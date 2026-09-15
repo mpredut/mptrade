@@ -718,6 +718,11 @@ class _LivePairVenue:
             f"strength={decision.strength} signal_reason={decision.reason} "
             f"loss={loss_fraction:.4%} emergency={emergency} "
             f"would_market={justified} reason={reason}")
+        if RTRADE_DYNAMIC_MARKET_EXIT_MODE == "emergency_only":
+            # Discretionary / adverse-regime exits WAIT (the round holds) -- a possibly
+            # false drop must not stop us out. Only a real loss >= the emergency
+            # threshold still forces a market exit as the catastrophe backstop.
+            return emergency
         if RTRADE_DYNAMIC_MARKET_EXIT_MODE in {"off", "shadow"}:
             return True
         return justified
@@ -1354,8 +1359,8 @@ class TradingBot:
             raise ValueError("RTRADE_INSUFFICIENT_FUNDS_BACKOFF_SEC must be > 0")
         if RTRADE_PLACE_FAILURE_BACKOFF_SEC <= 0:
             raise ValueError("RTRADE_PLACE_FAILURE_BACKOFF_SEC must be > 0")
-        if RTRADE_DYNAMIC_MARKET_EXIT_MODE not in {"off", "shadow", "live"}:
-            raise ValueError("RTRADE_DYNAMIC_MARKET_EXIT_MODE: off|shadow|live")
+        if RTRADE_DYNAMIC_MARKET_EXIT_MODE not in {"off", "shadow", "live", "emergency_only"}:
+            raise ValueError("RTRADE_DYNAMIC_MARKET_EXIT_MODE: off|shadow|live|emergency_only")
         if not RTRADE_HARD_STOP_PCT <= RTRADE_EMERGENCY_HARD_STOP_PCT < 1:
             raise ValueError(
                 "RTRADE_EMERGENCY_HARD_STOP_PCT must be >= hard-stop and < 1")

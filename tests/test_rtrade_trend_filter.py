@@ -1,6 +1,7 @@
-"""rtrade _trend_too_strong: the trend filter that makes the spread bot stand aside
-when the asset is clearly trending (|gradient_recent| > K*epsilon). Fail-OPEN plus a kill switch.
-cacheManager e injectat fake in sys.modules (import lazy in _trend_too_strong)."""
+"""rtrade _trend_too_strong / _followup_force / market_exit_allowed: the trend filter that
+makes the spread bot stand aside when the asset is clearly trending (|gradient_recent| >
+K*epsilon) AND when the trend signal is unavailable (fail-CLOSED on no data), plus a kill
+switch. A fake cacheManager is injected into sys.modules (imported lazily in the functions)."""
 import os
 import sys
 import types
@@ -174,6 +175,28 @@ class MarketRegimeTest(unittest.TestCase):
         # Adverse directional -> patient limit (pre-existing behavior preserved).
         self._fake_cm({"gradient_recent": -0.5, "epsilon": 0.1})   # bear
         self.assertFalse(rtrade._followup_force("TAOUSDC", "SELL"))
+
+
+class MarketExitModeTest(unittest.TestCase):
+    """emergency_only: a discretionary / adverse hard stop WAITS (the round holds); only a
+    real loss >= the emergency threshold still forces a market exit."""
+
+    def test_emergency_only_holds_until_emergency_even_when_regime_is_adverse(self):
+        import types
+        from unittest.mock import patch
+        fake = types.SimpleNamespace(symbol="TAOUSDC")
+        adverse = types.SimpleNamespace(
+            regime="bear", strength=5.0, reason="test", adverse_to=lambda side: True)
+        thr = rtrade.RTRADE_EMERGENCY_HARD_STOP_PCT
+        with (patch.object(rtrade, "RTRADE_DYNAMIC_MARKET_EXIT_MODE", "emergency_only"),
+              patch.object(rtrade, "_market_regime_decision", return_value=adverse)):
+            # Below the emergency loss: HOLD (do not stop out on a maybe-false drop),
+            # even though the regime reads adverse.
+            self.assertFalse(
+                rtrade._LivePairVenue.market_exit_allowed(fake, "LONG", thr - 0.01, "hard_stop"))
+            # At/above the emergency loss: MARKET exit (catastrophe backstop preserved).
+            self.assertTrue(
+                rtrade._LivePairVenue.market_exit_allowed(fake, "LONG", thr, "emergency"))
 
 
 if __name__ == "__main__":

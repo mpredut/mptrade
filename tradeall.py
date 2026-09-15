@@ -177,13 +177,16 @@ def _kalman_gate_blocks(symbol, action):
     # An allowed symbol must have an explicit mode; there is no default policy.
     mode = KALMAN_MODES[symbol]
     if mode == "off" or _shadow_ref is None:
-        return False, mode, None
+        return False, mode, None        # Gate disabled -> never blocks (not a data state).
     try:
         trend, age = _shadow_ref.current_trend(symbol)
     except Exception:
-        return False, mode, None
+        # No confirming signal (read failed): fail CLOSED for a BUY -- do not add
+        # exposure blind -- but never for a SELL, so a risk-reducing exit is never
+        # trapped by missing data.
+        return action == "BUY", mode, None
     if trend is None or age > GATE_STALE_SEC:
-        return False, mode, None        # Fail open on an absent or stale signal.
+        return action == "BUY", mode, None   # Absent/stale signal: block a blind BUY, allow a SELL.
     wanted = 1 if action == "BUY" else -1
     if mode == "permissive":
         return trend == -wanted, mode, trend

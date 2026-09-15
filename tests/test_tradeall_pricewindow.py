@@ -145,6 +145,21 @@ class TestTradeallOrderBoundary(unittest.TestCase):
         state.mark_fire_attempt.assert_not_called()
         fire.assert_not_called()
 
+    def test_kalman_gate_fails_closed_for_blind_buy_but_allows_sell(self):
+        # Missing/stale confirming signal: block an additive BUY (do not buy blind) but
+        # never a SELL -- a risk-reducing exit must never be trapped by a data outage.
+        class _AbsentShadow:
+            def current_trend(self, _sym):
+                return None, 0.0
+        class _StaleShadow:
+            def current_trend(self, _sym):
+                return 1, ta.GATE_STALE_SEC + 1.0
+        for shadow in (_AbsentShadow(), _StaleShadow()):
+            with (patch.object(ta, "_shadow_ref", shadow),
+                  patch.dict(ta.KALMAN_MODES, {"TAOUSDC": "strict"})):
+                self.assertTrue(ta._kalman_gate_blocks("TAOUSDC", "BUY")[0])
+                self.assertFalse(ta._kalman_gate_blocks("TAOUSDC", "SELL")[0])
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Helpers
