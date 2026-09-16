@@ -8,7 +8,7 @@ After the peak, the 24h window still contains the climb -> positive slope -> "up
 the price is ALREADY falling. Only when the window fills with the fall does the direction become "down".
 The test measures that LAG: how many hours after the peak it stays "up" while the price falls.
 
-Run it on the server (numpy):  ~/binance/myenv/bin/python test_tao_trend_lag.py
+Run it on the server (numpy):  ~/mptrade/myenv/bin/python test_tao_trend_lag.py
 """
 from __future__ import annotations
 

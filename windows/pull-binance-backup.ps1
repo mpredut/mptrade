@@ -7,9 +7,9 @@
 # Caile sunt specifice dev box-ului — ajusteaza daca difera.
 $ErrorActionPreference = 'Stop'
 $key      = "$env:USERPROFILE\.ssh\id_binance"
-$src      = 'predut@192.168.0.144:/home/predut/binance-secrets-backup.tar.gz'
-$dstLocal = "$env:USERPROFILE\binance-secrets-backup.tar.gz"
-$dstWsl   = '\\wsl.localhost\ubuntu-24.04\home\mariusp\binance-secrets-backup.tar.gz'
+$src      = 'predut@192.168.0.144:/home/predut/mptrade-secrets-backup.tar.gz'
+$dstLocal = "$env:USERPROFILE\mptrade-secrets-backup.tar.gz"
+$dstWsl   = '\\wsl.localhost\ubuntu-24.04\home\mariusp\mptrade-secrets-backup.tar.gz'
 $stamp    = Get-Date -Format 'yyyy-MM-dd HH:mm'
 
 # 1) descarca local (nu depinde de WSL)

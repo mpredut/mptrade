@@ -38,19 +38,19 @@ backup you get the chicken-and-egg: you need them to download the backup that co
 sudo apt update && sudo apt install -y git python3 python3-venv curl unzip
 
 # 1. the code  (HTTPS+token if you have no GitHub key on the VM; or add the key)
-git clone git@github.com:mpredut/mptrade.git ~/binance && cd ~/binance
+git clone git@github.com:mpredut/mptrade.git ~/mptrade && cd ~/mptrade
 
 # 2. BRING the secrets backup onto the VM — choose A or B:
 #   (A) STORJ (recommended, no dev box needed): configure rclone with the access grant and the
 #       crypt password (from the DR seed), then download and decrypt:
-#         ~/bin/rclone copyto storj-crypt:binance-secrets-backup.tar.gz ~/bk.tar.gz
+#         ~/bin/rclone copyto storj-crypt:mptrade-secrets-backup.tar.gz ~/bk.tar.gz
 #         mkdir bk && tar xzf ~/bk.tar.gz -C bk
 #   (B) PUSH from the dev box (interim): on the DEV BOX run
-#         scp ~/binance-secrets-backup.tar.gz user@NEW_VM:/tmp/
-#       then on the VM: mkdir bk && tar xzf /tmp/binance-secrets-backup.tar.gz -C bk
+#         scp ~/mptrade-secrets-backup.tar.gz user@NEW_VM:/tmp/
+#       then on the VM: mkdir bk && tar xzf /tmp/mptrade-secrets-backup.tar.gz -C bk
 
 # 3. ONE COMMAND — it rebuilds everything (secrets + venv + systemd + cron):
-./restore.sh bk/binance-secrets-backup
+./restore.sh bk/mptrade-secrets-backup
 
 # 4. PIA/VPN (once): install the PIA client and log in, then:
 sudo systemctl start pia binance
@@ -69,7 +69,7 @@ cron (within 5 minutes).
 Run it on the live machine (it creates the folder and the tar, without touching git):
 
 ```bash
-~/binance/backup_secrets.sh            # -> ~/binance-secrets-backup/ plus .tar.gz
+~/mptrade/backup_secrets.sh            # -> ~/mptrade-secrets-backup/ plus .tar.gz
 # then copy the tarball OFF-machine (USB, private cloud, another machine)
 ```
 
@@ -78,11 +78,11 @@ and off-machine is your responsibility.
 
 ## A local copy on WSL (interim, until Storj) — a Windows task
 The server rebuilds the backup daily (cron 03:30, `backup_secrets.sh`) and keeps **history:
-the last 7 dated tarballs** (`binance-secrets-backup-YYYYMMDD.tar.gz`) alongside the stable
-path `binance-secrets-backup.tar.gz` (latest) — so a corruption that makes it into the backup
+the last 7 dated tarballs** (`mptrade-secrets-backup-YYYYMMDD.tar.gz`) alongside the stable
+path `mptrade-secrets-backup.tar.gz` (latest) — so a corruption that makes it into the backup
 no longer overwrites the single good copy. A Windows task pulls the latest at 04:00 (WSL does
 not reach the server, only Windows does): it downloads **locally** first
-(`%USERPROFILE%\binance-secrets-backup.tar.gz`, which works even with WSL stopped), then copies
+(`%USERPROFILE%\mptrade-secrets-backup.tar.gz`, which works even with WSL stopped), then copies
 it into WSL as well. The script is versioned:
 [`../windows/pull-binance-backup.ps1`](../windows/pull-binance-backup.ps1) (keyless).
 

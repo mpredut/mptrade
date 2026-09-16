@@ -158,7 +158,7 @@ backup/disaster recovery procedure.
 
 ```bash
 # import/provider, no orders (from the repository root)
-cd /home/predut/binance
+cd "$(git rev-parse --show-toplevel)"
 myenv/bin/python -m unittest -q tests.test_hyperliquid_provider_executor
 
 # the launcher forced into PAPER; do not add it to the manifest just for a test

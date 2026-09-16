@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 app = FastAPI()
 
 app.mount("/static", StaticFiles(directory="/static"), name="static")
-#app.mount("/files", StaticFiles(directory="/home/predut/binance"), name="files")
+#app.mount("/files", StaticFiles(directory=os.path.dirname(os.path.abspath(__file__))), name="files")
 
 # The service currently allows every origin, method, and header. This is a runtime
 # configuration fact, not an assertion that the policy is safe for public exposure.

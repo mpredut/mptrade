@@ -69,10 +69,10 @@ samples ranging from 12 hours to 329 days.** The only thing that showed a real i
 
 ## How to run any script in this folder
 
-Every script assumes `cwd = /home/predut/binance` and uses `myenv`:
+Every script assumes `cwd =` the repo root and uses `myenv`:
 
 ```bash
-cd /home/predut/binance
+cd "$(git rev-parse --show-toplevel)"
 source myenv/bin/activate
 python3 offline/research/tradeall_trigger_gate/<script>.py
 ```
