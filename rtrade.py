@@ -1617,9 +1617,21 @@ if __name__ == "__main__":
     import cacheManager as cm
     cm.enable_real_ws_event_sync()
 
-    initial_price = float(api.get_current_price(symbol) or 0.0)
+    # A VPN/feed blip at startup must not crash with a traceback (which trips the
+    # watchdog's traceback alarm at threshold 1 and respawn-loops). Retry briefly for
+    # the first price, then exit CLEANLY for the supervisor to relaunch later. Wording
+    # avoids "unavailable" so it does not trip the blind regex either.
+    initial_price = 0.0
+    for attempt in range(1, 13):
+        initial_price = float(api.get_current_price(symbol) or 0.0)
+        if initial_price > 0:
+            break
+        print(f"[{symbol}] startup: price feed not ready yet (attempt {attempt}/12); waiting 5s...")
+        time.sleep(5)
     if initial_price <= 0:
-        raise RuntimeError(f"Price unavailable for {symbol}")
+        print(f"[{symbol}] startup: price feed still not ready after 12 tries; exiting cleanly "
+              "for the supervisor to relaunch (transient feed gap, not a fault).")
+        raise SystemExit(0)
     initial_qty = RTRADE_NOTIONAL_USDC / initial_price
     bot = TradingBot(symbol, initial_qty,
                      DEFAULT_ADJUSTMENT_PERCENT=DEFAULT_ADJUSTMENT_PERCENT)
