@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Root-owned fleet admin wrapper for UNATTENDED operation.
+#
+# Install once (as root), owned by root and NOT writable by the trading user:
+#     sudo install -m 0755 -o root -g root systemd/trading-admin /usr/local/sbin/trading-admin
+#
+# The trading user is then granted NOPASSWD on THIS FILE ONLY (see sudoers-trading), so an
+# agent/automation can run a FIXED set of privileged operations with no password and no
+# console -- but nothing else. Because the file is root-owned, the trading user cannot
+# edit it to gain arbitrary root.
+#
+# Escalation guard: subcommands that execute repo scripts (reinstall/rename) first verify
+# the working tree matches the committed version, so a tampered (uncommitted) script is
+# never run as root. The current trading root is read from the systemd unit (the
+# root-owned source of truth), so it follows renames automatically.
+set -euo pipefail
+
+TUSER="predut"                      # the fleet user (fixed here, never taken from caller env)
+
+svc_root() { systemctl show -p WorkingDirectory --value binance.service 2>/dev/null; }
+
+require_clean_repo() {              # refuse to run privileged repo scripts if edited locally
+  local root="$1"
+  git -C "$root" -c safe.directory="$root" diff --quiet HEAD -- \
+      rename_root.sh systemd/install_prod.sh make_venv_portable.sh 2>/dev/null \
+    || { echo "REFUSED: privileged scripts differ from the committed version (git tree not clean)." >&2; exit 1; }
+}
+
+log() { echo "[trading-admin $(date -u +%FT%TZ)] $*"; }
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  restart) log "restart fleet + vpn"; systemctl restart pia.service binance.service ;;
+  stop)    log "stop fleet";          systemctl stop binance.service ;;
+  start)   log "start fleet + vpn";   systemctl start pia.service binance.service ;;
+  status)  systemctl status --no-pager binance.service || true ;;
+  reinstall)
+    R="$(svc_root)"; [ -d "$R" ] || { echo "cannot resolve trading root from binance.service" >&2; exit 1; }
+    require_clean_repo "$R"
+    log "reinstall (re-render systemd + cron) from $R"
+    bash "$R/systemd/install_prod.sh" ;;
+  rename)
+    NEW="${1:?usage: trading-admin rename <new-folder-name>}"
+    R="$(svc_root)"; [ -d "$R" ] || { echo "cannot resolve trading root from binance.service" >&2; exit 1; }
+    require_clean_repo "$R"
+    log "rename trading root -> $NEW (via $R/rename_root.sh)"
+    bash "$R/rename_root.sh" "$NEW" ;;
+  *) echo "usage: trading-admin {restart|stop|start|status|reinstall|rename <new-folder-name>}" >&2; exit 2 ;;
+esac
