@@ -37,7 +37,9 @@ backup you get the chicken-and-egg: you need them to download the backup that co
 # 0. dependencies
 sudo apt update && sudo apt install -y git python3 python3-venv curl unzip
 
-# 1. the code  (HTTPS+token if you have no GitHub key on the VM; or add the key)
+# 1. the code — clone into ANY folder, as ANY user; restore.sh and install_prod.sh derive
+#    the checkout path and the account automatically (nothing is hardcoded to a name/user).
+#    (HTTPS+token if you have no GitHub key on the VM; or add the key)
 git clone git@github.com:mpredut/mptrade.git ~/mptrade && cd ~/mptrade
 
 # 2. BRING the secrets backup onto the VM — choose A or B:
