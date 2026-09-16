@@ -24,7 +24,7 @@ restore (from the dev box, or on the VM using the DR seed). The direction is eit
 downloads from Storj** or **you push** the backup to the VM. Never "the VM pulls from WSL".
 
 **🔑 THE DR SEED** — keep these 3 SEPARATELY (a password manager, or paper), not only in the backup:
-1. the git repository URL (`git@github.com:mpredut/binance.git`) plus GitHub access (an SSH key or an HTTPS token)
+1. the git repository URL (`git@github.com:mpredut/mptrade.git`) plus GitHub access (an SSH key or an HTTPS token)
 2. the **Storj access grant**
 3. the **rclone crypt password** (to decrypt the backup)
 
@@ -38,7 +38,7 @@ backup you get the chicken-and-egg: you need them to download the backup that co
 sudo apt update && sudo apt install -y git python3 python3-venv curl unzip
 
 # 1. the code  (HTTPS+token if you have no GitHub key on the VM; or add the key)
-git clone git@github.com:mpredut/binance.git ~/binance && cd ~/binance
+git clone git@github.com:mpredut/mptrade.git ~/binance && cd ~/binance
 
 # 2. BRING the secrets backup onto the VM — choose A or B:
 #   (A) STORJ (recommended, no dev box needed): configure rclone with the access grant and the
