@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # Rename the trading root folder in ONE automated, self-contained step.
 #
-#     sudo bash rename_root.sh <new-folder-name>
+#     sudo bash rename_root.sh <new-folder-name>          # do it
+#          bash rename_root.sh --dry-run <new-folder-name>  # preview + validate, no changes
 #
 # No preset env vars, nothing typed by hand beyond the new name: the script derives the
 # current root from its OWN location, and calls systemd/install_prod.sh with no env --
 # install_prod itself auto-derives TRADING_ROOT (its location), TRADING_USER (SUDO_USER)
 # and the Python (auto-detects myenv). The venv is made relocatable first so the move
-# needs no path edits. Idempotent-ish: refuses if the destination already exists.
+# needs no path edits.
 set -euo pipefail
 
-[ "$(id -u)" = 0 ] || { echo "Run with sudo: systemd/cron install and the root-owned venv need root." >&2; exit 1; }
-NEW="${1:?usage: sudo bash rename_root.sh <new-folder-name>}"
+DRY=0
+if [ "${1:-}" = "--dry-run" ]; then DRY=1; shift; fi
+NEW="${1:?usage: [sudo] bash rename_root.sh [--dry-run] <new-folder-name>}"
 case "$NEW" in */*|.*|"") echo "Give a bare folder name (no path, no leading dot)." >&2; exit 1;; esac
 
 CUR="$(cd "$(dirname "$0")" && pwd)"          # current root, derived from this script
@@ -22,7 +24,25 @@ TUSER="${SUDO_USER:-$(stat -c %U "$CUR")}"    # trading user, derived (never fro
 [ "$CUR" != "$DEST" ] || { echo "Already named '$NEW'; nothing to do."; exit 0; }
 [ ! -e "$DEST" ] || { echo "Destination already exists: $DEST" >&2; exit 1; }
 id "$TUSER" >/dev/null 2>&1 || { echo "Derived trading user does not exist: $TUSER" >&2; exit 1; }
-echo "Renaming trading root:  $CUR  ->  $DEST   (user=$TUSER)"
+echo "Plan: rename trading root  $CUR  ->  $DEST   (user=$TUSER)"
+
+if [ "$DRY" = 1 ]; then
+  echo "[dry-run] steps that WOULD run: stop binance.service+cron -> mv -> make_venv_portable"
+  echo "[dry-run]   -> systemd/install_prod.sh (no env) -> restart fleet/pia -> bots_start -> verify"
+  echo "[dry-run] validating install_prod auto-derivation (render-only, installs nothing)..."
+  RD="$(mktemp -d)"
+  if TRADING_RENDER_DIR="$RD" bash "$CUR/systemd/install_prod.sh" --render-only >/dev/null 2>&1; then
+    hits="$(grep -rl "$CUR" "$RD" 2>/dev/null | wc -l)"
+    echo "[dry-run]   render OK: @TRADING_ROOT@ auto-derived to $CUR ($hits rendered files reference it, no preset env)"
+  else
+    echo "[dry-run]   render-only FAILED -- inspect before the real run" >&2
+  fi
+  rm -rf "$RD"
+  echo "[dry-run] no changes made."
+  exit 0
+fi
+
+[ "$(id -u)" = 0 ] || { echo "Run the real rename with sudo (systemd/cron + root-owned venv need root)." >&2; exit 1; }
 
 echo "== [1/6] stop the fleet + pause supervision (brief trading pause) =="
 systemctl stop binance.service 2>/dev/null || true
