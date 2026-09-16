@@ -1,0 +1,31 @@
+# Scoped passwordless sudo for unattended fleet operation.
+#
+# Install once (as root), then the trading user can run ONLY these commands without a
+# password, so an agent/automation can manage the fleet when you are away:
+#
+#   sudo install -m 0440 -o root -g root systemd/sudoers-trading /etc/sudoers.d/trading
+#   sudo visudo -c            # validate the whole sudoers set before trusting it
+#
+# This is NOT blanket root. Every entry is /usr/bin/systemctl (a root-owned binary) on a
+# fixed set of units and verbs, so it grants nothing beyond starting/stopping those
+# services. Replace `predut` if the trading user differs.
+#
+# Deliberately NOT included: install_prod.sh / rename_root.sh and other repo scripts.
+# They are writable by the trading user, so NOPASSWD on them would be equivalent to full
+# root (edit the script, run anything). Keep rare privileged rebuilds/renames interactive,
+# or move that logic into a root-owned wrapper before granting it here.
+
+Cmnd_Alias TRADING_FLEET = \
+    /usr/bin/systemctl start binance.service, \
+    /usr/bin/systemctl stop binance.service, \
+    /usr/bin/systemctl restart binance.service, \
+    /usr/bin/systemctl start pia.service, \
+    /usr/bin/systemctl stop pia.service, \
+    /usr/bin/systemctl restart pia.service, \
+    /usr/bin/systemctl start cron.service, \
+    /usr/bin/systemctl stop cron.service, \
+    /usr/bin/systemctl daemon-reload, \
+    /usr/bin/systemctl is-active binance.service, \
+    /usr/bin/systemctl status binance.service
+
+predut ALL=(root) NOPASSWD: TRADING_FLEET
