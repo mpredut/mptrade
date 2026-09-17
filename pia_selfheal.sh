@@ -57,6 +57,10 @@ CONNECT_WAIT="${PIA_CONNECT_WAIT:-60}"  # How long we wait for a tunnel after ea
 DIP_TOKEN="${PIA_DIP_TOKEN:-$PIA_USER_HOME/piatoken_new.txt}"
 [ -f "$DIP_TOKEN" ] || DIP_TOKEN="$PIA_USER_HOME/piatoken.txt"   # fall back to the old token name
 FALLBACK_REGION="${PIA_FALLBACK_REGION:-auto}"
+# PIA's tunnel interface: wgpia0 with WireGuard, tun0 with OpenVPN. The wired ISP
+# throttles OpenVPN, so the fleet runs WireGuard; keep this in sync with the
+# `pia set protocol` in rung_restart_daemon.
+VPN_IF="${PIA_VPN_IF:-wgpia0}"
 REINSTALL_COOLDOWN="${PIA_REINSTALL_COOLDOWN:-86400}"  # At most one reinstall per 24h.
 # PIA's "latest" endpoint returns HTML rather than an installer, and
 # pia-linux-latest.run answers 403, so the URL has to carry an explicit version.
@@ -101,8 +105,8 @@ daemon_responsive() { [ -n "$(pia get connectionstate)" ]; }
 # while tun0/DNS/HTTPS are already dead. The probe is bound explicitly to tun0.
 vpn_healthy() {
     [ "$(pia get connectionstate)" = "Connected" ] || return 1
-    ip link show dev tun0 2>/dev/null | grep -q '<[^>]*UP[^>]*>' || return 1
-    curl -4 --interface tun0 --connect-timeout 4 --max-time "$PROBE_TIMEOUT" \
+    ip link show dev "$VPN_IF" 2>/dev/null | grep -q '<[^>]*UP[^>]*>' || return 1
+    curl -4 --interface "$VPN_IF" --connect-timeout 4 --max-time "$PROBE_TIMEOUT" \
         --fail --silent https://api.binance.com/api/v3/time >/dev/null 2>&1 || return 1
 }
 
@@ -144,7 +148,7 @@ check_resolved_cpu() {
             systemctl restart systemd-resolved.service
             sleep 3
             printf '0\n' > "$count_file"
-            resolvectl query -i tun0 api.binance.com >/dev/null 2>&1 && vpn_healthy && return 0
+            resolvectl query -i "$VPN_IF" api.binance.com >/dev/null 2>&1 && vpn_healthy && return 0
             log "DNS/VPN health did not recover after resolver restart; escalating through PIA recovery"
             return 1
         fi
@@ -210,6 +214,7 @@ flush_spool() {
 rung_connect() {
     log "rung 1: piactl connect"
     pia background enable >/dev/null
+    pia set allowlan true >/dev/null    # keep LAN/SSH reachable under the kill switch
     pia connect >/dev/null
 }
 
@@ -236,6 +241,7 @@ rung_restart_daemon() {
     sleep 8
     # Without this, `piactl connect` is SILENTLY ignored when no GUI is running.
     pia background enable >/dev/null
+    pia set allowlan true >/dev/null    # keep LAN/SSH reachable under the kill switch
 
     # A logout or a reset drops the dedicated IP registration from the daemon, while
     # the region stays pointed at one that no longer exists -> "Unknown region" and a
@@ -258,7 +264,7 @@ will return -2015. Generate a new token from the PIA account (the Dedicated IP s
 
     local dedicated
     dedicated=$(pia get regions | grep -m1 '^dedicated-')
-    pia set protocol openvpn >/dev/null
+    pia set protocol wireguard >/dev/null
     pia set region "${dedicated:-$FALLBACK_REGION}" >/dev/null
     pia set requestportforward true >/dev/null
     pia connect >/dev/null
@@ -359,7 +365,7 @@ if [ "$CHECK_ONLY" = 1 ]; then
     echo "  state          : $(pia get connectionstate)"
     echo "  region         : $(pia get region)"
     echo "  vpnip          : $(pia get vpnip)"
-    echo "  tun0           : $(ip -brief addr show tun0 2>&1 | head -1)"
+    echo "  vpn iface      : $(ip -brief addr show "$VPN_IF" 2>&1 | head -1)"
     echo "  dedicated IP   : $(pia get regions | grep -m1 '^dedicated-' || echo 'NOT REGISTERED')"
     echo "  raw internet   : $(net_raw_ok && echo OK || echo DOWN)"
     echo "  vpn_healthy    : $(vpn_healthy && echo YES || echo NO)"

@@ -6,6 +6,10 @@ HEALTH_INTERVAL="${PIA_HEALTH_INTERVAL:-20}"
 FAILURE_LIMIT="${PIA_FAILURE_LIMIT:-3}"
 PROBE_TIMEOUT="${PIA_PROBE_TIMEOUT:-7}"
 CLI_TIMEOUT="${PIA_CLI_TIMEOUT:-6}"
+# PIA's tunnel interface: wgpia0 with WireGuard, tun0 with OpenVPN. The wired ISP
+# throttles OpenVPN (it connects but the data channel stalls and the tunnel flaps),
+# so we run WireGuard. Keep this in sync with the `pia set protocol` line below.
+VPN_IF="${PIA_VPN_IF:-wgpia0}"
 failures=0
 
 pia() {
@@ -14,9 +18,9 @@ pia() {
 
 vpn_healthy() {
     [ "$(pia get connectionstate 2>/dev/null | tr -d '\r')" = "Connected" ] || return 1
-    ip link show dev tun0 2>/dev/null | grep -q '<[^>]*UP[^>]*>' || return 1
-    resolvectl query -i tun0 api.binance.com >/dev/null 2>&1 || return 1
-    curl -4 --interface tun0 --connect-timeout 4 --max-time "$PROBE_TIMEOUT" \
+    ip link show dev "$VPN_IF" 2>/dev/null | grep -q '<[^>]*UP[^>]*>' || return 1
+    resolvectl query -i "$VPN_IF" api.binance.com >/dev/null 2>&1 || return 1
+    curl -4 --interface "$VPN_IF" --connect-timeout 4 --max-time "$PROBE_TIMEOUT" \
         --fail --silent --show-error https://api.binance.com/api/v3/time \
         >/dev/null 2>&1 || return 1
 }
@@ -35,6 +39,9 @@ sleep 5
 # ever runs on the server, so background mode is mandatory (1 Sep 2026: without it
 # the daemon accepts the "connectVPN" RPC and stays calmly Disconnected).
 pia background enable || exit 1
+# Allow LAN through the kill switch. Without this, WireGuard's kill switch also blocks
+# the local network, which cuts SSH management access to the box.
+pia set allowlan true || true
 
 # The region is no longer hardcoded: on every logout PIA deletes the dedicated IP
 # registration, and a re-added token can return a DIFFERENT IP (1 Sep 2026: .86 -> .79).
@@ -50,7 +57,7 @@ if [ -z "$DEDICATED" ]; then
     exit 1
 fi
 
-pia set protocol openvpn || exit 1
+pia set protocol wireguard || exit 1
 pia set region "$DEDICATED" || exit 1
 pia set requestportforward true || exit 1
 pia connect || exit 1
