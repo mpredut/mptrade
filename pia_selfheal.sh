@@ -54,7 +54,8 @@ PIA_USER_HOME="$(getent passwd "$PIA_USER" | cut -d: -f6)"
 PROBE_TIMEOUT="${PIA_PROBE_TIMEOUT:-8}"
 CLI_TIMEOUT="${PIA_CLI_TIMEOUT:-6}"     # Longer than this means the daemon is wedged.
 CONNECT_WAIT="${PIA_CONNECT_WAIT:-60}"  # How long we wait for a tunnel after each rung.
-DIP_TOKEN="${PIA_DIP_TOKEN:-$PIA_USER_HOME/piatoken.txt}"
+DIP_TOKEN="${PIA_DIP_TOKEN:-$PIA_USER_HOME/piatoken_new.txt}"
+[ -f "$DIP_TOKEN" ] || DIP_TOKEN="$PIA_USER_HOME/piatoken.txt"   # fall back to the old token name
 FALLBACK_REGION="${PIA_FALLBACK_REGION:-auto}"
 REINSTALL_COOLDOWN="${PIA_REINSTALL_COOLDOWN:-86400}"  # At most one reinstall per 24h.
 # PIA's "latest" endpoint returns HTML rather than an installer, and
@@ -267,6 +268,19 @@ will return -2015. Generate a new token from the PIA account (the Dedicated IP s
 # refuses to run as root and may want interactive escalation, so it can legitimately
 # fail here.
 rung_reinstall() {
+    # The PIA installer needs an interactive terminal for privilege escalation, so it
+    # cannot run from cron (it fails with "sudo: a terminal is required"). In a headless
+    # context, skip it and alert for a manual reinstall instead of attempting-and-failing
+    # (which wastes a download and emits a misleading "reinstall failed" alert).
+    if [ ! -t 0 ] && [ -z "${PIA_ALLOW_HEADLESS_REINSTALL:-}" ]; then
+        log "rung 4: SKIPPED (headless/cron: the interactive PIA installer cannot run unattended)"
+        alert "PIA may need a manual reinstall ($(hostname))" \
+"The recovery ladder reached the reinstall rung, but the PIA installer needs an interactive
+terminal and cannot run from cron. Most outages here are network- or DIP-token-related, NOT a
+corrupt install -- check those first. If the daemon is genuinely corrupt, reinstall version
+$PIA_VERSION by hand from a terminal (or set PIA_ALLOW_HEADLESS_REINSTALL=1 to force an attempt)."
+        return 1
+    fi
     local last=0
     [ -f "$REINSTALL_MARK" ] && last=$(cat "$REINSTALL_MARK" 2>/dev/null || echo 0)
     local age=$(( $(date +%s) - last ))
