@@ -45,5 +45,17 @@ case "$cmd" in
     require_clean_repo "$R"
     log "rename trading root -> $NEW (via $R/rename_root.sh)"
     bash "$R/rename_root.sh" "$NEW" ;;
-  *) echo "usage: trading-admin {restart|stop|start|status|reinstall|rename <new-folder-name>}" >&2; exit 2 ;;
+  pin-dns)
+    # DNS-only apply: install the committed resolved drop-in + restart systemd-resolved.
+    # Deliberately does NOT touch the fleet, so it is safe to run during a VPN/network
+    # outage (unlike reinstall, which restarts binance.service and blocks on the VPN gate).
+    R="$(svc_root)"; [ -d "$R" ] || { echo "cannot resolve trading root from binance.service" >&2; exit 1; }
+    git -C "$R" -c safe.directory="$R" diff --quiet HEAD -- systemd/resolved-20-trading-cache.conf 2>/dev/null \
+      || { echo "REFUSED: resolved drop-in differs from the committed version." >&2; exit 1; }
+    log "pin DNS: install resolved drop-in + restart systemd-resolved (no fleet restart)"
+    install -m 0644 -o root -g root "$R/systemd/resolved-20-trading-cache.conf" \
+      /etc/systemd/resolved.conf.d/20-trading-cache.conf
+    systemctl restart systemd-resolved
+    resolvectl status 2>/dev/null | grep -m1 'Current DNS Server' || true ;;
+  *) echo "usage: trading-admin {restart|stop|start|status|reinstall|rename <new-folder-name>|pin-dns}" >&2; exit 2 ;;
 esac
