@@ -44,6 +44,16 @@ UPLINK_MTU="${PIA_UPLINK_MTU:-1280}"
 ip link set dev "$UPLINK_IF" mtu "$UPLINK_MTU" 2>/dev/null \
     || echo "warning: could not set $UPLINK_IF MTU to $UPLINK_MTU (continuing)"
 
+# Prefer IPv4 system-wide. The PIA WireGuard tunnel is IPv4-only and its kill switch
+# blocks IPv6 (leak protection), so an IPv6-first lookup to a dual-stack host (e.g.
+# google.com) hits "Operation not permitted"; only tools that then retry IPv4 recover.
+# Raising the precedence of IPv4-mapped addresses makes getaddrinfo() return IPv4 first,
+# so the fleet and diagnostics use the family that actually routes. IPv6 stays enabled,
+# just deprioritized. Idempotent -- appended at most once.
+if ! grep -qs '^precedence ::ffff:0:0/96' /etc/gai.conf; then
+    echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf
+fi
+
 sleep 5
 
 # `piactl connect` is SILENTLY ignored when no graphical client is running, and none
