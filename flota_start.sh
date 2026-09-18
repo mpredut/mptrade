@@ -26,9 +26,12 @@ echo "🔐 Checking the VPN connection..."
 SECONDS_PASSED=0
 sleep 5
 pia() { timeout "$PIA_CLI_TIMEOUT" piactl "$@"; }
+# Passive gate: only pia.service (pia_start.sh) drives `pia connect`. The fleet used to
+# issue its own `pia connect` here, which raced pia.service and the self-heal cron on the
+# same daemon -- part of the connect thrashing. binance.service has Requires=pia.service, so
+# the tunnel is already being brought up; we only WAIT for it here.
 while [ "$(pia get connectionstate 2>/dev/null | tr -d '\r')" != "Connected" ]; do
-    echo "⏳ VPN is not connected. Trying to reconnect..."
-    pia connect >/dev/null 2>&1 || true
+    echo "⏳ VPN not connected yet — waiting for pia.service to bring up the tunnel..."
     sleep $SLEEP_AFTER_VPN_CONNECT
     SECONDS_PASSED=$((SECONDS_PASSED + SLEEP_AFTER_VPN_CONNECT))
     if [ "$SECONDS_PASSED" -ge "$VPN_RETRY_TIMEOUT" ]; then

@@ -54,6 +54,10 @@ PIA_USER_HOME="$(getent passwd "$PIA_USER" | cut -d: -f6)"
 PROBE_TIMEOUT="${PIA_PROBE_TIMEOUT:-8}"
 CLI_TIMEOUT="${PIA_CLI_TIMEOUT:-6}"     # Longer than this means the daemon is wedged.
 CONNECT_WAIT="${PIA_CONNECT_WAIT:-60}"  # How long we wait for a tunnel after each rung.
+# Give pia.service's OWN connect attempt this long before self-heal steps in and takes over.
+# pia_start.sh waits up to 60s for an IP, so this must exceed that (plus margin) or self-heal
+# would stop pia.service mid-connect -- the thrashing this guard exists to prevent.
+CONNECT_SETTLE="${PIA_CONNECT_SETTLE:-120}"
 DIP_TOKEN="${PIA_DIP_TOKEN:-$PIA_USER_HOME/piatoken_new.txt}"
 [ -f "$DIP_TOKEN" ] || DIP_TOKEN="$PIA_USER_HOME/piatoken.txt"   # fall back to the old token name
 FALLBACK_REGION="${PIA_FALLBACK_REGION:-auto}"
@@ -117,6 +121,22 @@ wait_healthy() {
         vpn_healthy && return 0
     done
     return 1
+}
+
+# True while pia.service (Restart=always -> pia_start.sh) is still working through its own
+# connect attempt. When it is, self-heal defers instead of stopping it mid-connect. It is
+# NOT settling once it has been active longer than a full connect window (a genuinely stuck
+# tunnel that its own health loop should already be tearing down) or once it is failed/
+# inactive (systemd gave up / start-limit) -- both are when self-heal must actually step in.
+pia_service_settling() {
+    local st since now age
+    st=$(systemctl show -p ActiveState --value pia.service 2>/dev/null)
+    [ "$st" = "activating" ] && return 0
+    [ "$st" = "active" ] || return 1
+    since=$(systemctl show -p ActiveEnterTimestampMonotonic --value pia.service 2>/dev/null)
+    now=$(awk '{printf "%d", $1*1000000}' /proc/uptime)
+    age=$(( (now - ${since:-0}) / 1000000 ))
+    [ "$age" -lt "$CONNECT_SETTLE" ]
 }
 
 resolved_cpu_percent() {
@@ -414,8 +434,22 @@ Check the fleet: systemctl is-active binance.service (it has Requires=pia.servic
     exit 0
 fi
 
+# Unhealthy -- but if pia.service is still working through its OWN connect and the daemon
+# answers, defer to it. Stopping pia.service mid-connect (rung 3 does exactly that) is what
+# made the 19-Sep recovery thrash: cron and systemd fought over the same connect, and the
+# service was stopped ~19s into a 60s attempt. Only escalate when pia.service can no longer
+# help itself: a wedged daemon, or the service failed/inactive/long-stuck.
+if [ "$FORCE" = 0 ] && daemon_responsive && pia_service_settling; then
+    log "VPN not healthy yet, but pia.service is still connecting — deferring to its own retry"
+    exit 0
+fi
+
 [ -f "$OUTAGE_MARK" ] || date +%s > "$OUTAGE_MARK"
 log "VPN UNHEALTHY (state=$(pia get connectionstate) daemon=$(daemon_responsive && echo ok || echo wedged)) — starting the recovery ladder"
+# Take ownership: stop pia.service so its Restart=always loop cannot issue a competing
+# `pia connect` while the rungs run (two actors on one daemon was half the thrashing). Every
+# exit path below hands control back to systemd (reset-failed + start).
+systemctl stop pia.service >/dev/null 2>&1
 
 # A wedged daemon is not fixed by `connect`; jump straight to restarting it.
 if daemon_responsive; then
@@ -435,16 +469,21 @@ for rung in $LADDER; do
 "The tunnel was restored by $rung after ~${mins} min of downtime.
 VPN IP: $(pia get vpnip) | region: $(pia get region)
 If the region is NOT the dedicated one, Binance will return -2015 until the DIP token is restored."
-        # Rung 3 stopped pia.service; bring it back, and binance.service
-        # (Requires=pia.service) starts along with it.
-        systemctl start pia.service     >/dev/null 2>&1
-        systemctl start binance.service >/dev/null 2>&1
+        # We stopped pia.service to take ownership; hand it back (reset-failed clears any
+        # start-limit) and binance.service (Requires=pia.service) starts along with it.
+        systemctl reset-failed pia.service >/dev/null 2>&1
+        systemctl start pia.service        >/dev/null 2>&1
+        systemctl start binance.service    >/dev/null 2>&1
         exit 0
     fi
     log "$rung did not fix it; escalating"
 done
 
 log "FAILURE: every rung exhausted, the VPN is still down"
+# Do not leave pia.service stopped after giving up: hand control back to systemd's own
+# Restart=always loop (reset-failed clears the start-limit) so it keeps trying by itself.
+systemctl reset-failed pia.service >/dev/null 2>&1
+systemctl start pia.service        >/dev/null 2>&1
 alert "PIA NOT automatically repairable ($(hostname))" \
 "Every rung was exhausted (connect, reconnect, restart daemon, reinstall) and the tunnel still will not come up.
 State: $(pia get connectionstate) | region: $(pia get region) | raw internet: $(net_raw_ok && echo OK || echo DOWN)
