@@ -81,6 +81,13 @@ install -m 0644 "$SYSTEMD_DIR/resolved-20-trading-cache.conf" \
 install -d -m 0755 /etc/ssh/sshd_config.d
 install -m 0644 "$SYSTEMD_DIR/sshd-20-trading.conf" \
   /etc/ssh/sshd_config.d/20-trading.conf
+# Direct-to-router uplink (see netplan-99-force-gateway.yaml and DISASTER_RECOVERY.md).
+# Installed but deliberately NOT applied here: `netplan apply` while PIA is connected wipes
+# PIA's policy routing. It takes effect on the next reboot (clean order: netplan then
+# pia.service); to apply it immediately run `netplan apply` then `systemctl restart
+# pia.service` to rebuild the tunnel routing.
+install -m 0600 "$SYSTEMD_DIR/netplan-99-force-gateway.yaml" \
+  /etc/netplan/99-force-gateway.yaml
 
 install -d -o "$TRADING_USER" -g "$TRADING_GROUP" -m 0755 "$ROOT/logs"
 crontab -u "$TRADING_USER" "$TMP_DIR/crontab.prod.txt"

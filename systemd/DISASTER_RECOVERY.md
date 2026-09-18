@@ -53,11 +53,12 @@ missing, the fix is `piactl connect` (or `systemctl restart pia.service`), never
 
 A `git pull` + `sudo systemd/install_prod.sh` restores everything here:
 
-- **Services/cron/sshd/DNS drop-in**: `install_prod.sh` renders + installs
+- **Services/cron/sshd/DNS drop-in/netplan**: `install_prod.sh` renders + installs
   `binance.service`, `pia.service`, `piavpn.service`, `binancedemon.service`, both
-  crontabs, `sshd-20-trading.conf`, and the resolved drop-in
-  `resolved-20-trading-cache.conf` (Global DNS empty -> the tunnel owns resolution). It
-  also `systemctl restart systemd-resolved`.
+  crontabs, `sshd-20-trading.conf`, the resolved drop-in `resolved-20-trading-cache.conf`
+  (Global DNS empty -> the tunnel owns resolution), and the direct-default netplan file
+  `netplan-99-force-gateway.yaml` (installed, not applied -- see section 1). It also
+  `systemctl restart systemd-resolved`.
 - **PIA connection logic** (`pia_start.sh`, run by `pia.service`): WireGuard protocol,
   `allowlan true` (kill switch must not cut LAN/SSH), derive the dedicated region from
   `piactl get regions` (never hardcoded), connect, health-probe loop. It also, as root,
@@ -78,19 +79,23 @@ A `git pull` + `sudo systemd/install_prod.sh` restores everything here:
 ### 1. netplan — route the VM DIRECT to the gateway (.1)
 
 The VM must send its uplink straight to `192.168.0.1`, not hairpin through the Proxmox
-host (`.2`); otherwise the addKey to the dedicated IP fails. This is a static default in a
-netplan drop-in (`/etc/netplan/99-force-gateway.yaml`, root, 0600). It is NOT yet mirrored
-in this repo — MIRROR PENDING (paste `sudo cat /etc/netplan/99-force-gateway.yaml`). The
-required outcome is exactly:
+host (`.2`); otherwise the addKey to the dedicated IP fails. The LAN DHCP has handed out
+`.2` as the gateway, so a drop-in overrides it: `use-routes: false` (ignore the DHCP
+gateway) + a static default via `.1`.
+
+This is now MIRRORED at `systemd/netplan-99-force-gateway.yaml` and **installed** (0600
+root) by `install_prod.sh`, on top of cloud-init's `50-cloud-init.yaml` (`dhcp4: true`,
+regenerated automatically). Result once active:
 
 ```
 default via 192.168.0.1 dev ens18 proto static onlink
 ```
 
-CAUTION: `netplan apply` while PIA is connected wipes PIA's policy routing (`piavpnWgrt`)
-and traffic starts leaving direct instead of through the tunnel. After any `netplan apply`,
-run `piactl connect` (or `systemctl restart pia.service`) to rebuild it. On a clean reboot
-the order is safe (netplan first, then `pia.service`).
+`install_prod.sh` installs the file but deliberately does NOT `netplan apply` it, because
+that would wipe PIA's live policy routing (`piavpnWgrt`) and send traffic direct instead of
+through the tunnel. To activate: **reboot** (clean order netplan -> pia.service), or run
+`sudo netplan apply` and then `sudo systemctl restart pia.service` to rebuild the tunnel
+routing. On the current box the file is already installed and active.
 
 ### 2. Binance API IP whitelist — the dedicated IP
 
@@ -114,11 +119,12 @@ signed request gets `-2015`. Nothing automates this. See `PIA.md`.
    venv + PIA under the same paths (`README.md` steps 1-3).
 3. Install PIA's DIP token (`~/piatoken_new.txt`, fallback `~/piatoken.txt`) and log in
    (`piactl login ~/pia.txt`).
-4. netplan: install the direct-default drop-in (section 1) and `netplan apply` (PIA not yet
-   up, so safe).
-5. `sudo env TRADING_ROOT="$PWD" TRADING_USER="$(id -un)" systemd/install_prod.sh` — this
-   renders/installs the units (incl. the MTU `ExecStartPre`), the DNS drop-in and cron, and
-   restarts `piavpn`/`pia`/`binance`.
+4. `sudo env TRADING_ROOT="$PWD" TRADING_USER="$(id -un)" systemd/install_prod.sh` — renders
+   and installs the units (incl. the tunnel-MTU `ExecStartPre`), the DNS drop-in, the
+   direct-default netplan file, and cron; restarts `piavpn`/`pia`/`binance`.
+5. **Reboot** so netplan applies the direct route (`.1`) at boot and `pia.service` then
+   connects on the dedicated IP with the correct routing. (Without a reboot: `sudo netplan
+   apply`, then `sudo systemctl restart pia.service` to rebuild the tunnel routing.)
 6. Confirm the Binance whitelist matches `piactl get vpnip` (section 2).
 7. Run the green checklist above.
 
