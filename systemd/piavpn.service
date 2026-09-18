@@ -4,6 +4,12 @@ After=syslog.target network.target
 
 [Service]
 Environment="LD_LIBRARY_PATH=/opt/piavpn/lib"
+# Enforce the WireGuard tunnel MTU (1200) before the daemon reads settings.json. The
+# dedicated-IP path on this wired ISP is sub-1500, so without it the addKey/TLS to
+# <DIP>:1337 times out and the tunnel never comes up on the dedicated IP. The leading '-'
+# makes it non-fatal: a failure must never block the daemon (that would trip the kill
+# switch). See systemd/pia_settings_mtu.sh and systemd/DISASTER_RECOVERY.md.
+ExecStartPre=-/bin/bash @TRADING_ROOT@/systemd/pia_settings_mtu.sh
 ExecStart=/opt/piavpn/bin/pia-daemon
 Restart=always
 

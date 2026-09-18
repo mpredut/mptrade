@@ -55,6 +55,7 @@ render() {
 
 render "$SYSTEMD_DIR/binance.service" "$TMP_DIR/binance.service"
 render "$SYSTEMD_DIR/pia.service" "$TMP_DIR/pia.service"
+render "$SYSTEMD_DIR/piavpn.service" "$TMP_DIR/piavpn.service"
 render "$SYSTEMD_DIR/binancedemon.service" "$TMP_DIR/binancedemon.service"
 render "$SYSTEMD_DIR/crontab.prod.txt" "$TMP_DIR/crontab.prod.txt"
 render "$SYSTEMD_DIR/crontab.root.prod.txt" "$TMP_DIR/crontab.root.prod.txt"
@@ -72,7 +73,7 @@ test "$(id -u)" -eq 0 || { echo "Run this installer with sudo." >&2; exit 1; }
 
 install -m 0644 "$TMP_DIR/binance.service" /etc/systemd/system/binance.service
 install -m 0644 "$TMP_DIR/pia.service" /etc/systemd/system/pia.service
-install -m 0644 "$SYSTEMD_DIR/piavpn.service" /etc/systemd/system/piavpn.service
+install -m 0644 "$TMP_DIR/piavpn.service" /etc/systemd/system/piavpn.service
 install -m 0644 "$TMP_DIR/binancedemon.service" /etc/systemd/system/binancedemon.service
 install -d -m 0755 /etc/systemd/resolved.conf.d
 install -m 0644 "$SYSTEMD_DIR/resolved-20-trading-cache.conf" \
