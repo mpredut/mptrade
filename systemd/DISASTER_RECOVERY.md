@@ -103,14 +103,14 @@ The DIP is whitelisted on the Binance API keys. If PIA hands out a NEW dedicated
 re-added token can change it, e.g. `.86 -> .79`), **update the whitelist by hand** or every
 signed request gets `-2015`. Nothing automates this. See `PIA.md`.
 
-### 3. Proxmox host (192.168.0.2) — not this repo, but part of the path
+### 3. Proxmox host (192.168.0.2) — see systemd/PROXMOX_DR.md
 
-- The host's wired uplink must be the default route; the wifi hotspot interface
-  (`wlx...`) is commented out of `auto` in the host netplan/`/etc/network/interfaces` so a
-  `linkdown` wifi default cannot shadow the wired one.
-- If the VM is ever routed through the host (hairpin), the host needs a MASQUERADE rule for
-  the VM subnet (non-persistent by default). The direct-to-.1 netplan above avoids needing
-  this. See `pia-uplink-proxmox` in memory.
+The hypervisor's config (host network, firewall, VM definitions, storage) is documented for
+rebuild in `PROXMOX_DR.md`. Key points for THIS VM: the host's wired uplink (`vmbr0` static
+`.2` -> `.1` over `enp2s0`) must be the default route, and the USB wifi must stay NOT `auto`
+so a `linkdown` wifi default cannot shadow it. The VM is a bridge port on `vmbr0` and routes
+DIRECTLY to `.1`, so the host needs NO MASQUERADE/forwarding for it — the earlier
+hairpin-era iptables cruft was removed. See also `pia-uplink-proxmox` in memory.
 
 ## Full rebuild order
 
