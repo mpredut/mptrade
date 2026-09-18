@@ -70,11 +70,18 @@ IN ACCEPT -p icmp                                       # ping
 # outbound is open by default -> PIA/Binance/DNS work; replies are ESTABLISHED,RELATED
 ```
 
-Both VMs' NIC has `firewall=1`, so these rules are actually enforced (the per-VM chain is
-`tapNi0-IN`). WITHOUT the `firewall=1` NIC checkbox the VM firewall does nothing, so it is
-easy to think a VM is protected when it is not. To harden a VM: add the SSH allow rule
-FIRST, then tick `firewall=1` on the NIC, with the noVNC console open as a fallback --
-ticking it with only `policy_in: DROP` and no SSH rule locks you out.
+**IMPORTANT -- the TRADING VM (100) must run with `firewall=0` on its NIC.** `firewall=1`
+BREAKS PIA (confirmed twice, 19 Sep): the PVE firewall drops the PIA daemon's large TLS
+packets, so fetching the server list (`vpninfo/servers/v6`) AND the addKey to `<DIP>:1337`
+fail with `ApiNetworkError 1200` (an MTU-class failure) and the tunnel never comes up on a
+FRESH connect. An already-established tunnel survives (so it looks fine until PIA next
+reconnects, then thrashes with the self-heal cron). Keep VM 100 UNFILTERED -- its real
+boundary is the LAN + PIA kill switch. VM 101 (backtests, no PIA) MAY keep `firewall=1`.
+Firewalling VM 100 would require host-side MSS clamping (untested).
+
+The rule enforcement note still holds: the VM firewall only filters when the NIC has
+`firewall=1`, and ticking `firewall=1` with `policy_in: DROP` and no SSH allow rule locks
+you out -- add the SSH rule FIRST, with the noVNC console open.
 
 ## Virtual machines
 
@@ -82,8 +89,9 @@ Two VMs, both `onboot: 1`, both on `vmbr0`, disks on ZFS `local-zfs` (`rpool/dat
 
 - **VM 100 = the TRADING VM** (`192.168.0.144`, MAC `BC:24:11:2D:2F:23`): 4 cores,
   6144 MB (balloon 4096), `x86-64-v2-AES`, `scsi0 local-zfs:vm-100-disk-0 32G`
-  (`virtio-scsi-single`, iothread), `net0 virtio ...,firewall=1`, `ostype l26`. Runs the
-  live fleet + PIA (see `DISASTER_RECOVERY.md`).
+  (`virtio-scsi-single`, iothread), `net0 virtio ...` with the **NIC firewall OFF**
+  (`firewall=1` breaks PIA -- see the firewall section), `ostype l26`. Runs the live fleet
+  + PIA (see `DISASTER_RECOVERY.md`).
 - **VM 101 = `clone-of-100`** (MAC `BC:24:11:05:FA:22`): 4 cores, 4048 MB, `scsi0
   local-zfs:vm-101-disk-0 32G`, `net0 ...,firewall=1`. Runs ONLY scheduled backtests via
   cron -- NOT the live fleet and NOT PIA. This matters: if 101 ever started the fleet/PIA
