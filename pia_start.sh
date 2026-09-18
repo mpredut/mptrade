@@ -33,6 +33,17 @@ OWNER_HOME="$(getent passwd "$REPO_OWNER" | cut -d: -f6)"
 DIP_TOKEN="${PIA_DIP_TOKEN:-$OWNER_HOME/piatoken_new.txt}"
 [ -f "$DIP_TOKEN" ] || DIP_TOKEN="$OWNER_HOME/piatoken.txt"   # fall back to the old token name
 
+# Clamp the physical uplink MTU before touching PIA. The path to PIA's dedicated-IP
+# endpoint (the addKey/TLS to <DIP>:1337) and the WireGuard handshake cross a link whose
+# usable MTU is below 1500 on this wired ISP; with the uplink left at 1500 the TLS to
+# :1337 times out (ApiNetworkError 1200) and the tunnel never comes up on the dedicated
+# IP. Enforcing it here (as root, before connecting) makes a reboot or a bare
+# pia.service restart self-sufficient -- it does not depend on netplan having applied it.
+UPLINK_IF="${PIA_UPLINK_IF:-ens18}"
+UPLINK_MTU="${PIA_UPLINK_MTU:-1280}"
+ip link set dev "$UPLINK_IF" mtu "$UPLINK_MTU" 2>/dev/null \
+    || echo "warning: could not set $UPLINK_IF MTU to $UPLINK_MTU (continuing)"
+
 sleep 5
 
 # `piactl connect` is SILENTLY ignored when no graphical client is running, and none
