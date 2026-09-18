@@ -18,6 +18,10 @@ HLPY="$ROOT/$VENV/bin/python"
 now=$(date +%s)
 PIA_CLI_TIMEOUT="${PIA_CLI_TIMEOUT:-6}"
 VPN_PROBE_TIMEOUT="${PIA_PROBE_TIMEOUT:-8}"
+# PIA's tunnel interface: wgpia0 under WireGuard (tun0 was OpenVPN). Keep in sync with
+# pia_start.sh / pia_selfheal.sh -- probing the wrong interface reports a PERMANENT false
+# VPN fault (spamming alerts and masking a real outage).
+VPN_IF="${PIA_VPN_IF:-wgpia0}"
 
 pia() { timeout "$PIA_CLI_TIMEOUT" piactl "$@" 2>/dev/null | tr -d '\r'; }
 
@@ -34,14 +38,15 @@ PY
 }
 
 # Return a concise reason instead of only Connected/DOWN. Every external probe is
-# bounded, and HTTPS is explicitly bound to tun0 so it cannot escape via the ISP.
+# bounded, and HTTPS is explicitly bound to the tunnel ($VPN_IF) so it cannot escape via
+# the ISP.
 vpn_state() {
     [ "$(pia get connectionstate)" = "Connected" ] || { echo piactl; return; }
-    ip link show dev tun0 2>/dev/null | grep -q '<[^>]*UP[^>]*>' \
-        || { echo tun0; return; }
-    resolvectl query -i tun0 api.binance.com >/dev/null 2>&1 \
+    ip link show dev "$VPN_IF" 2>/dev/null | grep -q '<[^>]*UP[^>]*>' \
+        || { echo "$VPN_IF"; return; }
+    resolvectl query -i "$VPN_IF" api.binance.com >/dev/null 2>&1 \
         || { echo dns; return; }
-    curl -4 --interface tun0 --connect-timeout 4 --max-time "$VPN_PROBE_TIMEOUT" \
+    curl -4 --interface "$VPN_IF" --connect-timeout 4 --max-time "$VPN_PROBE_TIMEOUT" \
         --fail --silent --show-error https://api.binance.com/api/v3/time \
         >/dev/null 2>&1 || { echo https; return; }
     echo ok
@@ -76,7 +81,7 @@ proc_state() {
 if [ "$1" = "--check" ]; then
     echo "=== CHECK (read-only) $(date '+%H:%M:%S') — source: $MANIFEST ==="
     vpn=$(vpn_state)
-    [ "$vpn" = ok ] && echo "  VPN              ok (piactl + tun0 + DNS + Binance HTTPS)" \
+    [ "$vpn" = ok ] && echo "  VPN              ok (piactl + $VPN_IF + DNS + Binance HTTPS)" \
         || echo "  VPN              FAULT ($vpn)"
     intents=$(intent_state || echo "error|0|0|1")
     IFS='|' read -r intent_ok intent_count intent_unknown intent_errors <<EOF

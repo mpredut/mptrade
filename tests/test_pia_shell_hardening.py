@@ -90,16 +90,20 @@ def test_spool_is_drained_one_confirmed_alert_at_a_time():
 def test_healthcheck_probes_the_required_vpn_path():
     text = _text("healthcheck.sh")
     assert 'timeout "$PIA_CLI_TIMEOUT" piactl "$@"' in text
-    assert "ip link show dev tun0" in text
-    assert "resolvectl query -i tun0 api.binance.com" in text
-    assert "--interface tun0" in text
+    # The tunnel interface is wgpia0 under WireGuard (not tun0); it must be parameterised so
+    # the probe matches the live interface, or healthcheck reports a permanent false VPN
+    # fault (spamming alerts and masking a real outage).
+    assert 'VPN_IF="${PIA_VPN_IF:-wgpia0}"' in text
+    assert 'ip link show dev "$VPN_IF"' in text
+    assert 'resolvectl query -i "$VPN_IF" api.binance.com' in text
+    assert '--interface "$VPN_IF"' in text
     assert "https://api.binance.com/api/v3/time" in text
     assert 'VPN($vpn)' in text
 
 
 @pytest.mark.parametrize(
     ("failing", "reason"),
-    [("piactl", "piactl"), ("ip", "tun0"), ("resolvectl", "dns"), ("curl", "https")],
+    [("piactl", "piactl"), ("ip", "wgpia0"), ("resolvectl", "dns"), ("curl", "https")],
 )
 def test_healthcheck_reports_each_simulated_vpn_failure(tmp_path, failing, reason):
     result, _ = _run_healthcheck(tmp_path, failing)
@@ -110,7 +114,7 @@ def test_healthcheck_reports_each_simulated_vpn_failure(tmp_path, failing, reaso
 def test_healthcheck_accepts_a_fully_working_simulated_vpn(tmp_path):
     result, _ = _run_healthcheck(tmp_path)
     assert result.returncode == 0, result.stderr
-    assert "VPN              ok (piactl + tun0 + DNS + Binance HTTPS)" in result.stdout
+    assert "VPN              ok (piactl + wgpia0 + DNS + Binance HTTPS)" in result.stdout
 
 
 def test_healthcheck_surfaces_ntfy_http_failure(tmp_path):
