@@ -88,6 +88,9 @@ install -m 0644 "$SYSTEMD_DIR/sshd-20-trading.conf" \
 # pia.service` to rebuild the tunnel routing.
 install -m 0600 "$SYSTEMD_DIR/netplan-99-force-gateway.yaml" \
   /etc/netplan/99-force-gateway.yaml
+# Cap PIA's debug daemon log (debug logging is left ON in production for diagnostics).
+install -d -m 0755 /etc/logrotate.d
+install -m 0644 "$SYSTEMD_DIR/logrotate-pia-daemon.conf" /etc/logrotate.d/pia-daemon
 
 install -d -o "$TRADING_USER" -g "$TRADING_GROUP" -m 0755 "$ROOT/logs"
 crontab -u "$TRADING_USER" "$TMP_DIR/crontab.prod.txt"

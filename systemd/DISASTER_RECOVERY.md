@@ -56,9 +56,10 @@ A `git pull` + `sudo systemd/install_prod.sh` restores everything here:
 - **Services/cron/sshd/DNS drop-in/netplan**: `install_prod.sh` renders + installs
   `binance.service`, `pia.service`, `piavpn.service`, `binancedemon.service`, both
   crontabs, `sshd-20-trading.conf`, the resolved drop-in `resolved-20-trading-cache.conf`
-  (Global DNS empty -> the tunnel owns resolution), and the direct-default netplan file
-  `netplan-99-force-gateway.yaml` (installed, not applied -- see section 1). It also
-  `systemctl restart systemd-resolved`.
+  (Global DNS empty -> the tunnel owns resolution), the direct-default netplan file
+  `netplan-99-force-gateway.yaml` (installed, not applied -- see section 1), and the
+  `logrotate-pia-daemon.conf` cap on PIA's debug log (`/opt/piavpn/var/daemon.log`, kept ON
+  in production). It also `systemctl restart systemd-resolved`.
 - **PIA connection logic** (`pia_start.sh`, run by `pia.service`): WireGuard protocol,
   `allowlan true` (kill switch must not cut LAN/SSH), derive the dedicated region from
   `piactl get regions` (never hardcoded), connect, health-probe loop. It also, as root,
