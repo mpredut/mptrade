@@ -106,12 +106,22 @@ echo "Waiting for the IP assignment..."
 sleep 2
 connected=0
 for attempt in $(seq 1 12); do
-    if pia get vpnip | grep -q '[0-9]'; then
+    state=$(pia get connectionstate 2>/dev/null | tr -d '\r')
+    vpnip=$(pia get vpnip 2>/dev/null | tr -d '\r')
+    if [ "$state" = "Connected" ] && echo "$vpnip" | grep -q '[0-9]'; then
         connected=1
         break
     fi
+    # "Unknown" vpnip while Connected means the daemon lost its IP info — force a reconnect.
+    if [ "$state" = "Connected" ] && [ "$vpnip" = "Unknown" ] && [ "$attempt" -ge 3 ]; then
+        echo "PIA Connected but vpnip=Unknown after $attempt attempts; forcing reconnect."
+        pia disconnect >/dev/null 2>&1 || true
+        sleep 3
+        pia connect >/dev/null 2>&1 || true
+        sleep 5
+    fi
     sleep 5
-    echo "Still waiting for an IP ($attempt/12)..."
+    echo "Still waiting for an IP ($attempt/12)... state=$state vpnip=$vpnip"
 done
 if [ "$connected" -ne 1 ]; then
     echo "PIA did not receive an IP within 60s; systemd will retry."
@@ -128,7 +138,7 @@ echo "Port Forward: $PORT"
 # `piactl Connected` alone is not enough: during a flap PIA can report
 # Connected while tun0/DNS/HTTPS are already broken. The probe is bound
 # explicitly to tun0, so the traffic cannot fall back to the physical link.
-# Trei esecuri consecutive evita restartul la un timeout izolat.
+# Three consecutive failures prevent a restart on a single isolated timeout.
 while true; do
     sleep "$HEALTH_INTERVAL"
     if vpn_healthy; then
