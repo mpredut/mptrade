@@ -219,7 +219,7 @@ try:
     from kraken_xstock_watch import yahoo_last
 except Exception:
     yahoo_last = lambda s: None
-c = KrakenClient(osconfig.environ.get("KRAKEN_API_KEY"), osconfig.environ.get("KRAKEN_API_SECRET"))
+c = KrakenClient(os.environ.get("KRAKEN_API_KEY"), os.environ.get("KRAKEN_API_SECRET"))
 b = c.balance()
 print("  cash ZUSD %.0f + USDC %.0f | HYPE %s @ %s" % (
     float(b.get("ZUSD", 0)), float(b.get("USDC", 0)), b.get("HYPE"), c.last_price("HYPEUSD")))
@@ -238,7 +238,7 @@ import sys, os, time; sys.path.insert(0, ".")
 from ipo_common import load_dotenv
 load_dotenv("config.env")
 from t212_client import T212Client
-c = T212Client(osconfig.environ["T212_API_KEY"], osconfig.environ.get("T212_API_SECRET"), env="live")
+c = T212Client(os.environ["T212_API_KEY"], os.environ.get("T212_API_SECRET"), env="live")
 pf = None
 for _ in range(3):
     pf = c.get_portfolio()
