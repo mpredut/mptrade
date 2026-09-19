@@ -56,7 +56,6 @@ render() {
 render "$SYSTEMD_DIR/binance.service" "$TMP_DIR/binance.service"
 render "$SYSTEMD_DIR/pia.service" "$TMP_DIR/pia.service"
 render "$SYSTEMD_DIR/piavpn.service" "$TMP_DIR/piavpn.service"
-render "$SYSTEMD_DIR/binancedemon.service" "$TMP_DIR/binancedemon.service"
 render "$SYSTEMD_DIR/crontab.prod.txt" "$TMP_DIR/crontab.prod.txt"
 render "$SYSTEMD_DIR/crontab.root.prod.txt" "$TMP_DIR/crontab.root.prod.txt"
 render "$SYSTEMD_DIR/bashrc" "$TMP_DIR/bashrc"
@@ -74,7 +73,6 @@ test "$(id -u)" -eq 0 || { echo "Run this installer with sudo." >&2; exit 1; }
 install -m 0644 "$TMP_DIR/binance.service" /etc/systemd/system/binance.service
 install -m 0644 "$TMP_DIR/pia.service" /etc/systemd/system/pia.service
 install -m 0644 "$TMP_DIR/piavpn.service" /etc/systemd/system/piavpn.service
-install -m 0644 "$TMP_DIR/binancedemon.service" /etc/systemd/system/binancedemon.service
 install -d -m 0755 /etc/systemd/resolved.conf.d
 install -m 0644 "$SYSTEMD_DIR/resolved-20-trading-cache.conf" \
   /etc/systemd/resolved.conf.d/20-trading-cache.conf
@@ -94,8 +92,9 @@ install -m 0644 "$SYSTEMD_DIR/logrotate-pia-daemon.conf" /etc/logrotate.d/pia-da
 
 install -d -o "$TRADING_USER" -g "$TRADING_GROUP" -m 0755 "$ROOT/logs"
 crontab -u "$TRADING_USER" "$TMP_DIR/crontab.prod.txt"
-# Separate crontab for root: pia_selfheal.sh needs systemctl/kill on pia-daemon, so
-# it cannot run as the unprivileged trading user. See systemd/PIA.md.
+# Root crontab is reserved for tasks that require root privileges.
+# pia_selfheal.sh is a MANUAL tool only — do NOT add it here; pia.service
+# (Restart=always) is the sole automated PIA recovery mechanism.
 crontab -u root "$TMP_DIR/crontab.root.prod.txt"
 
 systemctl daemon-reload

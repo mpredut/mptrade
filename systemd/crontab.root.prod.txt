@@ -1,14 +1,14 @@
 # crontab.root.prod — snapshot of the ROOT crontab on the PROD machine (trading).
 # Reproducible: after a disaster, restore with:  crontab -u root systemd/crontab.root.prod.txt
 # (or automatically, through systemd/install_prod.sh)
-# Synced with PROD: 2026-09-01.
+# Synced with PROD: 2026-09-19.
 #
-# WHY ROOT and not @TRADING_USER@: pia_selfheal.sh has to be able to run
-# `systemctl stop/start piavpn.service` and `kill -9` on pia-daemon. As @TRADING_USER@ it
-# would fail in exactly the scenario it exists for. See systemd/PIA.md.
+# NOTE: pia_selfheal.sh has been removed from this crontab.
+# pia.service (systemd, Restart=always) is the sole automated PIA recovery mechanism.
+# Running pia_selfheal.sh from cron creates a competing restarter that fights pia.service
+# over piactl calls. Use ./pia_selfheal.sh --check or --force for manual intervention only.
 
-*/5 * * * * @TRADING_ROOT@/pia_selfheal.sh >> @TRADING_ROOT@/logs/pia_selfheal.log 2>&1
-# Optional auto-deploy (SHADOW by default -- observe only; set AUTODEPLOY_MODE=on in
+# Auto-deploy (SHADOW by default -- observe only; set AUTODEPLOY_MODE=on in
 # autodeploy.local.conf to apply). Pulls a moved origin/main and restarts the fleet; never
 # reboots. See git_autodeploy.sh.
 */10 * * * * @TRADING_ROOT@/git_autodeploy.sh >> @TRADING_ROOT@/logs/autodeploy.log 2>&1
