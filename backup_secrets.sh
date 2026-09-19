@@ -3,10 +3,10 @@
 # discovered AUTOMATICALLY from git (nothing hardcoded) minus the regenerable parts (venv/log/pyc/lock/html).
 # It catches: the .env files, keys/, ALL the .state_* files (HL/Kraken/T212/xstock/trailing), cachedb/,
 # .watchdog_state, trade_cooldown, priceanalysis.json and so on — and future files, automatically.
-# Rezultat: folder + tarball IN AFARA repo-ului. Copiaza tarball-ul OFF-MACHINE.
+# Output: folder + tarball OUTSIDE the repo. Copy the tarball OFF-MACHINE.
 #
 #   ./backup_secrets.sh                 # -> ~/<checkout>-secrets-backup/ + .tar.gz
-#   ./backup_secrets.sh /media/usb/bk   # destinatie custom
+#   ./backup_secrets.sh /media/usb/bk   # custom destination
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 OUT="${1:-$HOME/$(basename "$ROOT")-secrets-backup}"
@@ -17,12 +17,12 @@ cd "$ROOT"
 LIST="$(git ls-files --others --ignored --exclude-standard \
     | grep -vE '^(myenv|\.venv)/' \
     | grep -vE '(__pycache__|\.pyc$|\.log($|\.)|\.lock$|^index\.html$|^\.claude/)')"
-[ -n "$LIST" ] || { echo "❌ nothing to save (git ls-files gol?)"; exit 1; }
+[ -n "$LIST" ] || { echo "❌ nothing to save (git ls-files empty?)"; exit 1; }
 
 rm -rf "$OUT"; mkdir -p "$OUT"
 printf '%s\n' "$LIST" | tar cf - -C "$ROOT" -T - | tar xf - -C "$OUT"
 
-# Date de masina aflate intentionat in afara repo-ului. Tokenul PIA este secret
+# Machine-specific data kept intentionally outside the repo. The PIA token is secret
 # and it is required to restore the dedicated IP on a fresh install.
 mkdir -p "$OUT/_machine"
 PIA_TOKEN="${PIA_DIP_TOKEN:-$HOME/piatoken.txt}"
@@ -30,7 +30,7 @@ if [ -f "$PIA_TOKEN" ]; then
     install -m 0600 "$PIA_TOKEN" "$OUT/_machine/piatoken.txt"
 fi
 
-tar czf "$OUT.tar.gz" -C "$OUT" .   # latest, cale stabila pt pull-ul Windows
+tar czf "$OUT.tar.gz" -C "$OUT" .   # latest, stable path for Windows pull
 chmod -R go-rwx "$OUT" 2>/dev/null || true
 chmod 600 "$OUT.tar.gz"
 
@@ -45,5 +45,5 @@ N="$(find "$OUT" -type f | wc -l)"
 echo "=== a COMPLETE backup: $N files (secrets plus state) ==="
 printf '%s\n' "$LIST" | sed 's/^/    /'
 echo "Folder : $OUT"
-echo "Tarball: $OUT.tar.gz (600)  + istoric: $DATED (pastrez ultimele $KEEP)"
+echo "Tarball: $OUT.tar.gz (600)  + history: $DATED (keeping last $KEEP)"
 echo "⚠ Copy the tarball OFF-MACHINE. It holds the HL wallet key + every API key. NOT in git!"

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# refresh_dev.sh — aduce masina de BACKTEST (dev) la zi fata de prod, pe 2 canale:
+# refresh_dev.sh — brings the BACKTEST machine (dev) up to date with prod via two channels:
 #   1. CODE: `git pull --ff-only` on dev (code travels through GitHub, not this script).
 #   2. DATA (cachedb, untracked by git): rsync prod -> dev. Only the price archives
-#      (cache_price_*.jsonl) sunt strict necesare backtestului; sincronizam tot
+#      (cache_price_*.jsonl) are strictly needed by backtesting; we sync all of
 #      cachedb so that dev is a real mirror (rsync transfers only the delta, cheaply).
 #
 # Runs on PROD (it holds the SSH key to dev). It does NOT touch prod and does NOT git pull on
 # prod (the live machine with real money — the code is pulled there DELIBERATELY, never automatically).
-# Idempotent; sigur de pus pe cron pe prod.
+# Idempotent; safe to put in cron on prod.
 set -euo pipefail
 
 RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,10 +27,10 @@ fi
 REPO_ROOT="${BINANCE_REPO_ROOT:-$(cd "$RUNNER_DIR/../.." && pwd)}"
 SSH="ssh -o BatchMode=yes -p $DEV_PORT"
 
-echo "[refresh_dev $(date '+%F %T')] cod: git pull --ff-only pe dev"
+echo "[refresh_dev $(date '+%F %T')] code: git pull --ff-only on dev"
 $SSH "$DEV_USER@$DEV_HOST" "cd ~/$DEV_PATH && git pull --ff-only origin $DEV_CODE_BRANCH" 2>&1 | sed 's/^/  /'
 
-echo "[refresh_dev $(date '+%F %T')] date: rsync cachedb/ prod -> dev"
+echo "[refresh_dev $(date '+%F %T')] data: rsync cachedb/ prod -> dev"
 # --exclude '*.tmp': cacheManager writes atomically through temporary .tmp files that come and go
 # in real time; there is no point copying them. We tolerate the codes 23/24 (partial or
 # vanished files) — benign on a live source, NOT a real sync failure.
