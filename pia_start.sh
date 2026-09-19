@@ -2,7 +2,7 @@
 
 set -u
 
-HEALTH_INTERVAL="${PIA_HEALTH_INTERVAL:-20}"
+HEALTH_INTERVAL="${PIA_HEALTH_INTERVAL:-30}"
 FAILURE_LIMIT="${PIA_FAILURE_LIMIT:-3}"
 PROBE_TIMEOUT="${PIA_PROBE_TIMEOUT:-7}"
 CLI_TIMEOUT="${PIA_CLI_TIMEOUT:-6}"
@@ -16,7 +16,7 @@ pia() {
     timeout "$CLI_TIMEOUT" piactl "$@"
 }
 
-vpn_healthy() {
+vpn_old_healthy() {
     [ "$(pia get connectionstate 2>/dev/null | tr -d '\r')" = "Connected" ] || return 1
     ip link show dev "$VPN_IF" 2>/dev/null | grep -q '<[^>]*UP[^>]*>' || return 1
     resolvectl query -i "$VPN_IF" api.binance.com >/dev/null 2>&1 || return 1
@@ -24,6 +24,26 @@ vpn_healthy() {
         --fail --silent --show-error https://api.binance.com/api/v3/time \
         >/dev/null 2>&1 || return 1
 }
+vpn_healthy() {
+    [ "$(pia get connectionstate 2>/dev/null | tr -d '\r')" = "Connected" ] || return 1
+    ip link show dev "$VPN_IF" 2>/dev/null | grep -q '<[^>]*UP[^>]*>' || return 1
+
+    # 1. Extrage IP-ul IPv4 direct din resolvectl pe acea interfata
+    # (Scoate textul de control si pastreaza doar IP-ul curat de tip A)
+    local binance_ip
+    binance_ip=$(resolvectl query -i "$VPN_IF" api.binance.com 2>/dev/null | grep -E -o '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
+
+    [ -n "$binance_ip" ] || return 1
+
+    # 2. Transmite-i lui curl IP-ul direct. Curl nu va mai face DNS lookup general,
+    # nu va mai intreba proxy-ul, ci va trimite pachetele direct catre IP prin interfata VPN.
+    curl -4 --interface "$VPN_IF" \
+        --resolve "://binance.com:$binance_ip" \
+        --connect-timeout 4 --max-time "$PROBE_TIMEOUT" \
+        --fail --silent --show-error https://api.binance.com/api/v3/time \
+        >/dev/null 2>&1 || return 1
+}
+
 
 # Configurare PIA
 
