@@ -10,15 +10,7 @@
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-if [ -n "${DN_PY:-}" ]; then
-  PY="$DN_PY"
-elif [ -x "$HERE/../.venv/bin/python" ]; then
-  PY="$HERE/../.venv/bin/python"
-elif [ -x "$HERE/../myenv/bin/python" ]; then
-  PY="$HERE/../myenv/bin/python"
-else
-  PY="$(command -v python3)"
-fi
+source "$HERE/../env_common.sh"
 PAPER=""
 [ "${1:-}" = "--paper" ] && PAPER="--paper"
 
@@ -43,10 +35,10 @@ fi
 
 echo "[dn_close] 3/3 closing position (${PAPER:-REAL})..."
 cd "$HERE" || exit 1
-"$PY" dn_bot.py --close $PAPER
+"$PYTHON_BIN" dn_bot.py --close $PAPER
 rc=$?
 
-echo "[dn_close] done (rc=$rc). Check with: $PY dn_bot.py --status"
+echo "[dn_close] done (rc=$rc). Check with: $PYTHON_BIN dn_bot.py --status"
 echo "[dn_close] NB: bot supervision was stopped. To re-enable DN later:"
-echo "           start the bot via: sudo systemctl start hl-dn.service (or $PY dn_bot.py)"
+echo "           start the bot via: sudo systemctl start hl-dn.service (or $PYTHON_BIN dn_bot.py)"
 exit "$rc"
