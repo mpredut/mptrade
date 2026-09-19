@@ -19,9 +19,13 @@
 # disk and drained once connectivity returns, so the full story of the outage
 # reaches the phone even though not a single packet could leave during it.
 #
-# Scheduling (root crontab, every 5 minutes):
-# Schedule this script through the rendered root production crontab.
-# Manual use:
+# IMPORTANT — DO NOT ADD TO CRONTAB:
+#   pia.service (systemd, Restart=always) is the single automated recovery
+#   source for PIA. Running pia_selfheal.sh from cron alongside pia.service
+#   creates competing restarters that fight each other (both call piactl
+#   connect/disconnect and can kill the other's in-progress tunnel setup).
+#
+# This script is a MANUAL diagnostic and emergency recovery tool only:
 #   ./pia_selfheal.sh --check   # diagnostics only, touches nothing
 #   ./pia_selfheal.sh --force   # run the recovery ladder even if things look healthy
 #
