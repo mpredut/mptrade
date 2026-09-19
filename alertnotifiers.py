@@ -337,8 +337,8 @@ class AlertNotifier:
         alerts, email_config: Optional[dict] = None, subject: Optional[str] = None,
     ):
         email_config = email_config or {}
-        smtp_server = email_config.get("smtp_server") or os.environ.get("SMTP_SERVER", "smtp.gmail.com")
-        smtp_port = int(email_config.get("smtp_port") or os.environ.get("SMTP_PORT", "587"))
+        smtp_server = email_config.get("smtp_server") or os.environ.get("SMTP_SERVER")
+        smtp_port = email_config.get("smtp_port") or os.environ.get("SMTP_PORT")
         smtp_username = email_config.get("smtp_username") or os.environ.get("SMTP_USERNAME")
         smtp_password = email_config.get("smtp_password") or os.environ.get("SMTP_PASSWORD")
         to_email = email_config.get("to_email") or os.environ.get("ALERT_TO_EMAIL")
@@ -347,8 +347,14 @@ class AlertNotifier:
             print("[Notifier] Email: no alerts to send")
             return False
 
-        if not smtp_username or not smtp_password or not to_email:
-            print("[Notifier] Email: SMTP_USERNAME, SMTP_PASSWORD, and ALERT_TO_EMAIL are required")
+        if not smtp_server or not smtp_port or not smtp_username or not smtp_password or not to_email:
+            print("[Notifier] Email: SMTP_SERVER, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, and ALERT_TO_EMAIL are required")
+            return False
+
+        try:
+            smtp_port = int(smtp_port)
+        except ValueError:
+            print("[Notifier] Email: SMTP_PORT must be an integer")
             return False
 
         alerts = list(alerts)
