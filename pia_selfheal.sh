@@ -58,8 +58,7 @@ CONNECT_WAIT="${PIA_CONNECT_WAIT:-60}"  # How long we wait for a tunnel after ea
 # pia_start.sh waits up to 60s for an IP, so this must exceed that (plus margin) or self-heal
 # would stop pia.service mid-connect -- the thrashing this guard exists to prevent.
 CONNECT_SETTLE="${PIA_CONNECT_SETTLE:-120}"
-DIP_TOKEN="${PIA_DIP_TOKEN:-$PIA_USER_HOME/piatoken_new.txt}"
-[ -f "$DIP_TOKEN" ] || DIP_TOKEN="$PIA_USER_HOME/piatoken.txt"   # fall back to the old token name
+DIP_TOKEN="${PIA_DIP_TOKEN:-$PIA_USER_HOME/piatoken.txt}"
 FALLBACK_REGION="${PIA_FALLBACK_REGION:-auto}"
 # PIA's tunnel interface: wgpia0 with WireGuard, tun0 with OpenVPN. The wired ISP
 # throttles OpenVPN, so the fleet runs WireGuard; keep this in sync with the

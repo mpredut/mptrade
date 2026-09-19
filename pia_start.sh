@@ -49,8 +49,7 @@ vpn_healthy() {
 REPO_OWNER="$(stat -c %U "$(cd "$(dirname "$0")" && pwd)")"
 OWNER_HOME="$(getent passwd "$REPO_OWNER" | cut -d: -f6)"
 [ -n "$OWNER_HOME" ] || { echo "Cannot determine home for $REPO_OWNER"; exit 1; }
-DIP_TOKEN="${PIA_DIP_TOKEN:-$OWNER_HOME/piatoken_new.txt}"
-[ -f "$DIP_TOKEN" ] || DIP_TOKEN="$OWNER_HOME/piatoken.txt"   # fall back to the old token name
+DIP_TOKEN="${PIA_DIP_TOKEN:-$OWNER_HOME/piatoken.txt}"
 
 # Clamp the physical uplink MTU before touching PIA. The path to PIA's dedicated-IP
 # endpoint (the addKey/TLS to <DIP>:1337) and the WireGuard handshake cross a link whose

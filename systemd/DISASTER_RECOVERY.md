@@ -118,7 +118,7 @@ hairpin-era iptables cruft was removed. See also `pia-uplink-proxmox` in memory.
 1. Proxmox host uplink healthy (wired default, wifi not shadowing it).
 2. Fresh trading account + `git clone`; restore secrets/state from backup; install
    venv + PIA under the same paths (`README.md` steps 1-3).
-3. Install PIA's DIP token (`~/piatoken_new.txt`, fallback `~/piatoken.txt`) and log in
+3. Install PIA's DIP token (`~/piatoken.txt`) and log in
    (`piactl login ~/pia.txt`).
 4. `sudo env TRADING_ROOT="$PWD" TRADING_USER="$(id -un)" systemd/install_prod.sh` — renders
    and installs the units (incl. the tunnel-MTU `ExecStartPre`), the DNS drop-in, the
