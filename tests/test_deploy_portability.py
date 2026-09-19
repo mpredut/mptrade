@@ -5,18 +5,19 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_FILES = [
-    "backup_remote.sh",
+    "env_common.sh",
+    "tools/admin/backup_remote.sh",
     "backup_secrets.sh",
     "bots_start.sh",
     "deploy_providers.sh",
     "process_control.sh",
     "flota_start.sh",
     "healthcheck.sh",
-    "local_watch_start.sh",
+    "tools/monitoring/local_watch_start.sh",
     "logger_retention.sh",
-    "pia_selfheal.sh",
+    "tools/admin/pia_selfheal.sh",
     "pia_start.sh",
-    "restore.sh",
+    "tools/admin/restore.sh",
     "rotate_logs.sh",
     "systemd/PIA.md",
     "systemd/README.md",

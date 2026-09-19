@@ -10,7 +10,7 @@
 # The secrets folder MIRRORS the repo structure (.env, hyperliquid/.env, keys/, ...).
 # The repository path and account name are detected and passed to the installer.
 set -uo pipefail
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SECRETS="${1:-}"
 fail() { echo "❌ $*" >&2; exit 1; }
 

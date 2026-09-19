@@ -32,7 +32,7 @@
 
 set -u
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CONFIG="$ROOT/pia_selfheal_config.env"
 [ -r "$CONFIG" ] || { echo "missing required configuration: $CONFIG" >&2; exit 1; }
 set -a

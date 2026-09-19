@@ -15,7 +15,7 @@ def executable(path, content):
 
 
 def sandbox(tmp_path):
-    for name in ("deploy_providers.sh", "bots_start.sh", "process_control.sh"):
+    for name in ("deploy_providers.sh", "bots_start.sh", "process_control.sh", "env_common.sh"):
         shutil.copy2(ROOT / name, tmp_path / name)
     (tmp_path / "procs.conf").write_text(
         "cacheManager.py|$ROOT||cache|||fleet\n"

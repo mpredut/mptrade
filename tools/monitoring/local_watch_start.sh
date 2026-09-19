@@ -1,13 +1,8 @@
 #!/bin/bash
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
-if [ -x "$ROOT/.venv/bin/python" ]; then
-    PY="$ROOT/.venv/bin/python"
-elif [ -x "$ROOT/myenv/bin/python" ]; then
-    PY="$ROOT/myenv/bin/python"
-else
-    PY="$(command -v python3)"
-fi
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$HERE/../../env_common.sh"
+PY="$PYTHON_BIN"
 
 echo "=== DN WATCH ==="
 pkill -f "dn_bot.py --watch" 2>/dev/null || true

@@ -16,7 +16,7 @@ if [ "${1:-}" = "--dry-run" ]; then DRY=1; shift; fi
 NEW="${1:?usage: [sudo] bash rename_root.sh [--dry-run] <new-folder-name>}"
 case "$NEW" in */*|.*|"") echo "Give a bare folder name (no path, no leading dot)." >&2; exit 1;; esac
 
-CUR="$(cd "$(dirname "$0")" && pwd)"          # current root, derived from this script
+CUR="$(cd "$(dirname "$0")/../.." && pwd)"  # current root, derived from this script
 PARENT="$(dirname "$CUR")"
 DEST="$PARENT/$NEW"
 TUSER="${SUDO_USER:-$(stat -c %U "$CUR")}"    # trading user, derived (never from preset env)
@@ -53,7 +53,7 @@ mv "$CUR" "$DEST"
 cd "$DEST"
 
 echo "== [3/6] make the venv relocatable (self-deriving activate; root can write it) =="
-bash "$DEST/make_venv_portable.sh"
+bash "$DEST/tools/admin/make_venv_portable.sh"
 
 echo "== [4/6] re-render systemd units + both crontabs for the new path (auto-derived) =="
 bash "$DEST/systemd/install_prod.sh"           # no env vars: install_prod derives root/user/python

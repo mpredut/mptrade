@@ -9,19 +9,9 @@ set -euo pipefail
 
 RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${BINANCE_REPO_ROOT:-${ROOT:-$(cd "$RUNNER_DIR/../.." && pwd)}}"
+source "$REPO_ROOT/env_common.sh"
 ONLY="${PILOT_ONLY:-}"            # empty = every key; e.g. "maxage,hardtp"
 cd "$REPO_ROOT"
-
-PYTHON_BIN="${TRADING_PYTHON:-}"
-if [ -z "$PYTHON_BIN" ]; then
-  if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
-    PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
-  elif [ -x "$REPO_ROOT/myenv/bin/python" ]; then
-    PYTHON_BIN="$REPO_ROOT/myenv/bin/python"
-  else
-    PYTHON_BIN="$(command -v python3)"
-  fi
-fi
 
 echo "[cycle $(date '+%F %T')] pilot --propose (only='${ONLY:-all}')"
 args=(--propose)

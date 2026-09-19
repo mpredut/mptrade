@@ -8,7 +8,7 @@
 # derives its root ($ROOT in the shell scripts, __file__ in Python, @TRADING_ROOT@
 # auto-derived by systemd/install_prod.sh), so this is the last piece.
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 VENV_NAME="${1:-}"
 if [ -z "$VENV_NAME" ]; then
   if [ -d "$ROOT/myenv" ]; then

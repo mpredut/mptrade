@@ -6,10 +6,15 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 MANIFEST="$ROOT/procs.conf"
 cd "$ROOT"
 case "${1:-}" in ""|--check) ;; *) echo "Usage: $0 [--check]"; exit 2;; esac
-PY=""
-for candidate in .venv myenv; do
-    if [ -x "$ROOT/$candidate/bin/python" ]; then PY="$ROOT/$candidate/bin/python"; break; fi
-done
+if [ -f "$ROOT/env_common.sh" ]; then
+    source "$ROOT/env_common.sh"
+    PY="$PYTHON_BIN"
+else
+    PY=""
+    for v in "$ROOT/.venv" "$ROOT/myenv"; do
+        if [ -x "$v/bin/python" ]; then PY="$v/bin/python"; break; fi
+    done
+fi
 [ -n "$PY" ] || { echo "No virtual environment found"; exit 1; }
 source "$ROOT/process_control.sh"
 

@@ -25,16 +25,7 @@ source "$RUNNER_DIR/load_dev_backtest_env.sh"
 REPO_ROOT="${BINANCE_REPO_ROOT:-$(cd "$RUNNER_DIR/../.." && pwd)}"
 SSH="ssh -o BatchMode=yes -p $DEV_PORT"
 
-PYTHON_BIN="${TRADING_PYTHON:-}"
-if [ -z "$PYTHON_BIN" ]; then
-  if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
-    PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
-  elif [ -x "$REPO_ROOT/myenv/bin/python" ]; then
-    PYTHON_BIN="$REPO_ROOT/myenv/bin/python"
-  else
-    PYTHON_BIN="$(command -v python3)"
-  fi
-fi
+source "$REPO_ROOT/env_common.sh"
 
 echo "[trigger $(date '+%F %T')] 1/3 refresh dev (sync code+data)"
 "$REPO_ROOT/offline/runners/refresh_dev.sh"

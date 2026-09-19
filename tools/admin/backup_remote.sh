@@ -6,7 +6,7 @@
 #
 # The archive name follows the checkout directory unless BACKUP_NAME overrides it.
 set -uo pipefail
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 RCLONE="${RCLONE:-$HOME/bin/rclone}"
 command -v "$RCLONE" >/dev/null 2>&1 || RCLONE=rclone
 REMOTE="${RCLONE_REMOTE:-storj-crypt:}"          # the crypt remote (over Storj)

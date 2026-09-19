@@ -9,12 +9,9 @@
 #   --check      : READ-ONLY preview (what --supervise would do) — safe, touches nothing.
 #   (no arg)     : the full report (processes plus the HL/Kraken/T212 accounts).
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+source "$ROOT/env_common.sh"
 MANIFEST="$ROOT/procs.conf"
-# python with the Hyperliquid SDK (eth_account): it prefers the venv and falls back to python3
-VENV=""
-for _d in ".venv" "myenv"; do [ -f "$ROOT/$_d/bin/activate" ] && VENV="$_d" && break; done
-HLPY="$ROOT/$VENV/bin/python"
-{ [ -x "$HLPY" ] && "$HLPY" -c "import eth_account" 2>/dev/null; } || HLPY=python3
+HLPY="$PYTHON_BIN"
 now=$(date +%s)
 PIA_CLI_TIMEOUT="${PIA_CLI_TIMEOUT:-6}"
 VPN_PROBE_TIMEOUT="${PIA_PROBE_TIMEOUT:-8}"
@@ -44,11 +41,12 @@ vpn_state() {
     [ "$(pia get connectionstate)" = "Connected" ] || { echo piactl; return; }
     ip link show dev "$VPN_IF" 2>/dev/null | grep -q '<[^>]*UP[^>]*>' \
         || { echo "$VPN_IF"; return; }
+    resolvectl query -i "$VPN_IF" api.binance.com >/dev/null 2>&1 \
+        || { echo dns; return; }
     local binance_ip
     binance_ip=$(getent ahostsv4 api.binance.com 2>/dev/null | awk '{print $1; exit}')
     [ -n "$binance_ip" ] || binance_ip=$(resolvectl query api.binance.com 2>/dev/null \
         | grep -E -o '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
-    [ -n "$binance_ip" ] || { echo dns; return; }
     curl -4 --interface "$VPN_IF" \
         --resolve "api.binance.com:443:$binance_ip" \
         --connect-timeout 4 --max-time "$VPN_PROBE_TIMEOUT" \

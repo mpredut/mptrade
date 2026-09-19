@@ -9,7 +9,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _text(name):
-    return (ROOT / name).read_text(encoding="utf-8")
+    path = ROOT / name
+    if not path.is_file() and name == "pia_selfheal.sh":
+        path = ROOT / "tools/admin/pia_selfheal.sh"
+    return path.read_text(encoding="utf-8")
 
 
 def _executable(path, body):

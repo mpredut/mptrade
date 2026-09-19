@@ -3,12 +3,16 @@
 # The fleet service does not own these independent processes.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$ROOT/env_common.sh" ]; then
+    source "$ROOT/env_common.sh"
+else
+    VENV=""
+    for v in "$ROOT/.venv" "$ROOT/myenv"; do
+        if [ -f "$v/bin/activate" ]; then VENV="$v"; break; fi
+    done
+fi
 MANIFEST="$ROOT/procs.conf"
 source "$ROOT/process_control.sh"
-VENV=""
-for candidate in .venv myenv; do
-    if [ -f "$ROOT/$candidate/bin/activate" ]; then VENV="$candidate"; break; fi
-done
 [ -n "$VENV" ] || { echo "No virtual environment found"; exit 1; }
 [ -f "$MANIFEST" ] || { echo "Missing $MANIFEST"; exit 1; }
 

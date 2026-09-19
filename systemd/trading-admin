@@ -22,7 +22,7 @@ svc_root() { systemctl show -p WorkingDirectory --value binance.service 2>/dev/n
 require_clean_repo() {              # refuse to run privileged repo scripts if edited locally
   local root="$1"
   git -C "$root" -c safe.directory="$root" diff --quiet HEAD -- \
-      rename_root.sh systemd/install_prod.sh make_venv_portable.sh 2>/dev/null \
+      tools/admin/rename_root.sh systemd/install_prod.sh tools/admin/make_venv_portable.sh 2>/dev/null \
     || { echo "REFUSED: privileged scripts differ from the committed version (git tree not clean)." >&2; exit 1; }
 }
 
@@ -43,8 +43,8 @@ case "$cmd" in
     NEW="${1:?usage: trading-admin rename <new-folder-name>}"
     R="$(svc_root)"; [ -d "$R" ] || { echo "cannot resolve trading root from binance.service" >&2; exit 1; }
     require_clean_repo "$R"
-    log "rename trading root -> $NEW (via $R/rename_root.sh)"
-    bash "$R/rename_root.sh" "$NEW" ;;
+    log "rename trading root -> $NEW (via $R/tools/admin/rename_root.sh)"
+    bash "$R/tools/admin/rename_root.sh" "$NEW" ;;
   pin-dns)
     # DNS-only apply: install the committed resolved drop-in + restart systemd-resolved.
     # Deliberately does NOT touch the fleet, so it is safe to run during a VPN/network

@@ -2,24 +2,18 @@
 # ntfy_check.sh — checks the ntfy topics for ALARM messages (monitoring from dev,
 # without SSH to the server). Used manually or by the Claude session's monitoring job.
 # Usage: ./ntfy_check.sh [since]   (default: 40m; ex. 12h)
-set -u
-cd "$(dirname "$0")"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$HERE/../../env_common.sh"
 SINCE="${1:-40m}"
 
 # Read from .env without exposing the secrets in the output.
-PHONE_URL=$(grep -E '^\s*(export\s+)?PHONE_ALERT_URL=' .env | tail -1 | cut -d= -f2- | tr -d '" ')
-NT_TOPIC=$(grep -E '^\s*(export\s+)?NTFY_TOPIC=' .env | tail -1 | cut -d= -f2- | tr -d '" ')
+PHONE_URL=$(grep -E '^\s*(export\s+)?PHONE_ALERT_URL=' "$ROOT/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '" ')
+NT_TOPIC=$(grep -E '^\s*(export\s+)?NTFY_TOPIC=' "$ROOT/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '" ')
 
 check_url() {
     local url="$1" label="$2"
     [ -z "$url" ] && { echo "$label: (topic missing from .env)"; return; }
-    local py_bin="python3"
-    if [ -x "$PWD/.venv/bin/python" ]; then
-        py_bin="$PWD/.venv/bin/python"
-    elif [ -x "$PWD/myenv/bin/python" ]; then
-        py_bin="$PWD/myenv/bin/python"
-    fi
-    curl -s -m 15 "$url/json?poll=1&since=$SINCE" | "$py_bin" -c "
+    curl -s -m 15 "$url/json?poll=1&since=$SINCE" | "$PYTHON_BIN" -c "
 import sys, json, datetime
 alarms, info = [], 0
 for line in sys.stdin:
