@@ -3,15 +3,7 @@ set -euo pipefail
 
 RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${BINANCE_REPO_ROOT:-$(cd "$RUNNER_DIR/../.." && pwd)}"
-if [ -z "${PYTHON_BIN:-}" ]; then
-  if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
-    PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
-  elif [ -x "$REPO_ROOT/myenv/bin/python" ]; then
-    PYTHON_BIN="$REPO_ROOT/myenv/bin/python"
-  else
-    PYTHON_BIN="$(command -v python3)"
-  fi
-fi
+source "$REPO_ROOT/env_common.sh"
 
 cd "$REPO_ROOT"
 export BINANCE_AUTO_START_WEBSOCKETS=0
