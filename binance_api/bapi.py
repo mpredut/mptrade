@@ -30,7 +30,7 @@ print(binance.__version__)
 from . import bapi_ws
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_load_dotenv(os.path.join(_ROOT, "cachemanager_config.env"))
+_load_dotenv(os.path.join(_ROOT, "config.env"))
 BINANCE_REST_PRICE_CACHE_TTL_SEC = required_float_env(
     "CM_BINANCE_REST_PRICE_CACHE_TTL_SEC"
 )
