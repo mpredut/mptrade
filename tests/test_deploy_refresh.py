@@ -15,8 +15,11 @@ def executable(path, content):
 
 
 def sandbox(tmp_path):
-    for name in ("deploy_providers.sh", "bots_start.sh", "process_control.sh", "env_common.sh"):
+    # deploy_providers.sh, restart_bots.sh, tools/lib/process_control.sh, env_common.sh
+    for name in ("deploy_providers.sh", "restart_bots.sh", "env_common.sh"):
         shutil.copy2(ROOT / name, tmp_path / name)
+    (tmp_path / "tools" / "lib").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / "tools/lib/process_control.sh", tmp_path / "tools/lib/process_control.sh")
     (tmp_path / "procs.conf").write_text(
         "cacheManager.py|$ROOT||cache|||fleet\n"
         "binance_api/trailing_stop.py|$ROOT|exit 99|trailing|||bot\n")
@@ -52,18 +55,18 @@ def test_successful_deploy_refreshes_both_roles_before_reporting_success(tmp_pat
     executable(tmp_path / "fake-bin/sleep", "#!/bin/sh\nexit 0\n")
     executable(tmp_path / "fake-bin/ps", "#!/bin/sh\necho S\n")
     # Synthetic inventory and launchers: no real process is signalled or launched.
-    (tmp_path / "process_control.sh").write_text('''
+    (tmp_path / "tools/lib/process_control.sh").write_text('''
 manifest_pids() { if [ -f "$ROOT/bots-refreshed" ]; then echo 7; fi; }
 stop_manifest_process() { printf '%s\\n' "$1" >> "$ROOT/fleet-refreshed"; }
 ''')
-    (tmp_path / "bots_start.sh").write_text(
+    (tmp_path / "restart_bots.sh").write_text(
         'touch "$(dirname "$0")/bots-refreshed"\necho launcher-ready\n')
     result = subprocess.run(["bash", "deploy_providers.sh"], cwd=tmp_path,
                             env=env, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
     assert (tmp_path / "fleet-refreshed").read_text().strip() == "cacheManager.py"
     assert (tmp_path / "bots-refreshed").exists()
-    assert (tmp_path / "logs/deploy_bots_start.log").read_text().strip() == "launcher-ready"
+    assert (tmp_path / "logs/deploy_restart_bots.log").read_text().strip() == "launcher-ready"
     assert "Deployment verified" in result.stdout
 
 
@@ -79,7 +82,7 @@ def test_process_matching_and_stop_are_scoped_to_checkout(tmp_path):
     try:
         found = subprocess.check_output(
             ["bash", "-c", 'source "$1"; manifest_pids registry_test_bot.py "$2"',
-             "test", str(ROOT / "process_control.sh"), str(first)], text=True, timeout=10)
+             "test", str(ROOT / "tools/lib/process_control.sh"), str(first)], text=True, timeout=10)
         assert found.split() == [str(a.pid)]
         # Reap the child concurrently so the graceful-stop test does not see a zombie.
         import threading
@@ -87,7 +90,7 @@ def test_process_matching_and_stop_are_scoped_to_checkout(tmp_path):
         waiter.start()
         stopped = subprocess.run(
             ["bash", "-c", 'source "$1"; stop_manifest_process registry_test_bot.py "$2"',
-             "test", str(ROOT / "process_control.sh"), str(first)], timeout=15)
+             "test", str(ROOT / "tools/lib/process_control.sh"), str(first)], timeout=15)
         waiter.join(timeout=2)
         assert stopped.returncode == 0
         assert a.poll() is not None and b.poll() is None

@@ -6,7 +6,7 @@ see [DISASTER_RECOVERY.md](DISASTER_RECOVERY.md).
 ## Architecture in brief
 - **The Binance fleet** (8 processes): `cacheManager`, `assetguardian`, `priceAnalysis`,
   `tradeall`, `monitortrades`, `rtrade`, `market_alerts`, `order_retry_worker`. Started
-  and supervised by `flota_start.sh`, under **systemd `binance`**.
+  and supervised by `fleet_supervisor.sh`, under **systemd `binance`**.
 - **Bots running outside the fleet**: `kraken_cachemanager`, `kraken_bot`,
   `kraken_xstock_watch`, `t212_bot`, `kraken/trailing_stop` and
   `binance_api/trailing_stop`. They are started from the `bot` roles in `procs.conf` and
@@ -19,27 +19,27 @@ see [DISASTER_RECOVERY.md](DISASTER_RECOVERY.md).
 
 ## The single source of processes: `procs.conf`
 Format: `pat | dir | start_cmd | label | hb_log | hb_stale_s | role` (`role=bot|fleet`).
-Read by **all of them**: `healthcheck.sh`, `flota_start.sh`, `bots_start.sh`, `deploy_providers.sh`.
+Read by **all of them**: `healthcheck.sh`, `fleet_supervisor.sh`, `restart_bots.sh`, `deploy_providers.sh`.
 **To add, remove or change a process, edit ONLY `procs.conf`.**
 
 ## Supervision — `healthcheck.sh`
 - `--check` — a READ-ONLY preview (what it would do, without touching anything). Always safe.
 - `--supervise` (cron */5) — restarts `role=bot` processes that are dead OR frozen; `role=fleet` is
-  alert-only (flota_start owns those). Backoff: at most 3 restarts per 30 min, then a crash-loop alert.
+  alert-only (fleet_supervisor owns those). Backoff: at most 3 restarts per 30 min, then a crash-loop alert.
 - `--alert` — alerts only, no restart.
 - **Double detection:** absence (`pgrep`) **and HANG** (a live process whose `hb_log` has not been
   written for `hb_stale_s`). The active heartbeats are the ones declared on each manifest
   line; the commented-out HL entries are neither supervised nor restarted.
 
 ## Startup / deploy / backup
-- **Startup:** `flota_start.sh` (the fleet, systemd) · `bots_start.sh` (the bots).
+- **Startup:** `fleet_supervisor.sh` (the fleet, systemd) · `restart_bots.sh` (the bots).
 - **Code deploy:** `deploy_providers.sh` — `git pull` -> an **import gate** (it does not restart
   if the facade fails to load) -> fleet restart -> verification.
-- **Backup/DR:** `backup_secrets.sh` (local, derived automatically from `git ls-files`), `backup_remote.sh`
+- **Backup/DR:** `tools/admin/backup_local.sh` (local, derived automatically from `git ls-files`), `tools/admin/backup_remote.sh`
   (encrypted Storj), `restore.sh`. Details in DISASTER_RECOVERY.md.
 
 ## On REBOOT — everything comes back on its own
-- systemd `binance` (enabled) -> `flota_start` -> the fleet (after VPN/pia).
+- systemd `binance` (enabled) -> `fleet_supervisor` -> the fleet (after VPN/pia).
 - The crontab persists -> `healthcheck --supervise` (*/5) starts the processes declared
   active (`role=bot`) within 5 minutes.
 - The commented-out HL entries, and `hl_dca_bot.py` which is absent from `procs.conf`, do **not** restart.
@@ -56,13 +56,13 @@ Read by **all of them**: `healthcheck.sh`, `flota_start.sh`, `bots_start.sh`, `d
 ## ⚠ PITFALLS AND LESSONS (read before changing anything)
 
 ### 1. Lock leak through fd inheritance (a supervisor disabled "silently")
-`flota_start.sh` (`exec 9>flota_start.lock`) and `healthcheck --supervise`
+`fleet_supervisor.sh` (`exec 9>fleet_supervisor.lock`) and `healthcheck --supervise`
 (`exec 8>/tmp/binance_supervise.lock`) use `flock`. If they start a child with
 `nohup … &`, the child **inherits the lock's fd** -> it keeps the lock open after the
 script exits -> the next run reports "**already running**" forever, which means supervision
 is **silently disabled**.
 - **Fix (applied):** `8>&-` / `9>&-` at spawn time (the child no longer inherits the fd).
-- **Diagnosis:** `lsof /tmp/binance_supervise.lock` (or `flota_start.lock`) -> a PID holding `8w`/`9w`.
+- **Diagnosis:** `lsof /tmp/binance_supervise.lock` (or `fleet_supervisor.lock`) -> a PID holding `8w`/`9w`.
 - **Immediate unblock:** `rm /tmp/binance_supervise.lock` (the next run takes a fresh inode).
 
 ### 2. A hang is not a crash (a lesson kept from DN)
@@ -83,7 +83,7 @@ Editing a `.sh` from Windows/UNC resets it to `644` -> cron's `./script.sh` repo
 "Permission denied". **Fix:** `chmod +x x.sh && git update-index --chmod=+x x.sh`.
 
 ### 5. `pkill -f` can catch ITSELF
-`pkill -f flota_start.sh` run from a command whose own string CONTAINS the pattern kills
+`pkill -f fleet_supervisor.sh` run from a command whose own string CONTAINS the pattern kills
 its own shell. **Use script files or PIDs**, not inline patterns.
 
 ### 6. WSL does NOT reach the server
@@ -99,7 +99,7 @@ The fleet started SIMULTANEOUSLY locally (WSL `/home/mariusp`) AND on the server
 on the SAME live API keys -> **duplicated trades** plus Kraken nonce conflicts. Run the
 fleet in ONE place; for local testing use separate keys or a demo account, or stop the
 server first. (The guard in `--supervise` refuses to start on `/home/mariusp`, but
-`flota_start`/`bots_start` have NO such guard — be careful.)
+`fleet_supervisor`/`restart_bots` have NO such guard — be careful.)
 
 ## Quick diagnostics
 ```bash

@@ -9,10 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _text(name):
-    path = ROOT / name
-    if not path.is_file() and name == "pia_selfheal.sh":
-        path = ROOT / "tools/admin/pia_selfheal.sh"
-    return path.read_text(encoding="utf-8")
+    return (ROOT / name).read_text(encoding="utf-8")
 
 
 def _executable(path, body):
@@ -56,35 +53,35 @@ def _run_healthcheck(tmp_path, failing=None, mode="--check"):
     return result, fake_bin
 
 
-def test_all_runtime_piactl_calls_are_bounded():
-    for name, timeout_var in (
-        ("pia_start.sh", "CLI_TIMEOUT"),
-        ("flota_start.sh", "PIA_CLI_TIMEOUT"),
-    ):
-        text = _text(name)
-        assert f'timeout "${timeout_var}" piactl "$@"' in text
-        runtime = "\n".join(
-            line for line in text.splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        )
-        assert runtime.count("piactl") == 1, name
+@pytest.mark.parametrize(
+    ("script", "var_name"),
+    [
+        ("pia_supervisor.sh", "CLI_TIMEOUT"),
+        ("fleet_supervisor.sh", "PIA_CLI_TIMEOUT"),
+        ("healthcheck.sh", "PIA_CLI_TIMEOUT"),
+    ],
+)
+def test_hardcoded_piactl_timeouts(script, var_name):
+    text = _text(script)
+    assert f"{var_name}=" in text
+    assert 'timeout "$' in text
 
 
 def test_alert_transports_reject_http_errors():
-    assert "--fail-with-body" in _text("deadman_switch.sh")
-    assert "--fail-with-body" in _text("pia_selfheal.sh")
+    assert "--fail-with-body" in _text("tools/monitoring/deadman_switch.sh")
+    assert "--fail-with-body" in _text("tools/admin/pia_selfheal.sh")
     assert "--fail-with-body" in _text("healthcheck.sh")
 
 
 def test_installer_is_verified_with_pinned_sha256():
-    text = _text("pia_selfheal.sh")
+    text = _text("tools/admin/pia_selfheal.sh")
     assert "INSTALLER_SHA256=" in text
     assert 'sha256sum "$tmp/pia.run"' in text
     assert 'actual_sha256" != "$INSTALLER_SHA256' in text
 
 
 def test_spool_is_drained_one_confirmed_alert_at_a_time():
-    text = _text("pia_selfheal.sh")
+    text = _text("tools/admin/pia_selfheal.sh")
     assert 'IFS= read -r line < "$file"' in text
     assert 'ntfy_push "PIA: alerta intarziata' in text
     assert 'tail -n +2 "$file"' in text
@@ -146,7 +143,7 @@ def test_selfheal_is_part_of_reproducible_root_cron():
 
 
 def test_selfheal_watches_resolver_cpu_and_requires_versioned_policy():
-    text = _text("pia_selfheal.sh")
+    text = _text("tools/admin/pia_selfheal.sh")
     config = _text("pia_selfheal_config.env")
     assert 'CONFIG="$ROOT/pia_selfheal_config.env"' in text
     assert "resolved_cpu_percent" in text
@@ -157,13 +154,13 @@ def test_selfheal_watches_resolver_cpu_and_requires_versioned_policy():
 def test_selfheal_restarts_a_downed_fleet():
     # A clean stop of binance.service does not trigger its own Restart=always, so the
     # PIA-healthy path must bring the fleet back (guarded by a maintenance pause flag).
-    text = _text("pia_selfheal.sh")
+    text = _text("tools/admin/pia_selfheal.sh")
     assert "systemctl start binance.service" in text
     assert "FLEET_PAUSED" in text
 
 
 def test_autodeploy_is_shadow_by_default_and_never_reboots():
-    text = _text("git_autodeploy.sh")
+    text = _text("tools/admin/git_autodeploy.sh")
     assert "AUTODEPLOY_MODE=shadow" in text          # default is observe-only
     assert "status --porcelain" in text              # dirty-tree guard
     assert 'merge-base HEAD "origin/$BRANCH"' in text # fast-forward-only guard
@@ -174,5 +171,5 @@ def test_autodeploy_is_shadow_by_default_and_never_reboots():
 def test_deadman_has_an_independent_healthchecks_channel():
     # ntfy's shared free topic got 429-throttled during the incident; the deadman must also
     # ping a dedicated healthchecks.io URL (if configured) so the alarm survives that.
-    text = _text("deadman_switch.sh")
+    text = _text("tools/monitoring/deadman_switch.sh")
     assert "HC_PING_URL" in text

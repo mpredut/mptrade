@@ -2,12 +2,11 @@
 # install_prod.sh renders paths and installs this file.
 
 */3 * * * * TRADING_SUPERVISE_ENABLED=true @TRADING_ROOT@/healthcheck.sh --supervise >> @TRADING_ROOT@/logs/healthcheck.log 2>&1
-17 * * * * @TRADING_ROOT@/rotate_logs.sh >/dev/null 2>&1
+17 * * * * @TRADING_ROOT@/tools/admin/manage_logs.sh >> @TRADING_ROOT@/logs/manage_logs.log 2>&1
 */15 * * * * /usr/bin/python3 @TRADING_ROOT@/212trading/price_alert.py RGNT --below 4 >> @TRADING_ROOT@/212trading/price_alert.log 2>&1
 */15 * * * * cd @TRADING_ROOT@ && @TRADING_PYTHON@ verify_tools/check_cache_coherence.py >> @TRADING_ROOT@/logs/cache_coherence.log 2>&1
-30 3 * * * cd @TRADING_ROOT@ && ./backup_secrets.sh >> @TRADING_ROOT@/logs/backup_secrets.log 2>&1
-*/15 * * * * @TRADING_ROOT@/deadman_switch.sh >> @TRADING_ROOT@/logs/deadman.log 2>&1
-23 2 * * * @TRADING_ROOT@/logger_retention.sh >> @TRADING_ROOT@/logs/logger_retention.log 2>&1
+30 3 * * * cd @TRADING_ROOT@ && @TRADING_ROOT@/tools/admin/backup_local.sh >> @TRADING_ROOT@/logs/backup_local.log 2>&1
+*/15 * * * * @TRADING_ROOT@/tools/monitoring/deadman_switch.sh >> @TRADING_ROOT@/logs/deadman.log 2>&1
 */30 * * * * @TRADING_ROOT@/offline/runners/refresh_dev.sh >> @TRADING_ROOT@/logs/refresh_dev.log 2>&1
 0 2,14 * * * @TRADING_ROOT@/offline/runners/trigger_backtest_dev.sh >> @TRADING_ROOT@/logs/backtest_cycle.log 2>&1
 7 * * * * @TRADING_PYTHON@ @TRADING_ROOT@/kraken/shadow_live.py --interval 240 >> @TRADING_ROOT@/logs/shadow_live.log 2>&1

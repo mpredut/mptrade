@@ -98,13 +98,13 @@ Acest document continuă `SYSTEM_DESIGN_TRADING.md` și descrie conexiunile înt
 
    ┌──────────────────────────── CONTROL / OPERATIONS PLANE ─────────────────────────────────┐
    │                                                                                        │
-   │  pia.service ──► PIA VPN ──► binance.service ──► flota_start.sh                       │
+   │  pia.service ──► PIA VPN ──► binance.service ──► fleet_supervisor.sh                       │
    │                                                    │                                   │
    │  procs.conf ───────────────► fleet processes + bot processes                           │
    │                                                    │                                   │
    │  healthcheck --supervise ◄── cron ◄──────── PID + heartbeat + restart backoff          │
    │                                                                                        │
-   │  watchdog cache/config ──► kill stale owner ──► flota_start respawn                    │
+   │  watchdog cache/config ──► kill stale owner ──► fleet_supervisor respawn                    │
    │  watchdog anomalies ─────► alerts                                                      │
    └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -865,7 +865,7 @@ pia.service
 binance.service
       │
       ▼
-flota_start.sh
+fleet_supervisor.sh
       │
       ├── lock
       ├── validate venv/scripts

@@ -12,7 +12,7 @@ else
     done
 fi
 MANIFEST="$ROOT/procs.conf"
-source "$ROOT/process_control.sh"
+source "$ROOT/tools/lib/process_control.sh"
 [ -n "$VENV" ] || { echo "No virtual environment found"; exit 1; }
 [ -f "$MANIFEST" ] || { echo "Missing $MANIFEST"; exit 1; }
 

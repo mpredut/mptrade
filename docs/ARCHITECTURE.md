@@ -169,5 +169,5 @@ line-for-line across the two `trailing_stop.py` files, so it moved into
   **Binance does NOT notify** (only the `trail_b.log` log, which is block-buffered, so confirm through
   the state file or `--status`).
 - **Tests** (they guarantee the refactor's equivalence): `tests/test_trailing_stop.py`,
-  `kraken/test_trailing_kraken.py`. CLI: `--once`, `--status`. Launched from `bots_start.sh`,
+  `kraken/test_trailing_kraken.py`. CLI: `--once`, `--status`. Launched from `restart_bots.sh`,
   supervised by `healthcheck.sh --supervise` (see [OPERATIONS.md](OPERATIONS.md)).

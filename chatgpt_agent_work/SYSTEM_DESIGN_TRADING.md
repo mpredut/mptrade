@@ -19,7 +19,7 @@ Caracteristicile dominante sunt:
 - stare persistentă în fișiere, scrieri atomice și uneori lock-uri `fcntl`;
 - mai multe strategii care pot produce intenții de ordin;
 - pipeline comun de risc pentru `Instrument`, dar Binance păstrează propriul pipeline intern;
-- supervizare pe două niveluri: systemd + `flota_start.sh` pentru flotă, cron + `healthcheck.sh` pentru boți;
+- supervizare pe două niveluri: systemd + `fleet_supervisor.sh` pentru flotă, cron + `healthcheck.sh` pentru boți;
 - configurație distribuită între `*.env`, `*.conf`, `instruments.conf` și constante Python.
 
 ## 2. Context și limite
@@ -120,7 +120,7 @@ Detaliile și limitele migrării sunt în `docs/ORDER_LIFECYCLE_CENTRALIZATION.m
 
 ### Flota
 
-`systemd/binance.service` pornește `flota_start.sh` după `pia.service`. Scriptul:
+`systemd/binance.service` pornește `fleet_supervisor.sh` după `pia.service`. Scriptul:
 
 - impune single-instance prin `flock`;
 - așteaptă VPN-ul PIA;
@@ -132,11 +132,11 @@ Detaliile și limitele migrării sunt în `docs/ORDER_LIFECYCLE_CENTRALIZATION.m
 
 ### Boții autonomi
 
-`bots_start.sh` pornește intrările `role=bot` în ordinea manifestului. `healthcheck.sh --supervise`, rulat periodic, detectează atât procese absente, cât și procese vii cu heartbeat stale. Aplică maximum trei restarturi într-o fereastră de 30 minute, apoi escaladează ca crash-loop.
+`restart_bots.sh` pornește intrările `role=bot` în ordinea manifestului. `healthcheck.sh --supervise`, rulat periodic, detectează atât procese absente, cât și procese vii cu heartbeat stale. Aplică maximum trei restarturi într-o fereastră de 30 minute, apoi escaladează ca crash-loop.
 
 ### Protecție operațională
 
-- `flota_start.sh` are lock dedicat și închide descriptorul înainte de spawn.
+- `fleet_supervisor.sh` are lock dedicat și închide descriptorul înainte de spawn.
 - `healthcheck --supervise` refuză explicit pornirea din checkout-ul local `/home/mariusp`.
 - systemd repornește supervizorul flotei, nu fiecare proces Python separat.
 - VPN PIA este o dependență hard pentru flota de producție.
@@ -425,7 +425,7 @@ Adaptoarele Binance și Kraken implementează numai asset discovery, balance, pr
 ## 10. Observabilitate și notificări
 
 - fiecare proces scrie în log separat;
-- `flota_start` verifică PID, nu heartbeat, la fiecare 30s;
+- `fleet_supervisor` verifică PID, nu heartbeat, la fiecare 30s;
 - `healthcheck` verifică PID + freshness pentru boții configurați;
 - watchdog-ul de cache/config poate omorî procesul proprietar al unui cache stale, iar supervizorul îl reînvie;
 - watchdog-ul de anomalii urmărește rata erorilor din loguri;
@@ -518,7 +518,7 @@ Această țintă păstrează strategiile și providerii existenți, dar mută co
 | Domeniu | Componentă principală | Sursa de adevăr |
 |---|---|---|
 | procese declarate | `procs.conf` | manifest |
-| lifecycle flotă | systemd + `flota_start.sh` | PID + supervisor |
+| lifecycle flotă | systemd + `fleet_supervisor.sh` | PID + supervisor |
 | lifecycle boți | `healthcheck.sh` | PID + heartbeat log |
 | market data Binance | `cacheManager` + `bapi_ws` | WS/REST Binance |
 | market data generic | providers + `pricefetcher` | API venue/surse publice |

@@ -16,7 +16,7 @@ DEST="${REMOTE}${BACKUP_NAME}.tar.gz"
 
 echo "$(date '+%F %T') === backup_remote ==="
 # 1. fresh local backup (folder + tarball) — reuses existing script
-"$ROOT/backup_secrets.sh" >/dev/null
+"$ROOT/tools/admin/backup_local.sh" >/dev/null
 [ -f "$TAR" ] || { echo "❌ local tarball missing: $TAR"; exit 1; }
 
 # 2. an ENCRYPTED upload into Storj (it overwrites the last version)

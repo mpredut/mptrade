@@ -9,7 +9,7 @@ off-machine backup.
 
 | In git (automatic on `git clone`) | NOT in git — a separate backup |
 |---|---|
-| the code, `procs.conf` and the scripts (flota_start, bots_start, healthcheck, restore.sh) | `.env` (root, hyperliquid, kraken, 212trading) |
+| the code, `procs.conf` and the scripts (fleet_supervisor, restart_bots, healthcheck, restore.sh) | `.env` (root, hyperliquid, kraken, 212trading) |
 | `systemd/*.service` (binance, pia) | `keys/apikeys.py` (the Binance keys) |
 | `requirements.txt` (the venv dependencies) | `keys/ed25519_*.pem` (the Kraken keys) |
 | `systemd/crontab.prod.txt` plus `systemd/install_prod.sh` | (optional) bot state: `.state_*.json`, `cachedb/` |
@@ -71,7 +71,7 @@ cron (within 5 minutes).
 Run it on the live machine (it creates the folder and the tar, without touching git):
 
 ```bash
-~/mptrade/backup_secrets.sh            # -> ~/mptrade-secrets-backup/ plus .tar.gz
+~/mptrade/tools/admin/backup_local.sh            # -> ~/mptrade-secrets-backup/ plus .tar.gz
 # then copy the tarball OFF-machine (USB, private cloud, another machine)
 ```
 
@@ -79,7 +79,7 @@ Remember: the secrets NEVER go into git (they are in `.gitignore`). Keeping the 
 and off-machine is your responsibility.
 
 ## A local copy on WSL (interim, until Storj) — a Windows task
-The server rebuilds the backup daily (cron 03:30, `backup_secrets.sh`) and keeps **history:
+The server rebuilds the backup daily (cron 03:30, `tools/admin/backup_local.sh`) and keeps **history:
 the last 7 dated tarballs** (`mptrade-secrets-backup-YYYYMMDD.tar.gz`) alongside the stable
 path `mptrade-secrets-backup.tar.gz` (latest) — so a corruption that makes it into the backup
 no longer overwrites the single good copy. A Windows task pulls the latest at 04:00 (WSL does

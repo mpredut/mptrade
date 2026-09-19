@@ -16,7 +16,7 @@ else
     done
 fi
 [ -n "$PY" ] || { echo "No virtual environment found"; exit 1; }
-source "$ROOT/process_control.sh"
+source "$ROOT/tools/lib/process_control.sh"
 
 if [ "${1:-}" != --check ]; then
     # pipefail + errexit: an unsuccessful pull must never be followed by a restart.
@@ -55,11 +55,11 @@ done
 # Keep daemon-inherited descriptors off the caller's output pipe (upstream fix).
 # Do not mask launcher failure: successful import/pull is not successful deployment.
 mkdir -p "$ROOT/logs"
-if ! bash "$ROOT/bots_start.sh" >"$ROOT/logs/deploy_bots_start.log" 2>&1; then
-    tail -20 "$ROOT/logs/deploy_bots_start.log"
+if ! bash "$ROOT/restart_bots.sh" >"$ROOT/logs/deploy_restart_bots.log" 2>&1; then
+    tail -20 "$ROOT/logs/deploy_restart_bots.log"
     exit 1
 fi
-tail -3 "$ROOT/logs/deploy_bots_start.log"
+tail -3 "$ROOT/logs/deploy_restart_bots.log"
 
 # Require one replacement per manifest entry and fresh caches on three consecutive
 # checks. Presence alone, an old trailing PID, or an old success log is insufficient.

@@ -113,7 +113,7 @@ not deployment.
 A restart of `binance.service` refreshes only `role=fleet`. Binance trailing is
 `role=bot`; it must also restart. The updated `deploy_providers.sh` refreshes
 both roles, stops on pull/preflight failure, and requires replacement PIDs and
-fresh caches on consecutive checks. `bots_start.sh` coordinates with the
+fresh caches on consecutive checks. `restart_bots.sh` coordinates with the
 healthcheck supervisor, and shared process helpers restrict matching to the
 current user and manifest working directory. A process that cannot stop
 gracefully causes failure instead of a forced kill or duplicate launch.
@@ -152,7 +152,7 @@ thin compatibility wrappers over the one registry. Obsolete keys `trail.enabled`
 not silently used as a second source. The committed registry is already migrated.
 
 The upstream bot-launcher pipe fix is preserved: deployment redirects the launcher
-to `logs/deploy_bots_start.log` and checks its exit status before verification.
+to `logs/deploy_restart_bots.log` and checks its exit status before verification.
 Financial-floor review: [Profit-floor assessment](PROFIT_FLOOR_REVIEW_2026-09-07.md).
 
 ## Additional findings to review separately

@@ -11,4 +11,4 @@
 # Auto-deploy (SHADOW by default -- observe only; set AUTODEPLOY_MODE=on in
 # autodeploy.local.conf to apply). Pulls a moved origin/main and restarts the fleet; never
 # reboots. See git_autodeploy.sh.
-*/10 * * * * @TRADING_ROOT@/git_autodeploy.sh >> @TRADING_ROOT@/logs/autodeploy.log 2>&1
+*/10 * * * * @TRADING_ROOT@/tools/admin/git_autodeploy.sh >> @TRADING_ROOT@/logs/autodeploy.log 2>&1

@@ -17,7 +17,7 @@ architecture is no longer exclusively tied to Binance.
           ┌───────────────────┼───────────────────┐
           │                   │                   │
     Binance fleet      independent bots    offline research
-  (flota_start.sh)      (bots_start.sh)      (offline/, research/)
+  (fleet_supervisor.sh)      (restart_bots.sh)      (offline/, research/)
           │                   │                   │
  tradeall / rtrade       Kraken / T212       replay + backtest
  monitortrades           trailing stops      no live keys
@@ -36,13 +36,13 @@ architecture is no longer exclusively tied to Binance.
 
 `procs.conf` is the single inventory of processes. Each entry has the role:
 
-- `fleet` — processes coordinated by `flota_start.sh`, launched from the virtual
+- `fleet` — processes coordinated by `fleet_supervisor.sh`, launched from the virtual
   environment and supervised by the own loop of the `binance` systemd service;
-- `bot` — independent processes launched by `bots_start.sh` and verified/repaired
+- `bot` — independent processes launched by `restart_bots.sh` and verified/repaired
   by `healthcheck.sh --supervise`.
 
 `healthcheck.sh` detects both missing processes and live processes with a frozen
-heartbeat. `flota_start.sh` uses `flock`, so that two instances of the fleet
+heartbeat. `fleet_supervisor.sh` uses `flock`, so that two instances of the fleet
 cannot trade simultaneously.
 
 ### 2. Main Binance fleet
@@ -141,11 +141,11 @@ Run the commands from the root of the repository:
 | Read-only status | `./healthcheck.sh --check` |
 | `bot` processes supervision | `./healthcheck.sh --supervise` |
 | Fleet start/restart | `sudo systemctl restart binance` |
-| Independent bots start | `./bots_start.sh` |
+| Independent bots start | `./restart_bots.sh` |
 | Ownership verification | `.venv/bin/python verify_tools/ownership_inventory.py --running` |
 | Portfolio snapshot | `.venv/bin/python verify_tools/portfolio_snapshot.py` |
 | Controlled deploy | `./deploy_providers.sh` |
-| Secrets backup | `./backup_secrets.sh` / `./backup_remote.sh` |
+| Secrets backup | `./tools/admin/backup_local.sh` / `./tools/admin/backup_remote.sh` |
 | Server restoration | `./restore.sh <secrets_folder>` |
 
 After any change in the manifest or configuration:

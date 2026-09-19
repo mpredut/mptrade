@@ -440,7 +440,7 @@ Plan:
 
 ### B23. Health supervision must test progress, not only PID state
 
-Affected: `flota_start.sh`, healthcheck/watchdog scripts, systemd and cron artifacts.
+Affected: `fleet_supervisor.sh`, healthcheck/watchdog scripts, systemd and cron artifacts.
 
 Plan:
 - Give every active trading process a heartbeat/progress contract: last completed cycle,
