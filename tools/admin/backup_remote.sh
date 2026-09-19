@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# backup_remote.sh — backup local (backup_secrets.sh) + upload CRIPTAT off-site, descentralizat (Storj).
+# backup_remote.sh — backup local (backup_local.sh) + upload CRIPTAT off-site, descentralizat (Storj).
 # rclone does the encryption (a 'crypt' remote wrapping the Storj remote) -> what reaches Storj is
 # ONLY ciphertext. You keep the encryption password SEPARATELY (off-server) so you can decrypt at restore time.
 # It overwrites the last version (no bloat). See docs/DISASTER_RECOVERY.md for the config plus the restore.

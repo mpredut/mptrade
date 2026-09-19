@@ -2,7 +2,7 @@
 # restore.sh — DISASTER RECOVERY: rebuild EVERYTHING on a new machine, in one command.
 #
 # It assumes: the repo is already cloned (you need it in order to run the script) plus the folder of
-# SECRETS copied from your backup (it is NOT in git — made with ./backup_secrets.sh).
+# SECRETS copied from your backup (it is NOT in git — made with ./backup_local.sh).
 #
 #   git clone <repository-url> /srv/trading/current
 #   cd /srv/trading/current && ./restore.sh /path/to/secrets-backup
@@ -15,7 +15,7 @@ SECRETS="${1:-}"
 fail() { echo "❌ $*" >&2; exit 1; }
 
 echo "===== RESTORE @ $ROOT ====="
-[ -n "$SECRETS" ] || fail "Usage: $0 <secrets_folder>  (made with ./backup_secrets.sh)"
+[ -n "$SECRETS" ] || fail "Usage: $0 <secrets_folder>  (made with ./backup_local.sh)"
 [ -d "$SECRETS" ] || fail "The secrets folder does not exist: $SECRETS"
 command -v python3 >/dev/null || fail "python3 is missing (apt install python3 python3-venv)"
 
