@@ -20,9 +20,9 @@ Configuration is mandatory and versioned; missing values fail during component s
 
 ## Authorities
 
-- `cachemanager_config.env` owns cache retention, rotation, resynchronization and dense
+- `config.env` owns cache retention, rotation, resynchronization and dense
   archive sampling/flush settings.
-- `logger_config.env` owns log volume, batching, rotation, compression and deletion.
+- `config.env` owns log volume, batching, rotation, compression and deletion.
 
 The active cache remains plain JSONL for streaming recovery and append throughput.
 Compression is limited to immutable rotated archives so a process crash cannot corrupt an

@@ -86,11 +86,11 @@ def main():
     p.add_argument("--symbols", default=None,
                     help="explicit override; otherwise use instruments.conf role.archive")
     p.add_argument("--months", type=float, default=cm.CM_LONG_ARCHIVE_MONTHS,
-                    help="retention in months (default from cachemanager_config.env)")
+                    help="retention in months (default from config.env)")
     p.add_argument("--sync-ts", type=float, default=cm.CM_LONG_ARCHIVE_SAMPLE_SEC,
-                    help="nominal sampling cadence (default from cachemanager_config.env)")
+                    help="nominal sampling cadence (default from config.env)")
     p.add_argument("--save-every", type=float, default=cm.CM_LONG_ARCHIVE_FLUSH_SEC,
-                    help="disk flush cadence (default from cachemanager_config.env)")
+                    help="disk flush cadence (default from config.env)")
     args = p.parse_args()
     try:
         symbols = _symbols(args.symbols if args.symbols is not None

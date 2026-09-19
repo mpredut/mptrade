@@ -48,120 +48,120 @@ def _make_strategy(tmp_pair="TESTPAIR_REENTRY", **param_overrides):
 
 class TestEffectiveReentryDropPct(unittest.TestCase):
 
-    def test_fixed_when_adaptive_disabled(self):
-        s = _make_strategy(reentry_adaptive=False, reentry_drop_pct=2.2)
-        pct, source = s._effective_reentry_drop_pct()
-        self.assertEqual(pct, 2.2)
-        self.assertEqual(source, "fix")
+    def test_effective_reentry_drop_pct_behaviors(self):
+        with self.subTest(msg="fixed_when_adaptive_disabled"):
+            s = _make_strategy(reentry_adaptive=False, reentry_drop_pct=2.2)
+            pct, source = s._effective_reentry_drop_pct()
+            self.assertEqual(pct, 2.2)
+            self.assertEqual(source, "fix")
 
-    def test_fixed_stays_fixed_even_with_price_history(self):
-        """With reentry_adaptive=False, price history must NOT matter at all."""
-        s = _make_strategy(reentry_adaptive=False, reentry_drop_pct=2.2)
-        for i in range(30):
-            s._shadow_prices.append((i * 120.0, 100.0 + (i % 3)))
-        pct, source = s._effective_reentry_drop_pct()
-        self.assertEqual(pct, 2.2)
-        self.assertEqual(source, "fix")
+        with self.subTest(msg="fixed_stays_fixed_even_with_price_history"):
+            s = _make_strategy(reentry_adaptive=False, reentry_drop_pct=2.2)
+            for i in range(30):
+                s._shadow_prices.append((i * 120.0, 100.0 + (i % 3)))
+            pct, source = s._effective_reentry_drop_pct()
+            self.assertEqual(pct, 2.2)
+            self.assertEqual(source, "fix")
 
-    def test_adaptive_falls_back_to_fixed_during_warmup(self):
-        s = _make_strategy(reentry_adaptive=True, reentry_drop_pct=2.2)
-        # sub 20 de puncte -> _shadow_vol_1h() intoarce None -> fallback
-        for i in range(10):
-            s._shadow_prices.append((i * 120.0, 100.0 + i * 0.1))
-        pct, source = s._effective_reentry_drop_pct()
-        self.assertEqual(pct, 2.2)
-        self.assertIn("fallback", source)
-        self.assertIn("warm-up", source)
+        with self.subTest(msg="adaptive_falls_back_to_fixed_during_warmup"):
+            s = _make_strategy(reentry_adaptive=True, reentry_drop_pct=2.2)
+            for i in range(10):
+                s._shadow_prices.append((i * 120.0, 100.0 + i * 0.1))
+            pct, source = s._effective_reentry_drop_pct()
+            self.assertEqual(pct, 2.2)
+            self.assertIn("fallback", source)
+            self.assertIn("warm-up", source)
 
-    def test_adaptive_uses_volatility_when_enough_history(self):
-        s = _make_strategy(reentry_adaptive=True, reentry_drop_pct=2.2)
-        # 30 points, 120s apart, with a small cyclical variation -> a non-zero volatility.
-        import random
-        random.seed(42)
-        price = 100.0
-        for i in range(30):
-            price *= (1 + random.uniform(-0.01, 0.01))
-            s._shadow_prices.append((i * 120.0, price))
-        pct, source = s._effective_reentry_drop_pct()
-        self.assertIn("adaptiv", source)
-        self.assertNotEqual(pct, 2.2, "the adaptive threshold must not coincide with the fixed one by accident")
-        self.assertGreater(pct, 0)
+        with self.subTest(msg="adaptive_uses_volatility_when_enough_history"):
+            s = _make_strategy(reentry_adaptive=True, reentry_drop_pct=2.2)
+            import random
+            random.seed(42)
+            price = 100.0
+            for i in range(30):
+                price *= (1 + random.uniform(-0.01, 0.01))
+                s._shadow_prices.append((i * 120.0, price))
+            pct, source = s._effective_reentry_drop_pct()
+            self.assertIn("adaptiv", source)
+            self.assertNotEqual(pct, 2.2, "the adaptive threshold must not coincide with the fixed one by accident")
+            self.assertGreater(pct, 0)
 
-    def test_adaptive_respects_shadow_k_reentry_env_override(self):
-        s = _make_strategy(reentry_adaptive=True, reentry_drop_pct=2.2)
-        import random
-        random.seed(7)
-        price = 100.0
-        for i in range(30):
-            price *= (1 + random.uniform(-0.01, 0.01))
-            s._shadow_prices.append((i * 120.0, price))
-        pct_k2, _ = s._effective_reentry_drop_pct()
-        os.environ["SHADOW_K_REENTRY"] = "4.0"
-        try:
-            pct_k4, _ = s._effective_reentry_drop_pct()
-        finally:
-            del os.environ["SHADOW_K_REENTRY"]
-        self.assertAlmostEqual(pct_k4, pct_k2 * 2.0, places=6,
-                                msg="K=4.0 must give exactly double K=2.0 (the default), same vol_1h")
+        with self.subTest(msg="adaptive_respects_shadow_k_reentry_env_override"):
+            s = _make_strategy(reentry_adaptive=True, reentry_drop_pct=2.2)
+            import random
+            random.seed(7)
+            price = 100.0
+            for i in range(30):
+                price *= (1 + random.uniform(-0.01, 0.01))
+                s._shadow_prices.append((i * 120.0, price))
+            pct_k2, _ = s._effective_reentry_drop_pct()
+            os.environ["SHADOW_K_REENTRY"] = "4.0"
+            try:
+                pct_k4, _ = s._effective_reentry_drop_pct()
+            finally:
+                del os.environ["SHADOW_K_REENTRY"]
+            self.assertAlmostEqual(pct_k4, pct_k2 * 2.0, places=6,
+                                   msg="K=4.0 must give exactly double K=2.0 (the default), same vol_1h")
 
 
 class TestReentryGateUsesEffectivePct(unittest.TestCase):
     """step() uses the EFFECTIVE threshold (fixed or adaptive), not always the fixed one."""
 
-    def test_step_blocks_reentry_using_fixed_when_adaptive_disabled(self):
-        s = _make_strategy(reentry_adaptive=False, reentry_drop_pct=2.2, reentry_tolerance_pct=0.0)
-        s.s["last_sell_price"] = 100.0
-        s.s["qty"] = 0.0
-        # price 98.5 > fixed threshold (100*0.978=97.8) -> should be blocked
-        s.step(98.5)
-        self.assertFalse(s._has_open("buy"), "the re-entry should have been blocked (price above the fixed threshold)")
+    def test_reentry_gate_effective_threshold(self):
+        with self.subTest(msg="step_blocks_reentry_using_fixed_when_adaptive_disabled"):
+            s = _make_strategy(reentry_adaptive=False, reentry_drop_pct=2.2, reentry_tolerance_pct=0.0)
+            s.s["last_sell_price"] = 100.0
+            s.s["qty"] = 0.0
+            # price 98.5 > fixed threshold (100*0.978=97.8) -> should be blocked
+            s.step(98.5)
+            self.assertFalse(s._has_open("buy"), "the re-entry should have been blocked (price above the fixed threshold)")
 
-    def test_step_allows_reentry_when_price_below_fixed_threshold(self):
-        s = _make_strategy(reentry_adaptive=False, reentry_drop_pct=2.2, reentry_tolerance_pct=0.0)
-        s.s["last_sell_price"] = 100.0
-        s.s["qty"] = 0.0
-        # price 97.0 < fixed threshold (97.8) -> the re-entry must be allowed
-        s.step(97.0)
-        self.assertTrue(s._has_open("buy"), "the re-entry should have been allowed (the price is below the fixed threshold)")
+        with self.subTest(msg="step_allows_reentry_when_price_below_fixed_threshold"):
+            s = _make_strategy(reentry_adaptive=False, reentry_drop_pct=2.2, reentry_tolerance_pct=0.0)
+            s.s["last_sell_price"] = 100.0
+            s.s["qty"] = 0.0
+            # price 97.0 < fixed threshold (97.8) -> the re-entry must be allowed
+            s.step(97.0)
+            self.assertTrue(s._has_open("buy"), "the re-entry should have been allowed (the price is below the fixed threshold)")
 
 
 class TestStopAwareReentry(unittest.TestCase):
     """4 Aug: after a STOP-LOSS, re-entry is on RECOVERY (a bounce off the low), not on a
     further drop — otherwise the bot stays locked out when the price recovers."""
 
-    def test_stop_reentry_not_stranded_on_recovery(self):
-        # The fixed BUG: sold at 51.19 on stop-loss, the price recovers to 55.6 (above the sale).
-        # The old rule (re-enter only below 50.06) would block forever. The new one re-enters.
-        s = _make_strategy(reentry_sl_bounce_pct=1.5, reentry_drop_pct=2.2, reentry_tolerance_pct=0.0)
-        s.s["qty"] = 0.0
-        s.s["last_sell_price"] = 51.19
-        s.s["last_exit_kind"] = "STOP"
-        s.s["sl_low"] = 51.19
-        s.step(55.6)
-        self.assertTrue(s._has_open("buy"), "after a STOP, the recovery must trigger the re-entry")
+    def test_stop_and_tp_aware_reentry_behaviors(self):
+        with self.subTest(msg="stop_reentry_not_stranded_on_recovery"):
+            # The fixed BUG: sold at 51.19 on stop-loss, the price recovers to 55.6 (above the sale).
+            # The old rule (re-enter only below 50.06) would block forever. The new one re-enters.
+            s = _make_strategy(reentry_sl_bounce_pct=1.5, reentry_drop_pct=2.2, reentry_tolerance_pct=0.0)
+            s.s["qty"] = 0.0
+            s.s["last_sell_price"] = 51.19
+            s.s["last_exit_kind"] = "STOP"
+            s.s["sl_low"] = 51.19
+            s.step(55.6)
+            self.assertTrue(s._has_open("buy"), "after a STOP, the recovery must trigger the re-entry")
 
-    def test_stop_reentry_blocked_until_bounce_then_enters(self):
-        s = _make_strategy(reentry_sl_bounce_pct=1.5, reentry_tolerance_pct=0.0)
-        s.s["qty"] = 0.0
-        s.s["last_sell_price"] = 51.19
-        s.s["last_exit_kind"] = "STOP"
-        s.s["sl_low"] = 51.19
-        s.step(50.0)                                  # Still falling -> it tracks the low, it does not enter.
-        self.assertFalse(s._has_open("buy"))
-        self.assertEqual(s.s["sl_low"], 50.0)
-        s.step(50.8)                                  # +1.6% de la minim 50 -> bounce atins
-        self.assertTrue(s._has_open("buy"), "bounce >= prag -> reintra")
+        with self.subTest(msg="stop_reentry_blocked_until_bounce_then_enters"):
+            s = _make_strategy(reentry_sl_bounce_pct=1.5, reentry_tolerance_pct=0.0)
+            s.s["qty"] = 0.0
+            s.s["last_sell_price"] = 51.19
+            s.s["last_exit_kind"] = "STOP"
+            s.s["sl_low"] = 51.19
+            s.step(50.0)                                  # Still falling -> it tracks the low, it does not enter.
+            self.assertFalse(s._has_open("buy"))
+            self.assertEqual(s.s["sl_low"], 50.0)
+            s.step(50.8)                                  # +1.6% de la minim 50 -> bounce atins
+            self.assertTrue(s._has_open("buy"), "bounce >= prag -> reintra")
 
-    def test_tp_exit_keeps_old_drop_below_sell_rule(self):
-        # after a TP (not a STOP) the old rule stands: do not rebuy higher than you sold
-        s = _make_strategy(reentry_sl_bounce_pct=1.5, reentry_drop_pct=2.2, reentry_tolerance_pct=0.0)
-        s.s["qty"] = 0.0
-        s.s["last_sell_price"] = 100.0
-        s.s["last_exit_kind"] = "TP"
-        s.step(98.5)                                  # 98.5 > the threshold of 97.8 -> blocked (the old rule).
-        self.assertFalse(s._has_open("buy"))
-        s.step(97.0)                                  # 97.0 < 97.8 -> reintra
-        self.assertTrue(s._has_open("buy"))
+        with self.subTest(msg="tp_exit_keeps_old_drop_below_sell_rule"):
+            # after a TP (not a STOP) the old rule stands: do not rebuy higher than you sold
+            s = _make_strategy(reentry_sl_bounce_pct=1.5, reentry_drop_pct=2.2, reentry_tolerance_pct=0.0)
+            s.s["qty"] = 0.0
+            s.s["last_sell_price"] = 100.0
+            s.s["last_exit_kind"] = "TP"
+            s.step(98.5)                                  # 98.5 > the threshold of 97.8 -> blocked (the old rule).
+            self.assertFalse(s._has_open("buy"))
+            s.step(97.0)                                  # 97.0 < 97.8 -> reintra
+            self.assertTrue(s._has_open("buy"))
 
 
 class TestTrailingTakeProfit(unittest.TestCase):
@@ -184,135 +184,124 @@ class TestTrailingTakeProfit(unittest.TestCase):
         s.s["last_buy_price"] = 100.0
         return s
 
-    def test_regime_gate_uses_classic_tp_until_bullish(self):
-        s = self._positioned_strategy(tp_regime_gate=True)
-        s.client.ohlc_closes.return_value = [100.0 - index for index in range(40)]
+    def test_trailing_take_profit_arming_and_exiting(self):
+        with self.subTest(msg="regime_gate_uses_classic_tp_until_bullish"):
+            s = self._positioned_strategy(tp_regime_gate=True)
+            s.client.ohlc_closes.return_value = [100.0 - index for index in range(40)]
+            s.step(105.5)
+            sell = s._find_open("sell")
+            self.assertIsNotNone(sell)
+            self.assertFalse(sell["market"])
+            self.assertIsNone(s.s["trail_peak"])
 
-        s.step(105.5)
+        with self.subTest(msg="regime_gate_arms_trailing_on_common_bull_signal"):
+            s = self._positioned_strategy(tp_regime_gate=True)
+            s.client.ohlc_closes.return_value = [100.0 + index for index in range(40)]
+            s.step(105.5)
+            self.assertEqual(s.s["trail_peak"], 105.5)
+            self.assertFalse(s._has_open("sell"))
 
-        sell = s._find_open("sell")
-        self.assertIsNotNone(sell)
-        self.assertFalse(sell["market"])
-        self.assertIsNone(s.s["trail_peak"])
+        with self.subTest(msg="pullback_below_tp_after_arming_still_exits"):
+            s = self._positioned_strategy()
+            s.step(105.5)       # exceeds TP=105 and arms the trailing
+            self.assertEqual(s.s["trail_peak"], 105.5)
+            self.assertFalse(s._has_open("sell"))
+            s.step(102.0)       # A pullback of 3.32%; it is below the TP, but the trailing is already armed.
+            sell = s._find_open("sell")
+            self.assertIsNotNone(
+                sell,
+                "the armed trailing must still exit after falling back below the TP",
+            )
+            self.assertEqual(sell["kind"], "TP")
 
-    def test_regime_gate_arms_trailing_on_common_bull_signal(self):
-        s = self._positioned_strategy(tp_regime_gate=True)
-        s.client.ohlc_closes.return_value = [100.0 + index for index in range(40)]
+        with self.subTest(msg="armed_trailing_survives_a_later_bear_regime"):
+            s = self._positioned_strategy(tp_regime_gate=True)
+            s.client.ohlc_closes.return_value = [
+                100.0 + index for index in range(40)
+            ]
+            s.step(105.5)
+            s.client.ohlc_closes.return_value = [
+                140.0 - index for index in range(40)
+            ]
+            s.step(102.0)
+            sell = s._find_open("sell")
+            self.assertIsNotNone(sell)
+            self.assertTrue(sell["market"])
+            self.assertEqual(sell["kind"], "TP")
 
-        s.step(105.5)
+        with self.subTest(msg="trailing_exit_does_not_open_dca_in_same_tick"):
+            s = self._positioned_strategy(dca_drop_pct=2.0)
+            s.step(105.5)
+            # Makes the DCA threshold eligible at the same time as the trailing pullback. An exit
+            # and a buy in the same tick would contradict each other and raise exposure by accident.
+            s.s["last_buy_price"] = 110.0
+            s.step(102.0)
+            self.assertTrue(s._has_open("sell"))
+            self.assertFalse(s._has_open("buy"))
 
-        self.assertEqual(s.s["trail_peak"], 105.5)
-        self.assertFalse(s._has_open("sell"))
+    def test_trailing_take_profit_profit_floor_behaviors(self):
+        with self.subTest(msg="adaptive_trailing_floor_never_moves_down_when_volatility_widens"):
+            s = self._positioned_strategy(tp_trail_adaptive=True)
+            with patch.object(s, "_effective_trail_pct", side_effect=[1.5, 3.0]):
+                s.step(106.0)      # floor initial: 104.41
+                protected = s.s["trail_stop"]
+                self.assertAlmostEqual(protected, 104.41)
+                # The volatility rises and the adaptive trailing would widen to 3%.
+                # The floor already earned must not be lowered to 102.82.
+                s.step(104.0)
 
-    def test_pullback_below_tp_after_arming_still_exits(self):
-        s = self._positioned_strategy()
+            self.assertEqual(s.s["trail_stop"], protected)
+            sell = s._find_open("sell")
+            self.assertIsNotNone(sell, "the ratcheted floor must trigger the exit")
+            self.assertTrue(sell["market"])
+            self.assertEqual(sell["kind"], "TP")
 
-        s.step(105.5)       # exceeds TP=105 and arms the trailing
-        self.assertEqual(s.s["trail_peak"], 105.5)
-        self.assertFalse(s._has_open("sell"))
+        with self.subTest(msg="profit_floor_blocks_gap_exit_below_break_even"):
+            s = self._positioned_strategy(
+                stop_loss_pct=12.5,
+                tp_trail_profit_floor_pct=1.0,
+            )
+            s.step(105.5)       # arms the trailing
+            s.step(95.0)        # gap below break-even, but still above the hard stop
+            self.assertIsNone(s._find_open("sell"))
+            self.assertFalse(s._has_open("buy"))
 
-        s.step(102.0)       # A pullback of 3.32%; it is below the TP, but the trailing is already armed.
-        sell = s._find_open("sell")
-        self.assertIsNotNone(
-            sell,
-            "the armed trailing must still exit after falling back below the TP",
-        )
-        self.assertEqual(sell["kind"], "TP")
+        with self.subTest(msg="profit_floor_exits_on_recovery_still_below_trail_stop"):
+            s = self._positioned_strategy(
+                stop_loss_pct=12.5,
+                tp_trail_profit_floor_pct=1.0,
+            )
+            s.step(105.5)
+            s.step(95.0)
+            s.step(101.2)       # MARKET reference 101.10 >= floor; below the trail stop 102.335
+            sell = s._find_open("sell")
+            self.assertIsNotNone(sell)
+            self.assertTrue(sell["market"])
+            self.assertEqual(sell["kind"], "TP")
+            self.assertGreaterEqual(sell["price"], 101.0)
 
-    def test_armed_trailing_survives_a_later_bear_regime(self):
-        s = self._positioned_strategy(tp_regime_gate=True)
-        s.client.ohlc_closes.return_value = [
-            100.0 + index for index in range(40)
-        ]
-        s.step(105.5)
+        with self.subTest(msg="hard_stop_exits_market_after_profit_floor_block"):
+            s = self._positioned_strategy(
+                stop_loss_pct=12.5,
+                tp_trail_profit_floor_pct=1.0,
+            )
+            s.step(105.5)
+            s.step(95.0)
+            self.assertIsNone(s._find_open("sell"))
 
-        s.client.ohlc_closes.return_value = [
-            140.0 - index for index in range(40)
-        ]
-        s.step(102.0)
+            s.step(87.0)        # sub avg*(1-12.5%): STOP MARKET indiferent de profit
+            sell = s._find_open("sell")
+            self.assertIsNotNone(sell)
+            self.assertTrue(sell["market"])
+            self.assertEqual(sell["kind"], "STOP")
 
-        sell = s._find_open("sell")
-        self.assertIsNotNone(sell)
-        self.assertTrue(sell["market"])
-        self.assertEqual(sell["kind"], "TP")
-
-    def test_trailing_exit_does_not_open_dca_in_same_tick(self):
-        s = self._positioned_strategy(dca_drop_pct=2.0)
-        s.step(105.5)
-        # Makes the DCA threshold eligible at the same time as the trailing pullback. An exit
-        # and a buy in the same tick would contradict each other and raise exposure by accident.
-        s.s["last_buy_price"] = 110.0
-
-        s.step(102.0)
-
-        self.assertTrue(s._has_open("sell"))
-        self.assertFalse(s._has_open("buy"))
-
-    def test_adaptive_trailing_floor_never_moves_down_when_volatility_widens(self):
-        s = self._positioned_strategy(tp_trail_adaptive=True)
-
-        with patch.object(s, "_effective_trail_pct", side_effect=[1.5, 3.0]):
-            s.step(106.0)      # floor initial: 104.41
-            protected = s.s["trail_stop"]
-            self.assertAlmostEqual(protected, 104.41)
-
-            # The volatility rises and the adaptive trailing would widen to 3%.
-            # The floor already earned must not be lowered to 102.82.
-            s.step(104.0)
-
-        self.assertEqual(s.s["trail_stop"], protected)
-        sell = s._find_open("sell")
-        self.assertIsNotNone(sell, "the ratcheted floor must trigger the exit")
-        self.assertTrue(sell["market"])
-        self.assertEqual(sell["kind"], "TP")
-
-    def test_profit_floor_blocks_gap_exit_below_break_even(self):
-        s = self._positioned_strategy(
-            stop_loss_pct=12.5,
-            tp_trail_profit_floor_pct=1.0,
-        )
-        s.step(105.5)       # arms the trailing
-        s.step(95.0)        # gap below break-even, but still above the hard stop
-
-        self.assertIsNone(s._find_open("sell"))
-        self.assertFalse(s._has_open("buy"))
-
-    def test_profit_floor_exits_on_recovery_still_below_trail_stop(self):
-        s = self._positioned_strategy(
-            stop_loss_pct=12.5,
-            tp_trail_profit_floor_pct=1.0,
-        )
-        s.step(105.5)
-        s.step(95.0)
-        s.step(101.2)       # MARKET reference 101.10 >= floor; below the trail stop 102.335
-        sell = s._find_open("sell")
-        self.assertIsNotNone(sell)
-        self.assertTrue(sell["market"])
-        self.assertEqual(sell["kind"], "TP")
-        self.assertGreaterEqual(sell["price"], 101.0)
-
-    def test_hard_stop_exits_market_after_profit_floor_block(self):
-        s = self._positioned_strategy(
-            stop_loss_pct=12.5,
-            tp_trail_profit_floor_pct=1.0,
-        )
-        s.step(105.5)
-        s.step(95.0)
-        self.assertIsNone(s._find_open("sell"))
-
-        s.step(87.0)        # sub avg*(1-12.5%): STOP MARKET indiferent de profit
-        sell = s._find_open("sell")
-        self.assertIsNotNone(sell)
-        self.assertTrue(sell["market"])
-        self.assertEqual(sell["kind"], "STOP")
-
-    def test_zero_profit_floor_preserves_market_trailing(self):
-        s = self._positioned_strategy(tp_trail_profit_floor_pct=0.0)
-        s.step(105.5)
-        s.step(95.0)
-        sell = s._find_open("sell")
-        self.assertIsNotNone(sell)
-        self.assertTrue(sell["market"])
+        with self.subTest(msg="zero_profit_floor_preserves_market_trailing"):
+            s = self._positioned_strategy(tp_trail_profit_floor_pct=0.0)
+            s.step(105.5)
+            s.step(95.0)
+            sell = s._find_open("sell")
+            self.assertIsNotNone(sell)
+            self.assertTrue(sell["market"])
 
 
 class TestProgressiveDcaSpacing(unittest.TestCase):
@@ -339,43 +328,44 @@ class TestProgressiveDcaSpacing(unittest.TestCase):
 
 
 class TestPaperMarketReconciliation(unittest.TestCase):
-    def test_limit_buy_waits_until_observed_price_reaches_limit(self):
-        s = _make_strategy(entry_discount_pct=1.0)
-        with patch.object(strat, "notify"):
-            s.step(100.0)
-            order = s._find_open("buy")
-            self.assertEqual(order["price"], 99.0)
+    def test_paper_market_reconciliation_behaviors(self):
+        with self.subTest(msg="limit_buy_waits_until_observed_price_reaches_limit"):
+            s = _make_strategy(entry_discount_pct=1.0)
+            with patch.object(strat, "notify"):
+                s.step(100.0)
+                order = s._find_open("buy")
+                self.assertEqual(order["price"], 99.0)
 
-            s.reconcile(101.0)
-            self.assertTrue(s._has_open("buy"))
+                s.reconcile(101.0)
+                self.assertTrue(s._has_open("buy"))
+                self.assertEqual(s.s["qty"], 0.0)
+
+                s.reconcile(98.5)
+
+            self.assertFalse(s._has_open("buy"))
+            self.assertGreater(s.s["qty"], 0.0)
+            self.assertEqual(s.s["last_buy_price"], 99.0)
+
+        with self.subTest(msg="stop_market_sell_fills_at_observed_price_during_drop"):
+            s = _make_strategy(stop_loss_pct=10.0)
+            s.s.update({
+                "qty": 1.0, "cost": 100.0, "spent": 100.0,
+                "entry_price": 100.0, "last_buy_price": 100.0,
+            })
+
+            with patch.object(strat, "notify"):
+                s.step(80.0)
+                order = s._find_open("sell")
+                self.assertIsNotNone(order)
+                self.assertTrue(order["market"])
+                self.assertGreater(order["price"], 70.0)
+
+                s.reconcile(70.0)
+
+            self.assertFalse(s._has_open("sell"))
             self.assertEqual(s.s["qty"], 0.0)
-
-            s.reconcile(98.5)
-
-        self.assertFalse(s._has_open("buy"))
-        self.assertGreater(s.s["qty"], 0.0)
-        self.assertEqual(s.s["last_buy_price"], 99.0)
-
-    def test_stop_market_sell_fills_at_observed_price_during_drop(self):
-        s = _make_strategy(stop_loss_pct=10.0)
-        s.s.update({
-            "qty": 1.0, "cost": 100.0, "spent": 100.0,
-            "entry_price": 100.0, "last_buy_price": 100.0,
-        })
-
-        with patch.object(strat, "notify"):
-            s.step(80.0)
-            order = s._find_open("sell")
-            self.assertIsNotNone(order)
-            self.assertTrue(order["market"])
-            self.assertGreater(order["price"], 70.0)
-
-            s.reconcile(70.0)
-
-        self.assertFalse(s._has_open("sell"))
-        self.assertEqual(s.s["qty"], 0.0)
-        self.assertEqual(s.s["last_sell_price"], 70.0)
-        self.assertLess(s.s["realized_net"], 0.0)
+            self.assertEqual(s.s["last_sell_price"], 70.0)
+            self.assertLess(s.s["realized_net"], 0.0)
 
 
 class TestFillAccounting(unittest.TestCase):

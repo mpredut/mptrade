@@ -8,7 +8,6 @@ PROBE_TIMEOUT="${PIA_PROBE_TIMEOUT:-7}"
 CLI_TIMEOUT="${PIA_CLI_TIMEOUT:-6}"
 # PIA's tunnel interface: wgpia0 with WireGuard, tun0 with OpenVPN. The wired ISP
 # throttles OpenVPN (it connects but the data channel stalls and the tunnel flaps),
-# so we run WireGuard. Keep this in sync with the `pia set protocol` line below.
 VPN_IF="${PIA_VPN_IF:-wgpia0}"
 failures=0
 
@@ -83,6 +82,14 @@ pia background enable || exit 1
 # the local network, which cuts SSH management access to the box.
 pia set allowlan true || true
 
+# Despre killswitch: utilizatorul prefera sa isi asume riscul de leak al IP-ului real
+# in favoarea conectivitatii permanente (evitarea killswitch-ului pe WAN cand pica VPN-ul).
+# Dezactivati killswitch-ul prin decomentarea liniei de mai jos:
+# pia set killswitch off || true
+
+pia set protocol wireguard || exit 1
+
+
 # The region is no longer hardcoded: on every logout PIA deletes the dedicated IP
 # registration, and a re-added token can return a DIFFERENT IP (1 Sep 2026: .86 -> .79).
 # A hardcoded id then becomes "Unknown region", `set region` fails and the tunnel comes
@@ -97,7 +104,6 @@ if [ -z "$DEDICATED" ]; then
     exit 1
 fi
 
-pia set protocol wireguard || exit 1
 pia set region "$DEDICATED" || exit 1
 pia set requestportforward true || exit 1
 pia connect || exit 1

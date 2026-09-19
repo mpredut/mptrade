@@ -103,6 +103,14 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         # Explicit pin — the tests must not depend on the kill switch in the live config
         _oq.RETRY_ENABLED = True
         _oq.RETRY_DEDUP = True
+        self._clear_state()
+
+    def _clear_state(self):
+        import order_retry as _oq
+        open(tc.STATE_FILE, 'w').close()
+        open(_oq.QUEUE_FILE, 'w').close()
+        for f in glob.glob(os.path.join(self._log_tmp, "order_outcomes_*.log")):
+            os.remove(f)
 
     def tearDown(self):
         outcomes_log.ORDER_OUTCOMES_LOG_DIR = self._orig_log_dir
@@ -219,168 +227,174 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         self.assertEqual(tracked[0]["order_id"], "producer-only")
 
     # -- Daily cap and anti-spam. ---------------------------------------------
-    def test_daily_limit_blocks_after_threshold(self):
-        p = _FakeProvider()
-        inst = self._inst(p)
-        # An explicit safeback (48h) so the test is independent of the default in config.
-        # backdays = ceil(48h/86400) = 3, so the threshold is 25*3=75;
-        # 90 old trades (>3min, under the anti-spam threshold) exceed it.
-        for _ in range(90):
-            p.seed_trade("BUY", age_sec=4000.0)
-        order = inst.place("BUY", 100.0, 1.0, safeback_seconds=48 * 3600 + 60)
-        self.assertIsNone(order)
-        self.assertEqual(p.placed, [])
-        lines = self._log_lines()
-        self.assertTrue(any("|refused|daily_limit|" in l for l in lines), lines)
+    def test_daily_cap_and_safeback_behaviors(self):
+        with self.subTest("daily_limit_blocks_after_threshold"):
+            p = _FakeProvider()
+            inst = self._inst(p)
+            # An explicit safeback (48h) so the test is independent of the default in config.
+            # backdays = ceil(48h/86400) = 3, so the threshold is 25*3=75;
+            # 90 old trades (>3min, under the anti-spam threshold) exceed it.
+            for _ in range(90):
+                p.seed_trade("BUY", age_sec=4000.0)
+            order = inst.place("BUY", 100.0, 1.0, safeback_seconds=48 * 3600 + 60)
+            self.assertIsNone(order)
+            self.assertEqual(p.placed, [])
+            lines = self._log_lines()
+            self.assertTrue(any("|refused|daily_limit|" in l for l in lines), lines)
 
-    def test_safeback_seconds_default_window_misses_old_trades(self):
-        # 30 Jul, a fix: monitortrades.py (sbs=MT_GUARD_WINDOW_DAYS, 12 DAYS by default) and
-        # tradeall.py (14 days) overwrite safeback_seconds on every real call — the default
-        # from config (48h) is almost never actually used. instruments.conf already has
-        # [KRAKEN_HYPE] enabled=yes under "mt", so the same sbs applies there too.
-        p = _FakeProvider()
-        inst = self._inst(p)
-        for _ in range(60):
-            p.seed_trade("BUY", age_sec=5 * 24 * 3600)   # 5 days ago -> OUTSIDE the default 48h.
-        order = inst.place("BUY", 100.0, 1.0)   # No override -> the default (48h) does not see them
-        self.assertIsNotNone(order)
+        with self.subTest("safeback_seconds_default_window_misses_old_trades"):
+            # 30 Jul, a fix: monitortrades.py (sbs=MT_GUARD_WINDOW_DAYS, 12 DAYS by default) and
+            # tradeall.py (14 days) overwrite safeback_seconds on every real call — the default
+            # from config (48h) is almost never actually used. instruments.conf already has
+            # [KRAKEN_HYPE] enabled=yes under "mt", so the same sbs applies there too.
+            p = _FakeProvider()
+            inst = self._inst(p)
+            for _ in range(60):
+                p.seed_trade("BUY", age_sec=5 * 24 * 3600)   # 5 days ago -> OUTSIDE the default 48h.
+            order = inst.place("BUY", 100.0, 1.0)   # No override -> the default (48h) does not see them
+            self.assertIsNotNone(order)
 
-    def test_safeback_seconds_override_sees_older_trades_and_blocks(self):
-        p = _FakeProvider()
-        inst = self._inst(p)
-        # backdays = ceil((14 days + 60 seconds) / 86400) = 15, so the
-        # threshold is 25*15=375; 400 trades exceed it.
-        for _ in range(400):
-            p.seed_trade("BUY", age_sec=5 * 24 * 3600)   # Five days ago.
-        # An explicit 14-day override (identical to tradeall.py: d=14, h=24) -> NOW it sees them -> blocked.
-        order = inst.place("BUY", 100.0, 1.0, safeback_seconds=14 * 24 * 3600 + 60)
-        self.assertIsNone(order)
+        with self.subTest("safeback_seconds_override_sees_older_trades_and_blocks"):
+            p = _FakeProvider()
+            inst = self._inst(p)
+            # backdays = ceil((14 days + 60 seconds) / 86400) = 15, so the
+            # threshold is 25*15=375; 400 trades exceed it.
+            for _ in range(400):
+                p.seed_trade("BUY", age_sec=5 * 24 * 3600)   # Five days ago.
+            # An explicit 14-day override (identical to tradeall.py: d=14, h=24) -> NOW it sees them -> blocked.
+            order = inst.place("BUY", 100.0, 1.0, safeback_seconds=14 * 24 * 3600 + 60)
+            self.assertIsNone(order)
 
-    def test_recent_transaction_blocks(self):
-        p = _FakeProvider()
-        p.seed_trade("BUY", age_sec=5.0)   # 5s ago, under the default threshold of 180s.
-        inst = self._inst(p)
-        order = inst.place("BUY", 100.0, 1.0)
-        self.assertIsNone(order)
-        lines = self._log_lines()
-        self.assertTrue(any("|refused|recent_transaction|" in l for l in lines), lines)
+        with self.subTest("recent_transaction_blocks"):
+            p = _FakeProvider()
+            p.seed_trade("BUY", age_sec=5.0)   # 5s ago, under the default threshold of 180s.
+            inst = self._inst(p)
+            order = inst.place("BUY", 100.0, 1.0)
+            self.assertIsNone(order)
+            lines = self._log_lines()
+            self.assertTrue(any("|refused|recent_transaction|" in l for l in lines), lines)
 
-    def test_bypass_profit_guard_does_not_skip_daily_limit(self):
-        p = _FakeProvider()
-        for _ in range(90):   # See the 48-hour threshold of 75 tested above.
-            p.seed_trade("BUY", age_sec=4000.0)
-        inst = self._inst(p)
-        order = inst.place("BUY", 100.0, 1.0, safeback_seconds=48 * 3600 + 60, bypass_profit_guard=True)
-        self.assertIsNone(order)   # The daily cap stays active even with the bypass.
+        with self.subTest("bypass_profit_guard_does_not_skip_daily_limit"):
+            p = _FakeProvider()
+            for _ in range(90):   # See the 48-hour threshold of 75 tested above.
+                p.seed_trade("BUY", age_sec=4000.0)
+            inst = self._inst(p)
+            order = inst.place("BUY", 100.0, 1.0, safeback_seconds=48 * 3600 + 60, bypass_profit_guard=True)
+            self.assertIsNone(order)   # The daily cap stays active even with the bypass.
 
-    def test_reference_only_bypass_keeps_quantity_policy_active(self):
-        quantity_calls = []
+    def test_reference_only_bypass_behaviors(self):
+        with self.subTest("keeps_quantity_policy_active"):
+            quantity_calls = []
 
-        class _QuantityCapProvider(_FakeProvider):
-            def policy_cap_quantity(self, symbol, side, price, qty, available_qty,
-                                    **kwargs):
-                quantity_calls.append((symbol, side, price, qty, available_qty))
-                return 0.25
+            class _QuantityCapProvider(_FakeProvider):
+                def policy_cap_quantity(self, symbol, side, price, qty, available_qty,
+                                        **kwargs):
+                    quantity_calls.append((symbol, side, price, qty, available_qty))
+                    return 0.25
 
-        p = _QuantityCapProvider()
-        p.seed_trade("SELL", age_sec=400.0, price=100.0)
-        inst = self._inst(p)
+            p = _QuantityCapProvider()
+            p.seed_trade("SELL", age_sec=400.0, price=100.0)
+            inst = self._inst(p)
 
-        blocked = inst.place(
-            "BUY", 101.0, 1.0, smart=False, caller_owns_retry=True)
-        allowed = inst.place(
-            "BUY", 101.0, 1.0, smart=False, caller_owns_retry=True,
-            bypass_profit_reference=True)
+            blocked = inst.place(
+                "BUY", 101.0, 1.0, smart=False, caller_owns_retry=True)
+            allowed = inst.place(
+                "BUY", 101.0, 1.0, smart=False, caller_owns_retry=True,
+                bypass_profit_reference=True)
 
-        self.assertIsNone(blocked, "the normal guard must block a BUY above a SELL")
-        self.assertIsNotNone(allowed)
-        self.assertEqual(len(quantity_calls), 1)
-        self.assertEqual(p.placed[0][3], 0.25)
+            self.assertIsNone(blocked, "the normal guard must block a BUY above a SELL")
+            self.assertIsNotNone(allowed)
+            self.assertEqual(len(quantity_calls), 1)
+            self.assertEqual(p.placed[0][3], 0.25)
 
-    def test_reference_only_bypass_does_not_skip_daily_limit(self):
-        p = _FakeProvider()
-        for _ in range(90):
-            p.seed_trade("BUY", age_sec=4000.0)
-        order = self._inst(p).place(
-            "BUY", 100.0, 1.0,
-            safeback_seconds=48 * 3600 + 60,
-            bypass_profit_reference=True,
-            caller_owns_retry=True)
-        self.assertIsNone(order)
-        self.assertEqual(p.placed, [])
+        with self.subTest("does_not_skip_daily_limit"):
+            p = _FakeProvider()
+            for _ in range(90):
+                p.seed_trade("BUY", age_sec=4000.0)
+            order = self._inst(p).place(
+                "BUY", 100.0, 1.0,
+                safeback_seconds=48 * 3600 + 60,
+                bypass_profit_reference=True,
+                caller_owns_retry=True)
+            self.assertIsNone(order)
+            self.assertEqual(p.placed, [])
 
-    def test_reference_only_bypass_is_ignored_for_sell(self):
-        p = _FakeProvider()
-        p.seed_trade("BUY", age_sec=400.0, price=100.0)
+        with self.subTest("is_ignored_for_sell"):
+            p = _FakeProvider()
+            p.seed_trade("BUY", age_sec=400.0, price=100.0)
 
-        order = self._inst(p).place(
-            "SELL", 99.0, 1.0,
-            smart=False,
-            bypass_profit_reference=True,
-            caller_owns_retry=True)
+            order = self._inst(p).place(
+                "SELL", 99.0, 1.0,
+                smart=False,
+                bypass_profit_reference=True,
+                caller_owns_retry=True)
 
-        self.assertIsNone(order, "a SELL below the BUY reference must be blocked")
-        self.assertEqual(p.placed, [])
-        lines = self._log_lines()
-        self.assertTrue(any("|refused|profit_guard|" in line for line in lines), lines)
+            self.assertIsNone(order, "a SELL below the BUY reference must be blocked")
+            self.assertEqual(p.placed, [])
+            lines = self._log_lines()
+            self.assertTrue(any("|refused|profit_guard|" in line for line in lines), lines)
 
-    def test_quantity_policy_bypass_is_sell_only_and_keeps_profit_guard(self):
-        policy_calls = []
+    def test_quantity_policy_bypass_behaviors(self):
+        with self.subTest("is_sell_only_and_keeps_profit_guard"):
+            self._clear_state()
+            policy_calls = []
 
-        class _ZeroPolicyProvider(_FakeProvider):
-            def policy_cap_quantity(self, *args, **kwargs):
-                policy_calls.append((args, kwargs))
-                return 0.0
+            class _ZeroPolicyProvider(_FakeProvider):
+                def policy_cap_quantity(self, *args, **kwargs):
+                    policy_calls.append((args, kwargs))
+                    return 0.0
 
-        p = _ZeroPolicyProvider()
-        p.seed_trade("BUY", age_sec=400.0, price=100.0)
-        inst = self._inst(p)
+            p = _ZeroPolicyProvider()
+            p.seed_trade("BUY", age_sec=400.0, price=100.0)
+            inst = self._inst(p)
 
-        loss = inst.place(
-            "SELL", 99.0, 1.0, smart=False, caller_owns_retry=True,
-            bypass_quantity_policy=True)
-        profit = inst.place(
-            "SELL", 102.0, 1.0, smart=False, caller_owns_retry=True,
-            bypass_quantity_policy=True)
+            loss = inst.place(
+                "SELL", 99.0, 1.0, smart=False, caller_owns_retry=True,
+                bypass_quantity_policy=True)
+            profit = inst.place(
+                "SELL", 102.0, 1.0, smart=False, caller_owns_retry=True,
+                bypass_quantity_policy=True)
 
-        self.assertIsNone(loss, "the quantity bypass must not skip the profit guard")
-        self.assertIsNotNone(profit)
-        self.assertEqual(policy_calls, [], "the weight policy must be skipped only on a SELL")
-        self.assertEqual(p.placed[0][3], 1.0)
+            self.assertIsNone(loss, "the quantity bypass must not skip the profit guard")
+            self.assertIsNotNone(profit)
+            self.assertEqual(policy_calls, [], "the weight policy must be skipped only on a SELL")
+            self.assertEqual(p.placed[0][3], 1.0)
 
-    def test_quantity_policy_bypass_is_ignored_for_buy(self):
-        class _ZeroPolicyProvider(_FakeProvider):
-            def policy_cap_quantity(self, *args, **kwargs):
-                return 0.0
+        with self.subTest("is_ignored_for_buy"):
+            self._clear_state()
+            class _ZeroPolicyProvider(_FakeProvider):
+                def policy_cap_quantity(self, *args, **kwargs):
+                    return 0.0
 
-        p = _ZeroPolicyProvider()
-        p.seed_trade("SELL", age_sec=400.0, price=100.0)
-        order = self._inst(p).place(
-            "BUY", 98.0, 1.0, smart=False, caller_owns_retry=True,
-            bypass_quantity_policy=True)
+            p = _ZeroPolicyProvider()
+            p.seed_trade("SELL", age_sec=400.0, price=100.0)
+            order = self._inst(p).place(
+                "BUY", 98.0, 1.0, smart=False, caller_owns_retry=True,
+                bypass_quantity_policy=True)
 
-        self.assertIsNone(order)
-        self.assertEqual(p.placed, [])
+            self.assertIsNone(order)
+            self.assertEqual(p.placed, [])
 
-    def test_quantity_policy_bypass_keeps_balance_and_fee_caps(self):
-        class _FeeCapProvider(_FakeProvider):
-            def free_balance(self, _asset):
-                return 1.0
+        with self.subTest("keeps_balance_and_fee_caps"):
+            self._clear_state()
+            class _FeeCapProvider(_FakeProvider):
+                def free_balance(self, _asset):
+                    return 1.0
 
-            def policy_cap_quantity(self, *args, **kwargs):
-                raise AssertionError("policy must be bypassed")
+                def policy_cap_quantity(self, *args, **kwargs):
+                    raise AssertionError("policy must be bypassed")
 
-            def fee_cap_quantity(self, symbol, side, price, available_qty):
-                return 0.9
+                def fee_cap_quantity(self, symbol, side, price, available_qty):
+                    return 0.9
 
-        p = _FeeCapProvider()
-        p.seed_trade("BUY", age_sec=400.0, price=100.0)
-        order = self._inst(p).place(
-            "SELL", 102.0, 2.0, smart=False, caller_owns_retry=True,
-            bypass_quantity_policy=True)
+            p = _FeeCapProvider()
+            p.seed_trade("BUY", age_sec=400.0, price=100.0)
+            order = self._inst(p).place(
+                "SELL", 102.0, 2.0, smart=False, caller_owns_retry=True,
+                bypass_quantity_policy=True)
 
-        self.assertIsNotNone(order)
-        self.assertEqual(p.placed[0][3], 0.9)
+            self.assertIsNotNone(order)
+            self.assertEqual(p.placed[0][3], 0.9)
 
     def test_first_order_allowed_and_logged(self):
         p = _FakeProvider()
@@ -452,48 +466,52 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         self.assertEqual(queued[0]["last_failure_reason"], "submit_ambiguous")
 
     # ── cooldown anti-rapid-fire ────────────────────────────────────────────────
-    def test_cooldown_blocks_second_order(self):
-        p = _FakeProvider()
-        inst = self._inst(p)
-        first = inst.place("BUY", 100.0, 1.0)
-        self.assertIsNotNone(first)
-        second = inst.place("SELL", 101.0, 1.0)   # < cooldown_sec after the first one.
-        self.assertIsNone(second)
-        self.assertEqual(len(p.placed), 1)   # Only the first one reached the provider.
-        lines = self._log_lines()
-        self.assertTrue(any("|refused|cooldown|" in l for l in lines), lines)
+    def test_cooldown_behaviors(self):
+        with self.subTest("cooldown_blocks_second_order"):
+            self._clear_state()
+            p = _FakeProvider()
+            inst = self._inst(p)
+            first = inst.place("BUY", 100.0, 1.0)
+            self.assertIsNotNone(first)
+            second = inst.place("SELL", 101.0, 1.0)   # < cooldown_sec after the first one.
+            self.assertIsNone(second)
+            self.assertEqual(len(p.placed), 1)   # Only the first one reached the provider.
+            lines = self._log_lines()
+            self.assertTrue(any("|refused|cooldown|" in l for l in lines), lines)
 
-    def test_cooldown_independent_per_symbol(self):
-        p = _FakeProvider()
-        inst_a = Instrument(name="A", symbol="ZZZFAKEUSD_A", provider=p.name.lower(),
-                            base="A", quote="USD", api=MarketApi([p]))
-        inst_b = Instrument(name="B", symbol="ZZZFAKEUSD_B", provider=p.name.lower(),
-                            base="B", quote="USD", api=MarketApi([p]))
-        self.assertIsNotNone(inst_a.place("BUY", 100.0, 1.0))
-        self.assertIsNotNone(
-            inst_b.place("BUY", 100.0, 1.0))  # A different symbol is unaffected.
+        with self.subTest("cooldown_independent_per_symbol"):
+            self._clear_state()
+            p = _FakeProvider()
+            inst_a = Instrument(name="A", symbol="ZZZFAKEUSD_A", provider=p.name.lower(),
+                                base="A", quote="USD", api=MarketApi([p]))
+            inst_b = Instrument(name="B", symbol="ZZZFAKEUSD_B", provider=p.name.lower(),
+                                base="B", quote="USD", api=MarketApi([p]))
+            self.assertIsNotNone(inst_a.place("BUY", 100.0, 1.0))
+            self.assertIsNotNone(
+                inst_b.place("BUY", 100.0, 1.0))  # A different symbol is unaffected.
 
-    def test_pair_id_allows_only_the_opposite_leg_through_cooldown(self):
-        p = _FakeProvider()
-        inst = self._inst(p)
+        with self.subTest("pair_id_allows_only_the_opposite_leg_through_cooldown"):
+            self._clear_state()
+            p = _FakeProvider()
+            inst = self._inst(p)
 
-        buy = inst.place(
-            "BUY", 99.0, 1.0, smart=False, wait_for_trend=False,
-            bypass_profit_guard=True,
-            cooldown_pair_id="pair-1", caller_owns_retry=True)
-        sell = inst.place(
-            "SELL", 101.0, 1.0, smart=False, wait_for_trend=False,
-            bypass_profit_guard=True,
-            cooldown_pair_id="pair-1", caller_owns_retry=True)
-        duplicate = inst.place(
-            "SELL", 102.0, 1.0, smart=False, wait_for_trend=False,
-            bypass_profit_guard=True,
-            cooldown_pair_id="pair-1", caller_owns_retry=True)
+            buy = inst.place(
+                "BUY", 99.0, 1.0, smart=False, wait_for_trend=False,
+                bypass_profit_guard=True,
+                cooldown_pair_id="pair-1", caller_owns_retry=True)
+            sell = inst.place(
+                "SELL", 101.0, 1.0, smart=False, wait_for_trend=False,
+                bypass_profit_guard=True,
+                cooldown_pair_id="pair-1", caller_owns_retry=True)
+            duplicate = inst.place(
+                "SELL", 102.0, 1.0, smart=False, wait_for_trend=False,
+                bypass_profit_guard=True,
+                cooldown_pair_id="pair-1", caller_owns_retry=True)
 
-        self.assertIsNotNone(buy)
-        self.assertIsNotNone(sell)
-        self.assertIsNone(duplicate)
-        self.assertEqual(len(p.placed), 2)
+            self.assertIsNotNone(buy)
+            self.assertIsNotNone(sell)
+            self.assertIsNone(duplicate)
+            self.assertEqual(len(p.placed), 2)
 
     def test_facade_place_routes_through_pipeline(self):
         # MarketApi.place is the single guarded proxy replacing place_order_smart.
@@ -600,152 +618,153 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         self.assertEqual(calls, [(True, 2.7)])
 
     # -- Financial fidelity for market orders. -------------------------------
-    def test_market_order_profit_guard_uses_current_price_not_ignored_target(self):
-        p = _FakeProvider(price=100.0)
-        # The last BUY is the SELL reference. The declared target of 102 passes the margin of
-        # 1.15%, but MARKET would fill at 100 and only produce costs.
-        p.seed_trade("BUY", age_sec=400.0, price=100.0)
+    def test_financial_fidelity_and_profit_guard_behaviors(self):
+        with self.subTest("market_order_profit_guard_uses_current_price_not_ignored_target"):
+            self._clear_state()
+            p = _FakeProvider(price=100.0)
+            # The last BUY is the SELL reference. The declared target of 102 passes the margin of
+            # 1.15%, but MARKET would fill at 100 and only produce costs.
+            p.seed_trade("BUY", age_sec=400.0, price=100.0)
+            order = self._inst(p).place("SELL", 102.0, 1.0, force=True, smart=False)
+            self.assertIsNone(order)
+            self.assertEqual(p.placed, [])
+            self.assertTrue(any("|refused|profit_guard|" in line for line in self._log_lines()))
 
-        order = self._inst(p).place("SELL", 102.0, 1.0, force=True, smart=False)
-
-        self.assertIsNone(order)
-        self.assertEqual(p.placed, [])
-        self.assertTrue(any("|refused|profit_guard|" in line for line in self._log_lines()))
-
-    def test_limit_order_keeps_profitable_target_price(self):
-        p = _FakeProvider(price=100.0)
-        p.seed_trade("BUY", age_sec=400.0, price=100.0)
-
-        order = self._inst(p).place("SELL", 102.0, 1.0, force=False, smart=False)
-
-        self.assertIsNotNone(order)
-        self.assertEqual(p.placed[0][2], 102.0)
-
-    def test_protective_market_bypass_remains_explicitly_allowed(self):
-        p = _FakeProvider(price=90.0)
-        p.seed_trade("BUY", age_sec=400.0, price=100.0)
-
-        order = self._inst(p).place(
-            "SELL", 102.0, 1.0, force=True, smart=False,
-            bypass_profit_guard=True)
-
-        self.assertIsNotNone(order)
-        self.assertTrue(p.placed[0][4]["force"])
-
-    def test_protective_bypass_still_applies_terminal_venue_filter(self):
-        import order_retry as oq
-
-        business_minimum_flags = []
-
-        class _DustProvider(_FakeProvider):
-            def order_filter_refusal(self, *_args, **kwargs):
-                business_minimum_flags.append(
-                    kwargs["enforce_business_minimum"])
-                return "below_min_notional"
-
-        p = _DustProvider(price=90.0)
-        p.seed_trade("BUY", age_sec=400.0, price=100.0)
-        outcome = {}
-        order = self._inst(p).place(
-            "SELL", 102.0, 0.01, force=True, smart=False,
-            bypass_profit_guard=True, _outcome_context=outcome)
-
-        self.assertIsNone(order)
-        self.assertEqual(p.placed, [])
-        self.assertEqual(oq.load_all(), [])
-        self.assertEqual(outcome["reason"], "below_min_notional")
-        self.assertEqual(business_minimum_flags, [False])
-
-    def test_profit_bypass_buy_keeps_the_business_minimum(self):
-        business_minimum_flags = []
-
-        class _PolicySpyProvider(_FakeProvider):
-            def order_filter_refusal(self, *_args, **kwargs):
-                business_minimum_flags.append(
-                    kwargs["enforce_business_minimum"])
-                return None
-
-        p = _PolicySpyProvider(price=90.0)
-        order = self._inst(p).place(
-            "BUY", 90.0, 0.5, force=True, smart=False,
-            bypass_profit_guard=True, wait_for_trend=False,
-            caller_owns_retry=True)
-
-        self.assertIsNotNone(order)
-        self.assertEqual(business_minimum_flags, [True])
-
-    def test_terminal_filter_refusal_after_prequeue_removes_claim(self):
-        import order_retry as oq
-
-        class _LateDustProvider(_FakeProvider):
-            def place_order(self, *_args, **_kwargs):
-                raise SubmissionRefused(
-                    "binance_filter_refused:quantity below lot size")
-
-        p = _LateDustProvider()
-        order = self._inst(p).place(
-            "BUY", 100.0, 0.01, smart=False, wait_for_trend=False)
-
-        self.assertIsNone(order)
-        self.assertEqual(oq.load_all(), [])
-
-    def test_market_order_allowed_only_when_current_price_meets_margin(self):
-        p = _FakeProvider(price=102.0)
-        p.seed_trade("BUY", age_sec=400.0, price=100.0)
-
-        order = self._inst(p).place("SELL", 102.0, 1.0, force=True, smart=False)
-
-        self.assertIsNotNone(order)
-        self.assertTrue(p.placed[0][4]["force"])
-
-    def test_trend_deferral_returns_immediately_without_wait_loop(self):
-        class _Deferred:
-            @staticmethod
-            def should_wait(_side, _symbol):
-                return True
-
-            @staticmethod
-            def wait_for_favorable_entry(*_args, **_kwargs):
-                raise AssertionError("Instrument.place must not enter a wait loop")
-
-        p = _FakeProvider(price=100.0)
-        p.seed_trade("BUY", age_sec=400.0, price=100.0)
-        with patch("cacheManager.get_short_trend_manager", return_value=_Deferred()):
+        with self.subTest("limit_order_keeps_profitable_target_price"):
+            self._clear_state()
+            p = _FakeProvider(price=100.0)
+            p.seed_trade("BUY", age_sec=400.0, price=100.0)
             order = self._inst(p).place("SELL", 102.0, 1.0, force=False, smart=False)
+            self.assertIsNotNone(order)
+            self.assertEqual(p.placed[0][2], 102.0)
 
-        self.assertIsNone(order)
-        self.assertEqual(p.placed, [])
-        self.assertTrue(any("|refused|trend_deferred|" in line
-                            for line in self._log_lines()))
-
-    def test_trend_deferral_with_auto_quantity_enters_outbox_with_numeric_qty(self):
-        import order_retry as oq
-
-        class _Deferred:
-            @staticmethod
-            def should_wait(_side, _symbol):
-                return True
-
-        p = _FakeProvider(price=100.0)
-        with patch("cacheManager.get_short_trend_manager", return_value=_Deferred()):
-            order = self._inst(p).place("BUY", 100.0, None, smart=False)
-
-        self.assertIsNone(order)
-        queued = oq.load_all()
-        self.assertEqual(len(queued), 1)
-        self.assertGreater(float(queued[0]["qty"]), 0.0)
-        self.assertEqual(queued[0]["last_failure_reason"], "trend_deferred")
-
-    def test_tracked_caller_can_disable_instantaneous_trend_gate(self):
-        p = _FakeProvider(price=102.0)
-        p.seed_trade("BUY", age_sec=400.0, price=100.0)
-        with patch("cacheManager.get_short_trend_manager") as manager:
+        with self.subTest("protective_market_bypass_remains_explicitly_allowed"):
+            self._clear_state()
+            p = _FakeProvider(price=90.0)
+            p.seed_trade("BUY", age_sec=400.0, price=100.0)
             order = self._inst(p).place(
-                "SELL", 102.0, 1.0, force=False, smart=False,
-                wait_for_trend=False)
+                "SELL", 102.0, 1.0, force=True, smart=False,
+                bypass_profit_guard=True)
+            self.assertIsNotNone(order)
+            self.assertTrue(p.placed[0][4]["force"])
 
-        self.assertIsNotNone(order)
-        manager.assert_not_called()
+        with self.subTest("protective_bypass_still_applies_terminal_venue_filter"):
+            self._clear_state()
+            import order_retry as oq
+
+            business_minimum_flags = []
+
+            class _DustProvider(_FakeProvider):
+                def order_filter_refusal(self, *_args, **kwargs):
+                    business_minimum_flags.append(
+                        kwargs["enforce_business_minimum"])
+                    return "below_min_notional"
+
+            p = _DustProvider(price=90.0)
+            p.seed_trade("BUY", age_sec=400.0, price=100.0)
+            outcome = {}
+            order = self._inst(p).place(
+                "SELL", 102.0, 0.01, force=True, smart=False,
+                bypass_profit_guard=True, _outcome_context=outcome)
+
+            self.assertIsNone(order)
+            self.assertEqual(p.placed, [])
+            self.assertEqual(oq.load_all(), [])
+            self.assertEqual(outcome["reason"], "below_min_notional")
+            self.assertEqual(business_minimum_flags, [False])
+
+        with self.subTest("profit_bypass_buy_keeps_the_business_minimum"):
+            self._clear_state()
+            business_minimum_flags = []
+
+            class _PolicySpyProvider(_FakeProvider):
+                def order_filter_refusal(self, *_args, **kwargs):
+                    business_minimum_flags.append(
+                        kwargs["enforce_business_minimum"])
+                    return None
+
+            p = _PolicySpyProvider(price=90.0)
+            order = self._inst(p).place(
+                "BUY", 90.0, 0.5, force=True, smart=False,
+                bypass_profit_guard=True, wait_for_trend=False,
+                caller_owns_retry=True)
+
+            self.assertIsNotNone(order)
+            self.assertEqual(business_minimum_flags, [True])
+
+        with self.subTest("terminal_filter_refusal_after_prequeue_removes_claim"):
+            self._clear_state()
+            import order_retry as oq
+
+            class _LateDustProvider(_FakeProvider):
+                def place_order(self, *_args, **_kwargs):
+                    raise SubmissionRefused(
+                        "binance_filter_refused:quantity below lot size")
+
+            p = _LateDustProvider()
+            order = self._inst(p).place(
+                "BUY", 100.0, 0.01, smart=False, wait_for_trend=False)
+
+            self.assertIsNone(order)
+            self.assertEqual(oq.load_all(), [])
+
+        with self.subTest("market_order_allowed_only_when_current_price_meets_margin"):
+            self._clear_state()
+            p = _FakeProvider(price=102.0)
+            p.seed_trade("BUY", age_sec=400.0, price=100.0)
+            order = self._inst(p).place("SELL", 102.0, 1.0, force=True, smart=False)
+            self.assertIsNotNone(order)
+            self.assertTrue(p.placed[0][4]["force"])
+
+    def test_trend_deferral_behaviors(self):
+        with self.subTest("returns_immediately_without_wait_loop"):
+            class _Deferred:
+                @staticmethod
+                def should_wait(_side, _symbol):
+                    return True
+
+                @staticmethod
+                def wait_for_favorable_entry(*_args, **_kwargs):
+                    raise AssertionError("Instrument.place must not enter a wait loop")
+
+            p = _FakeProvider(price=100.0)
+            p.seed_trade("BUY", age_sec=400.0, price=100.0)
+            with patch("cacheManager.get_short_trend_manager", return_value=_Deferred()):
+                order = self._inst(p).place("SELL", 102.0, 1.0, force=False, smart=False)
+
+            self.assertIsNone(order)
+            self.assertEqual(p.placed, [])
+            self.assertTrue(any("|refused|trend_deferred|" in line
+                                for line in self._log_lines()))
+
+        with self.subTest("auto_quantity_enters_outbox_with_numeric_qty"):
+            import order_retry as oq
+            open(oq.QUEUE_FILE, 'w').close()
+            class _Deferred2:
+                @staticmethod
+                def should_wait(_side, _symbol):
+                    return True
+
+            p = _FakeProvider(price=100.0)
+            with patch("cacheManager.get_short_trend_manager", return_value=_Deferred2()):
+                order = self._inst(p).place("BUY", 100.0, None, smart=False)
+
+            self.assertIsNone(order)
+            queued = oq.load_all()
+            self.assertEqual(len(queued), 1)
+            self.assertGreater(float(queued[0]["qty"]), 0.0)
+            self.assertEqual(queued[0]["last_failure_reason"], "trend_deferred")
+
+        with self.subTest("tracked_caller_can_disable_instantaneous_trend_gate"):
+            p = _FakeProvider(price=102.0)
+            p.seed_trade("BUY", age_sec=400.0, price=100.0)
+            with patch("cacheManager.get_short_trend_manager") as manager:
+                order = self._inst(p).place(
+                    "SELL", 102.0, 1.0, force=False, smart=False,
+                    wait_for_trend=False)
+
+            self.assertIsNotNone(order)
+            manager.assert_not_called()
 
     # -- guards_internally skips the complete provider-agnostic layer. --------
     def test_guards_internally_provider_bypasses_new_gates(self):

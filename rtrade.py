@@ -9,7 +9,7 @@ from decimal import Decimal, ROUND_DOWN
 from concurrent.futures import ThreadPoolExecutor, wait
 
 # Financial policy and operational invariants are documented in docs/RTRADE.md.
-# Effective configuration remains in rtrade_config.env.
+# Effective configuration remains in config.env.
 
 
 # my imports
@@ -76,7 +76,7 @@ def _touch_rtrade_heartbeat(*, force=False, now=None):
 from botcore import (load_dotenv as _load_dotenv, required_bool_env,
                      required_env, required_float_env, required_int_env)
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "rtrade_config.env"))
+                          "config.env"))
 
 # Seconds between cancel-and-recreate attempts.
 WAIT_FOR_ORDER = required_float_env("RTRADE_WAIT_FOR_ORDER_SEC")

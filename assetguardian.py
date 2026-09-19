@@ -16,7 +16,7 @@ from instrument_registry import symbols_for
 # environment variables below. load_dotenv does not overwrite real environment.
 from botcore import load_dotenv as _load_dotenv
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "assetguardian_config.env"))
+                          "config.env"))
 
 REQUIRED_CONFIG_KEYS = (
     "AG_CHECK_INTERVAL_SEC",
@@ -72,7 +72,7 @@ def _required_int_config(name):
     return int(value)
 
 
-# Every financial/operational parameter is mandatory in assetguardian_config.env.
+# Every financial/operational parameter is mandatory in config.env.
 # There are deliberately no hidden code defaults: a missing key stops startup.
 _validate_required_config_presence()
 CHECK_INTERVAL_SECONDS = _required_float_config("AG_CHECK_INTERVAL_SEC")

@@ -53,7 +53,7 @@ each expired intent. Notifications use the reusable `notification_digest.py`:
 
 - The first batch for an incident is reported immediately.
 - Further expiries are summarized every `RETRY_GIVEUP_SUMMARY_SEC` (900 seconds in
-  `order_retry_config.env`). The interval controls notifications only.
+  `config.env`). The interval controls notifications only.
 - Incidents are grouped by provider, symbol, side, kind, last refusal and expiry
   reason. A different incident is not suppressed by another incident's cooldown.
 - Each summary contains the new count, total requested quantity and one sample
@@ -93,7 +93,7 @@ empty-queue summaries, per-intent audit, corrupted state, attempt-limit wording,
 
 ## Rtrade retry ownership audit
 
-The versioned `rtrade_config.env` enables the pair coordinator. Its limit-order
+The versioned `config.env` enables the pair coordinator. Its limit-order
 adapter explicitly sets `caller_owns_retry=True`; the common tracked lifecycle
 persists and reconciles the pair's intent without the global retry worker. Its
 hard-stop path also uses the pair-owned audited executor. These decisions must

@@ -241,63 +241,58 @@ class TestPriceTrendAnalyzer(unittest.TestCase):
 
 class TestPriceWindowSampleRate(unittest.TestCase):
 
-    def test_default_sample_rate(self):
-        pw = ta.PriceWindow("BTCUSDT", 50)
-        self.assertAlmostEqual(pw.sample_rate_sec, ta.TIME_SLEEP_GET_PRICE)
+    def test_sample_rate_initialization_and_update(self):
+        with self.subTest(msg="default_sample_rate"):
+            pw = ta.PriceWindow("BTCUSDT", 50)
+            self.assertAlmostEqual(pw.sample_rate_sec, ta.TIME_SLEEP_GET_PRICE)
+        with self.subTest(msg="custom_sample_rate"):
+            pw = ta.PriceWindow("BTCUSDT", 50, sample_rate_sec=2.0)
+            self.assertAlmostEqual(pw.sample_rate_sec, 2.0)
+        with self.subTest(msg="sample_rate_updatable"):
+            pw = ta.PriceWindow("BTCUSDT", 50)
+            pw.sample_rate_sec = 1.5
+            self.assertAlmostEqual(pw.sample_rate_sec, 1.5)
 
-    def test_custom_sample_rate(self):
-        pw = ta.PriceWindow("BTCUSDT", 50, sample_rate_sec=2.0)
-        self.assertAlmostEqual(pw.sample_rate_sec, 2.0)
+    def test_recent_n_calculation(self):
+        with self.subTest(msg="recent_n_formula"):
+            pw = ta.PriceWindow("BTCUSDT", 50, sample_rate_sec=1.0)
+            expected = max(2, int(ta.RECENT_GRADIENT_SECONDS / 1.0))
+            self.assertEqual(pw.recent_n, expected)
+        with self.subTest(msg="recent_n_minimum_two"):
+            pw = ta.PriceWindow("BTCUSDT", 50, sample_rate_sec=9999.0)
+            self.assertEqual(pw.recent_n, 2)
+        with self.subTest(msg="recent_n_larger_for_faster_rate"):
+            pw = ta.PriceWindow("BTCUSDT", 50, sample_rate_sec=0.5)
+            n_fast = pw.recent_n
+            pw.sample_rate_sec = 2.0
+            n_slow = pw.recent_n
+            self.assertGreater(n_fast, n_slow)
 
-    def test_recent_n_formula(self):
-        pw = ta.PriceWindow("BTCUSDT", 50, sample_rate_sec=1.0)
-        expected = max(2, int(ta.RECENT_GRADIENT_SECONDS / 1.0))
-        self.assertEqual(pw.recent_n, expected)
-
-    def test_recent_n_minimum_two(self):
-        pw = ta.PriceWindow("BTCUSDT", 50, sample_rate_sec=9999.0)
-        self.assertEqual(pw.recent_n, 2)
-
-    def test_recent_n_larger_for_faster_rate(self):
-        pw = ta.PriceWindow("BTCUSDT", 50, sample_rate_sec=0.5)
-        n_fast = pw.recent_n
-        pw.sample_rate_sec = 2.0
-        n_slow = pw.recent_n
-        self.assertGreater(n_fast, n_slow)
-
-    def test_sample_rate_updatable(self):
-        pw = ta.PriceWindow("BTCUSDT", 50)
-        pw.sample_rate_sec = 1.5
-        self.assertAlmostEqual(pw.sample_rate_sec, 1.5)
-
-    def test_set_sample_rate_no_resize_without_window_seconds(self):
-        pw = ta.PriceWindow("BTCUSDT", 50)   # window_seconds=None
-        pw.set_sample_rate(2.0)
-        self.assertAlmostEqual(pw.sample_rate_sec, 2.0)
-        self.assertEqual(pw.window_size, 50)   # neschimbat
-
-    def test_set_sample_rate_resizes_to_target_duration(self):
-        # target 60s; at a 1s rate -> ~60 samples, at 2s -> ~30 samples
-        pw = ta.PriceWindow("BTCUSDT", 60, sample_rate_sec=1.0, window_seconds=60.0)
-        pw.set_sample_rate(2.0)
-        self.assertEqual(pw.window_size, 30)
-        self.assertEqual(pw.prices.maxlen, 30)
-
-    def test_set_sample_rate_resize_keeps_recent_prices(self):
-        pw = ta.PriceWindow("BTCUSDT", 100, sample_rate_sec=1.0, window_seconds=100.0)
-        for p in range(100):
-            pw.process_price(float(p))
-        pw.set_sample_rate(4.0)   # 100/4 = 25 sample
-        self.assertEqual(pw.window_size, 25)
-        self.assertEqual(len(pw.prices), 25)
-        self.assertIn(99.0, pw.prices)        # the most recent ones are kept
-        self.assertEqual(len(pw.sorted_prices), len(pw.prices))
-
-    def test_set_sample_rate_ignores_invalid(self):
-        pw = ta.PriceWindow("BTCUSDT", 50, window_seconds=60.0)
-        pw.set_sample_rate(0)
-        pw.set_sample_rate(None)
-        self.assertEqual(pw.window_size, 50)
+    def test_set_sample_rate_resizing(self):
+        with self.subTest(msg="no_resize_without_window_seconds"):
+            pw = ta.PriceWindow("BTCUSDT", 50)
+            pw.set_sample_rate(2.0)
+            self.assertAlmostEqual(pw.sample_rate_sec, 2.0)
+            self.assertEqual(pw.window_size, 50)
+        with self.subTest(msg="resizes_to_target_duration"):
+            pw = ta.PriceWindow("BTCUSDT", 60, sample_rate_sec=1.0, window_seconds=60.0)
+            pw.set_sample_rate(2.0)
+            self.assertEqual(pw.window_size, 30)
+            self.assertEqual(pw.prices.maxlen, 30)
+        with self.subTest(msg="resize_keeps_recent_prices"):
+            pw = ta.PriceWindow("BTCUSDT", 100, sample_rate_sec=1.0, window_seconds=100.0)
+            for p in range(100):
+                pw.process_price(float(p))
+            pw.set_sample_rate(4.0)
+            self.assertEqual(pw.window_size, 25)
+            self.assertEqual(len(pw.prices), 25)
+            self.assertIn(99.0, pw.prices)
+            self.assertEqual(len(pw.sorted_prices), len(pw.prices))
+        with self.subTest(msg="ignores_invalid"):
+            pw = ta.PriceWindow("BTCUSDT", 50, window_seconds=60.0)
+            pw.set_sample_rate(0)
+            pw.set_sample_rate(None)
+            self.assertEqual(pw.window_size, 50)
 
     def test_from_cache24_stores_window_seconds(self):
         import tempfile
@@ -345,65 +340,64 @@ class TestPriceWindowFromCache24(unittest.TestCase):
 
     # ── date sintetice ──────────────────────────────────────────────────────
 
-    def test_prices_loaded(self):
-        entries = _synthetic_entries(50)
-        pw = self._make(entries, window_seconds=50 * 0.8)
-        self.assertGreater(len(pw.prices), 0)
+    def test_window_properties_initialization(self):
+        with self.subTest(msg="prices_loaded"):
+            entries = _synthetic_entries(50)
+            pw = self._make(entries, window_seconds=50 * 0.8)
+            self.assertGreater(len(pw.prices), 0)
+        
+        with self.subTest(msg="size_bounded_by_window_seconds"):
+            entries = _synthetic_entries(200, interval_ms=800)
+            pw = self._make(entries, window_seconds=60.0)  # 60s / 0.8s = 75 samples
+            self.assertLessEqual(pw.window_size, 100)
+            
+        with self.subTest(msg="sample_rate_computed_from_intervals"):
+            entries = _synthetic_entries(50, interval_ms=2000)  # 2s per sample
+            pw = self._make(entries, window_seconds=100.0)
+            self.assertAlmostEqual(pw.sample_rate_sec, 2.0, delta=0.1)
+            
+        with self.subTest(msg="window_within_24h_only"):
+            entries = _synthetic_entries(100, interval_ms=800)
+            max_seconds = cm.Cache24PriceManager.KEEP_HOURS * 3600
+            pw = self._make(entries, window_seconds=max_seconds)
+            self.assertLessEqual(pw.window_size, max_seconds / pw.sample_rate_sec + 1)
+            
+        with self.subTest(msg="minimum_window_size_ten"):
+            entries = _synthetic_entries(2)
+            pw = self._make(entries, window_seconds=1.0)
+            self.assertGreaterEqual(pw.window_size, 10)
 
-    def test_window_size_bounded_by_window_seconds(self):
-        entries = _synthetic_entries(200, interval_ms=800)
-        pw = self._make(entries, window_seconds=60.0)  # 60s / 0.8s = 75 samples
-        self.assertLessEqual(pw.window_size, 100)
-
-    def test_sample_rate_computed_from_real_intervals(self):
-        entries = _synthetic_entries(50, interval_ms=2000)  # 2s per sample
-        pw = self._make(entries, window_seconds=100.0)
-        self.assertAlmostEqual(pw.sample_rate_sec, 2.0, delta=0.1)
-
-    def test_get_trend_uptrend(self):
-        entries = _synthetic_entries(60, delta=10.0, interval_ms=800)
-        pw = self._make(entries, window_seconds=60 * 0.8)
-        final_trend, gc, sf, gr = pw.get_trend()
-        self.assertEqual(final_trend, 1)
-        self.assertGreater(gc, 0)
-
-    def test_get_trend_downtrend(self):
-        entries = _synthetic_entries(60, delta=-10.0, interval_ms=800)
-        pw = self._make(entries, window_seconds=60 * 0.8)
-        final_trend, gc, sf, gr = pw.get_trend()
-        self.assertEqual(final_trend, -1)
-        self.assertLess(gc, 0)
-
-    def test_window_within_24h_only(self):
-        # Entries older than 24h would be dropped by Cache24PriceManager._trim_old_data
-        # We check that from_cache24 with window>24h does not create impossibly large windows
-        entries = _synthetic_entries(100, interval_ms=800)
-        max_seconds = cm.Cache24PriceManager.KEEP_HOURS * 3600
-        pw = self._make(entries, window_seconds=max_seconds)
-        self.assertLessEqual(pw.window_size, max_seconds / pw.sample_rate_sec + 1)
-
-    def test_minimum_window_size_ten(self):
-        entries = _synthetic_entries(2)
-        pw = self._make(entries, window_seconds=1.0)
-        self.assertGreaterEqual(pw.window_size, 10)
-
-    def test_small_window_detects_reversal_before_large_window(self):
-        """Deterministic scenario: a long UP trend followed by a recent DOWN reversal."""
-        now_ms = int(time.time() * 1000)
-        prices = [100.0 + i for i in range(100)]
-        prices.extend(prices[-1] - i for i in range(1, 21))
-        entries = [[now_ms - (len(prices) - 1 - i) * 1000, price]
-                   for i, price in enumerate(prices)]
-        manager = _make_cache24_manager("BTCUSDC", entries, self.tmp)
-
-        large = ta.PriceWindow.from_cache24("BTCUSDC", 119.0, manager)
-        small = ta.PriceWindow.from_cache24("BTCUSDC", 15.0, manager)
-        _, _, large_slope, _ = large.get_trend()
-        _, _, small_slope, _ = small.get_trend()
-
-        self.assertGreater(large_slope, 0)
-        self.assertLess(small_slope, 0)
-        self.assertLess(len(small.prices), len(large.prices))
+    def test_trend_detection(self):
+        with self.subTest(msg="uptrend"):
+            entries = _synthetic_entries(60, delta=10.0, interval_ms=800)
+            pw = self._make(entries, window_seconds=60 * 0.8)
+            final_trend, gc, sf, gr = pw.get_trend()
+            self.assertEqual(final_trend, 1)
+            self.assertGreater(gc, 0)
+            
+        with self.subTest(msg="downtrend"):
+            entries = _synthetic_entries(60, delta=-10.0, interval_ms=800)
+            pw = self._make(entries, window_seconds=60 * 0.8)
+            final_trend, gc, sf, gr = pw.get_trend()
+            self.assertEqual(final_trend, -1)
+            self.assertLess(gc, 0)
+            
+        with self.subTest(msg="small_window_detects_reversal"):
+            now_ms = int(time.time() * 1000)
+            prices = [100.0 + i for i in range(100)]
+            prices.extend(prices[-1] - i for i in range(1, 21))
+            entries = [[now_ms - (len(prices) - 1 - i) * 1000, price]
+                       for i, price in enumerate(prices)]
+            manager = _make_cache24_manager("BTCUSDC", entries, self.tmp)
+    
+            large = ta.PriceWindow.from_cache24("BTCUSDC", 119.0, manager)
+            small = ta.PriceWindow.from_cache24("BTCUSDC", 15.0, manager)
+            _, _, large_slope, _ = large.get_trend()
+            _, _, small_slope, _ = small.get_trend()
+    
+            self.assertGreater(large_slope, 0)
+            self.assertLess(small_slope, 0)
+            self.assertLess(len(small.prices), len(large.prices))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -502,47 +496,49 @@ class TestTrendState(unittest.TestCase):
     def _ts(self, exp_time=9999, fresh_time=60):
         return ta.TrendState(3600, exp_time, fresh_time, now_fn=lambda: self.now)
 
-    def test_initial_state(self):
-        ts = self._ts()
-        self.assertEqual(ts.state, "HOLD")
-        self.assertEqual(ts.confirm_count, 0)
+    def test_trend_lifecycle(self):
+        with self.subTest(msg="initial_state"):
+            ts = self._ts()
+            self.assertEqual(ts.state, "HOLD")
+            self.assertEqual(ts.confirm_count, 0)
+            
+        with self.subTest(msg="start_confirm_and_direction"):
+            ts = self._ts()
+            ts.start_trend("UP")
+            self.assertEqual(ts.state, "UP")
+            self.assertEqual(ts.confirm_count, 1)
+            self.assertGreater(ts.is_trend_up(), 0)
+            self.assertEqual(ts.is_trend_down(), 0)
+            self.assertFalse(ts.is_trend_a_minim_validated())
+            ts.confirm_trend()
+            self.assertEqual(ts.confirm_count, 2)
+            
+        with self.subTest(msg="start_invalid_raises"):
+            with self.assertRaises(AssertionError):
+                self._ts().start_trend("INVALID")
 
-    def test_start_confirm_and_direction(self):
-        ts = self._ts()
-        ts.start_trend("UP")
-        self.assertEqual(ts.state, "UP")
-        self.assertEqual(ts.confirm_count, 1)
-        self.assertGreater(ts.is_trend_up(), 0)
-        self.assertEqual(ts.is_trend_down(), 0)
-        self.assertFalse(ts.is_trend_a_minim_validated())
-        ts.confirm_trend()
-        self.assertEqual(ts.confirm_count, 2)
-
-    def test_start_invalid_raises(self):
-        with self.assertRaises(AssertionError):
-            self._ts().start_trend("INVALID")
-
-    def test_trend_expiration(self):
-        ts = self._ts(exp_time=1)
-        ts.start_trend("UP")
-        self.now += 1.1
-        self.assertTrue(ts.check_trend_expiration())
-
-    def test_freshness_window(self):
-        fresh = self._ts(fresh_time=60)
-        stale = self._ts(fresh_time=1)
-        fresh.start_trend("UP")
-        stale.start_trend("UP")
-        self.assertTrue(fresh.is_trend_fresh())
-        self.now += 1.1
-        self.assertFalse(stale.is_trend_fresh())
-
-    def test_older_than(self):
-        ts = self._ts()
-        ts.start_trend("UP")
-        self.now += 0.1
-        self.assertTrue(ts.is_started_trend_older_than(0.05))
-        self.assertFalse(ts.is_started_trend_older_than(9999))
+    def test_trend_timing(self):
+        with self.subTest(msg="trend_expiration"):
+            ts = self._ts(exp_time=1)
+            ts.start_trend("UP")
+            self.now += 1.1
+            self.assertTrue(ts.check_trend_expiration())
+            
+        with self.subTest(msg="freshness_window"):
+            fresh = self._ts(fresh_time=60)
+            stale = self._ts(fresh_time=1)
+            fresh.start_trend("UP")
+            stale.start_trend("UP")
+            self.assertTrue(fresh.is_trend_fresh())
+            self.now += 1.1
+            self.assertFalse(stale.is_trend_fresh())
+            
+        with self.subTest(msg="older_than"):
+            ts = self._ts()
+            ts.start_trend("UP")
+            self.now += 0.1
+            self.assertTrue(ts.is_started_trend_older_than(0.05))
+            self.assertFalse(ts.is_started_trend_older_than(9999))
 
 class TestTrendStateCooldown(unittest.TestCase):
     """Cooldown per instanta de trend (22 iul) — vezi FIRE_MIN_RETRY_INTERVAL_SEC.
@@ -732,63 +728,63 @@ class TestPriceWindowCache24Wiring(unittest.TestCase):
         pw = ta.PriceWindow.from_cache24(symbol, window_seconds, mgr)
         return pw, mgr
 
-    def test_subscription_flags_for_wired_and_plain_windows(self):
-        entries = _synthetic_entries(20)
-        wired, _ = self._make_wired(entries)
-        plain = ta.PriceWindow("BTCUSDT", 50)
-        self.assertTrue(wired._subscribed_to_cache24)
-        self.assertFalse(plain._subscribed_to_cache24)
+    def test_subscription_lifecycle_and_flags(self):
+        with self.subTest(msg="subscription_flags"):
+            entries = _synthetic_entries(20)
+            wired, _ = self._make_wired(entries)
+            plain = ta.PriceWindow("BTCUSDT", 50)
+            self.assertTrue(wired._subscribed_to_cache24)
+            self.assertFalse(plain._subscribed_to_cache24)
+            
+        with self.subTest(msg="subscribe_method_directly"):
+            entries = _synthetic_entries(10)
+            mgr = _make_cache24_manager("BTCUSDT", entries, self.tmp)
+            pw = ta.PriceWindow("BTCUSDT", 20)
+            self.assertFalse(pw._subscribed_to_cache24)
+            pw.subscribe_to_cache24(mgr)
+            self.assertTrue(pw._subscribed_to_cache24)
+            mgr.on_price_update("BTCUSDT", int(time.time() * 1000), 88888.0)
+            self.assertIn(88888.0, pw.prices)
+            
+        with self.subTest(msg="unsubscribe_stops_updates"):
+            entries = _synthetic_entries(10)
+            pw, mgr = self._make_wired(entries, symbol="BTCUSDT")
+            pw.unsubscribe_from_cache24(mgr)
+            self.assertFalse(pw._subscribed_to_cache24)
+            n_before = len(pw.prices)
+            mgr.on_price_update("BTCUSDT", int(time.time() * 1000), 55555.0)
+            self.assertEqual(len(pw.prices), n_before)
 
-    def test_direct_price_updates_filter_symbol(self):
-        entries = _synthetic_entries(10)
-        pw, _ = self._make_wired(entries, symbol="BTCUSDT")
-        n_before = len(pw.prices)
-        pw.on_price_update("ETHUSDT", int(time.time() * 1000), 3000.0)
-        self.assertEqual(len(pw.prices), n_before)
-        pw.on_price_update("BTCUSDT", int(time.time() * 1000), 99999.0)
-        self.assertEqual(len(pw.prices), min(n_before + 1, pw.window_size))
-
-    def test_cache24_notifies_pricewindow(self):
-        """When Cache24PriceManager receives a new price, PriceWindow is updated automatically."""
-        entries = _synthetic_entries(10)
-        pw, mgr = self._make_wired(entries, symbol="BTCUSDT")
-        n_before = len(pw.prices)
-        ts_ms = int(time.time() * 1000)
-        mgr.on_price_update("BTCUSDT", ts_ms, 77777.0)
-        self.assertEqual(len(pw.prices), min(n_before + 1, pw.window_size))
-        self.assertIn(77777.0, pw.prices)
-
-    def test_unsubscribe_stops_updates(self):
-        entries = _synthetic_entries(10)
-        pw, mgr = self._make_wired(entries, symbol="BTCUSDT")
-        pw.unsubscribe_from_cache24(mgr)
-        self.assertFalse(pw._subscribed_to_cache24)
-        n_before = len(pw.prices)
-        mgr.on_price_update("BTCUSDT", int(time.time() * 1000), 55555.0)
-        self.assertEqual(len(pw.prices), n_before)  # It was not updated.
-
-    def test_multiple_windows_same_cache24(self):
-        """Two windows (small and large) can subscribe to the same Cache24."""
-        entries = _synthetic_entries(50)
-        mgr = _make_cache24_manager("BTCUSDT", entries, self.tmp)
-        pw_small = ta.PriceWindow.from_cache24("BTCUSDT", 20 * 0.8, mgr)
-        pw_big   = ta.PriceWindow.from_cache24("BTCUSDT", 50 * 0.8, mgr)
-
-        ts_ms = int(time.time() * 1000)
-        mgr.on_price_update("BTCUSDT", ts_ms, 12345.0)
-
-        self.assertIn(12345.0, pw_small.prices)
-        self.assertIn(12345.0, pw_big.prices)
-
-    def test_subscribe_to_cache24_method_directly(self):
-        entries = _synthetic_entries(10)
-        mgr = _make_cache24_manager("BTCUSDT", entries, self.tmp)
-        pw = ta.PriceWindow("BTCUSDT", 20)
-        self.assertFalse(pw._subscribed_to_cache24)
-        pw.subscribe_to_cache24(mgr)
-        self.assertTrue(pw._subscribed_to_cache24)
-        mgr.on_price_update("BTCUSDT", int(time.time() * 1000), 88888.0)
-        self.assertIn(88888.0, pw.prices)
+    def test_price_update_routing(self):
+        with self.subTest(msg="direct_price_updates_filter_symbol"):
+            entries = _synthetic_entries(10)
+            pw, _ = self._make_wired(entries, symbol="BTCUSDT")
+            n_before = len(pw.prices)
+            pw.on_price_update("ETHUSDT", int(time.time() * 1000), 3000.0)
+            self.assertEqual(len(pw.prices), n_before)
+            pw.on_price_update("BTCUSDT", int(time.time() * 1000), 99999.0)
+            self.assertEqual(len(pw.prices), min(n_before + 1, pw.window_size))
+            
+        with self.subTest(msg="cache24_notifies_pricewindow"):
+            entries = _synthetic_entries(10)
+            pw, mgr = self._make_wired(entries, symbol="BTCUSDT")
+            n_before = len(pw.prices)
+            ts_ms = int(time.time() * 1000)
+            mgr.on_price_update("BTCUSDT", ts_ms, 77777.0)
+            self.assertEqual(len(pw.prices), min(n_before + 1, pw.window_size))
+            self.assertIn(77777.0, pw.prices)
+            
+        with self.subTest(msg="multiple_windows_same_cache24"):
+            entries = _synthetic_entries(50)
+            mgr = _make_cache24_manager("BTCUSDT", entries, self.tmp)
+            pw_small = ta.PriceWindow.from_cache24("BTCUSDT", 20 * 0.8, mgr)
+            pw_big   = ta.PriceWindow.from_cache24("BTCUSDT", 50 * 0.8, mgr)
+    
+            ts_ms = int(time.time() * 1000)
+            mgr.on_price_update("BTCUSDT", ts_ms, 12345.0)
+    
+            self.assertIn(12345.0, pw_small.prices)
+            self.assertIn(12345.0, pw_big.prices)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

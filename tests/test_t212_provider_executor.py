@@ -84,53 +84,54 @@ class T212ExecutorContractTest(unittest.TestCase):
         self.fake.portfolio_result = None
         self.assertIsNone(self.provider.free_balance("NVDA_US_EQ"))
 
-    def test_submit_limit_market_and_the_live_gate(self):
-        oid = self.provider.submit_order("NVDA_US_EQ", "buy", 0.5, price=119.25)
-        self.assertEqual(oid, "712")
-        self.assertEqual(self.fake.calls[-1], ("limit", "NVDA_US_EQ", 0.5, 119.25, "DAY"))
+    def test_submit_order_behaviors(self):
+        with self.subTest(msg="submit_limit_market_and_the_live_gate"):
+            oid = self.provider.submit_order("NVDA_US_EQ", "buy", 0.5, price=119.25)
+            self.assertEqual(oid, "712")
+            self.assertEqual(self.fake.calls[-1], ("limit", "NVDA_US_EQ", 0.5, 119.25, "DAY"))
 
-        self.provider.submit_order("NVDA_US_EQ", "sell", 0.25, market=True)
-        self.assertEqual(self.fake.calls[-1], ("market", "NVDA_US_EQ", -0.25, False))
+            self.provider.submit_order("NVDA_US_EQ", "sell", 0.25, market=True)
+            self.assertEqual(self.fake.calls[-1], ("market", "NVDA_US_EQ", -0.25, False))
 
-        os.environ["T212_LIVE_ORDERS"] = "false"
-        with self.assertRaisesRegex(ProviderError, "blocked"):
-            self.provider.submit_order("NVDA_US_EQ", "buy", 0.5, price=119.25)
+            os.environ["T212_LIVE_ORDERS"] = "false"
+            with self.assertRaisesRegex(ProviderError, "blocked"):
+                self.provider.submit_order("NVDA_US_EQ", "buy", 0.5, price=119.25)
 
-        os.environ["T212_LIVE_ORDERS"] = "true"
-        with self.assertRaisesRegex(ProviderError, "quantity"):
-            self.provider.submit_order("NVDA_US_EQ", "buy", 0.001, price=119.25)
+            os.environ["T212_LIVE_ORDERS"] = "true"
+            with self.assertRaisesRegex(ProviderError, "quantity"):
+                self.provider.submit_order("NVDA_US_EQ", "buy", 0.001, price=119.25)
 
-    def test_the_live_gate_can_be_injected_by_the_standalone_launcher(self):
-        os.environ["T212_LIVE_ORDERS"] = "false"
-        explicit_live = T212Provider(
-            client=self.fake, live_enabled=True, order_validity="DAY",
-        )
-        self.assertEqual(
-            explicit_live.submit_order("NVDA_US_EQ", "buy", 0.5, price=119.25),
-            "712",
-        )
+        with self.subTest(msg="the_live_gate_can_be_injected_by_the_standalone_launcher"):
+            os.environ["T212_LIVE_ORDERS"] = "false"
+            explicit_live = T212Provider(
+                client=self.fake, live_enabled=True, order_validity="DAY",
+            )
+            self.assertEqual(
+                explicit_live.submit_order("NVDA_US_EQ", "buy", 0.5, price=119.25),
+                "712",
+            )
 
-        os.environ["T212_LIVE_ORDERS"] = "true"
-        explicit_paper = T212Provider(client=self.fake, live_enabled=False)
-        with self.assertRaisesRegex(ProviderError, "blocked"):
-            explicit_paper.submit_order("NVDA_US_EQ", "buy", 0.5, price=119.25)
+            os.environ["T212_LIVE_ORDERS"] = "true"
+            explicit_paper = T212Provider(client=self.fake, live_enabled=False)
+            with self.assertRaisesRegex(ProviderError, "blocked"):
+                explicit_paper.submit_order("NVDA_US_EQ", "buy", 0.5, price=119.25)
 
-    def test_the_limit_validity_can_be_injected_by_the_profile(self):
-        provider = T212Provider(
-            client=self.fake, live_enabled=True,
-            order_validity="GOOD_TILL_CANCEL",
-        )
+        with self.subTest(msg="the_limit_validity_can_be_injected_by_the_profile"):
+            provider = T212Provider(
+                client=self.fake, live_enabled=True,
+                order_validity="GOOD_TILL_CANCEL",
+            )
 
-        provider.submit_order("NVDA_US_EQ", "buy", 0.5, price=119.25)
+            provider.submit_order("NVDA_US_EQ", "buy", 0.5, price=119.25)
 
-        self.assertEqual(self.fake.calls[-1][-1], "GOOD_TILL_CANCEL")
+            self.assertEqual(self.fake.calls[-1][-1], "GOOD_TILL_CANCEL")
 
-    def test_a_rejected_submit_or_one_without_an_id_is_an_error(self):
-        for result in ((429, {"error": "rate limit"}), (200, {"status": "NEW"})):
-            with self.subTest(result=result):
-                self.fake.place_result = result
-                with self.assertRaises(ProviderError):
-                    self.provider.submit_order("NVDA_US_EQ", "buy", 0.5, price=119.25)
+        with self.subTest(msg="a_rejected_submit_or_one_without_an_id_is_an_error"):
+            for result in ((429, {"error": "rate limit"}), (200, {"status": "NEW"})):
+                with self.subTest(result=result):
+                    self.fake.place_result = result
+                    with self.assertRaises(ProviderError):
+                        self.provider.submit_order("NVDA_US_EQ", "buy", 0.5, price=119.25)
 
     def test_status_partial_terminal_and_fail_closed(self):
         self.assertEqual(

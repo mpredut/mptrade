@@ -47,6 +47,12 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def _reset_temp(self):
+        self.tmp.cleanup()
+        self.tmp = tempfile.TemporaryDirectory(
+            prefix="account-cache-reader-sync-"
+        )
+
     def _order_manager(self, items, fetchtime):
         path = os.path.join(self.tmp.name, "orders.json")
         if not os.path.exists(path):
@@ -75,336 +81,353 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             3600, ["BTCUSDC"], path, api_client=cm.api
         )
 
-    def test_order_reader_reloads_new_version_and_new_fill(self):
-        first = _order(1, 1000)
-        second = _order(2, 2000)
-        writer = self._order_manager([first], 1000)
-        writer.save_state = True
-        self.assertTrue(writer.save_state_to_file())
-        first_version = writer._persisted_data_version
-
-        reader = self._order_manager([], 0)
-        reader.ensure_persisted_version(first_version)
-        self.assertEqual([first], reader.cache["BTCUSDC"])
-
-        with writer.lock:
-            writer.cache["BTCUSDC"].append(second)
-            writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
-        self.assertTrue(writer.save_state_to_file())
-        reader.ensure_persisted_version(writer._persisted_data_version)
-        self.assertEqual([first, second], reader.cache["BTCUSDC"])
-
-    def test_order_same_version_performs_no_reload(self):
-        writer = self._order_manager([_order(1, 1000)], 1000)
-        writer.save_state = True
-        self.assertTrue(writer.save_state_to_file())
-        reader = self._order_manager([], 0)
-        reader.ensure_persisted_version(writer._persisted_data_version)
-
-        with patch.object(
-                reader, "_ensure_order_version") as reload_snapshot:
-            reader.ensure_persisted_version(writer._persisted_data_version)
-        reload_snapshot.assert_not_called()
-
-    def test_order_identical_snapshot_keeps_stable_version(self):
-        writer = self._order_manager([_order(1, 1000)], 1000)
-        writer.save_state = True
-        self.assertTrue(writer.save_state_to_file())
-        first_version = writer._persisted_data_version
-        self.assertTrue(writer.save_state_to_file())
-        self.assertEqual(first_version, writer._persisted_data_version)
-
-    def test_order_corruption_refuses_and_preserves_memory(self):
-        first = _order(1, 1000)
-        writer = self._order_manager([first], 1000)
-        writer.save_state = True
-        self.assertTrue(writer.save_state_to_file())
-        reader = self._order_manager([], 0)
-        reader.ensure_persisted_version(writer._persisted_data_version)
-        previous = list(reader.cache["BTCUSDC"])
-
-        with writer.lock:
-            writer.cache["BTCUSDC"].append(_order(2, 2000))
-            writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
-        self.assertTrue(writer.save_state_to_file())
-        new_version = writer._persisted_data_version
-        with open(writer.filename, "w", encoding="utf-8") as handle:
-            handle.write("{broken")
-
-        with self.assertRaises(health.AccountCacheNotReady) as raised:
-            reader.ensure_persisted_version(new_version)
-        self.assertEqual(
-            "order_cache_reader_not_current", raised.exception.reason
-        )
-        self.assertEqual(previous, reader.cache["BTCUSDC"])
-
-    def test_order_marker_manifest_mismatch_refuses(self):
-        writer = self._order_manager([_order(1, 1000)], 1000)
-        writer.save_state = True
-        self.assertTrue(writer.save_state_to_file())
-        reader = self._order_manager([], 0)
-        with self.assertRaises(health.AccountCacheNotReady):
-            reader.ensure_persisted_version("snapshot:not-the-manifest")
-
-    def test_trade_reader_uses_only_new_suffix(self):
-        first = _trade(1, 1000)
-        second = _trade(2, 2000)
-        writer = self._trade_manager([first], 1000)
-        writer.save_state = True
-        self.assertTrue(writer.save_state_to_file())
-        reader = self._trade_manager([], 0)
-        first_boundary = reader._loaded_committed_bytes
-
-        with writer.lock:
-            writer.cache["BTCUSDC"].append(second)
-            writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
-        self.assertTrue(writer.save_state_to_file())
-        new_boundary = writer._persisted_committed_bytes
-        with patch.object(
-                reader, "_read_trade_records_strict",
-                wraps=reader._read_trade_records_strict) as read_range:
-            reader.ensure_persisted_version(writer._persisted_data_version)
-        read_range.assert_called_once_with(first_boundary, new_boundary)
-        self.assertEqual([first, second], reader.cache["BTCUSDC"])
-
-    def test_trade_changed_stream_forces_full_reload(self):
-        writer = self._trade_manager([_trade(1, 1000)], 1000)
-        writer.save_state = True
-        self.assertTrue(writer.save_state_to_file())
-        reader = self._trade_manager([], 0)
-        old_stream = reader._loaded_stream_id
-
-        self.assertTrue(writer.compact_jsonl())
-        self.assertNotEqual(old_stream, writer._persisted_stream_id)
-        with patch.object(
-                reader, "_read_trade_snapshot_strict",
-                wraps=reader._read_trade_snapshot_strict) as full_reload:
-            reader.ensure_persisted_version(writer._persisted_data_version)
-        full_reload.assert_called_once()
-
-    def test_trade_corrupt_committed_content_refuses_and_preserves_memory(self):
-        first = _trade(1, 1000)
-        writer = self._trade_manager([first], 1000)
-        writer.save_state = True
-        self.assertTrue(writer.save_state_to_file())
-        reader = self._trade_manager([], 0)
-        previous = list(reader.cache["BTCUSDC"])
-
-        with writer.lock:
-            writer.cache["BTCUSDC"].append(_trade(2, 2000))
-            writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
-        self.assertTrue(writer.save_state_to_file())
-        new_version = writer._persisted_data_version
-        with open(writer.filename, "wb") as handle:
-            handle.write(b"{broken\n")
-
-        with self.assertRaises(health.AccountCacheNotReady) as raised:
-            reader.ensure_persisted_version(new_version)
-        self.assertEqual(
-            "trade_cache_reader_not_current", raised.exception.reason
-        )
-        self.assertEqual(previous, reader.cache["BTCUSDC"])
-
-    def test_trade_uncommitted_partial_tail_is_ignored(self):
-        first = _trade(1, 1000)
-        writer = self._trade_manager([first], 1000)
-        writer.save_state = True
-        self.assertTrue(writer.save_state_to_file())
-        committed = writer._persisted_committed_bytes
-        with open(writer.filename, "ab") as handle:
-            handle.write(b"{partial-uncommitted")
-        self.assertGreater(os.path.getsize(writer.filename), committed)
-
-        reader = self._trade_manager([], 0)
-        self.assertEqual([first], reader.cache["BTCUSDC"])
-        self.assertEqual(committed, reader._loaded_committed_bytes)
-
-    def test_dirty_trade_reader_reloads_same_version_then_resumes_suffix(self):
-        first = _trade(1, 1000)
-        second = _trade(2, 2000)
-        local_only = _trade(999, 1500)
-        writer = self._trade_manager([first], 1000)
-        writer.save_state = True
-        self.assertTrue(writer.save_state_to_file())
-        reader = self._trade_manager([], 0)
-        version = writer._persisted_data_version
-
-        with reader.lock:
-            reader.cache["BTCUSDC"].extend([first, local_only])
-            reader._mark_account_cache_dirty_locked()
-        with patch.object(
-                reader, "_read_trade_snapshot_strict",
-                wraps=reader._read_trade_snapshot_strict) as full_reload:
-            reader.ensure_persisted_version(version)
-        full_reload.assert_called_once()
-        self.assertEqual([first], reader.cache["BTCUSDC"])
-
-        old_boundary = reader._loaded_committed_bytes
-        with writer.lock:
-            writer.cache["BTCUSDC"].append(second)
-            writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
-        self.assertTrue(writer.save_state_to_file())
-        with patch.object(
-                reader, "_read_trade_records_strict",
-                wraps=reader._read_trade_records_strict) as suffix_read:
-            reader.ensure_persisted_version(writer._persisted_data_version)
-        suffix_read.assert_called_once_with(
-            old_boundary, writer._persisted_committed_bytes
-        )
-        self.assertEqual([first, second], reader.cache["BTCUSDC"])
-
-    def test_health_publish_failure_keeps_trade_data_and_meta_coherent(self):
-        writer = self._trade_manager([_trade(1, 1000)], 1000)
-        writer.save_state = True
-        self.assertTrue(writer.save_state_to_file())
-        with writer.lock:
-            writer.cache["BTCUSDC"].append(_trade(2, 2000))
-            writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
-
-        with (
-            patch.object(
-                writer, "_is_canonical_account_cache", return_value=True
-            ),
-            patch.object(
-                cm.account_cache_health,
-                "record_persisted_version",
-                side_effect=RuntimeError("marker unavailable"),
-            ),
-        ):
+    def test_order_reader_versions_and_reloads(self):
+        with self.subTest(msg="reloads_new_version_and_new_fill"):
+            self._reset_temp()
+            first = _order(1, 1000)
+            second = _order(2, 2000)
+            writer = self._order_manager([first], 1000)
+            writer.save_state = True
             self.assertTrue(writer.save_state_to_file())
+            first_version = writer._persisted_data_version
 
-        with open(writer.filename + ".meta", encoding="utf-8") as handle:
-            metadata = json.load(handle)
-        self.assertEqual(
-            metadata["committed_bytes"], os.path.getsize(writer.filename)
-        )
-        reader = self._trade_manager([], 0)
-        self.assertEqual(
-            [_trade(1, 1000), _trade(2, 2000)],
-            reader.cache["BTCUSDC"],
-        )
+            reader = self._order_manager([], 0)
+            reader.ensure_persisted_version(first_version)
+            self.assertEqual([first], reader.cache["BTCUSDC"])
 
-    def test_failed_trade_compaction_restores_prior_certified_generation(self):
-        first = _trade(1, 1000)
-        writer = self._trade_manager([first], 1000)
-        writer.save_state = True
-        self.assertTrue(writer.save_state_to_file())
-        reader = self._trade_manager([], 0)
-        old_version = writer._persisted_data_version
-        old_memory = list(reader.cache["BTCUSDC"])
+            with writer.lock:
+                writer.cache["BTCUSDC"].append(second)
+                writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
+            self.assertTrue(writer.save_state_to_file())
+            reader.ensure_persisted_version(writer._persisted_data_version)
+            self.assertEqual([first, second], reader.cache["BTCUSDC"])
 
-        with writer.lock:
-            writer.cache["BTCUSDC"][0] = {
-                **writer.cache["BTCUSDC"][0],
-                "price": "200",
-            }
-            writer._mark_account_cache_dirty_locked()
-        with patch.object(writer, "_write_meta", return_value=False):
-            self.assertFalse(writer.compact_jsonl())
+        with self.subTest(msg="same_version_performs_no_reload"):
+            self._reset_temp()
+            writer = self._order_manager([_order(1, 1000)], 1000)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            reader = self._order_manager([], 0)
+            reader.ensure_persisted_version(writer._persisted_data_version)
 
-        with reader.lock:
-            reader._mark_account_cache_dirty_locked()
-        reader.ensure_persisted_version(old_version)
-        self.assertEqual(old_memory, reader.cache["BTCUSDC"])
-        restarted = cm.CacheTradeManager(
-            3600, ["BTCUSDC"], writer.filename, api_client=cm.api
-        )
-        self.assertEqual(old_memory, restarted.cache["BTCUSDC"])
-        self.assertFalse(os.path.exists(writer.filename + ".previous"))
+            with patch.object(
+                    reader, "_ensure_order_version") as reload_snapshot:
+                reader.ensure_persisted_version(writer._persisted_data_version)
+            reload_snapshot.assert_not_called()
 
-    def test_oversized_trade_rotation_publishes_readable_generation(self):
-        now_ms = 2_000_000_000_000
-        trades = [_trade(index, now_ms + index) for index in range(1, 7)]
-        writer = self._trade_manager(trades, now_ms)
-        writer.save_state = True
-        self.assertTrue(writer.save_state_to_file())
-        old_version = writer._persisted_data_version
-        writer.MAX_FILE_BYTES = 1
-        writer.ROTATE_KEEP_FRACTION = 0.5
+        with self.subTest(msg="identical_snapshot_keeps_stable_version"):
+            self._reset_temp()
+            writer = self._order_manager([_order(1, 1000)], 1000)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            first_version = writer._persisted_data_version
+            self.assertTrue(writer.save_state_to_file())
+            self.assertEqual(first_version, writer._persisted_data_version)
 
-        with (
-            patch.object(
-                writer, "_is_canonical_account_cache", return_value=True
-            ),
-            patch.object(
-                cm.account_cache_health, "record_persisted_version"
-            ) as publish,
-        ):
-            writer.maintain_append_persist()
+        with self.subTest(msg="corruption_refuses_and_preserves_memory"):
+            self._reset_temp()
+            first = _order(1, 1000)
+            writer = self._order_manager([first], 1000)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            reader = self._order_manager([], 0)
+            reader.ensure_persisted_version(writer._persisted_data_version)
+            previous = list(reader.cache["BTCUSDC"])
 
-        with open(writer.filename + ".meta", encoding="utf-8") as handle:
-            metadata = json.load(handle)
-        self.assertTrue(os.path.exists(writer.filename))
-        self.assertEqual(
-            metadata["committed_bytes"], os.path.getsize(writer.filename)
-        )
-        self.assertEqual(
-            metadata["data_version"], writer._persisted_data_version
-        )
-        self.assertNotEqual(old_version, metadata["data_version"])
-        publish.assert_called_once_with(
-            "CacheTradeManager", metadata["data_version"]
-        )
-        self.assertFalse(os.path.exists(writer.filename + ".previous"))
+            with writer.lock:
+                writer.cache["BTCUSDC"].append(_order(2, 2000))
+                writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
+            self.assertTrue(writer.save_state_to_file())
+            new_version = writer._persisted_data_version
+            with open(writer.filename, "w", encoding="utf-8") as handle:
+                handle.write("{broken")
 
-        restarted = cm.CacheTradeManager(
-            3600, ["BTCUSDC"], writer.filename, api_client=cm.api
-        )
-        self.assertEqual(trades[-3:], restarted.cache["BTCUSDC"])
-        restarted.ensure_persisted_version(metadata["data_version"])
+            with self.assertRaises(health.AccountCacheNotReady) as raised:
+                reader.ensure_persisted_version(new_version)
+            self.assertEqual(
+                "order_cache_reader_not_current", raised.exception.reason
+            )
+            self.assertEqual(previous, reader.cache["BTCUSDC"])
 
-        archives = [
-            path for path in os.listdir(self.tmp.name)
-            if path.startswith(os.path.basename(writer.filename) + ".")
-            and path.endswith(".archive.gz")
-        ]
-        self.assertEqual(1, len(archives))
-        with gzip.open(
-                os.path.join(self.tmp.name, archives[0]),
-                "rt", encoding="utf-8") as handle:
-            archived = [json.loads(line)["i"] for line in handle]
-        self.assertEqual(trades, archived)
+        with self.subTest(msg="marker_manifest_mismatch_refuses"):
+            self._reset_temp()
+            writer = self._order_manager([_order(1, 1000)], 1000)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            reader = self._order_manager([], 0)
+            with self.assertRaises(health.AccountCacheNotReady):
+                reader.ensure_persisted_version("snapshot:not-the-manifest")
 
-    def test_failed_oversized_trade_rotation_preserves_certified_generation(self):
-        now_ms = 2_000_000_000_000
-        trades = [_trade(index, now_ms + index) for index in range(1, 5)]
-        writer = self._trade_manager(trades, now_ms)
-        writer.save_state = True
-        self.assertTrue(writer.save_state_to_file())
-        writer.MAX_FILE_BYTES = 1
-        writer.ROTATE_KEEP_FRACTION = 0.5
-        old_version = writer._persisted_data_version
-        old_cache = list(writer.cache["BTCUSDC"])
-        with open(writer.filename, "rb") as handle:
-            old_data = handle.read()
-        with open(writer.filename + ".meta", "rb") as handle:
-            old_meta = handle.read()
+    def test_trade_reader_versions_and_reloads(self):
+        with self.subTest(msg="uses_only_new_suffix"):
+            self._reset_temp()
+            first = _trade(1, 1000)
+            second = _trade(2, 2000)
+            writer = self._trade_manager([first], 1000)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            reader = self._trade_manager([], 0)
+            first_boundary = reader._loaded_committed_bytes
 
-        with (
-            patch.object(writer, "_write_meta", return_value=False),
-            patch.object(
-                cm.account_cache_health, "record_persisted_version"
-            ) as publish,
-        ):
-            writer.maintain_append_persist()
+            with writer.lock:
+                writer.cache["BTCUSDC"].append(second)
+                writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
+            self.assertTrue(writer.save_state_to_file())
+            new_boundary = writer._persisted_committed_bytes
+            with patch.object(
+                    reader, "_read_trade_records_strict",
+                    wraps=reader._read_trade_records_strict) as read_range:
+                reader.ensure_persisted_version(writer._persisted_data_version)
+            read_range.assert_called_once_with(first_boundary, new_boundary)
+            self.assertEqual([first, second], reader.cache["BTCUSDC"])
 
-        publish.assert_not_called()
-        self.assertEqual(old_version, writer._persisted_data_version)
-        self.assertEqual(old_cache, writer.cache["BTCUSDC"])
-        with open(writer.filename, "rb") as handle:
-            self.assertEqual(old_data, handle.read())
-        with open(writer.filename + ".meta", "rb") as handle:
-            self.assertEqual(old_meta, handle.read())
-        self.assertFalse(os.path.exists(writer.filename + ".previous"))
-        self.assertFalse(any(
-            ".archive" in path for path in os.listdir(self.tmp.name)
-        ))
+        with self.subTest(msg="changed_stream_forces_full_reload"):
+            self._reset_temp()
+            writer = self._trade_manager([_trade(1, 1000)], 1000)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            reader = self._trade_manager([], 0)
+            old_stream = reader._loaded_stream_id
 
-        restarted = cm.CacheTradeManager(
-            3600, ["BTCUSDC"], writer.filename, api_client=cm.api
-        )
-        self.assertEqual(trades, restarted.cache["BTCUSDC"])
-        restarted.ensure_persisted_version(old_version)
+            self.assertTrue(writer.compact_jsonl())
+            self.assertNotEqual(old_stream, writer._persisted_stream_id)
+            with patch.object(
+                    reader, "_read_trade_snapshot_strict",
+                    wraps=reader._read_trade_snapshot_strict) as full_reload:
+                reader.ensure_persisted_version(writer._persisted_data_version)
+            full_reload.assert_called_once()
+
+        with self.subTest(msg="corrupt_committed_content_refuses_and_preserves_memory"):
+            self._reset_temp()
+            first = _trade(1, 1000)
+            writer = self._trade_manager([first], 1000)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            reader = self._trade_manager([], 0)
+            previous = list(reader.cache["BTCUSDC"])
+
+            with writer.lock:
+                writer.cache["BTCUSDC"].append(_trade(2, 2000))
+                writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
+            self.assertTrue(writer.save_state_to_file())
+            new_version = writer._persisted_data_version
+            with open(writer.filename, "wb") as handle:
+                handle.write(b"{broken\n")
+
+            with self.assertRaises(health.AccountCacheNotReady) as raised:
+                reader.ensure_persisted_version(new_version)
+            self.assertEqual(
+                "trade_cache_reader_not_current", raised.exception.reason
+            )
+            self.assertEqual(previous, reader.cache["BTCUSDC"])
+
+        with self.subTest(msg="uncommitted_partial_tail_is_ignored"):
+            self._reset_temp()
+            first = _trade(1, 1000)
+            writer = self._trade_manager([first], 1000)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            committed = writer._persisted_committed_bytes
+            with open(writer.filename, "ab") as handle:
+                handle.write(b"{partial-uncommitted")
+            self.assertGreater(os.path.getsize(writer.filename), committed)
+
+            reader = self._trade_manager([], 0)
+            self.assertEqual([first], reader.cache["BTCUSDC"])
+            self.assertEqual(committed, reader._loaded_committed_bytes)
+
+        with self.subTest(msg="dirty_reader_reloads_same_version_then_resumes_suffix"):
+            self._reset_temp()
+            first = _trade(1, 1000)
+            second = _trade(2, 2000)
+            local_only = _trade(999, 1500)
+            writer = self._trade_manager([first], 1000)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            reader = self._trade_manager([], 0)
+            version = writer._persisted_data_version
+
+            with reader.lock:
+                reader.cache["BTCUSDC"].extend([first, local_only])
+                reader._mark_account_cache_dirty_locked()
+            with patch.object(
+                    reader, "_read_trade_snapshot_strict",
+                    wraps=reader._read_trade_snapshot_strict) as full_reload:
+                reader.ensure_persisted_version(version)
+            full_reload.assert_called_once()
+            self.assertEqual([first], reader.cache["BTCUSDC"])
+
+            old_boundary = reader._loaded_committed_bytes
+            with writer.lock:
+                writer.cache["BTCUSDC"].append(second)
+                writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
+            self.assertTrue(writer.save_state_to_file())
+            with patch.object(
+                    reader, "_read_trade_records_strict",
+                    wraps=reader._read_trade_records_strict) as suffix_read:
+                reader.ensure_persisted_version(writer._persisted_data_version)
+            suffix_read.assert_called_once_with(
+                old_boundary, writer._persisted_committed_bytes
+            )
+            self.assertEqual([first, second], reader.cache["BTCUSDC"])
+
+    def test_trade_compaction_and_rotation_behaviors(self):
+        with self.subTest(msg="health_publish_failure_keeps_trade_data_and_meta_coherent"):
+            self._reset_temp()
+            writer = self._trade_manager([_trade(1, 1000)], 1000)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            with writer.lock:
+                writer.cache["BTCUSDC"].append(_trade(2, 2000))
+                writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
+
+            with (
+                patch.object(
+                    writer, "_is_canonical_account_cache", return_value=True
+                ),
+                patch.object(
+                    cm.account_cache_health,
+                    "record_persisted_version",
+                    side_effect=RuntimeError("marker unavailable"),
+                ),
+            ):
+                self.assertTrue(writer.save_state_to_file())
+
+            with open(writer.filename + ".meta", encoding="utf-8") as handle:
+                metadata = json.load(handle)
+            self.assertEqual(
+                metadata["committed_bytes"], os.path.getsize(writer.filename)
+            )
+            reader = self._trade_manager([], 0)
+            self.assertEqual(
+                [_trade(1, 1000), _trade(2, 2000)],
+                reader.cache["BTCUSDC"],
+            )
+
+        with self.subTest(msg="failed_trade_compaction_restores_prior_certified_generation"):
+            self._reset_temp()
+            first = _trade(1, 1000)
+            writer = self._trade_manager([first], 1000)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            reader = self._trade_manager([], 0)
+            old_version = writer._persisted_data_version
+            old_memory = list(reader.cache["BTCUSDC"])
+
+            with writer.lock:
+                writer.cache["BTCUSDC"][0] = {
+                    **writer.cache["BTCUSDC"][0],
+                    "price": "200",
+                }
+                writer._mark_account_cache_dirty_locked()
+            with patch.object(writer, "_write_meta", return_value=False):
+                self.assertFalse(writer.compact_jsonl())
+
+            with reader.lock:
+                reader._mark_account_cache_dirty_locked()
+            reader.ensure_persisted_version(old_version)
+            self.assertEqual(old_memory, reader.cache["BTCUSDC"])
+            restarted = cm.CacheTradeManager(
+                3600, ["BTCUSDC"], writer.filename, api_client=cm.api
+            )
+            self.assertEqual(old_memory, restarted.cache["BTCUSDC"])
+            self.assertFalse(os.path.exists(writer.filename + ".previous"))
+
+        with self.subTest(msg="oversized_trade_rotation_publishes_readable_generation"):
+            self._reset_temp()
+            now_ms = 2_000_000_000_000
+            trades = [_trade(index, now_ms + index) for index in range(1, 7)]
+            writer = self._trade_manager(trades, now_ms)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            old_version = writer._persisted_data_version
+            writer.MAX_FILE_BYTES = 1
+            writer.ROTATE_KEEP_FRACTION = 0.5
+
+            with (
+                patch.object(
+                    writer, "_is_canonical_account_cache", return_value=True
+                ),
+                patch.object(
+                    cm.account_cache_health, "record_persisted_version"
+                ) as publish,
+            ):
+                writer.maintain_append_persist()
+
+            with open(writer.filename + ".meta", encoding="utf-8") as handle:
+                metadata = json.load(handle)
+            self.assertTrue(os.path.exists(writer.filename))
+            self.assertEqual(
+                metadata["committed_bytes"], os.path.getsize(writer.filename)
+            )
+            self.assertEqual(
+                metadata["data_version"], writer._persisted_data_version
+            )
+            self.assertNotEqual(old_version, metadata["data_version"])
+            publish.assert_called_once_with(
+                "CacheTradeManager", metadata["data_version"]
+            )
+            self.assertFalse(os.path.exists(writer.filename + ".previous"))
+
+            restarted = cm.CacheTradeManager(
+                3600, ["BTCUSDC"], writer.filename, api_client=cm.api
+            )
+            self.assertEqual(trades[-3:], restarted.cache["BTCUSDC"])
+            restarted.ensure_persisted_version(metadata["data_version"])
+
+            archives = [
+                path for path in os.listdir(self.tmp.name)
+                if path.startswith(os.path.basename(writer.filename) + ".")
+                and path.endswith(".archive.gz")
+            ]
+            self.assertEqual(1, len(archives))
+            with gzip.open(
+                    os.path.join(self.tmp.name, archives[0]),
+                    "rt", encoding="utf-8") as handle:
+                archived = [json.loads(line)["i"] for line in handle]
+            self.assertEqual(trades, archived)
+
+        with self.subTest(msg="failed_oversized_trade_rotation_preserves_certified_generation"):
+            self._reset_temp()
+            now_ms = 2_000_000_000_000
+            trades = [_trade(index, now_ms + index) for index in range(1, 5)]
+            writer = self._trade_manager(trades, now_ms)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            writer.MAX_FILE_BYTES = 1
+            writer.ROTATE_KEEP_FRACTION = 0.5
+            old_version = writer._persisted_data_version
+            old_cache = list(writer.cache["BTCUSDC"])
+            with open(writer.filename, "rb") as handle:
+                old_data = handle.read()
+            with open(writer.filename + ".meta", "rb") as handle:
+                old_meta = handle.read()
+
+            with (
+                patch.object(writer, "_write_meta", return_value=False),
+                patch.object(
+                    cm.account_cache_health, "record_persisted_version"
+                ) as publish,
+            ):
+                writer.maintain_append_persist()
+
+            publish.assert_not_called()
+            self.assertEqual(old_version, writer._persisted_data_version)
+            self.assertEqual(old_cache, writer.cache["BTCUSDC"])
+            with open(writer.filename, "rb") as handle:
+                self.assertEqual(old_data, handle.read())
+            with open(writer.filename + ".meta", "rb") as handle:
+                self.assertEqual(old_meta, handle.read())
+            self.assertFalse(os.path.exists(writer.filename + ".previous"))
+            self.assertFalse(any(
+                ".archive" in path for path in os.listdir(self.tmp.name)
+            ))
+
+            restarted = cm.CacheTradeManager(
+                3600, ["BTCUSDC"], writer.filename, api_client=cm.api
+            )
+            self.assertEqual(trades, restarted.cache["BTCUSDC"])
+            restarted.ensure_persisted_version(old_version)
 
     def test_periodic_trade_persist_waits_for_generation_without_manager_lock(self):
         now_ms = 2_000_000_000_000
@@ -555,58 +578,132 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             200.0, restarted.last_opposite_fill_price("BTCUSDC", "SELL")
         )
 
-    def test_order_rest_tranche_updates_existing_aggregate_atomically(self):
-        partial = {
-            **_order(7, 1000),
-            "price": 100.0,
-            "quantity": 1.0,
-            "status": "PARTIALLY_FILLED",
-        }
-        final_tranche = {
-            **_order(7, 2000),
-            "price": 120.0,
-            "quantity": 1.0,
-        }
-        manager = self._order_manager([partial], 1000)
-        manager._persist_items("BTCUSDC", [final_tranche])
+    def test_order_aggregation_and_deduplication(self):
+        with self.subTest(msg="rest_tranche_updates_existing_aggregate_atomically"):
+            self._reset_temp()
+            partial = {
+                **_order(7, 1000),
+                "price": 100.0,
+                "quantity": 1.0,
+                "status": "PARTIALLY_FILLED",
+            }
+            final_tranche = {
+                **_order(7, 2000),
+                "price": 120.0,
+                "quantity": 1.0,
+            }
+            manager = self._order_manager([partial], 1000)
+            manager._persist_items("BTCUSDC", [final_tranche])
 
-        self.assertEqual(1, len(manager.cache["BTCUSDC"]))
-        aggregate = manager.cache["BTCUSDC"][0]
-        self.assertEqual(2.0, aggregate["quantity"])
-        self.assertEqual(110.0, aggregate["price"])
-        self.assertEqual(2000, aggregate["timestamp"])
-        self.assertTrue(manager._account_cache_dirty)
+            self.assertEqual(1, len(manager.cache["BTCUSDC"]))
+            aggregate = manager.cache["BTCUSDC"][0]
+            self.assertEqual(2.0, aggregate["quantity"])
+            self.assertEqual(110.0, aggregate["price"])
+            self.assertEqual(2000, aggregate["timestamp"])
+            self.assertTrue(manager._account_cache_dirty)
 
-    def test_ws_partial_to_filled_uses_cumulative_order_aggregate(self):
-        manager = self._order_manager([], 0)
-        base = {
-            "s": "BTCUSDC",
-            "i": 7,
-            "x": "TRADE",
-            "S": "BUY",
-            "p": "100",
-            "q": "2",
-            "E": 1000,
-            "t": 101,
-        }
-        partial = {
-            **base, "X": "PARTIALLY_FILLED", "T": 1000,
-            "l": "1", "L": "100", "z": "1", "Z": "100",
-        }
-        filled = {
-            **base, "X": "FILLED", "T": 2000, "t": 102,
-            "l": "1", "L": "120", "z": "2", "Z": "220",
-        }
-        with patch.object(cm, "get_cache_manager", return_value=manager):
-            cm._upsert_order_from_execution_report(partial)
-            cm._upsert_order_from_execution_report(filled)
+        with self.subTest(msg="ws_partial_to_filled_uses_cumulative_order_aggregate"):
+            self._reset_temp()
+            manager = self._order_manager([], 0)
+            base = {
+                "s": "BTCUSDC",
+                "i": 7,
+                "x": "TRADE",
+                "S": "BUY",
+                "p": "100",
+                "q": "2",
+                "E": 1000,
+                "t": 101,
+            }
+            partial = {
+                **base, "X": "PARTIALLY_FILLED", "T": 1000,
+                "l": "1", "L": "100", "z": "1", "Z": "100",
+            }
+            filled = {
+                **base, "X": "FILLED", "T": 2000, "t": 102,
+                "l": "1", "L": "120", "z": "2", "Z": "220",
+            }
+            with patch.object(cm, "get_cache_manager", return_value=manager):
+                cm._upsert_order_from_execution_report(partial)
+                cm._upsert_order_from_execution_report(filled)
 
-        self.assertEqual(1, len(manager.cache["BTCUSDC"]))
-        aggregate = manager.cache["BTCUSDC"][0]
-        self.assertEqual(2.0, aggregate["quantity"])
-        self.assertEqual(110.0, aggregate["price"])
-        self.assertEqual("FILLED", aggregate["status"])
-        self.assertTrue(manager._account_cache_dirty)
+            self.assertEqual(1, len(manager.cache["BTCUSDC"]))
+            aggregate = manager.cache["BTCUSDC"][0]
+            self.assertEqual(2.0, aggregate["quantity"])
+            self.assertEqual(110.0, aggregate["price"])
+            self.assertEqual("FILLED", aggregate["status"])
+            self.assertTrue(manager._account_cache_dirty)
+
+        with self.subTest(msg="rest_fill_is_deduplicated_after_concurrent_ws_update"):
+            self._reset_temp()
+            partial = {
+                **_order(7, 1000),
+                "price": 100.0,
+                "quantity": 1.0,
+                "_fillIds": ["101"],
+            }
+            manager = self._order_manager([partial], 1000)
+            filled_event = {
+                "s": "BTCUSDC", "i": 7, "t": 102, "x": "TRADE",
+                "X": "FILLED", "S": "BUY", "T": 2000, "E": 2000,
+                "p": "100", "q": "2", "l": "1", "L": "120",
+                "z": "2", "Z": "220",
+            }
+            with patch.object(cm, "get_cache_manager", return_value=manager):
+                cm._upsert_order_from_execution_report(filled_event)
+
+            manager._persist_items("BTCUSDC", [{
+                **_order(7, 2000),
+                "price": 120.0,
+                "quantity": 1.0,
+                "_fillId": "102",
+            }])
+            aggregate = manager.cache["BTCUSDC"][0]
+            self.assertEqual(2.0, aggregate["quantity"])
+            self.assertEqual(110.0, aggregate["price"])
+            self.assertEqual(["101", "102"], aggregate["_fillIds"])
+
+        with self.subTest(msg="poll_overlap_is_idempotent_by_fill_id"):
+            self._reset_temp()
+            manager = self._order_manager([], 0)
+            fill = {
+                **_order(7, 1000),
+                "price": 100.0,
+                "quantity": 1.0,
+                "_fillId": "101",
+            }
+            manager._persist_items("BTCUSDC", [fill])
+            first_snapshot = [dict(item) for item in manager.cache["BTCUSDC"]]
+            manager._persist_items("BTCUSDC", [fill])
+            self.assertEqual(first_snapshot, manager.cache["BTCUSDC"])
+
+        with self.subTest(msg="ws_reconnect_then_rest_backfill_does_not_double_count"):
+            self._reset_temp()
+            manager = self._order_manager([], 0)
+            later_fill_event = {
+                "s": "BTCUSDC", "i": 7, "t": 102, "x": "TRADE",
+                "X": "FILLED", "S": "BUY", "T": 2000, "E": 2000,
+                "p": "100", "q": "2", "l": "1", "L": "120",
+                "z": "2", "Z": "220",
+            }
+            with patch.object(cm, "get_cache_manager", return_value=manager):
+                cm._upsert_order_from_execution_report(later_fill_event)
+
+            manager._persist_items("BTCUSDC", [
+                {
+                    **_order(7, 1000), "price": 100.0, "quantity": 1.0,
+                    "_fillId": "101",
+                },
+                {
+                    **_order(7, 2000), "price": 120.0, "quantity": 1.0,
+                    "_fillId": "102",
+                },
+            ])
+
+            aggregate = manager.cache["BTCUSDC"][0]
+            self.assertEqual(2.0, aggregate["quantity"])
+            self.assertEqual(110.0, aggregate["price"])
+            self.assertEqual({"101", "102"}, set(aggregate["_fillIds"]))
 
     def test_malformed_rest_rows_abort_the_sync(self):
         trade_manager = self._trade_manager([_trade(1, 1000)], 1000)
@@ -653,47 +750,6 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             [str(item["id"]) for item in manager.cache["BTCUSDC"]],
         )
 
-    def test_order_rest_fill_is_deduplicated_after_concurrent_ws_update(self):
-        partial = {
-            **_order(7, 1000),
-            "price": 100.0,
-            "quantity": 1.0,
-            "_fillIds": ["101"],
-        }
-        manager = self._order_manager([partial], 1000)
-        filled_event = {
-            "s": "BTCUSDC", "i": 7, "t": 102, "x": "TRADE",
-            "X": "FILLED", "S": "BUY", "T": 2000, "E": 2000,
-            "p": "100", "q": "2", "l": "1", "L": "120",
-            "z": "2", "Z": "220",
-        }
-        with patch.object(cm, "get_cache_manager", return_value=manager):
-            cm._upsert_order_from_execution_report(filled_event)
-
-        manager._persist_items("BTCUSDC", [{
-            **_order(7, 2000),
-            "price": 120.0,
-            "quantity": 1.0,
-            "_fillId": "102",
-        }])
-        aggregate = manager.cache["BTCUSDC"][0]
-        self.assertEqual(2.0, aggregate["quantity"])
-        self.assertEqual(110.0, aggregate["price"])
-        self.assertEqual(["101", "102"], aggregate["_fillIds"])
-
-    def test_order_poll_overlap_is_idempotent_by_fill_id(self):
-        manager = self._order_manager([], 0)
-        fill = {
-            **_order(7, 1000),
-            "price": 100.0,
-            "quantity": 1.0,
-            "_fillId": "101",
-        }
-        manager._persist_items("BTCUSDC", [fill])
-        first_snapshot = [dict(item) for item in manager.cache["BTCUSDC"]]
-        manager._persist_items("BTCUSDC", [fill])
-        self.assertEqual(first_snapshot, manager.cache["BTCUSDC"])
-
     def test_account_poll_cursor_uses_request_start_high_water(self):
         manager = self._trade_manager([_trade(1, 1000)], 1000)
         with (
@@ -714,128 +770,6 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 manager.get_remote_items("BTCUSDC", 1001)
 
-    def test_corrupt_legacy_trade_row_fails_closed(self):
-        path = os.path.join(self.tmp.name, "corrupt-legacy.jsonl")
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(
-                {"s": "BTCUSDC", "i": _trade(1, 1000)},
-                separators=(",", ":"),
-            ) + "\n")
-            handle.write("{broken\n")
-        with open(path + ".meta", "w", encoding="utf-8") as handle:
-            json.dump({"fetchtime": {"BTCUSDC": 1000}}, handle)
-
-        with self.assertRaises(health.AccountCacheNotReady):
-            cm.CacheTradeManager(
-                3600, ["BTCUSDC"], path, api_client=cm.api
-            )
-
-    def test_legacy_trade_uncommitted_tail_is_recovered_by_exact_counts(self):
-        first = _trade(1, 1000)
-        path = os.path.join(self.tmp.name, "legacy-tail.jsonl")
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(
-                {"s": "BTCUSDC", "i": first},
-                separators=(",", ":"),
-            ) + "\n")
-            handle.write("{partial")
-        with open(path + ".meta", "w", encoding="utf-8") as handle:
-            json.dump({
-                "fetchtime": {"BTCUSDC": 1000},
-                "counts": {"BTCUSDC": 1},
-            }, handle)
-
-        manager = cm.CacheTradeManager(
-            3600, ["BTCUSDC"], path, api_client=cm.api
-        )
-        self.assertEqual([first], manager.cache["BTCUSDC"])
-        self.assertTrue(manager._legacy_jsonl_needs_rewrite)
-        manager.save_state = True
-        self.assertTrue(manager.save_state_to_file())
-        self.assertEqual(os.path.getsize(path), manager._persisted_committed_bytes)
-
-    def test_ws_reconnect_then_rest_backfill_does_not_double_count(self):
-        manager = self._order_manager([], 0)
-        later_fill_event = {
-            "s": "BTCUSDC", "i": 7, "t": 102, "x": "TRADE",
-            "X": "FILLED", "S": "BUY", "T": 2000, "E": 2000,
-            "p": "100", "q": "2", "l": "1", "L": "120",
-            "z": "2", "Z": "220",
-        }
-        with patch.object(cm, "get_cache_manager", return_value=manager):
-            cm._upsert_order_from_execution_report(later_fill_event)
-
-        manager._persist_items("BTCUSDC", [
-            {
-                **_order(7, 1000), "price": 100.0, "quantity": 1.0,
-                "_fillId": "101",
-            },
-            {
-                **_order(7, 2000), "price": 120.0, "quantity": 1.0,
-                "_fillId": "102",
-            },
-        ])
-
-        aggregate = manager.cache["BTCUSDC"][0]
-        self.assertEqual(2.0, aggregate["quantity"])
-        self.assertEqual(110.0, aggregate["price"])
-        self.assertEqual({"101", "102"}, set(aggregate["_fillIds"]))
-
-    def test_legacy_trade_equivalent_duplicate_ids_collapse(self):
-        path = os.path.join(self.tmp.name, "legacy-duplicates.jsonl")
-        first = {
-            **_trade("2", 2000),
-            "orderId": "2", "price": "100.0", "qty": "1.00",
-        }
-        equivalent = {
-            **_trade(2, 2000),
-            "orderId": 2, "price": 100, "qty": 1,
-        }
-        with open(path, "w", encoding="utf-8") as handle:
-            for item in (first, equivalent):
-                handle.write(json.dumps(
-                    {"s": "BTCUSDC", "i": item},
-                    separators=(",", ":"),
-                ) + "\n")
-        with open(path + ".meta", "w", encoding="utf-8") as handle:
-            json.dump({
-                "fetchtime": {"BTCUSDC": 2000},
-                "counts": {"BTCUSDC": 2},
-            }, handle)
-
-        manager = cm.CacheTradeManager(
-            3600, ["BTCUSDC"], path, api_client=cm.api
-        )
-        self.assertEqual([first], manager.cache["BTCUSDC"])
-        self.assertTrue(manager._legacy_jsonl_needs_rewrite)
-        manager.save_state = True
-        self.assertTrue(manager.save_state_to_file())
-        with open(path + ".meta", encoding="utf-8") as handle:
-            self.assertEqual(
-                {"BTCUSDC": 1}, json.load(handle)["counts"]
-            )
-
-    def test_legacy_trade_conflicting_duplicate_id_fails_closed(self):
-        path = os.path.join(self.tmp.name, "legacy-conflict.jsonl")
-        first = _trade(2, 2000)
-        conflicting = {**first, "qty": "2"}
-        with open(path, "w", encoding="utf-8") as handle:
-            for item in (first, conflicting):
-                handle.write(json.dumps(
-                    {"s": "BTCUSDC", "i": item},
-                    separators=(",", ":"),
-                ) + "\n")
-        with open(path + ".meta", "w", encoding="utf-8") as handle:
-            json.dump({
-                "fetchtime": {"BTCUSDC": 2000},
-                "counts": {"BTCUSDC": 1},
-            }, handle)
-
-        with self.assertRaises(health.AccountCacheNotReady):
-            cm.CacheTradeManager(
-                3600, ["BTCUSDC"], path, api_client=cm.api
-            )
-
     def test_live_trade_duplicate_requires_same_financial_signature(self):
         first = _trade(2, 2000)
         manager = self._trade_manager([first], 2000)
@@ -850,27 +784,6 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             manager._persist_items("BTCUSDC", [conflicting])
         self.assertEqual([first], manager.cache["BTCUSDC"])
-
-    def test_semantically_invalid_legacy_tail_is_not_recoverable(self):
-        path = os.path.join(self.tmp.name, "semantic-tail.jsonl")
-        valid = _trade(1, 1000)
-        invalid = {**_trade(2, 2000), "qty": "0"}
-        with open(path, "w", encoding="utf-8") as handle:
-            for item in (valid, invalid):
-                handle.write(json.dumps(
-                    {"s": "BTCUSDC", "i": item},
-                    separators=(",", ":"),
-                ) + "\n")
-        with open(path + ".meta", "w", encoding="utf-8") as handle:
-            json.dump({
-                "fetchtime": {"BTCUSDC": 1000},
-                "counts": {"BTCUSDC": 1},
-            }, handle)
-
-        with self.assertRaises(health.AccountCacheNotReady):
-            cm.CacheTradeManager(
-                3600, ["BTCUSDC"], path, api_client=cm.api
-            )
 
     def test_restart_recovers_previous_generation_after_compaction_crash(self):
         first = _trade(1, 1000)
@@ -1045,32 +958,155 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             metadata = json.load(handle)
         self.assertEqual({"BTCUSDC": 2}, metadata["counts"])
 
-    def test_invalid_legacy_full_json_migration_fails_closed(self):
-        jsonl_path = os.path.join(self.tmp.name, "legacy-trades.jsonl")
-        legacy_path = jsonl_path[:-1]
-        valid = _trade(1, 1000)
-        invalid = {**_trade(2, 2000), "qty": "0"}
-        with open(legacy_path, "w", encoding="utf-8") as handle:
-            json.dump({
-                "items": {"BTCUSDC": [valid, invalid]},
-                "fetchtime": {"BTCUSDC": 9_999_999},
-            }, handle)
-        with open(legacy_path, "rb") as handle:
-            legacy_before = handle.read()
+    def test_legacy_trade_data_handling(self):
+        with self.subTest(msg="corrupt_legacy_trade_row_fails_closed"):
+            self._reset_temp()
+            path = os.path.join(self.tmp.name, "corrupt-legacy.jsonl")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(
+                    {"s": "BTCUSDC", "i": _trade(1, 1000)},
+                    separators=(",", ":"),
+                ) + "\n")
+                handle.write("{broken\n")
+            with open(path + ".meta", "w", encoding="utf-8") as handle:
+                json.dump({"fetchtime": {"BTCUSDC": 1000}}, handle)
 
-        with patch.object(
-                cm.account_cache_health, "record_persisted_version") as publish:
-            with self.assertRaisesRegex(
-                    RuntimeError, "Cannot migrate legacy cache"):
+            with self.assertRaises(health.AccountCacheNotReady):
                 cm.CacheTradeManager(
-                    3600, ["BTCUSDC"], jsonl_path, api_client=cm.api
+                    3600, ["BTCUSDC"], path, api_client=cm.api
                 )
 
-        publish.assert_not_called()
-        with open(legacy_path, "rb") as handle:
-            self.assertEqual(legacy_before, handle.read())
-        self.assertFalse(os.path.exists(jsonl_path))
-        self.assertFalse(os.path.exists(jsonl_path + ".meta"))
+        with self.subTest(msg="uncommitted_tail_is_recovered_by_exact_counts"):
+            self._reset_temp()
+            first = _trade(1, 1000)
+            path = os.path.join(self.tmp.name, "legacy-tail.jsonl")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(
+                    {"s": "BTCUSDC", "i": first},
+                    separators=(",", ":"),
+                ) + "\n")
+                handle.write("{partial")
+            with open(path + ".meta", "w", encoding="utf-8") as handle:
+                json.dump({
+                    "fetchtime": {"BTCUSDC": 1000},
+                    "counts": {"BTCUSDC": 1},
+                }, handle)
+
+            manager = cm.CacheTradeManager(
+                3600, ["BTCUSDC"], path, api_client=cm.api
+            )
+            self.assertEqual([first], manager.cache["BTCUSDC"])
+            self.assertTrue(manager._legacy_jsonl_needs_rewrite)
+            manager.save_state = True
+            self.assertTrue(manager.save_state_to_file())
+            self.assertEqual(os.path.getsize(path), manager._persisted_committed_bytes)
+
+        with self.subTest(msg="equivalent_duplicate_ids_collapse"):
+            self._reset_temp()
+            path = os.path.join(self.tmp.name, "legacy-duplicates.jsonl")
+            first = {
+                **_trade("2", 2000),
+                "orderId": "2", "price": "100.0", "qty": "1.00",
+            }
+            equivalent = {
+                **_trade(2, 2000),
+                "orderId": 2, "price": 100, "qty": 1,
+            }
+            with open(path, "w", encoding="utf-8") as handle:
+                for item in (first, equivalent):
+                    handle.write(json.dumps(
+                        {"s": "BTCUSDC", "i": item},
+                        separators=(",", ":"),
+                    ) + "\n")
+            with open(path + ".meta", "w", encoding="utf-8") as handle:
+                json.dump({
+                    "fetchtime": {"BTCUSDC": 2000},
+                    "counts": {"BTCUSDC": 2},
+                }, handle)
+
+            manager = cm.CacheTradeManager(
+                3600, ["BTCUSDC"], path, api_client=cm.api
+            )
+            self.assertEqual([first], manager.cache["BTCUSDC"])
+            self.assertTrue(manager._legacy_jsonl_needs_rewrite)
+            manager.save_state = True
+            self.assertTrue(manager.save_state_to_file())
+            with open(path + ".meta", encoding="utf-8") as handle:
+                self.assertEqual(
+                    {"BTCUSDC": 1}, json.load(handle)["counts"]
+                )
+
+        with self.subTest(msg="conflicting_duplicate_id_fails_closed"):
+            self._reset_temp()
+            path = os.path.join(self.tmp.name, "legacy-conflict.jsonl")
+            first = _trade(2, 2000)
+            conflicting = {**first, "qty": "2"}
+            with open(path, "w", encoding="utf-8") as handle:
+                for item in (first, conflicting):
+                    handle.write(json.dumps(
+                        {"s": "BTCUSDC", "i": item},
+                        separators=(",", ":"),
+                    ) + "\n")
+            with open(path + ".meta", "w", encoding="utf-8") as handle:
+                json.dump({
+                    "fetchtime": {"BTCUSDC": 2000},
+                    "counts": {"BTCUSDC": 1},
+                }, handle)
+
+            with self.assertRaises(health.AccountCacheNotReady):
+                cm.CacheTradeManager(
+                    3600, ["BTCUSDC"], path, api_client=cm.api
+                )
+
+        with self.subTest(msg="semantically_invalid_legacy_tail_is_not_recoverable"):
+            self._reset_temp()
+            path = os.path.join(self.tmp.name, "semantic-tail.jsonl")
+            valid = _trade(1, 1000)
+            invalid = {**_trade(2, 2000), "qty": "0"}
+            with open(path, "w", encoding="utf-8") as handle:
+                for item in (valid, invalid):
+                    handle.write(json.dumps(
+                        {"s": "BTCUSDC", "i": item},
+                        separators=(",", ":"),
+                    ) + "\n")
+            with open(path + ".meta", "w", encoding="utf-8") as handle:
+                json.dump({
+                    "fetchtime": {"BTCUSDC": 1000},
+                    "counts": {"BTCUSDC": 1},
+                }, handle)
+
+            with self.assertRaises(health.AccountCacheNotReady):
+                cm.CacheTradeManager(
+                    3600, ["BTCUSDC"], path, api_client=cm.api
+                )
+
+        with self.subTest(msg="invalid_legacy_full_json_migration_fails_closed"):
+            self._reset_temp()
+            jsonl_path = os.path.join(self.tmp.name, "legacy-trades.jsonl")
+            legacy_path = jsonl_path[:-1]
+            valid = _trade(1, 1000)
+            invalid = {**_trade(2, 2000), "qty": "0"}
+            with open(legacy_path, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "items": {"BTCUSDC": [valid, invalid]},
+                    "fetchtime": {"BTCUSDC": 9_999_999},
+                }, handle)
+            with open(legacy_path, "rb") as handle:
+                legacy_before = handle.read()
+
+            with patch.object(
+                    cm.account_cache_health, "record_persisted_version") as publish:
+                with self.assertRaisesRegex(
+                        RuntimeError, "Cannot migrate legacy cache"):
+                    cm.CacheTradeManager(
+                        3600, ["BTCUSDC"], jsonl_path, api_client=cm.api
+                    )
+
+            publish.assert_not_called()
+            with open(legacy_path, "rb") as handle:
+                self.assertEqual(legacy_before, handle.read())
+            self.assertFalse(os.path.exists(jsonl_path))
+            self.assertFalse(os.path.exists(jsonl_path + ".meta"))
 
     def test_legacy_order_cutoff_survives_new_fill_and_restart(self):
         legacy = {

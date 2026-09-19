@@ -34,37 +34,37 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
         self.assertFalse(bull.adverse_to("LONG"))
         self.assertFalse(bear.adverse_to("SOLD"))
 
-    def test_unavailable_and_invalid_signals_are_explicit_unknown(self):
-        self.assertEqual(self.evaluator.evaluate(None).regime, "unknown")
-        invalid = self.evaluator.evaluate({"gradient_recent": "bad", "epsilon": 1})
-        self.assertEqual((invalid.regime, invalid.fresh, invalid.reason),
-                         ("unknown", False, "invalid_signal"))
+    def test_invalid_and_incomplete_signals_are_explicit_unknown(self):
+        with self.subTest(msg="unavailable_and_invalid_signals"):
+            self.assertEqual(self.evaluator.evaluate(None).regime, "unknown")
+            invalid = self.evaluator.evaluate({"gradient_recent": "bad", "epsilon": 1})
+            self.assertEqual((invalid.regime, invalid.fresh, invalid.reason),
+                             ("unknown", False, "invalid_signal"))
 
-    def test_incomplete_snapshot_is_explicit_unknown(self):
-        decision = self.evaluator.evaluate({"gradient_recent": 0.5, "ts": 1000})
-        self.assertEqual(
-            (decision.regime, decision.fresh, decision.reason),
-            ("unknown", False, "missing_signal_fields"),
-        )
+        with self.subTest(msg="incomplete_snapshot"):
+            decision = self.evaluator.evaluate({"gradient_recent": 0.5, "ts": 1000})
+            self.assertEqual(
+                (decision.regime, decision.fresh, decision.reason),
+                ("unknown", False, "missing_signal_fields"),
+            )
 
-    def test_invalid_snapshot_metadata_is_explicit_unknown(self):
-        invalid_samples = self.evaluator.evaluate({
-            "gradient_recent": 0.5,
-            "epsilon": 0.1,
-            "n_samples": float("nan"),
-        })
-        invalid_window = self.evaluator.evaluate({
-            "gradient_recent": 0.5,
-            "epsilon": 0.1,
-            "window_seconds": -1,
-        })
+        with self.subTest(msg="invalid_snapshot_metadata"):
+            invalid_samples = self.evaluator.evaluate({
+                "gradient_recent": 0.5,
+                "epsilon": 0.1,
+                "n_samples": float("nan"),
+            })
+            invalid_window = self.evaluator.evaluate({
+                "gradient_recent": 0.5,
+                "epsilon": 0.1,
+                "window_seconds": -1,
+            })
+            self.assertEqual(invalid_samples.reason, "invalid_signal_metadata")
+            self.assertEqual(invalid_window.reason, "invalid_window_metadata")
+            self.assertFalse(invalid_samples.fresh)
+            self.assertFalse(invalid_window.fresh)
 
-        self.assertEqual(invalid_samples.reason, "invalid_signal_metadata")
-        self.assertEqual(invalid_window.reason, "invalid_window_metadata")
-        self.assertFalse(invalid_samples.fresh)
-        self.assertFalse(invalid_window.fresh)
-
-    def test_incomplete_snapshot_is_retained_before_ohlc_fallback(self):
+    def test_snapshot_fallback_and_staleness_behavior(self):
         class Provider:
             name = "Binance"
 
@@ -75,62 +75,53 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
                 self.calls.append(interval)
                 return [100, 101, 102, 103, 104, 105]
 
-        provider = Provider()
-        resolution = MarketRegimeService().resolve_with_evidence(
-            provider,
-            "TAOUSDC",
-            snapshot={"gradient_recent": 0.5, "ts": 1000},
-            now=1000,
-        )
+        with self.subTest(msg="incomplete_snapshot_is_retained_before_ohlc_fallback"):
+            provider = Provider()
+            resolution = MarketRegimeService().resolve_with_evidence(
+                provider,
+                "TAOUSDC",
+                snapshot={"gradient_recent": 0.5, "ts": 1000},
+                now=1000,
+            )
 
-        self.assertEqual(provider.calls, [1])
-        self.assertEqual(len(resolution.evidence), 2)
-        self.assertEqual(
-            resolution.evidence[0].decision.reason,
-            "missing_signal_fields",
-        )
-        self.assertEqual(resolution.primary.decision.source, "ohlc:1m")
+            self.assertEqual(provider.calls, [1])
+            self.assertEqual(len(resolution.evidence), 2)
+            self.assertEqual(
+                resolution.evidence[0].decision.reason,
+                "missing_signal_fields",
+            )
+            self.assertEqual(resolution.primary.decision.source, "ohlc:1m")
 
-    def test_stale_snapshot_falls_back_and_remains_observable(self):
-        class Provider:
-            name = "Binance"
+        with self.subTest(msg="stale_snapshot_falls_back_and_remains_observable"):
+            provider = Provider()
+            resolution = MarketRegimeService().resolve_with_evidence(
+                provider,
+                "TAOUSDC",
+                snapshot={"gradient_recent": 0.5, "epsilon": 0.1, "ts": 900},
+                snapshot_max_age_seconds=30,
+                now=1000,
+            )
 
-            def __init__(self):
-                self.calls = []
+            self.assertEqual(provider.calls, [1])
+            self.assertEqual(resolution.evidence[0].temporal_state, "stale")
+            self.assertFalse(resolution.evidence[0].usable)
+            self.assertEqual(resolution.selected_index, 1)
+            self.assertEqual(resolution.primary.decision.source, "ohlc:1m")
 
-            def ohlc_closes(self, _symbol, interval):
-                self.calls.append(interval)
-                return [100, 101, 102, 103, 104, 105]
+        with self.subTest(msg="stale_snapshot_without_fallback_has_no_selected_source"):
+            resolution = MarketRegimeService().resolve_with_evidence(
+                object(),
+                "TAOUSDC",
+                snapshot={"gradient_recent": 0.5, "epsilon": 0.1, "ts": 900},
+                snapshot_max_age_seconds=30,
+                allow_fallback=False,
+                now=1000,
+            )
 
-        provider = Provider()
-        resolution = MarketRegimeService().resolve_with_evidence(
-            provider,
-            "TAOUSDC",
-            snapshot={"gradient_recent": 0.5, "epsilon": 0.1, "ts": 900},
-            snapshot_max_age_seconds=30,
-            now=1000,
-        )
-
-        self.assertEqual(provider.calls, [1])
-        self.assertEqual(resolution.evidence[0].temporal_state, "stale")
-        self.assertFalse(resolution.evidence[0].usable)
-        self.assertEqual(resolution.selected_index, 1)
-        self.assertEqual(resolution.primary.decision.source, "ohlc:1m")
-
-    def test_stale_snapshot_without_fallback_has_no_selected_source(self):
-        resolution = MarketRegimeService().resolve_with_evidence(
-            object(),
-            "TAOUSDC",
-            snapshot={"gradient_recent": 0.5, "epsilon": 0.1, "ts": 900},
-            snapshot_max_age_seconds=30,
-            allow_fallback=False,
-            now=1000,
-        )
-
-        self.assertIsNone(resolution.selected_index)
-        self.assertIsNone(resolution.primary)
-        self.assertFalse(resolution.decision.fresh)
-        self.assertEqual(resolution.decision.reason, "stale_source")
+            self.assertIsNone(resolution.selected_index)
+            self.assertIsNone(resolution.primary)
+            self.assertFalse(resolution.decision.fresh)
+            self.assertEqual(resolution.decision.reason, "stale_source")
 
     def test_snapshot_observed_at_falls_back_to_valid_ts(self):
         resolution = MarketRegimeService().resolve_with_evidence(
@@ -252,7 +243,7 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
             1,
         )
 
-    def test_benchmark_context_cannot_create_or_reverse_asset_direction(self):
+    def test_composite_context_and_use_case_behavior(self):
         service = MarketRegimeService()
         bull = self.evaluator.evaluate({"gradient_recent": 0.6, "epsilon": 0.1})
         bear = self.evaluator.evaluate({"gradient_recent": -0.6, "epsilon": 0.1})
@@ -260,43 +251,76 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
             {"gradient_recent": 0.0, "epsilon": 0.1})
         unknown = self.evaluator.unknown()
 
-        context_only = service.compose(
-            sideways, unknown, (("BTC", bull, bull),))
-        self.assertTrue(context_only.actionable)
-        self.assertEqual(context_only.regime, "sideways")
-        self.assertEqual(context_only.score, 0.0)
+        with self.subTest(msg="benchmark_context_cannot_create_or_reverse_asset_direction"):
+            context_only = service.compose(
+                sideways, unknown, (("BTC", bull, bull),))
+            self.assertTrue(context_only.actionable)
+            self.assertEqual(context_only.regime, "sideways")
+            self.assertEqual(context_only.score, 0.0)
 
-        unavailable_asset = service.compose(
-            unknown, unknown, (("BTC", bull, bull),))
-        self.assertFalse(unavailable_asset.actionable)
-        self.assertEqual(unavailable_asset.regime, "unknown")
+            unavailable_asset = service.compose(
+                unknown, unknown, (("BTC", bull, bull),))
+            self.assertFalse(unavailable_asset.actionable)
+            self.assertEqual(unavailable_asset.regime, "unknown")
 
-        hostile_context = service.compose(
-            bull,
-            bull,
-            (("BTC", bear, bear),),
-            weights={
-                "asset_short": 0.1,
-                "asset_long": 0.1,
-                "benchmark_short": 0.4,
-                "benchmark_long": 0.4,
-            },
-        )
-        self.assertEqual(hostile_context.regime, "sideways")
-        self.assertNotEqual(hostile_context.regime, "bear")
-        self.assertTrue(hostile_context.conflict)
+            hostile_context = service.compose(
+                bull,
+                bull,
+                (("BTC", bear, bear),),
+                weights={
+                    "asset_short": 0.1,
+                    "asset_long": 0.1,
+                    "benchmark_short": 0.4,
+                    "benchmark_long": 0.4,
+                },
+            )
+            self.assertEqual(hostile_context.regime, "sideways")
+            self.assertNotEqual(hostile_context.regime, "bear")
+            self.assertTrue(hostile_context.conflict)
 
-        weak_bull = self.evaluator.evaluate({
-            "gradient_recent": 0.21,
-            "epsilon": 0.1,
-        })
-        aligned_context = service.compose(
-            unknown,
-            weak_bull,
-            (("BTC", bull, bull),),
-        )
-        self.assertEqual(aligned_context.regime, "bull")
-        self.assertGreater(aligned_context.score, 0.15)
+            weak_bull = self.evaluator.evaluate({
+                "gradient_recent": 0.21,
+                "epsilon": 0.1,
+            })
+            aligned_context = service.compose(
+                unknown,
+                weak_bull,
+                (("BTC", bull, bull),),
+            )
+            self.assertEqual(aligned_context.regime, "bull")
+            self.assertGreater(aligned_context.score, 0.15)
+
+        with self.subTest(msg="composite_uses_benchmark_as_context_not_asset_replacement"):
+            decision = service.compose(bull, bull, (("BTC", bear, bear),))
+            self.assertTrue(decision.actionable)
+            self.assertTrue(decision.conflict)
+            self.assertEqual(decision.regime, "bull")
+
+            benchmark_only = service.compose(
+                unknown, unknown, (("BTC", bull, bull),))
+            self.assertFalse(benchmark_only.actionable)
+            self.assertEqual(benchmark_only.regime, "unknown")
+            self.assertLessEqual(benchmark_only.confidence, 0.2)
+
+        with self.subTest(msg="composite_rejects_unsafe_weights"):
+            with self.assertRaises(ValueError):
+                service.compose(
+                    bull, bull, weights={
+                        "asset_short": 1, "asset_long": 1,
+                        "benchmark_short": 0, "benchmark_long": 0,
+                    })
+
+        with self.subTest(msg="composite_profiles_detect_pullback_and_change_conviction"):
+            execution = service.compose(bear, bull, use_case="execution")
+            risk = service.compose(bear, bull, use_case="risk")
+            self.assertEqual(execution.regime, "bear")
+            self.assertEqual(risk.regime, "bull")
+            self.assertEqual(risk.pattern, "bullish_pullback")
+            self.assertLess(risk.conviction, risk.confidence)
+
+        with self.subTest(msg="composite_rejects_unknown_use_case"):
+            with self.assertRaises(ValueError):
+                service.compose(bull, bull, use_case="magic")
 
     def test_timestamped_closed_series_propagates_verified_freshness(self):
         class Provider:
@@ -457,73 +481,34 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
         self.assertEqual(decision.regime, "unknown")
         self.assertEqual(decision.reason, "source_error:RuntimeError")
 
-    def test_short_falls_back_from_snapshot_to_same_provider_ohlc(self):
-        class Provider:
-            name = "Binance"
-            def ohlc_closes(self, _symbol, interval):
-                return [100, 101, 102, 103] if interval == 1 else []
+    def test_ohlc_fallback_behavior_for_horizons(self):
+        with self.subTest(msg="short_falls_back_from_snapshot_to_same_provider_ohlc"):
+            class Provider1:
+                name = "Binance"
+                def ohlc_closes(self, _symbol, interval):
+                    return [100, 101, 102, 103] if interval == 1 else []
 
-        decision = MarketRegimeService().resolve(
-            Provider(), "TAOUSDC", horizon="short", snapshot={})
-        self.assertEqual((decision.regime, decision.horizon, decision.source),
-                         ("bull", "short", "ohlc:1m"))
-        self.assertTrue(decision.fallback_used)
+            decision = MarketRegimeService().resolve(
+                Provider1(), "TAOUSDC", horizon="short", snapshot={})
+            self.assertEqual((decision.regime, decision.horizon, decision.source),
+                             ("bull", "short", "ohlc:1m"))
+            self.assertTrue(decision.fallback_used)
 
-    def test_long_uses_daily_fallback_when_four_hour_source_fails(self):
-        class Provider:
-            name = "Kraken"
-            def ohlc_closes(self, _symbol, interval):
-                if interval == 240:
-                    raise RuntimeError("4h unavailable")
-                return list(range(100, 130))
+        with self.subTest(msg="long_uses_daily_fallback_when_four_hour_source_fails"):
+            class Provider2:
+                name = "Kraken"
+                def ohlc_closes(self, _symbol, interval):
+                    if interval == 240:
+                        raise RuntimeError("4h unavailable")
+                    return list(range(100, 130))
 
-        decision = MarketRegimeService().resolve(
-            Provider(), "HYPEUSD", horizon="long")
-        self.assertEqual((decision.regime, decision.horizon, decision.source),
-                         ("bull", "long", "ohlc:1440m"))
-        self.assertTrue(decision.fallback_used)
+            decision = MarketRegimeService().resolve(
+                Provider2(), "HYPEUSD", horizon="long")
+            self.assertEqual((decision.regime, decision.horizon, decision.source),
+                             ("bull", "long", "ohlc:1440m"))
+            self.assertTrue(decision.fallback_used)
 
-    def test_composite_uses_benchmark_as_context_not_asset_replacement(self):
-        service = MarketRegimeService()
-        bull = self.evaluator.evaluate({"gradient_recent": 0.6, "epsilon": 0.1})
-        bear = self.evaluator.evaluate({"gradient_recent": -0.6, "epsilon": 0.1})
-        unknown = self.evaluator.unknown()
 
-        decision = service.compose(bull, bull, (("BTC", bear, bear),))
-        self.assertTrue(decision.actionable)
-        self.assertTrue(decision.conflict)
-        self.assertEqual(decision.regime, "bull")
-
-        benchmark_only = service.compose(
-            unknown, unknown, (("BTC", bull, bull),))
-        self.assertFalse(benchmark_only.actionable)
-        self.assertEqual(benchmark_only.regime, "unknown")
-        self.assertLessEqual(benchmark_only.confidence, 0.2)
-
-    def test_composite_rejects_unsafe_weights(self):
-        decision = self.evaluator.evaluate({"gradient_recent": 0.6, "epsilon": 0.1})
-        with self.assertRaises(ValueError):
-            MarketRegimeService().compose(
-                decision, decision, weights={
-                    "asset_short": 1, "asset_long": 1,
-                    "benchmark_short": 0, "benchmark_long": 0,
-                })
-
-    def test_composite_profiles_detect_pullback_and_change_conviction(self):
-        bull = self.evaluator.evaluate({"gradient_recent": 0.6, "epsilon": 0.1})
-        bear = self.evaluator.evaluate({"gradient_recent": -0.6, "epsilon": 0.1})
-        service = MarketRegimeService()
-        execution = service.compose(bear, bull, use_case="execution")
-        risk = service.compose(bear, bull, use_case="risk")
-        self.assertEqual(execution.regime, "bear")
-        self.assertEqual(risk.regime, "bull")
-        self.assertEqual(risk.pattern, "bullish_pullback")
-        self.assertLess(risk.conviction, risk.confidence)
-
-    def test_composite_rejects_unknown_use_case(self):
-        bull = self.evaluator.evaluate({"gradient_recent": 0.6, "epsilon": 0.1})
-        with self.assertRaises(ValueError):
-            MarketRegimeService().compose(bull, bull, use_case="magic")
 
 
 if __name__ == "__main__":

@@ -326,87 +326,93 @@ class ProcessOnceTest(unittest.TestCase):
             rec["last_failure_reason"], "account_cache_snapshot_changed")
         self.assertFalse(oq.is_expired(rec, now=now + 20 * 86400))
 
-    def test_awaiting_cancel_active_order_never_submits_or_expires(self):
-        oq.enqueue(
-            "BTCUSDC", "SELL", 1.25, {"smart": False},
-            requested_price=101.0, now=1000.0,
-            lifecycle="awaiting_cancel", replaces_order_id="old-1",
-            replaces_original_qty=2.0)
-        mkt = FakeMkt(price=101.0)
-        mkt.status = OrderStatus("open", 0.75, 75.0, 0.01, "PARTIALLY_FILLED")
+    def test_awaiting_cancel_behaviors(self):
+        with self.subTest(msg="active_order_never_submits_or_expires"):
+            oq.rewrite([])
+            oq.enqueue(
+                "BTCUSDC", "SELL", 1.25, {"smart": False},
+                requested_price=101.0, now=1000.0,
+                lifecycle="awaiting_cancel", replaces_order_id="old-1",
+                replaces_original_qty=2.0)
+            mkt = FakeMkt(price=101.0)
+            mkt.status = OrderStatus("open", 0.75, 75.0, 0.01, "PARTIALLY_FILLED")
 
-        worker.process_once(mkt, now=1400.0)
+            worker.process_once(mkt, now=1400.0)
 
-        rec = oq.load_all()[0]
-        self.assertEqual(rec["lifecycle"], "awaiting_cancel")
-        self.assertEqual(rec["replaces_order_id"], "old-1")
-        self.assertEqual(mkt.calls, [])
-        self.assertFalse(oq.is_expired(rec, now=1400.0 + 20 * 86400))
+            rec = oq.load_all()[0]
+            self.assertEqual(rec["lifecycle"], "awaiting_cancel")
+            self.assertEqual(rec["replaces_order_id"], "old-1")
+            self.assertEqual(mkt.calls, [])
+            self.assertFalse(oq.is_expired(rec, now=1400.0 + 20 * 86400))
 
-    def test_awaiting_cancel_activates_only_after_confirmed_cancellation(self):
-        oq.enqueue(
-            "BTCUSDC", "SELL", 1.25, {"smart": False},
-            requested_price=101.0, now=1000.0,
-            lifecycle="awaiting_cancel", replaces_order_id="old-2",
-            replaces_original_qty=2.0)
-        mkt = FakeMkt(price=101.0)
-        mkt.status = OrderStatus("canceled", 0.75, 75.0, 0.01, "CANCELED")
+        with self.subTest(msg="activates_only_after_confirmed_cancellation"):
+            oq.rewrite([])
+            oq.enqueue(
+                "BTCUSDC", "SELL", 1.25, {"smart": False},
+                requested_price=101.0, now=1000.0,
+                lifecycle="awaiting_cancel", replaces_order_id="old-2",
+                replaces_original_qty=2.0)
+            mkt = FakeMkt(price=101.0)
+            mkt.status = OrderStatus("canceled", 0.75, 75.0, 0.01, "CANCELED")
 
-        first = worker.process_once(mkt, now=1400.0)
-        activated = oq.load_all()[0]
-        self.assertEqual(first["attempted"], 0)
-        self.assertEqual(activated["lifecycle"], "submit_pending")
-        self.assertEqual(mkt.calls, [])
+            first = worker.process_once(mkt, now=1400.0)
+            activated = oq.load_all()[0]
+            self.assertEqual(first["attempted"], 0)
+            self.assertEqual(activated["lifecycle"], "submit_pending")
+            self.assertEqual(mkt.calls, [])
 
-        second = worker.process_once(mkt, now=1401.0)
-        self.assertEqual(second["attempted"], 1)
-        self.assertEqual(len(mkt.calls), 1)
-        self.assertEqual(mkt.calls[0]["qty"], 1.25)
+            second = worker.process_once(mkt, now=1401.0)
+            self.assertEqual(second["attempted"], 1)
+            self.assertEqual(len(mkt.calls), 1)
+            self.assertEqual(mkt.calls[0]["qty"], 1.25)
 
-    def test_awaiting_cancel_terminal_order_resolves_without_replacement(self):
-        oq.enqueue(
-            "BTCUSDC", "SELL", 1.25, {"smart": False},
-            requested_price=101.0, now=1000.0,
-            lifecycle="awaiting_cancel", replaces_order_id="old-3",
-            replaces_original_qty=2.0)
-        mkt = FakeMkt(price=101.0)
-        mkt.status = OrderStatus("closed", 2.0, 200.0, 0.02, "FILLED")
+        with self.subTest(msg="terminal_order_resolves_without_replacement"):
+            oq.rewrite([])
+            oq.enqueue(
+                "BTCUSDC", "SELL", 1.25, {"smart": False},
+                requested_price=101.0, now=1000.0,
+                lifecycle="awaiting_cancel", replaces_order_id="old-3",
+                replaces_original_qty=2.0)
+            mkt = FakeMkt(price=101.0)
+            mkt.status = OrderStatus("closed", 2.0, 200.0, 0.02, "FILLED")
 
-        worker.process_once(mkt, now=1400.0)
+            worker.process_once(mkt, now=1400.0)
 
-        self.assertEqual(oq.load_all(), [])
-        self.assertEqual(mkt.calls, [])
+            self.assertEqual(oq.load_all(), [])
+            self.assertEqual(mkt.calls, [])
 
-    def test_awaiting_cancel_rejected_order_never_activates_replacement(self):
-        oq.enqueue(
-            "BTCUSDC", "SELL", 2.0, {"smart": False},
-            requested_price=101.0, now=1000.0,
-            lifecycle="awaiting_cancel", replaces_order_id="old-rejected",
-            replaces_original_qty=2.0)
-        mkt = FakeMkt(price=101.0)
-        mkt.status = OrderStatus("canceled", 0.0, 0.0, 0.0, "REJECTED")
+        with self.subTest(msg="rejected_order_never_activates_replacement"):
+            oq.rewrite([])
+            oq.enqueue(
+                "BTCUSDC", "SELL", 2.0, {"smart": False},
+                requested_price=101.0, now=1000.0,
+                lifecycle="awaiting_cancel", replaces_order_id="old-rejected",
+                replaces_original_qty=2.0)
+            mkt = FakeMkt(price=101.0)
+            mkt.status = OrderStatus("canceled", 0.0, 0.0, 0.0, "REJECTED")
 
-        worker.process_once(mkt, now=1400.0)
+            worker.process_once(mkt, now=1400.0)
 
-        self.assertEqual(oq.load_all(), [])
-        self.assertEqual(mkt.calls, [])
+            self.assertEqual(oq.load_all(), [])
+            self.assertEqual(mkt.calls, [])
 
-    def test_awaiting_cancel_lookup_error_stays_non_submittable(self):
-        oq.enqueue(
-            "BTCUSDC", "SELL", 1.25, {"smart": False},
-            requested_price=101.0, now=1000.0,
-            lifecycle="awaiting_cancel", replaces_order_id="old-4",
-            replaces_original_qty=2.0)
+        with self.subTest(msg="lookup_error_stays_non_submittable"):
+            oq.rewrite([])
+            oq.enqueue(
+                "BTCUSDC", "SELL", 1.25, {"smart": False},
+                requested_price=101.0, now=1000.0,
+                lifecycle="awaiting_cancel", replaces_order_id="old-4",
+                replaces_original_qty=2.0)
 
-        class BrokenStatusMkt(FakeMkt):
-            def order_status(self, symbol, order_id, provider_name=None):
-                raise RuntimeError("status unavailable")
+            class BrokenStatusMkt(FakeMkt):
+                def order_status(self, symbol, order_id, provider_name=None):
+                    raise RuntimeError("status unavailable")
 
-        worker.process_once(BrokenStatusMkt(), now=1400.0)
+            worker.process_once(BrokenStatusMkt(), now=1400.0)
 
-        rec = oq.load_all()[0]
-        self.assertEqual(rec["lifecycle"], "awaiting_cancel")
-        self.assertIn("status unavailable", rec["status_error"])
+            rec = oq.load_all()[0]
+            self.assertEqual(rec["lifecycle"], "awaiting_cancel")
+            self.assertIn("status unavailable", rec["status_error"])
 
     def test_not_due_skipped(self):
         oq.enqueue("BTCUSDC", "BUY", 1.0, {}, now=1000.0)
@@ -433,60 +439,74 @@ class ProcessOnceTest(unittest.TestCase):
         self.assertEqual(len(mkt.calls), 0)          # NOT retried (expired).
         self.assertEqual(len(alerts), 1)             # give-up alert
 
-    def test_giveup_batch_audited_individually_and_summary_flushes_empty_queue(self):
-        oq.RETRY_DEDUP = False
-        mkt = FakeMkt()
-        with patch.object(worker._AUDIT, "record") as audit:
-            for created, count, now in ((1000, 3, 87401), (1030, 2, 87431)):
-                for _ in range(count):
-                    oq.enqueue("TAOUSDC", "SELL", 1.0, {}, now=created,
-                               failure_reason="weight_policy_unavailable")
-                stats = worker.process_once(mkt, now=now)
-                self.assertEqual(stats["expired"], count)
-                self.assertEqual(oq.load_all(), [])
-            self.assertEqual(len(self.alerts), 1)
-            self.assertIn("3 intent(s) expired", self.alerts[0]["body"])
-            self.assertEqual(audit.call_count, 5)
-            self.assertTrue(all(c.args[0] == "retry_giveup" for c in audit.call_args_list))
-            self.assertEqual(len({c.kwargs["intent_id"] for c in audit.call_args_list}), 5)
-            worker.process_once(mkt, now=88301)
-            self.assertEqual(len(self.alerts), 2)
-            self.assertIn("summary", self.alerts[1]["title"])
-            self.assertIn("2 intent(s) expired", self.alerts[1]["body"])
-            self.assertEqual(audit.call_count, 5)
-        self.assertEqual(mkt.calls, [])
-        self.assertEqual(mkt.lookup_calls, [])
-
-    def test_giveup_digest_corruption_does_not_abort_financial_processing(self):
+    def test_giveup_behaviors(self):
         from pathlib import Path
-        Path(self.tmp, "order_retry_giveup_alerts.json").write_text("broken")
-        oq.enqueue("BTCUSDC", "BUY", 1.0, {}, now=1000,
-                   requested_price=100.0)
-        mkt = FakeMkt()
-        self.assertEqual(worker.process_once(mkt, now=1400)["succeeded"], 1)
-        self.assertEqual(len(mkt.calls), 1)
-        self.assertEqual(self.alerts, [])
+        with self.subTest(msg="batch_audited_individually_and_summary_flushes_empty_queue"):
+            self.alerts.clear()
+            oq.rewrite([])
+            Path(self.tmp, "order_retry_giveup_alerts.json").unlink(missing_ok=True)
+            oq.RETRY_DEDUP = False
+            mkt = FakeMkt()
+            with patch.object(worker._AUDIT, "record") as audit:
+                for created, count, now in ((1000, 3, 87401), (1030, 2, 87431)):
+                    for _ in range(count):
+                        oq.enqueue("TAOUSDC", "SELL", 1.0, {}, now=created,
+                                   failure_reason="weight_policy_unavailable")
+                    stats = worker.process_once(mkt, now=now)
+                    self.assertEqual(stats["expired"], count)
+                    self.assertEqual(oq.load_all(), [])
+                self.assertEqual(len(self.alerts), 1)
+                self.assertIn("3 intent(s) expired", self.alerts[0]["body"])
+                self.assertEqual(audit.call_count, 5)
+                self.assertTrue(all(c.args[0] == "retry_giveup" for c in audit.call_args_list))
+                self.assertEqual(len({c.kwargs["intent_id"] for c in audit.call_args_list}), 5)
+                worker.process_once(mkt, now=88301)
+                self.assertEqual(len(self.alerts), 2)
+                self.assertIn("summary", self.alerts[1]["title"])
+                self.assertIn("2 intent(s) expired", self.alerts[1]["body"])
+                self.assertEqual(audit.call_count, 5)
+            self.assertEqual(mkt.calls, [])
+            self.assertEqual(mkt.lookup_calls, [])
+            oq.RETRY_DEDUP = True
 
-    def test_giveup_delivery_error_does_not_hide_another_incident(self):
-        for symbol in ("TAOUSDC", "BTCUSDC"):
-            oq.enqueue(symbol, "BUY", 1.0, {}, now=1000,
+        with self.subTest(msg="digest_corruption_does_not_abort_financial_processing"):
+            self.alerts.clear()
+            oq.rewrite([])
+            Path(self.tmp, "order_retry_giveup_alerts.json").write_text("broken")
+            oq.enqueue("BTCUSDC", "BUY", 1.0, {}, now=1000,
+                       requested_price=100.0)
+            mkt = FakeMkt()
+            self.assertEqual(worker.process_once(mkt, now=1400)["succeeded"], 1)
+            self.assertEqual(len(mkt.calls), 1)
+            self.assertEqual(self.alerts, [])
+
+        with self.subTest(msg="delivery_error_does_not_hide_another_incident"):
+            self.alerts.clear()
+            oq.rewrite([])
+            Path(self.tmp, "order_retry_giveup_alerts.json").unlink(missing_ok=True)
+            for symbol in ("TAOUSDC", "BTCUSDC"):
+                oq.enqueue(symbol, "BUY", 1.0, {}, now=1000,
+                           failure_reason="weight_policy_unavailable")
+            with patch.object(worker.alert, "notify", side_effect=[OSError("offline"), None]) as notify:
+                stats = worker.process_once(FakeMkt(), now=87401)
+            self.assertEqual(stats["expired"], 2)
+            self.assertEqual(notify.call_count, 2)
+
+        with self.subTest(msg="attempt_limit_is_not_mislabeled_as_ttl"):
+            self.alerts.clear()
+            oq.rewrite([])
+            Path(self.tmp, "order_retry_giveup_alerts.json").unlink(missing_ok=True)
+            oq.RETRY_MAX_ATTEMPTS = 1
+            oq.enqueue("BTCUSDC", "BUY", 1.0, {}, now=1000,
                        failure_reason="weight_policy_unavailable")
-        with patch.object(worker.alert, "notify", side_effect=[OSError("offline"), None]) as notify:
-            stats = worker.process_once(FakeMkt(), now=87401)
-        self.assertEqual(stats["expired"], 2)
-        self.assertEqual(notify.call_count, 2)
-
-    def test_giveup_attempt_limit_is_not_mislabeled_as_ttl(self):
-        oq.RETRY_MAX_ATTEMPTS = 1
-        oq.enqueue("BTCUSDC", "BUY", 1.0, {}, now=1000,
-                   failure_reason="weight_policy_unavailable")
-        records = oq.load_all()
-        records[0]["attempts"] = 1
-        oq.rewrite(records)
-        mkt = FakeMkt()
-        self.assertEqual(worker.process_once(mkt, now=1001)["expired"], 1)
-        self.assertIn("expiry=attempt_limit", self.alerts[0]["body"])
-        self.assertEqual(mkt.calls, [])
+            records = oq.load_all()
+            records[0]["attempts"] = 1
+            oq.rewrite(records)
+            mkt = FakeMkt()
+            self.assertEqual(worker.process_once(mkt, now=1001)["expired"], 1)
+            self.assertIn("expiry=attempt_limit", self.alerts[0]["body"])
+            self.assertEqual(mkt.calls, [])
+            oq.RETRY_MAX_ATTEMPTS = 0
 
     def test_semantically_invalid_record_fails_closed_without_submit(self):
         oq.rewrite([{
@@ -504,34 +524,36 @@ class ProcessOnceTest(unittest.TestCase):
         with open(oq.QUEUE_FILE, "rb") as queue_file:
             self.assertEqual(queue_file.read(), before)
 
-    def test_price_none_leaves_in_queue(self):
-        oq.enqueue("BTCUSDC", "BUY", 1.0, {}, now=1000.0)
-        mkt = FakeMkt(price=None, succeed=True)
-        stats = worker.process_once(mkt, now=1000.0 + 400)
-        self.assertEqual(stats["attempted"], 0)
-        self.assertEqual(len(oq.load_all()), 1)      # The price is unavailable -> it stays.
+    def test_price_gate_behaviors(self):
+        with self.subTest(msg="none_leaves_in_queue"):
+            oq.rewrite([])
+            oq.enqueue("BTCUSDC", "BUY", 1.0, {}, now=1000.0)
+            mkt = FakeMkt(price=None, succeed=True)
+            stats = worker.process_once(mkt, now=1000.0 + 400)
+            self.assertEqual(stats["attempted"], 0)
+            self.assertEqual(len(oq.load_all()), 1)
 
-    def test_price_gate_skips_unfavorable(self):
-        # SELL requested at 100; current price 90 (below) -> the guard stops it, no attempt
-        oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=100.0, now=1000.0)
-        mkt = FakeMkt(price=90.0, succeed=True)
-        stats = worker.process_once(mkt, now=1000.0 + 400)
-        self.assertEqual(stats["attempted"], 0)
-        self.assertEqual(stats["skipped_price"], 1)
-        self.assertEqual(len(mkt.calls), 0)          # nothing was placed
-        q = oq.load_all()
-        self.assertEqual(len(q), 1)
-        self.assertEqual(q[0]["attempts"], 0)        # It does not count as an attempt.
+        with self.subTest(msg="skips_unfavorable"):
+            oq.rewrite([])
+            oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=100.0, now=1000.0)
+            mkt = FakeMkt(price=90.0, succeed=True)
+            stats = worker.process_once(mkt, now=1000.0 + 400)
+            self.assertEqual(stats["attempted"], 0)
+            self.assertEqual(stats["skipped_price"], 1)
+            self.assertEqual(len(mkt.calls), 0)
+            q = oq.load_all()
+            self.assertEqual(len(q), 1)
+            self.assertEqual(q[0]["attempts"], 0)
 
-    def test_price_gate_allows_favorable(self):
-        # A SELL requested at 100; the current price is 101 (above) -> the guard lets it through and it is resumed.
-        oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=100.0, now=1000.0)
-        mkt = FakeMkt(price=101.0, succeed=True)
-        stats = worker.process_once(mkt, now=1000.0 + 400)
-        self.assertEqual(stats["succeeded"], 1)
-        self.assertEqual(len(mkt.calls), 1)
-        self.assertEqual(mkt.calls[0]["price"], 101.0)   # Resumed at the CURRENT price.
-        self.assertEqual(oq.load_all()[0]["lifecycle"], "accepted")
+        with self.subTest(msg="allows_favorable"):
+            oq.rewrite([])
+            oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=100.0, now=1000.0)
+            mkt = FakeMkt(price=101.0, succeed=True)
+            stats = worker.process_once(mkt, now=1000.0 + 400)
+            self.assertEqual(stats["succeeded"], 1)
+            self.assertEqual(len(mkt.calls), 1)
+            self.assertEqual(mkt.calls[0]["price"], 101.0)
+            self.assertEqual(oq.load_all()[0]["lifecycle"], "accepted")
 
     def test_leased_in_queue_during_place_and_not_due(self):
         oq.enqueue("BTCUSDC", "BUY", 1.0, {}, requested_price=100.0, now=1000.0)

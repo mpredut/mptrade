@@ -51,26 +51,29 @@ class OrderRetryStoreTest(unittest.TestCase):
         self.assertGreater(remainder["delivered_qty"], 0)
         return record_id, remainder
 
-    def test_enqueue_and_load(self):
-        i = oq.enqueue("BTCUSDC", "BUY", 1.0,
-                       {"safeback_seconds": 999, "force": False, "smart": False}, now=1000.0)
-        self.assertIsNotNone(i)
-        items = oq.load_all()
-        self.assertEqual(len(items), 1)
-        r = items[0]
-        self.assertEqual(r["symbol"], "BTCUSDC")
-        self.assertEqual(r["side"], "BUY")
-        self.assertEqual(r["qty"], 1.0)
-        self.assertEqual(r["place_kwargs"]["safeback_seconds"], 999)
-        self.assertEqual(r["attempts"], 0)
-        self.assertNotIn("price", r)   # The price is NOT saved as a value to send.
+    def test_enqueue_basics(self):
+        with self.subTest(msg="enqueue_and_load"):
+            oq.rewrite([])
+            i = oq.enqueue("BTCUSDC", "BUY", 1.0,
+                           {"safeback_seconds": 999, "force": False, "smart": False}, now=1000.0)
+            self.assertIsNotNone(i)
+            items = oq.load_all()
+            self.assertEqual(len(items), 1)
+            r = items[0]
+            self.assertEqual(r["symbol"], "BTCUSDC")
+            self.assertEqual(r["side"], "BUY")
+            self.assertEqual(r["qty"], 1.0)
+            self.assertEqual(r["place_kwargs"]["safeback_seconds"], 999)
+            self.assertEqual(r["attempts"], 0)
+            self.assertNotIn("price", r)   # The price is NOT saved as a value to send.
 
-    def test_enqueue_captures_price_intent(self):
-        oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=63000.0, ref_price=62950.0,
-                   now=1000.0)
-        r = oq.load_all()[0]
-        self.assertEqual(r["requested_price"], 63000.0)
-        self.assertEqual(r["ref_price"], 62950.0)
+        with self.subTest(msg="enqueue_captures_price_intent"):
+            oq.rewrite([])
+            oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=63000.0, ref_price=62950.0,
+                       now=1000.0)
+            r = oq.load_all()[0]
+            self.assertEqual(r["requested_price"], 63000.0)
+            self.assertEqual(r["ref_price"], 62950.0)
 
     def test_awaiting_cancel_enqueue_is_idempotent_without_mutating_claim(self):
         first = oq.enqueue(
@@ -235,29 +238,34 @@ class OrderRetryStoreTest(unittest.TestCase):
         self.assertEqual(claimed["place_kwargs"]["client_order_id"],
                          rec["place_kwargs"]["client_order_id"])
 
-    def test_dedup_collapses_ladder_any_distance(self):
-        # even at VERY different prices (the former "ladder") -> still a single intent per side
-        first = oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=63000.0, now=1000.0)
-        oq.mark_failure(
-            first, "profit_guard", now=1000.0, submission_state="refused")
-        oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=70000.0, now=1001.0)
-        self.assertEqual(len(oq.load_all()), 1)
-        # The opposite side is a distinct intent.
-        oq.enqueue("BTCUSDC", "BUY", 1.0, {}, requested_price=62000.0, now=1002.0)
-        self.assertEqual(len(oq.load_all()), 2)
+    def test_dedup_behaviors(self):
+        with self.subTest(msg="collapses_ladder_any_distance"):
+            oq.rewrite([])
+            # even at VERY different prices (the former "ladder") -> still a single intent per side
+            first = oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=63000.0, now=1000.0)
+            oq.mark_failure(
+                first, "profit_guard", now=1000.0, submission_state="refused")
+            oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=70000.0, now=1001.0)
+            self.assertEqual(len(oq.load_all()), 1)
+            # The opposite side is a distinct intent.
+            oq.enqueue("BTCUSDC", "BUY", 1.0, {}, requested_price=62000.0, now=1002.0)
+            self.assertEqual(len(oq.load_all()), 2)
 
-    def test_dedup_preserves_attempts_on_refresh(self):
-        oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=63000.0, now=1000.0, attempts=3)
-        oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=63100.0, now=1001.0, attempts=0)
-        self.assertEqual(oq.load_all()[0]["attempts"], 3)    # maximum retained
+        with self.subTest(msg="preserves_attempts_on_refresh"):
+            oq.rewrite([])
+            oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=63000.0, now=1000.0, attempts=3)
+            oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=63100.0, now=1001.0, attempts=0)
+            self.assertEqual(oq.load_all()[0]["attempts"], 3)    # maximum retained
 
-    def test_dedup_off_appends_always(self):
-        oq.RETRY_DEDUP = False
-        oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=63000.0,
-                   now=1000.0, failure_reason="network")
-        oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=63000.0,
-                   now=1001.0, failure_reason="network")
-        self.assertEqual(len(oq.load_all()), 2)
+        with self.subTest(msg="dedup_off_appends_always"):
+            oq.rewrite([])
+            oq.RETRY_DEDUP = False
+            oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=63000.0,
+                       now=1000.0, failure_reason="network")
+            oq.enqueue("BTCUSDC", "SELL", 1.0, {}, requested_price=63000.0,
+                       now=1001.0, failure_reason="network")
+            self.assertEqual(len(oq.load_all()), 2)
+            oq.RETRY_DEDUP = True
 
     def test_trend_deferred_stream_keeps_only_latest_desired_exposure(self):
         oq.RETRY_DEDUP = False
@@ -550,27 +558,28 @@ class OrderRetryStoreTest(unittest.TestCase):
         self.assertEqual(oq.load_all(), before)
         self.assertEqual(before[0]["id"], waiting)
 
-    def test_price_gate_sell(self):
-        rec = {"side": "SELL", "requested_price": 100.0}
-        self.assertTrue(oq.price_gate_ok(rec, 100.0))         # Equal -> ok.
-        self.assertTrue(oq.price_gate_ok(rec, 101.0))         # Higher -> ok (you sell better).
-        self.assertTrue(oq.price_gate_ok(rec, 99.9))          # Within the 0.2% tolerance.
-        self.assertFalse(oq.price_gate_ok(rec, 95.0))         # Far below -> it waits.
-        self.assertFalse(oq.price_gate_ok(rec, None))         # no price -> we do not decide
+    def test_price_gate_behaviors(self):
+        with self.subTest(msg="sell"):
+            rec = {"side": "SELL", "requested_price": 100.0}
+            self.assertTrue(oq.price_gate_ok(rec, 100.0))         # Equal -> ok.
+            self.assertTrue(oq.price_gate_ok(rec, 101.0))         # Higher -> ok (you sell better).
+            self.assertTrue(oq.price_gate_ok(rec, 99.9))          # Within the 0.2% tolerance.
+            self.assertFalse(oq.price_gate_ok(rec, 95.0))         # Far below -> it waits.
+            self.assertFalse(oq.price_gate_ok(rec, None))         # no price -> we do not decide
 
-    def test_price_gate_buy(self):
-        rec = {"side": "BUY", "requested_price": 100.0}
-        self.assertTrue(oq.price_gate_ok(rec, 100.0))
-        self.assertTrue(oq.price_gate_ok(rec, 99.0))          # Lower -> ok (you buy cheaper).
-        self.assertFalse(oq.price_gate_ok(rec, 105.0))        # Far above -> it waits.
+        with self.subTest(msg="buy"):
+            rec = {"side": "BUY", "requested_price": 100.0}
+            self.assertTrue(oq.price_gate_ok(rec, 100.0))
+            self.assertTrue(oq.price_gate_ok(rec, 99.0))          # Lower -> ok (you buy cheaper).
+            self.assertFalse(oq.price_gate_ok(rec, 105.0))        # Far above -> it waits.
 
-    def test_price_gate_no_intent_skips(self):
-        # no captured requested_price (old/abnormal entry) -> conservative, do NOT retry blind
-        self.assertFalse(oq.price_gate_ok({"side": "SELL"}, 50.0))
-        self.assertFalse(oq.price_gate_ok({"side": "BUY", "requested_price": 0}, 50.0))
-        self.assertFalse(oq.price_gate_ok({"side": "HOLD", "requested_price": 50}, 50.0))
-        self.assertFalse(oq.price_gate_ok(
-            {"side": "BUY", "requested_price": 50}, float("nan")))
+        with self.subTest(msg="no intent skips"):
+            # no captured requested_price (old/abnormal entry) -> conservative, do NOT retry blind
+            self.assertFalse(oq.price_gate_ok({"side": "SELL"}, 50.0))
+            self.assertFalse(oq.price_gate_ok({"side": "BUY", "requested_price": 0}, 50.0))
+            self.assertFalse(oq.price_gate_ok({"side": "HOLD", "requested_price": 50}, 50.0))
+            self.assertFalse(oq.price_gate_ok(
+                {"side": "BUY", "requested_price": 50}, float("nan")))
 
     def test_enqueue_disabled_returns_none(self):
         oq.RETRY_ENABLED = False
@@ -691,62 +700,59 @@ class OrderRetryStoreTest(unittest.TestCase):
             rid, {"orderId": 77, "status": "NEW"}, now=now + 100.0)
         return oq.claim([rid], now=now + 400.0)[0]
 
-    def test_advance_claimed_status_observes_partial_without_resubmit_state(self):
-        claimed = self._accepted_claim(qty=2.0)
-        status = OrderStatus(
-            "open", 0.5, 49.0, 0.01, venue_status="PARTIALLY_FILLED")
+    def test_advance_claimed_status_behaviors(self):
+        with self.subTest(msg="observes_partial_without_resubmit_state"):
+            oq.rewrite([])
+            claimed = self._accepted_claim(qty=2.0)
+            status = OrderStatus(
+                "open", 0.5, 49.0, 0.01, venue_status="PARTIALLY_FILLED")
+            transition = oq.advance_claimed_status(claimed, status, now=1401.0)
+            self.assertEqual(transition.action, "observed")
+            self.assertTrue(transition.status_changed)
+            record = oq.load_all()[0]
+            self.assertEqual(record["lifecycle"], "accepted")
+            self.assertEqual(record["filled_qty"], 0.5)
+            self.assertNotIn("claim_token", record)
 
-        transition = oq.advance_claimed_status(claimed, status, now=1401.0)
+        with self.subTest(msg="fill_removes_active_record"):
+            oq.rewrite([])
+            claimed = self._accepted_claim()
+            transition = oq.advance_claimed_status(
+                claimed,
+                OrderStatus("closed", 1.0, 100.0, 0.02, venue_status="FILLED"),
+                now=1401.0,
+            )
+            self.assertEqual(transition.action, "filled")
+            self.assertEqual(oq.load_all(), [])
 
-        self.assertEqual(transition.action, "observed")
-        self.assertTrue(transition.status_changed)
-        record = oq.load_all()[0]
-        self.assertEqual(record["lifecycle"], "accepted")
-        self.assertEqual(record["filled_qty"], 0.5)
-        self.assertNotIn("claim_token", record)
+        with self.subTest(msg="rejected_revises_only_remainder"):
+            oq.rewrite([])
+            claimed = self._accepted_claim(qty=2.0)
+            transition = oq.advance_claimed_status(
+                claimed,
+                OrderStatus(
+                    "canceled", 0.5, 49.0, 0.01, venue_status="REJECTED"),
+                now=1401.0,
+            )
+            self.assertEqual(transition.action, "retry_terminal")
+            self.assertEqual(transition.remaining_qty, 1.5)
+            record = oq.load_all()[0]
+            self.assertEqual(record["lifecycle"], "submit_pending")
+            self.assertEqual(record["qty"], 1.5)
+            self.assertEqual(record["revision"], 1)
 
-    def test_advance_claimed_status_fill_removes_active_record(self):
-        claimed = self._accepted_claim()
-
-        transition = oq.advance_claimed_status(
-            claimed,
-            OrderStatus("closed", 1.0, 100.0, 0.02, venue_status="FILLED"),
-            now=1401.0,
-        )
-
-        self.assertEqual(transition.action, "filled")
-        self.assertEqual(oq.load_all(), [])
-
-    def test_advance_claimed_status_rejected_revises_only_remainder(self):
-        claimed = self._accepted_claim(qty=2.0)
-
-        transition = oq.advance_claimed_status(
-            claimed,
-            OrderStatus(
-                "canceled", 0.5, 49.0, 0.01, venue_status="REJECTED"),
-            now=1401.0,
-        )
-
-        self.assertEqual(transition.action, "retry_terminal")
-        self.assertEqual(transition.remaining_qty, 1.5)
-        record = oq.load_all()[0]
-        self.assertEqual(record["lifecycle"], "submit_pending")
-        self.assertEqual(record["qty"], 1.5)
-        self.assertEqual(record["revision"], 1)
-
-    def test_advance_claimed_status_cancel_is_terminal_without_revision(self):
-        claimed = self._accepted_claim(qty=2.0)
-
-        transition = oq.advance_claimed_status(
-            claimed,
-            OrderStatus(
-                "canceled", 0.5, 49.0, 0.01, venue_status="CANCELED"),
-            now=1401.0,
-        )
-
-        self.assertEqual(transition.action, "terminal")
-        self.assertEqual(transition.remaining_qty, 1.5)
-        self.assertEqual(oq.load_all(), [])
+        with self.subTest(msg="cancel_is_terminal_without_revision"):
+            oq.rewrite([])
+            claimed = self._accepted_claim(qty=2.0)
+            transition = oq.advance_claimed_status(
+                claimed,
+                OrderStatus(
+                    "canceled", 0.5, 49.0, 0.01, venue_status="CANCELED"),
+                now=1401.0,
+            )
+            self.assertEqual(transition.action, "terminal")
+            self.assertEqual(transition.remaining_qty, 1.5)
+            self.assertEqual(oq.load_all(), [])
 
     def test_claim_survives_crash_and_becomes_due_after_lease(self):
         rid = oq.enqueue("BTCUSDC", "BUY", 1.0, {}, requested_price=1.0, now=1000.0)
@@ -805,36 +811,43 @@ class OrderRetryStoreTest(unittest.TestCase):
         self.assertEqual(r["created_ts"], 1000.0)
         self.assertEqual(r["attempts"], 2)
 
-    def test_is_due(self):
-        rec = {"last_attempt_ts": 1000.0}
-        self.assertFalse(oq.is_due(rec, now=1000.0 + 100))   # < interval 300
-        self.assertTrue(oq.is_due(rec, now=1000.0 + 300))    # >= interval
+    def test_due_and_expiry_behaviors(self):
+        with self.subTest(msg="is_due"):
+            rec = {"last_attempt_ts": 1000.0}
+            self.assertFalse(oq.is_due(rec, now=1000.0 + 100))   # < interval 300
+            self.assertTrue(oq.is_due(rec, now=1000.0 + 300))    # >= interval
 
-    def test_is_expired_ttl(self):
-        rec = {
-            "created_ts": 1000.0,
-            "attempts": 0,
-            "submission_state": "refused",
-        }
-        self.assertFalse(oq.is_expired(rec, now=1000.0 + 86400 - 1))
-        self.assertTrue(oq.is_expired(rec, now=1000.0 + 86400 + 1))
+        with self.subTest(msg="is_expired_ttl"):
+            rec = {
+                "created_ts": 1000.0,
+                "attempts": 0,
+                "submission_state": "refused",
+            }
+            self.assertFalse(oq.is_expired(rec, now=1000.0 + 86400 - 1))
+            self.assertTrue(oq.is_expired(rec, now=1000.0 + 86400 + 1))
 
-    def test_possibly_submitted_records_never_expire_automatically(self):
-        far_future = 1000.0 + 10 * oq.RETRY_TTL_SEC
-        for label, state, reason in (
-                ("producer-owned", "producer_claimed", "submit_pending"),
-                ("unknown-response", "unknown", "provider_timeout"),
-                ("legacy-ambiguous", None, "response_without_order_id")):
-            with self.subTest(label=label):
-                record = {
-                    "created_ts": 1000.0,
-                    "ttl_started_ts": 1000.0,
-                    "attempts": 999,
-                    "last_failure_reason": reason,
-                }
-                if state is not None:
-                    record["submission_state"] = state
-                self.assertFalse(oq.is_expired(record, now=far_future))
+        with self.subTest(msg="possibly_submitted_records_never_expire_automatically"):
+            far_future = 1000.0 + 10 * oq.RETRY_TTL_SEC
+            for label, state, reason in (
+                    ("producer-owned", "producer_claimed", "submit_pending"),
+                    ("unknown-response", "unknown", "provider_timeout"),
+                    ("legacy-ambiguous", None, "response_without_order_id")):
+                with self.subTest(label=label):
+                    record = {
+                        "created_ts": 1000.0,
+                        "ttl_started_ts": 1000.0,
+                        "attempts": 999,
+                        "last_failure_reason": reason,
+                    }
+                    if state is not None:
+                        record["submission_state"] = state
+                    self.assertFalse(oq.is_expired(record, now=far_future))
+
+        with self.subTest(msg="is_expired_max_attempts"):
+            oq.RETRY_MAX_ATTEMPTS = 3
+            base = {"created_ts": 1e9, "submission_state": "refused"}
+            self.assertFalse(oq.is_expired({**base, "attempts": 2}, now=1e9))
+            self.assertTrue(oq.is_expired({**base, "attempts": 3}, now=1e9))
 
     def test_trend_deferred_record_never_consumes_ttl_or_attempts(self):
         rid = oq.enqueue(
@@ -901,11 +914,6 @@ class OrderRetryStoreTest(unittest.TestCase):
         self.assertFalse(oq.is_expired(rec, now=transition + 86400 - 1))
         self.assertTrue(oq.is_expired(rec, now=transition + 86400 + 1))
 
-    def test_is_expired_max_attempts(self):
-        oq.RETRY_MAX_ATTEMPTS = 3
-        base = {"created_ts": 1e9, "submission_state": "refused"}
-        self.assertFalse(oq.is_expired({**base, "attempts": 2}, now=1e9))
-        self.assertTrue(oq.is_expired({**base, "attempts": 3}, now=1e9))
 
     def test_import_rejects_unsafe_retry_configuration(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

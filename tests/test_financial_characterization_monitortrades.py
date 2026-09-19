@@ -196,233 +196,229 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
         self.assertAlmostEqual(got["average_buy_price"], 320 / 3)
         self.assertEqual(got["average_sell_price"], 130.0)
 
-    def test_hard_tp_sells_configured_fraction_and_stops_the_tick(self):
-        inst = FakeInstrument(
-            price=118,
-            free=10,
-            fills=[_fill("BUY", 100, 10)],
-            params={"mt.hardtp": 17, "mt.hardtp_fraction": 0.5},
-        )
-        self.run_tick(inst, trend_up=True)  # hard TP is independent of uptrend
-        self.assertEqual(len(inst.placed), 1)
-        order = inst.placed[0]
-        self.assertEqual(order["side"], "SELL")
-        self.assertEqual(order["qty"], 5.0)
-        self.assertTrue(order["kwargs"]["force"])
-        self.assertNotIn("caller_owns_retry", order["kwargs"])
+    def test_hard_take_profit_behaviors(self):
+        mt._hard_tp_last.clear()
+        with self.subTest(msg="sells_configured_fraction_and_stops_the_tick"):
+            inst = FakeInstrument(
+                price=118,
+                free=10,
+                fills=[_fill("BUY", 100, 10)],
+                params={"mt.hardtp": 17, "mt.hardtp_fraction": 0.5},
+            )
+            self.run_tick(inst, trend_up=True)  # hard TP is independent of uptrend
+            self.assertEqual(len(inst.placed), 1)
+            order = inst.placed[0]
+            self.assertEqual(order["side"], "SELL")
+            self.assertEqual(order["qty"], 5.0)
+            self.assertTrue(order["kwargs"]["force"])
+            self.assertNotIn("caller_owns_retry", order["kwargs"])
 
-    def test_normal_take_profit_sells_all_free_balance_when_trend_not_up(self):
-        mt.HARD_TP_ENABLED = False
-        inst = FakeInstrument(price=112, free=7.25, fills=[_fill("BUY", 100, 8)])
-        self.run_tick(inst, trend_up=False, gain=0.10)
-        self.assertEqual(len(inst.placed), 1)
-        order = inst.placed[0]
-        self.assertEqual((order["side"], order["price"], order["qty"]),
-                         ("SELL", 112.0, 7.25))
-        self.assertFalse(order["kwargs"]["force"])
-        self.assertNotIn("caller_owns_retry", order["kwargs"])
+        mt._hard_tp_last.clear()
+        with self.subTest(msg="fractional_hard_tp_below_minimum_falls_through_to_full_normal_sell"):
+            inst = FakeInstrument(
+                price=118,
+                free=1,
+                fills=[_fill("BUY", 100, 1)],
+                params={"mt.hardtp": 17, "mt.hardtp_fraction": 0.5},
+                min_qty=0.6,
+            )
+            self.run_tick(inst, trend_up=False)
+            self.assertEqual(len(inst.placed), 1)
+            self.assertEqual((inst.placed[0]["side"], inst.placed[0]["qty"]),
+                             ("SELL", 1.0))
+            self.assertFalse(inst.placed[0]["kwargs"]["force"])
 
-    def test_uptrend_blocks_normal_take_profit(self):
-        mt.HARD_TP_ENABLED = False
-        inst = FakeInstrument(price=112, free=7.25, fills=[_fill("BUY", 100, 8)])
-        self.run_tick(inst, trend_up=True, gain=0.10)
-        self.assertEqual(inst.placed, [])
+        mt._hard_tp_last.clear()
+        with self.subTest(msg="hard_tp_cooldown_prevents_a_second_attempt_in_same_window"):
+            inst = FakeInstrument(
+                price=118,
+                free=10,
+                fills=[_fill("BUY", 100, 10)],
+                params={
+                    "mt.hardtp": 17,
+                    "mt.hardtp_fraction": 0.5,
+                    "mt.hardtp_cooldown_h": 6,
+                },
+            )
+            self.run_tick(inst, trend_up=True)
+            self.run_tick(inst, trend_up=True)
+            self.assertEqual(len(inst.placed), 1)
 
-    def test_loss_exit_bypasses_profit_guard_and_uses_shared_outbox(self):
-        mt.HARD_TP_ENABLED = False
-        inst = FakeInstrument(price=93, free=4, fills=[_fill("BUY", 100, 4)])
-        self.run_tick(inst, trend_up=False, loss=0.05)
-        self.assertEqual(len(inst.placed), 1)
-        order = inst.placed[0]
-        self.assertEqual((order["side"], order["qty"]), ("SELL", 4.0))
-        self.assertTrue(order["kwargs"]["bypass_profit_guard"])
-        self.assertNotIn("caller_owns_retry", order["kwargs"])
+        mt._hard_tp_last.clear()
+        with self.subTest(msg="regression_refused_hard_tp_must_not_start_cooldown"):
+            inst = RefusingInstrument(
+                price=118,
+                free=10,
+                fills=[_fill("BUY", 100, 10)],
+                params={"mt.hardtp": 17, "mt.hardtp_fraction": 0.5},
+            )
+            self.run_tick(inst, trend_up=True)
+            self.assertNotIn(SYMBOL, mt._hard_tp_last)
 
-    def test_buyback_uses_budget_divided_by_market_price_and_adds_offset(self):
-        mt.HARD_TP_ENABLED = False
-        inst = FakeInstrument(
-            price=90,
-            free=2,
-            fills=[_fill("SELL", 100, 2)],
-            params={"mt.buy_budget": 225, "mt.max_budget": 1_000},
-        )
-        self.run_tick(inst, trend_up=True, gain=0.09)
-        self.assertEqual(len(inst.placed), 1)
-        order = inst.placed[0]
-        self.assertEqual(order["side"], "BUY")
-        self.assertEqual(order["qty"], 2.5)
-        self.assertEqual(order["price"], 90 + mt.MT_BUY_PRICE_OFFSET)
+        mt._hard_tp_last.clear()
+        with self.subTest(msg="regression_hard_tp_fraction_must_not_exceed_free_balance"):
+            inst = FakeInstrument(
+                price=118,
+                free=10,
+                fills=[_fill("BUY", 100, 10)],
+                params={"mt.hardtp": 17, "mt.hardtp_fraction": 1.5},
+            )
+            self.run_tick(inst, trend_up=True)
+            self.assertEqual(inst.placed, [])
 
-    def test_buyback_is_blocked_when_existing_free_position_reaches_budget(self):
-        mt.HARD_TP_ENABLED = False
-        inst = FakeInstrument(
-            price=90,
-            free=10,
-            fills=[_fill("SELL", 100, 2)],
-            params={"mt.buy_budget": 225, "mt.max_budget": 900},
-        )
-        self.run_tick(inst, trend_up=True, gain=0.09)
-        self.assertEqual(inst.placed, [])
+    def test_normal_take_profit_behaviors(self):
+        with self.subTest(msg="normal_take_profit_sells_all_free_balance_when_trend_not_up"):
+            mt.HARD_TP_ENABLED = False
+            inst = FakeInstrument(price=112, free=7.25, fills=[_fill("BUY", 100, 8)])
+            self.run_tick(inst, trend_up=False, gain=0.10)
+            self.assertEqual(len(inst.placed), 1)
+            order = inst.placed[0]
+            self.assertEqual((order["side"], order["price"], order["qty"]),
+                             ("SELL", 112.0, 7.25))
+            self.assertFalse(order["kwargs"]["force"])
+            self.assertNotIn("caller_owns_retry", order["kwargs"])
 
-    def test_average_reference_can_trigger_sell_when_last_buy_does_not(self):
-        mt.HARD_TP_ENABLED = False
-        inst = FakeInstrument(
-            price=116,
-            free=4,
-            fills=[
-                _fill("BUY", 120, 1, age_s=4 * 3600),  # latest buy
-                _fill("BUY", 100, 3, age_s=5 * 3600),
-            ],
-            params={"mt.ref": "average"},
-        )
-        # Average is 105: +10.47% triggers. Last buy is 120 and would not trigger TP.
-        self.run_tick(inst, trend_up=False, gain=0.10, loss=0.20)
-        self.assertEqual(len(inst.placed), 1)
-        self.assertEqual(inst.placed[0]["side"], "SELL")
+        with self.subTest(msg="uptrend_blocks_normal_take_profit"):
+            mt.HARD_TP_ENABLED = False
+            inst = FakeInstrument(price=112, free=7.25, fills=[_fill("BUY", 100, 8)])
+            self.run_tick(inst, trend_up=True, gain=0.10)
+            self.assertEqual(inst.placed, [])
 
-    def test_fractional_hard_tp_below_minimum_falls_through_to_full_normal_sell(self):
-        """Current behaviour: a skipped fractional hard-TP does not end the tick.
+        with self.subTest(msg="loss_exit_bypasses_profit_guard_and_uses_shared_outbox"):
+            mt.HARD_TP_ENABLED = False
+            inst = FakeInstrument(price=93, free=4, fills=[_fill("BUY", 100, 4)])
+            self.run_tick(inst, trend_up=False, loss=0.05)
+            self.assertEqual(len(inst.placed), 1)
+            order = inst.placed[0]
+            self.assertEqual((order["side"], order["qty"]), ("SELL", 4.0))
+            self.assertTrue(order["kwargs"]["bypass_profit_guard"])
+            self.assertNotIn("caller_owns_retry", order["kwargs"])
 
-        The normal take-profit rule then sells the full free balance.  This is
-        financially surprising, but is intentionally characterized rather than
-        changed as part of the safety-baseline work.
-        """
-        inst = FakeInstrument(
-            price=118,
-            free=1,
-            fills=[_fill("BUY", 100, 1)],
-            params={"mt.hardtp": 17, "mt.hardtp_fraction": 0.5},
-            min_qty=0.6,
-        )
-        self.run_tick(inst, trend_up=False)
-        self.assertEqual(len(inst.placed), 1)
-        self.assertEqual((inst.placed[0]["side"], inst.placed[0]["qty"]),
-                         ("SELL", 1.0))
-        self.assertFalse(inst.placed[0]["kwargs"]["force"])
+        with self.subTest(msg="average_reference_can_trigger_sell_when_last_buy_does_not"):
+            mt.HARD_TP_ENABLED = False
+            inst = FakeInstrument(
+                price=116,
+                free=4,
+                fills=[
+                    _fill("BUY", 120, 1, age_s=4 * 3600),  # latest buy
+                    _fill("BUY", 100, 3, age_s=5 * 3600),
+                ],
+                params={"mt.ref": "average"},
+            )
+            # Average is 105: +10.47% triggers. Last buy is 120 and would not trigger TP.
+            self.run_tick(inst, trend_up=False, gain=0.10, loss=0.20)
+            self.assertEqual(len(inst.placed), 1)
+            self.assertEqual(inst.placed[0]["side"], "SELL")
 
-    def test_no_recent_fills_produces_no_financial_intent(self):
-        inst = FakeInstrument(price=100, free=10, fills=[])
-        self.run_tick(inst, trend_up=False)
-        self.assertEqual(inst.placed, [])
+        with self.subTest(msg="regression_own_ledger_exit_must_not_sell_unattributed_free_holdings"):
+            mt.HARD_TP_ENABLED = False
+            inst = FakeInstrument(
+                price=112,
+                free=10,
+                fills=[_fill("BUY", 100, 1)],
+            )
+            self.run_tick(inst, trend_up=False, gain=0.10)
+            self.assertLessEqual(inst.placed[0]["qty"], 1.0)
 
-    def test_minimum_quantity_blocks_placement_before_provider_call(self):
-        inst = FakeInstrument(
-            price=118,
-            free=1,
-            fills=[_fill("BUY", 100, 1)],
-            params={"mt.hardtp": 17, "mt.hardtp_fraction": 0.5},
-            min_qty=2,
-        )
-        # Both fractional hard TP and the normal full-balance sell are below min_qty.
-        self.run_tick(inst, trend_up=False)
-        self.assertEqual(inst.placed, [])
+    def test_buyback_behaviors(self):
+        with self.subTest(msg="buyback_uses_budget_divided_by_market_price_and_adds_offset"):
+            mt.HARD_TP_ENABLED = False
+            inst = FakeInstrument(
+                price=90,
+                free=2,
+                fills=[_fill("SELL", 100, 2)],
+                params={"mt.buy_budget": 225, "mt.max_budget": 1_000},
+            )
+            self.run_tick(inst, trend_up=True, gain=0.09)
+            self.assertEqual(len(inst.placed), 1)
+            order = inst.placed[0]
+            self.assertEqual(order["side"], "BUY")
+            self.assertEqual(order["qty"], 2.5)
+            self.assertEqual(order["price"], 90 + mt.MT_BUY_PRICE_OFFSET)
+
+        with self.subTest(msg="buyback_is_blocked_when_existing_free_position_reaches_budget"):
+            mt.HARD_TP_ENABLED = False
+            inst = FakeInstrument(
+                price=90,
+                free=10,
+                fills=[_fill("SELL", 100, 2)],
+                params={"mt.buy_budget": 225, "mt.max_budget": 900},
+            )
+            self.run_tick(inst, trend_up=True, gain=0.09)
+            self.assertEqual(inst.placed, [])
+
+        with self.subTest(msg="regression_buyback_must_include_proposed_buy_in_exposure_cap"):
+            inst = FakeInstrument(
+                price=90,
+                free=9,
+                fills=[_fill("SELL", 100, 2)],
+                params={"mt.buy_budget": 225, "mt.max_budget": 900},
+            )
+            # Existing exposure is 810, but the proposed 225 buy would reach 1,035.
+            self.run_tick(inst, trend_up=True, gain=0.09)
+            self.assertEqual(inst.placed, [])
+
+    def test_guards_and_blocking_behaviors(self):
+        with self.subTest(msg="no_recent_fills_produces_no_financial_intent"):
+            inst = FakeInstrument(price=100, free=10, fills=[])
+            self.run_tick(inst, trend_up=False)
+            self.assertEqual(inst.placed, [])
+
+        with self.subTest(msg="minimum_quantity_blocks_placement_before_provider_call"):
+            inst = FakeInstrument(
+                price=118,
+                free=1,
+                fills=[_fill("BUY", 100, 1)],
+                params={"mt.hardtp": 17, "mt.hardtp_fraction": 0.5},
+                min_qty=2,
+            )
+            # Both fractional hard TP and the normal full-balance sell are below min_qty.
+            self.run_tick(inst, trend_up=False)
+            self.assertEqual(inst.placed, [])
+
+        with self.subTest(msg="regression_global_recent_trade_gate_must_block_every_new_order"):
+            inst = FakeInstrument(
+                price=112,
+                free=7,
+                fills=[_fill("BUY", 100, 7, age_s=30 * 60)],
+            )
+            mt.HARD_TP_ENABLED = False
+            with (
+                patch.object(mt, "MT_RECENT_TRADE_BLOCK_SEC", 5 * 60),
+                patch.object(mt, "MT_ALL_TRADES_BLOCK_SEC", 60 * 60),
+            ):
+                self.run_tick(inst, trend_up=False, gain=0.10)
+            self.assertEqual(inst.placed, [])
+
+        with self.subTest(msg="regression_non_finite_market_price_must_not_reach_executor"):
+            inst = FakeInstrument(
+                price=float("inf"),
+                free=10,
+                fills=[_fill("BUY", 100, 10)],
+            )
+            self.run_tick(inst, trend_up=False)
+            self.assertEqual(inst.placed, [])
+
+        with self.subTest(msg="regression_refused_order_must_not_be_reported_as_placed"):
+            inst = RefusingInstrument(
+                price=118,
+                free=10,
+                fills=[_fill("BUY", 100, 10)],
+            )
+            placed = mt._place_guarded(
+                inst,
+                "SELL",
+                118,
+                5,
+                0,
+                force=True,
+            )
+            self.assertFalse(placed)
 
     def test_unavailable_balance_remains_distinct_from_real_zero(self):
         self.assertIsNone(
             mt.get_available_qty(SYMBOL, api=UnavailableBalanceApi()),
         )
-
-    def test_hard_tp_cooldown_prevents_a_second_attempt_in_same_window(self):
-        inst = FakeInstrument(
-            price=118,
-            free=10,
-            fills=[_fill("BUY", 100, 10)],
-            params={
-                "mt.hardtp": 17,
-                "mt.hardtp_fraction": 0.5,
-                "mt.hardtp_cooldown_h": 6,
-            },
-        )
-        self.run_tick(inst, trend_up=True)
-        self.run_tick(inst, trend_up=True)
-        self.assertEqual(len(inst.placed), 1)
-
-    def test_regression_refused_order_must_not_be_reported_as_placed(self):
-        """A downstream guard refusal is not an accepted order or a fill."""
-        inst = RefusingInstrument(
-            price=118,
-            free=10,
-            fills=[_fill("BUY", 100, 10)],
-        )
-        placed = mt._place_guarded(
-            inst,
-            "SELL",
-            118,
-            5,
-            0,
-            force=True,
-        )
-        self.assertFalse(placed)
-
-    def test_regression_refused_hard_tp_must_not_start_cooldown(self):
-        """A refused submit must remain eligible for a later reevaluation."""
-        inst = RefusingInstrument(
-            price=118,
-            free=10,
-            fills=[_fill("BUY", 100, 10)],
-            params={"mt.hardtp": 17, "mt.hardtp_fraction": 0.5},
-        )
-        self.run_tick(inst, trend_up=True)
-        self.assertNotIn(SYMBOL, mt._hard_tp_last)
-
-    def test_regression_non_finite_market_price_must_not_reach_executor(self):
-        """Financial inputs must reject infinity before constructing an order."""
-        inst = FakeInstrument(
-            price=float("inf"),
-            free=10,
-            fills=[_fill("BUY", 100, 10)],
-        )
-        self.run_tick(inst, trend_up=False)
-        self.assertEqual(inst.placed, [])
-
-    def test_regression_hard_tp_fraction_must_not_exceed_free_balance(self):
-        """Invalid configuration must not create an oversized financial intent."""
-        inst = FakeInstrument(
-            price=118,
-            free=10,
-            fills=[_fill("BUY", 100, 10)],
-            params={"mt.hardtp": 17, "mt.hardtp_fraction": 1.5},
-        )
-        self.run_tick(inst, trend_up=True)
-        self.assertEqual(inst.placed, [])
-
-    def test_regression_buyback_must_include_proposed_buy_in_exposure_cap(self):
-        """The max budget must constrain post-trade exposure, not only current holdings."""
-        inst = FakeInstrument(
-            price=90,
-            free=9,
-            fills=[_fill("SELL", 100, 2)],
-            params={"mt.buy_budget": 225, "mt.max_budget": 900},
-        )
-        # Existing exposure is 810, but the proposed 225 buy would reach 1,035.
-        self.run_tick(inst, trend_up=True, gain=0.09)
-        self.assertEqual(inst.placed, [])
-
-    def test_regression_global_recent_trade_gate_must_block_every_new_order(self):
-        """MT_ALL_TRADES_BLOCK must have an effect independent of per-side gates."""
-        inst = FakeInstrument(
-            price=112,
-            free=7,
-            fills=[_fill("BUY", 100, 7, age_s=30 * 60)],
-        )
-        mt.HARD_TP_ENABLED = False
-        with (
-            patch.object(mt, "MT_RECENT_TRADE_BLOCK_SEC", 5 * 60),
-            patch.object(mt, "MT_ALL_TRADES_BLOCK_SEC", 60 * 60),
-        ):
-            self.run_tick(inst, trend_up=False, gain=0.10)
-        self.assertEqual(inst.placed, [])
-
-    def test_regression_own_ledger_exit_must_not_sell_unattributed_free_holdings(self):
-        """An own-ledger strategy may not infer ownership from the account free balance."""
-        mt.HARD_TP_ENABLED = False
-        inst = FakeInstrument(
-            price=112,
-            free=10,
-            fills=[_fill("BUY", 100, 1)],
-        )
-        self.run_tick(inst, trend_up=False, gain=0.10)
-        self.assertLessEqual(inst.placed[0]["qty"], 1.0)
 
     def test_regression_loss_exit_must_reach_provider_through_real_guard_pipeline(self):
         """The strategy's loss exit is ineffective if profit guard blocks the SELL."""

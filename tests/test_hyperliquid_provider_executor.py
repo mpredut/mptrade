@@ -110,148 +110,164 @@ class HLExecutorContractTest(unittest.TestCase):
         self.assertEqual(pp, PairPrecision(price_decimals=6, volume_decimals=2,
                                            order_min=0.0, base_asset="HYPE"))
 
-    def test_ohlc_closes_exclude_forming_bar(self):
-        self.assertEqual(self.p.ohlc_closes("HYPE", 240), [10.0, 11.0])
+    def test_ohlc_behaviors(self):
+        with self.subTest(msg="closes exclude forming bar"):
+            self.assertEqual(self.p.ohlc_closes("HYPE", 240), [10.0, 11.0])
 
-    def test_ohlc_series_preserves_last_completed_timestamp(self):
-        self.p._client.candles = lambda *_args: [
-            {"c": "10", "T": 1_000},
-            {"c": "11", "T": 2_000},
-            {"c": "12", "T": 3_000},
-        ]
-        series = self.p.ohlc_series("HYPE", 240)
-        self.assertEqual(series.closes, (10.0, 11.0))
-        self.assertEqual(series.last_closed_at, 2.0)
-        self.assertEqual(series.timestamps, (1.0, 2.0))
+        with self.subTest(msg="series preserves last completed timestamp"):
+            self.p._client.candles = lambda *_args: [
+                {"c": "10", "T": 1_000},
+                {"c": "11", "T": 2_000},
+                {"c": "12", "T": 3_000},
+            ]
+            series = self.p.ohlc_series("HYPE", 240)
+            self.assertEqual(series.closes, (10.0, 11.0))
+            self.assertEqual(series.last_closed_at, 2.0)
+            self.assertEqual(series.timestamps, (1.0, 2.0))
 
-    def test_ohlc_rejects_non_hype_symbol_before_reading_cached_pair(self):
-        calls = []
-        self.p._client.candles = lambda *args: calls.append(args)
-        for symbol in ("BTCUSDC", "HYPERUSDC", "HYPEFAKE", "HYPEUSD"):
-            with self.subTest(symbol=symbol):
-                with self.assertRaisesRegex(ProviderError, "unsupported"):
-                    self.p.ohlc_closes(symbol, 240)
-        self.assertEqual(calls, [])
+        with self.subTest(msg="rejects non hype symbol before reading cached pair"):
+            calls = []
+            self.p._client.candles = lambda *args: calls.append(args)
+            for symbol in ("BTCUSDC", "HYPERUSDC", "HYPEFAKE", "HYPEUSD"):
+                with self.subTest(symbol=symbol):
+                    with self.assertRaisesRegex(ProviderError, "unsupported"):
+                        self.p.ohlc_closes(symbol, 240)
+            self.assertEqual(calls, [])
 
-    def test_exact_hyperliquid_spot_aliases_are_supported(self):
-        for symbol in (
-                "HYPE", "hype", "HYPEUSDC", "HYPE/USDC", "HYPE-USDC"):
-            with self.subTest(symbol=symbol):
-                self.assertTrue(self.p.supports_symbol(symbol))
-        for symbol in (
-                "HYPEUSD", "HYPEFAKE", "H/Y/P/E", "HY-PE-US-DC",
-                "HYPE//USDC", "HYPE USDC"):
-            with self.subTest(symbol=symbol):
-                self.assertFalse(self.p.supports_symbol(symbol))
+    def test_symbol_support_behaviors(self):
+        with self.subTest(msg="exact hyperliquid spot aliases are supported"):
+            for symbol in (
+                    "HYPE", "hype", "HYPEUSDC", "HYPE/USDC", "HYPE-USDC"):
+                with self.subTest(symbol=symbol):
+                    self.assertTrue(self.p.supports_symbol(symbol))
+            for symbol in (
+                    "HYPEUSD", "HYPEFAKE", "H/Y/P/E", "HY-PE-US-DC",
+                    "HYPE//USDC", "HYPE USDC"):
+                with self.subTest(symbol=symbol):
+                    self.assertFalse(self.p.supports_symbol(symbol))
 
-        purr = HyperliquidProvider(token="PURR")
-        self.assertTrue(purr.supports_symbol("PURR/USDC"))
-        self.assertFalse(purr.supports_symbol("HYPE/USDC"))
+            purr = HyperliquidProvider(token="PURR")
+            self.assertTrue(purr.supports_symbol("PURR/USDC"))
+            self.assertFalse(purr.supports_symbol("HYPE/USDC"))
 
-    def test_pair_scoped_entrypoints_reject_a_mismatched_symbol(self):
-        os.environ["HL_LIVE_ORDERS"] = "true"
-        calls = {
-            "price": lambda: self.p.get_current_price("BTCUSDC"),
-            "history": lambda: self.p.get_price_history("BTCUSDC", 1),
-            "orders": lambda: self.p.get_orders("BTCUSDC", "BUY", 60),
-            "trades": lambda: self.p.get_trades("BTCUSDC", 60),
-            "open_orders": lambda: self.p.open_orders("BTCUSDC"),
-            "place": lambda: self.p.place_order(
-                "BTCUSDC", "BUY", 60.0, 1.0),
-            "precision": lambda: self.p.pair_precision("BTCUSDC"),
-            "preflight_buy": lambda: self.p.preflight_order(
-                "BTCUSDC", "BUY", 1.0, 60.0),
-            "preflight_sell": lambda: self.p.preflight_order(
-                "BTCUSDC", "SELL", 1.0, 60.0),
-            "submit_limit": lambda: self.p.submit_order(
-                "BTCUSDC", "buy", 1.0, price=60.0),
-            "submit_market": lambda: self.p.submit_order(
-                "BTCUSDC", "sell", 1.0, market=True),
-            "lookup": lambda: self.p.order_by_client_id(
-                "BTCUSDC", "client-id"),
-            "status": lambda: self.p.order_status("BTCUSDC", "1"),
-            "cancel": lambda: self.p.cancel_order("BTCUSDC", "1"),
-        }
-        for name, call in calls.items():
-            with self.subTest(entrypoint=name):
-                with self.assertRaisesRegex(ProviderError, "unsupported"):
-                    call()
-        self.assertEqual(self.signer.calls, [])
+        with self.subTest(msg="pair scoped entrypoints reject a mismatched symbol"):
+            os.environ["HL_LIVE_ORDERS"] = "true"
+            calls = {
+                "price": lambda: self.p.get_current_price("BTCUSDC"),
+                "history": lambda: self.p.get_price_history("BTCUSDC", 1),
+                "orders": lambda: self.p.get_orders("BTCUSDC", "BUY", 60),
+                "trades": lambda: self.p.get_trades("BTCUSDC", 60),
+                "open_orders": lambda: self.p.open_orders("BTCUSDC"),
+                "place": lambda: self.p.place_order(
+                    "BTCUSDC", "BUY", 60.0, 1.0),
+                "precision": lambda: self.p.pair_precision("BTCUSDC"),
+                "preflight_buy": lambda: self.p.preflight_order(
+                    "BTCUSDC", "BUY", 1.0, 60.0),
+                "preflight_sell": lambda: self.p.preflight_order(
+                    "BTCUSDC", "SELL", 1.0, 60.0),
+                "submit_limit": lambda: self.p.submit_order(
+                    "BTCUSDC", "buy", 1.0, price=60.0),
+                "submit_market": lambda: self.p.submit_order(
+                    "BTCUSDC", "sell", 1.0, market=True),
+                "lookup": lambda: self.p.order_by_client_id(
+                    "BTCUSDC", "client-id"),
+                "status": lambda: self.p.order_status("BTCUSDC", "1"),
+                "cancel": lambda: self.p.cancel_order("BTCUSDC", "1"),
+            }
+            for name, call in calls.items():
+                with self.subTest(entrypoint=name):
+                    with self.assertRaisesRegex(ProviderError, "unsupported"):
+                        call()
+            self.assertEqual(self.signer.calls, [])
 
-    def test_instrument_and_explicit_facade_validate_the_symbol(self):
-        market_api = MarketApi([self.p])
-        with self.assertRaisesRegex(ProviderError, "unsupported"):
-            Instrument(
-                "BTC", "BTCUSDC", "Hyperliquid",
-                base="BTC", quote="USDC", api=market_api)
-        with self.assertRaisesRegex(ProviderError, "unsupported"):
-            market_api.get_current_price(
-                "BTCUSDC", provider_name="Hyperliquid")
+        with self.subTest(msg="instrument and explicit facade validate the symbol"):
+            market_api = MarketApi([self.p])
+            with self.assertRaisesRegex(ProviderError, "unsupported"):
+                Instrument(
+                    "BTC", "BTCUSDC", "Hyperliquid",
+                    base="BTC", quote="USDC", api=market_api)
+            with self.assertRaisesRegex(ProviderError, "unsupported"):
+                market_api.get_current_price(
+                    "BTCUSDC", provider_name="Hyperliquid")
 
-    def test_submit_order_is_gated_by_hl_live_orders(self):
-        # by default HL_LIVE_ORDERS is missing -> a refusal (DN co-mingling safety)
-        with self.assertRaises(ProviderError):
-            self.p.submit_order("HYPE", "buy", 1.0, price=60.0)
+    def test_submit_order_behaviors(self):
+        with self.subTest(msg="is gated by hl_live_orders"):
+            # by default HL_LIVE_ORDERS is missing -> a refusal (DN co-mingling safety)
+            with self.assertRaises(ProviderError):
+                self.p.submit_order("HYPE", "buy", 1.0, price=60.0)
 
-    def test_live_submit_returns_order_id(self):
-        os.environ["HL_LIVE_ORDERS"] = "true"
-        oid = self.p.submit_order("HYPE", "buy", 1.0, price=60.0)
-        self.assertEqual(oid, "12345")
-        self.assertEqual(self.signer.calls[-1][:3], ("spot_order", "@107", True))
+        with self.subTest(msg="live submit returns order id"):
+            os.environ["HL_LIVE_ORDERS"] = "true"
+            oid = self.p.submit_order("HYPE", "buy", 1.0, price=60.0)
+            self.assertEqual(oid, "12345")
+            self.assertEqual(self.signer.calls[-1][:3], ("spot_order", "@107", True))
 
-    def test_submit_order_propagates_cloid(self):
-        os.environ["HL_LIVE_ORDERS"] = "true"
-        cloid = "0x0123456789abcdef0123456789abcdef"
-        self.p.submit_order(
-            "HYPE", "buy", 1.0, price=60.0, client_order_id=cloid,
-        )
-        self.assertEqual(self.signer.calls[-1][-1], cloid)
+        with self.subTest(msg="propagates cloid"):
+            os.environ["HL_LIVE_ORDERS"] = "true"
+            cloid = "0x0123456789abcdef0123456789abcdef"
+            self.p.submit_order(
+                "HYPE", "buy", 1.0, price=60.0, client_order_id=cloid,
+            )
+            self.assertEqual(self.signer.calls[-1][-1], cloid)
 
-    def test_submit_order_market_crosses_the_price(self):
-        os.environ["HL_LIVE_ORDERS"] = "true"
-        self.p.submit_order("HYPE", "sell", 1.0, price=None, market=True)
-        px = self.signer.calls[-1][4]
-        self.assertAlmostEqual(
-            px, 60.0 * 0.95)  # A market sell crosses below mid for immediate fill.
+        with self.subTest(msg="market crosses the price"):
+            os.environ["HL_LIVE_ORDERS"] = "true"
+            self.p.submit_order("HYPE", "sell", 1.0, price=None, market=True)
+            px = self.signer.calls[-1][4]
+            self.assertAlmostEqual(
+                px, 60.0 * 0.95)  # A market sell crosses below mid for immediate fill.
 
-    def test_submit_order_rejection_raises(self):
-        os.environ["HL_LIVE_ORDERS"] = "true"
-        self.p._signer = lambda: FakeSigner(order_res=(False, None, "Insufficient"))
-        with self.assertRaises(ProviderError):
-            self.p.submit_order("HYPE", "buy", 1.0, price=60.0)
+        with self.subTest(msg="rejection raises"):
+            os.environ["HL_LIVE_ORDERS"] = "true"
+            original_signer = self.p._signer
+            self.p._signer = lambda: FakeSigner(order_res=(False, None, "Insufficient"))
+            with self.assertRaises(ProviderError):
+                self.p.submit_order("HYPE", "buy", 1.0, price=60.0)
+            self.p._signer = original_signer
 
-    def test_an_underfunded_buy_is_refused_before_the_signer(self):
-        os.environ["HL_LIVE_ORDERS"] = "true"
-        self.p._client = FakeRead(balances=[
-            {"coin": "USDC", "total": "10", "hold": "0"},
-        ])
-        with self.assertRaisesRegex(
-                ProviderError, "insufficient USDC balance"):
-            self.p.submit_order("HYPE", "buy", 1.0, price=60.0, kind="DCA")
-        self.assertEqual(self.signer.calls, [])
+        with self.subTest(msg="an underfunded buy is refused before the signer"):
+            os.environ["HL_LIVE_ORDERS"] = "true"
+            original_client = self.p._client
+            self.p._client = FakeRead(balances=[
+                {"coin": "USDC", "total": "10", "hold": "0"},
+            ])
+            self.signer.calls.clear()
+            with self.assertRaisesRegex(
+                    ProviderError, "insufficient USDC balance"):
+                self.p.submit_order("HYPE", "buy", 1.0, price=60.0, kind="DCA")
+            self.assertEqual(self.signer.calls, [])
+            self.p._client = original_client
 
-    def test_a_sell_is_not_blocked_by_the_quote_balance(self):
-        os.environ["HL_LIVE_ORDERS"] = "true"
-        self.p._client = FakeRead(balances=[])
-        self.assertEqual(
-            self.p.submit_order("HYPE", "sell", 1.0, price=60.0), "12345",
-        )
+        with self.subTest(msg="a sell is not blocked by the quote balance"):
+            os.environ["HL_LIVE_ORDERS"] = "true"
+            original_client = self.p._client
+            self.p._client = FakeRead(balances=[])
+            self.assertEqual(
+                self.p.submit_order("HYPE", "sell", 1.0, price=60.0), "12345",
+            )
+            self.p._client = original_client
 
-    def test_order_status_open(self):
-        self.p._client = FakeRead(status="open")
-        st = self.p.order_status("HYPE", "999")
-        self.assertEqual(st.status, "open")
+    def test_client_id_behaviors(self):
+        with self.subTest(msg="order by client id uses authoritative cloid query"):
+            cloid = "0x0123456789abcdef0123456789abcdef"
+            self.p._client.info.query_order_by_cloid = lambda _addr, _cloid: {
+                "status": "order",
+                "order": {"status": "open", "order": {"oid": 42}},
+            }
+            self.assertEqual(
+                self.p.order_by_client_id("HYPE", cloid),
+                {"orderId": "42", "status": "open"},
+            )
 
-    def test_order_by_client_id_uses_authoritative_cloid_query(self):
-        cloid = "0x0123456789abcdef0123456789abcdef"
-        self.p._client.info.query_order_by_cloid = lambda _addr, _cloid: {
-            "status": "order",
-            "order": {"status": "open", "order": {"oid": 42}},
-        }
-        self.assertEqual(
-            self.p.order_by_client_id("HYPE", cloid),
-            {"orderId": "42", "status": "open"},
-        )
+        with self.subTest(msg="order by client id converts hex string to sdk cloid"):
+            cloid = "0x0123456789abcdef0123456789abcdef"
+            observed = []
+            self.p._client.info.query_order_by_cloid = lambda _addr, value: (
+                observed.append(value) or {"status": "unknownOid"}
+            )
+            self.assertIsNone(self.p.order_by_client_id("HYPE", cloid))
+            self.assertEqual(str(observed[0]), cloid)
+            self.assertTrue(hasattr(observed[0], "to_raw"))
 
     def test_instrument_place_submit_and_lookup_share_deterministic_cloid(self):
         os.environ["HL_LIVE_ORDERS"] = "true"
@@ -312,83 +328,80 @@ class HLExecutorContractTest(unittest.TestCase):
             "12345")
         self.assertEqual(observed_lookup, [expected])
 
-    def test_order_by_client_id_converts_hex_string_to_sdk_cloid(self):
-        cloid = "0x0123456789abcdef0123456789abcdef"
-        observed = []
-        self.p._client.info.query_order_by_cloid = lambda _addr, value: (
-            observed.append(value) or {"status": "unknownOid"}
-        )
-        self.assertIsNone(self.p.order_by_client_id("HYPE", cloid))
-        self.assertEqual(str(observed[0]), cloid)
-        self.assertTrue(hasattr(observed[0], "to_raw"))
+    def test_order_status_behaviors(self):
+        with self.subTest(msg="open"):
+            self.p._client = FakeRead(status="open")
+            st = self.p.order_status("HYPE", "999")
+            self.assertEqual(st.status, "open")
 
-    def test_open_order_status_includes_partial_fill(self):
-        self.p._client = FakeRead(
-            fills=[{"oid": 999, "sz": "0.4", "px": "60", "fee": "0.02"}],
-            status="open",
-        )
-        st = self.p.order_status("HYPE", "999")
-        self.assertEqual(st.status, "open")
-        self.assertAlmostEqual(st.filled_qty, 0.4)
-        self.assertAlmostEqual(st.cost, 24.0)
-        self.assertAlmostEqual(st.fee, 0.02)
+        with self.subTest(msg="includes partial fill"):
+            self.p._client = FakeRead(
+                fills=[{"oid": 999, "sz": "0.4", "px": "60", "fee": "0.02"}],
+                status="open",
+            )
+            st = self.p.order_status("HYPE", "999")
+            self.assertEqual(st.status, "open")
+            self.assertAlmostEqual(st.filled_qty, 0.4)
+            self.assertAlmostEqual(st.cost, 24.0)
+            self.assertAlmostEqual(st.fee, 0.02)
 
-    def test_closed_order_status_aggregates_fills(self):
-        self.p._client = FakeRead(
-            fills=[
-                {"oid": 5, "sz": "1.5", "px": "60", "fee": "0.1"},
-                {"oid": 5, "sz": "0.5", "px": "62", "fee": "0.05"},
-            ],
-            status="filled",
-        )
-        st = self.p.order_status("HYPE", "5")
-        self.assertEqual(st.status, "closed")
-        self.assertAlmostEqual(st.filled_qty, 2.0)
-        self.assertAlmostEqual(st.cost, 1.5 * 60 + 0.5 * 62)
-        self.assertAlmostEqual(st.fee, 0.15)
+        with self.subTest(msg="aggregates fills"):
+            self.p._client = FakeRead(
+                fills=[
+                    {"oid": 5, "sz": "1.5", "px": "60", "fee": "0.1"},
+                    {"oid": 5, "sz": "0.5", "px": "62", "fee": "0.05"},
+                ],
+                status="filled",
+            )
+            st = self.p.order_status("HYPE", "5")
+            self.assertEqual(st.status, "closed")
+            self.assertAlmostEqual(st.filled_qty, 2.0)
+            self.assertAlmostEqual(st.cost, 1.5 * 60 + 0.5 * 62)
+            self.assertAlmostEqual(st.fee, 0.15)
 
-    def test_order_status_converts_the_fee_from_hype_to_usdc(self):
-        self.p._client = FakeRead(
-            fills=[{
-                "oid": 5, "sz": "2", "px": "75", "fee": "0.001",
-                "feeToken": "HYPE",
-            }],
-            status="filled",
-        )
-        st = self.p.order_status("HYPE", "5")
-        self.assertAlmostEqual(st.fee, 0.075)
+        with self.subTest(msg="converts the fee from hype to usdc"):
+            self.p._client = FakeRead(
+                fills=[{
+                    "oid": 5, "sz": "2", "px": "75", "fee": "0.001",
+                    "feeToken": "HYPE",
+                }],
+                status="filled",
+            )
+            st = self.p.order_status("HYPE", "5")
+            self.assertAlmostEqual(st.fee, 0.075)
 
-    def test_order_status_canceled_from_the_dedicated_endpoint(self):
-        self.p._client = FakeRead(status="canceled")
-        st = self.p.order_status("HYPE", "77")
-        self.assertEqual(st.status, "canceled")
+        with self.subTest(msg="canceled from the dedicated endpoint"):
+            self.p._client = FakeRead(status="canceled")
+            st = self.p.order_status("HYPE", "77")
+            self.assertEqual(st.status, "canceled")
 
-    def test_unknown_order_status_remains_indeterminate(self):
-        self.p._client = FakeRead(status="unknownOid")
-        with self.assertRaises(ProviderError):
-            self.p.order_status("HYPE", "77")
+        with self.subTest(msg="unknown order status remains indeterminate"):
+            self.p._client = FakeRead(status="unknownOid")
+            with self.assertRaises(ProviderError):
+                self.p.order_status("HYPE", "77")
 
-    def test_a_terminal_order_waits_for_complete_fills(self):
-        read = FakeRead(status="filled")
-        read.info.query_order_by_oid = lambda addr, oid: {
-            "status": "order",
-            "order": {
-                "status": "filled",
-                "order": {"origSz": "1", "sz": "0"},
-            },
-        }
-        self.p._client = read
-        with self.assertRaisesRegex(ProviderError, "fills incomplete"):
-            self.p.order_status("HYPE", "77")
+        with self.subTest(msg="a terminal order waits for complete fills"):
+            read = FakeRead(status="filled")
+            read.info.query_order_by_oid = lambda addr, oid: {
+                "status": "order",
+                "order": {
+                    "status": "filled",
+                    "order": {"origSz": "1", "sz": "0"},
+                },
+            }
+            self.p._client = read
+            with self.assertRaisesRegex(ProviderError, "fills incomplete"):
+                self.p.order_status("HYPE", "77")
 
-    def test_cancel_delegates_to_signer(self):
-        self.p.cancel_order("HYPE", "5")
-        self.assertIn(("cancel", "@107", 5), self.signer.calls)
-
-    def test_unconfirmed_cancel_raises(self):
-        self.p._signer = lambda: FakeSigner(cancel_res=False)
-        with self.assertRaises(ProviderError):
+    def test_cancel_behaviors(self):
+        with self.subTest(msg="delegates to signer"):
             self.p.cancel_order("HYPE", "5")
+            self.assertIn(("cancel", "@107", 5), self.signer.calls)
+
+        with self.subTest(msg="unconfirmed cancel raises"):
+            self.p._signer = lambda: FakeSigner(cancel_res=False)
+            with self.assertRaises(ProviderError):
+                self.p.cancel_order("HYPE", "5")
 
 
 if __name__ == "__main__":

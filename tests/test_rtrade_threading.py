@@ -405,71 +405,50 @@ class RTradeThreadingTest(unittest.TestCase):
         self.assertEqual(restored["kind"], "limit_1")
         self.assertEqual(restored["client_order_id"], new_cid)
 
-    def test_restart_merges_accepted_limit_replacement_ahead_of_checkpoint(self):
-        pair_id = "pair-limit-crash"
-        with tempfile.TemporaryDirectory(prefix="rtrade-merge-limit-") as root:
-            store = RTradePairStore(os.path.join(root, "pairs.json"))
-            state = _old_exposed_checkpoint(pair_id)
-            store.begin("TAOUSDC", pair_id, "BUY", 1.0)
-            store.checkpoint(pair_id, state, terminal=False)
-            client_id = rtrade_client_order_id(pair_id, "SELL", "limit_1")
-            store.intent(
-                pair_id, "SELL", 101.25, 0.7, client_id,
-                kind="limit_1", symbol="TAOUSDC")
-            store.accepted(pair_id, "SELL", "replacement-1", kind="limit_1")
-            venue, executor = _restart_merge_venue(
-                root, store, {
-                    "replacement-1": OrderStatus(
-                        "open", 0.0, 0.0, 0.0, "NEW")})
-            record = store.active("TAOUSDC")[0]
+    def test_restart_merges_accepted_modifications_ahead_of_checkpoint(self):
+        cases = [
+            ("limit_replacement", "limit_1", 101.25, 0.7, "replacement-1", "open"),
+            ("hard_stop", "hard_stop_1", 90.0, 1.0, "hard-stop-1", "open"),
+        ]
+        for kind, suffix, price, qty, order_id, expected_status in cases:
+            with self.subTest(kind=kind):
+                pair_id = f"pair-{kind}-crash"
+                with tempfile.TemporaryDirectory(prefix=f"rtrade-merge-{kind}-") as root:
+                    store = RTradePairStore(os.path.join(root, "pairs.json"))
+                    state = _old_exposed_checkpoint(pair_id)
+                    store.begin("TAOUSDC", pair_id, "BUY", 1.0)
+                    store.checkpoint(pair_id, state, terminal=False)
+                    client_id = rtrade_client_order_id(pair_id, "SELL", suffix)
+                    store.intent(
+                        pair_id, "SELL", price, qty, client_id,
+                        kind=suffix, symbol="TAOUSDC")
+                    store.accepted(pair_id, "SELL", order_id, kind=suffix)
+                    venue, executor = _restart_merge_venue(
+                        root, store, {
+                            order_id: OrderStatus(expected_status, 0.0, 0.0, 0.0, "NEW")})
+                    record = store.active("TAOUSDC")[0]
 
-            with patch.object(rtrade.mkt, "place") as submit:
-                merged = venue.merge_checkpoint_intents(record, state)
+                    with patch.object(rtrade.mkt, "place") as submit:
+                        merged = venue.merge_checkpoint_intents(record, state)
 
-            restored = rtrade.PairCoordinator.from_state(
-                venue, rtrade.PairPolicy(adjustment_fraction=0.0064), merged)
+                    if kind == "limit_replacement":
+                        restored = rtrade.PairCoordinator.from_state(
+                            venue, rtrade.PairPolicy(adjustment_fraction=0.0064), merged)
 
-        submit.assert_not_called()
-        self.assertEqual(executor.lookup_calls, [])
-        self.assertEqual(
-            executor.status_calls, [("TAOUSDC", "replacement-1")])
-        self.assertEqual(merged["limit_revisions"]["SELL"], 1)
-        self.assertEqual(restored.limit_revisions["SELL"], 1)
-        self.assertIn(
-            "replacement-1",
-            [ticket.order_id for ticket in restored.tickets])
-
-    def test_restart_merges_accepted_hard_stop_ahead_of_checkpoint(self):
-        pair_id = "pair-stop-crash"
-        with tempfile.TemporaryDirectory(prefix="rtrade-merge-stop-") as root:
-            store = RTradePairStore(os.path.join(root, "pairs.json"))
-            state = _old_exposed_checkpoint(pair_id)
-            store.begin("TAOUSDC", pair_id, "BUY", 1.0)
-            store.checkpoint(pair_id, state, terminal=False)
-            client_id = rtrade_client_order_id(
-                pair_id, "SELL", "hard_stop_1")
-            store.intent(
-                pair_id, "SELL", 90.0, 1.0, client_id,
-                kind="hard_stop_1", symbol="TAOUSDC")
-            store.accepted(
-                pair_id, "SELL", "hard-stop-1", kind="hard_stop_1")
-            venue, executor = _restart_merge_venue(
-                root, store, {
-                    "hard-stop-1": OrderStatus(
-                        "open", 0.0, 0.0, 0.0, "NEW")})
-            record = store.active("TAOUSDC")[0]
-
-            with patch.object(rtrade.mkt, "place") as submit:
-                merged = venue.merge_checkpoint_intents(record, state)
-
-        submit.assert_not_called()
-        self.assertEqual(executor.lookup_calls, [])
-        self.assertEqual(merged["phase"], "stopping")
-        self.assertEqual(merged["hard_stop_revision"], 1)
-        self.assertEqual(merged["stop_order_id"], "hard-stop-1")
-        self.assertIn(
-            "hard-stop-1",
-            [ticket["order_id"] for ticket in merged["tickets"]])
+                submit.assert_not_called()
+                self.assertEqual(executor.lookup_calls, [])
+                
+                if kind == "limit_replacement":
+                    self.assertEqual(
+                        executor.status_calls, [("TAOUSDC", order_id)])
+                    self.assertEqual(merged["limit_revisions"]["SELL"], 1)
+                    self.assertEqual(restored.limit_revisions["SELL"], 1)
+                    self.assertIn(order_id, [ticket.order_id for ticket in restored.tickets])
+                else:
+                    self.assertEqual(merged["phase"], "stopping")
+                    self.assertEqual(merged["hard_stop_revision"], 1)
+                    self.assertEqual(merged["stop_order_id"], order_id)
+                    self.assertIn(order_id, [ticket["order_id"] for ticket in merged["tickets"]])
 
     def test_restart_pending_intent_recovers_by_client_id_without_submit(self):
         pair_id = "pair-pending-crash"
@@ -763,87 +742,66 @@ class RTradeThreadingTest(unittest.TestCase):
         self.assertEqual(canonical["attempt"], 1)
         self.assertEqual(canonical["client_order_id"], client_id)
 
-    def test_live_pair_lookup_error_blocks_recovery_without_submit(self):
-        class Executor:
-            name = "Binance"
+    def test_lookup_error_blocks_progress_and_keeps_intent(self):
+        cases = ["recovery", "new_round"]
+        for case in cases:
+            with self.subTest(case=case):
+                class Executor:
+                    name = "Binance"
 
-            @staticmethod
-            def free_balance(_asset):
-                return 1000.0
+                    @staticmethod
+                    def free_balance(_asset):
+                        return 1000.0
 
-            @staticmethod
-            def reconciliation_capabilities():
-                return OrderReconciliationCapabilities(
-                    lookup_by_client_order_id=True,
-                    status_by_order_id=True,
-                    cancel_by_order_id=True,
-                    list_open_orders=True,
-                )
+                    @staticmethod
+                    def reconciliation_capabilities():
+                        return OrderReconciliationCapabilities(
+                            lookup_by_client_order_id=True,
+                            status_by_order_id=True,
+                            cancel_by_order_id=True,
+                            list_open_orders=True,
+                        )
 
-            @staticmethod
-            def order_by_client_id(_symbol, _client_id):
-                raise TimeoutError("lookup unavailable")
+                    @staticmethod
+                    def order_by_client_id(_symbol, _client_id):
+                        raise TimeoutError("lookup unavailable")
 
-        with tempfile.TemporaryDirectory(prefix="rtrade-ambiguous-") as root:
-            store = RTradePairStore(os.path.join(root, "pairs.json"))
-            client_id = rtrade_client_order_id("pair-1", "BUY", "limit")
-            store.intent(
-                "pair-1", "BUY", 99.36, 1.0, client_id,
-                kind="limit", symbol="TAOUSDC", start_side="BUY")
-            record = store.active("TAOUSDC")[0]
-            stored = record["intents"]["limit:BUY"]
-            with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
-                 patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-                 patch.object(rtrade.mkt, "provider_by_name", return_value=Executor()), \
-                 patch.object(rtrade.mkt, "place") as place:
-                venue = rtrade._LivePairVenue("TAOUSDC", pair_store=store)
-                with self.assertRaisesRegex(RuntimeError, "ambiguous"):
-                    venue.recover_intent(record, stored)
+                with tempfile.TemporaryDirectory(prefix=f"rtrade-ambiguous-{case}-") as root:
+                    store = RTradePairStore(os.path.join(root, "pairs.json"))
+                    client_id = rtrade_client_order_id("pair-1", "BUY", "limit")
+                    
+                    if case == "recovery":
+                        store.intent(
+                            "pair-1", "BUY", 99.36, 1.0, client_id,
+                            kind="limit", symbol="TAOUSDC", start_side="BUY")
+                        
+                    with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
+                         patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
+                         patch.object(rtrade.mkt, "provider_by_name", return_value=Executor()), \
+                         patch.object(rtrade.mkt, "place", return_value=None) as place:
+                        venue = rtrade._LivePairVenue("TAOUSDC", pair_store=store)
+                        if case == "recovery":
+                            record = store.active("TAOUSDC")[0]
+                            stored = record["intents"]["limit:BUY"]
+                            with self.assertRaisesRegex(RuntimeError, "ambiguous"):
+                                venue.recover_intent(record, stored)
+                        else:
+                            ticket = venue.place_limit("BUY", 99.36, 1.0, "pair-1")
+                            self.assertIsNone(ticket)
+                            ticket = venue.place_limit("BUY", 99.36, 1.0, "pair-1")
+                            self.assertIsNone(ticket)
 
-            canonical = store.active("TAOUSDC")[0]["intents"]["limit:BUY"]
-        place.assert_not_called()
-        self.assertIn("lookup_error", canonical)
+                    canonical = store.active("TAOUSDC")[0]["intents"]["limit:BUY"]
 
-    def test_place_limit_lookup_error_blocks_new_rounds_and_keeps_intent(self):
-        class Executor:
-            name = "Binance"
-
-            @staticmethod
-            def free_balance(_asset):
-                return 1000.0
-
-            @staticmethod
-            def reconciliation_capabilities():
-                return OrderReconciliationCapabilities(
-                    lookup_by_client_order_id=True,
-                    status_by_order_id=True,
-                    cancel_by_order_id=True,
-                    list_open_orders=True,
-                )
-
-            @staticmethod
-            def order_by_client_id(_symbol, _client_id):
-                raise TimeoutError("lookup unavailable")
-
-        with tempfile.TemporaryDirectory(prefix="rtrade-live-ambiguous-") as root:
-            store = RTradePairStore(os.path.join(root, "pairs.json"))
-            with patch.dict(os.environ, {"EXECUTION_AUDIT_DIR": root}), \
-                 patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
-                 patch.object(rtrade.mkt, "provider_by_name", return_value=Executor()), \
-                 patch.object(rtrade.mkt, "place", return_value=None) as place:
-                venue = rtrade._LivePairVenue("TAOUSDC", pair_store=store)
-                ticket = venue.place_limit("BUY", 99.36, 1.0, "pair-1")
-                self.assertIsNone(ticket)
-                ticket = venue.place_limit("BUY", 99.36, 1.0, "pair-1")
-
-            canonical = store.active("TAOUSDC")[0]["intents"]["limit:BUY"]
-        place.assert_called_once()
-        self.assertIsNone(ticket)
-        self.assertTrue(venue.recovery_blocked)
-        self.assertEqual(
-            venue.last_place_failure_reason("BUY"),
-            "buy_recovery_pending")
-        self.assertIn("lookup_error", canonical)
+                if case == "recovery":
+                    place.assert_not_called()
+                else:
+                    place.assert_called_once()
+                    self.assertTrue(venue.recovery_blocked)
+                    self.assertEqual(
+                        venue.last_place_failure_reason("BUY"),
+                        "buy_recovery_pending")
+                self.assertIn("lookup_error", canonical)
 
     def test_live_pair_hard_stop_reconciles_and_uses_audited_market_exit(self):
         precision = SimpleNamespace(volume_decimals=3, order_min=0.001)
@@ -875,37 +833,28 @@ class RTradeThreadingTest(unittest.TestCase):
             "TAOUSDC", "SELL", 90.0, 0.39, market=True,
             enforce_business_minimum=False)
 
-    def test_hard_stop_preflight_refusal_does_not_persist_intent(self):
-        with tempfile.TemporaryDirectory(prefix="rtrade-preflight-refusal-") as root:
-            store_path = os.path.join(root, "pairs.json")
-            store = RTradePairStore(store_path)
-            store.begin("TAOUSDC", "pair-10", "SELL", 0.4)
-            venue, executor = _hard_stop_venue(
-                root, store,
-                preflight_error=SubmissionRefused("cache_stale"))
-            with self.assertRaisesRegex(SubmissionRefused, "cache_stale"):
-                venue.place_market_exit(
-                    "SELL", 0.4, "hard_stop", pair_id="pair-10")
-            reopened = RTradePairStore(store_path).active("TAOUSDC")[0]
+    def test_hard_stop_refusal_preserves_clean_state(self):
+        cases = [
+            ("preflight", {"preflight_error": SubmissionRefused("cache_stale")}),
+            ("submit", {"submit_error": SubmissionRefused("cache_stale")}),
+        ]
+        for phase, kwargs in cases:
+            with self.subTest(phase=phase):
+                with tempfile.TemporaryDirectory(prefix=f"rtrade-{phase}-refusal-") as root:
+                    store_path = os.path.join(root, "pairs.json")
+                    store = RTradePairStore(store_path)
+                    store.begin("TAOUSDC", f"pair-{phase}", "SELL", 0.4)
+                    venue, executor = _hard_stop_venue(root, store, **kwargs)
+                    with self.assertRaisesRegex(SubmissionRefused, "cache_stale"):
+                        venue.place_market_exit(
+                            "SELL", 0.4, "hard_stop", pair_id=f"pair-{phase}")
+                    reopened = RTradePairStore(store_path).active("TAOUSDC")[0]
 
-        self.assertNotIn("hard_stop:SELL", reopened["intents"])
-        executor.submit_order.assert_not_called()
-
-    def test_hard_stop_submit_refusal_clears_persisted_intent(self):
-        with tempfile.TemporaryDirectory(prefix="rtrade-submit-refusal-") as root:
-            store_path = os.path.join(root, "pairs.json")
-            store = RTradePairStore(store_path)
-            store.begin("TAOUSDC", "pair-11", "SELL", 0.4)
-            venue, executor = _hard_stop_venue(
-                root, store,
-                submit_error=SubmissionRefused("cache_stale"))
-            with self.assertRaisesRegex(SubmissionRefused, "cache_stale"):
-                venue.place_market_exit(
-                    "SELL", 0.4, "hard_stop", pair_id="pair-11")
-            reopened = RTradePairStore(store_path).active("TAOUSDC")[0]
-
-        self.assertNotIn("hard_stop:SELL", reopened["intents"])
-        executor.submit_order.assert_called_once()
+                self.assertNotIn("hard_stop:SELL", reopened["intents"])
+                if phase == "preflight":
+                    executor.submit_order.assert_not_called()
+                else:
+                    executor.submit_order.assert_called_once()
 
     def test_post_cancel_hard_stop_refusal_retains_recoverable_intent(self):
         permit = object()
@@ -1095,57 +1044,57 @@ class RTradeThreadingTest(unittest.TestCase):
         self.assertTrue(all(len(ids) == 2 for ids in worker_sets))
         self.assertTrue(all(ids == worker_sets[0] for ids in worker_sets[1:]))
 
-    def test_worker_exception_propagates_to_owner(self):
-        bot = _bot()
+    def test_worker_exception_propagation_behavior(self):
+        cases = ["immediate", "waits_for_other"]
+        for case in cases:
+            with self.subTest(case=case):
+                bot = _bot()
+                sell_started = threading.Event()
+                release_sell = threading.Event()
+                owner_finished = threading.Event()
+                errors = []
 
-        def fail(_current, _filled):
-            raise RuntimeError("buy worker failed")
+                def fail(_current, _filled):
+                    raise RuntimeError(f"buy worker failed in {case}")
 
-        bot.repetitive_buy = fail
-        bot.repetitive_sell = lambda _current, _filled: 101.0
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            with self.assertRaisesRegex(RuntimeError, "buy worker failed"):
-                bot._run_pair(executor, 100.0)
+                def slow_sell(_current, _filled):
+                    sell_started.set()
+                    release_sell.wait(timeout=1.0)
+                    return 101.0
 
-    def test_worker_exception_waits_for_other_side_before_propagating(self):
-        bot = _bot()
-        sell_started = threading.Event()
-        release_sell = threading.Event()
-        owner_finished = threading.Event()
-        errors = []
+                bot.repetitive_buy = fail
+                if case == "immediate":
+                    bot.repetitive_sell = lambda _current, _filled: 101.0
+                else:
+                    bot.repetitive_sell = slow_sell
 
-        def fail(_current, _filled):
-            raise RuntimeError("buy worker failed")
+                if case == "immediate":
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        with self.assertRaisesRegex(RuntimeError, f"buy worker failed in {case}"):
+                            bot._run_pair(executor, 100.0)
+                else:
+                    def run_owner(executor):
+                        try:
+                            bot._run_pair(executor, 100.0)
+                        except Exception as exc:  # noqa: BLE001
+                            errors.append(exc)
+                        finally:
+                            owner_finished.set()
 
-        def slow_sell(_current, _filled):
-            sell_started.set()
-            release_sell.wait(timeout=1.0)
-            return 101.0
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        owner = threading.Thread(target=run_owner, args=(executor,))
+                        owner.start()
+                        self.assertTrue(sell_started.wait(timeout=1.0))
+                        self.assertFalse(
+                            owner_finished.wait(timeout=0.05),
+                            "the owner must not start another round while the old SELL is running",
+                        )
+                        release_sell.set()
+                        owner.join(timeout=1.0)
 
-        def run_owner(executor):
-            try:
-                bot._run_pair(executor, 100.0)
-            except Exception as exc:  # noqa: BLE001 - captured for the assertion
-                errors.append(exc)
-            finally:
-                owner_finished.set()
-
-        bot.repetitive_buy = fail
-        bot.repetitive_sell = slow_sell
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            owner = threading.Thread(target=run_owner, args=(executor,))
-            owner.start()
-            self.assertTrue(sell_started.wait(timeout=1.0))
-            self.assertFalse(
-                owner_finished.wait(timeout=0.05),
-                "the owner must not start another round while the old SELL is running",
-            )
-            release_sell.set()
-            owner.join(timeout=1.0)
-
-        self.assertFalse(owner.is_alive())
-        self.assertEqual(len(errors), 1)
-        self.assertRegex(str(errors[0]), "buy worker failed")
+                    self.assertFalse(owner.is_alive())
+                    self.assertEqual(len(errors), 1)
+                    self.assertRegex(str(errors[0]), f"buy worker failed in {case}")
 
     def test_legacy_replacement_preflight_refusal_preserves_active_order(self):
         cases = (

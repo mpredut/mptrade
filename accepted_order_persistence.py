@@ -10,7 +10,7 @@ from botcore import load_dotenv, required_float_env, required_int_env
 
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
-load_dotenv(os.path.join(_ROOT, "order_retry_config.env"))
+load_dotenv(os.path.join(_ROOT, "config.env"))
 
 ACCEPTED_TRACKING_PERSIST_ATTEMPTS = required_int_env(
     "ACCEPTED_TRACKING_PERSIST_ATTEMPTS")

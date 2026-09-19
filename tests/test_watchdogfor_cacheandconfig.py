@@ -27,39 +27,43 @@ class TestWatchdog(unittest.TestCase):
         self.assertAlmostEqual(wd._normalize_ts_seconds(1779829664), 1779829664.0)      # sec
         self.assertEqual(wd._normalize_ts_seconds(0), 0.0)
 
-    def test_fresh_cache_no_alert(self):
+    def test_cache_alerts_and_staleness(self):
         now = time.time()
-        _write_cache(self.cache, int(now * 1000))   # fresh
-        with patch.object(wd.wc, "send_ntfy") as ntfy, patch.object(wd.wc, "send_email") as email:
-            self.assertFalse(wd.check_once(now=now))
-            ntfy.assert_not_called()
-            email.assert_not_called()
+        with self.subTest("fresh cache no alert"):
+            if os.path.exists(wd.STATE_FILE): os.remove(wd.STATE_FILE)
+            _write_cache(self.cache, int(now * 1000))   # fresh
+            with patch.object(wd.wc, "send_ntfy") as ntfy, patch.object(wd.wc, "send_email") as email:
+                self.assertFalse(wd.check_once(now=now))
+                ntfy.assert_not_called()
+                email.assert_not_called()
 
-    def test_stale_cache_alerts(self):
-        now = time.time()
-        old = now - 60 * 60   # an hour ago -> stale
-        _write_cache(self.cache, int(old * 1000), mtime_sec=old)
-        with patch.object(wd.wc, "send_ntfy", return_value=True) as ntfy, \
-             patch.object(wd.wc, "send_email", return_value=True) as email:
-            self.assertTrue(wd.check_once(now=now))
-            ntfy.assert_called_once()
-            email.assert_called_once()
+        with self.subTest("stale cache alerts"):
+            if os.path.exists(wd.STATE_FILE): os.remove(wd.STATE_FILE)
+            old = now - 60 * 60   # an hour ago -> stale
+            _write_cache(self.cache, int(old * 1000), mtime_sec=old)
+            with patch.object(wd.wc, "send_ntfy", return_value=True) as ntfy, \
+                 patch.object(wd.wc, "send_email", return_value=True) as email:
+                self.assertTrue(wd.check_once(now=now))
+                ntfy.assert_called_once()
+                email.assert_called_once()
 
-    def test_cooldown_suppresses_second_alert(self):
-        now = time.time()
-        _write_cache(self.cache, int((now - 3600) * 1000), mtime_sec=now - 3600)
-        with patch.object(wd.wc, "send_ntfy", return_value=True), \
-             patch.object(wd.wc, "send_email", return_value=True):
-            self.assertTrue(wd.check_once(now=now))            # the first one -> alert
-            self.assertFalse(wd.check_once(now=now + 60))      # in cooldown -> no
-            self.assertTrue(wd.check_once(now=now + 3700))     # after the cooldown -> yes
+        with self.subTest("cooldown suppresses second alert"):
+            if os.path.exists(wd.STATE_FILE): os.remove(wd.STATE_FILE)
+            _write_cache(self.cache, int((now - 3600) * 1000), mtime_sec=now - 3600)
+            with patch.object(wd.wc, "send_ntfy", return_value=True), \
+                 patch.object(wd.wc, "send_email", return_value=True):
+                self.assertTrue(wd.check_once(now=now))            # the first one -> alert
+                self.assertFalse(wd.check_once(now=now + 60))      # in cooldown -> no
+                self.assertTrue(wd.check_once(now=now + 3700))     # after the cooldown -> yes
 
-    def test_missing_cache_is_stale(self):
-        now = time.time()   # a file that does not exist
-        with patch.object(wd.wc, "send_ntfy", return_value=True) as ntfy, \
-             patch.object(wd.wc, "send_email", return_value=True):
-            self.assertTrue(wd.check_once(now=now))
-            ntfy.assert_called_once()
+        with self.subTest("missing cache is stale"):
+            if os.path.exists(wd.STATE_FILE): os.remove(wd.STATE_FILE)
+            if os.path.exists(self.cache):
+                os.remove(self.cache)
+            with patch.object(wd.wc, "send_ntfy", return_value=True) as ntfy, \
+                 patch.object(wd.wc, "send_email", return_value=True):
+                self.assertTrue(wd.check_once(now=now))
+                ntfy.assert_called_once()
 
 
 class TestEventDrivenGating(unittest.TestCase):
@@ -76,36 +80,39 @@ class TestEventDrivenGating(unittest.TestCase):
         self.price = os.path.join(self.tmp, "cache_prices_multi.json")   # fleet-alive
         self.order = os.path.join(self.tmp, "cache_order.json")          # event-driven
 
-    def test_fill_cache_stale_but_fleet_alive_no_alarm(self):
+    def test_event_driven_gating_behaviors(self):
         now = time.time()
-        _write_cache(self.price, int(now * 1000))                        # A FRESH price -> the fleet is alive.
-        _write_cache(self.order, int((now - 90 * 3600) * 1000),          # A fill 90h old (>the 72h threshold).
-                     mtime_sec=now - 90 * 3600)
-        with patch.object(wd.wc, "send_ntfy") as ntfy, patch.object(wd.wc, "send_email") as email:
-            self.assertFalse(wd.check_once(now=now), "a live fleet -> a stale fill is benign, no alarm")
-            ntfy.assert_not_called()
-            email.assert_not_called()
+        
+        with self.subTest("stale but fleet alive -> no alarm"):
+            if os.path.exists(wd.STATE_FILE): os.remove(wd.STATE_FILE)
+            _write_cache(self.price, int(now * 1000))                        # A FRESH price -> the fleet is alive.
+            _write_cache(self.order, int((now - 90 * 3600) * 1000),          # A fill 90h old (>the 72h threshold).
+                         mtime_sec=now - 90 * 3600)
+            with patch.object(wd.wc, "send_ntfy") as ntfy, patch.object(wd.wc, "send_email") as email:
+                self.assertFalse(wd.check_once(now=now), "a live fleet -> a stale fill is benign, no alarm")
+                ntfy.assert_not_called()
+                email.assert_not_called()
 
-    def test_fill_cache_stale_and_fleet_dead_alarms(self):
-        now = time.time()
-        # BOTH stale: an old price (a dead fleet) plus an old fill -> an alarm (fail-safe).
-        _write_cache(self.price, int((now - 3600) * 1000), mtime_sec=now - 3600)
-        _write_cache(self.order, int((now - 90 * 3600) * 1000), mtime_sec=now - 90 * 3600)
-        with patch.object(wd.wc, "send_ntfy", return_value=True) as ntfy, \
-             patch.object(wd.wc, "send_email", return_value=True):
-            self.assertTrue(wd.check_once(now=now), "flota moarta -> alarma trece")
-            ntfy.assert_called_once()
+        with self.subTest("stale and fleet dead -> alarms"):
+            if os.path.exists(wd.STATE_FILE): os.remove(wd.STATE_FILE)
+            # BOTH stale: an old price (a dead fleet) plus an old fill -> an alarm (fail-safe).
+            _write_cache(self.price, int((now - 3600) * 1000), mtime_sec=now - 3600)
+            _write_cache(self.order, int((now - 90 * 3600) * 1000), mtime_sec=now - 90 * 3600)
+            with patch.object(wd.wc, "send_ntfy", return_value=True) as ntfy, \
+                 patch.object(wd.wc, "send_email", return_value=True):
+                self.assertTrue(wd.check_once(now=now), "flota moarta -> alarma trece")
+                ntfy.assert_called_once()
 
-    def test_fill_cache_beyond_hard_ceiling_alarms_even_if_fleet_alive(self):
-        now = time.time()
-        _write_cache(self.price, int(now * 1000))                        # flota vie
-        # A fill older than the hard cap (30 days) -> an alarm regardless.
-        old = now - (wd._EVENT_DRIVEN_HARD_CEILING_MIN + 60) * 60
-        _write_cache(self.order, int(old * 1000), mtime_sec=old)
-        with patch.object(wd.wc, "send_ntfy", return_value=True) as ntfy, \
-             patch.object(wd.wc, "send_email", return_value=True):
-            self.assertTrue(wd.check_once(now=now), "above the hard cap -> an alarm even with a live fleet")
-            ntfy.assert_called_once()
+        with self.subTest("beyond hard ceiling -> alarms even if fleet alive"):
+            if os.path.exists(wd.STATE_FILE): os.remove(wd.STATE_FILE)
+            _write_cache(self.price, int(now * 1000))                        # flota vie
+            # A fill older than the hard cap (30 days) -> an alarm regardless.
+            old = now - (wd._EVENT_DRIVEN_HARD_CEILING_MIN + 60) * 60
+            _write_cache(self.order, int(old * 1000), mtime_sec=old)
+            with patch.object(wd.wc, "send_ntfy", return_value=True) as ntfy, \
+                 patch.object(wd.wc, "send_email", return_value=True):
+                self.assertTrue(wd.check_once(now=now), "above the hard cap -> an alarm even with a live fleet")
+                ntfy.assert_called_once()
 
 
 class TestFastPriceThreshold(unittest.TestCase):
@@ -113,18 +120,25 @@ class TestFastPriceThreshold(unittest.TestCase):
     fast price caches (~1s), written by cacheManager.py itself. The sparse .jsonl archive
     stays on the general threshold and does NOT trigger a restart (28 Jul)."""
 
-    def test_fast_price_caches_classified(self):
-        for n in ("cache_currentprice.json",
-                  "cache_instant_trend.json", "cache_24price_HYPEUSD.json",
-                  "cache_24price_BTCUSDC.json"):
-            self.assertTrue(wd._is_fast_price_cache(n), n)
-            self.assertEqual(wd._threshold_for(n), wd._FAST_PRICE_THRESHOLD_MIN, n)
+    def test_cache_classification(self):
+        with self.subTest("fast price caches classified"):
+            for n in ("cache_currentprice.json",
+                      "cache_instant_trend.json", "cache_24price_HYPEUSD.json",
+                      "cache_24price_BTCUSDC.json"):
+                self.assertTrue(wd._is_fast_price_cache(n), n)
+                self.assertEqual(wd._threshold_for(n), wd._FAST_PRICE_THRESHOLD_MIN, n)
 
-    def test_sparse_and_slow_not_fast(self):
-        # sparse .jsonl / archiver plus slow, event-driven ones are NOT fast (no restart)
-        for n in ("cache_price_BTCUSDC.jsonl", "cache_24price_long_BTCUSDC.jsonl",
-                  "cache_price_long_trend.json", "cache_order.json", "cache_asset_value.json"):
-            self.assertFalse(wd._is_fast_price_cache(n), n)
+        with self.subTest("sparse and slow not fast"):
+            # sparse .jsonl / archiver plus slow, event-driven ones are NOT fast (no restart)
+            for n in ("cache_price_BTCUSDC.jsonl", "cache_24price_long_BTCUSDC.jsonl",
+                      "cache_price_long_trend.json", "cache_order.json", "cache_asset_value.json"):
+                self.assertFalse(wd._is_fast_price_cache(n), n)
+                
+        with self.subTest("cache prices multi reclassified slow override"):
+            self.assertFalse(wd._is_fast_price_cache("cache_prices_multi.json"))
+            self.assertEqual(wd._threshold_for("cache_prices_multi.json"), 8)
+            self.assertNotEqual(wd._threshold_for("cache_prices_multi.json"),
+                               wd._FAST_PRICE_THRESHOLD_MIN)
 
     def test_active_migrated_cache_hides_frozen_legacy_sibling(self):
         import tempfile
@@ -146,17 +160,6 @@ class TestFastPriceThreshold(unittest.TestCase):
             self.assertNotIn("cache_asset_value.json", names)
         finally:
             wd._CACHE_DIR = original
-
-    def test_cache_prices_multi_reclassified_slow_override(self):
-        """30 Jul: cache_prices_multi.json is written by market_alerts.py (~5 min
-        cadence), NOT by cacheManager.py — it is no longer a "fast price" (it was classified
-        wrongly, the tight 5-min threshold caused false alarms on its normal cadence
-        of ~5:03-5:04 min, and restarting cacheManager had no effect at all on
-        as such). Now: its own threshold (8min) via _STALE_OVERRIDES, with NO restart."""
-        self.assertFalse(wd._is_fast_price_cache("cache_prices_multi.json"))
-        self.assertEqual(wd._threshold_for("cache_prices_multi.json"), 8)
-        self.assertNotEqual(wd._threshold_for("cache_prices_multi.json"),
-                           wd._FAST_PRICE_THRESHOLD_MIN)
 
     def test_sparse_archive_stall_does_not_restart(self):
         """A stale sparse .jsonl cache (not fast) -> alarm, but NO restart."""
@@ -200,75 +203,79 @@ class TestAutoRestart(unittest.TestCase):
     def _stale_price(self, now):
         _write_cache(self.price, int((now - 3600) * 1000), mtime_sec=now - 3600)  # 1h stale
 
-    def test_fast_cache_stall_triggers_restart(self):
+    def test_restart_eligibility_behaviors(self):
         now = time.time()
-        self._stale_price(now)
-        with patch.object(wd, "_do_restart", return_value=True) as restart, \
-             patch.object(wd.wc, "send_ntfy", return_value=True), \
-             patch.object(wd.wc, "send_email", return_value=True):
-            self.assertTrue(wd.check_once(now=now))
-            restart.assert_called_once()
+        
+        with self.subTest("fast cache stall triggers restart"):
+            if os.path.exists(wd.STATE_FILE): os.remove(wd.STATE_FILE)
+            self._stale_price(now)
+            with patch.object(wd, "_do_restart", return_value=True) as restart, \
+                 patch.object(wd.wc, "send_ntfy", return_value=True), \
+                 patch.object(wd.wc, "send_email", return_value=True):
+                self.assertTrue(wd.check_once(now=now))
+                restart.assert_called_once()
 
-    def test_disabled_flag_no_restart(self):
-        now = time.time()
-        wd.AUTO_RESTART = False
-        self._stale_price(now)
-        with patch.object(wd, "_do_restart", return_value=True) as restart, \
-             patch.object(wd.wc, "send_ntfy", return_value=True), \
-             patch.object(wd.wc, "send_email", return_value=True):
-            wd.check_once(now=now)
-            restart.assert_not_called()
+        with self.subTest("disabled flag no restart"):
+            if os.path.exists(wd.STATE_FILE): os.remove(wd.STATE_FILE)
+            wd.AUTO_RESTART = False
+            self._stale_price(now)
+            with patch.object(wd, "_do_restart", return_value=True) as restart, \
+                 patch.object(wd.wc, "send_ntfy", return_value=True), \
+                 patch.object(wd.wc, "send_email", return_value=True):
+                wd.check_once(now=now)
+                restart.assert_not_called()
+            wd.AUTO_RESTART = True
 
-    def test_slow_cache_stall_does_not_restart(self):
-        """A cache from _STALE_OVERRIDES (event-driven/slow) is stale, but THE FLEET IS DEAD
-        (no fresh price) -> alarm, but NO restart (fill staleness does not
-        justifica repornirea procesului critic)."""
-        now = time.time()
-        _write_cache(self.order, int((now - 100 * 3600) * 1000), mtime_sec=now - 100 * 3600)
-        with patch.object(wd, "_do_restart", return_value=True) as restart, \
-             patch.object(wd.wc, "send_ntfy", return_value=True), \
-             patch.object(wd.wc, "send_email", return_value=True):
-            wd.check_once(now=now)
-            restart.assert_not_called()
+        with self.subTest("slow cache stall does not restart"):
+            if os.path.exists(wd.STATE_FILE): os.remove(wd.STATE_FILE)
+            if os.path.exists(self.price): os.remove(self.price)
+            _write_cache(self.order, int((now - 100 * 3600) * 1000), mtime_sec=now - 100 * 3600)
+            with patch.object(wd, "_do_restart", return_value=True) as restart, \
+                 patch.object(wd.wc, "send_ntfy", return_value=True), \
+                 patch.object(wd.wc, "send_email", return_value=True):
+                wd.check_once(now=now)
+                restart.assert_not_called()
 
-    def test_cache_prices_multi_is_not_restart_eligible(self):
-        """30 Jul: cache_prices_multi.json (market_alerts.py, NOT cacheManager.py)
-        stale -> alarm (its own 8min threshold from _STALE_OVERRIDES), but NEVER
-        restart -- the restart targets cacheManager.py, which has nothing
-        to do with this file (that was the bug found live on 30 Jul: 2 restarts
-        wasted on false alarms plus the wrong target, before it hit the cap)."""
-        now = time.time()
-        multi = os.path.join(self.tmp, "cache_prices_multi.json")
-        _write_cache(multi, int((now - 3600) * 1000), mtime_sec=now - 3600)  # 1h stale
-        with patch.object(wd, "_do_restart", return_value=True) as restart, \
-             patch.object(wd.wc, "send_ntfy", return_value=True), \
-             patch.object(wd.wc, "send_email", return_value=True):
-            self.assertTrue(wd.check_once(now=now), "it must still alarm")
-            restart.assert_not_called()
+        with self.subTest("cache prices multi is not restart eligible"):
+            if os.path.exists(wd.STATE_FILE): os.remove(wd.STATE_FILE)
+            if os.path.exists(self.price): os.remove(self.price)
+            if os.path.exists(self.order): os.remove(self.order)
+            multi = os.path.join(self.tmp, "cache_prices_multi.json")
+            _write_cache(multi, int((now - 3600) * 1000), mtime_sec=now - 3600)  # 1h stale
+            with patch.object(wd, "_do_restart", return_value=True) as restart, \
+                 patch.object(wd.wc, "send_ntfy", return_value=True), \
+                 patch.object(wd.wc, "send_email", return_value=True):
+                self.assertTrue(wd.check_once(now=now), "it must still alarm")
+                restart.assert_not_called()
 
-    def test_cooldown_blocks_second_restart(self):
+    def test_restart_rate_limits(self):
         now = time.time()
-        self._stale_price(now)
-        with patch.object(wd, "_do_restart", return_value=True) as restart, \
-             patch.object(wd.wc, "send_ntfy", return_value=True), \
-             patch.object(wd.wc, "send_email", return_value=True):
-            wd.check_once(now=now)                       # restart 1
-            wd.check_once(now=now + 5 * 60)              # +5min < the 15min cooldown -> NO.
-            self.assertEqual(restart.call_count, 1, "the cooldown must block the 2nd restart")
-            wd.check_once(now=now + 20 * 60)             # +20min > cooldown -> restart 2
-            self.assertEqual(restart.call_count, 2)
+        
+        with self.subTest("cooldown blocks second restart"):
+            if os.path.exists(wd.STATE_FILE):
+                os.remove(wd.STATE_FILE)
+            self._stale_price(now)
+            with patch.object(wd, "_do_restart", return_value=True) as restart, \
+                 patch.object(wd.wc, "send_ntfy", return_value=True), \
+                 patch.object(wd.wc, "send_email", return_value=True):
+                wd.check_once(now=now)                       # restart 1
+                wd.check_once(now=now + 5 * 60)              # +5min < the 15min cooldown -> NO.
+                self.assertEqual(restart.call_count, 1, "the cooldown must block the 2nd restart")
+                wd.check_once(now=now + 20 * 60)             # +20min > cooldown -> restart 2
+                self.assertEqual(restart.call_count, 2)
 
-    def test_max_per_window_then_escalates(self):
-        now = time.time()
-        self._stale_price(now)
-        with patch.object(wd, "_do_restart", return_value=True) as restart, \
-             patch.object(wd.wc, "send_ntfy", return_value=True), \
-             patch.object(wd.wc, "send_email", return_value=True):
-            wd.check_once(now=now)                   # 1
-            wd.check_once(now=now + 16 * 60)         # 2 (past the cooldown)
-            wd.check_once(now=now + 32 * 60)         # 3
-            wd.check_once(now=now + 48 * 60)         # The 4th: THE CAP -> no restart.
-            self.assertEqual(restart.call_count, 3, "the cap of 3 per window must be honoured")
+        with self.subTest("max per window then escalates"):
+            if os.path.exists(wd.STATE_FILE):
+                os.remove(wd.STATE_FILE)
+            self._stale_price(now)
+            with patch.object(wd, "_do_restart", return_value=True) as restart, \
+                 patch.object(wd.wc, "send_ntfy", return_value=True), \
+                 patch.object(wd.wc, "send_email", return_value=True):
+                wd.check_once(now=now)                   # 1
+                wd.check_once(now=now + 16 * 60)         # 2 (past the cooldown)
+                wd.check_once(now=now + 32 * 60)         # 3
+                wd.check_once(now=now + 48 * 60)         # The 4th: THE CAP -> no restart.
+                self.assertEqual(restart.call_count, 3, "the cap of 3 per window must be honoured")
 
 
 class TestConfigWatch(unittest.TestCase):
@@ -287,40 +294,49 @@ class TestConfigWatch(unittest.TestCase):
     def tearDown(self):
         wd._ROOT, wd._CONFIG_OWNERS, wd.CONFIG_RESTART = self._root0, self._owners0, self._cr0
 
-    def test_baseline_then_change_then_debounce(self):
-        with patch.object(wd, "_do_restart") as restart, \
-             patch.object(wd.wc, "send_ntfy"), patch.object(wd.wc, "send_email"):
-            # 1) first sighting = baseline only, NO restart
-            self.assertEqual(wd.check_configs_once(), [])
-            restart.assert_not_called()
-            # 2) continut schimbat -> restart proprietarul
+    def test_config_watch_behaviors(self):
+        with self.subTest("baseline then change then debounce"):
+            with patch.object(wd, "_do_restart") as restart, \
+                 patch.object(wd.wc, "send_ntfy"), patch.object(wd.wc, "send_email"):
+                # 1) first sighting = baseline only, NO restart
+                self.assertEqual(wd.check_configs_once(), [])
+                restart.assert_not_called()
+                # 2) continut schimbat -> restart proprietarul
+                with open(self.cfg, "w") as f:
+                    f.write("val = 2\n")
+                self.assertEqual(wd.check_configs_once(), ["fakeproc.py"])
+                restart.assert_called_once_with("fakeproc.py")
+                # 3) unchanged -> debounce, no second restart
+                restart.reset_mock()
+                self.assertEqual(wd.check_configs_once(), [])
+                restart.assert_not_called()
+
+        with self.subTest("mtime touch without content change no restart"):
+            # reset config and state for this subtest
             with open(self.cfg, "w") as f:
-                f.write("val = 2\n")
-            self.assertEqual(wd.check_configs_once(), ["fakeproc.py"])
-            restart.assert_called_once_with("fakeproc.py")
-            # 3) unchanged -> debounce, no second restart
-            restart.reset_mock()
-            self.assertEqual(wd.check_configs_once(), [])
-            restart.assert_not_called()
+                f.write("val = 1\n")
+            if os.path.exists(wd.STATE_FILE):
+                os.remove(wd.STATE_FILE)
+            with patch.object(wd, "_do_restart") as restart, \
+                 patch.object(wd.wc, "send_ntfy"), patch.object(wd.wc, "send_email"):
+                wd.check_configs_once()                       # baseline
+                os.utime(self.cfg, (time.time() + 100, time.time() + 100))  # Only mtime, identical content.
+                self.assertEqual(wd.check_configs_once(), [])  # An identical hash -> nothing.
+                restart.assert_not_called()
 
-    def test_mtime_touch_without_content_change_no_restart(self):
-        with patch.object(wd, "_do_restart") as restart, \
-             patch.object(wd.wc, "send_ntfy"), patch.object(wd.wc, "send_email"):
-            wd.check_configs_once()                       # baseline
-            os.utime(self.cfg, (time.time() + 100, time.time() + 100))  # Only mtime, identical content.
-            self.assertEqual(wd.check_configs_once(), [])  # An identical hash -> nothing.
-            restart.assert_not_called()
-
-    def test_kill_switch_off_detects_but_no_restart(self):
-        wd.CONFIG_RESTART = False
-        with patch.object(wd, "_do_restart") as restart, \
-             patch.object(wd.wc, "send_ntfy"), patch.object(wd.wc, "send_email"):
-            wd.check_configs_once()                       # baseline
-            with open(self.cfg, "w") as f:
-                f.write("val = 3\n")
-            self.assertEqual(wd.check_configs_once(), [])  # It detects but does NOT restart.
-            restart.assert_not_called()
-
+        with self.subTest("kill switch off detects but no restart"):
+            wd.CONFIG_RESTART = False
+            # reset state
+            if os.path.exists(wd.STATE_FILE):
+                os.remove(wd.STATE_FILE)
+            with patch.object(wd, "_do_restart") as restart, \
+                 patch.object(wd.wc, "send_ntfy"), patch.object(wd.wc, "send_email"):
+                wd.check_configs_once()                       # baseline
+                with open(self.cfg, "w") as f:
+                    f.write("val = 3\n")
+                self.assertEqual(wd.check_configs_once(), [])  # It detects but does NOT restart.
+                restart.assert_not_called()
+            wd.CONFIG_RESTART = True
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

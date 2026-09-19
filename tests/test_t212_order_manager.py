@@ -93,156 +93,177 @@ def _place(client, **overrides):
     return order_manager.place_order_with_retry(**args)
 
 
-def test_intent_is_fsynced_before_single_submit(marker_env, monkeypatch):
-    observed = {}
+import unittest
 
-    def inspect_pre_submit_marker():
-        observed.update(json.loads(marker_env.read_text(encoding="utf-8")))
-        return 201, {"id": "accepted-7", "status": "NEW"}
+class TestT212OrderManager(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def setup_env(self, marker_env, monkeypatch):
+        self.marker_env = marker_env
+        self.monkeypatch = monkeypatch
 
-    client = FakeClient([inspect_pre_submit_marker])
-    monkeypatch.setattr(order_manager.time, "sleep", pytest.fail)
+    def _reset_env(self):
+        if self.marker_env.exists():
+            self.marker_env.unlink()
 
-    assert _place(client) is True
+    def test_submit_and_recovery(self):
+        with self.subTest(msg="intent_is_fsynced_before_single_submit"):
+            self._reset_env()
+            observed = {}
 
-    assert len(client.place_calls) == 1
-    assert observed["lifecycle"] == "submit_pending"
-    assert observed["attempts"] == 1
-    assert observed["intent_id"].startswith("t212-one-shot-NVDA_US_EQ-")
-    final = json.loads(marker_env.read_text(encoding="utf-8"))
-    assert final["lifecycle"] == "accepted"
-    assert final["order_id"] == "accepted-7"
+            def inspect_pre_submit_marker():
+                observed.update(json.loads(self.marker_env.read_text(encoding="utf-8")))
+                return 201, {"id": "accepted-7", "status": "NEW"}
 
+            client = FakeClient([inspect_pre_submit_marker])
+            self.monkeypatch.setattr(order_manager.time, "sleep", pytest.fail)
 
-def test_response_loss_recovers_nested_active_order_without_resubmit(marker_env):
-    client = FakeClient([TimeoutError("response lost")])
-    assert _place(client) is False
+            assert _place(client) is True
 
-    client.active = [{
-        "id": "recovered-1",
-        "instrument": {"ticker": TICKER},
-        "quantity": 1.25,
-        "limitPrice": 100.0,
-    }]
-    assert _place(client) is True
+            assert len(client.place_calls) == 1
+            assert observed["lifecycle"] == "submit_pending"
+            assert observed["attempts"] == 1
+            assert observed["intent_id"].startswith("t212-one-shot-NVDA_US_EQ-")
+            final = json.loads(self.marker_env.read_text(encoding="utf-8"))
+            assert final["lifecycle"] == "accepted"
+            assert final["order_id"] == "accepted-7"
 
-    assert len(client.place_calls) == 1
-    record = json.loads(marker_env.read_text(encoding="utf-8"))
-    assert record["lifecycle"] == "accepted"
-    assert record["order_id"] == "recovered-1"
+        with self.subTest(msg="response_loss_recovers_nested_active_order_without_resubmit"):
+            self._reset_env()
+            client = FakeClient([TimeoutError("response lost")])
+            assert _place(client) is False
 
+            client.active = [{
+                "id": "recovered-1",
+                "instrument": {"ticker": TICKER},
+                "quantity": 1.25,
+                "limitPrice": 100.0,
+            }]
+            assert _place(client) is True
 
-def test_response_loss_recovers_portfolio_delta_without_resubmit(marker_env):
-    client = FakeClient([TimeoutError("response lost")])
-    client.portfolio = [{"ticker": TICKER, "quantity": 2.0}]
-    assert _place(client) is False
+            assert len(client.place_calls) == 1
+            record = json.loads(self.marker_env.read_text(encoding="utf-8"))
+            assert record["lifecycle"] == "accepted"
+            assert record["order_id"] == "recovered-1"
 
-    client.portfolio = [{"ticker": TICKER, "quantity": 3.25}]
-    assert _place(client) is True
+        with self.subTest(msg="response_loss_recovers_portfolio_delta_without_resubmit"):
+            self._reset_env()
+            client = FakeClient([TimeoutError("response lost")])
+            client.portfolio = [{"ticker": TICKER, "quantity": 2.0}]
+            assert _place(client) is False
 
-    assert len(client.place_calls) == 1
-    record = json.loads(marker_env.read_text(encoding="utf-8"))
-    assert record["lifecycle"] == "filled"
-    assert record["portfolio_fill_observed"] is True
-    assert record["filled_qty"] == pytest.approx(1.25)
+            client.portfolio = [{"ticker": TICKER, "quantity": 3.25}]
+            assert _place(client) is True
 
+            assert len(client.place_calls) == 1
+            record = json.loads(self.marker_env.read_text(encoding="utf-8"))
+            assert record["lifecycle"] == "filled"
+            assert record["portfolio_fill_observed"] is True
+            assert record["filled_qty"] == pytest.approx(1.25)
 
-def test_ambiguous_submit_retries_only_after_two_complete_absence_snapshots(marker_env):
-    client = FakeClient([
-        TimeoutError("response lost"),
-        (201, {"id": "retry-2", "status": "NEW"}),
-    ])
+        with self.subTest(msg="ambiguous_submit_retries_only_after_two_complete_absence_snapshots"):
+            self._reset_env()
+            client = FakeClient([
+                TimeoutError("response lost"),
+                (201, {"id": "retry-2", "status": "NEW"}),
+            ])
 
-    assert _place(client) is False      # ambiguous submit is not reported accepted
-    assert _place(client) is False      # first complete absence snapshot
-    assert len(client.place_calls) == 1
-    assert _place(client) is True       # second absence snapshot permits one retry
+            assert _place(client) is False      # ambiguous submit is not reported accepted
+            assert _place(client) is False      # first complete absence snapshot
+            assert len(client.place_calls) == 1
+            assert _place(client) is True       # second absence snapshot permits one retry
 
-    assert len(client.place_calls) == 2
-    record = json.loads(marker_env.read_text(encoding="utf-8"))
-    assert record["attempts"] == 2
-    assert record["order_id"] == "retry-2"
+            assert len(client.place_calls) == 2
+            record = json.loads(self.marker_env.read_text(encoding="utf-8"))
+            assert record["attempts"] == 2
+            assert record["order_id"] == "retry-2"
 
+    def test_rejections_and_failures(self):
+        with self.subTest(msg="http_rejection_stays_pending_but_is_not_reported_as_success"):
+            self._reset_env()
+            client = FakeClient([(503, {"error": "temporarily unavailable"})])
 
-def test_http_rejection_stays_pending_but_is_not_reported_as_success(marker_env):
-    client = FakeClient([(503, {"error": "temporarily unavailable"})])
+            assert _place(client) is False
 
-    assert _place(client) is False
+            record = json.loads(self.marker_env.read_text(encoding="utf-8"))
+            assert record["lifecycle"] == "submit_pending"
+            assert "HTTP 503" in record["submit_error"]
+            assert len(client.place_calls) == 1
 
-    record = json.loads(marker_env.read_text(encoding="utf-8"))
-    assert record["lifecycle"] == "submit_pending"
-    assert "HTTP 503" in record["submit_error"]
-    assert len(client.place_calls) == 1
+        with self.subTest(msg="unavailable_portfolio_never_counts_as_proven_absence"):
+            self._reset_env()
+            client = FakeClient([TimeoutError("response lost")])
+            assert _place(client) is False
+            client.portfolio = None
 
+            assert _place(client) is False
+            assert _place(client) is False
 
-def test_unavailable_portfolio_never_counts_as_proven_absence(marker_env):
-    client = FakeClient([TimeoutError("response lost")])
-    assert _place(client) is False
-    client.portfolio = None
+            assert len(client.place_calls) == 1
+            record = json.loads(self.marker_env.read_text(encoding="utf-8"))
+            assert record["lookup_misses"] == 0
 
-    assert _place(client) is False
-    assert _place(client) is False
+        with self.subTest(msg="canceled_order_is_terminal_and_never_retried"):
+            self._reset_env()
+            client = FakeClient([(201, {"id": "cancel-me", "status": "NEW"})])
+            assert _place(client) is True
+            client.statuses["cancel-me"] = {"id": "cancel-me", "status": "CANCELED"}
 
-    assert len(client.place_calls) == 1
-    record = json.loads(marker_env.read_text(encoding="utf-8"))
-    assert record["lookup_misses"] == 0
+            assert _place(client) is False
+            assert _place(client) is False
 
+            assert len(client.place_calls) == 1
+            record = json.loads(self.marker_env.read_text(encoding="utf-8"))
+            assert record["lifecycle"] == "canceled"
 
-def test_preflight_refuses_existing_matching_order_without_claiming_it(marker_env):
-    client = FakeClient()
-    client.active = [{
-        "id": "external-order",
-        "ticker": TICKER,
-        "quantity": 1.25,
-        "limit": 100.0,
-    }]
+        with self.subTest(msg="unknown_venue_status_fails_closed_without_resubmit"):
+            self._reset_env()
+            client = FakeClient([(201, {"id": "odd-1", "status": "NEW"})])
+            assert _place(client) is True
+            client.statuses["odd-1"] = {"id": "odd-1", "status": "MYSTERY_STATE"}
 
-    assert _place(client) is False
-    assert client.place_calls == []
-    assert not marker_env.exists()
+            assert _place(client) is True
 
+            assert len(client.place_calls) == 1
+            record = json.loads(self.marker_env.read_text(encoding="utf-8"))
+            assert record["lifecycle"] == "status_unknown"
 
-def test_canceled_order_is_terminal_and_never_retried(marker_env):
-    client = FakeClient([(201, {"id": "cancel-me", "status": "NEW"})])
-    assert _place(client) is True
-    client.statuses["cancel-me"] = {"id": "cancel-me", "status": "CANCELED"}
+        with self.subTest(msg="corrupt_marker_blocks_submit_instead_of_becoming_absent"):
+            self._reset_env()
+            self.marker_env.write_text("{broken", encoding="utf-8")
+            client = FakeClient()
 
-    assert _place(client) is False
-    assert _place(client) is False
+            assert _place(client) is False
+            assert client.place_calls == []
 
-    assert len(client.place_calls) == 1
-    record = json.loads(marker_env.read_text(encoding="utf-8"))
-    assert record["lifecycle"] == "canceled"
+    def test_preflight_and_namespace(self):
+        with self.subTest(msg="preflight_refuses_existing_matching_order_without_claiming_it"):
+            self._reset_env()
+            client = FakeClient()
+            client.active = [{
+                "id": "external-order",
+                "ticker": TICKER,
+                "quantity": 1.25,
+                "limit": 100.0,
+            }]
 
+            assert _place(client) is False
+            assert client.place_calls == []
+            assert not self.marker_env.exists()
 
-def test_unknown_venue_status_fails_closed_without_resubmit(marker_env):
-    client = FakeClient([(201, {"id": "odd-1", "status": "NEW"})])
-    assert _place(client) is True
-    client.statuses["odd-1"] = {"id": "odd-1", "status": "MYSTERY_STATE"}
+        with self.subTest(msg="marker_namespace_separates_profiles_and_symbols"):
+            self._reset_env()
+            
+            # This test requires the unmocked _marker_path
+            original_marker_path = getattr(order_manager, "_marker_path")
+            self.monkeypatch.undo() # this undoes ALL mocks from the monkeypatch fixture for this subtest!
+            
+            self.monkeypatch.setenv("IPO_PROFILE", "account one")
+            first = order_manager._marker_path("NVDA_US_EQ")
+            self.monkeypatch.setenv("IPO_PROFILE", "account two")
+            second = order_manager._marker_path("NVDA_US_EQ")
+            third = order_manager._marker_path("SPCX_US_EQ")
 
-    assert _place(client) is True
-
-    assert len(client.place_calls) == 1
-    record = json.loads(marker_env.read_text(encoding="utf-8"))
-    assert record["lifecycle"] == "status_unknown"
-
-
-def test_corrupt_marker_blocks_submit_instead_of_becoming_absent(marker_env):
-    marker_env.write_text("{broken", encoding="utf-8")
-    client = FakeClient()
-
-    assert _place(client) is False
-    assert client.place_calls == []
-
-
-def test_marker_namespace_separates_profiles_and_symbols(monkeypatch):
-    monkeypatch.setenv("IPO_PROFILE", "account one")
-    first = order_manager._marker_path("NVDA_US_EQ")
-    monkeypatch.setenv("IPO_PROFILE", "account two")
-    second = order_manager._marker_path("NVDA_US_EQ")
-    third = order_manager._marker_path("SPCX_US_EQ")
-
-    assert first != second
-    assert second != third
-    assert "account_one" in first
-    assert "account_two" in second
+            assert first != second
+            assert second != third
+            assert "account_one" in first
+            assert "account_two" in second

@@ -119,15 +119,16 @@ class PricePolicyTest(unittest.TestCase):
     def test_quotes_share_one_midpoint(self):
         self.assertEqual(quote_prices(100.0, 0.0064), (99.36, 100.64))
 
-    def test_long_exit_never_follows_market_below_cost_plus_edge(self):
-        target = anchored_exit_price("SELL", 100.0, 90.0, 0.0064, 0.0115)
-        self.assertEqual(target, 101.1634)
-        self.assertGreater(target, 100.0)
+    def test_anchored_exit_prices(self):
+        with self.subTest(msg="long_never_follows_market_below_cost_plus_edge"):
+            target = anchored_exit_price("SELL", 100.0, 90.0, 0.0064, 0.0115)
+            self.assertEqual(target, 101.1634)
+            self.assertGreater(target, 100.0)
 
-    def test_sold_exit_never_chases_market_above_profitable_buyback(self):
-        target = anchored_exit_price("BUY", 100.0, 110.0, 0.0064, 0.0115)
-        self.assertEqual(target, 98.85)
-        self.assertLess(target, 100.0)
+        with self.subTest(msg="sold_never_chases_market_above_profitable_buyback"):
+            target = anchored_exit_price("BUY", 100.0, 110.0, 0.0064, 0.0115)
+            self.assertEqual(target, 98.85)
+            self.assertLess(target, 100.0)
 
     def test_nonfinite_policy_and_quantity_fail_closed(self):
         with self.assertRaises(ValueError):
@@ -147,49 +148,50 @@ class PairCoordinatorTest(unittest.TestCase):
             [(t.side, t.price, pair) for t, pair in venue.orders],
             [("BUY", 99.36, "pair-1"), ("SELL", 100.64, "pair-1")])
 
-    def test_second_leg_failure_cancels_first_and_fails_closed(self):
-        venue = FakeVenue(fail_side="SELL")
-        outcome = _coordinator(venue).start(mid=100.0)
+    def test_second_leg_failure_behaviors(self):
+        with self.subTest(msg="cancels_first_and_fails_closed"):
+            venue = FakeVenue(fail_side="SELL")
+            outcome = _coordinator(venue).start(mid=100.0)
 
-        self.assertTrue(outcome.terminal)
-        self.assertEqual(outcome.reason, "sell_place_failed")
-        self.assertEqual(venue.canceled, ["L1"])
+            self.assertTrue(outcome.terminal)
+            self.assertEqual(outcome.reason, "sell_place_failed")
+            self.assertEqual(venue.canceled, ["L1"])
 
-    def test_second_leg_failure_with_unconfirmed_cancel_remains_recoverable(self):
-        venue = FakeVenue(fail_side="SELL")
-        venue.cancel_fail.add("L1")
+        with self.subTest(msg="with_unconfirmed_cancel_remains_recoverable"):
+            venue = FakeVenue(fail_side="SELL")
+            venue.cancel_fail.add("L1")
 
-        coordinator = _coordinator(venue)
-        outcome = coordinator.start(mid=100.0)
+            coordinator = _coordinator(venue)
+            outcome = coordinator.start(mid=100.0)
 
-        self.assertFalse(outcome.terminal)
-        self.assertEqual(outcome.phase, "startup_recovery")
-        self.assertEqual(outcome.reason, "sell_place_failed")
-        self.assertTrue(coordinator.tickets[0].active)
-        self.assertEqual(coordinator.export_state()["phase"], "startup_recovery")
+            self.assertFalse(outcome.terminal)
+            self.assertEqual(outcome.phase, "startup_recovery")
+            self.assertEqual(outcome.reason, "sell_place_failed")
+            self.assertTrue(coordinator.tickets[0].active)
+            self.assertEqual(coordinator.export_state()["phase"], "startup_recovery")
 
-    def test_second_leg_failure_with_cancel_exception_remains_recoverable(self):
-        venue = FakeVenue(fail_side="SELL")
-        venue.cancel_raise.add("L1")
+        with self.subTest(msg="with_cancel_exception_remains_recoverable"):
+            venue = FakeVenue(fail_side="SELL")
+            venue.cancel_raise.add("L1")
 
-        coordinator = _coordinator(venue)
-        outcome = coordinator.start(mid=100.0)
+            coordinator = _coordinator(venue)
+            outcome = coordinator.start(mid=100.0)
 
-        self.assertFalse(outcome.terminal)
-        self.assertEqual(outcome.phase, "startup_recovery")
-        self.assertTrue(coordinator.tickets[0].active)
+            self.assertFalse(outcome.terminal)
+            self.assertEqual(outcome.phase, "startup_recovery")
+            self.assertTrue(coordinator.tickets[0].active)
 
-    def test_second_leg_exception_keeps_the_first_leg_managed(self):
-        venue = FakeVenue()
-        venue.raise_side = "SELL"
-        venue.cancel_fail.add("L1")
+        with self.subTest(msg="exception_keeps_the_first_leg_managed"):
+            venue = FakeVenue()
+            venue.raise_side = "SELL"
+            venue.cancel_fail.add("L1")
 
-        coordinator = _coordinator(venue)
-        outcome = coordinator.start(mid=100.0)
+            coordinator = _coordinator(venue)
+            outcome = coordinator.start(mid=100.0)
 
-        self.assertFalse(outcome.terminal)
-        self.assertEqual(outcome.phase, "startup_recovery")
-        self.assertEqual([ticket.order_id for ticket in coordinator.tickets], ["L1"])
+            self.assertFalse(outcome.terminal)
+            self.assertEqual(outcome.phase, "startup_recovery")
+            self.assertEqual([ticket.order_id for ticket in coordinator.tickets], ["L1"])
 
     def test_first_leg_response_loss_stays_managed_until_later_recovery(self):
         venue = FakeVenue(fail_side="BUY")
@@ -264,44 +266,46 @@ class PairCoordinatorTest(unittest.TestCase):
             "late-sell",
             [ticket.order_id for ticket in coordinator.tickets])
 
-    def test_second_leg_failure_partial_fill_during_cancel_becomes_exposure(self):
-        venue = FakeVenue(fail_side="SELL")
-        venue.fill_on_cancel["L1"] = (0.4, 99.36)
+    def test_second_leg_failure_fill_during_cancel_behaviors(self):
+        with self.subTest(msg="partial_fill"):
+            venue = FakeVenue(fail_side="SELL")
+            venue.fill_on_cancel["L1"] = (0.4, 99.36)
 
-        coordinator = _coordinator(venue)
-        outcome = coordinator.start(mid=100.0)
+            coordinator = _coordinator(venue)
+            outcome = coordinator.start(mid=100.0)
 
-        self.assertFalse(outcome.terminal)
-        self.assertEqual(outcome.phase, "exposed")
-        self.assertAlmostEqual(outcome.net_qty, 0.4)
+            self.assertFalse(outcome.terminal)
+            self.assertEqual(outcome.phase, "exposed")
+            self.assertAlmostEqual(outcome.net_qty, 0.4)
 
-    def test_second_leg_failure_full_fill_during_cancel_becomes_exposure(self):
-        venue = FakeVenue(fail_side="SELL")
-        venue.fill_on_cancel["L1"] = (1.0, 99.36)
+        with self.subTest(msg="full_fill"):
+            venue = FakeVenue(fail_side="SELL")
+            venue.fill_on_cancel["L1"] = (1.0, 99.36)
 
-        coordinator = _coordinator(venue)
-        outcome = coordinator.start(mid=100.0)
+            coordinator = _coordinator(venue)
+            outcome = coordinator.start(mid=100.0)
 
-        self.assertFalse(outcome.terminal)
-        self.assertEqual(outcome.phase, "exposed")
-        self.assertAlmostEqual(outcome.net_qty, 1.0)
+            self.assertFalse(outcome.terminal)
+            self.assertEqual(outcome.phase, "exposed")
+            self.assertAlmostEqual(outcome.net_qty, 1.0)
 
-    def test_sell_first_places_both_legs_in_reverse_order(self):
-        venue = FakeVenue()
-        outcome = _coordinator(venue, start_side="SELL").start(mid=100.0)
+    def test_sell_first_behaviors(self):
+        with self.subTest(msg="places_both_legs_in_reverse_order"):
+            venue = FakeVenue()
+            outcome = _coordinator(venue, start_side="SELL").start(mid=100.0)
 
-        self.assertEqual(outcome.phase, "quoting")
-        self.assertEqual(
-            [(t.side, t.price, pair) for t, pair in venue.orders],
-            [("SELL", 100.64, "pair-1"), ("BUY", 99.36, "pair-1")])
+            self.assertEqual(outcome.phase, "quoting")
+            self.assertEqual(
+                [(t.side, t.price, pair) for t, pair in venue.orders],
+                [("SELL", 100.64, "pair-1"), ("BUY", 99.36, "pair-1")])
 
-    def test_sell_first_failure_does_not_attempt_buy(self):
-        venue = FakeVenue(fail_side="SELL")
-        outcome = _coordinator(venue, start_side="SELL").start(mid=100.0)
+        with self.subTest(msg="failure_does_not_attempt_buy"):
+            venue = FakeVenue(fail_side="SELL")
+            outcome = _coordinator(venue, start_side="SELL").start(mid=100.0)
 
-        self.assertTrue(outcome.terminal)
-        self.assertEqual(outcome.reason, "sell_place_failed")
-        self.assertEqual(venue.orders, [])
+            self.assertTrue(outcome.terminal)
+            self.assertEqual(outcome.reason, "sell_place_failed")
+            self.assertEqual(venue.orders, [])
 
     def test_venue_specific_insufficient_funds_reason_is_preserved(self):
         venue = FakeVenue(fail_side="BUY")
@@ -311,64 +315,65 @@ class PairCoordinatorTest(unittest.TestCase):
 
         self.assertEqual(outcome.reason, "buy_insufficient_funds:USDC")
 
-    def test_no_fill_until_ttl_cancels_both(self):
-        venue = FakeVenue()
-        coordinator = _coordinator(venue, quote_ttl_sec=32)
-        coordinator.start(mid=100.0)
+    def test_ttl_cancel_behaviors(self):
+        with self.subTest(msg="no_fill_until_ttl_cancels_both"):
+            venue = FakeVenue()
+            coordinator = _coordinator(venue, quote_ttl_sec=32)
+            coordinator.start(mid=100.0)
 
-        outcome = coordinator.step(now=33.0)
+            outcome = coordinator.step(now=33.0)
 
-        self.assertEqual(outcome.phase, "expired")
-        self.assertTrue(outcome.terminal)
-        self.assertCountEqual(venue.canceled, ["L1", "L2"])
-        self.assertEqual(coordinator.tickets, [])
-        self.assertEqual(coordinator.snapshots, {})
+            self.assertEqual(outcome.phase, "expired")
+            self.assertTrue(outcome.terminal)
+            self.assertCountEqual(venue.canceled, ["L1", "L2"])
+            self.assertEqual(coordinator.tickets, [])
+            self.assertEqual(coordinator.snapshots, {})
 
-    def test_ttl_does_not_terminalize_while_cancel_is_unconfirmed(self):
-        venue = FakeVenue()
-        coordinator = _coordinator(venue, quote_ttl_sec=32)
-        coordinator.start(mid=100.0)
-        venue.cancel_fail.add("L1")
+        with self.subTest(msg="ttl_does_not_terminalize_while_cancel_is_unconfirmed"):
+            venue = FakeVenue()
+            coordinator = _coordinator(venue, quote_ttl_sec=32)
+            coordinator.start(mid=100.0)
+            venue.cancel_fail.add("L1")
 
-        pending = coordinator.step(now=33.0)
+            pending = coordinator.step(now=33.0)
 
-        self.assertFalse(pending.terminal)
-        self.assertEqual(pending.reason, "quote_cancel_pending")
-        self.assertTrue(any(ticket.order_id == "L1" and ticket.active
-                            for ticket in coordinator.tickets))
+            self.assertFalse(pending.terminal)
+            self.assertEqual(pending.reason, "quote_cancel_pending")
+            self.assertTrue(any(ticket.order_id == "L1" and ticket.active
+                                for ticket in coordinator.tickets))
 
-    def test_balanced_pair_waits_for_cancel_confirmation_before_complete(self):
-        venue = FakeVenue()
-        coordinator = _coordinator(venue)
-        coordinator.start(mid=100.0)
-        venue.fill("L1", 0.5, 99.36, status="open")
-        venue.fill("L2", 0.5, 100.64, status="open")
-        venue.cancel_fail.add("L1")
+        with self.subTest(msg="balanced_pair_waits_for_cancel_confirmation"):
+            venue = FakeVenue()
+            coordinator = _coordinator(venue)
+            coordinator.start(mid=100.0)
+            venue.fill("L1", 0.5, 99.36, status="open")
+            venue.fill("L2", 0.5, 100.64, status="open")
+            venue.cancel_fail.add("L1")
 
-        pending = coordinator.step(now=5.0)
-        self.assertFalse(pending.terminal)
-        self.assertEqual(pending.phase, "closing")
-        self.assertEqual(pending.reason, "balanced_cancel_pending")
+            pending = coordinator.step(now=5.0)
+            self.assertFalse(pending.terminal)
+            self.assertEqual(pending.phase, "closing")
+            self.assertEqual(pending.reason, "balanced_cancel_pending")
 
-        venue.cancel_fail.clear()
-        complete = coordinator.step(now=6.0)
-        self.assertTrue(complete.terminal)
-        self.assertEqual(complete.phase, "complete")
+            venue.cancel_fail.clear()
+            complete = coordinator.step(now=6.0)
+            self.assertTrue(complete.terminal)
+            self.assertEqual(complete.phase, "complete")
 
-    def test_fill_during_ttl_cancel_is_reconciled_as_exposure(self):
-        venue = FakeVenue(current=99.36)
-        coordinator = _coordinator(venue, quote_ttl_sec=32)
-        coordinator.start(mid=100.0)
-        venue.fill_on_cancel["L1"] = (1.0, 99.36)
+        with self.subTest(msg="fill_during_ttl_cancel_is_reconciled_as_exposure"):
+            venue = FakeVenue(current=99.36)
+            coordinator = _coordinator(venue, quote_ttl_sec=32)
+            coordinator.start(mid=100.0)
+            venue.fill_on_cancel["L1"] = (1.0, 99.36)
 
-        outcome = coordinator.step(now=33.0)
+            outcome = coordinator.step(now=33.0)
 
-        self.assertEqual(outcome.phase, "exposed")
-        self.assertFalse(outcome.terminal)
-        self.assertAlmostEqual(outcome.net_qty, 1.0)
-        replacement = venue.orders[-1][0]
-        self.assertEqual(replacement.side, "SELL")
-        self.assertGreater(replacement.price, 99.36)
+            self.assertEqual(outcome.phase, "exposed")
+            self.assertFalse(outcome.terminal)
+            self.assertAlmostEqual(outcome.net_qty, 1.0)
+            replacement = venue.orders[-1][0]
+            self.assertEqual(replacement.side, "SELL")
+            self.assertGreater(replacement.price, 99.36)
 
     def test_both_fills_complete_cycle_and_measure_fast_latency(self):
         venue = FakeVenue()
@@ -716,39 +721,40 @@ class PairCoordinatorTest(unittest.TestCase):
         self.assertTrue(finished.terminal)
         self.assertAlmostEqual(finished.net_qty, 0.0)
 
-    def test_hard_stop_uses_net_remainder_after_fill_during_cancel(self):
-        venue = FakeVenue(current=95.0)
-        coordinator = _coordinator(
-            venue, quote_ttl_sec=32, fast_fill_ratio=0.25,
-            shock_hard_stop_fraction=0.04)
-        coordinator.start(mid=100.0)
-        venue.fill("L1", 1.0, 99.36)
-        venue.fill_on_cancel["L2"] = (0.25, 100.64)
+    def test_hard_stop_fill_during_cancel_behaviors(self):
+        with self.subTest(msg="uses_net_remainder_after_partial_fill"):
+            venue = FakeVenue(current=95.0)
+            coordinator = _coordinator(
+                venue, quote_ttl_sec=32, fast_fill_ratio=0.25,
+                shock_hard_stop_fraction=0.04)
+            coordinator.start(mid=100.0)
+            venue.fill("L1", 1.0, 99.36)
+            venue.fill_on_cancel["L2"] = (0.25, 100.64)
 
-        outcome = coordinator.step(now=5.0)
+            outcome = coordinator.step(now=5.0)
 
-        self.assertEqual(outcome.phase, "stopping")
-        self.assertEqual(
-            venue.market_calls,
-            [("SELL", 0.75, "fast_fill_hard_stop")])
-        self.assertEqual(venue.preflight_calls[0][1], 1.0)
-        self.assertIs(venue.market_permits[-1], venue.preflight_permit)
+            self.assertEqual(outcome.phase, "stopping")
+            self.assertEqual(
+                venue.market_calls,
+                [("SELL", 0.75, "fast_fill_hard_stop")])
+            self.assertEqual(venue.preflight_calls[0][1], 1.0)
+            self.assertIs(venue.market_permits[-1], venue.preflight_permit)
 
-    def test_hard_stop_skips_market_when_cancel_race_flattens_exposure(self):
-        venue = FakeVenue(current=95.0)
-        coordinator = _coordinator(
-            venue, quote_ttl_sec=32, fast_fill_ratio=0.25,
-            shock_hard_stop_fraction=0.04)
-        coordinator.start(mid=100.0)
-        venue.fill("L1", 1.0, 99.36)
-        venue.fill_on_cancel["L2"] = (1.0, 100.64)
+        with self.subTest(msg="skips_market_when_race_flattens_exposure"):
+            venue = FakeVenue(current=95.0)
+            coordinator = _coordinator(
+                venue, quote_ttl_sec=32, fast_fill_ratio=0.25,
+                shock_hard_stop_fraction=0.04)
+            coordinator.start(mid=100.0)
+            venue.fill("L1", 1.0, 99.36)
+            venue.fill_on_cancel["L2"] = (1.0, 100.64)
 
-        outcome = coordinator.step(now=5.0)
+            outcome = coordinator.step(now=5.0)
 
-        self.assertEqual(outcome.phase, "hard_stop")
-        self.assertTrue(outcome.terminal)
-        self.assertAlmostEqual(outcome.net_qty, 0.0)
-        self.assertEqual(venue.market_calls, [])
+            self.assertEqual(outcome.phase, "hard_stop")
+            self.assertTrue(outcome.terminal)
+            self.assertAlmostEqual(outcome.net_qty, 0.0)
+            self.assertEqual(venue.market_calls, [])
 
     def test_terminal_partial_hard_stop_submits_one_remainder_revision(self):
         venue = FakeVenue(current=95.0)

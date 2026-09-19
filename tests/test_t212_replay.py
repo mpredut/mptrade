@@ -63,143 +63,145 @@ def _params(**overrides):
 
 
 class T212ReplayTest(unittest.TestCase):
-    def test_partial_fill_remains_open_for_later_bars(self):
-        params = _params()
-        bars = [(100, 101, 99, 100), (100, 101, 99, 100)]
-        full = replay.run_replay(bars, params, bar_minutes=1440)
-        partial = replay.run_replay(
-            bars, params, bar_minutes=1440,
-            execution=replay.ExecutionModel(partial_fill_ratio=0.5),
-        )
-        self.assertEqual(full["fills"], 1)
-        self.assertEqual(partial["fills"], 1)
-        self.assertAlmostEqual(partial["open_qty"], full["open_qty"] / 2)
+    def test_replay_core_mechanics(self):
+        with self.subTest(msg="partial_fill_remains_open_for_later_bars"):
+            params = _params()
+            bars = [(100, 101, 99, 100), (100, 101, 99, 100)]
+            full = replay.run_replay(bars, params, bar_minutes=1440)
+            partial = replay.run_replay(
+                bars, params, bar_minutes=1440,
+                execution=replay.ExecutionModel(partial_fill_ratio=0.5),
+            )
+            self.assertEqual(full["fills"], 1)
+            self.assertEqual(partial["fills"], 1)
+            self.assertAlmostEqual(partial["open_qty"], full["open_qty"] / 2)
 
-    def test_historical_fx_changes_position_sizing_at_decision_time(self):
-        params = _params(STRAT_CURRENCY="RON")
-        bars = [(100, 101, 99, 100), (100, 101, 99, 100)]
-        one_to_one = replay.run_replay(bars, params, bar_minutes=1440, fx_to_usd=1.0)
-        historical = replay.run_replay(
-            bars, params, bar_minutes=1440, fx_to_usd=[0.5, 0.5],
-        )
-        self.assertAlmostEqual(historical["open_qty"], one_to_one["open_qty"] / 2)
-        self.assertEqual(historical["account_currency"], "RON")
+        with self.subTest(msg="historical_fx_changes_position_sizing_at_decision_time"):
+            params = _params(STRAT_CURRENCY="RON")
+            bars = [(100, 101, 99, 100), (100, 101, 99, 100)]
+            one_to_one = replay.run_replay(bars, params, bar_minutes=1440, fx_to_usd=1.0)
+            historical = replay.run_replay(
+                bars, params, bar_minutes=1440, fx_to_usd=[0.5, 0.5],
+            )
+            self.assertAlmostEqual(historical["open_qty"], one_to_one["open_qty"] / 2)
+            self.assertEqual(historical["account_currency"], "RON")
 
-    def test_worst_case_reports_ambiguous_buy_and_sell_paths(self):
-        params = _params()
-        bars = [
-            (100, 101, 99, 100),   # decide ENTRY
-            (100, 101, 99, 100),   # fill ENTRY, decide TP
-            (97, 101, 96.9, 97),   # decides DCA; the TP stays open
-            (100, 104, 96, 100),   # hits both the DCA BUY and the TP SELL
-        ]
-        result = replay.run_replay(
-            bars, params, bar_minutes=1440,
-            execution=replay.ExecutionModel(intrabar_policy="worst_case"),
-        )
-        self.assertGreaterEqual(result["ambiguous_bars"], 1)
-        self.assertIn(result["intrabar_policy_selected"], {"buy_first", "sell_first"})
-        scenarios = result["intrabar_scenarios"]
-        self.assertNotEqual(
-            scenarios["buy_first"]["return_pct"],
-            scenarios["sell_first"]["return_pct"],
-        )
+        with self.subTest(msg="worst_case_reports_ambiguous_buy_and_sell_paths"):
+            params = _params()
+            bars = [
+                (100, 101, 99, 100),   # decide ENTRY
+                (100, 101, 99, 100),   # fill ENTRY, decide TP
+                (97, 101, 96.9, 97),   # decides DCA; the TP stays open
+                (100, 104, 96, 100),   # hits both the DCA BUY and the TP SELL
+            ]
+            result = replay.run_replay(
+                bars, params, bar_minutes=1440,
+                execution=replay.ExecutionModel(intrabar_policy="worst_case"),
+            )
+            self.assertGreaterEqual(result["ambiguous_bars"], 1)
+            self.assertIn(result["intrabar_policy_selected"], {"buy_first", "sell_first"})
+            scenarios = result["intrabar_scenarios"]
+            self.assertNotEqual(
+                scenarios["buy_first"]["return_pct"],
+                scenarios["sell_first"]["return_pct"],
+            )
 
-    def test_order_decided_at_close_fills_only_in_next_bar(self):
-        params = _params()
-        first = (100.0, 200.0, 1.0, 100.0)
-        one = replay.run_replay([first], params, bar_minutes=1440)
-        self.assertEqual(one["fills"], 0)
-        self.assertEqual(one["open_qty"], 0.0)
+        with self.subTest(msg="order_decided_at_close_fills_only_in_next_bar"):
+            params = _params()
+            first = (100.0, 200.0, 1.0, 100.0)
+            one = replay.run_replay([first], params, bar_minutes=1440)
+            self.assertEqual(one["fills"], 0)
+            self.assertEqual(one["open_qty"], 0.0)
 
-        second = (100.0, 101.0, 99.0, 100.0)
-        two = replay.run_replay([first, second], params, bar_minutes=1440)
-        self.assertEqual(two["fills"], 1)
-        self.assertGreater(two["open_qty"], 0.0)
-        self.assertAlmostEqual(two["net_pnl"], two["total"])
+            second = (100.0, 101.0, 99.0, 100.0)
+            two = replay.run_replay([first, second], params, bar_minutes=1440)
+            self.assertEqual(two["fills"], 1)
+            self.assertGreater(two["open_qty"], 0.0)
+            self.assertAlmostEqual(two["net_pnl"], two["total"])
 
-    def test_market_stop_fills_at_next_open_and_slippage_is_adverse(self):
-        params = _params(STRAT_STOP_LOSS_PCT="20")
-        bars = [
-            (100, 101, 99, 100),  # decide ENTRY
-            (100, 101, 99, 100),  # fill ENTRY
-            (70, 71, 69, 70),     # decide STOP MARKET la close
-            (65, 66, 64, 65),     # A STOP fill at the open, right after the gap.
-        ]
-        base = replay.run_replay(bars, params, bar_minutes=1440)
-        stressed = replay.run_replay(
-            bars, params, bar_minutes=1440,
-            execution=replay.ExecutionModel(market_slippage_bps=100),
-        )
-        self.assertEqual(base["open_qty"], 0.0)
-        self.assertEqual(base["cycles"], 1)
-        self.assertLess(stressed["total"], base["total"])
+        with self.subTest(msg="market_stop_fills_at_next_open_and_slippage_is_adverse"):
+            params = _params(STRAT_STOP_LOSS_PCT="20")
+            bars = [
+                (100, 101, 99, 100),  # decide ENTRY
+                (100, 101, 99, 100),  # fill ENTRY
+                (70, 71, 69, 70),     # decide STOP MARKET la close
+                (65, 66, 64, 65),     # A STOP fill at the open, right after the gap.
+            ]
+            base = replay.run_replay(bars, params, bar_minutes=1440)
+            stressed = replay.run_replay(
+                bars, params, bar_minutes=1440,
+                execution=replay.ExecutionModel(market_slippage_bps=100),
+            )
+            self.assertEqual(base["open_qty"], 0.0)
+            self.assertEqual(base["cycles"], 1)
+            self.assertLess(stressed["total"], base["total"])
 
-    def test_partial_sell_reduces_remaining_cost_basis(self):
-        params = _params()
-        engine = strategy.Strategy(
-            MagicMock(), "TEST_US_EQ", params, dry_run=True,
-            initial_state=strategy._new_state(), fx_to_usd=1.0,
-        )
-        engine.s.update({"qty": 2.0, "cost_usd": 200.0, "spent_cash": 200.0})
-        strategy.notify = lambda **_kwargs: None
-        engine._apply_fill(
-            {"side": "SELL", "kind": "TP", "qty": 1.0, "limit": 110.0},
-            1.0, 110.0,
-        )
-        self.assertEqual(engine.s["qty"], 1.0)
-        self.assertAlmostEqual(engine.s["cost_usd"], 100.0)
-        self.assertAlmostEqual(engine._avg_cost(), 100.0)
+        with self.subTest(msg="partial_fill_worst_case_handles_fractional_dust"):
+            params = _params(STRAT_ENTRY="1", STRAT_TAKEPROFIT_PCT="1")
+            bars = [
+                (100.0, 101.0, 99.0, 100.0),
+                (100.0, 102.0, 99.0, 101.0),
+                (101.0, 103.0, 100.0, 102.0),
+            ]
 
-    def test_dust_sell_does_not_create_zero_quantity_order(self):
-        params = _params()
-        engine = strategy.Strategy(
-            MagicMock(), "TEST_US_EQ", params, dry_run=True,
-            initial_state=strategy._new_state(), fx_to_usd=1.0,
-        )
+            result = replay.run_replay(
+                bars, params, bar_minutes=1440,
+                execution=replay.ExecutionModel(
+                    partial_fill_ratio=0.75, intrabar_policy="worst_case",
+                ),
+            )
 
-        self.assertFalse(engine._place_sell(0.004, 110.0))
-        self.assertEqual(engine.s["orders"], [])
+            self.assertGreaterEqual(result["fills"], 1)
 
-    def test_partial_fill_worst_case_handles_fractional_dust(self):
-        params = _params(STRAT_ENTRY="1", STRAT_TAKEPROFIT_PCT="1")
-        bars = [
-            (100.0, 101.0, 99.0, 100.0),
-            (100.0, 102.0, 99.0, 101.0),
-            (101.0, 103.0, 100.0, 102.0),
-        ]
+        with self.subTest(msg="trend_gate_refuses_wrong_cadence"):
+            params = _params(STRAT_DCA_TREND_GATE_PCT="0.1")
+            with self.assertRaisesRegex(ValueError, "5-minute bars"):
+                replay.run_replay([(100, 101, 99, 100)], params, bar_minutes=1440)
 
-        result = replay.run_replay(
-            bars, params, bar_minutes=1440,
-            execution=replay.ExecutionModel(
-                partial_fill_ratio=0.75, intrabar_policy="worst_case",
-            ),
-        )
+    def test_strategy_engine_direct_actions(self):
+        with self.subTest(msg="partial_sell_reduces_remaining_cost_basis"):
+            params = _params()
+            engine = strategy.Strategy(
+                MagicMock(), "TEST_US_EQ", params, dry_run=True,
+                initial_state=strategy._new_state(), fx_to_usd=1.0,
+            )
+            engine.s.update({"qty": 2.0, "cost_usd": 200.0, "spent_cash": 200.0})
+            strategy.notify = lambda **_kwargs: None
+            engine._apply_fill(
+                {"side": "SELL", "kind": "TP", "qty": 1.0, "limit": 110.0},
+                1.0, 110.0,
+            )
+            self.assertEqual(engine.s["qty"], 1.0)
+            self.assertAlmostEqual(engine.s["cost_usd"], 100.0)
+            self.assertAlmostEqual(engine._avg_cost(), 100.0)
 
-        self.assertGreaterEqual(result["fills"], 1)
+        with self.subTest(msg="dust_sell_does_not_create_zero_quantity_order"):
+            params = _params()
+            engine = strategy.Strategy(
+                MagicMock(), "TEST_US_EQ", params, dry_run=True,
+                initial_state=strategy._new_state(), fx_to_usd=1.0,
+            )
 
-    def test_paper_stop_arms_same_rebuy_as_real_path(self):
-        params = _params(STRAT_SL_REBUY_ENABLED="true", STRAT_SL_REBUY_BOUNCE_PCT="1.2")
-        engine = strategy.Strategy(
-            MagicMock(), "TEST_US_EQ", params, dry_run=True,
-            initial_state=strategy._new_state(), fx_to_usd=1.0,
-        )
-        engine.s.update({
-            "qty": 1.0, "cost_usd": 100.0, "spent_cash": 100.0,
-            "sl_pending": True,
-        })
-        strategy.notify = lambda **_kwargs: None
-        engine._apply_fill(
-            {"side": "SELL", "kind": "SL", "qty": 1.0, "limit": 70.0},
-            1.0, 70.0,
-        )
-        self.assertEqual(engine.s["last_sell_price"], 70.0)
-        self.assertEqual(engine.s["sl_rebuy"], {"low": 70.0, "sell_price": 70.0})
+            self.assertFalse(engine._place_sell(0.004, 110.0))
+            self.assertEqual(engine.s["orders"], [])
 
-    def test_trend_gate_refuses_wrong_cadence(self):
-        params = _params(STRAT_DCA_TREND_GATE_PCT="0.1")
-        with self.assertRaisesRegex(ValueError, "5-minute bars"):
-            replay.run_replay([(100, 101, 99, 100)], params, bar_minutes=1440)
+        with self.subTest(msg="paper_stop_arms_same_rebuy_as_real_path"):
+            params = _params(STRAT_SL_REBUY_ENABLED="true", STRAT_SL_REBUY_BOUNCE_PCT="1.2")
+            engine = strategy.Strategy(
+                MagicMock(), "TEST_US_EQ", params, dry_run=True,
+                initial_state=strategy._new_state(), fx_to_usd=1.0,
+            )
+            engine.s.update({
+                "qty": 1.0, "cost_usd": 100.0, "spent_cash": 100.0,
+                "sl_pending": True,
+            })
+            strategy.notify = lambda **_kwargs: None
+            engine._apply_fill(
+                {"side": "SELL", "kind": "SL", "qty": 1.0, "limit": 70.0},
+                1.0, 70.0,
+            )
+            self.assertEqual(engine.s["last_sell_price"], 70.0)
+            self.assertEqual(engine.s["sl_rebuy"], {"low": 70.0, "sell_price": 70.0})
 
 
 class T212StatePersistenceTest(unittest.TestCase):
@@ -207,58 +209,59 @@ class T212StatePersistenceTest(unittest.TestCase):
     def _client():
         return MagicMock()
 
-    def test_corrupt_state_fails_closed_live_but_may_reset_in_paper(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "state.json")
-            with open(path, "w", encoding="utf-8") as handle:
-                handle.write("not-json")
-            with patch.object(strategy, "state_path_for", return_value=path):
-                with self.assertRaisesRegex(RuntimeError, "stare T212 invalida"):
-                    strategy.Strategy(
-                        self._client(), "TEST_US_EQ", _params(), dry_run=False,
+    def test_state_persistence_behaviors(self):
+        with self.subTest(msg="corrupt_state_fails_closed_live_but_may_reset_in_paper"):
+            with tempfile.TemporaryDirectory() as directory:
+                path = os.path.join(directory, "state.json")
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write("not-json")
+                with patch.object(strategy, "state_path_for", return_value=path):
+                    with self.assertRaisesRegex(RuntimeError, "stare T212 invalida"):
+                        strategy.Strategy(
+                            self._client(), "TEST_US_EQ", _params(), dry_run=False,
+                            fx_to_usd=1.0,
+                        )
+                    paper = strategy.Strategy(
+                        self._client(), "TEST_US_EQ", _params(), dry_run=True,
                         fx_to_usd=1.0,
                     )
-                paper = strategy.Strategy(
-                    self._client(), "TEST_US_EQ", _params(), dry_run=True,
-                    fx_to_usd=1.0,
+                self.assertEqual(paper.s, strategy._new_state())
+
+        with self.subTest(msg="live_save_is_atomic"):
+            with tempfile.TemporaryDirectory() as directory:
+                path = os.path.join(directory, "state.json")
+                engine = strategy.Strategy(
+                    self._client(), "TEST_US_EQ", _params(), dry_run=False,
+                    initial_state=strategy._new_state(), fx_to_usd=1.0,
                 )
-            self.assertEqual(paper.s, strategy._new_state())
+                engine.state_file = path
+                engine.s["qty"] = 1.25
 
-    def test_live_save_is_atomic(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "state.json")
-            engine = strategy.Strategy(
-                self._client(), "TEST_US_EQ", _params(), dry_run=False,
-                initial_state=strategy._new_state(), fx_to_usd=1.0,
-            )
-            engine.state_file = path
-            engine.s["qty"] = 1.25
+                engine._save()
 
-            engine._save()
+                with open(path, encoding="utf-8") as handle:
+                    self.assertEqual(json.load(handle)["qty"], 1.25)
+                self.assertEqual(os.listdir(directory), ["state.json"])
 
-            with open(path, encoding="utf-8") as handle:
-                self.assertEqual(json.load(handle)["qty"], 1.25)
-            self.assertEqual(os.listdir(directory), ["state.json"])
-
-    def test_failed_save_marks_state_dirty_and_live_fails_closed(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "state.json")
-            for dry_run in (True, False):
-                with self.subTest(dry_run=dry_run):
-                    engine = strategy.Strategy(
-                        self._client(), "TEST_US_EQ", _params(), dry_run=dry_run,
-                        initial_state=strategy._new_state(), fx_to_usd=1.0,
-                    )
-                    engine.state_file = path
-                    with patch(
-                        "strategies.state_store.os.replace", side_effect=OSError("disk")
-                    ):
-                        if dry_run:
-                            engine._save()
-                        else:
-                            with self.assertRaisesRegex(RuntimeError, "persisting the"):
+        with self.subTest(msg="failed_save_marks_state_dirty_and_live_fails_closed"):
+            with tempfile.TemporaryDirectory() as directory:
+                path = os.path.join(directory, "state.json")
+                for dry_run in (True, False):
+                    with self.subTest(dry_run=dry_run):
+                        engine = strategy.Strategy(
+                            self._client(), "TEST_US_EQ", _params(), dry_run=dry_run,
+                            initial_state=strategy._new_state(), fx_to_usd=1.0,
+                        )
+                        engine.state_file = path
+                        with patch(
+                            "strategies.state_store.os.replace", side_effect=OSError("disk")
+                        ):
+                            if dry_run:
                                 engine._save()
-                    self.assertTrue(engine._state_write_failed)
+                            else:
+                                with self.assertRaisesRegex(RuntimeError, "persisting the"):
+                                    engine._save()
+                        self.assertTrue(engine._state_write_failed)
 
 
 class _FillClient:
@@ -305,113 +308,114 @@ class T212ExactFillReconciliationTest(unittest.TestCase):
         engine._save = lambda: None
         return engine
 
-    def test_partial_and_terminal_sell_use_cumulative_fill_prices_not_poll_price(self):
-        client = _FillClient()
-        with tempfile.TemporaryDirectory() as audit_dir:
-            engine = self._engine(client, audit_dir)
-            with patch.object(strategy, "notify"):
-                engine._reconcile_real(150.0)  # poll-ul e deliberat departe de fill-ul 110
+    def test_reconciliation_behaviors(self):
+        with self.subTest(msg="partial_and_terminal_sell_use_cumulative_fill_prices_not_poll_price"):
+            client = _FillClient()
+            with tempfile.TemporaryDirectory() as audit_dir:
+                engine = self._engine(client, audit_dir)
+                with patch.object(strategy, "notify"):
+                    engine._reconcile_real(150.0)  # poll-ul e deliberat departe de fill-ul 110
 
-            self.assertAlmostEqual(engine.s["qty"], 0.5)
-            self.assertAlmostEqual(engine.s["realized_pnl_usd"], 5.0)
-            self.assertAlmostEqual(engine.s["last_sell_price"], 110.0)
-            self.assertAlmostEqual(engine.s["orders"][0]["applied_fill_qty"], 0.5)
+                self.assertAlmostEqual(engine.s["qty"], 0.5)
+                self.assertAlmostEqual(engine.s["realized_pnl_usd"], 5.0)
+                self.assertAlmostEqual(engine.s["last_sell_price"], 110.0)
+                self.assertAlmostEqual(engine.s["orders"][0]["applied_fill_qty"], 0.5)
 
-            client.portfolio = [{"ticker": "TEST_US_EQ", "quantity": 0.0, "averagePrice": 0.0}]
-            client.active = []
-            client.status = {
-                "id": "SELL-1", "ticker": "TEST_US_EQ", "status": "FILLED",
-                "filledQuantity": 1.0, "filledValue": 112.0,
-            }
-            with patch.object(strategy, "notify"):
-                engine._reconcile_real(160.0)
+                client.portfolio = [{"ticker": "TEST_US_EQ", "quantity": 0.0, "averagePrice": 0.0}]
+                client.active = []
+                client.status = {
+                    "id": "SELL-1", "ticker": "TEST_US_EQ", "status": "FILLED",
+                    "filledQuantity": 1.0, "filledValue": 112.0,
+                }
+                with patch.object(strategy, "notify"):
+                    engine._reconcile_real(160.0)
 
-            # The second half executed at 114; the gross total = 5 + 7, not at 150/160.
-            self.assertAlmostEqual(engine.s["realized_pnl_usd"], 12.0)
-            self.assertAlmostEqual(engine.s["last_sell_price"], 114.0)
-            self.assertEqual(engine.s["qty"], 0.0)
+                # The second half executed at 114; the gross total = 5 + 7, not at 150/160.
+                self.assertAlmostEqual(engine.s["realized_pnl_usd"], 12.0)
+                self.assertAlmostEqual(engine.s["last_sell_price"], 114.0)
+                self.assertEqual(engine.s["qty"], 0.0)
 
-    def test_canceled_unfilled_ladder_order_is_not_marked_as_sold(self):
-        client = _FillClient()
-        client.portfolio = [{"ticker": "TEST_US_EQ", "quantity": 1.0, "averagePrice": 100.0}]
-        client.active = []
-        client.status = {
-            "id": "SELL-1", "ticker": "TEST_US_EQ", "status": "CANCELLED",
-            "filledQuantity": 0.0, "filledValue": 0.0,
-        }
-        with tempfile.TemporaryDirectory() as audit_dir:
-            engine = self._engine(client, audit_dir)
-            engine.s["orders"][0]["level"] = 10.0
-            with patch.object(strategy, "notify"):
-                engine._reconcile_real(100.0)
-        self.assertEqual(engine.s["orders"], [])
-        self.assertEqual(engine.s["tp_sold_levels"], [])
-
-    def test_partial_dca_counts_one_buy_across_multiple_reconciliations(self):
-        client = _FillClient()
-        client.active = [{"id": "BUY-1", "ticker": "TEST_US_EQ"}]
-        client.portfolio = [{
-            "ticker": "TEST_US_EQ", "quantity": 1.5,
-            "averagePrice": 145.0 / 1.5,
-        }]
-        client.status = {
-            "id": "BUY-1", "ticker": "TEST_US_EQ", "status": "PARTIALLY_FILLED",
-            "filledQuantity": 0.5, "filledValue": 45.0,
-        }
-        with tempfile.TemporaryDirectory() as audit_dir:
-            engine = self._engine(client, audit_dir)
-            engine.s["orders"] = [{
-                "id": "BUY-1", "side": "BUY", "qty": 1.0,
-                "limit": 90.0, "amount": 90.0, "kind": "DCA",
-                "intent_id": "t212-test-dca", "ts": 0.0,
-            }]
-            with patch.object(strategy, "notify"):
-                engine._reconcile_real(90.0)
-            self.assertEqual(engine.s["dca_buys"], 1)
-
-            client.portfolio = [{
-                "ticker": "TEST_US_EQ", "quantity": 1.75,
-                "averagePrice": 167.5 / 1.75,
-            }]
-            client.status.update(filledQuantity=0.75, filledValue=67.5)
-            with patch.object(strategy, "notify"):
-                engine._reconcile_real(90.0)
-        self.assertEqual(engine.s["dca_buys"], 1)
-
-    def test_fill_racing_with_accepted_cancel_is_still_reconciled_exactly(self):
-        client = _FillClient()
-        client.portfolio = [{
-            "ticker": "TEST_US_EQ", "quantity": 1.0, "averagePrice": 100.0,
-        }]
-        client.active = [{"id": "SELL-1", "ticker": "TEST_US_EQ"}]
-        client.status = {
-            "id": "SELL-1", "ticker": "TEST_US_EQ", "status": "CONFIRMED",
-            "filledQuantity": 0.0, "filledValue": 0.0,
-        }
-        with tempfile.TemporaryDirectory() as audit_dir:
-            engine = self._engine(client, audit_dir)
-            order = engine.s["orders"][0]
-
-            self.assertTrue(engine._cancel_specific(order))
-            self.assertIn(order, engine.s["orders"])
-
-            # One half executes in the very race with the cancellation. The terminal status
-            # must be read before we forget the order, otherwise the P&L would use the poll price.
-            client.portfolio = [{
-                "ticker": "TEST_US_EQ", "quantity": 0.5, "averagePrice": 100.0,
-            }]
+        with self.subTest(msg="canceled_unfilled_ladder_order_is_not_marked_as_sold"):
+            client = _FillClient()
+            client.portfolio = [{"ticker": "TEST_US_EQ", "quantity": 1.0, "averagePrice": 100.0}]
             client.active = []
             client.status = {
                 "id": "SELL-1", "ticker": "TEST_US_EQ", "status": "CANCELLED",
-                "filledQuantity": 0.5, "filledValue": 55.0,
+                "filledQuantity": 0.0, "filledValue": 0.0,
             }
-            with patch.object(strategy, "notify"):
-                engine._reconcile_real(150.0)
+            with tempfile.TemporaryDirectory() as audit_dir:
+                engine = self._engine(client, audit_dir)
+                engine.s["orders"][0]["level"] = 10.0
+                with patch.object(strategy, "notify"):
+                    engine._reconcile_real(100.0)
+            self.assertEqual(engine.s["orders"], [])
+            self.assertEqual(engine.s["tp_sold_levels"], [])
 
-        self.assertEqual(engine.s["orders"], [])
-        self.assertAlmostEqual(engine.s["qty"], 0.5)
-        self.assertAlmostEqual(engine.s["realized_pnl_usd"], 5.0)
-        self.assertAlmostEqual(engine.s["last_sell_price"], 110.0)
+        with self.subTest(msg="partial_dca_counts_one_buy_across_multiple_reconciliations"):
+            client = _FillClient()
+            client.active = [{"id": "BUY-1", "ticker": "TEST_US_EQ"}]
+            client.portfolio = [{
+                "ticker": "TEST_US_EQ", "quantity": 1.5,
+                "averagePrice": 145.0 / 1.5,
+            }]
+            client.status = {
+                "id": "BUY-1", "ticker": "TEST_US_EQ", "status": "PARTIALLY_FILLED",
+                "filledQuantity": 0.5, "filledValue": 45.0,
+            }
+            with tempfile.TemporaryDirectory() as audit_dir:
+                engine = self._engine(client, audit_dir)
+                engine.s["orders"] = [{
+                    "id": "BUY-1", "side": "BUY", "qty": 1.0,
+                    "limit": 90.0, "amount": 90.0, "kind": "DCA",
+                    "intent_id": "t212-test-dca", "ts": 0.0,
+                }]
+                with patch.object(strategy, "notify"):
+                    engine._reconcile_real(90.0)
+                self.assertEqual(engine.s["dca_buys"], 1)
+
+                client.portfolio = [{
+                    "ticker": "TEST_US_EQ", "quantity": 1.75,
+                    "averagePrice": 167.5 / 1.75,
+                }]
+                client.status.update(filledQuantity=0.75, filledValue=67.5)
+                with patch.object(strategy, "notify"):
+                    engine._reconcile_real(90.0)
+            self.assertEqual(engine.s["dca_buys"], 1)
+
+        with self.subTest(msg="fill_racing_with_accepted_cancel_is_still_reconciled_exactly"):
+            client = _FillClient()
+            client.portfolio = [{
+                "ticker": "TEST_US_EQ", "quantity": 1.0, "averagePrice": 100.0,
+            }]
+            client.active = [{"id": "SELL-1", "ticker": "TEST_US_EQ"}]
+            client.status = {
+                "id": "SELL-1", "ticker": "TEST_US_EQ", "status": "CONFIRMED",
+                "filledQuantity": 0.0, "filledValue": 0.0,
+            }
+            with tempfile.TemporaryDirectory() as audit_dir:
+                engine = self._engine(client, audit_dir)
+                order = engine.s["orders"][0]
+
+                self.assertTrue(engine._cancel_specific(order))
+                self.assertIn(order, engine.s["orders"])
+
+                # One half executes in the very race with the cancellation. The terminal status
+                # must be read before we forget the order, otherwise the P&L would use the poll price.
+                client.portfolio = [{
+                    "ticker": "TEST_US_EQ", "quantity": 0.5, "averagePrice": 100.0,
+                }]
+                client.active = []
+                client.status = {
+                    "id": "SELL-1", "ticker": "TEST_US_EQ", "status": "CANCELLED",
+                    "filledQuantity": 0.5, "filledValue": 55.0,
+                }
+                with patch.object(strategy, "notify"):
+                    engine._reconcile_real(150.0)
+
+            self.assertEqual(engine.s["orders"], [])
+            self.assertAlmostEqual(engine.s["qty"], 0.5)
+            self.assertAlmostEqual(engine.s["realized_pnl_usd"], 5.0)
+            self.assertAlmostEqual(engine.s["last_sell_price"], 110.0)
 
 
 class _CancelClient:

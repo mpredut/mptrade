@@ -49,7 +49,7 @@ from botcore import (
     single_instance,
 )
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
-_load_dotenv(os.path.join(_CONFIG_ROOT, "cachemanager_config.env"))
+_load_dotenv(os.path.join(_CONFIG_ROOT, "config.env"))
 
 # Dynamic-window bounds for ``get_instant_trend_for_window``. Values below the minimum
 # provide too few samples for a meaningful slope; values above the maximum add unjustified

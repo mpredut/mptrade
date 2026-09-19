@@ -35,13 +35,13 @@ from pricewindow import (PriceTrendAnalyzer, PriceWindow, WindowAnalyzer,
                          WINDOW_SECONDS_SMALL, WINDOW_SECONDS_BIG)
 
 # July 23: load tunable parameters from the versioned, secret-free
-# tradeall_config.env before reading any environment variables below.
+# config.env before reading any environment variables below.
 # botcore.load_dotenv does not overwrite variables already set by the real
 # environment (for example, a systemd EnvironmentFile); it only fills gaps.
 from botcore import (load_dotenv as _load_dotenv,
                      required_float_env, required_int_env)
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "tradeall_config.env"))
+                          "config.env"))
 
 
 TIME_SLEEP_GET_PRICE = 0.8       # Nominal price-collection sleep interval in seconds.

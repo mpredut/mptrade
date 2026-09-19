@@ -21,7 +21,7 @@ from state_io import atomic_write_json
 
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
-load_dotenv(os.path.join(_ROOT, "cachemanager_config.env"))
+load_dotenv(os.path.join(_ROOT, "config.env"))
 
 
 def _positive_finite(value: float, name: str) -> float:

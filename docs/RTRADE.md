@@ -1,7 +1,7 @@
 # rtrade — financial policy, execution and operations
 
 A reference document for `rtrade.py`, `strategies/rtrade_pair.py` and
-`rtrade_pair_store.py`. The effective configuration remains `rtrade_config.env`; the values
+`rtrade_pair_store.py`. The effective configuration remains `config.env`; the values
 below describe the live profile as of 23 August 2026.
 
 ## Financial verdict

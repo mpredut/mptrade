@@ -24,7 +24,7 @@ delivery through terminal venue truth: acceptance is persisted and monitored, ne
 called a fill. Rejected/expired orders can retry only their unfilled remainder, while
 an intentional/ambiguous cancellation is never blindly resubmitted. Queue retry still
 cannot reconstruct every originating strategy signal, so it relies on placement guards
-and the stored price constraint. Configuration lives in ``order_retry_config.env``.
+and the stored price constraint. Configuration lives in ``config.env``.
 """
 import hashlib
 import os
@@ -45,7 +45,7 @@ from providers.strategy_executor import (
 from botcore import (load_dotenv as _load_dotenv, required_bool_env,
                      required_float_env, required_int_env)
 _ROOT = os.path.dirname(os.path.abspath(__file__))
-_load_dotenv(os.path.join(_ROOT, "order_retry_config.env"))
+_load_dotenv(os.path.join(_ROOT, "config.env"))
 
 RETRY_ENABLED = required_bool_env("RETRY_ENABLED")
 RETRY_INTERVAL_SEC = required_float_env("RETRY_INTERVAL_SEC")
