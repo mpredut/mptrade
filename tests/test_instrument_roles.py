@@ -144,9 +144,8 @@ def test_one_new_section_reaches_real_consumers_without_source_edits(tmp_path):
 def test_old_symbol_environment_lists_are_not_loaded_anywhere():
     # A stale service environment must not override registry ownership silently.
     for filename, keys in {
-        "tradeall_config.env": ["TRADEALL_FIRE_SYMBOLS=", "KALMAN_PRIMARY_SYMBOLS=",
-                                "KALMAN_GATE_MODE="],
-        "assetguardian_config.env": ["AG_SYMBOLS="],
+        "config.env": ["TRADEALL_FIRE_SYMBOLS=", "KALMAN_PRIMARY_SYMBOLS=",
+                       "KALMAN_GATE_MODE=", "AG_SYMBOLS="],
     }.items():
         content = (ROOT / filename).read_text()
         assert not any(key in content for key in keys)

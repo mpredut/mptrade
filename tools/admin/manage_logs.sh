@@ -11,7 +11,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 echo "=== manage_logs $(date '+%Y-%m-%d %H:%M:%S') ==="
 
 # 1. Rotate logs via logrotate
-POLICY="$ROOT/logger_config.env"
+POLICY="$ROOT/config.env"
 if [ -r "$POLICY" ]; then
     set -a
     # shellcheck disable=SC1090

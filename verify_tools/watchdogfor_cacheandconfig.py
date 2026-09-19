@@ -46,10 +46,6 @@ _CONFIG_OWNERS = {
     # restarted by this mapping. tradeall/rtrade use their own config files.
     "instruments.conf": ["monitortrades.py"],
     "monitortrades.conf": ["monitortrades.py"],
-    "monitortrades_config.env": ["monitortrades.py"],
-    "tradeall_config.env": ["tradeall.py"],
-    "rtrade_config.env": ["rtrade.py"],
-    "assetguardian_config.env": ["assetguardian.py"],
 }
 
 # Slow caches update rarely, while order/trade caches update only on exchange events.

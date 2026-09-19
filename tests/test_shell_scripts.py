@@ -10,8 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # --- PORTABILITY TESTS ---
 DEPLOY_FILES = [
     "env_common.sh",
-    "tools/admin/backup_remote.sh",
-    "tools/admin/backup_local.sh",
+    "tools/admin/manage_backups.sh",
     "restart_bots.sh",
     "deploy_providers.sh",
     "tools/lib/process_control.sh",
@@ -21,7 +20,6 @@ DEPLOY_FILES = [
     "tools/admin/manage_logs.sh",
     "tools/admin/pia_selfheal.sh",
     "pia_supervisor.sh",
-    "tools/admin/restore.sh",
     "systemd/PIA.md",
     "systemd/README.md",
     "systemd/bashrc",
@@ -320,8 +318,8 @@ def test_selfheal_is_part_of_reproducible_root_cron():
 
 def test_selfheal_watches_resolver_cpu_and_requires_versioned_policy():
     text = _text("tools/admin/pia_selfheal.sh")
-    config = _text("pia_selfheal_config.env")
-    assert 'CONFIG="$ROOT/pia_selfheal_config.env"' in text
+    config = _text("config.env")
+    assert 'CONFIG="$ROOT/config.env"' in text
     assert "resolved_cpu_percent" in text
     assert "PIA_RESOLVED_CPU_CONSECUTIVE" in config
     assert "systemctl restart systemd-resolved.service" in text
