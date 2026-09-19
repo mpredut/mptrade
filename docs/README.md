@@ -52,3 +52,4 @@ their code (a deliberate convention — they are linked below).
 - **Supervision**: `healthcheck.sh` — `--supervise` (restarts dead and frozen processes), `--alert`, `--check` (read-only).
 - **Startup**: `fleet_supervisor.sh` (the fleet, under systemd `binance`), `restart_bots.sh` (the bots).
 - **Backup/DR**: `tools/admin/backup_local.sh` (local), `tools/admin/backup_remote.sh` (encrypted Storj), `restore.sh` (rebuild), `systemd/crontab.prod.txt`, `requirements.txt`, `systemd/install_prod.sh`.
+- [SCRIPTS_CATALOG.md](SCRIPTS_CATALOG.md) - Registry of all shell scripts and their purposes.
