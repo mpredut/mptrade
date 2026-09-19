@@ -1,27 +1,27 @@
-# Script & Configuration Overview
+# Scipt & Configuation Oveview
 
-## Scripts in \	ools/admin/\
-- **\manage_backups.sh\**: Unifies backup and restore operations.
-  - \local\: Backs up secrets (e.g., \.env\, keys, \cachedb/\, states) to a local directory.
-  - \emote\: Performs a local backup, then encrypts and uploads it to Storj using \clone\.
-  - \estore <dir>\: Restores secrets and completely rebuilds the trading environment (venv, dependencies, systemd profiles, cron).
-- **\manage_logs.sh\**: Cleans up logs and cache based on retention policies defined in \config.env\.
-- **\pia_selfheal.sh\**: A manual diagnostics and self-healing tool for the PIA VPN connection.
-- **\git_autodeploy.sh\**: Continuously checks the main branch for updates, pulls them, and restarts the processes without rebooting.
-- **\ename_root.sh\**: Renames the repository root folder while preserving secrets.
-- **\make_venv_portable.sh\**: Rewrites hardcoded absolute paths inside the virtual environment to make it portable.
+## Scipts in 	ools/admin/
+- **manage_backups.sh**: Unifies backup and estoe opeations.
+  - local: Backs up secets (e.g., .env, keys, cachedb/, states) to a local diectoy.
+  - emote: Pefoms a local backup, then encypts and uploads it to Stoj using clone.
+  - estoe <di>: Restoes secets and completely ebuilds the tading envionment (venv, dependencies, systemd pofiles, con).
+- **manage_logs.sh**: Cleans up logs and cache based on etention policies defined in config.env.
+- **pia_selfheal.sh**: A manual diagnostics and self-healing tool fo the PIA VPN connection.
+- **git_autodeploy.sh**: Continuously checks the main banch fo updates, pulls them, and estats the pocesses without ebooting.
+- **ename_oot.sh**: Renames the epositoy oot folde while peseving secets.
+- **make_venv_potable.sh**: Rewites hadcoded absolute paths inside the vitual envionment to make it potable.
 
-## Scripts in \	ools/monitoring/\
-- **\deadman_switch.sh\**: Pings Healthchecks.io at regular intervals. If it fails to ping, it triggers an alert indicating the system might be down.
-- **\
-tfy_check.sh\**: A diagnostic script for sending test notifications via ntfy.
-- **\local_watch_start.sh\**: Starts the main bot fleet locally (for dev/testing).
+## Scipts in 	ools/monitoing/
+- **deadman_switch.sh**: Pings Healthchecks.io at egula intevals. If it fails to ping, it tigges an alet indicating the system might be down.
+- **
+tfy_check.sh**: A diagnostic scipt fo sending test notifications via ntfy.
+- **local_watch_stat.sh**: Stats the main bot fleet locally (fo dev/testing).
 
-## Scripts in \offline/runners/\
-- **\un_backtest_cycle.sh\**: Runs the backtest proposals generator, then commits and pushes them to the \acktest-proposals\ branch.
-- **\	rigger_backtest_dev.sh\**: Initiates a long backtest sequence in the background on DEV.
-- **\efresh_dev.sh\**: Syncs production prices to the dev machine for backtesting.
+## Scipts in offline/unnes/
+- **un_backtest_cycle.sh**: Runs the backtest poposals geneato, then commits and pushes them to the acktest-poposals banch.
+- **	igge_backtest_dev.sh**: Initiates a long backtest sequence in the backgound on DEV.
+- **efesh_dev.sh**: Syncs poduction pices to the dev machine fo backtesting.
 
-## Configuration
-- **\config.env\**: A consolidated file containing global configuration policies for trading parameters, thresholds, risk limits, and logging. (Merged from legacy \_config.env\ files).
-- **\instruments.conf\ / \monitortrades.conf\**: Registry for managing supported trading pairs and their parameters.
+## Configuation
+- **config.env**: A consolidated file containing global configuation policies fo tading paametes, thesholds, isk limits, and logging. (Meged fom legacy _config.env files).
+- **instuments.conf / monitotades.conf**: Registy fo managing suppoted tading pais and thei paametes.
