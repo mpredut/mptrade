@@ -112,7 +112,7 @@ def main() -> int:
     log(f"    coin         : {label}  ({coin} perp, levier {leverage}x)")
     log(f"    wallet       : {'yes' if os.environ.get('HL_SECRET_KEY') else 'NO (public/paper only)'}")
     log(f"    execution    : {'PAPER (no money)' if strat_dry else '⚠ REAL — REAL MONEY'}")
-    log(f"    ntfy/email   : {os.environ.get('NTFY_TOPIC') or '-'} / {os.environ.get('ALERT_TO_EMAIL') or '-'}")
+    log(f"    ntfy/email   : {os.environ.get('NTFY_TOPIC_TRADES') or '-'} / {os.environ.get('ALERT_TO_EMAIL') or '-'}")
 
     if not args.skip_wait:
         if not _wait_for_listing(client, coin, label, interval, args.desktop):

@@ -122,7 +122,7 @@ def main() -> int:
         f"    credentials  : "
         f"{'yes' if os.environ.get('KRAKEN_API_KEY_BOT') else 'NO (public/paper only)'}")
     log(f"    execution    : {'PAPER (no money)' if strat_dry else '⚠ REAL — REAL MONEY'}")
-    log(f"    ntfy/email   : {os.environ.get('NTFY_TOPIC') or '-'} / {os.environ.get('ALERT_TO_EMAIL') or '-'}")
+    log(f"    ntfy/email   : {os.environ.get('NTFY_TOPIC_TRADES') or '-'} / {os.environ.get('ALERT_TO_EMAIL') or '-'}")
 
     # --- wait until the pair is LISTED and tradable, analogous to launch ---
     if not args.skip_wait:

@@ -188,7 +188,6 @@ check_resolved_cpu() {
 ntfy_topic() {
     local t
     t=$(grep -hs '^NTFY_TOPIC_ERROR=' "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '" ')
-    [ -z "$t" ] && t=$(grep -hs '^NTFY_TOPIC=' "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '" ')
     echo "$t"
 }
 

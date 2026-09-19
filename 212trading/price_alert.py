@@ -49,10 +49,10 @@ def main() -> int:
     args = ap.parse_args()
 
     load_dotenv(args.env_file)
-    # PRICE alerts use the dedicated NTFY_TOPIC_PRICE, falling back to the generic topic.
-    topic = args.topic or os.environ.get("NTFY_TOPIC_PRICE") or os.environ.get("NTFY_TOPIC")
+    # PRICE alerts use the dedicated NTFY_TOPIC_PRICE.
+    topic = args.topic or os.environ.get("NTFY_TOPIC_PRICE")
     if not topic:
-        log("! no ntfy topic (--topic / NTFY_TOPIC_PRICE / NTFY_TOPIC in .env)"); return 1
+        log("! no ntfy topic (--topic / NTFY_TOPIC_PRICE in .env)"); return 1
     if args.below is None and args.above is None:
         log("! give at least --below or --above"); return 1
 

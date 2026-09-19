@@ -51,13 +51,11 @@ def save_state(state_file, state):
 
 
 def send_ntfy(title, message):
-    # watchdog = categoria ERROR -> prefera topic-ul dedicat; fallback PHONE_ALERT_URL / NTFY_TOPIC
+    # watchdog = categoria ERROR -> prefera topic-ul dedicat; fallback PHONE_ALERT_URL
     topic = os.environ.get("NTFY_TOPIC_ERROR")
     url = (f"https://ntfy.sh/{topic}" if topic else None) or os.environ.get("PHONE_ALERT_URL")
-    if not url and os.environ.get("NTFY_TOPIC"):
-        url = f"https://ntfy.sh/{os.environ['NTFY_TOPIC']}"
     if not url:
-        print("[watchdog] no PHONE_ALERT_URL/NTFY_TOPIC — skipping the push")
+        print("[watchdog] no PHONE_ALERT_URL/NTFY_TOPIC_ERROR — skipping the push")
         return False
     ok = AlertNotifier.send_phone_webhook_batch([_watchdog_event(title, message)], webhook_url=url)
     print(f"[watchdog] push {'OK' if ok else 'FAILED'}")

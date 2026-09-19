@@ -8,7 +8,7 @@ SINCE="${1:-40m}"
 
 # Read from config.env without exposing the secrets in the output.
 PHONE_URL=$(grep -E '^\s*(export\s+)?PHONE_ALERT_URL=' "$ROOT/config.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '" ')
-NT_TOPIC=$(grep -E '^\s*(export\s+)?NTFY_TOPIC=' "$ROOT/config.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '" ')
+NT_TOPIC=$(grep -E '^\s*(export\s+)?NTFY_TOPIC_ERROR=' "$ROOT/config.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '" ')
 
 check_url() {
     local url="$1" label="$2"

@@ -128,7 +128,7 @@ EOF
         [ "$st" != ok ] && missing="$missing $label($st)"
     done < "$MANIFEST"
     if [ -n "$missing" ]; then
-        TOPIC=$(grep -hs NTFY_TOPIC "$ROOT/kraken/config.env" "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '" ')
+        TOPIC=$(grep -hs NTFY_TOPIC_ERROR= "$ROOT/kraken/config.env" "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '" ')
         push_ntfy "Server processes" \
             "Dead/hung:$missing  -> check (./bots_start.sh / flota_start)" \
             || echo "$(date '+%H:%M') ALERT NOT DELIVERED: an ntfy HTTP or network error"
@@ -150,7 +150,7 @@ if [ "$1" = "--supervise" ]; then
     exec 8>/tmp/binance_supervise.lock
     flock -n 8 || { echo "$(date '+%H:%M') supervise is already running — skipping (anti-duplication)"; exit 0; }
     SUP=/tmp/binance_sup; mkdir -p "$SUP"; WINDOW=1800; MAX=3
-    TOPIC=$(grep -hs NTFY_TOPIC "$ROOT/kraken/config.env" "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '" ')
+    TOPIC=$(grep -hs NTFY_TOPIC_ERROR= "$ROOT/kraken/config.env" "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '" ')
     push(){ push_ntfy "$1" "$2"; }
     alert_miss=""
     vpn=$(vpn_state)

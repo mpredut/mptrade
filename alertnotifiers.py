@@ -546,7 +546,7 @@ def _topic_for(title: str, source: str) -> Optional[str]:
     at risk. ``error`` covers failures, manual action, missing positions, and watchdog
     events. ``price`` covers price-threshold alerts. ``trades`` covers fills, available
     balances, routine delta-neutral open/close/funding events, and everything else.
-    Read ``NTFY_TOPIC_<CATEGORY>`` and fall back to ``NTFY_TOPIC``. This matches the
+    Read ``NTFY_TOPIC_<CATEGORY>``. This matches the
     email policy, where guard and error events are urgent.
     """
     t = title.upper(); s = (source or "").lower()
@@ -558,7 +558,7 @@ def _topic_for(title: str, source: str) -> Optional[str]:
         cat = "PRICE"
     else:
         cat = "TRADES"       # Include routine DN events; they do not have a separate topic.
-    return os.environ.get(f"NTFY_TOPIC_{cat}") or os.environ.get("NTFY_TOPIC")
+    return os.environ.get(f"NTFY_TOPIC_{cat}")
 # Do not include 📉, which is also used by informational loss alerts such as ``📉 SPCX -8%``,
 # or a lone ⚠, which is too broad. ``TRAILING`` identifies trailing events. Urgent DN events
 # also include LIQUID/ERROR/MANUAL in their titles (or their Romanian equivalents, see the

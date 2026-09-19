@@ -211,7 +211,7 @@ def main() -> int:
     log(f"    mode         : {'STRATEGY (DCA+TP)' if strat_enabled else 'a single order'}")
     log(f"    execution    : {'PAPER (no money)' if (strat_dry if strat_enabled else order_dry) else '⚠ REAL — REAL MONEY'}")
     log(f"    lansare      : checking until {label} is launched (already listed: immediately; IPO: at the open)")
-    log(f"    ntfy/email   : {os.environ.get('NTFY_TOPIC') or '-'} / {os.environ.get('ALERT_TO_EMAIL') or '-'}")
+    log(f"    ntfy/email   : {os.environ.get('NTFY_TOPIC_TRADES') or '-'} / {os.environ.get('ALERT_TO_EMAIL') or '-'}")
 
     # --- PRE-FLIGHT: verify the instrument at STARTUP so configuration errors are caught
     #     immediately, not after waiting days for launch. Stop now on a wrong ISIN.
