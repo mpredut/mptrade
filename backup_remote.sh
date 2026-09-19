@@ -15,10 +15,10 @@ TAR="${BACKUP_TAR:-$HOME/$BACKUP_NAME.tar.gz}"
 DEST="${REMOTE}${BACKUP_NAME}.tar.gz"
 
 echo "$(date '+%F %T') === backup_remote ==="
-# 1. backup local proaspat (folder + tarball) — refoloseste scriptul existent
+# 1. fresh local backup (folder + tarball) — reuses existing script
 "$ROOT/backup_secrets.sh" >/dev/null
 [ -f "$TAR" ] || { echo "❌ local tarball missing: $TAR"; exit 1; }
 
 # 2. an ENCRYPTED upload into Storj (it overwrites the last version)
 "$RCLONE" copyto "$TAR" "$DEST" --transfers 1
-echo "$(date '+%F %T') ✔ urcat criptat -> $DEST  ($("$RCLONE" size "$DEST" 2>/dev/null | tr '\n' ' '))"
+echo "$(date '+%F %T') ✔ encrypted upload -> $DEST  ($("$RCLONE" size "$DEST" 2>/dev/null | tr '\n' ' '))"
