@@ -15,7 +15,7 @@
 # root-owned source of truth), so it follows renames automatically.
 set -euo pipefail
 
-TUSER="predut"                      # the fleet user (fixed here, never taken from caller env)
+TUSER="${TRADING_USER:-$(stat -c %U "$(svc_root)" 2>/dev/null || id -un)}"
 
 svc_root() { systemctl show -p WorkingDirectory --value binance.service 2>/dev/null; }
 

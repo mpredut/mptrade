@@ -12,12 +12,23 @@ REPO_ROOT="${BINANCE_REPO_ROOT:-${ROOT:-$(cd "$RUNNER_DIR/../.." && pwd)}}"
 ONLY="${PILOT_ONLY:-}"            # empty = every key; e.g. "maxage,hardtp"
 cd "$REPO_ROOT"
 
+PYTHON_BIN="${TRADING_PYTHON:-}"
+if [ -z "$PYTHON_BIN" ]; then
+  if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+    PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
+  elif [ -x "$REPO_ROOT/myenv/bin/python" ]; then
+    PYTHON_BIN="$REPO_ROOT/myenv/bin/python"
+  else
+    PYTHON_BIN="$(command -v python3)"
+  fi
+fi
+
 echo "[cycle $(date '+%F %T')] pilot --propose (only='${ONLY:-all}')"
 args=(--propose)
 [ -n "$ONLY" ] && args+=(--only "$ONLY")
-./myenv/bin/python offline/research/monitortrades_backtest/scheduled_pilot.py "${args[@]}"
+"$PYTHON_BIN" offline/research/monitortrades_backtest/scheduled_pilot.py "${args[@]}"
 
-echo "[cycle $(date '+%F %T')] publish propuneri pe git"
+echo "[cycle $(date '+%F %T')] publish proposals to git"
 "$REPO_ROOT/offline/runners/publish_proposals.sh"
 
 echo "[cycle $(date '+%F %T')] done"

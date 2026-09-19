@@ -13,7 +13,13 @@ NT_TOPIC=$(grep -E '^\s*(export\s+)?NTFY_TOPIC=' .env | tail -1 | cut -d= -f2- |
 check_url() {
     local url="$1" label="$2"
     [ -z "$url" ] && { echo "$label: (topic missing from .env)"; return; }
-    curl -s -m 15 "$url/json?poll=1&since=$SINCE" | .venv/bin/python -c "
+    local py_bin="python3"
+    if [ -x "$PWD/.venv/bin/python" ]; then
+        py_bin="$PWD/.venv/bin/python"
+    elif [ -x "$PWD/myenv/bin/python" ]; then
+        py_bin="$PWD/myenv/bin/python"
+    fi
+    curl -s -m 15 "$url/json?poll=1&since=$SINCE" | "$py_bin" -c "
 import sys, json, datetime
 alarms, info = [], 0
 for line in sys.stdin:
@@ -29,7 +35,7 @@ for line in sys.stdin:
         alarms.append(f'{ts} [{title}] {body}')
     else:
         info += 1
-print(f'$label: informative={info} ALARME={len(alarms)}')
+print(f'$label: informative={info} ALARMS={len(alarms)}')
 for a in alarms[-8:]:
     print('  !! ' + a)
 "

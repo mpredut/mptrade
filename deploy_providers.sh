@@ -66,7 +66,7 @@ while [ "$SECONDS" -lt "$deadline" ]; do
         current="$(manifest_pids "${patterns[$index]}" "${directories[$index]}")"
         count=$(printf '%s\n' "$current" | awk 'NF {n++} END {print n+0}')
         if [ "$count" -ne 1 ]; then ready=0; continue; fi
-        state="$(ps -o stat= -p "$current" 2>/dev/null)" || { ready=0; continue; }
+        state="$(ps -o stat= -p "$current" 2>/dev/null | tr -d '[:space:]')" || { ready=0; continue; }
         case "$state" in Z*|T*) ready=0; continue;; esac
         while read -r previous; do
             [ -z "$previous" ] && continue

@@ -14,6 +14,4 @@
 # After that the trading user (and thus the agent) runs, unattended:
 #   sudo /usr/local/sbin/trading-admin restart
 #   sudo /usr/local/sbin/trading-admin rename mptrade
-# Replace `predut` if the fleet user differs.
-
-predut ALL=(root) NOPASSWD: /usr/local/sbin/trading-admin
+@TRADING_USER@ ALL=(root) NOPASSWD: /usr/local/sbin/trading-admin

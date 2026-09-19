@@ -9,7 +9,17 @@
 # auto-derived by systemd/install_prod.sh), so this is the last piece.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-ACT="$ROOT/myenv/bin/activate"
+VENV_NAME="${1:-}"
+if [ -z "$VENV_NAME" ]; then
+  if [ -d "$ROOT/myenv" ]; then
+    VENV_NAME="myenv"
+  elif [ -d "$ROOT/.venv" ]; then
+    VENV_NAME=".venv"
+  else
+    echo "no myenv or .venv directory found in $ROOT" >&2; exit 1
+  fi
+fi
+ACT="$ROOT/$VENV_NAME/bin/activate"
 [ -f "$ACT" ] || { echo "no venv activate at $ACT" >&2; exit 1; }
 
 python3 - "$ACT" <<'PY'
@@ -30,6 +40,6 @@ PY
 
 # Prove it: the derived VIRTUAL_ENV must equal the real venv path when sourced here.
 # shellcheck disable=SC1090
-( . "$ACT" && [ "$VIRTUAL_ENV" = "$ROOT/myenv" ] \
+( . "$ACT" && [ "$VIRTUAL_ENV" = "$ROOT/$VENV_NAME" ] \
   && echo "verified: VIRTUAL_ENV -> $VIRTUAL_ENV" \
-  || { echo "VERIFY FAILED: VIRTUAL_ENV=$VIRTUAL_ENV expected $ROOT/myenv" >&2; exit 1; } )
+  || { echo "VERIFY FAILED: VIRTUAL_ENV=$VIRTUAL_ENV expected $ROOT/$VENV_NAME" >&2; exit 1; } )

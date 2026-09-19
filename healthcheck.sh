@@ -100,7 +100,7 @@ EOF
             [ -f "$lp" ] && extra="(heartbeat ${hblog}: $(( now - $(stat -c %Y "$lp") ))s/${hbstale}s)"
         fi
         act="-"
-        [ "$st" != ok ] && { [ "$role" = bot ] && act="REPORNIRE" || act="alerta"; }
+        [ "$st" != ok ] && { [ "$role" = bot ] && act="RESTART" || act="alert"; }
         printf '  %-16s %-6s %-7s %-10s %s\n' "$label" "$role" "$st" "$act" "$extra"
     done < "$MANIFEST"
     exit 0
@@ -126,10 +126,10 @@ EOF
     done < "$MANIFEST"
     if [ -n "$missing" ]; then
         TOPIC=$(grep -hs NTFY_TOPIC "$ROOT/kraken/.env" "$ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '" ')
-        push_ntfy "Procese pe server" \
+        push_ntfy "Server processes" \
             "Dead/hung:$missing  -> check (./bots_start.sh / flota_start)" \
             || echo "$(date '+%H:%M') ALERT NOT DELIVERED: an ntfy HTTP or network error"
-        echo "$(date '+%H:%M') ALERTA: $missing"
+        echo "$(date '+%H:%M') ALERT: $missing"
     else
         echo "$(date '+%H:%M') OK (all processes are running)"
     fi
@@ -164,14 +164,14 @@ EOF
         dir=$(eval echo "$dir")
         st=$(proc_state "$pat" "$dir" "$hblog" "$hbstale")
         if [ "$st" = ok ]; then
-            [ "$role" = bot ] && rm -f "$SUP/$label" "$SUP/$label.esc"   # sanatos -> reset backoff
+            [ "$role" = bot ] && rm -f "$SUP/$label" "$SUP/$label.esc"   # healthy -> reset backoff
             continue
         fi
         if [ "$role" != bot ]; then          # fleet: alert only (flota_start owns it)
             alert_miss="$alert_miss $label($st)"
             continue
         fi
-        # role=bot, stare absent|hung
+        # role=bot, state absent|hung
         if [ "$st" = hung ]; then
             echo "$(date '+%H:%M') $label HUNG (an old heartbeat) -> kill"
             pkill -f "$pat" 2>/dev/null; sleep 2; pkill -9 -f "$pat" 2>/dev/null
@@ -191,7 +191,7 @@ EOF
         echo "$(date '+%H:%M') $label RESTARTED ($st, attempt $cnt)"
     done < "$MANIFEST"
     [ -n "$alert_miss" ] && { push "Processes to check" "Dead/hung (not restarted from here):$alert_miss"; echo "$(date '+%H:%M') fleet alert:$alert_miss"; }
-    [ -z "$alert_miss" ] && echo "$(date '+%H:%M') supervise: flota OK"
+    [ -z "$alert_miss" ] && echo "$(date '+%H:%M') supervise: fleet OK"
     exit 0
 fi
 
@@ -247,7 +247,7 @@ for p in (pf or []):
             p.get("ticker"), p.get("quantity"), p.get("averagePrice"),
             p.get("currentPrice"), p.get("ppl")))
 if not pf:
-    print("  portofoliu indisponibil")
+    print("  portfolio unavailable")
 PY
 )
 echo "============ END ============"

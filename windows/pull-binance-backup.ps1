@@ -7,10 +7,12 @@
 # The paths are specific to the dev box — adjust if they differ.
 $ErrorActionPreference = 'Stop'
 $key      = "$env:USERPROFILE\.ssh\id_binance"
-$src      = 'predut@192.168.0.144:/home/predut/mptrade-secrets-backup.tar.gz'
-$dstLocal = "$env:USERPROFILE\mptrade-secrets-backup.tar.gz"
-$dstWsl   = '\\wsl.localhost\ubuntu-24.04\home\mariusp\mptrade-secrets-backup.tar.gz'
-$stamp    = Get-Date -Format 'yyyy-MM-dd HH:mm'
+$serverUser = if ($env:TRADING_USER) { $env:TRADING_USER } else { 'predut' }
+$wslUser    = if ($env:WSL_USER) { $env:WSL_USER } else { 'mariusp' }
+$src        = "${serverUser}@192.168.0.144:/home/${serverUser}/mptrade-secrets-backup.tar.gz"
+$dstLocal   = "$env:USERPROFILE\mptrade-secrets-backup.tar.gz"
+$dstWsl     = "\\wsl.localhost\ubuntu-24.04\home\${wslUser}\mptrade-secrets-backup.tar.gz"
+$stamp      = Get-Date -Format 'yyyy-MM-dd HH:mm'
 
 # 1) download locally (does not depend on WSL)
 scp -i "$key" -P 32238 -o StrictHostKeyChecking=accept-new -o BatchMode=yes "$src" "$dstLocal"

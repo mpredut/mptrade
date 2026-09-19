@@ -97,7 +97,7 @@ echo "✔ All scripts are present."
 for script in "${scripts[@]}"; do
     pids=$(pgrep -f "$script")
     if [ -n "$pids" ]; then
-        echo "🔪 Oprire: $script (pids: $pids)"
+        echo "🔪 Stopping: $script (pids: $pids)"
         kill $pids
         sleep 1
         if pgrep -f "$script" > /dev/null; then
@@ -114,7 +114,7 @@ declare -a LOGS
 FAILED=()
 
 echo "🚀 Starting the Python scripts..."
-# Pornim scripturile
+# Start the scripts
 for script in "${scripts[@]}"; do
     log="$SCRIPT_DIR/logs/${script%.py}.log"
     LOGS+=("$log")
@@ -142,7 +142,7 @@ for i in "${!scripts[@]}"; do
 done
 
 
-# ===== Raport final =====
+# ===== Final report =====
 if [ ${#FAILED[@]} -eq 0 ]; then
     echo "🎯 All scripts are running!"
 else
@@ -155,7 +155,7 @@ echo
 echo "Active Python processes:"
 ps aux | grep '[p]ython'
 
-# ===== Watchdog (cron la 5 min) — instalat/refresh idempotent =====
+# ===== Watchdogs (cron every 5 min) — installed/refreshed idempotently =====
 # Runs ONLY on this machine (the one starting the monitor). The paths are derived
 # from the current environment (SCRIPT_DIR + the activated venv python), so it is portable.
 WATCHDOG_PY="$(command -v python)"
@@ -167,12 +167,21 @@ _WD_RESOURCE="*/2 * * * * cd $SCRIPT_DIR && $WATCHDOG_PY $SCRIPT_DIR/verify_tool
 _WD_STRIP='cache_watchdog\.py|log_anomaly_watchdog\.py|watchdogfor_cache\.py|watchdogfor_cacheandconfig\.py|watchdogfor_anomaly\.py|watchdogfor_resources\.py|price_monitor_watchdog\.py'
 
 install_watchdog() {
+    # If running under systemd, crontab is already managed by install_prod.sh; do not modify it.
+    if [ -n "${INVOCATION_ID:-}" ] || [ -n "${JOURNAL_STREAM:-}" ]; then
+        echo "✔ Running under systemd; skipping dynamic crontab modification."
+        return 0
+    fi
     ( crontab -l 2>/dev/null | grep -vE "$_WD_STRIP"; echo "$_WD_CACHE"; echo "$_WD_ANOM"; echo "$_WD_RESOURCE" ) | crontab -
     echo "✔ Watchdogs active (cache + anomalies + process resources)"
 }
 remove_watchdog() {
+    # If running under systemd, do not strip permanent crontabs on stop/restart.
+    if [ -n "${INVOCATION_ID:-}" ] || [ -n "${JOURNAL_STREAM:-}" ]; then
+        return 0
+    fi
     crontab -l 2>/dev/null | grep -vE "$_WD_STRIP" | crontab - 2>/dev/null
-    echo "✔ Watchdog-uri dezactivate"
+    echo "✔ Watchdogs deactivated"
 }
 install_watchdog
 
@@ -180,7 +189,7 @@ install_watchdog
 # shutdown does not trigger the "monitor stopped" alarm. Restarting reinstalls it.
 cleanup() {
     echo
-    echo "🛑 Oprire..."
+    echo "🛑 Stopping..."
     remove_watchdog
     for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null; done
     # Give cache writers a short graceful window, then terminate only the children
@@ -211,7 +220,7 @@ while true; do
     for i in "${!scripts[@]}"; do
         pid="${PIDS[$i]}"
         state=$(ps -o state= -p "$pid" 2>/dev/null | tr -d ' ')
-        # SIGSTOP/Ctrl-Z lasa PID-ul existent, iar kill -0 il considera sanatos.
+        # SIGSTOP/Ctrl-Z keeps the PID, and kill -0 considers it healthy.
         # We try SIGCONT once; if it stays stopped, we replace it in a controlled way.
         if [[ "$state" == T* ]]; then
             echo "♻ $(date '+%H:%M:%S') ${scripts[$i]} STOPPED (PID $pid) → SIGCONT"
@@ -222,14 +231,14 @@ while true; do
         if ! kill -0 "$pid" 2>/dev/null || [[ "$state" == T* ]] || [[ "$state" == Z* ]]; then
             script="${scripts[$i]}"
             log="${LOGS[$i]}"
-            echo "♻ $(date '+%H:%M:%S') $script nesanatos (PID $pid, state=${state:-absent}) → repornesc"
+            echo "♻ $(date '+%H:%M:%S') $script unhealthy (PID $pid, state=${state:-absent}) → restarting"
             kill "$pid" 2>/dev/null || true
             sleep 1
             kill -9 "$pid" 2>/dev/null || true
             cd "$SCRIPT_DIR" || exit 1
             nohup python "$script" >> "$log" 2>&1 9>&- &
             PIDS[$i]=$!
-            echo "   → nou PID ${PIDS[$i]} → $log"
+            echo "   → new PID ${PIDS[$i]} → $log"
         fi
     done
     sleep "$SUPERVISE_INTERVAL"
