@@ -94,7 +94,9 @@ py-modules = [
     "pricewindow",
     "rtrade",
     "server",
+    "shadow_runtime",
     "shadow_signals",
+    "state_io",
     "symbols",
     "tradeall",
     "tradeall_observe",
@@ -159,3 +161,7 @@ warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
 disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

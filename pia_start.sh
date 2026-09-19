@@ -28,17 +28,16 @@ vpn_healthy() {
     [ "$(pia get connectionstate 2>/dev/null | tr -d '\r')" = "Connected" ] || return 1
     ip link show dev "$VPN_IF" 2>/dev/null | grep -q '<[^>]*UP[^>]*>' || return 1
 
-    # 1. Extrage IP-ul IPv4 direct din resolvectl pe acea interfata
-    # (Scoate textul de control si pastreaza doar IP-ul curat de tip A)
+    # 1. Extract the IPv4 address directly from resolvectl on the VPN interface
     local binance_ip
     binance_ip=$(resolvectl query -i "$VPN_IF" api.binance.com 2>/dev/null | grep -E -o '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
 
     [ -n "$binance_ip" ] || return 1
 
-    # 2. Transmite-i lui curl IP-ul direct. Curl nu va mai face DNS lookup general,
-    # nu va mai intreba proxy-ul, ci va trimite pachetele direct catre IP prin interfata VPN.
+    # 2. Pass the resolved IP directly to curl via --resolve (host:port:address)
+    # to avoid DNS lookup races and ensure traffic routes through the VPN interface.
     curl -4 --interface "$VPN_IF" \
-        --resolve "://binance.com:$binance_ip" \
+        --resolve "api.binance.com:443:$binance_ip" \
         --connect-timeout 4 --max-time "$PROBE_TIMEOUT" \
         --fail --silent --show-error https://api.binance.com/api/v3/time \
         >/dev/null 2>&1 || return 1
@@ -143,9 +142,9 @@ while true; do
 
     failures=$((failures + 1))
     state=$(pia get connectionstate 2>/dev/null | tr -d '\r')
-    echo "PIA nesanatos: proba $failures/$FAILURE_LIMIT (state=${state:-necunoscut})"
+    echo "PIA unhealthy: probe $failures/$FAILURE_LIMIT (state=${state:-unknown})"
     if [ "$failures" -ge "$FAILURE_LIMIT" ]; then
-        echo "PIA/DNS indisponibil persistent. Resetez tunelul; systemd reconecteaza."
+        echo "PIA/DNS persistently unavailable. Resetting tunnel; systemd will reconnect."
         pia disconnect >/dev/null 2>&1 || true
         exit 1
     fi
