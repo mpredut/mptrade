@@ -45,7 +45,8 @@ vpn_state() {
     ip link show dev "$VPN_IF" 2>/dev/null | grep -q '<[^>]*UP[^>]*>' \
         || { echo "$VPN_IF"; return; }
     local binance_ip
-    binance_ip=$(resolvectl query api.binance.com 2>/dev/null \
+    binance_ip=$(getent ahostsv4 api.binance.com 2>/dev/null | awk '{print $1; exit}')
+    [ -n "$binance_ip" ] || binance_ip=$(resolvectl query api.binance.com 2>/dev/null \
         | grep -E -o '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
     [ -n "$binance_ip" ] || { echo dns; return; }
     curl -4 --interface "$VPN_IF" \
