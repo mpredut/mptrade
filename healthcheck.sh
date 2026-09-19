@@ -44,9 +44,13 @@ vpn_state() {
     [ "$(pia get connectionstate)" = "Connected" ] || { echo piactl; return; }
     ip link show dev "$VPN_IF" 2>/dev/null | grep -q '<[^>]*UP[^>]*>' \
         || { echo "$VPN_IF"; return; }
-    resolvectl query -i "$VPN_IF" api.binance.com >/dev/null 2>&1 \
-        || { echo dns; return; }
-    curl -4 --interface "$VPN_IF" --connect-timeout 4 --max-time "$VPN_PROBE_TIMEOUT" \
+    local binance_ip
+    binance_ip=$(resolvectl query api.binance.com 2>/dev/null \
+        | grep -E -o '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
+    [ -n "$binance_ip" ] || { echo dns; return; }
+    curl -4 --interface "$VPN_IF" \
+        --resolve "api.binance.com:443:$binance_ip" \
+        --connect-timeout 4 --max-time "$VPN_PROBE_TIMEOUT" \
         --fail --silent --show-error https://api.binance.com/api/v3/time \
         >/dev/null 2>&1 || { echo https; return; }
     echo ok
@@ -185,7 +189,8 @@ EOF
         fi
         # 8>&- : the started bot does NOT inherit fd 8 (the supervise lock) -> no lock leak
         # (otherwise later --supervise runs find the lock held by a bot and skip forever).
-        ( cd "$dir" && eval "$cmd" ) 8>&-                     # A clean restart ($ROOT/$VENV are expanded here).
+        # Background the subshell with closed stdin/redirected stdout so healthcheck does not block.
+        ( cd "$dir" && eval "$cmd" ) 8>&- </dev/null >/dev/null 2>&1 &
         cnt=$((cnt + 1)); echo "$cnt $ws" > "$SUP/$label"; rm -f "$SUP/$label.esc"
         push "Bot restarted" "$label ($st) -> RESTARTED (attempt $cnt/$MAX)"
         echo "$(date '+%H:%M') $label RESTARTED ($st, attempt $cnt)"

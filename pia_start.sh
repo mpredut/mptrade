@@ -28,9 +28,9 @@ vpn_healthy() {
     [ "$(pia get connectionstate 2>/dev/null | tr -d '\r')" = "Connected" ] || return 1
     ip link show dev "$VPN_IF" 2>/dev/null | grep -q '<[^>]*UP[^>]*>' || return 1
 
-    # 1. Extract the IPv4 address directly from resolvectl on the VPN interface
+    # 1. Resolve Binance IPv4 address (systemd-resolved cache/uplink)
     local binance_ip
-    binance_ip=$(resolvectl query -i "$VPN_IF" api.binance.com 2>/dev/null | grep -E -o '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
+    binance_ip=$(resolvectl query api.binance.com 2>/dev/null | grep -E -o '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
 
     [ -n "$binance_ip" ] || return 1
 
