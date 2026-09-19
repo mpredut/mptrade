@@ -149,3 +149,27 @@ def test_selfheal_watches_resolver_cpu_and_requires_versioned_policy():
     assert "resolved_cpu_percent" in text
     assert "PIA_RESOLVED_CPU_CONSECUTIVE" in config
     assert "systemctl restart systemd-resolved.service" in text
+
+
+def test_selfheal_restarts_a_downed_fleet():
+    # A clean stop of binance.service does not trigger its own Restart=always, so the
+    # PIA-healthy path must bring the fleet back (guarded by a maintenance pause flag).
+    text = _text("pia_selfheal.sh")
+    assert "systemctl start binance.service" in text
+    assert "FLEET_PAUSED" in text
+
+
+def test_autodeploy_is_shadow_by_default_and_never_reboots():
+    text = _text("git_autodeploy.sh")
+    assert "AUTODEPLOY_MODE=shadow" in text          # default is observe-only
+    assert "status --porcelain" in text              # dirty-tree guard
+    assert 'merge-base HEAD "origin/$BRANCH"' in text # fast-forward-only guard
+    assert "systemctl restart binance.service" in text
+    assert "systemctl reboot" not in text            # never reboots the machine
+
+
+def test_deadman_has_an_independent_healthchecks_channel():
+    # ntfy's shared free topic got 429-throttled during the incident; the deadman must also
+    # ping a dedicated healthchecks.io URL (if configured) so the alarm survives that.
+    text = _text("deadman_switch.sh")
+    assert "HC_PING_URL" in text

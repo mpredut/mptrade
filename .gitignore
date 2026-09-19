@@ -15,6 +15,10 @@
 *.tmp
 *~
 
+# --- Auto-deploy / fleet: per-machine local config + pause flag (NOT tracked) ---
+autodeploy.local.conf
+FLEET_PAUSED
+
 # --- Python / build / venv ---
 __pycache__/
 *.pyc

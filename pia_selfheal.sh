@@ -430,6 +430,19 @@ if vpn_healthy && [ "$FORCE" = 0 ] && check_resolved_cpu; then
 VPN IP: $(pia get vpnip) | region: $(pia get region)
 Check the fleet: systemctl is-active binance.service (it has Requires=pia.service)."
     fi
+    # Fleet self-heal: PIA is healthy, so the fleet SHOULD be up. If binance.service is
+    # enabled but inactive, bring it back. This closes the 19-Sep gap: a reinstall's
+    # `systemctl restart` stopped binance and its start lost the VPN-gate race, leaving it
+    # down -- and a CLEAN stop does not trigger the unit's own Restart=always, so nothing
+    # recovered it. Skipped while a maintenance pause flag is present.
+    if [ ! -e "$ROOT/FLEET_PAUSED" ] \
+       && systemctl is-enabled --quiet binance.service 2>/dev/null \
+       && ! systemctl is-active --quiet binance.service 2>/dev/null; then
+        log "binance.service enabled but inactive while PIA is healthy -> starting it"
+        systemctl start binance.service >/dev/null 2>&1
+        alert "Fleet restarted ($(hostname))" \
+"PIA is healthy but binance.service was down; the watchdog restarted it. Touch FLEET_PAUSED to pause this."
+    fi
     log "OK (tun0 + HTTPS through the tunnel), region=$(pia get region) vpnip=$(pia get vpnip)"
     exit 0
 fi

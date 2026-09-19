@@ -8,3 +8,7 @@
 # would fail in exactly the scenario it exists for. See systemd/PIA.md.
 
 */5 * * * * @TRADING_ROOT@/pia_selfheal.sh >> @TRADING_ROOT@/logs/pia_selfheal.log 2>&1
+# Optional auto-deploy (SHADOW by default -- observe only; set AUTODEPLOY_MODE=on in
+# autodeploy.local.conf to apply). Pulls a moved origin/main and restarts the fleet; never
+# reboots. See git_autodeploy.sh.
+*/10 * * * * @TRADING_ROOT@/git_autodeploy.sh >> @TRADING_ROOT@/logs/autodeploy.log 2>&1
