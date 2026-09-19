@@ -13,10 +13,10 @@
 # further out and it delivers itself 35 minutes later — the alert arrives even if
 # the machine is completely off or without power.
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-TOPIC=$(grep -hs '^NTFY_TOPIC_ERROR=' "$ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '" ')
-[ -z "$TOPIC" ] && TOPIC=$(grep -hs '^NTFY_TOPIC=' "$ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '" ')
+TOPIC=$(grep -hs '^NTFY_TOPIC_ERROR=' "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '" ')
+[ -z "$TOPIC" ] && TOPIC=$(grep -hs '^NTFY_TOPIC=' "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '" ')
 if [ -z "$TOPIC" ]; then
-    echo "$(date '+%H:%M') deadman: no NTFY_TOPIC(_ERROR) found in $ROOT/.env"
+    echo "$(date '+%H:%M') deadman: no NTFY_TOPIC(_ERROR) found in $ROOT/config.env"
     exit 1
 fi
 
@@ -38,8 +38,8 @@ curl --fail-with-body -sS -m 10 --retry 4 --retry-delay 5 --retry-all-errors --r
 # ntfy topic and hit the limit during the incident). The ALARM fires on healthchecks.io's
 # side when pings STOP, so a failed ping here (server down / no net) is what triggers it.
 # Optional: create a check (period 15m, grace ~20m, e-mail/phone set THERE) and put its ping
-# URL in .env as HC_PING_URL=... (secret, gitignored). Absent -> this block is a no-op.
-HC_URL=$(grep -hs '^HC_PING_URL=' "$ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '" ')
+# URL in config.env as HC_PING_URL=... (secret, gitignored). Absent -> this block is a no-op.
+HC_URL=$(grep -hs '^HC_PING_URL=' "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '" ')
 if [ -n "$HC_URL" ]; then
     curl -fsS -m 10 --retry 3 --retry-delay 3 --retry-all-errors "$HC_URL" >/dev/null 2>&1 \
         && echo "$(date '+%H:%M') deadman: hc ping OK" \

@@ -71,7 +71,7 @@ VPN_IF="${PIA_VPN_IF:-wgpia0}"
 REINSTALL_COOLDOWN="${PIA_REINSTALL_COOLDOWN:-86400}"  # At most one reinstall per 24h.
 # PIA's "latest" endpoint returns HTML rather than an installer, and
 # pia-linux-latest.run answers 403, so the URL has to carry an explicit version.
-# Bumping it is a single line in .env.
+# Bumping it is a single line in config.env.
 PIA_VERSION="${PIA_VERSION:-3.7.2-08420}"
 INSTALLER_URL="${PIA_INSTALLER_URL:-https://installers.privateinternetaccess.com/download/pia-linux-${PIA_VERSION}.run}"
 # Published by PIA for pia-linux-3.7.2-08420.run. A version override must also
@@ -187,8 +187,8 @@ check_resolved_cpu() {
 # get on with the repair. The spool drains by itself once connectivity returns.
 ntfy_topic() {
     local t
-    t=$(grep -hs '^NTFY_TOPIC_ERROR=' "$ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '" ')
-    [ -z "$t" ] && t=$(grep -hs '^NTFY_TOPIC=' "$ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '" ')
+    t=$(grep -hs '^NTFY_TOPIC_ERROR=' "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '" ')
+    [ -z "$t" ] && t=$(grep -hs '^NTFY_TOPIC=' "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '" ')
     echo "$t"
 }
 

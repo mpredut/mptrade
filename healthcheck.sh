@@ -128,7 +128,7 @@ EOF
         [ "$st" != ok ] && missing="$missing $label($st)"
     done < "$MANIFEST"
     if [ -n "$missing" ]; then
-        TOPIC=$(grep -hs NTFY_TOPIC "$ROOT/kraken/.env" "$ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '" ')
+        TOPIC=$(grep -hs NTFY_TOPIC "$ROOT/kraken/config.env" "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '" ')
         push_ntfy "Server processes" \
             "Dead/hung:$missing  -> check (./bots_start.sh / flota_start)" \
             || echo "$(date '+%H:%M') ALERT NOT DELIVERED: an ntfy HTTP or network error"
@@ -150,7 +150,7 @@ if [ "$1" = "--supervise" ]; then
     exec 8>/tmp/binance_supervise.lock
     flock -n 8 || { echo "$(date '+%H:%M') supervise is already running — skipping (anti-duplication)"; exit 0; }
     SUP=/tmp/binance_sup; mkdir -p "$SUP"; WINDOW=1800; MAX=3
-    TOPIC=$(grep -hs NTFY_TOPIC "$ROOT/kraken/.env" "$ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '" ')
+    TOPIC=$(grep -hs NTFY_TOPIC "$ROOT/kraken/config.env" "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '" ')
     push(){ push_ntfy "$1" "$2"; }
     alert_miss=""
     vpn=$(vpn_state)
@@ -213,13 +213,13 @@ echo "=== KRAKEN ==="
 ( cd "$ROOT/kraken" && python3 - <<'PY' 2>/dev/null
 import sys, os; sys.path.insert(0, ".")
 from common import load_dotenv
-load_dotenv(".env"); load_dotenv("config.env")
+load_dotenv("config.env"); load_dotenv("config.env")
 from kraken_client import KrakenClient
 try:
     from kraken_xstock_watch import yahoo_last
 except Exception:
     yahoo_last = lambda s: None
-c = KrakenClient(os.environ.get("KRAKEN_API_KEY"), os.environ.get("KRAKEN_API_SECRET"))
+c = KrakenClient(osconfig.environ.get("KRAKEN_API_KEY"), osconfig.environ.get("KRAKEN_API_SECRET"))
 b = c.balance()
 print("  cash ZUSD %.0f + USDC %.0f | HYPE %s @ %s" % (
     float(b.get("ZUSD", 0)), float(b.get("USDC", 0)), b.get("HYPE"), c.last_price("HYPEUSD")))
@@ -236,9 +236,9 @@ echo "=== T212 ==="
 ( cd "$ROOT/212trading" && python3 - <<'PY' 2>/dev/null
 import sys, os, time; sys.path.insert(0, ".")
 from ipo_common import load_dotenv
-load_dotenv(".env")
+load_dotenv("config.env")
 from t212_client import T212Client
-c = T212Client(os.environ["T212_API_KEY"], os.environ.get("T212_API_SECRET"), env="live")
+c = T212Client(osconfig.environ["T212_API_KEY"], osconfig.environ.get("T212_API_SECRET"), env="live")
 pf = None
 for _ in range(3):
     pf = c.get_portfolio()
