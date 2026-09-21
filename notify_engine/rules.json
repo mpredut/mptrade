@@ -1,0 +1,25 @@
+{
+  "rules": [
+    {
+      "name": "Critical Errors",
+      "match_regex": "(?i)Traceback|Exception|\\[ERROR\\]",
+      "priority": "urgent",
+      "cooldown_minutes": 5,
+      "topic_category": "error"
+    },
+    {
+      "name": "Executed Orders",
+      "match_regex": "Order filled.*|BUY execution.*|SELL execution.*|Bought.*|Sold.*",
+      "priority": "high",
+      "cooldown_minutes": 0,
+      "topic_category": "trades"
+    },
+    {
+      "name": "Network / PIA Errors",
+      "match_regex": "PIA connection lost|Network Unreachable|Name or service not known",
+      "priority": "urgent",
+      "cooldown_minutes": 15,
+      "topic_category": "guard"
+    }
+  ]
+}

@@ -120,7 +120,9 @@ def drawPriceLst(timestamps, prices, trend_block_indices, symbol, trend_directio
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
     fig.autofmt_xdate()
 
-    fig.savefig(f"plot_{symbol}.png")
+    out_dir = os.path.join(_CONFIG_ROOT, "logs")
+    os.makedirs(out_dir, exist_ok=True)
+    fig.savefig(os.path.join(out_dir, f"plot_{symbol}.png"))
 
 
 

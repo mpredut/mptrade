@@ -1,78 +1,61 @@
-# ============================================================================
-# .gitignore
-# Secrets (.env, *.pem) are NEVER committed. Non-sensitive config = config.env /
-# *.conf (versioned). Runtime/cache data (json/jsonl/meta/lock/bak) globally ignored.
-# ============================================================================
-
-# --- Secrets (never in git) ---
+# Secrets (never in git)
 .env
 .env*
-env
+env/
 *.pem
 
-# --- Config local / editor ---
-.claude/settings.local.json
-*.swp
-*.swo
-*.tmp
-*~
-
-# --- Auto-deploy / fleet: per-machine local config + pause flag (NOT tracked) ---
-autodeploy.local.conf
-FLEET_PAUSED
-
-# --- Python / build / venv ---
+# Python / virtualenv / build
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 *.egg-info/
 .pytest_cache/
 .venv/
 .myenv/
 myenv/
 
-# --- Date runtime / cache (cachedb/ + fisiere razlete) ---
+# Editor & OS artifacts
+*.swp
+*.swo
+*.tmp
+*~
+*:Zone.Identifier
+.claude/settings.local.json
+
+# Production / local fleet state
+autodeploy.local.conf
+FLEET_PAUSED
+
+# Runtime databases & caches
 cachedb/
-*.json
-!offline/research/hype_dataset/financial_baseline_v1.json
-!offline/research/t212_dataset/manifest.json
-*.jsonl
-*.meta
 *.lock
+*.meta
 *.bak
+*.bak_*
 index.html
 
-# --- Loguri ---
+# State files (*.json in subdirectories are runtime states, except tracked schema/config)
+*.json
+!notify_engine/rules.json
+!offline/research/hype_dataset/financial_baseline_v1.json
+!offline/research/t212_dataset/manifest.json
+
+# Runtime logs & price streams
 *.log
-*.log.[0-9]*
+*.log.*
 .logrotate.state
-# logs/ intreg = runtime (bot logs, shadow jsonl, arhive) — nu se versioneaza; pastram doar .gitkeep
 logs/*
 !logs/.gitkeep
-
-# --- Observabilitate tradeall (artefacte generate, nu cod) ---
-tradeall_live/
-# 21 iul: logger/ intreg (nu doar backtest/) — jurnale generate, nu cod; gasit
-# netrackat inainte, risc real ca un "git add -A" neatent sa comita >1GB de
-# loguri in istoricul git permanent (vezi si logger_retention.sh/rotate_logs.sh
-# pt curatarea lor pe disc).
 logger/
+tradeall_live/
+plots/
 
-# Propunerile de backtest (dev) — traiesc DOAR pe branch-ul backtest-proposals
-# (scrise cu `git add -f`), nu pe main. Vezi `offline/runners/`.
+# Offline datasets & proposals
+*.jsonl
 backtest_proposals.json
-
-# Frozen datasets and walk-forward reports generated locally or on dev.
 offline/results/
 
-# Artefacte generate de drawPriceLst (priceAnalysis.py savefig) — nu cod.
-plot_*.png
-
-# --- Artefacte locale din root (nu cod / nu date de benchmark) ---
-/nohup.out
-/plots/
-/sell_recommendation.csv
-/commit
-/*.patch
-*:Zone.Identifier
-.env.bak*
-*.bak_*
+# Temporary generated artifacts
+nohup.out
+sell_recommendation.csv
+*.patch
