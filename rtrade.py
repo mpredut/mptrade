@@ -1390,16 +1390,25 @@ class TradingBot:
                 # checkpoint follows the coordinator step. Merge any intent that
                 # raced ahead of the older checkpoint before adopting the round.
                 state = venue.merge_checkpoint_intents(record, state)
-                if (not state.get("tickets")
-                        and state.get("phase") not in {
+                intents = record.get("intents", {})
+                all_exhausted = bool(intents) and all(
+                    isinstance(i, dict) and i.get("recovery_state") in {
+                        "absence_confirmed_no_reuse", "horizon_exhausted"}
+                    for i in intents.values()
+                )
+                if not state.get("tickets") and (
+                        all_exhausted or state.get("phase") not in {
                             "startup_recovery", "hard_stop_recovery"}):
                     state["phase"] = "failed"
-                    state["reason"] = "recovery_intent_not_submitted"
+                    state["reason"] = (
+                        "recovery_horizon_exhausted" if all_exhausted
+                        else "recovery_intent_not_submitted"
+                    )
                     pair_store.checkpoint(
                         record["pair_id"], state, terminal=True)
                     print(
                         f"[{self.symbol}] pair={record['pair_id']} recovery: "
-                        "the intent could not be placed; closed in a controlled way")
+                        "exhausted intent or no tickets placed; closed as terminal")
                     continue
                 pair_store.checkpoint(
                     record["pair_id"], state, terminal=False)
