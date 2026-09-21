@@ -1,13 +1,16 @@
-from __future__ import annotations
+from __future__ import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import annotations
 #!/usr/bin/env python3
 """Run new-coin discovery and watch-list price alerts in one process.
 
-``market_alerts.conf`` supplies the watch list, thresholds, scan intervals, sources,
+``price_notifier.conf`` supplies the watch list, thresholds, scan intervals, sources,
 and limits. Importing this module loads environment files, validates required alert
 configuration, and prints notification-channel status; only ``main`` starts monitor
 threads. Coin discovery additionally requires ``ALERT_NEW_COIN=TRUE``.
 
-Usage: ``python3 market_alerts.py [--config PATH] [--check]``.
+Usage: ``python3 price_notifier.py [--config PATH] [--check]``.
 """
 
 import argparse
@@ -20,7 +23,7 @@ import time
 from pricechecker import start_price_alert_checker
 from pricefetcher import create_cachePriceAll
 # Alert orchestration formerly lived in ``run_price_monitor.py``.
-from new_coins_discovery import create_new_coins_checker, NewCoinsMonitor, NewCoinsFactory, MAX_NEW_COINS_TO_TRACK
+from discovery.new_coins_discovery import create_new_coins_checker, NewCoinsMonitor, NewCoinsFactory, MAX_NEW_COINS_TO_TRACK
 from alertnotifiers import AlertNotifier
 from botcore import load_env_stack, required_bool_env
 
@@ -222,7 +225,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 def main():
     ap = argparse.ArgumentParser(description="Alert monitor: new coins plus price thresholds (config-driven).")
-    ap.add_argument("--config", default=os.path.join(_HERE, "market_alerts.conf"))
+    ap.add_argument("--config", default=os.path.join(_HERE, "price_notifier.conf"))
     ap.add_argument("--check", action="store_true", help="validate the config plus the imports and exit (it does not start the monitor)")
     args = ap.parse_args()
 
@@ -297,7 +300,7 @@ if __name__ == "__main__":
     main()
 #!/usr/bin/env python3
 """
-alerts_config.py — load the plain-text market_alerts.conf file for the alert monitor.
+alerts_config.py — load the plain-text price_notifier.conf file for the alert monitor.
 
 Line-oriented format (# starts a full-line or inline comment):
     watch    = BTC, TAO, HYPE          # watchlist (coins that are always monitored)
@@ -392,5 +395,5 @@ def resolve(alert_config: dict, symbol: str, is_dynamic: bool) -> dict:
 if __name__ == "__main__":
     import json
     import sys
-    p = sys.argv[1] if len(sys.argv) > 1 else "market_alerts.conf"
+    p = sys.argv[1] if len(sys.argv) > 1 else "price_notifier.conf"
     print(json.dumps(load_config(p), indent=2))
