@@ -1,7 +1,6 @@
 # Production crontab template for the configured trading account.
 # install_prod.sh renders paths and installs this file.
 
-*/3 * * * * TRADING_SUPERVISE_ENABLED=true @TRADING_ROOT@/healthcheck.sh --supervise >> @TRADING_ROOT@/logs/healthcheck.log 2>&1
 17 * * * * @TRADING_ROOT@/os_orchestrator/admin/manage_logs.sh >> @TRADING_ROOT@/logs/manage_logs.log 2>&1
 */15 * * * * /usr/bin/python3 @TRADING_ROOT@/212trading/price_alert.py RGNT --below 4 >> @TRADING_ROOT@/212trading/price_alert.log 2>&1
 */15 * * * * cd @TRADING_ROOT@ && @TRADING_PYTHON@ verify_tools/check_cache_coherence.py >> @TRADING_ROOT@/logs/cache_coherence.log 2>&1
@@ -13,5 +12,4 @@
 37 * * * * @TRADING_PYTHON@ @TRADING_ROOT@/kraken/shadow_live.py --interval 60 >> @TRADING_ROOT@/logs/shadow_live.log 2>&1
 */20 * * * * /usr/bin/flock -n @TRADING_ROOT@/logs/.portfolio_snapshot.lock /usr/bin/timeout --signal=TERM --kill-after=5s 90s @TRADING_PYTHON@ @TRADING_ROOT@/verify_tools/portfolio_snapshot.py --alert --json >> @TRADING_ROOT@/logs/portfolio_snapshot.jsonl 2>/dev/null
 27 * * * * @TRADING_PYTHON@ @TRADING_ROOT@/hyperliquid/shadow_longterm.py --quiet >> @TRADING_ROOT@/logs/hyperliquid_shadow.log 2>&1
-*/2 * * * * cd @TRADING_ROOT@ && @TRADING_PYTHON@ @TRADING_ROOT@/verify_tools/watchdogfor_cacheandconfig.py >> @TRADING_ROOT@/logs/watchdog.log 2>&1
-*/5 * * * * cd @TRADING_ROOT@ && @TRADING_PYTHON@ @TRADING_ROOT@/verify_tools/watchdogfor_anomaly.py >> @TRADING_ROOT@/logs/anomaly_watchdog.log 2>&1
+*/5 * * * * cd @TRADING_ROOT@ && @TRADING_PYTHON@ os_orchestrator/livecheck/os_resources_watchdog.py >> @TRADING_ROOT@/logs/os_resources_watchdog.log 2>&1
