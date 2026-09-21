@@ -164,6 +164,9 @@ class BotManager:
 
         # Start hot reload watchdog
         asyncio.create_task(self._hot_reload_loop())
+        
+        # Start notification persistent queue flusher
+        asyncio.create_task(self.server.flush_queue_loop())
 
         while True:
             # We run the bots in an infinite loop. If they exit or get terminated (by reload), they restart.
