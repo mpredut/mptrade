@@ -24,15 +24,17 @@ backup_local() {
     printf '%s\n' "$LIST" | tar cf - -C "$ROOT" -T - | tar xf - -C "$OUT"
     
     mkdir -p "$OUT/_machine"
-    # Backup all PIA tokens (default, new, belgia, etc)
+    # Backup all PIA tokens (default, frankfurt, belgia, etc)
     for token_file in "$HOME"/piatoken*.txt; do
         if [ -f "$token_file" ]; then
             install -m 0600 "$token_file" "$OUT/_machine/$(basename "$token_file")"
         fi
     done
-    if [ -f "$HOME/pia.txt" ]; then
-        install -m 0600 "$HOME/pia.txt" "$OUT/_machine/pia.txt"
-    fi
+    for cred_file in "$HOME"/pia.txt "$HOME"/pia_credentials.txt; do
+        if [ -f "$cred_file" ]; then
+            install -m 0600 "$cred_file" "$OUT/_machine/$(basename "$cred_file")"
+        fi
+    done
     
     tar czf "$OUT.tar.gz" -C "$OUT" .
     chmod -R go-rwx "$OUT" 2>/dev/null || true
@@ -100,10 +102,15 @@ restore_backup() {
     if [ "$token_restored" -eq 1 ]; then
         log "Restored PIA dedicated IP tokens to $HOME/"
     fi
-    if [ -f "$SECRETS/_machine/pia.txt" ]; then
-        install -m 0600 "$SECRETS/_machine/pia.txt" "$HOME/pia.txt"
-        log "Restored PIA credentials to $HOME/pia.txt"
-    fi
+    for cred_file in "$SECRETS/_machine"/pia*.txt; do
+        case "$(basename "$cred_file")" in
+            piatoken*.txt) continue ;;
+            *)
+                install -m 0600 "$cred_file" "$HOME/$(basename "$cred_file")"
+                log "Restored PIA credentials to $HOME/$(basename "$cred_file")"
+                ;;
+        esac
+    done
     
     echo "--- [2/5] venv + dependencies ---"
     local VENV_DIR="$ROOT/myenv"

@@ -19,21 +19,42 @@ timeout 8 piactl get regions           # the AVAILABLE regions (the dedicated on
 timeout 8 piactl get portforward
 piactl background enable               # mandatory on a server, see pitfalls
 piactl connect / piactl disconnect
-piactl dedicatedip add "$HOME/piatoken.txt"
-piactl login "$HOME/pia.txt"          # username on line 1, password on line 2
+piactl dedicatedip add "$HOME/piatoken.txt" # Frankfurt DIP token (or piatoken_frankfurt.txt)
+piactl dedicatedip add "$HOME/piatoken_belgia.txt" # Belgium DIP token
+piactl login "$HOME/pia.txt"          # account login: username on line 1, password on line 2
 piactl set debuglogging true           # creates /opt/piavpn/var/daemon.log (root)
 ```
+
+### Credentials & Token File Conventions
+
+| File | Alternative Name | Contents / Purpose |
+|------|------------------|-------------------|
+| `~/pia.txt` | `~/pia_credentials.txt` | PIA account credentials (line 1: `pXXXXXXX`, line 2: password) |
+| `~/piatoken.txt` | `~/piatoken_frankfurt.txt` | Frankfurt Dedicated IP token (`192.109.159.105`) |
+| `~/piatoken_belgia.txt` | `~/piatoken_belgium.txt` | Belgium Dedicated IP token |
+
+All scripts (`pia_supervisor.sh`, `vpn_watchdog.sh`, `manage_backups.sh`) recognize both primary and alternative names.
+
+#### Optional Centralization in `.env`
+You can centrally store PIA secrets in `.env`:
+```bash
+PIA_USER=pXXXXXXX
+PIA_PASS=YourPiaPassword
+PIA_DIP_TOKEN_FRANKFURT=YourFrankfurtDedicatedIpToken
+PIA_DIP_TOKEN_BELGIUM=YourBelgiumDedicatedIpToken
+```
+If `.env` contains these variables, `pia_supervisor.sh` will auto-generate `~/pia.txt` and `~/piatoken*.txt` with mode `0600` on startup if they do not already exist on disk.
 
 Quick diagnosis without touching anything:
 
 ```bash
-./pia_selfheal.sh --check
+./orchestratorOS/livecheck/pia_supervisor.sh --check
 ```
 
 The REAL check of where traffic leaves (do not trust `connectionstate`):
 
 ```bash
-curl -s --interface tun0 https://ipinfo.io/ip     # must be the dedicated IP
+curl -s --interface wgpia0 https://ipinfo.io/ip     # must be the dedicated IP
 ```
 
 ## Pitfalls that cost us 34 days

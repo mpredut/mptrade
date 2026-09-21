@@ -38,7 +38,7 @@ sudo /usr/local/sbin/trading-admin status                                       
 The entire deployment is reproducible and path-agnostic:
 
 - **Unified Backup & Restore** (`orchestratorOS/admin/manage_backups.sh`):
-  - `backup local`: Takes a snapshot of all secrets (`.env`, `212trading/.env`), caches (`cachedb/`), state files (`lock/trade_cooldown.json`), and PIA tokens (`~/piatoken*.txt`, `~/pia.txt`) into `$HOME/mptrade-secrets-backup.tar.gz`.
+  - `backup local`: Takes a snapshot of all secrets (`.env`, `212trading/.env`), caches (`cachedb/`), state files (`lock/trade_cooldown.json`), PIA Dedicated IP tokens (`~/piatoken*.txt`), and PIA login credentials (`~/pia.txt`, `~/pia_credentials.txt`) into `$HOME/mptrade-secrets-backup.tar.gz`.
   - `backup remote`: Uploads encrypted snapshot to Storj.
   - `restore <tarball_or_folder>`: Rebuilds secrets, establishes virtualenv, installs python dependencies, and runs `systemd/install_prod.sh`.
 - **Fleet Orchestration** (`orchestratorTrade/orchestrator.py`):

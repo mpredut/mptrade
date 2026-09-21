@@ -36,7 +36,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOGGER_DIR = os.path.join(ROOT, "logger")
 CACHE_TREND_PATH = os.path.join(ROOT, "cachedb", "cache_instant_trend.json")
 
@@ -49,7 +49,7 @@ PRICE_SAMPLES_PREFIX = "tradeall_price_samples_"
 DECISIONS_PREFIX = "tradeall_decisions_"
 OUTCOMES_PREFIX = "order_outcomes_"
 SHADOW_PREFIX = "tradeall_shadow_"
-SHADOW_COLOR = "#8250df"   # violet — semnalele shadow (Kalman), distinct de verde/rosu
+SHADOW_COLOR = "#8250df"   # violet — shadow signals (Kalman), distinct from green/red
 
 STATE_COLORS = {"UP": "#1a7f37", "DOWN": "#cf222e", "HOLD": "#8c8c8c"}
 DAY_SECONDS = 24 * 3600
@@ -99,7 +99,7 @@ def _read_pipe_log(path, ncols):
         )
         if unchanged:
             _PIPE_LOG_CACHE.move_to_end(path)
-            return cached[2]                   # neschimbat -> zero I/O
+            return cached[2]                   # unchanged -> zero I/O
 
         # Re-read same-size rewrites and rotations to a different inode.
         same_size_rewrite = bool(same_file and cached[5] == stat.st_size)
@@ -116,7 +116,7 @@ def _read_pipe_log(path, ncols):
     consumed = offset
     for raw in chunk.splitlines(keepends=True):
         if not raw.endswith(b"\n"):
-            break                               # linie incompleta (scriere in curs) — o reluam data viitoare
+            break                               # incomplete line (write in progress) — retry next cycle
         consumed += len(raw)
         parts = raw.decode("utf-8", errors="replace").rstrip("\n").split("|")
         if len(parts) != ncols:
@@ -154,7 +154,7 @@ def sample_current_prices(symbols):
         with open(CACHE_TREND_PATH, "r", encoding="utf-8") as f:
             snapshot = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        print(f"[tradeall_observe] eroare citire cache_instant_trend.json: {e}")
+        print(f"[tradeall_observe] error reading cache_instant_trend.json: {e}")
         return
 
     pending = []
@@ -970,9 +970,9 @@ def main():
         write_backtest_html(directory, symbols)
         html_path = os.path.join(directory, "tradeall_live_backtest.html")
         mode = f"a sliding window of {args.window_hours}h" if args.window_hours else "the whole interval"
-        print(f"[tradeall_observe] BACKTEST ({mode}): {directory} | simboluri: {symbols} | "
-              f"randare la {args.interval}s")
-        print(f"[tradeall_observe] deschide in browser: {html_path}")
+        print(f"[tradeall_observe] BACKTEST ({mode}): {directory} | symbols: {symbols} | "
+              f"rendering every {args.interval}s")
+        print(f"[tradeall_observe] open in browser: {html_path}")
         last_memory_trim = 0.0
         try:
             while True:
@@ -986,7 +986,7 @@ def main():
                             render_state_image(state_text,
                                                 os.path.join(directory, f"tradeall_live_{symbol}_state.png"))
                     except Exception as e:
-                        print(f"[tradeall_observe] eroare randare {symbol}: {e}")
+                        print(f"[tradeall_observe] render error {symbol}: {e}")
                 monotonic_now = time.monotonic()
                 if monotonic_now - last_memory_trim >= MEMORY_TRIM_SECONDS:
                     _release_unused_memory()
@@ -998,8 +998,8 @@ def main():
 
     write_html(symbols, live_minutes=args.live_minutes)
     html_path = os.path.join(LIVE_OUT_DIR, "tradeall_live.html")
-    print(f"[tradeall_observe] simboluri: {symbols} | randare la {args.interval}s")
-    print(f"[tradeall_observe] deschide in browser: {html_path}")
+    print(f"[tradeall_observe] symbols: {symbols} | rendering every {args.interval}s")
+    print(f"[tradeall_observe] open in browser: {html_path}")
 
     # Schedule live charts and analysis state every cycle for a real-time feel.
     # Refresh day/week charts less often because their visible state barely changes
@@ -1015,7 +1015,7 @@ def main():
                 try:
                     chart_specs = [
                         (
-                            f"LIVE ultimele {args.live_minutes:.0f} min",
+                            f"LIVE last {args.live_minutes:.0f} min",
                             args.live_minutes * 60,
                             os.path.join(LIVE_OUT_DIR, f"tradeall_live_{symbol}_live.png"),
                         )
@@ -1023,7 +1023,7 @@ def main():
                     if due_day:
                         chart_specs.append(
                             (
-                                "ultimele 24h",
+                                "last 24h",
                                 DAY_SECONDS,
                                 os.path.join(LIVE_OUT_DIR, f"tradeall_live_{symbol}_ziua.png"),
                             )
@@ -1031,7 +1031,7 @@ def main():
                     if due_week:
                         chart_specs.append(
                             (
-                                "ultimele 7 zile",
+                                "last 7 days",
                                 WEEK_SECONDS,
                                 os.path.join(
                                     LIVE_OUT_DIR, f"tradeall_live_{symbol}_saptamana.png"
@@ -1044,7 +1044,7 @@ def main():
                         render_state_image(state_text,
                                             os.path.join(LIVE_OUT_DIR, f"tradeall_live_{symbol}_state.png"))
                 except Exception as e:
-                    print(f"[tradeall_observe] eroare randare {symbol}: {e}")
+                    print(f"[tradeall_observe] render error {symbol}: {e}")
             if due_day:
                 last_day = cycle_start
             if due_week:

@@ -480,8 +480,12 @@ rung_relogin() {
     log "rung 4: Logout and Login to reset account state"
     pia logout >/dev/null 2>&1
     sleep 2
-    if [ -f "$HOME/pia.txt" ]; then
-        pia login "$HOME/pia.txt" >/dev/null 2>&1
+    local cred_file=""
+    for c in "$HOME/pia.txt" "$HOME/pia_credentials.txt"; do
+        [ -f "$c" ] && { cred_file="$c"; break; }
+    done
+    if [ -n "$cred_file" ]; then
+        pia login "$cred_file" >/dev/null 2>&1
         sleep 2
         # Restore all tokens
         for t in "$HOME"/piatoken*.txt; do
@@ -493,7 +497,7 @@ rung_relogin() {
         pia connect >/dev/null
         return 0
     else
-        log "   WARNING: $HOME/pia.txt missing -> cannot login"
+        log "   WARNING: $HOME/pia.txt or $HOME/pia_credentials.txt missing -> cannot login"
         return 1
     fi
 }
