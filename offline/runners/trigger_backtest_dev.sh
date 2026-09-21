@@ -25,7 +25,7 @@ source "$RUNNER_DIR/load_dev_backtest_env.sh"
 REPO_ROOT="${BINANCE_REPO_ROOT:-$(cd "$RUNNER_DIR/../.." && pwd)}"
 SSH="ssh -o BatchMode=yes -p $DEV_PORT"
 
-source "$REPO_ROOT/os_orchestrator/lib/env_common.sh"
+source "$REPO_ROOT/orchestratorOS/lib/env_common.sh"
 
 echo "[trigger $(date '+%F %T')] 1/3 refresh dev (sync code+data)"
 "$REPO_ROOT/offline/runners/refresh_dev.sh"

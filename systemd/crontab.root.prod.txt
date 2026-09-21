@@ -11,7 +11,7 @@
 # Auto-deploy (SHADOW by default -- observe only; set AUTODEPLOY_MODE=on in
 # autodeploy.local.conf to apply). Pulls a moved origin/main and restarts the fleet; never
 # reboots. See manage_gitautodeploy.sh.
-*/10 * * * * @TRADING_ROOT@/os_orchestrator/admin/manage_gitautodeploy.sh >> @TRADING_ROOT@/logs/autodeploy.log 2>&1
+*/10 * * * * @TRADING_ROOT@/orchestratorOS/admin/manage_gitautodeploy.sh >> @TRADING_ROOT@/logs/autodeploy.log 2>&1
 
 # PIA Network guard with exponential backoff (now safe for cron)
-*/5 * * * * @TRADING_ROOT@/os_orchestrator/livecheck/vpn_watchdog.sh >> @TRADING_ROOT@/logs/vpn_watchdog.log 2>&1
+*/5 * * * * @TRADING_ROOT@/orchestratorOS/livecheck/vpn_watchdog.sh >> @TRADING_ROOT@/logs/vpn_watchdog.log 2>&1

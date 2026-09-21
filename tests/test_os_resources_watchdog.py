@@ -3,7 +3,7 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "os_orchestrator", "livecheck"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "orchestratorOS", "livecheck"))
 import os_resources_watchdog as wd
 
 

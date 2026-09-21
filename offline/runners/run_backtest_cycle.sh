@@ -11,7 +11,7 @@ set -euo pipefail
 RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$RUNNER_DIR/load_dev_backtest_env.sh"
 REPO_ROOT="${BINANCE_REPO_ROOT:-${ROOT:-$(cd "$RUNNER_DIR/../.." && pwd)}}"
-source "$REPO_ROOT/os_orchestrator/lib/env_common.sh"
+source "$REPO_ROOT/orchestratorOS/lib/env_common.sh"
 ONLY="${PILOT_ONLY:-}"            # empty = every key; e.g. "maxage,hardtp"
 cd "$REPO_ROOT"
 
