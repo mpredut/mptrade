@@ -11,7 +11,7 @@ from typing import Dict, Any, List
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] Orchestrator: %(message)s")
 
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from notification_server import NotificationServer
 class BotManager:
     def __init__(self, server: NotificationServer):
