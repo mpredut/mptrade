@@ -39,7 +39,7 @@ class BotManager:
                     dr = dr.replace("$ROOT", ROOT_DIR)
                     cmd = cmd.replace("$ROOT", ROOT_DIR).replace("$VENV", "myenv")
                     
-                    if role == "bot" and cmd:
+                    if cmd and role in ("bot", "fleet"):
                         bots.append({"name": label or pat, "dir": dr, "cmd": cmd, "log_file": hblog})
         return bots
 
