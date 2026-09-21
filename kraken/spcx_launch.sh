@@ -13,6 +13,6 @@ cd "$HERE"
 
 STRAT_ENTRY=800 STRAT_DCA=500 STRAT_DCA_DROP_PCT=4 STRAT_TAKEPROFIT_PCT=12 \
 STRAT_STOP_LOSS_PCT=18 STRAT_MAX_BUDGET=5000 STRAT_REENTRY_DROP_PCT=3 \
-source "$HERE/../env_common.sh"
+source "$HERE/../os_orchestrator/lib/env_common.sh"
 nohup "$PYTHON_BIN" kraken_bot.py --pair "$PAIR" >> spcx_bot.log 2>&1 &
 echo "SPCX bot started on $PAIR — log: spcx_bot.log"

@@ -3,7 +3,7 @@ set -euo pipefail
 
 RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${BINANCE_REPO_ROOT:-$(cd "$RUNNER_DIR/../.." && pwd)}"
-source "$REPO_ROOT/env_common.sh"
+source "$REPO_ROOT/os_orchestrator/lib/env_common.sh"
 
 cd "$REPO_ROOT"
 export BINANCE_AUTO_START_WEBSOCKETS=0

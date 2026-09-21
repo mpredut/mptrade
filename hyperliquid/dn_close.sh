@@ -10,7 +10,7 @@
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-source "$HERE/../env_common.sh"
+source "$HERE/../os_orchestrator/lib/env_common.sh"
 PAPER=""
 [ "${1:-}" = "--paper" ] && PAPER="--paper"
 

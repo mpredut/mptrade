@@ -3,7 +3,7 @@
 # without SSH to the server). Used manually or by the Claude session's monitoring job.
 # Usage: ./ntfy_check.sh [since]   (default: 40m; ex. 12h)
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$HERE/../../env_common.sh"
+source "$HERE/../lib/env_common.sh"
 SINCE="${1:-40m}"
 
 # Read from config.env without exposing the secrets in the output.
