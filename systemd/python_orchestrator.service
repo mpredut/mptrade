@@ -8,7 +8,7 @@ Type=simple
 User=@TRADING_USER@
 WorkingDirectory=@TRADING_ROOT@
 Environment=PATH=@TRADING_ROOT@/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=@TRADING_PYTHON@ @TRADING_ROOT@/trade_engine/orchestrator.py
+ExecStart=@TRADING_PYTHON@ @TRADING_ROOT@/python_orchestrator/orchestrator.py
 Restart=always
 RestartSec=10
 TimeoutStopSec=15

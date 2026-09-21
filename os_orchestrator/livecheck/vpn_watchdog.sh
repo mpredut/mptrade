@@ -7,9 +7,9 @@
 # "Timed out after 5 sec". With no tun0, the PIA killswitch cut ALL outbound
 # traffic. The chain of consequences:
 #   - pia.service went into a restart loop (it reached 6975 restarts);
-#   - trade_engine.service has Requires=pia.service, so flota_start.sh blocked on its
+#   - python_orchestrator.service has Requires=pia.service, so flota_start.sh blocked on its
 #     "checking the VPN connection" gate and started NONE of the 7 fleet members,
-#     while `systemctl is-active trade_engine.service` cheerfully reported "active";
+#     while `systemctl is-active python_orchestrator.service` cheerfully reported "active";
 #   - NO alert ever reached the phone: ntfy.sh is reached over the internet, and
 #     the internet was precisely what was missing (278 x "EROARE curl" in
 #     logs/deadman.log).
@@ -430,20 +430,20 @@ if vpn_healthy && [ "$FORCE" = 0 ] && check_resolved_cpu; then
         alert "PIA restored ($(hostname))" \
 "The tunnel works again after ${mins} min of downtime.
 VPN IP: $(pia get vpnip) | region: $(pia get region)
-Check the fleet: systemctl is-active trade_engine.service ."
+Check the fleet: systemctl is-active python_orchestrator.service ."
     fi
-    # Fleet self-heal: PIA is healthy, so the fleet SHOULD be up. If trade_engine.service is
+    # Fleet self-heal: PIA is healthy, so the fleet SHOULD be up. If python_orchestrator.service is
     # enabled but inactive, bring it back. This closes the 19-Sep gap: a reinstall's
     # `systemctl restart` stopped binance and its start lost the VPN-gate race, leaving it
     # down -- and a CLEAN stop does not trigger the unit's own Restart=always, so nothing
     # recovered it. Skipped while a maintenance pause flag is present.
     if [ ! -e "$ROOT/FLEET_PAUSED" ] \
-       && systemctl is-enabled --quiet trade_engine.service 2>/dev/null \
-       && ! systemctl is-active --quiet trade_engine.service 2>/dev/null; then
-        log "trade_engine.service enabled but inactive while PIA is healthy -> starting it"
-        systemctl start trade_engine.service >/dev/null 2>&1
+       && systemctl is-enabled --quiet python_orchestrator.service 2>/dev/null \
+       && ! systemctl is-active --quiet python_orchestrator.service 2>/dev/null; then
+        log "python_orchestrator.service enabled but inactive while PIA is healthy -> starting it"
+        systemctl start python_orchestrator.service >/dev/null 2>&1
         alert "Fleet restarted ($(hostname))" \
-"PIA is healthy but trade_engine.service was down; the watchdog restarted it. Touch FLEET_PAUSED to pause this."
+"PIA is healthy but python_orchestrator.service was down; the watchdog restarted it. Touch FLEET_PAUSED to pause this."
     fi
     log "OK (tun0 + HTTPS through the tunnel), region=$(pia get region) vpnip=$(pia get vpnip)"
     exit 0
@@ -522,10 +522,10 @@ for rung in $LADDER; do
 VPN IP: $(pia get vpnip) | region: $(pia get region)
 If the region is NOT the dedicated one, Binance will return -2015 until the DIP token is restored."
         # We stopped pia.service to take ownership; hand it back (reset-failed clears any
-        # start-limit) and trade_engine.service (Requires=pia.service) starts along with it.
+        # start-limit) and python_orchestrator.service (Requires=pia.service) starts along with it.
         systemctl reset-failed pia.service >/dev/null 2>&1
         systemctl start pia.service        >/dev/null 2>&1
-        systemctl start trade_engine.service    >/dev/null 2>&1
+        systemctl start python_orchestrator.service    >/dev/null 2>&1
         exit 0
     fi
     log "$rung did not fix it; escalating"
@@ -543,6 +543,6 @@ systemctl start pia.service        >/dev/null 2>&1
 alert "PIA NOT automatically repairable ($(hostname))" \
 "Every rung was exhausted (connect, reconnect, restart daemon, reinstall) and the tunnel still will not come up.
 State: $(pia get connectionstate) | region: $(pia get region) | raw internet: $(net_raw_ok && echo OK || echo DOWN)
-WARNING: the Binance fleet stays stopped while pia.service is down (trade_engine.service has Requires=pia.service).
+WARNING: the Binance fleet stays stopped while pia.service is down (python_orchestrator.service has Requires=pia.service).
 Typical causes: an expired PIA account/subscription (AUTH_FAILED in /opt/piavpn/var/daemon.log) or an invalid DIP token."
 exit 1

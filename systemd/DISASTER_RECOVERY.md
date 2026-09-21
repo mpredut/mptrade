@@ -54,7 +54,7 @@ missing, the fix is `piactl connect` (or `systemctl restart pia.service`), never
 A `git pull` + `sudo systemd/install_prod.sh` restores everything here:
 
 - **Services/cron/sshd/DNS drop-in/netplan**: `install_prod.sh` renders + installs
-  `trade_engine.service`, `pia.service`, `piavpn.service`, `binancedemon.service`, both
+  `python_orchestrator.service`, `pia.service`, `piavpn.service`, `binancedemon.service`, both
   crontabs, `sshd-20-trading.conf`, the resolved drop-in `resolved-20-trading-cache.conf`
   (Global DNS empty -> the tunnel owns resolution), the direct-default netplan file
   `netplan-99-force-gateway.yaml` (installed, not applied -- see section 1), and the

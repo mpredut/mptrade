@@ -9,9 +9,9 @@ Core execution boundaries and entrypoints.
   The main deployment script. Validates python configuration (`--check` mode) or updates the local tree (`git pull --ff-only`), triggers python imports tests, and restarts the processes defined in `procs.conf`. Returns a failure if caching checks fail after deployment.
 - **`env_common.sh`**
   A shared environment bootstrapping file. Discovered and sourced by almost every other script to find the correct python `.venv` and export `$PYTHON_BIN`.
-- **`trade_engine/orchestrator.py`** (formerly `flota_start.sh`)
+- **`python_orchestrator/orchestrator.py`** (formerly `flota_start.sh`)
   The continuous execution daemon for the system's core "fleet" role. Used exclusively as `ExecStart=` by `systemd/binance.service`. Supervises processes like CacheManager.
-- **`trade_engine/orchestrator.py`**
+- **`python_orchestrator/orchestrator.py`**
   Diagnostic and health monitoring script. Validates the VPN tunnel (`PIA_VPN_IF`), tests real outbound traffic via curl to `api.binance.com`, and confirms fleet operation. If errors occur, it pushes alerts via `ntfy` to the user's phone.
 - **`pia_supervisor.sh`** (formerly `pia_start.sh`)
   The continuous execution daemon for the Private Internet Access VPN. Used as `ExecStart=` by `systemd/pia.service`. Applies MTU fixes, configures `gai.conf` (IPv4 precedence), logs in with `piatoken.txt`, and enables the tunnel kill switch.

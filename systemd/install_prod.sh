@@ -53,7 +53,7 @@ render() {
   }
 }
 
-render "$SYSTEMD_DIR/trade_engine.service" "$TMP_DIR/trade_engine.service"
+render "$SYSTEMD_DIR/python_orchestrator.service" "$TMP_DIR/python_orchestrator.service"
 render "$SYSTEMD_DIR/pia.service" "$TMP_DIR/pia.service"
 render "$SYSTEMD_DIR/piavpn.service" "$TMP_DIR/piavpn.service"
 render "$SYSTEMD_DIR/crontab.prod.txt" "$TMP_DIR/crontab.prod.txt"
@@ -71,7 +71,7 @@ fi
 
 test "$(id -u)" -eq 0 || { echo "Run this installer with sudo." >&2; exit 1; }
 
-install -m 0644 "$TMP_DIR/trade_engine.service" /etc/systemd/system/trade_engine.service
+install -m 0644 "$TMP_DIR/python_orchestrator.service" /etc/systemd/system/python_orchestrator.service
 install -m 0644 "$TMP_DIR/pia.service" /etc/systemd/system/pia.service
 install -m 0644 "$TMP_DIR/piavpn.service" /etc/systemd/system/piavpn.service
 install -d -m 0755 /etc/systemd/resolved.conf.d
@@ -101,11 +101,11 @@ crontab -u root "$TMP_DIR/crontab.root.prod.txt"
 systemctl daemon-reload
 sshd -t
 systemctl enable cron.service
-systemctl enable piavpn.service pia.service trade_engine.service
+systemctl enable piavpn.service pia.service python_orchestrator.service
 systemctl restart systemd-resolved
 systemctl reload ssh
-systemctl restart piavpn.service pia.service trade_engine.service
+systemctl restart piavpn.service pia.service python_orchestrator.service
 
-systemctl --no-pager --full status trade_engine.service pia.service piavpn.service
+systemctl --no-pager --full status python_orchestrator.service pia.service piavpn.service
 crontab -u "$TRADING_USER" -l
 crontab -u root -l

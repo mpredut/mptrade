@@ -1,4 +1,4 @@
-# Architecture: OS Orchestrator & Trade Engine (Phase 4)
+# Architecture: OS Orchestrator & Python Orchestrator (Phase 4)
 
 This document describes the decoupled architecture implemented to separate Linux OS-level administration from the Python MTrade bot execution environment.
 
@@ -7,7 +7,7 @@ Previously, bash scripts (`fleet_supervisor.sh`, `healthcheck.sh`, `pia_selfheal
 
 The new architecture enforces a strict boundary:
 1. **OS Orchestrator**: Maintains the Linux host, VPN, and resource limits.
-2. **Trade Engine**: A purely Python-based supervisor that runs bots, handles logging, and watches configurations.
+2. **Python Orchestrator**: A purely Python-based supervisor that runs bots, handles logging, and watches configurations.
 
 ---
 
@@ -31,9 +31,9 @@ This directory houses all Bash/Python scripts that run as `cron` jobs or one-off
 
 ---
 
-## 2. `trade_engine/` (MTrade Python Engine)
+## 2. `python_orchestrator/` (MTrade Python Engine)
 The centralized supervisor for the Python trading algorithms. 
-It runs as a systemd service (`trade_engine.service`) but **does NOT depend** (`Requires=`) on `pia.service`. It stays alive even if the network drops.
+It runs as a systemd service (`python_orchestrator.service`) but **does NOT depend** (`Requires=`) on `pia.service`. It stays alive even if the network drops.
 
 * **`orchestrator.py`**
   * Reads `procs.conf` and spawns bots (`kraken_bot.py`, `hl_dca_bot.py`, `monitortrades.py`) via `asyncio.create_subprocess_shell`.
@@ -55,7 +55,7 @@ A suite of read-only Python scripts used for manual intervention and state query
 ## Fallback Polling Flow (The Result)
 1. **VPN Drops**: PIA disconnects. Killswitch is disabled, traffic routes through Vodafone.
 2. **OS Reaction**: `vpn_watchdog.sh` detects failure, triggers a 5m backoff.
-3. **Trade Engine Reaction**: `orchestrator.py` keeps bots running.
+3. **Python Orchestrator Reaction**: `orchestrator.py` keeps bots running.
 4. **Bot Reaction**: 
    * Binance WS drops -> Enters `_mark_unhealthy()` -> Switches to REST Polling (read-only due to IP restrictions).
    * Kraken / HL -> Seamlessly reconnect over Vodafone and continue trading.
