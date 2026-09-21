@@ -29,7 +29,7 @@ class NotificationServer:
         return tok
 
     def _load_rules(self) -> List[Dict[str, Any]]:
-        rules_path = os.path.join(os.path.dirname(__file__), "notification_rules.json")
+        rules_path = os.path.join(os.path.dirname(__file__), "rules.json")
         try:
             with open(rules_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -37,7 +37,7 @@ class NotificationServer:
                     rule["regex_obj"] = re.compile(rule["match_regex"])
                 return data.get("rules", [])
         except Exception as e:
-            logging.error(f"Failed to load notification_rules.json: {e}")
+            logging.error(f"Failed to load rules.json: {e}")
             return []
 
     def _resolve_topic(self, category: str) -> str:
