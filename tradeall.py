@@ -28,7 +28,10 @@ from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
 
 
-import generateweb as web
+try:
+    from visuals import generateweb as web
+except ImportError:
+    import generateweb as web
 
 from pricewindow import (PriceTrendAnalyzer, PriceWindow, WindowAnalyzer,
                          RECENT_GRADIENT_SECONDS,
