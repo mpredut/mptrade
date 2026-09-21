@@ -26,13 +26,9 @@ Administrative and disaster recovery tools.
 - **`git_autodeploy.sh`**
   Automated deployment daemon run by root's cron. Can observe (`shadow` mode) or automatically apply (`on` mode) new commits from `origin/main` (or backtest proposals), restarting `binance.service` safely and applying cooldowns.
 - **`pia_selfheal.sh`**
-  Root cron job that acts as a watchdog for `pia.service`. If the tunnel loses connectivity, it attempts to reboot `systemd-resolved` or fully restart `pia.service` and pause the fleet to prevent trading in a disconnected state.
-- **`backup_local.sh`** (formerly `backup_secrets.sh`)
-  Creates a compressed local tarball in `~/backup/` consisting of the repository sqlite caches, `procs.conf`, environment files, and credentials.
-- **`backup_remote.sh`**
-  Transfers the local tarballs produced by `backup_local.sh` to a secure external location (or another server).
-- **`restore.sh`**
-  Interactive tool to unpack backups onto a fresh server.
+  Emergency disaster recovery script for `pia.service`. Used manually (`--check` or `--force`) to run a recovery ladder (reconnect, restart daemon, relogin, reinstall) when the VPN is hopelessly wedged. It is no longer run from cron to avoid fighting systemd.
+- **`manage_backups.sh`**
+  Unified script for backup and disaster recovery. Handles local tarball creation, remote uploads (e.g. to Storj) with encryption, and full machine restoration from backups. Replaces the legacy `backup_local.sh`, `backup_remote.sh`, and `restore.sh` scripts.
 - **`make_venv_portable.sh`**
   Fixes hardcoded absolute paths inside `.venv/bin/` wrappers when the repository is cloned or moved to a new path.
 - **`rename_root.sh`**

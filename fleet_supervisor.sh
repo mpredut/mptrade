@@ -84,6 +84,8 @@ if [ "${#scripts[@]}" -eq 0 ]; then
     exit 1
 fi
 
+source "$SCRIPT_DIR/tools/lib/process_control.sh"
+
 echo "🔍 Checking that the scripts exist..."
 for script in "${scripts[@]}"; do
     if [ ! -f "$SCRIPT_DIR/$script" ]; then
@@ -95,15 +97,14 @@ echo "✔ All scripts are present."
 
 # ===== Kill the existing processes =====
 for script in "${scripts[@]}"; do
-    pids=$(pgrep -f "$script")
-    if [ -n "$pids" ]; then
-        echo "🔪 Stopping: $script (pids: $pids)"
-        kill $pids
-        sleep 1
-        if pgrep -f "$script" > /dev/null; then
+    mapfile -t pids < <(manifest_pids "$script" "$SCRIPT_DIR")
+    if [ "${#pids[@]}" -gt 0 ]; then
+        echo "🔪 Stopping: $script (pids: ${pids[*]})"
+        stop_manifest_process "$script" "$SCRIPT_DIR" || {
             echo "⚠ Forcing kill -9 on $script"
-            kill -9 $pids
-        fi
+            mapfile -t remaining_pids < <(manifest_pids "$script" "$SCRIPT_DIR")
+            [ "${#remaining_pids[@]}" -gt 0 ] && kill -9 "${remaining_pids[@]}" 2>/dev/null || true
+        }
     fi
 done
 
@@ -217,6 +218,19 @@ echo "All good. Supervising the processes (restarting anything that falls over).
 # not left dead until everything falls. systemd stays the safety net for "everything died".
 SUPERVISE_INTERVAL=30
 while true; do
+    vpn_state=$(pia get connectionstate 2>/dev/null | tr -d '\r')
+    vpn_ip=$(pia get vpnip 2>/dev/null | tr -d '\r')
+    if [ "$vpn_state" != "Connected" ] || [ -z "$vpn_ip" ] || [ "$vpn_ip" = "Unknown" ]; then
+        echo "🚨 VPN DROPPED during supervision (state=${vpn_state}, ip=${vpn_ip})! Pausing bots to prevent IP leak..."
+        for pid in "${PIDS[@]}"; do kill -STOP "$pid" 2>/dev/null || true; done
+        while [ "$(pia get connectionstate 2>/dev/null | tr -d '\r')" != "Connected" ] || [ "$(pia get vpnip 2>/dev/null | tr -d '\r')" = "Unknown" ]; do
+            sleep 5
+        done
+        echo "✔ VPN restored! Resuming bots..."
+        for pid in "${PIDS[@]}"; do kill -CONT "$pid" 2>/dev/null || true; done
+        sleep 2
+    fi
+
     for i in "${!scripts[@]}"; do
         pid="${PIDS[$i]}"
         state=$(ps -o state= -p "$pid" 2>/dev/null | tr -d ' ')

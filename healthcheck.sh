@@ -10,6 +10,7 @@
 #   (no arg)     : the full report (processes plus the HL/Kraken/T212 accounts).
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 source "$ROOT/env_common.sh"
+source "$ROOT/tools/lib/process_control.sh"
 MANIFEST="$ROOT/procs.conf"
 HLPY="$PYTHON_BIN"
 now=$(date +%s)
@@ -65,9 +66,11 @@ push_ntfy() {
 # The state of one line: ok | absent | stopped | zombie | hung.
 proc_state() {
     local pat="$1" dir="$2" hblog="$3" hbstale="$4"
-    local pids states
-    pids=$(pgrep -f "$pat") || { echo absent; return; }
-    states=$(ps -o state= -p "$(echo "$pids" | paste -sd, -)" 2>/dev/null | tr -d ' ')
+    local states
+    local -a pids
+    mapfile -t pids < <(manifest_pids "$pat" "$dir")
+    [ "${#pids[@]}" -eq 0 ] && { echo absent; return; }
+    states=$(ps -o state= -p "${pids[@]}" 2>/dev/null | tr -d ' ')
     echo "$states" | grep -q T && { echo stopped; return; }
     echo "$states" | grep -q Z && { echo zombie; return; }
     if [ -n "$hblog" ] && [ -n "$hbstale" ]; then
