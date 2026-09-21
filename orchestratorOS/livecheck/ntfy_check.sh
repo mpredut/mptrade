@@ -6,13 +6,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/../lib/env_common.sh"
 SINCE="${1:-40m}"
 
-# Read from config.env without exposing the secrets in the output.
-PHONE_URL=$(grep -E '^\s*(export\s+)?PHONE_ALERT_URL=' "$ROOT/config.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '" ')
-NT_TOPIC=$(grep -E '^\s*(export\s+)?NTFY_TOPIC_ERROR=' "$ROOT/config.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '" ')
+# Read from .env or config.env without exposing secrets in output.
+PHONE_URL=$(grep -E -hs -m1 '^\s*(export\s+)?PHONE_ALERT_URL=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d '" ')
+NT_TOPIC=$(grep -E -hs -m1 '^\s*(export\s+)?NTFY_TOPIC_ERROR=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d '" ')
 
 check_url() {
     local url="$1" label="$2"
-    [ -z "$url" ] && { echo "$label: (topic missing from config.env)"; return; }
+    [ -z "$url" ] && { echo "$label: (topic missing from .env/config.env)"; return; }
     curl -s -m 15 "$url/json?poll=1&since=$SINCE" | "$PYTHON_BIN" -c "
 import sys, json, datetime
 alarms, info = [], 0

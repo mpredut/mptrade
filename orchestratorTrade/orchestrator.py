@@ -41,8 +41,14 @@ class BotManager:
                     # pat | dir | start_cmd | label | hb_log | hb_stale_s | role
                     pat, dr, cmd, label, hblog, hbstale, role = parts[:7]
 
-                    dr = dr.replace("$ROOT", ROOT_DIR)
-                    cmd = cmd.replace("$ROOT", ROOT_DIR).replace("$VENV", "myenv")
+                    venv = os.environ.get("VENV")
+                    if not venv:
+                        for cand in (".venv", "myenv"):
+                            if os.path.exists(os.path.join(ROOT_DIR, cand, "bin", "activate")):
+                                venv = cand
+                                break
+                    venv = venv or "myenv"
+                    cmd = cmd.replace("$ROOT", ROOT_DIR).replace("$VENV", venv)
 
                     if cmd and role in ("bot", "fleet"):
                         bots.append({"name": label or pat, "dir": dr, "cmd": cmd, "log_file": hblog})

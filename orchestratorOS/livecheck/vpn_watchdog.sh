@@ -187,7 +187,7 @@ check_resolved_cpu() {
 # get on with the repair. The spool drains by itself once connectivity returns.
 ntfy_topic() {
     local t
-    t=$(grep -hs '^NTFY_TOPIC_ERROR=' "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '" ')
+    t=$(grep -hs -m1 '^NTFY_TOPIC_ERROR=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d '" ')
     echo "$t"
 }
 

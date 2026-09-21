@@ -13,9 +13,9 @@
 # further out and it delivers itself 35 minutes later — the alert arrives even if
 # the machine is completely off or without power.
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-TOPIC=$(grep -hs '^NTFY_TOPIC_ERROR=' "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '" ')
+TOPIC=$(grep -hs -m1 '^NTFY_TOPIC_ERROR=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d '" ')
 if [ -z "$TOPIC" ]; then
-    echo "$(date '+%H:%M') deadman: no NTFY_TOPIC(_ERROR) found in $ROOT/config.env"
+    echo "$(date '+%H:%M') deadman: no NTFY_TOPIC(_ERROR) found in $ROOT/.env or $ROOT/config.env"
     exit 1
 fi
 
@@ -28,17 +28,14 @@ curl --fail-with-body -sS -m 10 --retry 4 --retry-delay 5 --retry-all-errors --r
     -H "In: 35m" -H "Title: SERVER DOWN ($HOST)" \
     -d "No heartbeat for 35 minutes — check the server (crash / reboot / power loss)." \
     "https://ntfy.sh/$TOPIC/server-alive" >/dev/null \
-    && echo "$(date '+%H:%M') deadman: impins (+35m)" \
-    || echo "$(date '+%H:%M') deadman: curl ERROR after the retries (a prolonged DNS/net blip?)"
+    && echo "$(date '+%H:%M') deadman: pushed heartbeat (+35m)" \
+    || echo "$(date '+%H:%M') deadman: curl ERROR after retries (prolonged DNS/net blip?)"
 
 # Second, INDEPENDENT dead-man's switch on healthchecks.io. It does NOT share ntfy's free
-# quota, so it keeps working when ntfy is 429-throttled -- exactly the gap that swallowed the
-# alerts on 18-19 Sep (deadman + Notifier + selfheal + healthcheck all funnel through one
-# ntfy topic and hit the limit during the incident). The ALARM fires on healthchecks.io's
-# side when pings STOP, so a failed ping here (server down / no net) is what triggers it.
+# quota, so it keeps working when ntfy is 429-throttled.
 # Optional: create a check (period 15m, grace ~20m, e-mail/phone set THERE) and put its ping
-# URL in config.env as HC_PING_URL=... (secret, gitignored). Absent -> this block is a no-op.
-HC_URL=$(grep -hs '^HC_PING_URL=' "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '" ')
+# URL in .env as HC_PING_URL=... (secret, gitignored). Absent -> this block is a no-op.
+HC_URL=$(grep -hs -m1 '^HC_PING_URL=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d '" ')
 if [ -n "$HC_URL" ]; then
     curl -fsS -m 10 --retry 3 --retry-delay 3 --retry-all-errors "$HC_URL" >/dev/null 2>&1 \
         && echo "$(date '+%H:%M') deadman: hc ping OK" \
