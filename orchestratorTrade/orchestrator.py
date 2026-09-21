@@ -48,6 +48,7 @@ class BotManager:
                                 venv = cand
                                 break
                     venv = venv or "myenv"
+                    dr = dr.replace("$ROOT", ROOT_DIR)
                     cmd = cmd.replace("$ROOT", ROOT_DIR).replace("$VENV", venv)
 
                     if cmd and role in ("bot", "fleet"):
