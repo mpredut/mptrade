@@ -3,7 +3,7 @@
 #
 # From the ROOT crontab (systemd/crontab.root.prod.txt) it checks whether origin/<branch>
 # moved (e.g. a push from WSL). Depending on the mode it either just reports what it WOULD
-# do (shadow), or fast-forwards the local repo and restarts the fleet (binance.service) so
+# do (shadow), or fast-forwards the local repo and restarts the fleet (python_orchestrator.service) so
 # the role=fleet processes come back on the new code. It does NOT reboot and does NOT touch
 # PIA (the tunnel stays up); the role=bot processes reload on their next supervise cycle.
 #
@@ -12,7 +12,7 @@
 #     cp autodeploy.local.conf.example autodeploy.local.conf     # then set AUTODEPLOY_MODE
 #   off    -- do nothing.
 #   shadow -- (DEFAULT) detect a moved origin, log + alert what it would do; apply NOTHING.
-#   on     -- pull the fast-forward and `systemctl restart binance.service`.
+#   on     -- pull the fast-forward and `systemctl restart python_orchestrator.service`.
 #
 # Guards (never clobber, never loop):
 #   - refuses if the working tree is dirty (uncommitted local changes) -> alert;
@@ -82,7 +82,7 @@ fi
 
 # SHADOW: report what we WOULD do, deduped so we do not alert every run for the same target.
 if [ "$AUTODEPLOY_MODE" = shadow ]; then
-    log "SHADOW: origin/$BRANCH=$remote_sha (HEAD=$local_sha) -- WOULD pull + restart binance.service. Not applied."
+    log "SHADOW: origin/$BRANCH=$remote_sha (HEAD=$local_sha) -- WOULD pull + restart python_orchestrator.service. Not applied."
     seen=""; [ -f "$SHADOW_MARK" ] && seen="$(cat "$SHADOW_MARK" 2>/dev/null)"
     if [ "$seen" != "$remote_sha" ]; then
         echo "$remote_sha" > "$SHADOW_MARK"
@@ -107,7 +107,7 @@ if ! g pull --ff-only --quiet origin "$BRANCH" 2>/dev/null; then
     exit 0
 fi
 printf '%s %s\n' "$remote_sha" "$(date +%s)" > "$LAST_MARK"
-log "deployed $remote_sha; restarting binance.service (role=fleet reloads; role=bot reload on next supervise)"
-systemctl restart binance.service >/dev/null 2>&1
+log "deployed $remote_sha; restarting python_orchestrator.service (role=fleet reloads; role=bot reload on next supervise)"
+systemctl restart python_orchestrator.service >/dev/null 2>&1
 alert "autodeploy ($(hostname))" \
-    "Pulled $BRANCH -> ${remote_sha:0:9} and restarted the fleet (binance.service). PIA untouched, no reboot."
+    "Pulled $BRANCH -> ${remote_sha:0:9} and restarted the fleet (python_orchestrator.service). PIA untouched, no reboot."
