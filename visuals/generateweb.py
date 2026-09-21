@@ -32,7 +32,8 @@ coins = [
 ]
 
 # File that stores the latest configuration.
-CONFIG_FILE = "last_watch_config.json"
+import os
+CONFIG_FILE = os.path.join(os.path.dirname(__file__), "last_watch_config.json")
 
 def citeste_config_anterioara():
     try:
