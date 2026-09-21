@@ -61,8 +61,7 @@ render "$SYSTEMD_DIR/crontab.root.prod.txt" "$TMP_DIR/crontab.root.prod.txt"
 render "$SYSTEMD_DIR/bashrc" "$TMP_DIR/bashrc"
 render "$SYSTEMD_DIR/sudo.txt" "$TMP_DIR/sudo.txt"
 render "$SYSTEMD_DIR/sudoers-trading" "$TMP_DIR/sudoers-trading"
-render "$ROOT/hyperliquid/hl-dn.service" "$TMP_DIR/hl-dn.service"
-render "$ROOT/kraken/xstock-watch.service" "$TMP_DIR/xstock-watch.service"
+
 
 if [ "${1:-}" = "--render-only" ]; then
   echo "Rendered deployment files in $TMP_DIR"
@@ -94,8 +93,7 @@ install -m 0644 "$SYSTEMD_DIR/logrotate-pia-daemon.conf" /etc/logrotate.d/pia-da
 install -d -o "$TRADING_USER" -g "$TRADING_GROUP" -m 0755 "$ROOT/logs"
 crontab -u "$TRADING_USER" "$TMP_DIR/crontab.prod.txt"
 # Root crontab is reserved for tasks that require root privileges.
-# pia_selfheal.sh is a MANUAL tool only — do NOT add it here; pia.service
-# (Restart=always) is the sole automated PIA recovery mechanism.
+# vpn_watchdog.sh runs from here to gracefully detect and recover from VPN flaps.
 crontab -u root "$TMP_DIR/crontab.root.prod.txt"
 
 systemctl daemon-reload
