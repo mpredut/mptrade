@@ -3,8 +3,8 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "verify_tools"))
-import watchdogfor_resources as wd
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "os_orchestrator", "livecheck"))
+import os_resources_watchdog as wd
 
 
 def _proc(pid=10, ticks=100, rss=100, command="worker.py"):

@@ -4,7 +4,9 @@ import os
 import signal
 import time
 from pathlib import Path
-
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 import watchdog_common as wc
 
 ROOT = wc.ROOT

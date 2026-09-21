@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 import threading
 import time
 
@@ -271,6 +272,14 @@ def main():
             max_new_coins=cfg["max_new_coins"], sources=cfg["sources"])
     else:
         print("NEW COIN ALERT DEZACTIVAT (ALERT_NEW_COIN != TRUE)")
+
+    # Send startup notification so the admin knows the fleet is active.
+    # Type "bot_event" gets special rendering in the ntfy channel.
+    AlertNotifier.send({
+        "type": "bot_event",
+        "symbol": "SYSTEM",
+        "event_name": f"Binance fleet started on {platform.system()}"
+    }, enable_phone_webhook=True, webhook_url=PRICE_WEBHOOK_URL)
 
     try:
         while True:

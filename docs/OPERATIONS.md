@@ -6,7 +6,7 @@ see [DISASTER_RECOVERY.md](DISASTER_RECOVERY.md).
 ## Architecture in brief
 - **The Binance fleet** (8 processes): `cacheManager`, `assetguardian`, `priceAnalysis`,
   `tradeall`, `monitortrades`, `rtrade`, `market_alerts`, `order_retry_worker`. Started
-  and supervised by `fleet_supervisor.sh`, under **systemd `binance`**.
+  and supervised by `trade_engine/orchestrator.py`, under **systemd `binance`**.
 - **Bots running outside the fleet**: `kraken_cachemanager`, `kraken_bot`,
   `kraken_xstock_watch`, `t212_bot`, `kraken/trailing_stop` and
   `binance_api/trailing_stop`. They are started from the `bot` roles in `procs.conf` and
@@ -19,7 +19,7 @@ see [DISASTER_RECOVERY.md](DISASTER_RECOVERY.md).
 
 ## The single source of processes: `procs.conf`
 Format: `pat | dir | start_cmd | label | hb_log | hb_stale_s | role` (`role=bot|fleet`).
-Read by **all of them**: `healthcheck.sh`, `fleet_supervisor.sh`, `restart_bots.sh`, `deploy_providers.sh`.
+Read by **all of them**: `healthcheck.sh`, `trade_engine/orchestrator.py`, `restart_bots.sh`, `deploy_providers.sh`.
 **To add, remove or change a process, edit ONLY `procs.conf`.**
 
 ## Supervision — `healthcheck.sh`
@@ -32,7 +32,7 @@ Read by **all of them**: `healthcheck.sh`, `fleet_supervisor.sh`, `restart_bots.
   line; the commented-out HL entries are neither supervised nor restarted.
 
 ## Startup / deploy / backup
-- **Startup:** `fleet_supervisor.sh` (the fleet, systemd) · `restart_bots.sh` (the bots).
+- **Startup:** `trade_engine/orchestrator.py` (the fleet, systemd) · `restart_bots.sh` (the bots).
 - **Code deploy:** `deploy_providers.sh` — `git pull` -> an **import gate** (it does not restart
   if the facade fails to load) -> fleet restart -> verification.
 - **Backup/DR:** `tools/admin/backup_local.sh` (local, derived automatically from `git ls-files`), `tools/admin/backup_remote.sh`
@@ -56,7 +56,7 @@ Read by **all of them**: `healthcheck.sh`, `fleet_supervisor.sh`, `restart_bots.
 ## ⚠ PITFALLS AND LESSONS (read before changing anything)
 
 ### 1. Lock leak through fd inheritance (a supervisor disabled "silently")
-`fleet_supervisor.sh` (`exec 9>fleet_supervisor.lock`) and `healthcheck --supervise`
+`trade_engine/orchestrator.py` (`exec 9>fleet_supervisor.lock`) and `healthcheck --supervise`
 (`exec 8>/tmp/binance_supervise.lock`) use `flock`. If they start a child with
 `nohup … &`, the child **inherits the lock's fd** -> it keeps the lock open after the
 script exits -> the next run reports "**already running**" forever, which means supervision
@@ -83,7 +83,7 @@ Editing a `.sh` from Windows/UNC resets it to `644` -> cron's `./script.sh` repo
 "Permission denied". **Fix:** `chmod +x x.sh && git update-index --chmod=+x x.sh`.
 
 ### 5. `pkill -f` can catch ITSELF
-`pkill -f fleet_supervisor.sh` run from a command whose own string CONTAINS the pattern kills
+`pkill -f trade_engine/orchestrator.py` run from a command whose own string CONTAINS the pattern kills
 its own shell. **Use script files or PIDs**, not inline patterns.
 
 ### 6. WSL does NOT reach the server

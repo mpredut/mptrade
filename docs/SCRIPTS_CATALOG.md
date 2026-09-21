@@ -9,21 +9,21 @@ Core execution boundaries and entrypoints.
   The main deployment script. Validates python configuration (`--check` mode) or updates the local tree (`git pull --ff-only`), triggers python imports tests, and restarts the processes defined in `procs.conf`. Returns a failure if caching checks fail after deployment.
 - **`env_common.sh`**
   A shared environment bootstrapping file. Discovered and sourced by almost every other script to find the correct python `.venv` and export `$PYTHON_BIN`.
-- **`fleet_supervisor.sh`** (formerly `flota_start.sh`)
+- **`trade_engine/orchestrator.py`** (formerly `flota_start.sh`)
   The continuous execution daemon for the system's core "fleet" role. Used exclusively as `ExecStart=` by `systemd/binance.service`. Supervises processes like CacheManager.
-- **`healthcheck.sh`**
+- **`trade_engine/orchestrator.py`**
   Diagnostic and health monitoring script. Validates the VPN tunnel (`PIA_VPN_IF`), tests real outbound traffic via curl to `api.binance.com`, and confirms fleet operation. If errors occur, it pushes alerts via `ntfy` to the user's phone.
 - **`pia_supervisor.sh`** (formerly `pia_start.sh`)
   The continuous execution daemon for the Private Internet Access VPN. Used as `ExecStart=` by `systemd/pia.service`. Applies MTU fixes, configures `gai.conf` (IPv4 precedence), logs in with `piatoken.txt`, and enables the tunnel kill switch.
 - **`restart_bots.sh`** (formerly `bots_start.sh`)
   A one-shot executable called by `deploy_providers.sh` (or manually) that signals all running `role=bot` processes listed in `procs.conf` to reload themselves.
 
-## `tools/admin/`
+## `os_orchestrator/admin/`
 Administrative and disaster recovery tools.
 
 - **`manage_logs.sh`** (merges `rotate_logs.sh` & `logger_retention.sh`)
   Scheduled via `crontab.prod.txt` every hour. Truncates console logs (e.g. `cron.log`, `deploy.log`) if they exceed 50MB and aggressively deletes archived `.log.gz` or dated logs older than 7 days.
-- **`git_autodeploy.sh`**
+- **`manage_gitautodeploy.sh`**
   Automated deployment daemon run by root's cron. Can observe (`shadow` mode) or automatically apply (`on` mode) new commits from `origin/main` (or backtest proposals), restarting `binance.service` safely and applying cooldowns.
 - **`pia_selfheal.sh`**
   Emergency disaster recovery script for `pia.service`. Used manually (`--check` or `--force`) to run a recovery ladder (reconnect, restart daemon, relogin, reinstall) when the VPN is hopelessly wedged. It is no longer run from cron to avoid fighting systemd.
@@ -34,7 +34,7 @@ Administrative and disaster recovery tools.
 - **`rename_root.sh`**
   Utility to adjust paths globally across files if the repo name changes.
 
-## `tools/monitoring/`
+## `os_orchestrator/monitoring/`
 Observability scripts.
 
 - **`deadman_switch.sh`**
@@ -46,7 +46,7 @@ Observability scripts.
 - **`local_watch_start.sh`**
   Developer utility leveraging `inotifywait` to automatically restart bots when a `.py` file is saved locally.
 
-## `tools/lib/`
+## `os_orchestrator/lib/`
 Shared utility libraries.
 
 - **`process_control.sh`**

@@ -28,6 +28,9 @@ backup_local() {
     if [ -f "$PIA_TOKEN" ]; then
         install -m 0600 "$PIA_TOKEN" "$OUT/_machine/piatoken.txt"
     fi
+    if [ -f "$HOME/pia.txt" ]; then
+        install -m 0600 "$HOME/pia.txt" "$OUT/_machine/pia.txt"
+    fi
     
     tar czf "$OUT.tar.gz" -C "$OUT" .
     chmod -R go-rwx "$OUT" 2>/dev/null || true
@@ -74,8 +77,12 @@ restore_backup() {
     tar cf - --exclude='./_machine' -C "$SECRETS" . | tar xf - -C "$ROOT"
     if [ -f "$SECRETS/_machine/piatoken.txt" ]; then
         install -m 0600 "$SECRETS/_machine/piatoken.txt" "$HOME/piatoken.txt"
+        log "Restored PIA dedicated IP token to $HOME/piatoken.txt"
     fi
-    echo "    ✔ restored"
+    if [ -f "$SECRETS/_machine/pia.txt" ]; then
+        install -m 0600 "$SECRETS/_machine/pia.txt" "$HOME/pia.txt"
+        log "Restored PIA credentials to $HOME/pia.txt"
+    fi
     
     echo "--- [2/5] venv (myenv) + dependencies ---"
     [ -x "$ROOT/myenv/bin/python" ] || python3 -m venv "$ROOT/myenv" || fail "cannot create the venv"

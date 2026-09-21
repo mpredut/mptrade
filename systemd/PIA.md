@@ -65,8 +65,8 @@ the machine answers pings on the LAN but reaches nothing outside. It looks like 
 network problem; it is a killswitch over a missing tunnel. Confirmation:
 `curl --interface ens18 ...` returns empty.
 
-**`binance.service` has `Requires=pia.service`.** If PIA goes down the fleet never
-starts — and `systemctl is-active binance.service` can report `active` while not one
+**`trade_engine.service` has `Requires=pia.service`.** If PIA goes down the fleet never
+starts — and `systemctl is-active trade_engine.service` can report `active` while not one
 of the 7 members is running. Check the processes, not the unit:
 `./healthcheck.sh --check`.
 
@@ -130,7 +130,7 @@ page never gets run). The URL must be **versioned**: `pia-linux-latest.run` answ
 
 ## What happens on reboot
 
-- `piavpn.service`, `pia.service`, `binance.service`, `cron.service` — all `enabled`.
+- `piavpn.service`, `pia.service`, `trade_engine.service`, `cron.service` — all `enabled`.
 - SSH is **socket-activated** on Ubuntu 24.04: `ssh.service` shows as `disabled`, but
   `ssh.socket` is `enabled` and listens on 32238. That is not a problem.
 - Both crontabs (the trading account and root) survive the reboot.

@@ -7,9 +7,9 @@
 # "Timed out after 5 sec". With no tun0, the PIA killswitch cut ALL outbound
 # traffic. The chain of consequences:
 #   - pia.service went into a restart loop (it reached 6975 restarts);
-#   - binance.service has Requires=pia.service, so flota_start.sh blocked on its
+#   - trade_engine.service has Requires=pia.service, so flota_start.sh blocked on its
 #     "checking the VPN connection" gate and started NONE of the 7 fleet members,
-#     while `systemctl is-active binance.service` cheerfully reported "active";
+#     while `systemctl is-active trade_engine.service` cheerfully reported "active";
 #   - NO alert ever reached the phone: ntfy.sh is reached over the internet, and
 #     the internet was precisely what was missing (278 x "EROARE curl" in
 #     logs/deadman.log).
@@ -430,20 +430,20 @@ if vpn_healthy && [ "$FORCE" = 0 ] && check_resolved_cpu; then
         alert "PIA restored ($(hostname))" \
 "The tunnel works again after ${mins} min of downtime.
 VPN IP: $(pia get vpnip) | region: $(pia get region)
-Check the fleet: systemctl is-active binance.service (it has Requires=pia.service)."
+Check the fleet: systemctl is-active trade_engine.service ."
     fi
-    # Fleet self-heal: PIA is healthy, so the fleet SHOULD be up. If binance.service is
+    # Fleet self-heal: PIA is healthy, so the fleet SHOULD be up. If trade_engine.service is
     # enabled but inactive, bring it back. This closes the 19-Sep gap: a reinstall's
     # `systemctl restart` stopped binance and its start lost the VPN-gate race, leaving it
     # down -- and a CLEAN stop does not trigger the unit's own Restart=always, so nothing
     # recovered it. Skipped while a maintenance pause flag is present.
     if [ ! -e "$ROOT/FLEET_PAUSED" ] \
-       && systemctl is-enabled --quiet binance.service 2>/dev/null \
-       && ! systemctl is-active --quiet binance.service 2>/dev/null; then
-        log "binance.service enabled but inactive while PIA is healthy -> starting it"
-        systemctl start binance.service >/dev/null 2>&1
+       && systemctl is-enabled --quiet trade_engine.service 2>/dev/null \
+       && ! systemctl is-active --quiet trade_engine.service 2>/dev/null; then
+        log "trade_engine.service enabled but inactive while PIA is healthy -> starting it"
+        systemctl start trade_engine.service >/dev/null 2>&1
         alert "Fleet restarted ($(hostname))" \
-"PIA is healthy but binance.service was down; the watchdog restarted it. Touch FLEET_PAUSED to pause this."
+"PIA is healthy but trade_engine.service was down; the watchdog restarted it. Touch FLEET_PAUSED to pause this."
     fi
     log "OK (tun0 + HTTPS through the tunnel), region=$(pia get region) vpnip=$(pia get vpnip)"
     exit 0
@@ -459,8 +459,45 @@ if [ "$FORCE" = 0 ] && daemon_responsive && pia_service_settling; then
     exit 0
 fi
 
+BACKOFF_FILE="$STATE_DIR/pia_backoff"
+NOW=$(date +%s)
+if [ "$FORCE" = 0 ] && [ -f "$BACKOFF_FILE" ]; then
+    . "$BACKOFF_FILE"
+    if [ "$NOW" -lt "${NEXT_RETRY:-0}" ]; then
+        wait_mins=$(( (NEXT_RETRY - NOW) / 60 ))
+        log "VPN UNHEALTHY but in exponential backoff. Next retry in ${wait_mins}m. Deferring to polling."
+        exit 0
+    fi
+    NEW_BACKOFF=$(( CURRENT_BACKOFF * 2 ))
+    [ "$NEW_BACKOFF" -gt 7200 ] && NEW_BACKOFF=7200
+else
+    NEW_BACKOFF=300 # 5 minutes initial backoff after first escalation
+fi
+
 [ -f "$OUTAGE_MARK" ] || date +%s > "$OUTAGE_MARK"
 log "VPN UNHEALTHY (state=$(pia get connectionstate) daemon=$(daemon_responsive && echo ok || echo wedged)) — starting the recovery ladder"
+rung_relogin() {
+    log "rung 4: Logout and Login to reset account state"
+    pia logout >/dev/null 2>&1
+    sleep 2
+    if [ -f "$HOME/pia.txt" ]; then
+        pia login "$HOME/pia.txt" >/dev/null 2>&1
+        sleep 2
+        # Restore all tokens
+        for t in "$HOME"/piatoken*.txt; do
+            [ -f "$t" ] && pia dedicatedip add "$t" >/dev/null 2>&1
+        done
+        local dedicated
+        dedicated=$(pia get regions | grep -m1 '^dedicated-')
+        pia set region "${dedicated:-${PIA_FALLBACK_REGION:-auto}}" >/dev/null
+        pia connect >/dev/null
+        return 0
+    else
+        log "   WARNING: $HOME/pia.txt missing -> cannot login"
+        return 1
+    fi
+}
+
 # Take ownership: stop pia.service so its Restart=always loop cannot issue a competing
 # `pia connect` while the rungs run (two actors on one daemon was half the thrashing). Every
 # exit path below hands control back to systemd (reset-failed + start).
@@ -468,33 +505,37 @@ systemctl stop pia.service >/dev/null 2>&1
 
 # A wedged daemon is not fixed by `connect`; jump straight to restarting it.
 if daemon_responsive; then
-    LADDER="rung_connect rung_reconnect rung_restart_daemon rung_reinstall"
+    LADDER="rung_connect rung_reconnect rung_restart_daemon rung_relogin rung_reinstall"
 else
     log "the daemon does not answer piactl -> skipping rungs 1-2"
-    LADDER="rung_restart_daemon rung_reinstall"
+    LADDER="rung_restart_daemon rung_relogin rung_reinstall"
 fi
 
 for rung in $LADDER; do
     "$rung" || continue
     if wait_healthy; then
         mins=$(( ( $(date +%s) - $(cat "$OUTAGE_MARK" 2>/dev/null || date +%s) ) / 60 ))
-        rm -f "$OUTAGE_MARK"
+        rm -f "$OUTAGE_MARK" "$BACKOFF_FILE"
         log "RECOVERED at $rung (vpnip=$(pia get vpnip))"
         alert "PIA repaired automatically ($(hostname))" \
 "The tunnel was restored by $rung after ~${mins} min of downtime.
 VPN IP: $(pia get vpnip) | region: $(pia get region)
 If the region is NOT the dedicated one, Binance will return -2015 until the DIP token is restored."
         # We stopped pia.service to take ownership; hand it back (reset-failed clears any
-        # start-limit) and binance.service (Requires=pia.service) starts along with it.
+        # start-limit) and trade_engine.service (Requires=pia.service) starts along with it.
         systemctl reset-failed pia.service >/dev/null 2>&1
         systemctl start pia.service        >/dev/null 2>&1
-        systemctl start binance.service    >/dev/null 2>&1
+        systemctl start trade_engine.service    >/dev/null 2>&1
         exit 0
     fi
     log "$rung did not fix it; escalating"
 done
 
 log "FAILURE: every rung exhausted, the VPN is still down"
+echo "CURRENT_BACKOFF=$NEW_BACKOFF" > "$BACKOFF_FILE"
+echo "NEXT_RETRY=$(( NOW + NEW_BACKOFF ))" >> "$BACKOFF_FILE"
+log "Exponential backoff active. Next retry in $(( NEW_BACKOFF / 60 )) minutes."
+
 # Do not leave pia.service stopped after giving up: hand control back to systemd's own
 # Restart=always loop (reset-failed clears the start-limit) so it keeps trying by itself.
 systemctl reset-failed pia.service >/dev/null 2>&1
@@ -502,6 +543,6 @@ systemctl start pia.service        >/dev/null 2>&1
 alert "PIA NOT automatically repairable ($(hostname))" \
 "Every rung was exhausted (connect, reconnect, restart daemon, reinstall) and the tunnel still will not come up.
 State: $(pia get connectionstate) | region: $(pia get region) | raw internet: $(net_raw_ok && echo OK || echo DOWN)
-WARNING: the Binance fleet stays stopped while pia.service is down (binance.service has Requires=pia.service).
+WARNING: the Binance fleet stays stopped while pia.service is down (trade_engine.service has Requires=pia.service).
 Typical causes: an expired PIA account/subscription (AUTH_FAILED in /opt/piavpn/var/daemon.log) or an invalid DIP token."
 exit 1

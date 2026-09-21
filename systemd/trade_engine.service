@@ -1,0 +1,19 @@
+[Unit]
+Description=MTrade Python Orchestrator
+After=network-online.target pia.service
+# Removed Requires=pia.service so the engine stays alive and bots can fallback to polling when PIA drops.
+
+[Service]
+Type=simple
+User=@TRADING_USER@
+WorkingDirectory=@TRADING_ROOT@
+Environment=PATH=@TRADING_ROOT@/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=@TRADING_PYTHON@ @TRADING_ROOT@/trade_engine/orchestrator.py
+Restart=always
+RestartSec=10
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

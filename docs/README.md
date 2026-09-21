@@ -48,8 +48,8 @@ their code (a deliberate convention — they are linked below).
 - [../kraken/README.md](../kraken/README.md) — Kraken: the bots (HYPE, xStock, trailing) plus the cachemanager.
 
 ## Quick maps (where things are)
-- **Single process manifest**: `procs.conf` (repository root) — read by `healthcheck.sh`, `fleet_supervisor.sh` and `restart_bots.sh`.
+- **Single process manifest**: `procs.conf` (repository root) — read by `healthcheck.sh`, `trade_engine/orchestrator.py` and `restart_bots.sh`.
 - **Supervision**: `healthcheck.sh` — `--supervise` (restarts dead and frozen processes), `--alert`, `--check` (read-only).
-- **Startup**: `fleet_supervisor.sh` (the fleet, under systemd `binance`), `restart_bots.sh` (the bots).
+- **Startup**: `trade_engine/orchestrator.py` (the fleet, under systemd `binance`), `restart_bots.sh` (the bots).
 - **Backup/DR**: `tools/admin/backup_local.sh` (local), `tools/admin/backup_remote.sh` (encrypted Storj), `restore.sh` (rebuild), `systemd/crontab.prod.txt`, `requirements.txt`, `systemd/install_prod.sh`.
 - [SCRIPTS_CATALOG.md](SCRIPTS_CATALOG.md) - Registry of all shell scripts and their purposes.
