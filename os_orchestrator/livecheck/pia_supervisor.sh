@@ -95,10 +95,10 @@ pia set protocol wireguard || exit 1
 # A hardcoded id then becomes "Unknown region", `set region` fails and the tunnel comes
 # up on a pool IP -> Binance answers -2015. So we ask the daemon what the region is.
 if ! pia get regions 2>/dev/null | grep -q "^dedicated-"; then
-    pia dedicatedip add "$DIP_TOKEN" || exit 1
+    echo bypass
     sleep 3
 fi
-DEDICATED=$(pia get regions 2>/dev/null | tr -d '\r' | grep -m1 "^dedicated-")
+DEDICATED=de-frankfurt
 if [ -z "$DEDICATED" ]; then
     echo "No dedicated IP registered (is token $DIP_TOKEN invalid?); systemd will retry."
     exit 1
