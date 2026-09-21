@@ -17,12 +17,12 @@ set -euo pipefail
 
 TUSER="${TRADING_USER:-$(stat -c %U "$(svc_root)" 2>/dev/null || id -un)}"
 
-svc_root() { systemctl show -p WorkingDirectory --value binance.service 2>/dev/null; }
+svc_root() { systemctl show -p WorkingDirectory --value python_orchestrator.service 2>/dev/null; }
 
 require_clean_repo() {              # refuse to run privileged repo scripts if edited locally
   local root="$1"
   git -C "$root" -c safe.directory="$root" diff --quiet HEAD -- \
-      tools/admin/rename_root.sh systemd/install_prod.sh tools/admin/make_venv_portable.sh 2>/dev/null \
+      orchestratorOS/admin/rename_root.sh systemd/install_prod.sh orchestratorOS/admin/make_venv_portable.sh 2>/dev/null \
     || { echo "REFUSED: privileged scripts differ from the committed version (git tree not clean)." >&2; exit 1; }
 }
 
@@ -30,26 +30,26 @@ log() { echo "[trading-admin $(date -u +%FT%TZ)] $*"; }
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
-  restart) log "restart fleet + vpn"; systemctl restart pia.service binance.service ;;
-  stop)    log "stop fleet";          systemctl stop binance.service ;;
-  start)   log "start fleet + vpn";   systemctl start pia.service binance.service ;;
-  status)  systemctl status --no-pager binance.service || true ;;
+  restart) log "restart fleet + vpn"; systemctl restart pia.service python_orchestrator.service ;;
+  stop)    log "stop fleet";          systemctl stop python_orchestrator.service ;;
+  start)   log "start fleet + vpn";   systemctl start pia.service python_orchestrator.service ;;
+  status)  systemctl status --no-pager python_orchestrator.service pia.service || true ;;
   reinstall)
-    R="$(svc_root)"; [ -d "$R" ] || { echo "cannot resolve trading root from binance.service" >&2; exit 1; }
+    R="$(svc_root)"; [ -d "$R" ] || { echo "cannot resolve trading root from python_orchestrator.service" >&2; exit 1; }
     require_clean_repo "$R"
     log "reinstall (re-render systemd + cron) from $R"
     bash "$R/systemd/install_prod.sh" ;;
   rename)
     NEW="${1:?usage: trading-admin rename <new-folder-name>}"
-    R="$(svc_root)"; [ -d "$R" ] || { echo "cannot resolve trading root from binance.service" >&2; exit 1; }
+    R="$(svc_root)"; [ -d "$R" ] || { echo "cannot resolve trading root from python_orchestrator.service" >&2; exit 1; }
     require_clean_repo "$R"
-    log "rename trading root -> $NEW (via $R/tools/admin/rename_root.sh)"
-    bash "$R/tools/admin/rename_root.sh" "$NEW" ;;
+    log "rename trading root -> $NEW (via $R/orchestratorOS/admin/rename_root.sh)"
+    bash "$R/orchestratorOS/admin/rename_root.sh" "$NEW" ;;
   pin-dns)
     # DNS-only apply: install the committed resolved drop-in + restart systemd-resolved.
     # Deliberately does NOT touch the fleet, so it is safe to run during a VPN/network
-    # outage (unlike reinstall, which restarts binance.service and blocks on the VPN gate).
-    R="$(svc_root)"; [ -d "$R" ] || { echo "cannot resolve trading root from binance.service" >&2; exit 1; }
+    # outage (unlike reinstall, which restarts python_orchestrator.service and blocks on the VPN gate).
+    R="$(svc_root)"; [ -d "$R" ] || { echo "cannot resolve trading root from python_orchestrator.service" >&2; exit 1; }
     git -C "$R" -c safe.directory="$R" diff --quiet HEAD -- systemd/resolved-20-trading-cache.conf 2>/dev/null \
       || { echo "REFUSED: resolved drop-in differs from the committed version." >&2; exit 1; }
     log "pin DNS: install resolved drop-in + restart systemd-resolved (no fleet restart)"

@@ -88,13 +88,15 @@ class BotManager:
         logging.info(f"Starting {name} in {directory}: {cmd}")
         start_time = time.time()
         try:
+            bot_env = {**os.environ, "MPTRADE_ORCHESTRATED": "1"}
             process = await asyncio.create_subprocess_shell(
                 cmd,
                 executable='/bin/bash',
                 cwd=directory,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
-                start_new_session=True
+                start_new_session=True,
+                env=bot_env
             )
             self.processes[name] = process
         except Exception as e:

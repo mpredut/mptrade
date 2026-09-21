@@ -59,7 +59,6 @@ render "$SYSTEMD_DIR/piavpn.service" "$TMP_DIR/piavpn.service"
 render "$SYSTEMD_DIR/crontab.prod.txt" "$TMP_DIR/crontab.prod.txt"
 render "$SYSTEMD_DIR/crontab.root.prod.txt" "$TMP_DIR/crontab.root.prod.txt"
 render "$SYSTEMD_DIR/bashrc" "$TMP_DIR/bashrc"
-render "$SYSTEMD_DIR/sudo.txt" "$TMP_DIR/sudo.txt"
 render "$SYSTEMD_DIR/sudoers-trading" "$TMP_DIR/sudoers-trading"
 
 

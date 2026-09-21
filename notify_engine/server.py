@@ -11,7 +11,31 @@ from typing import Dict, Any, List
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] Orchestrator: %(message)s")
 
+_GUARD_MARKERS = (
+    "🛑", "🛡", "STOP-LOSS", "STOP_LOSS", "TRAILING", "LIQUID", "CATASTROPH", "CRASH",
+    "LICHID", "CATASTROF",
+)
+_OPS_MARKERS = (
+    "FAILED", "ERROR", "MANUAL", "GONE", "IMBALANC",
+    "ESUAT", "ERORI", "DISPARUT", "DEZECHILIBR",
+)
+
+def _topic_for_category(title: str, source: str) -> str:
+    t = (title or "").upper()
+    s = (source or "").lower()
+    if any(m in t for m in _GUARD_MARKERS):
+        cat = "GUARD"
+    elif any(m in t for m in _OPS_MARKERS) or "watchdog" in s:
+        cat = "ERROR"
+    elif "alert" in s or "prag" in t.lower() or "threshold" in t.lower():
+        cat = "PRICE"
+    else:
+        cat = "TRADES"
+    topic = os.environ.get(f"NTFY_TOPIC_{cat}")
+    return topic or os.environ.get("PHONE_ALERT_URL", "test-mptrade")
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 class NotificationServer:
     def __init__(self):
         self.ntfy_token = self._load_ntfy_token()
@@ -44,6 +68,7 @@ class NotificationServer:
             logging.error(f"Failed to load rules.json: {e}")
             return []
 
+
     def _resolve_topic(self, category: str) -> str:
         cat = category.upper()
         # Fallbacks to old naming if env vars are present
@@ -73,7 +98,24 @@ class NotificationServer:
             
         try:
             resp = requests.post(url, data=message.encode("utf-8"), headers=headers, timeout=5)
-            resp.raise_for_status()
+            if getattr(resp, "status_code", None) == 429:
+                text = getattr(resp, "text", "") or ""
+                if "daily" in text.lower() or "42908" in text:
+                    logging.warning(f"ntfy daily limit reached: {text}")
+                    from notify_engine.alertnotifiers import _mark_provider_daily_limit
+                    _mark_provider_daily_limit("ntfy")
+                    return False
+                retry_after = getattr(resp, "headers", {}).get("Retry-After")
+                if retry_after:
+                    try:
+                        time.sleep(float(retry_after))
+                    except (ValueError, TypeError):
+                        time.sleep(1)
+                    resp = requests.post(url, data=message.encode("utf-8"), headers=headers, timeout=5)
+            if hasattr(resp, "raise_for_status"):
+                resp.raise_for_status()
+            elif getattr(resp, "status_code", 200) >= 400:
+                raise requests.HTTPError(f"HTTP {getattr(resp, 'status_code', 0)}")
             return True
         except Exception as e:
             if not is_retry:
@@ -88,10 +130,35 @@ class NotificationServer:
             
     def _send_email(self, subject: str, message: str, is_retry: bool = False) -> bool:
         # Placeholder for actual email delivery. Can be implemented with smtplib.
-        # For now, we simulate success if network is up, or queue it.
-        # To test network, we just do a quick ping or assume success.
         logging.warning(f"Email delivery not fully configured. Intent recorded for: {subject}")
         return True
+
+    def dispatch_alerts(self, alerts: list, webhook_url: str = None, bot_name: str = "") -> bool:
+        if not alerts:
+            return False
+        from notify_engine.alertnotifiers import _reserve_delivery, _alerts_are_urgent
+        urgent = _alerts_are_urgent(alerts)
+        allowed, reason, _ = _reserve_delivery("ntfy", alerts, urgent=urgent)
+        if not allowed:
+            logging.info(f"ntfy delivery skipped by policy: {reason}")
+            return False
+
+        first = alerts[0]
+        title = first.get("name", "Alert") if isinstance(first, dict) else getattr(first, "name", "Alert")
+        body = first.get("body", "") if isinstance(first, dict) else getattr(first, "body", "")
+        source = first.get("source", "") if isinstance(first, dict) else getattr(first, "source", "")
+        if not body and isinstance(first, dict):
+            body = first.get("symbol", "")
+
+        topic = None
+        if webhook_url:
+            topic = webhook_url.rstrip("/").rsplit("/", 1)[-1]
+        if not topic:
+            topic = _topic_for_category(title, source)
+
+        full_title = f"[{bot_name}] {title}" if bot_name else title
+        priority = "urgent" if urgent else "high"
+        return self._send_ntfy(full_title, body, priority, topic)
 
     def process_line(self, line: str, bot_name: str):
         # 1. Check for Explicit AlertNotifier Intent (JSON)
@@ -104,15 +171,12 @@ class NotificationServer:
                     if "title" in payload:
                         self._send_ntfy(payload["title"], payload["message"], payload["priority"], payload["topic"])
                         return
-                        
+
                     # Standard alert formatting
                     alerts = payload.get("alerts", [])
-                    if alerts:
-                        first = alerts[0]
-                        title = first.get("name", "Alert")
-                        body = first.get("body", "")
-                        self._send_ntfy(f"[{bot_name}] {title}", body, "high", self._resolve_topic("TRADES"))
-                
+                    webhook_url = payload.get("webhook_url")
+                    self.dispatch_alerts(alerts, webhook_url=webhook_url, bot_name=bot_name)
+
                 elif intent == "email":
                     subject = payload.get("subject", "Alert")
                     self._send_email(subject, str(payload.get("alerts", [])))

@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from alerts_config import load_config, resolve  # noqa: E402
+from market_monitor.alerts_config import load_config, resolve  # noqa: E402
 
 SAMPLE = """
 # Comment.
@@ -52,7 +52,7 @@ class TestLoad(unittest.TestCase):
         self.assertEqual(per["BTC"], {"up_percent": 6.0, "down_percent": 10.0})
         self.assertEqual(per["ETH"], {"up_percent": 5.0, "down_percent": 9.0})
 
-    def test_setari(self):
+    def test_settings(self):
         self.assertEqual(self.cfg["alert_config"]["cooldown_minutes"], 45)
         self.assertEqual(self.cfg["max_new_coins"], 8)
         self.assertEqual(self.cfg["max_monitored"], 20)

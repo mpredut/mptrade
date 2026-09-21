@@ -1,35 +1,17 @@
-export DISPLAY=192.168.0.103:0
 export PATH=$PATH:/opt/piavpn/bin
-export DISPLAY=192.168.0.104:0
 
 alias python='python3'
 cd @TRADING_ROOT@
 
-# piactl WITHOUT a timeout hangs the login: when pia-daemon is wedged (it was, for
-# 34 days, Aug-Sep 2026) every call blocks for ~5s and any SSH session becomes slow
-# exactly when you need to get in and debug. See systemd/PIA.md.
+# piactl without a timeout can hang interactive shells if pia-daemon wedges.
 pia() { timeout 5 piactl "$@" 2>/dev/null; }
 
-#PIA — the region is NOT hardcoded: a re-added token can return a different IP
-#      (Sep 2026: .86 -> .79), and a fixed id then becomes "Unknown region".
-#piactl dedicatedip add ~/piatoken.txt
-#piactl set region "$(piactl get regions | grep -m1 '^dedicated-')"
-#piactl set requestportforward true
-#piactl connect
-#
-
-# `pubip` is the PHYSICAL link's IP (the ISP line) and stays on it even when the
-# tunnel is perfectly healthy — shown on its own it looked like the server was
-# leaving unprotected. What matters for the Binance key whitelist is `vpnip`.
+# Print VPN and network state on shell login
 printf "🔐 VPN State      : %s\n" "$(pia get connectionstate)"
 printf "🔌 Port Forward   : %s\n" "$(pia get portforward)"
 printf "🌍 VPN exit IP    : %s\n" "$(pia get vpnip)"
 printf "🏠 ISP link IP    : %s\n" "$(pia get pubip)"
 
-#source myenv/bin/activate && python demon.py && deactivate
-#nohup python3 demon.py &
-#
-#./flota_start.sh
-#
-ps -aux | grep binance
-ps -aux | grep python
+# Display active fleet processes
+ps -aux | grep -E 'python_orchestrator|orchestratorTrade' | grep -v grep || true
+

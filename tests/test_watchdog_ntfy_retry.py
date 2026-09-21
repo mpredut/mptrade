@@ -1,6 +1,5 @@
-"""watchdog_common.send_ntfy: pe 429 (rate-limit ntfy.sh in burst) reincearca o data
-honouring Retry-After instead of losing the message. Without retries, a burst from the fleet led
-to 'push FAILED 429' and undelivered alerts."""
+"""watchdog_common.send_ntfy: retries once on 429 (burst rate-limit on ntfy.sh),
+honouring Retry-After instead of losing the message."""
 import os
 import sys
 import tempfile
@@ -8,7 +7,7 @@ import unittest
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(ROOT, "verify_tools"))
+sys.path.insert(0, os.path.join(ROOT, "orchestratorOS", "lib"))
 
 import watchdog_common as wc
 
@@ -40,10 +39,10 @@ class SendNtfyRetryTest(unittest.TestCase):
     def test_retry_on_429_then_success(self):
         with mock.patch("requests.post") as mpost, mock.patch("time.sleep") as msleep:
             mpost.side_effect = [_Resp(429, {"Retry-After": "1"}), _Resp(200)]
-            ok = wc.send_ntfy("titlu", "mesaj")
+            ok = wc.send_ntfy("title", "message")
         self.assertTrue(ok)
-        self.assertEqual(mpost.call_count, 2)     # a reincercat
-        msleep.assert_called_once()               # a asteptat Retry-After
+        self.assertEqual(mpost.call_count, 2)     # retried
+        msleep.assert_called_once()               # waited Retry-After
 
     def test_daily_429_does_not_retry_and_blocks_following_attempts(self):
         with mock.patch("requests.post") as mpost, mock.patch("time.sleep"):

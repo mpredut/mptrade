@@ -14,8 +14,10 @@ from urllib.parse import quote
 
 # Import your existing modules
 import log
-import utils as u
-from pricefetcher import get_base_symbol
+try:
+    from pricefetcher import get_base_symbol
+except ImportError:
+    from market_monitor.pricefetcher import get_base_symbol
 
 # Canonical CoinMarketCap slugs for major symbols. _all_listings is keyed by
 # symbol, so when several coins share one (for example, real Bitcoin and a scam

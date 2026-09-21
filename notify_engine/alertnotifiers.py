@@ -359,19 +359,39 @@ class AlertNotifier:
     def send_phone_webhook_batch(alerts, webhook_url: Optional[str] = None):
         if not alerts:
             return False
-        import json
-        from datetime import datetime
-        def default_serializer(obj):
-            if isinstance(obj, datetime):
-                return obj.isoformat()
-            return str(obj)
-        intent = {
-            "__orchestrator_intent__": "ntfy_webhook",
-            "webhook_url": webhook_url,
-            "alerts": list(alerts)
-        }
-        print(json.dumps(intent, default=default_serializer), flush=True)
-        return True
+        if os.environ.get("MPTRADE_ORCHESTRATED") == "1":
+            import json
+            from datetime import datetime
+            def default_serializer(obj):
+                if isinstance(obj, datetime):
+                    return obj.isoformat()
+                return str(obj)
+            intent = {
+                "__orchestrator_intent__": "ntfy_webhook",
+                "webhook_url": webhook_url,
+                "alerts": list(alerts)
+            }
+            print(json.dumps(intent, default=default_serializer), flush=True)
+            return True
+        else:
+            from notify_engine.server import NotificationServer
+            server = NotificationServer()
+            return server.dispatch_alerts(list(alerts), webhook_url=webhook_url)
+
+    @staticmethod
+    def send(alert, enable_console=True, enable_file=True,
+             enable_email=False, enable_phone_webhook=False, webhook_url=None):
+        alerts = [alert] if not isinstance(alert, list) else alert
+        if enable_console:
+            for item in alerts:
+                AlertNotifier.print_to_console(item)
+        if enable_file:
+            for item in alerts:
+                AlertNotifier.save_to_file(item)
+        if enable_email:
+            AlertNotifier.send_email_batch(alerts)
+        if enable_phone_webhook:
+            AlertNotifier.send_phone_webhook_batch(alerts, webhook_url=webhook_url)
 
     @staticmethod
     def _send_urgent_email_fallback(alerts) -> None:
@@ -384,18 +404,30 @@ class AlertNotifier:
 def notify(title: str, body: str, source: str, symbol: str,
            price: float = None, desktop: bool = False,
            email: bool = None) -> None:
-    import json
-    intent = {
-        __orchestrator_intent__: ntfy_webhook,
-        alerts: [{
-            type: bot_event,
-            name: title,
-            body: body,
-            source: source,
-            symbol: symbol
-        }]
-    }
-    print(json.dumps(intent), flush=True)
+    if os.environ.get("MPTRADE_ORCHESTRATED") == "1":
+        import json
+        intent = {
+            "__orchestrator_intent__": "ntfy_webhook",
+            "alerts": [{
+                "type": "bot_event",
+                "name": title,
+                "body": body,
+                "source": source,
+                "symbol": symbol
+            }]
+        }
+        print(json.dumps(intent), flush=True)
+    else:
+        from notify_engine.server import NotificationServer
+        server = NotificationServer()
+        server.dispatch_alerts([{
+            "type": "bot_event",
+            "name": title,
+            "body": body,
+            "source": source,
+            "symbol": symbol
+        }])
+
 
 def bind_notify(symbol_env_keys: tuple, default_symbol: str):
     import os

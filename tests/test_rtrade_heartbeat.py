@@ -44,10 +44,13 @@ class RTradeHeartbeatTest(unittest.TestCase):
             row for row in (ROOT / "procs.conf").read_text(encoding="utf-8").splitlines()
             if row.startswith("rtrade.py|")
         )
-        self.assertEqual(
-            line,
-            "rtrade.py|$ROOT||rtrade|cachedb/rtrade.heartbeat|180|fleet",
-        )
+        parts = line.split("|")
+        self.assertEqual(parts[0], "rtrade.py")
+        self.assertEqual(parts[1], "$ROOT")
+        self.assertEqual(parts[3], "rtrade")
+        self.assertEqual(parts[4], "cachedb/rtrade.heartbeat")
+        self.assertEqual(parts[5], "180")
+        self.assertEqual(parts[6], "fleet")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,0 @@
-sudo visudo -f /etc/sudoers.d/trading-pia
-
-@TRADING_USER@ ALL=(ALL) NOPASSWD: /bin/systemctl restart pia.service
-

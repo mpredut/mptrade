@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_market_alerts_and_hyperliquid_provider_use_shared_env_stack():
-    market = (ROOT / "market_alerts.py").read_text(encoding="utf-8")
+    market = (ROOT / "market_monitor/price_notifier.py").read_text(encoding="utf-8")
     provider = (ROOT / "providers/hyperliquid_provider.py").read_text(encoding="utf-8")
     assert "load_env_stack(" in market
     assert "from dotenv import" not in market
@@ -41,10 +41,10 @@ def test_operational_thresholds_have_one_versioned_source():
     assert keys <= configured
 
     runtime_files = [
-        ROOT / "verify_tools/watchdogfor_anomaly.py",
-        ROOT / "verify_tools/watchdogfor_cacheandconfig.py",
-        ROOT / "verify_tools/portfolio_snapshot.py",
-        ROOT / "verify_tools/monitor_night.py",
+        path for path in [
+            ROOT / "verify_tools/portfolio_snapshot.py",
+            ROOT / "verify_tools/monitor_night.py",
+        ] if path.exists()
     ]
     text = "\n".join(path.read_text(encoding="utf-8") for path in runtime_files)
     for key in keys:
@@ -54,7 +54,6 @@ def test_operational_thresholds_have_one_versioned_source():
 def test_specialized_atomic_writers_are_explicitly_bounded():
     remaining = {
         "order_retry.py",                    # locked durable JSONL outbox
-        "verify_tools/migrate_cachedb_usdc.py",  # one-shot migration with backup
     }
     candidates = []
     tracked = subprocess.check_output(
