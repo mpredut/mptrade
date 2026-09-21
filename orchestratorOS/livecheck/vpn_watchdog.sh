@@ -48,13 +48,34 @@ REINSTALL_MARK="$STATE_DIR/last_reinstall"
 SPOOL_MAX_BYTES="${PIA_SPOOL_MAX_BYTES:-262144}"
 LOCK="/tmp/pia_selfheal.lock"
 
-PIA_USER="${PIA_USER:-$(stat -c %U "$ROOT")}"
-id "$PIA_USER" >/dev/null 2>&1 || {
-    echo "invalid repository owner/trading user: $PIA_USER" >&2
+TRADING_USER="${TRADING_USER:-$(stat -c %U "$ROOT")}"
+id "$TRADING_USER" >/dev/null 2>&1 || {
+    echo "invalid repository owner/trading user: $TRADING_USER" >&2
     exit 1
 }
-PIA_USER_HOME="$(getent passwd "$PIA_USER" | cut -d: -f6)"
-[ -n "$PIA_USER_HOME" ] || { echo "home missing for $PIA_USER" >&2; exit 1; }
+TRADING_USER_HOME="$(getent passwd "$TRADING_USER" | cut -d: -f6)"
+[ -n "$TRADING_USER_HOME" ] || { echo "home missing for $TRADING_USER" >&2; exit 1; }
+
+# Load PIA credentials and tokens from .env if present
+PIA_ACCOUNT_USER=""
+PIA_PASS=""
+PIA_DIP_TOKEN_FRANKFURT=""
+PIA_DIP_TOKEN_BELGIUM=""
+if [ -f "$ROOT/.env" ]; then
+    while IFS='=' read -r key val; do
+        val="${val%\"}"
+        val="${val#\"}"
+        val="${val%\'}"
+        val="${val#\'}"
+        case "$key" in
+            PIA_USER|PIA_ACCOUNT_USER) PIA_ACCOUNT_USER="$val" ;;
+            PIA_PASS) PIA_PASS="$val" ;;
+            PIA_DIP_TOKEN|PIA_DIP_TOKEN_FRANKFURT) PIA_DIP_TOKEN_FRANKFURT="$val" ;;
+            PIA_DIP_TOKEN_BELGIUM) PIA_DIP_TOKEN_BELGIUM="$val" ;;
+        esac
+    done < <(grep -E '^(PIA_ACCOUNT_USER|PIA_USER|PIA_PASS|PIA_DIP_TOKEN|PIA_DIP_TOKEN_FRANKFURT|PIA_DIP_TOKEN_BELGIUM)=' "$ROOT/.env" 2>/dev/null || true)
+fi
+
 PROBE_TIMEOUT="${PIA_PROBE_TIMEOUT:-8}"
 CLI_TIMEOUT="${PIA_CLI_TIMEOUT:-6}"     # Longer than this means the daemon is wedged.
 CONNECT_WAIT="${PIA_CONNECT_WAIT:-60}"  # How long we wait for a tunnel after each rung.
@@ -62,7 +83,7 @@ CONNECT_WAIT="${PIA_CONNECT_WAIT:-60}"  # How long we wait for a tunnel after ea
 # pia_start.sh waits up to 60s for an IP, so this must exceed that (plus margin) or self-heal
 # would stop pia.service mid-connect -- the thrashing this guard exists to prevent.
 CONNECT_SETTLE="${PIA_CONNECT_SETTLE:-120}"
-DIP_TOKEN="${PIA_DIP_TOKEN:-$PIA_USER_HOME/piatoken.txt}"
+DIP_TOKEN="${PIA_DIP_TOKEN:-$TRADING_USER_HOME/piatoken.txt}"
 FALLBACK_REGION="${PIA_FALLBACK_REGION:-auto}"
 # PIA's tunnel interface: wgpia0 with WireGuard, tun0 with OpenVPN. The wired ISP
 # throttles OpenVPN, so the fleet runs WireGuard; keep this in sync with the
@@ -92,10 +113,10 @@ log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*"; }
 # piactl must be called as the user who owns the PIA session, not as root.
 # The `timeout` is mandatory: with a wedged daemon, piactl blocks forever.
 pia() {
-    if [ "$(id -un)" = "$PIA_USER" ]; then
+    if [ "$(id -un)" = "$TRADING_USER" ]; then
         timeout "$CLI_TIMEOUT" piactl "$@" 2>/dev/null | tr -d '\r'
     else
-        timeout "$CLI_TIMEOUT" runuser -u "$PIA_USER" -- piactl "$@" 2>/dev/null | tr -d '\r'
+        timeout "$CLI_TIMEOUT" runuser -u "$TRADING_USER" -- piactl "$@" 2>/dev/null | tr -d '\r'
     fi
 }
 
@@ -360,9 +381,9 @@ $PIA_VERSION by hand from a terminal (or set PIA_ALLOW_HEADLESS_REINSTALL=1 to f
 
     date +%s > "$REINSTALL_MARK"
     chmod +x "$tmp/pia.run"
-    chown -R "$PIA_USER" "$tmp"
+    chown -R "$TRADING_USER" "$tmp"
     systemctl stop pia.service >/dev/null 2>&1
-    if runuser -u "$PIA_USER" -- "$tmp/pia.run" >/tmp/pia_reinstall.out 2>&1; then
+    if runuser -u "$TRADING_USER" -- "$tmp/pia.run" >/tmp/pia_reinstall.out 2>&1; then
         log "   reinstall succeeded (version: $(pia -v))"
     else
         log "   reinstall FAILED (see /tmp/pia_reinstall.out) — it probably wants a terminal"
@@ -481,14 +502,45 @@ rung_relogin() {
     pia logout >/dev/null 2>&1
     sleep 2
     local cred_file=""
-    for c in "$HOME/pia.txt" "$HOME/pia_credentials.txt"; do
+    for c in "$TRADING_USER_HOME/pia.txt" "$TRADING_USER_HOME/pia_credentials.txt"; do
         [ -f "$c" ] && { cred_file="$c"; break; }
     done
+
+    # Materialize credentials if missing and defined in .env
+    if [ -z "$cred_file" ] && [ -n "${PIA_ACCOUNT_USER:-}" ] && [ -n "${PIA_PASS:-}" ]; then
+        cred_file="$TRADING_USER_HOME/pia.txt"
+        printf "%s\n%s\n" "$PIA_ACCOUNT_USER" "$PIA_PASS" > "$cred_file"
+        chmod 0600 "$cred_file"
+        chown "$TRADING_USER:$TRADING_USER" "$cred_file" 2>/dev/null || true
+        log "Materialized $cred_file from .env"
+    fi
+
+    # Materialize Frankfurt token if missing and defined in .env
+    if [ ! -f "$TRADING_USER_HOME/piatoken.txt" ] && [ ! -f "$TRADING_USER_HOME/piatoken_frankfurt.txt" ]; then
+        local f_tok="${PIA_DIP_TOKEN_FRANKFURT:-${PIA_DIP_TOKEN:-}}"
+        if [ -n "$f_tok" ]; then
+            printf "%s\n" "$f_tok" > "$TRADING_USER_HOME/piatoken.txt"
+            chmod 0600 "$TRADING_USER_HOME/piatoken.txt"
+            chown "$TRADING_USER:$TRADING_USER" "$TRADING_USER_HOME/piatoken.txt" 2>/dev/null || true
+            log "Materialized $TRADING_USER_HOME/piatoken.txt from .env"
+        fi
+    fi
+
+    # Materialize Belgium token if missing and defined in .env
+    if [ ! -f "$TRADING_USER_HOME/piatoken_belgia.txt" ] && [ ! -f "$TRADING_USER_HOME/piatoken_belgium.txt" ]; then
+        if [ -n "${PIA_DIP_TOKEN_BELGIUM:-}" ]; then
+            printf "%s\n" "$PIA_DIP_TOKEN_BELGIUM" > "$TRADING_USER_HOME/piatoken_belgia.txt"
+            chmod 0600 "$TRADING_USER_HOME/piatoken_belgia.txt"
+            chown "$TRADING_USER:$TRADING_USER" "$TRADING_USER_HOME/piatoken_belgia.txt" 2>/dev/null || true
+            log "Materialized $TRADING_USER_HOME/piatoken_belgia.txt from .env"
+        fi
+    fi
+
     if [ -n "$cred_file" ]; then
         pia login "$cred_file" >/dev/null 2>&1
         sleep 2
         # Restore all tokens
-        for t in "$HOME"/piatoken*.txt; do
+        for t in "$TRADING_USER_HOME"/piatoken*.txt; do
             [ -f "$t" ] && pia dedicatedip add "$t" >/dev/null 2>&1
         done
         local dedicated
@@ -497,7 +549,7 @@ rung_relogin() {
         pia connect >/dev/null
         return 0
     else
-        log "   WARNING: $HOME/pia.txt or $HOME/pia_credentials.txt missing -> cannot login"
+        log "   WARNING: $TRADING_USER_HOME/pia.txt or $TRADING_USER_HOME/pia_credentials.txt missing -> cannot login"
         return 1
     fi
 }
