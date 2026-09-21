@@ -72,7 +72,7 @@ class BotManager:
         cmd = cmd.replace("nohup ", "")
         cmd = re.sub(r'>>\s*[^\s]+', '', cmd)
         cmd = cmd.replace("2>&1", "")
-        cmd = cmd.replace("&", "")
+        cmd = cmd.removesuffix("&").strip()
         cmd = cmd.strip()
         
         # We wrap in bash -c because start_cmd often has `source activate && python ...`
