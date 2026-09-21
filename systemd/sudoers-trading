@@ -1,7 +1,7 @@
 # Scoped passwordless sudo for unattended fleet operation.
 #
 # Grants the trading user NOPASSWD on ONE root-owned wrapper only, so an agent/automation
-# can run its FIXED subcommands (restart/stop/start/status/reinstall/rename) with no
+# can run its FIXED subcommands (restart/stop/start/status/reinstall/pin-dns) with no
 # password and no console -- but nothing else. Because /usr/local/sbin/trading-admin is
 # root-owned and not writable by the trading user, this is not a path to arbitrary root;
 # the wrapper enforces exactly what may run (and refuses tampered repo scripts).
@@ -12,6 +12,6 @@
 #   sudo visudo -c        # validate the whole sudoers set before trusting it
 #
 # After that the trading user (and thus the agent) runs, unattended:
+#   sudo /usr/local/sbin/trading-admin status
 #   sudo /usr/local/sbin/trading-admin restart
-#   sudo /usr/local/sbin/trading-admin rename mptrade
 @TRADING_USER@ ALL=(root) NOPASSWD: /usr/local/sbin/trading-admin

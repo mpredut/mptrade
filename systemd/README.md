@@ -10,7 +10,6 @@ This directory contains the systemd services, administration tools, and deployme
    - `trading-admin status`: Show live status for fleet and VPN services.
    - `trading-admin restart|stop|start`: Control the fleet and VPN services safely.
    - `trading-admin reinstall`: Re-render systemd units and crontabs from a clean git repo.
-   - `trading-admin rename <folder>`: Safely rename trading directory and update systemd unit working directories.
    - `trading-admin pin-dns`: Apply DNS cache tuning and restart systemd-resolved without restarting the fleet.
 4. **`crontab.root.prod.txt`**: Root-level cron jobs (such as `vpn_watchdog.sh` and `manage_gitautodeploy.sh`).
 5. **`crontab.prod.txt`**: Unprivileged trading user cron jobs (such as log pruning, deadman switch, backups, and resource watchdog).

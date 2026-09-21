@@ -9,10 +9,10 @@
 # console -- but nothing else. Because the file is root-owned, the trading user cannot
 # edit it to gain arbitrary root.
 #
-# Escalation guard: subcommands that execute repo scripts (reinstall/rename) first verify
+# Escalation guard: subcommands that execute repo scripts (reinstall) first verify
 # the working tree matches the committed version, so a tampered (uncommitted) script is
 # never run as root. The current trading root is read from the systemd unit (the
-# root-owned source of truth), so it follows renames automatically.
+# root-owned source of truth).
 set -euo pipefail
 
 svc_root() { systemctl show -p WorkingDirectory --value python_orchestrator.service 2>/dev/null; }
@@ -22,7 +22,7 @@ TUSER="${TRADING_USER:-$(stat -c %U "$(svc_root)" 2>/dev/null || id -un)}"
 require_clean_repo() {              # refuse to run privileged repo scripts if edited locally
   local root="$1"
   git -C "$root" -c safe.directory="$root" diff --quiet HEAD -- \
-      orchestratorOS/admin/rename_root.sh systemd/install_prod.sh orchestratorOS/admin/make_venv_portable.sh 2>/dev/null \
+      systemd/install_prod.sh systemd/resolved-20-trading-cache.conf 2>/dev/null \
     || { echo "REFUSED: privileged scripts differ from the committed version (git tree not clean)." >&2; exit 1; }
 }
 
@@ -39,12 +39,6 @@ case "$cmd" in
     require_clean_repo "$R"
     log "reinstall (re-render systemd + cron) from $R"
     bash "$R/systemd/install_prod.sh" ;;
-  rename)
-    NEW="${1:?usage: trading-admin rename <new-folder-name>}"
-    R="$(svc_root)"; [ -d "$R" ] || { echo "cannot resolve trading root from python_orchestrator.service" >&2; exit 1; }
-    require_clean_repo "$R"
-    log "rename trading root -> $NEW (via $R/orchestratorOS/admin/rename_root.sh)"
-    bash "$R/orchestratorOS/admin/rename_root.sh" "$NEW" ;;
   pin-dns)
     # DNS-only apply: install the committed resolved drop-in + restart systemd-resolved.
     # Deliberately does NOT touch the fleet, so it is safe to run during a VPN/network
@@ -57,5 +51,5 @@ case "$cmd" in
       /etc/systemd/resolved.conf.d/20-trading-cache.conf
     systemctl restart systemd-resolved
     resolvectl status 2>/dev/null | grep -m1 'Current DNS Server' || true ;;
-  *) echo "usage: trading-admin {restart|stop|start|status|reinstall|rename <new-folder-name>|pin-dns}" >&2; exit 2 ;;
+  *) echo "usage: trading-admin {restart|stop|start|status|reinstall|pin-dns}" >&2; exit 2 ;;
 esac

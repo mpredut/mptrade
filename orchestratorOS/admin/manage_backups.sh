@@ -66,16 +66,28 @@ backup_remote() {
     echo "$(date '+%F %T') ✔ encrypted upload -> $DEST"
 }
 
+log() { echo "[$(date -u +%FT%TZ)] $*"; }
+
 restore_backup() {
     local SECRETS="${1:-}"
     fail() { echo "❌ $*" >&2; exit 1; }
     
     echo "===== RESTORE @ $ROOT ====="
-    [ -n "$SECRETS" ] || fail "Usage: $0 restore <secrets_folder>"
-    [ -d "$SECRETS" ] || fail "The secrets folder does not exist: $SECRETS"
+    [ -n "$SECRETS" ] || fail "Usage: $0 restore <secrets_folder_or_tarball>"
+    
+    local TMP_DIR=""
+    if [ -f "$SECRETS" ]; then
+        TMP_DIR="$(mktemp -d)"
+        trap 'rm -rf "$TMP_DIR"' EXIT
+        echo "--- extracting archive $SECRETS -> $TMP_DIR ---"
+        tar xzf "$SECRETS" -C "$TMP_DIR"
+        SECRETS="$TMP_DIR"
+    fi
+    
+    [ -d "$SECRETS" ] || fail "The secrets location does not exist or is invalid: $SECRETS"
     command -v python3 >/dev/null || fail "python3 is missing"
     
-    echo "--- [1/5] restoring the secrets plus the state from $SECRETS ---"
+    echo "--- [1/5] restoring secrets plus state from $SECRETS ---"
     tar cf - --exclude='./_machine' -C "$SECRETS" . | tar xf - -C "$ROOT"
     # Restore all PIA tokens
     local token_restored=0
@@ -93,15 +105,19 @@ restore_backup() {
         log "Restored PIA credentials to $HOME/pia.txt"
     fi
     
-    echo "--- [2/5] venv (myenv) + dependencies ---"
-    [ -x "$ROOT/myenv/bin/python" ] || python3 -m venv "$ROOT/myenv" || fail "cannot create the venv"
-    "$ROOT/myenv/bin/pip" install -q --upgrade pip
-    "$ROOT/myenv/bin/pip" install -q -r "$ROOT/requirements.txt" || fail "pip install failed"
-    echo "    ✔ dependencies installed"
+    echo "--- [2/5] venv + dependencies ---"
+    local VENV_DIR="$ROOT/myenv"
+    [ -d "$ROOT/.venv" ] && VENV_DIR="$ROOT/.venv"
+    [ -x "$VENV_DIR/bin/python" ] || python3 -m venv "$VENV_DIR" || fail "cannot create the venv"
+    "$VENV_DIR/bin/pip" install -q --upgrade pip
+    if [ -f "$ROOT/requirements.txt" ]; then
+        "$VENV_DIR/bin/pip" install -q -r "$ROOT/requirements.txt" || fail "pip install failed"
+    fi
+    echo "    ✔ dependencies installed in $VENV_DIR"
     
     echo "--- [3/5] systemd + DNS + SSH + cron (needs sudo) ---"
     if sudo -v 2>/dev/null; then
-        sudo env TRADING_ROOT="$ROOT" TRADING_USER="$(id -un)" TRADING_PYTHON="$ROOT/myenv/bin/python" bash "$ROOT/systemd/install_prod.sh"
+        sudo env TRADING_ROOT="$ROOT" TRADING_USER="$(id -un)" TRADING_PYTHON="$VENV_DIR/bin/python" bash "$ROOT/systemd/install_prod.sh"
         echo "    ✔ PROD profile installed"
     else
         echo "    ! no sudo — by hand: sudo bash systemd/install_prod.sh"

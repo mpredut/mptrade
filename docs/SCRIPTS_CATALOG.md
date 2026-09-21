@@ -24,18 +24,16 @@ Administrative and disaster recovery tools.
 - **`manage_logs.sh`** (merges `rotate_logs.sh` & `logger_retention.sh`)
   Scheduled via `crontab.prod.txt` every hour. Truncates console logs (e.g. `cron.log`, `deploy.log`) if they exceed 50MB and aggressively deletes archived `.log.gz` or dated logs older than 7 days.
 - **`manage_gitautodeploy.sh`**
-  Automated deployment daemon run by root's cron. Can observe (`shadow` mode) or automatically apply (`on` mode) new commits from `origin/main` (or backtest proposals), restarting `binance.service` safely and applying cooldowns.
-- **`pia_selfheal.sh`**
-  Emergency disaster recovery script for `pia.service`. Used manually (`--check` or `--force`) to run a recovery ladder (reconnect, restart daemon, relogin, reinstall) when the VPN is hopelessly wedged. It is no longer run from cron to avoid fighting systemd.
+  Automated deployment daemon run by root's cron. Can observe (`shadow` mode) or automatically apply (`on` mode) new commits from `origin/main`, restarting `python_orchestrator.service` safely and applying cooldowns.
+- **`vpn_watchdog.sh`**
+  Emergency disaster recovery watchdog for `pia.service`. Runs from root cron to heal VPN drops gracefully with backoff and an on-disk alert spool.
 - **`manage_backups.sh`**
-  Unified script for backup and disaster recovery. Handles local tarball creation, remote uploads (e.g. to Storj) with encryption, and full machine restoration from backups. Replaces the legacy `backup_local.sh`, `backup_remote.sh`, and `restore.sh` scripts.
+  Unified script for backup and disaster recovery. Handles local tarball creation, remote uploads (e.g. to Storj) with encryption, and full machine restoration from backups. Replaces legacy `backup_local.sh`, `backup_remote.sh`, and `restore.sh`.
 - **`make_venv_portable.sh`**
   Fixes hardcoded absolute paths inside `.venv/bin/` wrappers when the repository is cloned or moved to a new path.
-- **`rename_root.sh`**
-  Utility to adjust paths globally across files if the repo name changes.
 
-## `os_orchestrator/monitoring/`
-Observability scripts.
+## `orchestratorOS/`
+Observability and administration scripts.
 
 - **`deadman_switch.sh`**
   Cron job that continuously pings a `healthchecks.io` URL to prove the PROD machine is online and scheduling jobs. If this ping stops, `healthchecks.io` sends an alert, ensuring major outages are caught even if local `ntfy` fails.
