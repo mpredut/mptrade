@@ -5,54 +5,78 @@ import threading
 # Configuration cache.
 config_cache = {}
 
-# Configuration file path.
-config_file_path = "config.txt"
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_ENV_PATH = os.path.join(ROOT_DIR, "config.env")
+CONFIG_TXT_PATH = os.path.join(ROOT_DIR, "config.txt")
 
-def load_config():
-    """
-    Load the configuration file and refresh the cache.
-    """
-    global config_cache
-    new_config = {}
 
-    env_trade = os.environ.get("TRADE_ENABLED")
-    if env_trade is not None:
-        new_config["trade_enabled"] = env_trade.strip().lower() in ("true", "1", "yes")
-
+def _read_properties_file(path: str) -> dict:
+    result = {}
+    if not os.path.exists(path):
+        return result
     try:
-        with open(config_file_path, "r") as file:
-            lines = file.readlines()
-            for line in lines:
+        with open(path, "r", encoding="utf-8") as file:
+            for line in file:
                 line = line.strip()
                 if "=" in line and not line.startswith("#"):
                     key, value = line.split("=", 1)
                     key = key.strip()
-                    value = value.strip()
-                    # Convert textual true/false values to booleans.
+                    value = value.strip().split("#", 1)[0].strip()
                     if value.lower() == "true":
                         value = True
                     elif value.lower() == "false":
                         value = False
-                    new_config[key] = value
-            config_cache = new_config
-    except FileNotFoundError:
-        if "trade_enabled" not in new_config:
-            new_config["trade_enabled"] = True
-        config_cache = new_config
+                    result[key] = value
+    except Exception:
+        pass
+    return result
 
-def config_watcher(interval= 5 * 60): # 5 minutes
+
+def load_config():
     """
-    Periodically monitor the configuration file and reload the cache.
+    Load configuration from config.env (and legacy config.txt if present) and refresh cache.
+    """
+    global config_cache
+    new_config = {}
+
+    # 1. Load from centralized config.env
+    env_file_settings = _read_properties_file(CONFIG_ENV_PATH)
+    if "TRADE_ENABLED" in env_file_settings:
+        new_config["trade_enabled"] = bool(env_file_settings["TRADE_ENABLED"])
+    elif "trade_enabled" in env_file_settings:
+        new_config["trade_enabled"] = bool(env_file_settings["trade_enabled"])
+
+    # 2. Legacy config.txt if present
+    txt_settings = _read_properties_file(CONFIG_TXT_PATH)
+    for k, v in txt_settings.items():
+        new_config[k.lower()] = v
+
+    # 3. Environment variables take highest priority
+    env_trade = os.environ.get("TRADE_ENABLED")
+    if env_trade is not None:
+        new_config["trade_enabled"] = env_trade.strip().lower() in ("true", "1", "yes")
+
+    # Default to true if not specified
+    if "trade_enabled" not in new_config:
+        new_config["trade_enabled"] = True
+
+    config_cache = new_config
+
+
+def config_watcher(interval=5 * 60):  # 5 minutes
+    """
+    Periodically monitor configuration and reload the cache.
     """
     while True:
         load_config()
         time.sleep(interval)
 
+
 def is_trade_enabled():
     """
     Return whether cached ``trade_enabled`` is true.
     """
-    return config_cache.get("trade_enabled", False)
+    return bool(config_cache.get("trade_enabled", True))
 
 
 watcher_thread = None

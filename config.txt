@@ -1,2 +1,0 @@
-# Central trading configuration flag
-trade_enabled = true

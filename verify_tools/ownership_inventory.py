@@ -238,7 +238,11 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
 
     monitor_pattern = "monitortrades.py"
     monitor_configured = _pattern(patterns, monitor_pattern) is not None
-    trade_enabled = _truthy(trade_settings.get("trade_enabled"))
+    trade_enabled = _truthy(
+        root_env.get("TRADE_ENABLED")
+        or root_env.get("trade_enabled")
+        or trade_settings.get("trade_enabled", "true")
+    )
     instruments_path = root / "instruments.conf"
     if instruments_path.exists():
         parser = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
