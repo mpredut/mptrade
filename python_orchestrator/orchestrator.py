@@ -37,7 +37,7 @@ class BotManager:
                     pat, dr, cmd, label, hblog, hbstale, role = parts[:7]
                     
                     dr = dr.replace("$ROOT", ROOT_DIR)
-                    cmd = cmd.replace("$ROOT", ROOT_DIR).replace("$VENV", ".venv")
+                    cmd = cmd.replace("$ROOT", ROOT_DIR).replace("$VENV", "myenv")
                     
                     if role == "bot" and cmd:
                         bots.append({"name": label or pat, "dir": dr, "cmd": cmd, "log_file": hblog})
