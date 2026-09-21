@@ -95,7 +95,8 @@ FIRE_MAX_PER_TREND = required_int_env("TRADEALL_FIRE_MAX_PER_TREND")
 FIRE_SAFEBACK_DAYS = required_float_env("TRADEALL_FIRE_SAFEBACK_DAYS")
 FIRE_SAFEBACK_SEC = FIRE_SAFEBACK_DAYS * 24 * 3600 + 60
 
-DECISIONS_LOG_DIR = "logger"
+ROOT = os.path.dirname(os.path.abspath(__file__))
+DECISIONS_LOG_DIR = os.path.join(ROOT, "logger")
 
 
 def _validate_tradeall_config():

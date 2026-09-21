@@ -1,11 +1,13 @@
 # ============================================================================
 # .gitignore
-# Secrete (.env, *.pem) NU se comit NICIODATA. Config NEsensibil = config.env /
-# *.conf (versionate). Datele/cache-ul (json/jsonl/meta/lock/bak) se ignora global.
+# Secrets (.env, *.pem) are NEVER committed. Non-sensitive config = config.env /
+# *.conf (versioned). Runtime/cache data (json/jsonl/meta/lock/bak) globally ignored.
 # ============================================================================
 
-# --- Secrete (niciodata in git) ---
+# --- Secrets (never in git) ---
 .env
+.env*
+env
 *.pem
 
 # --- Config local / editor ---

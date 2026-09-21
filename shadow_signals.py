@@ -153,6 +153,10 @@ def adaptive_thresholds(vol1h: float | None) -> tuple[float | None, float | None
     return round(K_REENTRY * vol1h, 3), round(K_DCA * vol1h, 3)
 
 
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+_DEFAULT_LOG_DIR = os.path.join(_ROOT, "logger")
+
+
 class ShadowJournal:
     """Write sanitized pipe-delimited signal transitions without affecting host.
 
@@ -160,7 +164,7 @@ class ShadowJournal:
     rotate daily; backtests use a flat fixed_path file.
     """
 
-    def __init__(self, out_dir: str = "logger", fixed_path: str | None = None):
+    def __init__(self, out_dir: str = _DEFAULT_LOG_DIR, fixed_path: str | None = None):
         self.out_dir = out_dir
         self.fixed_path = fixed_path
 

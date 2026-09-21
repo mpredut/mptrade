@@ -14,7 +14,8 @@ import os
 import time
 from datetime import datetime
 
-ORDER_OUTCOMES_LOG_DIR = "logger"
+ROOT = os.path.dirname(os.path.abspath(__file__))
+ORDER_OUTCOMES_LOG_DIR = os.path.join(ROOT, "logger")
 
 
 def _sanitize_outcome_field(value):
