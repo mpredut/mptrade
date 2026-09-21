@@ -122,7 +122,12 @@ fi
 
 pia set region "$DEDICATED" || exit 1
 pia set requestportforward true || exit 1
-pia connect || exit 1
+
+if ! pia connect; then
+    echo "Connection to $DEDICATED failed! Falling back to dynamic de-frankfurt."
+    pia set region "de-frankfurt" || exit 1
+    pia connect || exit 1
+fi
 
 echo "Waiting for the IP assignment..."
 sleep 2
