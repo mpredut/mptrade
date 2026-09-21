@@ -1472,7 +1472,7 @@ class TradingBot:
                 _touch_rtrade_heartbeat(now=now)
 
                 if recovery_blocked:
-                    if now - last_recovery_retry >= 15.0:
+                    if now - last_recovery_retry >= 60.0:
                         last_recovery_retry = now
                         try:
                             known_client_ids = {
