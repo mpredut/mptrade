@@ -1,8 +1,8 @@
-from __future__ import sys
+#!/usr/bin/env python3
+from __future__ import annotations
+import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-import annotations
-#!/usr/bin/env python3
 """Run new-coin discovery and watch-list price alerts in one process.
 
 ``price_notifier.conf`` supplies the watch list, thresholds, scan intervals, sources,
