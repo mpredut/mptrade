@@ -54,27 +54,34 @@ class BotManager:
                     cmd = cmd.replace("$ROOT", ROOT_DIR).replace("$VENV", venv)
 
                     if cmd and role in ("bot", "fleet"):
-                        bots.append({"name": label or pat, "dir": dr, "cmd": cmd, "log_file": hblog})
+                        name = label or pat
+                        log_file = hblog.strip() if hblog else ""
+                        if not log_file or log_file.endswith(".heartbeat"):
+                            clean_stem = (label or pat).replace(".py", "")
+                            log_file = os.path.join(ROOT_DIR, "logs", f"{clean_stem}.log")
+                        bots.append({"name": name, "dir": dr, "cmd": cmd, "log_file": log_file})
         return bots
 
     async def _read_stream(self, stream, bot_name: str, log_file):
+        verbose_stdout = os.environ.get("ORCHESTRATOR_VERBOSE_STDOUT", "0") in ("1", "true", "True")
         while True:
             line = await stream.readline()
             if not line:
                 break
             decoded = line.decode("utf-8", errors="replace")
 
-            # 1. Print to console for orchestrator viewing
-            sys.stdout.write(f"[{bot_name}] {decoded}")
-            sys.stdout.flush()
-
-            # 2. Write to original log file (so tail -f still works)
+            # 1. Write to dedicated log file (so tail -f logs/<bot>.log works cleanly)
             if log_file:
                 log_file.write(decoded)
                 log_file.flush()
 
-            # 3. Analyze for notifications
+            # 2. Analyze for notifications
             self.server.process_line(decoded, bot_name)
+
+            # 3. Print to console / journalctl ONLY for warnings, errors, or if verbose
+            if verbose_stdout or any(err in decoded.upper() for err in ("ERROR", "CRITICAL", "EXCEPTION", "TRACEBACK", "RECOVERY BLOCKED", "WARN")):
+                sys.stdout.write(f"[{bot_name}] {decoded}")
+                sys.stdout.flush()
 
     async def start_bot(self, bot: Dict[str, str]):
         if not self.running:
@@ -95,7 +102,7 @@ class BotManager:
         log_fh = None
         task = None
         try:
-            bot_env = {**os.environ, "MPTRADE_ORCHESTRATED": "1"}
+            bot_env = {**os.environ, "MPTRADE_ORCHESTRATED": "1", "PYTHONUNBUFFERED": "1"}
             process = await asyncio.create_subprocess_shell(
                 cmd,
                 executable='/bin/bash',
@@ -113,9 +120,9 @@ class BotManager:
         finally:
             self.starting.discard(name)
 
-        log_path_rel = bot.get("log_file")
-        if log_path_rel:
-            abs_log_path = os.path.join(directory, log_path_rel)
+        log_path = bot.get("log_file")
+        if log_path:
+            abs_log_path = log_path if os.path.isabs(log_path) else os.path.join(directory, log_path)
             try:
                 os.makedirs(os.path.dirname(abs_log_path), exist_ok=True)
                 log_fh = open(abs_log_path, "a", encoding="utf-8")

@@ -1,3 +1,4 @@
+import os
 import time
 import threading
 
@@ -12,10 +13,15 @@ def load_config():
     Load the configuration file and refresh the cache.
     """
     global config_cache
+    new_config = {}
+
+    env_trade = os.environ.get("TRADE_ENABLED")
+    if env_trade is not None:
+        new_config["trade_enabled"] = env_trade.strip().lower() in ("true", "1", "yes")
+
     try:
         with open(config_file_path, "r") as file:
             lines = file.readlines()
-            new_config = {}
             for line in lines:
                 line = line.strip()
                 if "=" in line and not line.startswith("#"):
@@ -29,11 +35,12 @@ def load_config():
                         value = False
                     new_config[key] = value
             config_cache = new_config
-            print("Config actualizat:", config_cache)
     except FileNotFoundError:
-        print(f"File {config_file_path} was not found.")
+        if "trade_enabled" not in new_config:
+            new_config["trade_enabled"] = True
+        config_cache = new_config
 
-def config_watcher(interval= 5 * 60): #5 minute
+def config_watcher(interval= 5 * 60): # 5 minutes
     """
     Periodically monitor the configuration file and reload the cache.
     """

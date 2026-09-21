@@ -1454,12 +1454,39 @@ class TradingBot:
             print(f"[{self.symbol}] RECOVERY BLOCKED: exchange inventory unavailable ({exc})")
             recovery_blocked = True
         last_start_at = float("-inf")
+        last_recovery_retry = float("-inf")
         next_direction = 0
         side_backoff_until = {"BUY": 0.0, "SELL": 0.0}
         while True:
             try:
                 now = time.monotonic()
                 _touch_rtrade_heartbeat(now=now)
+
+                if recovery_blocked:
+                    if now - last_recovery_retry >= 15.0:
+                        last_recovery_retry = now
+                        try:
+                            known_client_ids = {
+                                intent.get("client_order_id")
+                                for rec in pair_store.active(self.symbol)
+                                for intent in rec.get("intents", {}).values()
+                            }
+                            orphan_orders = [
+                                order for order in venue.executor.open_orders(self.symbol)
+                                if str(order.get("clientOrderId") or "").startswith("RT_")
+                                and order.get("clientOrderId") not in known_client_ids
+                            ]
+                            for order in orphan_orders:
+                                order_id = str(order["orderId"])
+                                client_id = order.get("clientOrderId")
+                                venue.executor.cancel_order(self.symbol, order_id)
+                                print(f"[{self.symbol}] recovery: orphaned RT_ order cancelled "
+                                      f"order_id={order_id} client_id={client_id}")
+                            recovery_blocked = False
+                            print(f"[{self.symbol}] startup recovery unblocked: exchange inventory verified")
+                        except Exception as exc:
+                            print(f"[{self.symbol}] startup recovery retry blocked: {exc}")
+
                 survivors = []
                 checkpoints = []
                 for coordinator in active:
