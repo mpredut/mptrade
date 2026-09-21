@@ -381,7 +381,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
 
             n += 1
             if n % 100 == 0:
-                # Starea analizei SIMULATE — cititita de tradeall_observe.py (hover pe grafic),
+                # Simulated analysis state — read by tradeall_observe.py (chart hover),
                 # the same content as live's cache_instant_trend.json. Every 100 ticks, not
                 # per tick (cheap I/O even in fast-forward).
                 try:
