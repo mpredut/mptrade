@@ -1,3 +1,0 @@
-# A configuration example
-trade_enabled = true
-some_other_setting = value
