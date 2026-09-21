@@ -98,7 +98,7 @@ pia set protocol wireguard || exit 1
 if ! pia get regions 2>/dev/null | grep -q "^dedicated-"; then
     token_added=0
     # Prioritize new token, then default, then belgium
-    for t_file in "$OWNER_HOME/piatoken_new.txt" "$OWNER_HOME/piatoken.txt" "$OWNER_HOME/piatoken_belgia.txt"; do
+    for t_file in "$OWNER_HOME/piatoken.txt" "$OWNER_HOME/piatoken_belgia.txt"; do
         if [ -f "$t_file" ]; then
             echo "Trying Dedicated IP token from $t_file..."
             if pia dedicatedip add "$t_file" >/dev/null 2>&1; then
