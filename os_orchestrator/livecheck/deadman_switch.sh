@@ -12,7 +12,7 @@
 # If the server dies (or just cron does), nobody pushes the queued ntfy message
 # further out and it delivers itself 35 minutes later — the alert arrives even if
 # the machine is completely off or without power.
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TOPIC=$(grep -hs '^NTFY_TOPIC_ERROR=' "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '" ')
 if [ -z "$TOPIC" ]; then
     echo "$(date '+%H:%M') deadman: no NTFY_TOPIC(_ERROR) found in $ROOT/config.env"

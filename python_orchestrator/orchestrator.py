@@ -12,12 +12,15 @@ from typing import Dict, Any, List
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] Orchestrator: %(message)s")
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-import sys; sys.path.insert(0, ROOT_DIR)\nfrom notify_engine.server import NotificationServer
+import sys
+sys.path.insert(0, ROOT_DIR)
+from notify_engine.server import NotificationServer
 class BotManager:
     def __init__(self, server: NotificationServer):
         self.server = server
         self.processes: Dict[str, asyncio.subprocess.Process] = {}
         self.log_files: Dict[str, Any] = {}
+        self.bots: List[Dict[str, str]] = []
 
     def parse_procs_conf(self) -> List[Dict[str, str]]:
         bots = []
@@ -145,20 +148,22 @@ class BotManager:
                 if curr and curr != hashes[path]:
                     logging.warning(f"Config {path} changed! Restarting all affected bots...")
                     hashes[path] = curr
-                    for name in self.processes.keys():
+                    if path == procs_path:
+                        self.bots = self.parse_procs_conf()
+                    for name in list(self.processes.keys()):
                         await self.restart_bot(name)
                         
                     # Also notify the user
                     self.server._send_ntfy(
                         "Config Reloaded", 
-                        f"Detected change in {os.path.basename(path)}. All bots restarted automatically.", 
+                        f"Detected change in {os.path.basename(path)}. All bots reloaded automatically.", 
                         "high", 
                         self.server._resolve_topic("TRADES")
                     )
 
     async def supervise(self):
-        bots = self.parse_procs_conf()
-        if not bots:
+        self.bots = self.parse_procs_conf()
+        if not self.bots:
             logging.error("No bots found to start.")
             return
 
@@ -169,14 +174,12 @@ class BotManager:
         asyncio.create_task(self.server.flush_queue_loop())
 
         while True:
-            # We run the bots in an infinite loop. If they exit or get terminated (by reload), they restart.
-            tasks = []
-            for bot in bots:
-                if bot["name"] not in self.processes or self.processes[bot["name"]].returncode is not None:
-                    tasks.append(asyncio.create_task(self.start_bot(bot)))
-            
-            if tasks:
-                await asyncio.gather(*tasks)
+            # Continuously monitor and restart any bot that exited or crashed
+            for bot in self.bots:
+                name = bot["name"]
+                proc = self.processes.get(name)
+                if proc is None or proc.returncode is not None:
+                    asyncio.create_task(self.start_bot(bot))
             await asyncio.sleep(2)
 
 async def main():

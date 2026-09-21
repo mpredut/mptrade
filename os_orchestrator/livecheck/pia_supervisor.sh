@@ -46,7 +46,7 @@ vpn_healthy() {
 
 # Configurare PIA
 
-REPO_OWNER="$(stat -c %U "$(cd "$(dirname "$0")" && pwd)")"
+REPO_OWNER="$(stat -c %U "$(cd "$(dirname "$0")/../.." && pwd)")"
 OWNER_HOME="$(getent passwd "$REPO_OWNER" | cut -d: -f6)"
 [ -n "$OWNER_HOME" ] || { echo "Cannot determine home for $REPO_OWNER"; exit 1; }
 DIP_TOKEN="${PIA_DIP_TOKEN:-$OWNER_HOME/piatoken.txt}"

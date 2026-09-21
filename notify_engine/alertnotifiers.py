@@ -19,7 +19,7 @@ from typing import Any, Optional
 import log
 from lock import FileLock
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Matched against title.upper(). Bilingual ON PURPOSE, and it stays that way (owner's
 # decision, same reasoning as verify_tools/watchdogfor_anomaly.py): every alert title is

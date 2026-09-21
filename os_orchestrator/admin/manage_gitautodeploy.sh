@@ -24,7 +24,7 @@
 set -u
 export PATH="/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"   # cron has a minimal PATH
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OWNER="$(stat -c %U "$ROOT")"
 STATE_DIR="/var/lib/git_autodeploy"
 LAST_MARK="$STATE_DIR/last_deploy"
