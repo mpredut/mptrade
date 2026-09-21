@@ -101,7 +101,7 @@ if ! pia get regions 2>/dev/null | grep -q "^dedicated-"; then
     for t_file in "$OWNER_HOME/piatoken_new.txt" "$OWNER_HOME/piatoken.txt" "$OWNER_HOME/piatoken_belgia.txt"; do
         if [ -f "$t_file" ]; then
             echo "Trying Dedicated IP token from $t_file..."
-            if pia dedicatedip add "$(cat "$t_file")" >/dev/null 2>&1; then
+            if pia dedicatedip add "$t_file" >/dev/null 2>&1; then
                 echo "Success with token $t_file"
                 token_added=1
                 break
