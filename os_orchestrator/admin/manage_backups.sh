@@ -24,10 +24,12 @@ backup_local() {
     printf '%s\n' "$LIST" | tar cf - -C "$ROOT" -T - | tar xf - -C "$OUT"
     
     mkdir -p "$OUT/_machine"
-    local PIA_TOKEN="${PIA_DIP_TOKEN:-$HOME/piatoken.txt}"
-    if [ -f "$PIA_TOKEN" ]; then
-        install -m 0600 "$PIA_TOKEN" "$OUT/_machine/piatoken.txt"
-    fi
+    # Backup all PIA tokens (default, new, belgia, etc)
+    for token_file in "$HOME"/piatoken*.txt; do
+        if [ -f "$token_file" ]; then
+            install -m 0600 "$token_file" "$OUT/_machine/$(basename "$token_file")"
+        fi
+    done
     if [ -f "$HOME/pia.txt" ]; then
         install -m 0600 "$HOME/pia.txt" "$OUT/_machine/pia.txt"
     fi
@@ -75,9 +77,16 @@ restore_backup() {
     
     echo "--- [1/5] restoring the secrets plus the state from $SECRETS ---"
     tar cf - --exclude='./_machine' -C "$SECRETS" . | tar xf - -C "$ROOT"
-    if [ -f "$SECRETS/_machine/piatoken.txt" ]; then
-        install -m 0600 "$SECRETS/_machine/piatoken.txt" "$HOME/piatoken.txt"
-        log "Restored PIA dedicated IP token to $HOME/piatoken.txt"
+    # Restore all PIA tokens
+    local token_restored=0
+    for token_file in "$SECRETS/_machine"/piatoken*.txt; do
+        if [ -f "$token_file" ]; then
+            install -m 0600 "$token_file" "$HOME/$(basename "$token_file")"
+            token_restored=1
+        fi
+    done
+    if [ "$token_restored" -eq 1 ]; then
+        log "Restored PIA dedicated IP tokens to $HOME/"
     fi
     if [ -f "$SECRETS/_machine/pia.txt" ]; then
         install -m 0600 "$SECRETS/_machine/pia.txt" "$HOME/pia.txt"
