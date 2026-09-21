@@ -6,19 +6,19 @@ TITLE="${2:-OS Alert}"
 PRIORITY="${3:-default}"
 BODY="${4:-}"
 
-# Fallback token
-TOKEN="${NTFY_TOKEN}"
+TOKEN="${NTFY_TOKEN:-}"
 if [ -z "$TOKEN" ] && [ -f ~/.binance_ntfy_token ]; then
-    TOKEN="$(cat ~/.binance_ntfy_token)"
+    TOKEN="$(cat ~/.binance_ntfy_token 2>/dev/null || true)"
 fi
 
-AUTH_HEADER=""
+AUTH_ARGS=()
 if [ -n "$TOKEN" ]; then
-    AUTH_HEADER="-H \"Authorization: Bearer ${TOKEN}\""
+    AUTH_ARGS=(-H "Authorization: Bearer ${TOKEN}")
 fi
 
 curl -s -X POST "https://ntfy.sh/${TOPIC}" \
     -H "Title: ${TITLE}" \
     -H "Priority: ${PRIORITY}" \
-    ${AUTH_HEADER} \
+    "${AUTH_ARGS[@]}" \
     -d "${BODY}" > /dev/null 2>&1
+

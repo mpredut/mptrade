@@ -5,8 +5,8 @@
 # How it works: on every run (cron every 15 min) we push a SCHEDULED ntfy message
 # (In: 35m) further into the future, using the same sequence id in the URL
 # (ntfy.sh/<topic>/server-alive). Each update is still a request counted
-# against the ntfy quota; the old */2 cadence produced up to 720 requests/day and exceeded it on its own
-# limita gratuita. 96/zi lasa loc alertelor reale. Pattern-ul este documentat ca
+# against the ntfy quota; the old */2 cadence produced up to 720 requests/day and exceeded
+# the free quota. 96/day leaves room for real alerts. Pattern is documented as
 # "dead man's switch": https://docs.ntfy.sh/publish/#scheduled-delivery
 #
 # If the server dies (or just cron does), nobody pushes the queued ntfy message
@@ -23,7 +23,7 @@ HOST=$(hostname)
 # --retry 4 --retry-all-errors (8 Aug): it retries the push on transient DNS/network blips too
 # (NameResolutionError), not only on 5xx. A typical blip (~30-40s) is ridden out in one run
 # -> avoids a false alert when the server is alive but DNS resolution dropped briefly.
-# Worst-case ~4x(10s+5s)=60s, mult sub cadenta de 15 min.
+# Worst-case ~4x(10s+5s)=60s, well below the 15-minute cron cadence.
 curl --fail-with-body -sS -m 10 --retry 4 --retry-delay 5 --retry-all-errors --retry-connrefused \
     -H "In: 35m" -H "Title: SERVER DOWN ($HOST)" \
     -d "No heartbeat for 35 minutes — check the server (crash / reboot / power loss)." \
