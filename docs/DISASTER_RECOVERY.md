@@ -38,24 +38,25 @@ sudo /usr/local/sbin/trading-admin status                                       
 The entire deployment is reproducible and path-agnostic:
 
 - **Unified Backup & Restore** (`orchestratorOS/admin/manage_backups.sh`):
-  - `backup local`: Takes a snapshot of all secrets (`.env`, `212trading/.env`), caches (`cachedb/`), state files (`lock/trade_cooldown.json`), PIA Dedicated IP tokens (`~/piatoken*.txt`), and PIA login credentials (`~/pia.txt`, `~/pia_credentials.txt`) into `$HOME/mptrade-secrets-backup.tar.gz`.
+  - `backup local`: Takes a snapshot of all secrets (`.env`, `212trading/.env`), caches (`cachedb/`), and state files (`lock/trade_cooldown.json`) into `$HOME/mptrade-secrets-backup.tar.gz`. (All PIA credentials and DIP tokens are centralized in `.env`).
   - `backup remote`: Uploads encrypted snapshot to Storj.
   - `restore <tarball_or_folder>`: Rebuilds secrets, establishes virtualenv, installs python dependencies, and runs `systemd/install_prod.sh`.
 - **Fleet Orchestration** (`orchestratorTrade/orchestrator.py`):
   - Supervised by `python_orchestrator.service` (`systemd`).
-  - Reads `procs.conf` manifest to spawn all 18 bots in isolated process groups.
+  - Reads `procs.conf` manifest to spawn all bots in isolated process groups.
   - Automatic restart with exponential backoff on crash loops.
   - Hot-reload on config updates (`config.env`, `procs.conf`, `instruments.conf`).
 - **Services & Crontab Installation** (`systemd/install_prod.sh`):
-  - Renders and installs `python_orchestrator.service`, `pia.service`, `piavpn.service`.
+  - Installs `python_orchestrator.service`, `pia.service`, `piavpn.service`.
   - Installs `/usr/local/sbin/trading-admin` and validates `/etc/sudoers.d/trading`.
   - Installs DNS drop-in `resolved-20-trading-cache.conf` (tunnel wgpia0 owns DNS resolution).
   - Installs direct gateway routing drop-in `netplan-99-force-gateway.yaml`.
   - Installs logrotate cap for PIA daemon debug log.
   - Cleans up and eliminates any legacy `binance.service`.
-  - Renders and sets up crontabs for trading user and root.
+  - Sets up dynamic crontab (`systemd/crontab.prod.txt` using `orchestratorOS/run_python.sh`) for trading user and root.
 - **VPN Supervisor** (`orchestratorOS/livecheck/pia_supervisor.sh`):
-  - Manages WireGuard tunnel connection, Dedicated IP token registration, and port forwarding.
+  - Reads `PIA_USER`, `PIA_PASS`, and `PIA_DIP_TOKEN_FRANKFURT` directly from `.env` (fail-fast, no persistent token files on disk).
+  - Automatically authenticates `piactl`, registers Dedicated IP token, and configures port forwarding on startup.
   - Enforces MTU 1280 on uplink and IPv4 preference in `/etc/gai.conf`.
   - Provides instant diagnostic CLI via `--check`.
 - **VPN Watchdog** (`orchestratorOS/livecheck/vpn_watchdog.sh`):
@@ -94,19 +95,16 @@ git clone https://github.com/mpredut/mptrade.git ~/mptrade
 cd ~/mptrade
 
 # 2. Restore secrets and state from backup tarball (or directory)
-# (Automatically unpacks secrets, sets up venv, installs deps, and runs install_prod.sh)
+# (Automatically unpacks secrets, sets up venv, installs deps, renders units/crontabs, and starts services)
 sudo ./orchestratorOS/admin/manage_backups.sh restore ~/mptrade-secrets-backup.tar.gz
 
-# 3. Log into PIA (if not already authenticated)
-piactl login ~/pia.txt
-
-# 4. Reboot the VM
+# 3. Reboot the VM (applies netplan force-gateway and starts all services cleanly)
 sudo reboot
 ```
 
 After reboot:
 ```bash
-# 5. Verify system health
+# 4. Verify system health
 sudo /usr/local/sbin/trading-admin status
 ./orchestratorOS/livecheck/pia_supervisor.sh --check
 ```
