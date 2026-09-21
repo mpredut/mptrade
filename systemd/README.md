@@ -1,38 +1,22 @@
-# Rebuilding PROD
+# Systemd & Orchestration (mptrade)
 
-This folder reproduces the service and cron configuration of the PROD machine. The
-code comes from Git; secrets and persistent state are restored separately with the
-backup/restore scripts, before the fleet is started.
+This directory contains the systemd services and deployment configuration required to run the automated trading fleet on the PROD machine.
 
-Recommended order on a fresh machine:
+## Components
 
-1. create a dedicated trading account and clone the repository at any absolute path;
-2. restore the secrets and state files from backup;
-3. install the dependencies/venv and PIA under the same paths;
-4. run `sudo env TRADING_ROOT="$PWD" TRADING_USER="$(id -un)" systemd/install_prod.sh`;
-5. check `systemctl status binance pia piavpn`, cron, and the healthcheck.
+1. **`python_orchestrator.service`**: The main entry point. It runs `python_orchestrator/orchestrator.py`, which is responsible for parsing `procs.conf` and spawning all bots and fleet processes asynchronously. It provides built-in hot-reloading if configurations change.
+2. **`pia.service` & `piavpn.service`**: Private Internet Access daemon and supervisor. They use `os_orchestrator/livecheck/pia_supervisor.sh` to enforce the Dedicated IP and provide robust fallback routing if the VPN daemon fails.
+3. **`crontab.root.prod.txt`**: Root-level cron jobs (like `vpn_watchdog.sh` for auto-recovery).
+4. **`crontab.prod.txt`**: User-level cron jobs (like `manage_gitautodeploy.sh`).
 
-Cron comes from two files: `crontab.prod.txt` (the configured trading user) and
-`crontab.root.prod.txt` (root). The second one exists because `pia_selfheal.sh`
-needs `systemctl`/`kill` on `pia-daemon`, so it cannot run unprivileged.
+## Documentation
 
-The installer renders `@TRADING_*@` placeholders from `TRADING_ROOT`,
-`TRADING_USER`, and `TRADING_PYTHON`. It never infers production from a username
-or a checkout directory name. `healthcheck.sh --supervise` is enabled explicitly
-only by the rendered production crontab.
+All architectural and disaster recovery documentation has been moved to the `docs/` folder in the root repository.
+Please refer to `docs/DISASTER_RECOVERY.md` and `docs/PROXMOX_DR.md` for bare-metal rebuild procedures.
 
-`PIA.md` documents the VPN: the `piactl` commands, the pitfalls that cost us 34 days
-of a stopped fleet (`pubip` is not the exit IP, `connect` silently ignored without
-`background enable`, logging out deletes the dedicated IP), and how the self-healing
-works.
+## Installation
 
-`DNS_RESILIENCE.md` documents the two defences against the intermittent
-`api.hyperliquid.xyz` resolution failures seen during VPN blips: the systemd-resolved
-cache (`/etc/systemd/resolved.conf`: `Cache`/`StaleRetentionSec`/`FallbackDNS`) and the
-connect-only retry in `hyperliquid/hl_client.py`. Recreate BOTH on a rebuild — the cache
-needs `sudo`, the retry ships with the code.
-
-`binance.service` keeps `flota_start.sh` alive. The fleet checks its processes every
-30s, restarts dead/zombie ones, and sends `SIGCONT` to stopped ones. Cron
-additionally runs `healthcheck.sh --supervise` every three minutes and alerts on
-stale heartbeats, including `logs/rtrade.log`.
+To rebuild PROD on a fresh machine:
+```bash
+sudo env TRADING_ROOT="$PWD" TRADING_USER="$(id -un)" systemd/install_prod.sh
+```

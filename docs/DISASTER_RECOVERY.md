@@ -1,110 +1,134 @@
-# Disaster Recovery — rebuilding the trading server from scratch
+# Disaster recovery — full VM/network rebuild
 
-Everything **versioned** (the code, the `procs.conf` manifest, the systemd units,
-`requirements.txt`, `systemd/crontab.prod.txt`, the scripts) comes from git. The only thing
-that is **NOT in git** (and must not be) are the **secrets** — you keep those in a separate,
-off-machine backup.
+How to rebuild the trading VM's networking + VPN state from scratch so the fleet leaves
+through the PIA **dedicated IP** again. This complements `README.md` (services/cron) and
+`PIA.md` (the VPN runbook). It exists because several pieces are NOT in `git` and a couple
+live on the Proxmox host, so a bare `install_prod.sh` is not enough on its own.
 
-## What is in git vs what you keep (off-machine)
+`DNS_RESILIENCE.md` covers the Hyperliquid-specific DNS cache/retry and stays valid.
 
-| In git (automatic on `git clone`) | NOT in git — a separate backup |
-|---|---|
-| the code, `procs.conf` and the scripts (fleet_supervisor, restart_bots, healthcheck, restore.sh) | `.env` (root, hyperliquid, kraken, 212trading) |
-| `systemd/*.service` (binance, pia) | `keys/apikeys.py` (the Binance keys) |
-| `requirements.txt` (the venv dependencies) | `keys/ed25519_*.pem` (the Kraken keys) |
-| `systemd/crontab.prod.txt` plus `systemd/install_prod.sh` | (optional) bot state: `.state_*.json`, `cachedb/` |
+## Target state (what "correct" looks like)
 
-⚠ **`hyperliquid/.env` holds the HL agent-wallet key** — losing it means you can no longer
-sign HL orders. The secrets backup is CRITICAL.
+Snapshot of a healthy box (2026-09-18), for reference when verifying a rebuild:
 
-## ⚠ How do the secrets reach an EMPTY VM? (the chicken-and-egg)
+```
+ens18    192.168.0.144/24  MTU 1280   gateway 192.168.0.1 (direct, static onlink)
+wgpia0   10.79.x.x/32      PIA WireGuard tunnel, exit 85.122.194.79 (the DIP)
+default via 192.168.0.1 dev ens18 proto static onlink        # base uplink (netplan)
+DNS: systemd-resolved stub 127.0.0.53; Global EMPTY;
+     wgpia0 -> 10.0.0.243 (Domains ~., owns all public lookups); ens18 -> 192.168.0.1
+IPv6: enabled but deprioritized (gai.conf); the kill switch blocks it (tunnel is IPv4-only)
+sysctl: net.ipv4.ip_forward=0  rp_filter=2  net.ipv6.conf.all.disable_ipv6=0
+```
 
-A new VM **has no keys at all** and does NOT "pull from WSL" by itself. YOU initiate the
-restore (from the dev box, or on the VM using the DR seed). The direction is either **the VM
-downloads from Storj** or **you push** the backup to the VM. Never "the VM pulls from WSL".
-
-**🔑 THE DR SEED** — keep these 3 SEPARATELY (a password manager, or paper), not only in the backup:
-1. the git repository URL (`git@github.com:mpredut/mptrade.git`) plus GitHub access (an SSH key or an HTTPS token)
-2. the **Storj access grant**
-3. the **rclone crypt password** (to decrypt the backup)
-
-With those three, a completely empty VM can rebuild itself. (If you put them ONLY in the
-backup you get the chicken-and-egg: you need them to download the backup that contains them.)
-
-## Rebuilding on a new machine (Ubuntu) — the steps
+Green checklist (all must hold):
 
 ```bash
-# 0. dependencies
-sudo apt update && sudo apt install -y git python3 python3-venv curl unzip
-
-# 1. the code — clone into ANY folder, as ANY user; restore.sh and install_prod.sh derive
-#    the checkout path and the account automatically (nothing is hardcoded to a name/user).
-#    (HTTPS+token if you have no GitHub key on the VM; or add the key)
-git clone git@github.com:mpredut/mptrade.git ~/mptrade && cd ~/mptrade
-
-# 2. BRING the secrets backup onto the VM — choose A or B:
-#   (A) STORJ (recommended, no dev box needed): configure rclone with the access grant and the
-#       crypt password (from the DR seed), then download and decrypt:
-#         ~/bin/rclone copyto storj-crypt:mptrade-secrets-backup.tar.gz ~/bk.tar.gz
-#         mkdir bk && tar xzf ~/bk.tar.gz -C bk
-#   (B) PUSH from the dev box (interim): on the DEV BOX run
-#         scp ~/mptrade-secrets-backup.tar.gz user@NEW_VM:/tmp/
-#       then on the VM: mkdir bk && tar xzf /tmp/mptrade-secrets-backup.tar.gz -C bk
-
-# 3. ONE COMMAND — it rebuilds everything (secrets + venv + systemd + cron):
-./restore.sh bk/mptrade-secrets-backup
-
-# 4. PIA/VPN (once): install the PIA client and log in, then:
-sudo systemctl start pia binance
-
-# 5. verify
-./healthcheck.sh --check        # every process should be 'ok'
+piactl get connectionstate            # Connected
+piactl get vpnip                      # 85.122.194.79  (== the Binance-whitelisted DIP)
+curl -4 -s https://api.ipify.org      # 85.122.194.79
+for i in $(seq 10); do getent hosts api.binance.com >/dev/null && echo ok; done   # 10/10
+curl -4 -s -o /dev/null -w '%{http_code}\n' https://api.binance.com/api/v3/time   # 200
+systemctl is-active pia binance       # active / active
+./healthcheck.sh --check              # fleet processes alive (is-active can lie)
 ```
 
-`restore.sh` does: restore the secrets -> create `myenv` and `pip install -r requirements.txt`
--> install the systemd units (and enable them) -> install the crontab. After `systemctl start`,
-the **fleet** starts through systemd and the **bots** through the `healthcheck.sh --supervise`
-cron (within 5 minutes).
+## What PIA builds automatically — do NOT reproduce it by hand
 
-## How to (re)make the secrets backup
+When `pia connect` succeeds, the daemon creates all of this itself; it is runtime state,
+not config to restore. Listed only so nobody tries to "fix" it manually:
 
-Run it on the live machine (it creates the folder and the tar, without touching git):
+- routing tables `piavpnWgrt` (default dev wgpia0) and `piavpnFwdrt` (default dev wgpia0 +
+  `blackhole default` = the kill switch);
+- policy rules: `50: suppress_prefixlength 1`, `70: fwmark 0x3214 -> piavpnFwdrt`,
+  `102: not fwmark 0x3213 -> piavpnWgrt`;
+- the nftables kill-switch ruleset;
+- the `wgpia0` interface and its address.
 
-```bash
-~/mptrade/tools/admin/backup_local.sh            # -> ~/mptrade-secrets-backup/ plus .tar.gz
-# then copy the tarball OFF-machine (USB, private cloud, another machine)
+`ip rule show` / `ip route show table all` will show these once connected. If they are
+missing, the fix is `piactl connect` (or `systemctl restart pia.service`), never a manual
+`ip rule add`. A `netplan apply` while PIA is up WIPES these — see the netplan note below.
+
+## Automated (git + install_prod.sh + pia_start.sh)
+
+A `git pull` + `sudo systemd/install_prod.sh` restores everything here:
+
+- **Services/cron/sshd/DNS drop-in/netplan**: `install_prod.sh` renders + installs
+  `python_orchestrator.service`, `pia.service`, `piavpn.service`, `binancedemon.service`, both
+  crontabs, `sshd-20-trading.conf`, the resolved drop-in `resolved-20-trading-cache.conf`
+  (Global DNS empty -> the tunnel owns resolution), the direct-default netplan file
+  `netplan-99-force-gateway.yaml` (installed, not applied -- see section 1), and the
+  `logrotate-pia-daemon.conf` cap on PIA's debug log (`/opt/piavpn/var/daemon.log`, kept ON
+  in production). It also `systemctl restart systemd-resolved`.
+- **PIA connection logic** (`pia_start.sh`, run by `pia.service`): WireGuard protocol,
+  `allowlan true` (kill switch must not cut LAN/SSH), derive the dedicated region from
+  `piactl get regions` (never hardcoded), connect, health-probe loop. It also, as root,
+  before connecting:
+  - **clamps the uplink MTU** (`ens18` -> 1280; `PIA_UPLINK_IF`/`PIA_UPLINK_MTU`);
+  - **prefers IPv4** by adding `precedence ::ffff:0:0/96 100` to `/etc/gai.conf` (the
+    tunnel is IPv4-only, so IPv6-first lookups hit the kill switch).
+- **PIA tunnel MTU 1200** (`settings.json`): enforced by `pia_settings_mtu.sh`, wired as an
+  `ExecStartPre=-` of `piavpn.service` (idempotent, non-fatal). `piactl` has no `mtu`
+  setting, so it lives in the daemon's `settings.json`, which the daemon reads only at
+  startup. This is normally a no-op (settings.json is persistent) — it matters after a PIA
+  reinstall (self-heal rung 4), which resets it to defaults.
+- **Self-healing** (`pia_selfheal.sh`, root crontab): reconnect -> restart daemon ->
+  re-register DIP -> reinstall ladder, with an on-disk alert spool.
+
+## Manual / off-repo — the pieces a rebuild MUST redo by hand
+
+### 1. netplan — route the VM DIRECT to the gateway (.1)
+
+The VM must send its uplink straight to `192.168.0.1`, not hairpin through the Proxmox
+host (`.2`); otherwise the addKey to the dedicated IP fails. The LAN DHCP has handed out
+`.2` as the gateway, so a drop-in overrides it: `use-routes: false` (ignore the DHCP
+gateway) + a static default via `.1`.
+
+This is now MIRRORED at `systemd/netplan-99-force-gateway.yaml` and **installed** (0600
+root) by `install_prod.sh`, on top of cloud-init's `50-cloud-init.yaml` (`dhcp4: true`,
+regenerated automatically). Result once active:
+
+```
+default via 192.168.0.1 dev ens18 proto static onlink
 ```
 
-Remember: the secrets NEVER go into git (they are in `.gitignore`). Keeping the backup safe
-and off-machine is your responsibility.
+`install_prod.sh` installs the file but deliberately does NOT `netplan apply` it, because
+that would wipe PIA's live policy routing (`piavpnWgrt`) and send traffic direct instead of
+through the tunnel. To activate: **reboot** (clean order netplan -> pia.service), or run
+`sudo netplan apply` and then `sudo systemctl restart pia.service` to rebuild the tunnel
+routing. On the current box the file is already installed and active.
 
-## A local copy on WSL (interim, until Storj) — a Windows task
-The server rebuilds the backup daily (cron 03:30, `tools/admin/backup_local.sh`) and keeps **history:
-the last 7 dated tarballs** (`mptrade-secrets-backup-YYYYMMDD.tar.gz`) alongside the stable
-path `mptrade-secrets-backup.tar.gz` (latest) — so a corruption that makes it into the backup
-no longer overwrites the single good copy. A Windows task pulls the latest at 04:00 (WSL does
-not reach the server, only Windows does): it downloads **locally** first
-(`%USERPROFILE%\mptrade-secrets-backup.tar.gz`, which works even with WSL stopped), then copies
-it into WSL as well. The script is versioned:
-[`../windows/pull-binance-backup.ps1`](../windows/pull-binance-backup.ps1) (keyless).
+### 2. Binance API IP whitelist — the dedicated IP
 
-Setting it up on a new Windows machine (once):
-```powershell
-# 1. an SSH key (without a passphrase, for automation) and add the public part on the server
-ssh-keygen -t ed25519 -f "$env:USERPROFILE\.ssh\id_binance" -N '""' -C binance-backup-pull -q
-# add the contents of id_binance.pub to ~/.ssh/authorized_keys on the server (once, using the password)
-# 2. copy the script from the repository onto Windows (adjust the paths if they differ)
-copy <repo>\windows\pull-binance-backup.ps1 C:\Users\<user>\pull-binance-backup.ps1
-# 3. a daily 04:00 task, with catch-up if the PC was switched off
-$a=New-ScheduledTaskAction -Execute powershell.exe -Argument '-ExecutionPolicy Bypass -WindowStyle Hidden -File C:\Users\<user>\pull-binance-backup.ps1'
-$t=New-ScheduledTaskTrigger -Daily -At 4:00am
-$s=New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-Register-ScheduledTask -TaskName BinanceBackupPull -Action $a -Trigger $t -Settings $s -Force
-```
-The PRIVATE key `id_binance` does NOT go into git (put it in the secrets backup, or regenerate
-it and re-add the public part on the server). Once Storj is running, this task becomes optional.
+The DIP is whitelisted on the Binance API keys. If PIA hands out a NEW dedicated IP (a
+re-added token can change it, e.g. `.86 -> .79`), **update the whitelist by hand** or every
+signed request gets `-2015`. Nothing automates this. See `PIA.md`.
 
-## On reboot (without a rebuild) — everything comes back on its own
-- `binance.service` is `enabled`, so systemd starts the fleet after the VPN.
-- The crontab persists on disk, so `healthcheck --supervise` (cron */5) starts the bots within 5 minutes.
-- Nothing to do by hand.
+### 3. Proxmox host (192.168.0.2) — see systemd/PROXMOX_DR.md
+
+The hypervisor's config (host network, firewall, VM definitions, storage) is documented for
+rebuild in `PROXMOX_DR.md`. Key points for THIS VM: the host's wired uplink (`vmbr0` static
+`.2` -> `.1` over `enp2s0`) must be the default route, and the USB wifi must stay NOT `auto`
+so a `linkdown` wifi default cannot shadow it. The VM is a bridge port on `vmbr0` and routes
+DIRECTLY to `.1`, so the host needs NO MASQUERADE/forwarding for it — the earlier
+hairpin-era iptables cruft was removed. See also `pia-uplink-proxmox` in memory.
+
+## Full rebuild order
+
+1. Proxmox host uplink healthy (wired default, wifi not shadowing it).
+2. Fresh trading account + `git clone`; restore secrets/state from backup; install
+   venv + PIA under the same paths (`README.md` steps 1-3).
+3. Install PIA's DIP token (`~/piatoken*.txt`) and log in
+   (`piactl login ~/pia.txt`).
+4. `sudo env TRADING_ROOT="$PWD" TRADING_USER="$(id -un)" systemd/install_prod.sh` — renders
+   and installs the units (incl. the tunnel-MTU `ExecStartPre`), the DNS drop-in, the
+   direct-default netplan file, and cron; restarts `piavpn`/`pia`/`binance`.
+5. **Reboot** so netplan applies the direct route (`.1`) at boot and `pia.service` then
+   connects on the dedicated IP with the correct routing. (Without a reboot: `sudo netplan
+   apply`, then `sudo systemctl restart pia.service` to rebuild the tunnel routing.)
+6. Confirm the Binance whitelist matches `piactl get vpnip` (section 2).
+7. Run the green checklist above.
+
+On the CURRENTLY running box everything in "Automated" is already deployed and live; the
+only genuinely manual survivors are the netplan drop-in (section 1) and the Binance
+whitelist (section 2).
