@@ -60,55 +60,30 @@ fi
 
 # --- Daemon Configuration & Initialization ---
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-REPO_OWNER="$(stat -c %U "$ROOT")"
-OWNER_HOME="$(getent passwd "$REPO_OWNER" | cut -d: -f6)"
-[ -n "$OWNER_HOME" ] || { echo "Cannot determine home for $REPO_OWNER"; exit 1; }
 
-# Centralized credentials fallback: read PIA variables from .env if present
-if [ -f "$ROOT/.env" ]; then
-    while IFS='=' read -r key val; do
-        case "$key" in
-            PIA_USER|PIA_PASS|PIA_DIP_TOKEN|PIA_DIP_TOKEN_FRANKFURT|PIA_DIP_TOKEN_BELGIUM)
-                val="${val%\"}"
-                val="${val#\"}"
-                val="${val%\'}"
-                val="${val#\'}"
-                eval "[ -z \"\${$key:-}\" ] && $key=\"\$val\""
-                ;;
-        esac
-    done < <(grep -E '^(PIA_USER|PIA_PASS|PIA_DIP_TOKEN|PIA_DIP_TOKEN_FRANKFURT|PIA_DIP_TOKEN_BELGIUM)=' "$ROOT/.env" 2>/dev/null || true)
-fi
+# Require .env file and enforce required PIA variables
+[ -f "$ROOT/.env" ] || { echo "error: missing required $ROOT/.env configuration" >&2; exit 1; }
 
-# Auto-materialize PIA files if defined in .env but absent on disk
-if [ ! -f "$OWNER_HOME/pia.txt" ] && [ ! -f "$OWNER_HOME/pia_credentials.txt" ]; then
-    if [ -n "${PIA_USER:-}" ] && [ -n "${PIA_PASS:-}" ]; then
-        printf "%s\n%s\n" "$PIA_USER" "$PIA_PASS" > "$OWNER_HOME/pia.txt"
-        chmod 0600 "$OWNER_HOME/pia.txt"
-        chown "$REPO_OWNER:$REPO_OWNER" "$OWNER_HOME/pia.txt" 2>/dev/null || true
-        echo "Materialized $OWNER_HOME/pia.txt from .env"
-    fi
-fi
+PIA_USER=""
+PIA_PASS=""
+PIA_DIP_TOKEN_FRANKFURT=""
+PIA_DIP_TOKEN_BELGIUM=""
+while IFS='=' read -r key val; do
+    val="${val%\"}"
+    val="${val#\"}"
+    val="${val%\'}"
+    val="${val#\'}"
+    case "$key" in
+        PIA_USER|PIA_ACCOUNT_USER) PIA_USER="$val" ;;
+        PIA_PASS) PIA_PASS="$val" ;;
+        PIA_DIP_TOKEN|PIA_DIP_TOKEN_FRANKFURT) PIA_DIP_TOKEN_FRANKFURT="$val" ;;
+        PIA_DIP_TOKEN_BELGIUM) PIA_DIP_TOKEN_BELGIUM="$val" ;;
+    esac
+done < <(grep -E '^(PIA_USER|PIA_ACCOUNT_USER|PIA_PASS|PIA_DIP_TOKEN|PIA_DIP_TOKEN_FRANKFURT|PIA_DIP_TOKEN_BELGIUM)=' "$ROOT/.env" 2>/dev/null || true)
 
-if [ ! -f "$OWNER_HOME/piatoken.txt" ] && [ ! -f "$OWNER_HOME/piatoken_frankfurt.txt" ]; then
-    tok="${PIA_DIP_TOKEN_FRANKFURT:-${PIA_DIP_TOKEN:-}}"
-    if [ -n "$tok" ]; then
-        printf "%s\n" "$tok" > "$OWNER_HOME/piatoken.txt"
-        chmod 0600 "$OWNER_HOME/piatoken.txt"
-        chown "$REPO_OWNER:$REPO_OWNER" "$OWNER_HOME/piatoken.txt" 2>/dev/null || true
-        echo "Materialized $OWNER_HOME/piatoken.txt from .env"
-    fi
-fi
-
-if [ ! -f "$OWNER_HOME/piatoken_belgia.txt" ] && [ ! -f "$OWNER_HOME/piatoken_belgium.txt" ]; then
-    if [ -n "${PIA_DIP_TOKEN_BELGIUM:-}" ]; then
-        printf "%s\n" "$PIA_DIP_TOKEN_BELGIUM" > "$OWNER_HOME/piatoken_belgia.txt"
-        chmod 0600 "$OWNER_HOME/piatoken_belgia.txt"
-        chown "$REPO_OWNER:$REPO_OWNER" "$OWNER_HOME/piatoken_belgia.txt" 2>/dev/null || true
-        echo "Materialized $OWNER_HOME/piatoken_belgia.txt from .env"
-    fi
-fi
-
-DIP_TOKEN="${PIA_DIP_TOKEN:-$OWNER_HOME/piatoken.txt}"
+[ -n "$PIA_USER" ] || { echo "error: PIA_USER missing in $ROOT/.env" >&2; exit 1; }
+[ -n "$PIA_PASS" ] || { echo "error: PIA_PASS missing in $ROOT/.env" >&2; exit 1; }
+[ -n "$PIA_DIP_TOKEN_FRANKFURT" ] || { echo "error: PIA_DIP_TOKEN_FRANKFURT missing in $ROOT/.env" >&2; exit 1; }
 
 # Clamp physical uplink MTU before touching PIA.
 UPLINK_IF="${PIA_UPLINK_IF:-ens18}"
@@ -135,31 +110,42 @@ pia set protocol wireguard || exit 1
 
 # Ensure PIA login if not already authenticated
 if ! pia get connectionstate 2>/dev/null | grep -Eq '^(Connected|Connecting|Disconnected|Reconnecting)$'; then
-    for cred_file in "$OWNER_HOME/pia.txt" "$OWNER_HOME/pia_credentials.txt"; do
-        if [ -f "$cred_file" ]; then
-            echo "Attempting PIA login using $cred_file..."
-            pia login "$cred_file" >/dev/null 2>&1 || true
-            break
-        fi
-    done
+    echo "Attempting PIA login using .env credentials..."
+    cred_tmp="$(mktemp -p /dev/shm 2>/dev/null || mktemp)"
+    chmod 0600 "$cred_tmp"
+    printf "%s\n%s\n" "$PIA_USER" "$PIA_PASS" > "$cred_tmp"
+    pia login "$cred_tmp" >/dev/null 2>&1 || true
+    rm -f "$cred_tmp"
 fi
 
-# Register Dedicated IP from tokens if not present, otherwise fallback to dynamic.
+# Register Dedicated IP from tokens if not present
 if ! pia get regions 2>/dev/null | grep -q "^dedicated-"; then
+    echo "Registering Frankfurt Dedicated IP from .env..."
+    tok_tmp="$(mktemp -p /dev/shm 2>/dev/null || mktemp)"
+    chmod 0600 "$tok_tmp"
+    printf "%s\n" "$PIA_DIP_TOKEN_FRANKFURT" > "$tok_tmp"
     token_added=0
-    for t_file in "$OWNER_HOME/piatoken.txt" "$OWNER_HOME/piatoken_frankfurt.txt" "$OWNER_HOME/piatoken_belgia.txt" "$OWNER_HOME/piatoken_belgium.txt"; do
-        if [ -f "$t_file" ]; then
-            echo "Trying Dedicated IP token from $t_file..."
-            if pia dedicatedip add "$t_file" >/dev/null 2>&1; then
-                echo "Success with token $t_file"
-                token_added=1
-                break
-            fi
+    if pia dedicatedip add "$tok_tmp" >/dev/null 2>&1; then
+        echo "Successfully added Frankfurt Dedicated IP token from .env"
+        token_added=1
+    fi
+    rm -f "$tok_tmp"
+
+    if [ "$token_added" -eq 0 ] && [ -n "$PIA_DIP_TOKEN_BELGIUM" ]; then
+        echo "Frankfurt token failed; trying Belgium token from .env..."
+        tok_tmp="$(mktemp -p /dev/shm 2>/dev/null || mktemp)"
+        chmod 0600 "$tok_tmp"
+        printf "%s\n" "$PIA_DIP_TOKEN_BELGIUM" > "$tok_tmp"
+        if pia dedicatedip add "$tok_tmp" >/dev/null 2>&1; then
+            echo "Successfully added Belgium Dedicated IP token from .env"
+            token_added=1
         fi
-    done
+        rm -f "$tok_tmp"
+    fi
 
     if [ "$token_added" -eq 0 ]; then
-        echo "All Dedicated IP tokens failed (or none found). Will fallback to dynamic."
+        echo "error: Failed to register Dedicated IP tokens from .env" >&2
+        exit 1
     fi
 fi
 

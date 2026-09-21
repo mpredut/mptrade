@@ -501,57 +501,42 @@ rung_relogin() {
     log "rung 4: Logout and Login to reset account state"
     pia logout >/dev/null 2>&1
     sleep 2
-    local cred_file=""
-    for c in "$TRADING_USER_HOME/pia.txt" "$TRADING_USER_HOME/pia_credentials.txt"; do
-        [ -f "$c" ] && { cred_file="$c"; break; }
-    done
 
-    # Materialize credentials if missing and defined in .env
-    if [ -z "$cred_file" ] && [ -n "${PIA_ACCOUNT_USER:-}" ] && [ -n "${PIA_PASS:-}" ]; then
-        cred_file="$TRADING_USER_HOME/pia.txt"
-        printf "%s\n%s\n" "$PIA_ACCOUNT_USER" "$PIA_PASS" > "$cred_file"
-        chmod 0600 "$cred_file"
-        chown "$TRADING_USER:$TRADING_USER" "$cred_file" 2>/dev/null || true
-        log "Materialized $cred_file from .env"
+    # Fail fast if .env credentials missing
+    [ -n "${PIA_ACCOUNT_USER:-}" ] || { log "   FAILED: PIA_USER missing in .env"; return 1; }
+    [ -n "${PIA_PASS:-}" ] || { log "   FAILED: PIA_PASS missing in .env"; return 1; }
+    [ -n "${PIA_DIP_TOKEN_FRANKFURT:-}" ] || { log "   FAILED: PIA_DIP_TOKEN_FRANKFURT missing in .env"; return 1; }
+
+    local cred_tmp
+    cred_tmp="$(mktemp -p /dev/shm 2>/dev/null || mktemp)"
+    chmod 0600 "$cred_tmp"
+    printf "%s\n%s\n" "$PIA_ACCOUNT_USER" "$PIA_PASS" > "$cred_tmp"
+    pia login "$cred_tmp" >/dev/null 2>&1
+    rm -f "$cred_tmp"
+
+    sleep 2
+
+    # Re-register Dedicated IP from .env
+    local tok_tmp
+    tok_tmp="$(mktemp -p /dev/shm 2>/dev/null || mktemp)"
+    chmod 0600 "$tok_tmp"
+    printf "%s\n" "$PIA_DIP_TOKEN_FRANKFURT" > "$tok_tmp"
+    pia dedicatedip add "$tok_tmp" >/dev/null 2>&1
+    rm -f "$tok_tmp"
+
+    if [ -n "${PIA_DIP_TOKEN_BELGIUM:-}" ]; then
+        tok_tmp="$(mktemp -p /dev/shm 2>/dev/null || mktemp)"
+        chmod 0600 "$tok_tmp"
+        printf "%s\n" "$PIA_DIP_TOKEN_BELGIUM" > "$tok_tmp"
+        pia dedicatedip add "$tok_tmp" >/dev/null 2>&1
+        rm -f "$tok_tmp"
     fi
 
-    # Materialize Frankfurt token if missing and defined in .env
-    if [ ! -f "$TRADING_USER_HOME/piatoken.txt" ] && [ ! -f "$TRADING_USER_HOME/piatoken_frankfurt.txt" ]; then
-        local f_tok="${PIA_DIP_TOKEN_FRANKFURT:-${PIA_DIP_TOKEN:-}}"
-        if [ -n "$f_tok" ]; then
-            printf "%s\n" "$f_tok" > "$TRADING_USER_HOME/piatoken.txt"
-            chmod 0600 "$TRADING_USER_HOME/piatoken.txt"
-            chown "$TRADING_USER:$TRADING_USER" "$TRADING_USER_HOME/piatoken.txt" 2>/dev/null || true
-            log "Materialized $TRADING_USER_HOME/piatoken.txt from .env"
-        fi
-    fi
-
-    # Materialize Belgium token if missing and defined in .env
-    if [ ! -f "$TRADING_USER_HOME/piatoken_belgia.txt" ] && [ ! -f "$TRADING_USER_HOME/piatoken_belgium.txt" ]; then
-        if [ -n "${PIA_DIP_TOKEN_BELGIUM:-}" ]; then
-            printf "%s\n" "$PIA_DIP_TOKEN_BELGIUM" > "$TRADING_USER_HOME/piatoken_belgia.txt"
-            chmod 0600 "$TRADING_USER_HOME/piatoken_belgia.txt"
-            chown "$TRADING_USER:$TRADING_USER" "$TRADING_USER_HOME/piatoken_belgia.txt" 2>/dev/null || true
-            log "Materialized $TRADING_USER_HOME/piatoken_belgia.txt from .env"
-        fi
-    fi
-
-    if [ -n "$cred_file" ]; then
-        pia login "$cred_file" >/dev/null 2>&1
-        sleep 2
-        # Restore all tokens
-        for t in "$TRADING_USER_HOME"/piatoken*.txt; do
-            [ -f "$t" ] && pia dedicatedip add "$t" >/dev/null 2>&1
-        done
-        local dedicated
-        dedicated=$(pia get regions | grep -m1 '^dedicated-')
-        pia set region "${dedicated:-${PIA_FALLBACK_REGION:-auto}}" >/dev/null
-        pia connect >/dev/null
-        return 0
-    else
-        log "   WARNING: $TRADING_USER_HOME/pia.txt or $TRADING_USER_HOME/pia_credentials.txt missing -> cannot login"
-        return 1
-    fi
+    local dedicated
+    dedicated=$(pia get regions | grep -m1 '^dedicated-')
+    pia set region "${dedicated:-${PIA_FALLBACK_REGION:-auto}}" >/dev/null
+    pia connect >/dev/null
+    return 0
 }
 
 # Take ownership: stop pia.service so its Restart=always loop cannot issue a competing

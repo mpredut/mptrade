@@ -49,11 +49,11 @@ class NotificationServer:
     def _load_ntfy_token(self) -> str:
         tok = os.environ.get("NTFY_TOKEN", "").strip()
         if not tok:
-            try:
-                with open(os.path.expanduser("~/.binance_ntfy_token"), encoding="utf-8") as fh:
-                    tok = fh.read().strip()
-            except OSError:
-                tok = ""
+            env_path = os.path.join(ROOT_DIR, ".env")
+            if os.path.isfile(env_path):
+                from botcore import load_dotenv
+                load_dotenv(env_path)
+                tok = os.environ.get("NTFY_TOKEN", "").strip()
         return tok
 
     def _load_rules(self) -> List[Dict[str, Any]]:

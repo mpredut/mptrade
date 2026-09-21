@@ -1,15 +1,17 @@
 # Production crontab template for the configured trading account.
-# install_prod.sh renders paths and installs this file.
+SHELL=/bin/bash
+TRADING_ROOT=$HOME/mptrade
+PATH=$TRADING_ROOT/myenv/bin:$TRADING_ROOT/.venv/bin:/usr/local/bin:/usr/bin:/bin
 
-17 * * * * cd @TRADING_ROOT@ && @TRADING_ROOT@/orchestratorOS/admin/manage_logs.sh >> @TRADING_ROOT@/logs/manage_logs.log 2>&1
-*/15 * * * * cd @TRADING_ROOT@ && /usr/bin/python3 @TRADING_ROOT@/212trading/price_alert.py RGNT --below 4 >> @TRADING_ROOT@/212trading/price_alert.log 2>&1
-*/15 * * * * cd @TRADING_ROOT@ && @TRADING_PYTHON@ verify_tools/check_cache_coherence.py >> @TRADING_ROOT@/logs/cache_coherence.log 2>&1
-30 3 * * * cd @TRADING_ROOT@ && @TRADING_ROOT@/orchestratorOS/admin/manage_backups.sh local >> @TRADING_ROOT@/logs/manage_backups.log 2>&1
-*/15 * * * * cd @TRADING_ROOT@ && @TRADING_ROOT@/orchestratorOS/livecheck/deadman_switch.sh >> @TRADING_ROOT@/logs/deadman.log 2>&1
-*/30 * * * * cd @TRADING_ROOT@ && @TRADING_ROOT@/offline/runners/refresh_dev.sh >> @TRADING_ROOT@/logs/refresh_dev.log 2>&1
-0 2,14 * * * cd @TRADING_ROOT@ && @TRADING_ROOT@/offline/runners/trigger_backtest_dev.sh >> @TRADING_ROOT@/logs/backtest_cycle.log 2>&1
-7 * * * * cd @TRADING_ROOT@ && @TRADING_PYTHON@ @TRADING_ROOT@/kraken/shadow_live.py --interval 240 >> @TRADING_ROOT@/logs/shadow_live.log 2>&1
-37 * * * * cd @TRADING_ROOT@ && @TRADING_PYTHON@ @TRADING_ROOT@/kraken/shadow_live.py --interval 60 >> @TRADING_ROOT@/logs/shadow_live.log 2>&1
-*/20 * * * * cd @TRADING_ROOT@ && /usr/bin/flock -n @TRADING_ROOT@/logs/.portfolio_snapshot.lock /usr/bin/timeout --signal=TERM --kill-after=5s 90s @TRADING_PYTHON@ @TRADING_ROOT@/verify_tools/portfolio_snapshot.py --alert --json >> @TRADING_ROOT@/logs/portfolio_snapshot.jsonl 2>/dev/null
-27 * * * * cd @TRADING_ROOT@ && @TRADING_PYTHON@ @TRADING_ROOT@/hyperliquid/shadow_longterm.py --quiet >> @TRADING_ROOT@/logs/hyperliquid_shadow.log 2>&1
-*/5 * * * * cd @TRADING_ROOT@ && @TRADING_PYTHON@ orchestratorOS/livecheck/os_resources_watchdog.py >> @TRADING_ROOT@/logs/os_resources_watchdog.log 2>&1
+17 * * * * cd $TRADING_ROOT && ./orchestratorOS/admin/manage_logs.sh >> logs/manage_logs.log 2>&1
+*/15 * * * * cd $TRADING_ROOT && python3 212trading/price_alert.py RGNT --below 4 >> 212trading/price_alert.log 2>&1
+*/15 * * * * cd $TRADING_ROOT && python verify_tools/check_cache_coherence.py >> logs/cache_coherence.log 2>&1
+30 3 * * * cd $TRADING_ROOT && ./orchestratorOS/admin/manage_backups.sh local >> logs/manage_backups.log 2>&1
+*/15 * * * * cd $TRADING_ROOT && ./orchestratorOS/livecheck/deadman_switch.sh >> logs/deadman.log 2>&1
+*/30 * * * * cd $TRADING_ROOT && ./offline/runners/refresh_dev.sh >> logs/refresh_dev.log 2>&1
+0 2,14 * * * cd $TRADING_ROOT && ./offline/runners/trigger_backtest_dev.sh >> logs/backtest_cycle.log 2>&1
+7 * * * * cd $TRADING_ROOT && python kraken/shadow_live.py --interval 240 >> logs/shadow_live.log 2>&1
+37 * * * * cd $TRADING_ROOT && python kraken/shadow_live.py --interval 60 >> logs/shadow_live.log 2>&1
+*/20 * * * * cd $TRADING_ROOT && /usr/bin/flock -n logs/.portfolio_snapshot.lock /usr/bin/timeout --signal=TERM --kill-after=5s 90s python verify_tools/portfolio_snapshot.py --alert --json >> logs/portfolio_snapshot.jsonl 2>/dev/null
+27 * * * * cd $TRADING_ROOT && python hyperliquid/shadow_longterm.py --quiet >> logs/hyperliquid_shadow.log 2>&1
+*/5 * * * * cd $TRADING_ROOT && python orchestratorOS/livecheck/os_resources_watchdog.py >> logs/os_resources_watchdog.log 2>&1

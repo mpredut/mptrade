@@ -7,9 +7,11 @@ PRIORITY="${3:-default}"
 BODY="${4:-}"
 
 TOKEN="${NTFY_TOKEN:-}"
-if [ -z "$TOKEN" ] && [ -f ~/.binance_ntfy_token ]; then
-    TOKEN="$(cat ~/.binance_ntfy_token 2>/dev/null || true)"
+if [ -z "$TOKEN" ]; then
+    ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+    [ -f "$ROOT/.env" ] && TOKEN="$(grep -E '^NTFY_TOKEN=' "$ROOT/.env" 2>/dev/null | cut -d= -f2- | tr -d '"'\'' ')"
 fi
+[ -n "$TOKEN" ] || { echo "error: NTFY_TOKEN missing in environment and .env" >&2; exit 1; }
 
 AUTH_ARGS=()
 if [ -n "$TOKEN" ]; then

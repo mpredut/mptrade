@@ -8,10 +8,13 @@
 # Running pia_selfheal.sh from cron creates a competing restarter that fights pia.service
 # over piactl calls. Use ./pia_selfheal.sh --check or --force for manual intervention only.
 
+SHELL=/bin/bash
+TRADING_ROOT=@TRADING_ROOT@
+
 # Auto-deploy (SHADOW by default -- observe only; set AUTODEPLOY_MODE=on in
 # autodeploy.local.conf to apply). Pulls a moved origin/main and restarts the fleet; never
 # reboots. See manage_gitautodeploy.sh.
-*/10 * * * * @TRADING_ROOT@/orchestratorOS/admin/manage_gitautodeploy.sh >> @TRADING_ROOT@/logs/autodeploy.log 2>&1
+*/10 * * * * cd $TRADING_ROOT && ./orchestratorOS/admin/manage_gitautodeploy.sh >> logs/autodeploy.log 2>&1
 
 # PIA Network guard with exponential backoff (now safe for cron)
-*/5 * * * * @TRADING_ROOT@/orchestratorOS/livecheck/vpn_watchdog.sh >> @TRADING_ROOT@/logs/vpn_watchdog.log 2>&1
+*/5 * * * * cd $TRADING_ROOT && ./orchestratorOS/livecheck/vpn_watchdog.sh >> logs/vpn_watchdog.log 2>&1

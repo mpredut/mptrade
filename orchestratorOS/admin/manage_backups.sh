@@ -23,19 +23,6 @@ backup_local() {
     rm -rf "$OUT"; mkdir -p "$OUT"
     printf '%s\n' "$LIST" | tar cf - -C "$ROOT" -T - | tar xf - -C "$OUT"
     
-    mkdir -p "$OUT/_machine"
-    # Backup all PIA tokens (default, frankfurt, belgia, etc)
-    for token_file in "$HOME"/piatoken*.txt; do
-        if [ -f "$token_file" ]; then
-            install -m 0600 "$token_file" "$OUT/_machine/$(basename "$token_file")"
-        fi
-    done
-    for cred_file in "$HOME"/pia.txt "$HOME"/pia_credentials.txt; do
-        if [ -f "$cred_file" ]; then
-            install -m 0600 "$cred_file" "$OUT/_machine/$(basename "$cred_file")"
-        fi
-    done
-    
     tar czf "$OUT.tar.gz" -C "$OUT" .
     chmod -R go-rwx "$OUT" 2>/dev/null || true
     chmod 600 "$OUT.tar.gz"
@@ -90,27 +77,7 @@ restore_backup() {
     command -v python3 >/dev/null || fail "python3 is missing"
     
     echo "--- [1/5] restoring secrets plus state from $SECRETS ---"
-    tar cf - --exclude='./_machine' -C "$SECRETS" . | tar xf - -C "$ROOT"
-    # Restore all PIA tokens
-    local token_restored=0
-    for token_file in "$SECRETS/_machine"/piatoken*.txt; do
-        if [ -f "$token_file" ]; then
-            install -m 0600 "$token_file" "$HOME/$(basename "$token_file")"
-            token_restored=1
-        fi
-    done
-    if [ "$token_restored" -eq 1 ]; then
-        log "Restored PIA dedicated IP tokens to $HOME/"
-    fi
-    for cred_file in "$SECRETS/_machine"/pia*.txt; do
-        case "$(basename "$cred_file")" in
-            piatoken*.txt) continue ;;
-            *)
-                install -m 0600 "$cred_file" "$HOME/$(basename "$cred_file")"
-                log "Restored PIA credentials to $HOME/$(basename "$cred_file")"
-                ;;
-        esac
-    done
+    tar cf - -C "$SECRETS" . | tar xf - -C "$ROOT"
     
     echo "--- [2/5] venv + dependencies ---"
     local VENV_DIR="$ROOT/myenv"
