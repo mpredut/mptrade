@@ -46,9 +46,9 @@ EOF
         } > "$CONF"
         "$LOGROTATE" -s "$ROOT/.logrotate.state" "$CONF"
         rm -f "$CONF"
-        echo "✔ logrotate complet."
+        echo "✔ logrotate complete."
     else
-        echo "⚠ logrotate negasit, sar peste."
+        echo "⚠ logrotate not found, skipping."
     fi
 else
     echo "⚠ policy $POLICY missing, logrotate skipped."
