@@ -94,12 +94,23 @@ pia set protocol wireguard || exit 1
 # registration, and a re-added token can return a DIFFERENT IP (1 Sep 2026: .86 -> .79).
 # A hardcoded id then becomes "Unknown region", `set region` fails and the tunnel comes
 # up on a pool IP -> Binance answers -2015. So we ask the daemon what the region is.
-# Atempt to add the dedicated IP if not present. If it fails (ApiNetworkError etc), fallback to dynamic.
+# Attempt to add a dedicated IP from multiple tokens if not present. If all fail, fallback to dynamic.
 if ! pia get regions 2>/dev/null | grep -q "^dedicated-"; then
-    if [ -f "$DIP_TOKEN" ]; then
-        pia dedicatedip add "$(cat "$DIP_TOKEN")" || echo "Dedicated IP token failed. Will fallback to dynamic."
-    else
-        pia dedicatedip add "$DIP_TOKEN" || echo "Dedicated IP token failed. Will fallback to dynamic."
+    token_added=0
+    # Prioritize new token, then default, then belgium
+    for t_file in "$OWNER_HOME/piatoken_new.txt" "$OWNER_HOME/piatoken.txt" "$OWNER_HOME/piatoken_belgia.txt"; do
+        if [ -f "$t_file" ]; then
+            echo "Trying Dedicated IP token from $t_file..."
+            if pia dedicatedip add "$(cat "$t_file")" >/dev/null 2>&1; then
+                echo "Success with token $t_file"
+                token_added=1
+                break
+            fi
+        fi
+    done
+    
+    if [ "$token_added" -eq 0 ]; then
+        echo "All Dedicated IP tokens failed (or none found). Will fallback to dynamic."
     fi
 fi
 
