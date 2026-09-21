@@ -2,7 +2,7 @@
 """
 Tests for trend_stats (Mann-Kendall plus Hurst) and the integration of the MK filter in the detector.
 
-  /home/mariusp/binance/.venv/bin/python test_trend_stats.py -v
+  python -m pytest tests/test_trend_stats.py -v
 """
 
 from __future__ import annotations

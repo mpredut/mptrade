@@ -10,7 +10,7 @@ behaves approximately like spot with a distant liquidation price. "buy" opens or
 increases a long position, while "TP" reduces it.
 
 Run with the Python interpreter from the SDK virtual environment:
-    /home/mariusp/binance/.venv/bin/python hl_bot.py
+    python hl_bot.py
 """
 
 from __future__ import annotations

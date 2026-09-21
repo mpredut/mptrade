@@ -14,8 +14,8 @@ Modes:
   sweep  — test many TP/DROP combinations and show the best for tuning
 
 Run with the virtual environment:
-  /home/mariusp/binance/.venv/bin/python backtest.py --coin HYPE --days 45 --direction short
-  ...backtest.py --mode sweep --coin HYPE --days 45 --direction short --signal analysis
+  python backtest.py --coin HYPE --days 45 --direction short
+  python backtest.py --mode sweep --coin HYPE --days 45 --direction short --signal analysis
 """
 
 from __future__ import annotations

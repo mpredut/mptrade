@@ -13,11 +13,11 @@ import json
 from pathlib import Path
 import sys
 
-ROOT = Path(__file__).resolve().parent.parent      # verify_tools/ -> radacina repo
+ROOT = Path(__file__).resolve().parent.parent.parent  # orchestratorOS/lib/ -> repository root
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from alertnotifiers import AlertNotifier  # noqa: E402
+from notify_engine.alertnotifiers import AlertNotifier  # noqa: E402
 from botcore import (  # noqa: E402
     load_env_stack, required_bool_env, required_float_env, required_int_env,
 )
@@ -51,7 +51,7 @@ def save_state(state_file, state):
 
 
 def send_ntfy(title, message):
-    # watchdog = categoria ERROR -> prefera topic-ul dedicat; fallback PHONE_ALERT_URL
+    # watchdog = ERROR category -> prefer dedicated topic; fallback to PHONE_ALERT_URL
     topic = os.environ.get("NTFY_TOPIC_ERROR")
     url = (f"https://ntfy.sh/{topic}" if topic else None) or os.environ.get("PHONE_ALERT_URL")
     if not url:

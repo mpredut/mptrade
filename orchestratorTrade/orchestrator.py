@@ -22,6 +22,8 @@ class BotManager:
         self.log_files: Dict[str, Any] = {}
         self.bots: List[Dict[str, str]] = []
         self.restart_backoff: Dict[str, float] = {}
+        self.restart_delays: Dict[str, float] = {}
+        self.starting: set[str] = set()
         self.running = True
 
     def parse_procs_conf(self) -> List[Dict[str, str]]:
@@ -75,6 +77,8 @@ class BotManager:
             self.server.process_line(decoded, bot_name)
 
     async def start_bot(self, bot: Dict[str, str]):
+        if not self.running:
+            return
         name = bot["name"]
         cmd = bot["cmd"]
         directory = bot["dir"]
@@ -88,6 +92,8 @@ class BotManager:
 
         logging.info(f"Starting {name} in {directory}: {cmd}")
         start_time = time.time()
+        log_fh = None
+        task = None
         try:
             bot_env = {**os.environ, "MPTRADE_ORCHESTRATED": "1"}
             process = await asyncio.create_subprocess_shell(
@@ -104,8 +110,9 @@ class BotManager:
             logging.error(f"Failed to launch {name}: {e}")
             self.restart_backoff[name] = time.time() + 5
             return
+        finally:
+            self.starting.discard(name)
 
-        log_fh = None
         log_path_rel = bot.get("log_file")
         if log_path_rel:
             abs_log_path = os.path.join(directory, log_path_rel)
@@ -116,29 +123,42 @@ class BotManager:
             except Exception as e:
                 logging.error(f"Failed to open log {abs_log_path} for {name}: {e}")
 
-        task = None
         if process.stdout:
             task = asyncio.create_task(self._read_stream(process.stdout, name, log_fh))
 
-        await process.wait()
-        duration = time.time() - start_time
-        logging.warning(f"Bot {name} exited with code {process.returncode} (ran for {duration:.1f}s)")
+        try:
+            await process.wait()
+        except asyncio.CancelledError:
+            await self.stop_bot(name)
+            raise
+        finally:
+            duration = time.time() - start_time
+            logging.warning(f"Bot {name} exited with code {process.returncode} (ran for {duration:.1f}s)")
 
-        # If it exited very quickly (< 5s), throttle next start to avoid CPU spin
-        if duration < 5:
-            self.restart_backoff[name] = time.time() + 5
-        else:
-            self.restart_backoff[name] = 0
+            # Exponential backoff on rapid crash loop
+            if duration < 5:
+                prev_delay = self.restart_delays.get(name, 2.5)
+                new_delay = min(prev_delay * 2, 60.0)
+                self.restart_delays[name] = new_delay
+                self.restart_backoff[name] = time.time() + new_delay
+                logging.warning(f"Bot {name} rapid crash detected; backoff for {new_delay:.1f}s")
+            else:
+                self.restart_delays[name] = 5.0
+                self.restart_backoff[name] = 0
 
-        if task:
-            await task
-        if log_fh:
-            log_fh.close()
+            if task:
+                await task
+            if log_fh:
+                try:
+                    log_fh.close()
+                except Exception:
+                    pass
+                self.log_files.pop(name, None)
 
     async def stop_bot(self, name: str, sig=signal.SIGTERM):
         if name in self.processes:
             proc = self.processes[name]
-            if proc.returncode is None:
+            if isinstance(proc, asyncio.subprocess.Process) and proc.returncode is None:
                 logging.info(f"Stopping bot {name} (pid={proc.pid})...")
                 try:
                     os.killpg(os.getpgid(proc.pid), sig)
@@ -146,6 +166,19 @@ class BotManager:
                     pass
                 except Exception as e:
                     logging.warning(f"Failed to signal process group for {name}: {e}")
+
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=4.0)
+                except (asyncio.TimeoutError, TimeoutError):
+                    logging.warning(f"Bot {name} did not exit within 4s, sending SIGKILL...")
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except (ProcessLookupError, Exception):
+                        pass
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=2.0)
+                    except (asyncio.TimeoutError, TimeoutError):
+                        pass
 
     async def restart_bot(self, name: str):
         await self.stop_bot(name)
@@ -169,12 +202,14 @@ class BotManager:
             return ""
 
     async def _hot_reload_loop(self):
-        """Watches config.env and procs.conf for changes to trigger restarts."""
+        """Watches config.env, procs.conf, and instruments.conf for changes to trigger restarts."""
         config_path = os.path.join(ROOT_DIR, "config.env")
         procs_path = os.path.join(ROOT_DIR, "procs.conf")
+        instruments_path = os.path.join(ROOT_DIR, "instruments.conf")
         hashes = {
             config_path: self._hash_file(config_path),
-            procs_path: self._hash_file(procs_path)
+            procs_path: self._hash_file(procs_path),
+            instruments_path: self._hash_file(instruments_path),
         }
 
         while self.running:
@@ -217,10 +252,13 @@ class BotManager:
             now = time.time()
             for bot in self.bots:
                 name = bot["name"]
+                if name in self.starting:
+                    continue
                 proc = self.processes.get(name)
                 if proc is None or proc.returncode is not None:
                     next_allowed = self.restart_backoff.get(name, 0)
                     if now >= next_allowed:
+                        self.starting.add(name)
                         asyncio.create_task(self.start_bot(bot))
             await asyncio.sleep(2)
 

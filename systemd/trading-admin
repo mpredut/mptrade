@@ -15,9 +15,9 @@
 # root-owned source of truth), so it follows renames automatically.
 set -euo pipefail
 
-TUSER="${TRADING_USER:-$(stat -c %U "$(svc_root)" 2>/dev/null || id -un)}"
-
 svc_root() { systemctl show -p WorkingDirectory --value python_orchestrator.service 2>/dev/null; }
+
+TUSER="${TRADING_USER:-$(stat -c %U "$(svc_root)" 2>/dev/null || id -un)}"
 
 require_clean_repo() {              # refuse to run privileged repo scripts if edited locally
   local root="$1"

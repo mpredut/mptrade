@@ -45,7 +45,7 @@ fi
 [ "$(id -u)" = 0 ] || { echo "Run the real rename with sudo (systemd/cron + root-owned venv need root)." >&2; exit 1; }
 
 echo "== [1/6] stop the fleet + pause supervision (brief trading pause) =="
-systemctl stop binance.service 2>/dev/null || true
+systemctl stop python_orchestrator.service 2>/dev/null || true
 systemctl stop cron 2>/dev/null || true       # so healthcheck does not respawn at the old path mid-move
 
 echo "== [2/6] rename the folder =="
@@ -53,19 +53,17 @@ mv "$CUR" "$DEST"
 cd "$DEST"
 
 echo "== [3/6] make the venv relocatable (self-deriving activate; root can write it) =="
-bash "$DEST/tools/admin/make_venv_portable.sh"
+bash "$DEST/orchestratorOS/admin/make_venv_portable.sh"
 
 echo "== [4/6] re-render systemd units + both crontabs for the new path (auto-derived) =="
 bash "$DEST/systemd/install_prod.sh"           # no env vars: install_prod derives root/user/python
 
 echo "== [5/6] restart the fleet + relaunch the bots at the new path =="
 systemctl start cron
-systemctl restart pia.service binance.service 2>/dev/null || systemctl start binance.service
-runuser -u "$TUSER" -- bash "$DEST/bots_start.sh" >/dev/null 2>&1 || \
-  sudo -u "$TUSER" bash "$DEST/bots_start.sh" >/dev/null 2>&1 || true
+systemctl restart pia.service python_orchestrator.service 2>/dev/null || systemctl start python_orchestrator.service
 
 echo "== [6/6] verify =="
 sleep 3
-echo "  binance.service: $(systemctl is-active binance.service 2>/dev/null || echo unknown)"
+echo "  python_orchestrator.service: $(systemctl is-active python_orchestrator.service 2>/dev/null || echo unknown)"
 echo "DONE. Trading root is now: $DEST"
 echo "Confirm with:  $DEST/healthcheck.sh --check   (and: git -C $DEST remote -v)"

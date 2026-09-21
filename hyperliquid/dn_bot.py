@@ -3,10 +3,10 @@
 dn_bot.py — DELTA-NEUTRAL funding-farming bot on Hyperliquid.
 
 Run with the virtual-environment Python:
-    /home/mariusp/binance/.venv/bin/python dn_bot.py        # use .env
-    ...python dn_bot.py --paper                               # simulation
-    ...python dn_bot.py --funding                             # show current funding
-    ...python dn_bot.py --status                              # show legs and current delta
+    python dn_bot.py        # use .env
+    python dn_bot.py --paper                               # simulation
+    python dn_bot.py --funding                             # show current funding
+    python dn_bot.py --status                              # show legs and current delta
 
 Requires USDC in BOTH SPOT for buying the token and PERP for short margin.
 """

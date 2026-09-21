@@ -89,6 +89,20 @@ install -m 0600 "$SYSTEMD_DIR/netplan-99-force-gateway.yaml" \
 install -d -m 0755 /etc/logrotate.d
 install -m 0644 "$SYSTEMD_DIR/logrotate-pia-daemon.conf" /etc/logrotate.d/pia-daemon
 
+# Root-owned fleet admin wrapper + sudoers policy
+install -m 0755 "$SYSTEMD_DIR/trading-admin" /usr/local/sbin/trading-admin
+install -d -m 0755 /etc/sudoers.d
+install -m 0440 "$TMP_DIR/sudoers-trading" /etc/sudoers.d/trading
+visudo -cf /etc/sudoers.d/trading
+
+# Clean up obsolete binance.service if present
+if systemctl is-enabled binance.service >/dev/null 2>&1 || systemctl is-active binance.service >/dev/null 2>&1; then
+  echo "Cleaning up obsolete binance.service..."
+  systemctl stop binance.service 2>/dev/null || true
+  systemctl disable binance.service 2>/dev/null || true
+  rm -f /etc/systemd/system/binance.service /etc/systemd/system/multi-user.target.wants/binance.service
+fi
+
 install -d -o "$TRADING_USER" -g "$TRADING_GROUP" -m 0755 "$ROOT/logs"
 crontab -u "$TRADING_USER" "$TMP_DIR/crontab.prod.txt"
 # Root crontab is reserved for tasks that require root privileges.

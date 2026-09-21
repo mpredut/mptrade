@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Suita de teste pt edge-case-urile botului delta-neutral (autonomie pe server).
+Test suite for delta-neutral bot edge cases (server autonomy).
 NO real API, NO money: a fake client, captured notifications, state in temp files.
 
-  /home/mariusp/binance/.venv/bin/python test_dn.py -v
+  python test_dn.py -v
 """
 
 from __future__ import annotations

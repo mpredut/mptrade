@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 Tests for detect_long_term_trend (priceAnalysis) — the cases that produced
-raportari gresite (ex. TAO: 4 zile scadere raportate ca trend UP).
+incorrect reports (e.g. TAO: 4 days of drop reported as trend UP).
 
-  /home/mariusp/binance/.venv/bin/python test_trend.py -v
+  python -m pytest tests/test_trend.py -v
 """
 
 from __future__ import annotations

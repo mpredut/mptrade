@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Teste pt get_trade_weight (ponderile gaussiene de cash-permission) — bug-urile
-reparate: scara Zona 1 vs Zona 2/3, inversarea contra-trend la capatul batran,
-the seam at exactly T, and Zone 3 which ignores the alignment.
+Tests for get_trade_weight (Gaussian cash-permission weights) — bug fixes:
+Zone 1 vs Zone 2/3 scaling, counter-trend reversal at the old end,
+the seam at exactly T, and Zone 3 which ignores alignment.
 
-  /home/mariusp/binance/.venv/bin/python test_weights.py -v
+  python -m pytest tests/test_weights.py -v
 """
 
 from __future__ import annotations

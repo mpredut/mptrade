@@ -13,8 +13,8 @@ CAUTION: high funding correlates with high RISK. Euphoric longs in a pumping alt
 can liquidate the short if the rally continues. Choose vetted liquid coins rather than
 blindly selecting the maximum.
 
-  /home/mariusp/binance/.venv/bin/python funding_scan.py
-  ...funding_scan.py --min-vol 20000000 --top 20
+  python funding_scan.py
+  python funding_scan.py --min-vol 20000000 --top 20
 """
 
 from __future__ import annotations
