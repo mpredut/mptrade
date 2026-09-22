@@ -7,12 +7,43 @@
 
 set -u
 
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+[ -f "$ROOT/config.env" ] && {
+    set -a
+    . "$ROOT/config.env" 2>/dev/null || true
+    set +a
+}
+
 HEALTH_INTERVAL="${PIA_HEALTH_INTERVAL:-30}"
 FAILURE_LIMIT="${PIA_FAILURE_LIMIT:-3}"
 PROBE_TIMEOUT="${PIA_PROBE_TIMEOUT:-7}"
 CLI_TIMEOUT="${PIA_CLI_TIMEOUT:-6}"
 VPN_IF="${PIA_VPN_IF:-wgpia0}"
+PREWARM_INTERVAL="${PIA_PREWARM_INTERVAL:-300}"
+COOLDOWN_SEC="${PIA_FALLBACK_COOLDOWN_SEC:-900}"
 failures=0
+last_prewarm=0
+
+send_ntfy() {
+    local title="$1"
+    local body="$2"
+    local priority="${3:-default}"
+    local topic; topic=$(grep -hs -m1 '^NTFY_TOPIC_ERROR=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
+    [ -n "$topic" ] || topic="ntfy-error-941582"
+    local token; token=$(grep -hs -m1 '^NTFY_TOKEN=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
+    local auth_hdr=()
+    [ -n "$token" ] && auth_hdr=(-H "Authorization: Bearer $token")
+    curl -s -m 10 -X POST "https://ntfy.sh/$topic" \
+        -H "Title: $title" \
+        -H "Priority: $priority" \
+        "${auth_hdr[@]}" \
+        -d "$body" >/dev/null 2>&1 &
+}
+
+isp_healthy() {
+    # Test if direct physical uplink has working internet (without VPN)
+    curl -4 -s -m 5 -o /dev/null https://api.binance.com/api/v3/time 2>/dev/null
+}
 
 pia() {
     timeout "$CLI_TIMEOUT" piactl "$@"
@@ -39,18 +70,48 @@ vpn_healthy() {
 
 prewarm_dns() {
     # Refresh local systemd-resolved cache for all critical fleet venue endpoints.
-    # Runs in the background (&) so DNS network latency never delays the supervisor loop.
-    local domains=(
-        "api.binance.com"
-        "stream.binance.com"
-        "api.kraken.com"
-        "api.hyperliquid.xyz"
-        "live.trading212.com"
-        "ntfy.sh"
-    )
-    for d in "${domains[@]}"; do
-        getent ahostsv4 "$d" >/dev/null 2>&1 &
+    # Runs at most once every PREWARM_INTERVAL seconds (default: 300s / 5 min).
+    local now; now=$(date +%s)
+    if [ $((now - last_prewarm)) -ge "$PREWARM_INTERVAL" ]; then
+        last_prewarm=$now
+        local domains=(
+            "api.binance.com"
+            "stream.binance.com"
+            "api.kraken.com"
+            "api.hyperliquid.xyz"
+            "live.trading212.com"
+            "ntfy.sh"
+        )
+        for d in "${domains[@]}"; do
+            getent ahostsv4 "$d" >/dev/null 2>&1 &
+        done
+    fi
+}
+
+enter_isp_cooldown() {
+    local reason="$1"
+    echo "CRITICAL: PIA VPN unavailable ($reason). Disconnecting tunnel to release direct Romanian ISP traffic..."
+    pia disconnect >/dev/null 2>&1 || true
+    sleep 2
+
+    if isp_healthy; then
+        echo "Direct Romanian ISP uplink is healthy. Fleet operating on direct IP."
+        send_ntfy "PIA VPN Down -> Direct ISP Fallback" "PIA VPN failed ($reason). Tunnel disconnected. Fleet is operating directly via Romanian ISP for a ${COOLDOWN_SEC}s cooldown." "urgent"
+    else
+        echo "WARNING: Direct ISP uplink also unreachable or experiencing network issues."
+        send_ntfy "Network Outage: PIA & ISP Down" "Both PIA and direct ISP uplink probe failed ($reason)." "urgent"
+    fi
+
+    local elapsed=0
+    echo "Entering cooldown mode for ${COOLDOWN_SEC}s (checking direct connectivity periodically)..."
+    while [ "$elapsed" -lt "$COOLDOWN_SEC" ]; do
+        sleep 30
+        elapsed=$((elapsed + 30))
+        prewarm_dns
     done
+
+    echo "Cooldown period (${COOLDOWN_SEC}s) elapsed. Attempting single PIA recovery reconnect..."
+    send_ntfy "PIA VPN: Attempting Reconnect" "Cooldown elapsed. Attempting single PIA reconnection to resume VPN protection..." "default"
 }
 
 # --- Diagnostic / Manual Tool Mode ---
@@ -196,6 +257,7 @@ for attempt in $(seq 1 12); do
     if [ "$state" = "Connected" ] && [ "$vpnip" = "Unknown" ] && [ "$attempt" -ge 3 ]; then
         if echo "$DEDICATED" | grep -q "^dedicated-"; then
             echo "Dedicated IP region $DEDICATED returned vpnip=Unknown after $attempt attempts. Switching to dynamic de-frankfurt!"
+            send_ntfy "PIA VPN: Dedicated IP fallback" "Dedicated IP region $DEDICATED returned vpnip=Unknown. Switched to dynamic de-frankfurt." "high"
             DEDICATED="de-frankfurt"
             pia set region "de-frankfurt" >/dev/null 2>&1 || true
             pia disconnect >/dev/null 2>&1 || true
@@ -235,6 +297,7 @@ while true; do
     if vpn_healthy; then
         if [ "$failures" -gt 0 ]; then
             echo "PIA recovered after $failures failed probes"
+            send_ntfy "PIA VPN: Recovered" "PIA VPN is healthy again (IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
         fi
         failures=0
         echo "PIA healthy (tun0 + DNS + HTTPS)"
@@ -248,6 +311,7 @@ while true; do
         current_reg=$(pia get region 2>/dev/null | tr -d '\r')
         if echo "$current_reg" | grep -q "^dedicated-"; then
             echo "Dedicated IP failed $failures consecutive probes. Attempting emergency fallback to dynamic de-frankfurt..."
+            send_ntfy "PIA VPN: Dedicated IP Failing" "Dedicated IP failed $failures consecutive probes. Falling back to dynamic Frankfurt..." "high"
             pia set region "de-frankfurt" >/dev/null 2>&1 || true
             pia disconnect >/dev/null 2>&1 || true
             sleep 3
@@ -255,13 +319,26 @@ while true; do
                 sleep 5
                 if vpn_healthy; then
                     echo "Recovered on dynamic de-frankfurt! Continuing on dynamic IP."
+                    send_ntfy "PIA VPN: Recovered on Dynamic" "Successfully switched to dynamic Frankfurt (IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
                     failures=0
                     continue
                 fi
             fi
         fi
-        echo "PIA/DNS persistently unavailable. Resetting tunnel; systemd will reconnect."
-        pia disconnect >/dev/null 2>&1 || true
-        exit 1
+
+        # If already on dynamic or dynamic also failed: enter cooldown on direct Romanian ISP
+        enter_isp_cooldown "PIA failed $failures probes on region $current_reg"
+
+        # After cooldown, try one clean reconnect attempt:
+        failures=0
+        pia set region "$DEDICATED" >/dev/null 2>&1 || pia set region "de-frankfurt" >/dev/null 2>&1 || true
+        pia connect >/dev/null 2>&1 || true
+        sleep 5
+        if vpn_healthy; then
+            echo "PIA successfully reconnected after cooldown! (IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))"
+            send_ntfy "PIA VPN: Reconnected After Cooldown" "PIA reconnected successfully (IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
+        else
+            echo "PIA reconnection attempt failed. Will re-enter cooldown if next probe fails."
+        fi
     fi
 done
