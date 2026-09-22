@@ -18,6 +18,7 @@ This directory contains the systemd services, administration tools, and deployme
    - `netplan-99-force-gateway.yaml`: Direct uplink routing bypass for Proxmox hairpinning.
    - `logrotate-pia-daemon.conf`: Caps PIA daemon debug logs to prevent disk exhaustion.
    - `pia_settings_mtu.sh`: Pre-start WireGuard MTU clamp.
+   - `DNS_RESILIENCE.md`: Hyperliquid DNS resolution resilience runbook (cache + connect-retry).
 
 ## Manual Diagnostics
 
