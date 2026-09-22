@@ -13,23 +13,30 @@
 # further out and it delivers itself 35 minutes later — the alert arrives even if
 # the machine is completely off or without power.
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-TOPIC=$(grep -hs -m1 '^NTFY_TOPIC_ERROR=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d '" ')
+TOPIC=$(grep -hs -m1 '^NTFY_TOPIC_ERROR=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
+[ -n "$TOPIC" ] || TOPIC=$(grep -hs -m1 '^NTFY_TOPIC=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
 if [ -z "$TOPIC" ]; then
     echo "$(date '+%H:%M') deadman: no NTFY_TOPIC(_ERROR) found in $ROOT/.env or $ROOT/config.env"
     exit 1
 fi
 
+TOKEN="${NTFY_TOKEN:-}"
+if [ -z "$TOKEN" ]; then
+    TOKEN=$(grep -hs -m1 '^NTFY_TOKEN=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
+fi
+
+AUTH_HDR=()
+[ -n "$TOKEN" ] && AUTH_HDR=(-H "Authorization: Bearer $TOKEN")
+
 HOST=$(hostname)
-# --retry 4 --retry-all-errors (8 Aug): it retries the push on transient DNS/network blips too
-# (NameResolutionError), not only on 5xx. A typical blip (~30-40s) is ridden out in one run
-# -> avoids a false alert when the server is alive but DNS resolution dropped briefly.
-# Worst-case ~4x(10s+5s)=60s, well below the 15-minute cron cadence.
+# --retry 4 --retry-all-errors: retries on transient DNS/network blips
 curl --fail-with-body -sS -m 10 --retry 4 --retry-delay 5 --retry-all-errors --retry-connrefused \
+    "${AUTH_HDR[@]}" \
     -H "In: 35m" -H "Title: SERVER DOWN ($HOST)" \
     -d "No heartbeat for 35 minutes — check the server (crash / reboot / power loss)." \
     "https://ntfy.sh/$TOPIC/server-alive" >/dev/null \
     && echo "$(date '+%H:%M') deadman: pushed heartbeat (+35m)" \
-    || echo "$(date '+%H:%M') deadman: curl ERROR after retries (prolonged DNS/net blip?)"
+    || echo "$(date '+%H:%M') deadman: curl ERROR after retries (prolonged DNS/net blip or quota?)"
 
 # Second, INDEPENDENT dead-man's switch on healthchecks.io. It does NOT share ntfy's free
 # quota, so it keeps working when ntfy is 429-throttled.

@@ -5,7 +5,7 @@ SHELL=/bin/bash
 */15 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh 212trading/price_alert.py RGNT --below 4 >> 212trading/price_alert.log 2>&1
 */15 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh verify_tools/check_cache_coherence.py >> logs/cache_coherence.log 2>&1
 30 3 * * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_backups.sh local >> logs/manage_backups.log 2>&1
-*/15 * * * * cd $HOME/mptrade && ./orchestratorOS/livecheck/deadman_switch.sh >> logs/deadman.log 2>&1
+*/15 * * * * cd $HOME/mptrade && ./orchestratorOS/livecheck/deadman_switch.sh > logs/deadman.log 2>&1
 */30 * * * * cd $HOME/mptrade && ./offline/runners/refresh_dev.sh >> logs/refresh_dev.log 2>&1
 0 2,14 * * * cd $HOME/mptrade && ./offline/runners/trigger_backtest_dev.sh >> logs/backtest_cycle.log 2>&1
 7 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh kraken/shadow_live.py --interval 240 >> logs/shadow_live.log 2>&1
