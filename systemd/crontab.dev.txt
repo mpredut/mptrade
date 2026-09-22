@@ -1,0 +1,9 @@
+# DEV crontab template for backtest research and proposal generation.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Daily backtest proposal cycle at 03:00 AM (generates and pushes proposals to backtest-proposals branch)
+0 3 * * * cd $HOME/mptrade && ./offline/runners/run_backtest_cycle.sh >> logs/cron_backtest_cycle.log 2>&1
+
+# Weekly comprehensive master backtest suite on Sunday at 04:00 AM
+0 4 * * 0 cd $HOME/mptrade && ./offline/runners/run_overnight_master_suite.sh >> logs/cron_master_suite.log 2>&1
