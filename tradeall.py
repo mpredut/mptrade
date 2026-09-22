@@ -153,7 +153,7 @@ def log_decision(symbol, event, **fields):
         with open(path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except Exception as e:
-        print(f"[log_decision] eroare scriere jurnal decizii: {e}")
+        print(f"[log_decision] error writing decisions log: {e}")
 
 
 # Kalman gate (approved July 19): determine whether model orders reach real funds.
@@ -236,7 +236,7 @@ def _fire_order(symbol, action, price, reason, **kwargs):
             logger_fn(symbol, action, price, None,
                       "refused", f"kalman_gate_{mode}(trend={trend})", reason)
         except Exception as _e:  # noqa: BLE001
-            print(f"[KALMAN-GATE] eroare jurnal ({_e}) — blocarea ramane")
+            print(f"[KALMAN-GATE] journal error ({_e}) — block remains")
         return None
     return mkt.place(symbol, action, price, None, motivation=reason, **kwargs)
 
@@ -803,17 +803,17 @@ class TrendCoordinator:
                 if (symbol in KALMAN_PRIMARY_SYMBOLS and prev_ktrend is not None
                         and new_ktrend != prev_ktrend):
                     if new_ktrend == 1:
-                        print(f"[KALMAN-PRIMAR] {symbol} ->UP: initiez BUY")
+                        print(f"[KALMAN-PRIMARY] {symbol} ->UP: initiating BUY")
                         _fire_order(symbol, "BUY", current_price, "kalman_primary_up",
                                     safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
                                     cancelorders=True, hours=1)
                     elif new_ktrend == -1:
-                        print(f"[KALMAN-PRIMAR] {symbol} ->DOWN: initiez SELL")
+                        print(f"[KALMAN-PRIMARY] {symbol} ->DOWN: initiating SELL")
                         _fire_order(symbol, "SELL", current_price, "kalman_primary_down",
                                     safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
                                     cancelorders=True, hours=1)
             except Exception as _e:  # noqa: BLE001
-                print(f"[TrendCoordinator] eroare shadow {symbol} (continui): {_e}")
+                print(f"[TrendCoordinator] shadow error {symbol} (continuing): {_e}")
         self.instant_mgr.update_snapshot(symbol, **fields)
         return snapshot
 
@@ -844,7 +844,7 @@ class TrendCoordinator:
                 html_content = web.generate_html(web.coins)
                 web.save_html(html_content, "index.html")
             except Exception as e:
-                print(f"[TrendCoordinator] Eroare la generare HTML: {e}")
+                print(f"[TrendCoordinator] Error generating HTML: {e}")
 
     def stop(self):
         """Wake and stop the coordinator loop deterministically."""

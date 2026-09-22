@@ -498,7 +498,7 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
     h = hurst_rs(prices)
     res['hurst'] = h
     res['regime'] = hurst_regime(h)
-    print(f"[{symbol}] Hurst={h:.2f} ({res['regime']})" if h else f"[{symbol}] Hurst: serie prea scurta")
+    print(f"[{symbol}] Hurst={h:.2f} ({res['regime']})" if h else f"[{symbol}] Hurst: series too short")
 
     direction = res['direction']
     emoji = "📈" if direction == 'up' else "📉"
@@ -506,7 +506,7 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
     print(f"\n{'='*60}")
     print(f"[{symbol}] Trend {emoji} {direction.upper()} | slope/h={res['current_slope_h']:.4f}")
     print(f"  Points (last {lookback_days}d): {len(prices)} | window={window_hours}h "
-          f"pas={step_hours}h | blocuri={len(res['blocks'])}")
+          f"step={step_hours}h | blocks={len(res['blocks'])}")
     print(f"  Start: {format_timestamp(res['start_timestamp'])} | "
           f"Duration: {format_duration(dur)} ({dur/86400:.1f} days)")
     print(f"{'='*60}\n")
@@ -728,9 +728,9 @@ if __name__ == "__main__":
             for _inst in load_for("mt").values():
                 if _inst.provider_name != "binance" and _inst.symbol not in symbols:
                     symbols.append(_inst.symbol)
-            print(f"[priceAnalysis] trend LUNG non-Binance ACTIVAT: {symbols}")
+            print(f"[priceAnalysis] non-Binance LONG-term trend ACTIVATED: {symbols}")
         except Exception as _e:
-            print(f"[priceAnalysis] non-Binance trend indisponibil: {_e}")
+            print(f"[priceAnalysis] non-Binance trend unavailable: {_e}")
     try:
         while True:
             process = psutil.Process(os.getpid())

@@ -265,10 +265,10 @@ def _load_ed25519_signing_key():
             _re.DOTALL
         )
         if not b64match:
-            raise ValueError("PEM invalid")
+            raise ValueError("Invalid PEM")
         der_bytes = base64.b64decode(b64match.group(1).strip())
         if len(der_bytes) < 32:
-            raise ValueError("DER prea scurt")
+            raise ValueError("DER too short")
         
         seed = der_bytes[-32:]
         return nacl.signing.SigningKey(seed)

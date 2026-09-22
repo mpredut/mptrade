@@ -63,8 +63,8 @@ def get_quantity_precision(symbol):
                 step_size = filter['stepSize']
                 precision = -int(round(-math.log10(float(step_size)), 0))
                 return precision
-    except BinanceAPIException as e:
-        print(f"Eroare la obtinerea preciziei cantitatii: {e}")
+    except Exception as e:
+        print(f"Error getting quantity precision: {e}")
     return 8  # Default value.
 
 
@@ -74,7 +74,7 @@ def validate_binance_api_keys():
         print("The API keys are valid!")
         return True
     except Exception as e:
-        print(f"Eroare la verificarea cheilor API: {e}")
+        print(f"Error validating API keys: {e}")
         return False
 
 

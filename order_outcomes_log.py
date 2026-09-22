@@ -39,4 +39,4 @@ def log_order_outcome(symbol, side, price, qty, outcome, refuse_reason, motivati
         with open(path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except Exception as e:
-        print(f"[log_order_outcome] eroare scriere jurnal outcome: {e}")
+        print(f"[log_order_outcome] error writing outcomes log: {e}")

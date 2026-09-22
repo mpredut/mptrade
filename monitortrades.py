@@ -174,7 +174,7 @@ def get_relevant_trade(trade_orders, trade_type, threshold_s, symbol, now_fn=Non
     
     can_trade = True
     if current_time_s - trade_time < threshold_s:
-        print(f"Tranzactii de {trade_type.upper()} prea recente."
+        print(f"{trade_type.upper()} trades too recent. "
             f"Only {u.secondsToHours(current_time_s - trade_time):.2f} h have passed. Waiting for {u.secondsToHours(threshold_s)} h.")
         can_trade = False
 
@@ -367,7 +367,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     # 2. Fetch current price through the facade for the instrument's provider.
     current_price = inst.price()
     if current_price is None or not math.isfinite(float(current_price)) or current_price <= 0:
-        print(f"No current price for {symbol} (piata inchisa / indisponibil) — skip")
+        print(f"No current price for {symbol} (market closed / unavailable) — skip")
         return
     print(f"Current price for {symbol}: {current_price}")
     avail_qty = inst.free()

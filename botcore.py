@@ -203,7 +203,7 @@ def http_request(
     except urllib.error.HTTPError as e:
         return e.code, e.read()
     except Exception as e:  # noqa: BLE001
-        log(f"  ! eroare retea {verb}: {e}")
+        log(f"  ! network error {verb}: {e}")
         return 0, b""
 
 

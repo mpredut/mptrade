@@ -186,7 +186,7 @@ class ShadowJournal:
             with open(self._path(), "a", encoding="utf-8") as f:
                 f.write("|".join(self._sanitize(c) for c in cols) + "\n")
         except Exception as e:  # noqa: BLE001 — Logging must not stop the host.
-            print(f"[shadow_signals] eroare scriere jurnal shadow: {e}")
+            print(f"[shadow_signals] error writing shadow journal: {e}")
 
 
 class ShadowSet:
@@ -216,7 +216,7 @@ class ShadowSet:
             atomic_write_json(self.state_path, self._state)
             self._last_state_write = now
         except Exception as e:  # noqa: BLE001
-            print(f"[shadow_signals] eroare scriere stare shadow: {e}")
+            print(f"[shadow_signals] error writing shadow state: {e}")
 
     def current_trend(self, symbol: str) -> tuple:
         """Return Kalman trend and state age for tradeall's live order gate."""
