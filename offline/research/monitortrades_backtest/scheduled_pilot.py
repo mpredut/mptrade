@@ -191,7 +191,7 @@ def _run_one(symbol, base, params, series):
             try:
                 rb.mt.monitor_price_and_trade(inst, sbs=rb.SBS, now_fn=lambda: provider.now(symbol))
             except Exception as e:  # noqa: BLE001
-                sys.stderr.write(f"[{symbol}] eroare in monitor_price_and_trade: {e}\n")
+                sys.stderr.write(f"[{symbol}] error in monitor_price_and_trade: {e}\n")
     finally:
         rb.mt.is_trend_up = orig_is_trend_up
 
@@ -342,7 +342,7 @@ def _restart_monitortrades():
         for pid in pids:
             subprocess.run(["kill", pid], timeout=5)
     except Exception as e:  # noqa: BLE001 — it does not stop the journalling or the notification
-        print(f"[scheduled_pilot] eroare la restart monitortrades: {e}")
+        print(f"[scheduled_pilot] error restarting monitortrades: {e}")
 
 
 def _notify_change(full_key, symbol, old_value, new_value, winner_val, entry):
@@ -351,10 +351,10 @@ def _notify_change(full_key, symbol, old_value, new_value, winner_val, entry):
         body = (f"{full_key}: {old_value} -> {new_value} "
                 f"(a backtest winner confirmed on 2 windows: {winner_val}, "
                 f"averaged with the old value)")
-        alert.notify(title="Pilot backtest: config schimbat", body=body,
+        alert.notify(title="Pilot backtest: config changed", body=body,
                      source="scheduled_pilot.py", symbol=symbol)
     except Exception as e:  # noqa: BLE001
-        print(f"[scheduled_pilot] eroare notificare: {e}")
+        print(f"[scheduled_pilot] notification error: {e}")
 
 
 def main():
@@ -365,8 +365,8 @@ def main():
                      help="run ONLY the keys containing one of these substrings "
                           "separated by commas (e.g. 'maxage,hardtp' or 'BINANCE_TAO'); empty = all")
     ap.add_argument("--propose", action="store_true",
-                     help="DEV mode: do NOT apply or restart; write the confirmed proposals (value "
-                          "castigatoare bruta) in --propose-out, pt fluxul git dev->prod")
+                     help="DEV mode: do NOT apply or restart; write confirmed proposals "
+                          "to --propose-out for git dev->prod pipeline")
     ap.add_argument("--propose-out", default=os.path.join(ROOT, "backtest_proposals.json"),
                      help="where to write the proposals in --propose mode (default backtest_proposals.json)")
     args = ap.parse_args()
@@ -377,7 +377,7 @@ def main():
 
     # monitor_price_and_trade() is VERY chatty (a print() on every tick) —
     # the pilot runs dozens of variants over hundreds of thousands of ticks, so
-    # suprimarea e necesara (altfel I/O-ul de consola domina timpul de rulare).
+    # output suppression is required (otherwise console I/O dominates execution time).
     rb.mt.log.disable_print()
 
     only_terms = [t.strip() for t in args.only.split(",") if t.strip()]
@@ -387,14 +387,14 @@ def main():
         print(f"[scheduled_pilot] no key contains '{args.only}' -- leaving")
         return
 
-    # Chei INDEPENDENTE => rulare in PARALEL (ProcessPoolExecutor). Fork pe Linux =>
+    # Independent keys => run in PARALLEL (ProcessPoolExecutor). Fork on Linux =>
     # each key has its own rb.mt (so the is_trend_up monkeypatch from _run_one
     # stays isolated per process). The audit and the proposals are collected in the parent (no race).
     proposals = []
     max_workers = min(len(keys), os.cpu_count() or 2)
     # stderr (not print/stdout): disable_print() plus the ProcessPool buffering swallow
     # the parent's stdout; the per-value lines already use sys.stderr.write and show up correctly.
-    sys.stderr.write(f"[scheduled_pilot] {len(keys)} chei pe {max_workers} workeri paraleli\n")
+    sys.stderr.write(f"[scheduled_pilot] {len(keys)} keys on {max_workers} parallel workers\n")
     with _futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
         fut2key = {ex.submit(evaluate_key, fk, sym, base, key, args.dry_run, args.propose): fk
                    for fk, (sym, base, key) in keys.items()}
@@ -420,25 +420,25 @@ def main():
     if args.propose:
         # a snapshot of the current proposals (overwriting — the file means "what dev proposes
         # NOW"; prod consumes them and applies them with its own guardrails). Empty = no
-        # a confirmed signal in this cycle (prod has nothing to apply).
+        # confirmed signal in this cycle (prod has nothing to apply).
         with open(args.propose_out, "w", encoding="utf-8") as f:
             json.dump(proposals, f, indent=2, default=str)
-        print(f"\n[scheduled_pilot] {len(proposals)} propunere(i) scrise in {args.propose_out}")
+        print(f"\n[scheduled_pilot] {len(proposals)} proposal(s) written to {args.propose_out}")
         if proposals:
-            # notifica utilizatorul ca exista propuneri de REVIZUIT+APLICAT (apply e manual)
+            # notify user that new proposals are available to review and apply
             try:
                 from dotenv import load_dotenv
                 load_dotenv(os.path.join(ROOT, ".env"))
                 load_dotenv(os.path.join(ROOT, "config.env"))
                 import alertnotifiers as alert
-                lines = [f"{p['full_key']}: {p['current_on_dev']} -> castigator {p['winner_value']}"
+                lines = [f"{p['full_key']}: {p['current_on_dev']} -> winner {p['winner_value']}"
                          for p in proposals]
-                alert.notify(title=f"Backtest: {len(proposals)} propunere(i) noi de config",
+                alert.notify(title=f"Backtest: {len(proposals)} new config proposal(s)",
                              body="Run offline/runners/apply_proposals.py on prod (with guardrails):\n"
                                   + "\n".join(lines),
                              source="scheduled_pilot.py", symbol="backtest")
             except Exception as e:  # noqa: BLE001
-                print(f"[scheduled_pilot] eroare notificare propuneri: {e}")
+                print(f"[scheduled_pilot] proposals notification error: {e}")
 
 
 if __name__ == "__main__":

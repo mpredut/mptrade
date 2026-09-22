@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""apply_proposals.py — PROD: trage propunerile de backtest de pe branch-ul git
-`backtest-proposals` and applies them with guardrails. It does NOT rerun the backtest
-(dev already did). The owning process is NOT restarted here — that is done by
-watchdogfor_cacheandconfig when it detects the config change (a user decision).
+"""apply_proposals.py — pulls backtest proposals from the git branch
+`backtest-proposals` and applies them with guardrails on PROD. It does NOT rerun
+the backtest (dev already did). The owning process is NOT restarted here — that
+is done by watchdogfor_cacheandconfig when it detects the config change (a user decision).
 
-Guardrail-uri (aplicate AICI, pe prod, unde valoarea live e autoritativa):
+Guardrails (applied HERE, on PROD, where the live value is authoritative):
   - the current value is RE-READ live from prod (not taken from the proposal) — if
     prod has changed in the meantime, we apply against the real value;
   - AVERAGING, not a jump: new = (current_prod + winner) / 2 (damping, as in the pilot);
@@ -78,7 +78,7 @@ def main():
     for p in proposals:
         fk, section, key = p["full_key"], p["section"], p["key"]
         symbol, winner = p["symbol"], float(p["winner_value"])
-        current = sp._current_value(section, key)   # LIVE de pe prod (autoritativ)
+        current = sp._current_value(section, key)   # LIVE from prod (authoritative)
         rec = {"full_key": fk, "symbol": symbol, "source": "apply_proposals",
                "winner_value": winner, "current_value": current, "dev_commit": p.get("dev_commit")}
 
@@ -115,8 +115,8 @@ def main():
         sp._append_audit(rec)
 
     if not args.dry_run:
-        print("[apply] gata. Restartul procesului proprietar il face watchdogfor_cacheandconfig "
-              "(detecteaza schimbarea instruments.conf).")
+        print("[apply] done. The owning process restart is performed by watchdogfor_cacheandconfig "
+              "(detects instruments.conf change).")
 
 
 if __name__ == "__main__":
