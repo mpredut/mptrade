@@ -79,129 +79,19 @@ def print_number_of_orders(maxage_trade_s):
 
 
 
-# Retained for historical reference as requested: StateTracker and sell_recommendation structure.
-# Do not remove: preserved for algorithmic reference and historical state sequence tracking.
-default_values_sell_recommendation = {
-    "BTCUSDC": {
-        'force_sell': 0,
-        'procent_desired_profit': 0.07,
-        'expired_duration': 3600 * 3.7,
-        'min_procent': 0.0099,
-        'days_after_use_current_price': 7,
-        'slope': 0.0,      # Default slope.
-        'pos': 0,          # Default position.
-        'gradient': 0.0,   # Default gradient.
-        'tick': 0,         # Default tick.
-        'min': 0.0,        # Default minimum.
-        'max': 0.0         # Default maximum.
-    },
-    "TAOUSDC": {
-        'force_sell': 0,
-        'procent_desired_profit': 0.07,
-        'expired_duration': 3600 * 3.7,
-        'min_procent': 0.0099,
-        'days_after_use_current_price': 7,
-        'slope': 0.0,      # Default slope.
-        'pos': 0,          # Default position.
-        'gradient': 0.0,   # Default gradient.
-        'tick': 0,         # Default tick.
-        'min': 0.0,        # Default minimum.
-        'max': 0.0         # Default maximum.
-    },
-    "ETHUSDC": {
-        'force_sell': 0,
-        'procent_desired_profit': 0.07,
-        'expired_duration': 3600 * 3.7,
-        'min_procent': 0.0099,
-        'days_after_use_current_price': 7,
-        'slope': 0.0,      # Default slope.
-        'pos': 0,          # Default position.
-        'gradient': 0.0,   # Default gradient.
-        'tick': 0,         # Default tick.
-        'min': 0.0,        # Default minimum.
-        'max': 0.0         # Default maximum.
-    },
-    # HYPE needs a neutral fallback while cacheManager has no HYPE trend snapshot.
-    # Zero slope/gradient makes is_trend_up safely return False.
-    "HYPEUSDC": {
-        'force_sell': 0,
-        'procent_desired_profit': 0.07,
-        'expired_duration': 3600 * 3.7,
-        'min_procent': 0.0099,
-        'days_after_use_current_price': 7,
-        'slope': 0.0,      # Default slope.
-        'pos': 0,          # Default position.
-        'gradient': 0.0,   # Default gradient.
-        'tick': 0,         # Default tick.
-        'min': 0.0,        # Default minimum.
-        'max': 0.0         # Default maximum.
-    }
-}
-
-sell_recommendation = {}
-sell_lock = threading.Lock()
-
+# Retained for historical reference: StateTracker algorithm and state progression logic.
 class StateTracker:
     def __init__(self):
         self.running = True
         self.states = {}  # To hold states for each symbol
-    
-    def background_updater(self):
-        while self.running:
-            try:
-                self.update_sell_recommendation()
-            except Exception as e:
-                print(e)
-            time.sleep(50)
 
-    def update_sell_recommendation(self):
-        """Build sell recommendations from static defaults and shared trend snapshots.
+    def update_state(self, symbol, slope, tick=0, min_val=0.0, max_val=0.0):
+        """Historical state transition tracking based on slope momentum."""
+        if symbol not in self.states:
+            self.states[symbol] = []
 
-        CachePriceShortTrendManager supplies cross-process trend fields, replacing the
-        former sell_recommendation.csv input.
-        """
-        global sell_recommendation
-        try:
-            import cacheManager as cm
-            mgr = cm.get_short_trend_manager()
-
-            new_rec = {}
-            for symbol, cfg in default_values_sell_recommendation.items():
-                rec = dict(cfg)   # Static force, percentage, and expiration configuration.
-                snap = mgr.get_snapshot(symbol)
-                if snap:
-                    # is_trend_up consumes only slope and gradient. Use recent gradient as
-                    # real instant momentum because incomplete windows often leave slope_small zero.
-                    rec['slope']    = float(snap.get('gradient_recent', snap.get('slope_small', 0.0)) or 0.0)
-                    rec['gradient'] = float(snap.get('final_trend', 0.0) or 0.0)
-                new_rec[symbol] = rec
-
-            with sell_lock:
-                sell_recommendation = new_rec
-
-            print(f"sell_recommendation updated from CachePriceShortTrendManager!")
-            self.update_states_from_sell_recommendation()
-        except Exception as e:
-            print(f"Error in update_sell_recommendation from cacheManager: {e}. Using the defaults.")
-            with sell_lock:
-                sell_recommendation = default_values_sell_recommendation
-
-    def update_states_from_sell_recommendation(self):
-        for symbol, data in sell_recommendation.items():
-            slope = data['slope']
-            tick = data['tick']
-            min_val = data['min']
-            max_val = data['max']
-            
-            # If the symbol does not exist in the states, initialize it
-            if symbol not in self.states:
-                self.states[symbol] = []
-
-            # Get the last state for this symbol (if it exists)
-            last_state = self.states[symbol][-1] if self.states[symbol] else None
-
-            # Process the state based on slope conditions
-            self.process_state(symbol, slope, tick, min_val, max_val, last_state)
+        last_state = self.states[symbol][-1] if self.states[symbol] else None
+        self.process_state(symbol, slope, tick, min_val, max_val, last_state)
 
     def process_state(self, symbol, slope, tick, min_val, max_val, last_state):
         MAX_STATES = 1000
@@ -245,13 +135,6 @@ class StateTracker:
                     print(f"    {key}: {value}")
             print()
 
-    def display_sell_recommendation(self):
-        print("Current sell_recommendation content:")
-        for symbol, data in sell_recommendation.items():
-            print(f"Symbol: {symbol}")
-            for key, value in data.items():
-                print(f"  {key}: {value}")
-            print()
 
 state_tracker = StateTracker()
 
@@ -604,16 +487,6 @@ def main():
     maxage_trade_s =  4 * 24 * 3600  # Maximum age for considering filled orders recent.
     interval = 60 * 4 #4 minute
 
-    # Retained for historical reference: update sell recommendations and launch updater thread.
-    state_tracker.update_sell_recommendation()
-    state_tracker.display_sell_recommendation()
-
-    thread = threading.Thread(
-        target=state_tracker.background_updater,
-        name="SellRecommendationUpdater",
-        daemon=True
-    )
-    thread.start()
 
     close_sell_orders = apiorders.get_trade_orders("SELL", sym.taosymbol, maxage_trade_s)
     print(f"get_trade_orders:           Found {len(close_sell_orders)} close 'SELL' orders in the last {u.secondsToDays(maxage_trade_s)} days.")
