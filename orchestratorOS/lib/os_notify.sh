@@ -1,26 +1,41 @@
 #!/usr/bin/env bash
-# Sends a simple text notification to ntfy.sh for OS-level admin events.
-# Usage: os_notify.sh <topic> <title> <priority> <body>
-TOPIC="${1:-test-mptrade}"
-TITLE="${2:-OS Alert}"
-PRIORITY="${3:-default}"
-BODY="${4:-}"
+# os_notify.sh — unified helper for ntfy.sh push notifications.
+# Usage:
+#   Direct:  ./os_notify.sh "Title" "Body" [priority] [topic]
+#   Sourced: source os_notify.sh && send_os_ntfy "Title" "Body" [priority] [topic]
 
-TOKEN="${NTFY_TOKEN:-}"
-if [ -z "$TOKEN" ]; then
-    ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-    [ -f "$ROOT/.env" ] && TOKEN="$(grep -E '^NTFY_TOKEN=' "$ROOT/.env" 2>/dev/null | cut -d= -f2- | tr -d '"'\'' ')"
+set -u
+
+send_os_ntfy() {
+    local title="${1:-OS Alert}"
+    local body="${2:-}"
+    local priority="${3:-default}"
+    local topic="${4:-}"
+
+    local script_dir; script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local root; root="$(cd "$script_dir/../.." && pwd)"
+
+    if [ -z "$topic" ]; then
+        topic=$(grep -hs -m1 '^NTFY_TOPIC_ERROR=' "$root/.env" "$root/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
+        [ -n "$topic" ] || topic=$(grep -hs -m1 '^NTFY_TOPIC=' "$root/.env" "$root/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
+        [ -n "$topic" ] || topic="ntfy-error-941582"
+    fi
+
+    local token="${NTFY_TOKEN:-}"
+    if [ -z "$token" ]; then
+        token=$(grep -hs -m1 '^NTFY_TOKEN=' "$root/.env" "$root/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
+    fi
+
+    local auth_hdr=()
+    [ -n "$token" ] && auth_hdr=(-H "Authorization: Bearer $token")
+
+    curl -s -m 10 -X POST "https://ntfy.sh/$topic" \
+        -H "Title: $title" \
+        -H "Priority: $priority" \
+        "${auth_hdr[@]}" \
+        -d "$body" >/dev/null 2>&1
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    send_os_ntfy "${1:-OS Alert}" "${2:-}" "${3:-default}" "${4:-}"
 fi
-[ -n "$TOKEN" ] || { echo "error: NTFY_TOKEN missing in environment and .env" >&2; exit 1; }
-
-AUTH_ARGS=()
-if [ -n "$TOKEN" ]; then
-    AUTH_ARGS=(-H "Authorization: Bearer ${TOKEN}")
-fi
-
-curl -s -X POST "https://ntfy.sh/${TOPIC}" \
-    -H "Title: ${TITLE}" \
-    -H "Priority: ${PRIORITY}" \
-    "${AUTH_ARGS[@]}" \
-    -d "${BODY}" > /dev/null 2>&1
-

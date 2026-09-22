@@ -242,7 +242,7 @@ flush_spool() {
             IFS= read -r line < "$file" || [ -n "$line" ] || break
             # One stored alert per request keeps the push body comfortably below
             # mobile push limits. Remove a line only after an HTTP-confirmed send.
-            ntfy_push "PIA: alerta intarziata ($(hostname))" "$line" || return 1
+            ntfy_push "PIA: Delayed alert ($(hostname))" "$line" || return 1
             remainder="$file.remainder.$$"
             tail -n +2 "$file" > "$remainder"
             mv -f "$remainder" "$file"
@@ -402,7 +402,7 @@ $PIA_VERSION by hand from a terminal (or set PIA_ALLOW_HEADLESS_REINSTALL=1 to f
 mkdir -p "$STATE_DIR" 2>/dev/null
 
 if [ "$CHECK_ONLY" = 1 ]; then
-    echo "=== pia_selfheal --check (read-only) ==="
+    echo "=== vpn_watchdog --check (read-only) ==="
     echo "  PIA version    : $(pia -v)"
     echo "  daemon answers : $(daemon_responsive && echo YES || echo 'NO (wedged)')"
     echo "  state          : $(pia get connectionstate)"

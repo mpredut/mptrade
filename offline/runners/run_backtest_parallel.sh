@@ -9,7 +9,7 @@
 #   logs/backtest_parallel/<timestamp>/NN.log  (plus manifest.tsv with the NN->command mapping).
 #
 # Runs on DEV (the backtest machine). It does NOT touch the live config or processes.
-set -uo pipefail
+set -euo pipefail
 
 RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${BINANCE_REPO_ROOT:-${ROOT:-$(cd "$RUNNER_DIR/../.." && pwd)}}"
