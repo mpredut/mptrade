@@ -27,8 +27,11 @@ echo "Host: $(hostname) | Cores: $(nproc) | Root: $REPO_ROOT"
 echo "Commit: $(git rev-parse --short HEAD) [$(git rev-parse --abbrev-ref HEAD)]"
 echo "================================================================================"
 
-PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
-if [ ! -x "$PYTHON_BIN" ]; then
+if [ -x "$REPO_ROOT/myenv/bin/python" ]; then
+    PYTHON_BIN="$REPO_ROOT/myenv/bin/python"
+elif [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+    PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
+else
     PYTHON_BIN="python3"
 fi
 
@@ -115,7 +118,7 @@ run_step "3C" "Kraken Adaptive Reentry Verification" \
 # STEP 4: Comprehensive Multi-Factor Strategy Sweep (30 Candidates)
 # ------------------------------------------------------------------------------
 run_step "4" "Comprehensive 30-Candidate Multi-Factor Strategy Sweep" \
-    "$PYTHON_BIN scratch/comprehensive_strategy_sweep.py"
+    "$PYTHON_BIN offline/research/comprehensive_strategy_sweep.py"
 
 # ------------------------------------------------------------------------------
 # STEP 5: TradeAll Trigger Gate Experiments
