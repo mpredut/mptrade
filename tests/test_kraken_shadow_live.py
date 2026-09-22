@@ -87,8 +87,15 @@ class ShadowLiveTest(unittest.TestCase):
                 "reentry4", "trail_profit_floor_sl18", "trail_profit_floor_sl125",
                 "A_trail", "dca_vol_m1", "tp_regime_gate",
                 "overlay650t8_regime_v2", "B_dcabrake_regime_v2",
+                "overlay_safe_combo",
             ],
         )
+        safe_overlay = variants_240["overlay_safe_combo"]
+        self.assertTrue(safe_overlay.trend_overlay)
+        self.assertEqual(safe_overlay.trend_topup, 350.0)
+        self.assertEqual(safe_overlay.trend_trail_pct, 6.0)
+        self.assertEqual(safe_overlay.takeprofit_pct, 4.0)
+        self.assertEqual(safe_overlay.dca_spacing_growth_pct, 0.25)
         progressive = variants_60["dca_progressive025"]
         self.assertEqual(progressive.dca_spacing_growth_pct, 0.25)
         self.assertEqual(variants_60["reentry4"].reentry_drop_pct, 4.0)

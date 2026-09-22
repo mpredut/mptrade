@@ -130,6 +130,16 @@ def _variants(interval: int):
             dca_trend_brake=True,
             dca_brake_min_pct=1.5,
         )
+        # Safe trend overlay combo: 350 top-up with 6% trail, 4% TP, progressive DCA 0.25
+        variants["overlay_safe_combo"] = dataclasses.replace(
+            base,
+            trend_overlay=True,
+            trend_topup=350.0,
+            trend_trail_pct=6.0,
+            takeprofit_pct=4.0,
+            dca_spacing_growth_pct=0.25,
+            trend_exit_break=False,
+        )
     return variants
 
 
@@ -353,7 +363,7 @@ def main() -> int:
         try:
             snapshot(pair, args.interval, args.fee, quiet=args.quiet)
         except Exception as e:  # in loop mode, one failed fetch does not stop monitoring
-            print(f"[shadow_live] eroare: {e}", file=sys.stderr)
+            print(f"[shadow_live] error: {e}", file=sys.stderr)
             if args.loop <= 0:
                 return 1
         if args.loop <= 0:
