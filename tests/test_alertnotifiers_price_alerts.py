@@ -110,6 +110,26 @@ class TestNewCoinDictRobustness(unittest.TestCase):
         self.assertTrue(AlertNotifier.save_to_file(self.NEW_COIN, filename=path))
         self.assertIn("NEW COIN RWS", open(path, encoding="utf-8").read())
 
+    def test_save_to_file_handles_bot_event_and_dict(self):
+        import tempfile, os
+        path = os.path.join(tempfile.mkdtemp(), "alerts.log")
+        bot_event = {
+            "type": "bot_event",
+            "name": "TRADE_BUY",
+            "symbol": "BTCUSDT",
+            "body": "Bought 0.01 BTC at $60000",
+            "source": "binance",
+        }
+        self.assertTrue(AlertNotifier.save_to_file(bot_event, filename=path))
+        content = open(path, encoding="utf-8").read()
+        self.assertIn("BOT EVENT TRADE_BUY", content)
+        self.assertIn("Bought 0.01 BTC at $60000", content)
+
+        generic_dict = {"symbol": "ETHUSDT", "body": "Generic alert message"}
+        self.assertTrue(AlertNotifier.save_to_file(generic_dict, filename=path))
+        content = open(path, encoding="utf-8").read()
+        self.assertIn("ETHUSDT: Generic alert message", content)
+
     def test_format_batch_mixed(self):
         alert = PriceAlert("TAO", "down", 80.0, 100.0, -20.0, 7.5)
         msg = AlertNotifier.format_batch_message([self.NEW_COIN, alert])

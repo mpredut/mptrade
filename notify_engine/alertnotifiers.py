@@ -317,12 +317,27 @@ class AlertNotifier:
                     f.write(AlertNotifier.format_new_coin_message(alert) + "\n")
                     f.write("-" * 50 + "\n")
                     return True
+                if isinstance(alert, dict):
+                    if alert.get("type") == "bot_event":
+                        f.write(f"[{datetime.now().isoformat()}] BOT EVENT {alert.get('name', alert.get('symbol', 'N/A'))}\n")
+                        f.write(AlertNotifier.format_bot_event(alert) + "\n")
+                    else:
+                        sym = alert.get("symbol", "N/A")
+                        body = alert.get("body") or alert.get("name") or str(alert)
+                        f.write(f"[{datetime.now().isoformat()}] {sym}: {body}\n")
+                    f.write("-" * 50 + "\n")
+                    return True
                 reference_time = AlertNotifier.format_human_readable_time(
                     getattr(alert, "reference_time", None) or getattr(alert, "timestamp", None)
                 )
-                f.write(f"[{datetime.now().isoformat()}] {alert.symbol} - {alert.alert_type} - {alert.percent_change:+.2f}%\n")
-                f.write(f"  Price: ${alert.current_price:.4f}\n")
-                f.write(f"  Reference: ${alert.reference_price:.4f} (at {reference_time})\n")
+                sym = getattr(alert, "symbol", "N/A")
+                atype = getattr(alert, "alert_type", "")
+                pchg = getattr(alert, "percent_change", 0.0)
+                cprice = getattr(alert, "current_price", 0.0)
+                rprice = getattr(alert, "reference_price", 0.0)
+                f.write(f"[{datetime.now().isoformat()}] {sym} - {atype} - {pchg:+.2f}%\n")
+                f.write(f"  Price: ${cprice:.4f}\n")
+                f.write(f"  Reference: ${rprice:.4f} (at {reference_time})\n")
                 url = getattr(alert, "url", None)
                 if url:
                     f.write(f"  Link: {url}\n")
@@ -332,7 +347,6 @@ class AlertNotifier:
             print(f"[Notifier] File exception: {e}")
             return False
 
-    @staticmethod
     @staticmethod
     def send_email_batch(
         alerts: list[dict],
