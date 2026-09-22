@@ -20,13 +20,15 @@ class BotManager:
         self.server = server
         self.processes: Dict[str, asyncio.subprocess.Process] = {}
         self.log_files: Dict[str, Any] = {}
-        self.bots: List[Dict[str, str]] = []
+        self.bots: List[Dict[str, Any]] = []
         self.restart_backoff: Dict[str, float] = {}
         self.restart_delays: Dict[str, float] = {}
         self.starting: set[str] = set()
+        self.process_start_times: Dict[str, float] = {}
+        self.zombie_killing: set[str] = set()
         self.running = True
 
-    def parse_procs_conf(self) -> List[Dict[str, str]]:
+    def parse_procs_conf(self) -> List[Dict[str, Any]]:
         bots = []
         conf_path = os.path.join(ROOT_DIR, "procs.conf")
         if not os.path.exists(conf_path):
@@ -55,11 +57,26 @@ class BotManager:
 
                     if cmd and role in ("bot", "fleet"):
                         name = label or pat
-                        log_file = hblog.strip() if hblog else ""
-                        if not log_file or log_file.endswith(".heartbeat"):
-                            clean_stem = (label or pat).replace(".py", "")
-                            log_file = os.path.join(ROOT_DIR, "logs", f"{clean_stem}.log")
-                        bots.append({"name": name, "dir": dr, "cmd": cmd, "log_file": log_file})
+                        hblog_str = hblog.strip() if hblog else ""
+                        hb_stale_sec = float(hbstale.strip()) if hbstale and hbstale.strip().isdigit() else 0.0
+
+                        clean_stem = (label or pat).replace(".py", "")
+                        log_file = os.path.join(ROOT_DIR, "logs", f"{clean_stem}.log")
+
+                        hb_file = ""
+                        if hblog_str:
+                            hb_file = hblog_str if os.path.isabs(hblog_str) else os.path.join(dr, hblog_str)
+                        elif hb_stale_sec > 0:
+                            hb_file = log_file
+
+                        bots.append({
+                            "name": name,
+                            "dir": dr,
+                            "cmd": cmd,
+                            "log_file": log_file,
+                            "hb_file": hb_file,
+                            "hb_stale_s": hb_stale_sec,
+                        })
         return bots
 
     async def _read_stream(self, stream, bot_name: str, log_file):
@@ -113,6 +130,8 @@ class BotManager:
                 env=bot_env
             )
             self.processes[name] = process
+            self.process_start_times[name] = start_time
+            self.zombie_killing.discard(name)
         except Exception as e:
             logging.error(f"Failed to launch {name}: {e}")
             self.restart_backoff[name] = time.time() + 5
@@ -139,6 +158,8 @@ class BotManager:
             await self.stop_bot(name)
             raise
         finally:
+            self.process_start_times.pop(name, None)
+            self.zombie_killing.discard(name)
             duration = time.time() - start_time
             logging.warning(f"Bot {name} exited with code {process.returncode} (ran for {duration:.1f}s)")
 
@@ -267,6 +288,41 @@ class BotManager:
                     if now >= next_allowed:
                         self.starting.add(name)
                         asyncio.create_task(self.start_bot(bot))
+                elif name not in self.zombie_killing:
+                    # Zombie / Hang detection: check if process is alive but heartbeat is stale
+                    hb_file = bot.get("hb_file")
+                    hb_stale_s = bot.get("hb_stale_s", 0.0)
+                    if hb_stale_s > 0 and hb_file:
+                        proc_start = self.process_start_times.get(name, now)
+                        if (now - proc_start) > hb_stale_s:
+                            is_hung = False
+                            stale_duration = 0.0
+                            if os.path.exists(hb_file):
+                                try:
+                                    mtime = os.path.getmtime(hb_file)
+                                    stale_duration = now - mtime
+                                    if stale_duration > hb_stale_s:
+                                        is_hung = True
+                                except Exception as exc:
+                                    logging.warning(f"Failed to check heartbeat mtime for {name}: {exc}")
+                            else:
+                                is_hung = True
+                                stale_duration = now - proc_start
+
+                            if is_hung:
+                                logging.critical(
+                                    f"Bot {name} (PID {proc.pid}) is HUNG / ZOMBIE! "
+                                    f"Heartbeat {hb_file} stale by {stale_duration:.1f}s (> {hb_stale_s:.0f}s threshold). "
+                                    f"Terminating zombie process..."
+                                )
+                                self.zombie_killing.add(name)
+                                self.server._send_ntfy(
+                                    f"Zombie Bot Terminated: {name}",
+                                    f"Process {name} (PID {proc.pid}) hung: heartbeat {os.path.basename(hb_file)} stale by {int(stale_duration)}s > {int(hb_stale_s)}s. Terminating and restarting...",
+                                    "urgent",
+                                    self.server._resolve_topic("ERROR")
+                                )
+                                asyncio.create_task(self.stop_bot(name))
             await asyncio.sleep(2)
 
 

@@ -1464,14 +1464,19 @@ class TradingBot:
             recovery_blocked = True
         last_start_at = float("-inf")
         last_recovery_retry = float("-inf")
+        recovery_blocked_since = time.monotonic() if recovery_blocked else None
         next_direction = 0
         side_backoff_until = {"BUY": 0.0, "SELL": 0.0}
         while True:
             try:
                 now = time.monotonic()
-                _touch_rtrade_heartbeat(now=now)
 
                 if recovery_blocked:
+                    if recovery_blocked_since is None:
+                        recovery_blocked_since = now
+                    if now - recovery_blocked_since >= 180.0:
+                        print(f"[{self.symbol}] FATAL: startup recovery remained blocked for {now - recovery_blocked_since:.0f}s (>180s). Exiting for orchestrator restart.")
+                        sys.exit(1)
                     if now - last_recovery_retry >= 60.0:
                         last_recovery_retry = now
                         try:
@@ -1492,9 +1497,16 @@ class TradingBot:
                                 print(f"[{self.symbol}] recovery: orphaned RT_ order cancelled "
                                       f"order_id={order_id} client_id={client_id}")
                             recovery_blocked = False
+                            recovery_blocked_since = None
                             print(f"[{self.symbol}] startup recovery unblocked: exchange inventory verified")
                         except Exception as exc:
                             print(f"[{self.symbol}] startup recovery retry blocked: {exc}")
+                else:
+                    recovery_blocked_since = None
+
+                # Only touch heartbeat when the process is healthy and actively trading / coordinating
+                if not recovery_blocked and not getattr(venue, "recovery_blocked", False):
+                    _touch_rtrade_heartbeat(now=now)
 
                 survivors = []
                 checkpoints = []
