@@ -37,6 +37,22 @@ vpn_healthy() {
         >/dev/null 2>&1 || return 1
 }
 
+prewarm_dns() {
+    # Refresh local systemd-resolved cache for all critical fleet venue endpoints.
+    # Runs in the background (&) so DNS network latency never delays the supervisor loop.
+    local domains=(
+        "api.binance.com"
+        "stream.binance.com"
+        "api.kraken.com"
+        "api.hyperliquid.xyz"
+        "live.trading212.com"
+        "ntfy.sh"
+    )
+    for d in "${domains[@]}"; do
+        getent ahostsv4 "$d" >/dev/null 2>&1 &
+    done
+}
+
 # --- Diagnostic / Manual Tool Mode ---
 if [ "${1:-}" = "--check" ] || [ "${1:-}" = "-c" ] || [ "${1:-}" = "--status" ]; then
     echo "=== PIA VPN Manual Status Check ==="
@@ -144,15 +160,17 @@ if ! pia get regions 2>/dev/null | grep -q "^dedicated-"; then
     fi
 
     if [ "$token_added" -eq 0 ]; then
-        echo "error: Failed to register Dedicated IP tokens from .env" >&2
-        exit 1
+        echo "warning: Failed to register Dedicated IP tokens from .env; falling back to dynamic de-frankfurt" >&2
+        DEDICATED="de-frankfurt"
     fi
 fi
 
-DEDICATED=$(pia get regions 2>/dev/null | tr -d '\r' | grep -m1 "^dedicated-")
-if [ -z "$DEDICATED" ]; then
-    echo "No dedicated IP registered or token failed. Falling back to dynamic de-frankfurt."
-    DEDICATED="de-frankfurt"
+if [ -z "${DEDICATED:-}" ]; then
+    DEDICATED=$(pia get regions 2>/dev/null | tr -d '\r' | grep -m1 "^dedicated-")
+    if [ -z "$DEDICATED" ]; then
+        echo "No dedicated IP registered or token failed. Falling back to dynamic de-frankfurt."
+        DEDICATED="de-frankfurt"
+    fi
 fi
 
 pia set region "$DEDICATED" || exit 1
@@ -160,6 +178,7 @@ pia set requestportforward true || exit 1
 
 if ! pia connect; then
     echo "Connection to $DEDICATED failed! Falling back to dynamic de-frankfurt."
+    DEDICATED="de-frankfurt"
     pia set region "de-frankfurt" || exit 1
     pia connect || exit 1
 fi
@@ -175,6 +194,16 @@ for attempt in $(seq 1 12); do
         break
     fi
     if [ "$state" = "Connected" ] && [ "$vpnip" = "Unknown" ] && [ "$attempt" -ge 3 ]; then
+        if echo "$DEDICATED" | grep -q "^dedicated-"; then
+            echo "Dedicated IP region $DEDICATED returned vpnip=Unknown after $attempt attempts. Switching to dynamic de-frankfurt!"
+            DEDICATED="de-frankfurt"
+            pia set region "de-frankfurt" >/dev/null 2>&1 || true
+            pia disconnect >/dev/null 2>&1 || true
+            sleep 2
+            pia connect >/dev/null 2>&1 || true
+            sleep 3
+            continue
+        fi
         echo "PIA Connected but vpnip=Unknown after $attempt attempts; forcing reconnect."
         pia disconnect >/dev/null 2>&1 || true
         sleep 3
@@ -189,16 +218,20 @@ if [ "$connected" -ne 1 ]; then
     exit 1
 fi
 
-echo "VPN connected with a dedicated IP:"
+echo "VPN connected with region $DEDICATED:"
 pia get vpnip
 
 sleep 2
 PORT=$(pia get portforward)
 echo "Port Forward: $PORT"
 
+# Prime DNS cache on startup
+prewarm_dns
+
 # --- Main Supervisor Health Loop ---
 while true; do
     sleep "$HEALTH_INTERVAL"
+    prewarm_dns
     if vpn_healthy; then
         if [ "$failures" -gt 0 ]; then
             echo "PIA recovered after $failures failed probes"
@@ -212,6 +245,21 @@ while true; do
     state=$(pia get connectionstate 2>/dev/null | tr -d '\r')
     echo "PIA unhealthy: probe $failures/$FAILURE_LIMIT (state=${state:-unknown})"
     if [ "$failures" -ge "$FAILURE_LIMIT" ]; then
+        current_reg=$(pia get region 2>/dev/null | tr -d '\r')
+        if echo "$current_reg" | grep -q "^dedicated-"; then
+            echo "Dedicated IP failed $failures consecutive probes. Attempting emergency fallback to dynamic de-frankfurt..."
+            pia set region "de-frankfurt" >/dev/null 2>&1 || true
+            pia disconnect >/dev/null 2>&1 || true
+            sleep 3
+            if pia connect >/dev/null 2>&1; then
+                sleep 5
+                if vpn_healthy; then
+                    echo "Recovered on dynamic de-frankfurt! Continuing on dynamic IP."
+                    failures=0
+                    continue
+                fi
+            fi
+        fi
         echo "PIA/DNS persistently unavailable. Resetting tunnel; systemd will reconnect."
         pia disconnect >/dev/null 2>&1 || true
         exit 1
