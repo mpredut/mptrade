@@ -20,9 +20,16 @@ PROBE_TIMEOUT="${PIA_PROBE_TIMEOUT:-7}"
 CLI_TIMEOUT="${PIA_CLI_TIMEOUT:-6}"
 VPN_IF="${PIA_VPN_IF:-wgpia0}"
 PREWARM_INTERVAL="${PIA_PREWARM_INTERVAL:-300}"
-COOLDOWN_SEC="${PIA_FALLBACK_COOLDOWN_SEC:-900}"
+BACKOFF_MIN_SEC="${PIA_BACKOFF_MIN_SEC:-${PIA_FALLBACK_COOLDOWN_SEC:-60}}"
+BACKOFF_MAX_SEC="${PIA_BACKOFF_MAX_SEC:-7200}"
+
 failures=0
 last_prewarm=0
+current_cooldown_sec="$BACKOFF_MIN_SEC"
+
+REG_DED_DE=""
+REG_DED_BE=""
+REG_DYN_DE="de-frankfurt"
 
 send_ntfy() {
     local title="$1"
@@ -88,6 +95,81 @@ prewarm_dns() {
     fi
 }
 
+discover_regions() {
+    REG_DED_DE=$(pia get regions 2>/dev/null | tr -d '\r' | grep -m1 "^dedicated-de-frankfurt" || true)
+    REG_DED_BE=$(pia get regions 2>/dev/null | tr -d '\r' | grep -m1 "^dedicated-belgium" || true)
+    REG_DYN_DE="de-frankfurt"
+}
+
+connect_to_region() {
+    local target_region="$1"
+    local desc="$2"
+    echo "Attempting connection to $desc ($target_region)..."
+    pia set region "$target_region" >/dev/null 2>&1 || return 1
+    pia set requestportforward true >/dev/null 2>&1 || true
+    pia connect >/dev/null 2>&1 || return 1
+
+    local conn_ok=0
+    for attempt in $(seq 1 12); do
+        sleep 5
+        local state vpnip
+        state=$(pia get connectionstate 2>/dev/null | tr -d '\r')
+        vpnip=$(pia get vpnip 2>/dev/null | tr -d '\r')
+        if [ "$state" = "Connected" ] && echo "$vpnip" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+            conn_ok=1
+            break
+        fi
+        echo "Waiting for IP assignment on $target_region ($attempt/12)... state=${state:-unknown} vpnip=${vpnip:-unknown}"
+        if [ "$state" = "Connected" ] && [ "$vpnip" = "Unknown" ] && [ "$attempt" -ge 3 ]; then
+            echo "Region $target_region returned vpnip=Unknown after $attempt attempts."
+            break
+        fi
+    done
+
+    if [ "$conn_ok" -eq 1 ] && vpn_healthy; then
+        echo "Successfully connected to $target_region (IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))"
+        return 0
+    fi
+
+    echo "Connection to $target_region failed or health probe failed."
+    pia disconnect >/dev/null 2>&1 || true
+    return 1
+}
+
+establish_vpn_tunnel() {
+    discover_regions
+
+    # 1. Primary: Frankfurt Dedicated IP
+    if [ -n "$REG_DED_DE" ]; then
+        if connect_to_region "$REG_DED_DE" "Frankfurt Dedicated IP"; then
+            return 0
+        fi
+        echo "Frankfurt Dedicated IP ($REG_DED_DE) failed."
+    fi
+
+    # 2. Secondary: Belgium Dedicated IP
+    if [ -n "$REG_DED_BE" ]; then
+        echo "Falling back to Belgium Dedicated IP ($REG_DED_BE)..."
+        send_ntfy "PIA VPN: Frankfurt DIP Failed" "Frankfurt Dedicated IP failed. Falling back to Belgium Dedicated IP ($REG_DED_BE)..." "high"
+        if connect_to_region "$REG_DED_BE" "Belgium Dedicated IP"; then
+            send_ntfy "PIA VPN: Connected on Belgium DIP" "Successfully connected to Belgium Dedicated IP ($REG_DED_BE, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
+            return 0
+        fi
+        echo "Belgium Dedicated IP ($REG_DED_BE) failed."
+    fi
+
+    # 3. Tertiary: Dynamic Frankfurt
+    echo "Falling back to Dynamic Frankfurt ($REG_DYN_DE)..."
+    send_ntfy "PIA VPN: Dedicated IPs Failed" "Dedicated IP failed. Falling back to Dynamic Frankfurt ($REG_DYN_DE)..." "high"
+    if connect_to_region "$REG_DYN_DE" "Dynamic Frankfurt"; then
+        send_ntfy "PIA VPN: Connected on Dynamic" "Successfully connected to Dynamic Frankfurt ($REG_DYN_DE, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
+        return 0
+    fi
+
+    echo "All PIA regions failed (Frankfurt DIP, Belgium DIP, Dynamic Frankfurt)."
+    return 1
+}
+
 enter_isp_cooldown() {
     local reason="$1"
     echo "CRITICAL: PIA VPN unavailable ($reason). Disconnecting tunnel to release direct Romanian ISP traffic..."
@@ -96,22 +178,28 @@ enter_isp_cooldown() {
 
     if isp_healthy; then
         echo "Direct Romanian ISP uplink is healthy. Fleet operating on direct IP."
-        send_ntfy "PIA VPN Down -> Direct ISP Fallback" "PIA VPN failed ($reason). Tunnel disconnected. Fleet is operating directly via Romanian ISP for a ${COOLDOWN_SEC}s cooldown." "urgent"
+        send_ntfy "PIA VPN Down -> Direct ISP Fallback (${current_cooldown_sec}s)" \
+            "PIA VPN failed ($reason). Tunnel disconnected. Fleet operating directly via Romanian ISP for a ${current_cooldown_sec}s cooldown." \
+            "urgent"
     else
         echo "WARNING: Direct ISP uplink also unreachable or experiencing network issues."
-        send_ntfy "Network Outage: PIA & ISP Down" "Both PIA and direct ISP uplink probe failed ($reason)." "urgent"
+        send_ntfy "Network Outage: PIA & ISP Down" \
+            "Both PIA and direct ISP uplink probe failed ($reason). Cooldown: ${current_cooldown_sec}s." \
+            "urgent"
     fi
 
     local elapsed=0
-    echo "Entering cooldown mode for ${COOLDOWN_SEC}s (checking direct connectivity periodically)..."
-    while [ "$elapsed" -lt "$COOLDOWN_SEC" ]; do
+    echo "Entering Romanian ISP cooldown mode for ${current_cooldown_sec}s..."
+    while [ "$elapsed" -lt "$current_cooldown_sec" ]; do
         sleep 30
         elapsed=$((elapsed + 30))
         prewarm_dns
     done
 
-    echo "Cooldown period (${COOLDOWN_SEC}s) elapsed. Attempting single PIA recovery reconnect..."
-    send_ntfy "PIA VPN: Attempting Reconnect" "Cooldown elapsed. Attempting single PIA reconnection to resume VPN protection..." "default"
+    echo "Cooldown period (${current_cooldown_sec}s) elapsed. Attempting recovery reconnect..."
+    send_ntfy "PIA VPN: Attempting Reconnect" \
+        "Cooldown (${current_cooldown_sec}s) elapsed. Attempting PIA recovery across fallback ladder..." \
+        "default"
 }
 
 # --- Diagnostic / Manual Tool Mode ---
@@ -136,8 +224,6 @@ if [ "${1:-}" = "--check" ] || [ "${1:-}" = "-c" ] || [ "${1:-}" = "--status" ];
 fi
 
 # --- Daemon Configuration & Initialization ---
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-
 # Require .env file and enforce required PIA variables
 [ -f "$ROOT/.env" ] || { echo "error: missing required $ROOT/.env configuration" >&2; exit 1; }
 
@@ -180,9 +266,7 @@ pia background enable || exit 1
 # Allow LAN traffic through kill switch so SSH management is preserved.
 pia set allowlan true || true
 
-# Note on kill switch: user accepts risk of real-IP leak in exchange for persistent
-# server reachability if the VPN drops. To disable: pia set killswitch off || true
-
+# WireGuard protocol
 pia set protocol wireguard || exit 1
 
 # Ensure PIA login if not already authenticated
@@ -195,96 +279,51 @@ if ! pia get connectionstate 2>/dev/null | grep -Eq '^(Connected|Connecting|Disc
     rm -f "$cred_tmp"
 fi
 
-# Register Dedicated IP from tokens if not present
-if ! pia get regions 2>/dev/null | grep -q "^dedicated-"; then
+# Register Dedicated IP from tokens if not present in daemon regions
+if [ -n "$PIA_DIP_TOKEN_FRANKFURT" ] && ! pia get regions 2>/dev/null | grep -q "^dedicated-de-frankfurt"; then
     echo "Registering Frankfurt Dedicated IP from .env..."
     tok_tmp="$(mktemp -p /dev/shm 2>/dev/null || mktemp)"
     chmod 0600 "$tok_tmp"
     printf "%s\n" "$PIA_DIP_TOKEN_FRANKFURT" > "$tok_tmp"
-    token_added=0
     if pia dedicatedip add "$tok_tmp" >/dev/null 2>&1; then
         echo "Successfully added Frankfurt Dedicated IP token from .env"
-        token_added=1
+    else
+        echo "warning: Failed to add Frankfurt Dedicated IP token from .env" >&2
     fi
     rm -f "$tok_tmp"
-
-    if [ "$token_added" -eq 0 ] && [ -n "$PIA_DIP_TOKEN_BELGIUM" ]; then
-        echo "Frankfurt token failed; trying Belgium token from .env..."
-        tok_tmp="$(mktemp -p /dev/shm 2>/dev/null || mktemp)"
-        chmod 0600 "$tok_tmp"
-        printf "%s\n" "$PIA_DIP_TOKEN_BELGIUM" > "$tok_tmp"
-        if pia dedicatedip add "$tok_tmp" >/dev/null 2>&1; then
-            echo "Successfully added Belgium Dedicated IP token from .env"
-            token_added=1
-        fi
-        rm -f "$tok_tmp"
-    fi
-
-    if [ "$token_added" -eq 0 ]; then
-        echo "warning: Failed to register Dedicated IP tokens from .env; falling back to dynamic de-frankfurt" >&2
-        DEDICATED="de-frankfurt"
-    fi
 fi
 
-if [ -z "${DEDICATED:-}" ]; then
-    DEDICATED=$(pia get regions 2>/dev/null | tr -d '\r' | grep -m1 "^dedicated-")
-    if [ -z "$DEDICATED" ]; then
-        echo "No dedicated IP registered or token failed. Falling back to dynamic de-frankfurt."
-        DEDICATED="de-frankfurt"
+if [ -n "$PIA_DIP_TOKEN_BELGIUM" ] && ! pia get regions 2>/dev/null | grep -q "^dedicated-belgium"; then
+    echo "Registering Belgium Dedicated IP from .env..."
+    tok_tmp="$(mktemp -p /dev/shm 2>/dev/null || mktemp)"
+    chmod 0600 "$tok_tmp"
+    printf "%s\n" "$PIA_DIP_TOKEN_BELGIUM" > "$tok_tmp"
+    if pia dedicatedip add "$tok_tmp" >/dev/null 2>&1; then
+        echo "Successfully added Belgium Dedicated IP token from .env"
+    else
+        echo "warning: Failed to add Belgium Dedicated IP token from .env" >&2
     fi
+    rm -f "$tok_tmp"
 fi
 
-pia set region "$DEDICATED" || exit 1
-pia set requestportforward true || exit 1
-
-if ! pia connect; then
-    echo "Connection to $DEDICATED failed! Falling back to dynamic de-frankfurt."
-    DEDICATED="de-frankfurt"
-    pia set region "de-frankfurt" || exit 1
-    pia connect || exit 1
-fi
-
-echo "Waiting for the IP assignment..."
-sleep 2
-connected=0
-for attempt in $(seq 1 12); do
-    state=$(pia get connectionstate 2>/dev/null | tr -d '\r')
-    vpnip=$(pia get vpnip 2>/dev/null | tr -d '\r')
-    if [ "$state" = "Connected" ] && echo "$vpnip" | grep -q '[0-9]'; then
-        connected=1
-        break
+# Establish tunnel on startup across the fallback ladder
+while ! establish_vpn_tunnel; do
+    echo "Initial VPN connection failed across all regions. Entering Romanian ISP cooldown..."
+    enter_isp_cooldown "Initial startup connection failed across all regions"
+    current_cooldown_sec=$((current_cooldown_sec * 2))
+    if [ "$current_cooldown_sec" -gt "$BACKOFF_MAX_SEC" ]; then
+        current_cooldown_sec="$BACKOFF_MAX_SEC"
     fi
-    if [ "$state" = "Connected" ] && [ "$vpnip" = "Unknown" ] && [ "$attempt" -ge 3 ]; then
-        if echo "$DEDICATED" | grep -q "^dedicated-"; then
-            echo "Dedicated IP region $DEDICATED returned vpnip=Unknown after $attempt attempts. Switching to dynamic de-frankfurt!"
-            send_ntfy "PIA VPN: Dedicated IP fallback" "Dedicated IP region $DEDICATED returned vpnip=Unknown. Switched to dynamic de-frankfurt." "high"
-            DEDICATED="de-frankfurt"
-            pia set region "de-frankfurt" >/dev/null 2>&1 || true
-            pia disconnect >/dev/null 2>&1 || true
-            sleep 2
-            pia connect >/dev/null 2>&1 || true
-            sleep 3
-            continue
-        fi
-        echo "PIA Connected but vpnip=Unknown after $attempt attempts; forcing reconnect."
-        pia disconnect >/dev/null 2>&1 || true
-        sleep 3
-        pia connect >/dev/null 2>&1 || true
-        sleep 5
-    fi
-    sleep 5
-    echo "Still waiting for an IP ($attempt/12)... state=$state vpnip=$vpnip"
 done
-if [ "$connected" -ne 1 ]; then
-    echo "PIA did not receive an IP within 60s; systemd will retry."
-    exit 1
-fi
 
-echo "VPN connected with region $DEDICATED:"
+current_cooldown_sec="$BACKOFF_MIN_SEC"
+failures=0
+
+echo "VPN connected with region $(pia get region 2>/dev/null | tr -d '\r'):"
 pia get vpnip
 
 sleep 2
-PORT=$(pia get portforward)
+PORT=$(pia get portforward 2>/dev/null | tr -d '\r')
 echo "Port Forward: $PORT"
 
 # Prime DNS cache on startup
@@ -294,12 +333,14 @@ prewarm_dns
 while true; do
     sleep "$HEALTH_INTERVAL"
     prewarm_dns
+
     if vpn_healthy; then
         if [ "$failures" -gt 0 ]; then
             echo "PIA recovered after $failures failed probes"
-            send_ntfy "PIA VPN: Recovered" "PIA VPN is healthy again (IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
+            send_ntfy "PIA VPN: Recovered" "PIA VPN is healthy again (Region: $(pia get region 2>/dev/null | tr -d '\r'), IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
         fi
         failures=0
+        current_cooldown_sec="$BACKOFF_MIN_SEC"
         echo "PIA healthy (tun0 + DNS + HTTPS)"
         continue
     fi
@@ -307,38 +348,72 @@ while true; do
     failures=$((failures + 1))
     state=$(pia get connectionstate 2>/dev/null | tr -d '\r')
     echo "PIA unhealthy: probe $failures/$FAILURE_LIMIT (state=${state:-unknown})"
+
     if [ "$failures" -ge "$FAILURE_LIMIT" ]; then
         current_reg=$(pia get region 2>/dev/null | tr -d '\r')
-        if echo "$current_reg" | grep -q "^dedicated-"; then
-            echo "Dedicated IP failed $failures consecutive probes. Attempting emergency fallback to dynamic de-frankfurt..."
-            send_ntfy "PIA VPN: Dedicated IP Failing" "Dedicated IP failed $failures consecutive probes. Falling back to dynamic Frankfurt..." "high"
-            pia set region "de-frankfurt" >/dev/null 2>&1 || true
-            pia disconnect >/dev/null 2>&1 || true
-            sleep 3
-            if pia connect >/dev/null 2>&1; then
-                sleep 5
-                if vpn_healthy; then
-                    echo "Recovered on dynamic de-frankfurt! Continuing on dynamic IP."
-                    send_ntfy "PIA VPN: Recovered on Dynamic" "Successfully switched to dynamic Frankfurt (IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
+        discover_regions
+
+        recovered=0
+        # If currently on Frankfurt Dedicated IP:
+        if [ -n "$REG_DED_DE" ] && [ "$current_reg" = "$REG_DED_DE" ]; then
+            # 1. Fallback to Belgium Dedicated IP
+            if [ -n "$REG_DED_BE" ]; then
+                echo "Frankfurt Dedicated IP failed $failures consecutive probes. Attempting fallback to Belgium Dedicated IP ($REG_DED_BE)..."
+                send_ntfy "PIA VPN: Frankfurt DIP Failing" "Dedicated Frankfurt IP failed $failures probes. Falling back to Belgium Dedicated IP ($REG_DED_BE)..." "high"
+                if connect_to_region "$REG_DED_BE" "Belgium Dedicated IP"; then
+                    send_ntfy "PIA VPN: Switched to Belgium DIP" "Successfully switched to Belgium Dedicated IP ($REG_DED_BE, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
                     failures=0
-                    continue
+                    current_cooldown_sec="$BACKOFF_MIN_SEC"
+                    recovered=1
                 fi
+            fi
+            # 2. Fallback to Dynamic Frankfurt if Belgium failed or not available
+            if [ "$recovered" -eq 0 ]; then
+                echo "Dedicated IPs failed $failures consecutive probes. Attempting fallback to Dynamic Frankfurt ($REG_DYN_DE)..."
+                send_ntfy "PIA VPN: Dedicated IP Failing" "Dedicated IP failed $failures probes. Falling back to Dynamic Frankfurt ($REG_DYN_DE)..." "high"
+                if connect_to_region "$REG_DYN_DE" "Dynamic Frankfurt"; then
+                    send_ntfy "PIA VPN: Switched to Dynamic Frankfurt" "Successfully switched to Dynamic Frankfurt ($REG_DYN_DE, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
+                    failures=0
+                    current_cooldown_sec="$BACKOFF_MIN_SEC"
+                    recovered=1
+                fi
+            fi
+        # If currently on Belgium Dedicated IP:
+        elif [ -n "$REG_DED_BE" ] && [ "$current_reg" = "$REG_DED_BE" ]; then
+            # Fallback to Dynamic Frankfurt
+            echo "Belgium Dedicated IP failed $failures consecutive probes. Attempting fallback to Dynamic Frankfurt ($REG_DYN_DE)..."
+            send_ntfy "PIA VPN: Belgium DIP Failing" "Belgium Dedicated IP failed $failures probes. Falling back to Dynamic Frankfurt ($REG_DYN_DE)..." "high"
+            if connect_to_region "$REG_DYN_DE" "Dynamic Frankfurt"; then
+                send_ntfy "PIA VPN: Switched to Dynamic Frankfurt" "Successfully switched to Dynamic Frankfurt ($REG_DYN_DE, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
+                failures=0
+                current_cooldown_sec="$BACKOFF_MIN_SEC"
+                recovered=1
             fi
         fi
 
-        # If already on dynamic or dynamic also failed: enter cooldown on direct Romanian ISP
-        enter_isp_cooldown "PIA failed $failures probes on region $current_reg"
+        # If recovered to another region, continue supervising
+        if [ "$recovered" -eq 1 ]; then
+            continue
+        fi
 
-        # After cooldown, try one clean reconnect attempt:
-        failures=0
-        pia set region "$DEDICATED" >/dev/null 2>&1 || pia set region "de-frankfurt" >/dev/null 2>&1 || true
-        pia connect >/dev/null 2>&1 || true
-        sleep 5
-        if vpn_healthy; then
+        # All VPN regions failed (or dynamic Frankfurt failed):
+        # Enter exponential backoff cooldown on direct Romanian ISP
+        enter_isp_cooldown "PIA failed $failures probes on region ${current_reg:-unknown}"
+
+        # Cooldown elapsed, attempt single clean recovery reconnect across ladder
+        if establish_vpn_tunnel; then
             echo "PIA successfully reconnected after cooldown! (IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))"
-            send_ntfy "PIA VPN: Reconnected After Cooldown" "PIA reconnected successfully (IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
+            send_ntfy "PIA VPN: Reconnected After Cooldown" "PIA reconnected successfully (Region: $(pia get region 2>/dev/null | tr -d '\r'), IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
+            current_cooldown_sec="$BACKOFF_MIN_SEC"
+            failures=0
         else
-            echo "PIA reconnection attempt failed. Will re-enter cooldown if next probe fails."
+            echo "PIA reconnection attempt failed after cooldown. Increasing exponential backoff..."
+            current_cooldown_sec=$((current_cooldown_sec * 2))
+            if [ "$current_cooldown_sec" -gt "$BACKOFF_MAX_SEC" ]; then
+                current_cooldown_sec="$BACKOFF_MAX_SEC"
+            fi
+            echo "Next cooldown will be ${current_cooldown_sec}s (max: ${BACKOFF_MAX_SEC}s)."
+            failures="$FAILURE_LIMIT"
         fi
     fi
 done

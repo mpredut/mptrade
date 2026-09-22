@@ -492,7 +492,7 @@ if [ "$FORCE" = 0 ] && [ -f "$BACKOFF_FILE" ]; then
     NEW_BACKOFF=$(( CURRENT_BACKOFF * 2 ))
     [ "$NEW_BACKOFF" -gt 7200 ] && NEW_BACKOFF=7200
 else
-    NEW_BACKOFF=300 # 5 minutes initial backoff after first escalation
+    NEW_BACKOFF=60 # 1 minute initial backoff after first escalation
 fi
 
 [ -f "$OUTAGE_MARK" ] || date +%s > "$OUTAGE_MARK"
@@ -533,7 +533,7 @@ rung_relogin() {
     fi
 
     local dedicated
-    dedicated=$(pia get regions | grep -m1 '^dedicated-')
+    dedicated=$(pia get regions 2>/dev/null | tr -d '\r' | grep -m1 '^dedicated-de-frankfurt' || pia get regions 2>/dev/null | tr -d '\r' | grep -m1 '^dedicated-belgium' || pia get regions 2>/dev/null | tr -d '\r' | grep -m1 '^dedicated-')
     pia set region "${dedicated:-${PIA_FALLBACK_REGION:-auto}}" >/dev/null
     pia connect >/dev/null
     return 0

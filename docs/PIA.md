@@ -81,15 +81,32 @@ exist -> `Unknown region`, the connection fails, and if anything falls back to
 derives it from `piactl get regions` instead. When the IP changes, **the whitelist on
 the Binance account must be updated by hand** — nothing automates that.
 
-**The killswitch cuts everything when tun0 is absent.** The symptom is misleading:
-the machine answers pings on the LAN but reaches nothing outside. It looks like a
-network problem; it is a killswitch over a missing tunnel. Confirmation:
-`curl --interface ens18 ...` returns empty.
+**The killswitch must be off for automatic direct ISP fallback.** In production, `PIA_KILLSWITCH=off`
+is configured in `config.env` and written to `/opt/piavpn/etc/settings.json`. If all VPN regions fail,
+`pia_supervisor.sh` disconnects the tunnel so outbound traffic immediately falls back to the physical
+uplink (`ens18`) without packet drop, allowing the trading fleet to remain operational.
 
-**`python_orchestrator.service` has `Requires=pia.service`.** If PIA goes down the fleet never
-starts — and `systemctl is-active python_orchestrator.service` can report `active` while not one
-of the 7 members is running. Check the processes, not the unit:
-`./healthcheck.sh --check`.
+## Failover Ladder & Exponential Backoff Cooldown
+
+`pia_supervisor.sh` enforces a deterministic region failover ladder:
+
+1. **Primary**: Frankfurt Dedicated IP (`dedicated-de-frankfurt-*`)
+2. **Fallback 1**: Belgium Dedicated IP (`dedicated-belgium-*`)
+3. **Fallback 2**: Dynamic Frankfurt IP (`de-frankfurt`)
+4. **Fallback 3 (All VPN failed)**: Direct Romanian ISP uplink (`ens18`) via `pia disconnect`.
+
+### Exponential Backoff Model
+When all VPN regions fail, the supervisor enters a direct Romanian ISP cooldown:
+- Starts at **60 seconds (1 minute)**.
+- Doubles on each failed recovery attempt: `60s -> 120s -> 240s -> 480s -> 960s -> 1920s -> 3840s -> 7200s`.
+- Capped at **7200 seconds (2 hours)** and stays there indefinitely until VPN recovery.
+- Resets back to **60 seconds** upon successful VPN recovery (`vpn_healthy`).
+- During cooldown, local DNS cache is pre-warmed every 30 seconds for all critical endpoints (Binance, Kraken, Hyperliquid, Trading 212, NTFY).
+- NTFY alerts are dispatched for every ladder transition and recovery.
+
+**`python_orchestrator.service` has `Requires=pia.service`.** Because `pia_supervisor.sh` remains active
+and manages cooldown internally rather than crashing, `pia.service` stays healthy, preventing systemd
+restart thrashing and allowing continuous fleet trading. Check the processes: `./healthcheck.sh --check`.
 
 ## The 1 Sep 2026 incident (why pia_selfheal.sh exists)
 
