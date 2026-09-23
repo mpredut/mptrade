@@ -68,15 +68,11 @@ run_step "1A" "HYPE 240m Walk-Forward Baseline (628 days, 31 folds)" \
 
 run_step "1B" "HYPE 240m Candidate Comparison" \
     "$PYTHON_BIN offline/runners/kraken_walk_forward_compare.py \
-        $RESULTS_DIR/kraken_wf_240/baseline_HYPEUSD_*.json \
+        \$(ls -t $RESULTS_DIR/kraken_wf_240/baseline_HYPEUSD_*.json | head -1) \
         --candidate-set hype-240"
 
-run_step "1C" "HYPE 1440m (Daily) Walk-Forward Baseline" \
-    "$PYTHON_BIN offline/runners/kraken_walk_forward_baseline.py \
-        --intervals 1440 \
-        --dataset 1440=offline/research/hype_dataset/HYPEUSDC_1440m_hlspot.csv \
-        --train 180 --validation 60 --test 30 --step 30 --warmup 20 \
-        --output-dir $RESULTS_DIR/kraken_wf_1440"
+# No 1440m step: the live config is regime-aware (STRAT_TP_REGIME_GATE=true, 4h classifier),
+# and replay refuses any bar size other than trend_interval (240m) because it does not resample.
 
 # ------------------------------------------------------------------------------
 # STEP 2: Trading212 Walk-Forward Baselines (NVDA, RGNT, SPCX)
@@ -92,12 +88,12 @@ run_step "2B" "T212 RGNT 1d Walk-Forward Baseline" \
     "$PYTHON_BIN offline/runners/t212_walk_forward_baseline.py \
         --profile rgnt \
         --dataset offline/research/t212_dataset/rgnt/datasets/RGNT_1d_b67a2932ddd6.csv \
-        --train 180 --validation 60 --test 30 --step 30 --warmup 12 \
+        --train 90 --validation 30 --test 20 --step 20 --warmup 12 \
         --output-dir $RESULTS_DIR/t212_rgnt"
 
 run_step "2C" "T212 SPCX 5m Walk-Forward Baseline" \
     "$PYTHON_BIN offline/runners/t212_walk_forward_baseline.py \
-        --profile spcx \
+        --profile spcx --interval 5m \
         --dataset offline/research/t212_dataset/spcx/datasets/SPCX_5m_1cfe20146366.csv \
         --train 720 --validation 180 --test 90 --step 90 --warmup 12 \
         --output-dir $RESULTS_DIR/t212_spcx"
@@ -179,7 +175,6 @@ Commit: $(git rev-parse --short HEAD)
 
 ## Executed Modules
 - [x] **Kraken HYPE 240m Walk-Forward (628 days, 31 folds)**: Baseline & Comparative Pareto ranking
-- [x] **Kraken HYPE 1440m (Daily) Walk-Forward**: Long-term macro regime verification
 - [x] **Trading212 Walk-Forward**: NVDA (1d), RGNT (1d), SPCX (5m)
 - [x] **Kraken Adaptive Multipliers**: K_REENTRY & K_DCA sweeps
 - [x] **30-Candidate Multi-Factor Strategy Sweep**: Out-of-sample, continuous compounding, and forward live shadow

@@ -7,30 +7,28 @@ comparative paper P&L. This forward-tests the PRODUCTION configuration against s
 candidates preregistered from research before risking real money:
 
   - current: exact LIVE configuration loaded from .env and then config.env; reference
-  - tp4: only TAKEPROFIT changes 5.0 -> 4.0 (+0.13pp in research, no added drawdown)
-  - dca15: only DCA_DROP changes 1.25 -> 1.5 (+0.08pp, secondary candidate)
-  - dca_progressive025: first DCA at 1.25%, then +0.25pp per level; a risk candidate
-    that was neutral centrally and better under benchmark stress
-  - reentry4: after closing a cycle, wait for a 4% pullback before re-entry; an HLC
-    candidate selected over 31 windows and tracked across venues
-  - trail_profit_floor_sl18: soft trailing starts only above +1% gross; below that floor
-    it waits for recovery, while the MARKET hard stop widens to -18%
-  - trail_profit_floor_sl125: DECOUPLED profit-floor only, with the 12.5% baseline stop;
-    isolates the floor from stop widening (~78% of sl18's gain came from the stop)
-  - dca_vol_m1 (240m only): volatility-scaled DCA amount reduces tail risk/drawdown but
-    loses most active windows and remains defensive
-  - tp_regime_gate (240m only): use the common classifier to gate newly armed TP
-    trailing while leaving an already armed exit intact
-  - overlay650t8_regime_v2 (240m only): 650 top-up with an 8% trail; an EXPLORATORY
-    forward candidate using the common classifier and not approved for live use
+  - pre0923: the live configuration before the 23 Sep 2026 promotion (TP 5%, no DCA
+    spacing growth, fixed 3% trail, no regime gate, no profit floor, 12.5% stop); the
+    control that tells whether that promotion helps going forward
+  - rev_*: live with exactly ONE of the six 23 Sep changes reverted (tp5, spacing0,
+    trail_fixed, gate_off, floor0, sl125); isolates each change's forward contribution
+  - dca15: only DCA_DROP changes 1.25 -> 1.5 (secondary candidate)
+  - reentry4: after closing a cycle, wait for a 4% pullback before re-entry
+  - dca_vol_m1: volatility-scaled DCA amount; reduces tail risk, stays observational
+  - overlay650t8_regime_v2: 650 top-up with an 8% trail on the common classifier; the
+    only candidate that keeps buying while price trends away from the last sale
+  - B_dcabrake_regime_v2: skip DCA in confirmed downtrends; observational
+  - overlay_safe_combo: 350 top-up with a 6% trail (its TP 4% / spacing 0.25 are now live)
+
+The live configuration is regime-aware and uses the 4h volatility trail, so replay only
+accepts 240m bars: a --interval other than 240 exits without a snapshot.
 
 Given the same OHLC, results are deterministic and reproducible. Closed forward bars are
 stored locally so the anchored window continues growing beyond Kraken's 720-bar limit.
 Run once for cron or with --loop. Never read or write live bot state.
 
-  ./myenv/bin/python kraken/shadow_live.py                 # 60m snapshot, append JSONL
-  ./myenv/bin/python kraken/shadow_live.py --interval 240  # 4h bars
-  ./myenv/bin/python kraken/shadow_live.py --loop 60       # rerun every 60 minutes
+  ./myenv/bin/python kraken/shadow_live.py                 # 240m snapshot, append JSONL
+  ./myenv/bin/python kraken/shadow_live.py --loop 240      # rerun every 240 minutes
 """
 from __future__ import annotations
 
@@ -71,76 +69,58 @@ def _load_runtime_config(env_path: str | None = None,
 def _variants(interval: int):
     _load_runtime_config()
     from strategies import spot_dca as strat
+    replace = dataclasses.replace
     base = strat.StratParams.from_env()
     variants = {
         "current": base,
-        "tp4": dataclasses.replace(base, takeprofit_pct=4.0),
-        "dca15": dataclasses.replace(base, dca_drop_pct=1.5),
-        "dca_progressive025": dataclasses.replace(
-            base, dca_spacing_growth_pct=0.25,
+        "pre0923": replace(
+            base, takeprofit_pct=5.0, dca_spacing_growth_pct=0.0,
+            tp_trail_adaptive=False, tp_regime_gate=False,
+            tp_trail_profit_floor_pct=0.0, stop_loss_pct=12.5,
         ),
-        "reentry4": dataclasses.replace(base, reentry_drop_pct=4.0),
-        "trail_profit_floor_sl18": dataclasses.replace(
-            base,
-            tp_trail_profit_floor_pct=1.0,
-            stop_loss_pct=18.0,
+        "rev_tp5": replace(base, takeprofit_pct=5.0),
+        "rev_spacing0": replace(base, dca_spacing_growth_pct=0.0),
+        "rev_trail_fixed": replace(base, tp_trail_adaptive=False),
+        "rev_gate_off": replace(base, tp_regime_gate=False),
+        "rev_floor0": replace(base, tp_trail_profit_floor_pct=0.0),
+        "rev_sl125": replace(base, stop_loss_pct=12.5),
+        "dca15": replace(base, dca_drop_pct=1.5),
+        "reentry4": replace(base, reentry_drop_pct=4.0),
+        # DCA sizing reduces historical tail risk but fails the return/pairwise gate.
+        "dca_vol_m1": replace(base, dca_vol_scale_k=-1.0, dca_vol_ref=2.0),
+        # Versioned IDs prevent evidence from the former private classifier being mixed in.
+        "overlay650t8_regime_v2": replace(
+            base, trend_overlay=True, trend_topup=650.0, trend_trail_pct=8.0,
+            trend_exit_break=False,
         ),
-        # DECOUPLED: profit-floor only with the 12.5% baseline stop. The 4h benchmark
-        # shows ~78% of sl18's gain comes from the wide stop and its tail risk, NOT the
-        # profit floor, which adds only +0.1pp with +2.4pp exposure. Observational only.
-        "trail_profit_floor_sl125": dataclasses.replace(
-            base,
-            tp_trail_profit_floor_pct=1.0,
+        # The DCA brake reduces historical tail risk but sacrifices returns.
+        "B_dcabrake_regime_v2": replace(
+            base, dca_trend_brake=True, dca_brake_min_pct=1.5,
+        ),
+        "overlay_safe_combo": replace(
+            base, trend_overlay=True, trend_topup=350.0, trend_trail_pct=6.0,
+            trend_exit_break=False,
         ),
     }
-    # A uses fixed OHLC so live/replay cadence matches; do not run it at another interval.
-    if interval == base.tp_trail_vol_interval:
-        variants["A_trail"] = dataclasses.replace(
-            base,
-            tp_trail_adaptive=True,
-            tp_trail_k=2.0,
-            tp_trail_min=1.5,
-            tp_trail_max=8.0,
-        )
-    # DCA sizing uses fixed OHLC. It reduces historical tail risk but fails the
-    # return/pairwise gate, so it remains strictly observational.
-    if interval == base.dca_vol_interval:
-        variants["dca_vol_m1"] = dataclasses.replace(
-            base,
-            dca_vol_scale_k=-1.0,
-            dca_vol_ref=2.0,
-        )
-    # The overlay uses a 240m OHLC signal; do not simulate it artificially at 60m.
-    # Versioned IDs prevent evidence from the former private classifier being mixed in.
-    if interval == base.trend_interval:
-        variants["tp_regime_gate"] = dataclasses.replace(
-            base, tp_regime_gate=True,
-        )
-        variants["overlay650t8_regime_v2"] = dataclasses.replace(
-            base,
-            trend_overlay=True,
-            trend_topup=650.0,
-            trend_trail_pct=8.0,
-            trend_exit_break=False,
-        )
-        # The DCA brake reduces historical tail risk but sacrifices returns, so it
-        # also stays observational on the native regime cadence.
-        variants["B_dcabrake_regime_v2"] = dataclasses.replace(
-            base,
-            dca_trend_brake=True,
-            dca_brake_min_pct=1.5,
-        )
-        # Safe trend overlay combo: 350 top-up with 6% trail, 4% TP, progressive DCA 0.25
-        variants["overlay_safe_combo"] = dataclasses.replace(
-            base,
-            trend_overlay=True,
-            trend_topup=350.0,
-            trend_trail_pct=6.0,
-            takeprofit_pct=4.0,
-            dca_spacing_growth_pct=0.25,
-            trend_exit_break=False,
-        )
     return variants
+
+
+def _replay_interval_error(interval: int) -> str | None:
+    """Return why the live configuration cannot be replayed at this bar size, if it can't."""
+    _load_runtime_config()
+    from strategies import spot_dca as strat
+    base = strat.StratParams.from_env()
+    required = {int(base.trend_interval)} if (
+        base.trend_overlay or base.dca_trend_brake
+        or (base.tp_trend_hold and base.tp_regime_gate)) else set()
+    if base.tp_trail_adaptive:
+        required.add(int(base.tp_trail_vol_interval))
+    if base.dca_vol_scale_k:
+        required.add(int(base.dca_vol_interval))
+    if required and required != {interval}:
+        return (f"the live configuration needs {sorted(required)}-minute bars "
+                f"(regime gate / volatility trail); --interval {interval} is not replayable")
+    return None
 
 
 def _fetch_with_ts(pair: str, interval: int):
@@ -316,13 +296,13 @@ def _print_block(title: str, blk: dict) -> None:
     r = blk.get("configs")
     bh = blk.get("buyhold_pct")
     bh_s = f"{bh:+.2f}%" if bh is not None else "n/a"
-    print(f"  [{title}] {blk['bars']} bare  buy&hold {bh_s}")
+    print(f"  [{title}] {blk['bars']} bars  buy&hold {bh_s}")
     if not r:
         print("    (not enough bars — they are accumulating)")
         return
     cur = r["current"]["total_pct"]
     print(f"    {'config':<20} {'net%':>8} {'total%':>8} {'maxDD%':>8} "
-          f"{'cicluri':>8} {'Δdec':>6}  vs current total")
+          f"{'cycles':>8} {'Δdec':>6}  vs current total")
     for name, x in r.items():
         diff = "" if name == "current" else f"{x['total_pct'] - cur:+.2f}pp"
         divergences = x.get("decision_divergences")
@@ -334,7 +314,7 @@ def _print_block(title: str, blk: dict) -> None:
 
 def _print(snap: dict) -> None:
     print(f"[{snap['ts']}] {snap['pair']} {snap['interval_min']}m  last={snap['last_close']}")
-    _print_block("FORWARD (de la ancora)", snap["forward"])
+    _print_block("FORWARD (from the anchor)", snap["forward"])
     _print_block("window (context, the complete window)", snap["window"])
 
 
@@ -349,8 +329,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description="Live shadow test: current vs pre-registered candidates (read-only)."
     )
-    ap.add_argument("--interval", type=int, default=60, help="minute per bar (60/240/1440)")
-    ap.add_argument("--fee", type=float, default=0.26, help="comision per leg %%")
+    ap.add_argument("--interval", type=int, default=240, help="minutes per bar; the live configuration needs 240")
+    ap.add_argument("--fee", type=float, default=0.26, help="fee per leg %%")
     ap.add_argument("--pair", default=None, help="KRAKEN_PAIR from .env/config.env by default")
     ap.add_argument("--loop", type=float, default=0.0, help="minutes between runs (0=single shot)")
     ap.add_argument("--quiet", action="store_true")
@@ -358,6 +338,10 @@ def main() -> int:
 
     _load_runtime_config()
     pair = args.pair or required_env("KRAKEN_PAIR")
+    reason = _replay_interval_error(args.interval)
+    if reason:
+        print(f"[shadow_live] skipped: {reason}")
+        return 0
 
     while True:
         try:
