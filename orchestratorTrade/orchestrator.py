@@ -291,20 +291,22 @@ class BotManager:
                 elif name not in self.zombie_killing:
                     # Zombie / Hang detection: check if process is alive but heartbeat is stale
                     hb_file = bot.get("hb_file")
+                    log_file = bot.get("log_file")
                     hb_stale_s = bot.get("hb_stale_s", 0.0)
-                    if hb_stale_s > 0 and hb_file:
+                    if hb_stale_s > 0:
                         proc_start = self.process_start_times.get(name, now)
                         if (now - proc_start) > hb_stale_s:
                             is_hung = False
                             stale_duration = 0.0
-                            if os.path.exists(hb_file):
+                            candidates = [f for f in (hb_file, log_file) if f and os.path.exists(f)]
+                            if candidates:
                                 try:
-                                    mtime = os.path.getmtime(hb_file)
-                                    stale_duration = now - mtime
+                                    most_recent_mtime = max(os.path.getmtime(f) for f in candidates)
+                                    stale_duration = now - most_recent_mtime
                                     if stale_duration > hb_stale_s:
                                         is_hung = True
                                 except Exception as exc:
-                                    logging.warning(f"Failed to check heartbeat mtime for {name}: {exc}")
+                                    logging.warning(f"Failed to check mtime for {name}: {exc}")
                             else:
                                 is_hung = True
                                 stale_duration = now - proc_start
@@ -312,13 +314,13 @@ class BotManager:
                             if is_hung:
                                 logging.critical(
                                     f"Bot {name} (PID {proc.pid}) is HUNG / ZOMBIE! "
-                                    f"Heartbeat {hb_file} stale by {stale_duration:.1f}s (> {hb_stale_s:.0f}s threshold). "
+                                    f"Heartbeat stale by {stale_duration:.1f}s (> {hb_stale_s:.0f}s threshold). "
                                     f"Terminating zombie process..."
                                 )
                                 self.zombie_killing.add(name)
                                 self.server._send_ntfy(
                                     f"Zombie Bot Terminated: {name}",
-                                    f"Process {name} (PID {proc.pid}) hung: heartbeat {os.path.basename(hb_file)} stale by {int(stale_duration)}s > {int(hb_stale_s)}s. Terminating and restarting...",
+                                    f"Process {name} (PID {proc.pid}) hung: heartbeat stale by {int(stale_duration)}s > {int(hb_stale_s)}s. Terminating and restarting...",
                                     "urgent",
                                     self.server._resolve_topic("ERROR")
                                 )

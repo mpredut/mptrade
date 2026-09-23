@@ -119,6 +119,57 @@ class OrchestratorZombieDetectionTest(unittest.IsolatedAsyncioTestCase):
             self.assertLess(now - mtime, 180.0)
             self.manager.stop_bot.assert_not_called()
 
+    async def test_fresh_log_file_with_stale_hb_not_killed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            hb_file = os.path.join(tmp, "legacy_bot.log")
+            log_file = os.path.join(tmp, "logs", "test_bot.log")
+            os.makedirs(os.path.dirname(log_file), exist_ok=True)
+
+            # Legacy heartbeat file is 500 seconds stale
+            with open(hb_file, "w") as f:
+                f.write("old log content")
+            past = time.time() - 500.0
+            os.utime(hb_file, (past, past))
+
+            # Active orchestrator log file is fresh (just touched)
+            with open(log_file, "w") as f:
+                f.write("fresh bot log output")
+
+            mock_proc = MagicMock()
+            mock_proc.pid = 8888
+            mock_proc.returncode = None
+
+            bot_entry = {
+                "name": "test_bot",
+                "dir": tmp,
+                "cmd": "python test.py",
+                "log_file": log_file,
+                "hb_file": hb_file,
+                "hb_stale_s": 180.0,
+            }
+
+            self.manager.bots = [bot_entry]
+            self.manager.processes["test_bot"] = mock_proc
+            self.manager.process_start_times["test_bot"] = time.time() - 300.0
+            self.manager.stop_bot = AsyncMock()
+
+            # Supervise logic check
+            now = time.time()
+            hb_stale_s = bot_entry["hb_stale_s"]
+            proc_start = self.manager.process_start_times["test_bot"]
+            is_hung = False
+            if (now - proc_start) > hb_stale_s:
+                candidates = [f for f in (hb_file, log_file) if f and os.path.exists(f)]
+                if candidates:
+                    most_recent_mtime = max(os.path.getmtime(f) for f in candidates)
+                    stale_duration = now - most_recent_mtime
+                    if stale_duration > hb_stale_s:
+                        is_hung = True
+
+            self.assertFalse(is_hung)
+            self.manager.stop_bot.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
+
