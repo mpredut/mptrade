@@ -152,6 +152,13 @@ run_step "7" "Monitortrades Replay Backtest on Binance Historical Ticks" \
 run_step "8" "Scheduled Pilot Proposals Generation & Worktree Push" \
     "bash offline/runners/run_backtest_cycle.sh"
 
+# ------------------------------------------------------------------------------
+# STEP 9: Kraken continuous grid (11 assets since 2018; continuous, yearly, rolling,
+# walk-forward selection, fee stress and finite-cash views; ~2.5h)
+# ------------------------------------------------------------------------------
+run_step "9" "Kraken Continuous Multi-Asset Grid" \
+    "bash offline/research/kraken_continuous_grid/run_all.sh"
+
 END_SEC=$(date +%s)
 TOTAL_ELAPSED=$((END_SEC - START_SEC))
 HOURS=$((TOTAL_ELAPSED / 3600))
@@ -181,6 +188,7 @@ Commit: $(git rev-parse --short HEAD)
 - [x] **TradeAll Trigger Gate Experiments**: Trend gate, quality signal, RSI/BB, dual timeframe
 - [x] **TradeAll Adaptive Thresholds & Kalman Lag Sweeps**: Real-tick volatility and sampling latencies
 - [x] **Monitortrades 392-Day Replay**: Full Binance BTC & TAO simulation
+- [x] **Kraken Continuous Grid**: `offline/results/kraken_continuous_grid/REPORT*.md`
 - [x] **Proposal Publishing Pipeline**: Verified candidate parameters pushed to \`backtest-proposals\`
 
 ## Artifacts & Logs
