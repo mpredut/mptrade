@@ -48,7 +48,8 @@ class RTradeHeartbeatTest(unittest.TestCase):
         self.assertEqual(parts[0], "rtrade.py")
         self.assertEqual(parts[1], "$ROOT")
         self.assertEqual(parts[3], "rtrade")
-        self.assertEqual(parts[4], "cachedb/rtrade.heartbeat")
+        hb_targets = [f.strip() for f in parts[4].split(",")]
+        self.assertIn("cachedb/rtrade.heartbeat", hb_targets)
         self.assertEqual(parts[5], "180")
         self.assertEqual(parts[6], "fleet")
 

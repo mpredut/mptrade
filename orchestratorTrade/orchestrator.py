@@ -57,17 +57,30 @@ class BotManager:
 
                     if cmd and role in ("bot", "fleet"):
                         name = label or pat
-                        hblog_str = hblog.strip() if hblog else ""
+                        hblog_str = hblog.strip().replace("$ROOT", ROOT_DIR) if hblog else ""
                         hb_stale_sec = float(hbstale.strip()) if hbstale and hbstale.strip().isdigit() else 0.0
 
                         clean_stem = (label or pat).replace(".py", "")
                         log_file = os.path.join(ROOT_DIR, "logs", f"{clean_stem}.log")
 
-                        hb_file = ""
+                        hb_files = []
                         if hblog_str:
-                            hb_file = hblog_str if os.path.isabs(hblog_str) else os.path.join(dr, hblog_str)
-                        elif hb_stale_sec > 0:
-                            hb_file = log_file
+                            for part in [p.strip() for p in hblog_str.split(",") if p.strip()]:
+                                if os.path.isabs(part):
+                                    hb_files.append(part)
+                                elif part.startswith("logs/") or part.startswith("cachedb/"):
+                                    hb_files.append(os.path.join(ROOT_DIR, part))
+                                else:
+                                    hb_files.append(os.path.join(dr, part))
+
+                        # If a dedicated non-log heartbeat (e.g. .heartbeat) is configured,
+                        # require BOTH the dedicated heartbeat AND stdout log_file to indicate life!
+                        if hb_files and log_file not in hb_files and any(f.endswith(".heartbeat") for f in hb_files):
+                            hb_files.append(log_file)
+                        elif not hb_files and hb_stale_sec > 0:
+                            hb_files = [log_file]
+
+                        hb_file = hb_files[0] if hb_files else ""
 
                         bots.append({
                             "name": name,
@@ -75,6 +88,7 @@ class BotManager:
                             "cmd": cmd,
                             "log_file": log_file,
                             "hb_file": hb_file,
+                            "hb_files": hb_files,
                             "hb_stale_s": hb_stale_sec,
                         })
         return bots
@@ -290,37 +304,45 @@ class BotManager:
                         asyncio.create_task(self.start_bot(bot))
                 elif name not in self.zombie_killing:
                     # Zombie / Hang detection: check if process is alive but heartbeat is stale
-                    hb_file = bot.get("hb_file")
-                    log_file = bot.get("log_file")
+                    hb_files = bot.get("hb_files") or ([bot["hb_file"]] if bot.get("hb_file") else [])
                     hb_stale_s = bot.get("hb_stale_s", 0.0)
-                    if hb_stale_s > 0:
+                    if hb_stale_s > 0 and hb_files:
                         proc_start = self.process_start_times.get(name, now)
                         if (now - proc_start) > hb_stale_s:
                             is_hung = False
-                            stale_duration = 0.0
-                            candidates = [f for f in (hb_file, log_file) if f and os.path.exists(f)]
-                            if candidates:
-                                try:
-                                    most_recent_mtime = max(os.path.getmtime(f) for f in candidates)
-                                    stale_duration = now - most_recent_mtime
-                                    if stale_duration > hb_stale_s:
-                                        is_hung = True
-                                except Exception as exc:
-                                    logging.warning(f"Failed to check mtime for {name}: {exc}")
-                            else:
-                                is_hung = True
-                                stale_duration = now - proc_start
+                            stale_file = ""
+                            max_stale_duration = 0.0
+
+                            # Every heartbeat file must indicate life (ALL must be fresh)
+                            for hbf in hb_files:
+                                if os.path.exists(hbf):
+                                    try:
+                                        mtime = os.path.getmtime(hbf)
+                                        duration = now - mtime
+                                        if duration > hb_stale_s:
+                                            is_hung = True
+                                            if duration > max_stale_duration:
+                                                max_stale_duration = duration
+                                                stale_file = hbf
+                                    except Exception as exc:
+                                        logging.warning(f"Failed to check heartbeat mtime for {name} ({hbf}): {exc}")
+                                else:
+                                    is_hung = True
+                                    duration = now - proc_start
+                                    if duration > max_stale_duration:
+                                        max_stale_duration = duration
+                                        stale_file = hbf
 
                             if is_hung:
                                 logging.critical(
                                     f"Bot {name} (PID {proc.pid}) is HUNG / ZOMBIE! "
-                                    f"Heartbeat stale by {stale_duration:.1f}s (> {hb_stale_s:.0f}s threshold). "
+                                    f"Heartbeat {stale_file} stale by {max_stale_duration:.1f}s (> {hb_stale_s:.0f}s threshold). "
                                     f"Terminating zombie process..."
                                 )
                                 self.zombie_killing.add(name)
                                 self.server._send_ntfy(
                                     f"Zombie Bot Terminated: {name}",
-                                    f"Process {name} (PID {proc.pid}) hung: heartbeat stale by {int(stale_duration)}s > {int(hb_stale_s)}s. Terminating and restarting...",
+                                    f"Process {name} (PID {proc.pid}) hung: heartbeat {os.path.basename(stale_file)} stale by {int(max_stale_duration)}s > {int(hb_stale_s)}s. Terminating and restarting...",
                                     "urgent",
                                     self.server._resolve_topic("ERROR")
                                 )

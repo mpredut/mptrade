@@ -25,14 +25,19 @@ class OrchestratorZombieDetectionTest(unittest.IsolatedAsyncioTestCase):
             with open(conf, "w", encoding="utf-8") as f:
                 f.write(
                     "rtrade.py|$ROOT|source $ROOT/$VENV/bin/activate && python rtrade.py|rtrade|cachedb/rtrade.heartbeat|180|fleet\n"
+                    "hl_dca_bot.py|$ROOT/hyperliquid|source $ROOT/$VENV/bin/activate && nohup python3 hl_dca_bot.py >> logs/HL-bot.log 2>&1 &|HL-bot|logs/HL-bot.log|900|bot\n"
                     "cacheManager.py|$ROOT|source $ROOT/$VENV/bin/activate && python cacheManager.py|cacheManager|||fleet\n"
                 )
             with patch("orchestratorTrade.orchestrator.ROOT_DIR", tmp):
                 bots = self.manager.parse_procs_conf()
-                self.assertEqual(len(bots), 2)
+                self.assertEqual(len(bots), 3)
                 rtrade_bot = next(b for b in bots if b["name"] == "rtrade")
                 self.assertEqual(rtrade_bot["hb_file"], os.path.join(tmp, "cachedb", "rtrade.heartbeat"))
                 self.assertEqual(rtrade_bot["hb_stale_s"], 180.0)
+
+                hl_bot = next(b for b in bots if b["name"] == "HL-bot")
+                self.assertEqual(hl_bot["hb_file"], os.path.join(tmp, "logs", "HL-bot.log"))
+                self.assertEqual(hl_bot["hb_stale_s"], 900.0)
 
                 cm_bot = next(b for b in bots if b["name"] == "cacheManager")
                 self.assertEqual(cm_bot["hb_file"], "")
@@ -119,55 +124,55 @@ class OrchestratorZombieDetectionTest(unittest.IsolatedAsyncioTestCase):
             self.assertLess(now - mtime, 180.0)
             self.manager.stop_bot.assert_not_called()
 
-    async def test_fresh_log_file_with_stale_hb_not_killed(self):
+    async def test_dedicated_heartbeat_is_strictly_enforced_without_log_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
-            hb_file = os.path.join(tmp, "legacy_bot.log")
-            log_file = os.path.join(tmp, "logs", "test_bot.log")
+            hb_file = os.path.join(tmp, "cachedb", "rtrade.heartbeat")
+            os.makedirs(os.path.dirname(hb_file), exist_ok=True)
+            log_file = os.path.join(tmp, "logs", "rtrade.log")
             os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
-            # Legacy heartbeat file is 500 seconds stale
+            # Dedicated heartbeat file is stale (recovery blocked)
             with open(hb_file, "w") as f:
-                f.write("old log content")
-            past = time.time() - 500.0
+                f.write("heartbeat")
+            past = time.time() - 300.0
             os.utime(hb_file, (past, past))
 
-            # Active orchestrator log file is fresh (just touched)
+            # Log file has recent error logs
             with open(log_file, "w") as f:
-                f.write("fresh bot log output")
+                f.write("recovery blocked error line\n")
 
             mock_proc = MagicMock()
             mock_proc.pid = 8888
             mock_proc.returncode = None
 
             bot_entry = {
-                "name": "test_bot",
+                "name": "rtrade",
                 "dir": tmp,
-                "cmd": "python test.py",
+                "cmd": "python rtrade.py",
                 "log_file": log_file,
                 "hb_file": hb_file,
                 "hb_stale_s": 180.0,
             }
 
             self.manager.bots = [bot_entry]
-            self.manager.processes["test_bot"] = mock_proc
-            self.manager.process_start_times["test_bot"] = time.time() - 300.0
+            self.manager.processes["rtrade"] = mock_proc
+            self.manager.process_start_times["rtrade"] = time.time() - 300.0
             self.manager.stop_bot = AsyncMock()
 
-            # Supervise logic check
+            # Supervise logic check: should check hb_file strictly, not fall back to log_file
             now = time.time()
             hb_stale_s = bot_entry["hb_stale_s"]
-            proc_start = self.manager.process_start_times["test_bot"]
+            proc_start = self.manager.process_start_times["rtrade"]
             is_hung = False
-            if (now - proc_start) > hb_stale_s:
-                candidates = [f for f in (hb_file, log_file) if f and os.path.exists(f)]
-                if candidates:
-                    most_recent_mtime = max(os.path.getmtime(f) for f in candidates)
-                    stale_duration = now - most_recent_mtime
+            if (now - proc_start) > hb_stale_s and hb_file:
+                if os.path.exists(hb_file):
+                    stale_duration = now - os.path.getmtime(hb_file)
                     if stale_duration > hb_stale_s:
                         is_hung = True
+                else:
+                    is_hung = True
 
-            self.assertFalse(is_hung)
-            self.manager.stop_bot.assert_not_called()
+            self.assertTrue(is_hung)
 
 
 if __name__ == "__main__":
