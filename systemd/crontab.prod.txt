@@ -9,7 +9,6 @@ SHELL=/bin/bash
 */30 * * * * cd $HOME/mptrade && ./offline/runners/refresh_dev.sh >> logs/refresh_dev.log 2>&1
 0 2,14 * * * cd $HOME/mptrade && ./offline/runners/trigger_backtest_dev.sh >> logs/backtest_cycle.log 2>&1
 7 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh kraken/shadow_live.py --interval 240 >> logs/shadow_live.log 2>&1
-37 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh kraken/shadow_live.py --interval 60 >> logs/shadow_live.log 2>&1
 */20 * * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.portfolio_snapshot.lock /usr/bin/timeout --signal=TERM --kill-after=5s 90s ./orchestratorOS/run_python.sh verify_tools/portfolio_snapshot.py --alert --json >> logs/portfolio_snapshot.jsonl 2>/dev/null
 27 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh hyperliquid/shadow_longterm.py --quiet >> logs/hyperliquid_shadow.log 2>&1
 */5 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh orchestratorOS/livecheck/os_resources_watchdog.py >> logs/os_resources_watchdog.log 2>&1

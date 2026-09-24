@@ -164,6 +164,27 @@ class ReplayEngineTest(unittest.TestCase):
         self.assertEqual(two_bars["fills"], 1)
         self.assertGreater(two_bars["open_qty"], 0.0)
 
+    def test_stale_entry_is_replaced_after_a_rally_like_live_ttl(self):
+        # The ENTRY is placed 0.2% under 100; the next bars rally without touching it.
+        # Live cancels it after order_ttl_min and re-places it near the current price,
+        # so the pullback to 110.5 on the last bar must fill the re-placed entry.
+        bars = [(100.0, 100.5, 99.9, 100.0)]
+        bars += [(p, p * 1.004, p * 0.9995, p) for p in (103.0, 106.0, 109.0, 111.0)]
+        bars += [(111.0, 111.2, 110.5, 111.0)]
+        trace = rp.run_replay(bars, _params(), fee_pct=0.26, bar_minutes=240,
+                              include_decision_trace=True)
+        entries = [e for e in trace["decision_trace"] if e["kind"] == "ENTRY"]
+        self.assertGreater(len(entries), 1)
+        self.assertGreater(entries[-1]["price"], 110.0)
+        self.assertGreater(trace["open_qty"], 0.0)
+
+        # Bars shorter than the TTL keep the order, as live would.
+        short = rp.run_replay(bars, _params(order_ttl_min=300.0), fee_pct=0.26,
+                              bar_minutes=240, include_decision_trace=True)
+        self.assertEqual(
+            [e["kind"] for e in short["decision_trace"]].count("ENTRY"), 1)
+        self.assertEqual(short["open_qty"], 0.0)
+
     def test_market_stop_fills_at_next_open_even_below_reference_price(self):
         bars = [
             (100.0, 101.0, 99.0, 100.0),  # places the entry

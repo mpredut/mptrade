@@ -1,13 +1,13 @@
 """
 Tests for the ADAPTIVE re-entry threshold in the spot DCA engine (23 Jul).
 
-Context: investigat in offline/research/kraken_adaptive_thresholds/ — pragul adaptiv
-(K_REENTRY * vol_1h) bate pragul fix pe date reale (HYPEUSD, ~30 zile: TOTAL
-+3.26% versus +2.20%). Promoted to a real decision through StratParams.reentry_adaptive
+Context: investigated in offline/research/kraken_adaptive_thresholds/ — the adaptive
+threshold (K_REENTRY * vol_1h) beat the fixed threshold on real data (HYPEUSD, ~30 days:
+TOTAL +3.26% versus +2.20%). Promoted to a real decision through StratParams.reentry_adaptive
 (False by default — enabled explicitly through STRAT_REENTRY_ADAPTIVE=true), with
 fail-safe onto the fixed threshold when volatility cannot be computed (warm-up).
 
-Acoperire:
+Coverage:
   - _effective_reentry_drop_pct(): fixed when reentry_adaptive=False (always,
     regardless of price history); falls back to fixed when adaptive=True but
     warm-up (<20 points); adaptive once there is enough history.
@@ -15,6 +15,7 @@ Acoperire:
 """
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -25,6 +26,14 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from strategies import spot_dca as strat  # noqa: E402
 from providers.strategy_executor import PairPrecision  # noqa: E402
+
+
+# Keep the synthetic state file out of kraken/, next to the live pair states.
+_STATE_DIR = tempfile.TemporaryDirectory(prefix="test_reentry_state_")
+
+
+def tearDownModule():
+    _STATE_DIR.cleanup()
 
 
 def _make_strategy(tmp_pair="TESTPAIR_REENTRY", **param_overrides):
@@ -42,7 +51,7 @@ def _make_strategy(tmp_pair="TESTPAIR_REENTRY", **param_overrides):
     params = strat.StratParams(**defaults)
     return strat.Strategy(
         client, tmp_pair, params, dry_run=True,
-        initial_state=strat._new_state(),
+        initial_state=strat._new_state(), state_dir=_STATE_DIR.name,
     )
 
 
@@ -289,7 +298,7 @@ class TestTrailingTakeProfit(unittest.TestCase):
             s.step(95.0)
             self.assertIsNone(s._find_open("sell"))
 
-            s.step(87.0)        # sub avg*(1-12.5%): STOP MARKET indiferent de profit
+            s.step(87.0)        # below avg*(1-12.5%): MARKET STOP regardless of profit
             sell = s._find_open("sell")
             self.assertIsNotNone(sell)
             self.assertTrue(sell["market"])

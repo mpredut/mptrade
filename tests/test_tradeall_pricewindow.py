@@ -160,6 +160,21 @@ class TestTradeallOrderBoundary(unittest.TestCase):
                 self.assertTrue(ta._kalman_gate_blocks("TAOUSDC", "BUY")[0])
                 self.assertFalse(ta._kalman_gate_blocks("TAOUSDC", "SELL")[0])
 
+    def test_kalman_gate_ages_the_signal_on_the_replay_clock(self):
+        # A replay feeds historical timestamps. Ageing them against wall time made every
+        # signal months old, so the gate blocked every BUY in every TradeAll backtest.
+        import shadow_signals
+        sim_now = [1_780_000_000.0]
+        shadow = shadow_signals.ShadowSet(
+            journal=shadow_signals.ShadowJournal(fixed_path=os.devnull),
+            now_fn=lambda: sim_now[0])
+        shadow._state["TAOUSDC"] = {"kalman_trend": 1, "ts": sim_now[0] - 10.0}
+        with (patch.object(ta, "_shadow_ref", shadow),
+              patch.dict(ta.KALMAN_MODES, {"TAOUSDC": "strict"})):
+            self.assertFalse(ta._kalman_gate_blocks("TAOUSDC", "BUY")[0])
+            sim_now[0] += ta.GATE_STALE_SEC + 1.0
+            self.assertTrue(ta._kalman_gate_blocks("TAOUSDC", "BUY")[0])
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Helpers

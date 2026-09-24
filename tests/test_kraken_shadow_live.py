@@ -41,85 +41,99 @@ class ShadowLiveTest(unittest.TestCase):
         self.assertEqual(shadow._decision_distance(current, current), 0)
         self.assertEqual(shadow._decision_distance(current, candidate), 2)
 
-    def test_overlay_candidate_is_only_enabled_at_its_native_interval(self):
+    @staticmethod
+    def _live_params():
         @dataclasses.dataclass(frozen=True)
         class Params:
-            takeprofit_pct: float = 5.0
+            takeprofit_pct: float = 4.0
             dca_drop_pct: float = 1.25
-            dca_spacing_growth_pct: float = 0.0
-            reentry_drop_pct: float = 0.0
-            stop_loss_pct: float = 12.5
-            tp_trail_profit_floor_pct: float = 0.0
+            dca_spacing_growth_pct: float = 0.25
+            reentry_drop_pct: float = 2.2
+            stop_loss_pct: float = 18.0
+            tp_trail_profit_floor_pct: float = 1.0
             dca_vol_scale_k: float = 0.0
             dca_vol_ref: float = 2.0
             dca_vol_interval: int = 240
             dca_trend_brake: bool = False
             dca_brake_min_pct: float = 1.5
-            tp_trail_adaptive: bool = False
-            tp_trail_k: float = 2.0
-            tp_trail_min: float = 1.5
-            tp_trail_max: float = 8.0
+            tp_trend_hold: bool = True
+            tp_trail_adaptive: bool = True
             tp_trail_vol_interval: int = 240
             trend_interval: int = 240
             trend_overlay: bool = False
             trend_topup: float = 2000.0
             trend_trail_pct: float = 5.0
             trend_exit_break: bool = False
-            tp_regime_gate: bool = False
+            tp_regime_gate: bool = True
 
+        return Params()
+
+    def test_variants_isolate_each_promoted_change_against_live(self):
+        live = self._live_params()
         with patch(
-            "strategies.spot_dca.StratParams.from_env", return_value=Params(),
+            "strategies.spot_dca.StratParams.from_env", return_value=live,
         ), patch.object(shadow, "_load_runtime_config"):
-            variants_60 = shadow._variants(60)
-            variants_240 = shadow._variants(240)
+            variants = shadow._variants(240)
 
         self.assertEqual(
-            list(variants_60),
+            list(variants),
             [
-                "current", "tp4", "dca15", "dca_progressive025",
-                "reentry4", "trail_profit_floor_sl18", "trail_profit_floor_sl125",
-            ],
-        )
-        self.assertEqual(
-            list(variants_240),
-            [
-                "current", "tp4", "dca15", "dca_progressive025",
-                "reentry4", "trail_profit_floor_sl18", "trail_profit_floor_sl125",
-                "A_trail", "dca_vol_m1", "tp_regime_gate",
-                "overlay650t8_regime_v2", "B_dcabrake_regime_v2",
+                "current", "pre0923", "rev_tp5", "rev_spacing0", "rev_trail_fixed",
+                "rev_gate_off", "rev_floor0", "rev_sl125", "dca15", "reentry4",
+                "dca_vol_m1", "overlay650t8_regime_v2", "B_dcabrake_regime_v2",
                 "overlay_safe_combo",
             ],
         )
-        safe_overlay = variants_240["overlay_safe_combo"]
+        self.assertIs(variants["current"], live)
+        # No candidate may collapse onto the live configuration: it would log noise only.
+        for name, params in variants.items():
+            if name != "current":
+                self.assertNotEqual(params, live, name)
+        # Each rev_* variant differs from live in exactly one field.
+        reverted = {
+            "rev_tp5": ("takeprofit_pct", 5.0),
+            "rev_spacing0": ("dca_spacing_growth_pct", 0.0),
+            "rev_trail_fixed": ("tp_trail_adaptive", False),
+            "rev_gate_off": ("tp_regime_gate", False),
+            "rev_floor0": ("tp_trail_profit_floor_pct", 0.0),
+            "rev_sl125": ("stop_loss_pct", 12.5),
+        }
+        for name, (field, value) in reverted.items():
+            params = variants[name]
+            self.assertEqual(getattr(params, field), value, name)
+            changed = [f.name for f in dataclasses.fields(params)
+                       if getattr(params, f.name) != getattr(live, f.name)]
+            self.assertEqual(changed, [field], name)
+        pre = variants["pre0923"]
+        for field, value in reverted.values():
+            self.assertEqual(getattr(pre, field), value, field)
+        self.assertEqual(variants["reentry4"].reentry_drop_pct, 4.0)
+        vol_scaled = variants["dca_vol_m1"]
+        self.assertEqual(vol_scaled.dca_vol_scale_k, -1.0)
+        self.assertEqual(vol_scaled.dca_vol_ref, 2.0)
+        candidate = variants["overlay650t8_regime_v2"]
+        self.assertTrue(candidate.trend_overlay)
+        self.assertEqual(candidate.trend_topup, 650.0)
+        self.assertEqual(candidate.trend_trail_pct, 8.0)
+        self.assertTrue(variants["B_dcabrake_regime_v2"].dca_trend_brake)
+        safe_overlay = variants["overlay_safe_combo"]
         self.assertTrue(safe_overlay.trend_overlay)
         self.assertEqual(safe_overlay.trend_topup, 350.0)
         self.assertEqual(safe_overlay.trend_trail_pct, 6.0)
-        self.assertEqual(safe_overlay.takeprofit_pct, 4.0)
-        self.assertEqual(safe_overlay.dca_spacing_growth_pct, 0.25)
-        progressive = variants_60["dca_progressive025"]
-        self.assertEqual(progressive.dca_spacing_growth_pct, 0.25)
-        self.assertEqual(variants_60["reentry4"].reentry_drop_pct, 4.0)
-        profit_floor = variants_60["trail_profit_floor_sl18"]
-        self.assertEqual(profit_floor.tp_trail_profit_floor_pct, 1.0)
-        self.assertEqual(profit_floor.stop_loss_pct, 18.0)
-        # Decoupled: profit floor with the baseline stop (NOT widened to 18)
-        floor_only = variants_60["trail_profit_floor_sl125"]
-        self.assertEqual(floor_only.tp_trail_profit_floor_pct, 1.0)
-        self.assertEqual(floor_only.stop_loss_pct, variants_60["current"].stop_loss_pct)
-        self.assertNotEqual(floor_only.stop_loss_pct, 18.0)
-        adaptive = variants_240["A_trail"]
-        self.assertTrue(adaptive.tp_trail_adaptive)
-        self.assertEqual(adaptive.tp_trail_vol_interval, 240)
-        vol_scaled = variants_240["dca_vol_m1"]
-        self.assertEqual(vol_scaled.dca_vol_scale_k, -1.0)
-        self.assertEqual(vol_scaled.dca_vol_ref, 2.0)
-        self.assertTrue(variants_240["tp_regime_gate"].tp_regime_gate)
-        candidate = variants_240["overlay650t8_regime_v2"]
-        self.assertTrue(candidate.trend_overlay)
-        brake = variants_240["B_dcabrake_regime_v2"]
-        self.assertTrue(brake.dca_trend_brake)
-        self.assertEqual(candidate.trend_topup, 650.0)
-        self.assertEqual(candidate.trend_trail_pct, 8.0)
+
+    def test_interval_the_live_config_cannot_replay_is_skipped(self):
+        with patch(
+            "strategies.spot_dca.StratParams.from_env", return_value=self._live_params(),
+        ), patch.object(shadow, "_load_runtime_config"):
+            self.assertIsNone(shadow._replay_interval_error(240))
+            self.assertIn("240", shadow._replay_interval_error(60))
+            with patch.dict(os.environ, {"KRAKEN_PAIR": "HYPEUSD"}), \
+                    patch.object(shadow, "snapshot") as snapshot, \
+                    patch.object(sys, "argv", ["shadow_live.py", "--interval", "60"]), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(shadow.main(), 0)
+            snapshot.assert_not_called()
+            self.assertIn("skipped", out.getvalue())
 
     def test_runtime_config_matches_live_precedence(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -131,7 +145,7 @@ class ShadowLiveTest(unittest.TestCase):
             )
             config_path.write_text(
                 "KRAKEN_PAIR=FROM_CONFIG\nSTRAT_TAKEPROFIT_PCT=5.0\n"
-                "STRAT_DCA_DROP_PCT=1.25  # versionat\n",
+                "STRAT_DCA_DROP_PCT=1.25  # versioned\n",
                 encoding="utf-8",
             )
             with patch.dict(os.environ, {}, clear=True):
@@ -183,6 +197,7 @@ class ShadowLiveTest(unittest.TestCase):
 
     def test_single_shot_failure_returns_nonzero(self):
         with patch.object(shadow, "_load_runtime_config"), \
+                patch.object(shadow, "_replay_interval_error", return_value=None), \
                 patch.object(shadow, "snapshot", side_effect=RuntimeError("fetch failed")), \
                 patch.dict(os.environ, {"KRAKEN_PAIR": "HYPEUSD"}), \
                 patch.object(sys, "argv", ["shadow_live.py", "--quiet"]), \

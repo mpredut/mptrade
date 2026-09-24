@@ -92,5 +92,23 @@ class TestVolAndThresholds(unittest.TestCase):
         self.assertIsNone(dca)
 
 
+
+
+class TestCurrentTrendClock(unittest.TestCase):
+    """current_trend() ages the state on the injected clock (live: wall time)."""
+
+    def test_age_uses_injected_clock_and_defaults_to_wall_time(self):
+        journal = ss.ShadowJournal(fixed_path=os.devnull)
+        simulated = ss.ShadowSet(journal=journal, now_fn=lambda: 1_000_060.0)
+        simulated._state["BTCUSDC"] = {"kalman_trend": -1, "ts": 1_000_000.0}
+        self.assertEqual(simulated.current_trend("BTCUSDC"), (-1, 60.0))
+
+        wall = ss.ShadowSet(journal=journal)
+        wall._state["BTCUSDC"] = {"kalman_trend": 1, "ts": 1_000_000.0}
+        trend, age = wall.current_trend("BTCUSDC")
+        self.assertEqual(trend, 1)
+        self.assertGreater(age, 1e8)
+
+
 if __name__ == "__main__":
     unittest.main()

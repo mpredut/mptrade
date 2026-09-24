@@ -237,6 +237,15 @@ def _run_once(
                             )
                             cycle_net_start = strategy.s["realized_net"]
 
+            # Live reconcile() cancels an unfilled limit BUY once it is older than
+            # order_ttl_min and the price has risen more than 0.3% above it; step() then
+            # re-places it at the current level. Replay never calls reconcile(), so without
+            # this an ENTRY left below a rally would wait forever for a pullback.
+            if bar_minutes is None or bar_minutes >= params.order_ttl_min:
+                for order in list(strategy.s["orders"]):
+                    if (order["side"] == "buy" and not order.get("market")
+                            and close > order["price"] * 1.003):
+                        strategy._remove(order)
             replay_time = bar_index * bar_minutes * 60 if bar_minutes else bar_index
             strategy.step(close, timestamp=replay_time)
             qty = strategy.s["qty"]
