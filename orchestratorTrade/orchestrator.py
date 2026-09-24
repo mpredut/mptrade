@@ -248,10 +248,12 @@ class BotManager:
         config_path = os.path.join(ROOT_DIR, "config.env")
         procs_path = os.path.join(ROOT_DIR, "procs.conf")
         instruments_path = os.path.join(ROOT_DIR, "instruments.conf")
+        order_guard_path = os.path.join(ROOT_DIR, "order_guard.conf")
         hashes = {
             config_path: self._hash_file(config_path),
             procs_path: self._hash_file(procs_path),
             instruments_path: self._hash_file(instruments_path),
+            order_guard_path: self._hash_file(order_guard_path),
         }
 
         while self.running:
