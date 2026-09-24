@@ -54,7 +54,7 @@ def _load_margins():
     except FileNotFoundError:
         pass
     except Exception as e:
-        print(f"[order_guard] conf invalid ({e}) — folosesc default 1.15")
+        print(f"[order_guard] invalid configuration ({e}) — using default 1.15")
     _MARGINS = m
     return m
 
@@ -65,20 +65,61 @@ def _provider_name(provider):
     return getattr(provider, "name", "") or ""
 
 
-def buy_reference_enabled(provider_name):
-    """Return whether a BUY must sit below the venue's historical sell reference.
+def buy_reference_mode(provider_name) -> str:
+    """Return the buy reference mode: 'on', 'off', or 'dynamic'.
 
-    Configuration key `<venue>_buy_reference` (1 on, 0 off), falling back to
-    `default_buy_reference`. Off removes the static re-entry anchor ("never buy above the
-    lowest recent sell"); the SELL reference and the quantity/weight guards stay active."""
+    Configuration key `<venue>_buy_reference`, falling back to `default_buy_reference`.
+    '0', 0, False, 'off' -> 'off' (historical sell reference bypassed).
+    '1', 1, True, 'on' -> 'on' (strict static lookback enforced).
+    'dynamic' -> 'dynamic' (bypassed in confirmed BULL trend; enforced in BEAR/FLAT/UNKNOWN).
+    """
     m = _load_margins()
     name = _provider_name(provider_name)
     key = name.lower() + "_buy_reference"
+    val = m.get(key, m.get("default_buy_reference", 1.0))
+    if isinstance(val, str):
+        val_str = val.strip().lower()
+        if val_str in ("dynamic", "adaptive"):
+            return "dynamic"
+        if val_str in ("0", "0.0", "false", "off", "no"):
+            return "off"
+        if val_str in ("1", "1.0", "true", "on", "yes"):
+            return "on"
     try:
-        val = m.get(key, m.get("default_buy_reference", 1.0))
-        return float(val) != 0.0
-    except (TypeError, ValueError, KeyError):
-        return True     # an unreadable value keeps the conservative guard
+        return "off" if float(val) == 0.0 else "on"
+    except (TypeError, ValueError):
+        return "on"
+
+
+def buy_reference_enabled(provider_name) -> bool:
+    """Return whether a BUY must sit below the venue's historical sell reference.
+
+    Compatibility wrapper around buy_reference_mode(provider_name) != 'off'."""
+    return buy_reference_mode(provider_name) != "off"
+
+
+def _symbol_trend(symbol: str) -> str:
+    """Detect current macro/instant trend for symbol ('bull', 'bear', 'flat', 'unknown')."""
+    try:
+        import cacheManager as cm
+        mgr = cm.get_short_trend_manager()
+        snap = mgr.fresh_snapshot(symbol)
+        if snap is not None:
+            growth = float(snap.get("growth_coefficient", 0.0) or 0.0)
+            eps = float(snap.get("epsilon", 0.0) or 0.0)
+            if eps > 0:
+                if growth > eps:
+                    return "bull"
+                elif growth < -eps:
+                    return "bear"
+                return "flat"
+            if growth > 0:
+                return "bull"
+            elif growth < 0:
+                return "bear"
+    except Exception:
+        pass
+    return "unknown"
 
 
 def margin_for(provider_name):
@@ -229,10 +270,21 @@ def profit_guard(provider, symbol, order_type, price, profit_percentage, window_
     allows placement because there is no prior transaction to compare."""
     order_type = order_type.upper()
     provider_name = _provider_name(provider)
-    if order_type == "BUY" and not buy_reference_enabled(provider_name):
-        print(f"[GUARD] BUY {symbol}: the historical sell reference is off for this venue "
-              f"(order_guard.conf); price {price} is not compared with past sells")
-        return True
+    if order_type == "BUY":
+        mode = buy_reference_mode(provider_name)
+        if mode == "off":
+            print(f"[GUARD] BUY {symbol}: the historical sell reference is off for this venue "
+                  f"(order_guard.conf); price {price} is not compared with past sells")
+            return True
+        elif mode == "dynamic":
+            trend = _symbol_trend(symbol)
+            if trend == "bull":
+                print(f"[GUARD] BUY {symbol}: dynamic mode bypassed historical sell reference "
+                      f"during confirmed BULL trend; price {price} permitted")
+                return True
+            else:
+                print(f"[GUARD] BUY {symbol}: dynamic mode enforcing defensive profit guard "
+                      f"(trend='{trend}') against past sells")
     ref = window_ref if window_ref is not None else (
         provider.last_opposite_fill(symbol, order_type) if hasattr(provider, "last_opposite_fill") else None
     )
@@ -244,9 +296,9 @@ def profit_guard(provider, symbol, order_type, price, profit_percentage, window_
         diff = u.value_diff_to_percent(price, ref)   # (SELL_price - ref_BUY) / SELL_price
     src = "the window" if window_ref is not None else "the provider"
     print(f"[GUARD] {order_type} {symbol}: ref {ref} ({src}), price {price}, "
-          f"diff {diff:.2f}%, prag {profit_percentage}%")
+          f"diff {diff:.2f}%, threshold {profit_percentage}%")
     if diff < profit_percentage:
-        print(f"Diferenta procentuala ({diff:.2f}%) sub prag {profit_percentage}%. "
+        print(f"Percentage difference ({diff:.2f}%) below threshold {profit_percentage}%. "
               f"The {order_type} order is BLOCKED.")
         return False
     return True

@@ -39,6 +39,9 @@ _OPS_MARKERS = (
     "FAILED", "ERROR", "MANUAL", "GONE", "IMBALANC",
     "ESUAT", "ERORI", "DISPARUT", "DEZECHILIBR",
 )
+_TRADE_MARKERS = (
+    "BUY", "SELL", "FILLED", "TREND_ENTRY", "ADOPT", "EXECUTION",
+)
 
 
 def _positive_int_env(name: str, default: int) -> int:
@@ -97,18 +100,24 @@ def _alerts_are_urgent(alerts: list[Any]) -> bool:
     for alert in alerts:
         if not isinstance(alert, dict):
             continue
-        title = str(alert.get("name") or alert.get("symbol") or "").upper()
+        title = str(alert.get("name") or alert.get("symbol") or alert.get("title") or "").upper()
         source = str(alert.get("source") or "").lower()
-        if any(marker in title for marker in _URGENT_MARKERS) or "watchdog" in source:
+        if (
+            any(marker in title for marker in _URGENT_MARKERS)
+            or any(marker in title for marker in _TRADE_MARKERS)
+            or "watchdog" in source
+        ):
             return True
     return False
 
 
 def _dedup_seconds(alerts: list[Any], urgent: bool) -> int:
     titles = " ".join(
-        str(alert.get("name") or "").upper()
+        str(alert.get("name") or alert.get("title") or "").upper()
         for alert in alerts if isinstance(alert, dict)
     )
+    if any(marker in titles for marker in _TRADE_MARKERS):
+        return 0  # Real trades must never be suppressed by deduplication
     if "DISPONIBIL" in titles:
         return _positive_int_env("NOTIFICATION_STARTUP_DEDUP_SECONDS", 6 * 60 * 60)
     if urgent:
@@ -158,7 +167,7 @@ def _reserve_delivery(channel: str, alerts: list[Any], *, urgent: bool) -> tuple
         if channel == "ntfy" and not urgent:
             # Preserve the existing routine allowance and provider-quota headroom.
             # The reserve no longer places a ceiling on urgent delivery attempts.
-            budget = _positive_int_env("NTFY_DAILY_BUDGET", 100)
+            budget = _positive_int_env("NTFY_DAILY_BUDGET", 220)
             reserve = _positive_int_env("NTFY_URGENT_RESERVE", 20)
             if sent >= max(0, budget - reserve):
                 warn = not bool(channel_state.get("budget_warning_sent"))
@@ -448,6 +457,9 @@ def notify(title: str, body: str, source: str, symbol: str,
            price: float = None, desktop: bool = False,
            email: bool = None) -> None:
     if os.environ.get("DISABLE_EXTERNAL_NOTIFICATIONS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
+    if any(fake in f"{title} {body} {symbol} {source}".upper()
+           for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ")):
         return
     if os.environ.get("MPTRADE_ORCHESTRATED") == "1":
         intent = {

@@ -176,6 +176,40 @@ class T212HybridReentryTest(unittest.TestCase):
         self.assertEqual(len(strat.s["orders"]), 1)
         self.assertEqual(strat.s["orders"][0]["kind"], "ENTRY")
 
+    def test_adaptive_pullback_scaling(self):
+        """Dynamic pullback scales with volatility: clamp(K * vol, min, max)."""
+        params = _params(
+            STRAT_REENTRY_HYBRID_ENABLED="true",
+            STRAT_REENTRY_PULLBACK_ADAPTIVE="true",
+            STRAT_REENTRY_PULLBACK_K="1.0",
+            STRAT_REENTRY_PULLBACK_MIN="1.0",
+            STRAT_REENTRY_PULLBACK_MAX="4.0",
+        )
+        strat = strategy.Strategy(
+            client=self.mock_client,
+            ticker="TEST_US_EQ",
+            params=params,
+            dry_run=True,
+            trend_slope_provider=lambda _sym: 0.15,  # Confirmed bull
+        )
+        strat.s["last_sell_price"] = 90.0
+        strat.s["post_sell_peak"] = 100.0
+
+        # Inject 2.5% volatility
+        strat._shadow_vol_1h = lambda: 2.5
+        val, desc = strat._effective_reentry_pullback_pct()
+        self.assertAlmostEqual(val, 2.5)
+        self.assertIn("adaptive", desc)
+
+        # Price at 98.5 (1.5% drop from 100) -> blocked by 2.5% threshold
+        strat.step(98.5)
+        self.assertEqual(len(strat.s["orders"]), 0)
+
+        # Price at 97.0 (3.0% drop from 100) -> unblocked by 2.5% threshold
+        strat.step(97.0)
+        self.assertEqual(len(strat.s["orders"]), 1)
+        self.assertEqual(strat.s["orders"][0]["kind"], "ENTRY")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

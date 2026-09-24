@@ -60,10 +60,28 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="maybe")):
             self.assertTrue(order_guard.buy_reference_enabled("binance"))
 
-    def test_repository_config_turns_the_binance_buy_reference_off(self):
+    def test_repository_config_sets_binance_buy_reference_dynamic(self):
         with mock.patch.object(order_guard, "_MARGINS", None):
-            self.assertFalse(order_guard.buy_reference_enabled("binance"))
+            self.assertEqual(order_guard.buy_reference_mode("binance"), "dynamic")
+            self.assertEqual(order_guard.buy_reference_mode("kraken"), "on")
+            self.assertTrue(order_guard.buy_reference_enabled("binance"))
             self.assertTrue(order_guard.buy_reference_enabled("kraken"))
+
+    def test_dynamic_mode_bypasses_in_bull_trend_and_enforces_in_bear_or_flat(self):
+        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
+            provider = _Provider("binance")
+            # In confirmed BULL trend: BUY above old sell reference is permitted
+            with mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):
+                self.assertTrue(order_guard.profit_guard(
+                    provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
+            # In BEAR trend: BUY above old sell reference is blocked for defense
+            with mock.patch.object(order_guard, "_symbol_trend", return_value="bear"):
+                self.assertFalse(order_guard.profit_guard(
+                    provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
+            # In FLAT/UNKNOWN trend: defensive guard is maintained
+            with mock.patch.object(order_guard, "_symbol_trend", return_value="unknown"):
+                self.assertFalse(order_guard.profit_guard(
+                    provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
 
     def test_provider_as_string_and_case_insensitivity(self):
         with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference=0.0)):
@@ -73,6 +91,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
             self.assertTrue(order_guard.profit_guard(_Provider("Binance"), "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
             self.assertFalse(order_guard.buy_reference_enabled("Binance"))
             self.assertFalse(order_guard.buy_reference_enabled("binance"))
+            self.assertEqual(order_guard.buy_reference_mode("Binance"), "off")
 
     def test_missing_default_buy_reference_in_margins_does_not_raise(self):
         # Even if a test mock or custom dict omits default_buy_reference, no KeyError is thrown
@@ -84,9 +103,10 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         with mock.patch.object(order_guard, "_MARGINS", None):
             from providers.market_api import BinanceProvider
             provider = BinanceProvider()
-            self.assertFalse(order_guard.buy_reference_enabled(provider.name))
-            # BUY above historical sell reference is permitted on Binance
-            self.assertTrue(order_guard.profit_guard(provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
+            self.assertEqual(order_guard.buy_reference_mode(provider.name), "dynamic")
+            # In BULL trend, BUY above historical sell reference is permitted on Binance
+            with mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):
+                self.assertTrue(order_guard.profit_guard(provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
             # SELL below historical buy reference is still blocked
             self.assertFalse(order_guard.profit_guard(provider, "TAOUSDC", "SELL", 270.0, 1.15, window_ref=276.0))
 

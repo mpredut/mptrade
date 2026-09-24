@@ -75,6 +75,10 @@ class StratParams:
     reentry_hybrid_enabled: bool = False  # Decouple macro trend permission from micro pullback trigger.
     reentry_peak_relative: bool = False   # Force peak-relative pullback without trend filter (Test 1).
     reentry_pullback_pct: float = 1.5     # Pullback from post-sale peak required in confirmed bull trend.
+    reentry_pullback_adaptive: bool = False  # Scale pullback by volatility: clamp(K * vol, min, max)
+    reentry_pullback_k: float = 1.0       # Multiplier for volatility-adaptive pullback
+    reentry_pullback_min: float = 0.8     # Minimum pullback clamp (%)
+    reentry_pullback_max: float = 4.0     # Maximum pullback clamp (%)
     reentry_ttl_hours: float = 0.0        # 0 = off. After this many hours, stale sale barrier expires.
 
     @classmethod
@@ -144,6 +148,21 @@ class StratParams:
             reentry_pullback_pct = (
                 float_env("STRAT_REENTRY_PULLBACK_PCT", e)
                 if float_env("STRAT_REENTRY_PULLBACK_PCT", e) is not None else 1.5
+            ),
+            reentry_pullback_adaptive = (
+                str(e.get("STRAT_REENTRY_PULLBACK_ADAPTIVE", "")).lower() in ("true", "1")
+            ),
+            reentry_pullback_k = (
+                float_env("STRAT_REENTRY_PULLBACK_K", e)
+                if float_env("STRAT_REENTRY_PULLBACK_K", e) is not None else 1.0
+            ),
+            reentry_pullback_min = (
+                float_env("STRAT_REENTRY_PULLBACK_MIN", e)
+                if float_env("STRAT_REENTRY_PULLBACK_MIN", e) is not None else 0.8
+            ),
+            reentry_pullback_max = (
+                float_env("STRAT_REENTRY_PULLBACK_MAX", e)
+                if float_env("STRAT_REENTRY_PULLBACK_MAX", e) is not None else 4.0
             ),
             reentry_ttl_hours = (
                 float_env("STRAT_REENTRY_TTL_HOURS", e)
@@ -1056,6 +1075,25 @@ class Strategy:
                source="T212", price=price, desktop=self.desktop)
         self._place_buy(self.p.entry_amount, price * disc, kind="ENTRY")
 
+    def _effective_reentry_pullback_pct(self) -> tuple[float, str]:
+        """Return the dynamic volatility-scaled or fixed pullback threshold from peak.
+
+        When STRAT_REENTRY_PULLBACK_ADAPTIVE is enabled, scale pullback by volatility:
+        pullback = clamp(K_PULLBACK * vol, min_pullback, max_pullback).
+        """
+        if not self.p.reentry_pullback_adaptive:
+            return self.p.reentry_pullback_pct, "fixed"
+        vol = None
+        if hasattr(self, "_shadow_vol_1h"):
+            try:
+                vol = self._shadow_vol_1h()
+            except Exception:
+                vol = None
+        if vol is None:
+            return self.p.reentry_pullback_pct, "fixed (fallback)"
+        val = max(self.p.reentry_pullback_min, min(self.p.reentry_pullback_max, self.p.reentry_pullback_k * vol))
+        return val, f"adaptive (vol {vol:.2f}% x k={self.p.reentry_pullback_k} -> {val:.2f}%)"
+
     def step(self, price: float) -> None:
         held = self.s["qty"]
         self._check_loss_alert(price)   # Alert on deeper loss while holding; never sells.
@@ -1087,6 +1125,7 @@ class Strategy:
                             is_bull = True
                     except Exception:
                         pass
+                pullback_pct, pb_src = self._effective_reentry_pullback_pct()
                 elapsed = (self._now() - self.s["last_sell_ts"]) if self.s.get("last_sell_ts") else None
                 ttl_s = (self.p.reentry_ttl_hours * 3600.0) if self.p.reentry_ttl_hours > 0 else None
                 blocked, reason = sr.reentry_hybrid_blocked(
@@ -1095,17 +1134,17 @@ class Strategy:
                     post_sell_peak=self.s.get("post_sell_peak"),
                     is_bull=is_bull,
                     drop_pct=self.p.reentry_drop_pct,
-                    pullback_pct=self.p.reentry_pullback_pct,
+                    pullback_pct=pullback_pct,
                     tol_pct=self.p.reentry_tolerance_pct,
                     elapsed_sec=elapsed,
                     ttl_sec=ttl_s,
                 )
                 if blocked:
                     log(f"  [STRAT] hybrid re-entry blocked: {reason} "
-                        f"(price {price:.2f}, peak {self.s.get('post_sell_peak', 0.0):.2f})")
+                        f"(price {price:.2f}, peak {self.s.get('post_sell_peak', 0.0):.2f}) [{pb_src}]")
                     return
                 if lsp:
-                    log(f"  [STRAT] hybrid re-entry unblocked ({reason}) — placing ENTRY")
+                    log(f"  [STRAT] hybrid re-entry unblocked ({reason}) [{pb_src}] — placing ENTRY")
             else:
                 rdp = self.p.reentry_drop_pct
                 if rdp > 0 and lsp:

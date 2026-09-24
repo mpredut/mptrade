@@ -108,6 +108,11 @@ class NotificationServer:
         if os.environ.get("DISABLE_EXTERNAL_NOTIFICATIONS", "").strip().lower() in {"1", "true", "yes", "on"}:
             logging.debug(f"External notifications disabled: would send to {topic}: {title}")
             return True
+
+        check_text = f"{title} {message} {topic}".upper()
+        if any(fake in check_text for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ")):
+            logging.info(f"Skipping test/fake alert in _send_ntfy: {title}")
+            return True
         
         url = f"https://ntfy.sh/{topic}"
         headers = {
@@ -209,8 +214,9 @@ class NotificationServer:
         full_title = f"[{bot_name}] {title}" if bot_name else title
 
         # Block synthetic/fake test instruments from ever leaking to external topics
-        full_text = f"{full_title} {body}".upper()
-        if any(fake in full_text for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX")):
+        sym = str(first.get("symbol") if isinstance(first, dict) else getattr(first, "symbol", "") or "")
+        full_text = f"{full_title} {body} {sym}".upper()
+        if any(fake in full_text for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ")):
             logging.info(f"Skipping test/fake alert: {full_title}")
             return True
 
@@ -267,6 +273,8 @@ class NotificationServer:
 
         # 2. Check for the [NTFY] prefix shortcut
         if "[NTFY]" in line:
+            if any(fake in line.upper() for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ")):
+                return
             parts = line.split("[NTFY]", 1)
             if len(parts) > 1:
                 msg = parts[1].strip()
@@ -274,6 +282,8 @@ class NotificationServer:
                 return
 
         # 3. Check Intelligent Rules (Regex)
+        if any(fake in line.upper() for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ")):
+            return
         for rule in self.rules:
             if rule["regex_obj"].search(line):
                 # Enforce Cooldown

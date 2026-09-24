@@ -597,6 +597,41 @@ class StratRulesTest(unittest.TestCase):
         self.assertFalse(blocked)
         self.assertEqual(reason, "range_drop_met")
 
+    def test_effective_reentry_pullback_pct(self):
+        st = _make_strategy("TESTPAIR_PULLBACK")
+        st.p.reentry_pullback_pct = 1.5
+        st.p.reentry_pullback_adaptive = False
+        val, src = st._effective_reentry_pullback_pct()
+        self.assertEqual(val, 1.5)
+        self.assertEqual(src, "fixed")
+
+        st.p.reentry_pullback_adaptive = True
+        st.p.reentry_pullback_k = 1.0
+        st.p.reentry_pullback_min = 0.8
+        st.p.reentry_pullback_max = 3.5
+
+        # Fallback when warm-up or no vol data
+        st._shadow_vol_1h = lambda: None
+        val, src = st._effective_reentry_pullback_pct()
+        self.assertEqual(val, 1.5)
+        self.assertIn("fallback", src)
+
+        # Normal adaptive scaling: vol=2.2 -> 2.2%
+        st._shadow_vol_1h = lambda: 2.2
+        val, src = st._effective_reentry_pullback_pct()
+        self.assertAlmostEqual(val, 2.2)
+        self.assertIn("adaptive", src)
+
+        # Clamping to minimum: vol=0.3 -> 0.8%
+        st._shadow_vol_1h = lambda: 0.3
+        val, src = st._effective_reentry_pullback_pct()
+        self.assertAlmostEqual(val, 0.8)
+
+        # Clamping to maximum: vol=5.0 -> 3.5%
+        st._shadow_vol_1h = lambda: 5.0
+        val, src = st._effective_reentry_pullback_pct()
+        self.assertAlmostEqual(val, 3.5)
+
 
 if __name__ == "__main__":
     unittest.main()
