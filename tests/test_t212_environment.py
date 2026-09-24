@@ -31,7 +31,7 @@ def test_t212_environment_uses_one_documented_layer_order(monkeypatch, tmp_path)
 
 
 def test_t212_launchers_use_the_shared_environment_loader():
-    for relative in ("ipo.py", "t212_bot.py", "t212_status.py"):
+    for relative in ("ipo.py", "t212_bot.py", "t212_status.py", "price_alert.py"):
         text = (T212_DIR / relative).read_text(encoding="utf-8")
         assert "load_t212_environment(" in text
 

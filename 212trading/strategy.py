@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ipo_common import (
-    log, now_str, are_close, required_env, required_float_env,
+    log as _log, now_str, are_close, required_env, required_float_env,
     required_bool_env,
 )
 from ipo_notify import notify
@@ -28,6 +29,12 @@ from providers.t212_provider import T212Provider
 from strategies.state_store import JsonStateStore
 
 FX_FEE_PCT = 0.15  # T212 currency-conversion fee per direction.
+
+
+def log(msg: str) -> None:
+    """Log with the asset's thread name: t212_bot runs one thread per asset into one log."""
+    name = threading.current_thread().name
+    _log(msg if name == "MainThread" else f"[{name}] {msg}")
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -630,6 +637,21 @@ class Strategy:
             if not self._place_sell(q, lim, level=lvl):
                 fails[str(lvl)] = now + 1800
 
+    def _buy_is_stale(self, order: dict, price: float) -> bool:
+        """Return whether a resting limit BUY should be cancelled and placed again.
+
+        It must have waited ``order_ttl_min`` and a fresh order at the current price
+        (every BUY is placed at price minus ``entry_discount_pct``) must sit more than
+        0.3% above it. Comparing the raw price instead re-placed an identical order on
+        every TTL whenever the discount exceeded 0.3% (RGNT: 5%, NVDA: 0.4%).
+        """
+        if str(order.get("side")).upper() != "BUY" or order.get("market"):
+            return False
+        if (self._now() - order.get("ts", 0)) / 60 <= self.p.order_ttl_min:
+            return False
+        fresh_limit = price * (1 - self.p.entry_discount_pct / 100)
+        return fresh_limit > float(order["limit"]) * 1.003
+
     # -- Reconciliation --------------------------------------------------------
     def _remove_order(self, o: dict) -> None:
         if o in self.s["orders"]:
@@ -853,9 +875,7 @@ class Strategy:
                         and float(status.filled_qty or 0.0) > 1e-9):
                     self.s.setdefault("tp_sold_levels", []).append(o["level"])
                 self._remove_order(o)
-            elif (o["side"] == "BUY"
-                  and (self._now() - o.get("ts", 0)) / 60 > self.p.order_ttl_min
-                  and price > o["limit"] * 1.003):
+            elif self._buy_is_stale(o, price):
                 log(f"  [STRAT] BUY {o['id']} unfilled, the price rose — cancelling and re-placing")
                 self._cancel_specific(o)
 

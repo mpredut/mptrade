@@ -22,7 +22,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 sys.path.insert(0, _HERE)
 sys.path.insert(0, _ROOT)
-from ipo_common import load_dotenv, log  # noqa: E402
+from ipo_common import load_t212_environment, log  # noqa: E402
 from market_data import get_price_usd  # noqa: E402
 from alertnotifiers import AlertNotifier  # noqa: E402
 from state_io import atomic_write_json  # noqa: E402
@@ -48,7 +48,9 @@ def main() -> int:
     ap.add_argument("--env-file", default=os.path.join(_HERE, ".env"))
     args = ap.parse_args()
 
-    load_dotenv(args.env_file)
+    # The shared T212 policy also reads the repository .env, where NTFY_TOPIC_PRICE lives
+    # since the secrets moved there; loading only 212trading/.env left the alert mute.
+    load_t212_environment(args.env_file)
     # PRICE alerts use the dedicated NTFY_TOPIC_PRICE.
     topic = args.topic or os.environ.get("NTFY_TOPIC_PRICE")
     if not topic:

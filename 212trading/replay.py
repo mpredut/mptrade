@@ -209,6 +209,11 @@ def _run_once(
                     fills += 1
                     turnover_account += quantity * price / rate
 
+            # Live _reconcile_real() cancels a stale resting BUY and step() places it
+            # again at the current price; replay never reconciles, so apply the same rule.
+            for order in list(engine.s["orders"]):
+                if engine._buy_is_stale(order, float(close)):
+                    engine._remove_order(order)
             trend_closes.append(float(close))
             engine.fx_to_usd = rate
             engine.step(float(close))

@@ -204,6 +204,53 @@ class T212ReplayTest(unittest.TestCase):
             self.assertEqual(engine.s["sl_rebuy"], {"low": 70.0, "sell_price": 70.0})
 
 
+class T212StaleBuyTest(unittest.TestCase):
+    """One TTL rule for a resting BUY, shared by live reconciliation and replay."""
+
+    def _engine(self, **overrides):
+        now = [1_000_000.0]
+        engine = strategy.Strategy(
+            MagicMock(), "TEST_US_EQ", _params(**overrides), dry_run=True,
+            initial_state=strategy._new_state(), fx_to_usd=1.0, clock=lambda: now[0],
+        )
+        return engine, now
+
+    def test_buy_is_stale_compares_the_order_a_fresh_placement_would_make(self):
+        engine, now = self._engine(STRAT_ENTRY_DISCOUNT_PCT="5", STRAT_ORDER_TTL_MIN="3")
+        order = {"side": "BUY", "limit": 95.0, "ts": now[0]}
+        now[0] += 4 * 60
+        # Unchanged price: a new order would be the same 95.00, so nothing to replace.
+        # The old rule (price > limit * 1.003) re-placed it on every TTL.
+        self.assertFalse(engine._buy_is_stale(order, 100.0))
+        self.assertTrue(engine._buy_is_stale(order, 100.5))
+        with self.subTest(msg="younger_than_ttl"):
+            order_young = {"side": "BUY", "limit": 95.0, "ts": now[0] - 60}
+            self.assertFalse(engine._buy_is_stale(order_young, 110.0))
+        with self.subTest(msg="sells_and_market_orders_are_never_stale_buys"):
+            self.assertFalse(engine._buy_is_stale({"side": "SELL", "limit": 95.0, "ts": 0}, 110.0))
+            self.assertFalse(engine._buy_is_stale(
+                {"side": "BUY", "limit": 95.0, "ts": 0, "market": True}, 110.0))
+
+    def test_replay_replaces_an_entry_left_below_a_rally(self):
+        # The entry sits 0.2% under 100; the next bars rally without touching it, then
+        # dip to 110.5. Live re-places the stale entry near the price, so it must fill.
+        bars = [(100.0, 100.5, 99.9, 100.0)]
+        bars += [(p, p * 1.004, p * 0.9995, p) for p in (103.0, 106.0, 109.0, 111.0)]
+        bars += [(111.0, 111.2, 110.5, 111.0)]
+        result = replay.run_replay(bars, _params(), bar_minutes=1440)
+        self.assertGreater(result["open_qty"], 0.0)
+
+    def test_log_lines_carry_the_asset_thread_name(self):
+        import threading
+        lines = []
+        with patch.object(strategy, "_log", lines.append):
+            strategy.log("main")
+            worker = threading.Thread(target=strategy.log, args=("tick",), name="nvda")
+            worker.start()
+            worker.join()
+        self.assertEqual(lines, ["main", "[nvda] tick"])
+
+
 class T212StatePersistenceTest(unittest.TestCase):
     @staticmethod
     def _client():
