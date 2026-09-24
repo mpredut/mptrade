@@ -13,21 +13,25 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] Orch
 
 _GUARD_MARKERS = (
     "🛑", "🛡", "STOP-LOSS", "STOP_LOSS", "TRAILING", "LIQUID", "CATASTROPH", "CRASH",
-    "LICHID", "CATASTROF",
+    "LICHID", "CATASTROF", "IMBALANCE", "DEZECHILIBR", "QUARANTINE", "SL ", " SL",
 )
 _OPS_MARKERS = (
-    "FAILED", "ERROR", "MANUAL", "GONE", "IMBALANC",
-    "ESUAT", "ERORI", "DISPARUT", "DEZECHILIBR",
+    "FAILED", "ERROR", "MANUAL", "GONE",
+    "ESUAT", "ERORI", "DISPARUT",
 )
 
 def _topic_for_category(title: str, source: str) -> str:
     t = (title or "").upper()
     s = (source or "").lower()
-    if any(m in t for m in _GUARD_MARKERS):
+    if any(m in t for m in _GUARD_MARKERS) or any(m in s for m in ("guard", "trail", "assetguardian", "stop")):
         cat = "GUARD"
     elif any(m in t for m in _OPS_MARKERS) or "watchdog" in s:
         cat = "ERROR"
-    elif "alert" in s or "prag" in t.lower() or "threshold" in t.lower():
+    elif (
+        "alert" in s or "price" in s or "prag" in t.lower() or "threshold" in t.lower()
+        or "coin" in t.lower() or any(src in s for src in ("coinmarketcap", "coingecko", "dexscreener", "pricechecker", "notifier"))
+        or any(m in t for m in ("▲", "▼", "RISE", "DROP"))
+    ):
         cat = "PRICE"
     else:
         cat = "TRADES"
@@ -101,6 +105,9 @@ class NotificationServer:
     def _send_ntfy(self, title: str, message: str, priority: str, topic: str, is_retry: bool = False) -> bool:
         if not topic:
             return True
+        if os.environ.get("DISABLE_EXTERNAL_NOTIFICATIONS", "").strip().lower() in {"1", "true", "yes", "on"}:
+            logging.debug(f"External notifications disabled: would send to {topic}: {title}")
+            return True
         
         url = f"https://ntfy.sh/{topic}"
         headers = {
@@ -143,6 +150,8 @@ class NotificationServer:
             return False
             
     def _send_email(self, subject: str, message: str, is_retry: bool = False) -> bool:
+        if os.environ.get("DISABLE_EXTERNAL_NOTIFICATIONS", "").strip().lower() in {"1", "true", "yes", "on"}:
+            return True
         # Placeholder for actual email delivery. Can be implemented with smtplib.
         logging.warning(f"Email delivery not fully configured. Intent recorded for: {subject}")
         return True
@@ -150,6 +159,61 @@ class NotificationServer:
     def dispatch_alerts(self, alerts: list, webhook_url: str = None, bot_name: str = "") -> bool:
         if not alerts:
             return False
+
+        first = alerts[0]
+        # Resolve title, body, and source intelligently based on alert payload type
+        if isinstance(first, dict):
+            alert_type = first.get("type")
+            if alert_type == "price_alert" or "alert_type" in first:
+                sym = first.get("symbol", "N/A")
+                atype = first.get("alert_type", "alert")
+                pchg = float(first.get("percent_change", 0.0) or 0.0)
+                dir_str = "▲" if atype == "up" else "▼"
+                title = f"{sym} {dir_str} {pchg:+.2f}%"
+                from notify_engine.alertnotifiers import AlertNotifier
+                body = AlertNotifier.format_batch_message(alerts)
+                source = first.get("source") or "price_alert"
+            elif alert_type == "new_coin_discovered":
+                sym = first.get("symbol", "N/A")
+                title = f"New Coin: {sym}"
+                from notify_engine.alertnotifiers import AlertNotifier
+                body = AlertNotifier.format_batch_message(alerts)
+                source = first.get("source") or "price_alert"
+            elif alert_type == "bot_event":
+                title = first.get("name", "Alert")
+                body = first.get("body", "")
+                source = first.get("source", "")
+            else:
+                title = first.get("name") or first.get("title") or "Alert"
+                body = first.get("body") or first.get("message") or first.get("symbol") or ""
+                source = first.get("source", "")
+        elif isinstance(first, str):
+            title = "Alert"
+            body = "\n".join(alerts)
+            source = "price_alert" if "price" in body.lower() else "system"
+        else:
+            if hasattr(first, "alert_type"):
+                sym = getattr(first, "symbol", "N/A")
+                atype = getattr(first, "alert_type", "alert")
+                pchg = float(getattr(first, "percent_change", 0.0) or 0.0)
+                dir_str = "▲" if atype == "up" else "▼"
+                title = f"{sym} {dir_str} {pchg:+.2f}%"
+                from notify_engine.alertnotifiers import AlertNotifier
+                body = AlertNotifier.format_batch_message(alerts)
+                source = getattr(first, "source", "price_alert")
+            else:
+                title = getattr(first, "name", getattr(first, "title", "Alert"))
+                body = getattr(first, "body", getattr(first, "message", getattr(first, "symbol", "")))
+                source = getattr(first, "source", "")
+
+        full_title = f"[{bot_name}] {title}" if bot_name else title
+
+        # Block synthetic/fake test instruments from ever leaking to external topics
+        full_text = f"{full_title} {body}".upper()
+        if any(fake in full_text for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX")):
+            logging.info(f"Skipping test/fake alert: {full_title}")
+            return True
+
         from notify_engine.alertnotifiers import _reserve_delivery, _alerts_are_urgent
         urgent = _alerts_are_urgent(alerts)
         allowed, reason, _ = _reserve_delivery("ntfy", alerts, urgent=urgent)
@@ -157,20 +221,12 @@ class NotificationServer:
             logging.info(f"ntfy delivery skipped by policy: {reason}")
             return False
 
-        first = alerts[0]
-        title = first.get("name", "Alert") if isinstance(first, dict) else getattr(first, "name", "Alert")
-        body = first.get("body", "") if isinstance(first, dict) else getattr(first, "body", "")
-        source = first.get("source", "") if isinstance(first, dict) else getattr(first, "source", "")
-        if not body and isinstance(first, dict):
-            body = first.get("symbol", "")
-
         topic = None
         if webhook_url:
             topic = webhook_url.rstrip("/").rsplit("/", 1)[-1]
         if not topic:
             topic = _topic_for_category(title, source)
 
-        full_title = f"[{bot_name}] {title}" if bot_name else title
         priority = "urgent" if urgent else "high"
         return self._send_ntfy(full_title, body, priority, topic)
 

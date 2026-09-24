@@ -76,10 +76,10 @@ def _alert_identity(alert: Any) -> dict:
     if isinstance(alert, dict):
         return {
             key: alert.get(key)
-            for key in ("type", "symbol", "name", "source", "body", "url")
+            for key in ("type", "symbol", "name", "source", "body", "url", "alert_type", "threshold")
         }
     return {
-        "type": alert.__class__.__name__,
+        "type": getattr(alert, "type", alert.__class__.__name__),
         "symbol": getattr(alert, "symbol", None),
         "alert_type": getattr(alert, "alert_type", None),
         "threshold": getattr(alert, "threshold", None),
@@ -269,9 +269,6 @@ class AlertNotifier:
 
     @staticmethod
     def format_batch_message(alerts) -> str:
-        # List comma-separated symbols on the first line.
-        #symbols = ", ".join(alert.symbol for alert in alerts)
-        #lines = [f"({len(alerts)}): {symbols}",    "",]
         lines = []
         for alert in alerts:
             if isinstance(alert, dict) and alert.get("type") == "bot_event":
@@ -281,18 +278,32 @@ class AlertNotifier:
                 lines.append(AlertNotifier.format_new_coin_message(alert))
                 continue
 
-            direction = "U" if alert.alert_type == "up" else "D"
-            reference_time = AlertNotifier.format_human_readable_time(
-                getattr(alert, "reference_time", None) or getattr(alert, "timestamp", None)
-            )
+            if isinstance(alert, dict):
+                alert_type = alert.get("alert_type", "")
+                symbol = alert.get("symbol", "N/A")
+                pct_change = float(alert.get("percent_change", 0.0) or 0.0)
+                current_price = float(alert.get("current_price", 0.0) or 0.0)
+                ref_price = float(alert.get("reference_price", 0.0) or 0.0)
+                ref_time_val = alert.get("reference_time") or alert.get("timestamp")
+                url = alert.get("url")
+            else:
+                alert_type = getattr(alert, "alert_type", "")
+                symbol = getattr(alert, "symbol", "N/A")
+                pct_change = float(getattr(alert, "percent_change", 0.0) or 0.0)
+                current_price = float(getattr(alert, "current_price", 0.0) or 0.0)
+                ref_price = float(getattr(alert, "reference_price", 0.0) or 0.0)
+                ref_time_val = getattr(alert, "reference_time", None) or getattr(alert, "timestamp", None)
+                url = getattr(alert, "url", None)
+
+            direction = "U" if alert_type == "up" else "D"
+            reference_time = AlertNotifier.format_human_readable_time(ref_time_val)
 
             lines.append(
-                f"{alert.symbol}: {direction} {alert.percent_change:+.2f}% "
-                f"| C ${alert.current_price:.4f} | R ${alert.reference_price:.4f} "
+                f"{symbol}: {direction} {pct_change:+.2f}% "
+                f"| C ${current_price:.4f} | R ${ref_price:.4f} "
                 f"({reference_time})"
             )
 
-            url = getattr(alert, "url", None)
             if url:
                 lines.append(f"Link: {url}")
 
@@ -355,7 +366,11 @@ class AlertNotifier:
     ) -> bool:
         if not alerts:
             return False
+        if os.environ.get("DISABLE_EXTERNAL_NOTIFICATIONS", "").strip().lower() in {"1", "true", "yes", "on"}:
+            return True
         def default_serializer(obj):
+            if hasattr(obj, "to_dict"):
+                return obj.to_dict()
             if isinstance(obj, datetime):
                 return obj.isoformat()
             return str(obj)
@@ -372,15 +387,31 @@ class AlertNotifier:
     def send_phone_webhook_batch(alerts, webhook_url: Optional[str] = None):
         if not alerts:
             return False
+        if os.environ.get("DISABLE_EXTERNAL_NOTIFICATIONS", "").strip().lower() in {"1", "true", "yes", "on"}:
+            return True
         if os.environ.get("MPTRADE_ORCHESTRATED") == "1":
             def default_serializer(obj):
+                if hasattr(obj, "to_dict"):
+                    return obj.to_dict()
                 if isinstance(obj, datetime):
                     return obj.isoformat()
                 return str(obj)
+
+            serialized_alerts = []
+            for a in alerts:
+                if hasattr(a, "to_dict"):
+                    d = a.to_dict()
+                    d.setdefault("type", "price_alert")
+                    serialized_alerts.append(d)
+                elif isinstance(a, dict):
+                    serialized_alerts.append(a)
+                else:
+                    serialized_alerts.append(str(a))
+
             intent = {
                 "__orchestrator_intent__": "ntfy_webhook",
                 "webhook_url": webhook_url,
-                "alerts": list(alerts)
+                "alerts": serialized_alerts
             }
             sys.stdout.write(json.dumps(intent, default=default_serializer) + "\n")
             sys.stdout.flush()
@@ -416,6 +447,8 @@ class AlertNotifier:
 def notify(title: str, body: str, source: str, symbol: str,
            price: float = None, desktop: bool = False,
            email: bool = None) -> None:
+    if os.environ.get("DISABLE_EXTERNAL_NOTIFICATIONS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
     if os.environ.get("MPTRADE_ORCHESTRATED") == "1":
         intent = {
             "__orchestrator_intent__": "ntfy_webhook",

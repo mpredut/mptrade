@@ -69,3 +69,28 @@ def test_venue_env_stack_overrides_root_config_env(tmp_path, monkeypatch):
     # Root keys not overridden by venue remain available as defaults
     assert os.environ["VENUE_ROOT_ONLY"] == "root_only"
 
+
+def test_root_config_defines_no_venue_key():
+    import botcore
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    root_keys = set(botcore.parse_dotenv(os.path.join(root_dir, "config.env")))
+    for venue in ("kraken", "hyperliquid"):
+        venue_keys = set(botcore.parse_dotenv(os.path.join(root_dir, venue, "config.env")))
+        assert sorted(root_keys & venue_keys) == [], f"Conflict for {venue}"
+
+
+def test_venue_strategy_survives_root_config_loaded_first():
+    from unittest.mock import patch
+    import botcore
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for venue in ("kraken", "hyperliquid"):
+        venue_cfg = botcore.parse_dotenv(os.path.join(root_dir, venue, "config.env"))
+        with patch.dict(os.environ, {}, clear=True):
+            botcore.load_dotenv(os.path.join(root_dir, "config.env"))
+            botcore.load_env_stack(os.path.join(root_dir, venue, ".env.absent-for-test"))
+            for key in ("STRAT_EXECUTE", "STRAT_TAKEPROFIT_PCT", "STRAT_DCA_DROP_PCT"):
+                if key in venue_cfg:
+                    assert os.environ.get(key) == venue_cfg[key], f"{key} in {venue}"
+
+
+

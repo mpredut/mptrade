@@ -25,6 +25,7 @@ class SendNtfyRetryTest(unittest.TestCase):
             "NTFY_TOPIC_ERROR": "testtopic",
             "NTFY_DAILY_BUDGET": "100",
             "NTFY_URGENT_RESERVE": "20",
+            "DISABLE_EXTERNAL_NOTIFICATIONS": "0",
         }, clear=False)
         self._env.start()
         self._temporary = tempfile.TemporaryDirectory()

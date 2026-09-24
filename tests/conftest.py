@@ -20,6 +20,13 @@ _execution_audit_tmp = tempfile.TemporaryDirectory(
 )
 os.environ["EXECUTION_AUDIT_DIR"] = _execution_audit_tmp.name
 
+_notification_state_tmp = tempfile.TemporaryDirectory(
+    prefix="mptrade-tests-notification-state-",
+)
+os.environ["NOTIFICATION_STATE_FILE"] = os.path.join(
+    _notification_state_tmp.name, "notification_delivery_state.json"
+)
+
 
 @pytest.fixture(autouse=True)
 def _isolate_order_retry_queue(tmp_path, monkeypatch):
