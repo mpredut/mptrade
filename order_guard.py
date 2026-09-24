@@ -36,6 +36,7 @@ def _load_margins():
         "default_max_daily_trades": 25,        # daily trade cap
         "default_safeback_sec": 14 * 24 * 3600 + 60,  # own-trade search window (seconds): 14 days
         "default_recent_transaction_sec": 180,   # anti-spam window (seconds)
+        "default_buy_reference": 1.0,          # 1 = BUY must beat the historical sell reference
     }
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "order_guard.conf")
     try:
@@ -56,6 +57,28 @@ def _load_margins():
         print(f"[order_guard] conf invalid ({e}) — folosesc default 1.15")
     _MARGINS = m
     return m
+
+
+def _provider_name(provider):
+    if isinstance(provider, str):
+        return provider
+    return getattr(provider, "name", "") or ""
+
+
+def buy_reference_enabled(provider_name):
+    """Return whether a BUY must sit below the venue's historical sell reference.
+
+    Configuration key `<venue>_buy_reference` (1 on, 0 off), falling back to
+    `default_buy_reference`. Off removes the static re-entry anchor ("never buy above the
+    lowest recent sell"); the SELL reference and the quantity/weight guards stay active."""
+    m = _load_margins()
+    name = _provider_name(provider_name)
+    key = name.lower() + "_buy_reference"
+    try:
+        val = m.get(key, m.get("default_buy_reference", 1.0))
+        return float(val) != 0.0
+    except (TypeError, ValueError, KeyError):
+        return True     # an unreadable value keeps the conservative guard
 
 
 def margin_for(provider_name):
@@ -177,7 +200,7 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
 
     Return (True, None) or (False, reason). Read errors propagate so the caller can fail
     closed, consistently with profit_guard and weight_limit."""
-    name = getattr(provider, "name", "")
+    name = _provider_name(provider)
     max_daily_trades = max_daily_trades if max_daily_trades is not None else max_daily_trades_for(name)
     safeback_sec = float(safeback_sec if safeback_sec is not None else safeback_sec_for(name))
     recent_transaction_sec = float(recent_transaction_sec if recent_transaction_sec is not None
@@ -205,7 +228,14 @@ def profit_guard(provider, symbol, order_type, price, profit_percentage, window_
     provider.last_opposite_fill(symbol, order_type). A missing or non-positive reference
     allows placement because there is no prior transaction to compare."""
     order_type = order_type.upper()
-    ref = window_ref if window_ref is not None else provider.last_opposite_fill(symbol, order_type)
+    provider_name = _provider_name(provider)
+    if order_type == "BUY" and not buy_reference_enabled(provider_name):
+        print(f"[GUARD] BUY {symbol}: the historical sell reference is off for this venue "
+              f"(order_guard.conf); price {price} is not compared with past sells")
+        return True
+    ref = window_ref if window_ref is not None else (
+        provider.last_opposite_fill(symbol, order_type) if hasattr(provider, "last_opposite_fill") else None
+    )
     if ref is None or ref <= 0:
         return True
     if order_type == "BUY":
