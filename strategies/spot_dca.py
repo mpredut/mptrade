@@ -109,6 +109,11 @@ class StratParams:
     alloc_pct: float = 0.0      # percentage allocated to THIS coin; venue allocations total 100
     entry_pct: float = 0.0      # Entry is this percentage of the asset allocation.
     dca_pct: float = 0.0        # DCA is this percentage of the asset allocation.
+    # --- HYBRID RE-ENTRY (EXPERIMENTAL, default OFF) -----------------------------
+    reentry_hybrid_enabled: bool = False  # Decouple macro trend permission from micro pullback trigger.
+    reentry_peak_relative: bool = False   # Force peak-relative pullback without trend filter (Test 1).
+    reentry_pullback_pct: float = 1.5     # Pullback from post-sale peak required in confirmed bull trend.
+    reentry_ttl_hours: float = 0.0        # 0 = off. After this many hours, stale sale barrier expires.
 
     def __post_init__(self):
         def finite(name: str, value) -> float:
@@ -232,6 +237,20 @@ class StratParams:
             dca_vol_scale_k    = required_float_env("STRAT_DCA_VOL_SCALE_K"),
             dca_vol_ref        = required_float_env("STRAT_DCA_VOL_REF"),
             dca_vol_interval   = required_int_env("STRAT_DCA_VOL_INTERVAL"),
+            reentry_hybrid_enabled = (
+                str(os.environ.get("STRAT_REENTRY_HYBRID_ENABLED", "")).lower() in ("true", "1")
+            ),
+            reentry_peak_relative = (
+                str(os.environ.get("STRAT_REENTRY_PEAK_RELATIVE", "")).lower() in ("true", "1")
+            ),
+            reentry_pullback_pct = (
+                float_env("STRAT_REENTRY_PULLBACK_PCT")
+                if float_env("STRAT_REENTRY_PULLBACK_PCT") is not None else 1.5
+            ),
+            reentry_ttl_hours = (
+                float_env("STRAT_REENTRY_TTL_HOURS")
+                if float_env("STRAT_REENTRY_TTL_HOURS") is not None else 0.0
+            ),
         )
 
 
@@ -264,6 +283,8 @@ def _new_state() -> dict:
         "last_sell_price": None,  # Latest sale price for reentry rules.
         "last_exit_kind": None,   # TP/STOP/etc. for stop-aware reentry.
         "sl_low": None,           # Post-stop low used for bounce reentry.
+        "post_sell_peak": None,   # Peak tracked after sale for hybrid/peak pullback reentry.
+        "last_sell_ts": None,     # Timestamp of last exit for TTL barrier decay.
         "trail_peak": None,       # Peak tracked after price exceeds TP.
         "trail_stop": None,       # Trailing floor ratchets upward even as volatility changes.
         "trend_mode": False,      # overlay: currently in a hold+trailing trend position
@@ -908,6 +929,8 @@ class Strategy:
         self.s["last_sell_price"] = price   # reentry rule must not buy back higher
         self.s["last_exit_kind"] = o.get("kind")   # TP/STOP enables stop-aware reentry
         self.s["sl_low"] = price            # Initial low for post-stop bounce reentry.
+        self.s["post_sell_peak"] = price    # Initial peak for post-sale pullback tracking.
+        self.s["last_sell_ts"] = self._shadow_prices[-1][0] if self._shadow_prices else time.time()
         log(f"  [STRAT] === cycle closed; restarting (cycle {self.s['cycle']}) ===")
 
     # -- Decision logic --------------------------------------------------------
@@ -1185,7 +1208,7 @@ class Strategy:
         return min_move_pct <= 0 or (move is not None and abs(move) >= min_move_pct)
 
     def _overlay_step(self, price: float, regime: MarketRegimeDecision,
-                      closes: list) -> bool:
+                      closes: list, tick_time: float | None = None) -> bool:
         """Apply the regime overlay and return whether it handled the tick.
 
         Confirmed uptrend uses top-up, hold, and trailing or SMA-break exit. A range
@@ -1223,6 +1246,41 @@ class Strategy:
             log("  [STRAT] TREND ENTER cancelled: the signal vanished before the fill")
             return False                            # Return to the range strategy.
         if up and self.s["spent"] + self.p.trend_topup <= self._effective_max_budget():
+            # Brand new entry while flat must obey re-entry restrictions!
+            if self.s["qty"] <= 1e-12:
+                lsp = self.s.get("last_sell_price")
+                if lsp:
+                    cur_peak = self.s.get("post_sell_peak") or lsp
+                    self.s["post_sell_peak"] = max(cur_peak, price)
+                    if self.s.get("last_exit_kind") == "STOP" and self.p.reentry_sl_bounce_pct > 0:
+                        low = min(self.s.get("sl_low") or price, price)
+                        self.s["sl_low"] = low
+                        if sr.reentry_stop_blocked(price, low, self.p.reentry_sl_bounce_pct, self.p.reentry_tolerance_pct):
+                            return False
+                    elif self.p.reentry_hybrid_enabled:
+                        is_bull = True if self.p.reentry_peak_relative else up
+                        drop_pct, _ = self._effective_reentry_drop_pct()
+                        elapsed = (tick_time - self.s["last_sell_ts"]) if self.s.get("last_sell_ts") and tick_time else None
+                        ttl_s = (self.p.reentry_ttl_hours * 3600.0) if self.p.reentry_ttl_hours > 0 else None
+                        blocked, reason = sr.reentry_hybrid_blocked(
+                            price=price,
+                            last_sell=lsp,
+                            post_sell_peak=self.s.get("post_sell_peak"),
+                            is_bull=is_bull,
+                            drop_pct=drop_pct,
+                            pullback_pct=self.p.reentry_pullback_pct,
+                            tol_pct=self.p.reentry_tolerance_pct,
+                            elapsed_sec=elapsed,
+                            ttl_sec=ttl_s,
+                        )
+                        if blocked:
+                            log(f"  [STRAT] trend overlay entry blocked by hybrid re-entry: {reason}")
+                            return False
+                    else:
+                        drop_pct, _ = self._effective_reentry_drop_pct()
+                        if drop_pct > 0 and sr.reentry_drop_blocked(price, lsp, drop_pct, self.p.reentry_tolerance_pct):
+                            log(f"  [STRAT] trend overlay entry blocked by re-entry drop")
+                            return False
             self._cancel_orders("buy")              # Cancel pending range orders.
             self._cancel_orders("sell")
             if self.s["orders"]:                    # Live mode waits for terminal confirmations.
@@ -1285,7 +1343,7 @@ class Strategy:
 
         regime = None
         regime_closes = []
-        needs_regime = self.p.trend_overlay or (
+        needs_regime = self.p.trend_overlay or self.p.reentry_hybrid_enabled or (
             held > 1e-12 and (
                 self.p.dca_trend_brake
                 or (self.p.tp_trend_hold and self.p.tp_regime_gate)
@@ -1296,14 +1354,17 @@ class Strategy:
 
         # Combine range DCA/TP with trend hold/trailing behavior.
         if (self.p.trend_overlay
-                and self._overlay_step(price, regime, regime_closes)):
+                and self._overlay_step(price, regime, regime_closes, tick_time=tick_time)):
             return
 
         if held <= 1e-12:
             if self._has_open("buy"):
                 return
-            # Stop-aware reentry rule.
             lsp = self.s.get("last_sell_price")
+            if lsp:
+                cur_peak = self.s.get("post_sell_peak") or lsp
+                self.s["post_sell_peak"] = max(cur_peak, price)
+            # Stop-aware reentry rule.
             if self.s.get("last_exit_kind") == "STOP" and self.p.reentry_sl_bounce_pct > 0 and lsp:
                 # After stop-loss, reenter on a bounce from the post-sale low instead of
                 # waiting for a deeper drop that could leave the bot outside a recovery.
@@ -1316,6 +1377,29 @@ class Strategy:
                     return
                 log(f"  [STRAT] re-entry after STOP: recovery reached (price {price} >= "
                     f"{prag_bounce:.{self.price_dec}f}, min {low}) — reintru")
+            elif self.p.reentry_hybrid_enabled:
+                up = True if self.p.reentry_peak_relative else (
+                    self._regime_matches(regime, "bull", min_samples=self.p.regime_min_samples) if regime else False
+                )
+                drop_pct, _ = self._effective_reentry_drop_pct()
+                elapsed = (tick_time - self.s["last_sell_ts"]) if self.s.get("last_sell_ts") else None
+                ttl_s = (self.p.reentry_ttl_hours * 3600.0) if self.p.reentry_ttl_hours > 0 else None
+                blocked, reason = sr.reentry_hybrid_blocked(
+                    price=price,
+                    last_sell=lsp,
+                    post_sell_peak=self.s.get("post_sell_peak"),
+                    is_bull=up,
+                    drop_pct=drop_pct,
+                    pullback_pct=self.p.reentry_pullback_pct,
+                    tol_pct=self.p.reentry_tolerance_pct,
+                    elapsed_sec=elapsed,
+                    ttl_sec=ttl_s,
+                )
+                if blocked:
+                    log(f"  [STRAT] hybrid re-entry blocked: {reason}")
+                    return
+                if lsp:
+                    log(f"  [STRAT] hybrid re-entry unblocked ({reason}) — placing ENTRY")
             else:
                 # After TP, do not repurchase above the sale price; wait for a real drop.
                 drop_pct, drop_source = self._effective_reentry_drop_pct()

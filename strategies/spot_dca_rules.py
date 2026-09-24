@@ -85,3 +85,51 @@ def progressive_dca_drop_pct(
     growth = max(0.0, float(growth_pct))
     completed = max(0, int(completed_dca_buys))
     return max(0.0, float(base_drop_pct)) + growth * completed
+
+
+def reentry_hybrid_blocked(
+    price: float,
+    last_sell: float | None,
+    post_sell_peak: float | None,
+    is_bull: bool,
+    drop_pct: float,
+    pullback_pct: float,
+    tol_pct: float = 0.05,
+    elapsed_sec: float | None = None,
+    ttl_sec: float | None = None,
+) -> tuple[bool, str]:
+    """Hybrid re-entry decision separating trend confirmation from execution trigger.
+
+    State A/B/C logic:
+      - If no valid last_sell: unblocked.
+      - If TTL barrier expired (elapsed_sec >= ttl_sec > 0): unblocked.
+      - If is_bull (State B - TREND_CONFIRMED):
+          Bypasses last_sell price barrier; requires a pullback_pct drop
+          relative to post_sell_peak (peak = max(last_sell, post_sell_peak, price)).
+      - If not is_bull (State C - NO_CONFIRMED_TREND):
+          Enforces standard drop_pct below last_sell.
+
+    Returns:
+      (blocked: bool, reason: str)
+    """
+    if not last_sell or last_sell <= 0:
+        return False, "no_last_sell"
+
+    if (ttl_sec is not None and ttl_sec > 0
+            and elapsed_sec is not None and elapsed_sec >= ttl_sec):
+        return False, "ttl_expired"
+
+    if is_bull:
+        peak = max(float(last_sell), float(post_sell_peak or price), float(price))
+        if pullback_pct <= 0:
+            return False, "bull_immediate"
+        prag = peak * (1.0 - pullback_pct / 100.0)
+        blocked = price > prag and not are_close(price, prag, tol_pct)
+        return blocked, ("bull_pullback_pending" if blocked else "bull_pullback_met")
+
+    if drop_pct <= 0:
+        return False, "range_immediate"
+    prag = float(last_sell) * (1.0 - drop_pct / 100.0)
+    blocked = price > prag and not are_close(price, prag, tol_pct)
+    return blocked, ("range_drop_pending" if blocked else "range_drop_met")
+

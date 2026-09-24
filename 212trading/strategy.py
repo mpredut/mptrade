@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ipo_common import (
-    log as _log, now_str, are_close, required_env, required_float_env,
+    log as _log, now_str, are_close, float_env, required_env, required_float_env,
     required_bool_env,
 )
 from ipo_notify import notify
@@ -27,6 +27,7 @@ from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit, n
 from providers.strategy_executor import ProviderError
 from providers.t212_provider import T212Provider
 from strategies.state_store import JsonStateStore
+from strategies import spot_dca_rules as sr
 
 FX_FEE_PCT = 0.15  # T212 currency-conversion fee per direction.
 
@@ -70,6 +71,11 @@ class StratParams:
     dca_trend_gate_pct: float = 0.0  # Skip DCA below this confirmed downtrend slope; zero disables.
     trail_pct: float = 0.0           # Sell all after this drop from position peak; zero disables.
     trail_min_profit_pct: float = 5.0  # Keep trailing inactive until price gains this much over average.
+    # --- HYBRID RE-ENTRY (EXPERIMENTAL, default OFF) -----------------------------
+    reentry_hybrid_enabled: bool = False  # Decouple macro trend permission from micro pullback trigger.
+    reentry_peak_relative: bool = False   # Force peak-relative pullback without trend filter (Test 1).
+    reentry_pullback_pct: float = 1.5     # Pullback from post-sale peak required in confirmed bull trend.
+    reentry_ttl_hours: float = 0.0        # 0 = off. After this many hours, stale sale barrier expires.
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> "StratParams":
@@ -129,6 +135,20 @@ class StratParams:
             dca_trend_gate_pct = required_float_env("STRAT_DCA_TREND_GATE_PCT", e),
             trail_pct          = required_float_env("STRAT_TRAIL_PCT", e),
             trail_min_profit_pct = required_float_env("STRAT_TRAIL_MIN_PROFIT_PCT", e),
+            reentry_hybrid_enabled = (
+                str(e.get("STRAT_REENTRY_HYBRID_ENABLED", "")).lower() in ("true", "1")
+            ),
+            reentry_peak_relative = (
+                str(e.get("STRAT_REENTRY_PEAK_RELATIVE", "")).lower() in ("true", "1")
+            ),
+            reentry_pullback_pct = (
+                float_env("STRAT_REENTRY_PULLBACK_PCT", e)
+                if float_env("STRAT_REENTRY_PULLBACK_PCT", e) is not None else 1.5
+            ),
+            reentry_ttl_hours = (
+                float_env("STRAT_REENTRY_TTL_HOURS", e)
+                if float_env("STRAT_REENTRY_TTL_HOURS", e) is not None else 0.0
+            ),
         )
 
 
@@ -141,6 +161,9 @@ def _new_state() -> dict:
         "dca_buys": 0,
         "entry_price": None,
         "last_buy_price": None,
+        "last_sell_price": None,
+        "last_sell_ts": None,
+        "post_sell_peak": None,
         "realized_pnl_usd": 0.0,   # Cumulative gross profit.
         "realized_net_usd": 0.0,   # Cumulative net profit after FX fees.
         "fees_usd": 0.0,           # Total paid FX fees.
@@ -461,6 +484,8 @@ class Strategy:
                 self.s["fees_usd"] = fees
                 self.s["cycle"] = nxt
                 self.s["last_sell_price"] = price   # Reentry rule: do not buy back higher.
+                self.s["post_sell_peak"] = price
+                self.s["last_sell_ts"] = self._now()
                 if was_sl and self.p.sl_rebuy_enabled:
                     self.s["sl_rebuy"] = {"low": price, "sell_price": price}
                     log(f"  🟢 [STRAT] pullback re-buy ARMED after the stop-loss "
@@ -892,6 +917,8 @@ class Strategy:
             self.s["fees_usd"] = fees
             self.s["cycle"] = nxt
             self.s["last_sell_price"] = exit_price
+            self.s["post_sell_peak"] = exit_price
+            self.s["last_sell_ts"] = self._now()
             if was_sl and self.p.sl_rebuy_enabled:   # Rebuy on a bounce, not below the sale, to catch recovery.
                 self.s["sl_rebuy"] = {"low": exit_price, "sell_price": exit_price}
                 log(f"  🟢 [STRAT] pullback re-buy ARMED after the stop-loss (expecting +{self.p.sl_rebuy_bounce_pct}% from the low)")
@@ -1048,14 +1075,46 @@ class Strategy:
                 return
             # Kraken-style reentry rule: do not buy back above the previous sale price.
             lsp = self.s.get("last_sell_price")
-            rdp = self.p.reentry_drop_pct
-            if rdp > 0 and lsp:
-                prag = lsp * (1 - rdp / 100)
-                # Treat a value close to the threshold as reached (deterministic are_close).
-                if price > prag and not are_close(price, prag, self.p.reentry_tolerance_pct):
-                    log(f"  [STRAT] re-entry blocked: {price:.2f} > threshold {prag:.2f} "
-                        f"(sold at {lsp:.2f}, waiting for -{rdp}%)")
+            if lsp:
+                cur_peak = self.s.get("post_sell_peak") or lsp
+                self.s["post_sell_peak"] = max(cur_peak, price)
+            if self.p.reentry_hybrid_enabled:
+                is_bull = True if self.p.reentry_peak_relative else False
+                if not is_bull and self._trend_slope_provider:
+                    try:
+                        slope = self._trend_slope_provider(self.yahoo_sym)
+                        if slope is not None and slope >= 0.0:
+                            is_bull = True
+                    except Exception:
+                        pass
+                elapsed = (self._now() - self.s["last_sell_ts"]) if self.s.get("last_sell_ts") else None
+                ttl_s = (self.p.reentry_ttl_hours * 3600.0) if self.p.reentry_ttl_hours > 0 else None
+                blocked, reason = sr.reentry_hybrid_blocked(
+                    price=price,
+                    last_sell=lsp,
+                    post_sell_peak=self.s.get("post_sell_peak"),
+                    is_bull=is_bull,
+                    drop_pct=self.p.reentry_drop_pct,
+                    pullback_pct=self.p.reentry_pullback_pct,
+                    tol_pct=self.p.reentry_tolerance_pct,
+                    elapsed_sec=elapsed,
+                    ttl_sec=ttl_s,
+                )
+                if blocked:
+                    log(f"  [STRAT] hybrid re-entry blocked: {reason} "
+                        f"(price {price:.2f}, peak {self.s.get('post_sell_peak', 0.0):.2f})")
                     return
+                if lsp:
+                    log(f"  [STRAT] hybrid re-entry unblocked ({reason}) — placing ENTRY")
+            else:
+                rdp = self.p.reentry_drop_pct
+                if rdp > 0 and lsp:
+                    prag = lsp * (1 - rdp / 100)
+                    # Treat a value close to the threshold as reached (deterministic are_close).
+                    if price > prag and not are_close(price, prag, self.p.reentry_tolerance_pct):
+                        log(f"  [STRAT] re-entry blocked: {price:.2f} > threshold {prag:.2f} "
+                            f"(sold at {lsp:.2f}, waiting for -{rdp}%)")
+                        return
             if self.s["spent_cash"] + self.p.entry_amount > self.p.max_budget:
                 log(f"  [STRAT] budget cap {self.p.max_budget:.0f} {self.ccy} reached — not entering")
                 return

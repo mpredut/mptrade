@@ -404,5 +404,104 @@ class TestFillAccounting(unittest.TestCase):
             self.assertAlmostEqual(s.s["realized_net"], 28.882)
 
 
+class TestHybridReentry(unittest.TestCase):
+    """End-to-end tests for hybrid re-entry state transitions in spot_dca engine."""
+
+    def test_hybrid_reentry_bull_waits_for_pullback_then_enters(self):
+        s = _make_strategy(
+            reentry_hybrid_enabled=True,
+            reentry_pullback_pct=1.5,
+            reentry_drop_pct=2.0,
+        )
+        s.s["last_sell_price"] = 100.0
+        s.s["post_sell_peak"] = 100.0
+        s.s["last_sell_ts"] = 1000.0
+
+        # Mock regime decision to return bull
+        mock_regime = MagicMock()
+        mock_regime.regime = "bull"
+        mock_regime.closes = [100.0] * 30
+        mock_regime.is_valid = True
+
+        with patch.object(s, "_regime_context", return_value=(mock_regime, [100.0] * 30)), \
+             patch.object(s, "_regime_matches", return_value=True):
+            # Step at 130.0 -> peak becomes 130.0, pullback 1.5% is 128.05.
+            # 130.0 > 128.05 -> blocked waiting for pullback
+            s.step(130.0, timestamp=1010.0)
+            self.assertEqual(s.s["post_sell_peak"], 130.0)
+            self.assertFalse(s._has_open("buy"))
+
+            # Step at 129.0 -> still > 128.05 -> blocked
+            s.step(129.0, timestamp=1020.0)
+            self.assertFalse(s._has_open("buy"))
+
+            # Step at 127.5 <= 128.05 -> pullback met!
+            s.step(127.5, timestamp=1030.0)
+            self.assertTrue(s._has_open("buy"))
+            order = s._find_open("buy")
+            self.assertEqual(order["kind"], "ENTRY")
+
+    def test_hybrid_reentry_range_requires_sale_drop(self):
+        s = _make_strategy(
+            reentry_hybrid_enabled=True,
+            reentry_pullback_pct=1.5,
+            reentry_drop_pct=2.0,
+        )
+        s.s["last_sell_price"] = 100.0
+        s.s["post_sell_peak"] = 100.0
+        s.s["last_sell_ts"] = 1000.0
+
+        # Regime not bull
+        mock_regime = MagicMock()
+        mock_regime.regime = "range"
+        mock_regime.closes = [100.0] * 30
+        mock_regime.is_valid = True
+
+        with patch.object(s, "_regime_context", return_value=(mock_regime, [100.0] * 30)), \
+             patch.object(s, "_regime_matches", return_value=False):
+            # Step at 105.0 -> blocked
+            s.step(105.0, timestamp=1010.0)
+            self.assertFalse(s._has_open("buy"))
+
+            # Step at 99.0 -> blocked (99 > 98)
+            s.step(99.0, timestamp=1020.0)
+            self.assertFalse(s._has_open("buy"))
+
+            # Step at 97.5 <= 98.0 -> drop met!
+            s.step(97.5, timestamp=1030.0)
+            self.assertTrue(s._has_open("buy"))
+            order = s._find_open("buy")
+            self.assertEqual(order["kind"], "ENTRY")
+
+    def test_hybrid_reentry_ttl_expiry(self):
+        s = _make_strategy(
+            reentry_hybrid_enabled=True,
+            reentry_pullback_pct=1.5,
+            reentry_drop_pct=2.0,
+            reentry_ttl_hours=24.0,
+        )
+        s.s["last_sell_price"] = 100.0
+        s.s["post_sell_peak"] = 100.0
+        s.s["last_sell_ts"] = 1000.0
+
+        mock_regime = MagicMock()
+        mock_regime.regime = "range"
+        mock_regime.closes = [100.0] * 30
+        mock_regime.is_valid = True
+
+        with patch.object(s, "_regime_context", return_value=(mock_regime, [100.0] * 30)), \
+             patch.object(s, "_regime_matches", return_value=False):
+            # After 1 hour, price 105 -> blocked
+            s.step(105.0, timestamp=1000.0 + 3600.0)
+            self.assertFalse(s._has_open("buy"))
+
+            # After 25 hours (> 24h), price 105 -> TTL expired, unblocked!
+            s.step(105.0, timestamp=1000.0 + 25 * 3600.0)
+            self.assertTrue(s._has_open("buy"))
+            order = s._find_open("buy")
+            self.assertEqual(order["kind"], "ENTRY")
+
+
 if __name__ == "__main__":
     unittest.main()
+

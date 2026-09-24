@@ -55,6 +55,66 @@ class StratRulesTest(unittest.TestCase):
             self.assertEqual(sr.are_close(a, b, tol), botcore.are_close(a, b, tol),
                              f"divergenta la are_close({a},{b},{tol})")
 
+    def test_reentry_hybrid_blocked_behavior(self):
+        # Case 1: No last sell -> always unblocked
+        blocked, reason = sr.reentry_hybrid_blocked(100.0, None, None, True, 2.0, 1.5)
+        self.assertFalse(blocked)
+        self.assertEqual(reason, "no_last_sell")
+
+        # Case 2: TTL expired -> unblocked
+        blocked, reason = sr.reentry_hybrid_blocked(
+            price=120.0, last_sell=100.0, post_sell_peak=120.0,
+            is_bull=False, drop_pct=2.0, pullback_pct=1.5,
+            elapsed_sec=86400 * 15, ttl_sec=86400 * 14,
+        )
+        self.assertFalse(blocked)
+        self.assertEqual(reason, "ttl_expired")
+
+        # Case 3: State B (TREND_CONFIRMED, is_bull=True)
+        # Sold at 100, price reached peak 130.
+        # With 1.5% pullback, threshold is 130 * (1 - 0.015) = 128.05.
+        # At 129.0: price > 128.05 -> blocked waiting for pullback from peak.
+        blocked, reason = sr.reentry_hybrid_blocked(
+            price=129.0, last_sell=100.0, post_sell_peak=130.0,
+            is_bull=True, drop_pct=2.0, pullback_pct=1.5,
+        )
+        self.assertTrue(blocked)
+        self.assertEqual(reason, "bull_pullback_pending")
+
+        # At 127.5: price <= 128.05 -> pullback met! Enters even though 127.5 > 100.0.
+        blocked, reason = sr.reentry_hybrid_blocked(
+            price=127.5, last_sell=100.0, post_sell_peak=130.0,
+            is_bull=True, drop_pct=2.0, pullback_pct=1.5,
+        )
+        self.assertFalse(blocked)
+        self.assertEqual(reason, "bull_pullback_met")
+
+        # Pullback 0% in bull -> immediate
+        blocked, reason = sr.reentry_hybrid_blocked(
+            price=135.0, last_sell=100.0, post_sell_peak=135.0,
+            is_bull=True, drop_pct=2.0, pullback_pct=0.0,
+        )
+        self.assertFalse(blocked)
+        self.assertEqual(reason, "bull_immediate")
+
+        # Case 4: State C (NO_CONFIRMED_TREND, is_bull=False)
+        # Sold at 100, drop required = 2.0% -> threshold = 98.0.
+        # At 105.0: blocked.
+        blocked, reason = sr.reentry_hybrid_blocked(
+            price=105.0, last_sell=100.0, post_sell_peak=105.0,
+            is_bull=False, drop_pct=2.0, pullback_pct=1.5,
+        )
+        self.assertTrue(blocked)
+        self.assertEqual(reason, "range_drop_pending")
+
+        # At 97.0: range drop met.
+        blocked, reason = sr.reentry_hybrid_blocked(
+            price=97.0, last_sell=100.0, post_sell_peak=100.0,
+            is_bull=False, drop_pct=2.0, pullback_pct=1.5,
+        )
+        self.assertFalse(blocked)
+        self.assertEqual(reason, "range_drop_met")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
