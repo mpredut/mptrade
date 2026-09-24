@@ -32,6 +32,20 @@ def _isolate_order_retry_queue(tmp_path, monkeypatch):
         order_retry, "LOCK_FILE", str(tmp_path / "order_retry_queue.lock"))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_order_outcomes_journal(tmp_path, monkeypatch):
+    """Keep every test away from the live order journal (logger/order_outcomes_*.log).
+
+    Several tests drive the real placement pipeline; without this their synthetic
+    fills (CHARPIPEUSD, "BTCUSDC SELL 0.2 @ 100 accepted") landed in the journal that
+    tradeall_observe.py reads for the production fleet.
+    """
+    import order_outcomes_log
+
+    monkeypatch.setattr(
+        order_outcomes_log, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path / "order_outcomes"))
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _shutdown_runtime_threads_after_suite():
     yield
