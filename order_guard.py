@@ -37,6 +37,10 @@ def _load_margins():
         "default_safeback_sec": 14 * 24 * 3600 + 60,  # own-trade search window (seconds): 14 days
         "default_recent_transaction_sec": 180,   # anti-spam window (seconds)
         "default_buy_reference": 1.0,          # 1 = BUY must beat the historical sell reference
+        "buy_window_mode": "dynamic",          # dynamic regime-aware lookback window
+        "buy_window_bull_h": 8.0,              # Bull lookback: 4h - 12h
+        "buy_window_flat_h": 24.0,             # Flat lookback: 24h - 48h
+        "buy_window_bear_h": 72.0,             # Bear lookback: 48h - 168h
     }
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "order_guard.conf")
     try:
@@ -128,13 +132,63 @@ def margin_for(provider_name):
     return m.get((provider_name or "").lower(), m["default"])
 
 
-def window_for(provider_name):
-    """Return the per-venue min/max reference window in seconds.
-    Configuration key `<venue>_window_h`; 0 disables the windowed tier."""
+def dynamic_buy_window_sec(symbol=None) -> float:
+    """Calculate the dynamic lookback window (in seconds) for BUY reference:
+    - BULL trend: 4h - 12h (default 8h)
+    - BEAR trend: 48h - 168h (default 72h)
+    - FLAT / UNKNOWN: 24h - 48h (default 24h)
+    """
     m = _load_margins()
-    key = (provider_name or "").lower() + "_window_h"
-    hours = m.get(key, m["default_window_h"])
-    return float(hours) * 3600.0
+    try:
+        bull_h = float(m.get("buy_window_bull_h", 8.0))
+    except (ValueError, TypeError):
+        bull_h = 8.0
+    try:
+        flat_h = float(m.get("buy_window_flat_h", 24.0))
+    except (ValueError, TypeError):
+        flat_h = 24.0
+    try:
+        bear_h = float(m.get("buy_window_bear_h", 72.0))
+    except (ValueError, TypeError):
+        bear_h = 72.0
+
+    trend = _symbol_trend(symbol) if symbol else "unknown"
+    if trend == "bull":
+        hours = max(4.0, min(12.0, bull_h))
+    elif trend == "bear":
+        hours = max(48.0, min(168.0, bear_h))
+    else:  # flat, chop, or unknown
+        hours = max(12.0, min(48.0, flat_h))
+    return hours * 3600.0
+
+
+def window_for(provider_name, symbol=None, order_type=None) -> float:
+    """Return the reference window in seconds for the given venue and order side.
+
+    For BUY orders when dynamic windowing is active (via venue buy_reference='dynamic'
+    or buy_window_mode='dynamic'), returns dynamic_buy_window_sec(symbol)
+    scaling lookback from 4h-12h in bull to 48h-168h in bear.
+    For SELL orders or static venues, returns `<venue>_window_h` (or default_window_h) in seconds.
+    """
+    name = _provider_name(provider_name)
+    m = _load_margins()
+    side = (order_type or "").upper()
+
+    if side == "BUY":
+        mode = buy_reference_mode(name)
+        if mode == "off":
+            return 0.0
+        win_mode = str(m.get("buy_window_mode", "dynamic")).strip().lower()
+        if mode == "dynamic" or win_mode in ("dynamic", "adaptive"):
+            return dynamic_buy_window_sec(symbol)
+
+    key = (name.lower() if name else "") + "_window_h"
+    hours = m.get(key, m.get("default_window_h", 0.0))
+    try:
+        hours_val = float(hours)
+    except (ValueError, TypeError):
+        hours_val = 0.0
+    return hours_val * 3600.0
 
 
 def weight_proxy_for(provider_name):
@@ -278,15 +332,40 @@ def profit_guard(provider, symbol, order_type, price, profit_percentage, window_
             return True
         elif mode == "dynamic":
             trend = _symbol_trend(symbol)
-            if trend == "bull":
-                print(f"[GUARD] BUY {symbol}: dynamic mode bypassed historical sell reference "
-                      f"during confirmed BULL trend; price {price} permitted")
+            dyn_window_s = dynamic_buy_window_sec(symbol)
+            dyn_hours = dyn_window_s / 3600.0
+            if window_ref is not None and window_ref > 0:
+                diff = u.value_diff_to_percent(window_ref, price)
+                if diff < profit_percentage:
+                    # In bull trend, verify whether this reference actually sits within the dynamic window (4h - 12h)
+                    if trend == "bull" and hasattr(provider, "get_orders"):
+                        recent = provider.get_orders(symbol, "SELL", dyn_window_s) or []
+                        recent_prices = [float(o.get("price") or 0) for o in recent if float(o.get("price") or 0) > 0]
+                        if not recent_prices:
+                            print(f"[GUARD] BUY {symbol}: dynamic window ({dyn_hours:.1f}h) has no fills; "
+                                  f"anchor {window_ref} from older period bypassed in bull trend")
+                            return True
+                    elif trend == "bull" and not hasattr(provider, "get_orders"):
+                        print(f"[GUARD] BUY {symbol}: dynamic mode bypassed historical sell reference "
+                              f"during confirmed BULL trend; price {price} permitted")
+                        return True
+                    print(f"[GUARD] BUY {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
+                          f"found recent sell ref {window_ref}, price {price}, diff {diff:.2f}%, threshold {profit_percentage}%")
+                    print(f"Percentage difference ({diff:.2f}%) below threshold {profit_percentage}%. "
+                          f"The BUY order is BLOCKED.")
+                    return False
+                print(f"[GUARD] BUY {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
+                      f"recent sell ref {window_ref}, price {price}, diff {diff:.2f}% >= {profit_percentage}%. Permitted.")
                 return True
             else:
-                print(f"[GUARD] BUY {symbol}: dynamic mode enforcing defensive profit guard "
-                      f"(trend='{trend}') against past sells")
+                print(f"[GUARD] BUY {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
+                      f"has no recent sell reference; price {price} permitted")
+                return True
+    has_window = window_for(provider_name, symbol, order_type) > 0
     ref = window_ref if window_ref is not None else (
-        provider.last_opposite_fill(symbol, order_type) if hasattr(provider, "last_opposite_fill") else None
+        None if has_window else (
+            provider.last_opposite_fill(symbol, order_type) if hasattr(provider, "last_opposite_fill") else None
+        )
     )
     if ref is None or ref <= 0:
         return True

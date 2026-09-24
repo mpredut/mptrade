@@ -519,13 +519,17 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         oposite_trades = apiorders.get_trade_orders(opposite_order_type, symbol, max_age_seconds=time_back_in_seconds)  # current data
         print(f"I have {len(oposite_trades)} trades of type {opposite_order_type} for {backdays} days. ")
 
-        time_limit = float(time.time() * 1000) - (time_back_in_seconds * 1000)  # milliseconds
+        ref_window = order_guard.window_for("binance", symbol=symbol, order_type=order_type)
+        if not ref_window or ref_window <= 0:
+            ref_window = time_back_in_seconds
+
+        time_limit = float(time.time() * 1000) - (ref_window * 1000)  # milliseconds
         # Keep opposite trades in the requested interval. Requiring price > 0 remains a
         # defensive safety net even though canceled orders no longer enter the cache.
         recent_opposite_trades = [trade for trade in oposite_trades
                                   if float(trade['timestamp']) >= float(time_limit)
                                   and float(trade.get('price', 0)) > 0]
-        print(f"Considering only those within the last {time_back_in_seconds}s, {len(recent_opposite_trades)} of them")
+        print(f"Considering only those within the last {ref_window:.0f}s, {len(recent_opposite_trades)} of them")
         for trade in recent_opposite_trades:
             readable = datetime.fromtimestamp(trade['timestamp'] / 1000)
             print(f"[CHECK] {readable} - price: {trade['price']} - included: {float(trade['timestamp']) >= time_limit}")

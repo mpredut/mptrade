@@ -156,8 +156,10 @@ class MarketDataProvider(ABC):
 
     def profit_guard_window_ref(self, symbol: str, side: str, safeback_sec):
         import order_guard
-        return order_guard.window_reference(self, symbol, side,
-                                            order_guard.window_for(self.name))
+        window_s = order_guard.window_for(self.name, symbol=symbol, order_type=side)
+        if window_s is None or window_s <= 0:
+            window_s = float(safeback_sec) if safeback_sec else 0.0
+        return order_guard.window_reference(self, symbol, side, window_s)
 
     def last_opposite_fill(self, symbol: str, order_type: str,
                            since_s: float = 90 * 24 * 3600) -> Optional[float]:
