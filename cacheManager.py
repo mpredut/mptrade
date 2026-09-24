@@ -44,6 +44,7 @@ import providers.market_api as _market_api
 from botcore import (
     load_dotenv as _load_dotenv,
     required_bool_env,
+    required_env,
     required_float_env,
     required_int_env,
     single_instance,
@@ -56,6 +57,18 @@ _load_dotenv(os.path.join(_CONFIG_ROOT, "config.env"))
 # cost and exceed the 24-hour history retained by Cache24PriceManager.
 CM_DYNAMIC_WINDOW_MIN_SEC = required_float_env("CM_DYNAMIC_WINDOW_MIN_SEC")
 CM_DYNAMIC_WINDOW_MAX_SEC = required_float_env("CM_DYNAMIC_WINDOW_MAX_SEC")
+# Dynamic windows the writer (cacheManager) computes on every full evaluation and publishes
+# in the shared trend file. Only the writer holds the raw Cache24 buffers; a reader process
+# such as rtrade gets these windows from the file instead of computing them itself.
+CM_PUBLISHED_TREND_WINDOWS_SEC = [
+    float(part) for part in required_env("CM_PUBLISHED_TREND_WINDOWS_SEC").split(",")
+    if part.strip()
+]
+
+
+def _dynamic_window_key(window_seconds):
+    """Key a clamped dynamic window in the published snapshot, e.g. 900.0 -> "900"."""
+    return f"{float(window_seconds):g}"
 LONGTREND_NONBINANCE = required_bool_env("LONGTREND_NONBINANCE")
 CM_RETENTION_DAYS = required_float_env("CM_RETENTION_DAYS")
 CM_RETENTION_CHECK_INTERVAL_SEC = required_float_env("CM_RETENTION_CHECK_INTERVAL_SEC")
@@ -3035,7 +3048,17 @@ class CachePriceShortTrendManager:
             pos=primary_pos, epsilon=pwin.get_noise_epsilon(self.EPSILON_K),
             current_price=current_price,
             ts=observed_at,
+            dynamic=self._published_dynamic_windows(symbol),
         )
+
+    def _published_dynamic_windows(self, symbol):
+        """Compute the configured dynamic windows for the shared file (writer side)."""
+        published = {}
+        for window in CM_PUBLISHED_TREND_WINDOWS_SEC:
+            dyn = self.get_instant_trend_for_window(symbol, window)
+            if dyn is not None:
+                published[_dynamic_window_key(dyn["window_seconds"])] = dyn
+        return published
 
     def _start_full_eval_loop(self):
         if self._full_eval_thread is not None and self._full_eval_thread.is_alive():
@@ -3097,7 +3120,10 @@ class CachePriceShortTrendManager:
         bounds and report the adjusted horizon without raising.
         """
         if self._cache24_managers is None:
-            return None
+            # This process does not hold Cache24 (rtrade and other readers): use the
+            # window the writer published. Without it the answer was always None and
+            # rtrade stood aside permanently.
+            return self._published_window(symbol, window_seconds, now=now)
         c24 = self._cache24_managers.get(symbol)
         if c24 is None:
             return None
@@ -3134,6 +3160,29 @@ class CachePriceShortTrendManager:
                     slope_full=slope_full, gradient_recent=gradient_recent,
                     epsilon=epsilon, n_samples=len(entries), window_seconds=clamped,
                     sample_rate_sec=sample_rate, ts=now)
+
+    def _published_window(self, symbol, window_seconds, now=None):
+        """Return a dynamic window published by the writer, under the local freshness rule.
+
+        The writer publishes only windows listed in CM_PUBLISHED_TREND_WINDOWS_SEC and only
+        while its newest Cache24 tick is fresh; an absent or older entry returns None, so a
+        consumer stays fail-closed exactly as when it computed the window itself.
+        """
+        req = float(window_seconds)
+        clamped = min(max(req, CM_DYNAMIC_WINDOW_MIN_SEC), CM_DYNAMIC_WINDOW_MAX_SEC)
+        snap = self._read_file().get(symbol)
+        published = (snap or {}).get("dynamic") if isinstance(snap, dict) else None
+        dyn = published.get(_dynamic_window_key(clamped)) if isinstance(published, dict) else None
+        if not isinstance(dyn, dict):
+            return None
+        now = now if now is not None else time.time()
+        try:
+            age = float(now) - float(dyn["ts"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        if not -5.0 <= age <= self.TREND_STALE_SEC:
+            return None
+        return dict(dyn)
 
     def is_trend_up_for_window(self, symbol, window_seconds, now=None):
         """Evaluate monitortrades' upward-trend condition over a configurable window.

@@ -265,6 +265,29 @@ class AssetGuardianTest(unittest.TestCase):
             self.assertEqual(campaign["initial_cash"], 1000)
             self.assertEqual(campaign["peak_price"], 250)
 
+        with self.subTest(msg="test_guard_refused_shallow_tier_does_not_block_deeper_tiers"):
+            # Tier 7 respects the profit guard and keeps being refused (never completed).
+            # Deeper tiers are designed to bypass the guard, so crossing them must pick
+            # them; walking tiers from the shallowest picked 7 forever.
+            state = MemoryState({
+                "version": 2,
+                "symbols": {
+                    "TAOUSDC": {
+                        "peak_price": 324.1, "peak_ts": 2, "initial_cash": 1000,
+                        "completed_tiers": [], "attempts_by_tier": {"7": 287},
+                    }
+                },
+            })
+            maximum = {"timestamp": 2, "price": 324.1}
+            with mock.patch.object(ag, "STATE", state):
+                shallow, _ = ag._campaign_tier("TAOUSDC", 9.6, maximum, 1000)
+                middle, _ = ag._campaign_tier("TAOUSDC", 10.5, maximum, 1000)
+                deepest, _ = ag._campaign_tier("TAOUSDC", 14.2, maximum, 1000)
+            self.assertEqual(shallow, (7.0, 0.35))
+            self.assertEqual(middle, (10.0, 0.35))
+            self.assertEqual(deepest, (14.0, 0.30))
+            self.assertEqual(ag.GUARDED_BUY_THRESHOLD, 7.0)
+
         with self.subTest(msg="test_legacy_global_campaign_maps_only_to_btc"):
             state = MemoryState({
                 "peak_value": 100,

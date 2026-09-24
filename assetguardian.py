@@ -576,8 +576,12 @@ def _campaign_tier(symbol, drawdown_abs, maximum_row, free_cash):
         state["peak_ts"] = peak_ts
         _save_symbol_campaign(symbol, "buy", state)
 
+    # Try the deepest crossed tier first. The shallowest tier respects the profit
+    # guard and can be refused on every cycle; walking tiers from the top made that
+    # refused tier the permanent pick, so the deeper tiers designed to bypass the
+    # guard were never attempted. Per-tier budgets are unchanged by the order.
     completed = _completed_tier_values(state)
-    for threshold, allocation in BUY_TIERS:
+    for threshold, allocation in sorted(BUY_TIERS, key=lambda tier: tier[0], reverse=True):
         if drawdown_abs >= threshold and threshold not in completed:
             return (threshold, allocation), state
     return None, state

@@ -199,5 +199,86 @@ class MarketExitModeTest(unittest.TestCase):
                 rtrade._LivePairVenue.market_exit_allowed(fake, "LONG", thr, "emergency"))
 
 
+class ReaderProcessTrendTest(unittest.TestCase):
+    """End to end with the REAL trend manager, as in production: the cacheManager writer
+    computes and publishes the dynamic window, and rtrade's process holds an unstarted
+    reader. The mocks above replaced the manager, so they could not see that a reader
+    without Cache24 always answered None and kept rtrade standing aside for weeks."""
+
+    WINDOW = 900.0
+
+    def setUp(self):
+        import json
+        import tempfile
+        from unittest import mock
+
+        import cacheManager as cm
+
+        self.cm = cm
+        self.json = json
+        self.tmp = tempfile.TemporaryDirectory()
+        self.reader = cm.CachePriceShortTrendManager(
+            ["TAOUSDC"], os.path.join(self.tmp.name, "trend_reader.json"))
+        self._patches = [
+            mock.patch.object(rtrade, "RTRADE_TREND_FILTER_ENABLED", True),
+            mock.patch.object(rtrade, "RTRADE_TREND_FILTER_K", 2.0),
+            mock.patch.object(rtrade, "RTRADE_TREND_WINDOW_SEC", self.WINDOW),
+            mock.patch.object(cm, "CM_PUBLISHED_TREND_WINDOWS_SEC", [self.WINDOW]),
+            mock.patch.object(cm, "get_short_trend_manager", return_value=self.reader),
+        ]
+        for patcher in self._patches:
+            patcher.start()
+
+    def tearDown(self):
+        for patcher in reversed(self._patches):
+            patcher.stop()
+        self.tmp.cleanup()
+
+    def _publish(self, step, *, age_sec=0.0):
+        """Let a writer compute the window from ticks and publish it for the reader."""
+        import time
+
+        class FakeCache24:
+            def __init__(self, entries):
+                self.entries = entries
+
+            def get_recent_entries(self, _symbol, last_seconds):
+                cutoff = (time.time() - last_seconds) * 1000
+                return [e for e in self.entries if e[0] >= cutoff]
+
+        now_ms = int(time.time() * 1000)
+        # One tick per second over the window; a small alternating wiggle is the noise.
+        entries = [[now_ms - (899 - i) * 1000, 300.0 + step * i + (0.05 if i % 2 else -0.05)]
+                   for i in range(900)]
+        writer = self.cm.CachePriceShortTrendManager(
+            ["TAOUSDC"], os.path.join(self.tmp.name, "trend_writer.json"), writer=True)
+        writer._cache24_managers = {"TAOUSDC": FakeCache24(entries)}
+        published = writer._published_dynamic_windows("TAOUSDC")
+        for dyn in published.values():
+            dyn["ts"] -= age_sec
+        with open(self.reader.filename, "w", encoding="utf-8") as fh:
+            self.json.dump({"TAOUSDC": {"dynamic": published}}, fh)
+        return published
+
+    def test_reader_uses_the_published_window(self):
+        published = self._publish(step=0.0)
+        self.assertIn("900", published)
+        self.assertIsNotNone(self.reader.get_instant_trend_for_window("TAOUSDC", self.WINDOW))
+        # A sideways market is exactly when the spread bot should run.
+        self.assertFalse(rtrade._trend_too_strong("TAOUSDC"))
+
+    def test_strong_trend_still_stands_aside(self):
+        self._publish(step=0.2)
+        self.assertTrue(rtrade._trend_too_strong("TAOUSDC"))
+
+    def test_stale_or_missing_publication_fails_closed(self):
+        stale = self.cm.CachePriceShortTrendManager.TREND_STALE_SEC + 5
+        self._publish(step=0.0, age_sec=stale)
+        self.assertIsNone(self.reader.get_instant_trend_for_window("TAOUSDC", self.WINDOW))
+        self.assertTrue(rtrade._trend_too_strong("TAOUSDC"))
+        os.remove(self.reader.filename)
+        self.assertTrue(rtrade._trend_too_strong("TAOUSDC"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
