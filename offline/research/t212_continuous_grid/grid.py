@@ -2,7 +2,7 @@
 """Trading 212 strategy grid (runs on DEV): live profiles vs variants, continuous runs.
 
 The live engine (212trading/strategy.py) through 212trading/replay.py, on Yahoo bars:
-1h over the last ~730 days and 1d over ~10 years, one continuous run per dataset
+1h since Oct 2023 (Yahoo range=730d, ~3 years) and 1d over ~10 years, one continuous run per dataset
 (state carries across cycles, as live) plus fresh-state 90-day windows on 1h bars.
 
 Each live profile (config.nvda/spcx/rgnt.env) runs on its own asset and on a basket of
