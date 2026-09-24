@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from state_io import atomic_write_json
 from datetime import date
 
@@ -198,8 +199,13 @@ class ShadowSet:
     """
 
     def __init__(self, journal: ShadowJournal | None = None,
-                 state_path: str | None = None, state_min_interval: float = 1.0):
+                 state_path: str | None = None, state_min_interval: float = 1.0,
+                 now_fn=None):
         self.journal = journal or ShadowJournal()
+        # current_trend() ages the signal against this clock. Live uses wall time; a
+        # replay must inject its simulated clock, or every signal looks months old and
+        # the order gate blocks every BUY.
+        self._now = now_fn or time.time
         self.state_path = state_path
         self.state_min_interval = state_min_interval
         self._state: dict = {}
@@ -223,8 +229,7 @@ class ShadowSet:
         st = self._state.get(symbol)
         if not st:
             return None, 1e18
-        import time as _t
-        return st.get("kalman_trend"), _t.time() - st.get("ts", 0)
+        return st.get("kalman_trend"), self._now() - st.get("ts", 0)
 
     def update(self, symbol: str, ts: float, price: float, epsilon: float | None,
                big_prices, big_sample_rate: float) -> dict:

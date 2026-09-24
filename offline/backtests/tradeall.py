@@ -252,8 +252,8 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
 
     if quiet:
         # tradeall.logic()/check_price_change() print() on every tick, mirrored onto
-        # disc (log.py) — pe date DENSE (cache24, zeci de mii de tick-uri) asta domina timpul
-        # de rulare. log.disable_print() suprima global print() (mesajele NOASTRE folosesc
+        # disk (log.py) — on DENSE data (cache24, tens of thousands of ticks) that dominates the
+        # run time. log.disable_print() suppresses print() globally (OUR messages use
         # sys.stderr.write, which stays visible).
         ta.log.disable_print()
 
@@ -298,11 +298,12 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     trend_state_big = ta.TrendState(max_duration_seconds=3 * 60 * 60, expiration_trend_time=2.7 * 60,
                                      fresh_trend_time=3.7 * 60, now_fn=clock)
 
-    # SHADOW (observational, the 17 Jul plan): the same objects as live, with the clock
-    # simulat; jurnal FLAT in folderul run-ului (monitorul de backtest il deseneaza).
+    # SHADOW (observational, the 17 Jul plan): the same objects as live, with the simulated
+    # clock; a FLAT journal in the run's folder (the backtest monitor draws it).
     import shadow_signals
     shadow = shadow_signals.ShadowSet(
-        journal=shadow_signals.ShadowJournal(fixed_path=os.path.join(out_dir, "tradeall_shadow.log")))
+        journal=shadow_signals.ShadowJournal(fixed_path=os.path.join(out_dir, "tradeall_shadow.log")),
+        now_fn=clock)
     # The KALMAN GATE is in the backtest too (parity with live), but with the block journal
     # redirected into the run's folder — NEVER into the live order_outcomes (A5).
     ta._shadow_ref = shadow
@@ -414,9 +415,9 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     except OSError:
         pass
     sys.stderr.write(f"[tradeall_backtest] P&L: {pnl}\n")
-    sys.stderr.write(f"[tradeall_backtest] GATA: {n} tick-uri, BUY={broker.n_buy} SELL={broker.n_sell}\n")
-    sys.stderr.write(f"[tradeall_backtest] rezultate in: {out_dir}\n")
-    sys.stderr.write(f"[tradeall_backtest] vizualizare: "
+    sys.stderr.write(f"[tradeall_backtest] DONE: {n} ticks, BUY={broker.n_buy} SELL={broker.n_sell}\n")
+    sys.stderr.write(f"[tradeall_backtest] results in: {out_dir}\n")
+    sys.stderr.write(f"[tradeall_backtest] view: "
                       f"./tradeall_observe.py --backtest-dir {out_dir} --symbols {symbol}\n")
 
 
