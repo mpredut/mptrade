@@ -32,12 +32,19 @@ def _topic_for_category(title: str, source: str) -> str:
     else:
         cat = "TRADES"
     topic = os.environ.get(f"NTFY_TOPIC_{cat}")
+    if not topic:
+        from botcore import load_dotenv
+        env_path = os.path.join(ROOT_DIR, ".env")
+        if os.path.isfile(env_path):
+            load_dotenv(env_path)
+            topic = os.environ.get(f"NTFY_TOPIC_{cat}")
     return topic or os.environ.get("PHONE_ALERT_URL", "test-mptrade")
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 class NotificationServer:
     def __init__(self):
+        self._ensure_environment()
         self.ntfy_token = self._load_ntfy_token()
         self.rules = self._load_rules()
         self.cooldowns: Dict[str, float] = {}
@@ -45,6 +52,13 @@ class NotificationServer:
         # Persistent Queue File
         self.queue_file = os.path.join(ROOT_DIR, "cachedb", "notification_queue.jsonl")
         os.makedirs(os.path.dirname(self.queue_file), exist_ok=True)
+
+    def _ensure_environment(self) -> None:
+        from botcore import load_dotenv
+        for fname in ("config.env", ".env"):
+            p = os.path.join(ROOT_DIR, fname)
+            if os.path.isfile(p):
+                load_dotenv(p)
 
     def _load_ntfy_token(self) -> str:
         tok = os.environ.get("NTFY_TOKEN", "").strip()
@@ -164,7 +178,14 @@ class NotificationServer:
         # 1. Check for Explicit AlertNotifier Intent (JSON)
         if "__orchestrator_intent__" in line:
             try:
-                payload = json.loads(line)
+                start_idx = line.find("{")
+                end_idx = line.rfind("}")
+                if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
+                    json_str = line[start_idx:end_idx + 1]
+                    payload = json.loads(json_str)
+                else:
+                    payload = json.loads(line)
+
                 intent = payload.get("__orchestrator_intent__")
                 if intent == "ntfy_webhook":
                     # Direct retry payload
@@ -181,8 +202,12 @@ class NotificationServer:
                     subject = payload.get("subject", "Alert")
                     self._send_email(subject, str(payload.get("alerts", [])))
                 return
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as e:
+                logging.warning(f"Failed to decode orchestrator intent JSON from {bot_name}: {e} (raw line: {line.strip()})")
+                return
+            except Exception as e:
+                logging.error(f"Error processing orchestrator intent from {bot_name}: {e} (raw line: {line.strip()})", exc_info=True)
+                return
 
         # 2. Check for the [NTFY] prefix shortcut
         if "[NTFY]" in line:

@@ -417,6 +417,11 @@ def _patched_print(*args, **kwargs) -> None:
     current_time = datetime.datetime.now().strftime("%H:%M:%S")
     clean        = (_ANSI_RE.sub("", message) if "\x1b" in message else message)
 
+    if "__orchestrator_intent__" in message:
+        _original_print(message, **kwargs)
+        _file_logger.info(clean)
+        return
+
     if _needs_caller_info(clean):
         caller = _get_caller_info()
         _original_print(f"{current_time} {caller} {message}", **kwargs)

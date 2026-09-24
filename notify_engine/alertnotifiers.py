@@ -355,8 +355,6 @@ class AlertNotifier:
     ) -> bool:
         if not alerts:
             return False
-        import json
-        from datetime import datetime
         def default_serializer(obj):
             if isinstance(obj, datetime):
                 return obj.isoformat()
@@ -366,7 +364,8 @@ class AlertNotifier:
             "subject": subject,
             "alerts": list(alerts)
         }
-        print(json.dumps(intent, default=default_serializer), flush=True)
+        sys.stdout.write(json.dumps(intent, default=default_serializer) + "\n")
+        sys.stdout.flush()
         return True
 
     @staticmethod
@@ -374,8 +373,6 @@ class AlertNotifier:
         if not alerts:
             return False
         if os.environ.get("MPTRADE_ORCHESTRATED") == "1":
-            import json
-            from datetime import datetime
             def default_serializer(obj):
                 if isinstance(obj, datetime):
                     return obj.isoformat()
@@ -385,7 +382,8 @@ class AlertNotifier:
                 "webhook_url": webhook_url,
                 "alerts": list(alerts)
             }
-            print(json.dumps(intent, default=default_serializer), flush=True)
+            sys.stdout.write(json.dumps(intent, default=default_serializer) + "\n")
+            sys.stdout.flush()
             return True
         else:
             from notify_engine.server import NotificationServer
@@ -419,7 +417,6 @@ def notify(title: str, body: str, source: str, symbol: str,
            price: float = None, desktop: bool = False,
            email: bool = None) -> None:
     if os.environ.get("MPTRADE_ORCHESTRATED") == "1":
-        import json
         intent = {
             "__orchestrator_intent__": "ntfy_webhook",
             "alerts": [{
@@ -430,7 +427,8 @@ def notify(title: str, body: str, source: str, symbol: str,
                 "symbol": symbol
             }]
         }
-        print(json.dumps(intent), flush=True)
+        sys.stdout.write(json.dumps(intent) + "\n")
+        sys.stdout.flush()
     else:
         from notify_engine.server import NotificationServer
         server = NotificationServer()
