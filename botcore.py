@@ -76,27 +76,64 @@ def _dotenv_pairs(path: str) -> tuple[list[tuple[str, str]], bool]:
         return [], False
 
 
-def load_dotenv(path: str = ".env") -> None:
-    """Load KEY=VALUE entries from .env without overriding the existing environment."""
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+_ROOT_CONFIG_PATH = os.path.abspath(os.path.join(_REPO_ROOT, "config.env"))
+_ROOT_CONFIG_KEYS: set[str] = set()
+
+
+def load_dotenv(path: str = ".env", override: bool = False) -> None:
+    """Load KEY=VALUE entries from .env without overriding the existing environment (unless override=True)."""
     pairs, loaded = _dotenv_pairs(path)
     if not loaded:
         return
+    is_root = os.path.abspath(path) == _ROOT_CONFIG_PATH
     for key, value in pairs:
-        if key and key not in os.environ:
-            os.environ[key] = value
+        if not key:
+            continue
+        if is_root:
+            if key not in os.environ:
+                os.environ[key] = value
+                _ROOT_CONFIG_KEYS.add(key)
+        else:
+            if override or key not in os.environ or key in _ROOT_CONFIG_KEYS:
+                os.environ[key] = value
+                _ROOT_CONFIG_KEYS.discard(key)
     log(f"  .env loaded from {path}")
 
 
-def load_env_stack(env_file: str, config_name: str = "config.env") -> None:
-    """Load secrets/overrides first, then the adjacent versioned configuration.
+def load_env_stack(env_file: str, config_name: str = "config.env", override: bool = False) -> None:
+    """Load secrets/overrides and the adjacent versioned configuration.
 
-    ``load_dotenv`` never overwrites existing values, so process environment wins,
-    followed by the selected secrets file, followed by versioned policy. Keeping
-    this ordering here prevents venue launchers from silently diverging.
+    Local venue configurations take precedence over any globally loaded root config.env.
+    Precedence (highest to lowest):
+      1. Explicit process environment (unless override=True)
+      2. Secrets/profile env file (env_file)
+      3. Venue versioned configuration (config_name)
+      4. Global root config.env defaults
     """
     env_path = os.path.abspath(env_file)
-    load_dotenv(env_path)
-    load_dotenv(os.path.join(os.path.dirname(env_path), config_name))
+    cfg_path = os.path.join(os.path.dirname(env_path), config_name)
+
+    # Process keys are those in os.environ that were NOT set by root config.env
+    protected = set() if override else ((set(os.environ.keys()) - _ROOT_CONFIG_KEYS))
+
+    # 1. Load adjacent versioned configuration (venue defaults)
+    cfg_pairs, cfg_loaded = _dotenv_pairs(cfg_path)
+    if cfg_loaded:
+        for key, value in cfg_pairs:
+            if key and key not in protected:
+                os.environ[key] = value
+                _ROOT_CONFIG_KEYS.discard(key)
+        log(f"  .env loaded from {cfg_path}")
+
+    # 2. Load secrets/profile configuration (precedence over venue config, but below process env)
+    env_pairs, env_loaded = _dotenv_pairs(env_path)
+    if env_loaded:
+        for key, value in env_pairs:
+            if key and key not in protected:
+                os.environ[key] = value
+                _ROOT_CONFIG_KEYS.discard(key)
+        log(f"  .env loaded from {env_path}")
 
 
 def parse_dotenv(path: str) -> dict:
