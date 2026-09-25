@@ -254,6 +254,26 @@ class BuyReferenceSwitchTest(unittest.TestCase):
                 self.assertFalse(order_guard.profit_guard(
                     provider, "TAOUSDC", "BUY", 298.0, 1.15, window_ref=300.0))
 
+    def test_dynamic_window_ancient_sell_expires_in_flat_trend(self):
+        class _OrderProviderFlatNoRecent:
+            def __init__(self):
+                self.name = "binance"
+
+            def get_orders(self, symbol, side, since_s):
+                # No sells in the last 24h
+                return []
+
+            def last_opposite_fill(self, symbol, side):
+                # Ancient fill from 10 days ago
+                return 216.28
+
+        provider = _OrderProviderFlatNoRecent()
+        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
+            with mock.patch.object(order_guard, "_symbol_trend", return_value="flat"):
+                # In flat trend (24h window), 10-day-old anchor 216.28 is outside 24h -> BUY at 298 is permitted!
+                self.assertTrue(order_guard.profit_guard(
+                    provider, "TAOUSDC", "BUY", 298.0, 1.15, window_ref=216.28))
+
     def test_sell_orders_never_use_short_dynamic_window(self):
         # On SELL, window_for never uses dynamic short window; returns full venue window (e.g. 336h kraken)
         with mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):

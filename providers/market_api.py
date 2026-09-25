@@ -260,11 +260,15 @@ class BinanceProvider(MarketDataProvider):
         _po.cancel_opposite_orders(side, symbol, requested_price)
 
     def profit_guard_window_ref(self, symbol: str, side: str, safeback_sec):
-        # Use the Order-cache safeback window as tier-one reference. When the caller
-        # omits it, use the rich 14-day default rather than a weaker fill fallback.
+        # Use the Order-cache safeback window as tier-one reference. When dynamic windowing
+        # is active on BUY and safeback_sec was not explicitly passed by caller, use dynamic window.
         import order_guard
         from binance_api import bapi_placeorder as _po
-        sb = safeback_sec if safeback_sec else _po.PLACE_ORDER_SAFEBACK_SEC
+        if safeback_sec is not None:
+            sb = safeback_sec
+        else:
+            win_s = order_guard.window_for("binance", symbol=symbol, order_type=side)
+            sb = win_s if (win_s and win_s > 0) else _po.PLACE_ORDER_SAFEBACK_SEC
         return order_guard.window_reference(self, symbol, side, sb)
 
     def last_opposite_fill(self, symbol: str, order_type: str, since_s: float = 0) -> Optional[float]:

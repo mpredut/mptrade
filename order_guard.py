@@ -337,13 +337,13 @@ def profit_guard(provider, symbol, order_type, price, profit_percentage, window_
             if window_ref is not None and window_ref > 0:
                 diff = u.value_diff_to_percent(window_ref, price)
                 if diff < profit_percentage:
-                    # In bull trend, verify whether this reference actually sits within the dynamic window (4h - 12h)
-                    if trend == "bull" and hasattr(provider, "get_orders"):
+                    # In dynamic mode, verify whether this reference actually sits within the dynamic window (dyn_window_s)
+                    if hasattr(provider, "get_orders"):
                         recent = provider.get_orders(symbol, "SELL", dyn_window_s) or []
                         recent_prices = [float(o.get("price") or 0) for o in recent if float(o.get("price") or 0) > 0]
                         if not recent_prices:
-                            print(f"[GUARD] BUY {symbol}: dynamic window ({dyn_hours:.1f}h) has no fills; "
-                                  f"anchor {window_ref} from older period bypassed in bull trend")
+                            print(f"[GUARD] BUY {symbol}: dynamic window ({dyn_hours:.1f}h, trend='{trend}') has no fills; "
+                                  f"anchor {window_ref} from older period bypassed")
                             return True
                     elif trend == "bull" and not hasattr(provider, "get_orders"):
                         print(f"[GUARD] BUY {symbol}: dynamic mode bypassed historical sell reference "
