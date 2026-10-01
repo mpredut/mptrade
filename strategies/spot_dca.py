@@ -62,17 +62,17 @@ class StratParams:
     max_dca_buys: int
     enable_takeprofit: bool
     order_ttl_min: float
-    stop_loss_pct: float     # Sell everything at this loss percentage; zero disables it.
-    adopt_cost: float        # Positive value adopts an existing position at this average cost.
-    adopt_qty: float         # Adopted quantity; zero reads the base-asset balance automatically.
-    reentry_drop_pct: float  # After TP, reenter only this far below the sale price; zero is immediate.
-    reentry_tolerance_pct: float  # Treat prices within tolerance of the threshold as reached.
-    reentry_adaptive: bool   # Use volatility-based reentry, falling back to fixed during warm-up.
-    reentry_sl_bounce_pct: float  # After stop-loss, reenter on a bounce from the post-sale low.
-    tp_tranches: list        # Gradual ``(percentage, share)`` sales; empty means one full TP.
+    stop_loss_pct: float = 0.0     # Sell everything at this loss percentage; zero disables it (spot DCA default).
+    adopt_cost: float = 0.0        # Positive value adopts an existing position at this average cost.
+    adopt_qty: float = 0.0         # Adopted quantity; zero reads the base-asset balance automatically.
+    reentry_drop_pct: float = 2.0  # After TP, reenter only this far below the sale price; zero is immediate.
+    reentry_tolerance_pct: float = 0.05  # Treat prices within tolerance of the threshold as reached.
+    reentry_adaptive: bool = False # Deprecated legacy flag (dominated by hybrid re-entry).
+    reentry_sl_bounce_pct: float = 1.5  # After stop-loss, reenter on a bounce from the post-sale low.
+    tp_tranches: list = None       # Gradual ``(percentage, share)`` sales; empty means one full TP.
     # --- TP trend-aware (EXPERIMENTAL, default OFF) -------------------------------
     tp_trend_hold: bool = False       # Use trailing instead of a fixed TP after the target is reached.
-    tp_regime_gate: bool = False      # Let the common regime classifier gate new TP trailing.
+    tp_regime_gate: bool = False      # Deprecated legacy binary gate: superseded by continuous MHDPA rules.
     tp_trend_min_pct: float = 0.5     # Minimum fitted bullish move required by the TP policy.
     tp_trail_pct: float = 2.0         # Above TP, exit after this pullback from the peak.
     tp_trail_profit_floor_pct: float = 0.0  # 0 preserves live compatibility; >0 allows MARKET trailing only
@@ -110,7 +110,7 @@ class StratParams:
     entry_pct: float = 0.0      # Entry is this percentage of the asset allocation.
     dca_pct: float = 0.0        # DCA is this percentage of the asset allocation.
     # --- HYBRID RE-ENTRY (EXPERIMENTAL, default OFF) -----------------------------
-    reentry_hybrid_enabled: bool = False  # Decouple macro trend permission from micro pullback trigger.
+    reentry_hybrid_enabled: bool = False  # Unified hybrid re-entry (enabled by default in from_env()).
     reentry_peak_relative: bool = False   # Force peak-relative pullback without trend filter (Test 1).
     reentry_pullback_pct: float = 1.5     # Pullback from post-sale peak required in confirmed bull trend.
     reentry_pullback_adaptive: bool = False  # Scale pullback by volatility: clamp(K_PULLBACK * vol_1h, min, max)
@@ -230,16 +230,16 @@ class StratParams:
             dca_pct            = required_float_env("STRAT_DCA_PCT"),
             enable_takeprofit  = (mode != "dca_only"),
             order_ttl_min      = required_float_env("STRAT_ORDER_TTL_MIN"),
-            stop_loss_pct      = required_float_env("STRAT_STOP_LOSS_PCT"),
-            adopt_cost         = required_float_env("STRAT_ADOPT_COST"),
-            adopt_qty          = required_float_env("STRAT_ADOPT_QTY"),
-            reentry_drop_pct   = required_float_env("STRAT_REENTRY_DROP_PCT"),
-            reentry_tolerance_pct = required_float_env("STRAT_REENTRY_TOLERANCE_PCT"),
-            reentry_adaptive   = required_bool_env("STRAT_REENTRY_ADAPTIVE"),
-            reentry_sl_bounce_pct = required_float_env("STRAT_REENTRY_SL_BOUNCE_PCT"),
+            stop_loss_pct      = float(float_env("STRAT_STOP_LOSS_PCT") if float_env("STRAT_STOP_LOSS_PCT") is not None else 0.0),
+            adopt_cost         = float(float_env("STRAT_ADOPT_COST") if float_env("STRAT_ADOPT_COST") is not None else 0.0),
+            adopt_qty          = float(float_env("STRAT_ADOPT_QTY") if float_env("STRAT_ADOPT_QTY") is not None else 0.0),
+            reentry_drop_pct   = float(float_env("STRAT_REENTRY_DROP_PCT") if float_env("STRAT_REENTRY_DROP_PCT") is not None else 2.0),
+            reentry_tolerance_pct = float(float_env("STRAT_REENTRY_TOLERANCE_PCT") if float_env("STRAT_REENTRY_TOLERANCE_PCT") is not None else 0.05),
+            reentry_adaptive   = str(os.environ.get("STRAT_REENTRY_ADAPTIVE", "false")).lower() in ("true", "1", "yes"),
+            reentry_sl_bounce_pct = float(float_env("STRAT_REENTRY_SL_BOUNCE_PCT") if float_env("STRAT_REENTRY_SL_BOUNCE_PCT") is not None else 1.5),
             tp_tranches        = _parse_tranches(defined_env("STRAT_TP_TRANCHES")),
-            tp_trend_hold      = required_bool_env("STRAT_TP_TREND_HOLD"),
-            tp_regime_gate     = required_bool_env("STRAT_TP_REGIME_GATE"),
+            tp_trend_hold      = str(os.environ.get("STRAT_TP_TREND_HOLD", "true")).lower() in ("true", "1", "yes"),
+            tp_regime_gate     = str(os.environ.get("STRAT_TP_REGIME_GATE", "false")).lower() in ("true", "1", "yes"),
             tp_trend_min_pct   = required_float_env("STRAT_TP_TREND_MIN_PCT"),
             tp_trail_pct       = required_float_env("STRAT_TP_TRAIL_PCT"),
             tp_trail_profit_floor_pct = max(
@@ -266,7 +266,7 @@ class StratParams:
             dca_vol_ref        = required_float_env("STRAT_DCA_VOL_REF"),
             dca_vol_interval   = required_int_env("STRAT_DCA_VOL_INTERVAL"),
             reentry_hybrid_enabled = (
-                str(os.environ.get("STRAT_REENTRY_HYBRID_ENABLED", "")).lower() in ("true", "1")
+                str(os.environ.get("STRAT_REENTRY_HYBRID_ENABLED", "true")).lower() in ("true", "1", "yes")
             ),
             reentry_peak_relative = (
                 str(os.environ.get("STRAT_REENTRY_PEAK_RELATIVE", "")).lower() in ("true", "1")
@@ -1458,6 +1458,7 @@ class Strategy:
                     min_trail_pct=self.p.trend_trail_min_pct,
                     ratchet_k=self.p.trend_trail_ratchet_k,
                     gain_threshold_pct=self.p.trend_trail_gain_threshold,
+                    surge_guard_active=self.p.surge_guard,
                 )
             else:
                 eff_trail = self.p.trend_trail_pct
@@ -1683,7 +1684,7 @@ class Strategy:
                 min_samples=self.p.regime_min_samples,
             )
         )
-        trend_hold_active = self.p.tp_trend_hold and (
+        trend_hold_active = self.p.tp_trend_hold and not bool(self.p.tp_tranches) and (
             trail_armed or regime_allows_tp_hold
         )
         if (self.p.enable_takeprofit and avg and trend_hold_active

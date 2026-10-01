@@ -166,15 +166,21 @@ def dynamic_trend_trail_pct(
     min_trail_pct: float = 3.0,
     ratchet_k: float = 0.5,
     gain_threshold_pct: float = 6.0,
+    surge_guard_active: bool = False,
 ) -> float:
     """Calculate ratcheted trailing stop distance based on peak unrealized gain.
 
     Ratchets tighter as accumulated peak profit expands beyond gain_threshold_pct:
     trail = base_trail_pct - ratchet_k * max(0.0, peak_gain_pct - gain_threshold_pct)
     clamped to [min_trail_pct, base_trail_pct].
+
+    Harmonization: When surge_guard_active is True, clamps the floor to max(min_trail_pct, 5.0)
+    to preserve a healthy breathing cushion (preventing 3-4% pullbacks from prematurely
+    liquidating the position before it can reach the 25% parabolic surge trigger).
     """
     base = max(0.0, float(base_trail_pct))
-    floor = min(base, max(0.0, float(min_trail_pct)))
+    eff_min = max(float(min_trail_pct), 5.0) if surge_guard_active else float(min_trail_pct)
+    floor = min(base, max(0.0, eff_min))
     thresh = max(0.0, float(gain_threshold_pct))
     k = max(0.0, float(ratchet_k))
     gain = float(peak_gain_pct)
@@ -182,6 +188,7 @@ def dynamic_trend_trail_pct(
         return base
     ratcheted = base - k * (gain - thresh)
     return max(floor, min(base, ratcheted))
+
 
 
 def check_fast_profit_reversal(

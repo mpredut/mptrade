@@ -38,7 +38,6 @@ APPROVED_BOUNDARIES = {
         "cancel_order", "order_limit_buy", "order_limit_sell",
         "order_market_buy", "order_market_sell",
     },
-    "hyperliquid/delta_neutral.py": {"spot_order"},
     "monitororder.py": {"cancel_order"},
     "providers/hyperliquid_provider.py": {"spot_order"},
     "providers/kraken_provider.py": {"add_order", "cancel_order"},

@@ -131,3 +131,22 @@ When any configuration parameter is updated:
    ```bash
    kill -15 $(pgrep -f "hl_dca_bot.py")
    ```
+
+---
+
+## 6. Harmonization and Orthogonality Invariants
+
+To avoid rule clashing, parameter bloat, and strategy cannibalization, the engine enforces three explicit harmonization invariants:
+
+1. **Harmonization of Conflict #1 (Ratchet Trailing vs Parabolic Surge Guard):**
+   - When both `STRAT_TREND_TRAIL_DYNAMIC` and `STRAT_SURGE_GUARD` are active, `dynamic_trend_trail_pct` clamps its minimum trailing stop distance to `max(min_trail_pct, 5.0)`.
+   - **Rationale:** Prevents a tight 3.0% ratchet from prematurely stopping out normal volatility (+8% to +20%) before the parabolic surge threshold (+25%) can develop. Once +25% is reached, Surge Guard takes command with its tight 2.5% exhaustion exit.
+2. **Harmonization of Conflict #2 (Tranche TP vs Trailing Hold):**
+   - When `STRAT_TP_TRANCHES` is populated (e.g. `3:50,6:50`), the engine places staged limit sell orders without being canceled by `tp_trend_hold`. When empty (default), all-or-nothing trailing hold operates.
+3. **Harmonization of Conflict #3 (Unified Re-entry vs Obsolete Volatility Scaling):**
+   - `STRAT_REENTRY_HYBRID_ENABLED` is the single canonical re-entry policy (shallow pullback in bull trends, defensive drop in bear/chop, with 48h TTL lockout protection). The legacy `STRAT_REENTRY_ADAPTIVE` flag is deprecated and retired.
+4. **Retirement of Binary Regime Gate (`STRAT_TP_REGIME_GATE`):**
+   - The crude binary true/false gate that blocked take-profit trailing during regime lag is formally deprecated. Market regime is now continuously integrated via mathematical indicators (`regime.strength`, `dynamic_flat_tp_pct`).
+5. **Spot DCA Stop-Loss Policy:**
+   - In pure spot DCA, tight stop-losses (12%-18%) are empirically proven to be the largest loss drivers (crystallizing the dip before the recovery). Default `STRAT_STOP_LOSS_PCT=0.0` disables premature liquidations, leaving `hit_stop` as an optional catastrophe breaker utility.
+

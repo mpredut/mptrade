@@ -16,8 +16,15 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import sys
 import time
 from dataclasses import dataclass
+
+_HL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_ROOT_DIR = os.path.dirname(_HL_DIR)
+for _p in (_HL_DIR, _ROOT_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from common import (
     log, now_str, required_env, defined_env, required_float_env,
@@ -26,6 +33,7 @@ from common import (
 from notify import notify
 from hl_client import HLClient, HLError
 from state_io import atomic_write_json, load_json_state
+
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 MIN_ORDER_USD = 10.5          # Do not submit orders below Hyperliquid's ~$10 minimum.

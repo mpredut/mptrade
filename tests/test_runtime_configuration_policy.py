@@ -102,7 +102,7 @@ def test_tracked_order_compatibility_shim_is_removed_after_consumer_migration():
 def test_live_launcher_env_defaults_are_location_based():
     for relative in (
         "kraken/kraken_bot.py",
-        "hyperliquid/dn_bot.py",
+        "hyperliquid/archive/delta_neutral/dn_bot.py",
         "hyperliquid/hl_bot.py",
     ):
         text = (ROOT / relative).read_text(encoding="utf-8")
