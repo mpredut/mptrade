@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
 import dataclasses
+import io
 import json
 import math
 import os
@@ -211,48 +213,50 @@ def evaluate_single_candidate(
         warmup_ohlc = ohlc[:warmup_n]
         run_ohlc = ohlc[warmup_n:]
 
-        # Full run
-        res = run_replay(
-            ohlc=run_ohlc,
-            params=params,
-            fee_pct=0.26,
-            bar_minutes=240.0,
-            warmup_ohlc=warmup_ohlc,
-            initial_cash=3900.0,
-        )
-        pnl = float(res.get("total", 0.0))
-        dd = float(res.get("max_drawdown_pct", 0.0))
-        cyc = int(res.get("cycles", 0))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            # Full run
+            res = run_replay(
+                ohlc=run_ohlc,
+                params=params,
+                fee_pct=0.26,
+                bar_minutes=240.0,
+                warmup_ohlc=warmup_ohlc,
+                initial_cash=3900.0,
+            )
+            pnl = float(res.get("total", 0.0))
+            dd = float(res.get("max_drawdown_pct", 0.0))
+            cyc = int(res.get("cycles", 0))
 
-        total_profit += pnl
-        worst_maxdd = max(worst_maxdd, dd)
-        total_cycles += cyc
-        asset_profits[asset] = round(pnl, 2)
-        asset_maxdds[asset] = round(dd, 2)
+            total_profit += pnl
+            worst_maxdd = max(worst_maxdd, dd)
+            total_cycles += cyc
+            asset_profits[asset] = round(pnl, 2)
+            asset_maxdds[asset] = round(dd, 2)
 
-        # 2 Independent Halves Split (Guardrail #1)
-        half_idx = len(run_ohlc) // 2
-        ohlc_h1 = run_ohlc[:half_idx]
-        ohlc_h2 = run_ohlc[half_idx:]
+            # 2 Independent Halves Split (Guardrail #1)
+            half_idx = len(run_ohlc) // 2
+            ohlc_h1 = run_ohlc[:half_idx]
+            ohlc_h2 = run_ohlc[half_idx:]
 
-        res_h1 = run_replay(
-            ohlc=ohlc_h1,
-            params=params,
-            fee_pct=0.26,
-            bar_minutes=240.0,
-            warmup_ohlc=warmup_ohlc,
-            initial_cash=3900.0,
-        )
-        res_h2 = run_replay(
-            ohlc=ohlc_h2,
-            params=params,
-            fee_pct=0.26,
-            bar_minutes=240.0,
-            warmup_ohlc=ohlc_h1[-warmup_n:] if len(ohlc_h1) >= warmup_n else warmup_ohlc,
-            initial_cash=3900.0,
-        )
-        h1_profits += float(res_h1.get("total", 0.0))
-        h2_profits += float(res_h2.get("total", 0.0))
+            res_h1 = run_replay(
+                ohlc=ohlc_h1,
+                params=params,
+                fee_pct=0.26,
+                bar_minutes=240.0,
+                warmup_ohlc=warmup_ohlc,
+                initial_cash=3900.0,
+            )
+            res_h2 = run_replay(
+                ohlc=ohlc_h2,
+                params=params,
+                fee_pct=0.26,
+                bar_minutes=240.0,
+                warmup_ohlc=ohlc_h1[-warmup_n:] if len(ohlc_h1) >= warmup_n else warmup_ohlc,
+                initial_cash=3900.0,
+            )
+            h1_profits += float(res_h1.get("total", 0.0))
+            h2_profits += float(res_h2.get("total", 0.0))
 
     calmar = (total_profit / worst_maxdd) if worst_maxdd > 0 else 0.0
 
@@ -313,7 +317,7 @@ def main():
             except Exception as exc:
                 print(f"Error on {cand['id']}: {exc}")
             completed += 1
-            if completed % 100 == 0 or completed == total_cands:
+            if completed % 20 == 0 or completed == total_cands:
                 elapsed = time.time() - t0
                 rate = completed / elapsed if elapsed > 0 else 0
                 eta_s = (total_cands - completed) / rate if rate > 0 else 0
