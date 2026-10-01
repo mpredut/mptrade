@@ -899,6 +899,52 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
         self.assertEqual(len(sells), 1)
         self.assertAlmostEqual(sells[0]["price"], 103.0)
 
+    def test_fast_profit_guard_in_step_trailing(self):
+        st = _make_strategy("TESTPAIR_STEP_FAST_GUARD")
+        st.p.enable_takeprofit = True
+        st.p.tp_trend_hold = True
+        st.p.takeprofit_pct = 5.0
+        st.p.fast_profit_guard = True
+        st.p.fast_profit_mult = 2.0
+        st.p.fast_profit_window_min = 5.0
+        st.p.fast_profit_drop_pct = 1.0
+        st.s["qty"] = 1.0
+        st.s["cost"] = 100.0
+        st.s["entry_price"] = 100.0
+
+        now = 10000.0
+        st._shadow_prices.append((now - 120.0, 112.0))
+        st._shadow_prices.append((now, 110.5))
+
+        exited = []
+        st._request_market_exit = lambda px, kind, soft_floor=False: exited.append((px, kind)) or True
+
+        # Price at 110.5 (+10.5% >= 2x 5%), dropped from 112.0 (drop = 1.34% >= 1.0% in 5m)
+        st.step(110.5, timestamp=now)
+        self.assertEqual(len(exited), 1)
+        self.assertEqual(exited[0][1], "TP")
+
+    def test_surge_guard_in_step_trailing(self):
+        st = _make_strategy("TESTPAIR_STEP_SURGE_GUARD")
+        st.p.enable_takeprofit = True
+        st.p.tp_trend_hold = True
+        st.p.takeprofit_pct = 5.0
+        st.p.surge_guard = True
+        st.p.surge_gain_pct = 20.0
+        st.p.surge_exit_pullback_pct = 2.0
+        st.s["qty"] = 1.0
+        st.s["cost"] = 100.0
+        st.s["entry_price"] = 100.0
+        st.s["surge_peak"] = 125.0
+
+        exited = []
+        st._request_market_exit = lambda px, kind, soft_floor=False: exited.append((px, kind)) or True
+
+        # Price at 122.0 (+22% >= 20%), pullback from peak 125 is 2.4% >= 2.0%
+        st.step(122.0, timestamp=10000.0)
+        self.assertEqual(len(exited), 1)
+        self.assertEqual(exited[0][1], "TP")
+
 
 if __name__ == "__main__":
     unittest.main()

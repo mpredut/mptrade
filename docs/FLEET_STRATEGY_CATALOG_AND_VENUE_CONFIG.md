@@ -92,11 +92,11 @@ flowchart TD
 | **4** | **Base Trend Trailing Stop** | **ACTIVE** (`8.0%`) | **ACTIVE** (`5.0%`) | Rides the bull market peak; exits when price pulls back by the configured percentage from the highest price seen. |
 | **5** | **Volatility-Adaptive Trailing**| **ACTIVE** (`true`) | **ACTIVE** (`true`) | Adapts the trailing distance using rolling 1h/4h volatility: $\text{trail} = \text{clamp}(k \times \sigma, \text{min}, \text{max})$. |
 | **6** | **DCA Trend Brake** | **ACTIVE** (`true`) | Standby (`false`) | Detects severe downward velocity ($\le -1.5\%$) and halts further DCA purchases until the free-fall stabilizes. |
-| **7** | **Parabolic Surge Guard** | **ACTIVE** (`true`) | Standby (`false`) | **Backtest winner (+8.5% net profit):** If a coin surges $\ge 25\%$ in 72h or from entry, exits on a tight $2.5\%$ pullback from peak. |
-| **8** | **Catastrophe Stop-Loss** | **ACTIVE** (`25.0%`) | **ACTIVE** (`20.0%`) | Hard safety floor: liquidates the position if market collapses beyond normal DCA recovery bands. |
-| **9** | **Dynamic Flat TP** | Standby (`false`) | Standby (`false`) | In flat markets, scales take-profit dynamically between 3.0% (choppy noise) and 7.0% (breakout cusp) based on regime strength. |
+| **7** | **Parabolic Surge Guard** | **ACTIVE** (`true`) | **ACTIVE** (`true`) | **Backtest winner (+8.5% net profit):** If a coin surges $\ge 25\%$ in 72h or from entry, exits on a tight $2.5\%$ pullback from peak. |
+| **8** | **Catastrophe Stop-Loss** | Standby (`0.0%`) | Standby (`0.0%`) | Optional emergency utility floor: disabled by default in spot DCA to avoid crystallizing pullbacks before recovery. |
+| **9** | **Dynamic Flat TP** | **ACTIVE** (`true`) | **ACTIVE** (`true`) | In flat markets, scales take-profit dynamically between 3.0% (choppy noise) and 7.0% (breakout cusp) based on regime strength. |
 | **10**| **Profit Ratchet Trailing** | Standby (`false`) | Standby (`false`) | Ratchets the trailing stop tighter (from 8% down to 4%) as unrealized gains expand beyond 8%, locking in accumulated gains. |
-| **11**| **Fast Micro-Gradient Guard** | Standby (`false`) | Standby (`false`) | If profit $\ge 2\times \text{TP}$ (+10%), monitors rolling 5m candles; immediately sells if a 1.0% micro-drop occurs. |
+| **11**| **Fast Micro-Gradient Guard** | **ACTIVE** (`true`) | **ACTIVE** (`true`) | If profit $\ge 2\times \text{TP}$ (+10%), monitors rolling 5m candles; immediately sells if a 1.0% micro-drop occurs. |
 | **12**| **Slow-Grind Dual Sensor** | Standby (`false`) | Standby (`false`) | For positions held $\ge 7\text{d}$ with $\ge 15\%$ gain, exits if a 1.5% flash drop (15m) or 2.5% structural drop occurs. |
 
 ---

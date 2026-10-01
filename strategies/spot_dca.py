@@ -1582,6 +1582,8 @@ class Strategy:
             held > 1e-12 and (
                 self.p.dca_trend_brake
                 or self.p.tp_dynamic_flat
+                or self.p.surge_guard
+                or self.p.slow_grind_guard
             )
         )
         if needs_regime:
@@ -1683,6 +1685,71 @@ class Strategy:
             # if price later falls below TP, so the target pullback does not reset the peak.
             peak = max(self.s.get("trail_peak") or price, price)
             self.s["trail_peak"] = peak
+
+            # 1. Micro-gradient 2X Fast Profit Guard (Horizon 3)
+            if self.p.fast_profit_guard and avg and held > 1e-12:
+                triggered, gain, drop = sr.check_fast_profit_reversal(
+                    current_price=price,
+                    avg_cost=avg,
+                    base_tp_pct=self.p.takeprofit_pct,
+                    mult=self.p.fast_profit_mult,
+                    shadow_prices=list(self._shadow_prices),
+                    window_sec=self.p.fast_profit_window_min * 60.0,
+                    drop_pct=self.p.fast_profit_drop_pct,
+                    current_time=tick_time,
+                )
+                if triggered:
+                    exit_px = round(price * 0.999, self.price_dec)
+                    if self._request_market_exit(price, "TP"):
+                        log(f"  [STRAT] FAST PROFIT GUARD EXIT (+{gain:.2f}% gain, -{drop:.2f}% drop in {self.p.fast_profit_window_min:.0f}m) -> reference {exit_px}")
+                        return
+
+            # 2. Parabolic Surge Guard (2-3 Day Exhaustion, Horizon 4)
+            if self.p.surge_guard and avg and held > 1e-12:
+                surge_peak = max(self.s.get("surge_peak") or price, price)
+                self.s["surge_peak"] = surge_peak
+                window_move = regime.fitted_move_pct if regime and regime.fresh else None
+                triggered, reason = sr.check_parabolic_surge_exhaustion(
+                    current_price=price,
+                    avg_cost=avg,
+                    surge_peak=surge_peak,
+                    surge_gain_pct=self.p.surge_gain_pct,
+                    exit_pullback_pct=self.p.surge_exit_pullback_pct,
+                    window_move_pct=window_move,
+                    surge_move_pct=self.p.surge_move_pct,
+                )
+                if triggered:
+                    exit_px = round(price * 0.999, self.price_dec)
+                    if self._request_market_exit(price, "TP"):
+                        log(f"  [STRAT] SURGE EXHAUSTION EXIT ({reason}) peak {surge_peak:.{self.price_dec}f} -> reference {exit_px}")
+                        return
+
+            # 3. Slow-Grind Guard (1-3 Week Drift, Horizon 5)
+            if self.p.slow_grind_guard and avg and held > 1e-12:
+                slow_peak = max(self.s.get("slow_grind_peak") or price, price)
+                self.s["slow_grind_peak"] = slow_peak
+                entry_ts = self.s.get("entry_ts")
+                n = self.p.trend_sma_n
+                sma = sum(regime_closes[-n:]) / n if len(regime_closes) >= n else None
+                triggered, reason = sr.check_slow_grind_exhaustion(
+                    current_price=price,
+                    avg_cost=avg,
+                    entry_ts=entry_ts,
+                    current_ts=tick_time,
+                    min_days=self.p.slow_grind_days,
+                    min_gain_pct=self.p.slow_grind_min_gain_pct,
+                    recent_peak=slow_peak,
+                    shadow_prices=list(self._shadow_prices),
+                    flash_window_sec=self.p.slow_grind_flash_window_min * 60.0,
+                    flash_drop_pct=self.p.slow_grind_flash_drop_pct,
+                    structural_drop_pct=self.p.slow_grind_hourly_drop_pct,
+                    sma_value=sma,
+                )
+                if triggered:
+                    exit_px = round(price * 0.999, self.price_dec)
+                    if self._request_market_exit(price, "TP"):
+                        log(f"  [STRAT] SLOW GRIND EXIT ({reason}) peak {slow_peak:.{self.price_dec}f} -> reference {exit_px}")
+                        return
             eff_trail = self._effective_trail_pct()   # Adaptive when enabled, otherwise fixed.
             candidate_stop = peak * (1 - eff_trail / 100)
             # A trailing stop ratchets one way: volatility may widen distance for future
