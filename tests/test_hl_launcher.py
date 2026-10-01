@@ -8,7 +8,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 SPEC = importlib.util.spec_from_file_location(
-    "repo_hl_dca_bot", os.path.join(ROOT, "hyperliquid", "hl_dca_bot.py")
+    "repo_hl_bot", os.path.join(ROOT, "hyperliquid", "hl_bot.py")
 )
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -16,7 +16,7 @@ SPEC.loader.exec_module(MODULE)
 state_dir_for = MODULE.state_dir_for
 
 
-class HLDcaLauncherTest(unittest.TestCase):
+class HLLauncherTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.original_here = MODULE._HERE

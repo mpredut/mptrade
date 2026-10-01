@@ -7,9 +7,8 @@ active in production.
 
 ## Production state — 21 August 2026
 
-- `hl_dca_bot.py` sits outside `procs.conf`, with the REAL gates configured, but it is
-  stopped after the preflight found only ~1,024 USDC for a sizing of 7,000; it is not
-  supervised and does not restart automatically;
+- `hl_bot.py` is supervised in `procs.conf` to run the HYPE/USDC spot strategy
+  with REAL gates active;
 - the `PAPER-1` incident in the legacy Kraken state was fixed and validated; the LIVE HL
   state is isolated, and the last order was cancelled without a fill;
 - `dn_bot.py` and the watcher are stopped and commented out in the manifest;
@@ -20,8 +19,8 @@ active in production.
 The authoritative check is always the combination of:
 
 ```bash
-rg -n 'hl_dca|dn_bot' procs.conf
-ps -ef | grep -E '[h]l_dca_bot|[d]n_bot'
+rg -n 'hl_bot|dn_bot' procs.conf
+ps -ef | grep -E '[h]l_bot|[d]n_bot'
 python3 verify_tools/ownership_inventory.py --running
 ```
 
@@ -29,13 +28,13 @@ python3 verify_tools/ownership_inventory.py --running
 
 | File | Market | Engine | State |
 |---|---|---|---|
-| `hl_dca_bot.py` | HYPE/USDC spot | `strategies.spot_dca` (base v2) | stopped until the DCA reserve is funded |
-| `hl_bot.py` | PERP long/short | `hyperliquid/strategy.py` | legacy, unregistered and not started |
-| `dn_bot.py` | spot long plus perp short | `delta_neutral.py` | explicitly stopped in the manifest |
+| `hl_bot.py` | HYPE/USDC spot | `strategies.spot_dca` (base v2) | supervised in `procs.conf` |
+| `archive/perp/hl_perp_bot.py` | PERP long/short | `hyperliquid/strategy.py` | legacy, unregistered and archived |
+| `archive/delta_neutral/dn_bot.py` | spot long plus perp short | `delta_neutral.py` | archived |
 | `providers/hyperliquid_provider.py` | spot | the `StrategyExecutor` contract | a lazily imported adapter |
 | `hl_client.py` | spot and perp | the Hyperliquid SDK | a wrapper for reads and orders |
 
-`hl_dca_bot.py` uses the same live/replay financial engine as the Kraken bot; the provider
+`hl_bot.py` uses the same live/replay financial engine as the Kraken bot; the provider
 changes the venue, not the strategy's rules.
 
 ## Configuration and precedence
@@ -65,7 +64,7 @@ files in the same order as the launcher and print only the non-sensitive keys. N
 
 ## Safety gates
 
-For `hl_dca_bot.py`, real money requires all of these at once:
+For `hl_bot.py`, real money requires all of these at once:
 
 1. the process launched without `--paper`;
 2. `STRAT_EXECUTE=true`;
@@ -138,7 +137,7 @@ The artefact is not versioned; the durable figures and assumptions are kept here
 ## Co-mingling and ownership
 
 The HYPE spot balance is a single pool per wallet. If DN were restarted, its long spot leg
-would share the balance with `hl_dca_bot` or `monitortrades`; a SELL of "everything
+would share the balance with `hl_bot` or `monitortrades`; a SELL of "everything
 available" could undo the hedge. Before any activation, use a separate subaccount or wallet,
 or demonstrate exclusive ownership. DN being stopped today removes the current runtime
 conflict, not the architectural risk on restart.
@@ -163,7 +162,7 @@ myenv/bin/python -m unittest -q tests.test_hyperliquid_provider_executor
 
 # the launcher forced into PAPER; do not add it to the manifest just for a test
 cd hyperliquid
-../myenv/bin/python hl_dca_bot.py --paper
+../myenv/bin/python hl_bot.py --paper
 ```
 
 Starting PAPER still creates a persistent process; stop it in a controlled way after the

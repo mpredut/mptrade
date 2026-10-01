@@ -36,7 +36,7 @@ The centralized supervisor for the Python trading algorithms.
 It runs as a systemd service (`python_orchestrator.service`) but **does NOT depend** (`Requires=`) on `pia.service`. It stays alive even if the network drops.
 
 * **`orchestrator.py`**
-  * Reads `procs.conf` and spawns bots (`kraken_bot.py`, `hl_dca_bot.py`, `monitortrades.py`) via `asyncio.create_subprocess_shell`.
+  * Reads `procs.conf` and spawns bots (`kraken_bot.py`, `hl_bot.py`, `monitortrades.py`) via `asyncio.create_subprocess_shell`.
   * **Auto-Restart**: If a bot exits or crashes, the orchestrator instantly restarts it. No polling needed.
   * **Hot-Reload Watchdog**: Every 10 seconds, it checks the MD5 hash of `config.env`. If changed, it gracefully restarts all bots to apply the new config, notifying the user.
   

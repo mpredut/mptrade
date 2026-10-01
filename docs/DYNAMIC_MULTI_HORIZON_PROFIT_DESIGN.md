@@ -1,7 +1,7 @@
 # Multi-Horizon Dynamic Profit Architecture (MHDPA)
 
 > **Status:** Specification & Architecture Design  
-> **Target Subsystems:** `strategies/spot_dca.py`, `strategies/spot_dca_rules.py`, `market_regime.py`, `kraken_bot.py`, `hl_dca_bot.py`, `t212_bot.py`  
+> **Target Subsystems:** `strategies/spot_dca.py`, `strategies/spot_dca_rules.py`, `market_regime.py`, `kraken_bot.py`, `hl_bot.py`, `t212_bot.py`  
 > **Primary Invariant:** All take-profit exits must strictly respect the profit floor ($\text{Price} \ge \text{AvgCost} + \text{Fees}$), while the catastrophe stop-loss remains the only unconditional capital-preservation exit.
 
 ---

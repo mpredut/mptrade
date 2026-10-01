@@ -25,7 +25,7 @@ class OrchestratorZombieDetectionTest(unittest.IsolatedAsyncioTestCase):
             with open(conf, "w", encoding="utf-8") as f:
                 f.write(
                     "rtrade.py|$ROOT|source $ROOT/$VENV/bin/activate && python rtrade.py|rtrade|cachedb/rtrade.heartbeat|180|fleet\n"
-                    "hl_dca_bot.py|$ROOT/hyperliquid|source $ROOT/$VENV/bin/activate && nohup python3 hl_dca_bot.py >> logs/HL-bot.log 2>&1 &|HL-bot|logs/HL-bot.log|900|bot\n"
+                    "hl_bot.py|$ROOT/hyperliquid|source $ROOT/$VENV/bin/activate && nohup python3 hl_bot.py >> logs/HL-bot.log 2>&1 &|HL-bot|logs/HL-bot.log|900|bot\n"
                     "cacheManager.py|$ROOT|source $ROOT/$VENV/bin/activate && python cacheManager.py|cacheManager|||fleet\n"
                 )
             with patch("orchestratorTrade.orchestrator.ROOT_DIR", tmp):

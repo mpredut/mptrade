@@ -80,7 +80,7 @@ executor; both run the same class. `kraken/strategy.py` remains a shim for the h
 commands. The state directory, the notifier and the venue label are injectable, but the
 Kraken fallback keeps exactly the existing state file.
 
-`hl_dca_bot.py` injects `HyperliquidProvider` into the same `spot_dca` engine.
+`hl_bot.py` injects `HyperliquidProvider` into the same `spot_dca` engine.
 T212, the legacy PERP engine and delta-neutral are not aliases of it: providers may
 satisfy the same mechanical contract, but distinct financial strategies stay separate.
 

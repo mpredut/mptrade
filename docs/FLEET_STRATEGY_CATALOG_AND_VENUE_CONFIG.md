@@ -12,7 +12,7 @@ The automated trading fleet employs a modular, shared execution engine for spot 
 
 1. **Shared Engine (`strategies/spot_dca.py` + `strategies/spot_dca_rules.py`):**
    - **Kraken (`kraken/kraken_bot.py`):** Live on `HYPEUSD`, `TAOUSD`, `ADAUSD`.
-   - **Hyperliquid (`hyperliquid/hl_dca_bot.py`):** Live on `HYPE` spot.
+   - **Hyperliquid (`hyperliquid/hl_bot.py`):** Live on `HYPE` spot.
    - **Coverage:** Every single strategy, exit rule, and profit guard implemented in the shared engine is **100% available and compatible with both Kraken and Hyperliquid**.
 2. **Independent Engines:**
    - **Binance (`tradeall.py`, `rtrade.py`, `assetguardian.py`):** Uses a distinct pipeline based on multi-timeframe linear regression (`pricewindow.py`), Kalman filter direction gating, and `binance_api/trailing_stop.py`.
@@ -37,7 +37,7 @@ A fundamental architectural question:
                  ▼                                             ▼
    ┌───────────────────────────┐                 ┌───────────────────────────┐
    │        Kraken Bots        │                 │      Hyperliquid Bot      │
-   │    (kraken_bot.py)        │                 │     (hl_dca_bot.py)       │
+   │    (kraken_bot.py)        │                 │       (hl_bot.py)         │
    ├───────────────────────────┤                 ├───────────────────────────┤
    │ Config: kraken/config.env │                 │ Config: hyperliquid/      │
    │ State:  kraken/.state_*.  │                 │         config.env        │
@@ -129,7 +129,7 @@ When any configuration parameter is updated:
    ```
 4. **Reloading Hyperliquid Only:**
    ```bash
-   kill -15 $(pgrep -f "hl_dca_bot.py")
+   kill -15 $(pgrep -f "hl_bot.py")
    ```
 
 ---

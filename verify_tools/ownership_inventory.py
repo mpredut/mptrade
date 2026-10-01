@@ -227,13 +227,13 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
             hl_env, "hyperliquid", "hyperliquid-spot-dca",
         ),
         symbol=f"{hl_token}USDC", base=hl_token, quote="USDC",
-        role="primary", coordination="spot-dca", pattern="hl_dca_bot.py",
-        configured=_pattern(patterns, "hl_dca_bot.py") is not None,
+        role="primary", coordination="spot-dca", pattern="hl_bot.py",
+        configured=_pattern(patterns, "hl_bot.py") is not None,
         enabled=(
             _truthy(hl_env.get("STRAT_EXECUTE"))
             and _truthy(hl_env.get("HL_LIVE_ORDERS"))
         ),
-        source="hyperliquid/hl_dca_bot.py", commands=commands,
+        source="hyperliquid/hl_bot.py", commands=commands,
     ))
 
     monitor_pattern = "monitortrades.py"

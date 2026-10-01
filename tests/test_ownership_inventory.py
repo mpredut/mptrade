@@ -89,7 +89,7 @@ class OwnershipInventoryTest(unittest.TestCase):
 
     def test_running_scope_detects_owner_started_outside_manifest(self):
         root = _fixture()
-        owners = build_inventory(root, commands=["python3 hl_dca_bot.py"])
+        owners = build_inventory(root, commands=["python3 hl_bot.py"])
 
         spot = next(
             owner for owner in owners

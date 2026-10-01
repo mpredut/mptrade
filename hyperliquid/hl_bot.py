@@ -1,148 +1,85 @@
 #!/usr/bin/env python3
+"""hl_bot.py — base v2 spot_dca engine on Hyperliquid SPOT via HyperliquidProvider.
+
+The SAME engine as kraken_bot (DCA + take profit + trailing + stop), with only the
+venue changed. It trades only HYPE spot on HL. In provider-agnostic path B, the strategy
+requires StrategyExecutor and HyperliquidProvider implements it.
+
+  python3 hl_bot.py --paper   # PAPER validation without money
+  python3 hl_bot.py           # REAL requires STRAT_EXECUTE=true + HL_LIVE_ORDERS=true;
+                              # provider safety-gates real orders
+
+CAUTION: base v2 SELLS into strength at +TP%. It uses the SAME HYPE spot balance as a
+directional long, so do not run base v2 and long-hold over the same HYPE.
 """
-hl_bot.py — Hyperliquid long-only perpetual watcher and DCA/take-profit auto-trader.
-
-IMPORTANT: run with the Hyperliquid SDK/eth_account virtual environment. Easiest:
-    ./hl_run.sh            # selects server myenv, local .venv, or python3
-Alternatively: source ../myenv/bin/activate; python hl_bot.py
-
-Commands:
-    ...python hl_bot.py                  # run from .env
-    ...python hl_bot.py --paper          # PAPER without money or wallet
-    ...python hl_bot.py --price          # public HYPE price
-    ...python hl_bot.py --balance        # available USDC; requires HL_ACCOUNT_ADDRESS
-    ...python hl_bot.py --positions      # current position
-    ...python hl_bot.py --test-strategy HYPE
-"""
-
 from __future__ import annotations
 
 import argparse
 import os
 import sys
-import time
 
-from common import (
-    load_env_stack, log, now_str, required_env, required_int_env,
-    required_bool_env, single_instance,
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+for _p in (_ROOT, _HERE):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+from common import (  # hyperliquid/common.py
+    load_env_stack, log, single_instance, required_env, required_bool_env,
 )
-from hl_client import HLClient, HLError
-from market_data import get_price, coin_available
-from notify import notify
-from strategy import Strategy, StratParams
+from strategies.spot_dca import Strategy, StratParams
+from providers.hyperliquid_provider import HyperliquidProvider
 
-def _build_client(need_wallet: bool) -> HLClient:
-    mainnet = required_bool_env("HL_MAINNET")
-    secret = os.environ.get("HL_SECRET_KEY") if need_wallet else None
-    addr = os.environ.get("HL_ACCOUNT_ADDRESS")
-    return HLClient(secret_key=secret, account_address=addr, mainnet=mainnet)
+
+def state_dir_for(dry_run: bool) -> str:
+    """Isolate HL state from Kraken and separate PAPER from LIVE."""
+    state_dir = os.path.join(_HERE, ".paper_state") if dry_run else _HERE
+    if dry_run:
+        os.makedirs(state_dir, exist_ok=True)
+    return state_dir
 
 
 def main() -> int:
+    # Load configuration before CLI defaults and PAPER/REAL calculation. `.env` wins
+    # because load_dotenv does not override already defined variables.
     env_file = os.environ.get("ENV_FILE", os.path.join(os.path.dirname(__file__), ".env"))
     for i, a in enumerate(sys.argv):
         if a == "--env-file" and i + 1 < len(sys.argv):
             env_file = sys.argv[i + 1]
     load_env_stack(env_file)
 
-    ap = argparse.ArgumentParser(description="Bot DCA+TP pe Hyperliquid (perp long-only).")
+    ap = argparse.ArgumentParser(description="base v2 (spot_dca) pe Hyperliquid HYPE.")
     ap.add_argument("--env-file", default=env_file)
-    ap.add_argument("--coin", help="Override the coin (otherwise HL_COIN from .env)")
-    ap.add_argument("--interval", type=int, default=required_int_env("HL_POLL_SECONDS"))
-    ap.add_argument("--desktop", action="store_true")
-    ap.add_argument("--skip-wait", action="store_true")
-    ap.add_argument("--paper", action="store_true", help="PAPER (no money, no wallet)")
-    ap.add_argument("--price", action="store_true")
-    ap.add_argument("--balance", action="store_true")
-    ap.add_argument("--positions", action="store_true")
-    ap.add_argument("--signal", action="store_true", help="Arata semnalul de trend/predictie curent")
-    ap.add_argument("--test-strategy", metavar="COIN")
+    ap.add_argument("--paper", action="store_true", help="Force PAPER (no money)")
+    ap.add_argument("--token", default=None, help="Token to trade (defaults to HL_SPOT_TOKEN)")
+    ap.add_argument("--test-strategy", metavar="TOKEN", help="Run strategy once on given token")
     args = ap.parse_args()
 
-    coin      = (args.coin or required_env("HL_COIN")).strip()
-    label     = os.environ.get("SYMBOL_LABEL") or coin
-    leverage  = required_int_env("HL_LEVERAGE")
-    strat_dry = args.paper or not required_bool_env("STRAT_EXECUTE")
-    interval  = max(args.interval, 15)
-
+    token = (args.test_strategy or args.token or required_env("HL_SPOT_TOKEN")).upper()
+    strategy_enabled = required_bool_env("STRAT_EXECUTE")
+    venue_enabled = required_bool_env("HL_LIVE_ORDERS")
+    strat_dry = args.paper or not (strategy_enabled and venue_enabled)
     if args.test_strategy:
         single_instance(f"hl_bot_{args.test_strategy.strip()}")
-    elif not any((args.price, args.balance, args.positions, args.signal)):
-        single_instance(f"hl_bot_{coin}")
+    elif not any(a in sys.argv for a in ()):  # reserved for future one-shot commands
+        single_instance(f"hl_bot_{token}")   # one instance per token
 
-    # A wallet is required only for real trading.
-    need_wallet = not strat_dry or args.balance or args.positions
-    # RESILIENCE: retry startup network failures instead of terminating with a traceback.
-    while True:
-        try:
-            client = _build_client(need_wallet)
-            break
-        except HLError as e:
-            log(f"! {e}")
-            return 1                         # configuration error: do not retry
-        except KeyboardInterrupt:
-            return 130
-        except Exception as e:  # noqa: BLE001
-            log(f"! the connection failed ({e.__class__.__name__}) — retrying in 60s")
-            time.sleep(60)
+    from providers.execution_audit import AuditedStrategyExecutor
 
-    if args.price:
-        p = get_price(client, coin); log(f"[PRICE] {coin} = {p}")
-        return 0 if p else 1
-    if args.balance:
-        log(f"[BALANCE] USDC disponibil: {client.withdrawable()}")
-        return 0
-    if args.positions:
-        szi, entry = client.position(coin)
-        log(f"[POSITION] {coin}: size={szi} entryPx={entry}")
-        return 0
-    if args.signal:
-        from signals import get_signal
-        s = get_signal(client, coin)
-        log(f"[SIGNAL] {coin}: trend={s['trend']}  confidence={s['confidence']}  sursa={s['source']}"
-            + (f"  ({s['detail']})" if s.get("detail") else ""))
-        return 0
-    if args.test_strategy:
-        log(f"[TEST] strategie {args.test_strategy}  {'PAPER' if strat_dry else '⚠ REAL'}")
-        Strategy(client, args.test_strategy, StratParams.from_env(),
-                 dry_run=strat_dry, desktop=args.desktop, leverage=leverage).run()
-        return 0
-
-    log("=== Hyperliquid bot ===")
-    log(f"    coin         : {label}  ({coin} perp, levier {leverage}x)")
-    log(f"    wallet       : {'yes' if os.environ.get('HL_SECRET_KEY') else 'NO (public/paper only)'}")
-    log(f"    execution    : {'PAPER (no money)' if strat_dry else '⚠ REAL — REAL MONEY'}")
-    log(f"    ntfy/email   : {os.environ.get('NTFY_TOPIC_TRADES') or '-'} / {os.environ.get('ALERT_TO_EMAIL') or '-'}")
-
-    if not args.skip_wait:
-        if not _wait_for_listing(client, coin, label, interval, args.desktop):
-            return 130
-
-    try:
-        Strategy(client, coin, StratParams.from_env(), dry_run=strat_dry,
-                 desktop=args.desktop, leverage=leverage).run()
-        return 0
-    except KeyboardInterrupt:
-        log("Stopped manually."); return 130
-
-
-def _wait_for_listing(client, coin, label, interval, desktop) -> bool:
-    if coin_available(client, coin):
-        log(f"  [verify] {coin} e disponibil pe Hyperliquid — pornesc.")
-        return True
-    log(f"    {coin} is unavailable on Hyperliquid — waiting... (Ctrl+C to stop)")
-    try:
-        while True:
-            if coin_available(client, coin):
-                p = get_price(client, coin)
-                log(f">>> {label} is available on Hyperliquid (price {p}) — starting <<<")
-                notify(title=f"{label} disponibil pe Hyperliquid!",
-                       body=f"{coin} price {p}", source="hyperliquid", price=p, desktop=desktop)
-                return True
-            log(f"ping - waiting for {coin}...")
-            time.sleep(interval)
-    except KeyboardInterrupt:
-        log("Stopped manually."); return False
+    provider = AuditedStrategyExecutor(
+        HyperliquidProvider(token=token), venue="Hyperliquid",
+    )
+    log("=== HL base v2 bot (spot_dca) ===")
+    log(f"    token      : {token} (HYPE spot pe Hyperliquid)")
+    log(f"    execution  : {'PAPER (no money)' if strat_dry else '⚠ REAL — REAL MONEY'}")
+    log("    engine     : strategies.spot_dca (IDENTICAL to kraken_bot)")
+    Strategy(
+        provider, token, StratParams.from_env(), dry_run=strat_dry,
+        state_dir=state_dir_for(strat_dry),
+        notification_source="hyperliquid", venue_label="Hyperliquid",
+        fee_note="fee HL spot base ~0.04% maker / ~0.07% taker per fill",
+    ).run()
+    return 0
 
 
 if __name__ == "__main__":

@@ -11,9 +11,8 @@ see [DISASTER_RECOVERY.md](DISASTER_RECOVERY.md).
   `kraken_xstock_watch`, `t212_bot`, `kraken/trailing_stop` and
   `binance_api/trailing_stop`. They are started from the `bot` roles in `procs.conf` and
   supervised by `healthcheck.sh --supervise` (cron */5).
-- **Hyperliquid**: `dn_bot`/watch are stopped and commented out in the manifest. `hl_dca_bot`
-  is stopped, has zero orders, and stays outside `procs.conf`. The prepared
-  1,000/600/10,000 profile needs at least 7,000 USDC; the snapshot had ~1,024 USDC available.
+- **Hyperliquid**: `dn_bot`/watch are stopped and commented out in the manifest. `hl_bot`
+  is configured in `procs.conf` to run HYPE spot with REAL gates active.
 - **Market/account facade**: `providers/market_api.py` routes by symbol to
   `BinanceProvider` / `HyperliquidProvider` / `kraken` / `t212`. `monitortrades` uses it.
 
@@ -42,7 +41,7 @@ Read by **all of them**: `healthcheck.sh`, `trade_engine/orchestrator.py`, `rest
 - systemd `binance` (enabled) -> `fleet_supervisor` -> the fleet (after VPN/pia).
 - The crontab persists -> `healthcheck --supervise` (*/5) starts the processes declared
   active (`role=bot`) within 5 minutes.
-- The commented-out HL entries, and `hl_dca_bot.py` which is absent from `procs.conf`, do **not** restart.
+- The commented-out HL entries do **not** restart.
 - No manual intervention is needed for the fleet and the bots declared active.
 
 ### Enabling HL after funding
@@ -50,8 +49,8 @@ Read by **all of them**: `healthcheck.sh`, `trade_engine/orchestrator.py`, `rest
 1. Confirm at least `7,000 USDC` free; `7,200` is recommended for fees and slippage.
 2. Confirm zero HYPE orders and a single owner in `ownership_inventory.py --running`.
 3. Run the tests and the backtest on DEV after syncing `cachedb`; never on PROD.
-4. Start `hl_dca_bot.py` in a controlled way, then check the detached PID, the LIVE state and
-   two consecutive ticks. Do not add the process to the manifest without an explicit decision.
+4. Start `hl_bot.py` in a controlled way, then check the detached PID, the LIVE state and
+   two consecutive ticks.
 
 ## ⚠ PITFALLS AND LESSONS (read before changing anything)
 
@@ -72,9 +71,8 @@ must carry a heartbeat on `hb_log`/`hb_stale_s` again; they are commented out to
 
 ### 3. ⚠ SPOT co-mingling on Hyperliquid
 The HYPE spot balance is a single pool per wallet. If DN is restarted, its LONG spot leg,
-`hl_dca_bot` and any `monitortrades` owner would all see the same balance; a SELL of "everything
-available" can undo the hedge or another engine's position. At the last check `hl_dca_bot` was
-stopped; before any second owner exists, exclusive ownership must be demonstrated, or a
+`hl_bot` and any `monitortrades` owner would all see the same balance; a SELL of "everything
+available" can undo the hedge or another engine's position. Before any second owner exists, exclusive ownership must be demonstrated, or a
 separate subaccount/wallet used. `STRAT_EXECUTE` and `HL_LIVE_ORDERS` are necessary gates, not
 proof of ownership and not deploy approval.
 

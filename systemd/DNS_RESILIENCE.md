@@ -1,7 +1,7 @@
 # DNS resilience for the Hyperliquid bot (disaster recovery)
 
 ## Problem
-`hl_dca_bot` (Hyperliquid) intermittently fails to resolve **`api.hyperliquid.xyz`**
+`hl_bot` (Hyperliquid) intermittently fails to resolve **`api.hyperliquid.xyz`**
 ("Failed to resolve" / "Temporary failure in name resolution", Errno -3) during PIA VPN
 or resolver blips. Kraken (`api.kraken.com`) and Binance are unaffected — it is that one
 endpoint. Each failure makes the bot skip one price/manage tick until it recovers, which

@@ -104,8 +104,8 @@ Hyperliquid keep their own logic where the execution model differs.
   state for orders, partial fills, cancellation, and repricing;
 - `binance_api/trailing_stop.py` — trailing/re-buy circuit breaker for Binance;
 - `hyperliquid/` — HYPE client and provider. `dn_bot` is disabled in
-  `procs.conf`; `hl_dca_bot` is configured outside the manifest, with REAL gates
-  active, but is stopped until the DCA reserve is funded. Snapshot from August 21:
+  `procs.conf`; `hl_bot` runs HYPE spot via `strategies/spot_dca` with REAL gates
+  active. Snapshot from August 21:
   ~1,024 USDC available, zero orders; the 1,000/600 profile requires a minimum of 7,000 USDC.
 
 Kraken uses a separate namespace for the transactions cache. Kraken processes
