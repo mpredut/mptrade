@@ -118,6 +118,7 @@ class StratParams:
     reentry_pullback_min: float = 0.8     # Minimum pullback clamp (%)
     reentry_pullback_max: float = 4.0     # Maximum pullback clamp (%)
     reentry_ttl_hours: float = 0.0        # 0 = off. After this many hours, stale sale barrier expires.
+    reentry_bear_bounce_pct: float = 0.0  # In chop/bear, require this % bounce from local post-sell trough.
     # --- MULTI-HORIZON DYNAMIC PROFIT ARCHITECTURE (MHDPA, default OFF) ---
     tp_dynamic_flat: bool = False
     tp_min_pct: float = 3.0
@@ -136,6 +137,10 @@ class StratParams:
     surge_window_hours: float = 72.0
     surge_move_pct: float = 25.0
     surge_exit_pullback_pct: float = 2.0
+    surge_dynamic: bool = False
+    surge_min_gain_pct: float = 15.0
+    surge_max_gain_pct: float = 30.0
+    surge_vol_multiplier: float = 7.0
     slow_grind_guard: bool = False
     slow_grind_days: float = 7.0
     slow_grind_min_gain_pct: float = 15.0
@@ -294,6 +299,10 @@ class StratParams:
                 float_env("STRAT_REENTRY_TTL_HOURS")
                 if float_env("STRAT_REENTRY_TTL_HOURS") is not None else 0.0
             ),
+            reentry_bear_bounce_pct = (
+                float_env("STRAT_REENTRY_BEAR_BOUNCE_PCT")
+                if float_env("STRAT_REENTRY_BEAR_BOUNCE_PCT") is not None else 0.0
+            ),
             tp_dynamic_flat = (
                 str(os.environ.get("STRAT_TP_DYNAMIC_FLAT", "")).lower() in ("true", "1")
             ),
@@ -358,6 +367,21 @@ class StratParams:
                 float_env("STRAT_SURGE_EXIT_PULLBACK_PCT")
                 if float_env("STRAT_SURGE_EXIT_PULLBACK_PCT") is not None else 2.0
             ),
+            surge_dynamic = (
+                str(os.environ.get("STRAT_SURGE_DYNAMIC", "")).lower() in ("true", "1")
+            ),
+            surge_min_gain_pct = (
+                float_env("STRAT_SURGE_MIN_GAIN_PCT")
+                if float_env("STRAT_SURGE_MIN_GAIN_PCT") is not None else 15.0
+            ),
+            surge_max_gain_pct = (
+                float_env("STRAT_SURGE_MAX_GAIN_PCT")
+                if float_env("STRAT_SURGE_MAX_GAIN_PCT") is not None else 30.0
+            ),
+            surge_vol_multiplier = (
+                float_env("STRAT_SURGE_VOL_MULTIPLIER")
+                if float_env("STRAT_SURGE_VOL_MULTIPLIER") is not None else 7.0
+            ),
             slow_grind_guard = (
                 str(os.environ.get("STRAT_SLOW_GRIND_GUARD", "")).lower() in ("true", "1")
             ),
@@ -414,6 +438,7 @@ def _new_state() -> dict:
         "last_exit_kind": None,   # TP/STOP/etc. for stop-aware reentry.
         "sl_low": None,           # Post-stop low used for bounce reentry.
         "post_sell_peak": None,   # Peak tracked after sale for hybrid/peak pullback reentry.
+        "post_sell_trough": None, # Trough tracked after sale for smart bear bounce reentry.
         "last_sell_ts": None,     # Timestamp of last exit for TTL barrier decay.
         "trail_peak": None,       # Peak tracked after price exceeds TP.
         "trail_stop": None,       # Trailing floor ratchets upward even as volatility changes.
@@ -1067,6 +1092,7 @@ class Strategy:
         self.s["last_exit_kind"] = o.get("kind")   # TP/STOP enables stop-aware reentry
         self.s["sl_low"] = price            # Initial low for post-stop bounce reentry.
         self.s["post_sell_peak"] = price    # Initial peak for post-sale pullback tracking.
+        self.s["post_sell_trough"] = price  # Initial trough for post-sale bear bounce tracking.
         self.s["last_sell_ts"] = self._shadow_prices[-1][0] if self._shadow_prices else time.time()
         log(f"  [STRAT] === cycle closed; restarting (cycle {self.s['cycle']}) ===")
 
@@ -1276,6 +1302,22 @@ class Strategy:
             return self.p.tp_trail_pct
         return max(self.p.tp_trail_min, min(self.p.tp_trail_max, self.p.tp_trail_k * vol))
 
+    def _effective_surge_gain_pct(self) -> float:
+        """Return the dynamic volatility-scaled or fixed parabolic surge trigger."""
+        if not self.p.surge_dynamic:
+            return self.p.surge_gain_pct
+        try:
+            vol = self._trail_vol_1h()
+        except Exception:
+            vol = None
+        return sr.dynamic_surge_gain_pct(
+            vol,
+            min_gain_pct=self.p.surge_min_gain_pct,
+            max_gain_pct=self.p.surge_max_gain_pct,
+            vol_multiplier=self.p.surge_vol_multiplier,
+            fallback_gain_pct=self.p.surge_gain_pct,
+        )
+
     def _trail_vol_1h(self) -> float | None:
         """Return one-hour-normalized volatility at one OHLC cadence in live and replay.
 
@@ -1405,11 +1447,12 @@ class Strategy:
                 surge_peak = max(self.s.get("surge_peak") or price, price)
                 self.s["surge_peak"] = surge_peak
                 window_move = regime.fitted_move_pct if regime and regime.fresh else None
+                eff_surge_gain = self._effective_surge_gain_pct()
                 triggered, reason = sr.check_parabolic_surge_exhaustion(
                     current_price=price,
                     avg_cost=avg,
                     surge_peak=surge_peak,
-                    surge_gain_pct=self.p.surge_gain_pct,
+                    surge_gain_pct=eff_surge_gain,
                     exit_pullback_pct=self.p.surge_exit_pullback_pct,
                     window_move_pct=window_move,
                     surge_move_pct=self.p.surge_move_pct,
@@ -1483,10 +1526,12 @@ class Strategy:
         if up and self.s["spent"] + self.p.trend_topup <= self._effective_max_budget():
             # Brand new entry while flat must obey re-entry restrictions!
             if self.s["qty"] <= 1e-12:
-                lsp = self.s.get("last_sell_price")
+                lsp = self.s.get("last_sell_price") or self.s.get("last_sell")
                 if lsp:
                     cur_peak = self.s.get("post_sell_peak") or lsp
                     self.s["post_sell_peak"] = max(cur_peak, price)
+                    cur_trough = self.s.get("post_sell_trough") or lsp
+                    self.s["post_sell_trough"] = min(cur_trough, price)
                     if self.s.get("last_exit_kind") == "STOP" and self.p.reentry_sl_bounce_pct > 0:
                         low = min(self.s.get("sl_low") or price, price)
                         self.s["sl_low"] = low
@@ -1507,6 +1552,8 @@ class Strategy:
                             tol_pct=self.p.reentry_tolerance_pct,
                             elapsed_sec=elapsed,
                             ttl_sec=ttl_s,
+                            post_sell_trough=self.s.get("post_sell_trough"),
+                            bounce_pct=self.p.reentry_bear_bounce_pct,
                         )
                         if blocked:
                             log(f"  [STRAT] trend overlay entry blocked by hybrid re-entry: {reason}")
@@ -1597,10 +1644,12 @@ class Strategy:
         if held <= 1e-12:
             if self._has_open("buy"):
                 return
-            lsp = self.s.get("last_sell_price")
+            lsp = self.s.get("last_sell_price") or self.s.get("last_sell")
             if lsp:
                 cur_peak = self.s.get("post_sell_peak") or lsp
                 self.s["post_sell_peak"] = max(cur_peak, price)
+                cur_trough = self.s.get("post_sell_trough") or lsp
+                self.s["post_sell_trough"] = min(cur_trough, price)
             # Stop-aware reentry rule.
             if self.s.get("last_exit_kind") == "STOP" and self.p.reentry_sl_bounce_pct > 0 and lsp:
                 # After stop-loss, reenter on a bounce from the post-sale low instead of
@@ -1632,6 +1681,8 @@ class Strategy:
                     tol_pct=self.p.reentry_tolerance_pct,
                     elapsed_sec=elapsed,
                     ttl_sec=ttl_s,
+                    post_sell_trough=self.s.get("post_sell_trough"),
+                    bounce_pct=self.p.reentry_bear_bounce_pct,
                 )
                 if blocked:
                     log(f"  [STRAT] hybrid re-entry blocked: {reason} [{pb_src}]")
@@ -1709,11 +1760,12 @@ class Strategy:
                 surge_peak = max(self.s.get("surge_peak") or price, price)
                 self.s["surge_peak"] = surge_peak
                 window_move = regime.fitted_move_pct if regime and regime.fresh else None
+                eff_surge_gain = self._effective_surge_gain_pct()
                 triggered, reason = sr.check_parabolic_surge_exhaustion(
                     current_price=price,
                     avg_cost=avg,
                     surge_peak=surge_peak,
-                    surge_gain_pct=self.p.surge_gain_pct,
+                    surge_gain_pct=eff_surge_gain,
                     exit_pullback_pct=self.p.surge_exit_pullback_pct,
                     window_move_pct=window_move,
                     surge_move_pct=self.p.surge_move_pct,

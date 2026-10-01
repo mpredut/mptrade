@@ -945,6 +945,78 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
         self.assertEqual(len(exited), 1)
         self.assertEqual(exited[0][1], "TP")
 
+    def test_dynamic_surge_gain_pct(self):
+        import strategies.spot_dca_rules as sr
+        # Low volatility: 1.5% * 7.0 = 10.5% -> clamped to min 15.0%
+        self.assertEqual(sr.dynamic_surge_gain_pct(1.5, min_gain_pct=15.0, max_gain_pct=30.0, vol_multiplier=7.0), 15.0)
+        # Moderate volatility: 3.0% * 7.0 = 21.0% -> within [15.0, 30.0]
+        self.assertEqual(sr.dynamic_surge_gain_pct(3.0, min_gain_pct=15.0, max_gain_pct=30.0, vol_multiplier=7.0), 21.0)
+        # High volatility: 5.0% * 7.0 = 35.0% -> clamped to max 30.0%
+        self.assertEqual(sr.dynamic_surge_gain_pct(5.0, min_gain_pct=15.0, max_gain_pct=30.0, vol_multiplier=7.0), 30.0)
+        # Missing / None fallback
+        self.assertEqual(sr.dynamic_surge_gain_pct(None, fallback_gain_pct=25.0), 25.0)
+
+    def test_reentry_hybrid_bear_bounce_rule(self):
+        import strategies.spot_dca_rules as sr
+        # In non-bull regime:
+        # last_sell = 100.0, drop_pct = 2.0% -> drop threshold is 98.0
+        # Price drops to 95.0 -> meets drop threshold.
+        # But trough is 94.0, bounce_pct = 2.0% -> required price is 94.0 * 1.02 = 95.88
+        # At price 95.0, it hasn't bounced enough off the trough yet:
+        blocked, reason = sr.reentry_hybrid_blocked(
+            price=95.0,
+            last_sell=100.0,
+            post_sell_peak=100.0,
+            drop_pct=2.0,
+            pullback_pct=1.0,
+            is_bull=False,
+            post_sell_trough=94.0,
+            bounce_pct=2.0,
+        )
+        self.assertTrue(blocked)
+        self.assertEqual(reason, "range_bounce_pending")
+
+        # Now price bounces to 96.0 (> 95.88):
+        blocked, reason = sr.reentry_hybrid_blocked(
+            price=96.0,
+            last_sell=100.0,
+            post_sell_peak=100.0,
+            drop_pct=2.0,
+            pullback_pct=1.0,
+            is_bull=False,
+            post_sell_trough=94.0,
+            bounce_pct=2.0,
+        )
+        self.assertFalse(blocked)
+        self.assertEqual(reason, "range_bounce_met")
+
+    def test_strategy_tracks_post_sell_trough_and_blocks_falling_knife(self):
+        st = _make_strategy("TESTPAIR_TROUGH_BOUNCE")
+        st.p.reentry_hybrid_enabled = True
+        st.p.reentry_drop_pct = 2.0
+        st.p.reentry_bear_bounce_pct = 1.0
+        st.p.surge_dynamic = True
+        st.s["last_sell"] = 100.0
+        st.s["post_sell_trough"] = 100.0
+        st.s["cycle"] = 1
+
+        # Price falling rapidly: 98.0 -> 96.0 -> 94.0
+        st.step(98.0)
+        self.assertEqual(st.s.get("post_sell_trough"), 98.0)
+        self.assertFalse(st._has_open("buy"))  # Needs bounce
+
+        st.step(96.0)
+        self.assertEqual(st.s.get("post_sell_trough"), 96.0)
+        self.assertFalse(st._has_open("buy"))  # Still dropping, no knife catching
+
+        # Small bounce from 96.0 to 96.5 (+0.52% < 1.0% required) -> still blocked
+        st.step(96.5)
+        self.assertFalse(st._has_open("buy"))
+
+        # Confirmed bounce from 96.0 to 97.2 (+1.25% >= 1.0%) -> triggers entry buy!
+        st.step(97.2)
+        self.assertTrue(st._has_open("buy"))
+
 
 if __name__ == "__main__":
     unittest.main()

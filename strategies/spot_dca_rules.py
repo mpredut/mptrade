@@ -100,6 +100,8 @@ def reentry_hybrid_blocked(
     tol_pct: float = 0.05,
     elapsed_sec: float | None = None,
     ttl_sec: float | None = None,
+    post_sell_trough: float | None = None,
+    bounce_pct: float = 0.0,
 ) -> tuple[bool, str]:
     """Hybrid re-entry decision separating trend confirmation from execution trigger.
 
@@ -110,7 +112,9 @@ def reentry_hybrid_blocked(
           Bypasses last_sell price barrier; requires a pullback_pct drop
           relative to post_sell_peak (peak = max(last_sell, post_sell_peak, price)).
       - If not is_bull (State C - NO_CONFIRMED_TREND):
-          Enforces standard drop_pct below last_sell.
+          Enforces standard drop_pct below last_sell. If bounce_pct > 0, also
+          requires price to rebound >= bounce_pct above post_sell_trough to prevent
+          catching falling knives during free-fall downtrends.
 
     Returns:
       (blocked: bool, reason: str)
@@ -133,8 +137,36 @@ def reentry_hybrid_blocked(
     if drop_pct <= 0:
         return False, "range_immediate"
     prag = float(last_sell) * (1.0 - drop_pct / 100.0)
-    blocked = price > prag and not are_close(price, prag, tol_pct)
-    return blocked, ("range_drop_pending" if blocked else "range_drop_met")
+    if price > prag and not are_close(price, prag, tol_pct):
+        return True, "range_drop_pending"
+    if bounce_pct > 0:
+        trough = min(float(last_sell), float(post_sell_trough or price), float(price))
+        prag_bounce = trough * (1.0 + bounce_pct / 100.0)
+        if price < prag_bounce and not are_close(price, prag_bounce, tol_pct):
+            return True, "range_bounce_pending"
+        return False, "range_bounce_met"
+    return False, "range_drop_met"
+
+
+def dynamic_surge_gain_pct(
+    hourly_volatility_pct: float | None,
+    min_gain_pct: float = 15.0,
+    max_gain_pct: float = 30.0,
+    vol_multiplier: float = 7.0,
+    fallback_gain_pct: float = 25.0,
+) -> float:
+    """Calculate asset-adaptive parabolic surge trigger based on trailing volatility.
+
+    Low-volatility assets (e.g. ADA with ~1.5% vol) trigger earlier (~15%-18%),
+    recognizing that a +18% move is an exceptional parabolic event.
+    High-volatility assets (e.g. HYPE/TAO with ~3.5%-4.5% vol) trigger at ~25%-30%.
+    """
+    if hourly_volatility_pct is None or not math.isfinite(hourly_volatility_pct) or hourly_volatility_pct <= 0:
+        return float(fallback_gain_pct)
+    raw = float(hourly_volatility_pct) * float(vol_multiplier)
+    min_g = min(float(min_gain_pct), float(max_gain_pct))
+    max_g = max(float(min_gain_pct), float(max_gain_pct))
+    return max(min_g, min(max_g, raw))
 
 
 def dynamic_flat_tp_pct(
