@@ -194,17 +194,15 @@ class TestTrailingTakeProfit(unittest.TestCase):
         return s
 
     def test_trailing_take_profit_arming_and_exiting(self):
-        with self.subTest(msg="regime_gate_uses_classic_tp_until_bullish"):
-            s = self._positioned_strategy(tp_regime_gate=True)
+        with self.subTest(msg="trailing_arms_directly_at_tp"):
+            s = self._positioned_strategy()
             s.client.ohlc_closes.return_value = [100.0 - index for index in range(40)]
             s.step(105.5)
-            sell = s._find_open("sell")
-            self.assertIsNotNone(sell)
-            self.assertFalse(sell["market"])
-            self.assertIsNone(s.s["trail_peak"])
+            self.assertEqual(s.s["trail_peak"], 105.5)
+            self.assertFalse(s._has_open("sell"))
 
-        with self.subTest(msg="regime_gate_arms_trailing_on_common_bull_signal"):
-            s = self._positioned_strategy(tp_regime_gate=True)
+        with self.subTest(msg="trailing_arms_on_rising_market"):
+            s = self._positioned_strategy()
             s.client.ohlc_closes.return_value = [100.0 + index for index in range(40)]
             s.step(105.5)
             self.assertEqual(s.s["trail_peak"], 105.5)

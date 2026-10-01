@@ -145,8 +145,8 @@ To avoid rule clashing, parameter bloat, and strategy cannibalization, the engin
    - When `STRAT_TP_TRANCHES` is populated (e.g. `3:50,6:50`), the engine places staged limit sell orders without being canceled by `tp_trend_hold`. When empty (default), all-or-nothing trailing hold operates.
 3. **Harmonization of Conflict #3 (Unified Re-entry vs Obsolete Volatility Scaling):**
    - `STRAT_REENTRY_HYBRID_ENABLED` is the single canonical re-entry policy (shallow pullback in bull trends, defensive drop in bear/chop, with 48h TTL lockout protection). The legacy `STRAT_REENTRY_ADAPTIVE` flag is deprecated and retired.
-4. **Retirement of Binary Regime Gate (`STRAT_TP_REGIME_GATE`):**
-   - The crude binary true/false gate that blocked take-profit trailing during regime lag is formally deprecated. Market regime is now continuously integrated via mathematical indicators (`regime.strength`, `dynamic_flat_tp_pct`).
-5. **Spot DCA Stop-Loss Policy:**
-   - In pure spot DCA, tight stop-losses (12%-18%) are empirically proven to be the largest loss drivers (crystallizing the dip before the recovery). Default `STRAT_STOP_LOSS_PCT=0.0` disables premature liquidations, leaving `hit_stop` as an optional catastrophe breaker utility.
+4. **Retirement and Code Removal of Binary Regime Gate (`STRAT_TP_REGIME_GATE`):**
+   - The crude binary true/false gate that blocked take-profit trailing during regime lag has been completely removed from active `config.env` files and excised from the core execution engine. Market regime is now continuously integrated via mathematical indicators (`regime.strength`, `dynamic_flat_tp_pct`).
+5. **Spot DCA Stop-Loss Removal from Active Configs:**
+   - In pure spot DCA, tight stop-losses (12%-18%) are empirically proven to be the single largest loss driver (crystallizing the dip right before recovery). The dead parameter `STRAT_STOP_LOSS_PCT` has been removed from active production configs, cleanly defaulting to `0.0` (disabled), while retaining optional parameter support as a catastrophic emergency API.
 

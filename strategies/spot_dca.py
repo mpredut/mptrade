@@ -239,7 +239,7 @@ class StratParams:
             reentry_sl_bounce_pct = float(float_env("STRAT_REENTRY_SL_BOUNCE_PCT") if float_env("STRAT_REENTRY_SL_BOUNCE_PCT") is not None else 1.5),
             tp_tranches        = _parse_tranches(defined_env("STRAT_TP_TRANCHES")),
             tp_trend_hold      = str(os.environ.get("STRAT_TP_TREND_HOLD", "true")).lower() in ("true", "1", "yes"),
-            tp_regime_gate     = str(os.environ.get("STRAT_TP_REGIME_GATE", "false")).lower() in ("true", "1", "yes"),
+            tp_regime_gate     = False,  # Retired legacy binary gate: superseded by continuous MHDPA rules.
             tp_trend_min_pct   = required_float_env("STRAT_TP_TREND_MIN_PCT"),
             tp_trail_pct       = required_float_env("STRAT_TP_TRAIL_PCT"),
             tp_trail_profit_floor_pct = max(
@@ -1581,7 +1581,6 @@ class Strategy:
         needs_regime = self.p.trend_overlay or self.p.reentry_hybrid_enabled or (
             held > 1e-12 and (
                 self.p.dca_trend_brake
-                or (self.p.tp_trend_hold and self.p.tp_regime_gate)
                 or self.p.tp_dynamic_flat
             )
         )
@@ -1677,16 +1676,7 @@ class Strategy:
             )
 
         trail_armed = self.s.get("trail_peak") is not None
-        regime_allows_tp_hold = (
-            not self.p.tp_regime_gate
-            or self._regime_matches(
-                regime, "bull", min_move_pct=self.p.tp_trend_min_pct,
-                min_samples=self.p.regime_min_samples,
-            )
-        )
-        trend_hold_active = self.p.tp_trend_hold and not bool(self.p.tp_tranches) and (
-            trail_armed or regime_allows_tp_hold
-        )
+        trend_hold_active = self.p.tp_trend_hold and not bool(self.p.tp_tranches)
         if (self.p.enable_takeprofit and avg and trend_hold_active
                 and (trail_armed or price >= sr.tp_price(avg, eff_tp))):
             # Arm trailing at the first TP crossing and keep it armed through exit, even

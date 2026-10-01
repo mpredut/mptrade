@@ -28,7 +28,7 @@ def _validate_replay(ohlc, params, bar_minutes: float | None) -> None:
     if not ohlc:
         raise ValueError("ohlc cannot be empty")
     if (params.trend_overlay or params.dca_trend_brake
-            or (params.tp_trend_hold and params.tp_regime_gate)) and (
+            or getattr(params, "tp_dynamic_flat", False)) and (
             bar_minutes is None or float(bar_minutes) != float(params.trend_interval)):
         raise ValueError(
             "regime-aware policies require bar_minutes to equal trend_interval "

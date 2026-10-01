@@ -82,7 +82,7 @@ class StratParams:
             enable_takeprofit  = (mode != "dca_only"),
             order_ttl_min      = required_float_env("STRAT_ORDER_TTL_MIN"),
             signal_gate        = required_bool_env("HL_SIGNAL_GATE"),
-            stop_loss_pct      = required_float_env("STRAT_STOP_LOSS_PCT"),
+            stop_loss_pct      = float(os.environ.get("STRAT_STOP_LOSS_PCT", "0.0")),
             reentry_tolerance_pct = required_float_env("STRAT_REENTRY_TOLERANCE_PCT"),
         )
 

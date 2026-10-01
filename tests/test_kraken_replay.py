@@ -243,13 +243,12 @@ class ReplayEngineTest(unittest.TestCase):
                 fee_pct=0.26, bar_minutes=60,
             )
 
-    def test_tp_regime_gate_requires_configured_trend_interval(self):
+    def test_tp_dynamic_flat_requires_configured_trend_interval(self):
         with self.assertRaisesRegex(ValueError, "trend_interval"):
             rp.run_replay(
                 _series(),
                 _params(
-                    tp_trend_hold=True,
-                    tp_regime_gate=True,
+                    tp_dynamic_flat=True,
                     trend_interval=240,
                 ),
                 fee_pct=0.26,

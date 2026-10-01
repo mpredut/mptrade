@@ -112,7 +112,7 @@ def _replay_interval_error(interval: int) -> str | None:
     base = strat.StratParams.from_env()
     required = {int(base.trend_interval)} if (
         base.trend_overlay or base.dca_trend_brake
-        or (base.tp_trend_hold and base.tp_regime_gate)) else set()
+        or getattr(base, "tp_dynamic_flat", False)) else set()
     if base.tp_trail_adaptive:
         required.add(int(base.tp_trail_vol_interval))
     if base.dca_vol_scale_k:
