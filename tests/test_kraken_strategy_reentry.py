@@ -947,14 +947,15 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
 
     def test_dynamic_surge_gain_pct(self):
         import strategies.spot_dca_rules as sr
-        # Low volatility: 1.5% * 7.0 = 10.5% -> clamped to min 15.0%
-        self.assertEqual(sr.dynamic_surge_gain_pct(1.5, min_gain_pct=15.0, max_gain_pct=30.0, vol_multiplier=7.0), 15.0)
-        # Moderate volatility: 3.0% * 7.0 = 21.0% -> within [15.0, 30.0]
-        self.assertEqual(sr.dynamic_surge_gain_pct(3.0, min_gain_pct=15.0, max_gain_pct=30.0, vol_multiplier=7.0), 21.0)
-        # High volatility: 5.0% * 7.0 = 35.0% -> clamped to max 30.0%
-        self.assertEqual(sr.dynamic_surge_gain_pct(5.0, min_gain_pct=15.0, max_gain_pct=30.0, vol_multiplier=7.0), 30.0)
+        # Default behavior: 24.0% - 32.0% centered around 25.0%
+        # Low volatility: 1.5% * 10.0 = 15.0% -> clamped to min 24.0%
+        self.assertEqual(sr.dynamic_surge_gain_pct(1.5), 24.0)
+        # Moderate volatility: 2.7% * 10.0 = 27.0% -> within [24.0, 32.0]
+        self.assertEqual(sr.dynamic_surge_gain_pct(2.7), 27.0)
+        # High volatility: 4.0% * 10.0 = 40.0% -> clamped to max 32.0%
+        self.assertEqual(sr.dynamic_surge_gain_pct(4.0), 32.0)
         # Missing / None fallback
-        self.assertEqual(sr.dynamic_surge_gain_pct(None, fallback_gain_pct=25.0), 25.0)
+        self.assertEqual(sr.dynamic_surge_gain_pct(None), 25.0)
 
     def test_reentry_hybrid_bear_bounce_rule(self):
         import strategies.spot_dca_rules as sr

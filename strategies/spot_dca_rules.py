@@ -150,16 +150,19 @@ def reentry_hybrid_blocked(
 
 def dynamic_surge_gain_pct(
     hourly_volatility_pct: float | None,
-    min_gain_pct: float = 15.0,
-    max_gain_pct: float = 30.0,
-    vol_multiplier: float = 7.0,
+    min_gain_pct: float = 24.0,
+    max_gain_pct: float = 32.0,
+    vol_multiplier: float = 10.0,
     fallback_gain_pct: float = 25.0,
 ) -> float:
     """Calculate asset-adaptive parabolic surge trigger based on trailing volatility.
 
-    Low-volatility assets (e.g. ADA with ~1.5% vol) trigger earlier (~15%-18%),
-    recognizing that a +18% move is an exceptional parabolic event.
-    High-volatility assets (e.g. HYPE/TAO with ~3.5%-4.5% vol) trigger at ~25%-30%.
+    Centered around the proven 25.0% baseline:
+    - Normal volatility (~2.5% vol_1h) scales directly to ~25.0%.
+    - Calmer assets (vol_1h <= 2.2%) stay securely clamped to min_gain_pct (24.0%),
+      preventing normal +15% bull trend moves from being choked prematurely.
+    - Highly volatile assets scale up to max_gain_pct (32.0%), allowing explosive
+      candle bursts room to develop before arming the tight exhaustion exit.
     """
     if hourly_volatility_pct is None or not math.isfinite(hourly_volatility_pct) or hourly_volatility_pct <= 0:
         return float(fallback_gain_pct)

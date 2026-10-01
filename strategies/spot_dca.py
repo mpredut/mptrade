@@ -133,14 +133,14 @@ class StratParams:
     fast_profit_window_min: float = 5.0
     fast_profit_drop_pct: float = 1.0
     surge_guard: bool = False
-    surge_gain_pct: float = 20.0
+    surge_gain_pct: float = 25.0
     surge_window_hours: float = 72.0
     surge_move_pct: float = 25.0
-    surge_exit_pullback_pct: float = 2.0
+    surge_exit_pullback_pct: float = 3.2
     surge_dynamic: bool = False
-    surge_min_gain_pct: float = 15.0
-    surge_max_gain_pct: float = 30.0
-    surge_vol_multiplier: float = 7.0
+    surge_min_gain_pct: float = 24.0
+    surge_max_gain_pct: float = 32.0
+    surge_vol_multiplier: float = 10.0
     slow_grind_guard: bool = False
     slow_grind_days: float = 7.0
     slow_grind_min_gain_pct: float = 15.0
@@ -365,22 +365,22 @@ class StratParams:
             ),
             surge_exit_pullback_pct = (
                 float_env("STRAT_SURGE_EXIT_PULLBACK_PCT")
-                if float_env("STRAT_SURGE_EXIT_PULLBACK_PCT") is not None else 2.0
+                if float_env("STRAT_SURGE_EXIT_PULLBACK_PCT") is not None else 3.2
             ),
             surge_dynamic = (
                 str(os.environ.get("STRAT_SURGE_DYNAMIC", "")).lower() in ("true", "1")
             ),
             surge_min_gain_pct = (
                 float_env("STRAT_SURGE_MIN_GAIN_PCT")
-                if float_env("STRAT_SURGE_MIN_GAIN_PCT") is not None else 15.0
+                if float_env("STRAT_SURGE_MIN_GAIN_PCT") is not None else 24.0
             ),
             surge_max_gain_pct = (
                 float_env("STRAT_SURGE_MAX_GAIN_PCT")
-                if float_env("STRAT_SURGE_MAX_GAIN_PCT") is not None else 30.0
+                if float_env("STRAT_SURGE_MAX_GAIN_PCT") is not None else 32.0
             ),
             surge_vol_multiplier = (
                 float_env("STRAT_SURGE_VOL_MULTIPLIER")
-                if float_env("STRAT_SURGE_VOL_MULTIPLIER") is not None else 7.0
+                if float_env("STRAT_SURGE_VOL_MULTIPLIER") is not None else 10.0
             ),
             slow_grind_guard = (
                 str(os.environ.get("STRAT_SLOW_GRIND_GUARD", "")).lower() in ("true", "1")
