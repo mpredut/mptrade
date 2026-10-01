@@ -10,6 +10,9 @@ logic, creating drift risk. These formulas are IDENTICAL to live behavior. Calle
 retain their own event/OHLC loops and quantity/spend/count accounting, but all use
 the same price thresholds.
 """
+from __future__ import annotations
+
+import math
 
 
 def diff_percent(v1: float, v2: float) -> float:
@@ -132,4 +135,169 @@ def reentry_hybrid_blocked(
     prag = float(last_sell) * (1.0 - drop_pct / 100.0)
     blocked = price > prag and not are_close(price, prag, tol_pct)
     return blocked, ("range_drop_pending" if blocked else "range_drop_met")
+
+
+def dynamic_flat_tp_pct(
+    strength: float | None,
+    strength_threshold: float = 2.0,
+    tp_min_pct: float = 3.0,
+    tp_max_pct: float = 7.0,
+    base_tp_pct: float = 5.0,
+) -> float:
+    """Calculate regime-aware take-profit % for flat/sideways markets.
+
+    c_flat = clamp(strength / strength_threshold, 0.0, 1.0).
+    When strength is low (calm chop), returns near tp_min_pct.
+    When strength approaches strength_threshold (breakout cusp), returns near tp_max_pct.
+    Falls back safely to base_tp_pct if strength is None, negative, or non-finite.
+    """
+    if strength is None or not math.isfinite(strength) or strength < 0:
+        return float(base_tp_pct)
+    thresh = float(strength_threshold) if strength_threshold > 0 else 2.0
+    c_flat = min(1.0, max(0.0, float(strength) / thresh))
+    min_tp = min(float(tp_min_pct), float(tp_max_pct))
+    max_tp = max(float(tp_min_pct), float(tp_max_pct))
+    return min_tp + c_flat * (max_tp - min_tp)
+
+
+def dynamic_trend_trail_pct(
+    peak_gain_pct: float,
+    base_trail_pct: float = 8.0,
+    min_trail_pct: float = 3.0,
+    ratchet_k: float = 0.5,
+    gain_threshold_pct: float = 6.0,
+) -> float:
+    """Calculate ratcheted trailing stop distance based on peak unrealized gain.
+
+    Ratchets tighter as accumulated peak profit expands beyond gain_threshold_pct:
+    trail = base_trail_pct - ratchet_k * max(0.0, peak_gain_pct - gain_threshold_pct)
+    clamped to [min_trail_pct, base_trail_pct].
+    """
+    base = max(0.0, float(base_trail_pct))
+    floor = min(base, max(0.0, float(min_trail_pct)))
+    thresh = max(0.0, float(gain_threshold_pct))
+    k = max(0.0, float(ratchet_k))
+    gain = float(peak_gain_pct)
+    if gain <= thresh or k == 0.0:
+        return base
+    ratcheted = base - k * (gain - thresh)
+    return max(floor, min(base, ratcheted))
+
+
+def check_fast_profit_reversal(
+    current_price: float,
+    avg_cost: float,
+    base_tp_pct: float,
+    mult: float,
+    shadow_prices: list[tuple[float, float]],
+    window_sec: float,
+    drop_pct: float,
+    current_time: float | None = None,
+) -> tuple[bool, float, float]:
+    """Return (triggered, current_gain_pct, micro_drop_pct) for fast 2X profit reversal guard.
+
+    Triggered when:
+    1. current_gain_pct >= mult * base_tp_pct (e.g. >= 10.0%)
+    2. micro_drop_pct >= drop_pct from the highest price in the last window_sec.
+    """
+    if avg_cost <= 0 or current_price <= 0 or base_tp_pct <= 0 or mult <= 0:
+        return False, 0.0, 0.0
+    current_gain_pct = (current_price - avg_cost) / avg_cost * 100.0
+    required_gain = base_tp_pct * mult
+    if current_gain_pct < required_gain:
+        return False, current_gain_pct, 0.0
+    if not shadow_prices:
+        return False, current_gain_pct, 0.0
+    now = current_time if current_time is not None else shadow_prices[-1][0]
+    cutoff = now - max(0.0, window_sec)
+    recent = [p for t, p in shadow_prices if t >= cutoff]
+    if not recent:
+        recent = [shadow_prices[-1][1]]
+    local_peak = max(max(recent), current_price)
+    if local_peak <= 0:
+        return False, current_gain_pct, 0.0
+    micro_drop_pct = (local_peak - current_price) / local_peak * 100.0
+    triggered = micro_drop_pct >= drop_pct
+    return triggered, current_gain_pct, micro_drop_pct
+
+
+def check_parabolic_surge_exhaustion(
+    current_price: float,
+    avg_cost: float,
+    surge_peak: float,
+    surge_gain_pct: float,
+    exit_pullback_pct: float,
+    window_move_pct: float | None = None,
+    surge_move_pct: float = 25.0,
+) -> tuple[bool, str]:
+    """Return (triggered, reason) for 2-3 day parabolic surge exhaustion.
+
+    Surge is active if:
+    - current gain from avg_cost >= surge_gain_pct (e.g. 20.0%), OR
+    - window_move_pct >= surge_move_pct (e.g. 25.0% over 72h).
+    If surge is active, triggers exit when price pulls back >= exit_pullback_pct from surge_peak.
+    """
+    if avg_cost <= 0 or current_price <= 0 or surge_peak <= 0:
+        return False, ""
+    current_gain_pct = (current_price - avg_cost) / avg_cost * 100.0
+    pos_surge = surge_gain_pct > 0 and current_gain_pct >= surge_gain_pct
+    win_surge = window_move_pct is not None and surge_move_pct > 0 and window_move_pct >= surge_move_pct
+    if not (pos_surge or win_surge):
+        return False, ""
+    pullback = (surge_peak - current_price) / surge_peak * 100.0
+    if pullback >= exit_pullback_pct:
+        reason = f"surge_pullback_{pullback:.2f}%_ge_{exit_pullback_pct:.2f}%"
+        return True, reason
+    return False, ""
+
+
+def check_slow_grind_exhaustion(
+    current_price: float,
+    avg_cost: float,
+    entry_ts: float | None,
+    current_ts: float,
+    min_days: float,
+    min_gain_pct: float,
+    recent_peak: float,
+    shadow_prices: list[tuple[float, float]],
+    flash_window_sec: float,
+    flash_drop_pct: float,
+    structural_drop_pct: float,
+    sma_value: float | None = None,
+) -> tuple[bool, str]:
+    """Return (triggered, reason) for 1-3 week slow-grind accumulation exit.
+
+    Qualifies when position is held >= min_days (e.g. 7d) with accumulated gain >= min_gain_pct (e.g. 15%).
+    Exits if:
+    - Flash sensor: price drops >= flash_drop_pct within flash_window_sec (e.g. 1.5% in 15m), OR
+    - Structural sensor: price drops >= structural_drop_pct from recent_peak (e.g. 2.5%), OR
+    - SMA break: sma_value is provided and current_price < sma_value.
+    """
+    if avg_cost <= 0 or current_price <= 0 or entry_ts is None:
+        return False, ""
+    elapsed_days = (current_ts - entry_ts) / 86400.0
+    if elapsed_days < min_days:
+        return False, ""
+    current_gain_pct = (current_price - avg_cost) / avg_cost * 100.0
+    if current_gain_pct < min_gain_pct:
+        return False, ""
+    # Check flash drop
+    cutoff = current_ts - max(0.0, flash_window_sec)
+    recent = [p for t, p in shadow_prices if t >= cutoff]
+    if recent:
+        local_flash_peak = max(max(recent), current_price)
+        if local_flash_peak > 0:
+            flash_drop = (local_flash_peak - current_price) / local_flash_peak * 100.0
+            if flash_drop >= flash_drop_pct:
+                return True, f"slow_grind_flash_drop_{flash_drop:.2f}%_ge_{flash_drop_pct:.2f}%"
+    # Check structural drop
+    if recent_peak > 0:
+        struct_drop = (recent_peak - current_price) / recent_peak * 100.0
+        if struct_drop >= structural_drop_pct:
+            return True, f"slow_grind_structural_drop_{struct_drop:.2f}%_ge_{structural_drop_pct:.2f}%"
+    # Check SMA break
+    if sma_value is not None and current_price < sma_value:
+        return True, f"slow_grind_sma_break_{current_price:.4f}_lt_{sma_value:.4f}"
+    return False, ""
+
 

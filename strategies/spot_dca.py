@@ -118,6 +118,30 @@ class StratParams:
     reentry_pullback_min: float = 0.8     # Minimum pullback clamp (%)
     reentry_pullback_max: float = 4.0     # Maximum pullback clamp (%)
     reentry_ttl_hours: float = 0.0        # 0 = off. After this many hours, stale sale barrier expires.
+    # --- MULTI-HORIZON DYNAMIC PROFIT ARCHITECTURE (MHDPA, default OFF) ---
+    tp_dynamic_flat: bool = False
+    tp_min_pct: float = 3.0
+    tp_max_pct: float = 7.0
+    trend_trail_dynamic: bool = False
+    trend_trail_base_pct: float = 8.0
+    trend_trail_min_pct: float = 3.0
+    trend_trail_ratchet_k: float = 0.5
+    trend_trail_gain_threshold: float = 6.0
+    fast_profit_guard: bool = False
+    fast_profit_mult: float = 2.0
+    fast_profit_window_min: float = 5.0
+    fast_profit_drop_pct: float = 1.0
+    surge_guard: bool = False
+    surge_gain_pct: float = 20.0
+    surge_window_hours: float = 72.0
+    surge_move_pct: float = 25.0
+    surge_exit_pullback_pct: float = 2.0
+    slow_grind_guard: bool = False
+    slow_grind_days: float = 7.0
+    slow_grind_min_gain_pct: float = 15.0
+    slow_grind_flash_window_min: float = 15.0
+    slow_grind_flash_drop_pct: float = 1.5
+    slow_grind_hourly_drop_pct: float = 2.5
 
     def __post_init__(self):
         def finite(name: str, value) -> float:
@@ -270,6 +294,93 @@ class StratParams:
                 float_env("STRAT_REENTRY_TTL_HOURS")
                 if float_env("STRAT_REENTRY_TTL_HOURS") is not None else 0.0
             ),
+            tp_dynamic_flat = (
+                str(os.environ.get("STRAT_TP_DYNAMIC_FLAT", "")).lower() in ("true", "1")
+            ),
+            tp_min_pct = (
+                float_env("STRAT_TP_MIN_PCT")
+                if float_env("STRAT_TP_MIN_PCT") is not None else 3.0
+            ),
+            tp_max_pct = (
+                float_env("STRAT_TP_MAX_PCT")
+                if float_env("STRAT_TP_MAX_PCT") is not None else 7.0
+            ),
+            trend_trail_dynamic = (
+                str(os.environ.get("STRAT_TREND_TRAIL_DYNAMIC", "")).lower() in ("true", "1")
+            ),
+            trend_trail_base_pct = (
+                float_env("STRAT_TREND_TRAIL_BASE_PCT")
+                if float_env("STRAT_TREND_TRAIL_BASE_PCT") is not None else 8.0
+            ),
+            trend_trail_min_pct = (
+                float_env("STRAT_TREND_TRAIL_MIN_PCT")
+                if float_env("STRAT_TREND_TRAIL_MIN_PCT") is not None else 3.0
+            ),
+            trend_trail_ratchet_k = (
+                float_env("STRAT_TREND_TRAIL_RATCHET_K")
+                if float_env("STRAT_TREND_TRAIL_RATCHET_K") is not None else 0.5
+            ),
+            trend_trail_gain_threshold = (
+                float_env("STRAT_TREND_TRAIL_GAIN_THRESH")
+                if float_env("STRAT_TREND_TRAIL_GAIN_THRESH") is not None else 6.0
+            ),
+            fast_profit_guard = (
+                str(os.environ.get("STRAT_FAST_PROFIT_GUARD", "")).lower() in ("true", "1")
+            ),
+            fast_profit_mult = (
+                float_env("STRAT_FAST_PROFIT_MULT")
+                if float_env("STRAT_FAST_PROFIT_MULT") is not None else 2.0
+            ),
+            fast_profit_window_min = (
+                float_env("STRAT_FAST_PROFIT_WINDOW_MIN")
+                if float_env("STRAT_FAST_PROFIT_WINDOW_MIN") is not None else 5.0
+            ),
+            fast_profit_drop_pct = (
+                float_env("STRAT_FAST_PROFIT_DROP_PCT")
+                if float_env("STRAT_FAST_PROFIT_DROP_PCT") is not None else 1.0
+            ),
+            surge_guard = (
+                str(os.environ.get("STRAT_SURGE_GUARD", "")).lower() in ("true", "1")
+            ),
+            surge_gain_pct = (
+                float_env("STRAT_SURGE_GAIN_PCT")
+                if float_env("STRAT_SURGE_GAIN_PCT") is not None else 20.0
+            ),
+            surge_window_hours = (
+                float_env("STRAT_SURGE_WINDOW_HOURS")
+                if float_env("STRAT_SURGE_WINDOW_HOURS") is not None else 72.0
+            ),
+            surge_move_pct = (
+                float_env("STRAT_SURGE_MOVE_PCT")
+                if float_env("STRAT_SURGE_MOVE_PCT") is not None else 25.0
+            ),
+            surge_exit_pullback_pct = (
+                float_env("STRAT_SURGE_EXIT_PULLBACK_PCT")
+                if float_env("STRAT_SURGE_EXIT_PULLBACK_PCT") is not None else 2.0
+            ),
+            slow_grind_guard = (
+                str(os.environ.get("STRAT_SLOW_GRIND_GUARD", "")).lower() in ("true", "1")
+            ),
+            slow_grind_days = (
+                float_env("STRAT_SLOW_GRIND_DAYS")
+                if float_env("STRAT_SLOW_GRIND_DAYS") is not None else 7.0
+            ),
+            slow_grind_min_gain_pct = (
+                float_env("STRAT_SLOW_GRIND_MIN_GAIN_PCT")
+                if float_env("STRAT_SLOW_GRIND_MIN_GAIN_PCT") is not None else 15.0
+            ),
+            slow_grind_flash_window_min = (
+                float_env("STRAT_SLOW_GRIND_FLASH_WINDOW_MIN")
+                if float_env("STRAT_SLOW_GRIND_FLASH_WINDOW_MIN") is not None else 15.0
+            ),
+            slow_grind_flash_drop_pct = (
+                float_env("STRAT_SLOW_GRIND_FLASH_DROP_PCT")
+                if float_env("STRAT_SLOW_GRIND_FLASH_DROP_PCT") is not None else 1.5
+            ),
+            slow_grind_hourly_drop_pct = (
+                float_env("STRAT_SLOW_GRIND_HOURLY_DROP_PCT")
+                if float_env("STRAT_SLOW_GRIND_HOURLY_DROP_PCT") is not None else 2.5
+            ),
         )
 
 
@@ -318,6 +429,11 @@ def _new_state() -> dict:
         # Set only after a definitive insufficient-balance rejection. The next
         # decision must compare strategy holdings with the venue ledger.
         "ledger_reconcile_required": False,
+        "surge_active": False,
+        "surge_peak": None,
+        "slow_grind_active": False,
+        "slow_grind_peak": None,
+        "entry_ts": None,
     }
 
 
@@ -883,6 +999,8 @@ class Strategy:
             self.s["last_buy_price"] = price
             if self.s["entry_price"] is None:
                 self.s["entry_price"] = price
+            if self.s.get("entry_ts") is None:
+                self.s["entry_ts"] = self._shadow_prices[-1][0] if self._shadow_prices else time.time()
             self.s["spent"] += o.get("amount", vol * price)
             if o.get("kind") == "DCA":
                 self.s["dca_buys"] += 1
@@ -1262,9 +1380,88 @@ class Strategy:
             None,
         )
         if self.s.get("trend_mode"):
+            avg = self._avg()
+
+            # 1. Micro-gradient 2X Fast Profit Guard (Horizon 3)
+            if self.p.fast_profit_guard and avg and self.s["qty"] > 1e-12:
+                triggered, gain, drop = sr.check_fast_profit_reversal(
+                    current_price=price,
+                    avg_cost=avg,
+                    base_tp_pct=self.p.takeprofit_pct,
+                    mult=self.p.fast_profit_mult,
+                    shadow_prices=list(self._shadow_prices),
+                    window_sec=self.p.fast_profit_window_min * 60.0,
+                    drop_pct=self.p.fast_profit_drop_pct,
+                    current_time=tick_time,
+                )
+                if triggered:
+                    exit_px = round(price * 0.999, self.price_dec)
+                    if self._request_market_exit(price, "TP"):
+                        log(f"  [STRAT] FAST PROFIT GUARD EXIT (+{gain:.2f}% gain, -{drop:.2f}% drop in {self.p.fast_profit_window_min:.0f}m) -> reference {exit_px}")
+                        return True
+
+            # 2. Parabolic Surge Guard (2-3 Day Exhaustion, Horizon 4)
+            if self.p.surge_guard and avg and self.s["qty"] > 1e-12:
+                surge_peak = max(self.s.get("surge_peak") or price, price)
+                self.s["surge_peak"] = surge_peak
+                window_move = regime.fitted_move_pct if regime and regime.fresh else None
+                triggered, reason = sr.check_parabolic_surge_exhaustion(
+                    current_price=price,
+                    avg_cost=avg,
+                    surge_peak=surge_peak,
+                    surge_gain_pct=self.p.surge_gain_pct,
+                    exit_pullback_pct=self.p.surge_exit_pullback_pct,
+                    window_move_pct=window_move,
+                    surge_move_pct=self.p.surge_move_pct,
+                )
+                if triggered:
+                    exit_px = round(price * 0.999, self.price_dec)
+                    if self._request_market_exit(price, "TP"):
+                        log(f"  [STRAT] SURGE EXHAUSTION EXIT ({reason}) peak {surge_peak:.{self.price_dec}f} -> reference {exit_px}")
+                        return True
+
+            # 3. Slow-Grind Guard (1-3 Week Drift, Horizon 5)
+            if self.p.slow_grind_guard and avg and self.s["qty"] > 1e-12:
+                slow_peak = max(self.s.get("slow_grind_peak") or price, price)
+                self.s["slow_grind_peak"] = slow_peak
+                entry_ts = self.s.get("entry_ts")
+                n = self.p.trend_sma_n
+                sma = sum(closes[-n:]) / n if len(closes) >= n else None
+                triggered, reason = sr.check_slow_grind_exhaustion(
+                    current_price=price,
+                    avg_cost=avg,
+                    entry_ts=entry_ts,
+                    current_ts=tick_time if tick_time is not None else time.time(),
+                    min_days=self.p.slow_grind_days,
+                    min_gain_pct=self.p.slow_grind_min_gain_pct,
+                    recent_peak=slow_peak,
+                    shadow_prices=list(self._shadow_prices),
+                    flash_window_sec=self.p.slow_grind_flash_window_min * 60.0,
+                    flash_drop_pct=self.p.slow_grind_flash_drop_pct,
+                    structural_drop_pct=self.p.slow_grind_hourly_drop_pct,
+                    sma_value=sma,
+                )
+                if triggered:
+                    exit_px = round(price * 0.999, self.price_dec)
+                    if self._request_market_exit(price, "TP"):
+                        log(f"  [STRAT] SLOW GRIND EXIT ({reason}) peak {slow_peak:.{self.price_dec}f} -> reference {exit_px}")
+                        return True
+
+            # 4. Dynamic Profit Ratchet Trailing (Horizon 2)
             peak = max(self.s.get("trend_peak") or price, price)
             self.s["trend_peak"] = peak
-            trail_stop = peak * (1 - self.p.trend_trail_pct / 100)
+            if self.p.trend_trail_dynamic and avg:
+                peak_gain = (peak - avg) / avg * 100.0
+                eff_trail = sr.dynamic_trend_trail_pct(
+                    peak_gain_pct=peak_gain,
+                    base_trail_pct=self.p.trend_trail_base_pct,
+                    min_trail_pct=self.p.trend_trail_min_pct,
+                    ratchet_k=self.p.trend_trail_ratchet_k,
+                    gain_threshold_pct=self.p.trend_trail_gain_threshold,
+                )
+            else:
+                eff_trail = self.p.trend_trail_pct
+            trail_stop = peak * (1 - eff_trail / 100)
             n = self.p.trend_sma_n
             sma = sum(closes[-n:]) / n if len(closes) >= n else None
             broke = self.p.trend_exit_break and sma is not None and price < sma
@@ -1272,7 +1469,7 @@ class Strategy:
                 exit_px = round(price * 0.999, self.price_dec)
                 if self._request_market_exit(price, "TP"):
                     log(f"  [STRAT] TREND EXIT ({'break' if broke else 'trailing'} "
-                        f"{self.p.trend_trail_pct}%) peak {peak:.{self.price_dec}f} -> reference {exit_px}")
+                        f"{eff_trail:.2f}%) peak {peak:.{self.price_dec}f} -> reference {exit_px}")
             else:
                 self._cancel_orders("sell", exclude_market=True)  # Ride the trend; do not sell.
             return True
@@ -1384,6 +1581,7 @@ class Strategy:
             held > 1e-12 and (
                 self.p.dca_trend_brake
                 or (self.p.tp_trend_hold and self.p.tp_regime_gate)
+                or self.p.tp_dynamic_flat
             )
         )
         if needs_regime:
@@ -1461,6 +1659,22 @@ class Strategy:
             return
 
         avg = self._avg()
+        if held > 1e-12 and self.s.get("entry_ts") is None:
+            self.s["entry_ts"] = tick_time
+
+        eff_tp = self.p.takeprofit_pct
+        if self.p.tp_dynamic_flat and regime and regime.fresh and regime.regime == "sideways":
+            thresh = 2.0
+            if hasattr(self, "_regime_service") and hasattr(self._regime_service, "evaluator"):
+                thresh = getattr(self._regime_service.evaluator, "strength_threshold", 2.0)
+            eff_tp = sr.dynamic_flat_tp_pct(
+                strength=regime.strength,
+                strength_threshold=thresh,
+                tp_min_pct=self.p.tp_min_pct,
+                tp_max_pct=self.p.tp_max_pct,
+                base_tp_pct=self.p.takeprofit_pct,
+            )
+
         trail_armed = self.s.get("trail_peak") is not None
         regime_allows_tp_hold = (
             not self.p.tp_regime_gate
@@ -1473,7 +1687,7 @@ class Strategy:
             trail_armed or regime_allows_tp_hold
         )
         if (self.p.enable_takeprofit and avg and trend_hold_active
-                and (trail_armed or price >= sr.tp_price(avg, self.p.takeprofit_pct))):
+                and (trail_armed or price >= sr.tp_price(avg, eff_tp))):
             # Arm trailing at the first TP crossing and keep it armed through exit, even
             # if price later falls below TP, so the target pullback does not reset the peak.
             peak = max(self.s.get("trail_peak") or price, price)
@@ -1517,7 +1731,7 @@ class Strategy:
             self.s["trail_stop"] = None
             # Optional tranche TP (STRAT_TP_TRANCHES="3:50,6:50") sells gradually.
             # No configured tranches means the classic one-order full TP default.
-            tranches = self.p.tp_tranches or [(self.p.takeprofit_pct, 100.0)]
+            tranches = self.p.tp_tranches or [(eff_tp, 100.0)]
             desired, rem = [], held
             for i, (pct, share) in enumerate(tranches):
                 # The final tranche sells the remainder, risking "Insufficient funds".
