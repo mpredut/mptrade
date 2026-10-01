@@ -23,6 +23,9 @@ their code (a deliberate convention — they are linked below).
   comparison, automatic re-buy corrections and unpromoted financial candidates.
 - [STRATEGY_REVIEW_2026-09-08.md](STRATEGY_REVIEW_2026-09-08.md) — shared spot exit
   ownership fixes, reproduced Hyperliquid reentry evidence and explicit baseline drift.
+- [DYNAMIC_MULTI_HORIZON_PROFIT_DESIGN.md](DYNAMIC_MULTI_HORIZON_PROFIT_DESIGN.md) — Multi-Horizon
+  Dynamic Profit Architecture (MHDPA): dynamic flat TP, profit ratchet trailing, micro-gradient 2X guard,
+  parabolic surge exhaustion guard, and 1-3 week slow-grind dual sensor.
 - [STRATEGY.md](STRATEGY.md) — the trading logic: trend detection (+48h lag, survival
   curve, lindy plateau), the profit guard, trailing re-buy, the T212 profit guard/ladder, xStocks.
 - [RTRADE.md](RTRADE.md) — the rtrade policy, the BUY/SELL cycle, financial evaluation,
