@@ -269,6 +269,9 @@ sleep 5
 pia background enable || exit 1
 # Allow LAN traffic through kill switch so SSH management is preserved.
 pia set allowlan true || true
+if ! ip rule show | grep -q "to 192.168.0.0/24 lookup main"; then
+    ip rule add to 192.168.0.0/24 lookup main pref 50 2>/dev/null || true
+fi
 
 # WireGuard protocol
 pia set protocol wireguard || exit 1
@@ -337,6 +340,9 @@ prewarm_dns
 while true; do
     sleep "$HEALTH_INTERVAL"
     prewarm_dns
+    if ! ip rule show | grep -q "to 192.168.0.0/24 lookup main"; then
+        ip rule add to 192.168.0.0/24 lookup main pref 50 2>/dev/null || true
+    fi
 
     if vpn_healthy; then
         if [ "$failures" -gt 0 ]; then

@@ -428,6 +428,11 @@ fi
 
 flush_spool
 
+# Ensure local LAN traffic bypasses WireGuard/PIA policy routing so SSH management is preserved
+if ! ip rule show | grep -q "to 192.168.0.0/24 lookup main"; then
+    ip rule add to 192.168.0.0/24 lookup main pref 50 2>/dev/null || true
+fi
+
 # Boot grace: right after startup the VPN is LEGITIMATELY down (network-online.target,
 # then PIA negotiates the tunnel). Without this guard, the first cron run after a
 # reboot would declare a fault and start the recovery ladder over a connection that
