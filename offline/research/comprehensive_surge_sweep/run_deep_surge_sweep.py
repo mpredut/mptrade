@@ -5,10 +5,7 @@ Performs fine-grained grid search across:
 1. Fixed Parabolic Surge: gain triggers [18% - 35%], pullbacks [2.0% - 5.0%], windows [48h - 96h]
 2. Dynamic Parabolic Surge: min gains [18% - 26%], max gains [26% - 40%], multipliers [8.0 - 12.0], pullbacks [2.5% - 4.0%]
 3. Smart Bear Bounce Re-entry: bounce filters [0.0% - 2.0%]
-4. Dual-half split-sample consistency evaluation across 5 assets: HYPE, TAO, ADA, BTC, ETH.
-   Note: Evaluates multi-day surge exhaustion on 4h OHLC continuous history. 4h bars evaluate
-   multi-day dynamics and do not resolve 5-minute micro-gradient wicks.
-   Baseline parameters match canonical Kraken production: SMA 30, trailing 3.0%, trend_min 0.5%.
+4. Two-half sensitivity comparison (not held-out walk-forward validation) across 5 assets: HYPE, TAO, ADA, BTC, ETH.
 
 Outputs:
 - JSON database: offline/results/surge_sweep/sweep_results.json
@@ -21,19 +18,20 @@ import argparse
 import concurrent.futures
 import contextlib
 import dataclasses
-import io
 import json
 import math
 import os
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-ROOT = "/home/predut/mptrade"
+ROOT = str(Path(__file__).resolve().parents[3])
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "kraken"))
 
+from botcore import parse_dotenv
 from kraken.replay import run_replay
 from strategies import spot_dca as strat
 from offline.research.hybrid_reentry.harness import load_ohlc_csv
@@ -42,64 +40,18 @@ DATA_DIR = os.path.join(ROOT, "offline", "results", "kraken_continuous_grid", "d
 DEFAULT_OUT_DIR = os.path.join(ROOT, "offline", "results", "surge_sweep")
 ASSETS = ["HYPE", "TAO", "ADA", "BTC", "ETH"]
 
-# Base parameters matching canonical Kraken production
-BASE_PARAMS = strat.StratParams(
-    currency="USD",
-    entry_amount=650.0,
-    entry_discount_pct=0.8,
-    dca_amount=325.0,
-    dca_drop_pct=1.25,
-    dca_spacing_growth_pct=0.25,
-    check_minutes=2.0,
-    takeprofit_pct=5.0,
-    max_budget=3900.0,
-    max_dca_buys=10,
-    enable_takeprofit=True,
-    order_ttl_min=10.0,
-    stop_loss_pct=0.0,
-    adopt_cost=0.0,
-    adopt_qty=0.0,
-    reentry_drop_pct=2.0,
-    reentry_tolerance_pct=0.05,
-    reentry_adaptive=False,
-    reentry_sl_bounce_pct=1.5,
-    tp_tranches=[],
-    tp_trend_hold=True,
-    tp_regime_gate=False,
-    tp_trend_min_pct=0.5,
-    tp_trail_pct=3.0,
-    tp_trail_profit_floor_pct=1.0,
-    trend_overlay=True,
-    trend_sma_n=30,
-    trend_interval=240,
-    regime_min_samples=20,
-    trend_topup=650.0,
-    trend_trail_pct=8.0,
-    trend_exit_break=False,
-    tp_trail_adaptive=True,
-    tp_trail_k=2.0,
-    tp_trail_min=1.5,
-    tp_trail_max=8.0,
-    tp_trail_vol_interval=240,
-    dca_trend_brake=True,
-    dca_brake_min_pct=1.5,
-    reentry_hybrid_enabled=True,
-    reentry_pullback_adaptive=True,
-    reentry_pullback_k=1.0,
-    reentry_pullback_min=0.8,
-    reentry_pullback_max=3.5,
-    reentry_ttl_hours=48.0,
-    reentry_bear_bounce_pct=0.5,
-    fast_profit_guard=True,
-    tp_dynamic_flat=True,
-    surge_guard=False,
-    surge_dynamic=False,
-)
+DEFAULT_CONFIG = Path(ROOT) / "kraken" / "config.env"
+
+
+def load_base_params(config_path: str | Path) -> strat.StratParams:
+    """Read one explicit profile without inheriting shell variables or secrets."""
+    path = Path(config_path).resolve(strict=True)
+    return strat.StratParams.from_env(parse_dotenv(str(path)))
 
 R = dataclasses.replace
 
 
-def build_candidate_grid() -> list[dict[str, Any]]:
+def build_candidate_grid(base_params: strat.StratParams) -> list[dict[str, Any]]:
     """Construct a comprehensive grid covering fixed, dynamic, and pullback variations."""
     candidates = []
 
@@ -107,8 +59,15 @@ def build_candidate_grid() -> list[dict[str, Any]]:
     candidates.append({
         "id": "BASELINE_SURGE_OFF",
         "category": "Baseline",
-        "params": R(BASE_PARAMS, surge_guard=False),
-        "desc": "Baseline (Surge OFF, pure Trend Overlay)",
+        "params": R(base_params, surge_guard=False, surge_dynamic=False),
+        "desc": "Selected profile with Surge OFF",
+    })
+
+    candidates.append({
+        "id": "CURRENT_CONFIG",
+        "category": "Current",
+        "params": base_params,
+        "desc": "Unmodified selected versioned profile",
     })
 
     # 2. Fine-grained Fixed Surge Grid
@@ -125,7 +84,7 @@ def build_candidate_grid() -> list[dict[str, Any]]:
                     "id": cid,
                     "category": "Fixed",
                     "params": R(
-                        BASE_PARAMS,
+                        base_params,
                         surge_guard=True,
                         surge_dynamic=False,
                         surge_gain_pct=g,
@@ -153,7 +112,7 @@ def build_candidate_grid() -> list[dict[str, Any]]:
                         "id": cid,
                         "category": "Dynamic",
                         "params": R(
-                            BASE_PARAMS,
+                            base_params,
                             surge_guard=True,
                             surge_dynamic=True,
                             surge_min_gain_pct=mn,
@@ -175,7 +134,7 @@ def build_candidate_grid() -> list[dict[str, Any]]:
             "id": cid,
             "category": "BearBounce",
             "params": R(
-                BASE_PARAMS,
+                base_params,
                 surge_guard=True,
                 surge_dynamic=False,
                 surge_gain_pct=18.0,
@@ -193,8 +152,10 @@ def build_candidate_grid() -> list[dict[str, Any]]:
 def evaluate_single_candidate(
     candidate: dict[str, Any],
     asset_data: dict[str, list[tuple[float, float, float, float]]],
+    initial_cash: float,
+    fee_pct: float,
 ) -> dict[str, Any]:
-    """Run replay for a candidate across all assets and both independent split halves."""
+    """Run replay for a candidate across all assets and both chronological halves."""
     cid = candidate["id"]
     params = candidate["params"]
     category = candidate["category"]
@@ -206,7 +167,7 @@ def evaluate_single_candidate(
     asset_profits = {}
     asset_maxdds = {}
 
-    # Half 1 and Half 2 metrics for out-of-sample validation
+    # The same candidate is evaluated on both halves; neither is held out.
     h1_profits = 0.0
     h2_profits = 0.0
 
@@ -217,16 +178,15 @@ def evaluate_single_candidate(
         warmup_ohlc = ohlc[:warmup_n]
         run_ohlc = ohlc[warmup_n:]
 
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink):
             # Full run
             res = run_replay(
                 ohlc=run_ohlc,
                 params=params,
-                fee_pct=0.26,
+                fee_pct=fee_pct,
                 bar_minutes=240.0,
                 warmup_ohlc=warmup_ohlc,
-                initial_cash=3900.0,
+                initial_cash=initial_cash,
             )
             pnl = float(res.get("total", 0.0))
             dd = float(res.get("max_drawdown_pct", 0.0))
@@ -238,7 +198,7 @@ def evaluate_single_candidate(
             asset_profits[asset] = round(pnl, 2)
             asset_maxdds[asset] = round(dd, 2)
 
-            # 2 Independent Halves Split (Guardrail #1)
+            # Two chronological halves, each reset to the same cash balance.
             half_idx = len(run_ohlc) // 2
             ohlc_h1 = run_ohlc[:half_idx]
             ohlc_h2 = run_ohlc[half_idx:]
@@ -246,31 +206,32 @@ def evaluate_single_candidate(
             res_h1 = run_replay(
                 ohlc=ohlc_h1,
                 params=params,
-                fee_pct=0.26,
+                fee_pct=fee_pct,
                 bar_minutes=240.0,
                 warmup_ohlc=warmup_ohlc,
-                initial_cash=3900.0,
+                initial_cash=initial_cash,
             )
             res_h2 = run_replay(
                 ohlc=ohlc_h2,
                 params=params,
-                fee_pct=0.26,
+                fee_pct=fee_pct,
                 bar_minutes=240.0,
                 warmup_ohlc=ohlc_h1[-warmup_n:] if len(ohlc_h1) >= warmup_n else warmup_ohlc,
-                initial_cash=3900.0,
+                initial_cash=initial_cash,
             )
             h1_profits += float(res_h1.get("total", 0.0))
             h2_profits += float(res_h2.get("total", 0.0))
 
-    calmar = (total_profit / worst_maxdd) if worst_maxdd > 0 else 0.0
+    pnl_per_drawdown_point = (total_profit / worst_maxdd) if worst_maxdd > 0 else 0.0
 
     return {
         "id": cid,
         "category": category,
         "desc": desc,
+        "strategy_params": dataclasses.asdict(params),
         "total_profit_usd": round(total_profit, 2),
         "worst_maxdd_pct": round(worst_maxdd, 2),
-        "calmar_ratio": round(calmar, 2),
+        "pnl_per_drawdown_point": round(pnl_per_drawdown_point, 2),
         "total_cycles": total_cycles,
         "h1_profit_usd": round(h1_profits, 2),
         "h2_profit_usd": round(h2_profits, 2),
@@ -283,25 +244,47 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workers", type=int, default=3, help="Max parallel worker processes (default: 3)")
     parser.add_argument("--out-dir", type=str, default=DEFAULT_OUT_DIR, help="Output directory for reports")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
+                        help="Versioned venue profile; shell variables and .env are ignored")
+    parser.add_argument("--data-dir", type=Path, default=Path(DATA_DIR))
+    parser.add_argument("--initial-cash", type=float,
+                        help="Cash per independent asset replay; default: configured allocation")
+    parser.add_argument("--fee-pct", type=float, required=True,
+                        help="Explicit per-leg replay fee percentage (not fetched from the venue)")
     args = parser.parse_args()
+    base_params = load_base_params(args.config)
+    initial_cash = (base_params.effective_max_budget()
+                    if args.initial_cash is None else args.initial_cash)
+    if not math.isfinite(initial_cash) or initial_cash <= 0:
+        parser.error("initial cash must be finite and positive")
+    if not math.isfinite(args.fee_pct) or args.fee_pct < 0:
+        parser.error("fee percentage must be finite and non-negative")
+    if args.workers < 1:
+        parser.error("workers must be positive")
+    print("Research only: 4h OHLC cannot validate 5-minute guards; "
+          "two-half comparison is not held-out walk-forward evidence.")
+
 
     os.makedirs(args.out_dir, exist_ok=True)
     json_path = os.path.join(args.out_dir, "sweep_results.json")
     md_path = os.path.join(args.out_dir, "DEEP_SURGE_SWEEP_REPORT.md")
 
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Loading datasets from {DATA_DIR}...")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Loading datasets from {args.data_dir}...")
     asset_data = {}
     for a in ASSETS:
-        csv_file = os.path.join(DATA_DIR, f"{a}_240m.csv")
+        csv_file = os.path.join(args.data_dir, f"{a}_240m.csv")
         if os.path.isfile(csv_file):
             ohlc = load_ohlc_csv(csv_file)
             asset_data[a] = ohlc
             print(f"  - {a:<6}: {len(ohlc)} bars")
 
-    candidates = build_candidate_grid()
+    missing = [asset for asset in ASSETS if len(asset_data.get(asset, [])) < 60]
+    if missing:
+        parser.error(f"Missing or insufficient datasets: {', '.join(missing)}")
+    candidates = build_candidate_grid(base_params)
     total_cands = len(candidates)
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Built parameter grid: {total_cands} candidates across {len(asset_data)} assets.")
-    print(f"  Parallel execution: {args.workers} workers (nice -n 15 scheduled).")
+    print(f"  Parallel execution: {args.workers} workers.")
 
     t0 = time.time()
     results = []
@@ -309,7 +292,7 @@ def main():
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as executor:
         future_map = {
-            executor.submit(evaluate_single_candidate, c, asset_data): c
+            executor.submit(evaluate_single_candidate, c, asset_data, initial_cash, args.fee_pct): c
             for c in candidates
         }
 
@@ -338,27 +321,41 @@ def main():
 
     # Find baseline
     baseline = next((r for r in results if r["id"] == "BASELINE_SURGE_OFF"), None)
-    base_pnl = baseline["total_profit_usd"] if baseline else 0.0
-    base_h1 = baseline["h1_profit_usd"] if baseline else 0.0
-    base_h2 = baseline["h2_profit_usd"] if baseline else 0.0
+    if baseline is None or len(results) != total_cands:
+        raise RuntimeError("Incomplete sweep; refusing to rank results against a missing or partial control")
+    base_pnl = baseline["total_profit_usd"]
+    base_h1 = baseline["h1_profit_usd"]
+    base_h2 = baseline["h2_profit_usd"]
 
-    # Score and tag 2-window walk-forward winners
+    # Descriptive split comparison, not out-of-sample selection.
     for r in results:
         r["beats_baseline_total"] = r["total_profit_usd"] >= base_pnl
         r["beats_baseline_h1"] = r["h1_profit_usd"] >= base_h1
         r["beats_baseline_h2"] = r["h2_profit_usd"] >= base_h2
-        # True signal: beats baseline in BOTH independent halves
-        r["two_window_verified"] = r["beats_baseline_h1"] and r["beats_baseline_h2"]
+        # Both halves participated in comparison; do not interpret this as validation.
+        r["beats_baseline_both_halves"] = r["beats_baseline_h1"] and r["beats_baseline_h2"]
         r["edge_usd"] = round(r["total_profit_usd"] - base_pnl, 2)
 
     # Sort candidates
-    results.sort(key=lambda x: (x["total_profit_usd"], x["calmar_ratio"]), reverse=True)
+    results.sort(key=lambda x: (x["total_profit_usd"], x["pnl_per_drawdown_point"]), reverse=True)
 
     # Save JSON database
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(
             {
+                "schema_version": 2,
                 "timestamp": datetime.now().isoformat(),
+                "config_path": str(args.config.resolve()),
+                "strategy_params": dataclasses.asdict(base_params),
+                "initial_cash_per_asset": initial_cash,
+                "fee_pct_per_leg": args.fee_pct,
+                "bar_minutes": 240,
+                "limitations": [
+                    "Same candidates compared on both halves; no held-out walk-forward selection.",
+                    "Four-hour bars do not validate five-minute guards.",
+                    "Assets use independent cash accounts; the sum is not a shared-wallet simulation.",
+                    "The replay fee is an explicit assumption, not a verified live venue fee.",
+                ],
                 "total_candidates": len(results),
                 "duration_seconds": round(total_time, 1),
                 "baseline": baseline,
@@ -372,7 +369,7 @@ def main():
 
     # Generate Markdown Report
     top15 = results[:15]
-    top_verified = [r for r in results if r.get("two_window_verified")][:15]
+    top_verified = [r for r in results if r.get("beats_baseline_both_halves")][:15]
 
     lines = [
         "# Deep Parabolic Surge Guard & Re-entry Optimization Report",
@@ -380,40 +377,41 @@ def main():
         f"- **Timestamp:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"- **Candidates Evaluated:** {len(results):,}",
         f"- **Total Time:** {total_time/60:.1f} minutes",
-        f"- **Assets:** {', '.join(ASSETS)} (4h continuous multi-year history)",
+        f"- **Profile:** {args.config.resolve()}",
+        f"- **Cash per asset:** {initial_cash} {base_params.currency}; per-leg fee: {args.fee_pct}%",
+        "- **Limits:** 4h bars cannot validate 5-minute guards. Assets use independent cash accounts.",
+        "- **Selection:** both halves are compared, not held out; no live promotion is justified.",
+        f"- **Assets:** {', '.join(ASSETS)} (supplied 4h datasets; durations are not validated)",
         f"- **Baseline Reference (Surge OFF):** ${base_pnl:,.2f} | H1: ${base_h1:,.2f} | H2: ${base_h2:,.2f}",
         "",
-        "## 1. Top 15 Overall Performers (Total Fleet PnL)",
+        "## 1. Top 15 Overall Performers (Sum of Independent Asset PnLs)",
         "",
-        "| Rank | Candidate ID | Category | Total PnL ($) | Edge ($) | MaxDD % | Calmar | Dual-Half Pass | Description |",
+        "| Rank | Candidate ID | Category | Total PnL ($) | Edge ($) | MaxDD % | PnL/DD point | Both Halves | Description |",
         "| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |",
     ]
 
     for idx, r in enumerate(top15, 1):
-        v_tag = "✅ YES" if r["two_window_verified"] else "❌ No (1-win)"
+        v_tag = "YES" if r["beats_baseline_both_halves"] else "No"
         lines.append(
             f"| {idx} | `{r['id']}` | {r['category']} | **${r['total_profit_usd']:,.2f}** | "
-            f"+${r['edge_usd']:,.2f} | {r['worst_maxdd_pct']:.2f}% | {r['calmar_ratio']:.2f} | {v_tag} | {r['desc']} |"
+            f"+${r['edge_usd']:,.2f} | {r['worst_maxdd_pct']:.2f}% | {r['pnl_per_drawdown_point']:.2f} | {v_tag} | {r['desc']} |"
         )
 
     lines.extend([
         "",
-        "## 2. Top Robust Performers (Dual-Half Split-Sample Consistency Filter)",
+        "## 2. Candidates Matching or Beating Both Halves (Descriptive Comparison)",
         "",
-        "> [!NOTE]",
-        "> These candidates beat the baseline in **both sample halves (H1 and H2)**.",
-        "> Methodology Note: This dual-half filter checks whether an edge persists across both halves of the historical dataset.",
-        "> It operates as a cross-sample consistency check rather than an anchored out-of-sample walk-forward test.",
-        "> Furthermore, continuous 4h OHLC bars validate multi-day surge exhaustion dynamics, but cannot simulate 5-minute micro-gradient wicks.",
+        "> [!IMPORTANT]",
+        "> These candidates match or beat the control on both halves. This is an in-sample comparison, not proof against overfitting.",
         "",
-        "| Rank | Candidate ID | Category | Total PnL ($) | H1 ($) | H2 ($) | MaxDD % | Calmar | Description |",
+        "| Rank | Candidate ID | Category | Total PnL ($) | H1 ($) | H2 ($) | MaxDD % | PnL/DD point | Description |",
         "| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |",
     ])
 
     for idx, r in enumerate(top_verified, 1):
         lines.append(
             f"| {idx} | `{r['id']}` | {r['category']} | **${r['total_profit_usd']:,.2f}** | "
-            f"${r['h1_profit_usd']:,.2f} | ${r['h2_profit_usd']:,.2f} | {r['worst_maxdd_pct']:.2f}% | {r['calmar_ratio']:.2f} | {r['desc']} |"
+            f"${r['h1_profit_usd']:,.2f} | ${r['h2_profit_usd']:,.2f} | {r['worst_maxdd_pct']:.2f}% | {r['pnl_per_drawdown_point']:.2f} | {r['desc']} |"
         )
 
     lines.extend([
@@ -436,7 +434,7 @@ def main():
         "",
         "## 4. Proposal Branch Recommendation",
         "",
-        "The winning candidate parameters should be integrated into `kraken/config.env` and `hyperliquid/config.env`:",
+        "Research shortlist only. Do not promote to either venue without held-out, fee-calibrated, timeframe-appropriate validation:",
         "```env",
     ])
     if top_verified:
@@ -445,7 +443,7 @@ def main():
         top_cand = top15[0] if top15 else None
 
     if top_cand:
-        lines.append(f"# Recommended Winner: {top_cand['id']}")
+        lines.append(f"# Research Candidate: {top_cand['id']}")
         lines.append(f"# Total PnL: ${top_cand['total_profit_usd']} vs Baseline ${base_pnl}")
         lines.append(f"# Description: {top_cand['desc']}")
     lines.append("```\n")
@@ -456,7 +454,7 @@ def main():
     print(f"Generated comprehensive markdown report: {md_path}")
     print("\n=== TOP 5 CANDIDATES PREVIEW ===")
     for idx, r in enumerate(top15[:5], 1):
-        print(f"#{idx} {r['id']:<35} | PnL: ${r['total_profit_usd']:>9.2f} | MaxDD: {r['worst_maxdd_pct']:>5.2f}% | 2-Win: {r['two_window_verified']} | {r['desc']}")
+        print(f"#{idx} {r['id']:<35} | PnL: ${r['total_profit_usd']:>9.2f} | MaxDD: {r['worst_maxdd_pct']:>5.2f}% | 2-Win: {r['beats_baseline_both_halves']} | {r['desc']}")
 
 
 if __name__ == "__main__":

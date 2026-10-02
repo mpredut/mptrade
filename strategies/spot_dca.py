@@ -110,7 +110,7 @@ class StratParams:
     entry_pct: float = 0.0      # Entry is this percentage of the asset allocation.
     dca_pct: float = 0.0        # DCA is this percentage of the asset allocation.
     # --- HYBRID RE-ENTRY (EXPERIMENTAL, default OFF) -----------------------------
-    reentry_hybrid_enabled: bool = False  # Unified hybrid re-entry (enabled by default in from_env()).
+    reentry_hybrid_enabled: bool = False  # Live profiles must explicitly enable or disable hybrid re-entry.
     reentry_peak_relative: bool = False   # Force peak-relative pullback without trend filter (Test 1).
     reentry_pullback_pct: float = 1.5     # Pullback from post-sale peak required in confirmed bull trend.
     reentry_pullback_adaptive: bool = False  # Scale pullback by volatility: clamp(K_PULLBACK * vol_1h, min, max)
@@ -215,210 +215,117 @@ class StratParams:
         return self.allocated_budget()
 
     @classmethod
-    def from_env(cls) -> "StratParams":
-        mode = required_env("STRATEGY_MODE").lower()
+    def from_env(cls, env: dict | None = None) -> "StratParams":
+        """Load an explicit profile; missing financial policy is a startup error."""
+        mode = required_env("STRATEGY_MODE", env).lower()
         if mode not in {"avg_tp", "dca_only"}:
             raise ValueError(f"Invalid STRATEGY_MODE: {mode!r}")
         return cls(
-            currency           = required_env("STRAT_CURRENCY").upper(),
-            entry_amount       = required_float_env("STRAT_ENTRY"),
-            entry_discount_pct = required_float_env("STRAT_ENTRY_DISCOUNT_PCT"),
-            dca_amount         = required_float_env("STRAT_DCA"),
-            dca_drop_pct       = required_float_env("STRAT_DCA_DROP_PCT"),
-            check_minutes      = required_float_env("STRAT_CHECK_MINUTES"),
-            takeprofit_pct     = required_float_env("STRAT_TAKEPROFIT_PCT"),
-            max_budget         = required_float_env("STRAT_MAX_BUDGET"),
-            max_dca_buys       = required_int_env("STRAT_MAX_DCA_BUYS"),
-            total_budget       = required_float_env("STRAT_TOTAL_BUDGET"),
-            alloc_pct          = required_float_env("STRAT_ALLOC_PCT"),
-            entry_pct          = required_float_env("STRAT_ENTRY_PCT"),
-            dca_pct            = required_float_env("STRAT_DCA_PCT"),
+            currency           = required_env("STRAT_CURRENCY", env).upper(),
+            entry_amount       = required_float_env("STRAT_ENTRY", env),
+            entry_discount_pct = required_float_env("STRAT_ENTRY_DISCOUNT_PCT", env),
+            dca_amount         = required_float_env("STRAT_DCA", env),
+            dca_drop_pct       = required_float_env("STRAT_DCA_DROP_PCT", env),
+            check_minutes      = required_float_env("STRAT_CHECK_MINUTES", env),
+            takeprofit_pct     = required_float_env("STRAT_TAKEPROFIT_PCT", env),
+            max_budget         = required_float_env("STRAT_MAX_BUDGET", env),
+            max_dca_buys       = required_int_env("STRAT_MAX_DCA_BUYS", env),
+            total_budget       = required_float_env("STRAT_TOTAL_BUDGET", env),
+            alloc_pct          = required_float_env("STRAT_ALLOC_PCT", env),
+            entry_pct          = required_float_env("STRAT_ENTRY_PCT", env),
+            dca_pct            = required_float_env("STRAT_DCA_PCT", env),
             enable_takeprofit  = (mode != "dca_only"),
-            order_ttl_min      = required_float_env("STRAT_ORDER_TTL_MIN"),
-            stop_loss_pct      = float(float_env("STRAT_STOP_LOSS_PCT") if float_env("STRAT_STOP_LOSS_PCT") is not None else 0.0),
-            adopt_cost         = float(float_env("STRAT_ADOPT_COST") if float_env("STRAT_ADOPT_COST") is not None else 0.0),
-            adopt_qty          = float(float_env("STRAT_ADOPT_QTY") if float_env("STRAT_ADOPT_QTY") is not None else 0.0),
-            reentry_drop_pct   = float(float_env("STRAT_REENTRY_DROP_PCT") if float_env("STRAT_REENTRY_DROP_PCT") is not None else 2.0),
-            reentry_tolerance_pct = float(float_env("STRAT_REENTRY_TOLERANCE_PCT") if float_env("STRAT_REENTRY_TOLERANCE_PCT") is not None else 0.05),
-            reentry_adaptive   = str(os.environ.get("STRAT_REENTRY_ADAPTIVE", "false")).lower() in ("true", "1", "yes"),
-            reentry_sl_bounce_pct = float(float_env("STRAT_REENTRY_SL_BOUNCE_PCT") if float_env("STRAT_REENTRY_SL_BOUNCE_PCT") is not None else 1.5),
-            tp_tranches        = _parse_tranches(defined_env("STRAT_TP_TRANCHES")),
-            tp_trend_hold      = str(os.environ.get("STRAT_TP_TREND_HOLD", "true")).lower() in ("true", "1", "yes"),
+            order_ttl_min      = required_float_env("STRAT_ORDER_TTL_MIN", env),
+            stop_loss_pct      = required_float_env("STRAT_STOP_LOSS_PCT", env),
+            adopt_cost         = required_float_env("STRAT_ADOPT_COST", env),
+            adopt_qty          = required_float_env("STRAT_ADOPT_QTY", env),
+            reentry_drop_pct   = required_float_env("STRAT_REENTRY_DROP_PCT", env),
+            reentry_tolerance_pct = required_float_env("STRAT_REENTRY_TOLERANCE_PCT", env),
+            reentry_adaptive   = required_bool_env("STRAT_REENTRY_ADAPTIVE", env),
+            reentry_sl_bounce_pct = required_float_env("STRAT_REENTRY_SL_BOUNCE_PCT", env),
+            tp_tranches        = _parse_tranches(defined_env("STRAT_TP_TRANCHES", env)),
+            tp_trend_hold      = required_bool_env("STRAT_TP_TREND_HOLD", env),
             tp_regime_gate     = False,  # Retired legacy binary gate: superseded by continuous MHDPA rules.
-            tp_trend_min_pct   = required_float_env("STRAT_TP_TREND_MIN_PCT"),
-            tp_trail_pct       = required_float_env("STRAT_TP_TRAIL_PCT"),
+            tp_trend_min_pct   = required_float_env("STRAT_TP_TREND_MIN_PCT", env),
+            tp_trail_pct       = required_float_env("STRAT_TP_TRAIL_PCT", env),
             tp_trail_profit_floor_pct = max(
-                0.0, required_float_env("STRAT_TP_TRAIL_PROFIT_FLOOR_PCT"),
+                0.0, required_float_env("STRAT_TP_TRAIL_PROFIT_FLOOR_PCT", env),
             ),
-            trend_overlay      = required_bool_env("STRAT_TREND_OVERLAY"),
-            trend_sma_n        = required_int_env("STRAT_TREND_SMA_N"),
-            trend_interval     = required_int_env("STRAT_TREND_INTERVAL"),
-            regime_min_samples = required_int_env("STRAT_REGIME_MIN_SAMPLES"),
-            trend_topup        = required_float_env("STRAT_TREND_TOPUP"),
-            trend_trail_pct    = required_float_env("STRAT_TREND_TRAIL_PCT"),
-            trend_exit_break   = required_bool_env("STRAT_TREND_EXIT_BREAK"),
-            tp_trail_adaptive  = required_bool_env("STRAT_TP_TRAIL_ADAPTIVE"),
-            tp_trail_k         = required_float_env("STRAT_TP_TRAIL_K"),
-            tp_trail_min       = required_float_env("STRAT_TP_TRAIL_MIN"),
-            tp_trail_max       = required_float_env("STRAT_TP_TRAIL_MAX"),
-            tp_trail_vol_interval = required_int_env("STRAT_TP_TRAIL_VOL_INTERVAL"),
-            dca_trend_brake    = required_bool_env("STRAT_DCA_TREND_BRAKE"),
-            dca_brake_min_pct  = required_float_env("STRAT_DCA_BRAKE_MIN_PCT"),
+            trend_overlay      = required_bool_env("STRAT_TREND_OVERLAY", env),
+            trend_sma_n        = required_int_env("STRAT_TREND_SMA_N", env),
+            trend_interval     = required_int_env("STRAT_TREND_INTERVAL", env),
+            regime_min_samples = required_int_env("STRAT_REGIME_MIN_SAMPLES", env),
+            trend_topup        = required_float_env("STRAT_TREND_TOPUP", env),
+            trend_trail_pct    = required_float_env("STRAT_TREND_TRAIL_PCT", env),
+            trend_exit_break   = required_bool_env("STRAT_TREND_EXIT_BREAK", env),
+            tp_trail_adaptive  = required_bool_env("STRAT_TP_TRAIL_ADAPTIVE", env),
+            tp_trail_k         = required_float_env("STRAT_TP_TRAIL_K", env),
+            tp_trail_min       = required_float_env("STRAT_TP_TRAIL_MIN", env),
+            tp_trail_max       = required_float_env("STRAT_TP_TRAIL_MAX", env),
+            tp_trail_vol_interval = required_int_env("STRAT_TP_TRAIL_VOL_INTERVAL", env),
+            dca_trend_brake    = required_bool_env("STRAT_DCA_TREND_BRAKE", env),
+            dca_brake_min_pct  = required_float_env("STRAT_DCA_BRAKE_MIN_PCT", env),
             dca_spacing_growth_pct = max(
-                0.0, required_float_env("STRAT_DCA_SPACING_GROWTH_PCT"),
+                0.0, required_float_env("STRAT_DCA_SPACING_GROWTH_PCT", env),
             ),
-            dca_vol_scale_k    = required_float_env("STRAT_DCA_VOL_SCALE_K"),
-            dca_vol_ref        = required_float_env("STRAT_DCA_VOL_REF"),
-            dca_vol_interval   = required_int_env("STRAT_DCA_VOL_INTERVAL"),
-            reentry_hybrid_enabled = (
-                str(os.environ.get("STRAT_REENTRY_HYBRID_ENABLED", "true")).lower() in ("true", "1", "yes")
-            ),
-            reentry_peak_relative = (
-                str(os.environ.get("STRAT_REENTRY_PEAK_RELATIVE", "")).lower() in ("true", "1")
-            ),
-            reentry_pullback_pct = (
-                float_env("STRAT_REENTRY_PULLBACK_PCT")
-                if float_env("STRAT_REENTRY_PULLBACK_PCT") is not None else 1.5
-            ),
-            reentry_pullback_adaptive = (
-                str(os.environ.get("STRAT_REENTRY_PULLBACK_ADAPTIVE", "")).lower() in ("true", "1")
-            ),
-            reentry_pullback_k = (
-                float_env("STRAT_REENTRY_PULLBACK_K")
-                if float_env("STRAT_REENTRY_PULLBACK_K") is not None else 1.0
-            ),
-            reentry_pullback_min = (
-                float_env("STRAT_REENTRY_PULLBACK_MIN")
-                if float_env("STRAT_REENTRY_PULLBACK_MIN") is not None else 0.8
-            ),
-            reentry_pullback_max = (
-                float_env("STRAT_REENTRY_PULLBACK_MAX")
-                if float_env("STRAT_REENTRY_PULLBACK_MAX") is not None else 4.0
-            ),
-            reentry_ttl_hours = (
-                float_env("STRAT_REENTRY_TTL_HOURS")
-                if float_env("STRAT_REENTRY_TTL_HOURS") is not None else 0.0
-            ),
-            reentry_bear_bounce_pct = (
-                float_env("STRAT_REENTRY_BEAR_BOUNCE_PCT")
-                if float_env("STRAT_REENTRY_BEAR_BOUNCE_PCT") is not None else 0.0
-            ),
-            tp_dynamic_flat = (
-                str(os.environ.get("STRAT_TP_DYNAMIC_FLAT", "")).lower() in ("true", "1")
-            ),
-            tp_min_pct = (
-                float_env("STRAT_TP_MIN_PCT")
-                if float_env("STRAT_TP_MIN_PCT") is not None else 3.0
-            ),
-            tp_max_pct = (
-                float_env("STRAT_TP_MAX_PCT")
-                if float_env("STRAT_TP_MAX_PCT") is not None else 7.0
-            ),
-            trend_trail_dynamic = (
-                str(os.environ.get("STRAT_TREND_TRAIL_DYNAMIC", "")).lower() in ("true", "1")
-            ),
-            trend_trail_base_pct = (
-                float_env("STRAT_TREND_TRAIL_BASE_PCT")
-                if float_env("STRAT_TREND_TRAIL_BASE_PCT") is not None else 8.0
-            ),
-            trend_trail_min_pct = (
-                float_env("STRAT_TREND_TRAIL_MIN_PCT")
-                if float_env("STRAT_TREND_TRAIL_MIN_PCT") is not None else 3.0
-            ),
-            trend_trail_ratchet_k = (
-                float_env("STRAT_TREND_TRAIL_RATCHET_K")
-                if float_env("STRAT_TREND_TRAIL_RATCHET_K") is not None else 0.5
-            ),
-            trend_trail_gain_threshold = (
-                float_env("STRAT_TREND_TRAIL_GAIN_THRESH")
-                if float_env("STRAT_TREND_TRAIL_GAIN_THRESH") is not None else 6.0
-            ),
-            fast_profit_guard = (
-                str(os.environ.get("STRAT_FAST_PROFIT_GUARD", "")).lower() in ("true", "1")
-            ),
-            fast_profit_mult = (
-                float_env("STRAT_FAST_PROFIT_MULT")
-                if float_env("STRAT_FAST_PROFIT_MULT") is not None else 2.0
-            ),
-            fast_profit_window_min = (
-                float_env("STRAT_FAST_PROFIT_WINDOW_MIN")
-                if float_env("STRAT_FAST_PROFIT_WINDOW_MIN") is not None else 5.0
-            ),
-            fast_profit_drop_pct = (
-                float_env("STRAT_FAST_PROFIT_DROP_PCT")
-                if float_env("STRAT_FAST_PROFIT_DROP_PCT") is not None else 1.0
-            ),
-            surge_guard = (
-                str(os.environ.get("STRAT_SURGE_GUARD", "")).lower() in ("true", "1")
-            ),
-            surge_gain_pct = (
-                float_env("STRAT_SURGE_GAIN_PCT")
-                if float_env("STRAT_SURGE_GAIN_PCT") is not None else 20.0
-            ),
-            surge_window_hours = (
-                float_env("STRAT_SURGE_WINDOW_HOURS")
-                if float_env("STRAT_SURGE_WINDOW_HOURS") is not None else 72.0
-            ),
-            surge_move_pct = (
-                float_env("STRAT_SURGE_MOVE_PCT")
-                if float_env("STRAT_SURGE_MOVE_PCT") is not None else 25.0
-            ),
-            surge_exit_pullback_pct = (
-                float_env("STRAT_SURGE_EXIT_PULLBACK_PCT")
-                if float_env("STRAT_SURGE_EXIT_PULLBACK_PCT") is not None else 3.2
-            ),
-            surge_dynamic = (
-                str(os.environ.get("STRAT_SURGE_DYNAMIC", "")).lower() in ("true", "1")
-            ),
-            surge_min_gain_pct = (
-                float_env("STRAT_SURGE_MIN_GAIN_PCT")
-                if float_env("STRAT_SURGE_MIN_GAIN_PCT") is not None else 24.0
-            ),
-            surge_max_gain_pct = (
-                float_env("STRAT_SURGE_MAX_GAIN_PCT")
-                if float_env("STRAT_SURGE_MAX_GAIN_PCT") is not None else 32.0
-            ),
-            surge_vol_multiplier = (
-                float_env("STRAT_SURGE_VOL_MULTIPLIER")
-                if float_env("STRAT_SURGE_VOL_MULTIPLIER") is not None else 10.0
-            ),
-            slow_grind_guard = (
-                str(os.environ.get("STRAT_SLOW_GRIND_GUARD", "")).lower() in ("true", "1")
-            ),
-            slow_grind_days = (
-                float_env("STRAT_SLOW_GRIND_DAYS")
-                if float_env("STRAT_SLOW_GRIND_DAYS") is not None else 7.0
-            ),
-            slow_grind_min_gain_pct = (
-                float_env("STRAT_SLOW_GRIND_MIN_GAIN_PCT")
-                if float_env("STRAT_SLOW_GRIND_MIN_GAIN_PCT") is not None else 15.0
-            ),
-            slow_grind_flash_window_min = (
-                float_env("STRAT_SLOW_GRIND_FLASH_WINDOW_MIN")
-                if float_env("STRAT_SLOW_GRIND_FLASH_WINDOW_MIN") is not None else 15.0
-            ),
-            slow_grind_flash_drop_pct = (
-                float_env("STRAT_SLOW_GRIND_FLASH_DROP_PCT")
-                if float_env("STRAT_SLOW_GRIND_FLASH_DROP_PCT") is not None else 1.5
-            ),
-            slow_grind_hourly_drop_pct = (
-                float_env("STRAT_SLOW_GRIND_HOURLY_DROP_PCT")
-                if float_env("STRAT_SLOW_GRIND_HOURLY_DROP_PCT") is not None else 2.5
-            ),
+            dca_vol_scale_k    = required_float_env("STRAT_DCA_VOL_SCALE_K", env),
+            dca_vol_ref        = required_float_env("STRAT_DCA_VOL_REF", env),
+            dca_vol_interval   = required_int_env("STRAT_DCA_VOL_INTERVAL", env),
+            reentry_hybrid_enabled = required_bool_env("STRAT_REENTRY_HYBRID_ENABLED", env),
+            reentry_peak_relative = required_bool_env("STRAT_REENTRY_PEAK_RELATIVE", env),
+            reentry_pullback_pct = required_float_env("STRAT_REENTRY_PULLBACK_PCT", env),
+            reentry_pullback_adaptive = required_bool_env("STRAT_REENTRY_PULLBACK_ADAPTIVE", env),
+            reentry_pullback_k = required_float_env("STRAT_REENTRY_PULLBACK_K", env),
+            reentry_pullback_min = required_float_env("STRAT_REENTRY_PULLBACK_MIN", env),
+            reentry_pullback_max = required_float_env("STRAT_REENTRY_PULLBACK_MAX", env),
+            reentry_ttl_hours = required_float_env("STRAT_REENTRY_TTL_HOURS", env),
+            reentry_bear_bounce_pct = required_float_env("STRAT_REENTRY_BEAR_BOUNCE_PCT", env),
+            tp_dynamic_flat = required_bool_env("STRAT_TP_DYNAMIC_FLAT", env),
+            tp_min_pct = required_float_env("STRAT_TP_MIN_PCT", env),
+            tp_max_pct = required_float_env("STRAT_TP_MAX_PCT", env),
+            trend_trail_dynamic = required_bool_env("STRAT_TREND_TRAIL_DYNAMIC", env),
+            trend_trail_base_pct = required_float_env("STRAT_TREND_TRAIL_BASE_PCT", env),
+            trend_trail_min_pct = required_float_env("STRAT_TREND_TRAIL_MIN_PCT", env),
+            trend_trail_ratchet_k = required_float_env("STRAT_TREND_TRAIL_RATCHET_K", env),
+            trend_trail_gain_threshold = required_float_env("STRAT_TREND_TRAIL_GAIN_THRESH", env),
+            fast_profit_guard = required_bool_env("STRAT_FAST_PROFIT_GUARD", env),
+            fast_profit_mult = required_float_env("STRAT_FAST_PROFIT_MULT", env),
+            fast_profit_window_min = required_float_env("STRAT_FAST_PROFIT_WINDOW_MIN", env),
+            fast_profit_drop_pct = required_float_env("STRAT_FAST_PROFIT_DROP_PCT", env),
+            surge_guard = required_bool_env("STRAT_SURGE_GUARD", env),
+            surge_gain_pct = required_float_env("STRAT_SURGE_GAIN_PCT", env),
+            surge_window_hours = required_float_env("STRAT_SURGE_WINDOW_HOURS", env),
+            surge_move_pct = required_float_env("STRAT_SURGE_MOVE_PCT", env),
+            surge_exit_pullback_pct = required_float_env("STRAT_SURGE_EXIT_PULLBACK_PCT", env),
+            surge_dynamic = required_bool_env("STRAT_SURGE_DYNAMIC", env),
+            surge_min_gain_pct = required_float_env("STRAT_SURGE_MIN_GAIN_PCT", env),
+            surge_max_gain_pct = required_float_env("STRAT_SURGE_MAX_GAIN_PCT", env),
+            surge_vol_multiplier = required_float_env("STRAT_SURGE_VOL_MULTIPLIER", env),
+            slow_grind_guard = required_bool_env("STRAT_SLOW_GRIND_GUARD", env),
+            slow_grind_days = required_float_env("STRAT_SLOW_GRIND_DAYS", env),
+            slow_grind_min_gain_pct = required_float_env("STRAT_SLOW_GRIND_MIN_GAIN_PCT", env),
+            slow_grind_flash_window_min = required_float_env("STRAT_SLOW_GRIND_FLASH_WINDOW_MIN", env),
+            slow_grind_flash_drop_pct = required_float_env("STRAT_SLOW_GRIND_FLASH_DROP_PCT", env),
+            slow_grind_hourly_drop_pct = required_float_env("STRAT_SLOW_GRIND_HOURLY_DROP_PCT", env),
         )
 
 
 def _parse_tranches(spec: str) -> list:
     """Parse ``3:50,6:50`` into percentage/share pairs whose shares total 100."""
+    if not spec.strip():
+        return []
     out = []
-    for part in spec.split(","):
-        if ":" in part:
-            try:
-                pct, share = part.split(":")
-                out.append((float(pct), float(share)))
-            except ValueError:
-                return []
-    return out if out and abs(sum(s for _, s in out) - 100) < 1e-6 else []
+    try:
+        for part in spec.split(","):
+            pct, share = map(float, part.split(":"))
+            if not (math.isfinite(pct) and math.isfinite(share) and pct >= 0 and share > 0):
+                raise ValueError("Invalid tranche values")
+            out.append((pct, share))
+        if abs(sum(share for _, share in out) - 100) >= 1e-6:
+            raise ValueError("Tranche shares must total 100")
+    except ValueError as exc:
+        raise ValueError(f"Invalid STRAT_TP_TRANCHES: {spec!r}") from exc
+    return out
 
 
 def _new_state() -> dict:
