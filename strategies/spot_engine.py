@@ -761,7 +761,8 @@ class Strategy:
     def _has_pending_market_exit(self) -> bool:
         return any(o["side"] == "sell" and o.get("market") for o in self.s["orders"])
 
-    def _request_market_exit(self, price: float, kind: str, *, soft_floor: bool = False) -> bool:
+    def _request_market_exit(self, price: float, kind: str, *, soft_floor: bool = False,
+                             min_profit_pct: float | None = None) -> bool:
         """Persist exit ownership before cancellation, then sell reconciled holdings.
 
         A cancel acknowledgement is not terminal venue truth. Do not submit a
@@ -771,6 +772,9 @@ class Strategy:
         pending = self.s.get("pending_exit")
         if pending is None or (kind == "STOP" and pending["kind"] != "STOP"):
             self.s["pending_exit"] = {"kind": kind, "soft_floor": soft_floor}
+            if min_profit_pct is not None and kind != "STOP":
+                # Freeze the signal's floor across retries, config changes, and restart.
+                self.s["pending_exit"]["min_profit_pct"] = min_profit_pct
         return self._continue_market_exit(price)
 
     def _continue_market_exit(self, price: float) -> bool:
@@ -791,6 +795,19 @@ class Strategy:
         kind = pending["kind"]
         factor = 0.995 if kind == "STOP" else 0.999
         reference = round(price * factor, self.price_dec)
+        if "min_profit_pct" in pending and kind != "STOP":
+            # Recompute against reconciled cost basis, including late BUY fills.
+            try:
+                min_profit_pct = float(pending["min_profit_pct"])
+                avg = float(self._avg() or 0.0)
+                floor = sr.tp_price(avg, min_profit_pct)
+            except (TypeError, ValueError, OverflowError):
+                log("  [STRAT] profit exit pending: invalid stored floor or cost basis")
+                return False
+            if (not all(math.isfinite(v) for v in (min_profit_pct, avg, floor, reference))
+                    or min_profit_pct < 0 or avg <= 0 or reference < floor):
+                log("  [STRAT] profit exit pending: current reference does not satisfy the stored floor")
+                return False
         if pending.get("soft_floor") and kind != "STOP":
             floor = self._trail_profit_floor_price(self._avg() or 0.0)
             if floor is not None and reference < floor:
@@ -1409,7 +1426,10 @@ class Strategy:
                 )
                 if triggered:
                     exit_px = round(price * 0.999, self.price_dec)
-                    if self._request_market_exit(price, "TP"):
+                    if self._request_market_exit(
+                        price, "TP", min_profit_pct=sr.parabolic_surge_profit_floor_pct(
+                            eff_surge_gain, self.p.surge_exit_pullback_pct),
+                    ):
                         log(f"  [STRAT] SURGE EXHAUSTION EXIT ({reason}) peak {surge_peak:.{self.price_dec}f} -> reference {exit_px}")
                         return True
 
@@ -1742,7 +1762,10 @@ class Strategy:
                 )
                 if triggered:
                     exit_px = round(price * 0.999, self.price_dec)
-                    if self._request_market_exit(price, "TP"):
+                    if self._request_market_exit(
+                        price, "TP", min_profit_pct=sr.parabolic_surge_profit_floor_pct(
+                            eff_surge_gain, self.p.surge_exit_pullback_pct),
+                    ):
                         log(f"  [STRAT] SURGE EXHAUSTION EXIT ({reason}) peak {surge_peak:.{self.price_dec}f} -> reference {exit_px}")
                         return
 

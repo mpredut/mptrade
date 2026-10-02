@@ -263,6 +263,15 @@ def check_fast_profit_reversal(
     return triggered, current_gain_pct, micro_drop_pct
 
 
+def parabolic_surge_profit_floor_pct(
+    surge_gain_pct: float,
+    exit_pullback_pct: float,
+    min_profit_pct: float = 1.0,
+) -> float:
+    """Return the gross profit floor shared by surge signals and pending exits."""
+    return max(min_profit_pct, surge_gain_pct - exit_pullback_pct * 1.5)
+
+
 def check_parabolic_surge_exhaustion(
     current_price: float,
     avg_cost: float,
@@ -292,7 +301,8 @@ def check_parabolic_surge_exhaustion(
 
     # Invariant: A parabolic surge exhaustion exit is a TAKE-PROFIT guard.
     # It must never execute below the minimum surge profit floor!
-    min_floor = max(min_profit_pct, surge_gain_pct - exit_pullback_pct * 1.5)
+    min_floor = parabolic_surge_profit_floor_pct(
+        surge_gain_pct, exit_pullback_pct, min_profit_pct)
     if current_gain_pct < min_floor:
         return False, ""
 

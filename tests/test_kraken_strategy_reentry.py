@@ -827,7 +827,7 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
         st.s["surge_peak"] = 125.0
 
         exited = []
-        st._request_market_exit = lambda px, kind: exited.append((px, kind)) or True
+        st._request_market_exit = lambda px, kind, **kwargs: exited.append((px, kind)) or True
 
         from market_regime import MarketRegimeDecision
         dummy_regime = MarketRegimeDecision("bull", 0.05, 0.01, 5.0, True, "bullish")
@@ -961,7 +961,7 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
         st.s["surge_peak"] = 125.0
 
         exited = []
-        st._request_market_exit = lambda px, kind, soft_floor=False: exited.append((px, kind)) or True
+        st._request_market_exit = lambda px, kind, **kwargs: exited.append((px, kind)) or True
 
         # Price at 122.0 (+22% >= 20%), pullback from peak 125 is 2.4% >= 2.0%
         st.step(122.0, timestamp=10000.0)
@@ -1064,7 +1064,7 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
         st.s["entry_price"] = 100.0
 
         exited = []
-        st._request_market_exit = lambda px, kind, soft_floor=False: exited.append((px, kind)) or True
+        st._request_market_exit = lambda px, kind, **kwargs: exited.append((px, kind)) or True
 
         # Price hits 120.0 (+20% gain >= 18% threshold) -> arms surge guard
         st.step(120.0, timestamp=1000.0)
