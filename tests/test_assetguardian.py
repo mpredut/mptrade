@@ -73,6 +73,9 @@ class AssetGuardianTest(unittest.TestCase):
 
 
     def setUp(self):
+        state_patch = mock.patch.object(ag, "STATE", MemoryState())
+        state_patch.start()
+        self.addCleanup(state_patch.stop)
         self.sell_provider = mock.Mock()
         self.sell_provider.open_orders.return_value = []
         self._real_trend_defer_ready = ag._trend_defer_ready

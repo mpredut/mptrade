@@ -7,6 +7,19 @@ from state_io import StateReadError
 from trailing_core import TrailingCore
 
 
+@pytest.mark.parametrize("load_first", [False, True])
+@pytest.mark.parametrize("relative", [False, True])
+def test_assetguardian_initializes_its_state_directory(tmp_path, monkeypatch, load_first, relative):
+    monkeypatch.chdir(tmp_path)
+    path = "assetguardian.json" if relative else str(tmp_path / "new" / "nested" / "state.json")
+    state = AssetGuardianState(path)
+    if load_first:
+        assert state.load() == {}
+    value = {"version": 2, "symbols": {"TEST": {"pending": True}}}
+    state.save(value)
+    assert state.load() == value
+
+
 def test_assetguardian_rejects_corrupt_live_state(tmp_path):
     path = tmp_path / "assetguardian.json"
     path.write_text("{broken", encoding="utf-8")
@@ -39,4 +52,3 @@ def test_hyperliquid_live_engines_declare_fail_closed_reads():
     for relative in ("hyperliquid/strategy.py", "hyperliquid/archive/delta_neutral/delta_neutral.py"):
         text = open(os.path.join(root, relative), encoding="utf-8").read()
         assert "fail_closed=not self.dry_run" in text
-

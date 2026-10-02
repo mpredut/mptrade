@@ -125,6 +125,7 @@ class AssetGuardianState:
         self.fail_closed = fail_closed
 
     def load(self):
+        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         with FileLock(self.lock_path):
             return load_json_state(
                 self.path, default_factory=dict, fail_closed=self.fail_closed,
@@ -132,9 +133,8 @@ class AssetGuardianState:
             )
 
     def save(self, value):
+        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         with FileLock(self.lock_path):
-            directory = os.path.dirname(self.path)
-            os.makedirs(directory, exist_ok=True)
             atomic_write_json(
                 self.path, value, sort_keys=True, separators=(",", ":"),
             )
