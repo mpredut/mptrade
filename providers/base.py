@@ -154,9 +154,14 @@ class MarketDataProvider(ABC):
         """Cancel adverse opposing orders when the venue implements this policy."""
         return None
 
-    def profit_guard_window_ref(self, symbol: str, side: str, safeback_sec):
+    def profit_guard_window_ref(self, symbol: str, side: str, safeback_sec, regime_context=None):
         import order_guard
-        window_s = order_guard.window_for(self.name, symbol=symbol, order_type=side)
+        window_s = order_guard.window_for(
+            self.name,
+            symbol=symbol,
+            order_type=side,
+            regime_context=regime_context,
+        )
         if window_s is None or window_s <= 0:
             window_s = float(safeback_sec) if safeback_sec else 0.0
         return order_guard.window_reference(self, symbol, side, window_s)

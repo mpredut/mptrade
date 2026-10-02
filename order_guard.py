@@ -17,9 +17,9 @@ The profit threshold is configured per venue in versioned, non-sensitive
 import os
 import time
 import math
-from typing import Optional
+from typing import Optional, Callable, Any
 import utils as u
-from market_regime import MarketRegimeService, MarketRegimeDecision
+from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegimeContext
 
 _DEFAULT_REGIME_SERVICE = MarketRegimeService()
 _MARGINS = None   # cache: {provider_lower: percentage, "default": 1.15}
@@ -106,6 +106,27 @@ def buy_reference_enabled(provider_name) -> bool:
     return buy_reference_mode(provider_name) != "off"
 
 
+def default_snapshot_resolver(symbol: str, now: Optional[float] = None) -> Optional[dict]:
+    """Default resolver that queries cacheManager for a fresh snapshot."""
+    try:
+        import cacheManager as cm
+        mgr = cm.get_short_trend_manager()
+        return mgr.fresh_snapshot(symbol, now=now)
+    except Exception:
+        return None
+
+
+def default_provider_resolver(provider):
+    """Default resolver that queries MarketApi for a named provider instance."""
+    if isinstance(provider, str) and provider:
+        try:
+            from providers.market_api import api as market_api
+            return market_api.provider_by_name(provider) or provider
+        except Exception:
+            return None
+    return provider
+
+
 def symbol_regime(
     symbol: str,
     provider=None,
@@ -113,10 +134,13 @@ def symbol_regime(
     regime_service: Optional[MarketRegimeService] = None,
     now: Optional[float] = None,
     allow_fallback: bool = True,
+    snapshot_resolver: Optional[Callable[[str, Optional[float]], Optional[dict]]] = None,
+    provider_resolver: Optional[Callable[[Any], Any]] = None,
 ) -> MarketRegimeDecision:
     """Resolve the authoritative market regime decision for symbol via MarketRegimeService.
 
     Verifies freshness, observation timestamps, candle continuity, and provider fallback.
+    Resolvers can be injected to avoid hidden imports and global state dependencies.
     """
     svc = regime_service or _DEFAULT_REGIME_SERVICE
     if not symbol:
@@ -128,21 +152,17 @@ def symbol_regime(
         except Exception:
             pass
 
-    snap = None
+    snap_resolver = snapshot_resolver or default_snapshot_resolver
     try:
-        import cacheManager as cm
-        mgr = cm.get_short_trend_manager()
-        snap = mgr.fresh_snapshot(symbol, now=now)
+        snap = snap_resolver(symbol, now=now)
     except Exception:
         snap = None
 
-    target_provider = provider
-    if isinstance(provider, str) and provider:
-        try:
-            from providers.market_api import api as market_api
-            target_provider = market_api.provider_by_name(provider) or provider
-        except Exception:
-            target_provider = None
+    prov_resolver = provider_resolver or default_provider_resolver
+    try:
+        target_provider = prov_resolver(provider)
+    except Exception:
+        target_provider = None
 
     try:
         resolution = svc.resolve_with_evidence(
@@ -159,13 +179,55 @@ def symbol_regime(
         return svc.evaluator.unknown("regime_resolution_failed")
 
 
-def _symbol_trend(symbol: str, provider=None, regime_service=None, now=None) -> str:
+def symbol_regime_context(
+    symbol: str,
+    provider=None,
+    *,
+    regime_service: Optional[MarketRegimeService] = None,
+    now: Optional[float] = None,
+    allow_fallback: bool = True,
+    snapshot_resolver: Optional[Callable[[str, Optional[float]], Optional[dict]]] = None,
+    provider_resolver: Optional[Callable[[Any], Any]] = None,
+) -> MarketRegimeContext:
+    """Resolve and bundle MarketRegimeContext once for multi-guard placement pipelines."""
+    now_ts = time.time() if now is None else float(now)
+    decision = symbol_regime(
+        symbol,
+        provider=provider,
+        regime_service=regime_service,
+        now=now_ts,
+        allow_fallback=allow_fallback,
+        snapshot_resolver=snapshot_resolver,
+        provider_resolver=provider_resolver,
+    )
+    return MarketRegimeContext.from_decision(decision, evaluated_at=now_ts)
+
+
+def _symbol_trend(
+    symbol: str,
+    provider=None,
+    regime_service=None,
+    now=None,
+    *,
+    regime_context: Optional[MarketRegimeContext] = None,
+    snapshot_resolver=None,
+    provider_resolver=None,
+) -> str:
     """Detect current macro/instant trend for symbol ('bull', 'bear', 'flat', 'unknown').
 
     Consumes the unified MarketRegimeDecision from MarketRegimeService.
     """
+    if regime_context is not None:
+        return regime_context.resolved_trend
     try:
-        decision = symbol_regime(symbol, provider=provider, regime_service=regime_service, now=now)
+        decision = symbol_regime(
+            symbol,
+            provider=provider,
+            regime_service=regime_service,
+            now=now,
+            snapshot_resolver=snapshot_resolver,
+            provider_resolver=provider_resolver,
+        )
         regime = decision.regime
         if regime == "sideways":
             return "flat"
@@ -187,6 +249,9 @@ def dynamic_buy_window_sec(
     now=None,
     *,
     resolved_trend=None,
+    regime_context=None,
+    snapshot_resolver=None,
+    provider_resolver=None,
 ) -> float:
     """Calculate the dynamic lookback window (in seconds) for BUY reference:
     - BULL trend: 4h - 12h (default 8h)
@@ -208,6 +273,8 @@ def dynamic_buy_window_sec(
         bear_h = 72.0
 
     trend = resolved_trend
+    if trend is None and regime_context is not None:
+        trend = getattr(regime_context, "resolved_trend", None)
     if trend not in {"bull", "bear", "flat", "sideways", "unknown"}:
         trend = (
             _symbol_trend(
@@ -215,6 +282,9 @@ def dynamic_buy_window_sec(
                 provider=provider,
                 regime_service=regime_service,
                 now=now,
+                regime_context=regime_context,
+                snapshot_resolver=snapshot_resolver,
+                provider_resolver=provider_resolver,
             )
             if symbol
             else "unknown"
@@ -228,7 +298,13 @@ def dynamic_buy_window_sec(
     return hours * 3600.0
 
 
-def window_for(provider_name, symbol=None, order_type=None) -> float:
+def window_for(
+    provider_name,
+    symbol=None,
+    order_type=None,
+    *,
+    regime_context=None,
+) -> float:
     """Return the reference window in seconds for the given venue and order side.
 
     For BUY orders when dynamic windowing is active (via venue buy_reference='dynamic'
@@ -246,7 +322,11 @@ def window_for(provider_name, symbol=None, order_type=None) -> float:
             return 0.0
         win_mode = str(m.get("buy_window_mode", "dynamic")).strip().lower()
         if mode == "dynamic" or win_mode in ("dynamic", "adaptive"):
-            return dynamic_buy_window_sec(symbol, provider=name)
+            return dynamic_buy_window_sec(
+                symbol,
+                provider=name,
+                regime_context=regime_context,
+            )
 
     key = (name.lower() if name else "") + "_window_h"
     hours = m.get(key, m.get("default_window_h", 0.0))
@@ -383,7 +463,16 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
     return True, None
 
 
-def profit_guard(provider, symbol, order_type, price, profit_percentage, window_ref=None):
+def profit_guard(
+    provider,
+    symbol,
+    order_type,
+    price,
+    profit_percentage,
+    window_ref=None,
+    *,
+    regime_context=None,
+):
     """Return whether the order is profitable relative to its reference.
     Reference cascade: caller-provided window_ref first, otherwise
     provider.last_opposite_fill(symbol, order_type). A missing or non-positive reference
@@ -397,11 +486,16 @@ def profit_guard(provider, symbol, order_type, price, profit_percentage, window_
                   f"(order_guard.conf); price {price} is not compared with past sells")
             return True
         elif mode == "dynamic":
-            trend = _symbol_trend(symbol, provider=provider)
+            trend = (
+                getattr(regime_context, "resolved_trend", None)
+                if regime_context is not None
+                else _symbol_trend(symbol, provider=provider)
+            )
             dyn_window_s = dynamic_buy_window_sec(
                 symbol,
                 provider=provider,
                 resolved_trend=trend,
+                regime_context=regime_context,
             )
             dyn_hours = dyn_window_s / 3600.0
             if window_ref is not None and window_ref > 0:
@@ -431,7 +525,7 @@ def profit_guard(provider, symbol, order_type, price, profit_percentage, window_
                 print(f"[GUARD] BUY {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
                       f"has no recent sell reference; price {price} permitted")
                 return True
-    has_window = window_for(provider_name, symbol, order_type) > 0
+    has_window = window_for(provider_name, symbol, order_type, regime_context=regime_context) > 0
     ref = window_ref if window_ref is not None else (
         None if has_window else (
             provider.last_opposite_fill(symbol, order_type) if hasattr(provider, "last_opposite_fill") else None

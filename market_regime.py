@@ -66,6 +66,52 @@ class MarketRegimeDecision:
 
 
 @dataclass(frozen=True)
+class MarketRegimeContext:
+    """Pre-computed regime context for single-tick placement pipelines."""
+
+    decision: MarketRegimeDecision
+    resolved_trend: str
+    evaluated_at: float = 0.0
+
+    @property
+    def regime(self) -> str:
+        return self.decision.regime
+
+    @property
+    def strength(self) -> Optional[float]:
+        return self.decision.strength
+
+    @property
+    def fresh(self) -> bool:
+        return self.decision.fresh
+
+    @property
+    def reason(self) -> str:
+        return self.decision.reason
+
+    @property
+    def source(self) -> str:
+        return self.decision.source
+
+    @property
+    def fallback_used(self) -> bool:
+        return self.decision.fallback_used
+
+    @classmethod
+    def from_decision(
+        cls,
+        decision: MarketRegimeDecision,
+        evaluated_at: Optional[float] = None,
+    ) -> "MarketRegimeContext":
+        trend = "flat" if decision.regime == "sideways" else decision.regime
+        return cls(
+            decision=decision,
+            resolved_trend=trend,
+            evaluated_at=time.time() if evaluated_at is None else float(evaluated_at),
+        )
+
+
+@dataclass(frozen=True)
 class CompositeMarketRegimeDecision:
     """Asset regime enriched by broader crypto context."""
 

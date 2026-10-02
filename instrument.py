@@ -84,6 +84,17 @@ class Instrument:
                 "Is it registered in market_api?")
         self._provider.validate_symbol(self.symbol)
 
+    def _call_profit_guard_window_ref(
+        self, symbol: str, side: str, safeback_sec, regime_context=None
+    ):
+        method = getattr(self._provider, "profit_guard_window_ref", None)
+        if not callable(method):
+            return None
+        try:
+            return method(symbol, side, safeback_sec, regime_context=regime_context)
+        except TypeError:
+            return method(symbol, side, safeback_sec)
+
     # -- Provider identity and access. -----------------------------------------
     @property
     def provider(self):
@@ -249,6 +260,7 @@ class Instrument:
             bypass and side_u == "SELL" and is_market)
         profit_margin = None
         profit_window_ref = None
+        regime_context = None
         retry_requested_price = None
         retry_price_tolerance = None
         try:
@@ -310,11 +322,17 @@ class Instrument:
                     # and Hyperliquid use their configured venue window; Binance uses
                     # safeback_sec from the order cache. An empty window falls back to
                     # the last opposite fill.
-                    profit_window_ref = self._provider.profit_guard_window_ref(
-                        self.symbol, side_u, safeback_override)
+                    if regime_context is None and side_u == "BUY":
+                        try:
+                            regime_context = order_guard.symbol_regime_context(
+                                self.symbol, provider=self._provider)
+                        except Exception:
+                            regime_context = None
+                    profit_window_ref = self._call_profit_guard_window_ref(
+                        self.symbol, side_u, safeback_override, regime_context=regime_context)
                     ok = order_guard.profit_guard(
                         self._provider, self.symbol, side_u, price, profit_margin,
-                        window_ref=profit_window_ref)
+                        window_ref=profit_window_ref, regime_context=regime_context)
                     if not ok:
                         reason = "profit_guard"
                         return None
@@ -372,7 +390,7 @@ class Instrument:
                 guard_price = quantity_price
                 ok = order_guard.profit_guard(
                     self._provider, self.symbol, side_u, guard_price, profit_margin,
-                    window_ref=profit_window_ref)
+                    window_ref=profit_window_ref, regime_context=regime_context)
                 if not ok:
                     reason = "profit_guard"
                     return None
@@ -562,7 +580,8 @@ class Instrument:
                 and _is_terminal_filter_refusal(reason))
             _outcomes_log.log_order_outcome(
                 self.symbol, side_u, price, qty, submission_state,
-                None if order else reason, kwargs.get("motivation"), caller=caller)
+                None if order else reason, kwargs.get("motivation"), caller=caller,
+                regime_context=regime_context)
             # Acceptance is not a fill. Preserve the venue ID in the exact outbox
             # record so the single worker follows open/partial/terminal state. If
             # this persistence step fails, the pre-submit record and deterministic

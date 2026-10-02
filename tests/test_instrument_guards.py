@@ -15,7 +15,7 @@ import glob
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, ANY
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
@@ -25,6 +25,7 @@ from providers.strategy_executor import (
     OrderReconciliationCapabilities, SubmissionRefused,
 )
 from instrument import Instrument
+import order_guard
 import order_outcomes_log as outcomes_log
 from lock import trade_cooldown as tc
 
@@ -781,6 +782,31 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         # The second immediate placement is NOT blocked by the cooldown (guards_internally skips it)
         order2 = inst.place("SELL", 101.0, 1.0)
         self.assertIsNotNone(order2)
+
+    def test_instrument_place_reuses_single_regime_context_and_logs_telemetry(self):
+        p = _FakeProvider(price=100.0)
+        p.seed_trade("BUY", age_sec=400.0, price=100.0)
+        inst = self._inst(p)
+
+        mock_decision = order_guard.MarketRegimeDecision(
+            regime="bull", gradient=0.75, epsilon=0.15, strength=5.0,
+            fresh=True, reason="directional_signal", source="mock_src",
+        )
+        ctx = order_guard.MarketRegimeContext.from_decision(mock_decision, evaluated_at=time.time())
+
+        with patch("order_guard.symbol_regime_context", return_value=ctx) as mock_ctx, \
+                patch.object(p, "profit_guard_window_ref", return_value=None) as mock_window_ref, \
+                patch("order_guard.profit_guard", return_value=True) as mock_profit_guard:
+            order = inst.place("BUY", 100.0, 1.0, smart=False)
+
+        self.assertIsNotNone(order)
+        mock_ctx.assert_called_once_with(inst.symbol, provider=p)
+        mock_window_ref.assert_called_once_with(inst.symbol, "BUY", None, regime_context=ctx)
+        mock_profit_guard.assert_called_once_with(
+            p, inst.symbol, "BUY", 100.0, ANY, window_ref=None, regime_context=ctx
+        )
+        lines = self._log_lines()
+        self.assertTrue(any("|bull|5.0000|mock_src|True|False|directional_signal" in l for l in lines), lines)
 
 
 if __name__ == "__main__":

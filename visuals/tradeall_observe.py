@@ -119,7 +119,7 @@ def _read_pipe_log(path, ncols):
             break                               # incomplete line (write in progress) — retry next cycle
         consumed += len(raw)
         parts = raw.decode("utf-8", errors="replace").rstrip("\n").split("|")
-        if len(parts) != ncols:
+        if len(parts) < ncols:
             continue
         rows.append(parts)
     _PIPE_LOG_CACHE[path] = (
@@ -348,7 +348,7 @@ def load_order_events(symbol, days_back):
     events = []
     for d in reversed(_log_dates(days_back)):
         for row in _read_pipe_log(_daily_log_path(OUTCOMES_PREFIX, d), 9):
-            ts, sym_, side, price, qty, outcome, refuse_reason, caller, motivation = row
+            ts, sym_, side, price, qty, outcome, refuse_reason, caller, motivation = row[:9]
             if sym_ != symbol or not _is_tradeall_order(caller, motivation):
                 continue
             try:
@@ -435,7 +435,7 @@ def load_backtest_order_events(directory, symbol):
     """Load one backtest run; its sole caller needs no caller filtering."""
     events = []
     for row in _read_pipe_log(os.path.join(directory, "order_outcomes.log"), 9):
-        ts, sym_, side, price, qty, outcome, refuse_reason, caller, motivation = row
+        ts, sym_, side, price, qty, outcome, refuse_reason, caller, motivation = row[:9]
         if sym_ != symbol:
             continue
         try:

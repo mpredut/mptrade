@@ -332,6 +332,80 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         self.assertTrue(allowed)
         trend.assert_called_once_with("TAOUSDC", provider=mock.ANY)
 
+    def test_injected_resolvers_isolate_order_guard_from_globals(self):
+        called = {"snapshot": 0, "provider": 0}
+
+        def mock_snapshot(symbol, now=None):
+            called["snapshot"] += 1
+            return {
+                "gradient_recent": 0.45,
+                "epsilon": 0.05,
+                "ts": self.now - 5.0,
+            }
+
+        def mock_provider(provider):
+            called["provider"] += 1
+            return mock.MagicMock(name="mock_provider")
+
+        decision = order_guard.symbol_regime(
+            "BTCUSDT",
+            provider="mock_venue",
+            now=self.now,
+            snapshot_resolver=mock_snapshot,
+            provider_resolver=mock_provider,
+        )
+        self.assertEqual(decision.regime, "bull")
+        self.assertEqual(called["snapshot"], 1)
+        self.assertEqual(called["provider"], 1)
+
+    def test_symbol_regime_context_bundles_decision_and_properties(self):
+        mock_mgr = mock.MagicMock()
+        mock_mgr.fresh_snapshot.return_value = {
+            "gradient_recent": -0.6,
+            "epsilon": 0.1,
+            "ts": self.now - 10.0,
+        }
+        with mock.patch("cacheManager.get_short_trend_manager", return_value=mock_mgr):
+            ctx = order_guard.symbol_regime_context("BTCUSDT", now=self.now)
+
+        self.assertEqual(ctx.regime, "bear")
+        self.assertEqual(ctx.resolved_trend, "bear")
+        self.assertTrue(ctx.fresh)
+        self.assertAlmostEqual(ctx.strength, 6.0)
+
+    def test_profit_guard_uses_passed_regime_context_without_trend_lookup(self):
+        class _Provider:
+            name = "binance"
+
+            def get_orders(self, _symbol, _side, _window_s):
+                return []
+
+        margins = {
+            "default": 1.15,
+            "default_buy_reference": "dynamic",
+            "buy_window_mode": "dynamic",
+        }
+        mock_decision = order_guard.MarketRegimeDecision(
+            regime="bull", gradient=0.5, epsilon=0.1, strength=5.0,
+            fresh=True, reason="directional_signal",
+        )
+        ctx = order_guard.MarketRegimeContext.from_decision(mock_decision, evaluated_at=self.now)
+
+        with mock.patch.object(order_guard, "_MARGINS", margins), \
+                mock.patch.object(order_guard, "_symbol_trend") as mock_trend:
+            allowed = order_guard.profit_guard(
+                _Provider(),
+                "TAOUSDC",
+                "BUY",
+                293.0,
+                1.15,
+                window_ref=216.28,
+                regime_context=ctx,
+            )
+
+        self.assertTrue(allowed)
+        mock_trend.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

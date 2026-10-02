@@ -23,8 +23,19 @@ def _sanitize_outcome_field(value):
     return str(value).replace("|", "/").replace("\n", " ") if value is not None else ""
 
 
-def log_order_outcome(symbol, side, price, qty, outcome, refuse_reason, motivation, caller=None):
-    """Append one submission-attempt record.
+def log_order_outcome(
+    symbol,
+    side,
+    price,
+    qty,
+    outcome,
+    refuse_reason,
+    motivation,
+    caller=None,
+    *,
+    regime_context=None,
+):
+    """Append one submission-attempt record with optional market regime telemetry.
 
     ``caller`` is computed by each call site because stack depth differs between
     the legacy Binance adapter and ``Instrument.place``.
@@ -35,6 +46,17 @@ def log_order_outcome(symbol, side, price, qty, outcome, refuse_reason, motivati
                              f"order_outcomes_{datetime.now().strftime('%Y-%m-%d')}.log")
         cols = [time.time(), symbol, side, price, qty, outcome,
                 refuse_reason or "", caller or "", motivation or ""]
+        if regime_context is not None:
+            strength_val = getattr(regime_context, "strength", None)
+            strength_str = f"{float(strength_val):.4f}" if strength_val is not None else ""
+            cols.extend([
+                getattr(regime_context, "regime", "") or "",
+                strength_str,
+                getattr(regime_context, "source", "") or "",
+                str(getattr(regime_context, "fresh", "")),
+                str(getattr(regime_context, "fallback_used", "")),
+                getattr(regime_context, "reason", "") or "",
+            ])
         line = "|".join(_sanitize_outcome_field(c) for c in cols)
         with open(path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
