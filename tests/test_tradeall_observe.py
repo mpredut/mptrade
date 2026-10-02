@@ -206,3 +206,76 @@ def test_render_failure_does_not_leak_matplotlib_figures(tmp_path, monkeypatch):
         )
 
     assert set(plt.get_fignums()) == before
+
+
+def test_load_order_events_recognizes_tradeall_via_market_api_and_filters_other_callers(tmp_path, monkeypatch):
+    import datetime
+    today = datetime.datetime.now().date()
+    log_file = tmp_path / f"order_outcomes_{today.isoformat()}.log"
+    monkeypatch.setattr(observe, "LOGGER_DIR", str(tmp_path))
+
+    rows = [
+        # ts|symbol|side|price|qty|outcome|refuse_reason|caller|motivation
+        "100.0|BTCUSDC|BUY|85000.0|0.1|accepted||tradeall.py|trend_confirmed_up",
+        "200.0|BTCUSDC|BUY|85100.0|0.1|refused|deferred|market_api.py|kalman_primary_up",
+        "300.0|BTCUSDC|SELL|85500.0|0.1|accepted||market_api.py|consistent_or_old_down",
+        "400.0|BTCUSDC|BUY|85200.0|0.1|refused|error|market_api.py|rtrade_pair_quote",
+        "500.0|BTCUSDC|SELL|85300.0|0.1|accepted||monitortrades.py|monitortrades_exit",
+        "600.0|TAOUSDC|BUY|300.0|1.0|accepted||tradeall.py|trend_confirmed_up",
+    ]
+    log_file.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    btc_events = observe.load_order_events("BTCUSDC", 1)
+    assert len(btc_events) == 3
+    assert [e["ts"] for e in btc_events] == [100.0, 200.0, 300.0]
+    assert [e["reason"] for e in btc_events] == ["trend_confirmed_up", "kalman_primary_up", "consistent_or_old_down"]
+
+    tao_events = observe.load_order_events("TAOUSDC", 1)
+    assert len(tao_events) == 1
+    assert tao_events[0]["ts"] == 600.0
+
+
+def test_format_state_text_with_fast_trend_pending_and_exposure():
+    entry = {
+        "current_price": 312.6,
+        "final_trend": -1,
+        "gradient_recent": -0.005,
+        "slope_small": 0.0,
+        "slope_big": 0.0,
+        "epsilon": 0.038,
+        "trend_fast": 1,
+        "gradient_recent_fast": 0.0025,
+        "kalman_trend": 0,
+        "kalman_vel": 0.015,
+        "kalman_vel_std": 0.12,
+    }
+    text = observe.format_state_text(
+        entry, "HEADER NOW",
+        pending="BUY $1482.45",
+        exposure="2.126 ($650.00)",
+    )
+    assert "HEADER NOW" in text
+    assert "trend:     DOWN" in text
+    assert "fast:      UP (grad: +0.0025)" in text
+    assert "slope short:+0.000" in text
+    assert "slope long: +0.000" in text
+    assert "pending:   BUY $1482.45" in text
+    assert "position:  2.126 ($650.00)" in text
+
+
+def test_write_html_generates_summary_bar(tmp_path, monkeypatch):
+    monkeypatch.setattr(observe, "LIVE_OUT_DIR", str(tmp_path))
+    active_summary = {
+        "pending_notional": {"total_buy": 1500.0, "total_sell": 2500.0},
+        "net_exposures": {"total_cost": 3000.0},
+    }
+    observe.write_html(["BTCUSDC"], live_minutes=60, active_summary=active_summary)
+    html_file = tmp_path / "tradeall_live.html"
+    assert html_file.exists()
+    content = html_file.read_text(encoding="utf-8")
+    assert "Fleet Pending BUY:</strong> $1500.00" in content
+    assert "Fleet Pending SELL:</strong> $2500.00" in content
+    assert "Open Cost Basis:</strong> $3000.00" in content
+    assert "Day" in content
+    assert "Week" in content
+

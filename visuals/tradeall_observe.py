@@ -333,13 +333,23 @@ def load_trend_starts(symbol, days_back):
     return events
 
 
+def _is_tradeall_order(caller: str, motivation: str) -> bool:
+    if caller == "tradeall.py":
+        return True
+    if caller == "market_api.py" and motivation:
+        return any(motivation.startswith(prefix) for prefix in (
+            "trend_", "kalman_", "consistent_", "force_", "test_", "surge_"
+        ))
+    return False
+
+
 def load_order_events(symbol, days_back):
     """Load only tradeall.py events from the fleet-wide outcome log."""
     events = []
     for d in reversed(_log_dates(days_back)):
         for row in _read_pipe_log(_daily_log_path(OUTCOMES_PREFIX, d), 9):
             ts, sym_, side, price, qty, outcome, refuse_reason, caller, motivation = row
-            if sym_ != symbol or caller != "tradeall.py":
+            if sym_ != symbol or not _is_tradeall_order(caller, motivation):
                 continue
             try:
                 events.append({
@@ -624,9 +634,9 @@ def render_chart(symbol, window_label, window_start, window_end,
     _plot_order_markers(ax, refused, filled=False, max_annotated=MAX_ANNOTATED)
 
     summary = (
-        f"BUY  acceptat: {sum(1 for e in accepted if e['side'] == 'BUY')}   "
+        f"BUY  accepted: {sum(1 for e in accepted if e['side'] == 'BUY')}   "
         f"refused: {sum(1 for e in refused if e['side'] == 'BUY')}\n"
-        f"SELL acceptat: {sum(1 for e in accepted if e['side'] == 'SELL')}   "
+        f"SELL accepted: {sum(1 for e in accepted if e['side'] == 'SELL')}   "
         f"refused: {sum(1 for e in refused if e['side'] == 'SELL')}"
     )
     ax.text(0.01, 0.98, summary, transform=ax.transAxes, va="top", fontsize=9,
@@ -640,7 +650,7 @@ def render_chart(symbol, window_label, window_start, window_end,
                 bbox=dict(boxstyle="round", fc="#fffbe6", ec="#d4a017", alpha=0.95))
 
     ax.set_xlim(datetime.fromtimestamp(window_start), datetime.fromtimestamp(window_end))
-    ax.set_title(f"{symbol} — {window_label}  (actualizat {datetime.now().strftime('%H:%M:%S')})")
+    ax.set_title(f"{symbol} — {window_label}  (updated {datetime.now().strftime('%H:%M:%S')})")
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
     # autofmt_xdate plus tight_layout measured text on every render; profiling
     # attributed ~96 ms of ~360 ms per call to tight_layout. The structure is
@@ -655,17 +665,29 @@ def render_chart(symbol, window_label, window_start, window_end,
         plt.close(fig)
 
 
-def format_state_text(entry, header):
+def _get_active_summary():
+    """Safely fetch current active intent summary without raising."""
+    try:
+        from active_intents import build_active_intent_index
+        return build_active_intent_index(ROOT).get("summary")
+    except Exception:
+        return None
+
+
+def format_state_text(entry, header, pending=None, exposure=None):
     trend_map = {1: "UP", -1: "DOWN", 0: "FLAT"}
     text = (
         f"{header}\n"
         f"price:     {entry.get('current_price', '?')}\n"
         f"trend:     {trend_map.get(entry.get('final_trend'), '?')}\n"
         f"grad rec:  {entry.get('gradient_recent', 0):+.4f}\n"
-        f"slope mic: {entry.get('slope_small', 0):+.3f}\n"
-        f"slope mare:{entry.get('slope_big', 0):+.3f}\n"
+        f"slope short:{entry.get('slope_small', 0):+.3f}\n"
+        f"slope long: {entry.get('slope_big', 0):+.3f}\n"
         f"epsilon:   {entry.get('epsilon', 0):.4f}"
     )
+    fast_trend = entry.get("trend_fast")
+    if fast_trend is not None:
+        text += f"\nfast:      {trend_map.get(fast_trend, '?')} (grad: {entry.get('gradient_recent_fast', 0):+.4f})"
     # Add shadow rows only when their keys exist in the snapshot.
     if entry.get("kalman_trend") is not None:
         text += (f"\nkalman:    {trend_map.get(entry.get('kalman_trend'), '?')} "
@@ -674,11 +696,15 @@ def format_state_text(entry, header):
     if v1h is not None:
         text += (f"\nvol 1h:    {v1h:.2f}% → re:{entry.get('adapt_reentry_pct', '?')}% "
                  f"dca:{entry.get('adapt_dca_pct', '?')}%")
+    if pending:
+        text += f"\npending:   {pending}"
+    if exposure:
+        text += f"\nposition:  {exposure}"
     return text
 
 
-def build_analysis_state_text(symbol):
-    """Combine current live tradeall analysis with its shadow state.
+def build_analysis_state_text(symbol, active_summary=None):
+    """Combine current live tradeall analysis with its shadow state and active intents.
 
     tradeall writes shadow_state.json directly because cacheManager owns the
     trend cache file.
@@ -698,7 +724,28 @@ def build_analysis_state_text(symbol):
     except (OSError, json.JSONDecodeError):
         pass
     age = time.time() - entry.get("ts", 0)
-    return format_state_text(entry, f"ANALYSIS NOW ({age:.0f}s ago)")
+
+    pending_info = None
+    exposure_info = None
+    if active_summary:
+        pending_map = active_summary.get("pending_notional", {}).get("by_symbol", {}).get(symbol)
+        if pending_map:
+            parts = []
+            if pending_map.get("buy"):
+                parts.append(f"BUY ${pending_map['buy']:.2f}")
+            if pending_map.get("sell"):
+                parts.append(f"SELL ${pending_map['sell']:.2f}")
+            if parts:
+                pending_info = ", ".join(parts)
+        exp_map = active_summary.get("net_exposures", {}).get("by_symbol", {}).get(symbol)
+        if exp_map and abs(exp_map.get("qty", 0.0)) > 1e-9:
+            cost_str = f" (${exp_map['cost']:.2f})" if exp_map.get("cost") is not None else ""
+            exposure_info = f"{exp_map['qty']}{cost_str}"
+
+    return format_state_text(
+        entry, f"ANALYSIS NOW ({age:.0f}s ago)",
+        pending=pending_info, exposure=exposure_info,
+    )
 
 
 def build_backtest_state_text(directory, symbol):
@@ -712,17 +759,17 @@ def build_backtest_state_text(directory, symbol):
     if not entry:
         return None
     sim_time = datetime.fromtimestamp(entry.get("ts", 0)).strftime("%m-%d %H:%M:%S")
-    return format_state_text(entry, f"ANALIZA SIMULATA ({sim_time})")
+    return format_state_text(entry, f"SIMULATED ANALYSIS ({sim_time})")
 
 
 @_close_new_figures
 def render_state_image(state_text, out_path):
     """Render the state box separately for the HTML chart's hover display."""
-    fig = plt.figure(figsize=(4.6, 2.5))
+    fig = plt.figure(figsize=(4.8, 3.2))
     fig.patch.set_alpha(0.0)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.axis("off")
-    ax.text(0.04, 0.96, state_text, va="top", ha="left", fontsize=11, family="monospace",
+    ax.text(0.04, 0.96, state_text, va="top", ha="left", fontsize=9.5, family="monospace",
             bbox=dict(boxstyle="round,pad=0.6", fc="#fffbe6", ec="#d4a017", alpha=0.97))
     try:
         _save_figure_atomic(fig, out_path, dpi=110, transparent=True)
@@ -822,7 +869,7 @@ def render_backtest_chunks(symbol, directory, chunk_hours=24, out_dir=None):
         c_start = range_start + i * chunk_sec
         c_end = min(c_start + chunk_sec, range_end)
         label = f"{datetime.fromtimestamp(c_start).strftime('%Y-%m-%d %H:%M')} " \
-                f"→ {datetime.fromtimestamp(c_end).strftime('%Y-%m-%d %H:%M')}  (cadru {i+1}/{n_chunks})"
+                f"→ {datetime.fromtimestamp(c_end).strftime('%Y-%m-%d %H:%M')}  (frame {i+1}/{n_chunks})"
         fname = f"tradeall_live_{symbol}_frame{i+1:03d}_{datetime.fromtimestamp(c_start).strftime('%Y%m%d_%H%M')}.png"
         path = os.path.join(out_dir, fname)
         render_chart(symbol, label, c_start, c_end, price_ts, price_vals,
@@ -833,7 +880,7 @@ def render_backtest_chunks(symbol, directory, chunk_hours=24, out_dir=None):
 
 # -- Static, serverless HTML with day/week toggle and auto-refresh. ------------
 
-def write_html(symbols, live_minutes=60):
+def write_html(symbols, live_minutes=60, active_summary=None):
     blocks = []
     for s in symbols:
         blocks.append(f'''
@@ -841,20 +888,34 @@ def write_html(symbols, live_minutes=60):
     <h3>{s}</h3>
     <div class="chart-wrap">
       <img class="view-live" src="tradeall_live_{s}_live.png" alt="{s} live">
-      <img class="view-day" src="tradeall_live_{s}_ziua.png" alt="{s} zi" style="display:none">
-      <img class="view-week" src="tradeall_live_{s}_saptamana.png" alt="{s} saptamana" style="display:none">
-      <img class="state-overlay" src="tradeall_live_{s}_state.png" alt="{s} stare">
+      <img class="view-day" src="tradeall_live_{s}_ziua.png" alt="{s} day" style="display:none">
+      <img class="view-week" src="tradeall_live_{s}_saptamana.png" alt="{s} week" style="display:none">
+      <img class="state-overlay" src="tradeall_live_{s}_state.png" alt="{s} state">
     </div>
   </div>''')
 
+    summary_html = ""
+    if active_summary:
+        notional = active_summary.get("pending_notional", {})
+        exposures = active_summary.get("net_exposures", {})
+        summary_html = f'''
+<div class="summary-bar">
+  <span><strong>Fleet Pending BUY:</strong> ${notional.get("total_buy", 0.0):.2f}</span>
+  <span><strong>Fleet Pending SELL:</strong> ${notional.get("total_sell", 0.0):.2f}</span>
+  <span><strong>Open Cost Basis:</strong> ${exposures.get("total_cost", 0.0):.2f}</span>
+</div>'''
+
     html = f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>tradeall — live</title>
+<html><head><meta charset="utf-8"><title>tradeall — live monitor</title>
 <style>
 body {{ font-family: -apple-system, sans-serif; background:#111; color:#eee; margin: 16px; }}
 img {{ max-width: 100%; border: 1px solid #333; border-radius: 4px; }}
 button {{ margin: 4px 6px 14px 0; padding: 6px 16px; border-radius: 4px; border: 1px solid #444;
          background:#222; color:#eee; cursor:pointer; }}
 button.active {{ background:#1f6feb; border-color:#1f6feb; }}
+.summary-bar {{ background: #1c2128; border: 1px solid #30363d; border-radius: 6px; padding: 10px 16px;
+                margin-bottom: 18px; display: flex; flex-wrap: wrap; gap: 20px; font-family: monospace; font-size: 13px; }}
+.summary-bar span strong {{ color: #58a6ff; }}
 .chart {{ margin-bottom: 24px; }}
 .chart-wrap {{ position: relative; display: inline-block; max-width: 100%; }}
 .state-overlay {{ position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
@@ -863,10 +924,11 @@ button.active {{ background:#1f6feb; border-color:#1f6feb; }}
 .chart-wrap:hover .state-overlay {{ opacity: 1; }}
 </style></head>
 <body>
-<h2>tradeall — monitor live</h2>
+<h2>tradeall — live monitor</h2>
+{summary_html}
 <button id="btn-live" class="active" onclick="show('live')">Live ({live_minutes:.0f} min)</button>
-<button id="btn-day" onclick="show('day')">Zi</button>
-<button id="btn-week" onclick="show('week')">Saptamana</button>
+<button id="btn-day" onclick="show('day')">Day</button>
+<button id="btn-week" onclick="show('week')">Week</button>
 {"".join(blocks)}
 <script>
 function bust() {{
@@ -895,7 +957,7 @@ def write_backtest_html(directory, symbols):
     blocks = "".join(
         f'<div class="chart"><h3>{s}</h3><div class="chart-wrap">'
         f'<img src="tradeall_live_{s}.png" alt="{s}">'
-        f'<img class="state-overlay" src="tradeall_live_{s}_state.png" alt="{s} stare">'
+        f'<img class="state-overlay" src="tradeall_live_{s}_state.png" alt="{s} state">'
         f'</div></div>' for s in symbols)
     html = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>tradeall — backtest</title>
@@ -945,8 +1007,8 @@ def main():
                               "offline/backtests/tradeall.py run instead of running live")
     parser.add_argument("--frame-hours", type=float, default=None,
                          help="with --backtest-dir: instead of ONE dense chart covering the whole interval, "
-                              "genereaza o SERIE de cadre STATICE (imagini), cate unul per N ore. "
-                              "Generate once and exit (it does not loop).")
+                              "generate a SERIES of STATIC frames (images), one per N hours. "
+                              "Generate once and exit (does not loop).")
     parser.add_argument("--window-hours", type=float, default=None,
                          help="with --backtest-dir (without --frame-hours): a SLIDING window of N hours, "
                               "anchored to the current simulated clock — it runs in a loop (like live), "
@@ -960,7 +1022,7 @@ def main():
         directory = os.path.abspath(args.backtest_dir)
         for symbol in symbols:
             paths = render_backtest_chunks(symbol, directory, chunk_hours=args.frame_hours)
-            print(f"[tradeall_observe] {symbol}: {len(paths)} cadre generate in {directory}")
+            print(f"[tradeall_observe] {symbol}: {len(paths)} frames generated in {directory}")
             for p in paths:
                 print(f"    {p}")
         return
@@ -996,7 +1058,8 @@ def main():
             print("\n[tradeall_observe] stopped.")
         return
 
-    write_html(symbols, live_minutes=args.live_minutes)
+    active_summary = _get_active_summary()
+    write_html(symbols, live_minutes=args.live_minutes, active_summary=active_summary)
     html_path = os.path.join(LIVE_OUT_DIR, "tradeall_live.html")
     print(f"[tradeall_observe] symbols: {symbols} | rendering every {args.interval}s")
     print(f"[tradeall_observe] open in browser: {html_path}")
@@ -1011,6 +1074,9 @@ def main():
             sample_current_prices(symbols)
             due_day = cycle_start - last_day >= args.day_refresh
             due_week = cycle_start - last_week >= args.week_refresh
+            if due_day:
+                active_summary = _get_active_summary()
+                write_html(symbols, live_minutes=args.live_minutes, active_summary=active_summary)
             for symbol in symbols:
                 try:
                     chart_specs = [
@@ -1039,7 +1105,7 @@ def main():
                             )
                         )
                     render_symbol_charts_live(symbol, chart_specs, window_end=cycle_start)
-                    state_text = build_analysis_state_text(symbol)
+                    state_text = build_analysis_state_text(symbol, active_summary=active_summary)
                     if state_text:
                         render_state_image(state_text,
                                             os.path.join(LIVE_OUT_DIR, f"tradeall_live_{symbol}_state.png"))
