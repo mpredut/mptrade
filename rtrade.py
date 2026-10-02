@@ -1372,6 +1372,12 @@ class TradingBot:
         # to the configured per-symbol limit.
         active = []
         recovery_blocked = False
+
+        def _clear_venue_blocked_pair(pid):
+            unblock = getattr(venue, "_set_pair_recovery_blocked", None)
+            if callable(unblock):
+                unblock(pid, False)
+
         for record in pair_store.active(self.symbol):
             state = record.get("state")
             if not state:
@@ -1408,6 +1414,7 @@ class TradingBot:
                     )
                     pair_store.checkpoint(
                         record["pair_id"], state, terminal=True)
+                    _clear_venue_blocked_pair(record["pair_id"])
                     print(
                         f"[{self.symbol}] pair={record['pair_id']} recovery: "
                         "exhausted intent or no tickets placed; closed as terminal")
@@ -1466,20 +1473,25 @@ class TradingBot:
             recovery_blocked = True
         last_start_at = float("-inf")
         last_recovery_retry = float("-inf")
-        recovery_blocked_since = time.monotonic() if recovery_blocked else None
+        recovery_blocked_since = (
+            time.monotonic()
+            if (recovery_blocked or bool(getattr(venue, "recovery_blocked", False)))
+            else None
+        )
         next_direction = 0
         side_backoff_until = {"BUY": 0.0, "SELL": 0.0}
         while True:
             try:
                 now = time.monotonic()
+                is_recovery_blocked = recovery_blocked or bool(getattr(venue, "recovery_blocked", False))
 
-                if recovery_blocked:
+                if is_recovery_blocked:
                     if recovery_blocked_since is None:
                         recovery_blocked_since = now
                     if now - recovery_blocked_since >= _RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC:
                         print(f"[{self.symbol}] FATAL: startup recovery remained blocked for {now - recovery_blocked_since:.0f}s (>{_RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC:.0f}s). Exiting for orchestrator restart.")
                         sys.exit(1)
-                    if now - last_recovery_retry >= 60.0:
+                    if recovery_blocked and now - last_recovery_retry >= 60.0:
                         last_recovery_retry = now
                         try:
                             known_client_ids = {
@@ -1499,7 +1511,6 @@ class TradingBot:
                                 print(f"[{self.symbol}] recovery: orphaned RT_ order cancelled "
                                       f"order_id={order_id} client_id={client_id}")
                             recovery_blocked = False
-                            recovery_blocked_since = None
                             print(f"[{self.symbol}] startup recovery unblocked: exchange inventory verified")
                         except Exception as exc:
                             print(f"[{self.symbol}] startup recovery retry blocked: {exc}")
@@ -1507,7 +1518,7 @@ class TradingBot:
                     recovery_blocked_since = None
 
                 # Only touch heartbeat when the process is healthy and actively trading / coordinating
-                if not recovery_blocked and not getattr(venue, "recovery_blocked", False):
+                if not is_recovery_blocked:
                     _touch_rtrade_heartbeat(now=now)
 
                 survivors = []
@@ -1519,6 +1530,7 @@ class TradingBot:
                         checkpoints.append((
                             coordinator.pair_id, export_state(), outcome.terminal))
                     if outcome.terminal:
+                        _clear_venue_blocked_pair(coordinator.pair_id)
                         print(
                             f"[{self.symbol}] pair={outcome.pair_id} "
                             f"phase={outcome.phase} shock={outcome.shock} "
@@ -1575,6 +1587,7 @@ class TradingBot:
                             recovery_blocked = True
                             raise
                         if outcome.terminal:
+                            _clear_venue_blocked_pair(coordinator.pair_id)
                             failed_side, backoff_sec = _place_failure_backoff(
                                 outcome.reason)
                             if failed_side in side_backoff_until:

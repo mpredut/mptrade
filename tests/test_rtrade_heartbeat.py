@@ -62,6 +62,83 @@ class RTradeHeartbeatTest(unittest.TestCase):
             "Startup recovery timeout must be strictly less than orchestrator 180s threshold"
         )
 
+    def test_venue_pair_recovery_blocked_management(self):
+        venue = rtrade._LivePairVenue.__new__(rtrade._LivePairVenue)
+        venue._recovery_blocked_pairs = set()
+        venue.recovery_blocked = False
+        venue._set_pair_recovery_blocked("pair-1", True)
+        self.assertTrue(venue.recovery_blocked)
+        self.assertTrue(venue.pair_recovery_blocked("pair-1"))
+        venue._set_pair_recovery_blocked("pair-1", False)
+        self.assertFalse(venue.recovery_blocked)
+        self.assertFalse(venue.pair_recovery_blocked("pair-1"))
+
+    def test_coordinator_loop_exits_on_venue_recovery_blocked_timeout(self):
+        from unittest.mock import MagicMock
+        bot = rtrade.TradingBot.__new__(rtrade.TradingBot)
+        bot.symbol = "TAOUSDC"
+        bot.DEFAULT_ADJUSTMENT_PERCENT = 0.005
+        mock_venue = MagicMock()
+        mock_venue.recovery_blocked = True
+        mock_venue.executor.open_orders.return_value = []
+        mock_pair_store = MagicMock()
+        mock_pair_store.active.return_value = []
+
+        start_time = 1000.0
+        timeout = rtrade._RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC
+        monotonic_times = [
+            start_time,                  # loop enter: recovery_blocked_since init
+            start_time + 1.0,            # loop tick 1
+            start_time + timeout + 5.0,  # loop tick 2: timeout exceeded -> sys.exit(1)
+        ]
+        with (
+            patch.object(rtrade.time, "monotonic", side_effect=monotonic_times),
+            patch.object(rtrade.time, "sleep", return_value=None),
+            patch.object(rtrade.sys, "exit") as mock_exit,
+            patch.object(rtrade, "_LivePairVenue", return_value=mock_venue),
+            patch.object(rtrade, "RTradePairStore", return_value=mock_pair_store),
+        ):
+            mock_exit.side_effect = SystemExit(1)
+            with self.assertRaises(SystemExit):
+                bot._run_coordinator_forever()
+            mock_exit.assert_called_once_with(1)
+
+    def test_startup_recovery_terminal_record_clears_venue_blockage(self):
+        from unittest.mock import MagicMock
+        bot = rtrade.TradingBot.__new__(rtrade.TradingBot)
+        bot.symbol = "TAOUSDC"
+        bot.DEFAULT_ADJUSTMENT_PERCENT = 0.005
+        mock_venue = MagicMock()
+        mock_venue.recovery_blocked = False
+        mock_pair_store = MagicMock()
+        record = {
+            "pair_id": "test_pair_1",
+            "qty": 1.0,
+            "start_side": "SELL",
+            "state": {"phase": "quoting", "tickets": []},
+            "intents": {
+                "limit:SELL": {
+                    "recovery_state": "absence_confirmed_no_reuse"
+                }
+            }
+        }
+        mock_pair_store.active.return_value = [record]
+        mock_venue.merge_checkpoint_intents.return_value = record["state"]
+        mock_venue.executor.open_orders.return_value = []
+
+        with (
+            patch.object(rtrade, "_LivePairVenue", return_value=mock_venue),
+            patch.object(rtrade, "RTradePairStore", return_value=mock_pair_store),
+            patch.object(rtrade.time, "sleep", side_effect=StopIteration),
+        ):
+            try:
+                bot._run_coordinator_forever()
+            except StopIteration:
+                pass
+            mock_pair_store.checkpoint.assert_any_call("test_pair_1", record["state"], terminal=True)
+            mock_venue._set_pair_recovery_blocked.assert_called_with("test_pair_1", False)
+
 
 if __name__ == "__main__":
     unittest.main()
+
