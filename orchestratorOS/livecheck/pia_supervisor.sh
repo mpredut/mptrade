@@ -60,6 +60,10 @@ vpn_healthy() {
     [ "$(pia get connectionstate 2>/dev/null | tr -d '\r')" = "Connected" ] || return 1
     ip link show dev "$VPN_IF" 2>/dev/null | grep -q '<[^>]*UP[^>]*>' || return 1
 
+    # Verify kernel policy routing sends normal application traffic via the VPN interface.
+    # Prevents silent fallback to ISP uplink if netplan/DHCP wipes the WireGuard ip rules.
+    ip route get 1.1.1.1 2>/dev/null | grep -q "dev $VPN_IF" || return 1
+
     # 1. Resolve Binance IPv4 address (getent/systemd-resolved)
     local binance_ip
     binance_ip=$(getent ahostsv4 api.binance.com 2>/dev/null | awk '{print $1; exit}')

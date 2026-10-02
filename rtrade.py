@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import datetime
 import math
@@ -42,6 +43,7 @@ from strategies.rtrade_pair import (
 _RTRADE_HEARTBEAT_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "cachedb", "rtrade.heartbeat")
 _RTRADE_HEARTBEAT_INTERVAL_SEC = 30.0
+_RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC = 120.0
 _rtrade_heartbeat_lock = threading.Lock()
 _rtrade_heartbeat_last = float("-inf")
 
@@ -1474,8 +1476,8 @@ class TradingBot:
                 if recovery_blocked:
                     if recovery_blocked_since is None:
                         recovery_blocked_since = now
-                    if now - recovery_blocked_since >= 180.0:
-                        print(f"[{self.symbol}] FATAL: startup recovery remained blocked for {now - recovery_blocked_since:.0f}s (>180s). Exiting for orchestrator restart.")
+                    if now - recovery_blocked_since >= _RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC:
+                        print(f"[{self.symbol}] FATAL: startup recovery remained blocked for {now - recovery_blocked_since:.0f}s (>{_RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC:.0f}s). Exiting for orchestrator restart.")
                         sys.exit(1)
                     if now - last_recovery_retry >= 60.0:
                         last_recovery_retry = now

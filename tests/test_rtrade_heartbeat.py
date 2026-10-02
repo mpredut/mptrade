@@ -53,6 +53,15 @@ class RTradeHeartbeatTest(unittest.TestCase):
         self.assertEqual(parts[5], "180")
         self.assertEqual(parts[6], "fleet")
 
+    def test_rtrade_imports_sys_and_defines_recovery_timeout(self):
+        self.assertTrue(hasattr(rtrade, "sys"), "rtrade must import sys for sys.exit")
+        self.assertTrue(callable(rtrade.sys.exit))
+        self.assertTrue(hasattr(rtrade, "_RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC"))
+        self.assertLess(
+            rtrade._RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC, 180.0,
+            "Startup recovery timeout must be strictly less than orchestrator 180s threshold"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
