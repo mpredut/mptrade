@@ -2,8 +2,8 @@
 
 > **Status:** Canonical Production State & Architectural Reference  
 > **Date:** October 2, 2026  
-> **Git Reference:** `4217ff1f` (Branch: `main`, clean, auto-pushed to `origin/main`)  
-> **Test Verification:** 1,217 passed, 0 failed  
+> **Git Reference:** `adf419c9` (Branch: `main`, clean, auto-pushed to `origin/main`)  
+> **Test Verification:** 1,592 passed, 0 failed  
 
 ---
 
@@ -45,6 +45,17 @@ All shared-engine bots across Kraken and Hyperliquid are operating with zero dow
   - **Latched Surge Protection:** Parabolic Surge Guard latches into an active armed state upon crossing the +18% peak or 72h window move threshold, ensuring execution when a 3.5% pullback occurs even if current profit dips below the initial trigger.
   - **Canonical Deployment:** Deployed with `STRAT_SURGE_DYNAMIC=false` across Kraken and Hyperliquid to strictly enforce the sweep-proven 18.0% fixed threshold.
 
+### 2.5 Multi-Asset Fleet Revalidation Backtest Results (Freshly Run)
+Re-evaluated on the updated codebase across 6 production assets and benchmarks (HYPE, TAO, ADA, SOL, BTC, ETH) with faithful replay execution ($3,900 capital per asset, 0.26% round-trip fee):
+
+| Candidate Strategy | Category | Alts PnL (HYPE+TAO+ADA) | Fleet Total PnL (6 Assets) | Worst MaxDD | Total Cycles | PnL/MaxDD Ratio | Behavioral Notes |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| `BASELINE_SURGE_OFF` | Baseline | $4,316.91 | $19,816.77 | 37.18% | 1,191 | 532.93 | Pure trend overlay + DCA; no surge guard. |
+| **`LIVE_FIXED_18_PB3.5`** | **LIVE** | **$4,886.59** | **$15,640.30** | **36.34%** | **1,386** | 430.36 | **Active live configuration**: +$569.68 (+13.2%) alpha on altcoins vs baseline with reduced MaxDD (36.34% vs 37.18%). |
+| `DYNAMIC_18_26_PB3.5` | Shadow | $4,868.18 | $15,489.64 | 36.34% | 1,385 | 426.21 | Dynamic vol-adaptive trigger ($18\%-26\%$, $k=8.0$); tracks live performance closely. |
+| `BENCHMARK_FIXED_25_PB3.5` | Benchmark | $3,817.98 | $16,286.11 | 37.11% | 1,302 | 438.86 | High 25% surge trigger; suffers severe degradation on TAO (-$143.80) and ADA ($1,614.31). |
+| `SENSITIVITY_FIXED_20_PB3.0` | Sensitivity | $5,146.84 | $17,223.14 | 37.67% | 1,367 | 457.26 | Tighter 3.0% pullback with 20% surge; excellent altcoin capture (+$829.93 vs baseline). |
+
 ---
 
 ## 3. Active LIVE Trading Strategies & Fleet Inventory
@@ -53,28 +64,28 @@ All live processes run supervised by `orchestratorTrade/orchestrator.py` (`pytho
 
 ```mermaid
 flowchart TD
-    subgraph Orchestrator Daemon [orchestratorTrade/orchestrator.py - PID 131234]
+    subgraph Orchestrator Daemon [orchestratorTrade/orchestrator.py - PID 326855]
         subgraph Shared Engine Bots [strategies/spot_dca.py]
-            K1["Kraken HYPEUSD<br/>PID 303531"]
-            K2["Kraken TAOUSD<br/>PID 303533"]
-            K3["Kraken ADAUSD<br/>PID 303535"]
-            HL1["Hyperliquid Spot HYPE<br/>PID 303530"]
+            K1["Kraken HYPEUSD<br/>PID 326866"]
+            K2["Kraken TAOUSD<br/>PID 326869"]
+            K3["Kraken ADAUSD<br/>PID 326870"]
+            HL1["Hyperliquid Spot HYPE<br/>PID 326864"]
         end
 
         subgraph Independent Trading Engines
-            B1["Binance tradeall.py<br/>PID 278651"]
-            B2["Binance rtrade.py<br/>PID 303724"]
-            T1["Trading212 t212_bot.py<br/>PID 278641"]
+            B1["Binance tradeall.py<br/>PID 326885"]
+            B2["Binance rtrade.py<br/>PID 326894"]
+            T1["Trading212 t212_bot.py<br/>PID 326872"]
         end
 
         subgraph Protection & Supporting Services
-            S1["assetguardian.py (PID 278647)"]
-            S2["priceAnalysis.py (PID 278649)"]
-            S3["monitortrades.py (PID 278707)"]
-            S4["order_retry_worker.py (PID 278718)"]
-            S5["cacheManager.py (PID 278644)"]
-            S6["kraken_cachemanager.py (PID 278629)"]
-            S7["trailing_stop.py (Kraken & Binance)"]
+            S1["assetguardian.py (PID 326879)"]
+            S2["priceAnalysis.py (PID 326882)"]
+            S3["monitortrades.py (PID 326889)"]
+            S4["order_retry_worker.py (PID 326900)"]
+            S5["cacheManager.py (PID 326876)"]
+            S6["kraken_cachemanager.py (PID 326865)"]
+            S7["trailing_stop.py (Kraken 326873 & Binance 326874)"]
         end
     end
 ```
@@ -83,13 +94,13 @@ flowchart TD
 
 | Venue / Pair | PID | Engine / Strategy | Live Holdings | Cycle | Current Net PnL | Operational State |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **HL Spot HYPE** | `303530` | `strategies.spot_dca` (HL) | 5.0 HYPE @ 89.43 USDC | #9 | **+158.47 USDC** | Holding; trailing TP active |
-| **Kraken HYPEUSD** | `303531` | `strategies.spot_dca` (Kraken) | 0.0 HYPE (Cash) | #16 | **-120.53 USD** | Waiting for re-entry dip |
-| **Kraken TAOUSD** | `303533` | `strategies.spot_dca` (Kraken) | 2.12625 TAO @ 305.70 USD | #6 | **+53.89 USD** | Holding; TP / trend trailing |
-| **Kraken ADAUSD** | `303535` | `strategies.spot_dca` (Kraken) | 2,610.74 ADA @ 0.2488 USD | #7 | **+301.28 USD** | Holding; TP / trend trailing |
-| **Binance TradeAll** | `278651` | `tradeall.py` (Multi-pair) | Dynamic Portfolio | Cont. | Positive | Multi-pair linear regression |
-| **Binance RTrade** | `303724` | `rtrade.py` (Fast pair) | Momentum Spot | Cont. | Positive | Relative momentum trading |
-| **Trading212** | `278641` | `212trading/t212_bot.py` | Equity Watchlist | Cont. | Monitored | Laddered equity limit orders |
+| **HL Spot HYPE** | `326864` | `strategies.spot_dca` (HL) | 5.0 HYPE @ 89.43 USDC | #9 | **+158.47 USDC** | Holding; trailing TP active |
+| **Kraken HYPEUSD** | `326866` | `strategies.spot_dca` (Kraken) | 0.0 HYPE (Cash) | #16 | **-120.53 USD** | Waiting for re-entry dip |
+| **Kraken TAOUSD** | `326869` | `strategies.spot_dca` (Kraken) | 2.12625 TAO @ 305.70 USD | #6 | **+53.89 USD** | Holding; TP / trend trailing |
+| **Kraken ADAUSD** | `326870` | `strategies.spot_dca` (Kraken) | 2,610.74 ADA @ 0.2488 USD | #7 | **+301.28 USD** | Holding; TP / trend trailing |
+| **Binance TradeAll** | `326885` | `tradeall.py` (Multi-pair) | Dynamic Portfolio | Cont. | Positive | Multi-pair linear regression with MarketRegimeContext |
+| **Binance RTrade** | `326894` | `rtrade.py` (Fast pair) | Momentum Spot | Cont. | Positive | Relative momentum trading |
+| **Trading212** | `326872` | `212trading/t212_bot.py` | Equity Watchlist | Cont. | Monitored | Laddered equity limit orders |
 
 ### 3.2 Calibrated Shared-Engine Configuration (`config.env`)
 
@@ -140,24 +151,22 @@ Shadow runners operate completely isolated from live execution (zero orders, rea
 13. `B_dcabrake_regime_v2`: DCA brake testing in confirmed downtrends.
 14. `overlay_safe_combo`: Conservative overlay combo ($350 top-up with 6.0% trail).
 
-#### Current Shadow Forward-Testing Results (720-bar 240m Window, Buy & Hold +31.29%):
+#### Current Shadow Forward-Testing Results (720-bar 240m Window, Buy & Hold +34.78%):
 
 | Candidate Variant | Net Return (%) | Total Return (%) | Max Drawdown (%) | Completed Cycles | Delta vs Current (pp) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`current` (Live Calibrated)** | **26.67%** | **26.55%** | **9.44%** | **9** | **Reference** |
-| `rev_tp5` | 26.67% | 26.55% | 9.44% | 9 | +0.00pp |
-| `rev_spacing0` | 26.67% | 26.55% | 9.44% | 9 | +0.00pp |
-| `rev_trail_fixed` | 26.67% | 26.55% | 9.44% | 9 | +0.00pp |
-| `rev_gate_off` | 26.67% | 26.55% | 9.44% | 9 | +0.00pp |
-| `rev_floor0` | 26.67% | 26.55% | 9.44% | 9 | +0.00pp |
-| `reentry4` | 26.67% | 26.55% | 9.44% | 9 | +0.00pp |
-| `overlay650t8_regime_v2`| 26.67% | 26.55% | 9.44% | 9 | +0.00pp |
-| `B_dcabrake_regime_v2` | 26.67% | 26.55% | 9.44% | 9 | +0.00pp |
-| `overlay_safe_combo` | 25.36% | 25.36% | 7.52% | 13 | -1.19pp |
-| `dca15` | 23.62% | 23.50% | 8.74% | 9 | -3.05pp |
-| `dca_vol_m1` | 20.27% | 20.15% | 8.31% | 9 | -6.40pp |
-| `rev_sl125` (Stop-Loss) | 16.53% | 16.41% | 8.77% | 13 | **-10.14pp** |
-| `pre0923` (Old Legacy) | 10.26% | 10.14% | 8.61% | 14 | **-16.41pp** |
+| **`current` (Live Calibrated)** | **29.55%** | **29.43%** | **10.22%** | **8** | **Reference** |
+| `rev_tp5` | 29.55% | 29.43% | 10.22% | 8 | +0.00pp |
+| `rev_gate_off` | 29.55% | 29.43% | 10.22% | 8 | +0.00pp |
+| `rev_floor0` | 29.55% | 29.43% | 10.22% | 8 | +0.00pp |
+| `reentry4` | 29.41% | 29.29% | 10.22% | 8 | -0.14pp |
+| `rev_spacing0` | 29.38% | 29.26% | 10.22% | 8 | -0.17pp |
+| `rev_trail_fixed` | 29.29% | 29.17% | 10.22% | 8 | -0.26pp |
+| `overlay_safe_combo` | 28.08% | 28.08% | **8.05%** | 12 | -1.47pp |
+| `dca15` | 26.49% | 26.37% | 9.53% | 8 | -3.06pp |
+| `dca_vol_m1` | 22.28% | 22.16% | 9.05% | 8 | -7.27pp |
+| `rev_sl125` (Stop-Loss) | 16.60% | 16.48% | 9.68% | 12 | **-12.95pp** |
+| `pre0923` (Old Legacy) | 9.94% | 9.82% | 9.65% | 13 | **-19.61pp** |
 
 ---
 
@@ -165,6 +174,14 @@ Shadow runners operate completely isolated from live execution (zero orders, rea
 - **Execution Schedule:** Cron every hour (`27 * * * *`, interval 240m).
 - **Data Source:** Live Hyperliquid unsigned public API (`client.candles("HYPE", "4h")`), stored in `logs/hyperliquid_shadow/HYPE-HL_240m.jsonl`.
 - **Purpose:** Parallel paper testing on Hyperliquid spot fee structure (0.04% maker / 0.07% taker).
+- **Window Results (3,996 bars, Buy & Hold +564.08%):**
+  - `current` (Live Hyperliquid): **+171.99% net return**, 47.61% MaxDD, 40 cycles.
+  - `tp_regime_gate`: +171.99% net return, 47.61% MaxDD, 40 cycles.
+  - `reentry4`: +169.78% net return, 47.61% MaxDD, 40 cycles.
+  - `B_dcabrake_regime_v2`: +160.67% net return, **38.88% MaxDD**, 45 cycles.
+  - `long_tp3_trail3`: +153.03% net return, 48.51% MaxDD, 58 cycles.
+  - `trail_profit_floor_sl18`: +100.52% net return, 41.07% MaxDD, 103 cycles (-71.47pp penalty).
+  - `overlay650t8_regime_v2`: **+209.32% net return**, 39.85% MaxDD, 97 cycles.
 
 #### Shadow Variants Monitored in Hyperliquid Suite:
 1. `current`: Current effective Hyperliquid live configuration.
