@@ -76,7 +76,7 @@ class ShadowLiveTest(unittest.TestCase):
     def test_variants_isolate_each_promoted_change_against_live(self):
         live = self._live_params()
         with patch(
-            "strategies.spot_dca.StratParams.from_env", return_value=live,
+            "strategies.spot_engine.StratParams.from_env", return_value=live,
         ), patch.object(shadow, "_load_runtime_config"):
             variants = shadow._variants(240)
 
@@ -131,7 +131,7 @@ class ShadowLiveTest(unittest.TestCase):
 
     def test_interval_the_live_config_cannot_replay_is_skipped(self):
         with patch(
-            "strategies.spot_dca.StratParams.from_env", return_value=self._live_params(),
+            "strategies.spot_engine.StratParams.from_env", return_value=self._live_params(),
         ), patch.object(shadow, "_load_runtime_config"):
             self.assertIsNone(shadow._replay_interval_error(240))
             self.assertIn("240", shadow._replay_interval_error(60))

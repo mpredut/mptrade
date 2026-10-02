@@ -33,7 +33,7 @@ from kraken_common import (log, now_str, required_bool_env, required_env,
 from kraken_client import KrakenClient, KrakenError
 from market_data import get_price, pair_available
 from notify import notify
-from strategies.spot_dca import Strategy, StratParams
+from strategies.spot_engine import Strategy, StratParams
 
 # Provider-agnostic path B requires the StrategyExecutor contract. Wrap the _BOT client
 # in KrakenProvider so Strategy shares its connection/nonce. Balance/find/price CLI

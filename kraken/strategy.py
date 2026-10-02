@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Compatibility import for the venue-neutral spot DCA engine.
+"""Compatibility import for the venue-neutral spot engine.
 
-New code should import :mod:`strategies.spot_dca`.  This module remains so the
+New code should import :mod:`strategies.spot_engine`.  This module remains so the
 existing Kraken launch commands and external scripts keep working unchanged.
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from strategies.spot_dca import (  # noqa: E402,F401
+from strategies.spot_engine import (  # noqa: E402,F401
     StratParams,
     Strategy,
     _new_state,

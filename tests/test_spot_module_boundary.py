@@ -9,7 +9,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from strategies import spot_dca  # noqa: E402
+from strategies import spot_engine, spot_dca  # noqa: E402
 from providers.strategy_executor import PairPrecision  # noqa: E402
 
 
@@ -19,7 +19,7 @@ class _Executor:
 
 
 def _params():
-    return spot_dca.StratParams(
+    return spot_engine.StratParams(
         currency="USD", entry_amount=100.0, entry_discount_pct=0.2,
         dca_amount=50.0, dca_drop_pct=2.0, check_minutes=2.0,
         takeprofit_pct=5.0, max_budget=1000.0, max_dca_buys=10,
@@ -30,14 +30,20 @@ def _params():
     )
 
 
-class SpotDcaModuleBoundaryTest(unittest.TestCase):
+class SpotModuleBoundaryTest(unittest.TestCase):
+    def test_spot_dca_shim_matches_spot_engine_canonical(self):
+        self.assertIs(spot_dca.Strategy, spot_engine.Strategy)
+        self.assertIs(spot_dca.StratParams, spot_engine.StratParams)
+        self.assertEqual(spot_dca._new_state(), spot_engine._new_state())
+        self.assertEqual(spot_dca.state_path_for("HYPEUSD"), spot_engine.state_path_for("HYPEUSD"))
+
     def test_missing_venue_precision_fails_before_strategy_start(self):
         executor = _Executor()
         executor.pair_precision = lambda _symbol: None
         with self.assertRaisesRegex(RuntimeError, "no pair metadata"):
-            spot_dca.Strategy(
+            spot_engine.Strategy(
                 executor, "ASSETUSD", _params(), dry_run=False,
-                initial_state=spot_dca._new_state(),
+                initial_state=spot_engine._new_state(),
             )
 
     def test_legacy_kraken_module_reexports_canonical_engine(self):
@@ -46,27 +52,27 @@ class SpotDcaModuleBoundaryTest(unittest.TestCase):
         legacy = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(legacy)
 
-        self.assertIs(legacy.Strategy, spot_dca.Strategy)
-        self.assertIs(legacy.StratParams, spot_dca.StratParams)
-        self.assertEqual(legacy._new_state(), spot_dca._new_state())
+        self.assertIs(legacy.Strategy, spot_engine.Strategy)
+        self.assertIs(legacy.StratParams, spot_engine.StratParams)
+        self.assertEqual(legacy._new_state(), spot_engine._new_state())
 
     def test_default_state_path_stays_in_legacy_kraken_directory(self):
         expected = os.path.join(ROOT, "kraken", ".state_HYPEUSD.json")
-        self.assertEqual(spot_dca.state_path_for("HYPE/USD"), expected)
+        self.assertEqual(spot_engine.state_path_for("HYPE/USD"), expected)
 
     def test_state_directory_is_injectable_for_another_runtime(self):
         with tempfile.TemporaryDirectory() as directory:
-            engine = spot_dca.Strategy(
+            engine = spot_engine.Strategy(
                 _Executor(), "ASSET/USD", _params(), dry_run=True,
-                initial_state=spot_dca._new_state(), state_dir=directory,
+                initial_state=spot_engine._new_state(), state_dir=directory,
             )
             self.assertEqual(engine.state_file, os.path.join(directory, ".state_ASSETUSD.json"))
 
     def test_notification_sink_and_source_are_injectable(self):
         events = []
-        engine = spot_dca.Strategy(
+        engine = spot_engine.Strategy(
             _Executor(), "ASSETUSD", _params(), dry_run=True,
-            initial_state=spot_dca._new_state(), notifier=lambda **event: events.append(event),
+            initial_state=spot_engine._new_state(), notifier=lambda **event: events.append(event),
             notification_source="paper-venue",
         )
         order = {

@@ -1,6 +1,6 @@
 """Provider-neutral execution contract used by financially tracked strategies.
 
-``strategies.spot_dca`` consumes this interface. Venue adapters normalize native
+``strategies.spot_engine`` consumes this interface. Venue adapters normalize native
 responses into the explicit types below so the strategy engine can operate on one
 order lifecycle model.
 

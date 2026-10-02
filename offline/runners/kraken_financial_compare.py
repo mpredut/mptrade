@@ -26,7 +26,7 @@ from offline.backtests.hype_candidates import (  # noqa: E402
     financial_priority_candidates,
 )
 from offline.backtests.promotion import evaluate_dual_promotion  # noqa: E402
-from strategies.spot_dca import StratParams  # noqa: E402
+from strategies.spot_engine import StratParams  # noqa: E402
 
 
 DEFAULT_BASELINE = (

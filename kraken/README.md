@@ -64,7 +64,7 @@ as the trend aged.
 
 The experiment is not promoted into the live strategy. The implementation was built on the
 old `kraken/strategy.py` module, before the shared engine moved into
-`strategies/spot_dca.py`, and it has no sufficient financial validation on the current
+`strategies/spot_engine.py`, and it has no sufficient financial validation on the current
 historical data. The risk-adjusted metrics introduced back then (Sharpe/Sortino and friends)
 now live in the shared backtest infrastructure.
 

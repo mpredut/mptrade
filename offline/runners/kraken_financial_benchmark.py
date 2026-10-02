@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 
 from kraken_common import load_dotenv  # noqa: E402
 import replay as kraken_replay  # noqa: E402
-from strategies.spot_dca import StratParams  # noqa: E402
+from strategies.spot_engine import StratParams  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
     dataset_sha256,
     load_dataset,

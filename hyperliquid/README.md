@@ -1,7 +1,7 @@
 # Hyperliquid — integration, operational state and the HYPE strategy
 
 This directory holds three distinct capabilities: the HYPE/USDC spot provider used by the
-shared `strategies/spot_dca` engine, the historical directional PERP engine, and the
+shared `strategies/spot_engine` engine, the historical directional PERP engine, and the
 delta-neutral engine. The existence of code and configuration does not mean a process is
 active in production.
 
@@ -28,7 +28,7 @@ python3 verify_tools/ownership_inventory.py --running
 
 | File | Market | Engine | State |
 |---|---|---|---|
-| `hl_bot.py` | HYPE/USDC spot | `strategies.spot_dca` (base v2) | supervised in `procs.conf` |
+| `hl_bot.py` | HYPE/USDC spot | `strategies.spot_engine` (base v2) | supervised in `procs.conf` |
 | `archive/perp/hl_perp_bot.py` | PERP long/short | `hyperliquid/strategy.py` | legacy, unregistered and archived |
 | `archive/delta_neutral/dn_bot.py` | spot long plus perp short | `delta_neutral.py` | archived |
 | `providers/hyperliquid_provider.py` | spot | the `StrategyExecutor` contract | a lazily imported adapter |

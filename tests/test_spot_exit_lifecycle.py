@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from strategies import spot_dca as strat
+from strategies import spot_engine as strat
 from providers.strategy_executor import OrderStatus, ProviderError
 from test_kraken_strategy_provider_live import FakeExecutor, _strategy
 

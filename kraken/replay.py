@@ -16,7 +16,7 @@ from offline.backtests.execution import (
     split_order_fill,
 )
 from offline.backtests.metrics import calculate_performance_metrics
-from strategies import spot_dca as _strat
+from strategies import spot_engine as _strat
 from providers.strategy_executor import PairPrecision
 
 

@@ -22,7 +22,7 @@ from providers.hyperliquid_provider import HyperliquidProvider  # noqa: E402
 from providers.market_api import BinanceProvider  # noqa: E402
 from providers.t212_provider import T212Provider  # noqa: E402
 
-# Methods required by the venue-agnostic strategies/spot_dca.py engine.
+# Methods required by the venue-agnostic strategies/spot_engine.py engine.
 CONTRACT_METHODS = (
     "get_current_price", "submit_order", "order_status", "cancel_order",
     "pair_precision", "free_balance", "ohlc_closes",

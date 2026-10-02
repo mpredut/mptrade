@@ -12,7 +12,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from strategies import spot_dca as strat  # noqa: E402
+from strategies import spot_engine as strat  # noqa: E402
 from order_retry import OrderSubmissionRefused  # noqa: E402
 from providers.strategy_executor import (  # noqa: E402
     OrderReconciliationCapabilities,

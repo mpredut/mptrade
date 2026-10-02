@@ -27,7 +27,7 @@ for _p in (_ROOT, _HERE):
 from common import (  # hyperliquid/common.py
     load_env_stack, log, single_instance, required_env, required_bool_env,
 )
-from strategies.spot_dca import Strategy, StratParams
+from strategies.spot_engine import Strategy, StratParams
 from providers.hyperliquid_provider import HyperliquidProvider
 
 
@@ -69,10 +69,10 @@ def main() -> int:
     provider = AuditedStrategyExecutor(
         HyperliquidProvider(token=token), venue="Hyperliquid",
     )
-    log("=== HL base v2 bot (spot_dca) ===")
+    log("=== HL base v2 bot (spot_engine) ===")
     log(f"    token      : {token} (HYPE spot pe Hyperliquid)")
     log(f"    execution  : {'PAPER (no money)' if strat_dry else '⚠ REAL — REAL MONEY'}")
-    log("    engine     : strategies.spot_dca (IDENTICAL to kraken_bot)")
+    log("    engine     : strategies.spot_engine (IDENTICAL to kraken_bot)")
     Strategy(
         provider, token, StratParams.from_env(), dry_run=strat_dry,
         state_dir=state_dir_for(strat_dry),

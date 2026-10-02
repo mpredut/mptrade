@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Forward shadow for HYPE spot on Hyperliquid without order access.
 
-Use the faithful ``strategies.spot_dca`` engine through shared replay and public
+Use the faithful ``strategies.spot_engine`` engine through shared replay and public
 Hyperliquid candles. Never read or write live state, orders, or balances. Variants
 are preregistered and remain PAPER:
 
@@ -45,7 +45,7 @@ def _load_config() -> None:
 def _variants(interval: int):
     require_shadow_interval(interval, 240, "shadow_longterm")
     _load_config()
-    from strategies.spot_dca import StratParams
+    from strategies.spot_engine import StratParams
 
     base = StratParams.from_env()
     variants = {

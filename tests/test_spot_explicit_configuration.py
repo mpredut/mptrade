@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from botcore import parse_dotenv
-from strategies.spot_dca import StratParams
+from strategies.spot_engine import StratParams
 
 
 ROOT = Path(__file__).resolve().parents[1]

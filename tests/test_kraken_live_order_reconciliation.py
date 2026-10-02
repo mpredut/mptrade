@@ -16,7 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from strategies import spot_dca as strat  # noqa: E402
+from strategies import spot_engine as strat  # noqa: E402
 from providers.strategy_executor import OrderStatus, PairPrecision, ProviderError  # noqa: E402
 from botcore import parse_dotenv  # noqa: E402
 

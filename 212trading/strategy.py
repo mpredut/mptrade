@@ -27,7 +27,7 @@ from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit, n
 from providers.strategy_executor import ProviderError
 from providers.t212_provider import T212Provider
 from strategies.state_store import JsonStateStore
-from strategies import spot_dca_rules as sr
+from strategies import spot_rules as sr
 
 FX_FEE_PCT = 0.15  # T212 currency-conversion fee per direction.
 

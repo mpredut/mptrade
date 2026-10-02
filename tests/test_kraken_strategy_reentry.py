@@ -24,7 +24,7 @@ ROOT = os.path.dirname(KRAKEN_DIR)
 sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from strategies import spot_dca as strat  # noqa: E402
+from strategies import spot_engine as strat  # noqa: E402
 from providers.strategy_executor import PairPrecision  # noqa: E402
 
 
@@ -500,7 +500,7 @@ class TestHybridReentry(unittest.TestCase):
             self.assertEqual(order["kind"], "ENTRY")
 
 
-from strategies import spot_dca_rules as sr
+from strategies import spot_rules as sr
 
 
 class StratRulesTest(unittest.TestCase):
@@ -1079,7 +1079,7 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
         self.assertEqual(exited[0][1], "TP")
 
     def test_dynamic_surge_gain_pct(self):
-        import strategies.spot_dca_rules as sr
+        import strategies.spot_rules as sr
         # Default behavior: 24.0% - 32.0% centered around 25.0%
         # Low volatility: 1.5% * 10.0 = 15.0% -> clamped to min 24.0%
         self.assertEqual(sr.dynamic_surge_gain_pct(1.5), 24.0)
@@ -1091,7 +1091,7 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
         self.assertEqual(sr.dynamic_surge_gain_pct(None), 25.0)
 
     def test_reentry_hybrid_bear_bounce_rule(self):
-        import strategies.spot_dca_rules as sr
+        import strategies.spot_rules as sr
         # In non-bull regime:
         # last_sell = 100.0, drop_pct = 2.0% -> drop threshold is 98.0
         # Price drops to 95.0 -> meets drop threshold.

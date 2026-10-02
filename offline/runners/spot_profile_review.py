@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 from dotenv import dotenv_values
 from kraken import replay
-from strategies.spot_dca import StratParams
+from strategies.spot_engine import StratParams
 from offline.backtests.datasets import dataset_sha256, load_dataset, validate_dataset
 from offline.backtests.evaluation import evaluate_segment, to_ohlc
 from offline.backtests.financial_benchmark import (

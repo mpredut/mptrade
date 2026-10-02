@@ -23,8 +23,8 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from strategies import spot_dca_rules as sr
-from strategies.spot_dca import StratParams
+from strategies import spot_rules as sr
+from strategies.spot_engine import StratParams
 
 import dataclasses
 import replay as rp        # Faithful engine: the live strategy over OHLC data.

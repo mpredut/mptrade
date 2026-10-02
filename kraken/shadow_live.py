@@ -68,7 +68,7 @@ def _load_runtime_config(env_path: str | None = None,
 
 def _variants(interval: int):
     _load_runtime_config()
-    from strategies import spot_dca as strat
+    from strategies import spot_engine as strat
     replace = dataclasses.replace
     base = strat.StratParams.from_env()
     variants = {
@@ -114,7 +114,7 @@ def _variants(interval: int):
 def _replay_interval_error(interval: int) -> str | None:
     """Return why the live configuration cannot be replayed at this bar size, if it can't."""
     _load_runtime_config()
-    from strategies import spot_dca as strat
+    from strategies import spot_engine as strat
     base = strat.StratParams.from_env()
     required = {int(base.trend_interval)} if (
         base.trend_overlay or base.dca_trend_brake

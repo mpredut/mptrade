@@ -2,7 +2,7 @@
 
 > **Document Status:** Active Canonical Architecture Guide  
 > **Last Updated:** October 2026  
-> **Target Subsystems:** `strategies/spot_dca.py`, `strategies/spot_dca_rules.py`, `kraken/config.env`, `hyperliquid/config.env`, `tradeall.py`
+> **Target Subsystems:** `strategies/spot_engine.py` (canonical, alias `strategies/spot_dca.py`), `strategies/spot_rules.py` (alias `strategies/spot_dca_rules.py`), `kraken/config.env`, `hyperliquid/config.env`, `tradeall.py`
 
 ---
 
@@ -10,7 +10,7 @@
 
 The automated trading fleet employs a modular, shared execution engine for spot trading, alongside dedicated venue-specific engines for legacy or specialized markets:
 
-1. **Shared Engine (`strategies/spot_dca.py` + `strategies/spot_dca_rules.py`):**
+1. **Shared Engine (`strategies/spot_engine.py` + `strategies/spot_rules.py`, backward-compatible via `strategies/spot_dca.py`):**
    - **Kraken (`kraken/kraken_bot.py`):** Live on `HYPEUSD`, `TAOUSD`, `ADAUSD`.
    - **Hyperliquid (`hyperliquid/hl_bot.py`):** Live on `HYPE` spot.
    - **Coverage:** Every single strategy, exit rule, and profit guard implemented in the shared engine is **100% available and compatible with both Kraken and Hyperliquid**.
@@ -30,7 +30,7 @@ A fundamental architectural question:
 ```
                          ┌─────────────────────────────┐
                          │   Shared Execution Engine   │
-                         │   (strategies/spot_dca.py)  │
+                         │  (strategies/spot_engine.py)│
                          └──────────────┬──────────────┘
                                         │
                  ┌──────────────────────┴──────────────────────┐
@@ -59,7 +59,7 @@ A fundamental architectural question:
 
 ## 3. Full Inventory of the 12 Fleet Strategies & Modules
 
-All 12 mechanisms are native to `strategies/spot_dca.py`:
+All 12 mechanisms are native to `strategies/spot_engine.py` (and re-exported by `strategies/spot_dca.py`):
 
 ```mermaid
 flowchart TD
@@ -103,7 +103,7 @@ flowchart TD
 
 ## 4. Alternative Order Execution Modes in the Engine
 
-Beyond the 12 core algorithmic rules, `strategies/spot_dca.py` supports these operational switches:
+Beyond the 12 core algorithmic rules, `strategies/spot_engine.py` supports these operational switches:
 
 1. **Tranche Take-Profit (`STRAT_TP_TRANCHES`):**
    - Syntax: `"3:50,6:50"`

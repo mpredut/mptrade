@@ -15,7 +15,7 @@ KRAKEN_DIR = os.path.join(ROOT, "kraken")
 sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from strategies import spot_dca as strat  # noqa: E402
+from strategies import spot_engine as strat  # noqa: E402
 from providers.strategy_executor import PairPrecision  # noqa: E402
 
 
