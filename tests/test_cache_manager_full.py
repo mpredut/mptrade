@@ -173,23 +173,29 @@ class TestCacheManagerInterface(unittest.TestCase):
             mgr.update_cache_per_symbol("SYM", [[int(time.time()*1000), 1.0]])
             self.assertIn("SYM", mgr.fetchtime_time_per_symbol)
 
-    # ── filter_new_items ──────────────────────────────────────────────────────
+        with self.subTest("on_items_update stores entry"):
+            fname = _tmp_file(self.tmp)
+            mgr = ConcreteTestManager(9999, ["SYM"], fname, append_mode=True, remote_items={"SYM": []})
+            mgr.on_items_update("SYM", [[int(time.time()*1000), 123.0]])
+            with mgr.lock:
+                self.assertIn(123.0, [e[1] for e in mgr.cache.get("SYM", [])])
 
-    def test_filter_new_items_behaviors(self):
-        with self.subTest("removes duplicates"):
+    # ── filter_new_items and query_remote ─────────────────────────────────────
+
+    def test_filter_and_remote_query_behaviors(self):
+        with self.subTest("filter_new_items removes duplicates"):
             fname = _tmp_file(self.tmp)
             mgr = ConcreteTestManager(9999, ["SYM"], fname)
             existing = [[1, 10.0], [2, 20.0]]
             new = [[2, 20.0], [3, 30.0]]
             self.assertEqual(mgr.filter_new_items(existing, new), [[3, 30.0]])
 
-        with self.subTest("all new"):
+        with self.subTest("filter_new_items all new"):
             fname = _tmp_file(self.tmp)
             mgr = ConcreteTestManager(9999, ["SYM"], fname)
             self.assertEqual(len(mgr.filter_new_items([], [[1, 1.0], [2, 2.0]])), 2)
 
-    def test_query_remote_and_update_behaviors(self):
-        with self.subTest("fetches and stores"):
+        with self.subTest("query_remote fetches and stores"):
             fname = _tmp_file(self.tmp)
             ts = int(time.time() * 1000)
             remote = {"SYM": [[ts, 99.0]]}
@@ -200,7 +206,7 @@ class TestCacheManagerInterface(unittest.TestCase):
             with mgr.lock:
                 self.assertIn(99.0, [e[1] for e in mgr.cache.get("SYM", [])])
 
-        with self.subTest("skips empty"):
+        with self.subTest("query_remote skips empty"):
             fname = _tmp_file(self.tmp)
             mgr = ConcreteTestManager(9999, ["SYM"], fname, remote_items={"SYM": []})
             mgr.cache = {}
@@ -209,7 +215,7 @@ class TestCacheManagerInterface(unittest.TestCase):
             with mgr.lock:
                 self.assertEqual(mgr.cache.get("SYM", []), [])
 
-        with self.subTest("continues on empty symbol"):
+        with self.subTest("query_remote continues on empty symbol"):
             fname = _tmp_file(self.tmp)
             ts = int(time.time() * 1000)
             remote = {"SYM1": [], "SYM2": [[ts, 5.0]]}
@@ -219,13 +225,6 @@ class TestCacheManagerInterface(unittest.TestCase):
             mgr.query_remote_and_update_cache()
             with mgr.lock:
                 self.assertIn(5.0, [e[1] for e in mgr.cache.get("SYM2", [])])
-                
-    def test_on_items_update_stores_entry(self):
-        fname = _tmp_file(self.tmp)
-        mgr = ConcreteTestManager(9999, ["SYM"], fname, append_mode=True, remote_items={"SYM": []})
-        mgr.on_items_update("SYM", [[int(time.time()*1000), 123.0]])
-        with mgr.lock:
-            self.assertIn(123.0, [e[1] for e in mgr.cache.get("SYM", [])])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -240,12 +239,15 @@ class TestCachePersistenceDurability(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _make_manager(self, *, append_persist):
+    def _make_manager(self, *, append_persist, filename=None):
         suffix = "jsonl" if append_persist else "json"
+        if filename is None:
+            filename = _tmp_file(
+                self.tmp.name, f"durable_{len(os.listdir(self.tmp.name))}_{time.time_ns()}.{suffix}")
         manager = ConcreteTestManager(
             9999,
             ["SYM"],
-            _tmp_file(self.tmp.name, f"durable.{suffix}"),
+            filename,
             append_mode=True,
             append_persist=append_persist,
             remote_items={"SYM": []},
@@ -260,60 +262,61 @@ class TestCachePersistenceDurability(unittest.TestCase):
         with open(path, encoding="utf-8") as handle:
             return [json.loads(line) for line in handle if line.strip()]
 
-    def test_partial_jsonl_write_rolls_back_cursor_and_retries_all_rows(self):
-        manager = self._make_manager(append_persist=True)
-        manager.cache = {
-            "AAA": [[1000, 1.0]],
-            "BBB": [[2000, 2.0]],
-        }
-        manager.fetchtime_time_per_symbol = {"AAA": 1000, "BBB": 2000}
-        real_dumps = cm.json.dumps
-        calls = 0
+    def test_jsonl_write_failures_rollback_and_retry(self):
+        with self.subTest("partial write rolls back cursor and retries all rows"):
+            manager = self._make_manager(append_persist=True)
+            manager.cache = {
+                "AAA": [[1000, 1.0]],
+                "BBB": [[2000, 2.0]],
+            }
+            manager.fetchtime_time_per_symbol = {"AAA": 1000, "BBB": 2000}
+            real_dumps = cm.json.dumps
+            calls = 0
 
-        def fail_second_dump(*args, **kwargs):
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                raise OSError("simulated partial write failure")
-            return real_dumps(*args, **kwargs)
+            def fail_second_dump(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("simulated partial write failure")
+                return real_dumps(*args, **kwargs)
 
-        with patch.object(cm.json, "dumps", side_effect=fail_second_dump):
-            self.assertFalse(manager.save_state_to_file())
+            with patch.object(cm.json, "dumps", side_effect=fail_second_dump):
+                self.assertFalse(manager.save_state_to_file())
 
-        self.assertEqual(manager._persisted_counts, {})
-        self.assertEqual(os.path.getsize(manager.filename), 0)
-        self.assertTrue(manager.save_state_to_file())
-        rows = self._read_jsonl(manager.filename)
-        self.assertEqual([row["s"] for row in rows], ["AAA", "BBB"])
-        self.assertEqual(manager._persisted_counts, {"AAA": 1, "BBB": 1})
+            self.assertEqual(manager._persisted_counts, {})
+            self.assertEqual(os.path.getsize(manager.filename), 0)
+            self.assertTrue(manager.save_state_to_file())
+            rows = self._read_jsonl(manager.filename)
+            self.assertEqual([row["s"] for row in rows], ["AAA", "BBB"])
+            self.assertEqual(manager._persisted_counts, {"AAA": 1, "BBB": 1})
 
-    def test_jsonl_fsync_failure_rolls_back_and_retry_persists_every_row(self):
-        manager = self._make_manager(append_persist=True)
+        with self.subTest("fsync failure rolls back and retry persists every row"):
+            manager = self._make_manager(append_persist=True)
 
-        with patch.object(
-                cm.os, "fsync", side_effect=[OSError("simulated fsync failure"), None]):
-            self.assertFalse(manager.save_state_to_file())
+            with patch.object(
+                    cm.os, "fsync", side_effect=[OSError("simulated fsync failure"), None]):
+                self.assertFalse(manager.save_state_to_file())
 
-        self.assertEqual(manager._persisted_counts, {})
-        self.assertEqual(os.path.getsize(manager.filename), 0)
-        self.assertTrue(manager.save_state_to_file())
-        rows = self._read_jsonl(manager.filename)
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["i"], [1000, 1.0])
+            self.assertEqual(manager._persisted_counts, {})
+            self.assertEqual(os.path.getsize(manager.filename), 0)
+            self.assertTrue(manager.save_state_to_file())
+            rows = self._read_jsonl(manager.filename)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["i"], [1000, 1.0])
 
-    def test_metadata_failure_does_not_duplicate_durable_jsonl_rows_on_retry(self):
-        manager = self._make_manager(append_persist=True)
+        with self.subTest("metadata failure does not duplicate durable rows on retry"):
+            manager = self._make_manager(append_persist=True)
 
-        with patch.object(manager, "_write_meta", return_value=False):
-            self.assertFalse(manager.save_state_to_file())
+            with patch.object(manager, "_write_meta", return_value=False):
+                self.assertFalse(manager.save_state_to_file())
 
-        self.assertEqual(manager._persisted_counts, {"SYM": 1})
-        self.assertEqual(len(self._read_jsonl(manager.filename)), 1)
-        self.assertTrue(manager.save_state_to_file())
-        self.assertEqual(len(self._read_jsonl(manager.filename)), 1)
-        with open(manager.filename + ".meta", encoding="utf-8") as handle:
-            metadata = json.load(handle)
-        self.assertEqual(metadata["counts"], {"SYM": 1})
+            self.assertEqual(manager._persisted_counts, {"SYM": 1})
+            self.assertEqual(len(self._read_jsonl(manager.filename)), 1)
+            self.assertTrue(manager.save_state_to_file())
+            self.assertEqual(len(self._read_jsonl(manager.filename)), 1)
+            with open(manager.filename + ".meta", encoding="utf-8") as handle:
+                metadata = json.load(handle)
+            self.assertEqual(metadata["counts"], {"SYM": 1})
 
     def _save_while_update_attempts_to_cross_metadata(self, manager):
         real_atomic_write_json = cm.atomic_write_json
@@ -346,30 +349,26 @@ class TestCachePersistenceDurability(unittest.TestCase):
             self.assertFalse(mutation_thread.is_alive())
         self.assertTrue(mutation_finished.is_set())
 
-    def test_jsonl_metadata_cannot_advance_past_durable_rows(self):
-        manager = self._make_manager(append_persist=True)
-        self._save_while_update_attempts_to_cross_metadata(manager)
+    def test_metadata_cannot_advance_past_durable_data(self):
+        for append_persist in (True, False):
+            with self.subTest(append_persist=append_persist):
+                manager = self._make_manager(append_persist=append_persist)
+                self._save_while_update_attempts_to_cross_metadata(manager)
 
-        rows = self._read_jsonl(manager.filename)
-        with open(manager.filename + ".meta", encoding="utf-8") as handle:
-            metadata = json.load(handle)
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(metadata["counts"], {"SYM": 1})
-        self.assertEqual(metadata["fetchtime"], {"SYM": 1000})
-        self.assertEqual(len(manager.cache["SYM"]), 2)
+                with open(manager.filename + ".meta", encoding="utf-8") as handle:
+                    metadata = json.load(handle)
+                self.assertEqual(metadata["counts"], {"SYM": 1})
+                self.assertEqual(len(manager.cache["SYM"]), 2)
 
-    def test_full_snapshot_metadata_cannot_advance_past_durable_data(self):
-        manager = self._make_manager(append_persist=False)
-        self._save_while_update_attempts_to_cross_metadata(manager)
-
-        with open(manager.filename, encoding="utf-8") as handle:
-            data = json.load(handle)
-        with open(manager.filename + ".meta", encoding="utf-8") as handle:
-            metadata = json.load(handle)
-        self.assertEqual(data["items"], {"SYM": [[1000, 1.0]]})
-        self.assertEqual(data["fetchtime"], metadata["fetchtime"])
-        self.assertEqual(metadata["counts"], {"SYM": 1})
-        self.assertEqual(manager.cache["SYM"], [[1000, 1.0], [2000, 2.0]])
+                if append_persist:
+                    rows = self._read_jsonl(manager.filename)
+                    self.assertEqual(len(rows), 1)
+                    self.assertEqual(metadata["fetchtime"], {"SYM": 1000})
+                else:
+                    with open(manager.filename, encoding="utf-8") as handle:
+                        data = json.load(handle)
+                    self.assertEqual(data["items"], {"SYM": [[1000, 1.0]]})
+                    self.assertEqual(data["fetchtime"], metadata["fetchtime"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -557,45 +556,46 @@ class TestAccountCacheHealthPublication(unittest.TestCase):
                     now_ms=123456,
                 )
 
-    def test_failed_remote_sync_does_not_publish(self):
-        manager = self._make_manager(cm.CacheOrderManager, ["BTC"])
-        query, persist, publish = self._run_one_iteration(
-            manager,
-            canonical_symbols=["BTC"],
-            query_error=RuntimeError("remote sync failed"),
-        )
-        query.assert_called_once_with()
-        persist.assert_not_called()
-        publish.assert_not_called()
+    def test_non_publishing_failure_and_skip_scenarios(self):
+        with self.subTest("failed remote sync"):
+            manager = self._make_manager(cm.CacheOrderManager, ["BTC"])
+            query, persist, publish = self._run_one_iteration(
+                manager,
+                canonical_symbols=["BTC"],
+                query_error=RuntimeError("remote sync failed"),
+            )
+            query.assert_called_once_with()
+            persist.assert_not_called()
+            publish.assert_not_called()
 
-    def test_incomplete_remote_sync_does_not_publish(self):
-        manager = self._make_manager(cm.CacheTradeManager, ["BTC"])
-        _, persist, publish = self._run_one_iteration(
-            manager, canonical_symbols=["BTC"], query_result=False)
-        persist.assert_called_once_with()
-        publish.assert_not_called()
+        with self.subTest("incomplete remote sync"):
+            manager = self._make_manager(cm.CacheTradeManager, ["BTC"])
+            _, persist, publish = self._run_one_iteration(
+                manager, canonical_symbols=["BTC"], query_result=False)
+            persist.assert_called_once_with()
+            publish.assert_not_called()
 
-    def test_persistence_failure_does_not_publish(self):
-        manager = self._make_manager(cm.CacheOrderManager, ["BTC"])
-        _, persist, publish = self._run_one_iteration(
-            manager, canonical_symbols=["BTC"], persisted=False)
-        persist.assert_called_once_with()
-        publish.assert_not_called()
+        with self.subTest("persistence failure"):
+            manager = self._make_manager(cm.CacheOrderManager, ["BTC"])
+            _, persist, publish = self._run_one_iteration(
+                manager, canonical_symbols=["BTC"], persisted=False)
+            persist.assert_called_once_with()
+            publish.assert_not_called()
 
-    def test_restricted_symbol_manager_does_not_publish(self):
-        manager = self._make_manager(cm.CacheTradeManager, ["BTC"])
-        _, persist, publish = self._run_one_iteration(
-            manager, canonical_symbols=["BTC", "ETH"])
-        persist.assert_called_once_with()
-        publish.assert_not_called()
+        with self.subTest("restricted symbol manager"):
+            manager = self._make_manager(cm.CacheTradeManager, ["BTC"])
+            _, persist, publish = self._run_one_iteration(
+                manager, canonical_symbols=["BTC", "ETH"])
+            persist.assert_called_once_with()
+            publish.assert_not_called()
 
-    def test_non_polling_iteration_does_not_publish(self):
-        manager = self._make_manager(cm.CacheOrderManager, ["BTC"])
-        query, persist, publish = self._run_one_iteration(
-            manager, canonical_symbols=["BTC"], should_poll=False)
-        query.assert_not_called()
-        persist.assert_called_once_with()
-        publish.assert_not_called()
+        with self.subTest("non polling iteration"):
+            manager = self._make_manager(cm.CacheOrderManager, ["BTC"])
+            query, persist, publish = self._run_one_iteration(
+                manager, canonical_symbols=["BTC"], should_poll=False)
+            query.assert_not_called()
+            persist.assert_called_once_with()
+            publish.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -623,58 +623,58 @@ class TestCacheSparsePriceManager(unittest.TestCase):
         self._cur_mgr_mock = cur_mgr
         return mgr
 
-    def test_rebuild_fetchtime_from_cache(self):
-        mgr = self._make()
-        ts = int(time.time() * 1000)
-        mgr.cache = {"BTC": [[ts - 1000, 100.0], [ts, 200.0]]}
-        result = mgr.rebuild_fetchtime_times()
-        self.assertEqual(result["BTC"], ts)
+    def test_sparse_price_manager_rebuild_and_remote_behaviors(self):
+        with self.subTest("rebuild_fetchtime_from_cache"):
+            mgr = self._make()
+            ts = int(time.time() * 1000)
+            mgr.cache = {"BTC": [[ts - 1000, 100.0], [ts, 200.0]]}
+            result = mgr.rebuild_fetchtime_times()
+            self.assertEqual(result["BTC"], ts)
 
-    def test_rebuild_fetchtime_empty_cache(self):
-        mgr = self._make()
-        mgr.cache = {}
-        result = mgr.rebuild_fetchtime_times()
-        self.assertEqual(result, {})
+        with self.subTest("rebuild_fetchtime_empty_cache"):
+            mgr = self._make()
+            mgr.cache = {}
+            result = mgr.rebuild_fetchtime_times()
+            self.assertEqual(result, {})
 
-    def test_get_remote_items_returns_price_entry(self):
-        fname = _tmp_file(self.tmp, "cp.json")
-        api_mock = MagicMock()
-        cur_mgr = MagicMock()
-        ts = int(time.time() * 1000)
-        cur_mgr.get_price.return_value = [ts, 55000.0]
-        with patch("cacheManager.get_current_price_manager", return_value=cur_mgr):
-            mgr = cm.CacheSparsePriceManager(9999, ["BTC"], fname, api_client=api_mock)
-            result = mgr.get_remote_items("BTC", 0)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0][1], 55000.0)
-        self.assertEqual(result[0][0], ts)   # Real observation timestamp, not time.time().
+        with self.subTest("get_remote_items_returns_price_entry"):
+            fname = _tmp_file(self.tmp, "cp.json")
+            api_mock = MagicMock()
+            cur_mgr = MagicMock()
+            ts = int(time.time() * 1000)
+            cur_mgr.get_price.return_value = [ts, 55000.0]
+            with patch("cacheManager.get_current_price_manager", return_value=cur_mgr):
+                mgr = cm.CacheSparsePriceManager(9999, ["BTC"], fname, api_client=api_mock)
+                result = mgr.get_remote_items("BTC", 0)
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0][1], 55000.0)
+            self.assertEqual(result[0][0], ts)   # Real observation timestamp, not time.time().
 
-    def test_get_remote_items_none_price_returns_empty(self):
-        fname = _tmp_file(self.tmp, "cp_none.json")
-        api_mock = MagicMock()
-        cur_mgr = MagicMock()
-        cur_mgr.get_price.return_value = None
-        with patch("cacheManager.get_current_price_manager", return_value=cur_mgr):
-            mgr = cm.CacheSparsePriceManager(9999, ["BTC"], fname, api_client=api_mock)
-            result = mgr.get_remote_items("BTC", 0)
-        self.assertEqual(result, [])
+        with self.subTest("get_remote_items_none_price_returns_empty"):
+            fname = _tmp_file(self.tmp, "cp_none.json")
+            api_mock = MagicMock()
+            cur_mgr = MagicMock()
+            cur_mgr.get_price.return_value = None
+            with patch("cacheManager.get_current_price_manager", return_value=cur_mgr):
+                mgr = cm.CacheSparsePriceManager(9999, ["BTC"], fname, api_client=api_mock)
+                result = mgr.get_remote_items("BTC", 0)
+            self.assertEqual(result, [])
 
-    def test_get_remote_items_uses_real_timestamp_not_wallclock(self):
-        """Record a stale price with its real observation time, not wall time."""
-        fname = _tmp_file(self.tmp, "cp_frozen.json")
-        api_mock = MagicMock()
-        cur_mgr = MagicMock()
-        frozen_ts = int((time.time() - 27 * 60) * 1000)
-        cur_mgr.get_price.return_value = [frozen_ts, 12345.6]
-        with patch("cacheManager.get_current_price_manager", return_value=cur_mgr):
-            mgr = cm.CacheSparsePriceManager(9999, ["BTC"], fname, api_client=api_mock)
-            result = mgr.get_remote_items("BTC", 0)
-        self.assertEqual(result[0][0], frozen_ts)
-        self.assertNotAlmostEqual(result[0][0], int(time.time() * 1000), delta=5000)
+        with self.subTest("get_remote_items_uses_real_timestamp_not_wallclock"):
+            fname = _tmp_file(self.tmp, "cp_frozen.json")
+            api_mock = MagicMock()
+            cur_mgr = MagicMock()
+            frozen_ts = int((time.time() - 27 * 60) * 1000)
+            cur_mgr.get_price.return_value = [frozen_ts, 12345.6]
+            with patch("cacheManager.get_current_price_manager", return_value=cur_mgr):
+                mgr = cm.CacheSparsePriceManager(9999, ["BTC"], fname, api_client=api_mock)
+                result = mgr.get_remote_items("BTC", 0)
+            self.assertEqual(result[0][0], frozen_ts)
+            self.assertNotAlmostEqual(result[0][0], int(time.time() * 1000), delta=5000)
 
-    def test_append_mode_true(self):
-        mgr = self._make()
-        self.assertTrue(mgr.append_mode)
+        with self.subTest("append_mode_true"):
+            mgr = self._make()
+            self.assertTrue(mgr.append_mode)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -700,58 +700,59 @@ class TestCache24PriceManager(unittest.TestCase):
             mgr = cm.Cache24PriceManager(9999, ["BTC"], fname, api_client=api_mock)
         return mgr
 
-    def test_on_price_update_appends_entry(self):
-        mgr = self._make()
-        ts = int(time.time() * 1000)
-        mgr.on_price_update("BTC", ts, 60000.0)
-        with mgr.lock:
-            prices = [e[1] for e in mgr.cache.get("BTC", [])]
-        self.assertIn(60000.0, prices)
+    def test_cache24_price_manager_lifecycle_and_trimming(self):
+        with self.subTest("on_price_update_appends_entry"):
+            mgr = self._make()
+            ts = int(time.time() * 1000)
+            mgr.on_price_update("BTC", ts, 60000.0)
+            with mgr.lock:
+                prices = [e[1] for e in mgr.cache.get("BTC", [])]
+            self.assertIn(60000.0, prices)
 
-    def test_on_price_update_multiple_entries_all_kept(self):
-        mgr = self._make()
-        base_ts = int(time.time() * 1000)
-        for i in range(5):
-            mgr.on_price_update("BTC", base_ts + i*1000, 50000.0 + i)
-        with mgr.lock:
-            self.assertGreaterEqual(len(mgr.cache.get("BTC", [])), 5)
+        with self.subTest("on_price_update_multiple_entries_all_kept"):
+            mgr = self._make()
+            base_ts = int(time.time() * 1000)
+            for i in range(5):
+                mgr.on_price_update("BTC", base_ts + i*1000, 50000.0 + i)
+            with mgr.lock:
+                self.assertGreaterEqual(len(mgr.cache.get("BTC", [])), 5)
 
-    def test_trim_removes_entries_older_than_keep_hours(self):
-        mgr = self._make()
-        old_ts  = int((time.time() - (mgr.KEEP_HOURS + 1) * 3600) * 1000)
-        fresh_ts = int(time.time() * 1000)
-        with mgr.lock:
-            mgr.cache["BTC"] = [[old_ts, 1.0], [fresh_ts, 2.0]]
-        mgr._trim_old_data("BTC")
-        with mgr.lock:
-            entries = mgr.cache["BTC"]
-        self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0][1], 2.0)
+        with self.subTest("trim_removes_entries_older_than_keep_hours"):
+            mgr = self._make()
+            old_ts = int((time.time() - (mgr.KEEP_HOURS + 1) * 3600) * 1000)
+            fresh_ts = int(time.time() * 1000)
+            with mgr.lock:
+                mgr.cache["BTC"] = [[old_ts, 1.0], [fresh_ts, 2.0]]
+            mgr._trim_old_data("BTC")
+            with mgr.lock:
+                entries = mgr.cache["BTC"]
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0][1], 2.0)
 
-    def test_trim_keeps_all_fresh_entries(self):
-        mgr = self._make()
-        now = int(time.time() * 1000)
-        with mgr.lock:
-            mgr.cache["BTC"] = [[now - 100, 1.0], [now, 2.0]]
-        mgr._trim_old_data("BTC")
-        with mgr.lock:
-            self.assertEqual(len(mgr.cache["BTC"]), 2)
+        with self.subTest("trim_keeps_all_fresh_entries"):
+            mgr = self._make()
+            now = int(time.time() * 1000)
+            with mgr.lock:
+                mgr.cache["BTC"] = [[now - 100, 1.0], [now, 2.0]]
+            mgr._trim_old_data("BTC")
+            with mgr.lock:
+                self.assertEqual(len(mgr.cache["BTC"]), 2)
 
-    def test_rebuild_fetchtime_max_timestamp(self):
-        mgr = self._make()
-        mgr.cache = {"BTC": [[100, 1.0], [500, 2.0], [300, 3.0]]}
-        result = mgr.rebuild_fetchtime_times()
-        self.assertEqual(result["BTC"], 500)
+        with self.subTest("rebuild_fetchtime_max_timestamp"):
+            mgr = self._make()
+            mgr.cache = {"BTC": [[100, 1.0], [500, 2.0], [300, 3.0]]}
+            result = mgr.rebuild_fetchtime_times()
+            self.assertEqual(result["BTC"], 500)
 
-    def test_no_polling_only_saves(self):
-        mgr = self._make()
-        with patch.object(mgr, "query_remote_and_update_cache") as mock_poll:
-            time.sleep(0.1)
-            mock_poll.assert_not_called()
+        with self.subTest("no_polling_only_saves"):
+            mgr = self._make()
+            with patch.object(mgr, "query_remote_and_update_cache") as mock_poll:
+                time.sleep(0.1)
+                mock_poll.assert_not_called()
 
-    def test_append_mode_true(self):
-        mgr = self._make()
-        self.assertTrue(mgr.append_mode)
+        with self.subTest("append_mode_true"):
+            mgr = self._make()
+            self.assertTrue(mgr.append_mode)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -767,75 +768,74 @@ class TestCachePriceLongTrendManager(unittest.TestCase):
         fname = _tmp_file(self.tmp, "cache_price_long_trend.json")
         return cm.CachePriceLongTrendManager(9999, ["BTC"], fname, api_client=api_mock)
 
-    def test_rebuild_fetchtime_from_dict_cache(self):
-        mgr = self._make()
-        mgr.cache = {
-            "BTC": [{"timestamp": 100}, {"timestamp": 500}, {"timestamp": 300}]
-        }
-        result = mgr.rebuild_fetchtime_times()
-        # max minus offset 60s
-        self.assertEqual(result["BTC"], max(0, 500 * 1000 - 60_000))
+    def test_price_long_trend_manager_behaviors(self):
+        with self.subTest("rebuild_fetchtime_from_dict_cache"):
+            mgr = self._make()
+            mgr.cache = {
+                "BTC": [{"timestamp": 100}, {"timestamp": 500}, {"timestamp": 300}]
+            }
+            result = mgr.rebuild_fetchtime_times()
+            self.assertEqual(result["BTC"], max(0, 500 * 1000 - 60_000))
 
-    def test_rebuild_fetchtime_empty(self):
-        mgr = self._make()
-        mgr.cache = {}
-        result = mgr.rebuild_fetchtime_times()
-        self.assertEqual(result, {})
+        with self.subTest("rebuild_fetchtime_empty"):
+            mgr = self._make()
+            mgr.cache = {}
+            result = mgr.rebuild_fetchtime_times()
+            self.assertEqual(result, {})
 
-    def test_get_remote_items_missing_file(self):
-        mgr = self._make()
-        # A missing priceanalysis.json yields an empty list.
-        with patch("os.path.exists", return_value=False):
-            result = mgr.get_remote_items("BTC", 0)
-        self.assertEqual(result, [])
-
-    def test_get_remote_items_symbol_not_in_data(self):
-        mgr = self._make()
-        fake_data = {"ETH": {"trend": "up"}}
-        with patch("builtins.open", unittest.mock.mock_open(read_data=json.dumps(fake_data))):
-            with patch("os.path.exists", return_value=True):
+        with self.subTest("get_remote_items_missing_file"):
+            mgr = self._make()
+            with patch("os.path.exists", return_value=False):
                 result = mgr.get_remote_items("BTC", 0)
-        self.assertEqual(result, [])
+            self.assertEqual(result, [])
 
-    def test_explicit_neutral_trend_clears_the_snapshot(self):
-        mgr = self._make()
-        with patch("builtins.open", unittest.mock.mock_open(
-                read_data=json.dumps({"BTC": None}))):
-            with patch("os.path.exists", return_value=True):
-                self.assertEqual(mgr.get_remote_items("BTC", 0), [None])
+        with self.subTest("get_remote_items_symbol_not_in_data"):
+            mgr = self._make()
+            fake_data = {"ETH": {"trend": "up"}}
+            with patch("builtins.open", unittest.mock.mock_open(read_data=json.dumps(fake_data))):
+                with patch("os.path.exists", return_value=True):
+                    result = mgr.get_remote_items("BTC", 0)
+            self.assertEqual(result, [])
 
-        mgr.cache = {"BTC": [{"timestamp": 500, "direction": "up"}]}
-        mgr.update_cache_per_symbol("BTC", [None])
-        self.assertEqual(mgr.cache["BTC"], [None])
-        self.assertEqual(mgr.rebuild_fetchtime_times(), {})
+        with self.subTest("explicit_neutral_trend_clears_the_snapshot"):
+            mgr = self._make()
+            with patch("builtins.open", unittest.mock.mock_open(
+                    read_data=json.dumps({"BTC": None}))):
+                with patch("os.path.exists", return_value=True):
+                    self.assertEqual(mgr.get_remote_items("BTC", 0), [None])
 
-    def test_rebuild_skips_neutral_and_malformed_trend_entries(self):
-        mgr = self._make()
-        mgr.cache = {
-            "BTC": [
-                None,
-                "not-a-trend",
-                {"timestamp": None},
-                {"timestamp": "invalid"},
-                {"timestamp": 500},
-            ],
-        }
-        self.assertEqual(
-            mgr.rebuild_fetchtime_times(),
-            {"BTC": 440_000},
-        )
+            mgr.cache = {"BTC": [{"timestamp": 500, "direction": "up"}]}
+            mgr.update_cache_per_symbol("BTC", [None])
+            self.assertEqual(mgr.cache["BTC"], [None])
+            self.assertEqual(mgr.rebuild_fetchtime_times(), {})
 
-    def test_get_remote_items_returns_symbol_data(self):
-        mgr = self._make()
-        fake_data = {"BTC": {"trend": "up", "score": 0.9}}
-        with patch("builtins.open", unittest.mock.mock_open(read_data=json.dumps(fake_data))):
-            with patch("os.path.exists", return_value=True):
-                result = mgr.get_remote_items("BTC", 0)
-        self.assertEqual(result, [{"trend": "up", "score": 0.9}])
+        with self.subTest("rebuild_skips_neutral_and_malformed_trend_entries"):
+            mgr = self._make()
+            mgr.cache = {
+                "BTC": [
+                    None,
+                    "not-a-trend",
+                    {"timestamp": None},
+                    {"timestamp": "invalid"},
+                    {"timestamp": 500},
+                ],
+            }
+            self.assertEqual(
+                mgr.rebuild_fetchtime_times(),
+                {"BTC": 440_000},
+            )
 
-    def test_append_mode_false(self):
-        mgr = self._make()
-        self.assertFalse(mgr.append_mode)
+        with self.subTest("get_remote_items_returns_symbol_data"):
+            mgr = self._make()
+            fake_data = {"BTC": {"trend": "up", "score": 0.9}}
+            with patch("builtins.open", unittest.mock.mock_open(read_data=json.dumps(fake_data))):
+                with patch("os.path.exists", return_value=True):
+                    result = mgr.get_remote_items("BTC", 0)
+            self.assertEqual(result, [{"trend": "up", "score": 0.9}])
+
+        with self.subTest("append_mode_false"):
+            mgr = self._make()
+            self.assertFalse(mgr.append_mode)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -940,111 +940,110 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
 
     def test_fresh_price_read_apis_use_cached_value(self):
         mgr, api_mock = self._make()
-        mgr.on_items_update("BTC", [55000.0])
-        api_mock.get_current_price.reset_mock()
-        entry = mgr.get_price("BTC")
-        self.assertIsNotNone(entry)
-        self.assertEqual(entry[1], 55000.0)
-        self.assertEqual(len(entry), 2)
-        self.assertIsInstance(entry[0], int)
-        self.assertIsInstance(entry[1], float)
-        value = mgr.get_price_value("BTC")
-        self.assertIsInstance(value, float)
-        self.assertEqual(value, 55000.0)
-        api_mock.get_current_price.assert_not_called()
+    def test_get_price_and_value_cache_and_http_fallback(self):
+        with self.subTest("fresh price read apis use cached value"):
+            mgr, api_mock = self._make()
+            mgr.on_items_update("BTC", [55000.0])
+            api_mock.get_current_price.reset_mock()
+            entry = mgr.get_price("BTC")
+            self.assertIsNotNone(entry)
+            self.assertEqual(entry[1], 55000.0)
+            self.assertEqual(len(entry), 2)
+            self.assertIsInstance(entry[0], int)
+            self.assertIsInstance(entry[1], float)
+            value = mgr.get_price_value("BTC")
+            self.assertIsInstance(value, float)
+            self.assertEqual(value, 55000.0)
+            api_mock.get_current_price.assert_not_called()
 
-    def test_get_price_stale_forces_http(self):
-        mgr, api_mock = self._make()
-        api_mock.get_current_price.return_value = 65000.0
-        with mgr.lock:
-            mgr.cache["BTC"] = [[0, 50000.0]]   # A zero timestamp is always stale.
-        api_mock.get_current_price.reset_mock()
-        entry = mgr.get_price("BTC")
-        api_mock.get_current_price.assert_called()
-        self.assertEqual(entry[1], 65000.0)
+        with self.subTest("get_price stale forces http"):
+            mgr, api_mock = self._make()
+            api_mock.get_current_price.return_value = 65000.0
+            with mgr.lock:
+                mgr.cache["BTC"] = [[0, 50000.0]]   # A zero timestamp is always stale.
+            api_mock.get_current_price.reset_mock()
+            entry = mgr.get_price("BTC")
+            api_mock.get_current_price.assert_called()
+            self.assertEqual(entry[1], 65000.0)
 
-    def test_get_price_missing_forces_http(self):
-        mgr, api_mock = self._make()
-        api_mock.get_current_price.return_value = 70000.0
-        with mgr.lock:
-            mgr.cache = {}
-        api_mock.get_current_price.reset_mock()
-        entry = mgr.get_price("BTC")
-        api_mock.get_current_price.assert_called()
-        self.assertEqual(entry[1], 70000.0)
+        with self.subTest("get_price missing forces http"):
+            mgr, api_mock = self._make()
+            api_mock.get_current_price.return_value = 70000.0
+            with mgr.lock:
+                mgr.cache = {}
+            api_mock.get_current_price.reset_mock()
+            entry = mgr.get_price("BTC")
+            api_mock.get_current_price.assert_called()
+            self.assertEqual(entry[1], 70000.0)
 
-    def test_get_price_value_none_if_unavailable(self):
-        mgr, api_mock = self._make()
-        api_mock.get_current_price.return_value = None
-        with mgr.lock:
-            mgr.cache = {}
-        val = mgr.get_price_value("BTC")
-        self.assertIsNone(val)
+        with self.subTest("get_price_value none if unavailable"):
+            mgr, api_mock = self._make()
+            api_mock.get_current_price.return_value = None
+            with mgr.lock:
+                mgr.cache = {}
+            val = mgr.get_price_value("BTC")
+            self.assertIsNone(val)
 
-    def test_get_price_does_not_return_stale_row_after_http_failure(self):
-        mgr, api_mock = self._make()
-        api_mock.get_current_price.return_value = None
-        stale = [0, 50000.0]
-        with mgr.lock:
-            mgr.cache["BTC"] = [stale]
+        with self.subTest("get_price does not return stale row after http failure"):
+            mgr, api_mock = self._make()
+            api_mock.get_current_price.return_value = None
+            stale = [0, 50000.0]
+            with mgr.lock:
+                mgr.cache["BTC"] = [stale]
 
-        self.assertIsNone(mgr.get_price("BTC"))
-        api_mock.get_current_price.assert_called()
-        with mgr.lock:
-            self.assertEqual([stale], mgr.cache["BTC"])
+            self.assertIsNone(mgr.get_price("BTC"))
+            api_mock.get_current_price.assert_called()
+            with mgr.lock:
+                self.assertEqual([stale], mgr.cache["BTC"])
 
-    def test_unbound_remote_price_keeps_implicit_provider_routing(self):
-        mgr, api_mock = self._make(price=51000.0)
-        api_mock.get_current_price.reset_mock()
+    def test_provider_binding_and_cached_observation(self):
+        with self.subTest("unbound remote price keeps implicit provider routing"):
+            mgr, api_mock = self._make(price=51000.0)
+            api_mock.get_current_price.reset_mock()
+            rows = mgr.get_remote_items("BTC", None)
+            self.assertEqual(rows[0][1], 51000.0)
+            call = api_mock.get_current_price.call_args
+            self.assertEqual(call.kwargs["symbol"], "BTC")
+            self.assertIsNone(call.kwargs.get("provider_name"))
+            self.assertIsNone(mgr.provider_name_for("BTC"))
 
-        rows = mgr.get_remote_items("BTC", None)
+        with self.subTest("bound remote price uses explicit provider"):
+            mgr, api_mock = self._make(
+                price=85.49,
+                provider_names={"BTC": "Kraken"},
+            )
+            api_mock.get_current_price.reset_mock()
+            rows = mgr.get_remote_items("BTC", None)
+            self.assertEqual(rows[0][1], 85.49)
+            api_mock.get_current_price.assert_called_once_with(
+                symbol="BTC",
+                provider_name="Kraken",
+            )
+            self.assertEqual(mgr.provider_name_for("BTC"), "Kraken")
 
-        self.assertEqual(rows[0][1], 51000.0)
-        call = api_mock.get_current_price.call_args
-        self.assertEqual(call.kwargs["symbol"], "BTC")
-        self.assertIsNone(call.kwargs.get("provider_name"))
-        self.assertIsNone(mgr.provider_name_for("BTC"))
+        with self.subTest("conflicting provider binding is rejected"):
+            mgr, _ = self._make(provider_names={"BTC": "Kraken"})
+            mgr.bind_provider("BTC", "kraken")
+            with self.assertRaisesRegex(ValueError, r"conflicting provider"):
+                mgr.bind_provider("BTC", "Hyperliquid")
 
-    def test_bound_remote_price_uses_explicit_provider(self):
-        mgr, api_mock = self._make(
-            price=85.49,
-            provider_names={"BTC": "Kraken"},
-        )
-        api_mock.get_current_price.reset_mock()
+        with self.subTest("cached price observation never fetches"):
+            mgr, api_mock = self._make()
+            mgr.on_items_update("BTC", [55000.0])
+            api_mock.get_current_price.reset_mock()
 
-        rows = mgr.get_remote_items("BTC", None)
+            observed_at, price = mgr.cached_price_observation(
+                "BTC", max_age_sec=10.0)
 
-        self.assertEqual(rows[0][1], 85.49)
-        api_mock.get_current_price.assert_called_once_with(
-            symbol="BTC",
-            provider_name="Kraken",
-        )
-        self.assertEqual(mgr.provider_name_for("BTC"), "Kraken")
+            self.assertAlmostEqual(observed_at, time.time(), delta=1.0)
+            self.assertEqual(price, 55000.0)
+            api_mock.get_current_price.assert_not_called()
 
-    def test_conflicting_provider_binding_is_rejected(self):
-        mgr, _ = self._make(provider_names={"BTC": "Kraken"})
-
-        mgr.bind_provider("BTC", "kraken")
-        with self.assertRaisesRegex(ValueError, r"conflicting provider"):
-            mgr.bind_provider("BTC", "Hyperliquid")
-
-    def test_cached_price_observation_never_fetches(self):
-        mgr, api_mock = self._make()
-        mgr.on_items_update("BTC", [55000.0])
-        api_mock.get_current_price.reset_mock()
-
-        observed_at, price = mgr.cached_price_observation(
-            "BTC", max_age_sec=10.0)
-
-        self.assertAlmostEqual(observed_at, time.time(), delta=1.0)
-        self.assertEqual(price, 55000.0)
-        api_mock.get_current_price.assert_not_called()
-
-        with mgr.lock:
-            mgr.cache["BTC"][0][0] = int((time.time() - 20.0) * 1000)
-        self.assertIsNone(
-            mgr.cached_price_observation("BTC", max_age_sec=10.0))
-        api_mock.get_current_price.assert_not_called()
+            with mgr.lock:
+                mgr.cache["BTC"][0][0] = int((time.time() - 20.0) * 1000)
+            self.assertIsNone(
+                mgr.cached_price_observation("BTC", max_age_sec=10.0))
+            api_mock.get_current_price.assert_not_called()
 
     # ── subscribe_price / unsubscribe_price ───────────────────────────────────
 
@@ -1137,36 +1136,37 @@ class TestWsHealthFunctions(unittest.TestCase):
         cm._ws_last_event_ts = 0.0
         cm._ws_is_healthy = False
 
-    def test_mark_ws_available(self):
-        for available in (True, False):
-            with self.subTest(available=available):
-                cm._mark_ws_available(available)
-                with cm._ws_health_lock:
-                    self.assertEqual(cm._ws_available, available)
+    def test_ws_health_lifecycle_and_policies(self):
+        with self.subTest("mark ws available"):
+            for available in (True, False):
+                with self.subTest(available=available):
+                    cm._mark_ws_available(available)
+                    with cm._ws_health_lock:
+                        self.assertEqual(cm._ws_available, available)
 
-    def test_ws_event_and_unhealthy_lifecycle(self):
-        cm._mark_ws_event_received()
-        with cm._ws_health_lock:
-            self.assertTrue(cm._ws_is_healthy)
-            self.assertGreater(cm._ws_last_event_ts, 0)
-        cm._mark_ws_unhealthy()
-        with cm._ws_health_lock:
-            self.assertFalse(cm._ws_is_healthy)
+        with self.subTest("ws event and unhealthy lifecycle"):
+            cm._mark_ws_event_received()
+            with cm._ws_health_lock:
+                self.assertTrue(cm._ws_is_healthy)
+                self.assertGreater(cm._ws_last_event_ts, 0)
+            cm._mark_ws_unhealthy()
+            with cm._ws_health_lock:
+                self.assertFalse(cm._ws_is_healthy)
 
-    def test_polling_fallback_policies(self):
-        cases = (
-            ("ws-mode-off", False, True, "CacheOrderManager"),
-            ("unmanaged", True, True, "CacheSparsePriceManager"),
-            ("ws-unavailable", True, False, "CacheOrderManager"),
-        )
-        try:
-            for label, ws_only, available, manager_name in cases:
-                with self.subTest(case=label):
-                    cm.WS_ONLY_MODE = ws_only
-                    cm._ws_available = available
-                    self.assertTrue(cm._should_poll_for_manager(manager_name))
-        finally:
-            cm.WS_ONLY_MODE = False
+        with self.subTest("polling fallback policies"):
+            cases = (
+                ("ws-mode-off", False, True, "CacheOrderManager"),
+                ("unmanaged", True, True, "CacheSparsePriceManager"),
+                ("ws-unavailable", True, False, "CacheOrderManager"),
+            )
+            try:
+                for label, ws_only, available, manager_name in cases:
+                    with self.subTest(case=label):
+                        cm.WS_ONLY_MODE = ws_only
+                        cm._ws_available = available
+                        self.assertTrue(cm._should_poll_for_manager(manager_name))
+            finally:
+                cm.WS_ONLY_MODE = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1187,51 +1187,64 @@ class TestCacheFactory(unittest.TestCase):
             cm._current_price_instance.shutdown()
         cm._current_price_instance = None
 
-    def test_read_only_creation_can_be_promoted_to_periodic_sync(self):
-        with patch.object(cm.CacheTradeManager, "periodic_sync") as periodic, \
-             patch("binance_api.bapi_allorders.paginate_my_trades", return_value=[]):
-            first = cm.CacheFactory.get("Trade", symbols=["BTC"], start_sync=False)
-            periodic.assert_not_called()
-            second = cm.CacheFactory.get("Trade", symbols=["BTC"], start_sync=True)
-            self.assertIs(first, second)
-            periodic.assert_called_once()
-        cm._current_price_instance = None
+    def test_factory_lifecycle_promotion_and_identity(self):
+        def _reset():
+            cm.CacheFactory.shutdown_all()
+            if cm._current_price_instance is not None:
+                cm._current_price_instance.shutdown()
+            cm._current_price_instance = None
 
-    def test_unknown_name_raises(self):
-        with self.assertRaises(ValueError):
-            cm.CacheFactory.get("NonExistent")
+        with self.subTest("read only creation can be promoted to periodic sync"):
+            _reset()
+            with patch.object(cm.CacheTradeManager, "periodic_sync") as periodic, \
+                 patch("binance_api.bapi_allorders.paginate_my_trades", return_value=[]):
+                first = cm.CacheFactory.get("Trade", symbols=["BTC"], start_sync=False)
+                periodic.assert_not_called()
+                second = cm.CacheFactory.get("Trade", symbols=["BTC"], start_sync=True)
+                self.assertIs(first, second)
+                periodic.assert_called_once()
+            _reset()
 
-    def test_returns_same_instance_twice(self):
-        with patch("cacheManager.get_current_price_manager", return_value=MagicMock()):
-            i1 = cm.CacheFactory.get("CurrentPrice", symbols=["BTC"])
-            i2 = cm.CacheFactory.get("CurrentPrice", symbols=["BTC"])
-        self.assertIs(i1, i2)
+        with self.subTest("unknown name raises"):
+            _reset()
+            with self.assertRaises(ValueError):
+                cm.CacheFactory.get("NonExistent")
 
-    def test_factory_and_current_price_getter_share_identity_factory_first(self):
-        with patch.object(
-                cm.CacheCurrentPriceManager, "load_state", return_value=None):
-            factory_manager = cm.CacheFactory.get(
-                "CurrentPrice", symbols=["BTC"], start_sync=False)
-            singleton_manager = cm.get_current_price_manager(
-                symbols=["BTC"], start_sync=False)
-        self.assertIs(factory_manager, singleton_manager)
-        self.assertEqual(
-            singleton_manager.sync_ts,
-            cm.CURRENTPRICE_SYNC_INTERVAL_SEC,
-        )
+        with self.subTest("returns same instance twice"):
+            _reset()
+            with patch("cacheManager.get_current_price_manager", return_value=MagicMock()):
+                i1 = cm.CacheFactory.get("CurrentPrice", symbols=["BTC"])
+                i2 = cm.CacheFactory.get("CurrentPrice", symbols=["BTC"])
+            self.assertIs(i1, i2)
 
-    def test_factory_and_current_price_getter_share_identity_getter_first(self):
-        with patch.object(
-                cm.CacheCurrentPriceManager, "load_state", return_value=None), \
-             patch.object(
-                cm.CacheCurrentPriceManager, "periodic_sync") as periodic:
-            singleton_manager = cm.get_current_price_manager(
-                symbols=["BTC"], sync_ts=0.8, start_sync=False)
-            factory_manager = cm.CacheFactory.get(
-                "CurrentPrice", symbols=["BTC"])
-        self.assertIs(factory_manager, singleton_manager)
-        self.assertEqual(factory_manager.sync_ts, 0.8)
-        periodic.assert_called_once_with(0.8, False)
+        with self.subTest("factory and current price getter share identity factory first"):
+            _reset()
+            with patch.object(
+                    cm.CacheCurrentPriceManager, "load_state", return_value=None):
+                factory_manager = cm.CacheFactory.get(
+                    "CurrentPrice", symbols=["BTC"], start_sync=False)
+                singleton_manager = cm.get_current_price_manager(
+                    symbols=["BTC"], start_sync=False)
+            self.assertIs(factory_manager, singleton_manager)
+            self.assertEqual(
+                singleton_manager.sync_ts,
+                cm.CURRENTPRICE_SYNC_INTERVAL_SEC,
+            )
+
+        with self.subTest("factory and current price getter share identity getter first"):
+            _reset()
+            with patch.object(
+                    cm.CacheCurrentPriceManager, "load_state", return_value=None), \
+                 patch.object(
+                    cm.CacheCurrentPriceManager, "periodic_sync") as periodic:
+                singleton_manager = cm.get_current_price_manager(
+                    symbols=["BTC"], sync_ts=0.8, start_sync=False)
+                factory_manager = cm.CacheFactory.get(
+                    "CurrentPrice", symbols=["BTC"])
+            self.assertIs(factory_manager, singleton_manager)
+            self.assertEqual(factory_manager.sync_ts, 0.8)
+            periodic.assert_called_once_with(0.8, False)
+            _reset()
 
     def test_price_factories_return_per_symbol_managers_and_filenames(self):
         cur_mock = MagicMock()
@@ -1287,19 +1300,19 @@ class TestGetCurrentPriceManagerSingleton(unittest.TestCase):
             cm._current_price_instance.shutdown()
         cm._current_price_instance = None
 
-    def test_returns_single_cache_current_price_manager(self):
-        # This characterizes singleton identity, not live polling.
-        m1 = cm.get_current_price_manager(symbols=["BTC"], start_sync=False)
-        m2 = cm.get_current_price_manager(symbols=["BTC"], start_sync=False)
-        self.assertIsInstance(m1, cm.CacheCurrentPriceManager)
-        self.assertIs(m1, m2)
+    def test_get_current_price_manager_singleton_and_ws_wiring(self):
+        with self.subTest("returns single cache current price manager"):
+            m1 = cm.get_current_price_manager(symbols=["BTC"], start_sync=False)
+            m2 = cm.get_current_price_manager(symbols=["BTC"], start_sync=False)
+            self.assertIsInstance(m1, cm.CacheCurrentPriceManager)
+            self.assertIs(m1, m2)
 
-    def test_ws_manager_subscribed_if_provided(self):
-        ws = MagicMock()
-        mgr = cm.get_current_price_manager(
-            ws_manager=ws, symbols=["BTC"], start_sync=False,
-        )
-        ws.subscribe.assert_called_once_with(mgr)
+        with self.subTest("ws manager subscribed if provided"):
+            ws = MagicMock()
+            mgr = cm.get_current_price_manager(
+                ws_manager=ws, symbols=["BTC"], start_sync=False,
+            )
+            ws.subscribe.assert_called_once_with(mgr)
 
 
 class TestRefreshSymbolInCache(unittest.TestCase):
@@ -1308,20 +1321,21 @@ class TestRefreshSymbolInCache(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
 
-    def test_refresh_single_symbol(self):
-        fname = _tmp_file(self.tmp)
-        remote = {"SYM": [[int(time.time()*1000), 42.0]]}
-        mgr = ConcreteTestManager(9999, ["SYM"], fname, remote_items=remote)
-        with mgr.lock:
-            mgr.cache["SYM"] = []
-        cm._refresh_symbol_in_cache(mgr, "SYM")
-        with mgr.lock:
-            self.assertIn(42.0, [e[1] for e in mgr.cache.get("SYM", [])])
+    def test_refresh_symbol_in_cache(self):
+        with self.subTest("refresh single symbol"):
+            fname = _tmp_file(self.tmp)
+            remote = {"SYM": [[int(time.time()*1000), 42.0]]}
+            mgr = ConcreteTestManager(9999, ["SYM"], fname, remote_items=remote)
+            with mgr.lock:
+                mgr.cache["SYM"] = []
+            cm._refresh_symbol_in_cache(mgr, "SYM")
+            with mgr.lock:
+                self.assertIn(42.0, [e[1] for e in mgr.cache.get("SYM", [])])
 
-    def test_refresh_missing_symbol_no_crash(self):
-        fname = _tmp_file(self.tmp, "x.json")
-        mgr = ConcreteTestManager(9999, ["SYM"], fname, remote_items={})
-        cm._refresh_symbol_in_cache(mgr, "NOPE")   # Must not raise.
+        with self.subTest("refresh missing symbol no crash"):
+            fname = _tmp_file(self.tmp, "x.json")
+            mgr = ConcreteTestManager(9999, ["SYM"], fname, remote_items={})
+            cm._refresh_symbol_in_cache(mgr, "NOPE")   # Must not raise.
 
 
 class TestFactorySingletonWarning(unittest.TestCase):
@@ -1333,22 +1347,23 @@ class TestFactorySingletonWarning(unittest.TestCase):
     def tearDown(self):
         cm.CacheFactory.remove("AssetValue")
 
-    def test_same_instance_returned_and_warns(self):
-        m1 = cm.get_cache_manager("AssetValue", symbols=["TOTAL"])
-        import io, contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            m2 = cm.get_cache_manager("AssetValue", symbols=["OTHER"])
-        self.assertIs(m1, m2)                       # Same instance.
-        self.assertIn("IGNORED", buf.getvalue())    # Warning was emitted.
+    def test_factory_singleton_warning_behavior(self):
+        with self.subTest("same instance returned and warns"):
+            m1 = cm.get_cache_manager("AssetValue", symbols=["TOTAL"])
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                m2 = cm.get_cache_manager("AssetValue", symbols=["OTHER"])
+            self.assertIs(m1, m2)                       # Same instance.
+            self.assertIn("IGNORED", buf.getvalue())    # Warning was emitted.
 
-    def test_no_warning_same_symbols(self):
-        cm.get_cache_manager("AssetValue", symbols=["TOTAL"])
-        import io, contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        with self.subTest("no warning same symbols"):
             cm.get_cache_manager("AssetValue", symbols=["TOTAL"])
-        self.assertNotIn("IGNORED", buf.getvalue())
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                cm.get_cache_manager("AssetValue", symbols=["TOTAL"])
+            self.assertNotIn("IGNORED", buf.getvalue())
 
 
 class TestAppendJsonlPersist(unittest.TestCase):
@@ -1357,229 +1372,219 @@ class TestAppendJsonlPersist(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
 
-    def test_append_writes_only_delta(self):
-        fname = os.path.join(self.tmp, "t.jsonl")
-        m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
-        m.save_state = True
-        with m.lock:
-            m.cache["SYM"] = [{"id": 1}, {"id": 2}]
-        m.save_state_to_file_if_enabled()
-        n1 = sum(1 for _ in open(fname))
-        self.assertEqual(n1, 2)
-        # Add one item and write only its one-line delta.
-        with m.lock:
-            m.cache["SYM"].append({"id": 3})
-        m.save_state_to_file_if_enabled()
-        n2 = sum(1 for _ in open(fname))
-        self.assertEqual(n2, 3)   # Two existing lines plus one, not a rewrite.
-
-    def test_load_jsonl_rebuilds_cache(self):
-        fname = os.path.join(self.tmp, "t2.jsonl")
-        w = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
-        w.save_state = True
-        with w.lock:
-            w.cache["SYM"] = [{"id": 1}, {"id": 2}]
-        w.save_state_to_file_if_enabled()
-        # Another manager loads the JSONL at startup.
-        r = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
-        self.assertEqual(r.cache.get("SYM"), [{"id": 1}, {"id": 2}])
-
-    def test_compact_dedups(self):
-        fname = os.path.join(self.tmp, "dedup.jsonl")
-        m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
-        m.save_state = True
-        with m.lock:
-            m.cache["SYM"] = [{"id": 1}, {"id": 1}, {"id": 2}, {"id": 2}, {"id": 3}]
-        m.save_state_to_file_if_enabled()
-        m.compact_jsonl()
-        with m.lock:
-            self.assertEqual(m.cache["SYM"], [{"id": 1}, {"id": 2}, {"id": 3}])  # Deduplicate memory.
-        n = sum(1 for _ in open(fname))
-        self.assertEqual(n, 3)   # dedup pe disc
-
-    def test_save_to_file_unconditional_vs_if_enabled(self):
-        fname = _tmp_file(self.tmp, "split.json")
-        m = ConcreteTestManager(9999, ["SYM"], fname)
-        m.save_state = False
-        with m.lock:
-            m.cache["SYM"] = [[1, 1.0]]
-        m.save_state_to_file_if_enabled()       # save_state=False does not write.
-        self.assertFalse(os.path.exists(fname))
-        m.save_state_to_file()                  # Unconditional write.
-        self.assertTrue(os.path.exists(fname))
-
-    def test_compact_rewrites(self):
-        fname = os.path.join(self.tmp, "t3.jsonl")
-        m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
-        m.save_state = True
-        with m.lock:
-            m.cache["SYM"] = [{"id": i} for i in range(5)]
-        m.save_state_to_file_if_enabled()
-        m.compact_jsonl()
-        n = sum(1 for _ in open(fname))
-        self.assertEqual(n, 5)
-        r = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
-        self.assertEqual(len(r.cache.get("SYM")), 5)
-
-    def test_maintain_prunes_old_entries(self):
-        fname = os.path.join(self.tmp, "p.jsonl")
-        m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
-        m.save_state = True
-        m.RETENTION_DAYS = 730
-        now_ms = int(time.time() * 1000)
-        old_ms = now_ms - 800 * 24 * 3600 * 1000   # More than two years old.
-        with m.lock:
-            m.cache["SYM"] = [[old_ms, 1.0], [now_ms, 2.0]]
-        m.save_state_to_file_if_enabled()
-        m.maintain_append_persist()
-        with m.lock:
-            self.assertEqual(m.cache["SYM"], [[now_ms, 2.0]])   # Old entry removed.
-
-    def test_retention_normalizes_unix_seconds(self):
-        now_sec = int(time.time())
-        self.assertEqual(
-            ConcreteTestManager._entry_timestamp_ms({"timestamp": now_sec}),
-            now_sec * 1000,
-        )
-
-    def test_rotation_archives_and_keeps_latest(self):
-        fname = os.path.join(self.tmp, "r.jsonl")
-        m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
-        m.save_state = True
-        m.MAX_FILE_BYTES = 1          # Force rotation.
-        m.ROTATE_KEEP_FRACTION = 0.10
-        now_ms = int(time.time() * 1000)
-        with m.lock:
-            m.cache["SYM"] = [[now_ms + i, float(i)] for i in range(100)]
-        m.save_state_to_file_if_enabled()
-        m.maintain_append_persist()
-        # Create an archive and retain the newest ten percent in memory.
-        archives = [f for f in os.listdir(self.tmp) if ".archive" in f]
-        self.assertTrue(archives)
-        with m.lock:
-            self.assertEqual(len(m.cache["SYM"]), 10)
-            self.assertEqual(m.cache["SYM"][-1], [now_ms + 99, 99.0])
-
-    # -- Safety: rotation and maintenance do not lose data. --------------------
-
     def _count_lines(self, path):
         opener = gzip.open if path.endswith(".gz") else open
         with opener(path, "rt", encoding="utf-8") as handle:
             return sum(1 for _ in handle)
 
-    def test_rotation_archive_has_FULL_history(self):
-        """The archive contains every original record, so no data is lost."""
-        fname = os.path.join(self.tmp, "full.jsonl")
-        m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
-        m.save_state = True
-        m.MAX_FILE_BYTES = 1
-        now = int(time.time() * 1000)
-        with m.lock:
-            m.cache["SYM"] = [[now + i, float(i)] for i in range(100)]
-        m.save_state_to_file_if_enabled()
-        self.assertEqual(self._count_lines(fname), 100)
-        m.maintain_append_persist()
-        archive = [os.path.join(self.tmp, f) for f in os.listdir(self.tmp) if ".archive" in f][0]
-        self.assertEqual(self._count_lines(archive), 100)   # Complete history.
-        self.assertEqual(self._count_lines(fname), 10)       # Newest ten percent.
-        # The compressed archive remains a complete, independently recoverable JSONL stream.
-        with gzip.open(archive, "rt", encoding="utf-8") as handle:
-            rows = [json.loads(line) for line in handle]
-        self.assertEqual(len(rows), 100)
-        self.assertEqual(rows[-1]["i"], [now + 99, 99.0])
+    def test_append_jsonl_lifecycle_and_dedup(self):
+        with self.subTest("append writes only delta"):
+            fname = os.path.join(self.tmp, "t.jsonl")
+            m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
+            m.save_state = True
+            with m.lock:
+                m.cache["SYM"] = [{"id": 1}, {"id": 2}]
+            m.save_state_to_file_if_enabled()
+            n1 = sum(1 for _ in open(fname))
+            self.assertEqual(n1, 2)
+            # Add one item and write only its one-line delta.
+            with m.lock:
+                m.cache["SYM"].append({"id": 3})
+            m.save_state_to_file_if_enabled()
+            n2 = sum(1 for _ in open(fname))
+            self.assertEqual(n2, 3)   # Two existing lines plus one, not a rewrite.
 
-    def test_legacy_full_json_is_migrated_without_deleting_source(self):
-        legacy = os.path.join(self.tmp, "cache_trade.json")
-        target = legacy + "l"
-        now = int(time.time() * 1000)
-        _write_cache_file(legacy, {"SYM": [[now, 1.0]]}, {"SYM": now})
-        manager = ConcreteTestManager(9999, ["SYM"], target, append_persist=True)
-        self.assertTrue(os.path.exists(legacy))
-        self.assertTrue(os.path.exists(target))
-        self.assertEqual(manager.cache["SYM"], [[now, 1.0]])
+        with self.subTest("load jsonl rebuilds cache"):
+            fname = os.path.join(self.tmp, "t2.jsonl")
+            w = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
+            w.save_state = True
+            with w.lock:
+                w.cache["SYM"] = [{"id": 1}, {"id": 2}]
+            w.save_state_to_file_if_enabled()
+            # Another manager loads the JSONL at startup.
+            r = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
+            self.assertEqual(r.cache.get("SYM"), [{"id": 1}, {"id": 2}])
 
-    def test_maintain_noop_leaves_file_intact(self):
-        """Maintenance leaves a small recent file intact and creates no archive."""
-        fname = os.path.join(self.tmp, "intact.jsonl")
-        m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
-        m.save_state = True
-        now = int(time.time() * 1000)
-        with m.lock:
-            m.cache["SYM"] = [[now, 1.0], [now + 1, 2.0]]
-        m.save_state_to_file_if_enabled()
-        before = open(fname).read()
-        m.maintain_append_persist()
-        self.assertEqual(open(fname).read(), before)         # File unchanged.
-        self.assertEqual([f for f in os.listdir(self.tmp) if ".archive" in f], [])  # No archive.
-        self.assertEqual(len(m.cache["SYM"]), 2)             # Data intact.
+        with self.subTest("compact dedups"):
+            fname = os.path.join(self.tmp, "dedup.jsonl")
+            m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
+            m.save_state = True
+            with m.lock:
+                m.cache["SYM"] = [{"id": 1}, {"id": 1}, {"id": 2}, {"id": 2}, {"id": 3}]
+            m.save_state_to_file_if_enabled()
+            m.compact_jsonl()
+            with m.lock:
+                self.assertEqual(m.cache["SYM"], [{"id": 1}, {"id": 2}, {"id": 3}])  # Deduplicate memory.
+            n = sum(1 for _ in open(fname))
+            self.assertEqual(n, 3)   # dedup pe disc
 
-    def test_maintain_missing_file_no_crash(self):
-        fname = os.path.join(self.tmp, "nofile.jsonl")
-        m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
-        m.maintain_append_persist()   # A missing file must not crash.
-        self.assertEqual([f for f in os.listdir(self.tmp) if ".archive" in f], [])
+        with self.subTest("save to file unconditional vs if enabled"):
+            fname = _tmp_file(self.tmp, "split.json")
+            m = ConcreteTestManager(9999, ["SYM"], fname)
+            m.save_state = False
+            with m.lock:
+                m.cache["SYM"] = [[1, 1.0]]
+            m.save_state_to_file_if_enabled()       # save_state=False does not write.
+            self.assertFalse(os.path.exists(fname))
+            m.save_state_to_file()                  # Unconditional write.
+            self.assertTrue(os.path.exists(fname))
 
-    def test_maintain_noop_when_not_append_persist(self):
-        """Fresh data makes generalized append maintenance a true no-op.
+        with self.subTest("compact rewrites"):
+            fname = os.path.join(self.tmp, "t3.jsonl")
+            m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
+            m.save_state = True
+            with m.lock:
+                m.cache["SYM"] = [{"id": i} for i in range(5)]
+            m.save_state_to_file_if_enabled()
+            m.compact_jsonl()
+            n = sum(1 for _ in open(fname))
+            self.assertEqual(n, 5)
+            r = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
+            self.assertEqual(len(r.cache.get("SYM")), 5)
 
-        Maintenance also runs when append_persist is false so retention covers
-        Trade, Order, and AssetValue. The former timestamp=1 fixture was stale and
-        made old gating appear to be a no-op only because it skipped maintenance.
-        """
-        fname = os.path.join(self.tmp, "fullrw.json")
-        now_ms = int(time.time() * 1000)
-        _write_cache_file(fname, {"SYM": [[now_ms, 1.0]]})
-        m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=False)
-        before = open(fname).read()
-        m.maintain_append_persist()   # Fresh data leaves nothing to prune.
-        self.assertEqual(open(fname).read(), before)
-        self.assertEqual(len(m.cache["SYM"]), 1)
+    def test_maintain_pruning_and_rotation(self):
+        tmp = tempfile.mkdtemp(dir=self.tmp)
+        with self.subTest("maintain prunes old entries"):
+            fname = os.path.join(tmp, "p.jsonl")
+            m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
+            m.save_state = True
+            m.RETENTION_DAYS = 730
+            now_ms = int(time.time() * 1000)
+            old_ms = now_ms - 800 * 24 * 3600 * 1000   # More than two years old.
+            with m.lock:
+                m.cache["SYM"] = [[old_ms, 1.0], [now_ms, 2.0]]
+            m.save_state_to_file_if_enabled()
+            m.maintain_append_persist()
+            with m.lock:
+                self.assertEqual(m.cache["SYM"], [[now_ms, 2.0]])   # Old entry removed.
 
-    def test_maintain_prunes_old_entries_even_when_not_append_persist(self):
-        """Apply retention to full-JSON classes where append_persist is false.
+        with self.subTest("retention normalizes unix seconds"):
+            now_sec = int(time.time())
+            self.assertEqual(
+                ConcreteTestManager._entry_timestamp_ms({"timestamp": now_sec}),
+                now_sec * 1000,
+            )
 
-        This covers the discovered unbounded Trade, Order, and AssetValue growth
-        and explicitly exercises save_state_to_file after pruning.
-        """
-        fname = os.path.join(self.tmp, "fullrw_prune.json")
-        m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=False)
-        m.RETENTION_DAYS = 730
-        now_ms = int(time.time() * 1000)
-        old_ms = now_ms - 800 * 24 * 3600 * 1000   # More than two years old.
-        with m.lock:
-            m.cache["SYM"] = [[old_ms, 1.0], [now_ms, 2.0]]
-        m.save_state_to_file_if_enabled()
-        m.maintain_append_persist()
-        with m.lock:
-            self.assertEqual(m.cache["SYM"], [[now_ms, 2.0]])   # Old entry removed from memory.
-        m.enable_save_state_to_file()
-        m.save_state_to_file_if_enabled()
-        with open(fname) as f:
-            on_disk = json.load(f)
-        self.assertEqual(on_disk["items"]["SYM"], [[now_ms, 2.0]])   # Also on disk.
+        with self.subTest("rotation archives and keeps latest"):
+            fname = os.path.join(tmp, "r.jsonl")
+            m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
+            m.save_state = True
+            m.MAX_FILE_BYTES = 1          # Force rotation.
+            m.ROTATE_KEEP_FRACTION = 0.10
+            now_ms = int(time.time() * 1000)
+            with m.lock:
+                m.cache["SYM"] = [[now_ms + i, float(i)] for i in range(100)]
+            m.save_state_to_file_if_enabled()
+            m.maintain_append_persist()
+            # Create an archive and retain the newest ten percent in memory.
+            archives = [f for f in os.listdir(tmp) if "r.jsonl" in f and ".archive" in f]
+            self.assertTrue(archives)
+            with m.lock:
+                self.assertEqual(len(m.cache["SYM"]), 10)
+                self.assertEqual(m.cache["SYM"][-1], [now_ms + 99, 99.0])
 
-    def test_prune_keeps_file_and_recent(self):
-        fname = os.path.join(self.tmp, "prune.jsonl")
-        m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
-        m.save_state = True
-        now = int(time.time() * 1000)
-        old = now - 800 * 24 * 3600 * 1000
-        with m.lock:
-            m.cache["SYM"] = [[old, 1.0], [now, 2.0]]
-        m.save_state_to_file_if_enabled()
-        m.maintain_append_persist()
-        self.assertTrue(os.path.exists(fname))               # File still exists.
-        r = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
-        self.assertEqual(r.cache["SYM"], [[now, 2.0]])       # Retain recent, remove old.
+        with self.subTest("rotation archive has FULL history"):
+            fname = os.path.join(tmp, "full.jsonl")
+            m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
+            m.save_state = True
+            m.MAX_FILE_BYTES = 1
+            now = int(time.time() * 1000)
+            with m.lock:
+                m.cache["SYM"] = [[now + i, float(i)] for i in range(100)]
+            m.save_state_to_file_if_enabled()
+            self.assertEqual(self._count_lines(fname), 100)
+            m.maintain_append_persist()
+            archive = [os.path.join(tmp, f) for f in os.listdir(tmp) if "full.jsonl" in f and ".archive" in f][0]
+            self.assertEqual(self._count_lines(archive), 100)   # Complete history.
+            self.assertEqual(self._count_lines(fname), 10)       # Newest ten percent.
+            # The compressed archive remains a complete, independently recoverable JSONL stream.
+            with gzip.open(archive, "rt", encoding="utf-8") as handle:
+                rows = [json.loads(line) for line in handle]
+            self.assertEqual(len(rows), 100)
+            self.assertEqual(rows[-1]["i"], [now + 99, 99.0])
 
-    def test_skips_corrupt_lines(self):
-        fname = os.path.join(self.tmp, "t4.jsonl")
-        with open(fname, "w") as f:
-            f.write(json.dumps({"s": "SYM", "i": {"id": 1}}) + "\n")
-            f.write("{partial broken line\n")   # Corrupt line from a crash during append.
-            f.write(json.dumps({"s": "SYM", "i": {"id": 2}}) + "\n")
-        r = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
-        self.assertEqual(r.cache.get("SYM"), [{"id": 1}, {"id": 2}])   # Skip corrupt line.
+        with self.subTest("legacy full json is migrated without deleting source"):
+            legacy = os.path.join(tmp, "cache_trade.json")
+            target = legacy + "l"
+            now = int(time.time() * 1000)
+            _write_cache_file(legacy, {"SYM": [[now, 1.0]]}, {"SYM": now})
+            manager = ConcreteTestManager(9999, ["SYM"], target, append_persist=True)
+            self.assertTrue(os.path.exists(legacy))
+            self.assertTrue(os.path.exists(target))
+            self.assertEqual(manager.cache["SYM"], [[now, 1.0]])
+
+    def test_maintain_edge_cases_and_corruption(self):
+        tmp = tempfile.mkdtemp(dir=self.tmp)
+        with self.subTest("maintain noop leaves file intact"):
+            fname = os.path.join(tmp, "intact.jsonl")
+            m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
+            m.save_state = True
+            now = int(time.time() * 1000)
+            with m.lock:
+                m.cache["SYM"] = [[now, 1.0], [now + 1, 2.0]]
+            m.save_state_to_file_if_enabled()
+            before = open(fname).read()
+            m.maintain_append_persist()
+            self.assertEqual(open(fname).read(), before)         # File unchanged.
+            self.assertEqual([f for f in os.listdir(tmp) if ".archive" in f], [])  # No archive.
+            self.assertEqual(len(m.cache["SYM"]), 2)             # Data intact.
+
+        with self.subTest("maintain missing file no crash"):
+            fname = os.path.join(tmp, "nofile.jsonl")
+            m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
+            m.maintain_append_persist()   # A missing file must not crash.
+            self.assertEqual([f for f in os.listdir(tmp) if ".archive" in f], [])
+
+        with self.subTest("maintain noop when not append persist"):
+            fname = os.path.join(tmp, "fullrw.json")
+            now_ms = int(time.time() * 1000)
+            _write_cache_file(fname, {"SYM": [[now_ms, 1.0]]})
+            m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=False)
+            before = open(fname).read()
+            m.maintain_append_persist()   # Fresh data leaves nothing to prune.
+            self.assertEqual(open(fname).read(), before)
+            self.assertEqual(len(m.cache["SYM"]), 1)
+
+        with self.subTest("maintain prunes old entries even when not append persist"):
+            fname = os.path.join(tmp, "fullrw_prune.json")
+            m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=False)
+            m.RETENTION_DAYS = 730
+            now_ms = int(time.time() * 1000)
+            old_ms = now_ms - 800 * 24 * 3600 * 1000   # More than two years old.
+            with m.lock:
+                m.cache["SYM"] = [[old_ms, 1.0], [now_ms, 2.0]]
+            m.save_state_to_file_if_enabled()
+            m.maintain_append_persist()
+            with m.lock:
+                self.assertEqual(m.cache["SYM"], [[now_ms, 2.0]])   # Old entry removed from memory.
+            m.enable_save_state_to_file()
+            m.save_state_to_file_if_enabled()
+            with open(fname) as f:
+                on_disk = json.load(f)
+            self.assertEqual(on_disk["items"]["SYM"], [[now_ms, 2.0]])   # Also on disk.
+
+        with self.subTest("prune keeps file and recent"):
+            fname = os.path.join(tmp, "prune.jsonl")
+            m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
+            m.save_state = True
+            now = int(time.time() * 1000)
+            old = now - 800 * 24 * 3600 * 1000
+            with m.lock:
+                m.cache["SYM"] = [[old, 1.0], [now, 2.0]]
+            m.save_state_to_file_if_enabled()
+            m.maintain_append_persist()
+            self.assertTrue(os.path.exists(fname))               # File still exists.
+            r = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
+            self.assertEqual(r.cache["SYM"], [[now, 2.0]])       # Retain recent, remove old.
+
+        with self.subTest("skips corrupt lines"):
+            fname = os.path.join(tmp, "t4.jsonl")
+            with open(fname, "w") as f:
+                f.write(json.dumps({"s": "SYM", "i": {"id": 1}}) + "\n")
+                f.write("{partial broken line\n")   # Corrupt line from a crash during append.
+                f.write(json.dumps({"s": "SYM", "i": {"id": 2}}) + "\n")
+            r = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
+            self.assertEqual(r.cache.get("SYM"), [{"id": 1}, {"id": 2}])   # Skip corrupt line.
 
 
 class TestMemFileResync(unittest.TestCase):
@@ -1593,88 +1598,90 @@ class TestMemFileResync(unittest.TestCase):
         m.save_state = True
         return m
 
-    def test_refuses_overwrite_with_older(self):
-        fname = _tmp_file(self.tmp, "g.json")
-        # Writer A writes new data with a high fetch time.
-        a = self._mgr(fname)
-        with a.lock:
-            a.cache["SYM"] = [[1, 1.0]]
-            a.fetchtime_time_per_symbol["SYM"] = 2000   # New.
-        a.save_state_to_file_if_enabled()
-        # Writer B has stale data and must not overwrite it.
-        b = ConcreteTestManager(9999, ["SYM"], fname)
-        b.save_state = True
-        with b.lock:
-            b.cache["SYM"] = [[9, 9.0]]
-            b.fetchtime_time_per_symbol["SYM"] = 1000   # Older.
-        b.save_state_to_file_if_enabled()
-        # The file retains writer A's data.
-        data = json.load(open(fname))
-        self.assertEqual(data["items"]["SYM"], [[1, 1.0]])
+    def test_mem_file_resync_and_overwrite_rules(self):
+        with self.subTest("refuses overwrite with older"):
+            fname = _tmp_file(self.tmp, "g.json")
+            # Writer A writes new data with a high fetch time.
+            a = self._mgr(fname)
+            with a.lock:
+                a.cache["SYM"] = [[1, 1.0]]
+                a.fetchtime_time_per_symbol["SYM"] = 2000   # New.
+            a.save_state_to_file_if_enabled()
+            # Writer B has stale data and must not overwrite it.
+            b = ConcreteTestManager(9999, ["SYM"], fname)
+            b.save_state = True
+            with b.lock:
+                b.cache["SYM"] = [[9, 9.0]]
+                b.fetchtime_time_per_symbol["SYM"] = 1000   # Older.
+            b.save_state_to_file_if_enabled()
+            # The file retains writer A's data.
+            data = json.load(open(fname))
+            self.assertEqual(data["items"]["SYM"], [[1, 1.0]])
 
-    def test_allows_overwrite_with_newer(self):
-        fname = _tmp_file(self.tmp, "g2.json")
-        a = self._mgr(fname)
-        with a.lock:
-            a.cache["SYM"] = [[1, 1.0]]
-            a.fetchtime_time_per_symbol["SYM"] = 1000
-        a.save_state_to_file_if_enabled()
-        b = ConcreteTestManager(9999, ["SYM"], fname)
-        b.save_state = True
-        with b.lock:
-            b.cache["SYM"] = [[9, 9.0]]
-            b.fetchtime_time_per_symbol["SYM"] = 3000   # Newer, so overwrite.
-        b.save_state_to_file_if_enabled()
-        data = json.load(open(fname))
-        self.assertEqual(data["items"]["SYM"], [[9, 9.0]])
+        with self.subTest("allows overwrite with newer"):
+            fname = _tmp_file(self.tmp, "g2.json")
+            a = self._mgr(fname)
+            with a.lock:
+                a.cache["SYM"] = [[1, 1.0]]
+                a.fetchtime_time_per_symbol["SYM"] = 1000
+            a.save_state_to_file_if_enabled()
+            b = ConcreteTestManager(9999, ["SYM"], fname)
+            b.save_state = True
+            with b.lock:
+                b.cache["SYM"] = [[9, 9.0]]
+                b.fetchtime_time_per_symbol["SYM"] = 3000   # Newer, so overwrite.
+            b.save_state_to_file_if_enabled()
+            data = json.load(open(fname))
+            self.assertEqual(data["items"]["SYM"], [[9, 9.0]])
 
-    def test_resync_reloads_when_file_newer(self):
-        fname = _tmp_file(self.tmp, "r.json")
-        # Process A writes new data to disk.
-        a = self._mgr(fname)
-        with a.lock:
-            a.cache["SYM"] = [[5, 5.0]]
-            a.fetchtime_time_per_symbol["SYM"] = 5000
-        a.save_state_to_file_if_enabled()
-        # Process B has stale memory, so resync must reload it.
-        b = ConcreteTestManager(9999, ["SYM"], fname)
-        with b.lock:
-            b.cache["SYM"] = [[1, 1.0]]
-            b.fetchtime_time_per_symbol["SYM"] = 1000
-        b.resync_mem_file()
-        with b.lock:
-            self.assertEqual(b.cache["SYM"], [[5, 5.0]])   # Reloaded from the file.
+        with self.subTest("resync reloads when file newer"):
+            fname = _tmp_file(self.tmp, "r.json")
+            # Process A writes new data to disk.
+            a = self._mgr(fname)
+            with a.lock:
+                a.cache["SYM"] = [[5, 5.0]]
+                a.fetchtime_time_per_symbol["SYM"] = 5000
+            a.save_state_to_file_if_enabled()
+            # Process B has stale memory, so resync must reload it.
+            b = ConcreteTestManager(9999, ["SYM"], fname)
+            with b.lock:
+                b.cache["SYM"] = [[1, 1.0]]
+                b.fetchtime_time_per_symbol["SYM"] = 1000
+            b.resync_mem_file()
+            with b.lock:
+                self.assertEqual(b.cache["SYM"], [[5, 5.0]])   # Reloaded from the file.
 
 
 class TestAtomicWrite(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
 
-    def test_atomic_write_json_roundtrip(self):
-        p = os.path.join(self.tmp, "a.json")
-        cm.atomic_write_json(p, {"x": 1, "y": [2, 3]})
-        with open(p) as f:
-            self.assertEqual(json.load(f), {"x": 1, "y": [2, 3]})
-        self.assertFalse(os.path.exists(p + ".tmp"))   # Temporary file cleaned up.
+    def test_atomic_write_behaviors(self):
+        with self.subTest("atomic write json roundtrip"):
+            p = os.path.join(self.tmp, "a.json")
+            cm.atomic_write_json(p, {"x": 1, "y": [2, 3]})
+            with open(p) as f:
+                self.assertEqual(json.load(f), {"x": 1, "y": [2, 3]})
+            self.assertFalse(os.path.exists(p + ".tmp"))   # Temporary file cleaned up.
 
-    def test_atomic_write_cleanup_on_error(self):
-        p = os.path.join(self.tmp, "b.json")
-        with self.assertRaises(ValueError):
-            with cm.atomic_write(p) as f:
-                f.write("partial")
-                raise ValueError("boom")
-        self.assertFalse(os.path.exists(p))            # Target file untouched.
-        self.assertFalse(os.path.exists(p + ".tmp"))   # Temporary file removed.
+        with self.subTest("atomic write cleanup on error"):
+            p = os.path.join(self.tmp, "b.json")
+            with self.assertRaises(ValueError):
+                with cm.atomic_write(p) as f:
+                    f.write("partial")
+                    raise ValueError("boom")
+            self.assertFalse(os.path.exists(p))            # Target file untouched.
+            self.assertFalse(os.path.exists(p + ".tmp"))   # Temporary file removed.
 
-    def test_atomic_write_preserves_old_on_error(self):
-        p = os.path.join(self.tmp, "c.json")
-        cm.atomic_write_json(p, {"v": "old"})
-        with self.assertRaises(ValueError):
-            with cm.atomic_write(p) as f:
-                f.write("new-incomplete")
-                raise ValueError("boom")
-        with open(p) as f:
-            self.assertEqual(json.load(f), {"v": "old"})   # Previous content remains intact.
+        with self.subTest("atomic write preserves old on error"):
+            p = os.path.join(self.tmp, "c.json")
+            cm.atomic_write_json(p, {"v": "old"})
+            with self.assertRaises(ValueError):
+                with cm.atomic_write(p) as f:
+                    f.write("new-incomplete")
+                    raise ValueError("boom")
+            with open(p) as f:
+                self.assertEqual(json.load(f), {"v": "old"})   # Previous content remains intact.
 
 
 if __name__ == "__main__":

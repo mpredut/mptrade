@@ -24,27 +24,27 @@ def positioned(**params):
     return engine, executor
 
 
-@pytest.mark.parametrize("mode", ["stop", "trailing", "overlay"])
-def test_market_exit_waits_for_terminal_cancels_and_uses_racing_fill(mode):
-    engine, executor = positioned(trend_overlay=(mode == "overlay"))
-    engine.s["orders"] = [order("DCA-1", "buy", price=95.0),
-                          order("TP-1", "sell", price=110.0, kind="TP")]
-    engine.s.update(trail_peak=110.0, trail_stop=106.7,
-                    trend_mode=(mode == "overlay"), trend_peak=110.0)
-    price = 80.0 if mode == "stop" else 103.0
-    with patch.object(strat, "notify"):
-        engine.step(price)
-        assert not any(c[0] == "submit_order" for c in executor.calls)
-        assert all(o.get("cancel_requested") for o in engine.s["orders"])
-        # Cancellation acceptance did not prevent a partial DCA fill on the venue.
-        executor.order_status = lambda _symbol, oid: (
-            OrderStatus("canceled", 0.25, 23.75, 0.02) if oid == "DCA-1"
-            else OrderStatus("canceled", 0.0, 0.0, 0.0))
-        engine.reconcile(price)
-        engine.step(price)
-    submits = [c for c in executor.calls if c[0] == "submit_order"]
-    assert len(submits) == 1 and submits[0][2] == "sell" and submits[0][5]
-    assert submits[0][3] == engine._dust_safe_qty(1.25)
+def test_market_exit_waits_for_terminal_cancels_and_uses_racing_fill():
+    for mode in ["stop", "trailing", "overlay"]:
+        engine, executor = positioned(trend_overlay=(mode == "overlay"))
+        engine.s["orders"] = [order("DCA-1", "buy", price=95.0),
+                              order("TP-1", "sell", price=110.0, kind="TP")]
+        engine.s.update(trail_peak=110.0, trail_stop=106.7,
+                        trend_mode=(mode == "overlay"), trend_peak=110.0)
+        price = 80.0 if mode == "stop" else 103.0
+        with patch.object(strat, "notify"):
+            engine.step(price)
+            assert not any(c[0] == "submit_order" for c in executor.calls)
+            assert all(o.get("cancel_requested") for o in engine.s["orders"])
+            # Cancellation acceptance did not prevent a partial DCA fill on the venue.
+            executor.order_status = lambda _symbol, oid: (
+                OrderStatus("canceled", 0.25, 23.75, 0.02) if oid == "DCA-1"
+                else OrderStatus("canceled", 0.0, 0.0, 0.0))
+            engine.reconcile(price)
+            engine.step(price)
+        submits = [c for c in executor.calls if c[0] == "submit_order"]
+        assert len(submits) == 1 and submits[0][2] == "sell" and submits[0][5]
+        assert submits[0][3] == engine._dust_safe_qty(1.25)
 
 
 def test_triggered_stop_survives_restart_and_price_recovery_without_new_buy():

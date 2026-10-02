@@ -45,22 +45,23 @@ def test_current_execution_policy_is_preserved():
         "BINANCE_BTC", "BINANCE_TAO", "KRAKEN_HYPE"}
 
 
-@pytest.mark.parametrize("override", [
-    {"role.trailing": "perhaps"}, {"role.trailng": "yes"},
-    {"role.trailing": "yes"}, {"role.trailing": "yes", "trailing.pct": "nan"},
-    {"role.trailing": "yes", "trailing.pct": "100"},
-    {"role.trailing": "yes", "trailing.pct": "13"},   # valid pct but missing trailing.rebuy
-    {"role.trailing": "yes", "trailing.pct": "13", "trailing.rebuy": "maybe"},
-    {"role.tradeall_fire": "yes"},
-    {"role.tradeall_fire": "yes", "tradeall.kalman_mode": "typo"},
-    {"role.kalman_primary": "yes"}, {"symbol": "testusdc"}, {"quote": "USD"},
-    {"trail.enabled": "yes"}, {"trail.pct": "13"}, {"tradeall.trade": "yes"},
-])
-def test_invalid_policy_fails_before_selection(tmp_path, override):
-    path = tmp_path / "instruments.conf"
-    path.write_text(section(**override), encoding="utf-8")
-    with pytest.raises(ValueError):
-        registry.symbols_for("binance", path=path)
+def test_invalid_policy_fails_before_selection(tmp_path):
+    overrides = [
+        {"role.trailing": "perhaps"}, {"role.trailng": "yes"},
+        {"role.trailing": "yes"}, {"role.trailing": "yes", "trailing.pct": "nan"},
+        {"role.trailing": "yes", "trailing.pct": "100"},
+        {"role.trailing": "yes", "trailing.pct": "13"},   # valid pct but missing trailing.rebuy
+        {"role.trailing": "yes", "trailing.pct": "13", "trailing.rebuy": "maybe"},
+        {"role.tradeall_fire": "yes"},
+        {"role.tradeall_fire": "yes", "tradeall.kalman_mode": "typo"},
+        {"role.kalman_primary": "yes"}, {"symbol": "testusdc"}, {"quote": "USD"},
+        {"trail.enabled": "yes"}, {"trail.pct": "13"}, {"tradeall.trade": "yes"},
+    ]
+    for override in overrides:
+        path = tmp_path / "instruments.conf"
+        path.write_text(section(**override), encoding="utf-8")
+        with pytest.raises(ValueError):
+            registry.symbols_for("binance", path=path)
 
 
 def test_missing_role_is_not_an_implicit_opt_out(tmp_path):

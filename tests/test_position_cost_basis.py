@@ -24,16 +24,17 @@ def test_partial_sale_then_new_buy_uses_remaining_average_cost():
     assert remaining_average_cost(rows, 2) == 60
 
 
-@pytest.mark.parametrize("rows, held", [
-    ([], 1), ([fill(1)], 2), ([fill(1, "SELL"), fill(2)], 1),
-    ([fill(1), fill(1)], 2), ([fill(2), fill(1)], 2),
-    ([fill(1), fill(2, "SELL", qty=2)], 1),
-    ([fill(1, price=float("inf"))], 1), ([fill(1, qty=float("nan"))], 1),
-    ([fill(1, qty=-1)], 1), ([fill(1, qty=True)], 1),
-    ([fill(1, "UNKNOWN")], 1), ([fill(1)], float("nan")), ([fill(1)], True),
-])
-def test_ambiguous_invalid_or_unreconciled_history_is_unknown(rows, held):
-    assert remaining_average_cost(rows, held) is None
+def test_ambiguous_invalid_or_unreconciled_history_is_unknown():
+    cases = [
+        ([], 1), ([fill(1)], 2), ([fill(1, "SELL"), fill(2)], 1),
+        ([fill(1), fill(1)], 2), ([fill(2), fill(1)], 2),
+        ([fill(1), fill(2, "SELL", qty=2)], 1),
+        ([fill(1, price=float("inf"))], 1), ([fill(1, qty=float("nan"))], 1),
+        ([fill(1, qty=-1)], 1), ([fill(1, qty=True)], 1),
+        ([fill(1, "UNKNOWN")], 1), ([fill(1)], float("nan")), ([fill(1)], True),
+    ]
+    for rows, held in cases:
+        assert remaining_average_cost(rows, held) is None
 
 
 def test_base_and_quote_fees_are_accounted_for_without_guessing():

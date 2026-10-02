@@ -405,143 +405,134 @@ class TestFillAccounting(unittest.TestCase):
 class TestHybridReentry(unittest.TestCase):
     """End-to-end tests for hybrid re-entry state transitions in spot_dca engine."""
 
-    def test_hybrid_reentry_bull_waits_for_pullback_then_enters(self):
-        s = _make_strategy(
-            reentry_hybrid_enabled=True,
-            reentry_pullback_pct=1.5,
-            reentry_drop_pct=2.0,
-        )
-        s.s["last_sell_price"] = 100.0
-        s.s["post_sell_peak"] = 100.0
-        s.s["last_sell_ts"] = 1000.0
+    def test_hybrid_reentry_regimes_and_expiry(self):
+        with self.subTest("bull_waits_for_pullback_then_enters"):
+            s = _make_strategy(
+                reentry_hybrid_enabled=True,
+                reentry_pullback_pct=1.5,
+                reentry_drop_pct=2.0,
+            )
+            s.s["last_sell_price"] = 100.0
+            s.s["post_sell_peak"] = 100.0
+            s.s["last_sell_ts"] = 1000.0
 
-        # Mock regime decision to return bull
-        mock_regime = MagicMock()
-        mock_regime.regime = "bull"
-        mock_regime.closes = [100.0] * 30
-        mock_regime.is_valid = True
+            mock_regime = MagicMock()
+            mock_regime.regime = "bull"
+            mock_regime.closes = [100.0] * 30
+            mock_regime.is_valid = True
 
-        with patch.object(s, "_regime_context", return_value=(mock_regime, [100.0] * 30)), \
-             patch.object(s, "_regime_matches", return_value=True):
-            # Step at 130.0 -> peak becomes 130.0, pullback 1.5% is 128.05.
-            # 130.0 > 128.05 -> blocked waiting for pullback
-            s.step(130.0, timestamp=1010.0)
-            self.assertEqual(s.s["post_sell_peak"], 130.0)
-            self.assertFalse(s._has_open("buy"))
+            with patch.object(s, "_regime_context", return_value=(mock_regime, [100.0] * 30)), \
+                 patch.object(s, "_regime_matches", return_value=True):
+                s.step(130.0, timestamp=1010.0)
+                self.assertEqual(s.s["post_sell_peak"], 130.0)
+                self.assertFalse(s._has_open("buy"))
 
-            # Step at 129.0 -> still > 128.05 -> blocked
-            s.step(129.0, timestamp=1020.0)
-            self.assertFalse(s._has_open("buy"))
+                s.step(129.0, timestamp=1020.0)
+                self.assertFalse(s._has_open("buy"))
 
-            # Step at 127.5 <= 128.05 -> pullback met!
-            s.step(127.5, timestamp=1030.0)
-            self.assertTrue(s._has_open("buy"))
-            order = s._find_open("buy")
-            self.assertEqual(order["kind"], "ENTRY")
+                s.step(127.5, timestamp=1030.0)
+                self.assertTrue(s._has_open("buy"))
+                order = s._find_open("buy")
+                self.assertEqual(order["kind"], "ENTRY")
 
-    def test_hybrid_reentry_range_requires_sale_drop(self):
-        s = _make_strategy(
-            reentry_hybrid_enabled=True,
-            reentry_pullback_pct=1.5,
-            reentry_drop_pct=2.0,
-        )
-        s.s["last_sell_price"] = 100.0
-        s.s["post_sell_peak"] = 100.0
-        s.s["last_sell_ts"] = 1000.0
+        with self.subTest("range_requires_sale_drop"):
+            s = _make_strategy(
+                reentry_hybrid_enabled=True,
+                reentry_pullback_pct=1.5,
+                reentry_drop_pct=2.0,
+            )
+            s.s["last_sell_price"] = 100.0
+            s.s["post_sell_peak"] = 100.0
+            s.s["last_sell_ts"] = 1000.0
 
-        # Regime not bull
-        mock_regime = MagicMock()
-        mock_regime.regime = "range"
-        mock_regime.closes = [100.0] * 30
-        mock_regime.is_valid = True
+            mock_regime = MagicMock()
+            mock_regime.regime = "range"
+            mock_regime.closes = [100.0] * 30
+            mock_regime.is_valid = True
 
-        with patch.object(s, "_regime_context", return_value=(mock_regime, [100.0] * 30)), \
-             patch.object(s, "_regime_matches", return_value=False):
-            # Step at 105.0 -> blocked
-            s.step(105.0, timestamp=1010.0)
-            self.assertFalse(s._has_open("buy"))
+            with patch.object(s, "_regime_context", return_value=(mock_regime, [100.0] * 30)), \
+                 patch.object(s, "_regime_matches", return_value=False):
+                s.step(105.0, timestamp=1010.0)
+                self.assertFalse(s._has_open("buy"))
 
-            # Step at 99.0 -> blocked (99 > 98)
-            s.step(99.0, timestamp=1020.0)
-            self.assertFalse(s._has_open("buy"))
+                s.step(99.0, timestamp=1020.0)
+                self.assertFalse(s._has_open("buy"))
 
-            # Step at 97.5 <= 98.0 -> drop met!
-            s.step(97.5, timestamp=1030.0)
-            self.assertTrue(s._has_open("buy"))
-            order = s._find_open("buy")
-            self.assertEqual(order["kind"], "ENTRY")
+                s.step(97.5, timestamp=1030.0)
+                self.assertTrue(s._has_open("buy"))
+                order = s._find_open("buy")
+                self.assertEqual(order["kind"], "ENTRY")
 
-    def test_hybrid_reentry_ttl_expiry(self):
-        s = _make_strategy(
-            reentry_hybrid_enabled=True,
-            reentry_pullback_pct=1.5,
-            reentry_drop_pct=2.0,
-            reentry_ttl_hours=24.0,
-        )
-        s.s["last_sell_price"] = 100.0
-        s.s["post_sell_peak"] = 100.0
-        s.s["last_sell_ts"] = 1000.0
+        with self.subTest("ttl_expiry"):
+            s = _make_strategy(
+                reentry_hybrid_enabled=True,
+                reentry_pullback_pct=1.5,
+                reentry_drop_pct=2.0,
+                reentry_ttl_hours=24.0,
+            )
+            s.s["last_sell_price"] = 100.0
+            s.s["post_sell_peak"] = 100.0
+            s.s["last_sell_ts"] = 1000.0
 
-        mock_regime = MagicMock()
-        mock_regime.regime = "range"
-        mock_regime.closes = [100.0] * 30
-        mock_regime.is_valid = True
+            mock_regime = MagicMock()
+            mock_regime.regime = "range"
+            mock_regime.closes = [100.0] * 30
+            mock_regime.is_valid = True
 
-        with patch.object(s, "_regime_context", return_value=(mock_regime, [100.0] * 30)), \
-             patch.object(s, "_regime_matches", return_value=False):
-            # After 1 hour, price 105 -> blocked
-            s.step(105.0, timestamp=1000.0 + 3600.0)
-            self.assertFalse(s._has_open("buy"))
+            with patch.object(s, "_regime_context", return_value=(mock_regime, [100.0] * 30)), \
+                 patch.object(s, "_regime_matches", return_value=False):
+                s.step(105.0, timestamp=1000.0 + 3600.0)
+                self.assertFalse(s._has_open("buy"))
 
-            # After 25 hours (> 24h), price 105 -> TTL expired, unblocked!
-            s.step(105.0, timestamp=1000.0 + 25 * 3600.0)
-            self.assertTrue(s._has_open("buy"))
-            order = s._find_open("buy")
-            self.assertEqual(order["kind"], "ENTRY")
+                s.step(105.0, timestamp=1000.0 + 25 * 3600.0)
+                self.assertTrue(s._has_open("buy"))
+                order = s._find_open("buy")
+                self.assertEqual(order["kind"], "ENTRY")
 
 
 from strategies import spot_rules as sr
 
 
 class StratRulesTest(unittest.TestCase):
-    def test_entry_and_tp(self):
-        self.assertAlmostEqual(sr.entry_price(100.0, 0.2), 99.8)
-        self.assertAlmostEqual(sr.tp_price(100.0, 3.0), 103.0)
+    def test_spot_rules_pricing_and_boundaries(self):
+        with self.subTest("entry_and_tp"):
+            self.assertAlmostEqual(sr.entry_price(100.0, 0.2), 99.8)
+            self.assertAlmostEqual(sr.tp_price(100.0, 3.0), 103.0)
 
-    def test_hit_stop(self):
-        self.assertTrue(sr.hit_stop(100.0, 87.0, 12.5))
-        self.assertFalse(sr.hit_stop(100.0, 90.0, 12.5))
-        self.assertFalse(sr.hit_stop(100.0, 50.0, 0.0))
-        self.assertFalse(sr.hit_stop(0.0, 50.0, 12.5))
+        with self.subTest("hit_stop"):
+            self.assertTrue(sr.hit_stop(100.0, 87.0, 12.5))
+            self.assertFalse(sr.hit_stop(100.0, 90.0, 12.5))
+            self.assertFalse(sr.hit_stop(100.0, 50.0, 0.0))
+            self.assertFalse(sr.hit_stop(0.0, 50.0, 12.5))
 
-    def test_reentry_stop_bounce(self):
-        self.assertTrue(sr.reentry_stop_blocked(50.0, 50.0, 1.5, 0.0))
-        self.assertFalse(sr.reentry_stop_blocked(50.8, 50.0, 1.5, 0.0))
+        with self.subTest("reentry_stop_bounce"):
+            self.assertTrue(sr.reentry_stop_blocked(50.0, 50.0, 1.5, 0.0))
+            self.assertFalse(sr.reentry_stop_blocked(50.8, 50.0, 1.5, 0.0))
 
-    def test_reentry_drop(self):
-        self.assertTrue(sr.reentry_drop_blocked(99.0, 100.0, 2.0, 0.0))
-        self.assertFalse(sr.reentry_drop_blocked(97.0, 100.0, 2.0, 0.0))
-        self.assertFalse(sr.reentry_drop_blocked(99.0, 100.0, 0.0, 0.0))
-        self.assertFalse(sr.reentry_drop_blocked(99.0, 0.0, 2.0, 0.0))
+        with self.subTest("reentry_drop"):
+            self.assertTrue(sr.reentry_drop_blocked(99.0, 100.0, 2.0, 0.0))
+            self.assertFalse(sr.reentry_drop_blocked(97.0, 100.0, 2.0, 0.0))
+            self.assertFalse(sr.reentry_drop_blocked(99.0, 100.0, 0.0, 0.0))
+            self.assertFalse(sr.reentry_drop_blocked(99.0, 0.0, 2.0, 0.0))
 
-    def test_dca_price_hit(self):
-        self.assertTrue(sr.dca_price_hit(98.0, 100.0, 2.0, 0.0))
-        self.assertTrue(sr.dca_price_hit(97.0, 100.0, 2.0, 0.0))
-        self.assertFalse(sr.dca_price_hit(99.0, 100.0, 2.0, 0.0))
-        self.assertTrue(sr.dca_price_hit(98.04, 100.0, 2.0, 0.05))
+        with self.subTest("dca_price_hit"):
+            self.assertTrue(sr.dca_price_hit(98.0, 100.0, 2.0, 0.0))
+            self.assertTrue(sr.dca_price_hit(97.0, 100.0, 2.0, 0.0))
+            self.assertFalse(sr.dca_price_hit(99.0, 100.0, 2.0, 0.0))
+            self.assertTrue(sr.dca_price_hit(98.04, 100.0, 2.0, 0.05))
 
-    def test_progressive_dca_spacing_is_safe_and_zero_preserves_live(self):
-        self.assertEqual(sr.progressive_dca_drop_pct(1.25, 0.0, 9), 1.25)
-        self.assertEqual(sr.progressive_dca_drop_pct(1.25, 0.25, 0), 1.25)
-        self.assertEqual(sr.progressive_dca_drop_pct(1.25, 0.25, 4), 2.25)
-        self.assertEqual(sr.progressive_dca_drop_pct(1.25, -1.0, 4), 1.25)
+        with self.subTest("progressive_dca_spacing"):
+            self.assertEqual(sr.progressive_dca_drop_pct(1.25, 0.0, 9), 1.25)
+            self.assertEqual(sr.progressive_dca_drop_pct(1.25, 0.25, 0), 1.25)
+            self.assertEqual(sr.progressive_dca_drop_pct(1.25, 0.25, 4), 2.25)
+            self.assertEqual(sr.progressive_dca_drop_pct(1.25, -1.0, 4), 1.25)
 
-    def test_are_close_is_identical_to_botcore(self):
-        import botcore
-        for a, b, tol in [(50.0, 50.75, 0.05), (65.93, 65.91, 0.05), (100.0, 98.0, 0.0),
-                          (99.0, 100.0, 2.0), (0.0, 0.0, 0.05), (58.42, 58.47, 0.05)]:
-            self.assertEqual(sr.are_close(a, b, tol), botcore.are_close(a, b, tol),
-                             f"divergence at are_close({a},{b},{tol})")
+        with self.subTest("are_close_identical_to_botcore"):
+            import botcore
+            for a, b, tol in [(50.0, 50.75, 0.05), (65.93, 65.91, 0.05), (100.0, 98.0, 0.0),
+                              (99.0, 100.0, 2.0), (0.0, 0.0, 0.05), (58.42, 58.47, 0.05)]:
+                self.assertEqual(sr.are_close(a, b, tol), botcore.are_close(a, b, tol),
+                                 f"divergence at are_close({a},{b},{tol})")
 
     def test_reentry_hybrid_blocked_behavior(self):
         # Case 1: No last sell -> always unblocked
@@ -632,463 +623,448 @@ class StratRulesTest(unittest.TestCase):
 
 
 class TestMultiHorizonDynamicProfitRules(unittest.TestCase):
-    def test_dynamic_flat_tp_pct(self):
-        # Fallbacks on missing/invalid strength
-        self.assertEqual(sr.dynamic_flat_tp_pct(None, base_tp_pct=5.0), 5.0)
-        self.assertEqual(sr.dynamic_flat_tp_pct(-1.0, base_tp_pct=5.0), 5.0)
-        self.assertEqual(sr.dynamic_flat_tp_pct(float("nan"), base_tp_pct=5.0), 5.0)
+    def test_dynamic_profit_rules_and_exhaustion(self):
+        with self.subTest("dynamic_flat_tp_pct"):
+            # Fallbacks on missing/invalid strength
+            self.assertEqual(sr.dynamic_flat_tp_pct(None, base_tp_pct=5.0), 5.0)
+            self.assertEqual(sr.dynamic_flat_tp_pct(-1.0, base_tp_pct=5.0), 5.0)
+            self.assertEqual(sr.dynamic_flat_tp_pct(float("nan"), base_tp_pct=5.0), 5.0)
 
-        # Deep flat (strength = 0.0) -> tp_min_pct (3.0%)
-        self.assertAlmostEqual(sr.dynamic_flat_tp_pct(0.0, strength_threshold=2.0, tp_min_pct=3.0, tp_max_pct=7.0), 3.0)
+            # Deep flat (strength = 0.0) -> tp_min_pct (3.0%)
+            self.assertAlmostEqual(sr.dynamic_flat_tp_pct(0.0, strength_threshold=2.0, tp_min_pct=3.0, tp_max_pct=7.0), 3.0)
 
-        # Midpoint flat (strength = 1.0, threshold = 2.0 -> c_flat = 0.5) -> 5.0%
-        self.assertAlmostEqual(sr.dynamic_flat_tp_pct(1.0, strength_threshold=2.0, tp_min_pct=3.0, tp_max_pct=7.0), 5.0)
+            # Midpoint flat (strength = 1.0, threshold = 2.0 -> c_flat = 0.5) -> 5.0%
+            self.assertAlmostEqual(sr.dynamic_flat_tp_pct(1.0, strength_threshold=2.0, tp_min_pct=3.0, tp_max_pct=7.0), 5.0)
 
-        # Breakout boundary (strength = 2.0 -> c_flat = 1.0) -> 7.0%
-        self.assertAlmostEqual(sr.dynamic_flat_tp_pct(2.0, strength_threshold=2.0, tp_min_pct=3.0, tp_max_pct=7.0), 7.0)
+            # Breakout boundary (strength = 2.0 -> c_flat = 1.0) -> 7.0%
+            self.assertAlmostEqual(sr.dynamic_flat_tp_pct(2.0, strength_threshold=2.0, tp_min_pct=3.0, tp_max_pct=7.0), 7.0)
 
-        # Past boundary (strength = 3.5 -> clamped c_flat = 1.0) -> 7.0%
-        self.assertAlmostEqual(sr.dynamic_flat_tp_pct(3.5, strength_threshold=2.0, tp_min_pct=3.0, tp_max_pct=7.0), 7.0)
+            # Past boundary (strength = 3.5 -> clamped c_flat = 1.0) -> 7.0%
+            self.assertAlmostEqual(sr.dynamic_flat_tp_pct(3.5, strength_threshold=2.0, tp_min_pct=3.0, tp_max_pct=7.0), 7.0)
 
-    def test_dynamic_trend_trail_pct(self):
-        # Below threshold (gain 5% <= 6%) -> base_trail (8.0%)
-        self.assertAlmostEqual(sr.dynamic_trend_trail_pct(5.0, base_trail_pct=8.0, min_trail_pct=3.0, ratchet_k=0.5, gain_threshold_pct=6.0), 8.0)
+        with self.subTest("dynamic_trend_trail_pct"):
+            # Below threshold (gain 5% <= 6%) -> base_trail (8.0%)
+            self.assertAlmostEqual(sr.dynamic_trend_trail_pct(5.0, base_trail_pct=8.0, min_trail_pct=3.0, ratchet_k=0.5, gain_threshold_pct=6.0), 8.0)
 
-        # At threshold (gain 6.0%) -> 8.0%
-        self.assertAlmostEqual(sr.dynamic_trend_trail_pct(6.0, base_trail_pct=8.0, min_trail_pct=3.0, ratchet_k=0.5, gain_threshold_pct=6.0), 8.0)
+            # At threshold (gain 6.0%) -> 8.0%
+            self.assertAlmostEqual(sr.dynamic_trend_trail_pct(6.0, base_trail_pct=8.0, min_trail_pct=3.0, ratchet_k=0.5, gain_threshold_pct=6.0), 8.0)
 
-        # Above threshold: gain 8.0% -> 8.0 - 0.5 * 2.0 = 7.0%
-        self.assertAlmostEqual(sr.dynamic_trend_trail_pct(8.0, base_trail_pct=8.0, min_trail_pct=3.0, ratchet_k=0.5, gain_threshold_pct=6.0), 7.0)
+            # Above threshold: gain 8.0% -> 8.0 - 0.5 * 2.0 = 7.0%
+            self.assertAlmostEqual(sr.dynamic_trend_trail_pct(8.0, base_trail_pct=8.0, min_trail_pct=3.0, ratchet_k=0.5, gain_threshold_pct=6.0), 7.0)
 
-        # TAO scenario: gain 11.5% -> 8.0 - 0.5 * 5.5 = 5.25%
-        self.assertAlmostEqual(sr.dynamic_trend_trail_pct(11.5, base_trail_pct=8.0, min_trail_pct=3.0, ratchet_k=0.5, gain_threshold_pct=6.0), 5.25)
+            # TAO scenario: gain 11.5% -> 8.0 - 0.5 * 5.5 = 5.25%
+            self.assertAlmostEqual(sr.dynamic_trend_trail_pct(11.5, base_trail_pct=8.0, min_trail_pct=3.0, ratchet_k=0.5, gain_threshold_pct=6.0), 5.25)
 
-        # Deep profit: gain 20.0% -> 8.0 - 0.5 * 14.0 = 1.0% -> clamped to min_trail (3.0%)
-        self.assertAlmostEqual(sr.dynamic_trend_trail_pct(20.0, base_trail_pct=8.0, min_trail_pct=3.0, ratchet_k=0.5, gain_threshold_pct=6.0), 3.0)
+            # Deep profit: gain 20.0% -> 8.0 - 0.5 * 14.0 = 1.0% -> clamped to min_trail (3.0%)
+            self.assertAlmostEqual(sr.dynamic_trend_trail_pct(20.0, base_trail_pct=8.0, min_trail_pct=3.0, ratchet_k=0.5, gain_threshold_pct=6.0), 3.0)
 
-    def test_fast_profit_reversal(self):
-        avg = 100.0
-        shadow = [(1000.0, 110.0), (1100.0, 112.0), (1200.0, 111.0)]
+        with self.subTest("fast_profit_reversal"):
+            avg = 100.0
+            shadow = [(1000.0, 110.0), (1100.0, 112.0), (1200.0, 111.0)]
 
-        # Gain < 2 * 5.0% = 10.0% -> False
-        trig, gain, drop = sr.check_fast_profit_reversal(
-            current_price=108.0, avg_cost=avg, base_tp_pct=5.0, mult=2.0,
-            shadow_prices=shadow, window_sec=300.0, drop_pct=1.0, current_time=1200.0
-        )
-        self.assertFalse(trig)
+            # Gain < 2 * 5.0% = 10.0% -> False
+            trig, gain, drop = sr.check_fast_profit_reversal(
+                current_price=108.0, avg_cost=avg, base_tp_pct=5.0, mult=2.0,
+                shadow_prices=shadow, window_sec=300.0, drop_pct=1.0, current_time=1200.0
+            )
+            self.assertFalse(trig)
 
-        # Gain >= 10.0% (price 111.0 vs peak 112.0 in window)
-        # Drop = (112 - 111) / 112 * 100 = 0.89% < 1.0% -> False
-        trig, gain, drop = sr.check_fast_profit_reversal(
-            current_price=111.0, avg_cost=avg, base_tp_pct=5.0, mult=2.0,
-            shadow_prices=shadow, window_sec=300.0, drop_pct=1.0, current_time=1200.0
-        )
-        self.assertFalse(trig)
-        self.assertAlmostEqual(gain, 11.0)
-        self.assertAlmostEqual(drop, (112.0 - 111.0) / 112.0 * 100.0)
+            # Gain >= 10.0% (price 111.0 vs peak 112.0 in window)
+            # Drop = (112 - 111) / 112 * 100 = 0.89% < 1.0% -> False
+            trig, gain, drop = sr.check_fast_profit_reversal(
+                current_price=111.0, avg_cost=avg, base_tp_pct=5.0, mult=2.0,
+                shadow_prices=shadow, window_sec=300.0, drop_pct=1.0, current_time=1200.0
+            )
+            self.assertFalse(trig)
+            self.assertAlmostEqual(gain, 11.0)
+            self.assertAlmostEqual(drop, (112.0 - 111.0) / 112.0 * 100.0)
 
-        # Drop >= 1.0% (price 110.5 vs peak 112.0 -> drop = 1.34%) -> True!
-        trig, gain, drop = sr.check_fast_profit_reversal(
-            current_price=110.5, avg_cost=avg, base_tp_pct=5.0, mult=2.0,
-            shadow_prices=shadow, window_sec=300.0, drop_pct=1.0, current_time=1200.0
-        )
-        self.assertTrue(trig)
-        self.assertAlmostEqual(gain, 10.5)
+            # Drop >= 1.0% (price 110.5 vs peak 112.0 -> drop = 1.34%) -> True!
+            trig, gain, drop = sr.check_fast_profit_reversal(
+                current_price=110.5, avg_cost=avg, base_tp_pct=5.0, mult=2.0,
+                shadow_prices=shadow, window_sec=300.0, drop_pct=1.0, current_time=1200.0
+            )
+            self.assertTrue(trig)
+            self.assertAlmostEqual(gain, 10.5)
 
-    def test_parabolic_surge_exhaustion(self):
-        avg = 100.0
-        # Not qualified for surge (peak gain 15% < 20%, window_move 10% < 25%)
-        trig, reason = sr.check_parabolic_surge_exhaustion(
-            current_price=114.0, avg_cost=avg, surge_peak=115.0,
-            surge_gain_pct=20.0, exit_pullback_pct=2.0, window_move_pct=10.0, surge_move_pct=25.0
-        )
-        self.assertFalse(trig)
+        with self.subTest("parabolic_surge_exhaustion"):
+            avg = 100.0
+            # Not qualified for surge (peak gain 15% < 20%, window_move 10% < 25%)
+            trig, reason = sr.check_parabolic_surge_exhaustion(
+                current_price=114.0, avg_cost=avg, surge_peak=115.0,
+                surge_gain_pct=20.0, exit_pullback_pct=2.0, window_move_pct=10.0, surge_move_pct=25.0
+            )
+            self.assertFalse(trig)
 
-        # Qualified by position gain (current price 125, avg 100 -> gain 25% >= 20%)
-        # Surge peak 126. Pullback = (126 - 125) / 126 * 100 = 0.79% < 2.0% -> False
-        trig, reason = sr.check_parabolic_surge_exhaustion(
-            current_price=125.0, avg_cost=avg, surge_peak=126.0,
-            surge_gain_pct=20.0, exit_pullback_pct=2.0
-        )
-        self.assertFalse(trig)
+            # Qualified by position gain (current price 125, avg 100 -> gain 25% >= 20%)
+            # Surge peak 126. Pullback = (126 - 125) / 126 * 100 = 0.79% < 2.0% -> False
+            trig, reason = sr.check_parabolic_surge_exhaustion(
+                current_price=125.0, avg_cost=avg, surge_peak=126.0,
+                surge_gain_pct=20.0, exit_pullback_pct=2.0
+            )
+            self.assertFalse(trig)
 
-        # Pullback >= 2.0% (current price 123.0 vs surge peak 126.0 -> 2.38% drop) -> True!
-        trig, reason = sr.check_parabolic_surge_exhaustion(
-            current_price=123.0, avg_cost=avg, surge_peak=126.0,
-            surge_gain_pct=20.0, exit_pullback_pct=2.0
-        )
-        self.assertTrue(trig)
-        self.assertIn("surge_pullback", reason)
+            # Pullback >= 2.0% (current price 123.0 vs surge peak 126.0 -> 2.38% drop) -> True!
+            trig, reason = sr.check_parabolic_surge_exhaustion(
+                current_price=123.0, avg_cost=avg, surge_peak=126.0,
+                surge_gain_pct=20.0, exit_pullback_pct=2.0
+            )
+            self.assertTrue(trig)
+            self.assertIn("surge_pullback", reason)
 
-        # Observation 3 reproduction: cost 100, peak 120 (+20% >= 18%), price 115.7 (gain 15.7% < 18%).
-        # Pullback is 3.58% >= 3.5%. The guard must remain armed and trigger exit!
-        trig, reason = sr.check_parabolic_surge_exhaustion(
-            current_price=115.7,
-            avg_cost=100.0,
-            surge_peak=120.0,
-            surge_gain_pct=18.0,
-            exit_pullback_pct=3.5,
-        )
-        self.assertTrue(trig)
-        self.assertIn("surge_pullback_3.58%_ge_3.50%", reason)
+            # Observation 3 reproduction: cost 100, peak 120 (+20% >= 18%), price 115.7 (gain 15.7% < 18%).
+            # Pullback is 3.58% >= 3.5%. The guard must remain armed and trigger exit!
+            trig, reason = sr.check_parabolic_surge_exhaustion(
+                current_price=115.7,
+                avg_cost=100.0,
+                surge_peak=120.0,
+                surge_gain_pct=18.0,
+                exit_pullback_pct=3.5,
+            )
+            self.assertTrue(trig)
+            self.assertIn("surge_pullback_3.58%_ge_3.50%", reason)
 
-        # Also verified when surge_active flag is explicitly passed
-        trig, reason = sr.check_parabolic_surge_exhaustion(
-            current_price=115.7,
-            avg_cost=100.0,
-            surge_peak=120.0,
-            surge_gain_pct=18.0,
-            exit_pullback_pct=3.5,
-            surge_active=True,
-        )
-        self.assertTrue(trig)
+            # Also verified when surge_active flag is explicitly passed
+            trig, reason = sr.check_parabolic_surge_exhaustion(
+                current_price=115.7,
+                avg_cost=100.0,
+                surge_peak=120.0,
+                surge_gain_pct=18.0,
+                exit_pullback_pct=3.5,
+                surge_active=True,
+            )
+            self.assertTrue(trig)
 
-    def test_slow_grind_exhaustion(self):
-        avg = 100.0
-        entry_t = 100000.0
-        now_t = entry_t + 8 * 86400.0  # 8 days held (>= 7 days)
-        shadow = [(now_t - 300, 120.0), (now_t, 118.0)]  # 120 -> 118 in 5 min (1.67% drop)
+        with self.subTest("slow_grind_exhaustion"):
+            avg = 100.0
+            entry_t = 100000.0
+            now_t = entry_t + 8 * 86400.0  # 8 days held (>= 7 days)
+            shadow = [(now_t - 300, 120.0), (now_t, 118.0)]  # 120 -> 118 in 5 min (1.67% drop)
 
-        # Duration < 7 days -> False
-        trig, reason = sr.check_slow_grind_exhaustion(
-            current_price=118.0, avg_cost=avg, entry_ts=entry_t, current_ts=entry_t + 5 * 86400,
-            min_days=7.0, min_gain_pct=15.0, recent_peak=120.0, shadow_prices=shadow,
-            flash_window_sec=900.0, flash_drop_pct=1.5, structural_drop_pct=2.5
-        )
-        self.assertFalse(trig)
+            # Duration < 7 days -> False
+            trig, reason = sr.check_slow_grind_exhaustion(
+                current_price=118.0, avg_cost=avg, entry_ts=entry_t, current_ts=entry_t + 5 * 86400,
+                min_days=7.0, min_gain_pct=15.0, recent_peak=120.0, shadow_prices=shadow,
+                flash_window_sec=900.0, flash_drop_pct=1.5, structural_drop_pct=2.5
+            )
+            self.assertFalse(trig)
 
-        # Flash sensor triggered (drop 1.67% >= 1.5% in 15 min) -> True!
-        trig, reason = sr.check_slow_grind_exhaustion(
-            current_price=118.0, avg_cost=avg, entry_ts=entry_t, current_ts=now_t,
-            min_days=7.0, min_gain_pct=15.0, recent_peak=120.0, shadow_prices=shadow,
-            flash_window_sec=900.0, flash_drop_pct=1.5, structural_drop_pct=2.5
-        )
-        self.assertTrue(trig)
-        self.assertIn("flash_drop", reason)
+            # Flash sensor triggered (drop 1.67% >= 1.5% in 15 min) -> True!
+            trig, reason = sr.check_slow_grind_exhaustion(
+                current_price=118.0, avg_cost=avg, entry_ts=entry_t, current_ts=now_t,
+                min_days=7.0, min_gain_pct=15.0, recent_peak=120.0, shadow_prices=shadow,
+                flash_window_sec=900.0, flash_drop_pct=1.5, structural_drop_pct=2.5
+            )
+            self.assertTrue(trig)
+            self.assertIn("flash_drop", reason)
 
-        # Structural sensor: recent_peak 122.0 vs current 118.5 (drop = 2.87% >= 2.5%) -> True!
-        shadow_slow = [(now_t - 1800, 119.0), (now_t, 118.5)]
-        trig, reason = sr.check_slow_grind_exhaustion(
-            current_price=118.5, avg_cost=avg, entry_ts=entry_t, current_ts=now_t,
-            min_days=7.0, min_gain_pct=15.0, recent_peak=122.0, shadow_prices=shadow_slow,
-            flash_window_sec=900.0, flash_drop_pct=1.5, structural_drop_pct=2.5
-        )
-        self.assertTrue(trig)
-        self.assertIn("structural_drop", reason)
+            # Structural sensor: recent_peak 122.0 vs current 118.5 (drop = 2.87% >= 2.5%) -> True!
+            shadow_slow = [(now_t - 1800, 119.0), (now_t, 118.5)]
+            trig, reason = sr.check_slow_grind_exhaustion(
+                current_price=118.5, avg_cost=avg, entry_ts=entry_t, current_ts=now_t,
+                min_days=7.0, min_gain_pct=15.0, recent_peak=122.0, shadow_prices=shadow_slow,
+                flash_window_sec=900.0, flash_drop_pct=1.5, structural_drop_pct=2.5
+            )
+            self.assertTrue(trig)
+            self.assertIn("structural_drop", reason)
 
-        # SMA sensor: price < SMA -> True!
-        trig, reason = sr.check_slow_grind_exhaustion(
-            current_price=119.5, avg_cost=avg, entry_ts=entry_t, current_ts=now_t,
-            min_days=7.0, min_gain_pct=15.0, recent_peak=120.0, shadow_prices=[(now_t, 119.5)],
-            flash_window_sec=900.0, flash_drop_pct=1.5, structural_drop_pct=2.5, sma_value=120.0
-        )
-        self.assertTrue(trig)
-        self.assertIn("sma_break", reason)
+            # SMA sensor: price < SMA -> True!
+            trig, reason = sr.check_slow_grind_exhaustion(
+                current_price=119.5, avg_cost=avg, entry_ts=entry_t, current_ts=now_t,
+                min_days=7.0, min_gain_pct=15.0, recent_peak=120.0, shadow_prices=[(now_t, 119.5)],
+                flash_window_sec=900.0, flash_drop_pct=1.5, structural_drop_pct=2.5, sma_value=120.0
+            )
+            self.assertTrue(trig)
+            self.assertIn("sma_break", reason)
 
 
 class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
-    def test_fast_profit_guard_in_trend_overlay(self):
-        st = _make_strategy("TESTPAIR_MHDPA_FAST")
-        st.p.trend_overlay = True
-        st.p.fast_profit_guard = True
-        st.p.fast_profit_mult = 2.0
-        st.p.fast_profit_window_min = 5.0
-        st.p.fast_profit_drop_pct = 1.0
-        st.p.takeprofit_pct = 5.0
-        st.s["trend_mode"] = True
-        st.s["qty"] = 1.0
-        st.s["cost"] = 100.0
-        st.s["entry_price"] = 100.0
+    def test_guards_and_trail_in_trend_overlay(self):
+        with self.subTest("fast_profit_guard"):
+            st = _make_strategy("TESTPAIR_MHDPA_FAST")
+            st.p.trend_overlay = True
+            st.p.fast_profit_guard = True
+            st.p.fast_profit_mult = 2.0
+            st.p.fast_profit_window_min = 5.0
+            st.p.fast_profit_drop_pct = 1.0
+            st.p.takeprofit_pct = 5.0
+            st.s["trend_mode"] = True
+            st.s["qty"] = 1.0
+            st.s["cost"] = 100.0
+            st.s["entry_price"] = 100.0
 
-        now = 10000.0
-        st._shadow_prices.append((now - 120.0, 112.0))
-        st._shadow_prices.append((now, 110.5))
+            now = 10000.0
+            st._shadow_prices.append((now - 120.0, 112.0))
+            st._shadow_prices.append((now, 110.5))
 
-        exited = []
-        st._request_market_exit = lambda px, kind: exited.append((px, kind)) or True
+            exited = []
+            st._request_market_exit = lambda px, kind: exited.append((px, kind)) or True
 
-        from market_regime import MarketRegimeDecision
-        dummy_regime = MarketRegimeDecision("bull", 0.05, 0.01, 5.0, True, "bullish")
-        handled = st._overlay_step(110.5, dummy_regime, [100.0] * 30, tick_time=now)
-        self.assertTrue(handled)
-        self.assertEqual(len(exited), 1)
-        self.assertEqual(exited[0][1], "TP")
+            from market_regime import MarketRegimeDecision
+            dummy_regime = MarketRegimeDecision("bull", 0.05, 0.01, 5.0, True, "bullish")
+            handled = st._overlay_step(110.5, dummy_regime, [100.0] * 30, tick_time=now)
+            self.assertTrue(handled)
+            self.assertEqual(len(exited), 1)
+            self.assertEqual(exited[0][1], "TP")
 
-    def test_surge_guard_in_trend_overlay(self):
-        st = _make_strategy("TESTPAIR_MHDPA_SURGE")
-        st.p.trend_overlay = True
-        st.p.surge_guard = True
-        st.p.surge_gain_pct = 20.0
-        st.p.surge_exit_pullback_pct = 2.0
-        st.s["trend_mode"] = True
-        st.s["qty"] = 1.0
-        st.s["cost"] = 100.0
-        st.s["entry_price"] = 100.0
-        st.s["surge_peak"] = 125.0
+        with self.subTest("surge_guard"):
+            st = _make_strategy("TESTPAIR_MHDPA_SURGE")
+            st.p.trend_overlay = True
+            st.p.surge_guard = True
+            st.p.surge_gain_pct = 20.0
+            st.p.surge_exit_pullback_pct = 2.0
+            st.s["trend_mode"] = True
+            st.s["qty"] = 1.0
+            st.s["cost"] = 100.0
+            st.s["entry_price"] = 100.0
+            st.s["surge_peak"] = 125.0
 
-        exited = []
-        st._request_market_exit = lambda px, kind, **kwargs: exited.append((px, kind)) or True
+            exited = []
+            st._request_market_exit = lambda px, kind, **kwargs: exited.append((px, kind)) or True
 
-        from market_regime import MarketRegimeDecision
-        dummy_regime = MarketRegimeDecision("bull", 0.05, 0.01, 5.0, True, "bullish")
-        handled = st._overlay_step(122.0, dummy_regime, [100.0] * 30, tick_time=10000.0)
-        self.assertTrue(handled)
-        self.assertEqual(len(exited), 1)
-        self.assertEqual(exited[0][1], "TP")
+            from market_regime import MarketRegimeDecision
+            dummy_regime = MarketRegimeDecision("bull", 0.05, 0.01, 5.0, True, "bullish")
+            handled = st._overlay_step(122.0, dummy_regime, [100.0] * 30, tick_time=10000.0)
+            self.assertTrue(handled)
+            self.assertEqual(len(exited), 1)
+            self.assertEqual(exited[0][1], "TP")
 
-    def test_slow_grind_guard_in_trend_overlay(self):
-        st = _make_strategy("TESTPAIR_MHDPA_SLOW")
-        st.p.trend_overlay = True
-        st.p.slow_grind_guard = True
-        st.p.slow_grind_days = 7.0
-        st.p.slow_grind_min_gain_pct = 15.0
-        st.p.slow_grind_flash_window_min = 15.0
-        st.p.slow_grind_flash_drop_pct = 1.5
-        st.s["trend_mode"] = True
-        st.s["qty"] = 1.0
-        st.s["cost"] = 100.0
-        st.s["entry_price"] = 100.0
-        now = 1000000.0
-        st.s["entry_ts"] = now - 8 * 86400.0  # 8 days held
-        st.s["slow_grind_peak"] = 120.0
+        with self.subTest("slow_grind_guard"):
+            st = _make_strategy("TESTPAIR_MHDPA_SLOW")
+            st.p.trend_overlay = True
+            st.p.slow_grind_guard = True
+            st.p.slow_grind_days = 7.0
+            st.p.slow_grind_min_gain_pct = 15.0
+            st.p.slow_grind_flash_window_min = 15.0
+            st.p.slow_grind_flash_drop_pct = 1.5
+            st.s["trend_mode"] = True
+            st.s["qty"] = 1.0
+            st.s["cost"] = 100.0
+            st.s["entry_price"] = 100.0
+            now = 1000000.0
+            st.s["entry_ts"] = now - 8 * 86400.0  # 8 days held
+            st.s["slow_grind_peak"] = 120.0
 
-        st._shadow_prices.append((now - 120.0, 120.0))
-        st._shadow_prices.append((now, 118.0))  # 120 -> 118 is 1.67% drop >= 1.5%
+            st._shadow_prices.append((now - 120.0, 120.0))
+            st._shadow_prices.append((now, 118.0))  # 120 -> 118 is 1.67% drop >= 1.5%
 
-        exited = []
-        st._request_market_exit = lambda px, kind: exited.append((px, kind)) or True
+            exited = []
+            st._request_market_exit = lambda px, kind: exited.append((px, kind)) or True
 
-        from market_regime import MarketRegimeDecision
-        dummy_regime = MarketRegimeDecision("bull", 0.05, 0.01, 5.0, True, "bullish")
-        handled = st._overlay_step(118.0, dummy_regime, [100.0] * 30, tick_time=now)
-        self.assertTrue(handled)
-        self.assertEqual(len(exited), 1)
-        self.assertEqual(exited[0][1], "TP")
+            from market_regime import MarketRegimeDecision
+            dummy_regime = MarketRegimeDecision("bull", 0.05, 0.01, 5.0, True, "bullish")
+            handled = st._overlay_step(118.0, dummy_regime, [100.0] * 30, tick_time=now)
+            self.assertTrue(handled)
+            self.assertEqual(len(exited), 1)
+            self.assertEqual(exited[0][1], "TP")
 
-    def test_dynamic_trend_trail_in_trend_overlay(self):
-        st = _make_strategy("TESTPAIR_MHDPA_TRAIL")
-        st.p.trend_overlay = True
-        st.p.trend_trail_pct = 8.0
-        st.p.trend_trail_dynamic = True
-        st.p.trend_trail_base_pct = 8.0
-        st.p.trend_trail_min_pct = 3.0
-        st.p.trend_trail_ratchet_k = 0.5
-        st.p.trend_trail_gain_threshold = 6.0
-        st.s["trend_mode"] = True
-        st.s["qty"] = 1.0
-        st.s["cost"] = 100.0
-        st.s["entry_price"] = 100.0
-        # Peak at 120 (gain 20% > 6%). Ratchet = 8.0 - 0.5 * 14.0 = 1.0 -> clamped to 3.0%
-        st.s["trend_peak"] = 120.0
+        with self.subTest("dynamic_trend_trail"):
+            st = _make_strategy("TESTPAIR_MHDPA_TRAIL")
+            st.p.trend_overlay = True
+            st.p.trend_trail_pct = 8.0
+            st.p.trend_trail_dynamic = True
+            st.p.trend_trail_base_pct = 8.0
+            st.p.trend_trail_min_pct = 3.0
+            st.p.trend_trail_ratchet_k = 0.5
+            st.p.trend_trail_gain_threshold = 6.0
+            st.s["trend_mode"] = True
+            st.s["qty"] = 1.0
+            st.s["cost"] = 100.0
+            st.s["entry_price"] = 100.0
+            st.s["trend_peak"] = 120.0
 
-        exited = []
-        st._request_market_exit = lambda px, kind: exited.append((px, kind)) or True
+            exited = []
+            st._request_market_exit = lambda px, kind: exited.append((px, kind)) or True
 
-        from market_regime import MarketRegimeDecision
-        dummy_regime = MarketRegimeDecision("bull", 0.05, 0.01, 5.0, True, "bullish")
+            from market_regime import MarketRegimeDecision
+            dummy_regime = MarketRegimeDecision("bull", 0.05, 0.01, 5.0, True, "bullish")
 
-        # Price at 116.5: 120 * (1 - 0.03) = 116.4. At 116.5 > 116.4 -> should not exit yet
-        handled = st._overlay_step(116.5, dummy_regime, [100.0] * 30, tick_time=10000.0)
-        self.assertTrue(handled)
-        self.assertEqual(len(exited), 0)
+            handled = st._overlay_step(116.5, dummy_regime, [100.0] * 30, tick_time=10000.0)
+            self.assertTrue(handled)
+            self.assertEqual(len(exited), 0)
 
-        # Price at 116.3: 116.3 <= 116.4 -> exits under ratcheted 3% trail (whereas 8% trail would be 110.4)
-        handled = st._overlay_step(116.3, dummy_regime, [100.0] * 30, tick_time=10000.0)
-        self.assertTrue(handled)
-        self.assertEqual(len(exited), 1)
-        self.assertEqual(exited[0][1], "TP")
+            handled = st._overlay_step(116.3, dummy_regime, [100.0] * 30, tick_time=10000.0)
+            self.assertTrue(handled)
+            self.assertEqual(len(exited), 1)
+            self.assertEqual(exited[0][1], "TP")
 
-    def test_dynamic_flat_tp_in_step(self):
-        st = _make_strategy("TESTPAIR_MHDPA_FLAT")
-        st.p.enable_takeprofit = True
-        st.p.takeprofit_pct = 5.0
-        st.p.tp_dynamic_flat = True
-        st.p.tp_min_pct = 3.0
-        st.p.tp_max_pct = 7.0
-        st.s["qty"] = 1.0
-        st.s["cost"] = 100.0
-        st.s["entry_price"] = 100.0
+    def test_guards_in_step_trailing(self):
+        with self.subTest("dynamic_flat_tp"):
+            st = _make_strategy("TESTPAIR_MHDPA_FLAT")
+            st.p.enable_takeprofit = True
+            st.p.takeprofit_pct = 5.0
+            st.p.tp_dynamic_flat = True
+            st.p.tp_min_pct = 3.0
+            st.p.tp_max_pct = 7.0
+            st.s["qty"] = 1.0
+            st.s["cost"] = 100.0
+            st.s["entry_price"] = 100.0
 
-        # Mock regime as sideways with strength = 0.0 (deep quiet flat)
-        from market_regime import MarketRegimeDecision
-        st._regime_context = lambda: (
-            MarketRegimeDecision("sideways", 0.0, 0.01, 0.0, True, "sideways"),
-            [100.0] * 30,
-        )
+            from market_regime import MarketRegimeDecision
+            st._regime_context = lambda: (
+                MarketRegimeDecision("sideways", 0.0, 0.01, 0.0, True, "sideways"),
+                [100.0] * 30,
+            )
 
-        # In deep flat, eff_tp is 3.0%. A limit SELL TP order should be placed at 103.0 (instead of 105.0)
-        st.step(100.5, timestamp=1000.0)
-        sells = [o for o in st.s["orders"] if o["side"] == "sell"]
-        self.assertEqual(len(sells), 1)
-        self.assertAlmostEqual(sells[0]["price"], 103.0)
+            st.step(100.5, timestamp=1000.0)
+            sells = [o for o in st.s["orders"] if o["side"] == "sell"]
+            self.assertEqual(len(sells), 1)
+            self.assertAlmostEqual(sells[0]["price"], 103.0)
 
-    def test_fast_profit_guard_in_step_trailing(self):
-        st = _make_strategy("TESTPAIR_STEP_FAST_GUARD")
-        st.p.enable_takeprofit = True
-        st.p.tp_trend_hold = True
-        st.p.takeprofit_pct = 5.0
-        st.p.fast_profit_guard = True
-        st.p.fast_profit_mult = 2.0
-        st.p.fast_profit_window_min = 5.0
-        st.p.fast_profit_drop_pct = 1.0
-        st.s["qty"] = 1.0
-        st.s["cost"] = 100.0
-        st.s["entry_price"] = 100.0
+        with self.subTest("fast_profit_guard"):
+            st = _make_strategy("TESTPAIR_STEP_FAST_GUARD")
+            st.p.enable_takeprofit = True
+            st.p.tp_trend_hold = True
+            st.p.takeprofit_pct = 5.0
+            st.p.fast_profit_guard = True
+            st.p.fast_profit_mult = 2.0
+            st.p.fast_profit_window_min = 5.0
+            st.p.fast_profit_drop_pct = 1.0
+            st.s["qty"] = 1.0
+            st.s["cost"] = 100.0
+            st.s["entry_price"] = 100.0
 
-        now = 10000.0
-        st._shadow_prices.append((now - 120.0, 112.0))
-        st._shadow_prices.append((now, 110.5))
+            now = 10000.0
+            st._shadow_prices.append((now - 120.0, 112.0))
+            st._shadow_prices.append((now, 110.5))
 
-        exited = []
-        st._request_market_exit = lambda px, kind, soft_floor=False: exited.append((px, kind)) or True
+            exited = []
+            st._request_market_exit = lambda px, kind, soft_floor=False: exited.append((px, kind)) or True
 
-        # Price at 110.5 (+10.5% >= 2x 5%), dropped from 112.0 (drop = 1.34% >= 1.0% in 5m)
-        st.step(110.5, timestamp=now)
-        self.assertEqual(len(exited), 1)
-        self.assertEqual(exited[0][1], "TP")
+            st.step(110.5, timestamp=now)
+            self.assertEqual(len(exited), 1)
+            self.assertEqual(exited[0][1], "TP")
 
-    def test_surge_guard_in_step_trailing(self):
-        st = _make_strategy("TESTPAIR_STEP_SURGE_GUARD")
-        st.p.enable_takeprofit = True
-        st.p.tp_trend_hold = True
-        st.p.takeprofit_pct = 5.0
-        st.p.surge_guard = True
-        st.p.surge_gain_pct = 20.0
-        st.p.surge_exit_pullback_pct = 2.0
-        st.s["qty"] = 1.0
-        st.s["cost"] = 100.0
-        st.s["entry_price"] = 100.0
-        st.s["surge_peak"] = 125.0
+        with self.subTest("surge_guard"):
+            st = _make_strategy("TESTPAIR_STEP_SURGE_GUARD")
+            st.p.enable_takeprofit = True
+            st.p.tp_trend_hold = True
+            st.p.takeprofit_pct = 5.0
+            st.p.surge_guard = True
+            st.p.surge_gain_pct = 20.0
+            st.p.surge_exit_pullback_pct = 2.0
+            st.s["qty"] = 1.0
+            st.s["cost"] = 100.0
+            st.s["entry_price"] = 100.0
+            st.s["surge_peak"] = 125.0
 
-        exited = []
-        st._request_market_exit = lambda px, kind, **kwargs: exited.append((px, kind)) or True
+            exited = []
+            st._request_market_exit = lambda px, kind, **kwargs: exited.append((px, kind)) or True
 
-        # Price at 122.0 (+22% >= 20%), pullback from peak 125 is 2.4% >= 2.0%
-        st.step(122.0, timestamp=10000.0)
-        self.assertEqual(len(exited), 1)
-        self.assertEqual(exited[0][1], "TP")
+            st.step(122.0, timestamp=10000.0)
+            self.assertEqual(len(exited), 1)
+            self.assertEqual(exited[0][1], "TP")
 
-    def test_surge_window_move_pct(self):
-        st = _make_strategy("TESTPAIR_SURGE_WINDOW")
-        st.p.surge_window_hours = 72.0
-        st.p.trend_interval = 240  # 4h bars -> 72 / 4 = 18 bars
-        # 30 bars in history, past price at -18 was 100.0, current price is 125.0 -> +25% move
-        past_closes = [100.0] * 30
-        move = st._surge_window_move_pct(125.0, past_closes)
-        self.assertIsNotNone(move)
-        self.assertAlmostEqual(move, 25.0)
+    def test_surge_window_and_guard_dynamics(self):
+        with self.subTest("surge_window_move_pct"):
+            st = _make_strategy("TESTPAIR_SURGE_WINDOW")
+            st.p.surge_window_hours = 72.0
+            st.p.trend_interval = 240
+            past_closes = [100.0] * 30
+            move = st._surge_window_move_pct(125.0, past_closes)
+            self.assertIsNotNone(move)
+            self.assertAlmostEqual(move, 25.0)
 
-        # Different windows produce different moves
-        past_varying = [100.0] * 10 + [110.0] * 6 + [120.0] * 14  # 30 bars
-        st.p.surge_window_hours = 48.0  # 12 bars ago: idx -12 has 120.0
-        move_48 = st._surge_window_move_pct(130.0, past_varying)
-        st.p.surge_window_hours = 96.0  # 24 bars ago: idx -24 has 100.0
-        move_96 = st._surge_window_move_pct(130.0, past_varying)
-        self.assertAlmostEqual(move_48, (130.0 - 120.0) / 120.0 * 100.0)  # +8.33%
-        self.assertAlmostEqual(move_96, (130.0 - 100.0) / 100.0 * 100.0)  # +30.0%
-        self.assertNotEqual(move_48, move_96)
+            past_varying = [100.0] * 10 + [110.0] * 6 + [120.0] * 14
+            st.p.surge_window_hours = 48.0
+            move_48 = st._surge_window_move_pct(130.0, past_varying)
+            st.p.surge_window_hours = 96.0
+            move_96 = st._surge_window_move_pct(130.0, past_varying)
+            self.assertAlmostEqual(move_48, (130.0 - 120.0) / 120.0 * 100.0)
+            self.assertAlmostEqual(move_96, (130.0 - 100.0) / 100.0 * 100.0)
+            self.assertNotEqual(move_48, move_96)
 
-    def test_surge_window_live_and_replay_use_the_same_closed_bar_anchor(self):
-        st = _make_strategy(surge_window_hours=72.0, trend_interval=240)
-        closed = [100.0] + [110.0] * 17
-        self.assertAlmostEqual(st._surge_window_move_pct(130.0, closed), 30.0)
-        st.replay_mode = True
-        self.assertAlmostEqual(st._surge_window_move_pct(130.0, closed + [130.0]), 30.0)
-        self.assertIsNone(st._surge_window_move_pct(130.0, closed[1:] + [130.0]))
+        with self.subTest("live_and_replay_use_the_same_closed_bar_anchor"):
+            st = _make_strategy(surge_window_hours=72.0, trend_interval=240)
+            closed = [100.0] + [110.0] * 17
+            self.assertAlmostEqual(st._surge_window_move_pct(130.0, closed), 30.0)
+            st.replay_mode = True
+            self.assertAlmostEqual(st._surge_window_move_pct(130.0, closed + [130.0]), 30.0)
+            self.assertIsNone(st._surge_window_move_pct(130.0, closed[1:] + [130.0]))
 
-    def test_missing_surge_window_never_uses_a_different_regime_horizon(self):
-        from market_regime import MarketRegimeDecision
+        with self.subTest("missing_surge_window_never_uses_a_different_regime_horizon"):
+            from market_regime import MarketRegimeDecision
+            regime = MarketRegimeDecision(
+                "bull", 0.02, 0.01, 2.0, True, "above_epsilon", n_samples=21,
+            )
+            self.assertAlmostEqual(regime.fitted_move_pct, 40.0)
+            for overlay in (False, True):
+                for hours, closes in ((72.0, [90.0] * 17), (0.0, [90.0] * 30)):
+                    with self.subTest(overlay=overlay, hours=hours):
+                        st = _make_strategy(
+                            tp_trend_hold=True, takeprofit_pct=5.0, tp_trail_pct=8.0,
+                            surge_guard=True, surge_gain_pct=18.0, surge_move_pct=18.0,
+                            surge_window_hours=hours, surge_exit_pullback_pct=3.5,
+                        )
+                        st.s.update(qty=1.0, cost=100.0, entry_price=100.0, trend_mode=overlay)
+                        st._regime_context = lambda: (regime, closes)
+                        st._request_market_exit = MagicMock(return_value=True)
+                        if overlay:
+                            st._overlay_step(115.0, regime, closes, tick_time=1000.0)
+                        else:
+                            st.step(115.0, timestamp=1000.0)
+                        self.assertFalse(st.s["surge_active"])
+                        st._request_market_exit.assert_not_called()
 
-        regime = MarketRegimeDecision(
-            "bull", 0.02, 0.01, 2.0, True, "above_epsilon", n_samples=21,
-        )
-        self.assertAlmostEqual(regime.fitted_move_pct, 40.0)
-        for overlay in (False, True):
-            for hours, closes in ((72.0, [90.0] * 17), (0.0, [90.0] * 30)):
-                with self.subTest(overlay=overlay, hours=hours):
-                    st = _make_strategy(
-                        tp_trend_hold=True, takeprofit_pct=5.0, tp_trail_pct=8.0,
-                        surge_guard=True, surge_gain_pct=18.0, surge_move_pct=18.0,
-                        surge_window_hours=hours, surge_exit_pullback_pct=3.5,
-                    )
-                    st.s.update(qty=1.0, cost=100.0, entry_price=100.0, trend_mode=overlay)
-                    st._regime_context = lambda: (regime, closes)
-                    st._request_market_exit = MagicMock(return_value=True)
-                    if overlay:
-                        st._overlay_step(115.0, regime, closes, tick_time=1000.0)
-                    else:
-                        st.step(115.0, timestamp=1000.0)
-                    self.assertFalse(st.s["surge_active"])
-                    st._request_market_exit.assert_not_called()
+        with self.subTest("position_gain_and_latched_state_remain_independent"):
+            from market_regime import MarketRegimeDecision
+            regime = MarketRegimeDecision("sideways", 0.0, 0.01, 0.0, True, "sideways")
+            for overlay in (False, True):
+                for price, closes, armed in (
+                    (115.0, [90.0] * 18, False),
+                    (120.0, [], False),
+                    (115.0, [], True),
+                ):
+                    with self.subTest(overlay=overlay, price=price, armed=armed):
+                        st = _make_strategy(
+                            tp_trend_hold=True, takeprofit_pct=5.0, tp_trail_pct=8.0,
+                            surge_guard=True, surge_gain_pct=18.0, surge_move_pct=18.0,
+                            surge_window_hours=72.0, surge_exit_pullback_pct=3.5,
+                        )
+                        st.s.update(
+                            qty=1.0, cost=100.0, entry_price=100.0,
+                            trend_mode=overlay, surge_active=armed,
+                        )
+                        st._regime_context = lambda: (regime, closes)
+                        st._request_market_exit = MagicMock(return_value=True)
+                        if overlay:
+                            st._overlay_step(price, regime, closes, tick_time=1000.0)
+                        else:
+                            st.step(price, timestamp=1000.0)
+                        self.assertTrue(st.s["surge_active"])
+                        st._request_market_exit.assert_not_called()
 
-    def test_surge_window_position_gain_and_latched_state_remain_independent(self):
-        from market_regime import MarketRegimeDecision
+        with self.subTest("surge_guard_remains_armed_in_step_after_threshold_drop"):
+            st = _make_strategy("TESTPAIR_SURGE_ARMED_STEP")
+            st.p.enable_takeprofit = True
+            st.p.tp_trend_hold = True
+            st.p.takeprofit_pct = 5.0
+            st.p.surge_guard = True
+            st.p.surge_dynamic = False
+            st.p.surge_gain_pct = 18.0
+            st.p.surge_exit_pullback_pct = 3.5
+            st.s["qty"] = 1.0
+            st.s["cost"] = 100.0
+            st.s["entry_price"] = 100.0
 
-        regime = MarketRegimeDecision("sideways", 0.0, 0.01, 0.0, True, "sideways")
-        for overlay in (False, True):
-            for price, closes, armed in (
-                (115.0, [90.0] * 18, False),
-                (120.0, [], False),
-                (115.0, [], True),
-            ):
-                with self.subTest(overlay=overlay, price=price, armed=armed):
-                    st = _make_strategy(
-                        tp_trend_hold=True, takeprofit_pct=5.0, tp_trail_pct=8.0,
-                        surge_guard=True, surge_gain_pct=18.0, surge_move_pct=18.0,
-                        surge_window_hours=72.0, surge_exit_pullback_pct=3.5,
-                    )
-                    st.s.update(
-                        qty=1.0, cost=100.0, entry_price=100.0,
-                        trend_mode=overlay, surge_active=armed,
-                    )
-                    st._regime_context = lambda: (regime, closes)
-                    st._request_market_exit = MagicMock(return_value=True)
-                    if overlay:
-                        st._overlay_step(price, regime, closes, tick_time=1000.0)
-                    else:
-                        st.step(price, timestamp=1000.0)
-                    self.assertTrue(st.s["surge_active"])
-                    st._request_market_exit.assert_not_called()
+            exited = []
+            st._request_market_exit = lambda px, kind, **kwargs: exited.append((px, kind)) or True
 
-    def test_surge_guard_remains_armed_in_step_after_threshold_drop(self):
-        st = _make_strategy("TESTPAIR_SURGE_ARMED_STEP")
-        st.p.enable_takeprofit = True
-        st.p.tp_trend_hold = True
-        st.p.takeprofit_pct = 5.0
-        st.p.surge_guard = True
-        st.p.surge_dynamic = False
-        st.p.surge_gain_pct = 18.0
-        st.p.surge_exit_pullback_pct = 3.5
-        st.s["qty"] = 1.0
-        st.s["cost"] = 100.0
-        st.s["entry_price"] = 100.0
+            st.step(120.0, timestamp=1000.0)
+            self.assertTrue(st.s.get("surge_active"))
+            self.assertEqual(st.s.get("surge_peak"), 120.0)
+            self.assertEqual(len(exited), 0)
 
-        exited = []
-        st._request_market_exit = lambda px, kind, **kwargs: exited.append((px, kind)) or True
+            st.step(115.7, timestamp=1100.0)
+            self.assertEqual(len(exited), 1)
+            self.assertEqual(exited[0][1], "TP")
 
-        # Price hits 120.0 (+20% gain >= 18% threshold) -> arms surge guard
-        st.step(120.0, timestamp=1000.0)
-        self.assertTrue(st.s.get("surge_active"))
-        self.assertEqual(st.s.get("surge_peak"), 120.0)
-        self.assertEqual(len(exited), 0)
-
-        # Price pulls back to 115.7: gain is 15.7% (< 18.0%), pullback is (120 - 115.7)/120 = 3.58% >= 3.5%
-        # Must trigger market exit despite current gain falling below 18.0%!
-        st.step(115.7, timestamp=1100.0)
-        self.assertEqual(len(exited), 1)
-        self.assertEqual(exited[0][1], "TP")
-
-    def test_dynamic_surge_gain_pct(self):
-        import strategies.spot_rules as sr
-        # Default behavior: 24.0% - 32.0% centered around 25.0%
-        # Low volatility: 1.5% * 10.0 = 15.0% -> clamped to min 24.0%
-        self.assertEqual(sr.dynamic_surge_gain_pct(1.5), 24.0)
-        # Moderate volatility: 2.7% * 10.0 = 27.0% -> within [24.0, 32.0]
-        self.assertEqual(sr.dynamic_surge_gain_pct(2.7), 27.0)
-        # High volatility: 4.0% * 10.0 = 40.0% -> clamped to max 32.0%
-        self.assertEqual(sr.dynamic_surge_gain_pct(4.0), 32.0)
-        # Missing / None fallback
-        self.assertEqual(sr.dynamic_surge_gain_pct(None), 25.0)
+        with self.subTest("dynamic_surge_gain_pct"):
+            import strategies.spot_rules as sr
+            self.assertEqual(sr.dynamic_surge_gain_pct(1.5), 24.0)
+            self.assertEqual(sr.dynamic_surge_gain_pct(2.7), 27.0)
+            self.assertEqual(sr.dynamic_surge_gain_pct(4.0), 32.0)
+            self.assertEqual(sr.dynamic_surge_gain_pct(None), 25.0)
 
     def test_reentry_hybrid_bear_bounce_rule(self):
         import strategies.spot_rules as sr

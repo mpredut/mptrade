@@ -97,27 +97,21 @@ class TestTradeallOrderBoundary(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     ta._validate_tradeall_config()
 
-    def test_strategy_preserves_common_persistent_retry_policy(self):
+    def test_fire_order_allowlist_and_retry_policy(self):
         with (patch.object(ta, "_kalman_gate_blocks", return_value=(False, "off", None)),
               patch.object(ta, "TRADEALL_FIRE_SYMBOLS", {"BTCUSDT"}),
               patch.object(ta.mkt, "place", return_value={"orderId": "accepted"}) as place):
             result = ta._fire_order("BTCUSDT", "BUY", 100.0, "test")
-        self.assertIsNotNone(result)
-        self.assertNotIn("caller_owns_retry", place.call_args.kwargs)
+            self.assertIsNotNone(result)
+            self.assertNotIn("caller_owns_retry", place.call_args.kwargs)
 
-    def test_symbol_outside_fire_allowlist_is_never_traded(self):
-        # A coin can be trend-tracked (present in symbols.py) without tradeall
-        # trading it: a manual position guarded by the trailing stop. The gate is
-        # the single choke point, so neither logic() nor Kalman-primary can fire.
-        with (patch.object(ta, "_kalman_gate_blocks", return_value=(False, "off", None)),
-              patch.object(ta, "TRADEALL_FIRE_SYMBOLS", {"BTCUSDT"}),
-              patch.object(ta.mkt, "place", return_value={"orderId": "accepted"}) as place):
+            place.reset_mock()
             blocked = ta._fire_order("ARBUSDC", "SELL", 0.17, "test")
             allowed = ta._fire_order("BTCUSDT", "SELL", 100.0, "test")
-        self.assertIsNone(blocked)
-        self.assertIsNotNone(allowed)
-        self.assertEqual(place.call_count, 1)
-        self.assertEqual(place.call_args.args[0], "BTCUSDT")
+            self.assertIsNone(blocked)
+            self.assertIsNotNone(allowed)
+            self.assertEqual(place.call_count, 1)
+            self.assertEqual(place.call_args.args[0], "BTCUSDT")
 
     def test_invalid_side_or_price_never_reaches_executor(self):
         invalid = (("HOLD", 100.0), ("BUY", None), ("SELL", float("nan")),
@@ -145,35 +139,32 @@ class TestTradeallOrderBoundary(unittest.TestCase):
         state.mark_fire_attempt.assert_not_called()
         fire.assert_not_called()
 
-    def test_kalman_gate_fails_closed_for_blind_buy_but_allows_sell(self):
-        # Missing/stale confirming signal: block an additive BUY (do not buy blind) but
-        # never a SELL -- a risk-reducing exit must never be trapped by a data outage.
-        class _AbsentShadow:
-            def current_trend(self, _sym):
-                return None, 0.0
-        class _StaleShadow:
-            def current_trend(self, _sym):
-                return 1, ta.GATE_STALE_SEC + 1.0
-        for shadow in (_AbsentShadow(), _StaleShadow()):
+    def test_kalman_gate_behaviors(self):
+        with self.subTest("fails closed for blind buy but allows sell"):
+            class _AbsentShadow:
+                def current_trend(self, _sym):
+                    return None, 0.0
+            class _StaleShadow:
+                def current_trend(self, _sym):
+                    return 1, ta.GATE_STALE_SEC + 1.0
+            for shadow in (_AbsentShadow(), _StaleShadow()):
+                with (patch.object(ta, "_shadow_ref", shadow),
+                      patch.dict(ta.KALMAN_MODES, {"TAOUSDC": "strict"})):
+                    self.assertTrue(ta._kalman_gate_blocks("TAOUSDC", "BUY")[0])
+                    self.assertFalse(ta._kalman_gate_blocks("TAOUSDC", "SELL")[0])
+
+        with self.subTest("ages signal on replay clock"):
+            import shadow_signals
+            sim_now = [1_780_000_000.0]
+            shadow = shadow_signals.ShadowSet(
+                journal=shadow_signals.ShadowJournal(fixed_path=os.devnull),
+                now_fn=lambda: sim_now[0])
+            shadow._state["TAOUSDC"] = {"kalman_trend": 1, "ts": sim_now[0] - 10.0}
             with (patch.object(ta, "_shadow_ref", shadow),
                   patch.dict(ta.KALMAN_MODES, {"TAOUSDC": "strict"})):
+                self.assertFalse(ta._kalman_gate_blocks("TAOUSDC", "BUY")[0])
+                sim_now[0] += ta.GATE_STALE_SEC + 1.0
                 self.assertTrue(ta._kalman_gate_blocks("TAOUSDC", "BUY")[0])
-                self.assertFalse(ta._kalman_gate_blocks("TAOUSDC", "SELL")[0])
-
-    def test_kalman_gate_ages_the_signal_on_the_replay_clock(self):
-        # A replay feeds historical timestamps. Ageing them against wall time made every
-        # signal months old, so the gate blocked every BUY in every TradeAll backtest.
-        import shadow_signals
-        sim_now = [1_780_000_000.0]
-        shadow = shadow_signals.ShadowSet(
-            journal=shadow_signals.ShadowJournal(fixed_path=os.devnull),
-            now_fn=lambda: sim_now[0])
-        shadow._state["TAOUSDC"] = {"kalman_trend": 1, "ts": sim_now[0] - 10.0}
-        with (patch.object(ta, "_shadow_ref", shadow),
-              patch.dict(ta.KALMAN_MODES, {"TAOUSDC": "strict"})):
-            self.assertFalse(ta._kalman_gate_blocks("TAOUSDC", "BUY")[0])
-            sim_now[0] += ta.GATE_STALE_SEC + 1.0
-            self.assertTrue(ta._kalman_gate_blocks("TAOUSDC", "BUY")[0])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -421,51 +412,51 @@ class TestPriceWindowFromCache24(unittest.TestCase):
 
 class TestPriceWindowGetTrend(unittest.TestCase):
 
-    def test_returns_four_values(self):
-        pw = _window([100 + i for i in range(20)])
-        self.assertEqual(len(pw.get_trend()), 4)
+    def test_price_window_trend_calculations(self):
+        with self.subTest("returns four values"):
+            pw = _window([100 + i for i in range(20)])
+            self.assertEqual(len(pw.get_trend()), 4)
 
-    def test_directional_trends(self):
-        cases = (
-            ("up", [100 + i * 2 for i in range(30)], 1),
-            ("down", [200 - i * 2 for i in range(30)], -1),
-        )
-        for label, prices, expected in cases:
-            with self.subTest(direction=label):
-                final_trend, growth, slope, gradient = _window(prices).get_trend()
-                self.assertEqual(final_trend, expected)
-                self.assertGreater(growth * expected, 0)
-                self.assertGreater(slope * expected, 0)
-                self.assertGreater(gradient * expected, 0)
-                self.assertEqual(final_trend, 1 if growth > 0 else -1)
+        with self.subTest("directional trends"):
+            cases = (
+                ("up", [100 + i * 2 for i in range(30)], 1),
+                ("down", [200 - i * 2 for i in range(30)], -1),
+            )
+            for label, prices, expected in cases:
+                with self.subTest(direction=label):
+                    final_trend, growth, slope, gradient = _window(prices).get_trend()
+                    self.assertEqual(final_trend, expected)
+                    self.assertGreater(growth * expected, 0)
+                    self.assertGreater(slope * expected, 0)
+                    self.assertGreater(gradient * expected, 0)
+                    self.assertEqual(final_trend, 1 if growth > 0 else -1)
 
-    def test_gc_is_average_of_sf_and_gr(self):
-        pw = _window([100 + i for i in range(20)])
-        _, gc, sf, gr = pw.get_trend()
-        self.assertAlmostEqual(gc, (sf + gr) / 2.0, places=10)
+        with self.subTest("gc is average of sf and gr"):
+            pw = _window([100 + i for i in range(20)])
+            _, gc, sf, gr = pw.get_trend()
+            self.assertAlmostEqual(gc, (sf + gr) / 2.0, places=10)
 
-    def test_neutral_series_return_zero_trend(self):
-        for label, prices in (("single", [100.0]), ("constant", [100.0] * 20)):
-            with self.subTest(case=label):
-                final_trend, growth, slope, gradient = _window(prices).get_trend()
-                self.assertEqual(final_trend, 0)
-                self.assertAlmostEqual(growth, 0.0, places=6)
-                self.assertAlmostEqual(slope, 0.0, places=6)
-                self.assertAlmostEqual(gradient, 0.0, places=6)
+        with self.subTest("neutral series return zero trend"):
+            for label, prices in (("single", [100.0]), ("constant", [100.0] * 20)):
+                with self.subTest(case=label):
+                    final_trend, growth, slope, gradient = _window(prices).get_trend()
+                    self.assertEqual(final_trend, 0)
+                    self.assertAlmostEqual(growth, 0.0, places=6)
+                    self.assertAlmostEqual(slope, 0.0, places=6)
+                    self.assertAlmostEqual(gradient, 0.0, places=6)
 
-    def test_recent_gradient_captures_late_reversal(self):
-        # Overall UP trend, but the last 5 prices drop sharply
-        prices = [100 + i for i in range(30)] + [129 - i * 8 for i in range(1, 6)]
-        pw = _window(prices, sample_rate=0.8)
-        _, _, _, gr = pw.get_trend()
-        self.assertLess(gr, 0)   # momentumul recent e negativ
+        with self.subTest("recent gradient captures late reversal"):
+            prices = [100 + i for i in range(30)] + [129 - i * 8 for i in range(1, 6)]
+            pw = _window(prices, sample_rate=0.8)
+            _, _, _, gr = pw.get_trend()
+            self.assertLess(gr, 0)
 
-    def test_slope_full_sees_whole_window(self):
-        # Overall UP trend even though the last 2 prices dip slightly
-        prices = [100 + i for i in range(30)] + [129, 128]
-        pw = _window(prices)
-        _, _, sf, _ = pw.get_trend()
-        self.assertGreater(sf, 0)
+        with self.subTest("slope full sees whole window"):
+            prices = [100 + i for i in range(30)] + [129, 128]
+            pw = _window(prices)
+            _, _, sf, _ = pw.get_trend()
+            self.assertGreater(sf, 0)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # PriceWindow — min/max/slope/proximities
@@ -473,30 +464,31 @@ class TestPriceWindowGetTrend(unittest.TestCase):
 
 class TestPriceWindowMinMax(unittest.TestCase):
 
-    def test_get_min_max(self):
-        pw = _window([100, 105, 95, 110, 90])
-        self.assertAlmostEqual(pw.get_min(), 90.0, delta=1.0)
-        self.assertAlmostEqual(pw.get_max(), 110.0, delta=1.0)
+    def test_min_max_and_proximity_behaviors(self):
+        with self.subTest("get min max"):
+            pw = _window([100, 105, 95, 110, 90])
+            self.assertAlmostEqual(pw.get_min(), 90.0, delta=1.0)
+            self.assertAlmostEqual(pw.get_max(), 110.0, delta=1.0)
 
-    def test_sorted_consistency(self):
-        pw = _window([50, 80, 60, 70, 90])
-        self.assertEqual(len(pw.prices), len(pw.sorted_prices))
+        with self.subTest("sorted consistency"):
+            pw = _window([50, 80, 60, 70, 90])
+            self.assertEqual(len(pw.prices), len(pw.sorted_prices))
 
-    def test_eviction(self):
-        pw = ta.PriceWindow("BTCUSDT", 3)
-        for p in [10, 20, 30, 40]:
-            pw.process_price(p)
-        self.assertEqual(len(pw.prices), 3)
-        self.assertNotIn(10, pw.prices)
+        with self.subTest("eviction"):
+            pw = ta.PriceWindow("BTCUSDT", 3)
+            for p in [10, 20, 30, 40]:
+                pw.process_price(p)
+            self.assertEqual(len(pw.prices), 3)
+            self.assertNotIn(10, pw.prices)
 
-    def test_proximities(self):
-        analyzer = ta.WindowAnalyzer(_window([100, 200]))
-        cases = (("midpoint", 150, 0.5, 0.5), ("minimum", 100, 0.0, 1.0))
-        for label, price, expected_min, expected_max in cases:
-            with self.subTest(position=label):
-                min_proximity, max_proximity = analyzer.calculate_proximities(price)
-                self.assertAlmostEqual(min_proximity, expected_min, places=5)
-                self.assertAlmostEqual(max_proximity, expected_max, places=5)
+        with self.subTest("proximities"):
+            analyzer = ta.WindowAnalyzer(_window([100, 200]))
+            cases = (("midpoint", 150, 0.5, 0.5), ("minimum", 100, 0.0, 1.0))
+            for label, price, expected_min, expected_max in cases:
+                with self.subTest(position=label):
+                    min_proximity, max_proximity = analyzer.calculate_proximities(price)
+                    self.assertAlmostEqual(min_proximity, expected_min, places=5)
+                    self.assertAlmostEqual(max_proximity, expected_max, places=5)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -611,34 +603,36 @@ class TestCacheCurrentPriceFrequency(unittest.TestCase):
         # We start the frequency measurement clean to test the mechanism in isolation.
         self.mgr._update_timestamps.clear()
 
-    def test_empty_state_uses_fallback_and_zero_frequency(self):
-        self.assertAlmostEqual(self.mgr.get_sample_rate("BTCUSDT", fallback=0.8), 0.8)
-        self.assertEqual(self.mgr.get_update_frequency("BTCUSDT"), 0.0)
+    def test_current_price_frequency_and_sample_rate(self):
+        with self.subTest("empty state uses fallback and zero frequency"):
+            self.assertAlmostEqual(self.mgr.get_sample_rate("BTCUSDT", fallback=0.8), 0.8)
+            self.assertEqual(self.mgr.get_update_frequency("BTCUSDT"), 0.0)
 
-    def test_updates_produce_sample_rate_and_frequency(self):
-        t0 = time.time()
-        self.mgr.on_items_update("BTCUSDT", [60000.0])
-        time.sleep(0.15)
-        self.mgr.on_items_update("BTCUSDT", [60001.0])
-        elapsed = time.time() - t0
-        rate = self.mgr.get_sample_rate("BTCUSDT", fallback=9.9)
-        # the measured rate is approximately the real interval between the 2 updates (not the fallback)
-        self.assertGreater(rate, 0.0)
-        self.assertLess(rate, 9.9)                  # It is not the fallback.
-        self.assertLessEqual(rate, elapsed + 0.5)   # robust la jitter de scheduling
-        self.assertGreater(self.mgr.get_update_frequency("BTCUSDT"), 0.0)
+        with self.subTest("updates produce sample rate and frequency"):
+            t0 = time.time()
+            self.mgr.on_items_update("BTCUSDT", [60000.0])
+            time.sleep(0.15)
+            self.mgr.on_items_update("BTCUSDT", [60001.0])
+            elapsed = time.time() - t0
+            rate = self.mgr.get_sample_rate("BTCUSDT", fallback=9.9)
+            self.assertGreater(rate, 0.0)
+            self.assertLess(rate, 9.9)
+            self.assertLessEqual(rate, elapsed + 0.5)
+            self.assertGreater(self.mgr.get_update_frequency("BTCUSDT"), 0.0)
 
-    def test_old_timestamps_trimmed(self):
-        old_ts = time.time() - cm.CacheCurrentPriceManager.FREQ_WINDOW_SEC - 10
-        self.mgr._update_timestamps["BTCUSDT"].append(old_ts)
-        self.mgr.on_items_update("BTCUSDT", [60000.0])
-        dq = self.mgr._update_timestamps["BTCUSDT"]
-        cutoff = time.time() - cm.CacheCurrentPriceManager.FREQ_WINDOW_SEC - 1
-        self.assertTrue(all(t > cutoff for t in dq))
+        with self.subTest("old timestamps trimmed"):
+            self.mgr._update_timestamps.clear()
+            old_ts = time.time() - cm.CacheCurrentPriceManager.FREQ_WINDOW_SEC - 10
+            self.mgr._update_timestamps["BTCUSDT"].append(old_ts)
+            self.mgr.on_items_update("BTCUSDT", [60000.0])
+            dq = self.mgr._update_timestamps["BTCUSDT"]
+            cutoff = time.time() - cm.CacheCurrentPriceManager.FREQ_WINDOW_SEC - 1
+            self.assertTrue(all(t > cutoff for t in dq))
 
-    def test_single_update_returns_fallback(self):
-        self.mgr.on_items_update("BTCUSDT", [60000.0])
-        self.assertAlmostEqual(self.mgr.get_sample_rate("BTCUSDT", fallback=1.23), 1.23)
+        with self.subTest("single update returns fallback"):
+            self.mgr._update_timestamps.clear()
+            self.mgr.on_items_update("BTCUSDT", [60000.0])
+            self.assertAlmostEqual(self.mgr.get_sample_rate("BTCUSDT", fallback=1.23), 1.23)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -672,58 +666,58 @@ class TestSubscriberPatternInheritance(unittest.TestCase):
     def _cache24(self, symbol="BTCUSDT"):
         return _make_cache24_manager(symbol, _synthetic_entries(5), self.tmp)
 
-    def test_managers_inherit_subscribe_price(self):
-        cases = (
-            ("cache24", type(self._cache24()).subscribe_price),
-            ("current-price", cm.CacheCurrentPriceManager.subscribe_price),
-        )
-        for label, method in cases:
-            with self.subTest(manager=label):
-                self.assertIs(method, cm.CacheManagerInterface.subscribe_price)
+    def test_subscriber_pattern_and_ws_attachment(self):
+        with self.subTest("managers inherit subscribe_price"):
+            cases = (
+                ("cache24", type(self._cache24()).subscribe_price),
+                ("current-price", cm.CacheCurrentPriceManager.subscribe_price),
+            )
+            for label, method in cases:
+                with self.subTest(manager=label):
+                    self.assertIs(method, cm.CacheManagerInterface.subscribe_price)
 
-    def test_inherited_notify_reaches_subscriber(self):
-        mgr = self._cache24("BTCUSDT")
-        rec = _RecordingSubscriber()
-        mgr.subscribe_price(rec)
-        mgr.on_price_update("BTCUSDT", int(time.time() * 1000), 123.0)
-        self.assertIn(("BTCUSDT", 123.0), rec.events)
+        with self.subTest("inherited notify reaches subscriber"):
+            mgr = self._cache24("BTCUSDT")
+            rec = _RecordingSubscriber()
+            mgr.subscribe_price(rec)
+            mgr.on_price_update("BTCUSDT", int(time.time() * 1000), 123.0)
+            self.assertIn(("BTCUSDT", 123.0), rec.events)
 
-    def test_attach_ws_manager_wires_chain(self):
-        """WS tick → CacheCurrentPrice.on_items_update → subscriber.on_price_update."""
-        fname = os.path.join(self.tmp, "cp_ws.json")
-        mgr = cm.CacheCurrentPriceManager(
-            sync_ts=9999, symbols=["BTCUSDT"],
-            filename=fname, ws_manager=None, api_client=mock_bapi,
-        )
-        ws = _FakeWSManager()
-        mgr.attach_ws_manager(ws)
+        with self.subTest("attach ws manager wires chain"):
+            fname = os.path.join(self.tmp, "cp_ws.json")
+            mgr = cm.CacheCurrentPriceManager(
+                sync_ts=9999, symbols=["BTCUSDT"],
+                filename=fname, ws_manager=None, api_client=mock_bapi,
+            )
+            ws = _FakeWSManager()
+            mgr.attach_ws_manager(ws)
 
-        rec = _RecordingSubscriber()
-        mgr.subscribe_price(rec)
+            rec = _RecordingSubscriber()
+            mgr.subscribe_price(rec)
 
-        ws.push("BTCUSDT", 67000.0)   # simulates a WS tick
-        self.assertIn(("BTCUSDT", 67000.0), rec.events)
+            ws.push("BTCUSDT", 67000.0)
+            self.assertIn(("BTCUSDT", 67000.0), rec.events)
 
-    def test_attach_ws_manager_idempotent(self):
-        fname = os.path.join(self.tmp, "cp_ws2.json")
-        mgr = cm.CacheCurrentPriceManager(
-            sync_ts=9999, symbols=["BTCUSDT"],
-            filename=fname, ws_manager=None, api_client=mock_bapi,
-        )
-        ws = _FakeWSManager()
-        mgr.attach_ws_manager(ws)
-        mgr.attach_ws_manager(ws)
-        self.assertEqual(ws._subs.count(mgr), 1)
+        with self.subTest("attach ws manager idempotent"):
+            fname = os.path.join(self.tmp, "cp_ws2.json")
+            mgr = cm.CacheCurrentPriceManager(
+                sync_ts=9999, symbols=["BTCUSDT"],
+                filename=fname, ws_manager=None, api_client=mock_bapi,
+            )
+            ws = _FakeWSManager()
+            mgr.attach_ws_manager(ws)
+            mgr.attach_ws_manager(ws)
+            self.assertEqual(ws._subs.count(mgr), 1)
 
-    def test_ws_tick_marks_ws_healthy(self):
-        fname = os.path.join(self.tmp, "cp_ws3.json")
-        mgr = cm.CacheCurrentPriceManager(
-            sync_ts=9999, symbols=["BTCUSDT"],
-            filename=fname, ws_manager=None, api_client=mock_bapi,
-        )
-        self.assertFalse(mgr._ws_is_healthy())   # no event yet
-        mgr.on_items_update("BTCUSDT", [50000.0])
-        self.assertTrue(mgr._ws_is_healthy())    # WS marcat activ
+        with self.subTest("ws tick marks ws healthy"):
+            fname = os.path.join(self.tmp, "cp_ws3.json")
+            mgr = cm.CacheCurrentPriceManager(
+                sync_ts=9999, symbols=["BTCUSDT"],
+                filename=fname, ws_manager=None, api_client=mock_bapi,
+            )
+            self.assertFalse(mgr._ws_is_healthy())
+            mgr.on_items_update("BTCUSDT", [50000.0])
+            self.assertTrue(mgr._ws_is_healthy())
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -808,108 +802,109 @@ class TestPriceWindowCache24Wiring(unittest.TestCase):
 
 class TestWindowAnalyzer(unittest.TestCase):
 
-    def test_pricewindow_api_surface_is_lean(self):
-        pw = _window([100, 110, 105])
-        for method in ("calculate_proximities", "calculate_slope_max_min",
-                       "check_price_change", "evaluate_buy_sell_opportunity"):
-            with self.subTest(absent=method):
-                self.assertFalse(hasattr(pw, method))
-        for method in ("get_min", "get_max", "get_instant_trend"):
-            with self.subTest(present=method):
-                self.assertTrue(hasattr(pw, method))
+    def test_window_analyzer_integration_and_api_surface(self):
+        with self.subTest("api surface is lean"):
+            pw = _window([100, 110, 105])
+            for method in ("calculate_proximities", "calculate_slope_max_min",
+                           "check_price_change", "evaluate_buy_sell_opportunity"):
+                with self.subTest(absent=method):
+                    self.assertFalse(hasattr(pw, method))
+            for method in ("get_min", "get_max", "get_instant_trend"):
+                with self.subTest(present=method):
+                    self.assertTrue(hasattr(pw, method))
 
-    def test_get_trend_alias(self):
-        pw = _window([100 + i for i in range(20)])
-        self.assertEqual(pw.get_trend(), pw.get_instant_trend())
+        with self.subTest("get trend alias"):
+            pw = _window([100 + i for i in range(20)])
+            self.assertEqual(pw.get_trend(), pw.get_instant_trend())
 
-    def test_recent_gradient_cases(self):
-        cases = (
-            ("up", [100 + i for i in range(20)], 1),
-            ("down", [200 - i for i in range(20)], -1),
-            ("insufficient", [100.0], 0),
-        )
-        for label, prices, expected_sign in cases:
-            with self.subTest(case=label):
-                gradient = _window(prices).get_recent_gradient()
-                if expected_sign == 0:
-                    self.assertEqual(gradient, 0.0)
-                else:
-                    self.assertGreater(gradient * expected_sign, 0)
+    def test_analyzer_gradients_and_noise(self):
+        with self.subTest("recent gradient cases"):
+            cases = (
+                ("up", [100 + i for i in range(20)], 1),
+                ("down", [200 - i for i in range(20)], -1),
+                ("insufficient", [100.0], 0),
+            )
+            for label, prices, expected_sign in cases:
+                with self.subTest(case=label):
+                    gradient = _window(prices).get_recent_gradient()
+                    if expected_sign == 0:
+                        self.assertEqual(gradient, 0.0)
+                    else:
+                        self.assertGreater(gradient * expected_sign, 0)
 
-    def test_noise_epsilon_cases(self):
-        import random
-        random.seed(1)
-        constant = _window([100.0] * 20).get_noise_epsilon()
-        volatile = _window([100 + random.uniform(-5, 5) for _ in range(30)]).get_noise_epsilon()
-        calm = _window([100 + (i % 2) * 0.1 for i in range(30)])
-        wild = _window([100 + (i % 2) * 10 for i in range(30)])
-        insufficient = _window([100.0, 101.0]).get_noise_epsilon()
-        self.assertAlmostEqual(constant, 0.0, places=6)
-        self.assertGreater(volatile, 0.0)
-        self.assertLess(calm.get_noise_epsilon(), wild.get_noise_epsilon())
-        self.assertEqual(insufficient, 0.0)
+        with self.subTest("noise epsilon cases"):
+            import random
+            random.seed(1)
+            constant = _window([100.0] * 20).get_noise_epsilon()
+            volatile = _window([100 + random.uniform(-5, 5) for _ in range(30)]).get_noise_epsilon()
+            calm = _window([100 + (i % 2) * 0.1 for i in range(30)])
+            wild = _window([100 + (i % 2) * 10 for i in range(30)])
+            insufficient = _window([100.0, 101.0]).get_noise_epsilon()
+            self.assertAlmostEqual(constant, 0.0, places=6)
+            self.assertGreater(volatile, 0.0)
+            self.assertLess(calm.get_noise_epsilon(), wild.get_noise_epsilon())
+            self.assertEqual(insufficient, 0.0)
 
-    def test_slope_max_min_cases(self):
-        for label, prices, positive in (
-            ("up", [100 + i for i in range(20)], True),
-            ("constant", [100.0] * 10, False),
-        ):
-            with self.subTest(case=label):
-                slope = ta.WindowAnalyzer(_window(prices)).calculate_slope_max_min()
-                self.assertGreater(slope, 0) if positive else self.assertEqual(slope, 0)
+        with self.subTest("slope max min cases"):
+            for label, prices, positive in (
+                ("up", [100 + i for i in range(20)], True),
+                ("constant", [100.0] * 10, False),
+            ):
+                with self.subTest(case=label):
+                    slope = ta.WindowAnalyzer(_window(prices)).calculate_slope_max_min()
+                    self.assertGreater(slope, 0) if positive else self.assertEqual(slope, 0)
 
-    def test_check_price_change_cases(self):
-        cases = (
-            ("below", [100.0, 100.05, 100.02], 5.0, True, None),
-            ("above", [100.0, 100.0, 110.0], 1.0, False, None),
-            ("insufficient", [100.0], 1.0, True, 1),
-        )
-        for label, prices, threshold, expect_zero, expected_pos in cases:
-            with self.subTest(case=label):
-                slope, position = ta.WindowAnalyzer(_window(prices)).check_price_change(threshold)
-                self.assertEqual(slope, 0) if expect_zero else self.assertNotEqual(slope, 0)
-                if expected_pos is not None:
-                    self.assertEqual(position, expected_pos)
+    def test_analyzer_price_movement_and_evaluations(self):
+        with self.subTest("check price change cases"):
+            cases = (
+                ("below", [100.0, 100.05, 100.02], 5.0, True, None),
+                ("above", [100.0, 100.0, 110.0], 1.0, False, None),
+                ("insufficient", [100.0], 1.0, True, 1),
+            )
+            for label, prices, threshold, expect_zero, expected_pos in cases:
+                with self.subTest(case=label):
+                    slope, position = ta.WindowAnalyzer(_window(prices)).check_price_change(threshold)
+                    self.assertEqual(slope, 0) if expect_zero else self.assertNotEqual(slope, 0)
+                    if expected_pos is not None:
+                        self.assertEqual(position, expected_pos)
 
-    def test_evaluate_buy_sell_cases(self):
-        cases = (
-            ("directional", [100 + i for i in range(20)], 120.0, None, None),
-            ("below-threshold", [100.0, 100.01, 100.02], 100.02, 5.0, "HOLD"),
-        )
-        for label, prices, current, threshold, expected in cases:
-            with self.subTest(case=label):
-                analyzer = ta.WindowAnalyzer(_window(prices))
-                if threshold is None:
-                    action, _, _, _ = analyzer.evaluate_buy_sell_opportunity(current)
-                else:
-                    action, _, _, _ = analyzer.evaluate_buy_sell_opportunity(
-                        current, threshold_percent=threshold)
-                self.assertIn(action, ("BUY", "SELL", "HOLD"))
-                if expected is not None:
-                    self.assertEqual(action, expected)
+        with self.subTest("evaluate buy sell cases"):
+            cases = (
+                ("directional", [100 + i for i in range(20)], 120.0, None, None),
+                ("below-threshold", [100.0, 100.01, 100.02], 100.02, 5.0, "HOLD"),
+            )
+            for label, prices, current, threshold, expected in cases:
+                with self.subTest(case=label):
+                    analyzer = ta.WindowAnalyzer(_window(prices))
+                    if threshold is None:
+                        action, _, _, _ = analyzer.evaluate_buy_sell_opportunity(current)
+                    else:
+                        action, _, _, _ = analyzer.evaluate_buy_sell_opportunity(
+                            current, threshold_percent=threshold)
+                    self.assertIn(action, ("BUY", "SELL", "HOLD"))
+                    if expected is not None:
+                        self.assertEqual(action, expected)
 
-    def test_calculate_positions_returns_fractions(self):
-        pw = _window([100 + i for i in range(10)])
-        an = ta.WindowAnalyzer(pw)
-        min_pos, max_pos = an.calculate_positions()
-        self.assertIsNotNone(min_pos)
-        self.assertIsNotNone(max_pos)
+        with self.subTest("calculate positions returns fractions"):
+            pw = _window([100 + i for i in range(10)])
+            an = ta.WindowAnalyzer(pw)
+            min_pos, max_pos = an.calculate_positions()
+            self.assertIsNotNone(min_pos)
+            self.assertIsNotNone(max_pos)
 
-    def test_analyze_price_movement_returns_tuple(self):
-        # the complicated logic restored — it must return (slope, price_diff)
-        pw = _window([100 + i for i in range(20)])
-        an = ta.WindowAnalyzer(pw)
-        result = an._analyze_price_movement(100, 0, 119, 19, 119, 19, 19.0)
-        self.assertEqual(len(result), 2)
+        with self.subTest("analyze price movement returns tuple"):
+            pw = _window([100 + i for i in range(20)])
+            an = ta.WindowAnalyzer(pw)
+            result = an._analyze_price_movement(100, 0, 119, 19, 119, 19, 19.0)
+            self.assertEqual(len(result), 2)
 
-    def test_analyzer_shares_window_mutation(self):
-        # composition: the analyzer sees the window's changes (the same object)
-        pw = _window([100, 101, 102])
-        an = ta.WindowAnalyzer(pw)
-        before = pw.get_max()
-        pw.process_price(200.0)
-        self.assertGreater(pw.get_max(), before)
-        self.assertIs(an.window, pw)
+        with self.subTest("analyzer shares window mutation"):
+            pw = _window([100, 101, 102])
+            an = ta.WindowAnalyzer(pw)
+            before = pw.get_max()
+            pw.process_price(200.0)
+            self.assertGreater(pw.get_max(), before)
+            self.assertIs(an.window, pw)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -946,110 +941,110 @@ class TestTrendCoordinator(unittest.TestCase):
             min_interval=2.0, max_interval=30.0,
         )
 
-    def test_manager_owns_windows(self):
-        self.assertIsNotNone(self.mgr.get_window("BTCUSDT"))
-        self.assertIsNotNone(self.mgr.get_analyzer("BTCUSDT"))
-        self.assertGreater(len(self.mgr.get_window("BTCUSDT").prices), 0)
+    def test_coordinator_and_manager_lifecycle_and_snapshots(self):
+        with self.subTest("manager owns windows"):
+            self.assertIsNotNone(self.mgr.get_window("BTCUSDT"))
+            self.assertIsNotNone(self.mgr.get_analyzer("BTCUSDT"))
+            self.assertGreater(len(self.mgr.get_window("BTCUSDT").prices), 0)
 
-    def test_dirty_set_on_price_update(self):
-        coord = self._make_coord()
-        coord._dirty["BTCUSDT"] = False
-        coord.on_price_update("BTCUSDT", int(time.time() * 1000), 60001.0)
-        self.assertTrue(coord._dirty["BTCUSDT"])
-        self.assertTrue(coord._event.is_set())
+        with self.subTest("coordinator and windows subscribed to cache24"):
+            coord = self._make_coord()
+            self.assertIn(coord, self.cache24._price_subscribers)
+            self.assertTrue(self.mgr.get_window("BTCUSDT")._subscribed_to_cache24)
+            self.assertTrue(self.mgr.get_window("BTCUSDT", self.mgr.window_big_sec)._subscribed_to_cache24)
 
-    def test_due_policy_for_dirty_and_heartbeat(self):
-        coord = self._make_coord()
-        now = time.time()
-        coord._last_eval["BTCUSDT"] = now
-        coord._dirty["BTCUSDT"] = True
-        self.assertFalse(coord._is_due("BTCUSDT", now + 0.5))
-        self.assertTrue(coord._is_due("BTCUSDT", now + 2.5))
-        coord._dirty["BTCUSDT"] = False
-        self.assertTrue(coord._is_due("BTCUSDT", now + 31.0))
-        self.assertFalse(coord._is_due("BTCUSDT", now + 5.0))
+        with self.subTest("evaluation cache lifecycle"):
+            coord = self._make_coord()
+            self.assertIsNone(coord.get_cached_trend("BTCUSDT"))
+            self.assertEqual(coord.get_all_cached_trends(), {})
+            snap = coord.evaluate("BTCUSDT")
+            self.assertIsNotNone(snap)
+            cached = coord.get_cached_trend("BTCUSDT")
+            for key in ("final_trend", "growth_coefficient", "slope_full",
+                        "gradient_recent", "slope_small", "slope_big",
+                        "slope_max_min", "pos", "current_price", "ts"):
+                with self.subTest(field=key):
+                    self.assertIn(key, cached)
+            self.assertFalse(coord._dirty["BTCUSDT"])
+            self.assertIn("BTCUSDT", coord.get_all_cached_trends())
+            manager_snapshot = self.mgr.get_snapshot("BTCUSDT")
+            self.assertIsNotNone(manager_snapshot)
+            self.assertIn("slope_big", manager_snapshot)
 
-    def test_invalid_intervals_fail_fast_and_symbols_are_deduplicated(self):
-        for minimum, maximum in ((0, 30), (-1, 30), (31, 30), (1, float("nan"))):
-            with self.subTest(minimum=minimum, maximum=maximum):
-                with self.assertRaises(ValueError):
-                    ta.TrendCoordinator(
-                        ["BTCUSDT"], self.mgr, self.cpm,
-                        min_interval=minimum, max_interval=maximum,
-                    )
-        coord = ta.TrendCoordinator(
-            ["BTCUSDT", "BTCUSDT"], self.mgr, self.cpm,
-            min_interval=1, max_interval=2,
-        )
-        self.assertEqual(coord.symbols, ["BTCUSDT"])
+        with self.subTest("manager tick publishes instant gradient"):
+            self.mgr.on_price_update("BTCUSDT", int(time.time() * 1000), 60500.0)
+            snap = self.mgr.get_snapshot("BTCUSDT")
+            self.assertIsNotNone(snap)
+            self.assertIn("gradient_recent_fast", snap)
+            self.assertIn("epsilon", snap)
+            self.assertEqual(snap["current_price"], 60500.0)
 
-    def test_invalid_price_is_not_evaluated(self):
-        coord = self._make_coord()
-        with (patch.object(self.cpm, "get_price", return_value=[time.time() * 1000, float("nan")]),
-              patch.object(ta, "handle_symbol") as handle):
-            self.assertIsNone(coord.evaluate("BTCUSDT"))
-        handle.assert_not_called()
+    def test_coordinator_due_dirty_and_run_loop(self):
+        with self.subTest("dirty set on price update"):
+            coord = self._make_coord()
+            coord._dirty["BTCUSDT"] = False
+            coord.on_price_update("BTCUSDT", int(time.time() * 1000), 60001.0)
+            self.assertTrue(coord._dirty["BTCUSDT"])
+            self.assertTrue(coord._event.is_set())
 
-    def test_stale_or_future_price_is_not_evaluated(self):
-        coord = self._make_coord()
-        now_ms = time.time() * 1000
-        with patch.object(ta, "handle_symbol") as handle:
-            for timestamp in (now_ms - self.cpm.STALE_THRESHOLD_MS - 1, now_ms + 5_000):
-                with self.subTest(timestamp=timestamp):
-                    with patch.object(self.cpm, "get_price", return_value=[timestamp, 60_000.0]):
-                        self.assertIsNone(coord.evaluate("BTCUSDT"))
-        handle.assert_not_called()
+        with self.subTest("due policy for dirty and heartbeat"):
+            coord = self._make_coord()
+            now = time.time()
+            coord._last_eval["BTCUSDT"] = now
+            coord._dirty["BTCUSDT"] = True
+            self.assertFalse(coord._is_due("BTCUSDT", now + 0.5))
+            self.assertTrue(coord._is_due("BTCUSDT", now + 2.5))
+            coord._dirty["BTCUSDT"] = False
+            self.assertTrue(coord._is_due("BTCUSDT", now + 31.0))
+            self.assertFalse(coord._is_due("BTCUSDT", now + 5.0))
 
-    def test_stop_wakes_run_loop(self):
-        coord = self._make_coord()
-        thread = threading.Thread(target=coord.run)
-        thread.start()
-        coord.stop()
-        thread.join(timeout=2)
-        self.assertFalse(thread.is_alive())
+        with self.subTest("tick updates window and marks dirty"):
+            coord = self._make_coord()
+            coord._dirty["BTCUSDT"] = False
+            win = self.mgr.get_window("BTCUSDT")
+            self.cache24.on_price_update("BTCUSDT", int(time.time() * 1000), 61234.0)
+            self.assertTrue(coord._dirty["BTCUSDT"])
+            self.assertIn(61234.0, win.prices)
 
-    def test_evaluation_cache_lifecycle(self):
-        coord = self._make_coord()
-        self.assertIsNone(coord.get_cached_trend("BTCUSDT"))
-        self.assertEqual(coord.get_all_cached_trends(), {})
-        snap = coord.evaluate("BTCUSDT")
-        self.assertIsNotNone(snap)
-        cached = coord.get_cached_trend("BTCUSDT")
-        for key in ("final_trend", "growth_coefficient", "slope_full",
-                    "gradient_recent", "slope_small", "slope_big",
-                    "slope_max_min", "pos", "current_price", "ts"):
-            with self.subTest(field=key):
-                self.assertIn(key, cached)
-        self.assertFalse(coord._dirty["BTCUSDT"])
-        self.assertIn("BTCUSDT", coord.get_all_cached_trends())
-        manager_snapshot = self.mgr.get_snapshot("BTCUSDT")
-        self.assertIsNotNone(manager_snapshot)
-        self.assertIn("slope_big", manager_snapshot)
+        with self.subTest("stop wakes run loop"):
+            coord = self._make_coord()
+            thread = threading.Thread(target=coord.run)
+            thread.start()
+            coord.stop()
+            thread.join(timeout=2)
+            self.assertFalse(thread.is_alive())
 
-    def test_manager_tick_publishes_instant_gradient(self):
-        # the fast channel lives in the MANAGER: on_price_update publishes the gradient, under
-        # gradient_recent_fast (29 Jul: gradient_recent now belongs EXCLUSIVELY to the
-        # lente, evaluate_full — vezi cachemanager-trend-race-investigation).
-        self.mgr.on_price_update("BTCUSDT", int(time.time() * 1000), 60500.0)
-        snap = self.mgr.get_snapshot("BTCUSDT")
-        self.assertIsNotNone(snap)
-        self.assertIn("gradient_recent_fast", snap)
-        self.assertIn("epsilon", snap)
-        self.assertEqual(snap["current_price"], 60500.0)
+    def test_coordinator_validation_and_rejection_rules(self):
+        with self.subTest("invalid intervals fail fast and symbols deduplicated"):
+            for minimum, maximum in ((0, 30), (-1, 30), (31, 30), (1, float("nan"))):
+                with self.subTest(minimum=minimum, maximum=maximum):
+                    with self.assertRaises(ValueError):
+                        ta.TrendCoordinator(
+                            ["BTCUSDT"], self.mgr, self.cpm,
+                            min_interval=minimum, max_interval=maximum,
+                        )
+            coord = ta.TrendCoordinator(
+                ["BTCUSDT", "BTCUSDT"], self.mgr, self.cpm,
+                min_interval=1, max_interval=2,
+            )
+            self.assertEqual(coord.symbols, ["BTCUSDT"])
 
-    def test_coordinator_and_windows_subscribed_to_cache24(self):
-        coord = self._make_coord()
-        self.assertIn(coord, self.cache24._price_subscribers)
-        self.assertTrue(self.mgr.get_window("BTCUSDT")._subscribed_to_cache24)
-        self.assertTrue(self.mgr.get_window("BTCUSDT", self.mgr.window_big_sec)._subscribed_to_cache24)
+        with self.subTest("invalid price is not evaluated"):
+            coord = self._make_coord()
+            with (patch.object(self.cpm, "get_price", return_value=[time.time() * 1000, float("nan")]),
+                  patch.object(ta, "handle_symbol") as handle):
+                self.assertIsNone(coord.evaluate("BTCUSDT"))
+            handle.assert_not_called()
 
-    def test_tick_updates_window_and_marks_dirty(self):
-        coord = self._make_coord()
-        coord._dirty["BTCUSDT"] = False
-        win = self.mgr.get_window("BTCUSDT")
-        self.cache24.on_price_update("BTCUSDT", int(time.time() * 1000), 61234.0)
-        self.assertTrue(coord._dirty["BTCUSDT"])
-        self.assertIn(61234.0, win.prices)
+        with self.subTest("stale or future price is not evaluated"):
+            coord = self._make_coord()
+            now_ms = time.time() * 1000
+            with patch.object(ta, "handle_symbol") as handle:
+                for timestamp in (now_ms - self.cpm.STALE_THRESHOLD_MS - 1, now_ms + 5_000):
+                    with self.subTest(timestamp=timestamp):
+                        with patch.object(self.cpm, "get_price", return_value=[timestamp, 60_000.0]):
+                            self.assertIsNone(coord.evaluate("BTCUSDT"))
+            handle.assert_not_called()
 
     def test_concurrent_update_and_read_no_crash(self):
         """A WS thread updates the window while the evaluation reads it."""

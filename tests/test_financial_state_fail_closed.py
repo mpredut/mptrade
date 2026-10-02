@@ -7,17 +7,20 @@ from state_io import StateReadError
 from trailing_core import TrailingCore
 
 
-@pytest.mark.parametrize("load_first", [False, True])
-@pytest.mark.parametrize("relative", [False, True])
-def test_assetguardian_initializes_its_state_directory(tmp_path, monkeypatch, load_first, relative):
+def test_assetguardian_initializes_its_state_directory(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    path = "assetguardian.json" if relative else str(tmp_path / "new" / "nested" / "state.json")
-    state = AssetGuardianState(path)
-    if load_first:
-        assert state.load() == {}
-    value = {"version": 2, "symbols": {"TEST": {"pending": True}}}
-    state.save(value)
-    assert state.load() == value
+    for load_first in (False, True):
+        for relative in (False, True):
+            sub = tmp_path / f"dir_{load_first}_{relative}"
+            sub.mkdir(parents=True, exist_ok=True)
+            monkeypatch.chdir(sub)
+            path = "assetguardian.json" if relative else str(sub / "nested" / "state.json")
+            state = AssetGuardianState(path)
+            if load_first:
+                assert state.load() == {}
+            value = {"version": 2, "symbols": {"TEST": {"pending": True}}}
+            state.save(value)
+            assert state.load() == value
 
 
 def test_assetguardian_rejects_corrupt_live_state(tmp_path):

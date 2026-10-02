@@ -129,39 +129,40 @@ class InstrumentGuardsTestCase(unittest.TestCase):
                 lines.extend(fh.read().splitlines())
         return lines
 
-    def test_explicit_balance_lookup_does_not_route_by_bare_asset(self):
-        first = _FakeProvider(name="First")
-        second = _FakeProvider(name="Second")
-        first.free_balance = lambda _asset: 11.0
-        second.free_balance = lambda _asset: 22.0
-        api = MarketApi([first, second])
+    def test_provider_balance_routing_and_disabled_execution(self):
+        with self.subTest("explicit_balance_lookup_does_not_route_by_bare_asset"):
+            first = _FakeProvider(name="First")
+            second = _FakeProvider(name="Second")
+            first.free_balance = lambda _asset: 11.0
+            second.free_balance = lambda _asset: 22.0
+            api = MarketApi([first, second])
 
-        self.assertEqual(api.free_balance_for("second", "USDC"), 22.0)
-        with self.assertRaisesRegex(ValueError, "Unknown provider"):
-            api.free_balance_for("missing", "USDC")
+            self.assertEqual(api.free_balance_for("second", "USDC"), 22.0)
+            with self.assertRaisesRegex(ValueError, "Unknown provider"):
+                api.free_balance_for("missing", "USDC")
 
-    def test_disabled_execution_never_creates_a_later_live_retry(self):
-        import order_retry as oq
-        import order_retry_worker as worker
+        with self.subTest("disabled_execution_never_creates_a_later_live_retry"):
+            import order_retry as oq
+            import order_retry_worker as worker
 
-        class SwitchableProvider(_FakeProvider):
-            live = False
+            class SwitchableProvider(_FakeProvider):
+                live = False
 
-            def execution_enabled(self):
-                return self.live
+                def execution_enabled(self):
+                    return self.live
 
-        provider = SwitchableProvider()
-        instrument = self._inst(provider)
+            provider = SwitchableProvider()
+            instrument = self._inst(provider)
 
-        self.assertIsNone(instrument.place("BUY", 100.0, 1.0))
-        self.assertEqual(provider.placed, [])
-        self.assertEqual(oq.load_all(), [])
+            self.assertIsNone(instrument.place("BUY", 100.0, 1.0))
+            self.assertEqual(provider.placed, [])
+            self.assertEqual(oq.load_all(), [])
 
-        provider.live = True
-        stats = worker.process_once(MarketApi([provider]), now=time.time() + 1000.0)
-        self.assertEqual(stats["attempted"], 0)
-        self.assertEqual(provider.placed, [])
-        self.assertEqual(oq.load_all(), [])
+            provider.live = True
+            stats = worker.process_once(MarketApi([provider]), now=time.time() + 1000.0)
+            self.assertEqual(stats["attempted"], 0)
+            self.assertEqual(provider.placed, [])
+            self.assertEqual(oq.load_all(), [])
 
     def test_live_producer_retains_sole_submit_after_lease_expiry(self):
         import order_retry as oq
@@ -397,74 +398,79 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertIsNotNone(order)
             self.assertEqual(p.placed[0][3], 0.9)
 
-    def test_first_order_allowed_and_logged(self):
-        p = _FakeProvider()
-        inst = self._inst(p)
-        order = inst.place("BUY", 100.0, 1.0)
-        self.assertIsNotNone(order)
-        self.assertEqual(len(p.placed), 1)
-        lines = self._log_lines()
-        self.assertTrue(any("|accepted|" in l and SYMBOL in l for l in lines), lines)
+    def test_intent_lifecycle_persistence_and_response_loss(self):
+        with self.subTest("first_order_allowed_and_logged"):
+            self._clear_state()
+            p = _FakeProvider()
+            inst = self._inst(p)
+            order = inst.place("BUY", 100.0, 1.0)
+            self.assertIsNotNone(order)
+            self.assertEqual(len(p.placed), 1)
+            lines = self._log_lines()
+            self.assertTrue(any("|accepted|" in l and SYMBOL in l for l in lines), lines)
 
-    def test_intent_is_persisted_with_same_client_id_before_provider_submit(self):
-        import order_retry as oq
+        with self.subTest("intent_persisted_with_same_client_id_before_submit"):
+            self._clear_state()
+            import order_retry as oq
 
-        class _InspectProvider(_FakeProvider):
-            def place_order(self, symbol, side, price, qty, **kwargs):
-                queued = oq.load_all()
-                self.persisted_during_submit = copy = dict(queued[0])
-                self.submitted_client_id = kwargs.get("client_order_id")
-                return {"orderId": "persisted-1"}
+            class _InspectProvider(_FakeProvider):
+                def place_order(self, symbol, side, price, qty, **kwargs):
+                    queued = oq.load_all()
+                    self.persisted_during_submit = copy = dict(queued[0])
+                    self.submitted_client_id = kwargs.get("client_order_id")
+                    return {"orderId": "persisted-1"}
 
-        p = _InspectProvider()
-        order = self._inst(p).place("BUY", 100.0, 1.0)
+            p = _InspectProvider()
+            order = self._inst(p).place("BUY", 100.0, 1.0)
 
-        self.assertEqual(order["orderId"], "persisted-1")
-        self.assertEqual(
-            p.persisted_during_submit["place_kwargs"]["client_order_id"],
-            p.submitted_client_id)
-        tracked = oq.load_all()
-        self.assertEqual(len(tracked), 1)
-        self.assertEqual(tracked[0]["lifecycle"], "accepted")
-        self.assertEqual(tracked[0]["order_id"], "persisted-1")
+            self.assertEqual(order["orderId"], "persisted-1")
+            self.assertEqual(
+                p.persisted_during_submit["place_kwargs"]["client_order_id"],
+                p.submitted_client_id)
+            tracked = oq.load_all()
+            self.assertEqual(len(tracked), 1)
+            self.assertEqual(tracked[0]["lifecycle"], "accepted")
+            self.assertEqual(tracked[0]["order_id"], "persisted-1")
 
-    def test_truthy_payload_without_order_id_is_unknown_and_remains_queued(self):
-        import order_retry as oq
+        with self.subTest("truthy_payload_without_order_id_is_unknown"):
+            self._clear_state()
+            import order_retry as oq
 
-        class _AmbiguousProvider(_FakeProvider):
-            def place_order(self, symbol, side, price, qty, **kwargs):
-                self.placed.append((symbol, side, price, qty, kwargs))
-                return {"status": "UNKNOWN"}
+            class _AmbiguousProvider(_FakeProvider):
+                def place_order(self, symbol, side, price, qty, **kwargs):
+                    self.placed.append((symbol, side, price, qty, kwargs))
+                    return {"status": "UNKNOWN"}
 
-        p = _AmbiguousProvider()
-        order = self._inst(p).place("BUY", 100.0, 1.0)
+            p = _AmbiguousProvider()
+            order = self._inst(p).place("BUY", 100.0, 1.0)
 
-        self.assertIsNone(order)
-        queued = oq.load_all()
-        self.assertEqual(len(queued), 1)
-        self.assertEqual(queued[0]["last_failure_reason"],
-                         "response_without_order_id")
-        self.assertTrue(any("|unknown|response_without_order_id|" in line
-                            for line in self._log_lines()))
+            self.assertIsNone(order)
+            queued = oq.load_all()
+            self.assertEqual(len(queued), 1)
+            self.assertEqual(queued[0]["last_failure_reason"],
+                             "response_without_order_id")
+            self.assertTrue(any("|unknown|response_without_order_id|" in line
+                                for line in self._log_lines()))
 
-    def test_submit_response_loss_keeps_pre_submit_intent_with_same_client_id(self):
-        import order_retry as oq
+        with self.subTest("submit_response_loss_keeps_pre_submit_intent"):
+            self._clear_state()
+            import order_retry as oq
 
-        class _LostResponseProvider(_FakeProvider):
-            def place_order(self, symbol, side, price, qty, **kwargs):
-                self.submitted_client_id = kwargs.get("client_order_id")
-                raise TimeoutError("response lost after possible venue acceptance")
+            class _LostResponseProvider(_FakeProvider):
+                def place_order(self, symbol, side, price, qty, **kwargs):
+                    self.submitted_client_id = kwargs.get("client_order_id")
+                    raise TimeoutError("response lost after possible venue acceptance")
 
-        p = _LostResponseProvider()
-        order = self._inst(p).place("BUY", 100.0, 1.0)
+            p = _LostResponseProvider()
+            order = self._inst(p).place("BUY", 100.0, 1.0)
 
-        self.assertIsNone(order)
-        queued = oq.load_all()
-        self.assertEqual(len(queued), 1)
-        self.assertEqual(
-            queued[0]["place_kwargs"]["client_order_id"],
-            p.submitted_client_id)
-        self.assertEqual(queued[0]["last_failure_reason"], "submit_ambiguous")
+            self.assertIsNone(order)
+            queued = oq.load_all()
+            self.assertEqual(len(queued), 1)
+            self.assertEqual(
+                queued[0]["place_kwargs"]["client_order_id"],
+                p.submitted_client_id)
+            self.assertEqual(queued[0]["last_failure_reason"], "submit_ambiguous")
 
     # ── cooldown anti-rapid-fire ────────────────────────────────────────────────
     def test_cooldown_behaviors(self):
@@ -514,109 +520,113 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertIsNone(duplicate)
             self.assertEqual(len(p.placed), 2)
 
-    def test_facade_place_routes_through_pipeline(self):
-        # MarketApi.place is the single guarded proxy replacing place_order_smart.
-        # It builds an ephemeral Instrument and runs the pipeline (the cooldown blocks the 2nd).
-        p = _FakeProvider()
-        mkt = MarketApi([p])
-        first = mkt.place(SYMBOL, "BUY", 100.0, 1.0)
-        self.assertIsNotNone(first)
-        self.assertEqual(len(p.placed), 1)
-        second = mkt.place(SYMBOL, "SELL", 101.0, 1.0)   # < cooldown -> blocked.
-        self.assertIsNone(second)
-        self.assertEqual(len(p.placed), 1)
+    def test_facade_and_placement_flags_routing(self):
+        with self.subTest("facade_place_routes_through_pipeline"):
+            self._clear_state()
+            p = _FakeProvider()
+            mkt = MarketApi([p])
+            first = mkt.place(SYMBOL, "BUY", 100.0, 1.0)
+            self.assertIsNotNone(first)
+            self.assertEqual(len(p.placed), 1)
+            second = mkt.place(SYMBOL, "SELL", 101.0, 1.0)
+            self.assertIsNone(second)
+            self.assertEqual(len(p.placed), 1)
 
-    def test_failed_order_enqueued_for_retry(self):
-        import order_retry as _oq
-        p = _FakeProvider()
-        p.seed_trade("BUY", age_sec=5.0)   # Anti-spam refusal.
-        inst = self._inst(p)
-        order = inst.place("BUY", 100.0, 1.0)
-        self.assertIsNone(order)
-        q = _oq.load_all()
-        self.assertEqual(len(q), 1)
-        self.assertEqual(q[0]["symbol"], SYMBOL)
-        self.assertEqual(q[0]["side"], "BUY")
+        with self.subTest("smart_flag_gates_price_adjust"):
+            self._clear_state()
+            calls = []
 
-    def test_retry_flag_prevents_reenqueue(self):
-        import order_retry as _oq
-        p = _FakeProvider()
-        p.seed_trade("BUY", age_sec=5.0)   # Expected refusal.
-        inst = self._inst(p)
-        order = inst.place("BUY", 100.0, 1.0, caller_owns_retry=True)
-        self.assertIsNone(order)
-        self.assertEqual(_oq.load_all(), [])   # It is NOT re-enqueued (no recursion)
+            class _SpyProvider(_FakeProvider):
+                def adjust_order_price(self, symbol, side, price, cancel_opposite=True):
+                    calls.append((symbol, side, cancel_opposite))
+                    return price
 
-    def test_success_remains_tracked_until_terminal(self):
-        import order_retry as _oq
-        p = _FakeProvider()
-        inst = self._inst(p)
-        order = inst.place("BUY", 100.0, 1.0)
-        self.assertIsNotNone(order)
-        tracked = _oq.load_all()
-        self.assertEqual(len(tracked), 1)
-        self.assertEqual(tracked[0]["lifecycle"], "accepted")
-        self.assertEqual(tracked[0]["order_id"], "1")
-        self.assertEqual(p.status_calls, [])
+            p = _SpyProvider()
+            inst = Instrument(name="ZZZFAKE", symbol=SYMBOL, provider=p.name.lower(),
+                              base="ZZZFAKE", quote="USD", api=MarketApi([p]))
+            inst.place("BUY", 100.0, 1.0, smart=True)
+            self.assertEqual(len(calls), 1, "smart=True must call adjust_order_price")
+            calls.clear()
+            inst2 = Instrument(name="ZZZFAKE2", symbol="ZZZFAKEUSD2", provider=p.name.lower(),
+                               base="ZZZFAKE2", quote="USD", api=MarketApi([p]))
+            inst2.place("BUY", 100.0, 1.0, smart=False)
+            self.assertEqual(calls, [], "smart=False must NOT call adjust_order_price")
 
-    def test_success_does_not_remove_an_independent_same_side_intent(self):
-        import order_retry as _oq
-        _oq.RETRY_DEDUP = False
-        _oq.enqueue(SYMBOL, "BUY", 1.0, {}, requested_price=100.0, now=1000.0)
-        _oq.enqueue(SYMBOL, "SELL", 1.0, {}, requested_price=101.0, now=1001.0)
+        with self.subTest("cancelorders_and_hours_reach_quantity_hook"):
+            self._clear_state()
+            calls = []
 
-        p = _FakeProvider()
-        order = self._inst(p).place("BUY", 100.0, 1.0)
+            class _QuantitySpyProvider(_FakeProvider):
+                def policy_cap_quantity(self, symbol, side, price, qty, available_qty,
+                                        base=None, quote=None, cancelorders=False, hours=5):
+                    calls.append((cancelorders, hours))
+                    return qty
 
-        self.assertIsNotNone(order)
-        remaining = _oq.load_all()
-        self.assertEqual(len(remaining), 3)
-        buys = [row for row in remaining if row["side"] == "BUY"]
-        sells = [row for row in remaining if row["side"] == "SELL"]
-        self.assertEqual(len(buys), 2)
-        self.assertEqual(len(sells), 1)
-        self.assertEqual(
-            sorted(row["lifecycle"] for row in buys),
-            ["accepted", "submit_pending"],
-        )
+            p = _QuantitySpyProvider()
+            order = self._inst(p).place(
+                "BUY", 100.0, 1.0, smart=False, cancelorders=True, hours=2.7)
 
-    def test_smart_flag_gates_price_adjust(self):
-        # Smart placement adjusts price; safe placement does not. This preserves
-        # the former place_safe_order behavior for lifecycle-owning callers.
-        calls = []
+            self.assertIsNotNone(order)
+            self.assertEqual(calls, [(True, 2.7)])
 
-        class _SpyProvider(_FakeProvider):
-            def adjust_order_price(self, symbol, side, price, cancel_opposite=True):
-                calls.append((symbol, side, cancel_opposite))
-                return price
+    def test_retry_enqueue_and_tracking_lifecycle(self):
+        with self.subTest("failed_order_enqueued_for_retry"):
+            self._clear_state()
+            import order_retry as _oq
+            p = _FakeProvider()
+            p.seed_trade("BUY", age_sec=5.0)
+            inst = self._inst(p)
+            order = inst.place("BUY", 100.0, 1.0)
+            self.assertIsNone(order)
+            q = _oq.load_all()
+            self.assertEqual(len(q), 1)
+            self.assertEqual(q[0]["symbol"], SYMBOL)
+            self.assertEqual(q[0]["side"], "BUY")
 
-        p = _SpyProvider()
-        inst = Instrument(name="ZZZFAKE", symbol=SYMBOL, provider=p.name.lower(),
-                          base="ZZZFAKE", quote="USD", api=MarketApi([p]))
-        inst.place("BUY", 100.0, 1.0, smart=True)
-        self.assertEqual(len(calls), 1, "smart=True must call adjust_order_price")
-        calls.clear()
-        # The cooldown would block the 2nd one on the same symbol -> a different symbol for smart=False.
-        inst2 = Instrument(name="ZZZFAKE2", symbol="ZZZFAKEUSD2", provider=p.name.lower(),
-                           base="ZZZFAKE2", quote="USD", api=MarketApi([p]))
-        inst2.place("BUY", 100.0, 1.0, smart=False)
-        self.assertEqual(calls, [], "smart=False must NOT call adjust_order_price")
+        with self.subTest("retry_flag_prevents_reenqueue"):
+            self._clear_state()
+            import order_retry as _oq
+            p = _FakeProvider()
+            p.seed_trade("BUY", age_sec=5.0)
+            inst = self._inst(p)
+            order = inst.place("BUY", 100.0, 1.0, caller_owns_retry=True)
+            self.assertIsNone(order)
+            self.assertEqual(_oq.load_all(), [])
 
-    def test_cancelorders_and_hours_reach_quantity_hook(self):
-        calls = []
+        with self.subTest("success_remains_tracked_until_terminal"):
+            self._clear_state()
+            import order_retry as _oq
+            p = _FakeProvider()
+            inst = self._inst(p)
+            order = inst.place("BUY", 100.0, 1.0)
+            self.assertIsNotNone(order)
+            tracked = _oq.load_all()
+            self.assertEqual(len(tracked), 1)
+            self.assertEqual(tracked[0]["lifecycle"], "accepted")
+            self.assertEqual(tracked[0]["order_id"], "1")
+            self.assertEqual(p.status_calls, [])
 
-        class _QuantitySpyProvider(_FakeProvider):
-            def policy_cap_quantity(self, symbol, side, price, qty, available_qty,
-                                    base=None, quote=None, cancelorders=False, hours=5):
-                calls.append((cancelorders, hours))
-                return qty
+        with self.subTest("success_does_not_remove_independent_same_side_intent"):
+            self._clear_state()
+            import order_retry as _oq
+            _oq.RETRY_DEDUP = False
+            _oq.enqueue(SYMBOL, "BUY", 1.0, {}, requested_price=100.0, now=1000.0)
+            _oq.enqueue(SYMBOL, "SELL", 1.0, {}, requested_price=101.0, now=1001.0)
 
-        p = _QuantitySpyProvider()
-        order = self._inst(p).place(
-            "BUY", 100.0, 1.0, smart=False, cancelorders=True, hours=2.7)
+            p = _FakeProvider()
+            order = self._inst(p).place("BUY", 100.0, 1.0)
 
-        self.assertIsNotNone(order)
-        self.assertEqual(calls, [(True, 2.7)])
+            self.assertIsNotNone(order)
+            remaining = _oq.load_all()
+            self.assertEqual(len(remaining), 3)
+            buys = [row for row in remaining if row["side"] == "BUY"]
+            sells = [row for row in remaining if row["side"] == "SELL"]
+            self.assertEqual(len(buys), 2)
+            self.assertEqual(len(sells), 1)
+            self.assertEqual(
+                sorted(row["lifecycle"] for row in buys),
+                ["accepted", "submit_pending"],
+            )
 
     # -- Financial fidelity for market orders. -------------------------------
     def test_financial_fidelity_and_profit_guard_behaviors(self):

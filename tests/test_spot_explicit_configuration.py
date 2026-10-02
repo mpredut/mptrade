@@ -18,53 +18,53 @@ REQUIRED_KEYS = sorted(key for key in PROFILES["kraken"]
                        if key.startswith("STRAT_") and key != "STRAT_EXECUTE") + ["STRATEGY_MODE"]
 
 
-@pytest.mark.parametrize("venue", PROFILES)
-@pytest.mark.parametrize("key", REQUIRED_KEYS)
-def test_every_live_strategy_setting_must_exist(venue, key, monkeypatch):
-    env = PROFILES[venue].copy()
-    monkeypatch.setenv(key, env.pop(key))
-    with pytest.raises(ValueError, match=key):
-        StratParams.from_env(env)
+def test_every_live_strategy_setting_must_exist(monkeypatch):
+    for venue in PROFILES:
+        for key in REQUIRED_KEYS:
+            env = PROFILES[venue].copy()
+            monkeypatch.setenv(key, env.pop(key))
+            with pytest.raises(ValueError, match=key):
+                StratParams.from_env(env)
 
 
-@pytest.mark.parametrize("venue", PROFILES)
-@pytest.mark.parametrize("key", REQUIRED_KEYS)
-def test_invalid_settings_never_disable_or_default_policy(venue, key):
-    env = {**PROFILES[venue], key: "not-a-setting"}
-    if key == "STRAT_CURRENCY":
-        env[key] = ""
-    with pytest.raises(ValueError, match=key):
-        StratParams.from_env(env)
+def test_invalid_settings_never_disable_or_default_policy():
+    for venue in PROFILES:
+        for key in REQUIRED_KEYS:
+            env = {**PROFILES[venue], key: "not-a-setting"}
+            if key == "STRAT_CURRENCY":
+                env[key] = ""
+            with pytest.raises(ValueError, match=key):
+                StratParams.from_env(env)
 
 
-@pytest.mark.parametrize("venue", PROFILES)
-def test_versioned_profiles_preserve_effective_values_and_environment(venue):
-    env = PROFILES[venue]
-    before = dict(os.environ)
-    params = StratParams.from_env(env)
-    assert dict(os.environ) == before
-    with patch.dict(os.environ, env, clear=True):
-        assert StratParams.from_env() == params
-    assert params.stop_loss_pct == 0
-    assert params.reentry_peak_relative is False
-    assert params.reentry_pullback_pct == 1.5
-    assert params.reentry_hybrid_enabled is True
-    assert params.surge_gain_pct == float(env["STRAT_SURGE_GAIN_PCT"])
-    assert params.trend_sma_n == 30
-    assert params.tp_trend_min_pct == 0.5
-    assert params.tp_trail_pct == (3 if venue == "kraken" else 2)
+def test_versioned_profiles_preserve_effective_values_and_environment():
+    for venue in PROFILES:
+        env = PROFILES[venue]
+        before = dict(os.environ)
+        params = StratParams.from_env(env)
+        assert dict(os.environ) == before
+        with patch.dict(os.environ, env, clear=True):
+            assert StratParams.from_env() == params
+        assert params.stop_loss_pct == 0
+        assert params.reentry_peak_relative is False
+        assert params.reentry_pullback_pct == 1.5
+        assert params.reentry_hybrid_enabled is True
+        assert params.surge_gain_pct == float(env["STRAT_SURGE_GAIN_PCT"])
+        assert params.trend_sma_n == 30
+        assert params.tp_trend_min_pct == 0.5
+        assert params.tp_trail_pct == (3 if venue == "kraken" else 2)
 
 
-@pytest.mark.parametrize("value", ["nan", "inf", "-inf", ""])
-def test_nonfinite_or_empty_new_policy_is_rejected(value):
-    with pytest.raises(ValueError, match="STRAT_SURGE_GAIN_PCT"):
-        StratParams.from_env({**PROFILES["kraken"], "STRAT_SURGE_GAIN_PCT": value})
+def test_nonfinite_or_empty_new_policy_is_rejected():
+    for value in ["nan", "inf", "-inf", ""]:
+        with pytest.raises(ValueError, match="STRAT_SURGE_GAIN_PCT"):
+            StratParams.from_env({**PROFILES["kraken"], "STRAT_SURGE_GAIN_PCT": value})
 
 
-@pytest.mark.parametrize("value", ["garbage", "3:40", "3:100,junk", "nan:100", "3:-50,6:150"])
-def test_malformed_tranches_cannot_silently_become_single_tp(value):
-    with pytest.raises(ValueError, match="STRAT_TP_TRANCHES"):
-        StratParams.from_env({**PROFILES["kraken"], "STRAT_TP_TRANCHES": value})
+def test_malformed_tranches_cannot_silently_become_single_tp():
+    for value in ["garbage", "3:40", "3:100,junk", "nan:100", "3:-50,6:150"]:
+        with pytest.raises(ValueError, match="STRAT_TP_TRANCHES"):
+            StratParams.from_env({**PROFILES["kraken"], "STRAT_TP_TRANCHES": value})
 
 
 def test_empty_and_valid_tranches_are_supported():
