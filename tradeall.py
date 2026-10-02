@@ -471,7 +471,7 @@ class TrendState:
 
 
 
-def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price) :
+def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price, regime_ctx=None) :
     # July 30: removed dead d/h/proposed_price locals discovered while extracting
     # FIRE_SAFEBACK_SEC from logic().
     print(f" ACTIVATES AFTER 3.5 on slope: gradient={gradient}, slope={slope}")
@@ -484,7 +484,7 @@ def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price
 
 
 
-def logic(win, enable, symbol, gradient, slope, trend_state, current_price) :
+def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regime_ctx=None) :
 
     proposed_price = current_price
 
@@ -505,7 +505,7 @@ def logic(win, enable, symbol, gradient, slope, trend_state, current_price) :
         trend_state.mark_fire_attempt(direction)
         result = _fire_order(symbol, action, current_price, reason,
             safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
-            cancelorders=True, hours=1)
+            cancelorders=True, hours=1, regime_context=regime_ctx)
         if result is not None:
             # The provider accepted a submission.  This is intentionally a throttle
             # count, not a claim that the order filled.
@@ -625,12 +625,20 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
     else:
         count = 0
 
+    regime_ctx = None
+    try:
+        import order_guard
+        regime_ctx = order_guard.symbol_regime_context(symbol)
+        print(f"[TRADEALL] {symbol} resolved trend: {regime_ctx.resolved_trend}")
+    except Exception as e:
+        print(f"[TRADEALL] Error resolving regime context for {symbol}: {e}")
+
     # SMALL ONE!!
-    logic_small("SMALL", True, symbol, gradient, slope, trend_state, current_price)
+    logic_small("SMALL", True, symbol, gradient, slope, trend_state, current_price, regime_ctx=regime_ctx)
 
     # BIG ONE!!!
     slope_big, price_diff = analyzer_big.check_price_change(PRICE_CHANGE_THRESHOLD_BIG_EUR)
-    logic("BIG", True, symbol, gradient, slope_big, trend_state_big, current_price)
+    logic("BIG", True, symbol, gradient, slope_big, trend_state_big, current_price, regime_ctx=regime_ctx)
 
     for coin in web.coins:
         if coin["name"] == symbol:

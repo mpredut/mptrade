@@ -260,7 +260,7 @@ class Instrument:
             bypass and side_u == "SELL" and is_market)
         profit_margin = None
         profit_window_ref = None
-        regime_context = None
+        regime_context = kwargs.pop("regime_context", None)
         retry_requested_price = None
         retry_price_tolerance = None
         try:
