@@ -272,22 +272,33 @@ def check_parabolic_surge_exhaustion(
     window_move_pct: float | None = None,
     surge_move_pct: float = 25.0,
     surge_active: bool = False,
+    min_profit_pct: float = 1.0,
 ) -> tuple[bool, str]:
     """Return (triggered, reason) for 2-3 day parabolic surge exhaustion.
 
     Surge is active/armed if:
     - surge_active is True (latched state), OR
     - current gain from avg_cost >= surge_gain_pct (e.g. 18.0%), OR
-    - peak gain from avg_cost >= surge_gain_pct (e.g. 18.0%), OR
-    - window_move_pct >= surge_move_pct (e.g. 18.0% over 72h).
-    If surge is active, triggers exit when price pulls back >= exit_pullback_pct from surge_peak.
+    - peak gain from avg_cost >= surge_gain_pct (e.g. 18.0%).
+    Note: window_move_pct cannot arm surge alone unless position itself captured the move.
+    In all cases, Parabolic Surge Guard is a TAKE-PROFIT exit: it must never exit below
+    the minimum surge profit floor (min_floor = max(min_profit_pct, surge_gain_pct - exit_pullback_pct * 1.5)).
+    If surge is active and price >= floor, triggers exit when price pulls back >= exit_pullback_pct from surge_peak.
     """
     if avg_cost <= 0 or current_price <= 0 or surge_peak <= 0:
         return False, ""
     current_gain_pct = (current_price - avg_cost) / avg_cost * 100.0
     peak_gain_pct = (surge_peak - avg_cost) / avg_cost * 100.0
+
+    # Invariant: A parabolic surge exhaustion exit is a TAKE-PROFIT guard.
+    # It must never execute below the minimum surge profit floor!
+    min_floor = max(min_profit_pct, surge_gain_pct - exit_pullback_pct * 1.5)
+    if current_gain_pct < min_floor:
+        return False, ""
+
     pos_surge = surge_gain_pct > 0 and (current_gain_pct >= surge_gain_pct or peak_gain_pct >= surge_gain_pct)
-    win_surge = window_move_pct is not None and surge_move_pct > 0 and window_move_pct >= surge_move_pct
+    win_surge = (window_move_pct is not None and surge_move_pct > 0 and window_move_pct >= surge_move_pct
+                 and current_gain_pct >= surge_gain_pct * 0.8)
     if not (surge_active or pos_surge or win_surge):
         return False, ""
     pullback = (surge_peak - current_price) / surge_peak * 100.0
