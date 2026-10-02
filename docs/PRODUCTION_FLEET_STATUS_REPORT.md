@@ -36,12 +36,14 @@ All shared-engine bots across Kraken and Hyperliquid are operating with zero dow
    - `STRAT_REENTRY_HYBRID_ENABLED` is the single canonical re-entry policy: shallow pullback ($0.8\% - 3.5\%$) in confirmed bull regimes, defensive drop ($-2.0\%$) with bounce confirmation in chop/bear, guarded by a 48h TTL lockout. Legacy `STRAT_REENTRY_ADAPTIVE` is retired.
 
 ### 2.4 Deep Sweep Optimization (11,370 Backtest Runs across 758 Candidates)
-- **Scope:** 5 assets (HYPE, TAO, ADA, BTC, ETH) across multi-year 4h continuous history with 2-window walk-forward validation (161 minutes execution).
-- **Core Winner:** Fixed 18.0% Surge with 3.5% Pullback (`FIXED_g18_pb3.5`):
-  - **Altcoin Profit:** +$5,011.66 vs Baseline +$3,966.07 (**+$1,045.59 / +26.4% alpha**).
+- **Scope & Methodology:** 5 assets (HYPE, TAO, ADA, BTC, ETH) across multi-year 4h continuous history evaluated under dual-half split consistency filtering (161 minutes execution). Multi-day surge exhaustion is tested at 4h resolution, while 5-minute micro-gradient guards are independently forward-tested in live shadow runners.
+- **Canonical Baseline:** Harmonized to match production Kraken config (SMA 30, trailing 3.0%, trend threshold 0.5%, bear bounce 0.5%).
+- **Core Winner:** Fixed 18.0% Surge with 3.5% Pullback (`FIXED_g18_pb3.5_w72`):
+  - **Altcoin Profit:** +$5,006.74 vs Baseline +$3,966.07 (**+$1,040.67 / +26.2% alpha** across HYPE, TAO, ADA).
   - **TAO Rescue:** Converted TAO from -$12.51 net loss into **+$607.16 net profit**.
   - **Pullback Sweet Spot:** 3.5% pullback filters out normal intraday candle noise that falsely triggered at 2.5%, riding momentum through to cycle exhaustion.
-  - **Bear Bounce Sweet Spot:** 0.5% bounce reduced MaxDD from 41.91% to 39.17% without lagging behind V-bottom rebounds.
+  - **Latched Surge Protection:** Parabolic Surge Guard latches into an active armed state upon crossing the +18% peak or 72h window move threshold, ensuring execution when a 3.5% pullback occurs even if current profit dips below the initial trigger.
+  - **Canonical Deployment:** Deployed with `STRAT_SURGE_DYNAMIC=false` across Kraken and Hyperliquid to strictly enforce the sweep-proven 18.0% fixed threshold.
 
 ---
 
@@ -98,7 +100,7 @@ flowchart TD
 | `STRAT_SURGE_EXIT_PULLBACK_PCT` | `3.5%` | `3.5%` | Pullback breathing room preventing premature intraday exit |
 | `STRAT_SURGE_WINDOW_HOURS` | `72.0h` | `72.0h` | Rolling window to detect multi-day momentum accumulation |
 | `STRAT_SURGE_MOVE_PCT` | `18.0%` | `18.0%` | Asset rolling move threshold |
-| `STRAT_SURGE_DYNAMIC` | `true` | `true` | Dynamically shifts surge threshold based on volatility |
+| `STRAT_SURGE_DYNAMIC` | `false` | `false` | Fixed 18.0% surge trigger calibrated by deep sweep |
 | `STRAT_SURGE_MIN_GAIN_PCT` | `18.0%` | `18.0%` | Dynamic clamp lower bound |
 | `STRAT_SURGE_MAX_GAIN_PCT` | `26.0%` | `26.0%` | Dynamic clamp upper bound |
 | `STRAT_SURGE_VOL_MULTIPLIER`| `8.0` | `8.0` | Volatility scale factor |

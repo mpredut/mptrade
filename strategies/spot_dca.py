@@ -1318,6 +1318,25 @@ class Strategy:
             fallback_gain_pct=self.p.surge_gain_pct,
         )
 
+    def _surge_window_move_pct(self, price: float, closes: list | None = None) -> float | None:
+        """Calculate percentage price change over self.p.surge_window_hours."""
+        if not self.p.surge_window_hours or self.p.surge_window_hours <= 0:
+            return None
+        if closes is None:
+            closes = self._trend_closes()
+        if not closes:
+            return None
+        interval_hours = max(1.0, float(self.p.trend_interval)) / 60.0
+        n_bars = max(1, round(self.p.surge_window_hours / interval_hours))
+        offset = 1 if self.replay_mode else 0
+        idx = -n_bars - offset
+        if abs(idx) > len(closes):
+            return None
+        past_price = closes[idx]
+        if past_price <= 0:
+            return None
+        return (price - past_price) / past_price * 100.0
+
     def _trail_vol_1h(self) -> float | None:
         """Return one-hour-normalized volatility at one OHLC cadence in live and replay.
 
@@ -1446,8 +1465,21 @@ class Strategy:
             if self.p.surge_guard and avg and self.s["qty"] > 1e-12:
                 surge_peak = max(self.s.get("surge_peak") or price, price)
                 self.s["surge_peak"] = surge_peak
-                window_move = regime.fitted_move_pct if regime and regime.fresh else None
+                window_move = self._surge_window_move_pct(price, closes)
+                if window_move is None and regime and regime.fresh:
+                    window_move = regime.fitted_move_pct
                 eff_surge_gain = self._effective_surge_gain_pct()
+                current_gain = (price - avg) / avg * 100.0
+                peak_gain = (surge_peak - avg) / avg * 100.0
+                is_armed = bool(self.s.get("surge_active"))
+                if not is_armed:
+                    if (eff_surge_gain > 0 and (current_gain >= eff_surge_gain or peak_gain >= eff_surge_gain)) or (
+                        window_move is not None and self.p.surge_move_pct > 0 and window_move >= self.p.surge_move_pct
+                    ):
+                        is_armed = True
+                        self.s["surge_active"] = True
+                        log(f"  [STRAT] PARABOLIC SURGE ARMED (+{peak_gain:.2f}% peak gain, window move {window_move})")
+
                 triggered, reason = sr.check_parabolic_surge_exhaustion(
                     current_price=price,
                     avg_cost=avg,
@@ -1456,6 +1488,7 @@ class Strategy:
                     exit_pullback_pct=self.p.surge_exit_pullback_pct,
                     window_move_pct=window_move,
                     surge_move_pct=self.p.surge_move_pct,
+                    surge_active=is_armed,
                 )
                 if triggered:
                     exit_px = round(price * 0.999, self.price_dec)
@@ -1759,8 +1792,21 @@ class Strategy:
             if self.p.surge_guard and avg and held > 1e-12:
                 surge_peak = max(self.s.get("surge_peak") or price, price)
                 self.s["surge_peak"] = surge_peak
-                window_move = regime.fitted_move_pct if regime and regime.fresh else None
+                window_move = self._surge_window_move_pct(price, regime_closes)
+                if window_move is None and regime and regime.fresh:
+                    window_move = regime.fitted_move_pct
                 eff_surge_gain = self._effective_surge_gain_pct()
+                current_gain = (price - avg) / avg * 100.0
+                peak_gain = (surge_peak - avg) / avg * 100.0
+                is_armed = bool(self.s.get("surge_active"))
+                if not is_armed:
+                    if (eff_surge_gain > 0 and (current_gain >= eff_surge_gain or peak_gain >= eff_surge_gain)) or (
+                        window_move is not None and self.p.surge_move_pct > 0 and window_move >= self.p.surge_move_pct
+                    ):
+                        is_armed = True
+                        self.s["surge_active"] = True
+                        log(f"  [STRAT] PARABOLIC SURGE ARMED (+{peak_gain:.2f}% peak gain, window move {window_move})")
+
                 triggered, reason = sr.check_parabolic_surge_exhaustion(
                     current_price=price,
                     avg_cost=avg,
@@ -1769,6 +1815,7 @@ class Strategy:
                     exit_pullback_pct=self.p.surge_exit_pullback_pct,
                     window_move_pct=window_move,
                     surge_move_pct=self.p.surge_move_pct,
+                    surge_active=is_armed,
                 )
                 if triggered:
                     exit_px = round(price * 0.999, self.price_dec)

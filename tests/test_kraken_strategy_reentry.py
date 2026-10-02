@@ -697,9 +697,9 @@ class TestMultiHorizonDynamicProfitRules(unittest.TestCase):
 
     def test_parabolic_surge_exhaustion(self):
         avg = 100.0
-        # Not qualified for surge (gain 15% < 20%, window_move 10% < 25%)
+        # Not qualified for surge (peak gain 15% < 20%, window_move 10% < 25%)
         trig, reason = sr.check_parabolic_surge_exhaustion(
-            current_price=115.0, avg_cost=avg, surge_peak=120.0,
+            current_price=114.0, avg_cost=avg, surge_peak=115.0,
             surge_gain_pct=20.0, exit_pullback_pct=2.0, window_move_pct=10.0, surge_move_pct=25.0
         )
         self.assertFalse(trig)
@@ -719,6 +719,29 @@ class TestMultiHorizonDynamicProfitRules(unittest.TestCase):
         )
         self.assertTrue(trig)
         self.assertIn("surge_pullback", reason)
+
+        # Observation 3 reproduction: cost 100, peak 120 (+20% >= 18%), price 115.7 (gain 15.7% < 18%).
+        # Pullback is 3.58% >= 3.5%. The guard must remain armed and trigger exit!
+        trig, reason = sr.check_parabolic_surge_exhaustion(
+            current_price=115.7,
+            avg_cost=100.0,
+            surge_peak=120.0,
+            surge_gain_pct=18.0,
+            exit_pullback_pct=3.5,
+        )
+        self.assertTrue(trig)
+        self.assertIn("surge_pullback_3.58%_ge_3.50%", reason)
+
+        # Also verified when surge_active flag is explicitly passed
+        trig, reason = sr.check_parabolic_surge_exhaustion(
+            current_price=115.7,
+            avg_cost=100.0,
+            surge_peak=120.0,
+            surge_gain_pct=18.0,
+            exit_pullback_pct=3.5,
+            surge_active=True,
+        )
+        self.assertTrue(trig)
 
     def test_slow_grind_exhaustion(self):
         avg = 100.0
@@ -942,6 +965,54 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
 
         # Price at 122.0 (+22% >= 20%), pullback from peak 125 is 2.4% >= 2.0%
         st.step(122.0, timestamp=10000.0)
+        self.assertEqual(len(exited), 1)
+        self.assertEqual(exited[0][1], "TP")
+
+    def test_surge_window_move_pct(self):
+        st = _make_strategy("TESTPAIR_SURGE_WINDOW")
+        st.p.surge_window_hours = 72.0
+        st.p.trend_interval = 240  # 4h bars -> 72 / 4 = 18 bars
+        # 30 bars in history, past price at -18 was 100.0, current price is 125.0 -> +25% move
+        past_closes = [100.0] * 30
+        move = st._surge_window_move_pct(125.0, past_closes)
+        self.assertIsNotNone(move)
+        self.assertAlmostEqual(move, 25.0)
+
+        # Different windows produce different moves
+        past_varying = [100.0] * 10 + [110.0] * 6 + [120.0] * 14  # 30 bars
+        st.p.surge_window_hours = 48.0  # 12 bars ago: idx -12 has 120.0
+        move_48 = st._surge_window_move_pct(130.0, past_varying)
+        st.p.surge_window_hours = 96.0  # 24 bars ago: idx -24 has 100.0
+        move_96 = st._surge_window_move_pct(130.0, past_varying)
+        self.assertAlmostEqual(move_48, (130.0 - 120.0) / 120.0 * 100.0)  # +8.33%
+        self.assertAlmostEqual(move_96, (130.0 - 100.0) / 100.0 * 100.0)  # +30.0%
+        self.assertNotEqual(move_48, move_96)
+
+    def test_surge_guard_remains_armed_in_step_after_threshold_drop(self):
+        st = _make_strategy("TESTPAIR_SURGE_ARMED_STEP")
+        st.p.enable_takeprofit = True
+        st.p.tp_trend_hold = True
+        st.p.takeprofit_pct = 5.0
+        st.p.surge_guard = True
+        st.p.surge_dynamic = False
+        st.p.surge_gain_pct = 18.0
+        st.p.surge_exit_pullback_pct = 3.5
+        st.s["qty"] = 1.0
+        st.s["cost"] = 100.0
+        st.s["entry_price"] = 100.0
+
+        exited = []
+        st._request_market_exit = lambda px, kind, soft_floor=False: exited.append((px, kind)) or True
+
+        # Price hits 120.0 (+20% gain >= 18% threshold) -> arms surge guard
+        st.step(120.0, timestamp=1000.0)
+        self.assertTrue(st.s.get("surge_active"))
+        self.assertEqual(st.s.get("surge_peak"), 120.0)
+        self.assertEqual(len(exited), 0)
+
+        # Price pulls back to 115.7: gain is 15.7% (< 18.0%), pullback is (120 - 115.7)/120 = 3.58% >= 3.5%
+        # Must trigger market exit despite current gain falling below 18.0%!
+        st.step(115.7, timestamp=1100.0)
         self.assertEqual(len(exited), 1)
         self.assertEqual(exited[0][1], "TP")
 

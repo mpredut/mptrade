@@ -271,20 +271,24 @@ def check_parabolic_surge_exhaustion(
     exit_pullback_pct: float,
     window_move_pct: float | None = None,
     surge_move_pct: float = 25.0,
+    surge_active: bool = False,
 ) -> tuple[bool, str]:
     """Return (triggered, reason) for 2-3 day parabolic surge exhaustion.
 
-    Surge is active if:
-    - current gain from avg_cost >= surge_gain_pct (e.g. 20.0%), OR
-    - window_move_pct >= surge_move_pct (e.g. 25.0% over 72h).
+    Surge is active/armed if:
+    - surge_active is True (latched state), OR
+    - current gain from avg_cost >= surge_gain_pct (e.g. 18.0%), OR
+    - peak gain from avg_cost >= surge_gain_pct (e.g. 18.0%), OR
+    - window_move_pct >= surge_move_pct (e.g. 18.0% over 72h).
     If surge is active, triggers exit when price pulls back >= exit_pullback_pct from surge_peak.
     """
     if avg_cost <= 0 or current_price <= 0 or surge_peak <= 0:
         return False, ""
     current_gain_pct = (current_price - avg_cost) / avg_cost * 100.0
-    pos_surge = surge_gain_pct > 0 and current_gain_pct >= surge_gain_pct
+    peak_gain_pct = (surge_peak - avg_cost) / avg_cost * 100.0
+    pos_surge = surge_gain_pct > 0 and (current_gain_pct >= surge_gain_pct or peak_gain_pct >= surge_gain_pct)
     win_surge = window_move_pct is not None and surge_move_pct > 0 and window_move_pct >= surge_move_pct
-    if not (pos_surge or win_surge):
+    if not (surge_active or pos_surge or win_surge):
         return False, ""
     pullback = (surge_peak - current_price) / surge_peak * 100.0
     if pullback >= exit_pullback_pct:

@@ -3,9 +3,12 @@
 
 Performs fine-grained grid search across:
 1. Fixed Parabolic Surge: gain triggers [18% - 35%], pullbacks [2.0% - 5.0%], windows [48h - 96h]
-2. Dynamic Parabolic Surge: min gains [20% - 26%], max gains [28% - 40%], multipliers [8.0 - 12.0], pullbacks [2.5% - 4.0%]
+2. Dynamic Parabolic Surge: min gains [18% - 26%], max gains [26% - 40%], multipliers [8.0 - 12.0], pullbacks [2.5% - 4.0%]
 3. Smart Bear Bounce Re-entry: bounce filters [0.0% - 2.0%]
-4. Independent 2-window validation (Walk-Forward guardrail) across 5 assets: HYPE, TAO, ADA, BTC, ETH.
+4. Dual-half split-sample consistency evaluation across 5 assets: HYPE, TAO, ADA, BTC, ETH.
+   Note: Evaluates multi-day surge exhaustion on 4h OHLC continuous history. 4h bars evaluate
+   multi-day dynamics and do not resolve 5-minute micro-gradient wicks.
+   Baseline parameters match canonical Kraken production: SMA 30, trailing 3.0%, trend_min 0.5%.
 
 Outputs:
 - JSON database: offline/results/surge_sweep/sweep_results.json
@@ -39,7 +42,7 @@ DATA_DIR = os.path.join(ROOT, "offline", "results", "kraken_continuous_grid", "d
 DEFAULT_OUT_DIR = os.path.join(ROOT, "offline", "results", "surge_sweep")
 ASSETS = ["HYPE", "TAO", "ADA", "BTC", "ETH"]
 
-# Base parameters matching production
+# Base parameters matching canonical Kraken production
 BASE_PARAMS = strat.StratParams(
     currency="USD",
     entry_amount=650.0,
@@ -63,11 +66,11 @@ BASE_PARAMS = strat.StratParams(
     tp_tranches=[],
     tp_trend_hold=True,
     tp_regime_gate=False,
-    tp_trend_min_pct=3.0,
-    tp_trail_pct=4.0,
+    tp_trend_min_pct=0.5,
+    tp_trail_pct=3.0,
     tp_trail_profit_floor_pct=1.0,
     trend_overlay=True,
-    trend_sma_n=20,
+    trend_sma_n=30,
     trend_interval=240,
     regime_min_samples=20,
     trend_topup=650.0,
@@ -86,7 +89,7 @@ BASE_PARAMS = strat.StratParams(
     reentry_pullback_min=0.8,
     reentry_pullback_max=3.5,
     reentry_ttl_hours=48.0,
-    reentry_bear_bounce_pct=1.0,
+    reentry_bear_bounce_pct=0.5,
     fast_profit_guard=True,
     tp_dynamic_flat=True,
     surge_guard=False,
@@ -133,9 +136,9 @@ def build_candidate_grid() -> list[dict[str, Any]]:
                     "desc": f"Fixed Surge {g:.0f}% / PB {pb:.1f}% / Window {w:.0f}h",
                 })
 
-    # 3. Dynamic Surge Grid (Centered around 25%)
-    dyn_mins = [20.0, 22.0, 24.0, 25.0, 26.0]
-    dyn_maxs = [28.0, 30.0, 32.0, 35.0, 40.0]
+    # 3. Dynamic Surge Grid
+    dyn_mins = [18.0, 20.0, 22.0, 24.0, 25.0, 26.0]
+    dyn_maxs = [26.0, 28.0, 30.0, 32.0, 35.0, 40.0]
     vol_mults = [8.0, 10.0, 12.0]
     dyn_pbs = [2.5, 2.8, 3.0, 3.2, 3.5, 4.0]
 
@@ -158,12 +161,13 @@ def build_candidate_grid() -> list[dict[str, Any]]:
                             surge_vol_multiplier=mult,
                             surge_exit_pullback_pct=pb,
                             surge_window_hours=72.0,
-                            surge_gain_pct=25.0,
+                            surge_gain_pct=mn,
+                            surge_move_pct=mn,
                         ),
                         "desc": f"Dyn Surge [{mn:.0f}-{mx:.0f}%] k={mult:.0f} PB {pb:.1f}%",
                     })
 
-    # 4. Bear Bounce Re-entry Sweep (with top calibrated surge anchor)
+    # 4. Bear Bounce Re-entry Sweep (with calibrated fixed 18% surge anchor)
     bounces = [0.0, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0]
     for b in bounces:
         cid = f"BOUNCE_b{b:.1f}_with_calibrated_surge"
@@ -173,14 +177,14 @@ def build_candidate_grid() -> list[dict[str, Any]]:
             "params": R(
                 BASE_PARAMS,
                 surge_guard=True,
-                surge_dynamic=True,
-                surge_min_gain_pct=24.0,
-                surge_max_gain_pct=32.0,
-                surge_vol_multiplier=10.0,
-                surge_exit_pullback_pct=3.2,
+                surge_dynamic=False,
+                surge_gain_pct=18.0,
+                surge_move_pct=18.0,
+                surge_exit_pullback_pct=3.5,
+                surge_window_hours=72.0,
                 reentry_bear_bounce_pct=b,
             ),
-            "desc": f"Bear Bounce Re-entry {b:.1f}% (Dyn Surge 24-32% PB 3.2%)",
+            "desc": f"Bear Bounce Re-entry {b:.1f}% (Fixed Surge 18% PB 3.5% w72)",
         })
 
     return candidates
@@ -381,7 +385,7 @@ def main():
         "",
         "## 1. Top 15 Overall Performers (Total Fleet PnL)",
         "",
-        "| Rank | Candidate ID | Category | Total PnL ($) | Edge ($) | MaxDD % | Calmar | 2-Win Verified | Description |",
+        "| Rank | Candidate ID | Category | Total PnL ($) | Edge ($) | MaxDD % | Calmar | Dual-Half Pass | Description |",
         "| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |",
     ]
 
@@ -394,10 +398,13 @@ def main():
 
     lines.extend([
         "",
-        "## 2. Top Robust Performers (2-Window Independent Walk-Forward Verified)",
+        "## 2. Top Robust Performers (Dual-Half Split-Sample Consistency Filter)",
         "",
-        "> [!IMPORTANT]",
-        "> These candidates beat the baseline in **both independent sample halves (H1 and H2)**, satisfying Guardrail #1 against overfitting.",
+        "> [!NOTE]",
+        "> These candidates beat the baseline in **both sample halves (H1 and H2)**.",
+        "> Methodology Note: This dual-half filter checks whether an edge persists across both halves of the historical dataset.",
+        "> It operates as a cross-sample consistency check rather than an anchored out-of-sample walk-forward test.",
+        "> Furthermore, continuous 4h OHLC bars validate multi-day surge exhaustion dynamics, but cannot simulate 5-minute micro-gradient wicks.",
         "",
         "| Rank | Candidate ID | Category | Total PnL ($) | H1 ($) | H2 ($) | MaxDD % | Calmar | Description |",
         "| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |",
