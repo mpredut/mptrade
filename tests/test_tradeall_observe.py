@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import pytest
 from matplotlib import pyplot as plt
 
-import tradeall_observe as observe
+from visuals import tradeall_observe as observe
 
 
 @pytest.fixture(autouse=True)

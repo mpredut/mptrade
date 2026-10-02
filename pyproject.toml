@@ -99,7 +99,6 @@ py-modules = [
     "state_io",
     "symbols",
     "tradeall",
-    "tradeall_observe",
     "tradeall_price_archiver",
     "trailing_core",
     "utils",

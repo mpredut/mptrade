@@ -13,7 +13,7 @@ Rulare:
     python3 -m offline.backtests.tradeall --symbol BTCUSDC --start 2026-06-01 --end 2026-06-08 --speed real
 
 Visualisation (while running or afterwards): in another terminal,
-    ./tradeall_observe.py --backtest-dir logger/backtest/<run_id> --symbols BTCUSDC
+    python -m visuals.tradeall_observe --backtest-dir logger/backtest/<run_id> --symbols BTCUSDC
 """
 import argparse
 import json
@@ -418,7 +418,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     sys.stderr.write(f"[tradeall_backtest] DONE: {n} ticks, BUY={broker.n_buy} SELL={broker.n_sell}\n")
     sys.stderr.write(f"[tradeall_backtest] results in: {out_dir}\n")
     sys.stderr.write(f"[tradeall_backtest] view: "
-                      f"./tradeall_observe.py --backtest-dir {out_dir} --symbols {symbol}\n")
+                      f"python -m visuals.tradeall_observe --backtest-dir {out_dir} --symbols {symbol}\n")
 
 
 def main():
