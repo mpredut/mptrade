@@ -65,6 +65,11 @@ class ShadowLiveTest(unittest.TestCase):
             trend_trail_pct: float = 5.0
             trend_exit_break: bool = False
             tp_regime_gate: bool = True
+            surge_guard: bool = True
+            surge_gain_pct: float = 18.0
+            surge_exit_pullback_pct: float = 3.5
+            surge_move_pct: float = 18.0
+            surge_dynamic: bool = False
 
         return Params()
 
@@ -81,7 +86,7 @@ class ShadowLiveTest(unittest.TestCase):
                 "current", "pre0923", "rev_tp5", "rev_spacing0", "rev_trail_fixed",
                 "rev_gate_off", "rev_floor0", "rev_sl125", "dca15", "reentry4",
                 "dca_vol_m1", "overlay650t8_regime_v2", "B_dcabrake_regime_v2",
-                "overlay_safe_combo",
+                "overlay_safe_combo", "fixed_surge20_pb3",
             ],
         )
         self.assertIs(variants["current"], live)
@@ -120,6 +125,9 @@ class ShadowLiveTest(unittest.TestCase):
         self.assertTrue(safe_overlay.trend_overlay)
         self.assertEqual(safe_overlay.trend_topup, 350.0)
         self.assertEqual(safe_overlay.trend_trail_pct, 6.0)
+        fixed20 = variants["fixed_surge20_pb3"]
+        self.assertEqual(fixed20.surge_gain_pct, 20.0)
+        self.assertEqual(fixed20.surge_exit_pullback_pct, 3.0)
 
     def test_interval_the_live_config_cannot_replay_is_skipped(self):
         with patch(

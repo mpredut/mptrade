@@ -101,6 +101,12 @@ def _variants(interval: int):
             base, trend_overlay=True, trend_topup=350.0, trend_trail_pct=6.0,
             trend_exit_break=False,
         ),
+        # Sensitivity candidate: 20% surge trigger, 3.0% pullback
+        "fixed_surge20_pb3": replace(
+            base, surge_guard=True, surge_dynamic=False,
+            surge_gain_pct=20.0, surge_exit_pullback_pct=3.0,
+            surge_move_pct=20.0,
+        ),
     }
     return variants
 
