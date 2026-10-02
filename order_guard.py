@@ -7,8 +7,9 @@ margin. Decoupled from Binance, it accepts any `provider` implementing
 (for example, min(sell)/max(buy) from the Binance order cache). The SAME profit logic
 therefore runs on every venue instead of being embedded only in bapi_placeorder.
 
-Imports only utils, with no providers/cacheManager, avoiding circular imports. Reference
-read failures from provider.last_opposite_fill propagate so the caller can fail closed.
+Venue and cache adapters are imported lazily by `symbol_regime`, while the shared
+market-regime types remain provider-neutral. Reference read failures from
+provider.last_opposite_fill propagate so the caller can fail closed.
 Returns True when placement is allowed and False when blocked.
 
 The profit threshold is configured per venue in versioned, non-sensitive
@@ -16,7 +17,7 @@ The profit threshold is configured per venue in versioned, non-sensitive
 import os
 import time
 import math
-from typing import Optional, Mapping
+from typing import Optional
 import utils as u
 from market_regime import MarketRegimeService, MarketRegimeDecision
 
@@ -105,18 +106,6 @@ def buy_reference_enabled(provider_name) -> bool:
     return buy_reference_mode(provider_name) != "off"
 
 
-def _normalize_snapshot(snap: Optional[Mapping]) -> Optional[dict]:
-    """Ensure snapshot exposes standard fields expected by MarketRegimeEvaluator."""
-    if not snap or not isinstance(snap, Mapping):
-        return None
-    d = dict(snap)
-    if "gradient_recent" not in d and "growth_coefficient" in d:
-        d["gradient_recent"] = d["growth_coefficient"]
-    if "growth_coefficient" not in d and "gradient_recent" in d:
-        d["growth_coefficient"] = d["gradient_recent"]
-    return d
-
-
 def symbol_regime(
     symbol: str,
     provider=None,
@@ -147,8 +136,6 @@ def symbol_regime(
     except Exception:
         snap = None
 
-    normalized_snap = _normalize_snapshot(snap)
-
     target_provider = provider
     if isinstance(provider, str) and provider:
         try:
@@ -162,18 +149,13 @@ def symbol_regime(
             target_provider,
             symbol,
             horizon="short",
-            snapshot=normalized_snap,
+            snapshot=snap,
             snapshot_max_age_seconds=svc.default_snapshot_max_age_seconds(),
             allow_fallback=allow_fallback,
             now=now,
         )
         return resolution.decision
     except Exception:
-        if normalized_snap is not None:
-            try:
-                return svc.evaluate_snapshot(normalized_snap)
-            except Exception:
-                pass
         return svc.evaluator.unknown("regime_resolution_failed")
 
 
@@ -198,7 +180,14 @@ def margin_for(provider_name):
     return m.get((provider_name or "").lower(), m["default"])
 
 
-def dynamic_buy_window_sec(symbol=None, provider=None, regime_service=None, now=None) -> float:
+def dynamic_buy_window_sec(
+    symbol=None,
+    provider=None,
+    regime_service=None,
+    now=None,
+    *,
+    resolved_trend=None,
+) -> float:
     """Calculate the dynamic lookback window (in seconds) for BUY reference:
     - BULL trend: 4h - 12h (default 8h)
     - BEAR trend: 48h - 168h (default 72h)
@@ -218,7 +207,18 @@ def dynamic_buy_window_sec(symbol=None, provider=None, regime_service=None, now=
     except (ValueError, TypeError):
         bear_h = 72.0
 
-    trend = _symbol_trend(symbol, provider=provider, regime_service=regime_service, now=now) if symbol else "unknown"
+    trend = resolved_trend
+    if trend not in {"bull", "bear", "flat", "sideways", "unknown"}:
+        trend = (
+            _symbol_trend(
+                symbol,
+                provider=provider,
+                regime_service=regime_service,
+                now=now,
+            )
+            if symbol
+            else "unknown"
+        )
     if trend == "bull":
         hours = max(4.0, min(12.0, bull_h))
     elif trend == "bear":
@@ -397,8 +397,12 @@ def profit_guard(provider, symbol, order_type, price, profit_percentage, window_
                   f"(order_guard.conf); price {price} is not compared with past sells")
             return True
         elif mode == "dynamic":
-            dyn_window_s = dynamic_buy_window_sec(symbol, provider=provider)
             trend = _symbol_trend(symbol, provider=provider)
+            dyn_window_s = dynamic_buy_window_sec(
+                symbol,
+                provider=provider,
+                resolved_trend=trend,
+            )
             dyn_hours = dyn_window_s / 3600.0
             if window_ref is not None and window_ref > 0:
                 diff = u.value_diff_to_percent(window_ref, price)

@@ -26,6 +26,16 @@ class MarketRegimeEvaluatorTest(unittest.TestCase):
         self.assertEqual((bull.n_samples, bull.window_seconds), (40, 900.0))
         self.assertEqual(bull.fitted_move_pct, 1950.0)
 
+    def test_legacy_gradient_alias_is_normalized_by_the_common_evaluator(self):
+        decision = self.evaluator.evaluate({
+            "growth_coefficient": 0.5,
+            "epsilon": 0.1,
+        })
+
+        self.assertEqual(decision.regime, "bull")
+        self.assertEqual(decision.gradient, 0.5)
+        self.assertTrue(decision.fresh)
+
     def test_exposure_adversity_is_symmetric(self):
         bull = self.evaluator.evaluate({"gradient_recent": 0.5, "epsilon": 0.1})
         bear = self.evaluator.evaluate({"gradient_recent": -0.5, "epsilon": 0.1})

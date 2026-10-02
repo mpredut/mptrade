@@ -220,6 +220,31 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         self.assertEqual(order_guard._symbol_trend("BTCUSDT", provider=provider), "bear")
         self.assertEqual(order_guard.dynamic_buy_window_sec("BTCUSDT", provider=provider), 72.0 * 3600.0)
 
+    def test_resolution_error_does_not_bypass_freshness_validation(self):
+        class _BrokenService(MarketRegimeService):
+            def resolve_with_evidence(self, *_args, **_kwargs):
+                raise RuntimeError("resolution failed")
+
+        snap = {
+            "gradient_recent": 0.5,
+            "epsilon": 0.1,
+            "ts": self.now - 10.0,
+        }
+        mock_mgr = mock.MagicMock()
+        mock_mgr.fresh_snapshot.return_value = snap
+
+        with mock.patch(
+            "cacheManager.get_short_trend_manager",
+            return_value=mock_mgr,
+        ):
+            decision = order_guard.symbol_regime(
+                "BTCUSDT", regime_service=_BrokenService(), now=self.now,
+            )
+
+        self.assertEqual(decision.regime, "unknown")
+        self.assertFalse(decision.fresh)
+        self.assertEqual(decision.reason, "regime_resolution_failed")
+
     def test_missing_symbol_or_empty_cache_fails_safely_to_unknown(self):
         decision = order_guard.symbol_regime("", now=self.now)
         self.assertEqual(decision.regime, "unknown")
@@ -276,6 +301,36 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
                     provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28
                 )
                 self.assertFalse(allowed)
+
+    def test_profit_guard_reuses_one_regime_for_window_and_policy(self):
+        class _Provider:
+            name = "binance"
+
+            def get_orders(self, _symbol, _side, _window_s):
+                return []
+
+        margins = {
+            "default": 1.15,
+            "default_buy_reference": "dynamic",
+            "buy_window_mode": "dynamic",
+        }
+        with mock.patch.object(order_guard, "_MARGINS", margins), \
+                mock.patch.object(
+                    order_guard,
+                    "_symbol_trend",
+                    side_effect=["bull", "bear"],
+                ) as trend:
+            allowed = order_guard.profit_guard(
+                _Provider(),
+                "TAOUSDC",
+                "BUY",
+                293.0,
+                1.15,
+                window_ref=216.28,
+            )
+
+        self.assertTrue(allowed)
+        trend.assert_called_once_with("TAOUSDC", provider=mock.ANY)
 
 
 if __name__ == "__main__":

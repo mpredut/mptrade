@@ -15,6 +15,24 @@ from collections import OrderedDict
 from typing import Mapping, Optional
 
 
+def normalize_market_regime_snapshot(
+    snapshot: Optional[Mapping],
+) -> Optional[dict]:
+    """Return a snapshot that uses the canonical market-regime field names.
+
+    ``growth_coefficient`` is retained as a compatibility input for older trend
+    publishers, but every classifier consumes ``gradient_recent``. Keeping this
+    translation here prevents strategy and guard modules from implementing their
+    own subtly different adapters.
+    """
+    if not snapshot or not isinstance(snapshot, Mapping):
+        return None
+    normalized = dict(snapshot)
+    if "gradient_recent" not in normalized and "growth_coefficient" in normalized:
+        normalized["gradient_recent"] = normalized["growth_coefficient"]
+    return normalized
+
+
 @dataclass(frozen=True)
 class MarketRegimeDecision:
     regime: str                 # bull|bear|sideways|unknown
@@ -201,6 +219,7 @@ class MarketRegimeEvaluator:
             fresh=False, reason=reason)
 
     def evaluate(self, snapshot: Optional[Mapping]) -> MarketRegimeDecision:
+        snapshot = normalize_market_regime_snapshot(snapshot)
         if not snapshot:
             return self.unknown()
         if "gradient_recent" not in snapshot or "epsilon" not in snapshot:
