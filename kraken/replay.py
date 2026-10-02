@@ -127,6 +127,8 @@ def _run_once(
         for index, (_open, _high, _low, close) in enumerate(
                 warmup_ohlc, start=-len(warmup_ohlc)):
             strategy._shadow_prices.append((index * warmup_step, float(close)))
+            if strategy._surge_replay_closes is not None:
+                strategy._surge_replay_closes.append(float(close))
         strategy._save = _silent
         decision_trace = []
         current_bar = -1

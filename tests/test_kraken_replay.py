@@ -275,6 +275,57 @@ class ReplayEngineTest(unittest.TestCase):
             with self.subTest(overrides=overrides):
                 rp._validate_replay(_series(), _params(**overrides), bar_minutes=60)
 
+    def test_long_surge_window_keeps_its_own_replay_history(self):
+        strategy_type = rp._strat.Strategy
+        created = []
+
+        def capture_strategy(*args, **kwargs):
+            strategy = strategy_type(*args, **kwargs)
+            created.append(strategy)
+            return strategy
+
+        params = _params(surge_guard=True, surge_window_hours=96.0, trend_interval=60)
+        bar = (100.0, 100.0, 100.0, 100.0)
+        with patch.object(rp._strat, "Strategy", side_effect=capture_strategy):
+            for warmup_count, expected_move in ((95, None), (96, 25.0)):
+                with self.subTest(warmup_count=warmup_count):
+                    created.clear()
+                    rp.run_replay(
+                        [(125.0, 125.0, 125.0, 125.0)], params,
+                        bar_minutes=60, warmup_ohlc=[bar] * warmup_count,
+                    )
+                    self.assertTrue(created)
+                    for strategy in created:
+                        self.assertEqual(len(strategy._shadow_prices), 90)
+                        move = strategy._surge_window_move_pct(125.0)
+                        if expected_move is None:
+                            self.assertIsNone(move)
+                        else:
+                            self.assertAlmostEqual(move, expected_move)
+
+    def test_long_surge_window_can_arm_without_position_gain_threshold(self):
+        params = _params(
+            tp_trend_hold=True, takeprofit_pct=5.0, tp_trail_pct=8.0,
+            surge_guard=True, surge_gain_pct=18.0, surge_move_pct=10.0,
+            surge_window_hours=96.0, trend_interval=60,
+        )
+        client = rp.MagicMock()
+        client.pair_precision.return_value = rp.PairPrecision(5, 8, 0.0, "REPLAY")
+        client.free_balance.return_value = 1.0
+        strategy = rp._strat.Strategy(
+            client, "REPLAY", params, dry_run=True,
+            initial_state=rp._strat._new_state(), replay_mode=True,
+        )
+        strategy._save = lambda: None
+        strategy.s.update(qty=1.0, cost=100.0, entry_price=100.0)
+        strategy._shadow_prices.extend((index * 3600, 100.0) for index in range(96))
+        strategy._surge_replay_closes.extend([100.0] * 96)
+
+        strategy.step(115.0, timestamp=96 * 3600)
+
+        self.assertEqual(len(strategy._shadow_prices), 90)
+        self.assertTrue(strategy.s["surge_active"])
+
     def test_adaptive_features_require_their_configured_bar_interval(self):
         with self.assertRaisesRegex(ValueError, "tp_trail_vol_interval"):
             rp.run_replay(

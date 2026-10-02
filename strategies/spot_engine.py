@@ -407,6 +407,11 @@ class Strategy:
         # Observational adaptive-volatility shadow history stays in memory for sigma.
         # It is rebuilt after restart and never enters persistent state.
         self._shadow_prices = deque(maxlen=90)
+        self._surge_replay_closes = (
+            deque(maxlen=self._surge_window_bars() + 1)
+            if replay_mode and params.surge_guard and params.surge_window_hours > 0
+            and params.surge_move_pct > 0 else None
+        )
         # Pair precision normalized by the provider.
         try:
             precision = client.pair_precision(pair)
@@ -1242,6 +1247,10 @@ class Strategy:
             fallback_gain_pct=self.p.surge_gain_pct,
         )
 
+    def _surge_window_bars(self) -> int:
+        interval_hours = max(1.0, float(self.p.trend_interval)) / 60.0
+        return max(1, round(self.p.surge_window_hours / interval_hours))
+
     def _surge_window_move_pct(self, price: float, closes: list | None = None) -> float | None:
         """Calculate the configured-window move, or None when unavailable.
 
@@ -1251,11 +1260,13 @@ class Strategy:
         if not self.p.surge_window_hours or self.p.surge_window_hours <= 0:
             return None
         if closes is None:
-            closes = self._trend_closes()
+            closes = (
+                self._surge_replay_closes
+                if self._surge_replay_closes is not None else self._trend_closes()
+            )
         if not closes:
             return None
-        interval_hours = max(1.0, float(self.p.trend_interval)) / 60.0
-        n_bars = max(1, round(self.p.surge_window_hours / interval_hours))
+        n_bars = self._surge_window_bars()
         offset = 1 if self.replay_mode else 0
         idx = -n_bars - offset
         if abs(idx) > len(closes):
@@ -1393,7 +1404,8 @@ class Strategy:
             if self.p.surge_guard and avg and self.s["qty"] > 1e-12:
                 surge_peak = max(self.s.get("surge_peak") or price, price)
                 self.s["surge_peak"] = surge_peak
-                window_move = self._surge_window_move_pct(price, closes)
+                window_move = self._surge_window_move_pct(
+                    price, None if self.replay_mode else closes)
                 eff_surge_gain = self._effective_surge_gain_pct()
                 current_gain = (price - avg) / avg * 100.0
                 peak_gain = (surge_peak - avg) / avg * 100.0
@@ -1573,6 +1585,8 @@ class Strategy:
         # volatility and changes the adaptive threshold.
         tick_time = time.time() if timestamp is None else float(timestamp)
         self._shadow_prices.append((tick_time, price))
+        if self._surge_replay_closes is not None:
+            self._surge_replay_closes.append(price)
 
         # While adoption is pending, do not buy a new entry; the allocation is in transit.
         if self.p.adopt_cost > 0 and not self.s.get("adopted") and held <= 1e-12:
@@ -1729,7 +1743,8 @@ class Strategy:
             if self.p.surge_guard and avg and held > 1e-12:
                 surge_peak = max(self.s.get("surge_peak") or price, price)
                 self.s["surge_peak"] = surge_peak
-                window_move = self._surge_window_move_pct(price, regime_closes)
+                window_move = self._surge_window_move_pct(
+                    price, None if self.replay_mode else regime_closes)
                 eff_surge_gain = self._effective_surge_gain_pct()
                 current_gain = (price - avg) / avg * 100.0
                 peak_gain = (surge_peak - avg) / avg * 100.0
