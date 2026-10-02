@@ -104,9 +104,15 @@ class BuyReferenceSwitchTest(unittest.TestCase):
             from providers.market_api import BinanceProvider
             provider = BinanceProvider()
             self.assertEqual(order_guard.buy_reference_mode(provider.name), "dynamic")
-            # In BULL trend, BUY above historical sell reference is permitted on Binance
-            with mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):
+            # Keep the real provider/config routing, but isolate its history I/O.
+            with mock.patch.object(provider, "get_orders", return_value=[]) as history, \
+                    mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):
                 self.assertTrue(order_guard.profit_guard(provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
+                history.assert_called_with(
+                    "TAOUSDC", "SELL", order_guard.dynamic_buy_window_sec("TAOUSDC"))
+                history.return_value = [{"price": 216.28}]
+                self.assertFalse(order_guard.profit_guard(
+                    provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
             # SELL below historical buy reference is still blocked
             self.assertFalse(order_guard.profit_guard(provider, "TAOUSDC", "SELL", 270.0, 1.15, window_ref=276.0))
 
@@ -164,7 +170,9 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         def _mock_trade_slot(*a, **kw):
             yield _AllowedSlot()
 
-        with mock.patch("lock.trade_cooldown.trade_slot", side_effect=_mock_trade_slot):
+        # Exercise reference routing without live trend discovery on a cold cache.
+        with mock.patch("lock.trade_cooldown.trade_slot", side_effect=_mock_trade_slot), \
+                mock.patch.object(order_guard, "_symbol_trend", return_value="unknown"):
             # With binance_buy_reference = 0: BUY at 293 (above past sell 216.28) is accepted
             with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference=0.0)):
                 res = inst.place("BUY", 293.0, 1.0, motivation="test_buy", cache_permit=object(), smart=False, wait_for_trend=False)
@@ -302,4 +310,3 @@ class BuyReferenceSwitchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

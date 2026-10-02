@@ -255,7 +255,33 @@ class ReplayEngineTest(unittest.TestCase):
                 bar_minutes=60,
             )
 
+    def test_surge_and_hybrid_reentry_require_their_configured_trend_cadence(self):
+        for feature in ("surge_guard", "reentry_hybrid_enabled"):
+            for minutes in (None, 60):
+                with self.subTest(feature=feature, minutes=minutes), self.assertRaisesRegex(
+                    ValueError, "trend_interval",
+                ):
+                    rp.run_replay(
+                        _series(), _params(**{feature: True}, trend_interval=240),
+                        bar_minutes=minutes,
+                    )
+
+    def test_unused_surge_settings_do_not_restrict_replay_cadence(self):
+        for overrides in (
+            dict(surge_guard=False, surge_dynamic=True),
+            dict(surge_guard=True, surge_window_hours=0.0),
+            dict(surge_guard=True, surge_move_pct=0.0),
+        ):
+            with self.subTest(overrides=overrides):
+                rp._validate_replay(_series(), _params(**overrides), bar_minutes=60)
+
     def test_adaptive_features_require_their_configured_bar_interval(self):
+        with self.assertRaisesRegex(ValueError, "tp_trail_vol_interval"):
+            rp.run_replay(
+                _series(), _params(surge_guard=True, surge_dynamic=True,
+                                   trend_interval=60, tp_trail_vol_interval=240),
+                bar_minutes=60,
+            )
         with self.assertRaisesRegex(ValueError, "tp_trail_vol_interval"):
             rp.run_replay(
                 _series(), _params(tp_trail_adaptive=True, tp_trail_vol_interval=240),

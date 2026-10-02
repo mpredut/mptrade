@@ -988,6 +988,68 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
         self.assertAlmostEqual(move_96, (130.0 - 100.0) / 100.0 * 100.0)  # +30.0%
         self.assertNotEqual(move_48, move_96)
 
+    def test_surge_window_live_and_replay_use_the_same_closed_bar_anchor(self):
+        st = _make_strategy(surge_window_hours=72.0, trend_interval=240)
+        closed = [100.0] + [110.0] * 17
+        self.assertAlmostEqual(st._surge_window_move_pct(130.0, closed), 30.0)
+        st.replay_mode = True
+        self.assertAlmostEqual(st._surge_window_move_pct(130.0, closed + [130.0]), 30.0)
+        self.assertIsNone(st._surge_window_move_pct(130.0, closed[1:] + [130.0]))
+
+    def test_missing_surge_window_never_uses_a_different_regime_horizon(self):
+        from market_regime import MarketRegimeDecision
+
+        regime = MarketRegimeDecision(
+            "bull", 0.02, 0.01, 2.0, True, "above_epsilon", n_samples=21,
+        )
+        self.assertAlmostEqual(regime.fitted_move_pct, 40.0)
+        for overlay in (False, True):
+            for hours, closes in ((72.0, [90.0] * 17), (0.0, [90.0] * 30)):
+                with self.subTest(overlay=overlay, hours=hours):
+                    st = _make_strategy(
+                        tp_trend_hold=True, takeprofit_pct=5.0, tp_trail_pct=8.0,
+                        surge_guard=True, surge_gain_pct=18.0, surge_move_pct=18.0,
+                        surge_window_hours=hours, surge_exit_pullback_pct=3.5,
+                    )
+                    st.s.update(qty=1.0, cost=100.0, entry_price=100.0, trend_mode=overlay)
+                    st._regime_context = lambda: (regime, closes)
+                    st._request_market_exit = MagicMock(return_value=True)
+                    if overlay:
+                        st._overlay_step(115.0, regime, closes, tick_time=1000.0)
+                    else:
+                        st.step(115.0, timestamp=1000.0)
+                    self.assertFalse(st.s["surge_active"])
+                    st._request_market_exit.assert_not_called()
+
+    def test_surge_window_position_gain_and_latched_state_remain_independent(self):
+        from market_regime import MarketRegimeDecision
+
+        regime = MarketRegimeDecision("sideways", 0.0, 0.01, 0.0, True, "sideways")
+        for overlay in (False, True):
+            for price, closes, armed in (
+                (115.0, [90.0] * 18, False),
+                (120.0, [], False),
+                (115.0, [], True),
+            ):
+                with self.subTest(overlay=overlay, price=price, armed=armed):
+                    st = _make_strategy(
+                        tp_trend_hold=True, takeprofit_pct=5.0, tp_trail_pct=8.0,
+                        surge_guard=True, surge_gain_pct=18.0, surge_move_pct=18.0,
+                        surge_window_hours=72.0, surge_exit_pullback_pct=3.5,
+                    )
+                    st.s.update(
+                        qty=1.0, cost=100.0, entry_price=100.0,
+                        trend_mode=overlay, surge_active=armed,
+                    )
+                    st._regime_context = lambda: (regime, closes)
+                    st._request_market_exit = MagicMock(return_value=True)
+                    if overlay:
+                        st._overlay_step(price, regime, closes, tick_time=1000.0)
+                    else:
+                        st.step(price, timestamp=1000.0)
+                    self.assertTrue(st.s["surge_active"])
+                    st._request_market_exit.assert_not_called()
+
     def test_surge_guard_remains_armed_in_step_after_threshold_drop(self):
         st = _make_strategy("TESTPAIR_SURGE_ARMED_STEP")
         st.p.enable_takeprofit = True
@@ -1092,5 +1154,3 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

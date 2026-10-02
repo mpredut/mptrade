@@ -1226,7 +1226,11 @@ class Strategy:
         )
 
     def _surge_window_move_pct(self, price: float, closes: list | None = None) -> float | None:
-        """Calculate percentage price change over self.p.surge_window_hours."""
+        """Calculate the configured-window move, or None when unavailable.
+
+        A missing or disabled window must not use the classifier's different
+        horizon as a substitute. Position-gain arming remains independent.
+        """
         if not self.p.surge_window_hours or self.p.surge_window_hours <= 0:
             return None
         if closes is None:
@@ -1373,8 +1377,6 @@ class Strategy:
                 surge_peak = max(self.s.get("surge_peak") or price, price)
                 self.s["surge_peak"] = surge_peak
                 window_move = self._surge_window_move_pct(price, closes)
-                if window_move is None and regime and regime.fresh:
-                    window_move = regime.fitted_move_pct
                 eff_surge_gain = self._effective_surge_gain_pct()
                 current_gain = (price - avg) / avg * 100.0
                 peak_gain = (surge_peak - avg) / avg * 100.0
@@ -1708,8 +1710,6 @@ class Strategy:
                 surge_peak = max(self.s.get("surge_peak") or price, price)
                 self.s["surge_peak"] = surge_peak
                 window_move = self._surge_window_move_pct(price, regime_closes)
-                if window_move is None and regime and regime.fresh:
-                    window_move = regime.fitted_move_pct
                 eff_surge_gain = self._effective_surge_gain_pct()
                 current_gain = (price - avg) / avg * 100.0
                 peak_gain = (surge_peak - avg) / avg * 100.0

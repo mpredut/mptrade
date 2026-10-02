@@ -27,18 +27,22 @@ def _silent(*_args, **_kwargs):
 def _validate_replay(ohlc, params, bar_minutes: float | None) -> None:
     if not ohlc:
         raise ValueError("ohlc cannot be empty")
+    surge_window_enabled = (
+        params.surge_guard and params.surge_window_hours > 0 and params.surge_move_pct > 0
+    )
     if (params.trend_overlay or params.dca_trend_brake
+            or params.reentry_hybrid_enabled or surge_window_enabled
             or getattr(params, "tp_dynamic_flat", False)) and (
             bar_minutes is None or float(bar_minutes) != float(params.trend_interval)):
         raise ValueError(
             "regime-aware policies require bar_minutes to equal trend_interval "
             f"({params.trend_interval} minutes); resampling is not implemented"
         )
-    if params.tp_trail_adaptive and (
+    if (params.tp_trail_adaptive or (params.surge_guard and params.surge_dynamic)) and (
             bar_minutes is None
             or float(bar_minutes) != float(params.tp_trail_vol_interval)):
         raise ValueError(
-            "tp_trail_adaptive requires bar_minutes to equal "
+            "adaptive trailing or surge requires bar_minutes to equal "
             f"tp_trail_vol_interval ({params.tp_trail_vol_interval} minute)"
         )
     if params.dca_vol_scale_k and (
