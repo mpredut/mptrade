@@ -148,7 +148,7 @@ def get_free_balance(asset: str):
         return None
 
 
-def get_account_assets_balances():
+def get_account_assets_balances(raise_errors=False):
     try:
         account = client.get_account()
         balances = account.get("balances", [])
@@ -172,6 +172,8 @@ def get_account_assets_balances():
         return result
     except Exception as e:
         print(f"get_account_assets_balances: Error reading balances: {e}")
+        if raise_errors:
+            raise
         return []
 
 
@@ -377,7 +379,7 @@ def _convert_to_usdc(asset, amount):
     return 0.0
 
 
-def get_total_assets_value_usdc(use_cache=True, cache_ttl_seconds=ASSET_VALUE_CACHE_TTL_SECONDS):
+def get_total_assets_value_usdc(use_cache=True, cache_ttl_seconds=ASSET_VALUE_CACHE_TTL_SECONDS, raise_errors=False):
     now = time.time()
     if use_cache:
         with _asset_value_cache_lock:
@@ -389,10 +391,12 @@ def get_total_assets_value_usdc(use_cache=True, cache_ttl_seconds=ASSET_VALUE_CA
 
     total_value = 0.0
     try:
-        for balance in get_account_assets_balances():
+        for balance in get_account_assets_balances(raise_errors=True):
             total_value += _convert_to_usdc(balance["asset"], balance["total"])
     except Exception as e:
         print(f"Error: get_total_assets_value_usdc: Error calculating portfolio value: {e}")
+        if raise_errors:
+            raise
         return None
 
     with _asset_value_cache_lock:

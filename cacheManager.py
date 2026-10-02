@@ -2605,7 +2605,7 @@ class CacheAssetValueManager(CacheManagerInterface):
 
     def get_remote_items(self, symbol, startTime):
         try:
-            total_usdc = self.api_client.get_total_assets_value_usdc(use_cache=False)
+            total_usdc = self.api_client.get_total_assets_value_usdc(use_cache=False, raise_errors=True)
         except Exception as e:
             print(f"[{self.cls_name}][Error] Cannot query the total value: {e}")
             return []
