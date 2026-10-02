@@ -73,7 +73,7 @@ flowchart TD
     subgraph Multi-Horizon Profit Taking & Exits
         S4["4. Base Trend Trailing Stop (8%)"]
         S5["5. Volatility-Adaptive TP Trailing"]
-        S7["7. Parabolic Surge Guard (25% / 2.5%)"]
+        S7["7. Parabolic Surge Guard (18% / 3.5%)"]
         S8["8. Catastrophe Stop-Loss (25%)"]
         S9["9. Dynamic Flat TP (3% - 7%)"]
         S10["10. Profit Ratchet Trailing (8% -> 4%)"]
@@ -92,7 +92,7 @@ flowchart TD
 | **4** | **Base Trend Trailing Stop** | **ACTIVE** (`8.0%`) | **ACTIVE** (`5.0%`) | Rides the bull market peak; exits when price pulls back by the configured percentage from the highest price seen. |
 | **5** | **Volatility-Adaptive Trailing**| **ACTIVE** (`true`) | **ACTIVE** (`true`) | Adapts the trailing distance using rolling 1h/4h volatility: $\text{trail} = \text{clamp}(k \times \sigma, \text{min}, \text{max})$. |
 | **6** | **DCA Trend Brake** | **ACTIVE** (`true`) | Standby (`false`) | Detects severe downward velocity ($\le -1.5\%$) and halts further DCA purchases until the free-fall stabilizes. |
-| **7** | **Parabolic Surge Guard** | **ACTIVE** (`true`) | **ACTIVE** (`true`) | **Backtest winner (+8.5% net profit):** If a coin surges $\ge 25\%$ in 72h or from entry, exits on a tight $2.5\%$ pullback from peak. |
+| **7** | **Parabolic Surge Guard** | **ACTIVE** (`true`) | **ACTIVE** (`true`) | **Calibrated winner (+26.4% altcoin alpha):** If a coin surges $\ge 18\%$ in 72h or from entry, exits on a $3.5\%$ pullback from peak (dynamic clamp $18\% - 26\%$, vol multiplier $8.0$). |
 | **8** | **Catastrophe Stop-Loss** | Standby (`0.0%`) | Standby (`0.0%`) | Optional emergency utility floor: disabled by default in spot DCA to avoid crystallizing pullbacks before recovery. |
 | **9** | **Dynamic Flat TP** | **ACTIVE** (`true`) | **ACTIVE** (`true`) | In flat markets, scales take-profit dynamically between 3.0% (choppy noise) and 7.0% (breakout cusp) based on regime strength. |
 | **10**| **Profit Ratchet Trailing** | Standby (`false`) | Standby (`false`) | Ratchets the trailing stop tighter (from 8% down to 4%) as unrealized gains expand beyond 8%, locking in accumulated gains. |
