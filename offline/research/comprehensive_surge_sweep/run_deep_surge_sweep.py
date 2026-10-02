@@ -71,7 +71,7 @@ def build_candidate_grid(base_params: strat.StratParams) -> list[dict[str, Any]]
     })
 
     # 2. Fine-grained Fixed Surge Grid
-    fixed_gains = [18.0, 20.0, 22.0, 24.0, 25.0, 26.0, 28.0, 30.0, 32.0, 35.0]
+    fixed_gains = [18.0, 20.0, 21.0, 22.0, 24.0, 25.0, 26.0, 28.0, 30.0, 32.0, 35.0]
     pullbacks = [2.0, 2.5, 2.8, 3.0, 3.2, 3.5, 3.8, 4.0, 4.5, 5.0]
     windows = [48.0, 72.0, 96.0]
 
