@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
 import asyncio
+from collections import defaultdict, deque
 import logging
 import os
 import re
@@ -26,6 +26,8 @@ class BotManager:
         self.starting: set[str] = set()
         self.process_start_times: Dict[str, float] = {}
         self.zombie_killing: set[str] = set()
+        self.recent_lines: Dict[str, deque] = defaultdict(lambda: deque(maxlen=20))
+        self.last_hb_status_log = time.time()
         self.running = True
 
     def parse_procs_conf(self) -> List[Dict[str, Any]]:
@@ -100,6 +102,9 @@ class BotManager:
             if not line:
                 break
             decoded = line.decode("utf-8", errors="replace")
+            clean_line = decoded.strip()
+            if clean_line:
+                self.recent_lines[bot_name].append(clean_line)
 
             # 1. Write to dedicated log file (so tail -f logs/<bot>.log works cleanly)
             if log_file:
@@ -110,7 +115,7 @@ class BotManager:
             self.server.process_line(decoded, bot_name)
 
             # 3. Print to console / journalctl ONLY for warnings, errors, or if verbose
-            if verbose_stdout or any(err in decoded.upper() for err in ("ERROR", "CRITICAL", "EXCEPTION", "TRACEBACK", "RECOVERY BLOCKED", "WARN")):
+            if verbose_stdout or any(err in decoded.upper() for err in ("ERROR", "CRITICAL", "EXCEPTION", "TRACEBACK", "RECOVERY", "WARN")):
                 sys.stdout.write(f"[{bot_name}] {decoded}")
                 sys.stdout.flush()
 
@@ -294,6 +299,21 @@ class BotManager:
 
         while self.running:
             now = time.time()
+            if now - getattr(self, "last_hb_status_log", 0) >= 300.0:
+                self.last_hb_status_log = now
+                hb_statuses = []
+                for b in self.bots:
+                    hb_files = b.get("hb_files") or ([b["hb_file"]] if b.get("hb_file") else [])
+                    if b.get("hb_stale_s", 0) > 0 and hb_files:
+                        for hbf in hb_files:
+                            if os.path.exists(hbf):
+                                age = now - os.path.getmtime(hbf)
+                                hb_statuses.append(f"{b['name']} ({os.path.basename(hbf)}: {age:.1f}s/{b['hb_stale_s']:.0f}s)")
+                            else:
+                                hb_statuses.append(f"{b['name']} ({os.path.basename(hbf)}: missing)")
+                if hb_statuses:
+                    logging.info(f"Heartbeat healthcheck status: {', '.join(hb_statuses)}")
+
             for bot in self.bots:
                 name = bot["name"]
                 if name in self.starting:
@@ -336,15 +356,23 @@ class BotManager:
                                         stale_file = hbf
 
                             if is_hung:
+                                recent_logs = list(self.recent_lines.get(name, []))[-5:]
+                                last_activity = "\n".join(f"  > {l}" for l in recent_logs) if recent_logs else "  (no recent logs)"
                                 logging.critical(
                                     f"Bot {name} (PID {proc.pid}) is HUNG / ZOMBIE! "
-                                    f"Heartbeat {stale_file} stale by {max_stale_duration:.1f}s (> {hb_stale_s:.0f}s threshold). "
+                                    f"Heartbeat {stale_file} stale by {max_stale_duration:.1f}s (> {hb_stale_s:.0f}s threshold).\n"
+                                    f"Recent bot activity:\n{last_activity}\n"
                                     f"Terminating zombie process..."
                                 )
                                 self.zombie_killing.add(name)
+                                alert_body = (
+                                    f"Process {name} (PID {proc.pid}) hung: heartbeat {os.path.basename(stale_file)} "
+                                    f"stale by {int(max_stale_duration)}s > {int(hb_stale_s)}s.\n"
+                                    f"Last logs:\n{last_activity}"
+                                )
                                 self.server._send_ntfy(
                                     f"Zombie Bot Terminated: {name}",
-                                    f"Process {name} (PID {proc.pid}) hung: heartbeat {os.path.basename(stale_file)} stale by {int(max_stale_duration)}s > {int(hb_stale_s)}s. Terminating and restarting...",
+                                    alert_body,
                                     "urgent",
                                     self.server._resolve_topic("ERROR")
                                 )

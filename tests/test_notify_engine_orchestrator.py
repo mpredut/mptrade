@@ -85,11 +85,11 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.server.process_line(line3, "Kraken-TAO")
 
         self.assertEqual(len(self.dispatched), 3)
-        self.assertEqual(self.dispatched[0]["title"], "[Kraken-ADA] ADAUSD BUY 2725.09@0.24")
+        self.assertEqual(self.dispatched[0]["title"], "[Kraken] ADAUSD BUY 2725.09@0.24")
         self.assertEqual(self.dispatched[0]["topic"], "ntfy-trades-test")
-        self.assertEqual(self.dispatched[1]["title"], "[Kraken-HYPE] HYPEUSD BUY 7.07@91.97")
+        self.assertEqual(self.dispatched[1]["title"], "[Kraken] HYPEUSD BUY 7.07@91.97")
         self.assertEqual(self.dispatched[1]["topic"], "ntfy-trades-test")
-        self.assertEqual(self.dispatched[2]["title"], "[Kraken-TAO] TAOUSD BUY 2.26@287.30")
+        self.assertEqual(self.dispatched[2]["title"], "[Kraken] TAOUSD BUY 2.26@287.30")
         self.assertEqual(self.dispatched[2]["topic"], "ntfy-trades-test")
 
         # 4. Malformed JSON should not crash
@@ -121,8 +121,20 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.assertEqual(_topic_for_category("BTC ▲ +5.20%", "price_alert"), "ntfy-price-test")
         self.assertEqual(_topic_for_category("Threshold reached", "pricechecker"), "ntfy-price-test")
 
+    def test_provider_label_resolution(self):
+        """Verify provider resolution strips coins and formats providers cleanly."""
+        from notify_engine.server import _resolve_provider_label
+        self.assertEqual(_resolve_provider_label("Kraken-ADA", "kraken"), "Kraken")
+        self.assertEqual(_resolve_provider_label("Kraken-TAO", "kraken"), "Kraken")
+        self.assertEqual(_resolve_provider_label("HL-bot", "hyperliquid"), "Hyperliquid")
+        self.assertEqual(_resolve_provider_label("T212-bot", "t212"), "T212")
+        self.assertEqual(_resolve_provider_label("rtrade", "binance"), "Binance")
+        self.assertEqual(_resolve_provider_label("tradeall", ""), "Binance")
+        self.assertEqual(_resolve_provider_label("Binance-trailing", ""), "Binance")
+        self.assertEqual(_resolve_provider_label("Custom-PAIR", ""), "Custom")
+
     def test_price_alert_dispatch_formatting(self):
-        """Verify PriceAlert objects and dicts create rich titles and bodies on the PRICE topic."""
+        """Verify PriceAlert objects and dicts create rich titles without [price_notifier] prefix."""
         alert = PriceAlert(
             symbol="TAOUSDC",
             alert_type="up",
@@ -135,14 +147,14 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.server.dispatch_alerts([alert], bot_name="price_notifier")
         self.assertEqual(len(self.dispatched), 1)
         dispatched = self.dispatched[0]
-        self.assertEqual(dispatched["title"], "[price_notifier] TAOUSDC ▲ +5.36%")
+        self.assertEqual(dispatched["title"], "TAOUSDC ▲ +5.36%")
         self.assertIn("TAOUSDC: U +5.36%", dispatched["message"])
         self.assertIn("C $295.0000", dispatched["message"])
         self.assertIn("R $280.0000", dispatched["message"])
         self.assertEqual(dispatched["topic"], "ntfy-price-test")
 
     def test_new_coin_alert_dispatch(self):
-        """Verify new_coin_discovered alerts route properly to the PRICE topic."""
+        """Verify new_coin_discovered alerts route to PRICE without [price_notifier] prefix."""
         coin = {
             "type": "new_coin_discovered", "source": "coinmarketcap",
             "symbol": "RWS", "name": "Real World Services", "added_at": None,
@@ -151,7 +163,7 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.server.dispatch_alerts([coin], bot_name="price_notifier")
         self.assertEqual(len(self.dispatched), 1)
         dispatched = self.dispatched[0]
-        self.assertEqual(dispatched["title"], "[price_notifier] New Coin: RWS")
+        self.assertEqual(dispatched["title"], "New Coin: RWS")
         self.assertIn("🆕: RWS - Real World Services", dispatched["message"])
         self.assertEqual(dispatched["topic"], "ntfy-price-test")
 

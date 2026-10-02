@@ -20,21 +20,23 @@ _OPS_MARKERS = (
     "ESUAT", "ERORI", "DISPARUT",
 )
 
-def _topic_for_category(title: str, source: str) -> str:
+def _category_for_title_and_source(title: str, source: str) -> str:
     t = (title or "").upper()
     s = (source or "").lower()
     if any(m in t for m in _GUARD_MARKERS) or any(m in s for m in ("guard", "trail", "assetguardian", "stop")):
-        cat = "GUARD"
-    elif any(m in t for m in _OPS_MARKERS) or "watchdog" in s:
-        cat = "ERROR"
-    elif (
+        return "GUARD"
+    if any(m in t for m in _OPS_MARKERS) or "watchdog" in s:
+        return "ERROR"
+    if (
         "alert" in s or "price" in s or "prag" in t.lower() or "threshold" in t.lower()
         or "coin" in t.lower() or any(src in s for src in ("coinmarketcap", "coingecko", "dexscreener", "pricechecker", "notifier"))
         or any(m in t for m in ("▲", "▼", "RISE", "DROP"))
     ):
-        cat = "PRICE"
-    else:
-        cat = "TRADES"
+        return "PRICE"
+    return "TRADES"
+
+def _topic_for_category(title: str, source: str) -> str:
+    cat = _category_for_title_and_source(title, source)
     topic = os.environ.get(f"NTFY_TOPIC_{cat}")
     if not topic:
         from botcore import load_dotenv
@@ -43,6 +45,21 @@ def _topic_for_category(title: str, source: str) -> str:
             load_dotenv(env_path)
             topic = os.environ.get(f"NTFY_TOPIC_{cat}")
     return topic or os.environ.get("PHONE_ALERT_URL", "test-mptrade")
+
+def _resolve_provider_label(bot_name: str = "", source: str = "") -> str:
+    s = (source or "").lower()
+    b = (bot_name or "").lower()
+    if "kraken" in s or "kraken" in b or "xstock" in b:
+        return "Kraken"
+    if "hyperliquid" in s or "hl" in s or "hyperliquid" in b or b.startswith("hl"):
+        return "Hyperliquid"
+    if "t212" in s or "trading212" in s or "t212" in b:
+        return "T212"
+    if "binance" in s or "binance" in b or b in ("rtrade", "tradeall", "monitortrades", "order_retry"):
+        return "Binance"
+    if "-" in bot_name:
+        return bot_name.split("-")[0]
+    return bot_name or (source.capitalize() if source else "")
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -142,6 +159,7 @@ class NotificationServer:
                 resp.raise_for_status()
             elif getattr(resp, "status_code", 200) >= 400:
                 raise requests.HTTPError(f"HTTP {getattr(resp, 'status_code', 0)}")
+            logging.info(f"Dispatched ntfy alert to [{topic}] (priority={priority}): {title}")
             return True
         except Exception as e:
             if not is_retry:
@@ -211,7 +229,46 @@ class NotificationServer:
                 body = getattr(first, "body", getattr(first, "message", getattr(first, "symbol", "")))
                 source = getattr(first, "source", "")
 
-        full_title = f"[{bot_name}] {title}" if bot_name else title
+        topic = None
+        if webhook_url:
+            topic = webhook_url.rstrip("/").rsplit("/", 1)[-1]
+        if not topic:
+            topic = _topic_for_category(title, source)
+
+        cat = _category_for_title_and_source(title, source)
+        price_topic = self._resolve_topic("PRICE")
+        trades_topic = self._resolve_topic("TRADES")
+
+        # Strip any existing [price_notifier] prefix
+        cleaned_title = re.sub(r"^\[price_notifier(?:\.py)?\]\s*", "", title, flags=re.IGNORECASE).strip()
+
+        is_price = (
+            topic == price_topic
+            or cat == "PRICE"
+            or bot_name.lower() in ("price_notifier", "price_notifier.py", "price_alert")
+            or str(source).lower() in ("price_alert", "coinmarketcap", "coingecko", "dexscreener", "pricechecker", "notifier")
+            or any(m in cleaned_title for m in ("▲", "▼"))
+        )
+
+        if is_price:
+            full_title = cleaned_title
+        elif topic == trades_topic or cat == "TRADES":
+            # For trade notifications, show only provider in brackets without coin
+            provider = _resolve_provider_label(bot_name, source)
+            if provider:
+                if bot_name and cleaned_title.startswith(f"[{bot_name}]"):
+                    cleaned_title = cleaned_title[len(f"[{bot_name}]"):].strip()
+                if cleaned_title.startswith(f"[{provider}]"):
+                    full_title = cleaned_title
+                else:
+                    full_title = f"[{provider}] {cleaned_title}"
+            else:
+                full_title = cleaned_title
+        else:
+            if bot_name and not cleaned_title.startswith(f"[{bot_name}]"):
+                full_title = f"[{bot_name}] {cleaned_title}"
+            else:
+                full_title = cleaned_title
 
         # Block synthetic/fake test instruments from ever leaking to external topics
         sym = str(first.get("symbol") if isinstance(first, dict) else getattr(first, "symbol", "") or "")
@@ -226,12 +283,6 @@ class NotificationServer:
         if not allowed:
             logging.info(f"ntfy delivery skipped by policy: {reason}")
             return False
-
-        topic = None
-        if webhook_url:
-            topic = webhook_url.rstrip("/").rsplit("/", 1)[-1]
-        if not topic:
-            topic = _topic_for_category(title, source)
 
         priority = "urgent" if urgent else "high"
         return self._send_ntfy(full_title, body, priority, topic)
@@ -278,7 +329,11 @@ class NotificationServer:
             parts = line.split("[NTFY]", 1)
             if len(parts) > 1:
                 msg = parts[1].strip()
-                self._send_ntfy(f"[{bot_name}] Alert", msg, "high", self._resolve_topic("ERROR"))
+                if bot_name.lower() in ("price_notifier", "price_notifier.py"):
+                    title = "Price Alert"
+                else:
+                    title = f"[{bot_name}] Alert" if bot_name else "Alert"
+                self._send_ntfy(title, msg, "high", self._resolve_topic("ERROR"))
                 return
 
         # 3. Check Intelligent Rules (Regex)
@@ -294,8 +349,16 @@ class NotificationServer:
                 
                 if now - last_time >= cooldown_sec:
                     self.cooldowns[rule_key] = now
-                    topic = self._resolve_topic(rule.get("topic_category", "ERROR"))
-                    self._send_ntfy(f"[{bot_name}] {rule['name']}", line.strip(), rule.get("priority", "default"), topic)
+                    topic_cat = rule.get("topic_category", "ERROR").upper()
+                    topic = self._resolve_topic(topic_cat)
+                    if topic_cat == "PRICE" or bot_name.lower() in ("price_notifier", "price_notifier.py"):
+                        full_title = rule["name"]
+                    elif topic_cat == "TRADES":
+                        provider = _resolve_provider_label(bot_name)
+                        full_title = f"[{provider}] {rule['name']}" if provider else rule["name"]
+                    else:
+                        full_title = f"[{bot_name}] {rule['name']}" if bot_name else rule["name"]
+                    self._send_ntfy(full_title, line.strip(), rule.get("priority", "default"), topic)
                 break
 
     async def flush_queue_loop(self):

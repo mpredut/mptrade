@@ -219,12 +219,20 @@ class _LivePairVenue:
 
     def _set_pair_recovery_blocked(self, pair_id, blocked=True):
         pair_id = str(pair_id or "")
+        was_blocked = self.recovery_blocked
+        prev_count = len(self._recovery_blocked_pairs)
         if pair_id:
             if blocked:
                 self._recovery_blocked_pairs.add(pair_id)
             else:
                 self._recovery_blocked_pairs.discard(pair_id)
         self.recovery_blocked = bool(self._recovery_blocked_pairs)
+        if self.recovery_blocked != was_blocked or len(self._recovery_blocked_pairs) != prev_count:
+            sym = getattr(self, "symbol", "UNKNOWN")
+            print(
+                f"[{sym}] pair recovery state changed: pair={pair_id} blocked={blocked} "
+                f"-> total_blocked={len(self._recovery_blocked_pairs)} {list(self._recovery_blocked_pairs)}"
+            )
 
     def _pair_record(self, pair_id):
         if self.pair_store is None:
@@ -1473,6 +1481,8 @@ class TradingBot:
             recovery_blocked = True
         last_start_at = float("-inf")
         last_recovery_retry = float("-inf")
+        last_recovery_diag_log = float("-inf")
+        last_active_summary_log = float("-inf")
         recovery_blocked_since = (
             time.monotonic()
             if (recovery_blocked or bool(getattr(venue, "recovery_blocked", False)))
@@ -1488,9 +1498,21 @@ class TradingBot:
                 if is_recovery_blocked:
                     if recovery_blocked_since is None:
                         recovery_blocked_since = now
-                    if now - recovery_blocked_since >= _RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC:
-                        print(f"[{self.symbol}] FATAL: startup recovery remained blocked for {now - recovery_blocked_since:.0f}s (>{_RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC:.0f}s). Exiting for orchestrator restart.")
+                    elapsed_blocked = now - recovery_blocked_since
+                    if elapsed_blocked >= _RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC:
+                        print(f"[{self.symbol}] FATAL: startup recovery remained blocked for {elapsed_blocked:.0f}s (>{_RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC:.0f}s). Exiting for orchestrator restart.")
                         sys.exit(1)
+
+                    if now - last_recovery_diag_log >= 15.0:
+                        last_recovery_diag_log = now
+                        rem = max(0.0, _RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC - elapsed_blocked)
+                        blocked_list = list(getattr(venue, "_recovery_blocked_pairs", []))
+                        print(
+                            f"[{self.symbol}] RECOVERY IN PROGRESS / BLOCKED: elapsed={elapsed_blocked:.1f}s / max={_RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC:.1f}s "
+                            f"(orchestrator timeout in {rem:.1f}s) | venue_blocked={bool(getattr(venue, 'recovery_blocked', False))} "
+                            f"init_blocked={recovery_blocked} blocked_pairs={blocked_list}"
+                        )
+
                     if recovery_blocked and now - last_recovery_retry >= 60.0:
                         last_recovery_retry = now
                         try:
@@ -1515,11 +1537,16 @@ class TradingBot:
                         except Exception as exc:
                             print(f"[{self.symbol}] startup recovery retry blocked: {exc}")
                 else:
-                    recovery_blocked_since = None
+                    if recovery_blocked_since is not None:
+                        print(f"[{self.symbol}] RECOVERY UNBLOCKED: all pairs clear, resuming trading.")
+                        recovery_blocked_since = None
 
                 # Only touch heartbeat when the process is healthy and actively trading / coordinating
                 if not is_recovery_blocked:
                     _touch_rtrade_heartbeat(now=now)
+                    if now - last_active_summary_log >= 120.0:
+                        last_active_summary_log = now
+                        print(f"[{self.symbol}] health: active rounds={len(active)} heartbeat touched.")
 
                 survivors = []
                 checkpoints = []
