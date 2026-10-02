@@ -151,18 +151,32 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         p = _MockBinanceProvider()
         inst = Instrument(name="TAO", symbol="TAOUSDC", provider="binance", base="TAO", quote="USDC", api=MarketApi([p]))
 
-        # With binance_buy_reference = 0: BUY at 293 (above past sell 216.28) is accepted
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference=0.0)):
-            res = inst.place("BUY", 293.0, 1.0, motivation="test_buy", cache_permit=object(), smart=False, wait_for_trend=False)
-            self.assertIsNotNone(res)
-            self.assertEqual(len(p.placed), 1)
+        class _AllowedSlot:
+            allowed = True
+            info = ""
 
-        # With binance_buy_reference = 1: BUY at 293 (above past sell 216.28) is refused by profit_guard
-        p.placed.clear()
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference=1.0)):
-            res = inst.place("BUY", 293.0, 1.0, motivation="test_buy", cache_permit=object(), smart=False, wait_for_trend=False)
-            self.assertIsNone(res)
-            self.assertEqual(len(p.placed), 0)
+            def commit(self, *a, **kw):
+                pass
+
+        import contextlib
+
+        @contextlib.contextmanager
+        def _mock_trade_slot(*a, **kw):
+            yield _AllowedSlot()
+
+        with mock.patch("lock.trade_cooldown.trade_slot", side_effect=_mock_trade_slot):
+            # With binance_buy_reference = 0: BUY at 293 (above past sell 216.28) is accepted
+            with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference=0.0)):
+                res = inst.place("BUY", 293.0, 1.0, motivation="test_buy", cache_permit=object(), smart=False, wait_for_trend=False)
+                self.assertIsNotNone(res)
+                self.assertEqual(len(p.placed), 1)
+
+            # With binance_buy_reference = 1: BUY at 293 (above past sell 216.28) is refused by profit_guard
+            p.placed.clear()
+            with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference=1.0)):
+                res = inst.place("BUY", 293.0, 1.0, motivation="test_buy", cache_permit=object(), smart=False, wait_for_trend=False)
+                self.assertIsNone(res)
+                self.assertEqual(len(p.placed), 0)
 
     def test_dynamic_window_scaling_by_trend(self):
         # Bull: 8h (within 4h-12h), Flat: 24h (within 12h-48h), Bear: 72h (within 48h-168h)

@@ -16,8 +16,11 @@ The profit threshold is configured per venue in versioned, non-sensitive
 import os
 import time
 import math
+from typing import Optional, Mapping
 import utils as u
+from market_regime import MarketRegimeService, MarketRegimeDecision
 
+_DEFAULT_REGIME_SERVICE = MarketRegimeService()
 _MARGINS = None   # cache: {provider_lower: percentage, "default": 1.15}
 
 
@@ -102,28 +105,91 @@ def buy_reference_enabled(provider_name) -> bool:
     return buy_reference_mode(provider_name) != "off"
 
 
-def _symbol_trend(symbol: str) -> str:
-    """Detect current macro/instant trend for symbol ('bull', 'bear', 'flat', 'unknown')."""
+def _normalize_snapshot(snap: Optional[Mapping]) -> Optional[dict]:
+    """Ensure snapshot exposes standard fields expected by MarketRegimeEvaluator."""
+    if not snap or not isinstance(snap, Mapping):
+        return None
+    d = dict(snap)
+    if "gradient_recent" not in d and "growth_coefficient" in d:
+        d["gradient_recent"] = d["growth_coefficient"]
+    if "growth_coefficient" not in d and "gradient_recent" in d:
+        d["growth_coefficient"] = d["gradient_recent"]
+    return d
+
+
+def symbol_regime(
+    symbol: str,
+    provider=None,
+    *,
+    regime_service: Optional[MarketRegimeService] = None,
+    now: Optional[float] = None,
+    allow_fallback: bool = True,
+) -> MarketRegimeDecision:
+    """Resolve the authoritative market regime decision for symbol via MarketRegimeService.
+
+    Verifies freshness, observation timestamps, candle continuity, and provider fallback.
+    """
+    svc = regime_service or _DEFAULT_REGIME_SERVICE
+    if not symbol:
+        return svc.evaluator.unknown("missing_symbol")
+
+    if hasattr(provider, "market_regime"):
+        try:
+            return provider.market_regime(symbol, allow_fallback=allow_fallback)
+        except Exception:
+            pass
+
+    snap = None
     try:
         import cacheManager as cm
         mgr = cm.get_short_trend_manager()
-        snap = mgr.fresh_snapshot(symbol)
-        if snap is not None:
-            growth = float(snap.get("growth_coefficient", 0.0) or 0.0)
-            eps = float(snap.get("epsilon", 0.0) or 0.0)
-            if eps > 0:
-                if growth > eps:
-                    return "bull"
-                elif growth < -eps:
-                    return "bear"
-                return "flat"
-            if growth > 0:
-                return "bull"
-            elif growth < 0:
-                return "bear"
+        snap = mgr.fresh_snapshot(symbol, now=now)
     except Exception:
-        pass
-    return "unknown"
+        snap = None
+
+    normalized_snap = _normalize_snapshot(snap)
+
+    target_provider = provider
+    if isinstance(provider, str) and provider:
+        try:
+            from providers.market_api import api as market_api
+            target_provider = market_api.provider_by_name(provider) or provider
+        except Exception:
+            target_provider = None
+
+    try:
+        resolution = svc.resolve_with_evidence(
+            target_provider,
+            symbol,
+            horizon="short",
+            snapshot=normalized_snap,
+            snapshot_max_age_seconds=svc.default_snapshot_max_age_seconds(),
+            allow_fallback=allow_fallback,
+            now=now,
+        )
+        return resolution.decision
+    except Exception:
+        if normalized_snap is not None:
+            try:
+                return svc.evaluate_snapshot(normalized_snap)
+            except Exception:
+                pass
+        return svc.evaluator.unknown("regime_resolution_failed")
+
+
+def _symbol_trend(symbol: str, provider=None, regime_service=None, now=None) -> str:
+    """Detect current macro/instant trend for symbol ('bull', 'bear', 'flat', 'unknown').
+
+    Consumes the unified MarketRegimeDecision from MarketRegimeService.
+    """
+    try:
+        decision = symbol_regime(symbol, provider=provider, regime_service=regime_service, now=now)
+        regime = decision.regime
+        if regime == "sideways":
+            return "flat"
+        return regime
+    except Exception:
+        return "unknown"
 
 
 def margin_for(provider_name):
@@ -132,7 +198,7 @@ def margin_for(provider_name):
     return m.get((provider_name or "").lower(), m["default"])
 
 
-def dynamic_buy_window_sec(symbol=None) -> float:
+def dynamic_buy_window_sec(symbol=None, provider=None, regime_service=None, now=None) -> float:
     """Calculate the dynamic lookback window (in seconds) for BUY reference:
     - BULL trend: 4h - 12h (default 8h)
     - BEAR trend: 48h - 168h (default 72h)
@@ -152,12 +218,12 @@ def dynamic_buy_window_sec(symbol=None) -> float:
     except (ValueError, TypeError):
         bear_h = 72.0
 
-    trend = _symbol_trend(symbol) if symbol else "unknown"
+    trend = _symbol_trend(symbol, provider=provider, regime_service=regime_service, now=now) if symbol else "unknown"
     if trend == "bull":
         hours = max(4.0, min(12.0, bull_h))
     elif trend == "bear":
         hours = max(48.0, min(168.0, bear_h))
-    else:  # flat, chop, or unknown
+    else:  # flat, sideways, chop, or unknown
         hours = max(12.0, min(48.0, flat_h))
     return hours * 3600.0
 
@@ -166,7 +232,7 @@ def window_for(provider_name, symbol=None, order_type=None) -> float:
     """Return the reference window in seconds for the given venue and order side.
 
     For BUY orders when dynamic windowing is active (via venue buy_reference='dynamic'
-    or buy_window_mode='dynamic'), returns dynamic_buy_window_sec(symbol)
+    or buy_window_mode='dynamic'), returns dynamic_buy_window_sec(symbol, provider=name)
     scaling lookback from 4h-12h in bull to 48h-168h in bear.
     For SELL orders or static venues, returns `<venue>_window_h` (or default_window_h) in seconds.
     """
@@ -180,7 +246,7 @@ def window_for(provider_name, symbol=None, order_type=None) -> float:
             return 0.0
         win_mode = str(m.get("buy_window_mode", "dynamic")).strip().lower()
         if mode == "dynamic" or win_mode in ("dynamic", "adaptive"):
-            return dynamic_buy_window_sec(symbol)
+            return dynamic_buy_window_sec(symbol, provider=name)
 
     key = (name.lower() if name else "") + "_window_h"
     hours = m.get(key, m.get("default_window_h", 0.0))
@@ -331,8 +397,8 @@ def profit_guard(provider, symbol, order_type, price, profit_percentage, window_
                   f"(order_guard.conf); price {price} is not compared with past sells")
             return True
         elif mode == "dynamic":
-            trend = _symbol_trend(symbol)
-            dyn_window_s = dynamic_buy_window_sec(symbol)
+            dyn_window_s = dynamic_buy_window_sec(symbol, provider=provider)
+            trend = _symbol_trend(symbol, provider=provider)
             dyn_hours = dyn_window_s / 3600.0
             if window_ref is not None and window_ref > 0:
                 diff = u.value_diff_to_percent(window_ref, price)
