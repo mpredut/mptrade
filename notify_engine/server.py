@@ -179,6 +179,47 @@ class NotificationServer:
         logging.warning(f"Email delivery not fully configured. Intent recorded for: {subject}")
         return True
 
+    @staticmethod
+    def _format_price_alerts_batch_title(alerts: list) -> str:
+        count = len(alerts)
+        items = []
+        symbols = []
+        for a in alerts:
+            sym = a.get("symbol", "N/A") if isinstance(a, dict) else getattr(a, "symbol", "N/A")
+            atype = a.get("alert_type", "") if isinstance(a, dict) else getattr(a, "alert_type", "")
+            dir_str = "▲" if atype == "up" else ("▼" if atype == "down" else "")
+            if sym and sym != "N/A":
+                if sym not in symbols:
+                    symbols.append(sym)
+                items.append(f"{sym} {dir_str}".strip())
+
+        items_str = ", ".join(items)
+        syms_str = ", ".join(symbols)
+
+        if len(symbols) == 1:
+            return f"{symbols[0]} ({count} alerts)"
+
+        if items_str and len(items_str) <= 50:
+            return f"Price Alerts ({count}): {items_str}"
+        elif syms_str and len(syms_str) <= 50:
+            return f"Price Alerts ({count}): {syms_str}"
+        else:
+            return f"Price Alerts ({count} coins)"
+
+    @staticmethod
+    def _format_new_coins_batch_title(alerts: list) -> str:
+        count = len(alerts)
+        symbols = []
+        for a in alerts:
+            sym = a.get("symbol", "N/A") if isinstance(a, dict) else getattr(a, "symbol", "N/A")
+            if sym and sym != "N/A" and sym not in symbols:
+                symbols.append(sym)
+        syms_str = ", ".join(symbols)
+        if syms_str and len(syms_str) <= 50:
+            return f"New Coins ({count}): {syms_str}"
+        else:
+            return f"New Coins Discovered ({count})"
+
     def dispatch_alerts(self, alerts: list, webhook_url: str = None, bot_name: str = "") -> bool:
         if not alerts:
             return False
@@ -188,45 +229,69 @@ class NotificationServer:
         if isinstance(first, dict):
             alert_type = first.get("type")
             if alert_type == "price_alert" or "alert_type" in first:
-                sym = first.get("symbol", "N/A")
-                atype = first.get("alert_type", "alert")
-                pchg = float(first.get("percent_change", 0.0) or 0.0)
-                dir_str = "▲" if atype == "up" else "▼"
-                title = f"{sym} {dir_str} {pchg:+.2f}%"
+                if len(alerts) == 1:
+                    sym = first.get("symbol", "N/A")
+                    atype = first.get("alert_type", "alert")
+                    pchg = float(first.get("percent_change", 0.0) or 0.0)
+                    dir_str = "▲" if atype == "up" else "▼"
+                    title = f"{sym} {dir_str} {pchg:+.2f}%"
+                else:
+                    title = self._format_price_alerts_batch_title(alerts)
                 from notify_engine.alertnotifiers import AlertNotifier
                 body = AlertNotifier.format_batch_message(alerts)
                 source = first.get("source") or "price_alert"
             elif alert_type == "new_coin_discovered":
-                sym = first.get("symbol", "N/A")
-                title = f"New Coin: {sym}"
+                if len(alerts) == 1:
+                    sym = first.get("symbol", "N/A")
+                    title = f"New Coin: {sym}"
+                else:
+                    title = self._format_new_coins_batch_title(alerts)
                 from notify_engine.alertnotifiers import AlertNotifier
                 body = AlertNotifier.format_batch_message(alerts)
                 source = first.get("source") or "price_alert"
             elif alert_type == "bot_event":
-                title = first.get("name", "Alert")
-                body = first.get("body", "")
+                if len(alerts) == 1:
+                    title = first.get("name", "Alert")
+                    body = first.get("body", "")
+                else:
+                    title = f"{first.get('name', 'Alert')} ({len(alerts)})"
+                    from notify_engine.alertnotifiers import AlertNotifier
+                    body = AlertNotifier.format_batch_message(alerts)
                 source = first.get("source", "")
             else:
-                title = first.get("name") or first.get("title") or "Alert"
-                body = first.get("body") or first.get("message") or first.get("symbol") or ""
+                if len(alerts) == 1:
+                    title = first.get("name") or first.get("title") or "Alert"
+                    body = first.get("body") or first.get("message") or first.get("symbol") or ""
+                else:
+                    title = f"{first.get('name') or first.get('title') or 'Alert'} ({len(alerts)})"
+                    from notify_engine.alertnotifiers import AlertNotifier
+                    body = AlertNotifier.format_batch_message(alerts)
                 source = first.get("source", "")
         elif isinstance(first, str):
-            title = "Alert"
+            title = "Alert" if len(alerts) == 1 else f"Alerts ({len(alerts)})"
             body = "\n".join(alerts)
             source = "price_alert" if "price" in body.lower() else "system"
         else:
             if hasattr(first, "alert_type"):
-                sym = getattr(first, "symbol", "N/A")
-                atype = getattr(first, "alert_type", "alert")
-                pchg = float(getattr(first, "percent_change", 0.0) or 0.0)
-                dir_str = "▲" if atype == "up" else "▼"
-                title = f"{sym} {dir_str} {pchg:+.2f}%"
+                if len(alerts) == 1:
+                    sym = getattr(first, "symbol", "N/A")
+                    atype = getattr(first, "alert_type", "alert")
+                    pchg = float(getattr(first, "percent_change", 0.0) or 0.0)
+                    dir_str = "▲" if atype == "up" else "▼"
+                    title = f"{sym} {dir_str} {pchg:+.2f}%"
+                else:
+                    title = self._format_price_alerts_batch_title(alerts)
                 from notify_engine.alertnotifiers import AlertNotifier
                 body = AlertNotifier.format_batch_message(alerts)
                 source = getattr(first, "source", "price_alert")
             else:
-                title = getattr(first, "name", getattr(first, "title", "Alert"))
-                body = getattr(first, "body", getattr(first, "message", getattr(first, "symbol", "")))
+                if len(alerts) == 1:
+                    title = getattr(first, "name", getattr(first, "title", "Alert"))
+                    body = getattr(first, "body", getattr(first, "message", getattr(first, "symbol", "")))
+                else:
+                    title = f"{getattr(first, 'name', getattr(first, 'title', 'Alert'))} ({len(alerts)})"
+                    from notify_engine.alertnotifiers import AlertNotifier
+                    body = AlertNotifier.format_batch_message(alerts)
                 source = getattr(first, "source", "")
 
         topic = None
@@ -271,8 +336,8 @@ class NotificationServer:
                 full_title = cleaned_title
 
         # Block synthetic/fake test instruments from ever leaking to external topics
-        sym = str(first.get("symbol") if isinstance(first, dict) else getattr(first, "symbol", "") or "")
-        full_text = f"{full_title} {body} {sym}".upper()
+        all_syms = " ".join(str(a.get("symbol") if isinstance(a, dict) else getattr(a, "symbol", "") or "") for a in alerts)
+        full_text = f"{full_title} {body} {all_syms}".upper()
         if any(fake in full_text for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ")):
             logging.info(f"Skipping test/fake alert: {full_title}")
             return True
@@ -312,8 +377,19 @@ class NotificationServer:
                     self.dispatch_alerts(alerts, webhook_url=webhook_url, bot_name=bot_name)
 
                 elif intent == "email":
-                    subject = payload.get("subject", "Alert")
-                    self._send_email(subject, str(payload.get("alerts", [])))
+                    alerts = payload.get("alerts", [])
+                    subject = payload.get("subject")
+                    if not subject and alerts:
+                        first = alerts[0]
+                        if (isinstance(first, dict) and (first.get("type") == "price_alert" or "alert_type" in first)) or hasattr(first, "alert_type"):
+                            subject = self._format_price_alerts_batch_title(alerts) if len(alerts) > 1 else f"{first.get('symbol', 'N/A') if isinstance(first, dict) else getattr(first, 'symbol', 'N/A')} {first.get('alert_type', 'alert') if isinstance(first, dict) else getattr(first, 'alert_type', 'alert')}"
+                        elif isinstance(first, dict) and first.get("type") == "new_coin_discovered":
+                            subject = self._format_new_coins_batch_title(alerts) if len(alerts) > 1 else f"New Coin: {first.get('symbol', 'N/A')}"
+                        elif isinstance(first, dict):
+                            subject = first.get("name") or first.get("title") or "Alert"
+                    if not subject:
+                        subject = "Alert"
+                    self._send_email(subject, str(alerts))
                 return
             except json.JSONDecodeError as e:
                 logging.warning(f"Failed to decode orchestrator intent JSON from {bot_name}: {e} (raw line: {line.strip()})")

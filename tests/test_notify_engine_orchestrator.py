@@ -167,6 +167,39 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.assertIn("🆕: RWS - Real World Services", dispatched["message"])
         self.assertEqual(dispatched["topic"], "ntfy-price-test")
 
+    def test_batch_alerts_dispatch_formatting(self):
+        """Verify multi-coin batch alerts include all coins in title rather than only the first."""
+        alert1 = PriceAlert("TAOUSDC", "up", 295.0, 280.0, 5.36, 5.0)
+        alert2 = PriceAlert("BTCUSDC", "down", 84000.0, 87600.0, -4.11, 4.0)
+
+        # Batch of 2 price alerts
+        self.dispatched.clear()
+        self.server.dispatch_alerts([alert1, alert2], bot_name="price_notifier")
+        self.assertEqual(len(self.dispatched), 1)
+        self.assertEqual(self.dispatched[0]["title"], "Price Alerts (2): TAOUSDC ▲, BTCUSDC ▼")
+        self.assertIn("TAOUSDC: U +5.36%", self.dispatched[0]["message"])
+        self.assertIn("BTCUSDC: D -4.11%", self.dispatched[0]["message"])
+
+        # Batch of many price alerts exceeding 50 chars falls back to count
+        self.dispatched.clear()
+        many_alerts = [
+            PriceAlert(f"COIN{i}USDC", "up" if i % 2 == 0 else "down", 100.0, 95.0, 5.0, 4.0)
+            for i in range(10)
+        ]
+        self.server.dispatch_alerts(many_alerts, bot_name="price_notifier")
+        self.assertEqual(len(self.dispatched), 1)
+        self.assertEqual(self.dispatched[0]["title"], "Price Alerts (10 coins)")
+
+        # Batch of multiple new coins
+        self.dispatched.clear()
+        coins = [
+            {"type": "new_coin_discovered", "source": "cmc", "symbol": "COINA"},
+            {"type": "new_coin_discovered", "source": "cmc", "symbol": "COINB"},
+        ]
+        self.server.dispatch_alerts(coins, bot_name="price_notifier")
+        self.assertEqual(len(self.dispatched), 1)
+        self.assertEqual(self.dispatched[0]["title"], "New Coins (2): COINA, COINB")
+
     def test_fake_and_test_symbols_are_blocked_from_delivery(self):
         """Verify test instruments like ZZZFAKEUSD are blocked before network dispatch."""
         test_alert = {
