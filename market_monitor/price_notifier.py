@@ -282,14 +282,6 @@ def main():
     else:
         print("NEW COIN ALERT DISABLED (ALERT_NEW_COIN != TRUE)")
 
-    # Send startup notification so the admin knows the fleet is active.
-    # Type "bot_event" gets special rendering in the ntfy channel.
-    AlertNotifier.send({
-        "type": "bot_event",
-        "symbol": "SYSTEM",
-        "event_name": f"Binance fleet started on {platform.system()}"
-    }, enable_phone_webhook=True, webhook_url=PRICE_WEBHOOK_URL)
-
     try:
         while True:
             time.sleep(160)
