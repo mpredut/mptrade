@@ -34,6 +34,7 @@ SHADOW_MARK="$STATE_DIR/shadow_seen"
 AUTODEPLOY_MODE=shadow
 AUTODEPLOY_BRANCH=main
 AUTODEPLOY_COOLDOWN=900          # min seconds between fleet restarts for the same target
+AUTODEPLOY_RESTART_ON_LOCAL=false # default: false (restart ONLY on external push)
 LOCAL_CONF="$ROOT/autodeploy.local.conf"
 [ -r "$LOCAL_CONF" ] && . "$LOCAL_CONF"
 case "${AUTODEPLOY_MODE:-shadow}" in
@@ -43,6 +44,7 @@ case "${AUTODEPLOY_MODE:-shadow}" in
 esac
 BRANCH="${AUTODEPLOY_BRANCH:-main}"
 COOLDOWN="${AUTODEPLOY_COOLDOWN:-900}"
+RESTART_ON_LOCAL="${AUTODEPLOY_RESTART_ON_LOCAL:-false}"
 mkdir -p "$STATE_DIR" 2>/dev/null
 
 log() { echo "$(date '+%F %T') $*"; }
@@ -71,17 +73,25 @@ if [ -n "$(g status --porcelain 2>/dev/null)" ]; then
     exit 0
 fi
 
-# Check if already at remote SHA and already deployed to the fleet.
-last_sha=""
-last_ts=0
-if [ -f "$LAST_MARK" ]; then
-    read -r last_sha last_ts < "$LAST_MARK" 2>/dev/null || true
-fi
-
+# When local and remote match: restart only if explicit RESTART_ON_LOCAL is enabled.
 if [ "$local_sha" = "$remote_sha" ]; then
-    if [ -n "$last_sha" ] && [ "$last_sha" = "$local_sha" ]; then
-        exit 0     # up to date and already deployed
-    fi
+    case "${RESTART_ON_LOCAL:-false}" in
+        1|[tT][rR][uU][eE]|[yY][eE][sS]|[oO][nN])
+            # Optional: check if local HEAD has been deployed yet
+            last_sha=""
+            last_ts=0
+            if [ -f "$LAST_MARK" ]; then
+                read -r last_sha last_ts < "$LAST_MARK" 2>/dev/null || true
+            fi
+            if [ -n "$last_sha" ] && [ "$last_sha" = "$local_sha" ]; then
+                exit 0     # up to date and already deployed
+            fi
+            ;;
+        *)
+            # Default: restart ONLY on external push (when origin moved and was pulled)
+            exit 0
+            ;;
+    esac
 fi
 
 if [ "$local_sha" != "$remote_sha" ]; then

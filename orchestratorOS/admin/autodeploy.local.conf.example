@@ -14,3 +14,7 @@ AUTODEPLOY_MODE=shadow
 
 # Min seconds between fleet restarts for the SAME target commit, in `on` mode (default 900).
 #AUTODEPLOY_COOLDOWN=900
+
+# Whether to restart when local HEAD was committed directly on the host (default false).
+# When false (default), autodeploy restarts ONLY on external pushes (when origin moved and was pulled).
+#AUTODEPLOY_RESTART_ON_LOCAL=false
