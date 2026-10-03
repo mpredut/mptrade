@@ -63,8 +63,6 @@ for _i in 1 2 3; do g fetch --quiet origin "$BRANCH" 2>/dev/null && { fetched=1;
 local_sha="$(g rev-parse HEAD 2>/dev/null)"
 remote_sha="$(g rev-parse "origin/$BRANCH" 2>/dev/null)"
 [ -n "$local_sha" ] && [ -n "$remote_sha" ] || { log "cannot resolve SHAs; skipping"; exit 0; }
-[ "$local_sha" = "$remote_sha" ] && exit 0     # up to date
-
 # GUARD: clean working tree (a dirty tree would be clobbered by the pull).
 if [ -n "$(g status --porcelain 2>/dev/null)" ]; then
     log "REFUSED: working tree is dirty"
@@ -72,42 +70,58 @@ if [ -n "$(g status --porcelain 2>/dev/null)" ]; then
         "origin/$BRANCH moved but the working tree has uncommitted changes; NOT deploying. Resolve by hand."
     exit 0
 fi
-# GUARD: fast-forward only (origin must descend from HEAD; no divergence / history rewrite).
-if [ "$(g merge-base HEAD "origin/$BRANCH" 2>/dev/null)" != "$local_sha" ]; then
-    log "REFUSED: origin/$BRANCH is not a fast-forward of HEAD (diverged)"
-    alert "autodeploy SKIPPED ($(hostname))" \
-        "origin/$BRANCH diverged from local HEAD (not a fast-forward); NOT deploying. Resolve by hand."
-    exit 0
-fi
 
-# SHADOW: report what we WOULD do, deduped so we do not alert every run for the same target.
-if [ "$AUTODEPLOY_MODE" = shadow ]; then
-    log "SHADOW: origin/$BRANCH=$remote_sha (HEAD=$local_sha) -- WOULD pull + restart python_orchestrator.service. Not applied."
-    seen=""; [ -f "$SHADOW_MARK" ] && seen="$(cat "$SHADOW_MARK" 2>/dev/null)"
-    if [ "$seen" != "$remote_sha" ]; then
-        echo "$remote_sha" > "$SHADOW_MARK"
-        alert "autodeploy SHADOW ($(hostname))" \
-            "origin/$BRANCH -> ${remote_sha:0:9} is ready. Set AUTODEPLOY_MODE=on in autodeploy.local.conf to apply (pull + restart the fleet)."
-    fi
-    exit 0
-fi
-
-# --- mode=on: apply ---
-# GUARD: anti-loop -- do not redeploy the same target within the cooldown.
+# Check if already at remote SHA and already deployed to the fleet.
+last_sha=""
+last_ts=0
 if [ -f "$LAST_MARK" ]; then
     read -r last_sha last_ts < "$LAST_MARK" 2>/dev/null || true
-    if [ "${last_sha:-}" = "$remote_sha" ] && [ $(( $(date +%s) - ${last_ts:-0} )) -lt "$COOLDOWN" ]; then
-        log "already deployed $remote_sha within the ${COOLDOWN}s cooldown; skipping"
+fi
+
+if [ "$local_sha" = "$remote_sha" ]; then
+    if [ -n "$last_sha" ] && [ "$last_sha" = "$local_sha" ]; then
+        exit 0     # up to date and already deployed
+    fi
+fi
+
+if [ "$local_sha" != "$remote_sha" ]; then
+    # GUARD: fast-forward only (origin must descend from HEAD; no divergence / history rewrite).
+    if [ "$(g merge-base HEAD "origin/$BRANCH" 2>/dev/null)" != "$local_sha" ]; then
+        log "REFUSED: origin/$BRANCH is not a fast-forward of HEAD (diverged)"
+        alert "autodeploy SKIPPED ($(hostname))" \
+            "origin/$BRANCH diverged from local HEAD (not a fast-forward); NOT deploying. Resolve by hand."
+        exit 0
+    fi
+
+    # SHADOW: report what we WOULD do, deduped so we do not alert every run for the same target.
+    if [ "$AUTODEPLOY_MODE" = shadow ]; then
+        log "SHADOW: origin/$BRANCH=$remote_sha (HEAD=$local_sha) -- WOULD pull + restart python_orchestrator.service. Not applied."
+        seen=""; [ -f "$SHADOW_MARK" ] && seen="$(cat "$SHADOW_MARK" 2>/dev/null)"
+        if [ "$seen" != "$remote_sha" ]; then
+            echo "$remote_sha" > "$SHADOW_MARK"
+            alert "autodeploy SHADOW ($(hostname))" \
+                "origin/$BRANCH -> ${remote_sha:0:9} is ready. Set AUTODEPLOY_MODE=on in autodeploy.local.conf to apply (pull + restart the fleet)."
+        fi
+        exit 0
+    fi
+
+    # --- mode=on: apply pull ---
+    if ! g pull --ff-only --quiet origin "$BRANCH" 2>/dev/null; then
+        log "git pull --ff-only failed"
+        alert "autodeploy FAILED ($(hostname))" "git pull --ff-only origin/$BRANCH failed; fleet NOT restarted."
         exit 0
     fi
 fi
-if ! g pull --ff-only --quiet origin "$BRANCH" 2>/dev/null; then
-    log "git pull --ff-only failed"
-    alert "autodeploy FAILED ($(hostname))" "git pull --ff-only origin/$BRANCH failed; fleet NOT restarted."
+
+# --- mode=on: apply restart ---
+# GUARD: anti-loop -- do not redeploy the same target within the cooldown.
+if [ -n "$last_sha" ] && [ "$last_sha" = "$remote_sha" ] && [ $(( $(date +%s) - ${last_ts:-0} )) -lt "$COOLDOWN" ]; then
+    log "already deployed $remote_sha within the ${COOLDOWN}s cooldown; skipping"
     exit 0
 fi
+
 printf '%s %s\n' "$remote_sha" "$(date +%s)" > "$LAST_MARK"
 log "deployed $remote_sha; restarting python_orchestrator.service (role=fleet reloads; role=bot reload on next supervise)"
 systemctl restart python_orchestrator.service >/dev/null 2>&1
 alert "autodeploy ($(hostname))" \
-    "Pulled $BRANCH -> ${remote_sha:0:9} and restarted the fleet (python_orchestrator.service). PIA untouched, no reboot."
+    "Deployed $BRANCH -> ${remote_sha:0:9} and restarted the fleet (python_orchestrator.service). PIA untouched, no reboot."
