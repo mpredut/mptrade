@@ -50,6 +50,34 @@ class PriceCheckerTests(unittest.TestCase):
         self.assertEqual(default_alerts[0].threshold, 4.1)
         self.assertEqual(dynamic_alerts, [])
 
+    def test_price_platforms_fallback_and_error_handling(self):
+        from unittest.mock import patch, MagicMock
+        from market_monitor.pricefetcher import BinancePricePlatform, HyperliquidPricePlatform, PricePlatformFactory
+
+        with patch("requests.get", side_effect=Exception("offline")), \
+             patch("requests.post", side_effect=Exception("offline")):
+            bp = BinancePricePlatform()
+            self.assertTrue(bp.supports_symbol("BTCUSDC"))
+            self.assertTrue(bp.supports_symbol("BTC"))
+
+            hp = HyperliquidPricePlatform()
+            self.assertTrue(hp.supports_symbol("BTCUSDC"))
+            self.assertTrue(hp.supports_symbol("BTC"))
+
+            factory = PricePlatformFactory()
+            factory._platforms[0].get_price = MagicMock(return_value=None)
+            factory._platforms[1].get_price = MagicMock(return_value=99999.0)
+            res = factory.get_price("BTCUSDC")
+            self.assertEqual(res["price"], 99999.0)
+            self.assertEqual(res["platform"], "Hyperliquid")
+
+            factory._platforms[1].get_price = MagicMock(return_value=None)
+            with self.assertRaises(RuntimeError):
+                factory.get_price("BTCUSDC")
+
+            with self.assertRaises(ValueError):
+                factory.get_price("NONEXISTENTCOIN999")
+
 
 if __name__ == "__main__":
     unittest.main()

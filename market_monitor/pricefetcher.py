@@ -89,9 +89,9 @@ class BinancePricePlatform(PricePlatformInterface):
             response.raise_for_status()
             data = response.json()
             
-            self._usdc_pairs.clear()
-            self._supported_symbols.clear()
-            self._symbol_mapping.clear()
+            usdc_pairs = set()
+            supported_symbols = set()
+            symbol_mapping = {}
             
             for symbol_info in data.get("symbols", []):
                 symbol = symbol_info.get("symbol")
@@ -102,28 +102,40 @@ class BinancePricePlatform(PricePlatformInterface):
                 if status != "TRADING":
                     continue
                 
-                self._supported_symbols.add(symbol)
+                supported_symbols.add(symbol)
                 
                 if quote_asset == "USDC":
-                    self._usdc_pairs.add(symbol)
-                    if base_asset not in self._symbol_mapping:
-                        self._symbol_mapping[base_asset] = symbol
-                    self._symbol_mapping[symbol] = symbol
-                
-            print(f"[BinancePlatform] USDC: {len(self._usdc_pairs)} pairs")
+                    usdc_pairs.add(symbol)
+                    if base_asset not in symbol_mapping:
+                        symbol_mapping[base_asset] = symbol
+                    symbol_mapping[symbol] = symbol
+            
+            if usdc_pairs:
+                self._usdc_pairs = usdc_pairs
+                self._supported_symbols = supported_symbols
+                self._symbol_mapping = symbol_mapping
+                print(f"[BinancePlatform] USDC: {len(self._usdc_pairs)} pairs")
             self._last_refresh = time.time()
 
         except Exception as e:
-            print(f"[BinancePlatform] Error loading symbols: {e}")
-            self._fallback_symbols()
+            print(f"[BinancePlatform] Warning loading symbols: {e}")
+            if not self._supported_symbols:
+                self._fallback_symbols()
             self._last_refresh = time.time()
     
     def _fallback_symbols(self):
-        self._usdc_pairs = {"BTCUSDC", "ETHUSDC", "BNBUSDC"}
-        self._supported_symbols = self._usdc_pairs
+        self._usdc_pairs = {
+            "BTCUSDC", "ETHUSDC", "BNBUSDC", "SOLUSDC", "ADAUSDC",
+            "DOGEUSDC", "XRPUSDC", "TAOUSDC", "ARBUSDC"
+        }
+        self._supported_symbols = set(self._usdc_pairs)
         self._symbol_mapping = {
             "BTC": "BTCUSDC", "ETH": "ETHUSDC", "BNB": "BNBUSDC",
-            "SOL": "SOLUSDC", "ADA": "ADAUSDC", "DOGE": "DOGEUSDC", "XRP": "XRPUSDC"
+            "SOL": "SOLUSDC", "ADA": "ADAUSDC", "DOGE": "DOGEUSDC",
+            "XRP": "XRPUSDC", "TAO": "TAOUSDC", "ARB": "ARBUSDC",
+            "BTCUSDC": "BTCUSDC", "ETHUSDC": "ETHUSDC", "BNBUSDC": "BNBUSDC",
+            "SOLUSDC": "SOLUSDC", "ADAUSDC": "ADAUSDC", "DOGEUSDC": "DOGEUSDC",
+            "XRPUSDC": "XRPUSDC", "TAOUSDC": "TAOUSDC", "ARBUSDC": "ARBUSDC"
         }
     
     def refresh_symbols(self):
@@ -141,7 +153,10 @@ class BinancePricePlatform(PricePlatformInterface):
         if symbol in self._symbol_mapping:
             return True
         pair = f"{symbol}USDC"
-        if pair in self._supported_symbols:
+        if pair in self._supported_symbols or pair in self._usdc_pairs:
+            return True
+        base = get_base_symbol(symbol)
+        if base in self._symbol_mapping or f"{base}USDC" in self._usdc_pairs:
             return True
         return False
     
@@ -155,17 +170,26 @@ class BinancePricePlatform(PricePlatformInterface):
                 trading_pair = f"{symbol}USDC"
             elif symbol in self._supported_symbols:
                 trading_pair = symbol
+            else:
+                base = get_base_symbol(symbol)
+                if base in self._symbol_mapping:
+                    trading_pair = self._symbol_mapping[base]
+                elif f"{base}USDC" in self._supported_symbols:
+                    trading_pair = f"{base}USDC"
             
             if not trading_pair:
                 print(f"[BinancePlatform] No trading pair found for {symbol}")
                 return None
 
             price = self.api_client.get_current_price(symbol=trading_pair)
+            if price is None:
+                print(f"[BinancePlatform] Could not get price for {trading_pair}")
+                return None
             print(f"[BinancePlatform] {symbol} -> {trading_pair} = ${price}")
             return float(price)
 
         except Exception as e:
-            print(f"[BinancePlatform] Error for {symbol}: {e}")
+            print(f"[BinancePlatform] Warning for {symbol}: {e}")
             return None
 
 
@@ -193,8 +217,9 @@ class HyperliquidPricePlatform(PricePlatformInterface):
             print(f"[HyperliquidPlatform] Loaded {len(self._supported_symbols)} symbols")
             self._last_refresh = time.time()
         except Exception as e:
-            print(f"[HyperliquidPlatform] Error loading symbols: {e}")
-            self._supported_symbols = {"HYPE", "PURR", "BTC", "ETH", "SOL", "USDC"}
+            print(f"[HyperliquidPlatform] Warning loading symbols: {e}")
+            if not self._supported_symbols:
+                self._supported_symbols = {"HYPE", "PURR", "BTC", "ETH", "SOL", "USDC", "TAO", "ARB", "DOGE"}
             self._last_refresh = time.time()
     
     def refresh_symbols(self):
@@ -207,17 +232,21 @@ class HyperliquidPricePlatform(PricePlatformInterface):
     
     def supports_symbol(self, symbol: str) -> bool:
         self.refresh_symbols()
-        return symbol in self._supported_symbols
+        if symbol in self._supported_symbols:
+            return True
+        base = get_base_symbol(symbol)
+        return base in self._supported_symbols
     
     def get_price(self, symbol: str) -> Optional[float]:
         try:
             self.refresh_symbols()
-            if symbol not in self._all_mids:
+            lookup_key = symbol if symbol in self._all_mids else get_base_symbol(symbol)
+            if lookup_key not in self._all_mids:
                 print(f"[HyperliquidPlatform] Symbol {symbol} not found")
                 return None
-            return float(self._all_mids[symbol])
+            return float(self._all_mids[lookup_key])
         except Exception as e:
-            print(f"[HyperliquidPlatform] Error for {symbol}: {e}")
+            print(f"[HyperliquidPlatform] Warning for {symbol}: {e}")
             return None
 
 
@@ -265,7 +294,7 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
             print(f"[CMCPlatform] Loaded {len(self._supported_symbols)} symbols")
             self._last_refresh = time.time()
         except Exception as e:
-            print(f"[CMCPlatform] Error loading symbols: {e}")
+            print(f"[CMCPlatform] Warning loading symbols: {e}")
             self._last_refresh = time.time()  # Do not retest immediately; honour _refresh_interval (3600s).
 
     def refresh_symbols(self):
@@ -280,7 +309,10 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
         if not self.api_key:
             return False
         self.refresh_symbols()
-        return symbol in self._supported_symbols
+        if symbol in self._supported_symbols:
+            return True
+        base = get_base_symbol(symbol)
+        return base in self._supported_symbols
 
     def _extract_usd_price(self, symbol: str, data: Dict) -> Optional[float]:
         coin_data = data.get('data', {}).get(symbol)
@@ -311,7 +343,7 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
                 print(f"[CMCPlatform] {symbol} not found")
                 return None
         except Exception as e:
-            print(f"[CMCPlatform] Error for {symbol}: {e}")
+            print(f"[CMCPlatform] Warning for {symbol}: {e}")
             return None
         
     def get_price(self, symbol: str) -> Optional[float]:
@@ -331,22 +363,23 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
         # A simpler solution is to use CoinMarketCapSource directly. If there is no dedicated cache,
         # we will make a request to listings/latest for the specific symbol.
         try:
+            lookup_symbol = symbol if symbol in self._supported_symbols else get_base_symbol(symbol)
             headers = {'X-CMC_PRO_API_KEY': self.api_key, 'Accept': 'application/json'}
-            params = {'symbol': symbol, 'convert': 'USD'}
+            params = {'symbol': lookup_symbol, 'convert': 'USD'}
             response = requests.get(
                 self._base_url,
                 headers=headers, params=params, timeout=10
             )
             response.raise_for_status()
             data = response.json()
-            price = self._extract_usd_price(symbol, data)
+            price = self._extract_usd_price(lookup_symbol, data)
             if price is not None:
                 print(f"[CMCPlatform] {symbol} = ${price}")
                 return price
             print(f"[CMCPlatform] {symbol} not found")
             return None
         except Exception as e:
-            print(f"[CMCPlatform] Error for {symbol}: {e}")
+            print(f"[CMCPlatform] Warning for {symbol}: {e}")
             return None
 
 
@@ -398,7 +431,7 @@ class StockYahooPricePlatform(PricePlatformInterface):
             price = (result.get("meta", {}) or {}).get("regularMarketPrice")  # metadata fallback
             return float(price) if price else None
         except Exception as e:
-            print(f"[YahooPlatform] Error for {symbol}: {e}")
+            print(f"[YahooPlatform] Warning for {symbol}: {e}")
             return None
 
 
@@ -435,11 +468,13 @@ class PricePlatformFactory:
 
     def get_price(self, symbol: str) -> Dict:
         cached_platform = None
+        supported = False
         if symbol in self._symbol_platform_cache:
             platform_name = self._symbol_platform_cache[symbol]
             for platform in self._platforms:
                 if platform.platform_name == platform_name:
                     cached_platform = platform
+                    supported = True
                     price = platform.get_price(symbol)
                     if price is not None:
                         return {
@@ -452,6 +487,7 @@ class PricePlatformFactory:
             if platform is cached_platform:
                 continue
             if platform.supports_symbol(symbol):
+                supported = True
                 price = platform.get_price(symbol)
                 if price is not None:
                     self._symbol_platform_cache[symbol] = platform.platform_name
@@ -459,7 +495,9 @@ class PricePlatformFactory:
                         "symbol": symbol, "price": price,
                         "platform": platform.platform_name, "timestamp": int(time.time())
                     }
-        raise Exception(f"Symbol '{symbol}' is not supported by any platform")
+        if not supported:
+            raise ValueError(f"Symbol '{symbol}' is not supported by any platform")
+        raise RuntimeError(f"Unable to fetch price for '{symbol}' from any supported platform")
 
     def check_symbol_support(self, symbol: str) -> Dict:
         support = {}
@@ -571,7 +609,7 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
             print(f"[Pricefetcher][{symbol}] ${price:.4f} (source: {platform_used})")
             return [[timestamp_ms, price]]
         except Exception as e:
-            print(f"[Pricefetcher][Error] {symbol}: {e}")
+            print(f"[Pricefetcher][Warn] {symbol}: {e}")
             return []
     
     def add_symbol(self, symbol: str, preferred_source: Optional[str] = None):
@@ -709,7 +747,7 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                 }, indent=1)
                 print(f"[{self.cls_name}][info] Save cache to file {self.filename}")
         except Exception as e:
-            print(f"[{self.cls_name}][Error] Saving cache file {self.filename}: {e}")
+            print(f"[{self.cls_name}][Warn] Saving cache file {self.filename}: {e}")
 
 
 # ============================================
