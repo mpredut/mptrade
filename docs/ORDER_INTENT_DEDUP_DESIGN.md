@@ -1,9 +1,14 @@
 # Order intent deduplication design
 
+**Status:** Historical design analysis; semantic intent deduplication is not planned.
+
+This document retains the rejected proposal and its failure analysis for reference.
+
 ## Current operational decision
 
-`RETRY_DEDUP=false` is intentional. The retry outbox must retain every persisted
-intent until producers supply a stable semantic identity. The former deduplication
+`RETRY_DEDUP=false` is intentional in the versioned configuration. The retry
+outbox retains every persisted intent as its own record. Semantic equality is not
+inferred and is not a planned migration. The former deduplication
 key, `(symbol, side)`, was not idempotency: a newer order from another strategy could
 replace the older record's quantity, price, options, and client ID revision while the
 older age and attempt counters survived. That could silently lose one financial
@@ -16,10 +21,11 @@ The trade-off is that a producer which emits the same logical signal repeatedly 
 create multiple records. Queue bounds, guards, cooldowns, price validation, and
 venue client IDs reduce the operational risk, but they do not prove semantic equality.
 
-## Target key
+## Historical target key (not planned)
 
-Future deduplication must use an explicit `intent_id`, never `symbol + side`.
-The canonical identity should be derived or persisted from:
+The rejected proposal would have used an explicit `intent_id`, never
+`symbol + side`. The proposed canonical identity would have been derived or
+persisted from:
 
 ```text
 origin + venue/account + symbol + strategy_cycle/campaign + kind/tier + side
@@ -37,9 +43,9 @@ Retries of one intent reuse the same `intent_id` and `client_order_id`. Independ
 strategies, accounts, cycles, tiers, and sides remain distinct even when they target
 the same symbol.
 
-## Required record fields
+## Historical proposed record fields (not a gate)
 
-Before enabling semantic deduplication, every producer must publish:
+The rejected proposal would have required every producer to publish:
 
 - `intent_id`, `origin`, `venue/account`, `symbol`, `side`, and `kind`;
 - requested quantity, order type, requested/reference price, and budget boundary;
@@ -49,7 +55,7 @@ Before enabling semantic deduplication, every producer must publish:
 - terminal policy defining when fills are applied and when the strategy acknowledges
   completion.
 
-## Lifecycle rule
+## Historical proposed lifecycle rule
 
 The common monitor reconciles persisted intent, venue order, status, fills, and native
 terminal reason. It may retry an absent or ambiguous submit only under the intent's
@@ -69,9 +75,10 @@ Trend deferral is not an attempted submit: it consumes neither attempt count nor
 If a different refusal reason later appears, the normal active TTL begins at that
 transition.
 
-## Migration gate
+## Current conclusion
 
-Keep `RETRY_DEDUP=false` until every live producer has a stable `intent_id` and tests
-cover response loss, restart after persistence/before submit, partial fill, cancel/fill
-races, repeated signal emission, and two independent same-symbol/same-side intents.
-Only then replace the legacy boolean with semantic deduplication keyed by `intent_id`.
+Semantic deduplication has no active migration gate and is not planned.
+`RETRY_DEDUP=false` remains the versioned policy. Response-loss, restart,
+partial-fill, cancel/fill-race, repeated-signal, and independent same-symbol tests
+remain required for mechanical idempotency and recovery correctness; they are not
+steps toward merging financial intents.

@@ -2,7 +2,15 @@
 
 **Document version:** 1.0
 **Last updated:** 2026-09-03
-**Status:** Remaining work; an item is not implemented merely because it is listed here.
+**Status:** Historical; superseded on 2026-10-04 by
+[`../REFACTOR_STATUS.md`](../REFACTOR_STATUS.md).
+
+> This file preserves the original analysis and is not an active implementation
+> plan. The current architecture explicitly does not plan a global/common
+> financial ledger, a global/common portfolio-risk coordinator, or semantic
+> intent deduplication. Strategy-owned state, the retry outbox, read-only
+> observability, and exact-record/client-order-ID idempotency remain valid. Use
+> the active status document for current implementation and remaining safe work.
 
 ## Purpose
 

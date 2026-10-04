@@ -1,5 +1,12 @@
 # Centralising OrderLifecycle
 
+**Architecture decision updated:** 2026-10-04
+
+This document centralizes order mechanics only. A global/common financial
+ledger, a global/common portfolio-risk coordinator, and semantic intent
+deduplication are not planned. Exact-record idempotency and strategy-owned
+financial state remain required.
+
 ## The current decision
 
 `order_retry.py` is the canonical source for the reusable mechanics of the order
@@ -87,27 +94,38 @@ normalised operations available; a missing declaration means no support.
 not currently offer an operation strict enough for the lifecycle. Transport errors stay
 distinct from a missing capability.
 
-## Why we do not yet move every state into a single file
+## Why financial state remains distributed
 
-A single ledger without the terminal policy could resend a BUY after the signal has expired,
-or lose a protective exit after an external cancel. We centralise the mechanical code first.
-The financial policies and the migration of state authority will be a separate stage,
-protected by characterisation tests.
+A global/common financial ledger is not planned. Moving state authority out of a
+strategy could resend a BUY after its signal expired, lose a protective exit after
+an external cancel, or apply a fill to the wrong campaign. The shared layer owns
+mechanical transitions; each strategy remains authoritative for campaigns, cycles,
+positions, budgets, and terminal financial policy.
 
-T212 additionally requires different recovery capabilities: active orders and the portfolio
-delta, because client order ID lookup is not universally available.
+This boundary is an architectural decision, not an intermediate migration stage.
+Characterization tests protect it when mechanical code is shared.
 
-`active_intents.py` provides the safe first stage of a common ledger: a read-only,
-normalized index over the existing strategy-owned files. It performs no writes and has no
-submit, cancel, retry, or policy authority. Missing or malformed sources are reported as read
-errors rather than repaired. Strategy files remain the only financial source of truth. It also
-provides a minimal read-only summary aggregating pending BUY/SELL notional and net asset
-exposures (holdings and cost basis) across active venues without modifying strategy files.
+T212 additionally requires different recovery capabilities: active orders and the
+portfolio delta, because client order ID lookup is not universally available.
+
+`active_intents.py` is a read-only normalized index over existing strategy-owned
+files, not the first stage of a common ledger. It performs no writes and has no
+submit, cancel, retry, repair, or policy authority. Missing or malformed sources
+are reported as read errors. Strategy files remain the only financial source of
+truth. Its aggregate notional and exposure summary is operational observability,
+not a global portfolio-risk policy or enforcement engine.
 
 T212 now reuses the common typed and audited submit boundary. Its venue-specific recovery
 is intentionally retained: one unique matching active order proves acceptance, while a
 portfolio delta independently proves execution. Absence is confirmed across snapshots before
 the strategy is allowed to re-evaluate the same financial decision.
+
+## Mechanical idempotency is not semantic deduplication
+
+An `intent_id`, record ID, deterministic `client_order_id`, and venue order ID
+identify and reconcile one exact submission. They do not authorize merging two
+strategy decisions that happen to share a symbol and side. The versioned retry
+configuration keeps `RETRY_DEDUP=false`; separate intents remain separate records.
 
 ## Typed submit outcomes do not change retry policy
 
@@ -117,10 +135,11 @@ responses without an order ID. Existing retry cadence, TTL, price gates, attempt
 terminal-state decisions are unchanged. The richer state prevents an unknown submit from
 being mislabeled as a refusal; recovery still queries venue truth before another submit.
 
-## The future contract for the terminal policy — deferred
+## Optional strategy-local terminal policy — deferred
 
-The next stage will add a declarative per-intent policy, without implementing it in this
-refactor. The candidate fields saved for analysis are:
+A strategy may eventually use a declarative per-intent policy inside its own
+durable state. This would not create a global ledger, global portfolio policy, or
+semantic deduplication layer. The candidate fields retained for local analysis are:
 
 ```text
 intent_id
@@ -147,8 +166,10 @@ policies will not be added as a generic fallback in `order_retry`.
 
 ## The remaining refactor steps
 
-1. extend past rtrade towards T212 only with characterisation/golden tests;
-2. only afterwards introduce the declarative financial policies and a single active ledger.
+1. preserve characterization and golden tests for every venue-specific recovery path;
+2. extract only duplicated mechanical transitions whose semantics are demonstrably equal;
+3. keep financial policy and durable authority with the owning strategy;
+4. do not introduce a global ledger, global portfolio-risk engine, or semantic deduplication.
 
 The duplicated mechanical transitions in `order_retry_worker.py` were extracted into
 `order_retry.advance_claimed_status`. The worker keeps only the venue I/O, the audit and the

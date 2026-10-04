@@ -46,10 +46,9 @@ their code (a deliberate convention — they are linked below).
 - [ORDER_LIFECYCLE_CENTRALIZATION.md](ORDER_LIFECYCLE_CENTRALIZATION.md) — the limits of
   the shared refactor and an inventory of the migrated paths.
 - [ORDER_INTENT_DEDUP_DESIGN.md](ORDER_INTENT_DEDUP_DESIGN.md) — the saved analysis of
-  the semantic keys and why `RETRY_DEDUP=false` is still in force.
-- [REFACTOR_AND_SMART_STRATEGY_BACKLOG.md](REFACTOR_AND_SMART_STRATEGY_BACKLOG.md) —
-  versioned remaining-work backlog for shared execution refactors, market-regime
-  integration, strategy promotion, archive scalability, and recovery verification.
+  the rejected semantic-deduplication proposal and why `RETRY_DEDUP=false` remains in force.
+- [REFACTOR_STATUS.md](REFACTOR_STATUS.md) — the active implementation status,
+  remaining safe work, verification gates, and explicit architectural non-goals.
 
 ## Component READMEs (next to the code)
 - [../hyperliquid/README.md](../hyperliquid/README.md) — Hyperliquid: spot stopped for insufficient capital, runtime gates, isolated state and the long-term shadow candidate.
