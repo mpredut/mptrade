@@ -4,6 +4,7 @@ import unittest
 from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
 from intelligence.internal.triggers.kalman_trigger import KalmanTrend, KalmanTrendTrigger
 from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
+from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
 from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
@@ -175,5 +176,119 @@ class TestCompositeMarketIntelligence(unittest.TestCase):
         self.assertEqual(guard_dec.brake_action, BrakeAction.DEFER_WAIT)
 
 
+
+class TestMeanReversionTrigger(unittest.TestCase):
+    def test_oversold_triggers_buy_entry(self):
+        trigger = MeanReversionTrigger(mode="rsi", rsi_period=14, rsi_low=30.0)
+        symbol = "BTCUSDC"
+
+        # Feed dropping prices to reach oversold
+        ev = None
+        price = 100.0
+        for i in range(30):
+            price -= 2.0
+            ev = trigger.update(symbol, timestamp=1000.0 + i * 60, price=price)
+
+        self.assertIsNotNone(ev)
+        self.assertEqual(ev.side, TriggerSide.BUY)
+        self.assertEqual(ev.action, TriggerAction.ENTRY)
+        self.assertLess(ev.metadata["rsi"], 30.0)
+
+    def test_overbought_triggers_sell_exit(self):
+        trigger = MeanReversionTrigger(mode="rsi", rsi_period=14, rsi_high=70.0)
+        symbol = "BTCUSDC"
+
+        ev = None
+        price = 100.0
+        for i in range(30):
+            price += 2.0
+            ev = trigger.update(symbol, timestamp=1000.0 + i * 60, price=price)
+
+        self.assertIsNotNone(ev)
+        self.assertEqual(ev.side, TriggerSide.SELL)
+        self.assertEqual(ev.action, TriggerAction.EXIT)
+        self.assertGreater(ev.metadata["rsi"], 70.0)
+
+
+class TestTrendSignificanceGuard(unittest.TestCase):
+    def test_significant_trend_allowed(self):
+        from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+        guard = TrendSignificanceGuard(max_p_value=0.05)
+        # Clear upward trend
+        prices = [100.0 + 1.0 * i for i in range(24)]
+        ev = TriggerEvent(
+            action=TriggerAction.ENTRY,
+            side=TriggerSide.BUY,
+            source="test",
+            symbol="BTCUSDC",
+            price=prices[-1],
+            strength=1.0,
+        )
+        dec = guard.evaluate(ev, prices)
+        self.assertTrue(dec.allowed)
+        self.assertEqual(dec.brake_action, BrakeAction.NONE)
+
+    def test_noisy_trend_deferred(self):
+        from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+        import numpy as np
+        guard = TrendSignificanceGuard(max_p_value=0.05)
+        # Random noise around 100
+        rng = np.random.default_rng(42)
+        prices = list(100.0 + rng.normal(0, 1.0, 24))
+        ev = TriggerEvent(
+            action=TriggerAction.ENTRY,
+            side=TriggerSide.BUY,
+            source="test",
+            symbol="BTCUSDC",
+            price=prices[-1],
+            strength=1.0,
+        )
+        dec = guard.evaluate(ev, prices)
+        self.assertFalse(dec.allowed)
+        self.assertEqual(dec.brake_action, BrakeAction.DEFER_WAIT)
+        self.assertIn("trend_slope_not_statistically_significant", dec.reason)
+
+    def test_inverted_direction_vetoed(self):
+        from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+        guard = TrendSignificanceGuard(max_p_value=0.05)
+        # Downward series
+        prices = [100.0 - 1.0 * i for i in range(24)]
+        # But trying to BUY
+        ev = TriggerEvent(
+            action=TriggerAction.ENTRY,
+            side=TriggerSide.BUY,
+            source="test",
+            symbol="BTCUSDC",
+            price=prices[-1],
+            strength=1.0,
+        )
+        dec = guard.evaluate(ev, prices)
+        self.assertFalse(dec.allowed)
+        self.assertEqual(dec.brake_action, BrakeAction.HARD_VETO)
+        self.assertIn("trend_direction_inverted", dec.reason)
+
+
+class TestPersistenceState(unittest.TestCase):
+    def test_mann_kendall_and_hurst(self):
+        from intelligence.internal.state.persistence import (
+            calculate_mann_kendall,
+            calculate_hurst_exponent,
+            classify_hurst_regime,
+        )
+        import numpy as np
+        # Linear slope
+        y = [100.0 + 0.5 * i for i in range(24)]
+        s, z, p = calculate_mann_kendall(y)
+        self.assertGreater(z, 0)
+        self.assertLess(p, 0.01)
+
+        # Regimes classification
+        self.assertEqual(classify_hurst_regime(0.65), "persistent")
+        self.assertEqual(classify_hurst_regime(0.35), "mean_reverting")
+        self.assertEqual(classify_hurst_regime(0.50), "random_walk")
+        self.assertEqual(classify_hurst_regime(None), "unknown")
+
+
 if __name__ == "__main__":
     unittest.main()
+
