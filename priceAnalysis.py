@@ -209,6 +209,20 @@ def slope_tolerance_per_(symbol, price,
 
 
 
+def _fast_linear_regression_1d(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+    """Compute OLS linear slope and intercept in O(N) without LAPACK/SVD matrix overhead."""
+    dx = x - x[0]
+    mean_dx = float(np.mean(dx))
+    mean_y = float(np.mean(y))
+    dev_x = dx - mean_dx
+    var_x = float(np.dot(dev_x, dev_x))
+    if var_x == 0.0:
+        return 0.0, mean_y
+    slope = float(np.dot(dev_x, y) / var_x)
+    intercept = mean_y - slope * mean_dx
+    return slope, intercept
+
+
 # Intentionally retained legacy trend detection based on block-to-block slopes,
 # average reference slope, and relative tolerance. The active fixed path uses
 # time-based windows, Mann-Kendall, and noise tolerance.
@@ -258,7 +272,7 @@ def getTrendLongTerm(symbol: str, window_hours: int = 24, step_hours: int = 8,
         x_block = timestamps[start:end] - timestamps[start]
         y_block = prices[start:end]
 
-        slope_s, intercept = np.polyfit(x_block, y_block, 1)  # price increase per second
+        slope_s, intercept = _fast_linear_regression_1d(x_block, y_block)  # price increase per second
         
         trend_block_indices_test.append((0, window))
 
@@ -365,6 +379,10 @@ def format_timestamp(ts):
 MIN_POINTS_PER_WINDOW = 4
 
 
+_trend_memo_cache: dict = {}
+_TREND_MEMO_MAX_ENTRIES = 128
+
+
 def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
                            min_consecutive_blocks=3, noise_tolerance=2,
                            min_points_per_window=MIN_POINTS_PER_WINDOW,
@@ -384,7 +402,24 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     if len(timestamps) < 2:
         return None
 
-    t_end, t_first = timestamps[-1], timestamps[0]
+    t_end, t_first = float(timestamps[-1]), float(timestamps[0])
+    p_last = float(prices[-1])
+    cache_key = (
+        len(timestamps),
+        t_end,
+        p_last,
+        window_hours,
+        step_hours,
+        min_consecutive_blocks,
+        noise_tolerance,
+        min_points_per_window,
+        detection_lag_hours,
+        mk_alpha,
+    )
+    cached = _trend_memo_cache.get(cache_key)
+    if cached is not None:
+        return dict(cached) if isinstance(cached, dict) else cached
+
     window_sec = window_hours * 3600.0
     step_sec = step_hours * 3600.0
 
@@ -395,7 +430,7 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
         if hi - lo < min_points_per_window:
             return None, (lo, hi)
         x, y = timestamps[lo:hi], prices[lo:hi]
-        s, _ = np.polyfit(x - x[0], y, 1)
+        s, _ = _fast_linear_regression_1d(x, y)
         return s * 3600.0, (lo, hi)
 
     cur, cur_idx = slope_h(t_end - window_sec, t_end + 1.0)
@@ -442,7 +477,7 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     trend_start_ts = t_end - duration_seconds
     if duration_seconds <= 0:
         return None
-    return {
+    res = {
         'direction': 'up' if current_sign > 0 else 'down',
         'start_timestamp': float(trend_start_ts),
         'duration_seconds': float(duration_seconds),
@@ -450,6 +485,10 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
         'current_slope_h': float(cur),
         'blocks': blocks,
     }
+    if len(_trend_memo_cache) > _TREND_MEMO_MAX_ENTRIES:
+        _trend_memo_cache.clear()
+    _trend_memo_cache[cache_key] = res
+    return dict(res)
 
 
 def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int = 8,

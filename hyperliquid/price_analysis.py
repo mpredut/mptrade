@@ -18,6 +18,17 @@ from common import log, float_env
 MIN_POINTS_PER_WINDOW = 3
 
 
+def _fast_linear_slope_1d(x: np.ndarray, y: np.ndarray) -> float:
+    """Compute OLS linear slope in O(N) without LAPACK/SVD matrix overhead."""
+    dx = x - x[0]
+    mean_dx = float(np.mean(dx))
+    dev_x = dx - mean_dx
+    var_x = float(np.dot(dev_x, dev_x))
+    if var_x == 0.0:
+        return 0.0
+    return float(np.dot(dev_x, y) / var_x)
+
+
 def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
                            min_consecutive_blocks=3, noise_tolerance=2,
                            min_points_per_window=MIN_POINTS_PER_WINDOW):
@@ -37,7 +48,7 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
         if hi - lo < min_points_per_window:
             return None, (lo, hi)
         x, y = timestamps[lo:hi], prices[lo:hi]
-        s, _ = np.polyfit(x - x[0], y, 1)
+        s = _fast_linear_slope_1d(x, y)
         return s * 3600.0, (lo, hi)
 
     cur, cur_idx = slope_h(t_end - window_sec, t_end + 1.0)

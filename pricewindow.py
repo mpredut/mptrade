@@ -29,18 +29,28 @@ class PriceTrendAnalyzer:
         self.prices = prices
 
     def linear_regression_trend(self):
-        if len(self.prices) < 2:
+        n = len(self.prices)
+        if n < 2:
             print("Linear regression: not enough data to compute the trend.")
             return None, None, None
 
-        x = np.arange(len(self.prices))
-        y = np.array(self.prices)
+        x = np.arange(n)
+        y = np.asarray(self.prices, dtype=float)
 
-        if np.std(y) == 0:
+        mean_y = float(np.mean(y))
+        dev_y = y - mean_y
+        ss_y = float(np.dot(dev_y, dev_y))
+        if ss_y == 0.0:
             print("Linear regression: prices are constant, the trend cannot be determined.")
             return None, None, None
 
-        slope, intercept, r_value, _, _ = linregress(x, y)
+        mean_x = (n - 1) / 2.0
+        var_x = n * (n * n - 1) / 12.0
+        dev_x = x - mean_x
+        cov_xy = float(np.dot(dev_x, y))
+        slope = cov_xy / var_x
+        intercept = mean_y - slope * mean_x
+        r_value = cov_xy / np.sqrt(var_x * ss_y) if (var_x * ss_y) > 0 else 0.0
         trend_line = slope * x + intercept
         return trend_line, slope, r_value
 

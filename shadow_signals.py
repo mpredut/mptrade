@@ -126,6 +126,8 @@ class ShadowSet:
         self._last_fed: dict = {}      # Last Kalman feed timestamp per symbol.
         self._last_kfields: dict = {}  # Last Kalman fields between feeds.
         self._fed_prices: dict = {}    # Fed prices for step-scale epsilon.
+        self._last_vol_time: dict = {} # Throttling for 1h volatility computation.
+        self._last_vol_fields: dict = {}
 
     def _write_state(self, now: float) -> None:
         if not self.state_path or (now - self._last_state_write) < self.state_min_interval:
@@ -174,8 +176,15 @@ class ShadowSet:
             k = self._last_kfields.get(symbol,
                                         {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0})
 
-        v1h = vol_1h_pct(big_prices, big_sample_rate)
-        adapt_re, adapt_dca = adaptive_thresholds(v1h)
+        # Throttle heavy volatility & log-return computation on big_prices (thousands of points)
+        last_vol_t = self._last_vol_time.get(symbol, -1e18)
+        if (ts - last_vol_t) >= 2.0 or (ts - last_fed >= KALMAN_SAMPLE_SEC):
+            v1h = vol_1h_pct(big_prices, big_sample_rate)
+            adapt_re, adapt_dca = adaptive_thresholds(v1h)
+            self._last_vol_time[symbol] = ts
+            self._last_vol_fields[symbol] = (v1h, adapt_re, adapt_dca)
+        else:
+            v1h, adapt_re, adapt_dca = self._last_vol_fields.get(symbol, (None, None, None))
         fields = {
             "kalman_vel": k["vel"], "kalman_vel_std": k["vel_std"],
             "kalman_trend": k["trend"],

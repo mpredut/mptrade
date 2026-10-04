@@ -181,13 +181,41 @@ def get_relevant_trade(trade_orders, trade_type, threshold_s, symbol, now_fn=Non
     return trade_price, trade_time, can_trade
 
 
-def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_orders=None):
+_position_stats_cache = {}
+_POSITION_CACHE_HEARTBEAT_SEC = 15.0  # Safety fallback: re-verify after 15s even if order counts match
 
+
+def _make_order_signature(orders):
+    if not orders:
+        return (0, 0, 0)
+    first = orders[0]
+    return (
+        len(orders),
+        first.get("id") or first.get("orderId") or first.get("timestamp") or 0,
+        first.get("price") or 0,
+    )
+
+
+def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_orders=None, force_refresh=False):
     api = api or mkt
     if buy_orders is None:
         buy_orders = api.get_orders(symbol, "BUY", maxage_trade_s)
     if sell_orders is None:
         sell_orders = api.get_orders(symbol, "SELL", maxage_trade_s)
+
+    now_ts = time.time()
+    cache_key = (id(api), str(symbol).upper(), float(maxage_trade_s))
+    buy_sig = _make_order_signature(buy_orders)
+    sell_sig = _make_order_signature(sell_orders)
+    entry_sig = (buy_sig, sell_sig)
+
+    if not force_refresh:
+        cached = _position_stats_cache.get(cache_key)
+        if cached is not None:
+            cached_sig, cached_time, cached_val = cached
+            # If orders signature is identical and fallback heartbeat interval hasn't expired:
+            if cached_sig == entry_sig and (now_ts - cached_time) < _POSITION_CACHE_HEARTBEAT_SEC:
+                return dict(cached_val)
 
     total_buy_qty = sum(float(o['qty']) for o in buy_orders)
     total_sell_qty = sum(float(o['qty']) for o in sell_orders)
@@ -207,7 +235,7 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
 
     net_qty = total_buy_qty - total_sell_qty
 
-    return {
+    res = {
         "buy_qty": total_buy_qty,
         "sell_qty": total_sell_qty,
         "net_qty": net_qty,
@@ -216,6 +244,8 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
         "buy_count": len(buy_orders),
         "sell_count": len(sell_orders),
     }
+    _position_stats_cache[cache_key] = (entry_sig, now_ts, res)
+    return dict(res)
 
 # Hard TP coexists with trend logic. It sells a position fraction on a large gain
 # regardless of trend, catching peaks the trend gate may miss. Cooldown prevents a cascade.
