@@ -553,3 +553,92 @@ class TestOrderGuardWithGemini:
             )
             assert allowed is True
 
+    def test_check_intelligence_guards_memoized_on_regime_context(self, monkeypatch):
+        import order_guard
+        from market_regime import MarketRegimeContext, MarketRegimeDecision
+
+        mock_decision = MarketRegimeDecision(
+            regime="bull", gradient=0.5, epsilon=0.1, strength=5.0,
+            fresh=True, reason="directional_signal", source="mock",
+        )
+        ctx = MarketRegimeContext.from_decision(mock_decision)
+
+        eval_count = 0
+        original_eval = order_guard._evaluate_intelligence_guards_raw
+
+        def counting_eval(*args, **kwargs):
+            nonlocal eval_count
+            eval_count += 1
+            return original_eval(*args, **kwargs)
+
+        monkeypatch.setattr(order_guard, "_evaluate_intelligence_guards_raw", counting_eval)
+
+        # Call multiple times with the same regime_context (simulating multi-step MARKET placement)
+        res1 = order_guard.check_intelligence_guards(None, "BTCUSDC", "BUY", 65000.0, regime_context=ctx, qty=0.1)
+        res2 = order_guard.check_intelligence_guards(None, "BTCUSDC", "BUY", 65100.0, regime_context=ctx, qty=0.1)
+        res3 = order_guard.check_intelligence_guards(None, "BTCUSDC", "BUY", 65200.0, regime_context=ctx, qty=0.1)
+
+        assert eval_count == 1
+        assert res1 == res2 == res3
+
+    def test_profit_guard_passes_qty_and_computes_notional_for_gemini(self, monkeypatch):
+        import order_guard
+
+        margins = {
+            "intelligence_guards_mode": "enforce",
+            "gemini_guard_mode": "enforce",
+            "gemini_min_notional_eur": 1000.0,
+            "default": 1.15,
+        }
+        monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
+
+        from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
+        from intelligence.sentiment.gemini_client import GeminiClient
+
+        called_notionals = []
+
+        def tracking_runner(prompt, model, timeout):
+            return json.dumps({"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Good trade"})
+
+        class MockGuard(GeminiHighStakeGuard):
+            def check(self, symbol, side, price, qty, notional_eur=None, **kw):
+                called_notionals.append(notional_eur)
+                return super().check(symbol, side, price, qty, notional_eur=notional_eur)
+
+        mock_guard = MockGuard(
+            gemini_client=GeminiClient(custom_runner=tracking_runner),
+            min_notional_eur=1000.0,
+        )
+        monkeypatch.setattr("intelligence.sentiment.guards.gemini_high_stake_guard.GeminiHighStakeGuard", lambda **kw: mock_guard)
+
+        # Provider mockup
+        class _P:
+            name = "binance"
+            def last_opposite_fill(self, *a, **k): return 60000.0
+
+        # BUY 0.05 BTC @ 65,000 = 3,250 EUR > 1000 EUR min
+        allowed = order_guard.profit_guard(_P(), "BTCUSDC", "BUY", 65000.0, 1.15, qty=0.05)
+        assert allowed is True
+        assert len(called_notionals) == 1
+        assert called_notionals[0] == 65000.0 * 0.05  # 3,250
+
+    def test_symbol_regime_fallback_when_allow_fallback_true(self, monkeypatch):
+        import order_guard
+
+        snapshot_called = False
+        def mock_snapshot(symbol, now=None):
+            nonlocal snapshot_called
+            snapshot_called = True
+            return {"gradient_recent": 0.8, "epsilon": 0.1, "ts": time.time()}
+
+        class MockShortTrendManager:
+            def fresh_snapshot(self, symbol, now=None):
+                return mock_snapshot(symbol, now)
+
+        monkeypatch.setattr("cacheManager.get_short_trend_manager", lambda: MockShortTrendManager())
+
+        # Calling symbol_regime directly without snapshot_resolver falls back gracefully
+        decision = order_guard.symbol_regime("BTCUSDT", allow_fallback=True)
+        assert snapshot_called is True
+        assert decision.regime == "bull"
+

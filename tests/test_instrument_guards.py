@@ -814,7 +814,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         mock_ctx.assert_called_once_with(inst.symbol, provider_name=inst.provider_name)
         mock_window_ref.assert_called_once_with(inst.symbol, "BUY", None, regime_context=ctx)
         mock_profit_guard.assert_called_once_with(
-            p, inst.symbol, "BUY", 100.0, ANY, window_ref=None, regime_context=ctx
+            p, inst.symbol, "BUY", 100.0, ANY, window_ref=None, regime_context=ctx, qty=1.0
         )
         import order_retry as oq
         queued = oq.load_all()

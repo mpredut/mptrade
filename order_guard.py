@@ -137,6 +137,14 @@ def symbol_regime(
             snap = snapshot_resolver(symbol, now=now)
         except Exception:
             snap = None
+    elif allow_fallback:
+        # Graceful fallback for direct callers that did not inject a snapshot resolver
+        try:
+            import cacheManager as _cm
+            mgr = _cm.get_short_trend_manager()
+            snap = mgr.fresh_snapshot(symbol, now=now)
+        except Exception:
+            snap = None
 
     target_provider = provider
     if provider_resolver is not None:
@@ -144,6 +152,12 @@ def symbol_regime(
             target_provider = provider_resolver(provider)
         except Exception:
             target_provider = None
+    elif allow_fallback and isinstance(provider, str) and provider:
+        try:
+            from providers.market_api import api as _market_api
+            target_provider = _market_api.provider_by_name(provider) or provider
+        except Exception:
+            target_provider = provider
 
     try:
         resolution = svc.resolve_with_evidence(
@@ -466,6 +480,46 @@ def check_intelligence_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
+    if regime_context is not None:
+        cached_res = getattr(regime_context, "_intelligence_decision", None)
+        if cached_res is not None:
+            return cached_res
+
+    res = _evaluate_intelligence_guards_raw(
+        provider,
+        symbol,
+        order_type,
+        price,
+        price_history=price_history,
+        trend_duration_seconds=trend_duration_seconds,
+        regime_context=regime_context,
+        qty=qty,
+        notional_eur=notional_eur,
+        now=now,
+    )
+
+    if regime_context is not None:
+        try:
+            object.__setattr__(regime_context, "_intelligence_decision", res)
+        except Exception:
+            pass
+
+    return res
+
+
+def _evaluate_intelligence_guards_raw(
+    provider,
+    symbol: str,
+    order_type: str,
+    price: float,
+    *,
+    price_history=None,
+    trend_duration_seconds: float = 0.0,
+    regime_context=None,
+    qty: Optional[float] = None,
+    notional_eur: Optional[float] = None,
+    now: Optional[float] = None,
+) -> tuple[bool, str, float]:
     m = _load_margins()
     mode = str(m.get("intelligence_guards_mode", "shadow")).strip().lower()
     if mode in ("off", "0", "disabled"):

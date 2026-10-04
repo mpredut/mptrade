@@ -568,6 +568,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
                 order_guard.margin_for("binance"),
                 window_ref=window_ref,
                 regime_context=regime_context,
+                qty=qty,
             ):
                 return False, "profit_guard"
         return True, None

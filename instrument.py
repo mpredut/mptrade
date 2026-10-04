@@ -355,7 +355,9 @@ class Instrument:
                         self.symbol, side_u, safeback_override, regime_context=regime_context)
                     ok = order_guard.profit_guard(
                         self._provider, self.symbol, side_u, price, profit_margin,
-                        window_ref=profit_window_ref, regime_context=regime_context)
+                        window_ref=profit_window_ref, regime_context=regime_context,
+                        qty=qty,
+                    )
                     if not ok:
                         reason = "profit_guard"
                         return None
@@ -413,7 +415,9 @@ class Instrument:
                 guard_price = quantity_price
                 ok = order_guard.profit_guard(
                     self._provider, self.symbol, side_u, guard_price, profit_margin,
-                    window_ref=profit_window_ref, regime_context=regime_context)
+                    window_ref=profit_window_ref, regime_context=regime_context,
+                    qty=qty,
+                )
                 if not ok:
                     reason = "profit_guard"
                     return None
@@ -531,7 +535,8 @@ class Instrument:
                             self._provider, self.symbol, side_u,
                             final_market_price, profit_margin,
                             window_ref=profit_window_ref,
-                            regime_context=regime_context):
+                            regime_context=regime_context,
+                            qty=qty):
                         reason = "profit_guard"
                         return None
                 if callable(execution_enabled) and not bool(execution_enabled()):
