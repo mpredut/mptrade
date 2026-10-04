@@ -412,14 +412,17 @@ if __name__ == "__main__":
     for sym, stats in results.items():
         print_comparison_table(sym, stats)
 
-    # Save to JSON
-    out_dir = os.path.join(ROOT, "logger")
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "chop_weight_backtest_results.json")
+    # Save to JSON in tracked research directory and logger
+    out_paths = [
+        os.path.join(ROOT, "offline", "research", "chop_weight_backtest_results.json"),
+        os.path.join(ROOT, "logger", "chop_weight_backtest_results.json"),
+    ]
     json_data = {
         sym: [asdict(s) for s in stats]
         for sym, stats in results.items()
     }
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(json_data, f, indent=2)
-    logger.info("Saved chop benchmark results to %s", out_path)
+    for p in out_paths:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(json_data, f, indent=2)
+        logger.info("Saved chop benchmark results to %s", p)

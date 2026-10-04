@@ -18,6 +18,10 @@ current code — what lives here are the durable "whys", not the live state.
   - **The market regime does NOT change the duration** — it is invariant across bull/bear/range
     (the median of ~3 days is identical); analysed and abandoned (per-regime turned out to be a
     small-sample artefact). A global T plus the plateau is enough.
+  - **Chop regime fallback & proxy (`offline/research/CHOP_WEIGHT_BENCHMARK_2026-10-05.md`)**:
+    When a symbol is in consolidation (Mann-Kendall $p > 0.05$), `PROXY_BTC` achieves the highest net
+    return for altcoins (+0.54% on TAO vs +0.41% flat), while fixed chop weight 0.03 minimizes BTC
+    drawdown. Enforced via unified `order_guard.resolve_trade_weight`.
   - Offline ML research models (`forecast.py`, PyTorch LSTM `priceprediction.py`, and Chronos foundation models) are isolated in `offline/research/ml_forecast/`. The operational trend survival and persistence logic is consolidated into `intelligence/internal/state/persistence.py`.
 
 ## Market Intelligence Execution Guards (`order_guard.py` + `intelligence/`)
