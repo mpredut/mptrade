@@ -53,7 +53,7 @@ def run_intelligence_backtest(
     cache_path: Optional[str] = None,
     step_seconds: int = 300,  # 5-minute sampling bar
     initial_balance: float = 10_000.0,
-    parabolic_surge_pct: float = 8.0,
+    parabolic_surge_pct: float = 3.5,
     fee_pct: float = 0.001,  # 0.1% taker fee
 ) -> Tuple[BacktestStats, BacktestStats]:
     """Run comparative backtest between Unguarded baseline and Intelligence-Guarded strategies."""
@@ -81,10 +81,10 @@ def run_intelligence_backtest(
         use_guards = (mode == "INTELLIGENCE_GUARDED")
         logger.info("Starting simulation in mode: %s ...", mode)
 
-        kalman = KalmanTrendTrigger()
+        kalman = KalmanTrendTrigger(gap_reset_sec=max(900.0, step_seconds * 3.0))
         gradient_trigger = LinearGradientTrigger()
         mean_rev_trigger = MeanReversionTrigger(rsi_period=14, bb_period=20)
-        parabolic_guard = ParabolicSurgeGuard(surge_threshold_pct=parabolic_surge_pct)
+        parabolic_guard = ParabolicSurgeGuard(surge_threshold_pct=parabolic_surge_pct, pullback_required_pct=1.5)
         exhaustion_guard = WeibullExhaustionGuard(policy="downscale", exhausted_scale=0.35)
         noise_guard = NoiseFloorGuard(min_strength_ratio=1.0)
 
@@ -99,6 +99,7 @@ def run_intelligence_backtest(
         trend_start_ts = 0.0
         current_trend = "FLAT"
 
+        last_exit_ts = 0.0
         parabolic_vetoes = 0
         weibull_downscales = 0
         noise_vetoes = 0
@@ -109,7 +110,7 @@ def run_intelligence_backtest(
         for idx, (t, p) in enumerate(sampled):
             rolling_prices.append(p)
             rolling_history.append((t, p))
-            if len(rolling_prices) > 100:
+            if len(rolling_prices) > 200:
                 rolling_prices.pop(0)
                 rolling_history.pop(0)
 
@@ -117,22 +118,25 @@ def run_intelligence_backtest(
             vol1h = calculate_volatility_1h(rolling_prices, sample_rate_sec=float(step_seconds)) if len(rolling_prices) >= 20 else 0.5
             eps = (p * (vol1h / 100.0) * 0.15) if vol1h else (p * 0.001)
 
-            # Triggers
+            # Triggers and Guard updates
             k_out, k_event = kalman.evaluate(symbol, t, p, eps)
             mr_event = mean_rev_trigger.update(symbol, t, p)
+            p_dec = parabolic_guard.check(symbol, "BUY", p, price_history=rolling_history, volatility_1h_pct=vol1h, now=t) if use_guards else None
 
-            # Trend tracking
-            if k_out == "BULL":
+            # Trend tracking: evaluate integer direction (1 = BULL, -1 = BEAR, 0 = FLAT)
+            k_trend = k_out.get("trend", 0)
+            if k_trend == 1:
                 if current_trend != "BULL":
                     current_trend = "BULL"
                     trend_start_ts = t
-            elif k_out == "BEAR":
+            elif k_trend == -1:
                 if current_trend != "BEAR":
                     current_trend = "BEAR"
                     trend_start_ts = t
             else:
-                current_trend = "FLAT"
-                trend_start_ts = t
+                if current_trend != "FLAT":
+                    current_trend = "FLAT"
+                    trend_start_ts = t
 
             trend_duration_sec = max(0.0, t - trend_start_ts)
 
@@ -148,10 +152,28 @@ def run_intelligence_backtest(
             want_buy = False
             want_sell = False
 
+            # Take-Profit & Stop-Loss protection (matching monitortrades / swing bot)
+            if asset_qty > 0 and entry_price > 0:
+                pnl_pct = (p - entry_price) / entry_price
+                if pnl_pct >= 0.035:  # +3.5% Take Profit
+                    want_sell = True
+                elif pnl_pct <= -0.040:  # -4.0% Risk Stop
+                    want_sell = True
+
             if k_event and k_event.action.value == "ENTRY" and k_event.side.value == "BUY":
                 want_buy = True
             elif mr_event and mr_event.action.value == "ENTRY" and mr_event.side.value == "BUY":
                 want_buy = True
+            elif current_trend == "BULL" and asset_qty == 0 and len(rolling_prices) >= 20:
+                # Re-entry / continuation during confirmed bull trend
+                recent_high = max(rolling_prices[-20:])
+                if (t - last_exit_ts) >= 1800:
+                    pullback = (recent_high - p) / recent_high if recent_high > 0 else 0.0
+                    if pullback >= 0.010:
+                        want_buy = True
+                    elif p >= recent_high:
+                        # Momentum breakout (FOMO buy in naive baseline)
+                        want_buy = True
 
             if k_event and k_event.action.value == "EXIT" and k_event.side.value == "SELL":
                 want_sell = True
@@ -167,14 +189,14 @@ def run_intelligence_backtest(
                 trades.append({"entry_price": entry_price, "exit_price": p, "pnl": pnl, "is_win": pnl > 0})
                 asset_qty = 0.0
                 entry_price = 0.0
+                last_exit_ts = t
 
             elif want_buy and asset_qty == 0 and usd > 50.0:
                 scale = 1.0
 
                 if use_guards:
                     # 1. Parabolic Surge Guard (Anti-FOMO)
-                    p_dec = parabolic_guard.check(symbol, "BUY", p, price_history=rolling_history, volatility_1h_pct=vol1h, now=t)
-                    if not p_dec.allowed:
+                    if p_dec and not p_dec.allowed:
                         parabolic_vetoes += 1
                         continue
 

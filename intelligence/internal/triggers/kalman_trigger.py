@@ -30,8 +30,9 @@ GAP_RESET_SEC = 300.0
 class KalmanTrend:
     """One-dimensional constant-velocity Kalman filter for level and velocity tracking."""
 
-    def __init__(self, qr: float = KALMAN_QR):
+    def __init__(self, qr: float = KALMAN_QR, gap_reset_sec: float = GAP_RESET_SEC):
         self.qr = qr
+        self.gap_reset_sec = float(gap_reset_sec)
         self.x = None          # [level, velocity]
         self.P = None          # State covariance
         self.last_ts = None
@@ -51,7 +52,7 @@ class KalmanTrend:
             return self._out(price, old_trend=self.trend)
 
         raw_dt = ts - self.last_ts
-        if raw_dt > GAP_RESET_SEC:
+        if raw_dt > self.gap_reset_sec:
             self.x = np.array([price, 0.0])
             self.P = np.diag([R * 10.0, (price * 1e-3) ** 2])
             self.last_ts = ts
@@ -107,8 +108,8 @@ class KalmanTrend:
 class KalmanTrendTrigger:
     """Actionable trigger generator wrapping KalmanTrend state."""
 
-    def __init__(self, qr: float = KALMAN_QR):
-        self.filter = KalmanTrend(qr=qr)
+    def __init__(self, qr: float = KALMAN_QR, gap_reset_sec: float = GAP_RESET_SEC):
+        self.filter = KalmanTrend(qr=qr, gap_reset_sec=gap_reset_sec)
 
     def evaluate(
         self, symbol: str, ts: float, price: float, epsilon: Optional[float] = None

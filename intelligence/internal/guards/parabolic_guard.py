@@ -71,6 +71,10 @@ class ParabolicSurgeGuard:
             window_prices = [p for (t, p) in price_history if t >= window_start_ts and p > 0]
             if window_prices:
                 low_px = min(window_prices)
+                high_px = max(window_prices)
+                if high_px > st["peak"]:
+                    st["peak"] = high_px
+                    st["ts"] = ts_now
                 if low_px > 0:
                     window_move_pct = (st["peak"] - low_px) / low_px * 100.0
                     if window_move_pct >= threshold:
