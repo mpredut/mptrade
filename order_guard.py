@@ -458,6 +458,35 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
     return True, None
 
 
+_whale_collector = None
+_orderbook_collector = None
+_derivatives_collector = None
+
+
+def get_whale_collector():
+    global _whale_collector
+    if _whale_collector is None:
+        from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+        _whale_collector = WhalePositioningCollector()
+    return _whale_collector
+
+
+def get_orderbook_collector():
+    global _orderbook_collector
+    if _orderbook_collector is None:
+        from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
+        _orderbook_collector = OrderbookDepthCollector()
+    return _orderbook_collector
+
+
+def get_derivatives_collector():
+    global _derivatives_collector
+    if _derivatives_collector is None:
+        from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetryCollector
+        _derivatives_collector = DerivativesTelemetryCollector()
+    return _derivatives_collector
+
+
 def check_intelligence_guards(
     provider,
     symbol: str,
@@ -471,11 +500,15 @@ def check_intelligence_guards(
     notional_eur: Optional[float] = None,
     now: Optional[float] = None,
 ) -> tuple[bool, str, float]:
-    """Evaluate intelligence guards (ParabolicSurge, WeibullExhaustion, and GeminiHighStake).
+    """Evaluate intelligence guards across all active pillars.
 
     Supports staged rollouts via order_guard.conf:
-    - 'intelligence_guards_mode': 'off' | 'shadow' | 'enforce'
-    - 'gemini_guard_mode': 'off' | 'shadow' | 'enforce' (vets purchases >= 1000 EUR)
+    - 'intelligence_guards_mode': 'off' | 'shadow' | 'enforce' (Pillar 1)
+    - 'gemini_guard_mode': 'off' | 'shadow' | 'enforce' (Pillar 3, purchases >= 1000 EUR)
+    - 'geopolitical_guard_mode': 'off' | 'shadow' | 'enforce' (Pillar 4, Black Swan Shield)
+    - 'whale_guard_mode': 'off' | 'shadow' | 'enforce' (Pillar 2, Whale Flow & OI Divergence)
+    - 'orderbook_wall_guard_mode': 'off' | 'shadow' | 'enforce' (Pillar 2, Orderbook Depth & Ask Walls)
+    - 'funding_guard_mode': 'off' | 'shadow' | 'enforce' (Pillar 2, Derivatives Funding Crowding)
 
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
@@ -541,6 +574,9 @@ def _evaluate_intelligence_guards_raw(
     p_guard = ParabolicSurgeGuard(surge_threshold_pct=surge_pct, pullback_required_pct=pullback_pct)
     e_guard = WeibullExhaustionGuard(policy=exhaust_policy, exhausted_scale=exhaust_scale)
 
+    effective_scale = 1.0
+    active_reason = "ok"
+
     # 1. Parabolic surge check (if price history is available)
     if price_history:
         p_dec = p_guard.check(symbol, side, price, price_history=price_history, now=now)
@@ -572,7 +608,8 @@ def _evaluate_intelligence_guards_raw(
             if mode == "enforce":
                 if not e_dec.allowed:
                     return False, e_dec.reason, 0.0
-                return True, e_dec.reason, e_dec.suggested_scale
+                effective_scale = min(effective_scale, e_dec.suggested_scale)
+                active_reason = e_dec.reason
 
     # 3. Google Gemini High-Stake Guard (> 1000 EUR purchases)
     gemini_mode = str(m.get("gemini_guard_mode", "shadow")).strip().lower()
@@ -593,27 +630,97 @@ def _evaluate_intelligence_guards_raw(
                 if gemini_mode == "enforce":
                     if not g_dec.allowed:
                         return False, g_dec.reason, 0.0
-                    return True, g_dec.reason, g_dec.suggested_scale
+                    effective_scale = min(effective_scale, g_dec.suggested_scale)
+                    active_reason = g_dec.reason
 
     # 4. Geopolitical & Energy Shock Guard (Black Swan Shield)
     geo_mode = str(m.get("geopolitical_guard_mode", "shadow")).strip().lower()
     if geo_mode not in ("off", "0", "disabled"):
-        from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
-        from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
-        analyzer = GeopoliticalThreatAnalyzer()
-        cached_geo = analyzer._cached_assessment
-        if cached_geo is not None:
-            geo_guard = GeopoliticalShockGuard()
-            geo_dec = geo_guard.check(symbol, side, cached_geo)
-            if not geo_dec.allowed or geo_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                prefix = "[GEOPOLITICAL_GUARD_SHADOW]" if geo_mode == "shadow" else "[GEOPOLITICAL_GUARD_ENFORCE]"
-                print(f"{prefix} {side} {symbol}: {geo_dec.reason} (brake={geo_dec.brake_action}, suggested_scale={geo_dec.suggested_scale})")
-                if geo_mode == "enforce":
-                    if not geo_dec.allowed:
-                        return False, geo_dec.reason, 0.0
-                    return True, geo_dec.reason, geo_dec.suggested_scale
+        try:
+            from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+            from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+            analyzer = GeopoliticalThreatAnalyzer()
+            cached_geo = analyzer._cached_assessment
+            if cached_geo is not None:
+                geo_guard = GeopoliticalShockGuard()
+                geo_dec = geo_guard.check(symbol, side, cached_geo)
+                if not geo_dec.allowed or geo_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                    prefix = "[GEOPOLITICAL_GUARD_SHADOW]" if geo_mode == "shadow" else "[GEOPOLITICAL_GUARD_ENFORCE]"
+                    print(f"{prefix} {side} {symbol}: {geo_dec.reason} (brake={geo_dec.brake_action}, suggested_scale={geo_dec.suggested_scale})")
+                    if geo_mode == "enforce":
+                        if not geo_dec.allowed:
+                            return False, geo_dec.reason, 0.0
+                        effective_scale = min(effective_scale, geo_dec.suggested_scale)
+                        active_reason = geo_dec.reason
+        except Exception:
+            pass
 
-    return True, "ok", 1.0
+    # 5. Pillar 2: Whale Flow & Open Interest Divergence Guard
+    whale_mode = str(m.get("whale_guard_mode", "shadow")).strip().lower()
+    if whale_mode not in ("off", "0", "disabled"):
+        try:
+            from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+            w_snap = get_whale_collector().fetch(symbol, allow_network=False)
+            w_guard = WhaleDivergenceGuard()
+            w_dec = w_guard.check(symbol, side, snapshot=w_snap)
+            if not w_dec.allowed or w_dec.brake_action == BrakeAction.DEFER_WAIT:
+                prefix = "[WHALE_GUARD_SHADOW]" if whale_mode == "shadow" else "[WHALE_GUARD_ENFORCE]"
+                print(f"{prefix} {side} {symbol}: {w_dec.reason} (brake={w_dec.brake_action})")
+                if whale_mode == "enforce":
+                    if not w_dec.allowed:
+                        return False, w_dec.reason, 0.0
+        except Exception:
+            pass
+
+    # 6. Pillar 2: Orderbook Depth & Whale Limit Wall Guard
+    ob_mode = str(m.get("orderbook_wall_guard_mode", "shadow")).strip().lower()
+    if ob_mode not in ("off", "0", "disabled"):
+        try:
+            from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+            ob_snap = get_orderbook_collector().fetch(symbol, allow_network=False)
+            min_imb = float(m.get("min_buy_imbalance", 0.25))
+            wall_limit = float(m.get("whale_wall_usd_limit", 1_000_000.0))
+            ob_guard = OrderbookWallGuard(
+                min_buy_imbalance=min_imb,
+                whale_wall_usd_limit=wall_limit,
+            )
+            ob_dec = ob_guard.check(symbol, side, snapshot=ob_snap)
+            if not ob_dec.allowed or ob_dec.brake_action == BrakeAction.DEFER_WAIT:
+                prefix = "[ORDERBOOK_GUARD_SHADOW]" if ob_mode == "shadow" else "[ORDERBOOK_GUARD_ENFORCE]"
+                print(f"{prefix} {side} {symbol}: {ob_dec.reason} (brake={ob_dec.brake_action})")
+                if ob_mode == "enforce":
+                    if not ob_dec.allowed:
+                        return False, ob_dec.reason, 0.0
+        except Exception:
+            pass
+
+    # 7. Pillar 2: Perpetual Derivatives Funding Rate Crowding Guard
+    funding_mode = str(m.get("funding_guard_mode", "shadow")).strip().lower()
+    if funding_mode not in ("off", "0", "disabled"):
+        try:
+            from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
+            f_snap = get_derivatives_collector().fetch(symbol, allow_network=False)
+            f_max = float(m.get("funding_max_long_rate", 0.0005))
+            f_policy = str(m.get("funding_crowding_policy", "downscale")).strip().lower()
+            f_scale = float(m.get("funding_crowded_scale", 0.50))
+            f_guard = FundingCrowdingGuard(
+                max_long_funding_rate=f_max,
+                crowding_policy=f_policy,
+                crowded_scale=f_scale,
+            )
+            f_dec = f_guard.check(symbol, side, telemetry=f_snap)
+            if not f_dec.allowed or f_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                prefix = "[FUNDING_GUARD_SHADOW]" if funding_mode == "shadow" else "[FUNDING_GUARD_ENFORCE]"
+                print(f"{prefix} {side} {symbol}: {f_dec.reason} (brake={f_dec.brake_action}, suggested_scale={f_dec.suggested_scale})")
+                if funding_mode == "enforce":
+                    if not f_dec.allowed:
+                        return False, f_dec.reason, 0.0
+                    effective_scale = min(effective_scale, f_dec.suggested_scale)
+                    active_reason = f_dec.reason
+        except Exception:
+            pass
+
+    return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
 
 
 def profit_guard(

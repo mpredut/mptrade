@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import urllib.request
-from dataclasses import dataclass
-from typing import Dict, Optional
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger("intelligence.external.whale_positioning")
 
@@ -34,21 +35,78 @@ class WhalePositioningSnapshot:
     divergence_regime: str             # "accumulation", "short_covering", "aggressive_shorting", "long_liquidation", "neutral"
     ts: float
 
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> WhalePositioningSnapshot:
+        return cls(
+            symbol=str(data.get("symbol", "")),
+            top_traders_long_ratio=float(data.get("top_traders_long_ratio", 1.0)),
+            top_traders_long_pct=float(data.get("top_traders_long_pct", 0.5)),
+            taker_buy_sell_ratio=float(data.get("taker_buy_sell_ratio", 1.0)),
+            taker_buy_vol_usd=float(data.get("taker_buy_vol_usd", 0.0)),
+            taker_sell_vol_usd=float(data.get("taker_sell_vol_usd", 0.0)),
+            open_interest_usd=float(data.get("open_interest_usd", 0.0)),
+            open_interest_1h_change_pct=float(data.get("open_interest_1h_change_pct", 0.0)),
+            divergence_regime=str(data.get("divergence_regime", "neutral")),
+            ts=float(data.get("ts", 0.0)),
+        )
+
 
 class WhalePositioningCollector:
     """Collects and caches Binance Futures top trader and open interest metrics."""
 
-    def __init__(self, cache_ttl_sec: float = 120.0) -> None:
+    def __init__(self, cache_ttl_sec: float = 120.0, cache_dir: Optional[str] = "cachedb") -> None:
         self.cache_ttl_sec = cache_ttl_sec
+        self.cache_dir = cache_dir
         self._cache: Dict[str, tuple[float, WhalePositioningSnapshot]] = {}
 
-    def fetch(self, symbol: str, price_1h_change_pct: float = 0.0) -> Optional[WhalePositioningSnapshot]:
+    def _disk_path(self, symbol: str) -> Optional[str]:
+        if not self.cache_dir:
+            return None
+        return os.path.join(self.cache_dir, f"whale_snapshot_{symbol.upper()}.json")
+
+    def _load_from_disk(self, symbol: str, now: float) -> Optional[WhalePositioningSnapshot]:
+        p = self._disk_path(symbol)
+        if not p or not os.path.exists(p):
+            return None
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            snapshot = WhalePositioningSnapshot.from_dict(data)
+            if (now - snapshot.ts) < self.cache_ttl_sec:
+                self._cache[symbol.upper()] = (snapshot.ts, snapshot)
+                return snapshot
+        except Exception as e:
+            logger.debug("Failed loading whale snapshot from %s: %s", p, e)
+        return None
+
+    def _save_to_disk(self, snapshot: WhalePositioningSnapshot) -> None:
+        p = self._disk_path(snapshot.symbol)
+        if not p:
+            return
+        try:
+            from state_io import atomic_write_json
+            atomic_write_json(p, snapshot.to_dict(), indent=2)
+        except Exception as e:
+            logger.debug("Failed writing whale snapshot to %s: %s", p, e)
+
+    def fetch(self, symbol: str, price_1h_change_pct: float = 0.0, allow_network: bool = True) -> Optional[WhalePositioningSnapshot]:
         """Fetch latest whale positioning metrics from public Binance Futures endpoints."""
         symbol = symbol.upper()
         now = time.time()
         cached = self._cache.get(symbol)
         if cached and (now - cached[0]) < self.cache_ttl_sec:
             return cached[1]
+
+        # Check disk cache before network
+        disk_snap = self._load_from_disk(symbol, now)
+        if disk_snap is not None:
+            return disk_snap
+
+        if not allow_network:
+            return None
 
         lookup_sym = symbol.replace("USDC", "USDT")
         try:
@@ -106,13 +164,25 @@ class WhalePositioningCollector:
                 ts=now,
             )
             self._cache[symbol] = (now, snapshot)
+            self._save_to_disk(snapshot)
             return snapshot
         except Exception as e:
             logger.warning("Could not fetch whale positioning for %s: %s", symbol, e)
             if cached:
                 return cached[1]
+            # Try stale disk snapshot as last resort
+            p = self._disk_path(symbol)
+            if p and os.path.exists(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    return WhalePositioningSnapshot.from_dict(data)
+                except Exception:
+                    pass
             return None
 
-    def record_snapshot(self, snapshot: WhalePositioningSnapshot) -> None:
+    def record_snapshot(self, snapshot: WhalePositioningSnapshot, save_to_disk: bool = False) -> None:
         """Inject snapshot directly (useful for testing and deterministic replays)."""
         self._cache[snapshot.symbol.upper()] = (snapshot.ts, snapshot)
+        if save_to_disk:
+            self._save_to_disk(snapshot)

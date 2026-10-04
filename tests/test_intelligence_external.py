@@ -224,6 +224,245 @@ class TestExternalGuards(unittest.TestCase):
         self.assertEqual(ev.side, TriggerSide.BUY)
         self.assertEqual(ev.reason, "whale_aggressive_accumulation")
 
+    def test_disk_serialization_round_trip(self):
+        import tempfile
+        import os
+        from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot, WhalePositioningCollector
+        from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot, OrderbookDepthCollector
+        from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry, DerivativesTelemetryCollector
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # 1. Whale collector disk round-trip
+            w_collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=tmpdir)
+            t0 = time.time()
+            w_snap = WhalePositioningSnapshot(
+                symbol="BTCUSDT",
+                top_traders_long_ratio=1.75,
+                top_traders_long_pct=0.63,
+                taker_buy_sell_ratio=1.30,
+                taker_buy_vol_usd=1_000_000.0,
+                taker_sell_vol_usd=750_000.0,
+                open_interest_usd=5_000_000_000.0,
+                open_interest_1h_change_pct=2.1,
+                divergence_regime="accumulation",
+                ts=t0,
+            )
+            w_collector.record_snapshot(w_snap, save_to_disk=True)
+
+            # Read back with a brand new collector instance
+            w_collector2 = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=tmpdir)
+            loaded_w = w_collector2.fetch("BTCUSDT")
+            self.assertIsNotNone(loaded_w)
+            self.assertEqual(loaded_w.symbol, "BTCUSDT")
+            self.assertEqual(loaded_w.divergence_regime, "accumulation")
+
+            # 2. Orderbook collector disk round-trip
+            ob_collector = OrderbookDepthCollector(cache_ttl_sec=30.0, cache_dir=tmpdir)
+            ob_snap = OrderbookSnapshot(
+                symbol="ETHUSDT",
+                mid_price=3500.0,
+                bid_depth_usd=2_000_000.0,
+                ask_depth_usd=1_500_000.0,
+                imbalance_ratio=0.571,
+                largest_bid_wall_usd=300_000.0,
+                largest_bid_wall_price=3490.0,
+                largest_ask_wall_usd=250_000.0,
+                largest_ask_wall_price=3510.0,
+                ts=t0,
+            )
+            ob_collector.record_snapshot(ob_snap, save_to_disk=True)
+
+            ob_collector2 = OrderbookDepthCollector(cache_ttl_sec=30.0, cache_dir=tmpdir)
+            loaded_ob = ob_collector2.fetch("ETHUSDT")
+            self.assertIsNotNone(loaded_ob)
+            self.assertEqual(loaded_ob.symbol, "ETHUSDT")
+            self.assertAlmostEqual(loaded_ob.imbalance_ratio, 0.571)
+
+            # 3. Derivatives telemetry disk round-trip
+            d_collector = DerivativesTelemetryCollector(cache_ttl_sec=30.0, cache_dir=tmpdir)
+            d_snap = DerivativesTelemetry(
+                symbol="SOLUSDT",
+                funding_rate=0.0002,
+                predicted_funding_rate=0.00025,
+                open_interest=100_000.0,
+                open_interest_usd=15_000_000.0,
+                ts=t0,
+            )
+            d_collector.record_telemetry(d_snap, save_to_disk=True)
+
+            d_collector2 = DerivativesTelemetryCollector(cache_ttl_sec=30.0, cache_dir=tmpdir)
+            loaded_d = d_collector2.fetch("SOLUSDT")
+            self.assertIsNotNone(loaded_d)
+            self.assertEqual(loaded_d.symbol, "SOLUSDT")
+            self.assertEqual(loaded_d.funding_rate, 0.0002)
+
+
+class TestOrderGuardPillar2Integration(unittest.TestCase):
+    """Verify Pillar 2 guards wire cleanly into order_guard.check_intelligence_guards."""
+
+    def test_whale_guard_shadow_allows_while_enforce_blocks(self):
+        import order_guard
+        from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot, WhalePositioningCollector
+
+        fakeout_snap = WhalePositioningSnapshot(
+            symbol="BTCUSDT",
+            top_traders_long_ratio=1.0,
+            top_traders_long_pct=0.5,
+            taker_buy_sell_ratio=0.8,
+            taker_buy_vol_usd=500_000.0,
+            taker_sell_vol_usd=600_000.0,
+            open_interest_usd=5_000_000_000.0,
+            open_interest_1h_change_pct=-4.0,
+            divergence_regime="short_covering",
+            ts=time.time(),
+        )
+
+        collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=None)
+        collector.record_snapshot(fakeout_snap)
+
+        orig_collector = order_guard._whale_collector
+        orig_margins = order_guard._MARGINS
+        try:
+            order_guard._whale_collector = collector
+
+            # Test SHADOW mode: logs warning but allows trade
+            order_guard._MARGINS = {
+                "intelligence_guards_mode": "shadow",
+                "whale_guard_mode": "shadow",
+                "orderbook_wall_guard_mode": "off",
+                "funding_guard_mode": "off",
+                "gemini_guard_mode": "off",
+                "geopolitical_guard_mode": "off",
+            }
+            allowed_shadow, reason_shadow, scale_shadow = order_guard.check_intelligence_guards(
+                None, "BTCUSDT", "BUY", 85000.0
+            )
+            self.assertTrue(allowed_shadow)
+            self.assertEqual(scale_shadow, 1.0)
+
+            # Test ENFORCE mode: hard veto
+            order_guard._MARGINS = {
+                "intelligence_guards_mode": "enforce",
+                "whale_guard_mode": "enforce",
+                "orderbook_wall_guard_mode": "off",
+                "funding_guard_mode": "off",
+                "gemini_guard_mode": "off",
+                "geopolitical_guard_mode": "off",
+            }
+            allowed_enforce, reason_enforce, scale_enforce = order_guard.check_intelligence_guards(
+                None, "BTCUSDT", "BUY", 85000.0
+            )
+            self.assertFalse(allowed_enforce)
+            self.assertIn("short_covering_fakeout", reason_enforce)
+            self.assertEqual(scale_enforce, 0.0)
+        finally:
+            order_guard._whale_collector = orig_collector
+            order_guard._MARGINS = orig_margins
+
+    def test_orderbook_wall_guard_shadow_and_enforce(self):
+        import order_guard
+        from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot, OrderbookDepthCollector
+
+        wall_snap = OrderbookSnapshot(
+            symbol="BTCUSDT",
+            mid_price=85000.0,
+            bid_depth_usd=200_000.0,
+            ask_depth_usd=2_500_000.0,
+            imbalance_ratio=0.074,
+            largest_bid_wall_usd=50_000.0,
+            largest_bid_wall_price=84900.0,
+            largest_ask_wall_usd=2_000_000.0,
+            largest_ask_wall_price=85100.0,
+            ts=time.time(),
+        )
+
+        collector = OrderbookDepthCollector(cache_ttl_sec=60.0, cache_dir=None)
+        collector.record_snapshot(wall_snap)
+
+        orig_collector = order_guard._orderbook_collector
+        orig_margins = order_guard._MARGINS
+        try:
+            order_guard._orderbook_collector = collector
+
+            # Test SHADOW mode
+            order_guard._MARGINS = {
+                "intelligence_guards_mode": "shadow",
+                "whale_guard_mode": "off",
+                "orderbook_wall_guard_mode": "shadow",
+                "whale_wall_usd_limit": 1_000_000.0,
+                "funding_guard_mode": "off",
+                "gemini_guard_mode": "off",
+                "geopolitical_guard_mode": "off",
+            }
+            allowed_shadow, _, scale_shadow = order_guard.check_intelligence_guards(
+                None, "BTCUSDT", "BUY", 85000.0
+            )
+            self.assertTrue(allowed_shadow)
+            self.assertEqual(scale_shadow, 1.0)
+
+            # Test ENFORCE mode
+            order_guard._MARGINS["orderbook_wall_guard_mode"] = "enforce"
+            allowed_enforce, reason_enforce, scale_enforce = order_guard.check_intelligence_guards(
+                None, "BTCUSDT", "BUY", 85000.0
+            )
+            self.assertFalse(allowed_enforce)
+            self.assertIn("orderbook_heavily_ask_dominated", reason_enforce)
+            self.assertEqual(scale_enforce, 0.0)
+        finally:
+            order_guard._orderbook_collector = orig_collector
+            order_guard._MARGINS = orig_margins
+
+    def test_funding_crowding_guard_downscales_in_enforce(self):
+        import order_guard
+        from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry, DerivativesTelemetryCollector
+
+        crowded_snap = DerivativesTelemetry(
+            symbol="BTCUSDT",
+            funding_rate=0.0008,
+            predicted_funding_rate=0.0008,
+            open_interest=50000.0,
+            open_interest_usd=4_250_000_000.0,
+            ts=time.time(),
+        )
+
+        collector = DerivativesTelemetryCollector(cache_ttl_sec=60.0, cache_dir=None)
+        collector.record_telemetry(crowded_snap)
+
+        orig_collector = order_guard._derivatives_collector
+        orig_margins = order_guard._MARGINS
+        try:
+            order_guard._derivatives_collector = collector
+
+            # Test SHADOW mode
+            order_guard._MARGINS = {
+                "intelligence_guards_mode": "shadow",
+                "whale_guard_mode": "off",
+                "orderbook_wall_guard_mode": "off",
+                "funding_guard_mode": "shadow",
+                "funding_max_long_rate": 0.0005,
+                "funding_crowded_scale": 0.50,
+                "gemini_guard_mode": "off",
+                "geopolitical_guard_mode": "off",
+            }
+            allowed_shadow, _, scale_shadow = order_guard.check_intelligence_guards(
+                None, "BTCUSDT", "BUY", 85000.0
+            )
+            self.assertTrue(allowed_shadow)
+            self.assertEqual(scale_shadow, 1.0)
+
+            # Test ENFORCE mode: allows but downscales to 0.50
+            order_guard._MARGINS["funding_guard_mode"] = "enforce"
+            allowed_enforce, reason_enforce, scale_enforce = order_guard.check_intelligence_guards(
+                None, "BTCUSDT", "BUY", 85000.0
+            )
+            self.assertTrue(allowed_enforce)
+            self.assertIn("long_crowding_extreme", reason_enforce)
+            self.assertEqual(scale_enforce, 0.50)
+        finally:
+            order_guard._derivatives_collector = orig_collector
+            order_guard._MARGINS = orig_margins
+
 
 if __name__ == "__main__":
     unittest.main()
+

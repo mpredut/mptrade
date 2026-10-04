@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import urllib.request
-from dataclasses import dataclass
-from typing import Dict, Optional
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger("intelligence.external.derivatives_telemetry")
 
@@ -27,21 +28,73 @@ class DerivativesTelemetry:
     open_interest_usd: float       # total open interest in USD
     ts: float
 
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> DerivativesTelemetry:
+        return cls(
+            symbol=str(data.get("symbol", "")),
+            funding_rate=float(data.get("funding_rate", 0.0)),
+            predicted_funding_rate=float(data.get("predicted_funding_rate", 0.0)),
+            open_interest=float(data.get("open_interest", 0.0)),
+            open_interest_usd=float(data.get("open_interest_usd", 0.0)),
+            ts=float(data.get("ts", 0.0)),
+        )
+
 
 class DerivativesTelemetryCollector:
     """Fetches and caches public derivatives market metrics."""
 
-    def __init__(self, cache_ttl_sec: float = 60.0) -> None:
+    def __init__(self, cache_ttl_sec: float = 60.0, cache_dir: Optional[str] = "cachedb") -> None:
         self.cache_ttl_sec = cache_ttl_sec
+        self.cache_dir = cache_dir
         self._cache: Dict[str, tuple[float, DerivativesTelemetry]] = {}
 
-    def fetch(self, symbol: str) -> Optional[DerivativesTelemetry]:
+    def _disk_path(self, symbol: str) -> Optional[str]:
+        if not self.cache_dir:
+            return None
+        return os.path.join(self.cache_dir, f"derivatives_telemetry_{symbol.upper()}.json")
+
+    def _load_from_disk(self, symbol: str, now: float) -> Optional[DerivativesTelemetry]:
+        p = self._disk_path(symbol)
+        if not p or not os.path.exists(p):
+            return None
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            telemetry = DerivativesTelemetry.from_dict(data)
+            if (now - telemetry.ts) < self.cache_ttl_sec:
+                self._cache[symbol.upper()] = (telemetry.ts, telemetry)
+                return telemetry
+        except Exception as e:
+            logger.debug("Failed loading derivatives telemetry from %s: %s", p, e)
+        return None
+
+    def _save_to_disk(self, telemetry: DerivativesTelemetry) -> None:
+        p = self._disk_path(telemetry.symbol)
+        if not p:
+            return
+        try:
+            from state_io import atomic_write_json
+            atomic_write_json(p, telemetry.to_dict(), indent=2)
+        except Exception as e:
+            logger.debug("Failed writing derivatives telemetry to %s: %s", p, e)
+
+    def fetch(self, symbol: str, allow_network: bool = True) -> Optional[DerivativesTelemetry]:
         """Fetch funding rate and open interest from public Binance Futures endpoint."""
         symbol = symbol.upper()
         now = time.time()
         cached = self._cache.get(symbol)
         if cached and (now - cached[0]) < self.cache_ttl_sec:
             return cached[1]
+
+        disk_snap = self._load_from_disk(symbol, now)
+        if disk_snap is not None:
+            return disk_snap
+
+        if not allow_network:
+            return None
 
         # Use USDT-perp pair as proxy if USDC given
         lookup_sym = symbol.replace("USDC", "USDT")
@@ -74,13 +127,24 @@ class DerivativesTelemetryCollector:
                 ts=now,
             )
             self._cache[symbol] = (now, telemetry)
+            self._save_to_disk(telemetry)
             return telemetry
         except Exception as e:
             logger.warning("Could not fetch derivatives telemetry for %s: %s", symbol, e)
             if cached:
                 return cached[1]
+            p = self._disk_path(symbol)
+            if p and os.path.exists(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    return DerivativesTelemetry.from_dict(data)
+                except Exception:
+                    pass
             return None
 
-    def record_telemetry(self, telemetry: DerivativesTelemetry) -> None:
+    def record_telemetry(self, telemetry: DerivativesTelemetry, save_to_disk: bool = False) -> None:
         """Inject telemetry directly (useful for tests and synthetic feeds)."""
         self._cache[telemetry.symbol.upper()] = (telemetry.ts, telemetry)
+        if save_to_disk:
+            self._save_to_disk(telemetry)

@@ -77,13 +77,17 @@ Mathematical triggers and guards operating purely on price time-series and volat
 
 Market microstructure monitoring that tracks institutional and leveraged market participants:
 - **Collectors**:
-  - `WhaleFlowCollector`: Tracks single-trade prints exceeding symbol thresholds (e.g. $\ge 50,000$ USD on BTC, $\ge 15,000$ USD on TAO), computing net whale delta.
-  - `OrderbookImbalanceCollector`: Evaluates real-time depth bid/ask ratio across top 20 levels and monitors thick bid wall defenses.
-  - `LiquidationCollector`: Aggregates leveraged long/short liquidation bursts.
+  - `WhalePositioningCollector`: Tracks Binance Futures top-trader long/short ratio, taker aggression ratio, and Open Interest flow history. Detects divergence regimes (`accumulation`, `short_covering`, `aggressive_shorting`, `long_liquidation`, `neutral`).
+  - `OrderbookDepthCollector`: Evaluates real-time spot depth within 1.5% of mid-price, computing the order book imbalance ratio ($Bids / (Bids + Asks)$) and detecting massive limit walls ($\ge \$1,000,000$).
+  - `DerivativesTelemetryCollector`: Collects public Binance perpetual funding rates and total open interest in real time.
+  - `BybitLiquidationCollector`: Streams live Bybit linear liquidations via WebSocket and calculates rolling liquidation burst velocity and capitulation/squeeze ratios.
 - **Guards & Triggers**:
-  - `WhaleDumpGuard`: Vetoes BUY orders when whales are aggressively dumping into retail liquidity.
-  - `CascadeVetoGuard`: Blocks dip-buying during active long liquidation cascades.
-  - `WhaleAbsorptionTrigger`: Generates high-conviction BUY triggers when whale bids absorb heavy market selling without breaking support.
+  - `WhaleDivergenceGuard`: Vetoes BUY orders during short-covering fakeouts (price up, but falling OI indicating no whale accumulation) and aggressive whale shorting expansion.
+  - `OrderbookWallGuard`: Defers BUY orders when the book is heavily ask-dominated (imbalance $< 0.25$) or blocked by large whale ask walls ($\ge \$1,000,000$).
+  - `FundingCrowdingGuard`: Downscales orders entering hyper-crowded long markets (funding $> +0.05\% / 8\text{h}$) to avoid liquidation cascades.
+  - `LiquidationCascadeGuard`: Blocks catching falling knives during active liquidation storms ($> \$500,000$ in 60s).
+- **Latency & Concurrency Architecture**:
+  - `order_guard.py` evaluates local memory and disk snapshots with `allow_network=False` in microseconds (sub-millisecond overhead). Network polling is decoupled into background telemetry syncs, and missing snapshots fail open safely (`reason="no_whale_snapshot_data"`).
 
 ---
 
@@ -113,19 +117,39 @@ Protects the portfolio from macroeconomic black swan events:
 - **Guard (`GeopoliticalShockGuard`)**:
   - On `CRITICAL_SHOCK`, hard-vetoes BUY orders.
   - On `ELEVATED` risk, scales down BUY order sizing.
-  - Never blocks SELL/exit orders, ensuring capital preservation.
+  - Never blocks SELL/exit orders, ensuring capital preservation. State persisted to `cachedb/geopolitical_threat_state.json`.
 
 ---
 
 ## 3. Order Guard Configuration & Safe Rollout
 
-Guards are integrated into `order_guard.py` and configured in `order_guard.conf`:
+Guards are integrated into `order_guard.py` and configured in `order_guard.conf` (hot-reloaded every 10 seconds by orchestrator):
 
 ```ini
-# order_guard.conf
-[intelligence]
+# Pillar 1: Anti-FOMO Parabolic surge & Weibull trend exhaustion
+intelligence_guards_mode = shadow
+parabolic_surge_pct = 15.0
+parabolic_pullback_pct = 2.0
+weibull_exhaustion_policy = downscale
+weibull_exhausted_scale = 0.25
+
+# Pillar 2: External Whale Flow, Orderbook Microstructure & Derivatives Guards
+whale_guard_mode = shadow
+orderbook_wall_guard_mode = shadow
+whale_wall_usd_limit = 1000000.0
+min_buy_imbalance = 0.25
+funding_guard_mode = shadow
+funding_max_long_rate = 0.0005
+funding_crowding_policy = downscale
+funding_crowded_scale = 0.50
+
+# Pillar 3: Google Gemini High-Stake Guard (> 1000 EUR purchases)
 gemini_guard_mode = shadow
 gemini_min_notional_eur = 1000.0
+gemini_timeout_sec = 12.0
+gemini_fallback = allow
+
+# Pillar 4: Geopolitical & Energy Shock Guard
 geopolitical_guard_mode = shadow
 ```
 
