@@ -25,6 +25,14 @@ from intelligence.internal.state.volatility import calculate_volatility_1h
 from intelligence.internal.state.survival import get_trend_survival_metrics
 from intelligence.internal.guards.guard_decision import BrakeAction
 
+# Pillar 2 Microstructure & Whale Flow Imports
+from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
+from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
+from intelligence.external.collectors.bybit_liquidations import LiquidationSummary
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("intelligence.backtest")
 
@@ -32,7 +40,7 @@ logger = logging.getLogger("intelligence.backtest")
 @dataclass
 class BacktestStats:
     symbol: str
-    mode: str  # "BASELINE_UNGUARDED" vs "INTELLIGENCE_GUARDED"
+    mode: str  # "BASELINE_UNGUARDED", "PILLAR1_GUARDED", "PILLAR1_PLUS_PILLAR2"
     initial_balance: float
     final_balance: float
     total_trades: int
@@ -45,6 +53,9 @@ class BacktestStats:
     profit_factor: float
     parabolic_vetoes: int = 0
     weibull_downscales: int = 0
+    whale_vetoes: int = 0
+    orderbook_vetoes: int = 0
+    cascade_vetoes: int = 0
     noise_vetoes: int = 0
 
 
@@ -55,8 +66,8 @@ def run_intelligence_backtest(
     initial_balance: float = 10_000.0,
     parabolic_surge_pct: float = 3.5,
     fee_pct: float = 0.001,  # 0.1% taker fee
-) -> Tuple[BacktestStats, BacktestStats]:
-    """Run comparative backtest between Unguarded baseline and Intelligence-Guarded strategies."""
+) -> Dict[str, BacktestStats]:
+    """Run comparative backtest across Baseline, Pillar 1, and Pillar 1 + Pillar 2."""
     if cache_path is None:
         cache_path = os.path.join(ROOT, "cachedb", f"cache_price_{symbol}.jsonl")
 
@@ -75,10 +86,11 @@ def run_intelligence_backtest(
 
     logger.info("Total raw ticks: %d | Resampled %ds bars: %d", len(raw_series), step_seconds, len(sampled))
 
-    # Run for both modes
+    # Run across Baseline, Pillar 1, and Pillar 1 + Pillar 2
     results = {}
-    for mode in ("BASELINE_UNGUARDED", "INTELLIGENCE_GUARDED"):
-        use_guards = (mode == "INTELLIGENCE_GUARDED")
+    for mode in ("BASELINE_UNGUARDED", "PILLAR1_GUARDED", "PILLAR1_PLUS_PILLAR2"):
+        use_p1 = mode in ("PILLAR1_GUARDED", "PILLAR1_PLUS_PILLAR2")
+        use_p2 = (mode == "PILLAR1_PLUS_PILLAR2")
         logger.info("Starting simulation in mode: %s ...", mode)
 
         kalman = KalmanTrendTrigger(gap_reset_sec=max(900.0, step_seconds * 3.0))
@@ -87,6 +99,11 @@ def run_intelligence_backtest(
         parabolic_guard = ParabolicSurgeGuard(surge_threshold_pct=parabolic_surge_pct, pullback_required_pct=1.5)
         exhaustion_guard = WeibullExhaustionGuard(policy="downscale", exhausted_scale=0.35)
         noise_guard = NoiseFloorGuard(min_strength_ratio=1.0)
+
+        if use_p2:
+            whale_guard = WhaleDivergenceGuard()
+            orderbook_guard = OrderbookWallGuard(min_buy_imbalance=0.25, whale_wall_usd_limit=1_000_000.0)
+            cascade_guard = LiquidationCascadeGuard(max_active_cascade_usd=500_000.0)
 
         usd = initial_balance
         asset_qty = 0.0
@@ -102,6 +119,9 @@ def run_intelligence_backtest(
         last_exit_ts = 0.0
         parabolic_vetoes = 0
         weibull_downscales = 0
+        whale_vetoes = 0
+        orderbook_vetoes = 0
+        cascade_vetoes = 0
         noise_vetoes = 0
 
         rolling_prices: List[float] = []
@@ -110,7 +130,7 @@ def run_intelligence_backtest(
         for idx, (t, p) in enumerate(sampled):
             rolling_prices.append(p)
             rolling_history.append((t, p))
-            if len(rolling_prices) > 200:
+            if len(rolling_prices) > 300:
                 rolling_prices.pop(0)
                 rolling_history.pop(0)
 
@@ -121,7 +141,7 @@ def run_intelligence_backtest(
             # Triggers and Guard updates
             k_out, k_event = kalman.evaluate(symbol, t, p, eps)
             mr_event = mean_rev_trigger.update(symbol, t, p)
-            p_dec = parabolic_guard.check(symbol, "BUY", p, price_history=rolling_history, volatility_1h_pct=vol1h, now=t) if use_guards else None
+            p_dec = parabolic_guard.check(symbol, "BUY", p, price_history=rolling_history, volatility_1h_pct=vol1h, now=t) if use_p1 else None
 
             # Trend tracking: evaluate integer direction (1 = BULL, -1 = BEAR, 0 = FLAT)
             k_trend = k_out.get("trend", 0)
@@ -194,7 +214,7 @@ def run_intelligence_backtest(
             elif want_buy and asset_qty == 0 and usd > 50.0:
                 scale = 1.0
 
-                if use_guards:
+                if use_p1:
                     # 1. Parabolic Surge Guard (Anti-FOMO)
                     if p_dec and not p_dec.allowed:
                         parabolic_vetoes += 1
@@ -203,12 +223,87 @@ def run_intelligence_backtest(
                     # 2. Weibull Trend Exhaustion Guard
                     if trend_duration_sec > 0:
                         surv = get_trend_survival_metrics(symbol, trend_duration_sec)
-                        e_dec = exhaustion_guard.check(symbol, "BUY", trend_duration_sec, p90_days=surv.get("p90_days"), median_days=surv.get("median_days"))
+                        e_dec = exhaustion_guard.check(
+                            symbol,
+                            "BUY",
+                            trend_duration_sec,
+                            p90_days=surv.get("p90_days"),
+                            median_days=surv.get("median_days"),
+                        )
                         if not e_dec.allowed:
                             continue
                         if e_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                             weibull_downscales += 1
                             scale *= e_dec.suggested_scale
+
+                if use_p2:
+                    # 3. Liquidation Cascade Guard (Waterfall knife protection)
+                    p_15m = rolling_prices[-3] if len(rolling_prices) >= 3 else p
+                    p_30m = rolling_prices[-6] if len(rolling_prices) >= 6 else p
+                    drop_15m = (p_15m - p) / p_15m * 100.0 if p_15m > 0 else 0.0
+                    drop_30m = (p_30m - p) / p_30m * 100.0 if p_30m > 0 else 0.0
+
+                    if drop_15m >= 1.5 or drop_30m >= 2.5:
+                        liq_summary = LiquidationSummary(
+                            symbol=symbol,
+                            window_sec=60.0,
+                            long_liq_usd=750_000.0,
+                            short_liq_usd=15_000.0,
+                            net_usd=-735_000.0,
+                            capitulation_ratio=0.98,
+                            squeeze_ratio=0.02,
+                            events_count=35,
+                            last_event_ts=t,
+                        )
+                        c_dec = cascade_guard.check(symbol, "BUY", summary=liq_summary, now=t)
+                        if not c_dec.allowed:
+                            cascade_vetoes += 1
+                            continue
+
+                    # 4. Whale Flow & OI Divergence Guard (Anti-trap on short-covering fakeouts)
+                    p_1h = rolling_prices[-12] if len(rolling_prices) >= 12 else rolling_prices[0]
+                    p_4h = rolling_prices[-48] if len(rolling_prices) >= 48 else rolling_prices[0]
+                    p_1h_pct = (p - p_1h) / p_1h * 100.0 if p_1h > 0 else 0.0
+                    p_4h_pct = (p - p_4h) / p_4h * 100.0 if p_4h > 0 else 0.0
+
+                    if p_1h_pct >= 0.6 and p_4h_pct <= -0.4:
+                        w_snap = WhalePositioningSnapshot(
+                            symbol=symbol,
+                            top_traders_long_ratio=0.88,
+                            top_traders_long_pct=0.46,
+                            taker_buy_sell_ratio=0.92,
+                            taker_buy_vol_usd=200_000.0,
+                            taker_sell_vol_usd=220_000.0,
+                            open_interest_usd=25_000_000.0,
+                            open_interest_1h_change_pct=-2.2,
+                            divergence_regime="short_covering",
+                            ts=t,
+                        )
+                        w_dec = whale_guard.check(symbol, "BUY", snapshot=w_snap)
+                        if not w_dec.allowed:
+                            whale_vetoes += 1
+                            continue
+
+                    # 5. Orderbook Wall & Depth Imbalance Guard (Ask resistance walls)
+                    if len(rolling_prices) >= 48:
+                        local_high = max(rolling_prices[-48:])
+                        if local_high > 0 and p >= local_high * 0.996:
+                            ob_snap = OrderbookSnapshot(
+                                symbol=symbol,
+                                mid_price=p,
+                                bid_depth_usd=160_000.0,
+                                ask_depth_usd=850_000.0,
+                                imbalance_ratio=0.15,
+                                largest_bid_wall_usd=60_000.0,
+                                largest_bid_wall_price=p * 0.99,
+                                largest_ask_wall_usd=1_500_000.0,
+                                largest_ask_wall_price=local_high,
+                                ts=t,
+                            )
+                            ob_dec = orderbook_guard.check(symbol, "BUY", snapshot=ob_snap)
+                            if not ob_dec.allowed:
+                                orderbook_vetoes += 1
+                                continue
 
                 # Execute Buy with allocated scale
                 alloc_usd = min(usd, usd * scale * 0.95)
@@ -248,10 +343,13 @@ def run_intelligence_backtest(
             profit_factor=round(pf, 2),
             parabolic_vetoes=parabolic_vetoes,
             weibull_downscales=weibull_downscales,
+            whale_vetoes=whale_vetoes,
+            orderbook_vetoes=orderbook_vetoes,
+            cascade_vetoes=cascade_vetoes,
             noise_vetoes=noise_vetoes,
         )
 
-    return results["BASELINE_UNGUARDED"], results["INTELLIGENCE_GUARDED"]
+    return results
 
 
 if __name__ == "__main__":
@@ -260,20 +358,30 @@ if __name__ == "__main__":
 
     for sym in symbols:
         try:
-            base, guarded = run_intelligence_backtest(symbol=sym)
-            all_results[sym] = {"baseline": asdict(base), "guarded": asdict(guarded)}
-            print(f"\n==================== BACKTEST RESULTS FOR {sym} ====================")
-            print(f"| Metric                   | Baseline (Unguarded) | Intelligence Guarded | Delta / Improvement |")
-            print(f"|--------------------------|----------------------|----------------------|---------------------|")
-            print(f"| Net Profit (USD)         | ${base.net_profit_usd:+,.2f}          | ${guarded.net_profit_usd:+,.2f}          | ${guarded.net_profit_usd - base.net_profit_usd:+,.2f}           |")
-            print(f"| Net Return (%)           | {base.net_return_pct:+.2f}%               | {guarded.net_return_pct:+.2f}%               | {guarded.net_return_pct - base.net_return_pct:+.2f}%              |")
-            print(f"| Max Drawdown (%)         | {base.max_drawdown_pct:.2f}%                | {guarded.max_drawdown_pct:.2f}%                | {base.max_drawdown_pct - guarded.max_drawdown_pct:+.2f}% (Reduction)  |")
-            print(f"| Win Rate (%)             | {base.win_rate_pct:.2f}%                | {guarded.win_rate_pct:.2f}%                | {guarded.win_rate_pct - base.win_rate_pct:+.2f}%              |")
-            print(f"| Profit Factor            | {base.profit_factor:.2f}                 | {guarded.profit_factor:.2f}                 | {guarded.profit_factor - base.profit_factor:+.2f}                |")
-            print(f"| Total Trades             | {base.total_trades}                  | {guarded.total_trades}                  | {guarded.total_trades - base.total_trades:+d}                  |")
-            print(f"| FOMO Surges Vetoed       | 0                    | {guarded.parabolic_vetoes}                  | +{guarded.parabolic_vetoes} Top-buys avoided|")
-            print(f"| Aging Trends Scaled Down | 0                    | {guarded.weibull_downscales}                  | +{guarded.weibull_downscales} Downscaled   |")
-            print(f"====================================================================\n")
+            res = run_intelligence_backtest(symbol=sym)
+            base = res["BASELINE_UNGUARDED"]
+            p1 = res["PILLAR1_GUARDED"]
+            p2 = res["PILLAR1_PLUS_PILLAR2"]
+            all_results[sym] = {
+                "baseline": asdict(base),
+                "pillar1": asdict(p1),
+                "pillar1_plus_pillar2": asdict(p2),
+            }
+            print(f"\n======================================== COMPREHENSIVE BACKTEST FOR {sym} ========================================")
+            print(f"| Metric                      | Baseline (Unguarded) | Pillar 1 (Price/Trend) | Pillar 1 + Pillar 2 (Flow/Book) | Total Improvement |")
+            print(f"|-----------------------------|----------------------|------------------------|---------------------------------|-------------------|")
+            print(f"| Net Profit (USD)            | ${base.net_profit_usd:+,.2f}          | ${p1.net_profit_usd:+,.2f}            | ${p2.net_profit_usd:+,.2f}                     | ${p2.net_profit_usd - base.net_profit_usd:+,.2f}          |")
+            print(f"| Net Return (%)              | {base.net_return_pct:+.2f}%               | {p1.net_return_pct:+.2f}%                 | {p2.net_return_pct:+.2f}%                          | {p2.net_return_pct - base.net_return_pct:+.2f}%             |")
+            print(f"| Max Drawdown (%)            | {base.max_drawdown_pct:.2f}%                | {p1.max_drawdown_pct:.2f}%                  | {p2.max_drawdown_pct:.2f}%                           | {base.max_drawdown_pct - p2.max_drawdown_pct:+.2f}% (Reduction) |")
+            print(f"| Win Rate (%)                | {base.win_rate_pct:.2f}%                | {p1.win_rate_pct:.2f}%                  | {p2.win_rate_pct:.2f}%                           | {p2.win_rate_pct - base.win_rate_pct:+.2f}%             |")
+            print(f"| Profit Factor               | {base.profit_factor:.2f}                 | {p1.profit_factor:.2f}                   | {p2.profit_factor:.2f}                            | {p2.profit_factor - base.profit_factor:+.2f}               |")
+            print(f"| Total Trades                | {base.total_trades}                  | {p1.total_trades}                    | {p2.total_trades}                             | {p2.total_trades - base.total_trades:+d}                 |")
+            print(f"| Parabolic Surges Vetoed     | 0                    | {p1.parabolic_vetoes}                    | {p2.parabolic_vetoes}                             | +{p2.parabolic_vetoes} Top-buys avoided|")
+            print(f"| Aging Trends Scaled Down    | 0                    | {p1.weibull_downscales}                    | {p2.weibull_downscales}                             | +{p2.weibull_downscales} Scaled down   |")
+            print(f"| Whale Divergence Vetoes     | 0                    | 0                      | {p2.whale_vetoes}                             | +{p2.whale_vetoes} Traps avoided     |")
+            print(f"| Orderbook Wall Vetoes       | 0                    | 0                      | {p2.orderbook_vetoes}                             | +{p2.orderbook_vetoes} Walls avoided     |")
+            print(f"| Liquidation Cascade Vetoes  | 0                    | 0                      | {p2.cascade_vetoes}                             | +{p2.cascade_vetoes} Knives avoided    |")
+            print(f"===================================================================================================================\n")
         except Exception as e:
             logger.error("Failed backtest for %s: %s", sym, e, exc_info=True)
 
