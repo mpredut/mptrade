@@ -83,7 +83,7 @@ def run_intelligence_backtest(
 
         kalman = KalmanTrendTrigger()
         gradient_trigger = LinearGradientTrigger()
-        mean_rev_trigger = MeanReversionTrigger(rsi_period=14, bollinger_period=20)
+        mean_rev_trigger = MeanReversionTrigger(rsi_period=14, bb_period=20)
         parabolic_guard = ParabolicSurgeGuard(surge_threshold_pct=parabolic_surge_pct)
         exhaustion_guard = WeibullExhaustionGuard(policy="downscale", exhausted_scale=0.35)
         noise_guard = NoiseFloorGuard(min_strength_ratio=1.0)
@@ -119,7 +119,7 @@ def run_intelligence_backtest(
 
             # Triggers
             k_out, k_event = kalman.evaluate(symbol, t, p, eps)
-            mr_sig, mr_event = mean_rev_trigger.evaluate(symbol, rolling_prices, t=t) if len(rolling_prices) >= 30 else (None, None)
+            mr_event = mean_rev_trigger.update(symbol, t, p)
 
             # Trend tracking
             if k_out == "BULL":
@@ -150,12 +150,12 @@ def run_intelligence_backtest(
 
             if k_event and k_event.action.value == "ENTRY" and k_event.side.value == "BUY":
                 want_buy = True
-            elif mr_event and mr_event.side.value == "BUY":
+            elif mr_event and mr_event.action.value == "ENTRY" and mr_event.side.value == "BUY":
                 want_buy = True
 
             if k_event and k_event.action.value == "EXIT" and k_event.side.value == "SELL":
                 want_sell = True
-            elif mr_event and mr_event.side.value == "SELL":
+            elif mr_event and mr_event.action.value == "EXIT" and mr_event.side.value == "SELL":
                 want_sell = True
 
             # Execution logic:
