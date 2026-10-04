@@ -1,0 +1,178 @@
+"""Composite market intelligence coordinator orchestrating triggers and guards."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import time
+from typing import Dict, List, Optional, Sequence, Tuple
+
+from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
+from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
+from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
+from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
+from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+from intelligence.internal.guards.noise_guard import NoiseFloorGuard
+from intelligence.internal.state.volatility import calculate_volatility_1h
+from intelligence.internal.state.survival import get_trend_survival_metrics
+
+
+@dataclass(frozen=True)
+class MarketIntelligenceEvaluation:
+    """Consolidated outcome of evaluating directional triggers against all guards."""
+
+    symbol: str
+    price: float
+    ts: float
+    triggers: Tuple[TriggerEvent, ...]
+    active_trigger: Optional[TriggerEvent]
+    guard_decision: GuardDecision
+    can_execute: bool
+    effective_scale: float
+    metrics: Dict[str, object] = field(default_factory=dict)
+
+
+class CompositeMarketIntelligence:
+    """Unified coordinator enforcing the Drivers/Triggers vs Guards/Brakes paradigm."""
+
+    def __init__(
+        self,
+        parabolic_surge_pct: float = 4.0,
+        exhaustion_policy: str = "downscale",  # "downscale" | "veto"
+        exhaustion_scale: float = 0.25,
+    ):
+        self.kalman_triggers: Dict[str, KalmanTrendTrigger] = {}
+        self.gradient_triggers: Dict[str, LinearGradientTrigger] = {}
+
+        # Guards (Brakes)
+        self.parabolic_guard = ParabolicSurgeGuard(surge_threshold_pct=parabolic_surge_pct)
+        self.exhaustion_guard = WeibullExhaustionGuard(policy=exhaustion_policy, exhausted_scale=exhaustion_scale)
+        self.noise_guard = NoiseFloorGuard(min_strength_ratio=1.0)
+
+    def _get_kalman(self, symbol: str) -> KalmanTrendTrigger:
+        if symbol not in self.kalman_triggers:
+            self.kalman_triggers[symbol] = KalmanTrendTrigger()
+        return self.kalman_triggers[symbol]
+
+    def _get_gradient(self, symbol: str) -> LinearGradientTrigger:
+        if symbol not in self.gradient_triggers:
+            self.gradient_triggers[symbol] = LinearGradientTrigger()
+        return self.gradient_triggers[symbol]
+
+    def evaluate_guards(
+        self,
+        symbol: str,
+        side: str,
+        price: float,
+        *,
+        gradient: Optional[float] = None,
+        epsilon: Optional[float] = None,
+        trend_duration_seconds: float = 0.0,
+        price_history: Optional[List[Tuple[float, float]]] = None,
+        volatility_1h_pct: Optional[float] = None,
+        now: Optional[float] = None,
+    ) -> GuardDecision:
+        """Run all protection guards (brakes) in sequence.
+
+        Returns the first blocking decision or an approved allow decision.
+        """
+        # 1. Noise Floor Guard
+        if gradient is not None and epsilon is not None:
+            noise_dec = self.noise_guard.check(symbol, side, gradient, epsilon)
+            if not noise_dec.allowed:
+                return noise_dec
+
+        # 2. Parabolic Surge Guard (Anti-FOMO)
+        parabolic_dec = self.parabolic_guard.check(
+            symbol, side, price, price_history=price_history,
+            volatility_1h_pct=volatility_1h_pct, now=now,
+        )
+        if not parabolic_dec.allowed:
+            return parabolic_dec
+
+        # 3. Weibull Trend Exhaustion Guard
+        if trend_duration_seconds > 0:
+            surv = get_trend_survival_metrics(symbol, trend_duration_seconds)
+            exh_dec = self.exhaustion_guard.check(
+                symbol, side, trend_duration_seconds,
+                p90_days=surv.get("p90_days"),
+                median_days=surv.get("median_days"),
+            )
+            if not exh_dec.allowed or exh_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                return exh_dec
+
+        return GuardDecision.allow("CompositeGuards", "all_guards_cleared")
+
+    def evaluate(
+        self,
+        symbol: str,
+        price: float,
+        *,
+        ts: Optional[float] = None,
+        gradient: Optional[float] = None,
+        epsilon: Optional[float] = None,
+        trend_duration_seconds: float = 0.0,
+        price_history: Optional[List[Tuple[float, float]]] = None,
+        prices_for_vol: Optional[Sequence[float]] = None,
+        sample_rate_sec: float = 60.0,
+    ) -> MarketIntelligenceEvaluation:
+        """Evaluate directional triggers and validate against all guards."""
+        now_ts = ts if ts is not None else time.time()
+        triggered_events: List[TriggerEvent] = []
+
+        # Update Kalman trigger
+        kalman = self._get_kalman(symbol)
+        k_out, k_event = kalman.evaluate(symbol, now_ts, price, epsilon)
+        if k_event:
+            triggered_events.append(k_event)
+
+        # Update Gradient trigger
+        if gradient is not None and epsilon is not None:
+            grad = self._get_gradient(symbol)
+            _, g_event = grad.evaluate(symbol, price, gradient, epsilon, ts=now_ts)
+            if g_event:
+                triggered_events.append(g_event)
+
+        # Calculate volatility if prices given
+        vol1h: Optional[float] = None
+        if prices_for_vol and len(prices_for_vol) >= 20:
+            vol1h = calculate_volatility_1h(prices_for_vol, sample_rate_sec)
+
+        # Select primary active trigger
+        active_trigger = triggered_events[0] if triggered_events else None
+        side = active_trigger.side.value if active_trigger else "HOLD"
+
+        # Evaluate guards against active side
+        if active_trigger and active_trigger.is_executable():
+            guard_dec = self.evaluate_guards(
+                symbol,
+                side,
+                price,
+                gradient=gradient,
+                epsilon=epsilon,
+                trend_duration_seconds=trend_duration_seconds,
+                price_history=price_history,
+                volatility_1h_pct=vol1h,
+                now=now_ts,
+            )
+        else:
+            guard_dec = GuardDecision.allow("NoActiveOrder", "idle")
+
+        can_exec = bool(active_trigger and active_trigger.is_executable() and guard_dec.allowed)
+        scale = guard_dec.suggested_scale if can_exec else 0.0
+
+        return MarketIntelligenceEvaluation(
+            symbol=symbol,
+            price=price,
+            ts=now_ts,
+            triggers=tuple(triggered_events),
+            active_trigger=active_trigger,
+            guard_decision=guard_dec,
+            can_execute=can_exec,
+            effective_scale=scale,
+            metrics={
+                "kalman": k_out,
+                "volatility_1h": vol1h,
+                "gradient": gradient,
+                "epsilon": epsilon,
+            },
+        )

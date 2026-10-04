@@ -49,109 +49,21 @@ DT_MIN = 0.05
 # uncertainty. This matches tradeall's stale-signal gate.
 GAP_RESET_SEC = 300.0
 
-
-class KalmanTrend:
-    """Apply a one-dimensional constant-velocity Kalman filter to one symbol.
-
-    State is level and price-per-second velocity; observation is price. R comes
-    from PriceWindow epsilon in absolute price units, and Q is KALMAN_QR times R
-    discretized using actual elapsed time.
-    """
-
-    def __init__(self, qr: float = KALMAN_QR):
-        self.qr = qr
-        self.x = None          # [level, velocity]
-        self.P = None          # State covariance.
-        self.last_ts = None
-        self.trend = 0         # Last confirmed direction: -1, 0, or +1.
-
-    def update(self, ts: float, price: float, epsilon: float | None) -> dict:
-        """Run one predict/update step and return velocity and trend fields."""
-        eps = float(epsilon) if epsilon else 0.0
-        if eps <= 0:
-            eps = max(price * 1e-4, 1e-9)   # Warm-up assumes noise at 0.01% of price.
-        R = eps * eps
-
-        if self.x is None:
-            self.x = np.array([price, 0.0])
-            self.P = np.diag([R * 10.0, (price * 1e-3) ** 2])
-            self.last_ts = ts
-            return self._out(price, old_trend=self.trend)
-
-        raw_dt = ts - self.last_ts
-        if raw_dt > GAP_RESET_SEC:
-            # Do not propagate stale velocity across a long gap. Reset as at warm-up
-            # so zero velocity remains flat until enough new data accumulates.
-            self.x = np.array([price, 0.0])
-            self.P = np.diag([R * 10.0, (price * 1e-3) ** 2])
-            self.last_ts = ts
-            old_trend = self.trend
-            out = self._out(price, old_trend=old_trend)
-            self.trend = out["trend"]
-            return out
-
-        dt = max(raw_dt, DT_MIN)
-        self.last_ts = ts
-
-        F = np.array([[1.0, dt], [0.0, 1.0]])
-        q = self.qr * R
-        Q = q * np.array([[dt ** 3 / 3.0, dt ** 2 / 2.0],
-                          [dt ** 2 / 2.0, dt]])
-        # predict
-        self.x = F @ self.x
-        self.P = F @ self.P @ F.T + Q
-        # update (H = [1, 0])
-        y = price - self.x[0]
-        S = self.P[0, 0] + R
-        K = self.P[:, 0] / S
-        self.x = self.x + K * y
-        self.P = self.P - np.outer(K, self.P[0, :])
-
-        old_trend = self.trend
-        out = self._out(price, old_trend=old_trend)
-        self.trend = out["trend"]
-        return out
-
-    def _out(self, price: float, old_trend: int) -> dict:
-        vel = float(self.x[1])
-        vel_std = math.sqrt(max(float(self.P[1, 1]), 0.0))
-        vel_pct_min = vel / price * 100.0 * 60.0
-        std_pct_min = vel_std / price * 100.0 * 60.0
-        # Schmitt hysteresis enters at CONF_ENTER*std and exits below CONF_EXIT*std,
-        # eliminating flicker around a single threshold.
-        trend = old_trend
-        if old_trend == 0:
-            if abs(vel_pct_min) > max(CONF_ENTER * std_pct_min, MIN_VEL_PCT_MIN):
-                trend = 1 if vel_pct_min > 0 else -1
-        else:
-            if vel_pct_min * old_trend < 0 and abs(vel_pct_min) > CONF_ENTER * std_pct_min:
-                trend = -old_trend                      # Direct high-confidence flip.
-            elif abs(vel_pct_min) < CONF_EXIT * std_pct_min:
-                trend = 0
-        return {"vel": round(vel_pct_min, 5), "vel_std": round(std_pct_min, 5),
-                "trend": trend, "old_trend": old_trend}
-
-
-def vol_1h_pct(prices, sample_rate_sec: float) -> float | None:
-    """Estimate one-sigma hourly volatility from scaled log returns."""
-    p = np.asarray(prices, dtype=float)
-    if len(p) < 20 or sample_rate_sec <= 0:
-        return None
-    p = p[p > 0]
-    if len(p) < 20:
-        return None
-    rets = np.diff(np.log(p))
-    std = float(np.std(rets))
-    if std == 0.0:
-        return 0.0
-    return round(std * math.sqrt(3600.0 / sample_rate_sec) * 100.0, 4)
-
-
-def adaptive_thresholds(vol1h: float | None) -> tuple[float | None, float | None]:
-    """Return adaptive reentry and DCA percentages as multipliers of hourly vol."""
-    if vol1h is None:
-        return None, None
-    return round(K_REENTRY * vol1h, 3), round(K_DCA * vol1h, 3)
+from intelligence.internal.triggers.kalman_trigger import (
+    KalmanTrend,
+    KALMAN_QR,
+    CONF_ENTER,
+    CONF_EXIT,
+    MIN_VEL_PCT_MIN,
+    DT_MIN,
+    GAP_RESET_SEC,
+)
+from intelligence.internal.state.volatility import (
+    vol_1h_pct,
+    adaptive_thresholds,
+    K_REENTRY_DEFAULT as K_REENTRY,
+    K_DCA_DEFAULT as K_DCA,
+)
 
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
