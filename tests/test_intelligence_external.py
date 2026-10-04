@@ -152,6 +152,78 @@ class TestExternalGuards(unittest.TestCase):
         self.assertEqual(dec.suggested_scale, 0.50)
         self.assertIn("long_crowding_extreme", dec.reason)
 
+    def test_whale_divergence_guard_defers_short_covering(self):
+        from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+        from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+
+        guard = WhaleDivergenceGuard()
+        # Price rose, but OI dropped (-3.5%): short-covering fakeout!
+        snapshot_fakeout = WhalePositioningSnapshot(
+            symbol="BTCUSDC",
+            top_traders_long_ratio=1.2,
+            top_traders_long_pct=0.54,
+            taker_buy_sell_ratio=0.95,
+            taker_buy_vol_usd=500_000.0,
+            taker_sell_vol_usd=520_000.0,
+            open_interest_usd=8_000_000_000.0,
+            open_interest_1h_change_pct=-3.5,
+            divergence_regime="short_covering",
+            ts=time.time(),
+        )
+
+        dec = guard.check("BTCUSDC", "BUY", snapshot=snapshot_fakeout)
+        self.assertFalse(dec.allowed)
+        self.assertEqual(dec.brake_action, BrakeAction.DEFER_WAIT)
+        self.assertIn("short_covering_fakeout", dec.reason)
+
+    def test_orderbook_wall_guard_defers_when_blocked(self):
+        from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
+        from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+
+        guard = OrderbookWallGuard(whale_wall_usd_limit=1_000_000.0)
+        # Massive $2.5M ask wall sitting right above mid price
+        snapshot_wall = OrderbookSnapshot(
+            symbol="BTCUSDC",
+            mid_price=85000.0,
+            bid_depth_usd=500_000.0,
+            ask_depth_usd=3_000_000.0,
+            imbalance_ratio=0.14,
+            largest_bid_wall_usd=200_000.0,
+            largest_bid_wall_price=84900.0,
+            largest_ask_wall_usd=2_500_000.0,
+            largest_ask_wall_price=85100.0,
+            ts=time.time(),
+        )
+
+        dec = guard.check("BTCUSDC", "BUY", snapshot=snapshot_wall)
+        self.assertFalse(dec.allowed)
+        self.assertEqual(dec.brake_action, BrakeAction.DEFER_WAIT)
+
+    def test_whale_accumulation_trigger_fires(self):
+        from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+        from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
+
+        trigger = WhaleAccumulationTrigger()
+        # Whales are 68% long, taker buys 1.6x sells, and OI is expanding (+4.2%)
+        snapshot_acc = WhalePositioningSnapshot(
+            symbol="BTCUSDC",
+            top_traders_long_ratio=2.12,
+            top_traders_long_pct=0.68,
+            taker_buy_sell_ratio=1.60,
+            taker_buy_vol_usd=2_000_000.0,
+            taker_sell_vol_usd=1_250_000.0,
+            open_interest_usd=8_500_000_000.0,
+            open_interest_1h_change_pct=+4.2,
+            divergence_regime="accumulation",
+            ts=time.time(),
+        )
+
+        ev = trigger.evaluate("BTCUSDC", price=85000.0, snapshot=snapshot_acc)
+        self.assertIsNotNone(ev)
+        self.assertEqual(ev.action, TriggerAction.ENTRY)
+        self.assertEqual(ev.side, TriggerSide.BUY)
+        self.assertEqual(ev.reason, "whale_aggressive_accumulation")
+
 
 if __name__ == "__main__":
     unittest.main()
