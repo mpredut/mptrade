@@ -560,6 +560,24 @@ def check_intelligence_guards(
                         return False, g_dec.reason, 0.0
                     return True, g_dec.reason, g_dec.suggested_scale
 
+    # 4. Geopolitical & Energy Shock Guard (Black Swan Shield)
+    geo_mode = str(m.get("geopolitical_guard_mode", "shadow")).strip().lower()
+    if geo_mode not in ("off", "0", "disabled"):
+        from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+        from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+        analyzer = GeopoliticalThreatAnalyzer()
+        cached_geo = analyzer._cached_assessment
+        if cached_geo is not None:
+            geo_guard = GeopoliticalShockGuard()
+            geo_dec = geo_guard.check(symbol, side, cached_geo)
+            if not geo_dec.allowed or geo_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                prefix = "[GEOPOLITICAL_GUARD_SHADOW]" if geo_mode == "shadow" else "[GEOPOLITICAL_GUARD_ENFORCE]"
+                print(f"{prefix} {side} {symbol}: {geo_dec.reason} (brake={geo_dec.brake_action}, suggested_scale={geo_dec.suggested_scale})")
+                if geo_mode == "enforce":
+                    if not geo_dec.allowed:
+                        return False, geo_dec.reason, 0.0
+                    return True, geo_dec.reason, geo_dec.suggested_scale
+
     return True, "ok", 1.0
 
 

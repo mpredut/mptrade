@@ -1,4 +1,4 @@
-"""Composite market intelligence coordinator orchestrating triggers and guards across all 3 pillars."""
+"""Composite market intelligence coordinator orchestrating triggers and guards across all pillars."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -26,6 +26,8 @@ from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadth
 from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
 from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
 from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
+from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
+from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
 
 
 @dataclass(frozen=True)
@@ -44,7 +46,7 @@ class MarketIntelligenceEvaluation:
 
 
 class CompositeMarketIntelligence:
-    """Unified coordinator enforcing the Drivers/Triggers vs Guards/Brakes paradigm across all 3 pillars."""
+    """Unified coordinator enforcing the Drivers/Triggers vs Guards/Brakes paradigm across all pillars."""
 
     def __init__(
         self,
@@ -57,6 +59,7 @@ class CompositeMarketIntelligence:
         greed_hard_veto_threshold: int = 90,
         gemini_min_notional_eur: float = 1000.0,
         gemini_guard: Optional[GeminiHighStakeGuard] = None,
+        geopolitical_guard: Optional[GeopoliticalShockGuard] = None,
     ):
         # Triggers (Drivers - Signals IN and Signals OUT)
         self.kalman_triggers: Dict[str, KalmanTrendTrigger] = {}
@@ -81,6 +84,9 @@ class CompositeMarketIntelligence:
         )
         self.panic_guard = PanicWashoutGuard()
         self.gemini_guard = gemini_guard or GeminiHighStakeGuard(min_notional_eur=gemini_min_notional_eur)
+
+        # Macro Geopolitical & Energy Shock Shield (Black Swan Brake)
+        self.geopolitical_guard = geopolitical_guard or GeopoliticalShockGuard()
 
     def _get_kalman(self, symbol: str) -> KalmanTrendTrigger:
         if symbol not in self.kalman_triggers:
@@ -107,12 +113,13 @@ class CompositeMarketIntelligence:
         derivatives_telemetry: Optional[DerivativesTelemetry] = None,
         fear_greed_snapshot: Optional[FearGreedSnapshot] = None,
         market_breadth_snapshot: Optional[MarketBreadthSnapshot] = None,
+        geopolitical_assessment: Optional[GeopoliticalThreatAssessment] = None,
         asset_24h_change_pct: Optional[float] = None,
         qty: Optional[float] = None,
         notional_eur: Optional[float] = None,
         now: Optional[float] = None,
     ) -> GuardDecision:
-        """Run all protection guards (brakes) across Pillar 1, 2, and 3 in sequence.
+        """Run all protection guards (brakes) across all pillars in sequence.
 
         Returns the first blocking/downscaling decision or an approved allow decision.
         """
@@ -190,6 +197,12 @@ class CompositeMarketIntelligence:
             if not gemini_dec.allowed or gemini_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                 return gemini_dec
 
+        # 9. Geopolitical & Energy Shock Guard (Black Swan Shield)
+        if geopolitical_assessment is not None:
+            geo_dec = self.geopolitical_guard.check(symbol, side, geopolitical_assessment)
+            if not geo_dec.allowed or geo_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                return geo_dec
+
         return GuardDecision.allow("CompositeGuards", "all_guards_cleared")
 
     def evaluate(
@@ -208,6 +221,7 @@ class CompositeMarketIntelligence:
         derivatives_telemetry: Optional[DerivativesTelemetry] = None,
         fear_greed_snapshot: Optional[FearGreedSnapshot] = None,
         market_breadth_snapshot: Optional[MarketBreadthSnapshot] = None,
+        geopolitical_assessment: Optional[GeopoliticalThreatAssessment] = None,
         asset_24h_change_pct: Optional[float] = None,
         qty: Optional[float] = None,
         notional_eur: Optional[float] = None,
@@ -277,6 +291,7 @@ class CompositeMarketIntelligence:
                 derivatives_telemetry=derivatives_telemetry,
                 fear_greed_snapshot=fear_greed_snapshot,
                 market_breadth_snapshot=market_breadth_snapshot,
+                geopolitical_assessment=geopolitical_assessment,
                 asset_24h_change_pct=asset_24h_change_pct,
                 qty=qty,
                 notional_eur=notional_eur,
@@ -304,5 +319,6 @@ class CompositeMarketIntelligence:
                 "epsilon": epsilon,
                 "fear_greed": fear_greed_snapshot.value if fear_greed_snapshot else None,
                 "market_regime": market_breadth_snapshot.regime if market_breadth_snapshot else None,
+                "geopolitical_threat": geopolitical_assessment.threat_level if geopolitical_assessment else None,
             },
         )

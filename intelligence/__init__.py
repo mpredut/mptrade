@@ -1,4 +1,4 @@
-"""Root intelligence package unifying internal, external, and sentiment market regimes."""
+"""Root intelligence package unifying internal, external, sentiment, and macro geopolitical regimes."""
 from __future__ import annotations
 
 # Pillar 1: Internal dynamics (Regime, Kalman, Gradient, Weibull, Volatility)
@@ -41,6 +41,11 @@ from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadth
 from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
 from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
 from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
+
+# Macro Geopolitical & Energy Shock Shield (Black Swan Brake)
+from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot, NewsHeadline
+from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer, GeopoliticalThreatAssessment
+from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
 
 # Unified Coordinator
 from intelligence.composite import CompositeMarketIntelligence, MarketIntelligenceEvaluation
@@ -96,6 +101,13 @@ __all__ = [
     "ExtremeGreedGuard",
     "PanicWashoutGuard",
     "GeminiHighStakeGuard",
+    # Macro Black Swan Shield
+    "NewsFeedCollector",
+    "NewsFeedSnapshot",
+    "NewsHeadline",
+    "GeopoliticalThreatAnalyzer",
+    "GeopoliticalThreatAssessment",
+    "GeopoliticalShockGuard",
     # Coordinator
     "CompositeMarketIntelligence",
     "MarketIntelligenceEvaluation",
