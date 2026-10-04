@@ -201,4 +201,31 @@ To maintain sub-millisecond execution loops across high-frequency price analysis
 5. **Single-Placement Intelligence Memoization**:
    - `regime_context._intelligence_decision` caches the evaluated decision for the lifespan of an `Instrument.place` invocation, preventing repeated execution of guards across multiple internal checks.
 
+## Unified Cross-Venue Trade Weight and Quantity Policy (`order_guard.py`)
+
+A centralized, platform-agnostic allocation and quantity-limiting layer evaluated before placing orders across all venues (Binance, Kraken, Hyperliquid):
+
+1. **Canonical Weight Resolution (`resolve_trade_weight`)**:
+   - **Tier 1 (Own Trend Gaussian)**: When a coin has a verified long-term trend, reads `priceAnalysis.get_weight_for_cash_permission_at_quant_time` (evaluating Gaussian distribution, Lindy plateau, and 3-zone momentum/exhaustion bounds).
+   - **Tier 2 (Cross-Venue Proxy)**: When the symbol has no trend of its own (e.g. `TAOUSDC` or `HYPE` during consolidation or new listings), looks up `<venue>_weight_proxy` (configured to `BTCUSDC` in `order_guard.conf`). If the proxy has an active trend, applies the proxy's Gaussian weight.
+   - **Tier 3 (Conservative Chop Fallback)**: If neither the symbol nor proxy has an active trend, falls back to `chop_weight_for(provider_name)` (default `0.03` / 3%).
+   - **Fault-Isolation**: Infrastructure downtime (exceptions from `priceAnalysis`) causes BUY submissions to fail closed with `SubmissionRefused("weight_policy_unavailable")`, while SELL orders fail open to balance cap to preserve exit liquidity. Corrupt numeric outputs (NaN or out-of-range weights) raise `invalid_weight_policy_weight`.
+
+2. **Unified Mathematical Quantity Capping (`compute_weight_capped_qty`)**:
+   - Enforces 24-hour traded value limits identically across Binance (`bapi_placeorder.apply_weight_limit`) and shared venues (`order_guard.weight_limit`):
+     \[
+     \text{total\_ref} = \text{traded\_24h} + \text{available\_qty} \times \text{price}
+     \]
+     \[
+     \text{max\_trade\_value} = \text{total\_ref} \times \text{weight}
+     \]
+     \[
+     \text{remaining\_qty} = \frac{\max(0.0, \text{max\_trade\_value} - \text{traded\_24h})}{\text{price}}
+     \]
+     \[
+     \text{adjusted\_qty} = \min(\text{required\_qty}, \text{remaining\_qty})
+     \]
+   - Eliminates duplicate logic between venue drivers and unifies behavior across the fleet.
+
+
 
