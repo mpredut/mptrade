@@ -791,8 +791,19 @@ class MarketApi:
             allow_fallback=allow_fallback,
             now=evaluated_at,
         )
+        provider_str = provider_name
+        if not provider_str:
+            try:
+                p_obj = self._provider_explicit_or_routed(symbol, provider_name)
+                provider_str = p_obj.name if p_obj is not None else None
+            except Exception:
+                provider_str = None
         return MarketRegimeContext.from_decision(
-            resolution.decision, evaluated_at=evaluated_at)
+            resolution.decision,
+            evaluated_at=evaluated_at,
+            symbol=symbol,
+            provider=provider_str,
+        )
 
     def market_regime_resolution(
         self,

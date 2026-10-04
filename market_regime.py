@@ -72,6 +72,11 @@ class MarketRegimeContext:
     decision: MarketRegimeDecision
     resolved_trend: str
     evaluated_at: float = 0.0
+    symbol: Optional[str] = None
+    provider: Optional[str] = None
+    trend_duration_seconds: float = 0.0
+    benchmark_symbol: Optional[str] = None
+    benchmark_decision: Optional[MarketRegimeDecision] = None
 
     @property
     def regime(self) -> str:
@@ -97,17 +102,48 @@ class MarketRegimeContext:
     def fallback_used(self) -> bool:
         return self.decision.fallback_used
 
+    def is_valid_for(
+        self,
+        symbol: Optional[str] = None,
+        provider: Optional[str] = None,
+        max_age_seconds: Optional[float] = None,
+        now: Optional[float] = None,
+    ) -> bool:
+        """Validate whether context matches instrument identity and freshness constraints."""
+        if symbol is not None and self.symbol is not None:
+            if self.symbol.strip().upper() != symbol.strip().upper():
+                return False
+        if provider is not None and self.provider is not None:
+            p_str = getattr(provider, "name", None) or (provider if isinstance(provider, str) else None)
+            if p_str and self.provider.strip().lower() != p_str.strip().lower():
+                return False
+        if max_age_seconds is not None and max_age_seconds > 0:
+            current_time = time.time() if now is None else float(now)
+            if self.evaluated_at > 0 and (current_time - self.evaluated_at) > max_age_seconds:
+                return False
+        return True
+
     @classmethod
     def from_decision(
         cls,
         decision: MarketRegimeDecision,
         evaluated_at: Optional[float] = None,
+        symbol: Optional[str] = None,
+        provider: Optional[str] = None,
+        trend_duration_seconds: float = 0.0,
+        benchmark_symbol: Optional[str] = None,
+        benchmark_decision: Optional[MarketRegimeDecision] = None,
     ) -> "MarketRegimeContext":
         trend = "flat" if decision.regime == "sideways" else decision.regime
         return cls(
             decision=decision,
             resolved_trend=trend,
             evaluated_at=time.time() if evaluated_at is None else float(evaluated_at),
+            symbol=symbol.strip().upper() if symbol else None,
+            provider=provider.strip().lower() if provider else None,
+            trend_duration_seconds=float(trend_duration_seconds or 0.0),
+            benchmark_symbol=benchmark_symbol.strip().upper() if benchmark_symbol else None,
+            benchmark_decision=benchmark_decision,
         )
 
 

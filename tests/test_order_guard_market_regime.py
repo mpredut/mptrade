@@ -524,7 +524,105 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             self.assertEqual(scale, 0.25)
             self.assertIn("trend_exhausted", reason)
 
+    def test_market_regime_context_validation_and_benchmarks(self):
+        dec = order_guard.MarketRegimeDecision(
+            regime="bull", gradient=0.5, epsilon=0.1, strength=5.0,
+            fresh=True, reason="signal",
+        )
+        # 1. Matching symbol and provider
+        ctx = order_guard.MarketRegimeContext.from_decision(
+            dec,
+            evaluated_at=self.now,
+            symbol="ETHUSDT",
+            provider="binance",
+            trend_duration_seconds=3600.0,
+            benchmark_symbol="BTCUSDT",
+        )
+        self.assertEqual(ctx.symbol, "ETHUSDT")
+        self.assertEqual(ctx.provider, "binance")
+        self.assertEqual(ctx.trend_duration_seconds, 3600.0)
+        self.assertEqual(ctx.benchmark_symbol, "BTCUSDT")
+
+        # Valid for matching symbol
+        self.assertTrue(ctx.is_valid_for("ETHUSDT", provider="binance", max_age_seconds=60.0, now=self.now + 10.0))
+        # Case insensitive
+        self.assertTrue(ctx.is_valid_for("ethusdt", provider="BINANCE", max_age_seconds=60.0, now=self.now + 10.0))
+        # Invalid for mismatched symbol
+        self.assertFalse(ctx.is_valid_for("SOLUSDT", provider="binance", max_age_seconds=60.0, now=self.now + 10.0))
+        # Invalid for mismatched provider
+        self.assertFalse(ctx.is_valid_for("ETHUSDT", provider="kraken", max_age_seconds=60.0, now=self.now + 10.0))
+        # Invalid when stale (> max_age_seconds)
+        self.assertFalse(ctx.is_valid_for("ETHUSDT", provider="binance", max_age_seconds=60.0, now=self.now + 65.0))
+
+        # 2. Generic context (symbol=None, provider=None) backwards compatible
+        generic_ctx = order_guard.MarketRegimeContext.from_decision(dec, evaluated_at=self.now)
+        self.assertTrue(generic_ctx.is_valid_for("ANY_SYMBOL", provider="any_provider", max_age_seconds=60.0, now=self.now + 10.0))
+        self.assertFalse(generic_ctx.is_valid_for("ANY_SYMBOL", max_age_seconds=60.0, now=self.now + 65.0))
+
+    def test_profit_guard_rejects_mismatched_or_stale_context(self):
+        class _Provider:
+            name = "binance"
+            def get_orders(self, _symbol, _side, _window_s):
+                return []
+
+        provider = _Provider()
+        margins = {
+            "default": 1.15,
+            "default_buy_reference": "dynamic",
+            "buy_window_mode": "dynamic",
+            "regime_context_max_age_sec": 60.0,
+        }
+        dec = order_guard.MarketRegimeDecision(
+            regime="bull", gradient=0.5, epsilon=0.1, strength=5.0,
+            fresh=True, reason="signal",
+        )
+        # Context built for BTCUSDC, but order placed for TAOUSDC
+        btc_ctx = order_guard.MarketRegimeContext.from_decision(
+            dec, evaluated_at=self.now, symbol="BTCUSDC", provider="binance"
+        )
+
+        with mock.patch.object(order_guard, "_MARGINS", margins), \
+                mock.patch.object(order_guard, "_symbol_trend", return_value="bear") as mock_trend:
+            allowed = order_guard.profit_guard(
+                provider,
+                "TAOUSDC",
+                "BUY",
+                293.0,
+                1.15,
+                window_ref=216.28,
+                regime_context=btc_ctx,
+            )
+            # Mismatch should bypass btc_ctx and call _symbol_trend for TAOUSDC!
+            mock_trend.assert_called_with("TAOUSDC", provider=provider)
+            self.assertTrue(allowed)
+
+    def test_check_intelligence_guards_does_not_reuse_cached_decision_across_symbols(self):
+        dec = order_guard.MarketRegimeDecision(
+            regime="bull", gradient=0.5, epsilon=0.1, strength=5.0,
+            fresh=True, reason="signal",
+        )
+        ctx = order_guard.MarketRegimeContext.from_decision(
+            dec, evaluated_at=self.now, symbol="BTCUSDT", provider="binance"
+        )
+        # Pre-seed memoized decision for BTCUSDT
+        object.__setattr__(ctx, "_intelligence_decision", (False, "btc_blocked", 0.0))
+
+        # Check for BTCUSDT: reuses cached memoized decision
+        ok_btc, reason_btc, _ = order_guard.check_intelligence_guards(
+            "binance", "BTCUSDT", "BUY", 80000.0, regime_context=ctx
+        )
+        self.assertFalse(ok_btc)
+        self.assertEqual(reason_btc, "btc_blocked")
+
+        # Check for ETHUSDT: mismatched symbol MUST NOT reuse BTC's memoized decision
+        ok_eth, reason_eth, _ = order_guard.check_intelligence_guards(
+            "binance", "ETHUSDT", "BUY", 3000.0, regime_context=ctx
+        )
+        self.assertTrue(ok_eth)
+        self.assertEqual(reason_eth, "ok")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

@@ -45,6 +45,7 @@ def _load_margins():
         "buy_window_bull_h": 8.0,              # Bull lookback: 4h - 12h
         "buy_window_flat_h": 24.0,             # Flat lookback: 24h - 48h
         "buy_window_bear_h": 72.0,             # Bear lookback: 48h - 168h
+        "regime_context_max_age_sec": 120.0,   # Pre-computed regime context max age (seconds)
     }
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "order_guard.conf")
     try:
@@ -183,6 +184,8 @@ def symbol_regime_context(
     allow_fallback: bool = True,
     snapshot_resolver: Optional[Callable[[str, Optional[float]], Optional[dict]]] = None,
     provider_resolver: Optional[Callable[[Any], Any]] = None,
+    trend_duration_seconds: float = 0.0,
+    benchmark_symbol: Optional[str] = None,
 ) -> MarketRegimeContext:
     """Resolve and bundle MarketRegimeContext once for multi-guard placement pipelines."""
     now_ts = time.time() if now is None else float(now)
@@ -195,7 +198,15 @@ def symbol_regime_context(
         snapshot_resolver=snapshot_resolver,
         provider_resolver=provider_resolver,
     )
-    return MarketRegimeContext.from_decision(decision, evaluated_at=now_ts)
+    provider_name = getattr(provider, "name", None) or (provider if isinstance(provider, str) else None)
+    return MarketRegimeContext.from_decision(
+        decision,
+        evaluated_at=now_ts,
+        symbol=symbol,
+        provider=provider_name,
+        trend_duration_seconds=trend_duration_seconds,
+        benchmark_symbol=benchmark_symbol,
+    )
 
 
 def _symbol_trend(
@@ -213,7 +224,12 @@ def _symbol_trend(
     Consumes the unified MarketRegimeDecision from MarketRegimeService.
     """
     if regime_context is not None:
-        return regime_context.resolved_trend
+        max_age = _load_margins().get("regime_context_max_age_sec", 120.0)
+        if hasattr(regime_context, "is_valid_for"):
+            if regime_context.is_valid_for(symbol=symbol, provider=provider, max_age_seconds=max_age, now=now):
+                return regime_context.resolved_trend
+        else:
+            return regime_context.resolved_trend
     try:
         decision = symbol_regime(
             symbol,
@@ -269,7 +285,9 @@ def dynamic_buy_window_sec(
 
     trend = resolved_trend
     if trend is None and regime_context is not None:
-        trend = getattr(regime_context, "resolved_trend", None)
+        max_age = _load_margins().get("regime_context_max_age_sec", 120.0)
+        if not hasattr(regime_context, "is_valid_for") or regime_context.is_valid_for(symbol=symbol, provider=provider, max_age_seconds=max_age, now=now):
+            trend = getattr(regime_context, "resolved_trend", None)
     if trend not in {"bull", "bear", "flat", "sideways", "unknown"}:
         trend = (
             _symbol_trend(
@@ -528,7 +546,17 @@ def check_intelligence_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
+    valid_context = False
     if regime_context is not None:
+        max_age = _load_margins().get("regime_context_max_age_sec", 120.0)
+        if hasattr(regime_context, "is_valid_for"):
+            valid_context = regime_context.is_valid_for(
+                symbol=symbol, provider=provider, max_age_seconds=max_age, now=now
+            )
+        else:
+            valid_context = True
+
+    if valid_context:
         cached_res = getattr(regime_context, "_intelligence_decision", None)
         if cached_res is not None:
             return cached_res
@@ -540,13 +568,13 @@ def check_intelligence_guards(
         price,
         price_history=price_history,
         trend_duration_seconds=trend_duration_seconds,
-        regime_context=regime_context,
+        regime_context=regime_context if valid_context else None,
         qty=qty,
         notional_eur=notional_eur,
         now=now,
     )
 
-    if regime_context is not None:
+    if valid_context:
         try:
             object.__setattr__(regime_context, "_intelligence_decision", res)
         except Exception:
@@ -797,11 +825,15 @@ def profit_guard(
                   f"(order_guard.conf); price {price} is not compared with past sells")
             return True
         elif mode == "dynamic":
-            trend = (
-                getattr(regime_context, "resolved_trend", None)
-                if regime_context is not None
-                else _symbol_trend(symbol, provider=provider)
-            )
+            trend = None
+            if regime_context is not None:
+                max_age = _load_margins().get("regime_context_max_age_sec", 120.0)
+                if not hasattr(regime_context, "is_valid_for") or regime_context.is_valid_for(
+                    symbol=symbol, provider=provider_name, max_age_seconds=max_age
+                ):
+                    trend = getattr(regime_context, "resolved_trend", None)
+            if trend is None:
+                trend = _symbol_trend(symbol, provider=provider)
             dyn_window_s = dynamic_buy_window_sec(
                 symbol,
                 provider=provider,

@@ -138,9 +138,9 @@ run result belongs to change verification, not this status document.
 
 ## Remaining safe work
 
-1. Bind a reusable `MarketRegimeContext` to its symbol/provider and validate its
-   horizon and age when callers supply it manually. The current context carries
-   the decision horizon and evaluation time but not a complete instrument identity.
+1. [COMPLETED] Bind a reusable `MarketRegimeContext` to its symbol/provider, trend
+   duration, and optional benchmark context, and validate identity and freshness
+   via `is_valid_for()`. Guards bypass mismatched or stale contexts and resolve fresh.
 2. Resolve intelligence evidence once per placement and reuse a typed result
    across guard checks. Inject trend duration, history, and cached assessments
    through an explicit boundary instead of repeated hidden state reads. Preserve
