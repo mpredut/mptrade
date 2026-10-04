@@ -238,4 +238,52 @@ Provides operators with complete visibility into real-time multi-pillar state, g
 ./myenv/bin/python3 intelligence_cli.py --symbol BTCUSDC --json
 ```
 
+---
+
+## 7. Execution Layer: Unified Weight & Sizing Policy (`order_guard.py`)
+
+A centralized, platform-agnostic allocation and quantity-limiting layer evaluated before placing orders across all venues (Binance, Kraken, Hyperliquid):
+
+### 7.1 Canonical Weight Resolution (`order_guard.resolve_trade_weight`)
+Resolves sizing hierarchically across 3 tiers:
+1. **Tier 1 (Own Trend Gaussian)**: When a coin has an active long-term trend, queries `priceAnalysis.get_weight_for_cash_permission_at_quant_time` (evaluating Gaussian distribution, Lindy continuation plateau, and 3-zone momentum bounds).
+2. **Tier 2 (Cross-Venue Proxy)**: When the coin has no trend of its own (e.g. `TAOUSDC` or `HYPE` during consolidation or new listings), queries `<venue>_weight_proxy` (`BTCUSDC` in `order_guard.conf`). If the proxy has an active trend, applies the proxy's Gaussian weight for early beta accumulation.
+3. **Tier 3 (Conservative Chop Floor)**: If neither the symbol nor the proxy has an active trend, falls back to `chop_weight_for(provider_name)` (default `0.03` / 3%).
+4. **Fault Isolation**: Infrastructure exceptions from `priceAnalysis` cause BUY orders to fail closed with `SubmissionRefused("weight_policy_unavailable")`, while SELL orders fail open to balance cap to preserve exit liquidity. Corrupt numeric outputs (NaN or out-of-range weights) raise `invalid_weight_policy_weight`.
+
+### 7.2 Unified Mathematical Quantity Capping (`order_guard.compute_weight_capped_qty`)
+Enforces 24-hour traded value limits identically across Binance (`bapi_placeorder.apply_weight_limit`) and shared venues (`order_guard.weight_limit`):
+\[
+\text{total\_ref} = \text{traded\_24h} + \text{available\_qty} \times \text{price}
+\]
+\[
+\text{max\_trade\_value} = \text{total\_ref} \times \text{weight}
+\]
+\[
+\text{remaining\_qty} = \frac{\max(0.0, \text{max\_trade\_value} - \text{traded\_24h})}{\text{price}}
+\]
+\[
+\text{adjusted\_qty} = \min(\text{required\_qty}, \text{remaining\_qty})
+\]
+
+---
+
+## 8. Empirical Chop Regime & Fallback Weight Optimization (October 2026)
+
+Conducted across **403.9 days** of real continuous tick data (~902,000 ticks per asset, resampled to 30,000+ 15-minute bars) using `offline/research/chop_weight_backtest.py`:
+
+### Key Benchmark Findings:
+1. **Altcoins (`TAOUSDC`)**:
+   - `PROXY_BTC` achieved the **highest total return (+0.54%)** and net profit (+$53.73), outperforming flat weights by enabling early accumulation when Bitcoin leads the market.
+   - Fractional chop weights generated steady positive PnL in chop (+$7.77 at 0.03, +$12.95 at 0.05).
+2. **Market Anchor (`BTCUSDC`)**:
+   - Sideways trading on Bitcoin incurs fee drag (-$7.64 at 0.03).
+   - Higher weights (0.05 to 0.10) increased maximum drawdown (rising from 1.50% to 1.83%).
+   - Capping fallback weight at `0.03` provides the optimal mathematical median (+0.41% return on TAO, halfway between 0.01 at +0.37% and 0.05 at +0.44%) while preserving capital on BTC.
+3. **Persistent Research Artifacts**:
+   - Detailed report: `offline/research/CHOP_WEIGHT_BENCHMARK_2026-10-05.md`.
+   - Full dataset: `offline/research/chop_weight_backtest_results.json`.
+   - Automated backtester: `offline/research/chop_weight_backtest.py`.
+
+
 
