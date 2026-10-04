@@ -470,7 +470,13 @@ def process_once(mkt, now=None):
         # reach the price gate. Reconciliation must not depend on current price:
         # an already accepted venue order remains real after the quote moves.
         try:
-            price = mkt.get_current_price(symbol)
+            if provider_name is not None and hasattr(mkt, "get_current_price"):
+                try:
+                    price = mkt.get_current_price(symbol, provider_name=provider_name)
+                except TypeError:
+                    price = mkt.get_current_price(symbol)
+            else:
+                price = mkt.get_current_price(symbol)
         except Exception as exc:  # noqa: BLE001
             print(
                 f"[order_retry] price unavailable {symbol} ({exc}); "

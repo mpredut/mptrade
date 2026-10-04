@@ -477,6 +477,15 @@ class BinanceProvider(MarketDataProvider):
         except ProviderError:
             raise
         except Exception as e:  # noqa: BLE001
+            err_text = str(e)
+            if "-2026" in err_text or "archived" in err_text:
+                return OrderStatus(
+                    status="canceled",
+                    filled_qty=0.0,
+                    cost=0.0,
+                    fee=0.0,
+                    venue_status="ARCHIVED_CANCELED",
+                )
             raise ProviderError(f"order_status({order_id}): {e}") from e
         st_map = {
             "FILLED": "closed",
