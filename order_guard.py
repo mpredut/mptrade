@@ -199,12 +199,15 @@ def symbol_regime_context(
         provider_resolver=provider_resolver,
     )
     provider_name = getattr(provider, "name", None) or (provider if isinstance(provider, str) else None)
+    dur_sec = trend_duration_seconds
+    if not dur_sec and symbol:
+        dur_sec = _resolve_trend_duration(symbol)
     return MarketRegimeContext.from_decision(
         decision,
         evaluated_at=now_ts,
         symbol=symbol,
         provider=provider_name,
-        trend_duration_seconds=trend_duration_seconds,
+        trend_duration_seconds=dur_sec,
         benchmark_symbol=benchmark_symbol,
     )
 
@@ -520,6 +523,22 @@ def _read_cached_trend_duration(symbol: str) -> float:
     return 0.0
 
 
+def _resolve_trend_duration(symbol: str) -> float:
+    """Resolve trend duration in seconds from memory/cache files once."""
+    if not symbol:
+        return 0.0
+    try:
+        import cacheManager as cm
+        trend_meta = getattr(cm, "read_long_term_trend_file", lambda s: None)(symbol)
+        if trend_meta and "duration_seconds" in trend_meta:
+            dur = float(trend_meta["duration_seconds"] or 0.0)
+            if dur > 0:
+                return dur
+    except Exception:
+        pass
+    return _read_cached_trend_duration(symbol)
+
+
 def check_intelligence_guards(
     provider,
     symbol: str,
@@ -635,15 +654,7 @@ def _evaluate_intelligence_guards_raw(
         if regime_context is not None:
             dur_sec = getattr(regime_context, "trend_duration_seconds", 0.0) or 0.0
         if not dur_sec:
-            try:
-                import cacheManager as cm
-                trend_meta = getattr(cm, "read_long_term_trend_file", lambda s: None)(symbol)
-                if trend_meta and "duration_seconds" in trend_meta:
-                    dur_sec = float(trend_meta["duration_seconds"])
-            except Exception:
-                pass
-        if not dur_sec:
-            dur_sec = _read_cached_trend_duration(symbol)
+            dur_sec = _resolve_trend_duration(symbol)
 
     if dur_sec and dur_sec > 0:
         e_dec = e_guard.check(symbol, side, trend_duration_seconds=dur_sec)

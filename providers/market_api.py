@@ -761,6 +761,7 @@ class MarketApi:
         strength_threshold=None,
         allow_fallback=True,
         now=None,
+        trend_duration_seconds=0.0,
     ) -> MarketRegimeContext:
         """Resolve one reusable short-horizon context at the composition root."""
         evaluated_at = time.time() if now is None else float(now)
@@ -803,6 +804,7 @@ class MarketApi:
             evaluated_at=evaluated_at,
             symbol=symbol,
             provider=provider_str,
+            trend_duration_seconds=trend_duration_seconds,
         )
 
     def market_regime_resolution(

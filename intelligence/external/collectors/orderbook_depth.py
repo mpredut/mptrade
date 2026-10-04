@@ -61,11 +61,13 @@ class OrderbookDepthCollector:
         depth_band_pct: float = 1.5,     # Analyze depth within 1.5% of mid-price
         whale_wall_usd: float = 500_000.0,
         cache_dir: Optional[str] = "cachedb",
+        disk_ttl_sec: float = 60.0,
     ) -> None:
         self.cache_ttl_sec = cache_ttl_sec
         self.depth_band_pct = depth_band_pct
         self.whale_wall_usd = whale_wall_usd
         self.cache_dir = cache_dir
+        self.disk_ttl_sec = disk_ttl_sec
         self._cache: Dict[str, tuple[float, OrderbookSnapshot]] = {}
 
     def _disk_path(self, symbol: str) -> Optional[str]:
@@ -81,7 +83,8 @@ class OrderbookDepthCollector:
             with open(p, "r", encoding="utf-8") as f:
                 data = json.load(f)
             snapshot = OrderbookSnapshot.from_dict(data)
-            if (now - snapshot.ts) < self.cache_ttl_sec:
+            max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
+            if (now - snapshot.ts) < max_age:
                 self._cache[symbol.upper()] = (snapshot.ts, snapshot)
                 return snapshot
         except Exception as e:

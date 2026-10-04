@@ -46,9 +46,15 @@ class DerivativesTelemetry:
 class DerivativesTelemetryCollector:
     """Fetches and caches public derivatives market metrics."""
 
-    def __init__(self, cache_ttl_sec: float = 60.0, cache_dir: Optional[str] = "cachedb") -> None:
+    def __init__(
+        self,
+        cache_ttl_sec: float = 60.0,
+        cache_dir: Optional[str] = "cachedb",
+        disk_ttl_sec: float = 120.0,
+    ) -> None:
         self.cache_ttl_sec = cache_ttl_sec
         self.cache_dir = cache_dir
+        self.disk_ttl_sec = disk_ttl_sec
         self._cache: Dict[str, tuple[float, DerivativesTelemetry]] = {}
 
     def _disk_path(self, symbol: str) -> Optional[str]:
@@ -64,7 +70,8 @@ class DerivativesTelemetryCollector:
             with open(p, "r", encoding="utf-8") as f:
                 data = json.load(f)
             telemetry = DerivativesTelemetry.from_dict(data)
-            if (now - telemetry.ts) < self.cache_ttl_sec:
+            max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
+            if (now - telemetry.ts) < max_age:
                 self._cache[symbol.upper()] = (telemetry.ts, telemetry)
                 return telemetry
         except Exception as e:

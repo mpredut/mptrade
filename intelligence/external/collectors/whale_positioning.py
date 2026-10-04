@@ -57,9 +57,15 @@ class WhalePositioningSnapshot:
 class WhalePositioningCollector:
     """Collects and caches Binance Futures top trader and open interest metrics."""
 
-    def __init__(self, cache_ttl_sec: float = 120.0, cache_dir: Optional[str] = "cachedb") -> None:
+    def __init__(
+        self,
+        cache_ttl_sec: float = 120.0,
+        cache_dir: Optional[str] = "cachedb",
+        disk_ttl_sec: float = 300.0,
+    ) -> None:
         self.cache_ttl_sec = cache_ttl_sec
         self.cache_dir = cache_dir
+        self.disk_ttl_sec = disk_ttl_sec
         self._cache: Dict[str, tuple[float, WhalePositioningSnapshot]] = {}
 
     def _disk_path(self, symbol: str) -> Optional[str]:
@@ -75,7 +81,8 @@ class WhalePositioningCollector:
             with open(p, "r", encoding="utf-8") as f:
                 data = json.load(f)
             snapshot = WhalePositioningSnapshot.from_dict(data)
-            if (now - snapshot.ts) < self.cache_ttl_sec:
+            max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
+            if (now - snapshot.ts) < max_age:
                 self._cache[symbol.upper()] = (snapshot.ts, snapshot)
                 return snapshot
         except Exception as e:
