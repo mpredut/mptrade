@@ -81,7 +81,7 @@ def run_intelligence_backtest(
         use_guards = (mode == "INTELLIGENCE_GUARDED")
         logger.info("Starting simulation in mode: %s ...", mode)
 
-        kalman = KalmanTrendTrigger(q=1e-4, r=1e-2)
+        kalman = KalmanTrendTrigger()
         gradient_trigger = LinearGradientTrigger()
         mean_rev_trigger = MeanReversionTrigger(rsi_period=14, bollinger_period=20)
         parabolic_guard = ParabolicSurgeGuard(surge_threshold_pct=parabolic_surge_pct)
