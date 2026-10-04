@@ -168,6 +168,7 @@ the necessary order and exceptions for restarting.
 | `kraken/` | Kraken integration and processes |
 | `212trading/` | Trading 212 engine and integration |
 | `hyperliquid/` | Hyperliquid integration; DN stopped in production |
+| `intelligence/` | multi-pillar decision framework, mathematical & flow guards, sentiment, macro shield |
 | `forecast/` | trend and survival estimations |
 | `verify_tools/` | health, ownership, snapshot, and operational validations |
 | `offline/` | runners, simulations, and replay isolated from live |
@@ -179,9 +180,12 @@ the necessary order and exceptions for restarting.
 ## Documentation
 
 - [`docs/README.md`](docs/README.md) — documentation index;
+- [`docs/MARKET_INTELLIGENCE.md`](docs/MARKET_INTELLIGENCE.md) — multi-pillar decision & guard framework;
+- [`docs/REFACTOR_STATUS.md`](docs/REFACTOR_STATUS.md) — active refactor status and architectural boundaries;
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — runbook, reboot, and diagnostic;
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — contracts, providers, and ownership;
 - [`docs/STRATEGY.md`](docs/STRATEGY.md) — financial rules;
 - [`docs/DISASTER_RECOVERY.md`](docs/DISASTER_RECOVERY.md) — backup and recovery;
 - [`kraken/README.md`](kraken/README.md) and
   [`hyperliquid/README.md`](hyperliquid/README.md) — per-component details.
+

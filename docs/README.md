@@ -9,19 +9,19 @@ their code (a deliberate convention — they are linked below).
   **pitfalls and lessons** (fd lock leak, hang vs crash, DN co-mingling, the execute bit, quoting) and diagnostics.
 - [DISASTER_RECOVERY.md](DISASTER_RECOVERY.md) — full rebuild on a new VM (the DR seed,
   secret backups, restore.sh), periodic backups, what is and is not in git.
-- [VERIFICATION_STATUS.md](VERIFICATION_STATUS.md) — the last reproducible verification,
+- [archive/VERIFICATION_STATUS.md](archive/VERIFICATION_STATUS.md) — historical reproducible verification,
   the limits of the local environment, and the intentional ownership overlaps.
 - [NOTIFICATION_DELIVERY_POLICY.md](NOTIFICATION_DELIVERY_POLICY.md) — routine ntfy
   limits, uncapped urgent alerts/email, deduplication, and provider-quota fallback.
 
 ## Design and strategy (the durable whys)
 
-- [RSI_BOLLINGER_REVIEW_2026-09-14.md](RSI_BOLLINGER_REVIEW_2026-09-14.md) — RSI and
+- [archive/RSI_BOLLINGER_REVIEW_2026-09-14.md](archive/RSI_BOLLINGER_REVIEW_2026-09-14.md) — RSI and
   Bollinger tested as a trigger (Exp 8) and as a DCA filter (Exp 9); both rejected on 329
   days with an overfit split. Do not add them; the existing signal stack covers it better.
-- [STRATEGY_REVIEW_2026-09-09.md](STRATEGY_REVIEW_2026-09-09.md) — finite-cash profile
+- [archive/STRATEGY_REVIEW_2026-09-09.md](archive/STRATEGY_REVIEW_2026-09-09.md) — finite-cash profile
   comparison, automatic re-buy corrections and unpromoted financial candidates.
-- [STRATEGY_REVIEW_2026-09-08.md](STRATEGY_REVIEW_2026-09-08.md) — shared spot exit
+- [archive/STRATEGY_REVIEW_2026-09-08.md](archive/STRATEGY_REVIEW_2026-09-08.md) — shared spot exit
   ownership fixes, reproduced Hyperliquid reentry evidence and explicit baseline drift.
 - [FLEET_STRATEGY_CATALOG_AND_VENUE_CONFIG.md](FLEET_STRATEGY_CATALOG_AND_VENUE_CONFIG.md) — Comprehensive
   inventory of all 12 trading strategies and execution modes, cross-venue compatibility (Kraken vs Hyperliquid vs Binance),
@@ -49,6 +49,8 @@ their code (a deliberate convention — they are linked below).
   the rejected semantic-deduplication proposal and why `RETRY_DEDUP=false` remains in force.
 - [REFACTOR_STATUS.md](REFACTOR_STATUS.md) — the active implementation status,
   remaining safe work, verification gates, and explicit architectural non-goals.
+- [../offline/research/intelligence_backtest_results.json](../offline/research/intelligence_backtest_results.json) — empirical 14-month backtest dataset for Pillars 1 & 2.
+- [../offline/research/verify_optimizations_parity.py](../offline/research/verify_optimizations_parity.py) — 30,000-trial numerical parity test suite for fast OLS, Welford volatility, and memoized cost-basis.
 
 ## Component READMEs (next to the code)
 - [../hyperliquid/README.md](../hyperliquid/README.md) — Hyperliquid: spot stopped for insufficient capital, runtime gates, isolated state and the long-term shadow candidate.

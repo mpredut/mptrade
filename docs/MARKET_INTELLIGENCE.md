@@ -206,5 +206,7 @@ All persistent intelligence state is isolated to `cachedb/`:
 - `cachedb/cache_T_trend.json`: Empirically calibrated Weibull trend survival parameters per symbol.
 - `cachedb/gemini_macro_advisor.json`: 30-minute periodic LLM macro market synthesis.
 - `cachedb/fear_greed_cache.json`: Alternative.me Fear & Greed index cache.
-- `cachedb/geopolitical_shock.json`: Macro news shock scores and Gemini risk grade.
-- `logger/intelligence_backtest_results.json`: Detailed historical backtest outcome records.
+- `cachedb/geopolitical_threat_state.json`: Macro news shock scores and Gemini risk grade.
+- `offline/research/intelligence_backtest_results.json`: Detailed historical backtest outcome records.
+- `offline/research/verify_optimizations_parity.py`: Exhaustive numerical parity verification suite (30,000+ randomized trials).
+

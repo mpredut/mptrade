@@ -85,31 +85,44 @@ survival, parabolic-surge, exhaustion, and noise components. Existing analysis
 code now reuses these internal primitives instead of keeping separate
 implementations.
 
-The shared order boundary is deliberately narrower than the composite. For BUY
-orders, `order_guard.check_intelligence_guards` currently evaluates optional
-parabolic history, Weibull trend duration, high-stake Gemini review, and a cached
-geopolitical assessment. The versioned modes are `shadow`, so these observations
-do not block or resize an order under those defaults. This hook does not call
-`CompositeMarketIntelligence`, and it is not a global portfolio-risk coordinator.
+The shared order boundary evaluates guards across all active pillars. For BUY
+orders, `order_guard.check_intelligence_guards` evaluates:
 
-Current integration limits are explicit:
+- **Pillar 1 (Internal quantitative)**: `ParabolicSurgeGuard` (anti-FOMO spike
+  detection), `WeibullExhaustionGuard` (P90 trend age downscaling), and
+  `NoiseFloorGuard`;
+- **Pillar 2 (External microstructure & flow)**: `OrderbookWallGuard` (deferring
+  buys into ask walls or thin books), `WhaleDivergenceGuard` (vetoing fakeout
+  spikes with falling OI or whale dump), and `FundingCrowdingGuard` (downscaling
+  crowded longs). These read local memory and disk snapshots with `allow_network=False`
+  (sub-millisecond overhead, failing open safely if snapshot data is missing);
+- **Pillar 3 (Sentiment & LLM)**: `GeminiHighStakeGuard` for high-notional orders
+  ($\ge 1,000$ EUR, evaluated with a 12s timeout and fail-open fallback; sub-1,000
+  EUR orders bypass immediately with 0 ms overhead);
+- **Pillar 4 (Macro shock shield)**: `GeopoliticalShockGuard` evaluating persisted
+  `cachedb/geopolitical_threat_state.json` without performing external HTTP
+  requests during placement.
 
-- no runtime bot currently consumes `CompositeMarketIntelligence`; the external
-  and sentiment composite inputs are not wired into the live order hook;
-- `profit_guard` does not forward price history, and placement callers do not
-  supply `qty` or `notional_eur` to it, so the parabolic and high-stake Gemini
-  checks are not exercised by those paths;
-- `profit_guard` consumes the allow/block result but discards `suggested_scale`,
-  so a downscale decision does not yet change executable quantity;
-- `MarketRegimeContext` does not carry trend duration, so Weibull evaluation may
-  fall back to the legacy cache, while geopolitical evaluation consumes only a
-  persisted assessment and does not fetch or analyze news in the order path;
-- one MARKET placement can call `profit_guard` up to three times. Intelligence
-  evidence is not yet captured once and reused, so directly adding remote inputs
-  would risk repeated state reads and repeated high-latency reviews;
-- the offline intelligence backtest covers a simplified single-asset internal
-  strategy. It is not evidence for external, sentiment, macro, or live execution
-  behavior.
+The versioned default modes are `shadow` in `order_guard.conf`, logging decisions
+and emitting push alerts via `ntfy` (`SHADOW_NTFY_ENABLED=true`) without blocking
+or altering execution.
+
+Current operational state:
+
+- `profit_guard` now accepts `qty`, calculates order notional, and forwards `qty`
+  to `check_intelligence_guards`;
+- single-placement evaluation memoization is implemented: `_intelligence_decision`
+  is cached on `regime_context`, eliminating repeated state reads or duplicated
+  evaluations across the multiple guard checks of a single MARKET placement;
+- `MarketRegimeContext` carries `symbol`, `provider`, and `trend_duration_seconds`,
+  and validates identity and freshness via `is_valid_for()`;
+- `CompositeMarketIntelligence` serves as an orchestration API for multi-pillar
+  analysis; order placement paths invoke targeted guards rather than the entire
+  offline composite;
+- the offline intelligence backtest (`offline/research/intelligence_backtest.py`)
+  simulates 14 months of empirical price data + orderbook/flow dynamics (cascade
+  knives, whale dump, ask walls) on BTC and TAO, and results are permanently
+  persisted to `offline/research/intelligence_backtest_results.json`.
 
 ### Order lifecycle and state ownership
 
@@ -141,11 +154,10 @@ run result belongs to change verification, not this status document.
 1. [COMPLETED] Bind a reusable `MarketRegimeContext` to its symbol/provider, trend
    duration, and optional benchmark context, and validate identity and freshness
    via `is_valid_for()`. Guards bypass mismatched or stale contexts and resolve fresh.
-2. Resolve intelligence evidence once per placement and reuse a typed result
-   across guard checks. Inject trend duration, history, and cached assessments
-   through an explicit boundary instead of repeated hidden state reads. Preserve
-   current shadow behavior; wiring notional into every guard call could otherwise
-   invoke a high-latency review up to three times for one MARKET order.
+2. [COMPLETED] Resolve intelligence evidence once per placement and reuse a typed
+   result across guard checks (`_intelligence_decision` memoized on `regime_context`).
+   `qty` and notional forwarded to `profit_guard`, and non-blocking local snapshot
+   policy (`allow_network=False`) prevents latency bottlenecks.
 3. Adopt the shared resolver in another bot only when that bot needs the same
    evidence semantics. Do not force every strategy through one policy or change
    its existing thresholds as part of a mechanical refactor.

@@ -18,10 +18,16 @@ current code — what lives here are the durable "whys", not the live state.
   - **The market regime does NOT change the duration** — it is invariant across bull/bear/range
     (the median of ~3 days is identical); analysed and abandoned (per-regime turned out to be a
     small-sample artefact). A global T plus the plateau is enough.
-  - `forecast.py` is a parallel module (experimental, it does NOT trade); it does not beat the lindy
-    baseline. The LSTM (`priceprediction.py`, Keras) does not run — tensorflow is not in the venv.
+  - Offline ML research models (`forecast.py`, PyTorch LSTM `priceprediction.py`, and Chronos foundation models) are isolated in `offline/research/ml_forecast/`. The operational trend survival and persistence logic is consolidated into `intelligence/internal/state/persistence.py`.
 
-## The Binance profit guard — a 12-day window
+## Market Intelligence Execution Guards (`order_guard.py` + `intelligence/`)
+A multi-pillar execution defense layer evaluated before sending BUY orders to exchanges:
+- **Anti-FOMO Parabolic Surge Guard**: Detects vertical price spikes ($\ge 15.0\%$ in 2 hours, scaled by 1h volatility) and defers BUY orders until a healthy pullback occurs, preventing entries into blow-off tops.
+- **Weibull Trend Exhaustion Guard**: Calculates survival hazard probability. When trend age exceeds empirical survival $P90$ (e.g. 7.0 days for BTC, 6.7 days for TAO), new BUY allocations are downscaled to 25% of standard sizing.
+- **External Orderbook Wall & Whale Divergence Guard**: Microstructure vetoes that block BUY entries into massive institutional ask walls ($\ge \$1,000,000$) or during short-covering fakeouts where price rises without open interest expansion.
+- **Liquidation Cascade Guard**: Prevents catching falling knives during sudden derivative liquidation waterfalls.
+- **Macro Geopolitical & Gemini High-Stake Shield**: Evaluates real-time geopolitical crisis news and subjects high-notional orders ($\ge 1,000$ EUR) to Gemini LLM risk evaluation.
+
 `monitortrades` plus `bapi_placeorder.if_place_safe_order`: the guard takes its reference from the
 last `MT_GUARD_WINDOW_DAYS` (default **12**) days (`min(sell)` for a BUY, `max(buy)` for a SELL). It
 used to be 14 — an old sell blocked re-entry after a crash (the TAO incident, June 2026); reduced to 12.
