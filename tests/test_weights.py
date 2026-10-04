@@ -135,5 +135,30 @@ class TestWeightForCashPermission(unittest.TestCase):
         self.assertTrue(weight is None or isinstance(weight, float))
 
 
+class TestUnifiedWeightResolution(unittest.TestCase):
+    """Test unified order_guard resolve_trade_weight and chop_weight_for."""
+
+    def test_chop_weight_for_venue(self):
+        import order_guard
+        self.assertEqual(order_guard.chop_weight_for("binance"), 0.03)
+        self.assertEqual(order_guard.chop_weight_for("kraken"), 0.03)
+        self.assertEqual(order_guard.chop_weight_for(None), 0.03)
+
+    def test_compute_weight_capped_qty(self):
+        import order_guard
+        # price=100, weight=0.10, traded_24h=50, available=10 -> total_ref = 50 + 1000 = 1050
+        # max_trade_value = 105.0 -> remaining_value = 105 - 50 = 55.0 -> remaining_qty = 0.55
+        adj = order_guard.compute_weight_capped_qty(
+            weight=0.10, price=100.0, required_qty=1.0, available_qty=10.0, traded_24h_value=50.0)
+        self.assertAlmostEqual(adj, 0.55, places=4)
+
+    def test_resolve_trade_weight_fallback(self):
+        from unittest.mock import patch
+        import order_guard
+        with patch("priceAnalysis.get_weight_for_cash_permission_at_quant_time", return_value=None):
+            w = order_guard.resolve_trade_weight("UNKNOWNCOIN", "BUY", "binance")
+            self.assertEqual(w, 0.03)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

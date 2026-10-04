@@ -378,6 +378,81 @@ def window_reference(provider, symbol, order_type, window_s):
     return min(prices) if order_type.upper() == "BUY" else max(prices)
 
 
+def chop_weight_for(provider_name):
+    """Return the venue's conservative chop fallback weight (default 0.03)."""
+    m = _load_margins()
+    key = (provider_name or "").lower() + "_chop_weight"
+    val = m.get(key, m.get("default_chop_weight", 0.03))
+    try:
+        f = float(val)
+        return f if math.isfinite(f) and f > 0 else 0.03
+    except (TypeError, ValueError):
+        return 0.03
+
+
+def resolve_trade_weight(symbol, order_type, provider_name=None, *, default_weight=None, raise_on_error=False):
+    """Resolve trade weight using priceAnalysis Gaussian curve, proxy, or conservative fallback.
+
+    1. Gaussian weight for symbol when long trend exists.
+    2. Proxy Gaussian weight (e.g. BTCUSDC) when symbol has no trend.
+    3. Conservative chop fallback (default 0.03 or venue-configured chop weight).
+    """
+    import math
+
+    def _gauss(sym):
+        try:
+            import priceAnalysis as pa
+            val = pa.get_weight_for_cash_permission_at_quant_time(sym, order_type)
+            if val is not None:
+                fval = float(val)
+                if not math.isfinite(fval) or not 0 < fval <= 1:
+                    if raise_on_error and sym == symbol:
+                        from providers.strategy_executor import SubmissionRefused
+                        raise SubmissionRefused("invalid_weight_policy_weight")
+                    return None
+                return fval
+            return None
+        except Exception as e:
+            if raise_on_error and sym == symbol:
+                raise
+            print(f"[WEIGHT] {sym}: cannot compute the gauss value ({e})")
+            return None
+
+    weight = _gauss(symbol)
+    if weight is None:
+        proxy = weight_proxy_for(provider_name)
+        if proxy and proxy != symbol:
+            try:
+                pw = _gauss(proxy)
+                if pw is not None:
+                    weight = pw
+                    print(f"[WEIGHT] {symbol}: no trend of its own -> proxy {proxy} (weight={weight})")
+            except Exception as e:
+                print(f"[WEIGHT] {symbol}: proxy {proxy} lookup failed ({e})")
+
+    if weight is None:
+        if default_weight is None:
+            default_weight = chop_weight_for(provider_name)
+        weight = default_weight
+        print(f"[WEIGHT] {symbol}: no trend or proxy -> fallback weight={weight}")
+
+    return float(weight)
+
+
+def compute_weight_capped_qty(weight, price, required_qty, available_qty, traded_24h_value):
+    """Cap per-order quantity using Gaussian/chop weight and 24h traded quote reference."""
+    price = float(price)
+    available = float(available_qty)
+    required = float(required_qty)
+    traded = float(traded_24h_value)
+
+    total_ref = traded + available * price
+    max_trade_value = total_ref * float(weight)
+    remaining_value = max(0.0, max_trade_value - traded)
+    remaining_qty = remaining_value / price if price > 0 else 0.0
+    return min(required, remaining_qty)
+
+
 def weight_limit(provider, symbol, order_type, price, required_qty, *, available_qty):
     """Cap per-order quantity using the Gaussian curve, the platform-agnostic equivalent
     of bapi.apply_weight_limit. Allocate tradable value by trend position so the whole
@@ -385,39 +460,15 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
     provider.get_orders supplies 24-hour traded value. The shared quantity decision must
     supply the side-aware balance, which this guard does not re-read. Return the smaller
     of requested and permitted quantity. Errors propagate so the caller fails closed."""
-    import math
-    def _ok(w):
-        return w is not None and not (isinstance(w, float) and math.isnan(w)) and w > 0
-
-    def _gauss(sym):
-        try:
-            import priceAnalysis as pa
-            return pa.get_weight_for_cash_permission_at_quant_time(sym, order_type)
-        except Exception as e:
-            print(f"[WEIGHT] {sym}: cannot compute the gauss value ({e})")
-            return None
-
-    weight = _gauss(symbol)                                 # own Gaussian weight when a long trend exists
-    if not _ok(weight):                                     # no own trend: try a proxy such as BTC for HYPE
-        proxy = weight_proxy_for(getattr(provider, "name", ""))
-        if proxy and proxy != symbol:
-            pw = _gauss(proxy)
-            if _ok(pw):
-                weight = pw
-                print(f"[WEIGHT] {symbol}: no trend of its own -> proxy {proxy} (weight={weight})")
-    if not _ok(weight):                                     # no valid proxy: use conservative default
-        weight = 0.03
-    recent = provider.get_orders(symbol, order_type, 86400) or []      # same side over the last 24 hours
+    provider_name = getattr(provider, "name", "")
+    weight = resolve_trade_weight(symbol, order_type, provider_name)
+    recent = provider.get_orders(symbol, order_type, 86400) or []
     traded_value = sum(float(o.get("price", 0)) * float(o.get("qty", o.get("quantity", 0))) for o in recent)
-    # available is in BASE and already side-aware from providers.quantity:
-    #   SELL: BASE balance available to sell;
-    #   BUY: BASE purchasable with QUOTE balance (free_balance maps USD to ZUSD on Kraken).
     available = float(available_qty)
-    total_ref = traded_value + available * price                       # total potentially tradable quote value
-    max_trade_value = total_ref * weight                               # Gaussian-weighted cap
-    remaining_value = max(0.0, max_trade_value - traded_value)         # remaining value allowed today
-    remaining_qty = remaining_value / price if price else 0.0
-    adjusted = min(required_qty, remaining_qty)
+    adjusted = compute_weight_capped_qty(weight, price, required_qty, available, traded_value)
+    total_ref = traded_value + available * price
+    max_trade_value = total_ref * weight
+    remaining_value = max(0.0, max_trade_value - traded_value)
     print(f"[WEIGHT] {order_type} {symbol}: weight={weight} traded24h={traded_value:.2f} "
           f"avail={available:.6f} max={max_trade_value:.2f} remaining={remaining_value:.2f} "
           f"cerut={required_qty:.6f} -> {adjusted:.6f}")

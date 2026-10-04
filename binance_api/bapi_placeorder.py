@@ -185,41 +185,13 @@ def apply_weight_limit(symbol, order_type, price, required_qty, available_qty):
             return available_qty
         raise SubmissionRefused(reason) from exc
 
-    raw_weight = None
     try:
-        raw_weight = pa.get_weight_for_cash_permission_at_quant_time(
-            symbol, order_type)
+        weight = order_guard.resolve_trade_weight(
+            symbol, order_type, provider_name="binance", raise_on_error=True)
+    except SubmissionRefused:
+        raise
     except Exception as exc:
         return _fail_open_or_refuse("weight_policy_unavailable", exc)
-
-    weight = None
-    if raw_weight is not None:
-        try:
-            fw = float(raw_weight)
-            if not math.isfinite(fw) or not 0 < fw <= 1:
-                raise SubmissionRefused("invalid_weight_policy_weight")
-            weight = fw
-        except (TypeError, ValueError) as exc:
-            raise SubmissionRefused("invalid_weight_policy_weight") from exc
-
-    if weight is None:
-        proxy = order_guard.weight_proxy_for("binance")
-        if proxy and proxy != symbol:
-            try:
-                pw = pa.get_weight_for_cash_permission_at_quant_time(
-                    proxy, order_type)
-                if pw is not None:
-                    fw = float(pw)
-                    if math.isfinite(fw) and 0 < fw <= 1:
-                        weight = fw
-                        print(f"apply_weight_limit -> {symbol}: no trend of its own -> "
-                              f"proxy {proxy} (weight={weight})")
-            except Exception as exc:
-                print(f"apply_weight_limit -> {symbol}: proxy {proxy} lookup failed: {exc}")
-
-    if weight is None:
-        weight = 0.03
-        print(f"apply_weight_limit -> {symbol}: no trend or proxy -> fallback weight={weight}")
 
     if not math.isfinite(weight) or not 0 < weight <= 1:
         raise SubmissionRefused("invalid_weight_policy_weight")
@@ -233,11 +205,17 @@ def apply_weight_limit(symbol, order_type, price, required_qty, available_qty):
     if not math.isfinite(traded_value) or traded_value < 0:
         raise SubmissionRefused("invalid_trade_stats")
 
+    adjusted_qty = order_guard.compute_weight_capped_qty(
+        weight=weight,
+        price=price,
+        required_qty=required_qty,
+        available_qty=available_qty,
+        traded_24h_value=traded_value,
+    )
     total_value_reference = traded_value + available_qty * price
     max_trade_value = total_value_reference * weight
     remaining_trade_value = max(0.0, max_trade_value - traded_value)
     remaining_trade_qty = remaining_trade_value / price
-    adjusted_qty = min(required_qty, remaining_trade_qty)
     if not all(math.isfinite(value) for value in (
             total_value_reference, max_trade_value, remaining_trade_value,
             remaining_trade_qty, adjusted_qty)):
