@@ -472,14 +472,15 @@ def check_intelligence_guards(
     price_history=None,
     trend_duration_seconds: float = 0.0,
     regime_context=None,
+    qty: Optional[float] = None,
+    notional_eur: Optional[float] = None,
     now: Optional[float] = None,
 ) -> tuple[bool, str, float]:
-    """Evaluate intelligence guards (ParabolicSurgeGuard and WeibullExhaustionGuard).
+    """Evaluate intelligence guards (ParabolicSurge, WeibullExhaustion, and GeminiHighStake).
 
-    Supports staged rollouts via order_guard.conf 'intelligence_guards_mode':
-    - 'off': Bypassed completely.
-    - 'shadow' (default): Evaluates guards and logs observational decisions without blocking orders.
-    - 'enforce': Actively enforces vetoes or downscales orders.
+    Supports staged rollouts via order_guard.conf:
+    - 'intelligence_guards_mode': 'off' | 'shadow' | 'enforce'
+    - 'gemini_guard_mode': 'off' | 'shadow' | 'enforce' (vets purchases >= 1000 EUR)
 
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
@@ -538,6 +539,27 @@ def check_intelligence_guards(
                     return False, e_dec.reason, 0.0
                 return True, e_dec.reason, e_dec.suggested_scale
 
+    # 3. Google Gemini High-Stake Guard (> 1000 EUR purchases)
+    gemini_mode = str(m.get("gemini_guard_mode", "shadow")).strip().lower()
+    if gemini_mode not in ("off", "0", "disabled"):
+        min_notional = float(m.get("gemini_min_notional_eur", 1000.0))
+        computed_notional = notional_eur
+        if computed_notional is None and qty is not None and price > 0:
+            computed_notional = price * qty
+        if computed_notional is not None and computed_notional >= min_notional:
+            from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
+            timeout_sec = float(m.get("gemini_timeout_sec", 12.0))
+            fallback = str(m.get("gemini_fallback", "allow")).strip().lower()
+            g_guard = GeminiHighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
+            g_dec = g_guard.check(symbol, side, price, qty if qty is not None else 1.0, notional_eur=computed_notional)
+            if not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                prefix = "[GEMINI_GUARD_SHADOW]" if gemini_mode == "shadow" else "[GEMINI_GUARD_ENFORCE]"
+                print(f"{prefix} {side} {symbol} €{computed_notional:.2f}: {g_dec.reason} (brake={g_dec.brake_action}, suggested_scale={g_dec.suggested_scale})")
+                if gemini_mode == "enforce":
+                    if not g_dec.allowed:
+                        return False, g_dec.reason, 0.0
+                    return True, g_dec.reason, g_dec.suggested_scale
+
     return True, "ok", 1.0
 
 
@@ -550,6 +572,8 @@ def profit_guard(
     window_ref=None,
     *,
     regime_context=None,
+    qty: Optional[float] = None,
+    notional_eur: Optional[float] = None,
 ):
     """Return whether the order is profitable relative to its reference.
     Reference cascade: caller-provided window_ref first, otherwise
@@ -557,7 +581,7 @@ def profit_guard(
     allows placement because there is no prior transaction to compare."""
     # Staged / Shadow intelligence guard evaluation
     intel_ok, intel_reason, _ = check_intelligence_guards(
-        provider, symbol, order_type, price, regime_context=regime_context
+        provider, symbol, order_type, price, regime_context=regime_context, qty=qty, notional_eur=notional_eur
     )
     if not intel_ok:
         print(f"[GUARD] {order_type} {symbol}: blocked by intelligence guard ({intel_reason})")

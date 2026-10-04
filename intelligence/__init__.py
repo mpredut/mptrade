@@ -31,13 +31,16 @@ from intelligence.external.guards.funding_crowding_guard import FundingCrowdingG
 from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
 from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
 
-# Pillar 3: Sentiment telemetry (Fear & Greed, Market Breadth, Contrarian drivers, Euphoria brakes)
+# Pillar 3: Sentiment & LLM telemetry (Fear & Greed, Market Breadth, Gemini Advisor & High-Stake Guard)
+from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector, FearGreedSnapshot
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector, MarketBreadthSnapshot
+from intelligence.sentiment.collectors.gemini_advisor import GeminiMarketAdvisor, GeminiMacroAssessment
 from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
 from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
 from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
 from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
+from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
 
 # Unified Coordinator
 from intelligence.composite import CompositeMarketIntelligence, MarketIntelligenceEvaluation
@@ -81,14 +84,18 @@ __all__ = [
     "WhaleDivergenceGuard",
     "OrderbookWallGuard",
     # Pillar 3
+    "GeminiClient",
     "FearGreedCollector",
     "FearGreedSnapshot",
     "MarketBreadthCollector",
     "MarketBreadthSnapshot",
+    "GeminiMarketAdvisor",
+    "GeminiMacroAssessment",
     "SentimentContrarianTrigger",
     "MarketBreadthTrigger",
     "ExtremeGreedGuard",
     "PanicWashoutGuard",
+    "GeminiHighStakeGuard",
     # Coordinator
     "CompositeMarketIntelligence",
     "MarketIntelligenceEvaluation",

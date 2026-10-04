@@ -1,4 +1,4 @@
-"""Composite market intelligence coordinator orchestrating triggers and guards."""
+"""Composite market intelligence coordinator orchestrating triggers and guards across all 3 pillars."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -25,6 +25,7 @@ from intelligence.sentiment.triggers.sentiment_contrarian_trigger import Sentime
 from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
 from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
 from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
+from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,8 @@ class CompositeMarketIntelligence:
         max_long_funding_rate: float = 0.0005,
         greed_downscale_threshold: int = 80,
         greed_hard_veto_threshold: int = 90,
+        gemini_min_notional_eur: float = 1000.0,
+        gemini_guard: Optional[GeminiHighStakeGuard] = None,
     ):
         # Triggers (Drivers - Signals IN and Signals OUT)
         self.kalman_triggers: Dict[str, KalmanTrendTrigger] = {}
@@ -71,12 +74,13 @@ class CompositeMarketIntelligence:
         self.cascade_guard = LiquidationCascadeGuard(max_active_cascade_usd=max_active_cascade_usd)
         self.funding_guard = FundingCrowdingGuard(max_long_funding_rate=max_long_funding_rate)
 
-        # Pillar 3: Sentiment Guards (Brakes)
+        # Pillar 3: Sentiment & LLM Guards (Brakes)
         self.greed_guard = ExtremeGreedGuard(
             downscale_threshold=greed_downscale_threshold,
             hard_veto_threshold=greed_hard_veto_threshold,
         )
         self.panic_guard = PanicWashoutGuard()
+        self.gemini_guard = gemini_guard or GeminiHighStakeGuard(min_notional_eur=gemini_min_notional_eur)
 
     def _get_kalman(self, symbol: str) -> KalmanTrendTrigger:
         if symbol not in self.kalman_triggers:
@@ -104,6 +108,8 @@ class CompositeMarketIntelligence:
         fear_greed_snapshot: Optional[FearGreedSnapshot] = None,
         market_breadth_snapshot: Optional[MarketBreadthSnapshot] = None,
         asset_24h_change_pct: Optional[float] = None,
+        qty: Optional[float] = None,
+        notional_eur: Optional[float] = None,
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Run all protection guards (brakes) across Pillar 1, 2, and 3 in sequence.
@@ -165,6 +171,25 @@ class CompositeMarketIntelligence:
             if not panic_dec.allowed or panic_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                 return panic_dec
 
+        # 8. Google Gemini High-Stake Guard (> 1000 EUR purchases)
+        computed_notional = notional_eur
+        if computed_notional is None and qty is not None and price > 0:
+            computed_notional = price * qty
+        if computed_notional is not None and computed_notional >= self.gemini_guard.min_notional_eur:
+            gemini_dec = self.gemini_guard.check(
+                symbol,
+                side,
+                price,
+                qty if qty is not None else 1.0,
+                notional_eur=computed_notional,
+                telemetry={
+                    "fear_greed": fear_greed_snapshot.value if fear_greed_snapshot else None,
+                    "breadth_regime": market_breadth_snapshot.regime if market_breadth_snapshot else None,
+                },
+            )
+            if not gemini_dec.allowed or gemini_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                return gemini_dec
+
         return GuardDecision.allow("CompositeGuards", "all_guards_cleared")
 
     def evaluate(
@@ -184,6 +209,8 @@ class CompositeMarketIntelligence:
         fear_greed_snapshot: Optional[FearGreedSnapshot] = None,
         market_breadth_snapshot: Optional[MarketBreadthSnapshot] = None,
         asset_24h_change_pct: Optional[float] = None,
+        qty: Optional[float] = None,
+        notional_eur: Optional[float] = None,
     ) -> MarketIntelligenceEvaluation:
         """Evaluate directional triggers and validate against all guards."""
         now_ts = ts if ts is not None else time.time()
@@ -251,6 +278,8 @@ class CompositeMarketIntelligence:
                 fear_greed_snapshot=fear_greed_snapshot,
                 market_breadth_snapshot=market_breadth_snapshot,
                 asset_24h_change_pct=asset_24h_change_pct,
+                qty=qty,
+                notional_eur=notional_eur,
                 now=now_ts,
             )
         else:

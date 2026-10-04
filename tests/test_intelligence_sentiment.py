@@ -1,4 +1,5 @@
 """Unit tests for Pillar 3: Sentiment Intelligence (Fear & Greed, Market Breadth, Contrarian Triggers, Euphoria/Panic Guards)."""
+import json
 import time
 import pytest
 
@@ -392,3 +393,163 @@ class TestCompositeWithSentiment:
         assert evaluation.guard_decision.allowed is False
         assert evaluation.guard_decision.brake_action == BrakeAction.HARD_VETO
         assert evaluation.can_execute is False
+
+
+class TestGeminiClient:
+    """Tests for GeminiClient wrapper with mocked runner and JSON decoding."""
+
+    def test_query_json_clean(self):
+        from intelligence.sentiment.gemini_client import GeminiClient
+
+        def mock_runner(prompt, model, timeout):
+            return '{"decision": "APPROVED", "suggested_scale": 1.0, "reason": "All metrics green"}'
+
+        client = GeminiClient(custom_runner=mock_runner)
+        res = client.query_json("Test prompt")
+        assert res is not None
+        assert res["decision"] == "APPROVED"
+        assert res["suggested_scale"] == 1.0
+
+    def test_query_json_markdown_wrapped(self):
+        from intelligence.sentiment.gemini_client import GeminiClient
+
+        def mock_runner(prompt, model, timeout):
+            return "```json\n{\n  \"decision\": \"DOWNSCALE\",\n  \"suggested_scale\": 0.5,\n  \"reason\": \"Overleveraged\"\n}\n```"
+
+        client = GeminiClient(custom_runner=mock_runner)
+        res = client.query_json("Test prompt")
+        assert res is not None
+        assert res["decision"] == "DOWNSCALE"
+        assert res["suggested_scale"] == 0.5
+
+
+class TestGeminiMarketAdvisor:
+    """Tests for periodic GeminiMarketAdvisor macro evaluations."""
+
+    def test_advisor_review_and_caching(self, tmp_path):
+        from intelligence.sentiment.gemini_client import GeminiClient
+        from intelligence.sentiment.collectors.gemini_advisor import GeminiMarketAdvisor
+
+        def mock_runner(prompt, model, timeout):
+            return json.dumps({
+                "market_bias": "BULLISH",
+                "risk_level": "MODERATE",
+                "confidence": 0.85,
+                "summary": "Macro indicators suggest continued institutional accumulation.",
+                "key_risks": ["Upcoming CPI release", "Derivatives OI peak"],
+                "recommended_action": "ACCUMULATE",
+            })
+
+        client = GeminiClient(custom_runner=mock_runner)
+        cache_file = str(tmp_path / "gemini_advisor.json")
+        advisor = GeminiMarketAdvisor(gemini_client=client, cache_file=cache_file, cache_ttl_sec=300.0)
+
+        assessment = advisor.review(force_refresh=True)
+        assert assessment is not None
+        assert assessment.market_bias == "BULLISH"
+        assert assessment.recommended_action == "ACCUMULATE"
+        assert assessment.confidence == 0.85
+
+        # Check caching without re-evaluating
+        cached = advisor.review(force_refresh=False)
+        assert cached == assessment
+
+
+class TestGeminiHighStakeGuard:
+    """Tests for GeminiHighStakeGuard order vetting for >= 1000 EUR."""
+
+    def test_sub_threshold_bypasses_llm(self):
+        from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
+        # Client runner that raises if called
+        def failing_runner(prompt, model, timeout):
+            raise AssertionError("Should not be called for orders < 1000 EUR")
+
+        from intelligence.sentiment.gemini_client import GeminiClient
+        client = GeminiClient(custom_runner=failing_runner)
+        guard = GeminiHighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
+
+        # 500 EUR order -> instant pass
+        dec = guard.check("BTCUSDT", "BUY", price=50000.0, qty=0.01, notional_eur=500.0)
+        assert dec.allowed is True
+        assert "below_high_stake_threshold" in dec.reason
+
+    def test_high_stake_approved(self):
+        from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
+        from intelligence.sentiment.gemini_client import GeminiClient
+
+        def approve_runner(prompt, model, timeout):
+            assert "1,500.00 EUR" in prompt
+            return json.dumps({"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Healthy trend and low funding"})
+
+        client = GeminiClient(custom_runner=approve_runner)
+        guard = GeminiHighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
+
+        dec = guard.check("BTCUSDT", "BUY", price=60000.0, qty=0.025, notional_eur=1500.0)
+        assert dec.allowed is True
+        assert dec.brake_action == BrakeAction.NONE
+        assert "Gemini approved" in dec.reason
+
+    def test_high_stake_vetoed(self):
+        from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
+        from intelligence.sentiment.gemini_client import GeminiClient
+
+        def veto_runner(prompt, model, timeout):
+            return json.dumps({"decision": "REJECTED", "suggested_scale": 0.0, "reason": "Massive whale sell wall and euphoric top"})
+
+        client = GeminiClient(custom_runner=veto_runner)
+        guard = GeminiHighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
+
+        dec = guard.check("BTCUSDT", "BUY", price=70000.0, qty=0.03, notional_eur=2100.0)
+        assert dec.allowed is False
+        assert dec.brake_action == BrakeAction.HARD_VETO
+        assert "Gemini vetoed" in dec.reason
+
+    def test_high_stake_downscaled(self):
+        from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
+        from intelligence.sentiment.gemini_client import GeminiClient
+
+        def downscale_runner(prompt, model, timeout):
+            return json.dumps({"decision": "DOWNSCALE", "suggested_scale": 0.35, "reason": "Caution: funding is elevated"})
+
+        client = GeminiClient(custom_runner=downscale_runner)
+        guard = GeminiHighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
+
+        dec = guard.check("BTCUSDT", "BUY", price=60000.0, qty=0.02, notional_eur=1200.0)
+        assert dec.allowed is True
+        assert dec.brake_action == BrakeAction.DOWNSCALE_QTY
+        assert dec.suggested_scale == 0.35
+
+
+class TestOrderGuardWithGemini:
+    """Integration test for order_guard.check_intelligence_guards with Gemini mode."""
+
+    def test_check_intelligence_guards_with_gemini_shadow(self, monkeypatch):
+        import order_guard
+
+        margins = {
+            "intelligence_guards_mode": "shadow",
+            "gemini_guard_mode": "shadow",
+            "gemini_min_notional_eur": 1000.0,
+            "default": 1.15,
+        }
+        monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
+
+        from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
+        from intelligence.sentiment.gemini_client import GeminiClient
+
+        def mock_veto_runner(prompt, model, timeout):
+            return json.dumps({"decision": "REJECTED", "suggested_scale": 0.0, "reason": "Risky market"})
+
+        mock_guard = GeminiHighStakeGuard(
+            gemini_client=GeminiClient(custom_runner=mock_veto_runner),
+            min_notional_eur=1000.0,
+        )
+
+        with monkeypatch.context() as m:
+            m.setattr("intelligence.sentiment.guards.gemini_high_stake_guard.GeminiHighStakeGuard", lambda **kw: mock_guard)
+            # In shadow mode, order is allowed despite LLM rejection (only logged)
+            allowed, reason, scale = order_guard.check_intelligence_guards(
+                None, "BTCUSDT", "BUY", 65000.0, notional_eur=1500.0
+            )
+            assert allowed is True
+
