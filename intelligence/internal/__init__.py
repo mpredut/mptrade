@@ -13,7 +13,7 @@ from intelligence.internal.guards.noise_guard import NoiseFloorGuard
 from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
 
 from intelligence.internal.state.volatility import calculate_volatility_1h, adaptive_thresholds, vol_1h_pct
-from intelligence.internal.state.survival import get_trend_survival_metrics
+from intelligence.internal.state.survival import get_trend_survival_metrics, estimate_T, hybrid_T
 from intelligence.internal.state.persistence import (
     calculate_mann_kendall,
     calculate_hurst_exponent,
@@ -38,6 +38,8 @@ __all__ = [
     "adaptive_thresholds",
     "vol_1h_pct",
     "get_trend_survival_metrics",
+    "estimate_T",
+    "hybrid_T",
     "calculate_mann_kendall",
     "calculate_hurst_exponent",
     "classify_hurst_regime",

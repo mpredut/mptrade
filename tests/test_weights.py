@@ -103,7 +103,7 @@ class TestEstimareT(unittest.TestCase):
     """hybrid_T: the empirical value is favoured when we have data, the prior when we do not (no network)."""
 
     def test_hybrid_t_estimation(self):
-        from forecast.trend_survival import hybrid_T
+        from intelligence.internal.state.survival import hybrid_T
 
         with self.subTest(msg="multe episoade domina empiricul"):
             durs = [72.0] * 100 + [160.0] * 20            # mediana 3z, P90 ~6.7z
