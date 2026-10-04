@@ -33,6 +33,7 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             "NOTIFICATION_PRICE_DEDUP_SECONDS": "0",
             "NOTIFICATION_STARTUP_DEDUP_SECONDS": "0",
             "NOTIFICATION_URGENT_DEDUP_SECONDS": "0",
+            "NOTIFICATION_GUARD_DEDUP_SECONDS": "0",
             "DISABLE_EXTERNAL_NOTIFICATIONS": "0",  # Ensure server methods test dispatch
         })
         self.patcher.start()
@@ -276,4 +277,34 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.server.process_line("2026-10-04 12:00:00 [INFO] Bot restarted\n", "bot_a")
         self.assertEqual(len(self.dispatched), 1)
         self.assertIn("Traceback (most recent call last):", self.dispatched[0]["message"])
+
+    def test_guard_alert_deduplication_and_stable_fingerprint(self):
+        """Verify that guard veto alerts containing BUY/SELL are deduplicated across cycles."""
+        with mock.patch.dict(os.environ, {"NOTIFICATION_GUARD_DEDUP_SECONDS": "1800"}):
+            alert1 = {
+                "type": "bot_event",
+                "name": "🛡 [MACRO SHADOW VETO] Would Block BUY TAOUSDC",
+                "body": "Macro shock flagged: threat=CRITICAL_SHOCK, risk=0.95",
+                "source": "order_guard",
+                "symbol": "TAOUSDC",
+            }
+            alert2 = {
+                "type": "bot_event",
+                "name": "🛡 [MACRO SHADOW VETO] Would Block BUY TAOUSDC",
+                "body": "Macro shock flagged: threat=CRITICAL_SHOCK, risk=0.92 (wording variation)",
+                "source": "order_guard",
+                "symbol": "TAOUSDC",
+            }
+
+            # First delivery should succeed
+            self.dispatched.clear()
+            self.server.dispatch_alerts([alert1], bot_name="rtrade")
+            self.assertEqual(len(self.dispatched), 1)
+            self.assertEqual(self.dispatched[0]["title"], "[rtrade] 🛡 [MACRO SHADOW VETO] Would Block BUY TAOUSDC")
+            self.assertEqual(self.dispatched[0]["topic"], "ntfy-guard-test")
+
+            # Second delivery within 1800s with slight body variation must be deduplicated
+            self.server.dispatch_alerts([alert2], bot_name="rtrade")
+            self.assertEqual(len(self.dispatched), 1, "Guard alert should be deduplicated despite BUY keyword")
+
 

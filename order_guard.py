@@ -24,6 +24,7 @@ from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegim
 
 _DEFAULT_REGIME_SERVICE = MarketRegimeService()
 _MARGINS = None   # cache: {provider_lower: percentage, "default": 1.15}
+_SHADOW_NOTIFY_COOLDOWN: Dict[Tuple[str, str, str], float] = {}
 
 
 def _load_margins():
@@ -715,16 +716,20 @@ def _evaluate_intelligence_guards_raw(
                 prefix = "[GEMINI_GUARD_SHADOW]" if gemini_mode == "shadow" else "[GEMINI_GUARD_ENFORCE]"
                 print(f"{prefix} {side} {symbol} €{computed_notional:.2f}: {g_dec.reason} (brake={g_dec.brake_action}, suggested_scale={g_dec.suggested_scale})")
                 if gemini_mode == "shadow" and shadow_notify:
-                    try:
-                        from notify_engine.alertnotifiers import notify
-                        notify(
-                            title=f"🛡 [GEMINI SHADOW] {side} {symbol}",
-                            body=f"High-stake order €{computed_notional:.2f} flagged: {g_dec.reason} (brake={g_dec.brake_action}, scale={g_dec.suggested_scale})",
-                            source="order_guard",
-                            symbol=symbol,
-                        )
-                    except Exception:
-                        pass
+                    cd_key = ("gemini", symbol, side)
+                    now_ts = time.time()
+                    if now_ts - _SHADOW_NOTIFY_COOLDOWN.get(cd_key, 0.0) >= 1800.0:
+                        _SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
+                        try:
+                            from notify_engine.alertnotifiers import notify
+                            notify(
+                                title=f"🛡 [GEMINI SHADOW VETO] Would Block {side} {symbol}",
+                                body=f"High-stake order €{computed_notional:.2f} flagged: {g_dec.reason} (brake={g_dec.brake_action}, scale={g_dec.suggested_scale})",
+                                source="order_guard",
+                                symbol=symbol,
+                            )
+                        except Exception:
+                            pass
                 if gemini_mode == "enforce":
                     if not g_dec.allowed:
                         return False, g_dec.reason, 0.0
@@ -746,16 +751,20 @@ def _evaluate_intelligence_guards_raw(
                     prefix = "[GEOPOLITICAL_GUARD_SHADOW]" if geo_mode == "shadow" else "[GEOPOLITICAL_GUARD_ENFORCE]"
                     print(f"{prefix} {side} {symbol}: {geo_dec.reason} (brake={geo_dec.brake_action}, suggested_scale={geo_dec.suggested_scale})")
                     if geo_mode == "shadow" and shadow_notify:
-                        try:
-                            from notify_engine.alertnotifiers import notify
-                            notify(
-                                title=f"🛡 [MACRO SHADOW] {side} {symbol}",
-                                body=f"Macro shock flagged: {geo_dec.reason} (threat={cached_geo.threat_level}, risk={cached_geo.risk_score:.2f})",
-                                source="order_guard",
-                                symbol=symbol,
-                            )
-                        except Exception:
-                            pass
+                        cd_key = ("geopolitical", symbol, side)
+                        now_ts = time.time()
+                        if now_ts - _SHADOW_NOTIFY_COOLDOWN.get(cd_key, 0.0) >= 1800.0:
+                            _SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
+                            try:
+                                from notify_engine.alertnotifiers import notify
+                                notify(
+                                    title=f"🛡 [MACRO SHADOW VETO] Would Block {side} {symbol}",
+                                    body=f"Macro shock flagged: {geo_dec.reason} (threat={cached_geo.threat_level}, risk={cached_geo.risk_score:.2f})",
+                                    source="order_guard",
+                                    symbol=symbol,
+                                )
+                            except Exception:
+                                pass
                     if geo_mode == "enforce":
                         if not geo_dec.allowed:
                             return False, geo_dec.reason, 0.0

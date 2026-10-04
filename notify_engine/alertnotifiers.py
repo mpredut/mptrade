@@ -74,9 +74,36 @@ def _save_delivery_state(path: Path, state: dict) -> None:
     )
 
 
+def _is_guard_alert(alerts: list[Any]) -> bool:
+    for alert in alerts:
+        if not isinstance(alert, dict):
+            continue
+        title = str(alert.get("name") or alert.get("symbol") or alert.get("title") or "").upper()
+        source = str(alert.get("source") or "").lower()
+        if (
+            any(marker in title for marker in ("🛡", "🛑", "GUARD", "VETO", "SHADOW", "BLOCKED"))
+            or any(src in source for src in ("order_guard", "guard", "assetguardian"))
+        ):
+            return True
+    return False
+
+
 def _alert_identity(alert: Any) -> dict:
     """Return stable identity excluding timestamps and prices that change each poll."""
     if isinstance(alert, dict):
+        source = str(alert.get("source") or "").lower()
+        name = str(alert.get("name") or alert.get("title") or "")
+        if (
+            source in ("order_guard", "guard", "assetguardian")
+            or any(m in name for m in ("🛡", "🛑", "GUARD", "VETO", "SHADOW", "BLOCKED"))
+        ):
+            # For guard alerts, dedup on identity fields excluding volatile body reasoning/risk scores
+            return {
+                "type": alert.get("type"),
+                "symbol": alert.get("symbol"),
+                "name": name,
+                "source": alert.get("source"),
+            }
         return {
             key: alert.get(key)
             for key in ("type", "symbol", "name", "source", "body", "url", "alert_type", "threshold")
@@ -116,6 +143,8 @@ def _dedup_seconds(alerts: list[Any], urgent: bool) -> int:
         str(alert.get("name") or alert.get("title") or "").upper()
         for alert in alerts if isinstance(alert, dict)
     )
+    if _is_guard_alert(alerts):
+        return _positive_int_env("NOTIFICATION_GUARD_DEDUP_SECONDS", 30 * 60)
     if any(marker in titles for marker in _TRADE_MARKERS):
         return 0  # Real trades must never be suppressed by deduplication
     if "DISPONIBIL" in titles:

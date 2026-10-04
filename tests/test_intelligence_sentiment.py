@@ -642,3 +642,48 @@ class TestOrderGuardWithGemini:
         assert snapshot_called is True
         assert decision.regime == "bull"
 
+    def test_macro_shadow_guard_notification_title_and_cooldown(self, monkeypatch):
+        """Verify macro shadow guard sends clear VETO titles and deduplicates consecutive calls."""
+        import order_guard
+        from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
+
+        margins = {
+            "intelligence_guards_mode": "shadow",
+            "geopolitical_guard_mode": "shadow",
+            "shadow_notify": 1.0,
+            "default": 1.15,
+        }
+        monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
+        order_guard._SHADOW_NOTIFY_COOLDOWN.clear()
+
+        shock_geo = GeopoliticalThreatAssessment(
+            threat_level="CRITICAL_SHOCK",
+            risk_score=0.95,
+            summary="Kinetic strikes on energy hubs",
+            recommended_brake="HALT_ALL",
+            headlines_analyzed=10,
+            ts=time.time(),
+        )
+
+        class MockAnalyzer:
+            _cached_assessment = shock_geo
+
+        monkeypatch.setattr("intelligence.macro.geopolitical_analyzer.GeopoliticalThreatAnalyzer", lambda: MockAnalyzer())
+
+        dispatched_alerts = []
+        monkeypatch.setattr("notify_engine.alertnotifiers.notify", lambda **kw: dispatched_alerts.append(kw))
+
+        # First evaluation: must notify with clear "Would Block" title
+        allowed, reason, scale = order_guard.check_intelligence_guards(None, "TAOUSDC", "BUY", 250.0)
+        assert allowed is True
+        assert len(dispatched_alerts) == 1
+        alert = dispatched_alerts[0]
+        assert alert["title"] == "🛡 [MACRO SHADOW VETO] Would Block BUY TAOUSDC"
+        assert alert["symbol"] == "TAOUSDC"
+        assert "veto_critical_geopolitical_shock" in alert["body"]
+
+        # Immediate second evaluation: must be suppressed by in-memory cooldown
+        order_guard.check_intelligence_guards(None, "TAOUSDC", "BUY", 250.0)
+        assert len(dispatched_alerts) == 1, "Immediate repeat should be throttled by in-memory cooldown"
+
+
