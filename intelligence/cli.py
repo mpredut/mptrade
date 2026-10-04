@@ -81,11 +81,12 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         from intelligence.internal.state.survival import estimate_T
         t_est = estimate_T(symbol)
         result["pillar1_internal"]["trend_survival"] = {
-            "T_emp": t_est.T_emp,
-            "median_duration_hours": t_est.median,
-            "P90_hours": t_est.p90,
-            "samples": t_est.n_samples,
-            "is_calibrated": t_est.n_samples > 0,
+            "T": t_est.get("T", 14),
+            "T_emp": t_est.get("T_emp"),
+            "median_duration_days": t_est.get("median_d"),
+            "P90_days": t_est.get("p90_d"),
+            "samples": t_est.get("n", 0),
+            "is_calibrated": t_est.get("n", 0) > 0,
         }
     except Exception as e:
         result["pillar1_internal"]["trend_survival_error"] = str(e)
@@ -219,9 +220,11 @@ def print_intelligence_report(report: Dict[str, Any]) -> None:
     # Pillar 1
     print("\n📊 [PILLAR 1: INTERNAL QUANTITATIVE & SURVIVAL]")
     surv = p1.get("trend_survival")
-    if surv:
-        print(f"  • Trend Survival: T_emp={surv['T_emp']:.1f}h | Median={surv['median_duration_hours']:.1f}h | P90={surv['P90_hours']:.1f}h ({surv['P90_hours']/24:.1f} days)")
-        print(f"  • Calibration:    {surv['samples']} empirical trend cycles")
+    if surv and surv.get("P90_days") is not None:
+        print(f"  • Trend Survival: T_emp={surv.get('T_emp')}d | Median={surv.get('median_duration_days')}d | P90={surv.get('P90_days')}d")
+        print(f"  • Calibration:    {surv.get('samples', 0)} empirical trend cycles")
+    elif surv:
+        print(f"  • Trend Survival: Prior default T={surv.get('T', 14)}d (samples: {surv.get('samples', 0)})")
     else:
         print("  • Trend Survival: None")
 
@@ -376,9 +379,10 @@ def main():
     if args.test_guard:
         from order_guard import check_intelligence_guards
         allowed, reason, scale = check_intelligence_guards(
+            provider="binance",
             symbol=symbol,
-            side=args.side,
-            current_price=100.0,
+            order_type=args.side,
+            price=100.0,
             qty=args.qty,
             notional_eur=args.notional,
         )
