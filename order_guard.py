@@ -17,7 +17,8 @@ The profit threshold is configured per venue in versioned, non-sensitive
 import os
 import time
 import math
-from typing import Optional, Callable, Any
+import json
+from typing import Optional, Callable, Any, List, Tuple, Dict
 import utils as u
 from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegimeContext
 
@@ -539,6 +540,31 @@ def _resolve_trend_duration(symbol: str) -> float:
     return _read_cached_trend_duration(symbol)
 
 
+def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> Optional[List[Tuple[float, float]]]:
+    """Read rolling price history from local cache for parabolic surge evaluation."""
+    try:
+        p = "cachedb/cache_prices_multi.json"
+        if not os.path.exists(p):
+            return None
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        raw_items = data.get("items", {}).get(symbol.upper(), [])
+        if not raw_items:
+            return None
+        now_ts = time.time()
+        cutoff_ts = now_ts - window_seconds
+        history: List[Tuple[float, float]] = []
+        for item in raw_items:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                ts_raw = float(item[0])
+                ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
+                if ts_sec >= cutoff_ts:
+                    history.append((ts_sec, float(item[1])))
+        return history if history else None
+    except Exception:
+        return None
+
+
 def check_intelligence_guards(
     provider,
     symbol: str,
@@ -639,9 +665,12 @@ def _evaluate_intelligence_guards_raw(
     effective_scale = 1.0
     active_reason = "ok"
 
-    # 1. Parabolic surge check (if price history is available)
-    if price_history:
-        p_dec = p_guard.check(symbol, side, price, price_history=price_history, now=now)
+    # 1. Parabolic surge check (if price history is available or in local cache)
+    history = price_history
+    if history is None:
+        history = _read_cached_price_history(symbol, window_seconds=7200.0)
+    if history:
+        p_dec = p_guard.check(symbol, side, price, price_history=history, now=now)
         if not p_dec.allowed:
             prefix = "[INTELLIGENCE_GUARD_SHADOW]" if mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
             print(f"{prefix} {side} {symbol} @ {price}: {p_dec.reason} (brake={p_dec.brake_action})")

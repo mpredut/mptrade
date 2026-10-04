@@ -574,9 +574,9 @@ class TestOrderGuardWithGemini:
         monkeypatch.setattr(order_guard, "_evaluate_intelligence_guards_raw", counting_eval)
 
         # Call multiple times with the same regime_context (simulating multi-step MARKET placement)
-        res1 = order_guard.check_intelligence_guards(None, "BTCUSDC", "BUY", 65000.0, regime_context=ctx, qty=0.1)
-        res2 = order_guard.check_intelligence_guards(None, "BTCUSDC", "BUY", 65100.0, regime_context=ctx, qty=0.1)
-        res3 = order_guard.check_intelligence_guards(None, "BTCUSDC", "BUY", 65200.0, regime_context=ctx, qty=0.1)
+        res1 = order_guard.check_intelligence_guards(None, "BTCUSDC", "BUY", 65000.0, regime_context=ctx, notional_eur=100.0)
+        res2 = order_guard.check_intelligence_guards(None, "BTCUSDC", "BUY", 65100.0, regime_context=ctx, notional_eur=100.0)
+        res3 = order_guard.check_intelligence_guards(None, "BTCUSDC", "BUY", 65200.0, regime_context=ctx, notional_eur=100.0)
 
         assert eval_count == 1
         assert res1 == res2 == res3

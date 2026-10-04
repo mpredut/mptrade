@@ -151,7 +151,8 @@ def test_inspect_symbol_intelligence(temp_cache_dir):
             f,
         )
 
-    report = inspect_symbol_intelligence("BTCUSDC", cache_dir=temp_cache_dir)
+    with patch("order_guard.check_intelligence_guards", return_value=(True, "ok", 1.0)):
+        report = inspect_symbol_intelligence("BTCUSDC", cache_dir=temp_cache_dir)
     assert report["symbol"] == "BTCUSDC"
     assert report["pillar2_external"]["orderbook"]["mid_price"] == 65000.0
     assert report["pillar2_external"]["orderbook"]["imbalance_ratio"] == 0.556
