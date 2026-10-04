@@ -487,6 +487,21 @@ def get_derivatives_collector():
     return _derivatives_collector
 
 
+def _read_cached_trend_duration(symbol: str) -> float:
+    try:
+        p = "cachedb/cache_price_long_trend.json"
+        if not os.path.exists(p):
+            return 0.0
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        items = data.get("items", {}).get(symbol.upper(), [])
+        if items and isinstance(items, list) and items[0]:
+            return float(items[0].get("duration_seconds", 0.0) or 0.0)
+    except Exception:
+        pass
+    return 0.0
+
+
 def check_intelligence_guards(
     provider,
     symbol: str,
@@ -594,11 +609,13 @@ def _evaluate_intelligence_guards_raw(
         if not dur_sec:
             try:
                 import cacheManager as cm
-                trend_meta = cm.read_long_term_trend_file(symbol)
+                trend_meta = getattr(cm, "read_long_term_trend_file", lambda s: None)(symbol)
                 if trend_meta and "duration_seconds" in trend_meta:
                     dur_sec = float(trend_meta["duration_seconds"])
             except Exception:
                 pass
+        if not dur_sec:
+            dur_sec = _read_cached_trend_duration(symbol)
 
     if dur_sec and dur_sec > 0:
         e_dec = e_guard.check(symbol, side, trend_duration_seconds=dur_sec)
@@ -610,6 +627,8 @@ def _evaluate_intelligence_guards_raw(
                     return False, e_dec.reason, 0.0
                 effective_scale = min(effective_scale, e_dec.suggested_scale)
                 active_reason = e_dec.reason
+
+    shadow_notify = bool(int(float(m.get("shadow_notify", 1.0))))
 
     # 3. Google Gemini High-Stake Guard (> 1000 EUR purchases)
     gemini_mode = str(m.get("gemini_guard_mode", "shadow")).strip().lower()
@@ -627,6 +646,17 @@ def _evaluate_intelligence_guards_raw(
             if not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                 prefix = "[GEMINI_GUARD_SHADOW]" if gemini_mode == "shadow" else "[GEMINI_GUARD_ENFORCE]"
                 print(f"{prefix} {side} {symbol} €{computed_notional:.2f}: {g_dec.reason} (brake={g_dec.brake_action}, suggested_scale={g_dec.suggested_scale})")
+                if gemini_mode == "shadow" and shadow_notify:
+                    try:
+                        from notify_engine.alertnotifiers import notify
+                        notify(
+                            title=f"🛡 [GEMINI SHADOW] {side} {symbol}",
+                            body=f"High-stake order €{computed_notional:.2f} flagged: {g_dec.reason} (brake={g_dec.brake_action}, scale={g_dec.suggested_scale})",
+                            source="order_guard",
+                            symbol=symbol,
+                        )
+                    except Exception:
+                        pass
                 if gemini_mode == "enforce":
                     if not g_dec.allowed:
                         return False, g_dec.reason, 0.0
@@ -647,6 +677,17 @@ def _evaluate_intelligence_guards_raw(
                 if not geo_dec.allowed or geo_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                     prefix = "[GEOPOLITICAL_GUARD_SHADOW]" if geo_mode == "shadow" else "[GEOPOLITICAL_GUARD_ENFORCE]"
                     print(f"{prefix} {side} {symbol}: {geo_dec.reason} (brake={geo_dec.brake_action}, suggested_scale={geo_dec.suggested_scale})")
+                    if geo_mode == "shadow" and shadow_notify:
+                        try:
+                            from notify_engine.alertnotifiers import notify
+                            notify(
+                                title=f"🛡 [MACRO SHADOW] {side} {symbol}",
+                                body=f"Macro shock flagged: {geo_dec.reason} (threat={cached_geo.threat_level}, risk={cached_geo.risk_score:.2f})",
+                                source="order_guard",
+                                symbol=symbol,
+                            )
+                        except Exception:
+                            pass
                     if geo_mode == "enforce":
                         if not geo_dec.allowed:
                             return False, geo_dec.reason, 0.0
