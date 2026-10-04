@@ -86,6 +86,7 @@ class IntelligenceTelemetryDaemon:
         self._last_derivatives_ts: Dict[str, float] = {}
         self._last_whale_ts: Dict[str, float] = {}
         self._last_macro_ts: float = 0.0
+        self._last_stdout_hb_ts: float = 0.0
 
         # Heartbeat path
         self.heartbeat_path = os.path.join(self.cache_dir, "intelligence_daemon.heartbeat")
@@ -199,6 +200,15 @@ class IntelligenceTelemetryDaemon:
                 if self.update_macro(force=force):
                     results["macro_updated"] = True
                     self._last_macro_ts = current_ts
+
+        # Periodic stdout/log heartbeat so orchestrator sees continuous activity in log_file
+        if force or (current_ts - self._last_stdout_hb_ts) >= 60.0:
+            logger.info(
+                "Telemetry cycle active: %d symbols monitored (PID=%d)",
+                len(self.symbols),
+                os.getpid(),
+            )
+            self._last_stdout_hb_ts = current_ts
 
         self.write_heartbeat(results)
         return results

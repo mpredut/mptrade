@@ -7,6 +7,7 @@ import logging
 import re
 import time
 import requests
+from collections import defaultdict
 from typing import Dict, Any, List
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] Orchestrator: %(message)s")
@@ -69,6 +70,7 @@ class NotificationServer:
         self.ntfy_token = self._load_ntfy_token()
         self.rules = self._load_rules()
         self.cooldowns: Dict[str, float] = {}
+        self.traceback_buffers: Dict[str, List[str]] = defaultdict(list)
         
         # Persistent Queue File
         self.queue_file = os.path.join(ROOT_DIR, "cachedb", "notification_queue.jsonl")
@@ -353,6 +355,51 @@ class NotificationServer:
         return self._send_ntfy(full_title, body, priority, topic)
 
     def process_line(self, line: str, bot_name: str):
+        clean_stripped = line.strip()
+
+        # Multi-line Python traceback buffering
+        if self.traceback_buffers[bot_name]:
+            is_log_prefix = (
+                clean_stripped.startswith(("[", "{"))
+                or (len(clean_stripped) >= 10 and clean_stripped[:4].isdigit() and clean_stripped[4] in ("-", "/", ":"))
+            )
+            if is_log_prefix:
+                # Flush incomplete traceback buffer before processing new log line
+                prev_tb = "\n".join(self.traceback_buffers[bot_name])
+                self.traceback_buffers[bot_name] = []
+                self.process_line(prev_tb, bot_name)
+            else:
+                is_indented = line.startswith(" ") or line.startswith("\t")
+                is_chain_header = (
+                    clean_stripped.startswith("During handling of the above exception")
+                    or clean_stripped.startswith("The above exception was the direct cause")
+                    or clean_stripped.startswith("Traceback (most recent call last):")
+                )
+                if clean_stripped == "":
+                    return
+                elif is_indented or is_chain_header:
+                    self.traceback_buffers[bot_name].append(clean_stripped)
+                    if len(self.traceback_buffers[bot_name]) >= 40:
+                        lines = self.traceback_buffers[bot_name]
+                        accumulated = lines[0] + "\n  ...\n" + "\n".join(lines[-10:])
+                        self.traceback_buffers[bot_name] = []
+                        line = accumulated
+                    else:
+                        return
+                else:
+                    # Terminal exception line reached!
+                    self.traceback_buffers[bot_name].append(clean_stripped)
+                    lines = self.traceback_buffers[bot_name]
+                    if len(lines) > 12:
+                        accumulated = lines[0] + "\n  ...\n" + "\n".join(lines[-10:])
+                    else:
+                        accumulated = "\n".join(lines)
+                    self.traceback_buffers[bot_name] = []
+                    line = accumulated
+        elif "\n" not in clean_stripped and "Traceback (most recent call last):" in clean_stripped:
+            self.traceback_buffers[bot_name] = [clean_stripped]
+            return
+
         # 1. Check for Explicit AlertNotifier Intent (JSON)
         if "__orchestrator_intent__" in line:
             try:

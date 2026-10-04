@@ -246,3 +246,34 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
                 sys.stdout = old_stdout
             payload = json.loads(buf2.getvalue().strip())
             self.assertEqual(payload["alerts"][0]["name"], "BTC BUY")
+
+    def test_multiline_traceback_buffering(self):
+        """Verify multi-line Python tracebacks are buffered until the final exception line."""
+        tb_lines = [
+            "Traceback (most recent call last):\n",
+            '  File "intelligence/daemon.py", line 120, in run_cycle\n',
+            "    resp = requests.get(url)\n",
+            "requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='news.google.com'): Read timed out.\n",
+        ]
+        for line in tb_lines:
+            self.server.process_line(line, "intelligence_daemon")
+
+        self.assertEqual(len(self.dispatched), 1)
+        alert = self.dispatched[0]
+        self.assertEqual(alert["title"], "[intelligence_daemon] Critical Errors")
+        self.assertIn("Traceback (most recent call last):", alert["message"])
+        self.assertIn("line 120", alert["message"])
+        self.assertIn("ReadTimeout", alert["message"])
+        self.assertEqual(alert["priority"], "urgent")
+
+    def test_incomplete_traceback_flushed_on_new_log(self):
+        """Verify incomplete traceback is dispatched if a subsequent log line arrives."""
+        self.server.process_line("Traceback (most recent call last):\n", "bot_a")
+        self.server.process_line('  File "bot.py", line 10, in foo\n', "bot_a")
+        self.assertEqual(len(self.dispatched), 0)
+
+        # Subsequent log line arrives
+        self.server.process_line("2026-10-04 12:00:00 [INFO] Bot restarted\n", "bot_a")
+        self.assertEqual(len(self.dispatched), 1)
+        self.assertIn("Traceback (most recent call last):", self.dispatched[0]["message"])
+
