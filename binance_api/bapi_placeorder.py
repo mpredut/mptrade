@@ -476,7 +476,7 @@ def _last_opposite_fill_price_api(symbol, order_type):
 
 
 def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
-                        bypass_profit_guard=False):
+                        bypass_profit_guard=False, *, regime_context=None):
     # Removed dead max_daily_trades and profit_percentage parameters. The only real caller
     # always supplied these exact configured values, now read here as the source of truth.
     # ``bypass_profit_guard=True`` skips profit/history and fail-closed checks, unlike
@@ -519,7 +519,23 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         oposite_trades = apiorders.get_trade_orders(opposite_order_type, symbol, max_age_seconds=time_back_in_seconds)  # current data
         print(f"I have {len(oposite_trades)} trades of type {opposite_order_type} for {backdays} days. ")
 
-        ref_window = order_guard.window_for("binance", symbol=symbol, order_type=order_type)
+        if (
+            regime_context is None
+            and order_type == "BUY"
+            and not bypass_profit_guard
+        ):
+            # This legacy Binance boundary owns runtime data-source resolution.
+            # Compute one context and reuse it for both window and guard decisions.
+            from providers.market_api import api as market_api
+            regime_context = market_api.market_regime_context(
+                symbol, provider_name="binance")
+
+        ref_window = order_guard.window_for(
+            "binance",
+            symbol=symbol,
+            order_type=order_type,
+            regime_context=regime_context,
+        )
         if not ref_window or ref_window <= 0:
             ref_window = time_back_in_seconds
 
@@ -544,8 +560,15 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
                 window_ref = min(_prices) if order_type == "BUY" else max(_prices)
             # Resolve the configured margin lazily only when the guard is used. Reuse the
             # stateless provider already created for the daily-limit guard.
-            if not order_guard.profit_guard(provider, symbol, order_type, price,
-                                            order_guard.margin_for("binance"), window_ref=window_ref):
+            if not order_guard.profit_guard(
+                provider,
+                symbol,
+                order_type,
+                price,
+                order_guard.margin_for("binance"),
+                window_ref=window_ref,
+                regime_context=regime_context,
+            ):
                 return False, "profit_guard"
         return True, None
 

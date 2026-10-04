@@ -8,6 +8,7 @@ their guard chain bypass this shared layer.
 The minimal in-memory fake provider is fully isolated from the network and uses
 the default guards_internally() == False contract.
 """
+import json
 import os
 import sys
 import time
@@ -804,19 +805,153 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         )
         ctx = order_guard.MarketRegimeContext.from_decision(mock_decision, evaluated_at=time.time())
 
-        with patch("order_guard.symbol_regime_context", return_value=ctx) as mock_ctx, \
+        with patch.object(inst._api, "market_regime_context", return_value=ctx) as mock_ctx, \
                 patch.object(p, "profit_guard_window_ref", return_value=None) as mock_window_ref, \
                 patch("order_guard.profit_guard", return_value=True) as mock_profit_guard:
-            order = inst.place("BUY", 100.0, 1.0, smart=False)
+            order = inst.place("BUY", 100.0, 1.0, smart=False, wait_for_trend=False)
 
         self.assertIsNotNone(order)
-        mock_ctx.assert_called_once_with(inst.symbol, provider=p)
+        mock_ctx.assert_called_once_with(inst.symbol, provider_name=inst.provider_name)
         mock_window_ref.assert_called_once_with(inst.symbol, "BUY", None, regime_context=ctx)
         mock_profit_guard.assert_called_once_with(
             p, inst.symbol, "BUY", 100.0, ANY, window_ref=None, regime_context=ctx
         )
+        import order_retry as oq
+        queued = oq.load_all()
+        self.assertEqual(len(queued), 1)
+        self.assertNotIn("regime_context", queued[0]["place_kwargs"])
+        self.assertNotIn("regime_context", p.placed[0][4])
+        json.dumps(queued[0], allow_nan=False)
         lines = self._log_lines()
         self.assertTrue(any("|bull|5.0000|mock_src|True|False|directional_signal" in l for l in lines), lines)
+
+    def test_market_dispatch_reuses_context_even_when_final_guard_refuses(self):
+        ctx = order_guard.MarketRegimeContext.from_decision(
+            order_guard.MarketRegimeDecision(
+                regime="bull", gradient=0.75, epsilon=0.15, strength=5.0,
+                fresh=True, reason="directional_signal"))
+        for final_allowed in (True, False):
+            with self.subTest(final_allowed=final_allowed):
+                self._clear_state()
+                provider = _FakeProvider(price=100.0)
+                inst = self._inst(provider)
+                with patch.object(
+                        inst._api, "market_regime_context", return_value=ctx) as resolve, \
+                        patch.object(
+                            provider, "profit_guard_window_ref", return_value=None) as window, \
+                        patch("order_guard.profit_guard",
+                              side_effect=[True, True, final_allowed]) as guard:
+                    result = inst.place(
+                        "BUY", 100.0, 1.0, smart=False, wait_for_trend=False,
+                        force=True, caller_owns_retry=True)
+                resolve.assert_called_once_with(
+                    SYMBOL, provider_name=inst.provider_name)
+                window.assert_called_once_with(
+                    SYMBOL, "BUY", None, regime_context=ctx)
+                self.assertEqual(guard.call_count, 3)
+                for call in guard.call_args_list:
+                    self.assertIs(call.kwargs["regime_context"], ctx)
+                self.assertEqual(result is not None, final_allowed)
+                self.assertEqual(len(provider.placed), int(final_allowed))
+
+    def test_window_reference_hook_compatibility_and_internal_type_error(self):
+        provider = _FakeProvider()
+        inst = self._inst(provider)
+        context = object()
+        calls = []
+
+        def legacy(symbol, side, seconds):
+            calls.append((symbol, side, seconds, None))
+            return 42.0
+
+        def keyword_only(symbol, side, seconds, *, regime_context=None):
+            calls.append((symbol, side, seconds, regime_context))
+            return 42.0
+
+        def keywords(symbol, side, seconds, **kwargs):
+            calls.append((symbol, side, seconds, kwargs["regime_context"]))
+            return 42.0
+
+        def positional_only(symbol, side, seconds, regime_context=None, /):
+            calls.append((symbol, side, seconds, regime_context))
+            return 42.0
+
+        def broken(symbol, side, seconds, *, regime_context=None):
+            calls.append((symbol, side, seconds, regime_context))
+            raise TypeError("provider hook failed internally")
+
+        class OpaqueLegacyHook:
+            __signature__ = object()
+
+            def __call__(self, symbol, side, seconds):
+                return legacy(symbol, side, seconds)
+
+        cases = (
+            ("legacy", legacy, None),
+            ("keyword_only", keyword_only, context),
+            ("kwargs", keywords, context),
+            ("positional_only", positional_only, None),
+            ("opaque_legacy", OpaqueLegacyHook(), None),
+            ("internal_error", broken, context),
+        )
+        for name, hook, expected in cases:
+            with self.subTest(name):
+                calls.clear()
+                with patch.object(provider, "profit_guard_window_ref", hook):
+                    if name == "internal_error":
+                        with self.assertRaisesRegex(TypeError, "failed internally"):
+                            inst._call_profit_guard_window_ref(
+                                SYMBOL, "BUY", 300, regime_context=context)
+                    else:
+                        self.assertEqual(inst._call_profit_guard_window_ref(
+                            SYMBOL, "BUY", 300, regime_context=context), 42.0)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0][:3], (SYMBOL, "BUY", 300))
+                self.assertIs(calls[0][3], expected)
+
+    def test_supplied_context_stays_ephemeral_and_retry_recomputes_it(self):
+        import order_retry as oq
+        import order_retry_worker as worker
+
+        old = order_guard.MarketRegimeContext.from_decision(
+            order_guard.MarketRegimeDecision(
+                regime="bull", gradient=0.5, epsilon=0.1, strength=5.0,
+                fresh=True, reason="original_decision"))
+        new = order_guard.MarketRegimeContext.from_decision(
+            order_guard.MarketRegimeDecision(
+                regime="bear", gradient=-0.5, epsilon=0.1, strength=5.0,
+                fresh=True, reason="retry_decision"))
+        for accepted in (True, False):
+            with self.subTest(accepted=accepted):
+                self._clear_state()
+                provider = _FakeProvider()
+                inst = self._inst(provider)
+                with patch.object(inst._api, "market_regime_context") as resolve, \
+                        patch("order_guard.profit_guard", return_value=accepted) as guard:
+                    result = inst.place(
+                        "BUY", 100.0, 1.0, smart=False, wait_for_trend=False,
+                        regime_context=old)
+                resolve.assert_not_called()
+                self.assertIs(guard.call_args.kwargs["regime_context"], old)
+                self.assertEqual(result is not None, accepted)
+                queued = oq.load_all()
+                self.assertEqual(len(queued), 1)
+                self.assertNotIn("regime_context", queued[0]["place_kwargs"])
+                json.dumps(queued[0], allow_nan=False)
+                if not accepted:
+                    with patch.object(
+                            inst._api, "market_regime_context", return_value=new) as resolve, \
+                            patch.object(provider, "profit_guard_window_ref") as window, \
+                            patch("order_guard.profit_guard", return_value=True) as guard:
+                        stats = worker.process_once(inst._api, now=time.time() + 1000.0)
+                    self.assertEqual(stats["attempted"], 1)
+                    self.assertEqual(stats["succeeded"], 1)
+                    resolve.assert_called_once_with(
+                        SYMBOL, provider_name=provider.name)
+                    self.assertIs(window.call_args.kwargs["regime_context"], new)
+                    self.assertIs(guard.call_args.kwargs["regime_context"], new)
+                    self.assertEqual(len(oq.load_all()), 1)
+                    self.assertEqual(oq.load_all()[0]["lifecycle"], "accepted")
 
 
 if __name__ == "__main__":

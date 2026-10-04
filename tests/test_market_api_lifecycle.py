@@ -1,8 +1,8 @@
 import unittest
 import time
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from market_regime import ClosedPriceSeries
+from market_regime import ClosedPriceSeries, MarketRegimeService
 from providers.base import MarketDataProvider
 from providers.market_api import MarketApi
 from providers.strategy_executor import (
@@ -173,6 +173,87 @@ class MarketApiLifecycleTest(unittest.TestCase):
         self.assertEqual(lifecycle.provider_name, "Fake")
         self.assertEqual(lifecycle.max_age_seconds, 60)
         self.assertTrue(lifecycle.retry_on_lookup_error)
+
+    def test_context_uses_injected_snapshot_once_and_preserves_freshness(self):
+        now = 10_000_000.0
+        snapshot = {"gradient_recent": -0.6, "epsilon": 0.1, "ts": now - 5.0}
+        resolver = Mock(return_value=snapshot)
+        api = MarketApi([self.provider], regime_snapshot_resolver=resolver)
+        with patch.object(self.provider, "ohlc_series") as ohlc:
+            context = api.market_regime_context("ABCUSD", now=now)
+        self.assertEqual(context.regime, "bear")
+        self.assertTrue(context.fresh)
+        self.assertEqual(context.resolved_trend, "bear")
+        self.assertEqual(context.evaluated_at, now)
+        resolver.assert_called_once_with("ABCUSD", now=now)
+        ohlc.assert_not_called()
+
+        for label, timestamp in (("stale", now - 300.0), ("future", now + 60.0),
+                                 ("missing", None)):
+            with self.subTest(label):
+                resolver.return_value = dict(snapshot, ts=timestamp)
+                context = api.market_regime_context(
+                    "ABCUSD", now=now, allow_fallback=False)
+                self.assertFalse(context.fresh)
+                self.assertEqual(context.regime, "unknown")
+
+    def test_context_snapshot_controls_and_missing_source_fallback(self):
+        now = 10_000_000.0
+        self.provider.series_now = now
+        snapshot = {"gradient_recent": -0.6, "epsilon": 0.1, "ts": now}
+        resolver = Mock(side_effect=RuntimeError("snapshot unavailable"))
+        api = MarketApi([self.provider], regime_snapshot_resolver=resolver)
+        with patch.object(self.provider, "ohlc_series",
+                          wraps=self.provider.ohlc_series) as ohlc:
+            context = api.market_regime_context("ABCUSD", now=now)
+        self.assertEqual(context.regime, "bull")
+        resolver.assert_called_once_with("ABCUSD", now=now)
+        ohlc.assert_called_once_with("ABCUSD", 1)
+
+        for label, options in (
+            ("explicit_snapshot", {"snapshot": snapshot}),
+            ("disabled_runtime_snapshot", {"use_runtime_snapshot": False}),
+        ):
+            with self.subTest(label):
+                resolver.reset_mock()
+                context = api.market_regime_context("ABCUSD", now=now, **options)
+                self.assertEqual(context.regime,
+                                 "bear" if "snapshot" in options else "bull")
+                resolver.assert_not_called()
+
+    def test_context_routes_fallback_to_explicit_venue_and_injected_service(self):
+        now = 10_000_000.0
+        second = FakeProvider()
+        second.name = "Second"
+        second.series_now = now
+        second.ohlc_closes = lambda symbol, interval: list(range(50, 10, -1))
+        service = MarketRegimeService()
+        api = MarketApi([self.provider, second], regime_service=service)
+        with patch.object(self.provider, "ohlc_series") as wrong_venue, \
+                patch.object(service, "resolve_with_evidence",
+                             wraps=service.resolve_with_evidence) as resolve, \
+                patch("providers.market_api._runtime_market_regime_snapshot") as hidden:
+            context = api.market_regime_context(
+                "ABCUSD", provider_name="Second", now=now)
+        self.assertEqual(context.regime, "bear")
+        self.assertTrue(context.fresh)
+        self.assertEqual(context.source, "ohlc:1m")
+        self.assertIs(resolve.call_args.args[0], second)
+        resolve.assert_called_once()
+        wrong_venue.assert_not_called()
+        hidden.assert_not_called()
+
+    def test_runtime_snapshot_adapter_is_only_wired_at_application_boundary(self):
+        from providers.market_api import api, _runtime_market_regime_snapshot
+
+        self.assertIs(api._regime_snapshot_resolver, _runtime_market_regime_snapshot)
+        manager = Mock()
+        snapshot = {"gradient_recent": 0.6, "epsilon": 0.1, "ts": 1000.0}
+        manager.fresh_snapshot.return_value = snapshot
+        with patch("cacheManager.get_short_trend_manager", return_value=manager):
+            self.assertIs(_runtime_market_regime_snapshot("ABCUSD", now=1001.0),
+                          snapshot)
+        manager.fresh_snapshot.assert_called_once_with("ABCUSD", now=1001.0)
 
     def test_market_regime_routes_to_provider_ohlc(self):
         decision = self.api.market_regime(

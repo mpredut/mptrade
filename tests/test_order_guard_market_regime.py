@@ -9,6 +9,7 @@ Validates that order_guard:
     * Sideways / Flat / Unknown: 12h - 48h (default 24h)
 - Safely maps 'sideways' regime to 'flat' for backward compatibility.
 """
+import builtins
 import os
 import sys
 import time
@@ -47,26 +48,34 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         self.now = time.time()
         order_guard._DEFAULT_REGIME_SERVICE._cache.clear()
 
+    @staticmethod
+    def _snapshot_resolver(snapshot):
+        """Return an explicit resolver for one deterministic snapshot."""
+        return lambda _symbol, now=None: snapshot
+
     def test_fresh_bull_snapshot_produces_bull_regime_and_8h_window(self):
         snap = {
             "gradient_recent": 0.5,
             "epsilon": 0.1,
             "ts": self.now - 10.0,  # 10s old -> fresh
         }
-        mock_mgr = mock.MagicMock()
-        mock_mgr.fresh_snapshot.return_value = snap
+        resolver = self._snapshot_resolver(snap)
+        decision = order_guard.symbol_regime(
+            "BTCUSDT", now=self.now, snapshot_resolver=resolver,
+        )
+        self.assertEqual(decision.regime, "bull")
+        self.assertTrue(decision.fresh)
+        self.assertEqual(decision.source, "snapshot")
 
-        with mock.patch("cacheManager.get_short_trend_manager", return_value=mock_mgr):
-            decision = order_guard.symbol_regime("BTCUSDT", now=self.now)
-            self.assertEqual(decision.regime, "bull")
-            self.assertTrue(decision.fresh)
-            self.assertEqual(decision.source, "snapshot")
+        trend = order_guard._symbol_trend(
+            "BTCUSDT", now=self.now, snapshot_resolver=resolver,
+        )
+        self.assertEqual(trend, "bull")
 
-            trend = order_guard._symbol_trend("BTCUSDT", now=self.now)
-            self.assertEqual(trend, "bull")
-
-            window_s = order_guard.dynamic_buy_window_sec("BTCUSDT", now=self.now)
-            self.assertEqual(window_s, 8.0 * 3600.0)
+        window_s = order_guard.dynamic_buy_window_sec(
+            "BTCUSDT", now=self.now, snapshot_resolver=resolver,
+        )
+        self.assertEqual(window_s, 8.0 * 3600.0)
 
     def test_fresh_bear_snapshot_produces_bear_regime_and_72h_window(self):
         snap = {
@@ -74,19 +83,22 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             "epsilon": 0.1,
             "ts": self.now - 10.0,
         }
-        mock_mgr = mock.MagicMock()
-        mock_mgr.fresh_snapshot.return_value = snap
+        resolver = self._snapshot_resolver(snap)
+        decision = order_guard.symbol_regime(
+            "BTCUSDT", now=self.now, snapshot_resolver=resolver,
+        )
+        self.assertEqual(decision.regime, "bear")
+        self.assertTrue(decision.fresh)
 
-        with mock.patch("cacheManager.get_short_trend_manager", return_value=mock_mgr):
-            decision = order_guard.symbol_regime("BTCUSDT", now=self.now)
-            self.assertEqual(decision.regime, "bear")
-            self.assertTrue(decision.fresh)
+        trend = order_guard._symbol_trend(
+            "BTCUSDT", now=self.now, snapshot_resolver=resolver,
+        )
+        self.assertEqual(trend, "bear")
 
-            trend = order_guard._symbol_trend("BTCUSDT", now=self.now)
-            self.assertEqual(trend, "bear")
-
-            window_s = order_guard.dynamic_buy_window_sec("BTCUSDT", now=self.now)
-            self.assertEqual(window_s, 72.0 * 3600.0)
+        window_s = order_guard.dynamic_buy_window_sec(
+            "BTCUSDT", now=self.now, snapshot_resolver=resolver,
+        )
+        self.assertEqual(window_s, 72.0 * 3600.0)
 
     def test_weak_signal_produces_sideways_regime_mapped_to_flat_and_24h_window(self):
         # abs(gradient) / epsilon = 0.15 / 0.1 = 1.5 <= strength_threshold 2.0 -> sideways
@@ -95,19 +107,22 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             "epsilon": 0.1,
             "ts": self.now - 10.0,
         }
-        mock_mgr = mock.MagicMock()
-        mock_mgr.fresh_snapshot.return_value = snap
+        resolver = self._snapshot_resolver(snap)
+        decision = order_guard.symbol_regime(
+            "BTCUSDT", now=self.now, snapshot_resolver=resolver,
+        )
+        self.assertEqual(decision.regime, "sideways")
+        self.assertTrue(decision.fresh)
 
-        with mock.patch("cacheManager.get_short_trend_manager", return_value=mock_mgr):
-            decision = order_guard.symbol_regime("BTCUSDT", now=self.now)
-            self.assertEqual(decision.regime, "sideways")
-            self.assertTrue(decision.fresh)
+        trend = order_guard._symbol_trend(
+            "BTCUSDT", now=self.now, snapshot_resolver=resolver,
+        )
+        self.assertEqual(trend, "flat")
 
-            trend = order_guard._symbol_trend("BTCUSDT", now=self.now)
-            self.assertEqual(trend, "flat")
-
-            window_s = order_guard.dynamic_buy_window_sec("BTCUSDT", now=self.now)
-            self.assertEqual(window_s, 24.0 * 3600.0)
+        window_s = order_guard.dynamic_buy_window_sec(
+            "BTCUSDT", now=self.now, snapshot_resolver=resolver,
+        )
+        self.assertEqual(window_s, 24.0 * 3600.0)
 
     def test_stale_snapshot_rejected_and_falls_back_to_provider_ohlc(self):
         # Snapshot is 300s old (> default max age 120s) -> stale
@@ -116,8 +131,7 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             "epsilon": 0.1,
             "ts": self.now - 300.0,
         }
-        mock_mgr = mock.MagicMock()
-        mock_mgr.fresh_snapshot.return_value = stale_snap
+        resolver = self._snapshot_resolver(stale_snap)
 
         # Provider provides 15 rising 1m closes up to self.now
         rising_closes = tuple(100.0 + i * 2.0 for i in range(20))
@@ -129,17 +143,22 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             last_closed_at=self.now,
         )
 
-        with mock.patch("cacheManager.get_short_trend_manager", return_value=mock_mgr):
-            # When fallback allowed: falls back to provider OHLC
-            decision = order_guard.symbol_regime("BTCUSDT", provider=provider, now=self.now, allow_fallback=True)
-            self.assertTrue(decision.fresh)
-            self.assertEqual(decision.regime, "bull")
-            self.assertTrue(decision.fallback_used)
-            self.assertTrue(decision.source.startswith("ohlc:"))
+        # When fallback is allowed, the stale snapshot falls back to provider OHLC.
+        decision = order_guard.symbol_regime(
+            "BTCUSDT", provider=provider, now=self.now, allow_fallback=True,
+            snapshot_resolver=resolver,
+        )
+        self.assertTrue(decision.fresh)
+        self.assertEqual(decision.regime, "bull")
+        self.assertTrue(decision.fallback_used)
+        self.assertTrue(decision.source.startswith("ohlc:"))
 
-            # Window uses the verified fallback bull regime
-            window_s = order_guard.dynamic_buy_window_sec("BTCUSDT", provider=provider, now=self.now)
-            self.assertEqual(window_s, 8.0 * 3600.0)
+        # The window uses the verified fallback bull regime.
+        window_s = order_guard.dynamic_buy_window_sec(
+            "BTCUSDT", provider=provider, now=self.now,
+            snapshot_resolver=resolver,
+        )
+        self.assertEqual(window_s, 8.0 * 3600.0)
 
     def test_stale_snapshot_without_fallback_becomes_unknown_and_uses_24h_window(self):
         stale_snap = {
@@ -147,19 +166,25 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             "epsilon": 0.1,
             "ts": self.now - 300.0,
         }
-        mock_mgr = mock.MagicMock()
-        mock_mgr.fresh_snapshot.return_value = stale_snap
+        resolver = self._snapshot_resolver(stale_snap)
+        decision = order_guard.symbol_regime(
+            "BTCUSDT", provider=None, now=self.now, allow_fallback=False,
+            snapshot_resolver=resolver,
+        )
+        self.assertFalse(decision.fresh)
+        self.assertEqual(decision.regime, "unknown")
 
-        with mock.patch("cacheManager.get_short_trend_manager", return_value=mock_mgr):
-            decision = order_guard.symbol_regime("BTCUSDT", provider=None, now=self.now, allow_fallback=False)
-            self.assertFalse(decision.fresh)
-            self.assertEqual(decision.regime, "unknown")
+        trend = order_guard._symbol_trend(
+            "BTCUSDT", provider=None, now=self.now,
+            snapshot_resolver=resolver,
+        )
+        self.assertEqual(trend, "unknown")
 
-            trend = order_guard._symbol_trend("BTCUSDT", provider=None, now=self.now)
-            self.assertEqual(trend, "unknown")
-
-            window_s = order_guard.dynamic_buy_window_sec("BTCUSDT", provider=None, now=self.now)
-            self.assertEqual(window_s, 24.0 * 3600.0)
+        window_s = order_guard.dynamic_buy_window_sec(
+            "BTCUSDT", provider=None, now=self.now,
+            snapshot_resolver=resolver,
+        )
+        self.assertEqual(window_s, 24.0 * 3600.0)
 
     def test_ohlc_candle_gap_fails_closed_to_unknown(self):
         stale_snap = {
@@ -167,8 +192,7 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             "epsilon": 0.1,
             "ts": self.now - 300.0,
         }
-        mock_mgr = mock.MagicMock()
-        mock_mgr.fresh_snapshot.return_value = stale_snap
+        resolver = self._snapshot_resolver(stale_snap)
 
         # Gap between candles (e.g. 500s interval on 1m candles)
         rising_closes = (100.0, 102.0, 104.0, 106.0)
@@ -180,10 +204,12 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             last_closed_at=self.now,
         )
 
-        with mock.patch("cacheManager.get_short_trend_manager", return_value=mock_mgr):
-            decision = order_guard.symbol_regime("BTCUSDT", provider=provider, now=self.now, allow_fallback=True)
-            self.assertFalse(decision.fresh)
-            self.assertEqual(decision.regime, "unknown")
+        decision = order_guard.symbol_regime(
+            "BTCUSDT", provider=provider, now=self.now, allow_fallback=True,
+            snapshot_resolver=resolver,
+        )
+        self.assertFalse(decision.fresh)
+        self.assertEqual(decision.regime, "unknown")
 
     def test_legacy_growth_coefficient_snapshot_is_normalized(self):
         # Legacy snapshot containing only growth_coefficient instead of gradient_recent
@@ -192,14 +218,13 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             "epsilon": 0.1,
             "ts": self.now - 5.0,
         }
-        mock_mgr = mock.MagicMock()
-        mock_mgr.fresh_snapshot.return_value = legacy_snap
-
-        with mock.patch("cacheManager.get_short_trend_manager", return_value=mock_mgr):
-            decision = order_guard.symbol_regime("BTCUSDT", now=self.now)
-            self.assertEqual(decision.regime, "bull")
-            self.assertTrue(decision.fresh)
-            self.assertEqual(decision.gradient, 0.6)
+        decision = order_guard.symbol_regime(
+            "BTCUSDT", now=self.now,
+            snapshot_resolver=self._snapshot_resolver(legacy_snap),
+        )
+        self.assertEqual(decision.regime, "bull")
+        self.assertTrue(decision.fresh)
+        self.assertEqual(decision.gradient, 0.6)
 
     def test_provider_with_direct_market_regime_is_delegated(self):
         class _DirectRegimeProvider:
@@ -230,30 +255,52 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             "epsilon": 0.1,
             "ts": self.now - 10.0,
         }
-        mock_mgr = mock.MagicMock()
-        mock_mgr.fresh_snapshot.return_value = snap
-
-        with mock.patch(
-            "cacheManager.get_short_trend_manager",
-            return_value=mock_mgr,
-        ):
-            decision = order_guard.symbol_regime(
-                "BTCUSDT", regime_service=_BrokenService(), now=self.now,
-            )
+        decision = order_guard.symbol_regime(
+            "BTCUSDT", regime_service=_BrokenService(), now=self.now,
+            snapshot_resolver=self._snapshot_resolver(snap),
+        )
 
         self.assertEqual(decision.regime, "unknown")
         self.assertFalse(decision.fresh)
         self.assertEqual(decision.reason, "regime_resolution_failed")
 
-    def test_missing_symbol_or_empty_cache_fails_safely_to_unknown(self):
+    def test_missing_symbol_or_missing_sources_fails_safely_without_hidden_imports(self):
         decision = order_guard.symbol_regime("", now=self.now)
         self.assertEqual(decision.regime, "unknown")
         self.assertEqual(decision.reason, "missing_symbol")
 
-        with mock.patch("cacheManager.get_short_trend_manager", side_effect=Exception("Cache error")):
-            decision = order_guard.symbol_regime("BTCUSDT", provider=None, now=self.now, allow_fallback=False)
-            self.assertEqual(decision.regime, "unknown")
-            self.assertEqual(order_guard.dynamic_buy_window_sec("BTCUSDT", provider=None), 24.0 * 3600.0)
+        real_import = builtins.__import__
+
+        def reject_hidden_market_sources(name, *args, **kwargs):
+            if name in {"cacheManager", "market_api", "providers.market_api"}:
+                raise AssertionError(f"hidden market source imported: {name}")
+            return real_import(name, *args, **kwargs)
+
+        def failing_snapshot_resolver(_symbol, now=None):
+            raise RuntimeError("snapshot unavailable")
+
+        cases = (
+            ("no_sources", None),
+            ("snapshot_error", failing_snapshot_resolver),
+        )
+        with mock.patch("builtins.__import__", side_effect=reject_hidden_market_sources):
+            for case, resolver in cases:
+                with self.subTest(case=case):
+                    decision = order_guard.symbol_regime(
+                        "BTCUSDT",
+                        provider=None,
+                        now=self.now,
+                        allow_fallback=False,
+                        snapshot_resolver=resolver,
+                    )
+                    self.assertEqual(decision.regime, "unknown")
+            window_s = order_guard.dynamic_buy_window_sec(
+                "BTCUSDT", provider=None, now=self.now,
+            )
+
+        self.assertFalse(hasattr(order_guard, "cacheManager"))
+        self.assertFalse(hasattr(order_guard, "MarketApi"))
+        self.assertEqual(window_s, 24.0 * 3600.0)
 
     def test_profit_guard_dynamic_mode_respects_bull_and_bear_regimes(self):
         bull_snap = {
@@ -275,7 +322,6 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
                 return 216.28
 
         provider = _MockExecutionProvider()
-        mock_mgr = mock.MagicMock()
 
         margins = {
             "default": 1.15,
@@ -285,22 +331,29 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             "buy_window_mode": "dynamic",
         }
 
+        cases = (
+            ("bull", bull_snap, True),
+            ("bear", bear_snap, False),
+        )
         with mock.patch.object(order_guard, "_MARGINS", margins):
-            # In confirmed BULL trend: BUY at 293 above past sell 216.28 is allowed
-            mock_mgr.fresh_snapshot.return_value = bull_snap
-            with mock.patch("cacheManager.get_short_trend_manager", return_value=mock_mgr):
-                allowed = order_guard.profit_guard(
-                    provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28
-                )
-                self.assertTrue(allowed)
-
-            # In BEAR trend: BUY at 293 above past sell 216.28 is BLOCKED for capital defense
-            mock_mgr.fresh_snapshot.return_value = bear_snap
-            with mock.patch("cacheManager.get_short_trend_manager", return_value=mock_mgr):
-                allowed = order_guard.profit_guard(
-                    provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28
-                )
-                self.assertFalse(allowed)
+            for regime, snapshot, expected in cases:
+                with self.subTest(regime=regime):
+                    context = order_guard.symbol_regime_context(
+                        "TAOUSDC",
+                        provider=provider,
+                        now=self.now,
+                        snapshot_resolver=self._snapshot_resolver(snapshot),
+                    )
+                    allowed = order_guard.profit_guard(
+                        provider,
+                        "TAOUSDC",
+                        "BUY",
+                        293.0,
+                        1.15,
+                        window_ref=216.28,
+                        regime_context=context,
+                    )
+                    self.assertEqual(allowed, expected)
 
     def test_profit_guard_reuses_one_regime_for_window_and_policy(self):
         class _Provider:
@@ -314,23 +367,43 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             "default_buy_reference": "dynamic",
             "buy_window_mode": "dynamic",
         }
+        calls = 0
+
+        def snapshot_resolver(_symbol, now=None):
+            nonlocal calls
+            calls += 1
+            return {
+                "gradient_recent": 0.5,
+                "epsilon": 0.1,
+                "ts": self.now - 10.0,
+            }
+
+        provider = _Provider()
+        context = order_guard.symbol_regime_context(
+            "TAOUSDC",
+            provider=provider,
+            now=self.now,
+            snapshot_resolver=snapshot_resolver,
+        )
         with mock.patch.object(order_guard, "_MARGINS", margins), \
-                mock.patch.object(
-                    order_guard,
-                    "_symbol_trend",
-                    side_effect=["bull", "bear"],
-                ) as trend:
+                mock.patch.object(order_guard, "_symbol_trend") as trend:
+            window_s = order_guard.window_for(
+                provider, "TAOUSDC", "BUY", regime_context=context,
+            )
             allowed = order_guard.profit_guard(
-                _Provider(),
+                provider,
                 "TAOUSDC",
                 "BUY",
                 293.0,
                 1.15,
                 window_ref=216.28,
+                regime_context=context,
             )
 
+        self.assertEqual(calls, 1)
+        self.assertEqual(window_s, 8.0 * 3600.0)
         self.assertTrue(allowed)
-        trend.assert_called_once_with("TAOUSDC", provider=mock.ANY)
+        trend.assert_not_called()
 
     def test_injected_resolvers_isolate_order_guard_from_globals(self):
         called = {"snapshot": 0, "provider": 0}
@@ -359,14 +432,16 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         self.assertEqual(called["provider"], 1)
 
     def test_symbol_regime_context_bundles_decision_and_properties(self):
-        mock_mgr = mock.MagicMock()
-        mock_mgr.fresh_snapshot.return_value = {
+        snapshot = {
             "gradient_recent": -0.6,
             "epsilon": 0.1,
             "ts": self.now - 10.0,
         }
-        with mock.patch("cacheManager.get_short_trend_manager", return_value=mock_mgr):
-            ctx = order_guard.symbol_regime_context("BTCUSDT", now=self.now)
+        ctx = order_guard.symbol_regime_context(
+            "BTCUSDT",
+            now=self.now,
+            snapshot_resolver=self._snapshot_resolver(snapshot),
+        )
 
         self.assertEqual(ctx.regime, "bear")
         self.assertEqual(ctx.resolved_trend, "bear")

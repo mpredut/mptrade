@@ -627,8 +627,7 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
 
     regime_ctx = None
     try:
-        import order_guard
-        regime_ctx = order_guard.symbol_regime_context(symbol)
+        regime_ctx = mkt.market_regime_context(symbol)
         print(f"[TRADEALL] {symbol} resolved trend: {regime_ctx.resolved_trend}")
     except Exception as e:
         print(f"[TRADEALL] Error resolving regime context for {symbol}: {e}")

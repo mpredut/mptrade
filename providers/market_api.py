@@ -14,7 +14,7 @@ eagerly importing modules that lead back to ``cacheManager`` would create a cycl
 """
 import math
 import time
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 from .base import MarketDataProvider, _normalize_order, env_value
 from .binance_filters import (
@@ -36,6 +36,7 @@ from .strategy_executor import (
 from market_regime import (
     ClosedPriceSeries,
     CompositeMarketRegimeDecision,
+    MarketRegimeContext,
     MarketRegimeDecision,
     MarketRegimeBundle,
     MarketRegimeResolution,
@@ -69,6 +70,15 @@ def _get_allorders():
         from binance_api import bapi_allorders
         _allorders = bapi_allorders
     return _allorders
+
+
+def _runtime_market_regime_snapshot(symbol: str, now=None):
+    """Read the optional short-trend snapshot at the application boundary."""
+    try:
+        import cacheManager as cm
+        return cm.get_short_trend_manager().fresh_snapshot(symbol, now=now)
+    except Exception:
+        return None
 
 
 def _step_decimals(step: str) -> int:
@@ -506,7 +516,13 @@ class MarketApi:
     get_current_price signature matches bapi, making this a drop-in data facade.
     """
 
-    def __init__(self, providers: List[MarketDataProvider]):
+    def __init__(
+        self,
+        providers: List[MarketDataProvider],
+        *,
+        regime_service: Optional[MarketRegimeService] = None,
+        regime_snapshot_resolver: Optional[Callable] = None,
+    ):
         if not providers:
             raise ValueError("MarketApi: the provider list cannot be empty")
         self._providers: List[MarketDataProvider] = list(providers)
@@ -514,7 +530,8 @@ class MarketApi:
         # Name registry enables explicit venue routing for Instrument rather than
         # guessing via supports_symbol. It does not alter symbol routing below.
         self._by_name: dict = {p.name.lower(): p for p in self._providers}
-        self._regime_service = MarketRegimeService()
+        self._regime_service = regime_service or MarketRegimeService()
+        self._regime_snapshot_resolver = regime_snapshot_resolver
 
     def _provider_explicit_or_routed(self, symbol: str, provider_name=None):
         if provider_name is None:
@@ -730,6 +747,52 @@ class MarketApi:
             cache_max=service.cache_max,
             clock=service.clock,
         )
+
+    def market_regime_context(
+        self,
+        symbol: str,
+        *,
+        provider_name=None,
+        snapshot=None,
+        use_runtime_snapshot=True,
+        snapshot_source="snapshot",
+        snapshot_max_age_seconds=None,
+        ohlc_max_age_seconds=None,
+        strength_threshold=None,
+        allow_fallback=True,
+        now=None,
+    ) -> MarketRegimeContext:
+        """Resolve one reusable short-horizon context at the composition root."""
+        evaluated_at = time.time() if now is None else float(now)
+        if not math.isfinite(evaluated_at):
+            raise ValueError("now must be finite")
+        if snapshot_max_age_seconds is None:
+            snapshot_max_age_seconds = (
+                self._regime_service.default_snapshot_max_age_seconds())
+        if (
+            snapshot is None
+            and use_runtime_snapshot
+            and self._regime_snapshot_resolver is not None
+        ):
+            try:
+                snapshot = self._regime_snapshot_resolver(
+                    symbol, now=evaluated_at)
+            except Exception:
+                snapshot = None
+        resolution = self.market_regime_resolution(
+            symbol,
+            provider_name=provider_name,
+            horizon="short",
+            snapshot=snapshot,
+            snapshot_source=snapshot_source,
+            snapshot_max_age_seconds=snapshot_max_age_seconds,
+            ohlc_max_age_seconds=ohlc_max_age_seconds,
+            strength_threshold=strength_threshold,
+            allow_fallback=allow_fallback,
+            now=evaluated_at,
+        )
+        return MarketRegimeContext.from_decision(
+            resolution.decision, evaluated_at=evaluated_at)
 
     def market_regime_resolution(
         self,
@@ -1014,4 +1077,7 @@ for _modname, _clsname in (("hyperliquid_provider", "HyperliquidProvider"),
     except Exception as _e:  # noqa: BLE001
         print(f"market_api: {_clsname} unavailable ({_e})")
 
-api = MarketApi([BinanceProvider()] + _extra_providers)
+api = MarketApi(
+    [BinanceProvider()] + _extra_providers,
+    regime_snapshot_resolver=_runtime_market_regime_snapshot,
+)

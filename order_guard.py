@@ -7,8 +7,8 @@ margin. Decoupled from Binance, it accepts any `provider` implementing
 (for example, min(sell)/max(buy) from the Binance order cache). The SAME profit logic
 therefore runs on every venue instead of being embedded only in bapi_placeorder.
 
-Venue and cache adapters are imported lazily by `symbol_regime`, while the shared
-market-regime types remain provider-neutral. Reference read failures from
+Market-regime data sources and provider lookup are injected by callers, while the
+shared market-regime types remain provider-neutral. Reference read failures from
 provider.last_opposite_fill propagate so the caller can fail closed.
 Returns True when placement is allowed and False when blocked.
 
@@ -106,27 +106,6 @@ def buy_reference_enabled(provider_name) -> bool:
     return buy_reference_mode(provider_name) != "off"
 
 
-def default_snapshot_resolver(symbol: str, now: Optional[float] = None) -> Optional[dict]:
-    """Default resolver that queries cacheManager for a fresh snapshot."""
-    try:
-        import cacheManager as cm
-        mgr = cm.get_short_trend_manager()
-        return mgr.fresh_snapshot(symbol, now=now)
-    except Exception:
-        return None
-
-
-def default_provider_resolver(provider):
-    """Default resolver that queries MarketApi for a named provider instance."""
-    if isinstance(provider, str) and provider:
-        try:
-            from providers.market_api import api as market_api
-            return market_api.provider_by_name(provider) or provider
-        except Exception:
-            return None
-    return provider
-
-
 def symbol_regime(
     symbol: str,
     provider=None,
@@ -152,17 +131,19 @@ def symbol_regime(
         except Exception:
             pass
 
-    snap_resolver = snapshot_resolver or default_snapshot_resolver
-    try:
-        snap = snap_resolver(symbol, now=now)
-    except Exception:
-        snap = None
+    snap = None
+    if snapshot_resolver is not None:
+        try:
+            snap = snapshot_resolver(symbol, now=now)
+        except Exception:
+            snap = None
 
-    prov_resolver = provider_resolver or default_provider_resolver
-    try:
-        target_provider = prov_resolver(provider)
-    except Exception:
-        target_provider = None
+    target_provider = provider
+    if provider_resolver is not None:
+        try:
+            target_provider = provider_resolver(provider)
+        except Exception:
+            target_provider = None
 
     try:
         resolution = svc.resolve_with_evidence(

@@ -9,6 +9,7 @@ same asset can be represented independently on multiple venues.
 when no base is configured). ``place()`` either delegates to an internally guarded
 provider or runs the shared policy pipeline before provider mechanics.
 """
+import inspect
 import os
 import math
 import sys
@@ -91,9 +92,23 @@ class Instrument:
         if not callable(method):
             return None
         try:
+            parameters = inspect.signature(method).parameters.values()
+            accepts_context = any(
+                (
+                    parameter.name == "regime_context"
+                    and parameter.kind in {
+                        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                        inspect.Parameter.KEYWORD_ONLY,
+                    }
+                )
+                or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+        except (TypeError, ValueError):
+            accepts_context = False
+        if accepts_context:
             return method(symbol, side, safeback_sec, regime_context=regime_context)
-        except TypeError:
-            return method(symbol, side, safeback_sec)
+        return method(symbol, side, safeback_sec)
 
     # -- Provider identity and access. -----------------------------------------
     @property
@@ -241,6 +256,7 @@ class Instrument:
         # does neither. Default true for the main path; former safe-order callers
         # explicitly pass false.
         smart = bool(kwargs.pop("smart", True))
+        regime_context = kwargs.pop("regime_context", None)
         # Reconstruct this call exactly for retry after bypass/smart were popped;
         # all other placement metadata remains in kwargs.
         retry_kwargs = dict(kwargs)
@@ -260,7 +276,6 @@ class Instrument:
             bypass and side_u == "SELL" and is_market)
         profit_margin = None
         profit_window_ref = None
-        regime_context = kwargs.pop("regime_context", None)
         retry_requested_price = None
         retry_price_tolerance = None
         try:
@@ -324,8 +339,16 @@ class Instrument:
                     # the last opposite fill.
                     if regime_context is None and side_u == "BUY":
                         try:
-                            regime_context = order_guard.symbol_regime_context(
-                                self.symbol, provider=self._provider)
+                            resolve_context = getattr(
+                                self._api, "market_regime_context", None)
+                            if callable(resolve_context):
+                                regime_context = resolve_context(
+                                    self.symbol,
+                                    provider_name=self.provider_name,
+                                )
+                            else:
+                                regime_context = order_guard.symbol_regime_context(
+                                    self.symbol, provider=self._provider)
                         except Exception:
                             regime_context = None
                     profit_window_ref = self._call_profit_guard_window_ref(
@@ -507,7 +530,8 @@ class Instrument:
                     if final_profit_check and not order_guard.profit_guard(
                             self._provider, self.symbol, side_u,
                             final_market_price, profit_margin,
-                            window_ref=profit_window_ref):
+                            window_ref=profit_window_ref,
+                            regime_context=regime_context):
                         reason = "profit_guard"
                         return None
                 if callable(execution_enabled) and not bool(execution_enabled()):
