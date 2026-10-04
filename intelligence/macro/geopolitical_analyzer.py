@@ -42,6 +42,7 @@ class GeopoliticalThreatAnalyzer:
         self.state_file = state_file
         self._cached_assessment: Optional[GeopoliticalThreatAssessment] = None
         self._last_eval_ts: float = 0.0
+        self._last_headlines_digest: str = ""
         self._load_from_disk()
 
     def _load_from_disk(self) -> None:
@@ -107,7 +108,12 @@ class GeopoliticalThreatAnalyzer:
             self._save_to_disk(normal_assessment)
             return normal_assessment
 
-        # Stage 2: High-severity headlines present -> Query Google Gemini LLM
+        # Stage 2: High-severity headlines present -> Check if headlines have changed
+        headline_digest = " || ".join(h.title for h in high_sev[:12])
+        if not force_refresh and self._cached_assessment and headline_digest == self._last_headlines_digest:
+            return self._cached_assessment
+
+        # Stage 3: New high-severity headlines detected -> Query Google Gemini LLM
         headline_list = "\n".join(f"- {h.title} ({h.source})" for h in high_sev[:12])
         prompt = (
             "You are a senior macroeconomic and geopolitical risk officer for an algorithmic crypto fund.\n"
@@ -156,5 +162,6 @@ class GeopoliticalThreatAnalyzer:
         )
         self._cached_assessment = assessment
         self._last_eval_ts = now
+        self._last_headlines_digest = headline_digest
         self._save_to_disk(assessment)
         return assessment

@@ -74,10 +74,10 @@ class IntelligenceTelemetryDaemon:
             disk_ttl_sec=300.0,
         )
         self.news_collector = NewsFeedCollector(
-            cache_ttl_sec=max(60.0, macro_interval_sec * 0.8),
+            cache_ttl_sec=max(300.0, macro_interval_sec * 0.8),
         )
         self.geopolitical_analyzer = GeopoliticalThreatAnalyzer(
-            cache_ttl_sec=max(120.0, macro_interval_sec * 0.8),
+            cache_ttl_sec=max(1800.0, macro_interval_sec * 2.0),
             state_file=os.path.join(self.cache_dir, "geopolitical_threat_state.json"),
         )
 
@@ -143,13 +143,13 @@ class IntelligenceTelemetryDaemon:
             logger.warning("[%s] Failed updating whale positioning: %s", symbol, e)
         return False
 
-    def update_macro(self) -> bool:
+    def update_macro(self, force: bool = False) -> bool:
         """Fetch breaking macro news and update geopolitical threat assessment."""
         try:
-            news_snap = self.news_collector.fetch(force_refresh=True)
-            assessment = self.geopolitical_analyzer.assess(news_snap, force_refresh=True)
+            news_snap = self.news_collector.fetch(force_refresh=force)
+            assessment = self.geopolitical_analyzer.assess(news_snap, force_refresh=force)
             logger.info(
-                "Macro threat assessment updated: threat=%s, risk=%.2f, headlines=%d",
+                "Macro threat assessment: threat=%s, risk=%.2f, headlines=%d",
                 assessment.threat_level, assessment.risk_score, assessment.headlines_analyzed,
             )
             return True
@@ -196,7 +196,7 @@ class IntelligenceTelemetryDaemon:
         # Pillar 4: Macro Geopolitical Shield update
         if not self.skip_macro:
             if force or (current_ts - self._last_macro_ts) >= self.macro_interval_sec:
-                if self.update_macro():
+                if self.update_macro(force=force):
                     results["macro_updated"] = True
                     self._last_macro_ts = current_ts
 
