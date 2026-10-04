@@ -19,6 +19,12 @@ from intelligence.external.collectors.derivatives_telemetry import DerivativesTe
 from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
 from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
 from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
+from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
+from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
+from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
+from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
+from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
+from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
 
 
 @dataclass(frozen=True)
@@ -37,7 +43,7 @@ class MarketIntelligenceEvaluation:
 
 
 class CompositeMarketIntelligence:
-    """Unified coordinator enforcing the Drivers/Triggers vs Guards/Brakes paradigm."""
+    """Unified coordinator enforcing the Drivers/Triggers vs Guards/Brakes paradigm across all 3 pillars."""
 
     def __init__(
         self,
@@ -46,19 +52,31 @@ class CompositeMarketIntelligence:
         exhaustion_scale: float = 0.25,
         max_active_cascade_usd: float = 500_000.0,
         max_long_funding_rate: float = 0.0005,
+        greed_downscale_threshold: int = 80,
+        greed_hard_veto_threshold: int = 90,
     ):
+        # Triggers (Drivers - Signals IN and Signals OUT)
         self.kalman_triggers: Dict[str, KalmanTrendTrigger] = {}
         self.gradient_triggers: Dict[str, LinearGradientTrigger] = {}
         self.liquidation_trigger = LiquidationCapitulationTrigger()
+        self.sentiment_trigger = SentimentContrarianTrigger()
+        self.breadth_trigger = MarketBreadthTrigger()
 
-        # Internal Guards (Brakes)
+        # Pillar 1: Internal Guards (Brakes)
         self.parabolic_guard = ParabolicSurgeGuard(surge_threshold_pct=parabolic_surge_pct)
         self.exhaustion_guard = WeibullExhaustionGuard(policy=exhaustion_policy, exhausted_scale=exhaustion_scale)
         self.noise_guard = NoiseFloorGuard(min_strength_ratio=1.0)
 
-        # External Guards (Brakes)
+        # Pillar 2: External Guards (Brakes)
         self.cascade_guard = LiquidationCascadeGuard(max_active_cascade_usd=max_active_cascade_usd)
         self.funding_guard = FundingCrowdingGuard(max_long_funding_rate=max_long_funding_rate)
+
+        # Pillar 3: Sentiment Guards (Brakes)
+        self.greed_guard = ExtremeGreedGuard(
+            downscale_threshold=greed_downscale_threshold,
+            hard_veto_threshold=greed_hard_veto_threshold,
+        )
+        self.panic_guard = PanicWashoutGuard()
 
     def _get_kalman(self, symbol: str) -> KalmanTrendTrigger:
         if symbol not in self.kalman_triggers:
@@ -83,11 +101,14 @@ class CompositeMarketIntelligence:
         volatility_1h_pct: Optional[float] = None,
         liquidation_summary: Optional[LiquidationSummary] = None,
         derivatives_telemetry: Optional[DerivativesTelemetry] = None,
+        fear_greed_snapshot: Optional[FearGreedSnapshot] = None,
+        market_breadth_snapshot: Optional[MarketBreadthSnapshot] = None,
+        asset_24h_change_pct: Optional[float] = None,
         now: Optional[float] = None,
     ) -> GuardDecision:
-        """Run all protection guards (brakes) in sequence.
+        """Run all protection guards (brakes) across Pillar 1, 2, and 3 in sequence.
 
-        Returns the first blocking decision or an approved allow decision.
+        Returns the first blocking/downscaling decision or an approved allow decision.
         """
         # 1. Noise Floor Guard
         if gradient is not None and epsilon is not None:
@@ -126,6 +147,24 @@ class CompositeMarketIntelligence:
             if not fund_dec.allowed or fund_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                 return fund_dec
 
+        # 6. Sentiment Extreme Greed Guard (Anti-Euphoria / Anti-Top Buying)
+        if fear_greed_snapshot is not None:
+            greed_dec = self.greed_guard.check(symbol, side, fear_greed_snapshot)
+            if not greed_dec.allowed or greed_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                return greed_dec
+
+        # 7. Sentiment Panic Washout Guard (Falling Knife / Market-Wide Panic)
+        if market_breadth_snapshot is not None or fear_greed_snapshot is not None:
+            panic_dec = self.panic_guard.check(
+                symbol,
+                side,
+                breadth_snapshot=market_breadth_snapshot,
+                fear_greed_snapshot=fear_greed_snapshot,
+                asset_24h_change_pct=asset_24h_change_pct,
+            )
+            if not panic_dec.allowed or panic_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                return panic_dec
+
         return GuardDecision.allow("CompositeGuards", "all_guards_cleared")
 
     def evaluate(
@@ -140,30 +179,59 @@ class CompositeMarketIntelligence:
         price_history: Optional[List[Tuple[float, float]]] = None,
         prices_for_vol: Optional[Sequence[float]] = None,
         sample_rate_sec: float = 60.0,
+        liquidation_summary: Optional[LiquidationSummary] = None,
+        derivatives_telemetry: Optional[DerivativesTelemetry] = None,
+        fear_greed_snapshot: Optional[FearGreedSnapshot] = None,
+        market_breadth_snapshot: Optional[MarketBreadthSnapshot] = None,
+        asset_24h_change_pct: Optional[float] = None,
     ) -> MarketIntelligenceEvaluation:
         """Evaluate directional triggers and validate against all guards."""
         now_ts = ts if ts is not None else time.time()
         triggered_events: List[TriggerEvent] = []
 
-        # Update Kalman trigger
+        # 1. Kalman trigger
         kalman = self._get_kalman(symbol)
         k_out, k_event = kalman.evaluate(symbol, now_ts, price, epsilon)
         if k_event:
             triggered_events.append(k_event)
 
-        # Update Gradient trigger
+        # 2. Gradient trigger
         if gradient is not None and epsilon is not None:
             grad = self._get_gradient(symbol)
             _, g_event = grad.evaluate(symbol, price, gradient, epsilon, ts=now_ts)
             if g_event:
                 triggered_events.append(g_event)
 
+        # 3. External Liquidation Capitulation Trigger
+        if liquidation_summary is not None:
+            _, l_event = self.liquidation_trigger.evaluate(symbol, price, liquidation_summary, now=now_ts)
+            if l_event:
+                triggered_events.append(l_event)
+
+        # 4. Sentiment Contrarian Trigger (Fear & Greed)
+        if fear_greed_snapshot is not None:
+            _, s_event = self.sentiment_trigger.evaluate(symbol, price, fear_greed_snapshot, ts=now_ts)
+            if s_event:
+                triggered_events.append(s_event)
+
+        # 5. Market Breadth Trigger
+        if market_breadth_snapshot is not None:
+            _, b_event = self.breadth_trigger.evaluate(
+                symbol,
+                price,
+                market_breadth_snapshot,
+                asset_24h_change_pct=asset_24h_change_pct,
+                ts=now_ts,
+            )
+            if b_event:
+                triggered_events.append(b_event)
+
         # Calculate volatility if prices given
         vol1h: Optional[float] = None
         if prices_for_vol and len(prices_for_vol) >= 20:
             vol1h = calculate_volatility_1h(prices_for_vol, sample_rate_sec)
 
-        # Select primary active trigger
+        # Select primary active trigger (prioritize highest strength or first actionable)
         active_trigger = triggered_events[0] if triggered_events else None
         side = active_trigger.side.value if active_trigger else "HOLD"
 
@@ -178,6 +246,11 @@ class CompositeMarketIntelligence:
                 trend_duration_seconds=trend_duration_seconds,
                 price_history=price_history,
                 volatility_1h_pct=vol1h,
+                liquidation_summary=liquidation_summary,
+                derivatives_telemetry=derivatives_telemetry,
+                fear_greed_snapshot=fear_greed_snapshot,
+                market_breadth_snapshot=market_breadth_snapshot,
+                asset_24h_change_pct=asset_24h_change_pct,
                 now=now_ts,
             )
         else:
@@ -200,5 +273,7 @@ class CompositeMarketIntelligence:
                 "volatility_1h": vol1h,
                 "gradient": gradient,
                 "epsilon": epsilon,
+                "fear_greed": fear_greed_snapshot.value if fear_greed_snapshot else None,
+                "market_regime": market_breadth_snapshot.regime if market_breadth_snapshot else None,
             },
         )
