@@ -14,6 +14,11 @@ from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
 from intelligence.internal.guards.noise_guard import NoiseFloorGuard
 from intelligence.internal.state.volatility import calculate_volatility_1h
 from intelligence.internal.state.survival import get_trend_survival_metrics
+from intelligence.external.collectors.bybit_liquidations import LiquidationSummary
+from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
+from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
+from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
+from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
 
 
 @dataclass(frozen=True)
@@ -39,14 +44,21 @@ class CompositeMarketIntelligence:
         parabolic_surge_pct: float = 4.0,
         exhaustion_policy: str = "downscale",  # "downscale" | "veto"
         exhaustion_scale: float = 0.25,
+        max_active_cascade_usd: float = 500_000.0,
+        max_long_funding_rate: float = 0.0005,
     ):
         self.kalman_triggers: Dict[str, KalmanTrendTrigger] = {}
         self.gradient_triggers: Dict[str, LinearGradientTrigger] = {}
+        self.liquidation_trigger = LiquidationCapitulationTrigger()
 
-        # Guards (Brakes)
+        # Internal Guards (Brakes)
         self.parabolic_guard = ParabolicSurgeGuard(surge_threshold_pct=parabolic_surge_pct)
         self.exhaustion_guard = WeibullExhaustionGuard(policy=exhaustion_policy, exhausted_scale=exhaustion_scale)
         self.noise_guard = NoiseFloorGuard(min_strength_ratio=1.0)
+
+        # External Guards (Brakes)
+        self.cascade_guard = LiquidationCascadeGuard(max_active_cascade_usd=max_active_cascade_usd)
+        self.funding_guard = FundingCrowdingGuard(max_long_funding_rate=max_long_funding_rate)
 
     def _get_kalman(self, symbol: str) -> KalmanTrendTrigger:
         if symbol not in self.kalman_triggers:
@@ -69,6 +81,8 @@ class CompositeMarketIntelligence:
         trend_duration_seconds: float = 0.0,
         price_history: Optional[List[Tuple[float, float]]] = None,
         volatility_1h_pct: Optional[float] = None,
+        liquidation_summary: Optional[LiquidationSummary] = None,
+        derivatives_telemetry: Optional[DerivativesTelemetry] = None,
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Run all protection guards (brakes) in sequence.
@@ -99,6 +113,18 @@ class CompositeMarketIntelligence:
             )
             if not exh_dec.allowed or exh_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                 return exh_dec
+
+        # 4. External Liquidation Cascade Guard (Active Falling Knife)
+        if liquidation_summary is not None:
+            cascade_dec = self.cascade_guard.check(symbol, side, summary=liquidation_summary, now=now)
+            if not cascade_dec.allowed:
+                return cascade_dec
+
+        # 5. External Funding Rate Crowding Guard
+        if derivatives_telemetry is not None:
+            fund_dec = self.funding_guard.check(symbol, side, telemetry=derivatives_telemetry)
+            if not fund_dec.allowed or fund_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                return fund_dec
 
         return GuardDecision.allow("CompositeGuards", "all_guards_cleared")
 

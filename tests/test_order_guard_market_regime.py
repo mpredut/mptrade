@@ -406,6 +406,49 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         self.assertTrue(allowed)
         mock_trend.assert_not_called()
 
+    def test_intelligence_guards_shadow_and_enforce_modes(self):
+        # 1. In shadow mode, an exhausted trend or surge still allows the order
+        margins_shadow = {
+            "default": 1.15,
+            "intelligence_guards_mode": "shadow",
+            "weibull_exhaustion_policy": "veto",
+        }
+        with mock.patch.object(order_guard, "_MARGINS", margins_shadow):
+            # Trend duration 15 days (> P90)
+            ok, reason, scale = order_guard.check_intelligence_guards(
+                "binance", "BTCUSDC", "BUY", 85000.0, trend_duration_seconds=15 * 86400
+            )
+            self.assertTrue(ok)
+            self.assertEqual(scale, 1.0)
+
+        # 2. In enforce mode with veto policy, exhausted trend blocks the order
+        margins_enforce_veto = {
+            "default": 1.15,
+            "intelligence_guards_mode": "enforce",
+            "weibull_exhaustion_policy": "veto",
+        }
+        with mock.patch.object(order_guard, "_MARGINS", margins_enforce_veto):
+            ok, reason, scale = order_guard.check_intelligence_guards(
+                "binance", "BTCUSDC", "BUY", 85000.0, trend_duration_seconds=15 * 86400
+            )
+            self.assertFalse(ok)
+            self.assertIn("trend_exhausted", reason)
+
+        # 3. In enforce mode with downscale policy, exhausted trend suggests scale
+        margins_enforce_scale = {
+            "default": 1.15,
+            "intelligence_guards_mode": "enforce",
+            "weibull_exhaustion_policy": "downscale",
+            "weibull_exhausted_scale": 0.25,
+        }
+        with mock.patch.object(order_guard, "_MARGINS", margins_enforce_scale):
+            ok, reason, scale = order_guard.check_intelligence_guards(
+                "binance", "BTCUSDC", "BUY", 85000.0, trend_duration_seconds=15 * 86400
+            )
+            self.assertTrue(ok)
+            self.assertEqual(scale, 0.25)
+            self.assertIn("trend_exhausted", reason)
+
 
 if __name__ == "__main__":
     unittest.main()

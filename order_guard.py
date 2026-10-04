@@ -463,6 +463,84 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
     return True, None
 
 
+def check_intelligence_guards(
+    provider,
+    symbol: str,
+    order_type: str,
+    price: float,
+    *,
+    price_history=None,
+    trend_duration_seconds: float = 0.0,
+    regime_context=None,
+    now: Optional[float] = None,
+) -> tuple[bool, str, float]:
+    """Evaluate intelligence guards (ParabolicSurgeGuard and WeibullExhaustionGuard).
+
+    Supports staged rollouts via order_guard.conf 'intelligence_guards_mode':
+    - 'off': Bypassed completely.
+    - 'shadow' (default): Evaluates guards and logs observational decisions without blocking orders.
+    - 'enforce': Actively enforces vetoes or downscales orders.
+
+    Returns:
+        (allowed: bool, reason: str, suggested_scale: float)
+    """
+    m = _load_margins()
+    mode = str(m.get("intelligence_guards_mode", "shadow")).strip().lower()
+    if mode in ("off", "0", "disabled"):
+        return True, "intelligence_guards_off", 1.0
+
+    side = (order_type or "").upper()
+    if side != "BUY":
+        return True, "not_buy_side", 1.0
+
+    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+    from intelligence.internal.guards.guard_decision import BrakeAction
+
+    surge_pct = float(m.get("parabolic_surge_pct", 15.0))
+    pullback_pct = float(m.get("parabolic_pullback_pct", 2.0))
+    exhaust_policy = str(m.get("weibull_exhaustion_policy", "downscale")).strip().lower()
+    exhaust_scale = float(m.get("weibull_exhausted_scale", 0.25))
+
+    p_guard = ParabolicSurgeGuard(surge_threshold_pct=surge_pct, pullback_required_pct=pullback_pct)
+    e_guard = WeibullExhaustionGuard(policy=exhaust_policy, exhausted_scale=exhaust_scale)
+
+    # 1. Parabolic surge check (if price history is available)
+    if price_history:
+        p_dec = p_guard.check(symbol, side, price, price_history=price_history, now=now)
+        if not p_dec.allowed:
+            prefix = "[INTELLIGENCE_GUARD_SHADOW]" if mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
+            print(f"{prefix} {side} {symbol} @ {price}: {p_dec.reason} (brake={p_dec.brake_action})")
+            if mode == "enforce":
+                return False, p_dec.reason, 0.0
+
+    # 2. Weibull trend exhaustion check
+    dur_sec = trend_duration_seconds
+    if not dur_sec:
+        if regime_context is not None:
+            dur_sec = getattr(regime_context, "trend_duration_seconds", 0.0) or 0.0
+        if not dur_sec:
+            try:
+                import cacheManager as cm
+                trend_meta = cm.read_long_term_trend_file(symbol)
+                if trend_meta and "duration_seconds" in trend_meta:
+                    dur_sec = float(trend_meta["duration_seconds"])
+            except Exception:
+                pass
+
+    if dur_sec and dur_sec > 0:
+        e_dec = e_guard.check(symbol, side, trend_duration_seconds=dur_sec)
+        if e_dec.brake_action != BrakeAction.NONE:
+            prefix = "[INTELLIGENCE_GUARD_SHADOW]" if mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
+            print(f"{prefix} {side} {symbol} @ {price}: {e_dec.reason} (brake={e_dec.brake_action}, suggested_scale={e_dec.suggested_scale})")
+            if mode == "enforce":
+                if not e_dec.allowed:
+                    return False, e_dec.reason, 0.0
+                return True, e_dec.reason, e_dec.suggested_scale
+
+    return True, "ok", 1.0
+
+
 def profit_guard(
     provider,
     symbol,
@@ -477,6 +555,14 @@ def profit_guard(
     Reference cascade: caller-provided window_ref first, otherwise
     provider.last_opposite_fill(symbol, order_type). A missing or non-positive reference
     allows placement because there is no prior transaction to compare."""
+    # Staged / Shadow intelligence guard evaluation
+    intel_ok, intel_reason, _ = check_intelligence_guards(
+        provider, symbol, order_type, price, regime_context=regime_context
+    )
+    if not intel_ok:
+        print(f"[GUARD] {order_type} {symbol}: blocked by intelligence guard ({intel_reason})")
+        return False
+
     order_type = order_type.upper()
     provider_name = _provider_name(provider)
     if order_type == "BUY":
