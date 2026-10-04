@@ -210,3 +210,32 @@ All persistent intelligence state is isolated to `cachedb/`:
 - `offline/research/intelligence_backtest_results.json`: Detailed historical backtest outcome records.
 - `offline/research/verify_optimizations_parity.py`: Exhaustive numerical parity verification suite (30,000+ randomized trials).
 
+---
+
+## 6. Background Telemetry Daemon & Diagnostic CLI
+
+### 6.1 Telemetry Daemon (`intelligence_daemon.py`)
+To ensure that `order_guard.py` evaluates external orderbook and derivatives guards with strictly zero network latency (`allow_network=False`, sub-millisecond execution), the background daemon asynchronously refreshes disk snapshots in `cachedb/`:
+- **Spot Orderbook Depth**: Polled every 15s (`cachedb/orderbook_depth_<SYM>.json`).
+- **Derivatives Telemetry**: Polled every 30s (`cachedb/derivatives_telemetry_<SYM>.json`).
+- **Whale Positioning**: Polled every 60s (`cachedb/whale_snapshot_<SYM>.json`).
+- **Macro News Shield**: Polled every 300s (`cachedb/geopolitical_threat_state.json`).
+- **Heartbeat**: Atomically recorded to `cachedb/intelligence_daemon.heartbeat` and supervised under `procs.conf` fleet manifest.
+
+### 6.2 Diagnostic CLI (`intelligence_cli.py`)
+Provides operators with complete visibility into real-time multi-pillar state, guard simulations, and daemon health:
+```bash
+# Full multi-pillar inspection report
+./myenv/bin/python3 intelligence_cli.py --symbol BTCUSDC
+
+# Daemon operational status & snapshot age
+./myenv/bin/python3 intelligence_cli.py --daemon-status
+
+# Simulate guard execution for a prospective order
+./myenv/bin/python3 intelligence_cli.py --test-guard --side BUY --symbol BTCUSDC --qty 0.1 --notional 250
+
+# Machine-readable JSON output for automated health probes
+./myenv/bin/python3 intelligence_cli.py --symbol BTCUSDC --json
+```
+
+
