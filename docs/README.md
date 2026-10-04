@@ -29,6 +29,8 @@ their code (a deliberate convention — they are linked below).
 - [DYNAMIC_MULTI_HORIZON_PROFIT_DESIGN.md](DYNAMIC_MULTI_HORIZON_PROFIT_DESIGN.md) — Multi-Horizon
   Dynamic Profit Architecture (MHDPA): dynamic flat TP, profit ratchet trailing, micro-gradient 2X guard,
   parabolic surge exhaustion guard, and 1-3 week slow-grind dual sensor.
+- [MARKET_INTELLIGENCE.md](MARKET_INTELLIGENCE.md) — Multi-pillar decision and guard architecture:
+  internal statistical models (Kalman, Weibull, parabolic surge), external whale flow, sentiment, Google Gemini LLM reasoning, and macro news shock shield.
 - [STRATEGY.md](STRATEGY.md) — the trading logic: trend detection (+48h lag, survival
   curve, lindy plateau), the profit guard, trailing re-buy, the T212 profit guard/ladder, xStocks.
 - [RTRADE.md](RTRADE.md) — the rtrade policy, the BUY/SELL cycle, financial evaluation,

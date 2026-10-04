@@ -171,3 +171,13 @@ line-for-line across the two `trailing_stop.py` files, so it moved into
 - **Tests** (they guarantee the refactor's equivalence): `tests/test_trailing_stop.py`,
   `kraken/test_trailing_kraken.py`. CLI: `--once`, `--status`. Launched from `restart_bots.sh`,
   supervised by `healthcheck.sh --supervise` (see [OPERATIONS.md](OPERATIONS.md)).
+
+## Market Intelligence Architecture
+The `intelligence/` framework provides a four-pillar decision and capital protection layer:
+1. **Internal Quantitative**: Kalman trend state, linear gradients, mean reversion, and mathematical guards (anti-FOMO parabolic surge guard, Weibull trend exhaustion guard downscaling mature moves past P90, noise floor guard).
+2. **External Microstructure**: Whale flow volume prints, orderbook depth imbalance, and liquidation cascade vetoes.
+3. **Sentiment & LLM Reasoning**: Fear & Greed contrarian triggers, market breadth, and Google Gemini LLM reasoning (30m macro assessments and pre-flight vetoes on orders >= 1,000 EUR).
+4. **Macro Geopolitical Shield**: Real-time Google News RSS screening with Gemini risk scoring to veto BUYs during international conflict or energy supply shocks.
+
+Wired into `order_guard.py` via `check_intelligence_guards()` and configured in `order_guard.conf`. For complete specifications and backtest verification evidence, see [MARKET_INTELLIGENCE.md](MARKET_INTELLIGENCE.md).
+
