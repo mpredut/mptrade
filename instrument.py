@@ -327,6 +327,21 @@ class Instrument:
                 return None
 
             if not bypass:
+                if regime_context is None and side_u == "BUY":
+                    try:
+                        resolve_context = getattr(
+                            self._api, "market_regime_context", None)
+                        if callable(resolve_context):
+                            regime_context = resolve_context(
+                                self.symbol,
+                                provider_name=self.provider_name,
+                            )
+                        else:
+                            regime_context = order_guard.symbol_regime_context(
+                                self.symbol, provider=self._provider)
+                    except Exception:
+                        regime_context = None
+
                 if bypass_profit_reference:
                     print(
                         f"[GUARD] {side_u} {self.symbol}: the historical price reference "
@@ -337,20 +352,6 @@ class Instrument:
                     # and Hyperliquid use their configured venue window; Binance uses
                     # safeback_sec from the order cache. An empty window falls back to
                     # the last opposite fill.
-                    if regime_context is None and side_u == "BUY":
-                        try:
-                            resolve_context = getattr(
-                                self._api, "market_regime_context", None)
-                            if callable(resolve_context):
-                                regime_context = resolve_context(
-                                    self.symbol,
-                                    provider_name=self.provider_name,
-                                )
-                            else:
-                                regime_context = order_guard.symbol_regime_context(
-                                    self.symbol, provider=self._provider)
-                        except Exception:
-                            regime_context = None
                     profit_window_ref = self._call_profit_guard_window_ref(
                         self.symbol, side_u, safeback_override, regime_context=regime_context)
                     ok = order_guard.profit_guard(
@@ -382,6 +383,7 @@ class Instrument:
                 apply_policy=not (bypass or bypass_quantity_policy),
                 market=is_market,
                 enforce_business_minimum=enforce_business_minimum,
+                regime_context=regime_context,
             )
             qty = decision.final_qty
             if qty <= 0:
@@ -389,6 +391,36 @@ class Instrument:
                       f"{decision.refuse_reason} asset={decision.balance_asset}")
                 reason = decision.refuse_reason or "qty_zero_after_weight"
                 return None
+
+            # Fail-safe check for intelligence scaling if not applied in quantity_decision
+            if (
+                regime_context is not None
+                and side_u == "BUY"
+                and qty > 0
+                and not getattr(regime_context, "_scale_applied", False)
+            ):
+                scale = getattr(regime_context, "suggested_scale", None)
+                if scale is not None and 0.0 < float(scale) < 1.0:
+                    scaled_qty = qty * float(scale)
+                    if hasattr(self._provider, "round_amount"):
+                        scaled_qty = self._provider.round_amount(self.symbol, scaled_qty)
+                    filter_check = getattr(self._provider, "order_filter_refusal", None)
+                    refusal = (
+                        filter_check(
+                            self.symbol, side_u, quantity_price, scaled_qty,
+                            market=is_market, enforce_business_minimum=enforce_business_minimum)
+                        if callable(filter_check) else None
+                    )
+                    if refusal:
+                        print(f"[{self.symbol}] {side_u} scaled qty {scaled_qty} refused by filter: {refusal}")
+                        reason = str(refusal)
+                        return None
+                    print(f"[{self.symbol}] {side_u} scaled down by intelligence guard: {qty} -> {scaled_qty} (scale={scale:.2f})")
+                    qty = scaled_qty
+                    try:
+                        object.__setattr__(regime_context, "_scale_applied", True)
+                    except Exception:
+                        pass
 
             # 2. Optional provider-agnostic trend gate is instantaneous.  Placement
             # must never sleep or poll: a negative decision returns immediately and

@@ -611,8 +611,7 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
     explicitly restores legacy behavior.
     """
     import cacheManager as cm
-    global last_timestamp
-    global last_w
+    global last_timestamp, last_w, last_calc_time, last_duration
 
     if T_quanta is None:
         try:
@@ -643,10 +642,20 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
     # Include order type and T in the memo key because their weights differ and
     # automatic T may change after re-estimation.
     memo_key = (symbol, order_type.upper(), T_quanta)
-    if timestamp == last_timestamp.get(memo_key):
+    curr_now = time.time()
+    dur_sec = float(trend.get('duration_seconds', 0) or 0.0)
+    cache_age = curr_now - last_calc_time.get(memo_key, 0.0)
+    dur_drift = abs(dur_sec - last_duration.get(memo_key, 0.0))
+
+    # Recalculate if timestamp changed, cache age > 300s (5min fallback TTL), or duration drifted > 300s
+    if (
+        timestamp == last_timestamp.get(memo_key)
+        and cache_age < 300.0
+        and dur_drift < 300.0
+    ):
         cached_w = last_w.get(memo_key)
         if cached_w is not None and len(cached_w) > 0 and not np.isnan(cached_w[0]):
-            print(f"not new timestamp, use weight from mem cache.")
+            print(f"not new timestamp (age={cache_age:.1f}s), use weight from mem cache.")
             return float(cached_w[0])
 
     trend_len_quanta = trend.get('duration_seconds', 0) / quant_seconds
@@ -683,10 +692,14 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
 
     last_w[memo_key] = w        # w is already sliced from current position.
     last_timestamp[memo_key] = timestamp
+    last_calc_time[memo_key] = curr_now
+    last_duration[memo_key] = dur_sec
     return current_weight     # w[0] is the current weight.
 
 last_timestamp = {}
 last_w = {}
+last_calc_time = {}
+last_duration = {}
 
 
 # Zone 1: 0 to T is Gaussian, confident in the middle and uncertain at endpoints.

@@ -24,18 +24,30 @@ from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegim
 
 _DEFAULT_REGIME_SERVICE = MarketRegimeService()
 _MARGINS = None   # cache: {provider_lower: percentage, "default": 1.15}
+_MARGINS_FILE_MTIME: float = 0.0
+_MARGINS_LAST_CHECK: float = 0.0
 _SHADOW_NOTIFY_COOLDOWN: Dict[Tuple[str, str, str], float] = {}
 
 
 def _load_margins():
-    """Read and cache `key = value` lines from order_guard.conf once.
-    The configuration file is the SINGLE source of truth. The dictionary below is only
-    a safety net for missing entries, such as a truncated file, and centralizes fallbacks
-    so hard-coded shadow defaults are not scattered across functions. Change operational
-    values in order_guard.conf, not here."""
-    global _MARGINS
-    if _MARGINS is not None:
+    """Read and cache `key = value` lines from order_guard.conf.
+    The configuration file is the SINGLE source of truth. Checks file mtime
+    periodically (every 5 seconds) to hot-reload config edits without restarting.
+    The dictionary below is only a safety net for missing entries."""
+    global _MARGINS, _MARGINS_FILE_MTIME, _MARGINS_LAST_CHECK
+    now_ts = time.time()
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "order_guard.conf")
+    if _MARGINS is not None and (now_ts - _MARGINS_LAST_CHECK) < 5.0:
         return _MARGINS
+    _MARGINS_LAST_CHECK = now_ts
+    try:
+        mtime = os.path.getmtime(path) if os.path.exists(path) else 0.0
+        if _MARGINS is not None and mtime == _MARGINS_FILE_MTIME:
+            return _MARGINS
+        _MARGINS_FILE_MTIME = mtime
+    except Exception:
+        if _MARGINS is not None:
+            return _MARGINS
     m = {
         "default": 1.15,                       # fallback profit threshold (%)
         "default_window_h": 0.0,               # profit-guard window (hours); 0 uses only last_opposite_fill
@@ -653,31 +665,104 @@ def check_intelligence_guards(
         else:
             valid_context = True
 
-    if valid_context:
-        cached_res = getattr(regime_context, "_intelligence_decision", None)
-        if cached_res is not None:
-            return cached_res
+    m = _load_margins()
+    mode = str(m.get("intelligence_guards_mode", "shadow")).strip().lower()
+    if mode in ("off", "0", "disabled"):
+        return True, "intelligence_guards_off", 1.0
 
-    res = _evaluate_intelligence_guards_raw(
-        provider,
-        symbol,
-        order_type,
-        price,
-        price_history=price_history,
-        trend_duration_seconds=trend_duration_seconds,
-        regime_context=regime_context if valid_context else None,
-        qty=qty,
-        notional_eur=notional_eur,
-        now=now,
-    )
+    side = (order_type or "").upper()
+    if side != "BUY":
+        return True, "not_buy_side", 1.0
 
+    computed_notional = notional_eur
+    if computed_notional is None and qty is not None and price > 0:
+        computed_notional = price * qty
+
+    # Check if expensive static analysis is already cached on regime_context
+    cached_res = getattr(regime_context, "_intelligence_decision", None) if valid_context else None
+    if cached_res is None:
+        cached_res = _evaluate_intelligence_guards_raw(
+            provider,
+            symbol,
+            order_type,
+            price,
+            price_history=price_history,
+            trend_duration_seconds=trend_duration_seconds,
+            regime_context=regime_context if valid_context else None,
+            qty=qty,
+            notional_eur=computed_notional,
+            now=now,
+        )
+        if valid_context:
+            try:
+                object.__setattr__(regime_context, "_intelligence_decision", cached_res)
+                object.__setattr__(regime_context, "_intelligence_price", price)
+                object.__setattr__(regime_context, "_intelligence_notional", computed_notional)
+            except Exception:
+                pass
+
+    static_allowed, static_reason, static_scale = cached_res
+    if not static_allowed:
+        # Rejected by baseline or macro guard (e.g. Black Swan, Whale divergence, Ask Wall)
+        return False, static_reason, 0.0
+
+    if not valid_context:
+        return cached_res
+
+    effective_scale = static_scale
+    active_reason = static_reason
+
+    # Dynamic Re-evaluation for cached context:
+    # 1. Dynamic Parabolic Surge Guard (Anti-FOMO spike check if price moved)
+    cached_eval_price = getattr(regime_context, "_intelligence_price", None)
+    if price > 0 and (cached_eval_price is None or abs(price - cached_eval_price) / max(cached_eval_price, 1e-9) > 0.005):
+        from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+        from intelligence.internal.guards.guard_decision import BrakeAction
+        surge_pct = float(m.get("parabolic_surge_pct", 15.0))
+        pullback_pct = float(m.get("parabolic_pullback_pct", 2.0))
+        history = price_history
+        if history is None:
+            history = _read_cached_price_history(symbol, window_seconds=7200.0)
+        if history:
+            p_guard = ParabolicSurgeGuard(surge_threshold_pct=surge_pct, pullback_required_pct=pullback_pct)
+            p_dec = p_guard.check(symbol, side, price, price_history=history, now=now)
+            if not p_dec.allowed:
+                prefix = "[INTELLIGENCE_GUARD_SHADOW]" if mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
+                print(f"{prefix} {side} {symbol} @ {price}: {p_dec.reason} (brake={p_dec.brake_action})")
+                if mode == "enforce":
+                    return False, p_dec.reason, 0.0
+
+    # 2. Dynamic Gemini High-Stake Guard if notional crossed the threshold
+    gemini_mode = str(m.get("gemini_guard_mode", "shadow")).strip().lower()
+    if gemini_mode not in ("off", "0", "disabled"):
+        min_notional = float(m.get("gemini_min_notional_eur", 1000.0))
+        if computed_notional is not None and computed_notional >= min_notional:
+            cached_gemini_notional = getattr(regime_context, "_intelligence_notional", None)
+            # If notional wasn't evaluated for high-stake in cached_res, re-evaluate now
+            if cached_gemini_notional is None or cached_gemini_notional < min_notional:
+                from intelligence.internal.guards.guard_decision import BrakeAction
+                from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
+                timeout_sec = float(m.get("gemini_timeout_sec", 12.0))
+                fallback = str(m.get("gemini_fallback", "allow")).strip().lower()
+                g_guard = GeminiHighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
+                g_dec = g_guard.check(symbol, side, price, qty if qty is not None else 1.0, notional_eur=computed_notional)
+                if not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                    prefix = "[GEMINI_GUARD_SHADOW]" if gemini_mode == "shadow" else "[GEMINI_GUARD_ENFORCE]"
+                    print(f"{prefix} {side} {symbol} €{computed_notional:.2f}: {g_dec.reason} (brake={g_dec.brake_action}, suggested_scale={g_dec.suggested_scale})")
+                    if gemini_mode == "enforce":
+                        if not g_dec.allowed:
+                            return False, g_dec.reason, 0.0
+                        effective_scale = min(effective_scale, g_dec.suggested_scale)
+                        active_reason = g_dec.reason
+
+    final_res = (True, active_reason if effective_scale < 1.0 else "ok", effective_scale)
     if valid_context:
         try:
-            object.__setattr__(regime_context, "_intelligence_decision", res)
+            object.__setattr__(regime_context, "suggested_scale", effective_scale)
+            object.__setattr__(regime_context, "intelligence_reason", active_reason)
         except Exception:
             pass
-
-    return res
+    return final_res
 
 
 def _evaluate_intelligence_guards_raw(
@@ -909,12 +994,21 @@ def profit_guard(
     provider.last_opposite_fill(symbol, order_type). A missing or non-positive reference
     allows placement because there is no prior transaction to compare."""
     # Staged / Shadow intelligence guard evaluation
-    intel_ok, intel_reason, _ = check_intelligence_guards(
+    intel_ok, intel_reason, suggested_scale = check_intelligence_guards(
         provider, symbol, order_type, price, regime_context=regime_context, qty=qty, notional_eur=notional_eur
     )
     if not intel_ok:
         print(f"[GUARD] {order_type} {symbol}: blocked by intelligence guard ({intel_reason})")
         return False
+
+    if regime_context is not None and suggested_scale < 1.0:
+        try:
+            curr = getattr(regime_context, "suggested_scale", None)
+            if curr is None or suggested_scale < curr:
+                object.__setattr__(regime_context, "suggested_scale", float(suggested_scale))
+                object.__setattr__(regime_context, "intelligence_scale_reason", intel_reason)
+        except Exception:
+            pass
 
     order_type = order_type.upper()
     provider_name = _provider_name(provider)

@@ -121,7 +121,10 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
                     hours: float = 5,
                     apply_policy: bool = True,
                     market: bool = False,
-                    enforce_business_minimum: bool = True) -> QuantityDecision:
+                    enforce_business_minimum: bool = True,
+                    regime_context=None,
+                    scale: Optional[float] = None,
+                    **kwargs) -> QuantityDecision:
     # Historical safe contract: None means "maximum permitted", not missing
     # validation. Balance, policy, and the fee cap determine final quantity.
     if requested_qty is None:
@@ -152,6 +155,31 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     fee_cap = max(0.0, float(provider.fee_cap_quantity(
         symbol, side, price, balance_cap)))
     final = min(requested, balance_cap, policy_cap, fee_cap)
+
+    # Market-intelligence quantity scaling (e.g. Weibull trend exhaustion, derivatives crowding)
+    # Applies exactly once per placement flow if not already scaled.
+    effective_scale = scale
+    if effective_scale is None and regime_context is not None:
+        effective_scale = getattr(regime_context, "suggested_scale", None)
+
+    if (
+        effective_scale is not None
+        and 0.0 < float(effective_scale) < 1.0
+        and final > 0
+        and (regime_context is None or not getattr(regime_context, "_scale_applied", False))
+    ):
+        scaled_amount = final * float(effective_scale)
+        if hasattr(provider, "round_amount"):
+            scaled_amount = provider.round_amount(symbol, scaled_amount)
+        print(f"[{symbol}] {side.upper()} quantity scaled by market-intelligence: "
+              f"{final} -> {scaled_amount} (scale={float(effective_scale):.2f})")
+        final = scaled_amount
+        if regime_context is not None:
+            try:
+                object.__setattr__(regime_context, "_scale_applied", True)
+            except Exception:
+                pass
+
     reason = None if final > 0 else "qty_zero_after_policy"
     # Reject a venue-invalid candidate before it can become a durable retry intent.
     # The provider owns exact step, tick, notional, and market-applicability rules.
