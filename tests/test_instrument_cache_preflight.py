@@ -294,8 +294,9 @@ class InstrumentCachePreflightTest(unittest.TestCase):
 
     def test_invalid_weight_inputs_and_stats_fail_before_provider_submit(self):
         cases = (
-            ("missing-weight", None, {"BUY": {"total_value": 0.0}},
-             None, "weight_policy_unavailable"),
+            ("policy-error", RuntimeError("weight policy failed"),
+             {"BUY": {"total_value": 0.0}}, None,
+             "weight_policy_unavailable"),
             ("nan-weight", float("nan"),
              {"BUY": {"total_value": 0.0}}, None,
              "invalid_weight_policy_weight"),
@@ -308,6 +309,8 @@ class InstrumentCachePreflightTest(unittest.TestCase):
                 instrument = self._binance_instrument(provider)
                 outcome = {}
                 stats_effect = stats_error if stats_error is not None else stats
+                weight_effect = weight if isinstance(weight, Exception) else None
+                weight_return = None if isinstance(weight, Exception) else weight
                 with (
                     patch.object(
                         order_guard, "daily_limit_guard",
@@ -317,7 +320,8 @@ class InstrumentCachePreflightTest(unittest.TestCase):
                     patch.object(
                         placeorder.pa,
                         "get_weight_for_cash_permission_at_quant_time",
-                        return_value=weight),
+                        side_effect=weight_effect,
+                        return_value=weight_return),
                     patch(
                         "binance_api.bapi_allorders.get_total_traded_stats",
                         side_effect=(stats_error if stats_error is not None
@@ -334,6 +338,34 @@ class InstrumentCachePreflightTest(unittest.TestCase):
                     event[0] in {"cancel", "submit"}
                     for event in provider.events))
                 self.assertEqual(outcome["reason"], expected_reason)
+
+    def test_missing_trend_falls_back_to_proxy_or_default_weight(self):
+        provider = _WeightedBinanceProvider()
+        instrument = self._binance_instrument(provider)
+        outcome = {}
+        with (
+            patch.object(
+                order_guard, "daily_limit_guard",
+                return_value=(True, None)),
+            patch.object(order_guard, "profit_guard", return_value=True),
+            patch.object(order_guard, "margin_for", return_value=0.01),
+            patch.object(
+                placeorder.pa,
+                "get_weight_for_cash_permission_at_quant_time",
+                return_value=None),
+            patch(
+                "binance_api.bapi_allorders.get_total_traded_stats",
+                return_value={"BUY": {"total_value": 0.0}}),
+        ):
+            result = instrument.place(
+                "BUY", 100.0, None, smart=False,
+                wait_for_trend=False, caller_owns_retry=True,
+                _outcome_context=outcome)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["orderId"], "accepted")
+        self.assertTrue(any(
+            event[0] == "submit" for event in provider.events))
 
     def test_invalid_weight_policy_price_is_refused(self):
         for label, price, qty in (
