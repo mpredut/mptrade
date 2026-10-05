@@ -461,7 +461,13 @@ class Instrument:
             if wait_for_trend:
                 try:
                     import cacheManager as cm
-                    if cm.get_short_trend_manager().should_wait(side_u, self.symbol):
+                    short_tm = cm.get_short_trend_manager()
+                    try:
+                        deferred = short_tm.should_wait(
+                            side_u, self.symbol, use_noise_gate=False)
+                    except TypeError:
+                        deferred = short_tm.should_wait(side_u, self.symbol)
+                    if deferred:
                         print(
                             f"[{self.symbol}] {side_u} deferred by trend; "
                             "placement does not wait, the intent stays queued for retry")
