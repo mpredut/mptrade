@@ -625,25 +625,43 @@ def _resolve_trend_duration(symbol: str) -> float:
     return _read_cached_trend_duration(symbol)
 
 
+def _normalize_base_asset(sym: str) -> str:
+    s = (sym or "").strip().upper()
+    for q in ("USDC", "USDT", "FDUSD", "BUSD", "USD", "EUR", "GBP"):
+        if s.endswith(q) and len(s) > len(q):
+            return s[:-len(q)]
+    return s
+
+
 def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> Optional[List[Tuple[float, float]]]:
     """Read rolling price history from local cache for parabolic surge evaluation.
 
     Prefers the authoritative 24h per-symbol cache (cachedb/cache_24price_{symbol}.json)
     which captures every high-resolution tick, and falls back to cache_prices_multi.json
-    with base-symbol prefix matching for cross-venue assets (e.g. HYPE on Kraken).
+    with exact normalized base-symbol matching for cross-venue assets (e.g. HYPE on Kraken).
+    Never uses substring matching so e.g. ETHFI does not accidentally match ETH.
     """
     su = (symbol or "").strip().upper()
+    cachedb_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
     now_ts = time.time()
     cutoff_ts = now_ts - window_seconds
     history: List[Tuple[float, float]] = []
 
     # 1. Primary: dedicated 24h cache (cache_24price_{symbol}.json)
-    p24 = os.path.join("cachedb", f"cache_24price_{su}.json")
+    p24 = os.path.join(cachedb_dir, f"cache_24price_{su}.json")
+    if not os.path.exists(p24):
+        su_base = _normalize_base_asset(su)
+        p24_base = os.path.join(cachedb_dir, f"cache_24price_{su_base}.json")
+        if os.path.exists(p24_base):
+            p24 = p24_base
     if os.path.exists(p24):
         try:
             with open(p24, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            raw_items = data.get("items", {}).get(su, [])
+            raw_items = data.get("items", {}).get(su)
+            if not raw_items:
+                su_base = _normalize_base_asset(su)
+                raw_items = data.get("items", {}).get(su_base, [])
             for item in raw_items:
                 if isinstance(item, (list, tuple)) and len(item) >= 2:
                     try:
@@ -659,7 +677,7 @@ def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> O
 
     # 2. Fallback: shared multi-symbol cache (cache_prices_multi.json)
     if not history:
-        p_multi = os.path.join("cachedb", "cache_prices_multi.json")
+        p_multi = os.path.join(cachedb_dir, "cache_prices_multi.json")
         if os.path.exists(p_multi):
             try:
                 with open(p_multi, "r", encoding="utf-8") as f:
@@ -667,11 +685,14 @@ def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> O
                 all_items = data.get("items", {})
                 raw_items = all_items.get(su)
                 if not raw_items:
-                    # Support base asset keys (e.g. HYPE for HYPEUSD or HYPEUSDC)
-                    for k, v in all_items.items():
-                        if k and (k in su or su.startswith(k)):
-                            raw_items = v
-                            break
+                    su_base = _normalize_base_asset(su)
+                    # Support exact normalized base asset keys (e.g. HYPE for HYPEUSD or HYPEUSDC)
+                    raw_items = all_items.get(su_base)
+                    if not raw_items:
+                        for k, v in all_items.items():
+                            if k and _normalize_base_asset(k) == su_base:
+                                raw_items = v
+                                break
                 if raw_items:
                     for item in raw_items:
                         if isinstance(item, (list, tuple)) and len(item) >= 2:
@@ -815,6 +836,7 @@ def check_intelligence_guards(
                 if valid_context:
                     try:
                         object.__setattr__(regime_context, "_gemini_evaluated_notional", computed_notional)
+                        object.__setattr__(regime_context, "_gemini_decision", (g_dec.allowed, g_dec.reason, g_dec.suggested_scale))
                     except Exception:
                         pass
                 if not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
@@ -825,6 +847,17 @@ def check_intelligence_guards(
                             return False, g_dec.reason, 0.0
                         effective_scale = min(effective_scale, g_dec.suggested_scale)
                         active_reason = g_dec.reason
+            else:
+                # Re-apply cached Gemini decision for unchanged notional baseline
+                cached_g_dec = getattr(regime_context, "_gemini_decision", None) if valid_context else None
+                if cached_g_dec is not None:
+                    g_allowed, g_reason, g_scale = cached_g_dec
+                    if not g_allowed or g_scale < 1.0:
+                        if gemini_mode == "enforce":
+                            if not g_allowed:
+                                return False, g_reason, 0.0
+                            effective_scale = min(effective_scale, g_scale)
+                            active_reason = g_reason
 
     final_res = (True, active_reason if effective_scale < 1.0 else "ok", effective_scale)
     if valid_context:
@@ -925,6 +958,7 @@ def _evaluate_intelligence_guards_raw(
             if regime_context is not None:
                 try:
                     object.__setattr__(regime_context, "_gemini_evaluated_notional", computed_notional)
+                    object.__setattr__(regime_context, "_gemini_decision", (g_dec.allowed, g_dec.reason, g_dec.suggested_scale))
                 except Exception:
                     pass
             if not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:

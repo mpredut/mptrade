@@ -299,7 +299,7 @@ class Instrument:
         # before submission at the current executable price. This prevents a
         # force-market sell from passing at +1% then executing below the validated
         # margin, a financial time-of-check/time-of-use issue.
-        is_market = bool(kwargs.get("force", False))
+        is_market = bool(kwargs.get("force", False) or kwargs.get("market", False))
         enforce_business_minimum = not (
             bypass and side_u == "SELL" and is_market)
         profit_margin = None
@@ -613,6 +613,16 @@ class Instrument:
                         if refusal:
                             reason = refusal
                             return None
+                        if prequeued_claim is not None:
+                            try:
+                                import order_retry
+                                if order_retry.RETRY_ENABLED:
+                                    synced_claim = order_retry.update_claimed_qty(
+                                        prequeued_claim, qty)
+                                    if synced_claim is not None:
+                                        prequeued_claim = synced_claim
+                            except Exception:
+                                pass
                 if callable(execution_enabled) and not bool(execution_enabled()):
                     # The switch can change while guards and persistence run. This
                     # final check converts that race into a terminal pre-submit
@@ -624,7 +634,7 @@ class Instrument:
                     # race a worker or allow two provider submissions.
                     import order_retry
                     refreshed_claim = order_retry.begin_claimed_submit(
-                        prequeued_claim)
+                        prequeued_claim, qty=qty)
                     if refreshed_claim is None:
                         raise SubmissionRefused("producer_claim_lost")
                     prequeued_claim = refreshed_claim

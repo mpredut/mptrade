@@ -675,7 +675,51 @@ def enqueue_claimed(
         lifecycle="submit_pending", _producer_lease_sec=lease_sec)
 
 
-def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None):
+def update_claimed_qty(claim_snapshot, qty, *, now=None):
+    """Durably update the requested quantity of an exact claimed intent before submit.
+
+    Token, revision, and client order ID must match. Ensures that late quantity
+    scaling (e.g. market-intelligence risk reductions) is persisted on disk
+    so crash recovery or partial fills calculate remainder against the actual
+    submitted amount rather than the initial unscaled intent.
+    """
+    if not isinstance(claim_snapshot, dict):
+        return None
+    try:
+        q_val = float(qty)
+        if not math.isfinite(q_val) or q_val <= 0:
+            return None
+    except (TypeError, ValueError, OverflowError):
+        return None
+    snapshot_client_id = dict(
+        claim_snapshot.get("place_kwargs") or {}).get("client_order_id")
+    if not snapshot_client_id:
+        return None
+    _ensure_dir()
+    with FileLock(LOCK_FILE):
+        existing = _read_nolock()
+        refreshed = None
+        for record in existing:
+            record_client_id = dict(
+                record.get("place_kwargs") or {}).get("client_order_id")
+            exact_claim = (
+                record.get("id") == claim_snapshot.get("id")
+                and record.get("claim_token") == claim_snapshot.get("claim_token")
+                and int(record.get("revision", 0)) == int(claim_snapshot.get("claim_revision", -1))
+                and int(record.get("claim_revision", -1)) == int(claim_snapshot.get("claim_revision", -2))
+                and record_client_id == snapshot_client_id
+            )
+            if not exact_claim:
+                continue
+            record["qty"] = q_val
+            record["requested_qty_total"] = q_val
+            refreshed = dict(record)
+            _write_nolock(existing)
+            break
+    return refreshed
+
+
+def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None):
     """Durably mark one exact claimed revision possibly submitted.
 
     Token, revision, and deterministic client order ID must still match under
@@ -735,6 +779,14 @@ def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None):
             record["claim_until"] = max(
                 float(record.get("claim_until", 0) or 0),
                 now + lease_sec)
+            if qty is not None:
+                try:
+                    q_val = float(qty)
+                    if math.isfinite(q_val) and q_val > 0:
+                        record["qty"] = q_val
+                        record["requested_qty_total"] = q_val
+                except (TypeError, ValueError, OverflowError):
+                    pass
             refreshed = dict(record)
             _write_nolock(existing)
             break
@@ -1039,6 +1091,14 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                 continue
             if outcome == "accepted" and same_revision:
                 _set_safe_to_discard(rec, False)
+                if claimed.get("qty") is not None:
+                    try:
+                        cq = float(claimed["qty"])
+                        if math.isfinite(cq) and cq > 0:
+                            rec["qty"] = cq
+                            rec["requested_qty_total"] = cq
+                    except (TypeError, ValueError, OverflowError):
+                        pass
                 if not _apply_accepted(
                         rec, order, now, provider_name=provider_name):
                     rec["last_failure_reason"] = "response_without_order_id"

@@ -7,6 +7,7 @@ Tests cover:
 4. Hot-reload of order_guard.conf on mtime change in _load_margins().
 5. TTL fallback timer in priceAnalysis.py cache.
 """
+import json
 import os
 import sys
 import time
@@ -679,16 +680,43 @@ class TestArchitectureFixes4Cases:
 
 
 class TestSisterArchitecturalDefects:
-    def test_sister1_price_history_resolves_24h_cache_and_cross_venue_symbols(self):
+    def test_sister1_price_history_resolves_24h_cache_and_cross_venue_symbols(self, tmp_path, monkeypatch):
         """Sister 1: Verify _read_cached_price_history resolves 24h high-resolution cache
-        and supports cross-venue symbols (e.g. HYPEUSD on Kraken)."""
+        and supports cross-venue symbols (e.g. HYPEUSD on Kraken) using synthetic test data."""
+        monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path))
+        now_ts = time.time()
+
+        # 1. Create synthetic 24h cache for BTCUSDC
+        btc_file = tmp_path / "cache_24price_BTCUSDC.json"
+        btc_items = [[(now_ts - i * 10) * 1000, 80000.0 + i] for i in range(120)]
+        btc_file.write_text(json.dumps({"items": {"BTCUSDC": btc_items}}), encoding="utf-8")
+
+        # 2. Create synthetic multi cache with base asset HYPE
+        multi_file = tmp_path / "cache_prices_multi.json"
+        hype_items = [[(now_ts - i * 15) * 1000, 90.0 + i * 0.1] for i in range(60)]
+        multi_file.write_text(json.dumps({"items": {"HYPE": hype_items}}), encoding="utf-8")
+
         history_btc = order_guard._read_cached_price_history("BTCUSDC", window_seconds=7200.0)
         assert history_btc is not None
-        assert len(history_btc) > 100  # High-resolution 24h cache
+        assert len(history_btc) == 120  # High-resolution 24h cache resolved
 
         history_hype = order_guard._read_cached_price_history("HYPEUSD", window_seconds=7200.0)
         assert history_hype is not None
-        assert len(history_hype) > 50  # Kraken cache resolved instead of being blinded (0)
+        assert len(history_hype) == 60  # Cross-venue base asset normalized and resolved
+
+    def test_sister1_price_history_never_matches_substring_asset(self, tmp_path, monkeypatch):
+        """Sister 1: History fallback must NOT match substring asset (e.g. ETH for ETHFIUSDC)."""
+        monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path))
+        now_ts = time.time()
+
+        # Multi cache contains only ETH
+        multi_file = tmp_path / "cache_prices_multi.json"
+        eth_items = [[(now_ts - i * 10) * 1000, 3000.0] for i in range(50)]
+        multi_file.write_text(json.dumps({"items": {"ETH": eth_items}}), encoding="utf-8")
+
+        # ETHFIUSDC must not match ETH
+        history = order_guard._read_cached_price_history("ETHFIUSDC", window_seconds=7200.0)
+        assert history is None
 
     def test_sister2_sell_orders_not_downscaled_by_regime_context_suggested_scale(self):
         """Sister 2: Market intelligence suggested_scale must ONLY downscale BUY entries,
@@ -764,6 +792,173 @@ class TestSisterArchitecturalDefects:
         assert len(calls) == 2
         assert calls[1] == 1300.0
         assert getattr(ctx, "_gemini_evaluated_notional", None) == 1300.0
+
+    def test_sister3_gemini_decision_preserved_on_identical_subsequent_check(self, monkeypatch):
+        """Sister 3: Gemini decisions (rejection and downscaling) must be cached and re-applied
+        on identical subsequent checks rather than reverting to allow/1.0."""
+        from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
+        ctx = _build_test_context()
+        calls = []
+
+        gemini_result = [GuardDecision.veto("gemini", "Gemini high-risk block")]
+
+        def fake_gemini_check(self, symbol, side, price, qty, notional_eur=None):
+            calls.append(notional_eur)
+            return gemini_result[0]
+
+        monkeypatch.setattr(order_guard, "_load_margins", lambda: {
+            "intelligence_guards_mode": "enforce",
+            "gemini_guard_mode": "enforce",
+            "gemini_min_notional_eur": 1000.0,
+            "regime_context_max_age_sec": 120.0,
+        })
+        monkeypatch.setattr(
+            "intelligence.sentiment.guards.gemini_high_stake_guard.GeminiHighStakeGuard.check",
+            fake_gemini_check
+        )
+
+        class MockProvider:
+            name = "binance"
+
+        # 1. Initial check at 100 EUR (< 1000 min_notional): passes baseline
+        ok, reason, scale = order_guard.check_intelligence_guards(
+            MockProvider(), "BTCUSDC", "BUY", 100.0,
+            regime_context=ctx, qty=1.0  # notional = 100 EUR
+        )
+        assert ok is True
+        assert len(calls) == 0
+
+        # 2. Large order at 1500 EUR: Gemini rejects
+        ok, reason, scale = order_guard.check_intelligence_guards(
+            MockProvider(), "BTCUSDC", "BUY", 100.0,
+            regime_context=ctx, qty=15.0  # notional = 1500 EUR
+        )
+        assert ok is False
+        assert "Gemini high-risk block" in reason
+        assert len(calls) == 1
+
+        # 3. Identical large order at 1500 EUR on SAME context: MUST REMAIN REJECTED
+        # without calling Gemini API a second time!
+        ok2, reason2, scale2 = order_guard.check_intelligence_guards(
+            MockProvider(), "BTCUSDC", "BUY", 100.0,
+            regime_context=ctx, qty=15.0  # notional = 1500 EUR
+        )
+        assert ok2 is False
+        assert "Gemini high-risk block" in reason2
+        assert len(calls) == 1  # No second API call
+
+        # 4. Downscaling test: Gemini returns scale = 0.25
+        ctx_downscale = _build_test_context()
+        calls.clear()
+        gemini_result[0] = GuardDecision.downscale("gemini", 0.25, "Gemini downscale risk")
+
+        ok3, reason3, scale3 = order_guard.check_intelligence_guards(
+            MockProvider(), "BTCUSDC", "BUY", 100.0,
+            regime_context=ctx_downscale, qty=15.0  # notional = 1500 EUR
+        )
+        assert ok3 is True
+        assert scale3 == 0.25
+        assert len(calls) == 1
+
+        # Second check on SAME context: scale must remain 0.25, NOT revert to 1.0!
+        ok4, reason4, scale4 = order_guard.check_intelligence_guards(
+            MockProvider(), "BTCUSDC", "BUY", 100.0,
+            regime_context=ctx_downscale, qty=15.0  # notional = 1500 EUR
+        )
+        assert ok4 is True
+        assert scale4 == 0.25
+        assert len(calls) == 1  # No second API call
+
+    def test_instrument_late_scale_synchronizes_retry_queue_and_partial_fill(self, tmp_path, monkeypatch):
+        """Sister Priority 1: Late intelligence scaling in Instrument.place must update
+        the retry queue record so partial fill remainder is calculated against submitted qty."""
+        import order_retry
+        from instrument import Instrument
+        from providers.strategy_executor import OrderStatus
+
+        queue_file = str(tmp_path / "order_retry_queue.jsonl")
+        lock_file = str(tmp_path / "order_retry_queue.lock")
+        monkeypatch.setattr(order_retry, "QUEUE_FILE", queue_file)
+        monkeypatch.setattr(order_retry, "LOCK_FILE", lock_file)
+        monkeypatch.setattr(order_retry, "RETRY_ENABLED", True)
+
+        ctx = _build_test_context()
+        # Initial scale is 1.0 so intent is prequeued for full quantity (4.0)
+        object.__setattr__(ctx, "suggested_scale", 1.0)
+
+        provider = MagicMock()
+        provider.name = "binance"
+        provider.get_current_price.return_value = 100.0
+        provider.round_amount = lambda s, a: round(a, 4)
+        provider.min_order_qty.return_value = 0.001
+        provider.min_order_notional.return_value = 5.0
+        provider.order_filter_refusal.return_value = None
+        provider.free_balance.return_value = 10000.0
+        provider.policy_cap_quantity.return_value = 10.0
+        provider.fee_cap_quantity.return_value = 100.0
+        provider.guards_internally.return_value = False
+        provider.get_orders.return_value = []
+        provider.get_trades.return_value = []
+        provider.adjust_order_price.side_effect = lambda s, sd, p, **k: p
+        from providers.quantity import decide_quantity
+        provider.quantity_decision.side_effect = lambda *a, **k: decide_quantity(provider, *a, **k)
+
+        placed_calls = []
+        def fake_place_order(symbol, side, price, qty, **kwargs):
+            placed_calls.append({"symbol": symbol, "side": side, "price": price, "qty": qty, "kwargs": kwargs})
+            return {"orderId": "ORD_12345", "status": "NEW", "executedQty": "0.0", "origQty": str(qty)}
+
+        provider.place_order.side_effect = fake_place_order
+
+        # Dispatch-time profit guard recommends late scale reduction 0.25
+        def fake_profit_guard(prov, sym, side, px, margin, window_ref=None, regime_context=None, qty=None):
+            if regime_context is not None:
+                object.__setattr__(regime_context, "suggested_scale", 0.25)
+            return True
+
+        monkeypatch.setattr(order_guard, "profit_guard", fake_profit_guard)
+        from contextlib import contextmanager
+
+        @contextmanager
+        def fake_trade_slot(*a, **k):
+            slot = MagicMock()
+            slot.allowed = True
+            slot.info = {}
+            yield slot
+
+        monkeypatch.setattr("lock.trade_cooldown.trade_slot", fake_trade_slot)
+
+        mock_api = MagicMock()
+        mock_api.provider_by_name.return_value = provider
+        inst = Instrument("test_inst", "BTCUSDC", "test_venue", api=mock_api)
+        order = inst.place("BUY", 100.0, 4.0, market=True, regime_context=ctx, wait_for_trend=False)
+
+        assert order is not None
+        assert len(placed_calls) == 1
+        # Order sent to provider was scaled 4.0 -> 1.0
+        assert placed_calls[0]["qty"] == 1.0
+
+        # Verify retry queue record on disk has qty=1.0, NOT 4.0!
+        records = order_retry.load_all()
+        assert len(records) == 1
+        assert records[0]["qty"] == 1.0
+        assert records[0]["requested_qty_total"] == 1.0
+
+        # Now simulate a partial fill of 0.4 on venue, followed by order expiration
+        claimed = order_retry.claim([records[0]["id"]], now=time.time())
+        assert len(claimed) == 1
+
+        status = OrderStatus(
+            status="expired",
+            venue_status="EXPIRED",
+            filled_qty=0.4,
+            cost=40.0,
+            fee=0.04,
+        )
+        transition = order_retry.advance_claimed_status(claimed[0], status)
+        # Remainder must be 1.0 - 0.4 = 0.6, NOT 4.0 - 0.4 = 3.6!
+        assert transition.action == "retry_terminal"
+        assert abs(transition.remaining_qty - 0.6) < 1e-6
 
     def test_sister4_identity_enforced_in_symbol_trend_and_dynamic_window(self):
         """Sister 4: Anonymous context without symbol/provider is rejected by _symbol_trend
