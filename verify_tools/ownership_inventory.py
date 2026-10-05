@@ -142,7 +142,21 @@ def _python_symbols(root: Path) -> tuple[list[str], str]:
             values[target.id] = ast.literal_eval(node.value)
         except (ValueError, TypeError):
             continue
-    return list(values.get("symbols") or []), str(values.get("taosymbol") or "")
+    syms = list(values.get("symbols") or [])
+    tao = str(values.get("taosymbol") or "")
+    if not syms:
+        try:
+            from instrument_registry import symbols_for, single_symbol_for
+            conf_path = root / "instruments.conf"
+            if conf_path.exists():
+                syms = symbols_for("binance", path=conf_path)
+                try:
+                    tao = single_symbol_for("binance", "rtrade", path=conf_path)
+                except Exception:
+                    tao = "TAOUSDC" if "TAOUSDC" in syms else ""
+        except Exception:
+            pass
+    return syms, tao
 
 
 def _record(
@@ -261,6 +275,9 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
         }
         for section in parser.sections():
             values = parser[section]
+            mt_role = values.get("role.mt")
+            if mt_role is not None and not _truthy(mt_role):
+                continue
             venue = values.get("provider", "unknown").strip().lower()
             symbol = values.get("symbol", section).strip()
             enabled = (

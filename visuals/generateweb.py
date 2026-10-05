@@ -25,10 +25,15 @@ coins_empty = [
 ]
 
 
-# Initial coin list (top 10).
+try:
+    from instrument_registry import symbols_for
+    _discovered_symbols = symbols_for("binance")
+except Exception:
+    _discovered_symbols = ["BTCUSDC", "TAOUSDC", "ARBUSDC"]
+
 coins = [
-    {"name": "BTCUSDC", "quantity": 0.5, "watch": True},
-    {"name": "TAOUSDC", "quantity": 0.5, "watch": True}
+    {"name": symbol, "quantity": 0.5, "watch": True}
+    for symbol in _discovered_symbols
 ]
 
 # File that stores the latest configuration.

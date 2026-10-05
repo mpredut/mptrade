@@ -529,12 +529,15 @@ def main():
     interval = 60 * 4 #4 minute
 
 
-    close_sell_orders = apiorders.get_trade_orders("SELL", sym.taosymbol, maxage_trade_s)
-    print(f"get_trade_orders:           Found {len(close_sell_orders)} close 'SELL' orders in the last {u.secondsToDays(maxage_trade_s)} days.")
-    close_buy_orders = apiorders.get_trade_orders("BUY", sym.taosymbol, maxage_trade_s)
-    print(f"get_trade_orders:           Found {len(close_buy_orders)} close 'BUY' orders in the last {u.secondsToDays(maxage_trade_s)} days.")
-    print(f"close_buy_orders {close_buy_orders}")
-    print(f"close_sell_orders {close_sell_orders}")
+    for _inst in instruments.values():
+        if _inst.provider_label.lower() == "binance":
+            _sym = _inst.symbol
+            close_sell_orders = apiorders.get_trade_orders("SELL", _sym, maxage_trade_s)
+            print(f"get_trade_orders ({_sym}): Found {len(close_sell_orders)} close 'SELL' orders in the last {u.secondsToDays(maxage_trade_s)} days.")
+            close_buy_orders = apiorders.get_trade_orders("BUY", _sym, maxage_trade_s)
+            print(f"get_trade_orders ({_sym}): Found {len(close_buy_orders)} close 'BUY' orders in the last {u.secondsToDays(maxage_trade_s)} days.")
+            print(f"close_buy_orders ({_sym}) {close_buy_orders}")
+            print(f"close_sell_orders ({_sym}) {close_sell_orders}")
 
     d = MT_GUARD_WINDOW_DAYS
     while True:

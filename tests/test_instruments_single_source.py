@@ -72,6 +72,26 @@ class TestInstrumentsSingleSource(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_symbols_facade_constants_and_dynamic_lookup(self):
+        import symbols as sym
+        self.assertEqual(sym.btcsymbol, "BTCUSDC")
+        self.assertEqual(sym.taosymbol, "TAOUSDC")
+        self.assertEqual(sym.arbsymbol, "ARBUSDC")
+        self.assertEqual(sym.hypesymbol, "HYPEUSDC")
+        self.assertEqual(sym.symbols, ["BTCUSDC", "TAOUSDC", "ARBUSDC"])
+        self.assertEqual(sym.forcesellsymbol, ["BTCUSDC", "TAOUSDC"])
+        # Dynamic attribute lookup for registered bases:
+        self.assertEqual(getattr(sym, "btcsymbol"), "BTCUSDC")
+        with self.assertRaises(AttributeError):
+            getattr(sym, "nonexistentsymbol")
+
+    def test_ownership_inventory_symbols_fallback(self):
+        from pathlib import Path
+        from verify_tools.ownership_inventory import _python_symbols
+        syms, tao = _python_symbols(Path(_ROOT))
+        self.assertEqual(syms, ["BTCUSDC", "TAOUSDC", "ARBUSDC"])
+        self.assertEqual(tao, "TAOUSDC")
+
 
 if __name__ == "__main__":
     unittest.main()
