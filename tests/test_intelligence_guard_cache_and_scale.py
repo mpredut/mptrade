@@ -117,7 +117,7 @@ class TestIntelligenceGuardDynamicEvaluation:
 
 class TestIntelligenceQuantityScaling:
     def test_suggested_scale_applied_once_in_decide_quantity(self):
-        """Verify that suggested_scale on regime_context scales quantity and is marked applied."""
+        """Verify that suggested_scale on regime_context scales quantity and is tracked on QuantityDecision without mutating context."""
         ctx = _build_test_context()
         object.__setattr__(ctx, "suggested_scale", 0.25)
 
@@ -132,14 +132,20 @@ class TestIntelligenceQuantityScaling:
             provider, "BTCUSDC", "BUY", 100.0, 10.0, regime_context=ctx
         )
         assert decision.final_qty == 2.5
-        assert getattr(ctx, "_scale_applied", False) is True
+        assert decision.scale_applied is True
+        assert decision.applied_scale == 0.25
+        # Shared context is NOT mutated with _scale_applied
+        assert getattr(ctx, "_scale_applied", None) is None
 
-        # Calling decide_quantity again on the same context must NOT re-scale 2.5 to 0.625
-        provider.policy_cap_quantity.return_value = 2.5
+        # Fix 3: Calling decide_quantity for a second order reusing the same context
+        # MUST also scale the second order (4.0 -> 1.0), rather than omitting scale!
+        provider.policy_cap_quantity.return_value = 4.0
         decision2 = decide_quantity(
-            provider, "BTCUSDC", "BUY", 100.0, 2.5, regime_context=ctx
+            provider, "BTCUSDC", "BUY", 100.0, 4.0, regime_context=ctx
         )
-        assert decision2.final_qty == 2.5
+        assert decision2.final_qty == 1.0
+        assert decision2.scale_applied is True
+        assert decision2.applied_scale == 0.25
 
     def test_profit_guard_propagates_suggested_scale_to_regime_context(self, monkeypatch):
         """Verify profit_guard records suggested_scale on regime_context when intelligence downscales."""
@@ -515,4 +521,159 @@ class TestCase5HistoryFailClosed:
         )
         assert len(calls) == 2
         assert calls[1] == 1500.0
+
+
+class TestArchitectureFixes4Cases:
+    def test_case1_anti_fomo_threshold_crossing_on_fractional_price_move(self, monkeypatch):
+        """Case 1: Anti-FOMO parabolic surge guard recalculates on any price move,
+        preventing crossing 15% threshold via a small move (114.9 -> 115.1)."""
+        ctx = _build_test_context()
+        now = time.time()
+        # Price history with base 100.0
+        history = [(now - 120, 100.0), (now - 60, 100.0)]
+
+        monkeypatch.setattr(order_guard, "_load_margins", lambda: {
+            "intelligence_guards_mode": "enforce",
+            "parabolic_surge_pct": 15.0,
+            "parabolic_pullback_pct": 2.0,
+            "regime_context_max_age_sec": 120.0,
+        })
+
+        class MockProvider:
+            name = "binance"
+
+        # 1. At price 114.9 (+14.9% < 15.0%), BUY is permitted
+        ok, reason, scale = order_guard.check_intelligence_guards(
+            MockProvider(), "BTCUSDC", "BUY", 114.9,
+            regime_context=ctx, price_history=history, now=now
+        )
+        assert ok is True
+
+        # 2. At price 115.1 (+15.1% >= 15.0%), price moved +0.174% (<0.5%).
+        # Parabolic surge guard MUST re-evaluate and reject despite the small delta.
+        ok2, reason2, scale2 = order_guard.check_intelligence_guards(
+            MockProvider(), "BTCUSDC", "BUY", 115.1,
+            regime_context=ctx, price_history=history, now=now + 1
+        )
+        assert ok2 is False
+        assert "parabolic_surge_active" in reason2
+
+    def test_case2_late_intelligence_downscale_applied_to_placed_order(self, monkeypatch):
+        """Case 2: If profit_guard / intelligence guard recommends downscale late (e.g. 0.25),
+        Instrument.place updates quantity dispatched to venue from 4.0 to 1.0."""
+        from instrument import Instrument
+
+        ctx = _build_test_context()
+        provider = MagicMock()
+        provider.name = "binance"
+        provider.guards_internally.return_value = False
+        provider.free_balance.return_value = 10000.0
+        provider.policy_cap_quantity.return_value = 4.0
+        provider.fee_cap_quantity.return_value = 100.0
+        provider.round_amount = lambda s, a: round(a, 4)
+        provider.order_filter_refusal.return_value = None
+        provider.market_price.return_value = 100.0
+        provider.get_current_price.return_value = 100.0
+        provider.open_orders.return_value = []
+        provider.recent_trades.return_value = []
+        provider.prepare_order_state.return_value = {}
+        provider.preflight_order.return_value = object()
+        provider.adjust_order_price = lambda s, side, px, **kw: px
+        provider.quantity_decision = lambda *a, **k: type('Dec', (), {
+            'final_qty': 4.0, 'scale_applied': False, 'applied_scale': 1.0,
+            'refuse_reason': None, 'balance_asset': 'USDC'
+        })()
+
+        placed_calls = []
+        def fake_place_order(symbol, side, price, qty, **kw):
+            placed_calls.append({"symbol": symbol, "side": side, "qty": qty, "price": price})
+            return {"id": "ord-1", "symbol": symbol, "side": side, "price": price, "qty": qty}
+
+        provider.place_order = fake_place_order
+
+        mock_api = MagicMock()
+        mock_api.provider_by_name.return_value = provider
+
+        # Late intelligence downscale inside profit_guard
+        def mock_profit_guard(prov, sym, side, px, pm, window_ref=None, regime_context=None, qty=None):
+            if regime_context is not None:
+                object.__setattr__(regime_context, "suggested_scale", 0.25)
+            return True
+
+        monkeypatch.setattr(order_guard, "profit_guard", mock_profit_guard)
+        monkeypatch.setattr(order_guard, "buy_reference_mode", lambda p: "off")
+
+        class FakeSlot:
+            allowed = True
+            info = {}
+            def commit(self, order):
+                pass
+        import contextlib
+        import instrument as inst_mod
+        @contextlib.contextmanager
+        def fake_trade_slot(*a, **k):
+            yield FakeSlot()
+        monkeypatch.setattr(inst_mod.trade_cooldown, "trade_slot", fake_trade_slot)
+
+        inst = Instrument("binance_btcusdc", "BTCUSDC", "binance", api=mock_api)
+        res = inst.place("BUY", 4.0, 100.0, regime_context=ctx, force=True, wait_for_trend=False, caller_owns_retry=True)
+
+        assert res is not None
+        assert len(placed_calls) == 1
+        # Crucial check: qty sent was scaled to 1.0 (4.0 * 0.25)
+        assert placed_calls[0]["qty"] == pytest.approx(1.0)
+
+    def test_case3_context_reuse_preserves_scale_across_multiple_orders(self):
+        """Case 3: Two separate order requests sharing the same context with scale 0.25
+        both produce scaled quantity 1.0 instead of 1.0 then 4.0."""
+        ctx = _build_test_context()
+        object.__setattr__(ctx, "suggested_scale", 0.25)
+
+        provider = MagicMock()
+        provider.free_balance.return_value = 10000.0
+        provider.policy_cap_quantity.return_value = 10.0
+        provider.fee_cap_quantity.return_value = 100.0
+        provider.round_amount = lambda s, a: round(a, 4)
+        provider.order_filter_refusal.return_value = None
+
+        # Order 1
+        d1 = decide_quantity(provider, "BTCUSDC", "BUY", 100.0, 4.0, regime_context=ctx)
+        assert d1.final_qty == 1.0
+        assert d1.scale_applied is True
+        assert d1.applied_scale == 0.25
+
+        # Order 2 with identical shared context
+        d2 = decide_quantity(provider, "BTCUSDC", "BUY", 100.0, 4.0, regime_context=ctx)
+        assert d2.final_qty == 1.0
+        assert d2.scale_applied is True
+        assert d2.applied_scale == 0.25
+
+    def test_case4_monitortrades_position_stats_cache_detects_quantity_change(self):
+        """Case 4: Position stats cache includes total quantity in order signature,
+        preventing stale cache reuse when order quantity changes from 1.0 to 7.25."""
+        import monitortrades as mt
+        mt.clear_position_stats_cache()
+
+        class MockApi:
+            name = "test_venue"
+
+        api = MockApi()
+        symbol = "BTCUSDC"
+
+        # 1. First call with quantity 1.0
+        orders_v1 = [{"id": 101, "price": 100.0, "qty": 1.0, "timestamp": 1000}]
+        stats1 = mt.get_position_stats(symbol, 3600, api=api, buy_orders=orders_v1, sell_orders=[])
+        assert stats1.get("buy_qty") == pytest.approx(1.0)
+        assert stats1.get("net_qty") == pytest.approx(1.0)
+
+        # 2. Second call where the order quantity is now 7.25
+        # (same length 1, same order id 101, same price 100.0)
+        orders_v2 = [{"id": 101, "price": 100.0, "qty": 7.25, "timestamp": 1000}]
+        stats2 = mt.get_position_stats(symbol, 3600, api=api, buy_orders=orders_v2, sell_orders=[])
+        assert stats2.get("buy_qty") == pytest.approx(7.25)
+        assert stats2.get("net_qty") == pytest.approx(7.25)
+
+        # 3. Cache clearing function works cleanly
+        mt.clear_position_stats_cache()
+        assert len(mt._position_stats_cache) == 0
 

@@ -185,15 +185,26 @@ _position_stats_cache = {}
 _POSITION_CACHE_HEARTBEAT_SEC = 15.0  # Safety fallback: re-verify after 15s even if order counts match
 
 
+def clear_position_stats_cache():
+    """Clear position cache for test isolation and clean resets."""
+    _position_stats_cache.clear()
+
+
 def _make_order_signature(orders):
     if not orders:
-        return (0, 0, 0)
+        return (0, 0.0, 0.0, 0, 0)
+    cnt = len(orders)
+    total_qty = round(sum(float(o.get("qty", o.get("quantity", 0.0)) or 0.0) for o in orders), 8)
+    total_val = round(sum(float(o.get("price", 0.0) or 0.0) * float(o.get("qty", o.get("quantity", 0.0)) or 0.0) for o in orders), 4)
+    latest_ts = max(int(o.get("timestamp") or 0) for o in orders)
     first = orders[0]
-    return (
-        len(orders),
-        first.get("id") or first.get("orderId") or first.get("timestamp") or 0,
-        first.get("price") or 0,
-    )
+    first_id = first.get("id") or first.get("orderId") or first.get("timestamp") or 0
+    return (cnt, total_qty, total_val, latest_ts, first_id)
+
+
+def _api_cache_identity(api) -> tuple[str, int]:
+    name = getattr(api, "name", None) or getattr(api, "provider_label", None) or type(api).__name__
+    return (str(name), id(api))
 
 
 def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_orders=None, force_refresh=False):
@@ -204,7 +215,7 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
         sell_orders = api.get_orders(symbol, "SELL", maxage_trade_s)
 
     now_ts = time.time()
-    cache_key = (id(api), str(symbol).upper(), float(maxage_trade_s))
+    cache_key = (_api_cache_identity(api), str(symbol).upper(), float(maxage_trade_s))
     buy_sig = _make_order_signature(buy_orders)
     sell_sig = _make_order_signature(sell_orders)
     entry_sig = (buy_sig, sell_sig)

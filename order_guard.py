@@ -729,9 +729,8 @@ def check_intelligence_guards(
     active_reason = static_reason
 
     # Dynamic Re-evaluation for cached context:
-    # 1. Dynamic Parabolic Surge Guard (Anti-FOMO spike check if price moved)
-    cached_eval_price = getattr(regime_context, "_intelligence_price", None)
-    if price > 0 and (cached_eval_price is None or abs(price - cached_eval_price) / max(cached_eval_price, 1e-9) > 0.005):
+    # 1. Dynamic Parabolic Surge Guard (Anti-FOMO spike check evaluated on every verified price)
+    if price > 0:
         from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
         from intelligence.internal.guards.guard_decision import BrakeAction
         surge_pct = float(m.get("parabolic_surge_pct", 15.0))
@@ -778,6 +777,9 @@ def check_intelligence_guards(
     final_res = (True, active_reason if effective_scale < 1.0 else "ok", effective_scale)
     if valid_context:
         try:
+            object.__setattr__(regime_context, "_intelligence_price", price)
+            if computed_notional is not None:
+                object.__setattr__(regime_context, "_intelligence_notional", computed_notional)
             object.__setattr__(regime_context, "suggested_scale", effective_scale)
             object.__setattr__(regime_context, "intelligence_reason", active_reason)
         except Exception:

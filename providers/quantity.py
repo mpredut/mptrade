@@ -70,6 +70,8 @@ class QuantityDecision:
     final_qty: float
     refuse_reason: Optional[str] = None
     balance_asset: Optional[str] = None
+    scale_applied: bool = False
+    applied_scale: float = 1.0
 
 
 def resolve_assets(symbol: str, base: Optional[str] = None,
@@ -157,7 +159,9 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     final = min(requested, balance_cap, policy_cap, fee_cap)
 
     # Market-intelligence quantity scaling (e.g. Weibull trend exhaustion, derivatives crowding)
-    # Applies exactly once per placement flow if not already scaled.
+    # Applied per-order without mutating the shared market context.
+    scale_applied = False
+    applied_scale = 1.0
     effective_scale = scale
     if effective_scale is None and regime_context is not None:
         effective_scale = getattr(regime_context, "suggested_scale", None)
@@ -166,7 +170,6 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
         effective_scale is not None
         and 0.0 < float(effective_scale) < 1.0
         and final > 0
-        and (regime_context is None or not getattr(regime_context, "_scale_applied", False))
     ):
         scaled_amount = final * float(effective_scale)
         if hasattr(provider, "round_amount"):
@@ -174,11 +177,8 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
         print(f"[{symbol}] {side.upper()} quantity scaled by market-intelligence: "
               f"{final} -> {scaled_amount} (scale={float(effective_scale):.2f})")
         final = scaled_amount
-        if regime_context is not None:
-            try:
-                object.__setattr__(regime_context, "_scale_applied", True)
-            except Exception:
-                pass
+        scale_applied = True
+        applied_scale = float(effective_scale)
 
     reason = None if final > 0 else "qty_zero_after_policy"
     # Reject a venue-invalid candidate before it can become a durable retry intent.
@@ -192,6 +192,8 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     )
     if refusal:
         return QuantityDecision(requested, balance_cap, policy_cap, fee_cap,
-                                0.0, str(refusal), asset)
+                                0.0, str(refusal), asset,
+                                scale_applied=scale_applied, applied_scale=applied_scale)
     return QuantityDecision(requested, balance_cap, policy_cap, fee_cap,
-                            final, reason, asset)
+                            final, reason, asset,
+                            scale_applied=scale_applied, applied_scale=applied_scale)

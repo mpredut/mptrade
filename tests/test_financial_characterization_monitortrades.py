@@ -165,12 +165,14 @@ class PipelineApi:
 class MonitorTradesFinancialCharacterization(unittest.TestCase):
     def setUp(self):
         mt._hard_tp_last.clear()
+        mt.clear_position_stats_cache()
         self._hard_tp_enabled = mt.HARD_TP_ENABLED
         mt.HARD_TP_ENABLED = True
 
     def tearDown(self):
         mt.HARD_TP_ENABLED = self._hard_tp_enabled
         mt._hard_tp_last.clear()
+        mt.clear_position_stats_cache()
 
     def run_tick(self, inst, *, trend_up=False, gain=0.10, loss=0.05):
         with patch.object(mt, "is_trend_up", return_value=trend_up):

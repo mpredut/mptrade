@@ -110,6 +110,34 @@ class Instrument:
             return method(symbol, side, safeback_sec, regime_context=regime_context)
         return method(symbol, side, safeback_sec)
 
+    def _apply_late_intelligence_scale(
+        self, qty: float, price: float, is_market: bool,
+        enforce_business_minimum: bool, regime_context,
+        applied_scale: float, side_u: str = "BUY"
+    ) -> tuple[float, float, Optional[str]]:
+        """Scale down quantity if intelligence guards recommended risk reduction after initial calculation."""
+        if regime_context is None or qty <= 0 or side_u != "BUY":
+            return qty, applied_scale, None
+        scale = getattr(regime_context, "suggested_scale", None)
+        if scale is not None and 0.0 < float(scale) < float(applied_scale):
+            ratio = float(scale) / float(applied_scale)
+            scaled_qty = qty * ratio
+            if hasattr(self._provider, "round_amount"):
+                scaled_qty = self._provider.round_amount(self.symbol, scaled_qty)
+            filter_check = getattr(self._provider, "order_filter_refusal", None)
+            refusal = (
+                filter_check(
+                    self.symbol, side_u, price, scaled_qty,
+                    market=is_market, enforce_business_minimum=enforce_business_minimum)
+                if callable(filter_check) else None
+            )
+            if refusal:
+                print(f"[{self.symbol}] {side_u} late-scaled qty {scaled_qty} refused by filter: {refusal}")
+                return 0.0, applied_scale, str(refusal)
+            print(f"[{self.symbol}] {side_u} late-scaled by intelligence guard: {qty} -> {scaled_qty} (scale={float(scale):.2f})")
+            return scaled_qty, float(scale), None
+        return qty, applied_scale, None
+
     # -- Provider identity and access. -----------------------------------------
     @property
     def provider(self):
@@ -386,6 +414,7 @@ class Instrument:
                 regime_context=regime_context,
             )
             qty = decision.final_qty
+            applied_scale = getattr(decision, "applied_scale", 1.0) if getattr(decision, "scale_applied", False) else 1.0
             if qty <= 0:
                 print(f"[{self.symbol}] {side_u} qty refused: "
                       f"{decision.refuse_reason} asset={decision.balance_asset}")
@@ -397,30 +426,14 @@ class Instrument:
                 regime_context is not None
                 and side_u == "BUY"
                 and qty > 0
-                and not getattr(regime_context, "_scale_applied", False)
+                and not getattr(decision, "scale_applied", False)
             ):
-                scale = getattr(regime_context, "suggested_scale", None)
-                if scale is not None and 0.0 < float(scale) < 1.0:
-                    scaled_qty = qty * float(scale)
-                    if hasattr(self._provider, "round_amount"):
-                        scaled_qty = self._provider.round_amount(self.symbol, scaled_qty)
-                    filter_check = getattr(self._provider, "order_filter_refusal", None)
-                    refusal = (
-                        filter_check(
-                            self.symbol, side_u, quantity_price, scaled_qty,
-                            market=is_market, enforce_business_minimum=enforce_business_minimum)
-                        if callable(filter_check) else None
-                    )
-                    if refusal:
-                        print(f"[{self.symbol}] {side_u} scaled qty {scaled_qty} refused by filter: {refusal}")
-                        reason = str(refusal)
-                        return None
-                    print(f"[{self.symbol}] {side_u} scaled down by intelligence guard: {qty} -> {scaled_qty} (scale={scale:.2f})")
-                    qty = scaled_qty
-                    try:
-                        object.__setattr__(regime_context, "_scale_applied", True)
-                    except Exception:
-                        pass
+                qty, applied_scale, refusal = self._apply_late_intelligence_scale(
+                    qty, quantity_price, is_market, enforce_business_minimum,
+                    regime_context, applied_scale, side_u=side_u)
+                if refusal:
+                    reason = refusal
+                    return None
 
             # 2. Optional provider-agnostic trend gate is instantaneous.  Placement
             # must never sleep or poll: a negative decision returns immediately and
@@ -454,6 +467,12 @@ class Instrument:
                     if not ok:
                         reason = "profit_guard"
                         return None
+                    qty, applied_scale, refusal = self._apply_late_intelligence_scale(
+                        qty, guard_price, is_market, enforce_business_minimum,
+                        regime_context, applied_scale, side_u=side_u)
+                    if refusal:
+                        reason = refusal
+                        return None
                 elif orig_qty is None and qty > 0:
                     ok = order_guard.profit_guard(
                         self._provider, self.symbol, side_u, price, profit_margin,
@@ -462,6 +481,12 @@ class Instrument:
                     )
                     if not ok:
                         reason = "profit_guard"
+                        return None
+                    qty, applied_scale, refusal = self._apply_late_intelligence_scale(
+                        qty, price, is_market, enforce_business_minimum,
+                        regime_context, applied_scale, side_u=side_u)
+                    if refusal:
+                        reason = refusal
                         return None
 
             # 3. Provider-agnostic rapid-fire cooldown shared with Binance. Keys are
@@ -573,14 +598,21 @@ class Instrument:
                         if not favorable:
                             reason = "retry_price_unfavorable"
                             return None
-                    if final_profit_check and not order_guard.profit_guard(
+                    if final_profit_check:
+                        if not order_guard.profit_guard(
                             self._provider, self.symbol, side_u,
                             final_market_price, profit_margin,
                             window_ref=profit_window_ref,
                             regime_context=regime_context,
                             qty=qty):
-                        reason = "profit_guard"
-                        return None
+                            reason = "profit_guard"
+                            return None
+                        qty, applied_scale, refusal = self._apply_late_intelligence_scale(
+                            qty, final_market_price, is_market, enforce_business_minimum,
+                            regime_context, applied_scale, side_u=side_u)
+                        if refusal:
+                            reason = refusal
+                            return None
                 if callable(execution_enabled) and not bool(execution_enabled()):
                     # The switch can change while guards and persistence run. This
                     # final check converts that race into a terminal pre-submit
