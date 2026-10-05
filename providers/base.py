@@ -1,10 +1,15 @@
 """Provider primitives with no registry or venue-module dependencies."""
 
+import math
 import os
 from abc import ABC, abstractmethod
 from typing import Any, List, Optional
 
-from .strategy_executor import OrderReconciliationCapabilities, ProviderError
+from .strategy_executor import (
+    OrderReconciliationCapabilities,
+    PairPrecision,
+    ProviderError,
+)
 
 
 def env_value(folder: str, key: str) -> Optional[str]:
@@ -119,7 +124,35 @@ class MarketDataProvider(ABC):
     def guards_internally(self) -> bool:
         return False
 
+    def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
+        """Return normalized pair precision and limits, or None if unavailable."""
+        return None
+
+    def round_quantity(self, symbol: str, qty: float) -> float:
+        """Round or floor quantity to venue volume precision."""
+        try:
+            pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
+            if pp is not None and getattr(pp, "volume_decimals", None) is not None:
+                dec = int(pp.volume_decimals)
+                if dec >= 0:
+                    factor = 10 ** dec
+                    return math.floor(float(qty) * factor + 1e-12) / factor
+        except Exception:
+            pass
+        return float(qty)
+
+    def round_amount(self, symbol: str, qty: float) -> float:
+        """Backward-compatible alias for round_quantity."""
+        return self.round_quantity(symbol, qty)
+
     def min_order_qty(self, symbol: str) -> float:
+        """Return venue minimum order quantity; 0.0 means no known minimum."""
+        try:
+            pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
+            if pp is not None:
+                return float(getattr(pp, "order_min", 0.0) or 0.0)
+        except Exception:
+            pass
         return 0.0
 
     def order_filter_refusal(self, symbol: str, side: str, price: float,
@@ -127,6 +160,15 @@ class MarketDataProvider(ABC):
                              enforce_business_minimum: bool = True
                              ) -> Optional[str]:
         """Return a provider-specific pre-submit refusal, if one is known."""
+        try:
+            qty_f = float(qty)
+            if not math.isfinite(qty_f) or qty_f <= 0:
+                return "qty_zero_or_negative"
+            min_qty = self.min_order_qty(symbol)
+            if min_qty > 0 and qty_f < min_qty:
+                return f"filter_lot_size_min:{qty_f}<{min_qty}"
+        except Exception:
+            pass
         return None
 
     def policy_cap_quantity(self, symbol: str, side: str, price: float,

@@ -759,19 +759,20 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
         available_qty, _balance_asset = balance_cap_quantity(
             api.get_free_balance, symbol, order_type, price)
         if available_qty is None:
-            print(f"Balance unavailable for {order_type} {symbol}; order skipped.")
-            return None
-        if available_qty <= 0:
+            if kwargs.get("_balance_verified") or kwargs.get("caller_owns_retry"):
+                print(f"Balance check soft-skipped for {order_type} {symbol}; using verified qty={qty:.8f}")
+            else:
+                print(f"Balance unavailable for {order_type} {symbol}; order skipped.")
+                return None
+        elif available_qty <= 0:
             print(f"No sufficient quantity available to place the {order_type} order.")
             return None
-
-        # Keep the final check next to submission in case balance changed after planning.
-        # ``available_qty`` is already expressed as base quantity.
-        fee_cap = fee_cap_quantity(available_qty, PLACE_ORDER_FEE_PCT)
-        if qty > fee_cap:
-            print(f"Adjusting {order_type} qty from {qty:.8f} to "
-                  f"{fee_cap:.8f} to cover balance and fees")
-            qty = fee_cap
+        else:
+            fee_cap = fee_cap_quantity(available_qty, PLACE_ORDER_FEE_PCT)
+            if qty > fee_cap:
+                print(f"Adjusting {order_type} qty from {qty:.8f} to "
+                      f"{fee_cap:.8f} to cover balance and fees")
+                qty = fee_cap
 
         current_price = api.get_current_price(symbol)
         from providers.binance_filters import (

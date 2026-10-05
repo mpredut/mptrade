@@ -122,8 +122,17 @@ class Instrument:
         if scale is not None and 0.0 < float(scale) < float(applied_scale):
             ratio = float(scale) / float(applied_scale)
             scaled_qty = qty * ratio
-            if hasattr(self._provider, "round_amount"):
-                scaled_qty = self._provider.round_amount(self.symbol, scaled_qty)
+            round_fn = getattr(self._provider, "round_amount", None)
+            if round_fn is None:
+                round_fn = getattr(self._provider, "round_quantity", None)
+            if callable(round_fn):
+                res = round_fn(self.symbol, scaled_qty)
+                try:
+                    res_f = float(res)
+                    if math.isfinite(res_f):
+                        scaled_qty = res_f
+                except (TypeError, ValueError):
+                    pass
             filter_check = getattr(self._provider, "order_filter_refusal", None)
             refusal = (
                 filter_check(
@@ -168,7 +177,7 @@ class Instrument:
         return self._provider.open_orders(self.symbol)
 
     # -- Order placement: dry or real after provider gates. --------------------
-    def place(self, side: str, price: float, qty: float, **kwargs):
+    def place(self, side: str, price: float, qty: Optional[float] = None, **kwargs):
         # Complete provider-agnostic guard: profit, daily cap/anti-spam, rapid-fire
         # cooldown, instantaneous trend deferral, and fleet-wide logging. Apply only to providers
         # without internal guards. Binance retains its richer implementation using
@@ -658,6 +667,7 @@ class Instrument:
                 provider_kwargs = dict(kwargs)
                 provider_kwargs["market"] = is_market
                 provider_kwargs["force"] = is_market
+                provider_kwargs["_balance_verified"] = True
                 if is_binance:
                     provider_kwargs["enforce_business_minimum"] = (
                         enforce_business_minimum)

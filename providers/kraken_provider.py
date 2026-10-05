@@ -362,6 +362,10 @@ class KrakenProvider(MarketDataProvider):
         except ProviderError as exc:
             print(f"[Kraken] place_order {symbol}: {exc}")
             return None
+        qty = self.round_quantity(symbol, qty)
+        if qty <= 0:
+            print(f"[Kraken] place_order {symbol}: refused non-positive qty={qty}")
+            return None
         if not live:
             print(f"[Kraken][DRY] would place {side} {symbol} qty={qty} @ {price} "
                   f"(real orders are disabled; set KRAKEN_LIVE_ORDERS=true)")
@@ -391,6 +395,9 @@ class KrakenProvider(MarketDataProvider):
                      client_order_id: Optional[str] = None) -> str:
         s = "buy" if (side or "").lower().startswith("b") else "sell"
         ordertype = "market" if (market or price is None) else "limit"
+        qty = self.round_quantity(symbol, qty)
+        if qty <= 0:
+            raise ProviderError(f"submit_order {symbol} {s}: non-positive qty={qty}")
         try:
             order_kwargs = {"ordertype": ordertype, "validate": False}
             if client_order_id is not None:
@@ -426,6 +433,8 @@ class KrakenProvider(MarketDataProvider):
         required fee/slippage reserve depends on order type and execution.
         """
         if not str(side or "").lower().startswith("s"):
+            return
+        if qty is None:
             return
         try:
             requested = float(qty)

@@ -340,6 +340,30 @@ class BinanceProvider(MarketDataProvider):
             order_min=float(rules.lot_min), base_asset=rules.base_asset,
         )
 
+    def min_order_qty(self, symbol: str) -> float:
+        try:
+            pp = self.pair_precision(symbol)
+            if pp is not None:
+                return float(pp.order_min)
+        except Exception:
+            pass
+        return 0.0
+
+    def round_quantity(self, symbol: str, qty: float) -> float:
+        try:
+            pp = self.pair_precision(symbol)
+            if pp is not None and getattr(pp, "volume_decimals", None) is not None:
+                dec = int(pp.volume_decimals)
+                if dec >= 0:
+                    factor = 10 ** dec
+                    return math.floor(float(qty) * factor + 1e-12) / factor
+        except Exception:
+            pass
+        return float(qty)
+
+    def round_amount(self, symbol: str, qty: float) -> float:
+        return self.round_quantity(symbol, qty)
+
     def order_filter_refusal(self, symbol: str, side: str, price: float,
                              qty: float, *, market: bool = False,
                              enforce_business_minimum: bool = True
@@ -1045,12 +1069,35 @@ class MarketApi:
             enforce_business_minimum=enforce_business_minimum,
         )
 
+    def pair_precision(self, symbol: str, provider_name=None) -> Optional[PairPrecision]:
+        provider = self._provider_explicit_or_routed(symbol, provider_name)
+        if hasattr(provider, "pair_precision"):
+            return provider.pair_precision(symbol)
+        return None
+
+    def min_order_qty(self, symbol: str, provider_name=None) -> float:
+        provider = self._provider_explicit_or_routed(symbol, provider_name)
+        if hasattr(provider, "min_order_qty"):
+            return provider.min_order_qty(symbol)
+        return 0.0
+
+    def round_quantity(self, symbol: str, qty: float, provider_name=None) -> float:
+        provider = self._provider_explicit_or_routed(symbol, provider_name)
+        if hasattr(provider, "round_quantity"):
+            return provider.round_quantity(symbol, qty)
+        if hasattr(provider, "round_amount"):
+            return provider.round_amount(symbol, qty)
+        return float(qty)
+
+    def round_amount(self, symbol: str, qty: float, provider_name=None) -> float:
+        return self.round_quantity(symbol, qty, provider_name=provider_name)
+
     def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
         # Mechanics-only provider dispatch without guards. Real placement must use
         # guarded .place(); this remains for internal and dry-run cases.
         return self._provider_for(symbol).place_order(symbol, side, price, qty, **kwargs)
 
-    def place(self, symbol: str, side: str, price: float, qty: float,
+    def place(self, symbol: str, side: str, price: float, qty: Optional[float] = None,
               base: Optional[str] = None, quote: Optional[str] = None, **kwargs):
         """Place through the single guarded proxy using a temporary Instrument.
 

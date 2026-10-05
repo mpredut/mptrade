@@ -158,6 +158,18 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
         symbol, side, price, balance_cap)))
     final = min(requested, balance_cap, policy_cap, fee_cap)
 
+    round_fn = getattr(provider, "round_amount", None)
+    if round_fn is None:
+        round_fn = getattr(provider, "round_quantity", None)
+    if callable(round_fn) and final > 0:
+        res = round_fn(symbol, final)
+        try:
+            res_f = float(res)
+            if math.isfinite(res_f):
+                final = res_f
+        except (TypeError, ValueError):
+            pass
+
     # Market-intelligence quantity scaling (e.g. Weibull trend exhaustion, derivatives crowding)
     # Applied per-order without mutating the shared market context.
     # Exclusively applies to BUY entries; exits and SELL orders must never be shrunk by entry risk guards.
@@ -173,8 +185,14 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
         and final > 0
     ):
         scaled_amount = final * float(effective_scale)
-        if hasattr(provider, "round_amount"):
-            scaled_amount = provider.round_amount(symbol, scaled_amount)
+        if callable(round_fn):
+            res = round_fn(symbol, scaled_amount)
+            try:
+                res_f = float(res)
+                if math.isfinite(res_f):
+                    scaled_amount = res_f
+            except (TypeError, ValueError):
+                pass
         print(f"[{symbol}] {side.upper()} quantity scaled by market-intelligence: "
               f"{final} -> {scaled_amount} (scale={float(effective_scale):.2f})")
         final = scaled_amount

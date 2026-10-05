@@ -232,6 +232,10 @@ class T212Provider(MarketDataProvider):
         try:
             print(f"[T212][LIVE] {side} {symbol} qty={qty} @ {price}")
             is_market = bool(kwargs.get("market", False) or kwargs.get("force", False))
+            qty = self.round_quantity(symbol, qty)
+            if qty <= 0:
+                print(f"[T212] place_order {symbol}: refused non-positive qty={qty}")
+                return None
             status, data = self._send_order(
                 symbol, side, qty, price, market=is_market)
             if status not in (200, 201):
@@ -257,6 +261,9 @@ class T212Provider(MarketDataProvider):
         del kind, client_order_id
         if not self._orders_live():
             raise ProviderError("T212_LIVE_ORDERS is not true; the real order is blocked")
+        qty = self.round_quantity(symbol, qty)
+        if qty <= 0:
+            raise ProviderError(f"submit_order({symbol}): invalid quantity {qty}")
         try:
             status, data = self._send_order(
                 symbol, side, qty, price, market=bool(market or price is None))

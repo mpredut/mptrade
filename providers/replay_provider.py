@@ -75,6 +75,12 @@ class ReplayMarketDataProvider(MarketDataProvider):
     def supports_symbol(self, symbol: str) -> bool:
         return symbol in self._series
 
+    def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
+        from providers.strategy_executor import PairPrecision
+        return PairPrecision(
+            price_decimals=2, volume_decimals=4, order_min=0.0,
+            base_asset=_base_asset(symbol))
+
     # ── Clock advancement: called by the backtest driver, not bot code ───────
     def advance(self, symbol: str, steps: int = 1) -> Optional[float]:
         """Advance a symbol cursor by ``steps`` and return its new current price.
@@ -158,7 +164,9 @@ class ReplayMarketDataProvider(MarketDataProvider):
         """
         side = side.upper()
         price = float(price)
-        qty = float(qty)
+        qty = self.round_quantity(symbol, float(qty))
+        if qty <= 0:
+            return None
         ts_ms = int(self.now(symbol) * 1000)
         pos_qty, pos_cost = self._positions.get(symbol, (0.0, 0.0))
         if side == "BUY":

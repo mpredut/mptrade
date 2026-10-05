@@ -338,6 +338,10 @@ class HyperliquidProvider(MarketDataProvider):
                 return None
             signer = self._new_client(secret)
             sz_dec = signer.sz_decimals(self._token)
+            qty = self.round_quantity(symbol, qty)
+            if qty <= 0:
+                print(f"[HL] place_order {side} {symbol}: refused non-positive qty={qty}")
+                return None
             ok, oid, msg = signer.spot_order(
                 pair, side == "BUY", float(qty), float(price),
                 sz_decimals=sz_dec, cloid=cloid)
@@ -423,6 +427,9 @@ class HyperliquidProvider(MarketDataProvider):
             if not mid:
                 raise ProviderError(f"submit_order({symbol}) market: price unavailable")
             px = mid * (1.05 if is_buy else 0.95)               # Aggressive limit for immediate fill.
+        qty = self.round_quantity(symbol, qty)
+        if qty <= 0:
+            raise ProviderError(f"submit_order({symbol}): non-positive qty={qty}")
         self.preflight_order(
             symbol, side, qty, px, market=market, kind=kind,
         )
@@ -459,6 +466,8 @@ class HyperliquidProvider(MarketDataProvider):
         """
         self.validate_symbol(symbol)
         if not (side or "").lower().startswith("b"):
+            return
+        if qty is None:
             return
         if price is None:
             mid = self.get_current_price(symbol)
