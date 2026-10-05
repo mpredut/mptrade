@@ -623,6 +623,12 @@ class Instrument:
                                         prequeued_claim = synced_claim
                             except Exception:
                                 pass
+                            if prequeued_intent_id and applied_scale < 1.0:
+                                _EXECUTION_AUDIT.record(
+                                    "submit_scaled", intent_id=prequeued_intent_id,
+                                    venue=self.provider_name, symbol=self.symbol,
+                                    side=side_u.lower(), qty=qty, scale=applied_scale,
+                                )
                 if callable(execution_enabled) and not bool(execution_enabled()):
                     # The switch can change while guards and persistence run. This
                     # final check converts that race into a terminal pre-submit
@@ -680,6 +686,9 @@ class Instrument:
                     "accepted" if order is not None else
                     "unknown" if submit_attempted else "refused"
                 )
+                if order is not None:
+                    outcome_context["submitted_qty"] = qty
+                    outcome_context["submitted_price"] = price
             try:
                 caller = os.path.basename(sys._getframe(1).f_code.co_filename)
             except Exception:

@@ -594,16 +594,36 @@ def get_derivatives_collector():
     return _derivatives_collector
 
 
+def _normalize_base_asset(sym: str) -> str:
+    s = (sym or "").strip().upper()
+    for q in ("USDC", "USDT", "FDUSD", "USD", "EUR", "RON", "GBP"):
+        if s.endswith(q) and len(s) > len(q):
+            return s[:-len(q)]
+    return s
+
+
 def _read_cached_trend_duration(symbol: str) -> float:
     try:
-        p = "cachedb/cache_price_long_trend.json"
+        cachedb_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
+        p = os.path.join(cachedb_dir, "cache_price_long_trend.json")
         if not os.path.exists(p):
             return 0.0
         with open(p, "r", encoding="utf-8") as f:
             data = json.load(f)
-        items = data.get("items", {}).get(symbol.upper(), [])
-        if items and isinstance(items, list) and items[0]:
-            return float(items[0].get("duration_seconds", 0.0) or 0.0)
+        all_items = data.get("items", {})
+        items = all_items.get(symbol.upper())
+        if not items:
+            su_base = _normalize_base_asset(symbol)
+            for k, v in all_items.items():
+                if _normalize_base_asset(k) == su_base:
+                    items = v
+                    break
+        if items and isinstance(items, list):
+            for entry in reversed(items):
+                if isinstance(entry, dict) and entry.get("duration_seconds") is not None:
+                    dur = float(entry.get("duration_seconds", 0.0) or 0.0)
+                    if dur > 0:
+                        return dur
     except Exception:
         pass
     return 0.0
@@ -623,14 +643,6 @@ def _resolve_trend_duration(symbol: str) -> float:
     except Exception:
         pass
     return _read_cached_trend_duration(symbol)
-
-
-def _normalize_base_asset(sym: str) -> str:
-    s = (sym or "").strip().upper()
-    for q in ("USDC", "USDT", "FDUSD", "BUSD", "USD", "EUR", "GBP"):
-        if s.endswith(q) and len(s) > len(q):
-            return s[:-len(q)]
-    return s
 
 
 def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> Optional[List[Tuple[float, float]]]:
@@ -858,6 +870,27 @@ def check_intelligence_guards(
                                 return False, g_reason, 0.0
                             effective_scale = min(effective_scale, g_scale)
                             active_reason = g_reason
+
+    # 3. Dynamic Weibull trend exhaustion check if duration provided or resolved
+    dur_sec = trend_duration_seconds or (getattr(regime_context, "trend_duration_seconds", 0.0) if valid_context else 0.0)
+    if not dur_sec and symbol:
+        dur_sec = _resolve_trend_duration(symbol)
+    if dur_sec and dur_sec > 0:
+        from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+        from intelligence.internal.guards.guard_decision import BrakeAction
+        e_policy = str(m.get("weibull_exhaustion_policy", "downscale")).strip().lower()
+        e_scale = float(m.get("weibull_exhausted_scale", 0.25))
+        e_p90 = float(m.get("weibull_p90_days", 7.0))
+        e_guard = WeibullExhaustionGuard(default_p90_days=e_p90, policy=e_policy, exhausted_scale=e_scale)
+        e_dec = e_guard.check(symbol, side, trend_duration_seconds=dur_sec)
+        if e_dec.brake_action != BrakeAction.NONE:
+            prefix = "[INTELLIGENCE_GUARD_SHADOW]" if mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
+            print(f"{prefix} {side} {symbol} @ {price}: {e_dec.reason} (brake={e_dec.brake_action}, suggested_scale={e_dec.suggested_scale})")
+            if mode == "enforce":
+                if not e_dec.allowed:
+                    return False, e_dec.reason, 0.0
+                effective_scale = min(effective_scale, e_dec.suggested_scale)
+                active_reason = e_dec.reason
 
     final_res = (True, active_reason if effective_scale < 1.0 else "ok", effective_scale)
     if valid_context:

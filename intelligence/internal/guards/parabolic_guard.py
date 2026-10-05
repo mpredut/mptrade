@@ -82,11 +82,17 @@ class ParabolicSurgeGuard:
                         st["surge_start_px"] = low_px
 
         # If surge is active, verify if price has pulled back sufficiently from peak
+        # or if the spike has consolidated over the full window without making new highs
         if st["surge_active"]:
             peak = st["peak"]
             pullback_pct = (peak - current_price) / peak * 100.0 if peak > 0 else 0.0
 
-            if pullback_pct < self.pullback_required_pct:
+            if ts_now > 0 and st.get("ts", 0) > 0 and (ts_now - st["ts"]) >= self.window_seconds:
+                # Spike has consolidated past the window without new highs; surge disarmed
+                st["surge_active"] = False
+                st["peak"] = current_price
+                st["ts"] = ts_now
+            elif pullback_pct < self.pullback_required_pct:
                 return GuardDecision.defer(
                     "ParabolicSurgeGuard",
                     f"parabolic_surge_active (peak={peak:.2f}, current={current_price:.2f}, "

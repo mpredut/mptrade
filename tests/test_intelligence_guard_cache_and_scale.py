@@ -999,3 +999,124 @@ class TestSisterArchitecturalDefects:
         )
         assert res is False
 
+    def test_sister6_parabolic_surge_consolidates_over_window_without_requiring_pullback(self):
+        """Sister 6: Parabolic surge must disarm after consolidating past window_seconds,
+        even if price did not pull back by the required percentage."""
+        from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+        guard = ParabolicSurgeGuard(surge_threshold_pct=5.0, pullback_required_pct=2.0, window_seconds=7200.0)
+
+        # 1. Surge occurs from 100 to 110 (+10% > 5%) at ts=1000
+        history = [(900.0, 100.0), (1000.0, 110.0)]
+        dec1 = guard.check("BTCUSDC", "BUY", 110.0, price_history=history, now=1000.0)
+        assert dec1.allowed is False
+        assert "parabolic_surge_active" in dec1.reason
+
+        # 2. At ts=3000 (2000s later, within 2h window), price consolidates at 109.0 (pullback 0.9% < 2%)
+        # Surge must still be active
+        dec2 = guard.check("BTCUSDC", "BUY", 109.0, price_history=history, now=3000.0)
+        assert dec2.allowed is False
+
+        # 3. At ts=9000 (8000s later, elapsed > window_seconds=7200s), price is still 109.0
+        # Consolidation disarms the surge; BUY must be permitted!
+        dec3 = guard.check("BTCUSDC", "BUY", 109.0, price_history=history, now=9000.0)
+        assert dec3.allowed is True
+        assert dec3.reason == "normal_market_structure"
+
+    def test_sister7_price_analysis_resolves_cross_venue_symbols_via_normalized_base(self, monkeypatch):
+        """Sister 7: priceAnalysis.get_weight_for_cash_permission_at_quant_time must resolve
+        cross-venue quote symbols (e.g. ARBUSD) against base-asset cache records (ARBUSDC)."""
+        import priceAnalysis as pa
+        import cacheManager as cm
+
+        # Mock CachePriceLongTrendManager cache with ARBUSDC having an active trend
+        trend_item = {
+            "timestamp": 1791198244,
+            "direction": "up",
+            "start_timestamp": 1790679820.569,
+            "duration_seconds": 518293.69,
+            "estimated_future_hours": 72.0,
+        }
+        mock_mgr = MagicMock()
+        mock_mgr.cache = {"ARBUSDC": [trend_item]}
+        monkeypatch.setattr(cm, "get_cache_manager", lambda name: mock_mgr)
+
+        # ARBUSD (Kraken/Hyperliquid symbol) should match ARBUSDC
+        w = pa.get_weight_for_cash_permission_at_quant_time("ARBUSD", "BUY", T_quanta=8)
+        assert w is not None
+        assert 0.0 < w <= 1.0
+
+    def test_sister8_read_cached_trend_duration_resolves_cross_venue_and_skips_nulls(self, tmp_path, monkeypatch):
+        """Sister 8: _read_cached_trend_duration must support MPTRADE_CACHEDB_DIR,
+        match normalized base assets across venues (ARBUSD -> ARBUSDC), and skip nulls."""
+        monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path))
+        trend_file = tmp_path / "cache_price_long_trend.json"
+        data = {
+            "items": {
+                "BTCUSDC": [None],
+                "ARBUSDC": [
+                    None,
+                    {
+                        "timestamp": 1791198244,
+                        "direction": "up",
+                        "start_timestamp": 1790679820.569,
+                        "duration_seconds": 518293.69,
+                    }
+                ]
+            }
+        }
+        trend_file.write_text(json.dumps(data), encoding="utf-8")
+
+        # BTCUSDC has only null, duration is 0.0
+        dur_btc = order_guard._read_cached_trend_duration("BTCUSDC")
+        assert dur_btc == 0.0
+
+        # ARBUSD matches ARBUSDC and skips initial None to get 518293.69
+        dur_arb = order_guard._read_cached_trend_duration("ARBUSD")
+        assert abs(dur_arb - 518293.69) < 1e-2
+
+    def test_sister9_order_retry_worker_syncs_late_scaled_qty_from_outcome_context(self, tmp_path, monkeypatch):
+        """Sister 9: order_retry_worker must synchronize submitted_qty from outcome_context
+        into the accepted claim record."""
+        import order_retry as oq
+        import order_retry_worker as worker
+
+        queue_file = str(tmp_path / "order_retry_queue.jsonl")
+        lock_file = str(tmp_path / "order_retry_queue.lock")
+        monkeypatch.setattr(oq, "QUEUE_FILE", queue_file)
+        monkeypatch.setattr(oq, "LOCK_FILE", lock_file)
+        monkeypatch.setattr(oq, "RETRY_ENABLED", True)
+
+        # Enqueue intent for 4.0 at now=1000.0
+        oq.enqueue("BTCUSDC", "BUY", 4.0, {}, requested_price=100.0, now=1000.0)
+
+        # Simulate mkt.place reducing quantity to 1.0 and populating outcome_context
+        def fake_place(symbol, side, price, qty, **kwargs):
+            ctx = kwargs.get("_outcome_context")
+            if ctx is not None:
+                ctx["accepted"] = True
+                ctx["submitted_qty"] = 1.0
+                ctx["submitted_price"] = price
+                ctx["state"] = "accepted"
+            return {"orderId": "ORD_WORKER_999", "status": "NEW", "executedQty": "0.0", "origQty": "1.0"}
+
+        from providers.strategy_executor import OrderReconciliationCapabilities
+        monkeypatch.setattr(worker.alert, "notify", lambda **kw: None)
+
+        mock_mkt = MagicMock()
+        mock_mkt.get_current_price.return_value = 100.0
+        mock_mkt.order_by_client_id.return_value = None
+        mock_mkt.reconciliation_capabilities.return_value = OrderReconciliationCapabilities(
+            True, True, True, True, not_found_reliable_for_seconds=86400 * 90)
+        mock_mkt.place.side_effect = fake_place
+
+        res = worker.process_once(mkt=mock_mkt, now=1400.0)
+        assert res["attempted"] == 1
+        assert res["succeeded"] == 1
+
+        # Check queue record: qty must be 1.0, NOT 4.0!
+        records = oq.load_all()
+        assert len(records) == 1
+        assert records[0]["qty"] == 1.0
+        assert records[0]["requested_qty_total"] == 1.0
+
+

@@ -626,10 +626,29 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
             print(f"[{symbol}] estimarea T failed ({e}) — using the prior T=14")
 
     all_trend_data = cm.get_cache_manager("PriceLongTrend").cache
-    if symbol not in all_trend_data:
+    items = all_trend_data.get(symbol)
+    if not items:
+        # Fallback to normalized base asset match (e.g. ARBUSD -> ARBUSDC)
+        from order_guard import _normalize_base_asset
+        s_base = _normalize_base_asset(symbol)
+        for k, v in all_trend_data.items():
+            if _normalize_base_asset(k) == s_base:
+                items = v
+                break
+    if not items:
         print(f"Symbol {symbol} is not present in the trends that were read.")
         return None
-    trend = all_trend_data[symbol][0]
+
+    # Retrieve latest non-null trend record
+    trend = None
+    if isinstance(items, list):
+        for entry in reversed(items):
+            if isinstance(entry, dict) and entry.get("duration_seconds") is not None:
+                trend = entry
+                break
+    elif isinstance(items, dict):
+        trend = items
+
     if trend is None:
         print(f" No trend in cache for symbol {symbol}.")
         return None

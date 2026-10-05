@@ -525,6 +525,15 @@ def process_once(mkt, now=None):
                 reconciled += 1
         if accepted:
             succeeded += 1
+            submitted_qty = outcome_context.get("submitted_qty")
+            if submitted_qty is not None:
+                try:
+                    sq = float(submitted_qty)
+                    if math.isfinite(sq) and sq > 0:
+                        r["qty"] = sq
+                        r["requested_qty_total"] = sq
+                except (TypeError, ValueError, OverflowError):
+                    pass
             oq.complete_claim(
                 r, "accepted", now, order=order,
                 provider_name=provider_name)
