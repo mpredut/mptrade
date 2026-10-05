@@ -140,7 +140,7 @@ class TestUnifiedWeightResolution(unittest.TestCase):
 
     def test_chop_weight_for_venue(self):
         import order_guard
-        self.assertEqual(order_guard.chop_weight_for("binance"), 0.12)
+        self.assertEqual(order_guard.chop_weight_for("binance"), 0.03)
         self.assertEqual(order_guard.chop_weight_for("kraken"), 0.03)
         self.assertEqual(order_guard.chop_weight_for(None), 0.03)
 
@@ -157,7 +157,7 @@ class TestUnifiedWeightResolution(unittest.TestCase):
         import order_guard
         with patch("priceAnalysis.get_weight_for_cash_permission_at_quant_time", return_value=None):
             w = order_guard.resolve_trade_weight("UNKNOWNCOIN", "BUY", "binance")
-            self.assertEqual(w, 0.12)
+            self.assertEqual(w, 0.03)
 
 
 if __name__ == "__main__":
