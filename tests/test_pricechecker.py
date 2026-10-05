@@ -1,6 +1,6 @@
 import unittest
 
-from pricechecker import PriceChecker
+from market_monitor.pricechecker import PriceChecker
 
 
 class DummyPriceManager:

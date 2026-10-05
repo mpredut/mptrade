@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 MODS = [
     "binance_api.bapi", "binance_api.bapi_client", "binance_api.bapi_placeorder",
     "binance_api.bapi_trades", "binance_api.bapi_allorders", "binance_api.bapi_ws",
-    "cacheManager", "pricefetcher", "tradeall", "monitortrades",
+    "cacheManager", "market_monitor.pricefetcher", "tradeall", "monitortrades",
     "assetguardian", "rtrade", "monitororder", "market_regime",
     "providers.market_api", "symbols",
 ]

@@ -545,3 +545,61 @@ def test() :
     
     print(f"{len(trade_orders_buy)}, {trade_orders_buy}")
     sys.exit(1)
+
+
+# Retained for historical reference: StateTracker algorithm and state progression logic.
+class StateTracker:
+    def __init__(self):
+        self.running = True
+        self.states = {}  # To hold states for each symbol
+
+    def update_state(self, symbol, slope, tick=0, min_val=0.0, max_val=0.0):
+        """Historical state transition tracking based on slope momentum."""
+        if symbol not in self.states:
+            self.states[symbol] = []
+
+        last_state = self.states[symbol][-1] if self.states[symbol] else None
+        self.process_state(symbol, slope, tick, min_val, max_val, last_state)
+
+    def process_state(self, symbol, slope, tick, min_val, max_val, last_state):
+        MAX_STATES = 1000
+        # If there is no previous state, create a new one
+        if last_state is None:
+            new_state = {
+                'slope': slope,
+                'tick': tick,
+                'min': min_val,
+                'max': max_val
+            }
+            self.states[symbol].append(new_state)
+            if len(self.states[symbol]) > MAX_STATES:
+                self.states[symbol].pop(0)
+            return
+
+        # If slope is the same as the last state, update the current state's tick and min/max
+        if slope * last_state['slope'] > 0 or (abs(slope - last_state['slope']) < 1e-9):  # Same sign.
+            last_state['tick'] = tick
+            last_state['min'] = min(last_state['min'], min_val)
+            last_state['max'] = max(last_state['max'], max_val)
+        else:
+            # If slope has changed, create a new state
+            new_state = {
+                'slope': slope,
+                'tick': tick,
+                'min': min_val,
+                'max': max_val
+            }
+            self.states[symbol].append(new_state)
+            if len(self.states[symbol]) > MAX_STATES:
+                self.states[symbol].pop(0)
+
+    def display_states(self):
+        print("Current states:")
+        for symbol, states_list in self.states.items():
+            print(f"Symbol: {symbol}")
+            for i, state in enumerate(states_list):
+                print(f"  State {i + 1}:")
+                for key, value in state.items():
+                    print(f"    {key}: {value}")
+            print()
+

@@ -20,12 +20,8 @@ import threading
 import time
 
 
-try:
-    from pricechecker import start_price_alert_checker
-    from pricefetcher import create_cachePriceAll
-except ImportError:
-    from market_monitor.pricechecker import start_price_alert_checker
-    from market_monitor.pricefetcher import create_cachePriceAll
+from market_monitor.pricechecker import start_price_alert_checker
+from market_monitor.pricefetcher import create_cachePriceAll
 
 # Alert orchestration formerly lived in ``run_price_monitor.py``.
 from market_monitor.new_coins_discovery import create_new_coins_checker, NewCoinsMonitor, NewCoinsFactory, MAX_NEW_COINS_TO_TRACK

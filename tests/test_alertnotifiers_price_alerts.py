@@ -2,7 +2,7 @@ import time
 import unittest
 
 from alertnotifiers import AlertNotifier
-from pricechecker import PriceAlert, PriceChecker
+from market_monitor.pricechecker import PriceAlert, PriceChecker
 
 
 class DummyCMCPlatform:

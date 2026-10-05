@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from assetguardian_state import AssetGuardianState
+from assetguardian import AssetGuardianState
 from state_io import StateReadError
 from trailing_core import TrailingCore
 
