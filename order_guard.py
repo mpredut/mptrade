@@ -1004,8 +1004,12 @@ def _evaluate_intelligence_guards_raw(
                         _SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
                         try:
                             from notify_engine.alertnotifiers import notify
+                            if not g_dec.allowed:
+                                g_title = f"🛡 [GEMINI SHADOW VETO] Would Block {side} {symbol}"
+                            else:
+                                g_title = f"🛡 [GEMINI SHADOW DOWNSCALE] Would Scale {int(g_dec.suggested_scale*100)}% {side} {symbol}"
                             notify(
-                                title=f"🛡 [GEMINI SHADOW VETO] Would Block {side} {symbol}",
+                                title=g_title,
                                 body=f"High-stake order €{computed_notional:.2f} flagged: {g_dec.reason} (brake={g_dec.brake_action}, scale={g_dec.suggested_scale})",
                                 source="order_guard",
                                 symbol=symbol,
@@ -1039,8 +1043,12 @@ def _evaluate_intelligence_guards_raw(
                             _SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
                             try:
                                 from notify_engine.alertnotifiers import notify
+                                if not geo_dec.allowed:
+                                    geo_title = f"🛡 [MACRO SHADOW VETO] Would Block {side} {symbol}"
+                                else:
+                                    geo_title = f"🛡 [MACRO SHADOW DOWNSCALE] Would Scale {int(geo_dec.suggested_scale*100)}% {side} {symbol}"
                                 notify(
-                                    title=f"🛡 [MACRO SHADOW VETO] Would Block {side} {symbol}",
+                                    title=geo_title,
                                     body=f"Macro shock flagged: {geo_dec.reason} (threat={cached_geo.threat_level}, risk={cached_geo.risk_score:.2f})",
                                     source="order_guard",
                                     symbol=symbol,
