@@ -231,8 +231,9 @@ class T212Provider(MarketDataProvider):
             return None
         try:
             print(f"[T212][LIVE] {side} {symbol} qty={qty} @ {price}")
+            is_market = bool(kwargs.get("market", False) or kwargs.get("force", False))
             status, data = self._send_order(
-                symbol, side, qty, price, market=bool(kwargs.get("force", False)))
+                symbol, side, qty, price, market=is_market)
             if status not in (200, 201):
                 return None
             # Instrument.place uses the common orderId key for cooldown. Preserve

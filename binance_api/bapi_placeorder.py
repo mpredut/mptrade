@@ -742,7 +742,7 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
                           client_order_id=None, cache_permit=None,
                           permit_requested_price=None, kind=None,
                           cancel_opposite_requested_price=None,
-                          enforce_business_minimum=True):
+                          enforce_business_minimum=True, market=False, **kwargs):
     """Execute Binance-specific submission mechanics.
 
     Clamp to real balance after fees, enforce configured order filters, round,
@@ -753,6 +753,7 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
     """
     order_type = order_type.upper()
     sym.validate_params(order_type, symbol, price, qty)
+    is_market = bool(force or market or kwargs.get("market", False) or kwargs.get("force", False))
     try:
         from providers.quantity import balance_cap_quantity, fee_cap_quantity
         available_qty, _balance_asset = balance_cap_quantity(
@@ -780,12 +781,12 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
         )
         rules = BinanceOrderRules.from_symbol_info(client.get_symbol_info(symbol))
         candidate_price = order_candidate_price(
-            order_type, price, current_price, market=bool(force))
+            order_type, price, current_price, market=is_market)
         try:
             normalized_qty, normalized_price = rules.normalize(
                 quantity=qty,
                 price=candidate_price,
-                market=bool(force),
+                market=is_market,
                 reference_price=current_price,
                 business_min_notional=(
                     PLACE_ORDER_MIN_NOTIONAL
@@ -799,11 +800,11 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
             price = float(normalized_price)
 
         print(f"Trying to place {order_type} {symbol} qty {qty:.8f} at "
-              f"{'market price' if force else f'price {price}'}")
+              f"{'market price' if is_market else f'price {price}'}")
         if order_type in {"BUY", "SELL"}:
             return _submit_binance_order(
-                order_type, symbol, qty, price=None if force else price,
-                market=bool(force), client_order_id=client_order_id,
+                order_type, symbol, qty, price=None if is_market else price,
+                market=is_market, client_order_id=client_order_id,
                 cache_permit=cache_permit,
                 permit_requested_price=permit_requested_price, kind=kind,
                 cancel_opposite_requested_price=(

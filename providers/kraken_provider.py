@@ -351,7 +351,7 @@ class KrakenProvider(MarketDataProvider):
         live = self.execution_enabled()
         s = (side or "").lower()
         s = "buy" if s.startswith("b") else "sell"
-        market = bool(kwargs.get("force", False))
+        market = bool(kwargs.get("market", False) or kwargs.get("force", False))
         ordertype = "market" if market else "limit"
         submit_price = None if market else price
         client_order_id = kwargs.get("client_order_id")

@@ -241,12 +241,15 @@ class BinanceProvider(MarketDataProvider):
                     enforce_business_minimum: bool = True, **kwargs):
         # Mechanics only: fee/balance, minimum notional, and dispatch. Instrument.place
         # applies daily, profit, quantity, trend, cooldown, and logging policies via
-        # provider-neutral hooks. Only force affects market versus limit here.
+        # provider-neutral hooks. force and market both specify market order execution.
         from binance_api import bapi_placeorder as _po
+        is_market = bool(force or kwargs.get("market", False) or kwargs.get("force", False))
         mechanics_kwargs = {
-            "force": force,
+            "force": is_market,
             "enforce_business_minimum": enforce_business_minimum,
         }
+        if "market" in kwargs:
+            mechanics_kwargs["market"] = is_market
         if kwargs.get("client_order_id") is not None:
             mechanics_kwargs["client_order_id"] = kwargs["client_order_id"]
         cancel_requested_price = kwargs.get(
@@ -257,7 +260,7 @@ class BinanceProvider(MarketDataProvider):
         if cache_permit is not None:
             mechanics_kwargs["cache_permit"] = cache_permit
             mechanics_kwargs["permit_requested_price"] = (
-                price if permit_requested_price is None and not force
+                price if permit_requested_price is None and not is_market
                 else permit_requested_price)
             mechanics_kwargs["kind"] = (
                 kwargs.get("kind") or kwargs.get("motivation"))

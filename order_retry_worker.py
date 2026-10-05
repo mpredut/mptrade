@@ -232,7 +232,7 @@ def process_once(mkt, now=None):
                 # worker may only recover venue truth by deterministic lookup.
                 live_producer_reconciliation.append(r)
                 continue
-            if owner_state not in {"dead", "mismatched"}:
+            if owner_state not in {"dead", "mismatched", "unknown"}:
                 quarantined += 1
                 _alert_producer_quarantine(
                     r, reason="producer_identity_unverifiable")
@@ -505,6 +505,7 @@ def process_once(mkt, now=None):
                 failure_reason="exact_dispatch_claim_unavailable")
             continue
         r = dispatch_claim
+        kwargs["_retry_claim"] = dispatch_claim
         attempted += 1
         try:
             _audit_event(
@@ -514,6 +515,15 @@ def process_once(mkt, now=None):
         except Exception as e:  # noqa: BLE001
             print(f"[order_retry] retry {r.get('side')} {symbol} raised ({e}) — treating it as a failure")
             order = None
+        submitted_qty = outcome_context.get("submitted_qty")
+        if submitted_qty is not None:
+            try:
+                sq = float(submitted_qty)
+                if math.isfinite(sq) and sq > 0:
+                    r["qty"] = sq
+                    r["requested_qty_total"] = sq
+            except (TypeError, ValueError, OverflowError):
+                pass
         accepted = _accepted_order(order)
         if not accepted:
             reconciliation_state, recovered = _reconcile_client_order(
@@ -525,15 +535,6 @@ def process_once(mkt, now=None):
                 reconciled += 1
         if accepted:
             succeeded += 1
-            submitted_qty = outcome_context.get("submitted_qty")
-            if submitted_qty is not None:
-                try:
-                    sq = float(submitted_qty)
-                    if math.isfinite(sq) and sq > 0:
-                        r["qty"] = sq
-                        r["requested_qty_total"] = sq
-                except (TypeError, ValueError, OverflowError):
-                    pass
             oq.complete_claim(
                 r, "accepted", now, order=order,
                 provider_name=provider_name)

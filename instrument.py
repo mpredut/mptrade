@@ -537,6 +537,15 @@ class Instrument:
                             f"persisted before the submit ({exc})")
                         reason = "pre_submit_persist_failed"
                         return None
+                else:
+                    prequeued_claim = kwargs.get("_retry_claim")
+                    if prequeued_claim is not None:
+                        prequeued_record_id = prequeued_claim.get("id")
+                        prequeued = prequeued_claim
+                        prequeued_client_order_id = dict(
+                            prequeued.get("place_kwargs") or {}).get(
+                                "client_order_id")
+                        prequeued_intent_id = prequeued.get("intent_id")
 
                 if prequeued_intent_id:
                     _EXECUTION_AUDIT.record(
@@ -634,7 +643,7 @@ class Instrument:
                     # final check converts that race into a terminal pre-submit
                     # refusal under the producer's exact durable claim.
                     raise SubmissionRefused("execution_disabled")
-                if prequeued_claim is not None:
+                if prequeued_claim is not None and not caller_owns_retry:
                     # Revalidate exact durable ownership next to the external side
                     # effect. An expired/stolen/revision-changed claim must never
                     # race a worker or allow two provider submissions.
@@ -647,6 +656,8 @@ class Instrument:
                 reason = "submit_ambiguous"
                 submit_attempted = True
                 provider_kwargs = dict(kwargs)
+                provider_kwargs["market"] = is_market
+                provider_kwargs["force"] = is_market
                 if is_binance:
                     provider_kwargs["enforce_business_minimum"] = (
                         enforce_business_minimum)
@@ -686,7 +697,7 @@ class Instrument:
                     "accepted" if order is not None else
                     "unknown" if submit_attempted else "refused"
                 )
-                if order is not None:
+                if order is not None or submit_attempted:
                     outcome_context["submitted_qty"] = qty
                     outcome_context["submitted_price"] = price
             try:
