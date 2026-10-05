@@ -4,7 +4,7 @@ import os
 from abc import ABC, abstractmethod
 from typing import Any, List, Optional
 
-from .strategy_executor import OrderReconciliationCapabilities
+from .strategy_executor import OrderReconciliationCapabilities, ProviderError
 
 
 def env_value(folder: str, key: str) -> Optional[str]:
@@ -169,7 +169,9 @@ class MarketDataProvider(ABC):
     def last_opposite_fill(self, symbol: str, order_type: str,
                            since_s: float = 90 * 24 * 3600) -> Optional[float]:
         opposite = "SELL" if order_type.upper() == "BUY" else "BUY"
-        fills = self.get_orders(symbol, opposite, since_s) or []
+        fills = self.get_orders(symbol, opposite, since_s)
+        if fills is None:
+            raise ProviderError(f"last_opposite_fill({symbol}): failed to read order history")
         if not fills:
             return None
         latest = max(fills, key=lambda order: order.get("timestamp") or 0)

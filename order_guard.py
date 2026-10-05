@@ -384,7 +384,9 @@ def window_reference(provider, symbol, order_type, window_s):
     if not window_s or window_s <= 0:
         return None
     opp = "SELL" if order_type.upper() == "BUY" else "BUY"
-    recent = provider.get_orders(symbol, opp, window_s) or []
+    recent = provider.get_orders(symbol, opp, window_s)
+    if recent is None:
+        raise ProviderError(f"window_reference({symbol}): failed to read order history")
     prices = [float(o.get("price") or 0) for o in recent if float(o.get("price") or 0) > 0]
     if not prices:
         return None
@@ -1055,7 +1057,14 @@ def profit_guard(
                 if diff < profit_percentage:
                     # In dynamic mode, verify whether this reference actually sits within the dynamic window (dyn_window_s)
                     if hasattr(provider, "get_orders"):
-                        recent = provider.get_orders(symbol, "SELL", dyn_window_s) or []
+                        try:
+                            recent = provider.get_orders(symbol, "SELL", dyn_window_s)
+                        except ProviderError as exc:
+                            print(f"[GUARD] BUY {symbol}: dynamic window history unavailable ({exc}) -> BLOCKED")
+                            return False
+                        if recent is None:
+                            print(f"[GUARD] BUY {symbol}: dynamic window history unavailable -> BLOCKED")
+                            return False
                         recent_prices = [float(o.get("price") or 0) for o in recent if float(o.get("price") or 0) > 0]
                         if not recent_prices:
                             print(f"[GUARD] BUY {symbol}: dynamic window ({dyn_hours:.1f}h, trend='{trend}') has no fills; "

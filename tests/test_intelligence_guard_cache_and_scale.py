@@ -341,3 +341,51 @@ class TestCase5HistoryFailClosed:
 
         with pytest.raises(ProviderError, match="Network error fetching trade history"):
             order_guard.weight_limit(p, "BTCUSDC", "BUY", 100.0, 1.0, available_qty=10.0)
+
+    def test_hyperliquid_open_orders_failure_raises_provider_error(self, monkeypatch):
+        from providers.hyperliquid_provider import HyperliquidProvider
+        from providers.strategy_executor import ProviderError
+        hp = HyperliquidProvider(token="PURR")
+        monkeypatch.setattr(hp, "_hl", lambda: None)
+
+        with pytest.raises(ProviderError, match="client or pair unavailable"):
+            hp.open_orders("PURR/USDC")
+
+    def test_window_reference_and_last_opposite_fill_fail_closed_on_none_history(self):
+        from providers.strategy_executor import ProviderError
+        from providers.base import MarketDataProvider
+        class NoneHistoryProvider(MarketDataProvider):
+            @property
+            def name(self):
+                return "mock"
+            def get_current_price(self, symbol):
+                return 100.0
+            def supports_symbol(self, symbol):
+                return True
+            def get_orders(self, symbol, side, since_s):
+                return None
+
+        p = NoneHistoryProvider()
+        with pytest.raises(ProviderError, match="failed to read order history"):
+            order_guard.window_reference(p, "BTCUSDC", "BUY", 3600.0)
+
+        with pytest.raises(ProviderError, match="failed to read order history"):
+            p.last_opposite_fill("BTCUSDC", "BUY")
+
+    def test_profit_guard_dynamic_window_fails_closed_on_unavailable_history(self, monkeypatch):
+        from providers.strategy_executor import ProviderError
+        class FailingHistoryProvider:
+            name = "binance"
+            def get_orders(self, symbol, side, since_s):
+                raise ProviderError("history fetch network error")
+
+        p = FailingHistoryProvider()
+        monkeypatch.setattr(order_guard, "buy_reference_mode", lambda name: "dynamic")
+        monkeypatch.setattr(order_guard, "dynamic_buy_window_sec", lambda *a, **k: 3600.0)
+
+        # In dynamic mode, price (99.0) is below reference (100.0) with diff < threshold (1.15%),
+        # but history fetch fails. Must fail closed (False), NOT bypass anchor!
+        allowed = order_guard.profit_guard(
+            p, "BTCUSDC", "BUY", 99.0, 1.15, window_ref=100.0
+        )
+        assert allowed is False

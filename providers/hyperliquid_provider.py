@@ -284,7 +284,7 @@ class HyperliquidProvider(MarketDataProvider):
         c = self._hl()
         pair = self._pair()
         if c is None or pair is None:
-            return []
+            raise ProviderError(f"open_orders({symbol}): Hyperliquid client or pair unavailable")
         try:
             out = []
             for o in c.open_orders(pair):
@@ -295,9 +295,11 @@ class HyperliquidProvider(MarketDataProvider):
                     "timestamp": o.get("timestamp"),
                 }))
             return out
+        except ProviderError:
+            raise
         except Exception as e:  # noqa: BLE001
             print(f"[HL] open_orders({symbol}) failed: {e}")
-            return []
+            raise ProviderError(f"open_orders({symbol}): {e}") from e
 
     # -- Spot order placement, dry by default due to wallet co-mingling. --------
     def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
