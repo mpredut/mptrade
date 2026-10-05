@@ -227,5 +227,53 @@ A centralized, platform-agnostic allocation and quantity-limiting layer evaluate
      \]
    - Eliminates duplicate logic between venue drivers and unifies behavior across the fleet.
 
+## Single Source of Truth for Sizing, Pricing, and Precision (`providers/quantity.py`, `providers/base.py`)
+
+A unified, venue-agnostic execution contract eliminates duplicated formatting and rounding code across individual strategy callers:
+
+1. **Venue Precision Abstraction (`PairPrecision`)**:
+   - Encapsulated in the immutable `PairPrecision` dataclass (`price_decimals`, `volume_decimals`, `order_min`, `base_asset`).
+   - Every provider implements `pair_precision(symbol)` and standard rounding helpers:
+     - `round_quantity(symbol, qty)`: floors quantity to the venue's step/lot size, guaranteeing the order never breaches available account balance.
+     - `round_price(symbol, price)`: rounds limit price to the venue's tick size/price decimals, preventing exchange tick-rejection errors.
+     - `order_filter_refusal(symbol, side, price, qty)`: preflights minimum order size and notional limits before order dispatch.
+     - `min_order_qty(symbol)`: returns minimum allowable order quantity.
+   - Delegated transparently by the top-level `MarketApi` facade (`market_api.round_quantity`, `market_api.round_price`).
+
+2. **Autonomous Quantity Decision Flow (`qty=None` Contract)**:
+   - Callers/strategies simply declare their trading intent (`side="BUY"` / `"SELL"`), optionally specifying a target or limit price, leaving `qty=None`.
+   - `Instrument.place` passes `qty=None` into `decide_quantity(...)`, where `requested` defaults to `+inf`:
+     - **`balance_cap`**: reads available free balance from the venue (`quote` currency on BUY, `base` asset on SELL).
+     - **`policy_cap`**: applies portfolio allocation and weight bounds.
+     - **`fee_cap`**: reserves balance for exchange trading fees.
+     - **Raw Sizing**: computes `min(balance_cap, policy_cap, fee_cap)`.
+     - **Market Intelligence Scaling**: dynamically modulates BUY sizing via `intelligence.compute_combined_scale(regime_context)` (e.g., scaling down to 0.5x or 0.25x in adverse regime states).
+     - **Precision Truncation**: rounds to venue decimal precision via `round_quantity`.
+     - **Filter Guard**: validates lot size and notional constraints via `order_filter_refusal`.
+   - If a caller supplies an explicit `qty`, it acts strictly as an upper bound (`requested`) and remains bounded by balance and risk guards.
+
+3. **Automatic Price Tick Rounding in `Instrument.place`**:
+   - All non-market (limit) orders pass automatically through `provider.round_price` before guards, order persistence, and venue submission. Callers never need manual `round(price, N)` calls.
+
+4. **Order Retry Worker Quantity Synchronization**:
+   - In flight intent claims are updated atomically with the downscaled, guard-adjusted quantity before submission, ensuring retries and outbox tracking never retain stale or un-scaled sizes.
+
+## Single Source of Truth for Fleet Registry and Modular Monitoring
+
+1. **Fleet Registry Architecture (`instruments.conf`)**:
+   - `instruments.conf` is the solitary source of truth for instrument configuration across the fleet (Binance, Kraken, Hyperliquid, Trading212).
+   - Defines symbols, asset pairs, market hours, isolation modes, operational roles (`role.mt`, `role.tradeall_fire`, `role.trailing`, `role.assetguardian`, `role.force_sell`), and per-coin parameters (trailing stop percentages, buy/max budgets).
+   - Loaded and validated strictly via `instrument_registry.py` (`load_registry`, `select_instruments`, `symbols_for`, `single_symbol_for`).
+
+2. **Lightweight Compatibility Facade (`symbols.py`)**:
+   - `symbols.py` serves strictly as an import-light compatibility facade over `instrument_registry.py`, reading dynamically from `instruments.conf`.
+   - Avoids pulling in heavy network clients or creating circular import chains across legacy callers.
+   - Dynamic attribute resolution (`__getattr__`) maps any `<coin>symbol` dynamically against the registry.
+
+3. **Active Modular Price Monitoring and State Ownership**:
+   - Multi-source price aggregation, caching, and rate-limited polling are modularized in `market_monitor/pricefetcher.py`.
+   - 24-hour spike/drop anomaly detection and alert cooldowns reside in `market_monitor/pricechecker.py`.
+   - AssetGuardian position tracking and re-arm thresholds are managed exclusively by `AssetGuardianState` in `assetguardian.py`, persisted atomically with fail-closed concurrency locking in `cachedb/assetguardian_state.json`.
+
 
 
