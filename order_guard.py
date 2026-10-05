@@ -244,7 +244,10 @@ def _symbol_trend(
     if regime_context is not None:
         max_age = _load_margins().get("regime_context_max_age_sec", 120.0)
         if hasattr(regime_context, "is_valid_for"):
-            if regime_context.is_valid_for(symbol=symbol, provider=provider, max_age_seconds=max_age, now=now):
+            if regime_context.is_valid_for(
+                symbol=symbol, provider=provider, max_age_seconds=max_age, now=now,
+                require_identity=True,
+            ):
                 return regime_context.resolved_trend
         else:
             return regime_context.resolved_trend
@@ -304,7 +307,10 @@ def dynamic_buy_window_sec(
     trend = resolved_trend
     if trend is None and regime_context is not None:
         max_age = _load_margins().get("regime_context_max_age_sec", 120.0)
-        if not hasattr(regime_context, "is_valid_for") or regime_context.is_valid_for(symbol=symbol, provider=provider, max_age_seconds=max_age, now=now):
+        if not hasattr(regime_context, "is_valid_for") or regime_context.is_valid_for(
+            symbol=symbol, provider=provider, max_age_seconds=max_age, now=now,
+            require_identity=True,
+        ):
             trend = getattr(regime_context, "resolved_trend", None)
     if trend not in {"bull", "bear", "flat", "sideways", "unknown"}:
         trend = (
@@ -620,28 +626,67 @@ def _resolve_trend_duration(symbol: str) -> float:
 
 
 def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> Optional[List[Tuple[float, float]]]:
-    """Read rolling price history from local cache for parabolic surge evaluation."""
-    try:
-        p = "cachedb/cache_prices_multi.json"
-        if not os.path.exists(p):
-            return None
-        with open(p, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        raw_items = data.get("items", {}).get(symbol.upper(), [])
-        if not raw_items:
-            return None
-        now_ts = time.time()
-        cutoff_ts = now_ts - window_seconds
-        history: List[Tuple[float, float]] = []
-        for item in raw_items:
-            if isinstance(item, (list, tuple)) and len(item) >= 2:
-                ts_raw = float(item[0])
-                ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
-                if ts_sec >= cutoff_ts:
-                    history.append((ts_sec, float(item[1])))
-        return history if history else None
-    except Exception:
-        return None
+    """Read rolling price history from local cache for parabolic surge evaluation.
+
+    Prefers the authoritative 24h per-symbol cache (cachedb/cache_24price_{symbol}.json)
+    which captures every high-resolution tick, and falls back to cache_prices_multi.json
+    with base-symbol prefix matching for cross-venue assets (e.g. HYPE on Kraken).
+    """
+    su = (symbol or "").strip().upper()
+    now_ts = time.time()
+    cutoff_ts = now_ts - window_seconds
+    history: List[Tuple[float, float]] = []
+
+    # 1. Primary: dedicated 24h cache (cache_24price_{symbol}.json)
+    p24 = os.path.join("cachedb", f"cache_24price_{su}.json")
+    if os.path.exists(p24):
+        try:
+            with open(p24, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            raw_items = data.get("items", {}).get(su, [])
+            for item in raw_items:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    try:
+                        ts_raw = float(item[0])
+                        ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
+                        px = float(item[1])
+                        if ts_sec >= cutoff_ts and px > 0:
+                            history.append((ts_sec, px))
+                    except (ValueError, TypeError):
+                        continue
+        except Exception:
+            pass
+
+    # 2. Fallback: shared multi-symbol cache (cache_prices_multi.json)
+    if not history:
+        p_multi = os.path.join("cachedb", "cache_prices_multi.json")
+        if os.path.exists(p_multi):
+            try:
+                with open(p_multi, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                all_items = data.get("items", {})
+                raw_items = all_items.get(su)
+                if not raw_items:
+                    # Support base asset keys (e.g. HYPE for HYPEUSD or HYPEUSDC)
+                    for k, v in all_items.items():
+                        if k and (k in su or su.startswith(k)):
+                            raw_items = v
+                            break
+                if raw_items:
+                    for item in raw_items:
+                        if isinstance(item, (list, tuple)) and len(item) >= 2:
+                            try:
+                                ts_raw = float(item[0])
+                                ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
+                                px = float(item[1])
+                                if ts_sec >= cutoff_ts and px > 0:
+                                    history.append((ts_sec, px))
+                            except (ValueError, TypeError):
+                                continue
+            except Exception:
+                pass
+
+    return history if history else None
 
 
 def check_intelligence_guards(
@@ -752,12 +797,14 @@ def check_intelligence_guards(
     if gemini_mode not in ("off", "0", "disabled"):
         min_notional = float(m.get("gemini_min_notional_eur", 1000.0))
         if computed_notional is not None and computed_notional >= min_notional:
-            cached_gemini_notional = getattr(regime_context, "_intelligence_notional", None)
+            cached_gemini_notional = getattr(regime_context, "_gemini_evaluated_notional", None)
+            if cached_gemini_notional is None:
+                cached_gemini_notional = getattr(regime_context, "_intelligence_notional", None)
             notional_jump = (
                 cached_gemini_notional is not None
                 and (computed_notional - cached_gemini_notional) / max(cached_gemini_notional, 1.0) > 0.20
             )
-            # If notional wasn't evaluated for high-stake in cached_res, or has jumped significantly (>20%), re-evaluate now
+            # If notional wasn't evaluated for high-stake in cached_res, or has jumped significantly (>20%) from evaluated baseline, re-evaluate now
             if cached_gemini_notional is None or cached_gemini_notional < min_notional or notional_jump:
                 from intelligence.internal.guards.guard_decision import BrakeAction
                 from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
@@ -765,6 +812,11 @@ def check_intelligence_guards(
                 fallback = str(m.get("gemini_fallback", "allow")).strip().lower()
                 g_guard = GeminiHighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
                 g_dec = g_guard.check(symbol, side, price, qty if qty is not None else 1.0, notional_eur=computed_notional)
+                if valid_context:
+                    try:
+                        object.__setattr__(regime_context, "_gemini_evaluated_notional", computed_notional)
+                    except Exception:
+                        pass
                 if not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                     prefix = "[GEMINI_GUARD_SHADOW]" if gemini_mode == "shadow" else "[GEMINI_GUARD_ENFORCE]"
                     print(f"{prefix} {side} {symbol} €{computed_notional:.2f}: {g_dec.reason} (brake={g_dec.brake_action}, suggested_scale={g_dec.suggested_scale})")
@@ -870,6 +922,11 @@ def _evaluate_intelligence_guards_raw(
             fallback = str(m.get("gemini_fallback", "allow")).strip().lower()
             g_guard = GeminiHighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
             g_dec = g_guard.check(symbol, side, price, qty if qty is not None else 1.0, notional_eur=computed_notional)
+            if regime_context is not None:
+                try:
+                    object.__setattr__(regime_context, "_gemini_evaluated_notional", computed_notional)
+                except Exception:
+                    pass
             if not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                 prefix = "[GEMINI_GUARD_SHADOW]" if gemini_mode == "shadow" else "[GEMINI_GUARD_ENFORCE]"
                 print(f"{prefix} {side} {symbol} €{computed_notional:.2f}: {g_dec.reason} (brake={g_dec.brake_action}, suggested_scale={g_dec.suggested_scale})")
@@ -1065,13 +1122,20 @@ def profit_guard(
                     if hasattr(provider, "get_orders"):
                         try:
                             recent = provider.get_orders(symbol, "SELL", dyn_window_s)
-                        except ProviderError as exc:
+                        except (ProviderError, Exception) as exc:
                             print(f"[GUARD] BUY {symbol}: dynamic window history unavailable ({exc}) -> BLOCKED")
                             return False
                         if recent is None:
                             print(f"[GUARD] BUY {symbol}: dynamic window history unavailable -> BLOCKED")
                             return False
-                        recent_prices = [float(o.get("price") or 0) for o in recent if float(o.get("price") or 0) > 0]
+                        recent_prices = []
+                        for o in recent:
+                            try:
+                                px = float(o.get("price", 0.0) or 0.0)
+                                if px > 0:
+                                    recent_prices.append(px)
+                            except (ValueError, TypeError):
+                                continue
                         if not recent_prices:
                             print(f"[GUARD] BUY {symbol}: dynamic window ({dyn_hours:.1f}h, trend='{trend}') has no fills; "
                                   f"anchor {window_ref} from older period bypassed")

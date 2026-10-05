@@ -160,10 +160,11 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
 
     # Market-intelligence quantity scaling (e.g. Weibull trend exhaustion, derivatives crowding)
     # Applied per-order without mutating the shared market context.
+    # Exclusively applies to BUY entries; exits and SELL orders must never be shrunk by entry risk guards.
     scale_applied = False
     applied_scale = 1.0
     effective_scale = scale
-    if effective_scale is None and regime_context is not None:
+    if effective_scale is None and regime_context is not None and str(side).upper() == "BUY":
         effective_scale = getattr(regime_context, "suggested_scale", None)
 
     if (

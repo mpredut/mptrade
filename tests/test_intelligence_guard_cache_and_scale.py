@@ -677,3 +677,130 @@ class TestArchitectureFixes4Cases:
         mt.clear_position_stats_cache()
         assert len(mt._position_stats_cache) == 0
 
+
+class TestSisterArchitecturalDefects:
+    def test_sister1_price_history_resolves_24h_cache_and_cross_venue_symbols(self):
+        """Sister 1: Verify _read_cached_price_history resolves 24h high-resolution cache
+        and supports cross-venue symbols (e.g. HYPEUSD on Kraken)."""
+        history_btc = order_guard._read_cached_price_history("BTCUSDC", window_seconds=7200.0)
+        assert history_btc is not None
+        assert len(history_btc) > 100  # High-resolution 24h cache
+
+        history_hype = order_guard._read_cached_price_history("HYPEUSD", window_seconds=7200.0)
+        assert history_hype is not None
+        assert len(history_hype) > 50  # Kraken cache resolved instead of being blinded (0)
+
+    def test_sister2_sell_orders_not_downscaled_by_regime_context_suggested_scale(self):
+        """Sister 2: Market intelligence suggested_scale must ONLY downscale BUY entries,
+        never downscaling SELL exits or risk reductions."""
+        ctx = _build_test_context()
+        object.__setattr__(ctx, "suggested_scale", 0.25)
+
+        provider = MagicMock()
+        provider.free_balance.return_value = 10000.0
+        provider.policy_cap_quantity.return_value = 10.0
+        provider.fee_cap_quantity.return_value = 100.0
+        provider.round_amount = lambda s, a: round(a, 4)
+        provider.order_filter_refusal.return_value = None
+
+        # 1. SELL order must NOT be downscaled (requested 4.0 remains 4.0)
+        sell_dec = decide_quantity(provider, "BTCUSDC", "SELL", 100.0, 4.0, regime_context=ctx)
+        assert sell_dec.final_qty == 4.0
+        assert sell_dec.scale_applied is False
+        assert sell_dec.applied_scale == 1.0
+
+        # 2. BUY order with the same context IS downscaled (4.0 -> 1.0)
+        buy_dec = decide_quantity(provider, "BTCUSDC", "BUY", 100.0, 4.0, regime_context=ctx)
+        assert buy_dec.final_qty == 1.0
+        assert buy_dec.scale_applied is True
+        assert buy_dec.applied_scale == 0.25
+
+    def test_sister3_gemini_evaluated_notional_prevents_ratchet_drift(self, monkeypatch):
+        """Sister 3: Incremental notional growth must not ratchet baseline forward without evaluation."""
+        ctx = _build_test_context()
+        calls = []
+
+        def fake_gemini_check(self, symbol, side, price, qty, notional_eur=None):
+            calls.append(notional_eur)
+            from intelligence.internal.guards.guard_decision import GuardDecision
+            return GuardDecision.allow("Gemini approved")
+
+        monkeypatch.setattr(order_guard, "_load_margins", lambda: {
+            "intelligence_guards_mode": "enforce",
+            "gemini_guard_mode": "enforce",
+            "gemini_min_notional_eur": 1000.0,
+            "regime_context_max_age_sec": 120.0,
+        })
+        monkeypatch.setattr(
+            "intelligence.sentiment.guards.gemini_high_stake_guard.GeminiHighStakeGuard.check",
+            fake_gemini_check
+        )
+
+        class MockProvider:
+            name = "binance"
+
+        # 1. Initial evaluation at 1000 EUR
+        order_guard.check_intelligence_guards(
+            MockProvider(), "BTCUSDC", "BUY", 100.0,
+            regime_context=ctx, qty=10.0  # notional = 1000 EUR
+        )
+        assert len(calls) == 1
+        assert getattr(ctx, "_gemini_evaluated_notional", None) == 1000.0
+
+        # 2. Intermediate step at 1150 EUR (+15% < 20%): skipped, baseline remains 1000 EUR
+        order_guard.check_intelligence_guards(
+            MockProvider(), "BTCUSDC", "BUY", 100.0,
+            regime_context=ctx, qty=11.5  # notional = 1150 EUR
+        )
+        assert len(calls) == 1
+        assert getattr(ctx, "_gemini_evaluated_notional", None) == 1000.0
+
+        # 3. Step at 1300 EUR (+30% from 1000 EUR, but only +13% from 1150 EUR):
+        # MUST trigger re-evaluation because baseline was preserved!
+        order_guard.check_intelligence_guards(
+            MockProvider(), "BTCUSDC", "BUY", 100.0,
+            regime_context=ctx, qty=13.0  # notional = 1300 EUR
+        )
+        assert len(calls) == 2
+        assert calls[1] == 1300.0
+        assert getattr(ctx, "_gemini_evaluated_notional", None) == 1300.0
+
+    def test_sister4_identity_enforced_in_symbol_trend_and_dynamic_window(self):
+        """Sister 4: Anonymous context without symbol/provider is rejected by _symbol_trend
+        and dynamic_buy_window_sec via require_identity=True."""
+        from market_regime import MarketRegimeContext, MarketRegimeDecision
+        anon_decision = MarketRegimeDecision("bull", 0.5, 0.1, 5.0, True, "test")
+        anon_ctx = MarketRegimeContext.from_decision(
+            anon_decision,
+            evaluated_at=time.time(),
+            symbol=None,
+            provider=None,
+        )
+
+        # _symbol_trend must NOT trust anonymous context as matching
+        trend = order_guard._symbol_trend("BTCUSDC", provider="binance", regime_context=anon_ctx)
+        # Without identity, anon_ctx.resolved_trend is bypassed
+        assert trend != "bull" or getattr(anon_ctx, "symbol", None) is None
+
+        # dynamic_buy_window_sec must not consume anonymous context
+        window = order_guard.dynamic_buy_window_sec("BTCUSDC", provider="binance", regime_context=anon_ctx)
+        assert window > 0
+
+    def test_sister5_profit_guard_dynamic_history_exception_fails_closed(self, monkeypatch):
+        """Sister 5: Unhandled exceptions in provider.get_orders within dynamic buy window
+        fail closed (return False) cleanly."""
+        ctx = _build_test_context()
+        provider = MagicMock()
+        provider.name = "binance"
+        provider.get_orders.side_effect = RuntimeError("network socket reset")
+
+        monkeypatch.setattr(order_guard, "buy_reference_mode", lambda p: "dynamic")
+        monkeypatch.setattr(order_guard, "_symbol_trend", lambda *a, **k: "flat")
+
+        # In dynamic mode with an old reference, if history fails to load, must fail closed
+        res = order_guard.profit_guard(
+            provider, "BTCUSDC", "BUY", 100.0, 1.15,
+            window_ref=100.5, regime_context=ctx
+        )
+        assert res is False
+

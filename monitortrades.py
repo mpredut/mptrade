@@ -228,11 +228,11 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
             if cached_sig == entry_sig and (now_ts - cached_time) < _POSITION_CACHE_HEARTBEAT_SEC:
                 return dict(cached_val)
 
-    total_buy_qty = sum(float(o['qty']) for o in buy_orders)
-    total_sell_qty = sum(float(o['qty']) for o in sell_orders)
+    total_buy_qty = sum(float(o.get('qty', o.get('quantity', 0.0)) or 0.0) for o in buy_orders)
+    total_sell_qty = sum(float(o.get('qty', o.get('quantity', 0.0)) or 0.0) for o in sell_orders)
 
-    total_buy_value = sum(float(o['price']) * float(o['qty']) for o in buy_orders)
-    total_sell_value = sum(float(o['price']) * float(o['qty']) for o in sell_orders)
+    total_buy_value = sum(float(o.get('price', 0.0) or 0.0) * float(o.get('qty', o.get('quantity', 0.0)) or 0.0) for o in buy_orders)
+    total_sell_value = sum(float(o.get('price', 0.0) or 0.0) * float(o.get('qty', o.get('quantity', 0.0)) or 0.0) for o in sell_orders)
 
     average_buy_price = (
         total_buy_value / total_buy_qty
