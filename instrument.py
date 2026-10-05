@@ -356,6 +356,15 @@ class Instrument:
                 price = self._provider.adjust_order_price(
                     self.symbol, side_u, price,
                     cancel_opposite=not is_binance)
+            if not is_market and price is not None:
+                round_px = getattr(self._provider, "round_price", None)
+                if callable(round_px):
+                    try:
+                        px_f = float(round_px(self.symbol, price))
+                        if math.isfinite(px_f) and px_f > 0:
+                            price = px_f
+                    except (TypeError, ValueError):
+                        pass
 
             # 1. Provider-agnostic daily cap and anti-spam, never bypassed.
             ok, reason = order_guard.daily_limit_guard(self._provider, self.symbol, side_u,

@@ -364,6 +364,15 @@ class BinanceProvider(MarketDataProvider):
     def round_amount(self, symbol: str, qty: float) -> float:
         return self.round_quantity(symbol, qty)
 
+    def round_price(self, symbol: str, price: float) -> float:
+        try:
+            pp = self.pair_precision(symbol)
+            if pp is not None and pp.price_decimals >= 0:
+                return round(float(price), pp.price_decimals)
+        except Exception:
+            pass
+        return super().round_price(symbol, price)
+
     def order_filter_refusal(self, symbol: str, side: str, price: float,
                              qty: float, *, market: bool = False,
                              enforce_business_minimum: bool = True
@@ -1091,6 +1100,12 @@ class MarketApi:
 
     def round_amount(self, symbol: str, qty: float, provider_name=None) -> float:
         return self.round_quantity(symbol, qty, provider_name=provider_name)
+
+    def round_price(self, symbol: str, price: float, provider_name=None) -> float:
+        provider = self._provider_explicit_or_routed(symbol, provider_name)
+        if hasattr(provider, "round_price"):
+            return provider.round_price(symbol, price)
+        return float(price)
 
     def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
         # Mechanics-only provider dispatch without guards. Real placement must use

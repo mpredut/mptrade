@@ -145,6 +145,18 @@ class MarketDataProvider(ABC):
         """Backward-compatible alias for round_quantity."""
         return self.round_quantity(symbol, qty)
 
+    def round_price(self, symbol: str, price: float) -> float:
+        """Round price to venue price precision (tick size / price decimals)."""
+        try:
+            pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
+            if pp is not None and getattr(pp, "price_decimals", None) is not None:
+                dec = int(pp.price_decimals)
+                if dec >= 0:
+                    return round(float(price), dec)
+        except Exception:
+            pass
+        return float(price)
+
     def min_order_qty(self, symbol: str) -> float:
         """Return venue minimum order quantity; 0.0 means no known minimum."""
         try:

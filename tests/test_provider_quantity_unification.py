@@ -56,6 +56,7 @@ class TestProviderQuantityPrecision(unittest.TestCase):
         self.assertEqual(p.min_order_qty("TESTUSDC"), 0.1)
         self.assertAlmostEqual(p.round_quantity("TESTUSDC", 1.239), 1.23, places=6)
         self.assertAlmostEqual(p.round_amount("TESTUSDC", 1.239), 1.23, places=6)
+        self.assertAlmostEqual(p.round_price("TESTUSDC", 10.126), 10.13, places=6)
 
         # Filter refusal catches dust
         self.assertIn("filter_lot_size_min", p.order_filter_refusal("TESTUSDC", "BUY", 10.0, 0.05) or "")
@@ -80,6 +81,7 @@ class TestProviderQuantityPrecision(unittest.TestCase):
 
         # Rounding floors to 4 decimals
         self.assertAlmostEqual(p.round_quantity("ETHUSD", 0.12349), 0.1234, places=6)
+        self.assertAlmostEqual(p.round_price("ETHUSD", 3000.126), 3000.13, places=6)
 
         # Filter catches dust < 0.01
         refusal = p.order_filter_refusal("ETHUSD", "BUY", 3000.0, 0.005)
@@ -104,6 +106,7 @@ class TestProviderQuantityPrecision(unittest.TestCase):
         self.assertIsNotNone(pp)
         self.assertEqual(pp.volume_decimals, 2)
         self.assertAlmostEqual(p.round_quantity("PURR/USDC", 5.678), 5.67, places=6)
+        self.assertAlmostEqual(p.round_price("PURR/USDC", 1.23456789), 1.234568, places=6)
 
         # preflight_order with qty=None passes safely
         p.preflight_order("PURR/USDC", "BUY", None)
@@ -117,6 +120,7 @@ class TestProviderQuantityPrecision(unittest.TestCase):
         self.assertEqual(pp.order_min, 0.01)
 
         self.assertAlmostEqual(p.round_quantity("AAPL_US_EQ", 3.456), 3.45, places=6)
+        self.assertAlmostEqual(p.round_price("AAPL_US_EQ", 150.126), 150.13, places=6)
         self.assertIn("filter_lot_size_min", p.order_filter_refusal("AAPL_US_EQ", "BUY", 150.0, 0.005) or "")
         self.assertIsNone(p.order_filter_refusal("AAPL_US_EQ", "BUY", 150.0, 0.05))
 
@@ -127,6 +131,7 @@ class TestProviderQuantityPrecision(unittest.TestCase):
         self.assertIsNotNone(pp)
         self.assertEqual(pp.volume_decimals, 4)
         self.assertAlmostEqual(p.round_quantity("BTCUSDC", 0.12349), 0.1234, places=6)
+        self.assertAlmostEqual(p.round_price("BTCUSDC", 50000.126), 50000.13, places=6)
 
     def test_market_data_registry_delegates_precision_methods(self):
         """Verify MarketApi forwards pair_precision, min_order_qty, round_quantity."""
@@ -139,6 +144,7 @@ class TestProviderQuantityPrecision(unittest.TestCase):
         self.assertEqual(registry.min_order_qty("TESTUSDC"), 0.02)
         self.assertAlmostEqual(registry.round_quantity("TESTUSDC", 1.9876), 1.987, places=6)
         self.assertAlmostEqual(registry.round_amount("TESTUSDC", 1.9876), 1.987, places=6)
+        self.assertAlmostEqual(registry.round_price("TESTUSDC", 10.126), 10.13, places=6)
 
 
 class TestQuantityDecisionAndAvailableBalance(unittest.TestCase):
