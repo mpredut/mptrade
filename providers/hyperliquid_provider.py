@@ -255,6 +255,8 @@ class HyperliquidProvider(MarketDataProvider):
             fills = c.info.user_fills(addr)
             if fills is None:
                 raise ProviderError(f"get_orders({symbol}): user_fills returned None")
+            if not isinstance(fills, list):
+                raise ProviderError(f"get_orders({symbol}): user_fills returned unexpected type {type(fills).__name__}")
             for f in fills:
                 if f.get("coin") != pair:        # Spot pair only; exclude perpetual HYPE.
                     continue
@@ -287,7 +289,12 @@ class HyperliquidProvider(MarketDataProvider):
             raise ProviderError(f"open_orders({symbol}): Hyperliquid client or pair unavailable")
         try:
             out = []
-            for o in c.open_orders(pair):
+            orders = c.open_orders(pair)
+            if orders is None or not isinstance(orders, list):
+                raise ProviderError(
+                    f"open_orders({symbol}): open_orders returned unexpected type {type(orders).__name__ if orders is not None else 'None'}"
+                )
+            for o in orders:
                 out.append(_normalize_order({
                     "side": "BUY" if (o.get("side") == "B") else "SELL",
                     "price": o.get("limitPx"),

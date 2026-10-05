@@ -389,3 +389,130 @@ class TestCase5HistoryFailClosed:
             p, "BTCUSDC", "BUY", 99.0, 1.15, window_ref=100.0
         )
         assert allowed is False
+
+    def test_kraken_fills_from_api_fails_closed_on_missing_or_invalid_payload(self):
+        from providers.kraken_provider import KrakenProvider
+        from providers.strategy_executor import ProviderError
+        from unittest.mock import MagicMock
+
+        fake_client = MagicMock()
+        kp = KrakenProvider(client=fake_client)
+
+        # 1. Missing trades in payload
+        fake_client._private.return_value = {}
+        with pytest.raises(ProviderError, match="trades history payload missing or invalid"):
+            kp._fills_from_api("BTCUSDC")
+
+        # 2. Trades is not a dict
+        fake_client._private.return_value = {"trades": "invalid"}
+        with pytest.raises(ProviderError, match="trades mapping in payload is invalid"):
+            kp._fills_from_api("BTCUSDC")
+
+    def test_kraken_cancel_order_fails_closed_on_missing_or_zero_count(self):
+        from providers.kraken_provider import KrakenProvider
+        from providers.strategy_executor import ProviderError
+        from unittest.mock import MagicMock
+
+        fake_client = MagicMock()
+        kp = KrakenProvider(client=fake_client)
+
+        # 1. Missing count in result
+        fake_client.cancel_order.return_value = {}
+        with pytest.raises(ProviderError, match="missing count in Kraken response"):
+            kp.cancel_order_by_id("HYPEUSD", "ORD-123")
+
+        # 2. Zero count
+        fake_client.cancel_order.return_value = {"count": 0}
+        with pytest.raises(ProviderError, match="did not confirm the cancellation"):
+            kp.cancel_order_by_id("HYPEUSD", "ORD-123")
+
+    def test_hyperliquid_fails_closed_on_invalid_user_fills_or_open_orders_type(self, monkeypatch):
+        from providers.hyperliquid_provider import HyperliquidProvider
+        from providers.strategy_executor import ProviderError
+        from unittest.mock import MagicMock
+
+        monkeypatch.setenv("HL_ACCOUNT_ADDRESS", "0x1234567890abcdef")
+        fake_client = MagicMock()
+        fake_client.info.user_fills.return_value = {"error": "rate limited"}
+        fake_client.open_orders.return_value = None
+
+        hp = HyperliquidProvider()
+        monkeypatch.setattr(hp, "_hl", lambda: fake_client)
+        monkeypatch.setattr(hp, "_pair", lambda: "HYPE/USDC")
+
+        # user_fills returning dict instead of list
+        with pytest.raises(ProviderError, match="user_fills returned unexpected type"):
+            hp.get_orders("HYPEUSDC", "BUY", 3600.0)
+
+        # open_orders returning None instead of list
+        with pytest.raises(ProviderError, match="open_orders returned unexpected type"):
+            hp.open_orders("HYPEUSDC")
+
+    def test_binance_open_orders_fails_closed_on_none(self, monkeypatch):
+        from providers.market_api import BinanceProvider
+        from providers.strategy_executor import ProviderError
+        from unittest.mock import MagicMock
+
+        bp = BinanceProvider()
+        fake_bapi = MagicMock()
+        fake_bapi.client.get_open_orders.return_value = None
+        monkeypatch.setattr("providers.market_api._get_bapi", lambda: fake_bapi)
+
+        with pytest.raises(ProviderError, match="received None from Binance client"):
+            bp.open_orders("BTCUSDC")
+
+    def test_gemini_high_stake_reevaluated_on_notional_jump(self, monkeypatch):
+        from market_regime import MarketRegimeContext, MarketRegimeDecision
+        from intelligence.internal.guards.guard_decision import GuardDecision
+
+        # Initial context evaluated at 1000 EUR
+        ctx = MarketRegimeContext.from_decision(
+            MarketRegimeDecision("sideways", 0.0, 0.01, 0.0, True, "test"),
+            evaluated_at=time.time(),
+            symbol="BTCUSDC",
+            provider="binance",
+            trend_duration_seconds=3600.0,
+        )
+
+        calls = []
+        def fake_gemini_check(self, symbol, side, price, qty, notional_eur=None):
+            calls.append(notional_eur)
+            return GuardDecision.allow("Gemini approved")
+
+        monkeypatch.setattr("order_guard._load_margins", lambda: {
+            "intelligence_guards_mode": "enforce",
+            "gemini_guard_mode": "enforce",
+            "gemini_min_notional_eur": 1000.0,
+            "regime_context_max_age_sec": 120.0,
+        })
+        monkeypatch.setattr(
+            "intelligence.sentiment.guards.gemini_high_stake_guard.GeminiHighStakeGuard.check",
+            fake_gemini_check
+        )
+
+        class MockProvider:
+            name = "binance"
+
+        # 1. First evaluation at notional 1000 EUR
+        order_guard.check_intelligence_guards(
+            MockProvider(), "BTCUSDC", "BUY", 100.0,
+            regime_context=ctx, qty=10.0  # notional = 1000 EUR
+        )
+        assert len(calls) == 1
+        assert calls[0] == 1000.0
+
+        # 2. Second evaluation with identical notional -> cached, no new call
+        order_guard.check_intelligence_guards(
+            MockProvider(), "BTCUSDC", "BUY", 100.0,
+            regime_context=ctx, qty=10.0  # notional = 1000 EUR
+        )
+        assert len(calls) == 1
+
+        # 3. Third evaluation with notional jumping to 1500 EUR (+50% > 20%) -> triggers re-evaluation!
+        order_guard.check_intelligence_guards(
+            MockProvider(), "BTCUSDC", "BUY", 100.0,
+            regime_context=ctx, qty=15.0  # notional = 1500 EUR
+        )
+        assert len(calls) == 2
+        assert calls[1] == 1500.0
+

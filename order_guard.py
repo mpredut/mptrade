@@ -754,8 +754,12 @@ def check_intelligence_guards(
         min_notional = float(m.get("gemini_min_notional_eur", 1000.0))
         if computed_notional is not None and computed_notional >= min_notional:
             cached_gemini_notional = getattr(regime_context, "_intelligence_notional", None)
-            # If notional wasn't evaluated for high-stake in cached_res, re-evaluate now
-            if cached_gemini_notional is None or cached_gemini_notional < min_notional:
+            notional_jump = (
+                cached_gemini_notional is not None
+                and (computed_notional - cached_gemini_notional) / max(cached_gemini_notional, 1.0) > 0.20
+            )
+            # If notional wasn't evaluated for high-stake in cached_res, or has jumped significantly (>20%), re-evaluate now
+            if cached_gemini_notional is None or cached_gemini_notional < min_notional or notional_jump:
                 from intelligence.internal.guards.guard_decision import BrakeAction
                 from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
                 timeout_sec = float(m.get("gemini_timeout_sec", 12.0))

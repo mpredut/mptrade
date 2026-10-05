@@ -443,16 +443,26 @@ class Instrument:
             # already known to be unprofitable. It is repeated at the final dispatch
             # boundary because cooldown, persistence, and cache validation can take
             # long enough for a market quote to move.
-            if not bypass and not bypass_profit_reference and is_market:
-                guard_price = quantity_price
-                ok = order_guard.profit_guard(
-                    self._provider, self.symbol, side_u, guard_price, profit_margin,
-                    window_ref=profit_window_ref, regime_context=regime_context,
-                    qty=qty,
-                )
-                if not ok:
-                    reason = "profit_guard"
-                    return None
+            if not bypass and not bypass_profit_reference:
+                if is_market:
+                    guard_price = quantity_price
+                    ok = order_guard.profit_guard(
+                        self._provider, self.symbol, side_u, guard_price, profit_margin,
+                        window_ref=profit_window_ref, regime_context=regime_context,
+                        qty=qty,
+                    )
+                    if not ok:
+                        reason = "profit_guard"
+                        return None
+                elif orig_qty is None and qty > 0:
+                    ok = order_guard.profit_guard(
+                        self._provider, self.symbol, side_u, price, profit_margin,
+                        window_ref=profit_window_ref, regime_context=regime_context,
+                        qty=qty,
+                    )
+                    if not ok:
+                        reason = "profit_guard"
+                        return None
 
             # 3. Provider-agnostic rapid-fire cooldown shared with Binance. Keys are
             # symbols, preventing collisions between different venues.

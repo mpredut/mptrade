@@ -328,7 +328,11 @@ class KrakenProvider(MarketDataProvider):
         """Fall back to direct TradesHistory, matching pre-cachemanager behavior."""
         cli = self._client()
         res = cli._private("TradesHistory")
-        trades = (res or {}).get("trades", {}) or {}
+        if not isinstance(res, dict) or "trades" not in res:
+            raise ProviderError(f"TradesHistory({symbol}): trades history payload missing or invalid")
+        trades = res.get("trades")
+        if not isinstance(trades, dict):
+            raise ProviderError(f"TradesHistory({symbol}): trades mapping in payload is invalid")
         su = symbol.upper()
         rows = []
         for tr in trades.values():
@@ -498,16 +502,19 @@ class KrakenProvider(MarketDataProvider):
             if "unknown order" in msg or "already" in msg:
                 return                       # Idempotent: already closed or canceled.
             raise ProviderError(f"cancel_order {order_id}: {e}") from e
-        if "count" in result:
-            try:
-                if int(result["count"]) < 1:
-                    raise ProviderError(
-                        f"cancel_order {order_id}: Kraken did not confirm the cancellation"
-                    )
-            except (TypeError, ValueError) as e:
+        if not isinstance(result, dict) or "count" not in result:
+            raise ProviderError(
+                f"cancel_order {order_id}: missing count in Kraken response ({result})"
+            )
+        try:
+            if int(result["count"]) < 1:
                 raise ProviderError(
-                    f"cancel_order {order_id}: invalid response ({result})"
-                ) from e
+                    f"cancel_order {order_id}: Kraken did not confirm the cancellation"
+                )
+        except (TypeError, ValueError) as e:
+            raise ProviderError(
+                f"cancel_order {order_id}: invalid response ({result})"
+            ) from e
 
     def cancel_order(self, symbol: str, order_id: str) -> None:  # contract StrategyExecutor
         self.cancel_order_by_id(symbol, order_id)

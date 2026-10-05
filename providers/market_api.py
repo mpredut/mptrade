@@ -177,7 +177,11 @@ class BinanceProvider(MarketDataProvider):
 
     def open_orders(self, symbol: str) -> List[dict]:
         try:
-            raw = _get_bapi().client.get_open_orders(symbol=symbol) or []
+            raw = _get_bapi().client.get_open_orders(symbol=symbol)
+            if raw is None:
+                raise ProviderError(f"open_orders({symbol}): received None from Binance client")
+        except ProviderError:
+            raise
         except Exception as exc:
             raise ProviderError(f"open_orders({symbol}): {exc}") from exc
         return [{
