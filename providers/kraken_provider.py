@@ -231,6 +231,8 @@ class KrakenProvider(MarketDataProvider):
             rows = self._fills_from_cache(symbol)
             if rows is None:                                  # Missing or stale cache: direct API.
                 rows = self._fills_from_api(symbol)
+            if rows is None:
+                raise ProviderError(f"get_orders({symbol}): fills history unavailable")
             cutoff_ms = (time.time() - since_s) * 1000.0
             want = (side or "").upper()
             out = []
@@ -241,9 +243,11 @@ class KrakenProvider(MarketDataProvider):
                     continue
                 out.append(_normalize_order(r))
             return out
+        except ProviderError:
+            raise
         except Exception as e:  # noqa: BLE001
             print(f"[Kraken] get_orders {symbol}: {e}")
-            return []
+            raise ProviderError(f"get_orders({symbol}): {e}") from e
 
     def open_orders(self, symbol: str) -> List[dict]:
         """Return a strict Binance-shaped snapshot of active Kraken orders."""

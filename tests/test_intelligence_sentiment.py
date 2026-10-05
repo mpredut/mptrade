@@ -561,7 +561,9 @@ class TestOrderGuardWithGemini:
             regime="bull", gradient=0.5, epsilon=0.1, strength=5.0,
             fresh=True, reason="directional_signal", source="mock",
         )
-        ctx = MarketRegimeContext.from_decision(mock_decision)
+        ctx = MarketRegimeContext.from_decision(
+            mock_decision, symbol="BTCUSDC", provider="binance", evaluated_at=time.time()
+        )
 
         eval_count = 0
         original_eval = order_guard._evaluate_intelligence_guards_raw

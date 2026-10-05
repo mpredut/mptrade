@@ -229,3 +229,115 @@ class TestCacheSafetyAndHotReload:
         )
         assert calc_called is True
         assert w == pytest.approx(0.77)
+
+
+class TestCase3BinanceArchivedIsolation:
+    def test_archived_order_recognized_only_on_get_order(self, monkeypatch):
+        from providers.market_api import BinanceProvider
+        bp = BinanceProvider()
+        mock_bapi = MagicMock()
+        class BinanceApiErr(Exception):
+            code = -2026
+        mock_bapi.client.get_order.side_effect = BinanceApiErr("Order was canceled or archived -2026")
+        monkeypatch.setattr("providers.market_api._get_bapi", lambda: mock_bapi)
+
+        status = bp.order_status("BTCUSDC", "12345")
+        assert status.status == "canceled"
+        assert status.filled_qty == 0.0
+        assert status.venue_status == "ARCHIVED_CANCELED"
+
+    def test_fee_error_does_not_convert_filled_order_to_archived_canceled(self, monkeypatch):
+        from providers.market_api import BinanceProvider
+        bp = BinanceProvider()
+        mock_bapi = MagicMock()
+        mock_bapi.client.get_order.return_value = {
+            "status": "FILLED",
+            "executedQty": "1.5",
+            "cummulativeQuoteQty": "150.0",
+        }
+        monkeypatch.setattr("providers.market_api._get_bapi", lambda: mock_bapi)
+        def bad_fee(symbol, oid):
+            raise RuntimeError("trade fee endpoint failed: trade archived")
+        monkeypatch.setattr(bp, "_order_fee_quote", bad_fee)
+
+        with pytest.raises(RuntimeError, match="archived"):
+            bp.order_status("BTCUSDC", "12345")
+
+
+class TestCase4MarketRegimeContextValidation:
+    def _make_dec(self):
+        return MarketRegimeDecision(
+            regime="bull", gradient=0.5, epsilon=0.1, strength=5.0,
+            fresh=True, reason="test", source="test",
+        )
+
+    def test_timestamp_sanity_rejections(self):
+        d = self._make_dec()
+        ctx_zero = MarketRegimeContext.from_decision(d, evaluated_at=0.0)
+        assert ctx_zero.is_valid_for("BTCUSDC", now=1000.0) is False
+
+        ctx_neg = MarketRegimeContext.from_decision(d, evaluated_at=-10.0)
+        assert ctx_neg.is_valid_for("BTCUSDC", now=1000.0) is False
+
+        ctx_future = MarketRegimeContext.from_decision(d, evaluated_at=1005.0)
+        assert ctx_future.is_valid_for("BTCUSDC", now=1000.0) is False
+
+    def test_horizon_validation(self):
+        d = self._make_dec()
+        ctx = MarketRegimeContext.from_decision(
+            d, evaluated_at=1000.0, trend_duration_seconds=7200.0
+        )
+        assert ctx.is_valid_for("BTCUSDC", now=1000.0, max_horizon_seconds=3600.0) is False
+        assert ctx.is_valid_for("BTCUSDC", now=1000.0, max_horizon_seconds=10000.0) is True
+
+    def test_require_identity_validation(self):
+        d = self._make_dec()
+        anon_ctx = MarketRegimeContext.from_decision(d, evaluated_at=1000.0)
+        # Without require_identity, passes
+        assert anon_ctx.is_valid_for("BTCUSDC", now=1000.0, require_identity=False) is True
+        # With require_identity, rejected
+        assert anon_ctx.is_valid_for("BTCUSDC", now=1000.0, require_identity=True) is False
+
+        identified_ctx = MarketRegimeContext.from_decision(
+            d, evaluated_at=1000.0, symbol="BTCUSDC", provider="binance"
+        )
+        assert identified_ctx.is_valid_for("BTCUSDC", provider="binance", now=1000.0, require_identity=True) is True
+        assert identified_ctx.is_valid_for("ETHUSDC", provider="binance", now=1000.0, require_identity=True) is False
+
+
+class TestCase5HistoryFailClosed:
+    def test_kraken_history_failure_raises_provider_error(self, monkeypatch):
+        from providers.kraken_provider import KrakenProvider
+        from providers.strategy_executor import ProviderError
+        kp = KrakenProvider()
+        monkeypatch.setattr(kp, "_fills_from_cache", lambda s: None)
+        def bad_api(s):
+            raise RuntimeError("Kraken API network failure")
+        monkeypatch.setattr(kp, "_fills_from_api", bad_api)
+
+        with pytest.raises(ProviderError, match="Kraken API network failure"):
+            kp.get_orders("BTCUSDC", "BUY", 86400)
+
+    def test_hyperliquid_history_failure_raises_provider_error(self, monkeypatch):
+        from providers.hyperliquid_provider import HyperliquidProvider
+        from providers.strategy_executor import ProviderError
+        hp = HyperliquidProvider(token="PURR")
+        monkeypatch.setattr(hp, "_hl", lambda: None)
+
+        with pytest.raises(ProviderError, match="client or pair unavailable"):
+            hp.get_orders("PURR/USDC", "BUY", 86400)
+
+    def test_order_guard_daily_limit_and_weight_limit_fail_closed_on_history_error(self):
+        from providers.strategy_executor import ProviderError
+        class BrokenHistoryProvider:
+            name = "mock"
+            def get_orders(self, symbol, side, since_s):
+                raise ProviderError("Network error fetching trade history")
+
+        p = BrokenHistoryProvider()
+        ok, reason = order_guard.daily_limit_guard(p, "BTCUSDC", "BUY", safeback_sec=86400)
+        assert ok is False
+        assert reason == "history_unavailable"
+
+        with pytest.raises(ProviderError, match="Network error fetching trade history"):
+            order_guard.weight_limit(p, "BTCUSDC", "BUY", 100.0, 1.0, available_qty=10.0)

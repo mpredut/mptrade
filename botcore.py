@@ -91,7 +91,7 @@ def load_dotenv(path: str = ".env", override: bool = False) -> None:
         if not key:
             continue
         if is_root:
-            if key not in os.environ:
+            if override or key not in os.environ:
                 os.environ[key] = value
                 _ROOT_CONFIG_KEYS.add(key)
         else:

@@ -108,19 +108,64 @@ class MarketRegimeContext:
         provider: Optional[str] = None,
         max_age_seconds: Optional[float] = None,
         now: Optional[float] = None,
+        *,
+        max_horizon_seconds: Optional[float] = None,
+        require_identity: bool = False,
     ) -> bool:
-        """Validate whether context matches instrument identity and freshness constraints."""
-        if symbol is not None and self.symbol is not None:
-            if self.symbol.strip().upper() != symbol.strip().upper():
-                return False
-        if provider is not None and self.provider is not None:
-            p_str = getattr(provider, "name", None) or (provider if isinstance(provider, str) else None)
-            if p_str and self.provider.strip().lower() != p_str.strip().lower():
-                return False
+        """Validate whether context matches instrument identity, timestamp sanity, and freshness constraints."""
+        current_time = time.time() if now is None else float(now)
+        if not math.isfinite(current_time):
+            return False
+
+        # 1. Timestamp validation: evaluated_at must be strictly positive, finite, and not in the future
+        if not math.isfinite(self.evaluated_at) or self.evaluated_at <= 0:
+            return False
+        # Allow at most 1.0 second clock skew for future timestamps
+        if self.evaluated_at > (current_time + 1.0):
+            return False
+
+        # 2. Freshness and age validation
+        age = current_time - self.evaluated_at
+        if age < -1.0:
+            return False
+
         if max_age_seconds is not None and max_age_seconds > 0:
-            current_time = time.time() if now is None else float(now)
-            if self.evaluated_at > 0 and (current_time - self.evaluated_at) > max_age_seconds:
+            if age > float(max_age_seconds):
                 return False
+
+        # 3. Temporal horizon and trend duration validation
+        if not math.isfinite(self.trend_duration_seconds) or self.trend_duration_seconds < 0:
+            return False
+
+        if max_horizon_seconds is not None and max_horizon_seconds > 0:
+            if self.trend_duration_seconds > float(max_horizon_seconds):
+                return False
+
+        # 4. Identity validation
+        if require_identity:
+            if not self.symbol or not str(self.symbol).strip():
+                return False
+            if not self.provider or not str(self.provider).strip():
+                return False
+
+        if symbol is not None:
+            target_sym = str(symbol).strip().upper()
+            if self.symbol is not None:
+                if self.symbol.strip().upper() != target_sym:
+                    return False
+            elif require_identity:
+                return False
+
+        if provider is not None:
+            p_str = getattr(provider, "name", None) or (provider if isinstance(provider, str) else None)
+            if p_str:
+                target_prov = str(p_str).strip().lower()
+                if self.provider is not None:
+                    if self.provider.strip().lower() != target_prov:
+                        return False
+                elif require_identity:
+                    return False
+
         return True
 
     @classmethod

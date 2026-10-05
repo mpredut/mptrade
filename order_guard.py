@@ -21,6 +21,7 @@ import json
 from typing import Optional, Callable, Any, List, Tuple, Dict
 import utils as u
 from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegimeContext
+from providers.strategy_executor import ProviderError
 
 _DEFAULT_REGIME_SERVICE = MarketRegimeService()
 _MARGINS = None   # cache: {provider_lower: percentage, "default": 1.15}
@@ -474,7 +475,9 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
     of requested and permitted quantity. Errors propagate so the caller fails closed."""
     provider_name = getattr(provider, "name", "")
     weight = resolve_trade_weight(symbol, order_type, provider_name)
-    recent = provider.get_orders(symbol, order_type, 86400) or []
+    recent = provider.get_orders(symbol, order_type, 86400)
+    if recent is None:
+        raise ProviderError(f"weight_limit({symbol}): order history unavailable")
     traded_value = sum(float(o.get("price", 0)) * float(o.get("qty", o.get("quantity", 0))) for o in recent)
     available = float(available_qty)
     adjusted = compute_weight_capped_qty(weight, price, required_qty, available, traded_value)
@@ -528,7 +531,17 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
     recent_transaction_sec = float(recent_transaction_sec if recent_transaction_sec is not None
                                    else recent_transaction_sec_for(name))
     order_type = order_type.upper()
-    trades = provider.get_orders(symbol, order_type, safeback_sec) or []
+    try:
+        trades = provider.get_orders(symbol, order_type, safeback_sec)
+    except ProviderError as exc:
+        print(f"[DAILY-LIMIT] {order_type} {symbol}: history unavailable ({exc}) -> BLOCKED")
+        return False, "history_unavailable"
+    except Exception as exc:
+        print(f"[DAILY-LIMIT] {order_type} {symbol}: history read failed ({exc}) -> BLOCKED")
+        return False, "history_unavailable"
+    if trades is None:
+        print(f"[DAILY-LIMIT] {order_type} {symbol}: history unavailable -> BLOCKED")
+        return False, "history_unavailable"
     backdays = max(math.ceil(safeback_sec / 86400.0), 1)
     if len(trades) / backdays > max_daily_trades:
         print(f"[DAILY-LIMIT] {order_type} {symbol}: {len(trades)} trades in "
@@ -660,7 +673,8 @@ def check_intelligence_guards(
         max_age = _load_margins().get("regime_context_max_age_sec", 120.0)
         if hasattr(regime_context, "is_valid_for"):
             valid_context = regime_context.is_valid_for(
-                symbol=symbol, provider=provider, max_age_seconds=max_age, now=now
+                symbol=symbol, provider=provider, max_age_seconds=max_age, now=now,
+                require_identity=True,
             )
         else:
             valid_context = True
@@ -1023,7 +1037,8 @@ def profit_guard(
             if regime_context is not None:
                 max_age = _load_margins().get("regime_context_max_age_sec", 120.0)
                 if not hasattr(regime_context, "is_valid_for") or regime_context.is_valid_for(
-                    symbol=symbol, provider=provider_name, max_age_seconds=max_age
+                    symbol=symbol, provider=provider_name, max_age_seconds=max_age,
+                    require_identity=True,
                 ):
                     trend = getattr(regime_context, "resolved_trend", None)
             if trend is None:

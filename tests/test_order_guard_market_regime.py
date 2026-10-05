@@ -464,7 +464,9 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             regime="bull", gradient=0.5, epsilon=0.1, strength=5.0,
             fresh=True, reason="directional_signal",
         )
-        ctx = order_guard.MarketRegimeContext.from_decision(mock_decision, evaluated_at=self.now)
+        ctx = order_guard.MarketRegimeContext.from_decision(
+            mock_decision, evaluated_at=self.now, symbol="TAOUSDC", provider="binance"
+        )
 
         with mock.patch.object(order_guard, "_MARGINS", margins), \
                 mock.patch.object(order_guard, "_symbol_trend") as mock_trend:

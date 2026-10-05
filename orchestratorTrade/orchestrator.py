@@ -138,7 +138,18 @@ class BotManager:
         log_fh = None
         task = None
         try:
-            bot_env = {**os.environ, "MPTRADE_ORCHESTRATED": "1", "PYTHONUNBUFFERED": "1"}
+            fresh_env = dict(os.environ)
+            config_env_path = os.path.join(ROOT_DIR, "config.env")
+            if os.path.exists(config_env_path):
+                try:
+                    from botcore import _dotenv_pairs
+                    pairs, ok = _dotenv_pairs(config_env_path)
+                    if ok:
+                        for k, v in pairs:
+                            fresh_env[k] = v
+                except Exception as env_err:
+                    logging.warning(f"Could not parse fresh config.env for {name}: {env_err}")
+            bot_env = {**fresh_env, "MPTRADE_ORCHESTRATED": "1", "PYTHONUNBUFFERED": "1"}
             process = await asyncio.create_subprocess_shell(
                 cmd,
                 executable='/bin/bash',

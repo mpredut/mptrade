@@ -244,15 +244,18 @@ class HyperliquidProvider(MarketDataProvider):
         c = self._hl()
         pair = self._pair()
         if c is None or pair is None:
-            return []
+            raise ProviderError(f"get_orders({symbol}): Hyperliquid client or pair unavailable")
         try:
             addr = os.environ.get("HL_ACCOUNT_ADDRESS")
             if not addr:
-                return []
+                raise ProviderError(f"get_orders({symbol}): HL_ACCOUNT_ADDRESS missing")
             want = side.upper() if side else None
             cutoff_ms = (time.time() - float(since_s)) * 1000.0
             out = []
-            for f in (c.info.user_fills(addr) or []):
+            fills = c.info.user_fills(addr)
+            if fills is None:
+                raise ProviderError(f"get_orders({symbol}): user_fills returned None")
+            for f in fills:
                 if f.get("coin") != pair:        # Spot pair only; exclude perpetual HYPE.
                     continue
                 t = f.get("time")
@@ -269,9 +272,11 @@ class HyperliquidProvider(MarketDataProvider):
                     "timestamp": int(t),
                 }))
             return out
+        except ProviderError:
+            raise
         except Exception as e:  # noqa: BLE001
             print(f"[HL] get_orders({symbol},{side}) failed: {e}")
-            return []
+            raise ProviderError(f"get_orders({symbol}): {e}") from e
 
     def open_orders(self, symbol: str) -> List[dict]:
         """Return normalized resting spot orders for the resolved pair."""

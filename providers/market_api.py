@@ -471,14 +471,17 @@ class BinanceProvider(MarketDataProvider):
     def order_status(self, symbol: str, order_id: str):
         try:
             oid = int(order_id)
+        except (ValueError, TypeError) as exc:
+            raise ProviderError(f"order_status({order_id}): invalid order id") from exc
+
+        try:
             o = _get_bapi().client.get_order(symbol=symbol, orderId=oid)
-            executed_qty = float(o.get("executedQty") or 0.0)
-            fee = self._order_fee_quote(symbol, oid) if executed_qty > 0 else 0.0
         except ProviderError:
             raise
         except Exception as e:  # noqa: BLE001
-            err_text = str(e)
-            if "-2026" in err_text or "archived" in err_text:
+            err_code = getattr(e, "code", None)
+            err_text = str(e).lower()
+            if err_code == -2026 or "-2026" in str(e) or ("order was canceled" in err_text and "archived" in err_text):
                 return OrderStatus(
                     status="canceled",
                     filled_qty=0.0,
@@ -487,6 +490,9 @@ class BinanceProvider(MarketDataProvider):
                     venue_status="ARCHIVED_CANCELED",
                 )
             raise ProviderError(f"order_status({order_id}): {e}") from e
+
+        executed_qty = float(o.get("executedQty") or 0.0)
+        fee = self._order_fee_quote(symbol, oid) if executed_qty > 0 else 0.0
         st_map = {
             "FILLED": "closed",
             "CANCELED": "canceled",
