@@ -28,11 +28,6 @@ from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
 
 
-try:
-    from visuals import generateweb as web
-except ImportError:
-    import generateweb as web
-
 from pricewindow import (PriceTrendAnalyzer, PriceWindow, WindowAnalyzer,
                          RECENT_GRADIENT_SECONDS,
                          WINDOW_SECONDS_SMALL, WINDOW_SECONDS_BIG)
@@ -639,10 +634,6 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
     slope_big, price_diff = analyzer_big.check_price_change(PRICE_CHANGE_THRESHOLD_BIG_EUR)
     logic("BIG", True, symbol, gradient, slope_big, trend_state_big, current_price, regime_ctx=regime_ctx)
 
-    for coin in web.coins:
-        if coin["name"] == symbol:
-            coin["watch"] = True if slope_big != 0 else False
-
     # Cross-process snapshot. ``monitortrades`` consumes only ``slope_small`` and
     # ``final_trend`` through ``is_trend_up``; other fields serve other consumers.
     return {
@@ -847,11 +838,6 @@ class TrendCoordinator:
                     self.evaluate(symbol)
                 except Exception as e:
                     print(f"[TrendCoordinator] Error while evaluating {symbol}: {e}")
-            try:
-                html_content = web.generate_html(web.coins)
-                web.save_html(html_content, "index.html")
-            except Exception as e:
-                print(f"[TrendCoordinator] Error generating HTML: {e}")
 
     def stop(self):
         """Wake and stop the coordinator loop deterministically."""

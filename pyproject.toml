@@ -73,7 +73,6 @@ py-modules = [
     "cleanup",
     "config",
     "drawprices",
-    "generateweb",
     "instrument",
     "instrument_registry",
     "instruments_config",
