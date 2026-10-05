@@ -653,7 +653,8 @@ class HyperliquidProvider(MarketDataProvider):
                 # missing open order.
                 normalized = "canceled"
             return OrderStatus(
-                normalized, filled, cost, fee, venue_status=venue_status)
+                normalized, filled, cost, fee, venue_status=venue_status,
+                orig_qty=original)
         except ProviderError:
             raise
         except Exception as e:  # noqa: BLE001

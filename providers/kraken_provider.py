@@ -477,6 +477,7 @@ class KrakenProvider(MarketDataProvider):
             cost=float(info.get("cost") or 0.0),
             fee=float(info.get("fee") or 0.0),
             venue_status=str(info.get("status") or ""),
+            orig_qty=float(info.get("vol") or 0.0),
         )
 
     def order_by_client_id(self, symbol: str, client_order_id: str):

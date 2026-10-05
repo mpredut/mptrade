@@ -553,6 +553,7 @@ class BinanceProvider(MarketDataProvider):
             cost=float(o.get("cummulativeQuoteQty") or 0.0),
             fee=fee,
             venue_status=venue_status,
+            orig_qty=float(o.get("origQty") or 0.0),
         )
 
     def cancel_order(self, symbol: str, order_id: str) -> None:

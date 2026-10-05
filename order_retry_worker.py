@@ -293,6 +293,16 @@ def process_once(mkt, now=None):
             mkt, symbol, client_order_id, provider_name=provider_name
         )
         if reconciliation_state == _RECONCILE_FOUND:
+            if oq.order_qty_from_response(existing_order) is None and hasattr(mkt, "order_status"):
+                try:
+                    oid = oq.order_id_from_response(existing_order)
+                    if oid:
+                        st = mkt.order_status(symbol, oid)
+                        if st and getattr(st, "orig_qty", None):
+                            existing_order = dict(existing_order)
+                            existing_order["orig_qty"] = st.orig_qty
+                except Exception:
+                    pass
             if oq.complete_claim(
                     r, "accepted", now, order=existing_order,
                     provider_name=provider_name):
@@ -447,6 +457,16 @@ def process_once(mkt, now=None):
             if reconciliation_state == _RECONCILE_FOUND:
                 succeeded += 1
                 reconciled += 1
+                if oq.order_qty_from_response(existing_order) is None and hasattr(mkt, "order_status"):
+                    try:
+                        oid = oq.order_id_from_response(existing_order)
+                        if oid:
+                            st = mkt.order_status(symbol, oid)
+                            if st and getattr(st, "orig_qty", None):
+                                existing_order = dict(existing_order)
+                                existing_order["orig_qty"] = st.orig_qty
+                    except Exception:
+                        pass
                 oq.complete_claim(
                     r, "accepted", now, order=existing_order,
                     provider_name=provider_name)
@@ -538,6 +558,16 @@ def process_once(mkt, now=None):
                 provider_name=provider_name)
             if reconciliation_state == _RECONCILE_FOUND:
                 order = recovered
+                if oq.order_qty_from_response(order) is None and hasattr(mkt, "order_status"):
+                    try:
+                        oid = oq.order_id_from_response(order)
+                        if oid:
+                            st = mkt.order_status(symbol, oid)
+                            if st and getattr(st, "orig_qty", None):
+                                order = dict(order)
+                                order["orig_qty"] = st.orig_qty
+                    except Exception:
+                        pass
                 accepted = True
                 reconciled += 1
         if accepted:
