@@ -289,12 +289,15 @@ class HLClient:
 
     def spot_order(self, pair: str, is_buy: bool, sz: float, px: float,
                    sz_decimals: int = 2,
-                   cloid: str | None = None) -> tuple[bool, int | None, str]:
-        """Place a spot LIMIT order; pair is the @index name such as @107."""
+                   cloid: str | None = None,
+                   is_market: bool = False,
+                   tif: str | None = None) -> tuple[bool, int | None, str]:
+        """Place a spot limit or market IOC order; pair is the @index name such as @107."""
         if not self.exchange:
             raise HLError("No agent wallet (HL_SECRET_KEY)")
         sz = round(sz, sz_decimals)
         px = _round_px(px, sz_decimals, is_perp=False)
+        order_tif = tif or ("Ioc" if is_market else "Gtc")
         try:
             kwargs = {}
             if cloid is not None:
@@ -302,7 +305,7 @@ class HLClient:
                 from hyperliquid.utils.types import Cloid
                 kwargs["cloid"] = Cloid.from_str(cloid)
             res = self.exchange.order(
-                pair, is_buy, sz, px, {"limit": {"tif": "Gtc"}}, **kwargs,
+                pair, is_buy, sz, px, {"limit": {"tif": order_tif}}, **kwargs,
             )
         except Exception as e:  # noqa: BLE001
             return False, None, str(e)

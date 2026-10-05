@@ -812,6 +812,26 @@ class ProcessOnceTest(unittest.TestCase):
                     self.assertEqual(
                         oq.get(claimed["id"])["lifecycle"], "accepted")
 
+        with self.subTest("unknown_producer_identity_quarantined"):
+            oq.rewrite([])
+            claimed = oq.enqueue_claimed(
+                "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
+                provider_name="Binance", now=1000.0, lease_sec=301.0)
+            mkt = ExistingOrderMkt2(price=100.0)
+
+            with patch.object(
+                    oq, "producer_claim_owner_state",
+                    return_value="unknown"):
+                stats = worker.process_once(mkt, now=1400.0)
+
+            self.assertEqual(stats["quarantined"], 1)
+            self.assertEqual(stats["attempted"], 0)
+            self.assertEqual(stats["reconciled"], 0)
+            self.assertEqual(len(mkt.lookup_calls), 0)
+            self.assertEqual(mkt.calls, [])
+            self.assertEqual(
+                oq.get(claimed["id"])["submission_state"], "producer_claimed")
+
         with self.subTest("crash_after_begin_submit"):
             oq.rewrite([])
             record_id = oq.enqueue(
@@ -908,6 +928,32 @@ class ProcessOnceTest(unittest.TestCase):
                 self.assertEqual(len(mkt.lookup_calls), 1)
                 self.assertEqual(mkt.calls, [])
                 self.assertEqual(oq.get(record_id)["attempts"], 0)
+
+        with self.subTest("diagnostic_alert_differentiates_missing_horizon_from_expired_horizon"):
+            worker._ALERTED_RECONCILIATION_QUARANTINES.clear()
+            oq.rewrite([])
+            oq.enqueue(
+                "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
+                failure_reason="submit_ambiguous",
+                provider_name="Unbounded", now=1000.0)
+            mkt_missing = UnboundedAbsenceMkt(None)
+            alerts_captured = []
+            with patch("order_retry_worker.alert.notify", side_effect=lambda **kw: alerts_captured.append(kw)):
+                worker.process_once(mkt_missing, now=1400.0)
+            self.assertTrue(any("does not declare a reliable reconciliation interval" in a.get("body", "") for a in alerts_captured))
+            self.assertFalse(any("older than the bounded interval" in a.get("body", "") for a in alerts_captured))
+
+            worker._ALERTED_RECONCILIATION_QUARANTINES.clear()
+            oq.rewrite([])
+            oq.enqueue(
+                "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
+                failure_reason="submit_ambiguous",
+                provider_name="Bounded", now=1000.0)
+            mkt_bounded = UnboundedAbsenceMkt(100.0)
+            alerts_captured.clear()
+            with patch("order_retry_worker.alert.notify", side_effect=lambda **kw: alerts_captured.append(kw)):
+                worker.process_once(mkt_bounded, now=1400.0)  # 400 sec old > 100.0 sec horizon
+            self.assertTrue(any("older than the bounded interval" in a.get("body", "") for a in alerts_captured))
 
     def test_terminal_refusals_and_expiry_cleanup(self):
         with self.subTest("expiry_cleanup_preserves_refreshed_revision"):

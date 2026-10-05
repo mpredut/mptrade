@@ -68,12 +68,14 @@ class FakeRead:
 class FakeSigner:
     def __init__(self, order_res=(True, 12345, "resting"), cancel_res=True):
         self._o, self._c, self.calls = order_res, cancel_res, []
+        self.kwargs_calls = []
 
     def sz_decimals(self, coin):
         return 2
 
-    def spot_order(self, pair, is_buy, sz, px, sz_decimals=2, cloid=None):
+    def spot_order(self, pair, is_buy, sz, px, sz_decimals=2, cloid=None, **kwargs):
         self.calls.append(("spot_order", pair, is_buy, sz, px, cloid))
+        self.kwargs_calls.append(kwargs)
         return self._o
 
     def cancel(self, pair, oid):
@@ -246,6 +248,54 @@ class HLExecutorContractTest(unittest.TestCase):
                 self.p.submit_order("HYPE", "sell", 1.0, price=60.0), "12345",
             )
             self.p._client = original_client
+
+    def test_place_order_market_and_rounding(self):
+        os.environ["HL_LIVE_ORDERS"] = "true"
+        os.environ["HL_SECRET_KEY"] = "fake-key"
+        self.p._new_client = lambda _s=None: self.signer
+
+        with self.subTest("place_order_market_sends_ioc_with_slippage"):
+            self.signer.calls.clear()
+            self.signer.kwargs_calls.clear()
+            res = self.p.place_order("HYPE", "BUY", 100.0, 1.0, market=True)
+            self.assertIsNotNone(res)
+            self.assertEqual(res["orderId"], 12345)
+            call = self.signer.calls[-1]
+            kw = self.signer.kwargs_calls[-1]
+            self.assertEqual(call[1], "@107")
+            self.assertTrue(call[2])  # is_buy
+            self.assertAlmostEqual(call[4], 105.0)  # 100.0 * 1.05
+            self.assertTrue(kw.get("is_market"))
+            self.assertEqual(kw.get("tif"), "Ioc")
+
+        with self.subTest("place_order_force_treated_as_market"):
+            self.signer.calls.clear()
+            self.signer.kwargs_calls.clear()
+            res = self.p.place_order("HYPE", "SELL", 100.0, 1.0, force=True)
+            self.assertIsNotNone(res)
+            call = self.signer.calls[-1]
+            kw = self.signer.kwargs_calls[-1]
+            self.assertFalse(call[2])  # is_buy is False
+            self.assertAlmostEqual(call[4], 95.0)  # 100.0 * 0.95
+            self.assertTrue(kw.get("is_market"))
+            self.assertEqual(kw.get("tif"), "Ioc")
+
+        with self.subTest("place_order_limit_sends_gtc"):
+            self.signer.calls.clear()
+            self.signer.kwargs_calls.clear()
+            res = self.p.place_order("HYPE", "BUY", 100.0, 1.0)
+            self.assertIsNotNone(res)
+            call = self.signer.calls[-1]
+            kw = self.signer.kwargs_calls[-1]
+            self.assertAlmostEqual(call[4], 100.0)
+            self.assertFalse(kw.get("is_market"))
+            self.assertEqual(kw.get("tif"), "Gtc")
+
+        with self.subTest("round_price_enforces_5_significant_figures"):
+            self.assertAlmostEqual(self.p.round_price("HYPE", 1.234568), 1.2346)
+            self.assertAlmostEqual(self.p.round_price("HYPE", 1234.567), 1234.6)
+            self.assertAlmostEqual(self.p.round_price("HYPE", 0.01234567), 0.012346)
+            self.assertAlmostEqual(self.p.round_price("HYPE", 0.001234567), 0.001235)
 
     def test_client_id_behaviors(self):
         with self.subTest(msg="order by client id uses authoritative cloid query"):

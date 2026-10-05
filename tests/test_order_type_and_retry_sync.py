@@ -177,8 +177,8 @@ class OrderTypeAndRetrySyncTest(unittest.TestCase):
         self.assertEqual(transition.action, "retry_terminal")
         self.assertAlmostEqual(transition.remaining_qty, 0.6, places=6)
 
-    def test_zombie_order_recovery_unknown_owner(self):
-        """Verify that an expired producer claim with owner_state == 'unknown' is reconciled and retried."""
+    def test_zombie_order_recovery_unknown_vs_dead_owner(self):
+        """Verify that unknown owner state is quarantined fail-closed, while a real dead zombie is retried."""
         oq.rewrite([])
         claimed = oq.enqueue_claimed(
             "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
@@ -205,15 +205,23 @@ class OrderTypeAndRetrySyncTest(unittest.TestCase):
                 return {"orderId": 888}
 
         mkt = ReconcilingMkt()
-        # Mock owner_state as "unknown" (process identity unverifiable)
-        # Note: now=1400.0 ensures now - created_ts (1400 - 1000 = 400) >= RETRY_INTERVAL_SEC (300)
+        # 1. Unknown owner state: identity unverifiable -> must quarantine fail-closed to avoid duplicate orders
         with patch.object(oq, "producer_claim_owner_state", return_value="unknown"):
-            stats = worker.process_once(mkt, now=1400.0)
+            stats_unknown = worker.process_once(mkt, now=1400.0)
 
-        # Must NOT be quarantined; must be reconciled and retried!
-        self.assertEqual(stats["quarantined"], 0)
-        self.assertEqual(stats["attempted"], 1)
-        self.assertEqual(stats["succeeded"], 1)
+        self.assertEqual(stats_unknown["quarantined"], 1)
+        self.assertEqual(stats_unknown["attempted"], 0)
+        self.assertEqual(len(mkt.lookup_calls), 0)
+        self.assertEqual(len(mkt.place_calls), 0)
+        self.assertEqual(oq.get(claimed["id"])["submission_state"], "producer_claimed")
+
+        # 2. Real dead zombie: owner confirmed dead -> safely reconciled and retried
+        with patch.object(oq, "producer_claim_owner_state", return_value="dead"):
+            stats_dead = worker.process_once(mkt, now=1400.0)
+
+        self.assertEqual(stats_dead["quarantined"], 0)
+        self.assertEqual(stats_dead["attempted"], 1)
+        self.assertEqual(stats_dead["succeeded"], 1)
         self.assertEqual(len(mkt.lookup_calls), 1)
         self.assertEqual(len(mkt.place_calls), 1)
         durable = oq.get(claimed["id"])

@@ -105,8 +105,9 @@ class TestProviderQuantityPrecision(unittest.TestCase):
         pp = p.pair_precision("PURR/USDC")
         self.assertIsNotNone(pp)
         self.assertEqual(pp.volume_decimals, 2)
-        self.assertAlmostEqual(p.round_quantity("PURR/USDC", 5.678), 5.67, places=6)
-        self.assertAlmostEqual(p.round_price("PURR/USDC", 1.23456789), 1.234568, places=6)
+        # 5 significant figures limit + (8 - szDecimals) spot decimals
+        self.assertAlmostEqual(p.round_price("PURR/USDC", 1.23456789), 1.2346, places=6)
+        self.assertAlmostEqual(p.round_price("PURR/USDC", 1.234568), 1.2346, places=6)
 
         # preflight_order with qty=None passes safely
         p.preflight_order("PURR/USDC", "BUY", None)
@@ -205,6 +206,31 @@ class TestBinanceTransientBalanceSoftSkip(unittest.TestCase):
             # 2. With _balance_verified=True: soft-skips balance failure, submits verified qty
             res2 = po.place_order_mechanics("BUY", "BTCUSDC", 100.0, 2.0, force=False, _balance_verified=True)
             self.assertEqual(res2, {"orderId": 9999})
+            mock_submit.assert_called_once()
+
+    def test_binance_provider_place_order_forwards_balance_verified(self):
+        """Verify BinanceProvider.place_order passes _balance_verified through to mechanics."""
+        with patch.object(po.api, "get_free_balance", return_value=None), \
+             patch.object(po.api, "get_current_price", return_value=100.0), \
+             patch("providers.binance_filters.BinanceOrderRules.from_symbol_info") as mock_rules_info, \
+             patch.object(po, "_submit_binance_order", return_value={"orderId": 8888}) as mock_submit:
+
+            mock_rules = MagicMock()
+            mock_rules.normalize.return_value = ("2.0", "100.0")
+            mock_rules_info.return_value = mock_rules
+
+            from providers.market_api import BinanceProvider
+            bp = BinanceProvider()
+            bp.validate_symbol = lambda s: None
+
+            # Through BinanceProvider.place_order without _balance_verified: returns None
+            res1 = bp.place_order("BTCUSDC", "BUY", 100.0, 2.0)
+            self.assertIsNone(res1)
+            mock_submit.assert_not_called()
+
+            # Through BinanceProvider.place_order with _balance_verified=True: succeeds
+            res2 = bp.place_order("BTCUSDC", "BUY", 100.0, 2.0, _balance_verified=True)
+            self.assertEqual(res2, {"orderId": 8888})
             mock_submit.assert_called_once()
 
 

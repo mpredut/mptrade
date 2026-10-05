@@ -146,33 +146,42 @@ def _supports_client_id_reconciliation(mkt, symbol, provider_name):
         and capabilities.lookup_by_client_order_id)
 
 
-def _not_found_is_reliable(mkt, record, now, provider_name):
-    """Return whether this venue absence is recent enough to authorize submit."""
+def _not_found_reliability_status(mkt, record, now, provider_name):
+    """Return whether venue absence is recent enough, and the specific failure reason."""
     capabilities = _reconciliation_capabilities(
         mkt, record.get("symbol"), provider_name)
     if capabilities is None or not capabilities.lookup_by_client_order_id:
-        return False
+        return False, "lookup_unavailable"
+    raw_venue_horizon = getattr(capabilities, "not_found_reliable_for_seconds", None)
+    if raw_venue_horizon is None:
+        return False, "missing_reconciliation_horizon"
     try:
-        venue_horizon = float(
-            getattr(capabilities, "not_found_reliable_for_seconds", None))
+        venue_horizon = float(raw_venue_horizon)
         configured_horizon = float(oq.RETRY_NOT_FOUND_MAX_AGE_SEC)
         observed_at = float(now)
         created_at = float(record.get("created_ts") or 0.0)
         last_attempt_at = float(record.get("last_attempt_ts") or 0.0)
     except (TypeError, ValueError, OverflowError):
-        return False
+        return False, "invalid_reference_timestamp"
+    if not math.isfinite(venue_horizon) or venue_horizon <= 0:
+        return False, "missing_reconciliation_horizon"
+    if not math.isfinite(configured_horizon) or configured_horizon <= 0:
+        return False, "missing_reconciliation_horizon"
     reference_at = max(created_at, last_attempt_at)
-    values = (
-        venue_horizon, configured_horizon, observed_at, reference_at)
-    if (
-        not all(math.isfinite(value) for value in values)
-        or venue_horizon <= 0
-        or configured_horizon <= 0
-        or reference_at <= 0
-    ):
-        return False
+    if not math.isfinite(reference_at) or reference_at <= 0 or not math.isfinite(observed_at):
+        return False, "invalid_reference_timestamp"
     age = observed_at - reference_at
-    return 0 <= age <= min(venue_horizon, configured_horizon)
+    if age < 0:
+        return False, "future_reference_timestamp"
+    if age > min(venue_horizon, configured_horizon):
+        return False, "not_found_outside_reliable_horizon"
+    return True, None
+
+
+def _not_found_is_reliable(mkt, record, now, provider_name):
+    """Return whether this venue absence is recent enough to authorize submit."""
+    reliable, _ = _not_found_reliability_status(mkt, record, now, provider_name)
+    return reliable
 
 
 def _audit_event(record, event, **fields):
@@ -232,7 +241,7 @@ def process_once(mkt, now=None):
                 # worker may only recover venue truth by deterministic lookup.
                 live_producer_reconciliation.append(r)
                 continue
-            if owner_state not in {"dead", "mismatched", "unknown"}:
+            if owner_state not in {"dead", "mismatched"}:
                 quarantined += 1
                 _alert_producer_quarantine(
                     r, reason="producer_identity_unverifiable")
@@ -447,15 +456,13 @@ def process_once(mkt, now=None):
                 print(f"[order_retry] RECONCILED {r.get('side')} {symbol} "
                       f"orderId={oq.order_id_from_response(existing_order)}")
                 continue
-            absence_reliable = (
-                reconciliation_state == _RECONCILE_NOT_FOUND
-                and _not_found_is_reliable(
-                    mkt, r, now, provider_name))
+            if reconciliation_state == _RECONCILE_NOT_FOUND:
+                absence_reliable, not_found_reason = _not_found_reliability_status(
+                    mkt, r, now, provider_name)
+            else:
+                absence_reliable, not_found_reason = False, "lookup_unavailable"
             if not absence_reliable:
-                quarantine_reason = (
-                    "not_found_outside_reliable_horizon"
-                    if reconciliation_state == _RECONCILE_NOT_FOUND
-                    else "lookup_unavailable")
+                quarantine_reason = not_found_reason or "lookup_unavailable"
                 quarantined += 1
                 _alert_reconciliation_quarantine(
                     r, reason=quarantine_reason)
@@ -658,21 +665,36 @@ def _alert_reconciliation_quarantine(rec, *, reason="lookup_unavailable"):
     if fingerprint in _ALERTED_RECONCILIATION_QUARANTINES:
         return False
     _ALERTED_RECONCILIATION_QUARANTINES.add(fingerprint)
+    if reason == "not_found_outside_reliable_horizon":
+        body = (
+            "The venue reports no matching client order, but this intent is "
+            "older than the bounded interval in which absence is reliable. "
+            "Automatic submission and expiry are blocked; inspect the venue "
+            "and outbox manually."
+        )
+    elif reason == "missing_reconciliation_horizon":
+        body = (
+            "The venue reports no matching client order, but the provider does "
+            "not declare a reliable reconciliation interval. Automatic submission "
+            "and expiry are blocked; inspect the venue and outbox manually."
+        )
+    elif reason in {"invalid_reference_timestamp", "future_reference_timestamp"}:
+        body = (
+            "The venue reports no matching client order, but intent timestamps "
+            "are invalid or in the future. Automatic submission and expiry are "
+            "blocked; inspect the venue and outbox manually."
+        )
+    else:
+        body = (
+            "This intent may already exist at the venue, but deterministic "
+            "client-ID reconciliation is unavailable. Automatic submission "
+            "and expiry are blocked; inspect the venue and outbox manually."
+        )
     try:
         alert.notify(
             title=(f"🛑 order submission quarantined "
                    f"{rec.get('side')} {rec.get('symbol')}"),
-            body=(
-                "The venue reports no matching client order, but this intent is "
-                "older than the bounded interval in which absence is reliable. "
-                "Automatic submission and expiry are blocked; inspect the venue "
-                "and outbox manually."
-                if reason == "not_found_outside_reliable_horizon"
-                else
-                "This intent may already exist at the venue, but deterministic "
-                "client-ID reconciliation is unavailable. Automatic submission "
-                "and expiry are blocked; inspect the venue and outbox manually."
-            ),
+            body=body,
             source="order_retry", symbol=str(rec.get("symbol")))
     except Exception as exc:  # noqa: BLE001
         print(

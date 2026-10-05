@@ -308,8 +308,25 @@ class HyperliquidProvider(MarketDataProvider):
             print(f"[HL] open_orders({symbol}) failed: {e}")
             raise ProviderError(f"open_orders({symbol}): {e}") from e
 
+    def round_price(self, symbol: str, price: float) -> float:
+        """Round price to Hyperliquid rules: max 5 significant figures and (8 - szDecimals) decimals for spot."""
+        self.validate_symbol(symbol)
+        try:
+            pp = self.pair_precision(symbol)
+            sz_dec = int(getattr(pp, "volume_decimals", 2)) if pp is not None else 2
+        except Exception:
+            sz_dec = 2
+        if _HL_DIR not in sys.path:
+            sys.path.insert(0, _HL_DIR)
+        from hl_client import _round_px
+        try:
+            return _round_px(float(price), sz_decimals=sz_dec, is_perp=False)
+        except Exception:
+            return float(price)
+
     # -- Spot order placement, dry by default due to wallet co-mingling. --------
-    def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
+    def place_order(self, symbol: str, side: str, price: float, qty: float,
+                    force: bool = False, **kwargs):
         """Place a spot order, remaining dry unless HL_LIVE_ORDERS is true.
 
         Live mode is the final gate after dry-run validation and resolution of
@@ -318,9 +335,30 @@ class HyperliquidProvider(MarketDataProvider):
         self.validate_symbol(symbol)
         side = (side or "").upper()
         live = self.execution_enabled()
+        is_market = bool(force or kwargs.get("market", False) or kwargs.get("force", False))
+        is_buy = side.startswith("B")
+
+        if is_market:
+            try:
+                base_px = float(price) if price is not None and float(price) > 0 else 0.0
+            except (TypeError, ValueError, OverflowError):
+                base_px = 0.0
+            if base_px <= 0:
+                base_px = float(self.get_current_price(symbol) or 0.0)
+            if base_px <= 0:
+                print(f"[HL] place_order {side} {symbol}: market price unavailable")
+                return None
+            slippage = float(kwargs.get("slippage", 0.05))
+            aggressive_px = base_px * (1.0 + slippage if is_buy else 1.0 - slippage)
+            submit_px = self.round_price(symbol, aggressive_px)
+            order_tif = "Ioc"
+        else:
+            submit_px = self.round_price(symbol, price)
+            order_tif = "Gtc"
+
         if not live:
-            print(f"[HL][DRY] would place {side} {symbol} qty={qty} @ {price} "
-                  f"(real orders disabled; set {_LIVE_ENV}=true for real orders)")
+            print(f"[HL][DRY] would place {side} {symbol} qty={qty} @ {submit_px} "
+                  f"(market={is_market}, tif={order_tif}, real orders disabled; set {_LIVE_ENV}=true for real orders)")
             return None
         # -- Gated live path. ---------------------------------------------------
         pair = self._pair()
@@ -342,9 +380,14 @@ class HyperliquidProvider(MarketDataProvider):
             if qty <= 0:
                 print(f"[HL] place_order {side} {symbol}: refused non-positive qty={qty}")
                 return None
-            ok, oid, msg = signer.spot_order(
-                pair, side == "BUY", float(qty), float(price),
-                sz_decimals=sz_dec, cloid=cloid)
+            try:
+                ok, oid, msg = signer.spot_order(
+                    pair, is_buy, float(qty), float(submit_px),
+                    sz_decimals=sz_dec, cloid=cloid, is_market=is_market, tif=order_tif)
+            except TypeError:
+                ok, oid, msg = signer.spot_order(
+                    pair, is_buy, float(qty), float(submit_px),
+                    sz_decimals=sz_dec, cloid=cloid)
             print(f"[HL] place_order {side} {symbol} -> ok={ok} oid={oid} ({msg})")
             return {"orderId": oid, "ok": ok, "msg": msg} if ok else None
         except Exception as e:  # noqa: BLE001
@@ -427,6 +470,7 @@ class HyperliquidProvider(MarketDataProvider):
             if not mid:
                 raise ProviderError(f"submit_order({symbol}) market: price unavailable")
             px = mid * (1.05 if is_buy else 0.95)               # Aggressive limit for immediate fill.
+        px = self.round_price(symbol, px)
         qty = self.round_quantity(symbol, qty)
         if qty <= 0:
             raise ProviderError(f"submit_order({symbol}): non-positive qty={qty}")
@@ -436,13 +480,24 @@ class HyperliquidProvider(MarketDataProvider):
         try:
             signer = self._signer()
             szd = signer.sz_decimals(self._token)
-            order_kwargs = {"sz_decimals": szd}
+            order_kwargs = {
+                "sz_decimals": szd,
+                "is_market": market,
+                "tif": "Ioc" if market else "Gtc",
+            }
             if client_order_id is not None:
                 order_kwargs["cloid"] = _cloid_for_client_order_id(
                     client_order_id)
-            ok, oid, msg = signer.spot_order(
-                pair, is_buy, float(qty), float(px), **order_kwargs,
-            )
+            try:
+                ok, oid, msg = signer.spot_order(
+                    pair, is_buy, float(qty), float(px), **order_kwargs,
+                )
+            except TypeError:
+                order_kwargs.pop("is_market", None)
+                order_kwargs.pop("tif", None)
+                ok, oid, msg = signer.spot_order(
+                    pair, is_buy, float(qty), float(px), **order_kwargs,
+                )
         except ProviderError:
             raise
         except Exception as e:  # noqa: BLE001
