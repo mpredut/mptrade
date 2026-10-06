@@ -14,6 +14,7 @@ from intelligence.sentiment.gemini_client import GeminiClient
 logger = logging.getLogger("intelligence.macro.geopolitical_analyzer")
 
 DEFAULT_STATE_FILE = "cachedb/geopolitical_threat_state.json"
+DEFAULT_CACHE_TTL_SEC = float(os.environ.get("MACRO_LLM_INTERVAL_SEC", "7200.0"))  # 2 hours default (was 30m)
 
 
 @dataclass(frozen=True)
@@ -29,16 +30,19 @@ class GeopoliticalThreatAssessment:
 
 
 class GeopoliticalThreatAnalyzer:
-    """Evaluates breaking macro headlines through a two-stage filter: keyword screening + Gemini LLM."""
+    """Evaluates breaking macro headlines through a multi-stage filter: keyword screening + Gemini LLM."""
 
     def __init__(
         self,
         gemini_client: Optional[GeminiClient] = None,
-        cache_ttl_sec: float = 1800.0,  # 30 minutes
+        cache_ttl_sec: Optional[float] = None,
         state_file: str = DEFAULT_STATE_FILE,
     ) -> None:
         self.gemini_client = gemini_client or GeminiClient()
-        self.cache_ttl_sec = cache_ttl_sec
+        if cache_ttl_sec is not None:
+            self.cache_ttl_sec = float(cache_ttl_sec)
+        else:
+            self.cache_ttl_sec = float(os.environ.get("MACRO_LLM_INTERVAL_SEC", str(DEFAULT_CACHE_TTL_SEC)))
         self.state_file = state_file
         self._cached_assessment: Optional[GeopoliticalThreatAssessment] = None
         self._last_eval_ts: float = 0.0
@@ -59,14 +63,17 @@ class GeopoliticalThreatAnalyzer:
                     ts=float(data.get("ts", 0.0)),
                 )
                 self._last_eval_ts = self._cached_assessment.ts
+                self._last_headlines_digest = str(data.get("headlines_digest", ""))
             except Exception as e:
                 logger.debug("Could not load cached geopolitical state: %s", e)
 
     def _save_to_disk(self, assessment: GeopoliticalThreatAssessment) -> None:
         try:
             os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
+            data = asdict(assessment)
+            data["headlines_digest"] = self._last_headlines_digest
             with open(self.state_file, "w") as f:
-                json.dump(asdict(assessment), f, indent=2)
+                json.dump(data, f, indent=2)
         except Exception as e:
             logger.warning("Could not persist geopolitical state to %s: %s", self.state_file, e)
 
@@ -79,7 +86,14 @@ class GeopoliticalThreatAnalyzer:
     ) -> GeopoliticalThreatAssessment:
         """Evaluate geopolitical threat level based on news headlines."""
         now = now_ts if now_ts is not None else time.time()
-        if not force_refresh and self._cached_assessment and (now - self._last_eval_ts) < self.cache_ttl_sec:
+        is_stale = (now - self._last_eval_ts) >= self.cache_ttl_sec
+        acute_shock_alert = (
+            news_snapshot is not None
+            and news_snapshot.has_critical_shock_keywords
+            and self._cached_assessment is not None
+            and self._cached_assessment.threat_level == "NORMAL"
+        )
+        if not force_refresh and not acute_shock_alert and self._cached_assessment and not is_stale:
             return self._cached_assessment
 
         if news_snapshot is None or len(news_snapshot.headlines) == 0:
@@ -105,12 +119,17 @@ class GeopoliticalThreatAnalyzer:
             )
             self._cached_assessment = normal_assessment
             self._last_eval_ts = now
+            self._last_headlines_digest = ""
             self._save_to_disk(normal_assessment)
             return normal_assessment
 
         # Stage 2: High-severity headlines present -> Check if headlines have changed
         headline_digest = " || ".join(h.title for h in high_sev[:12])
-        if not force_refresh and self._cached_assessment and headline_digest == self._last_headlines_digest:
+        if not force_refresh and not acute_shock_alert and self._cached_assessment and headline_digest == self._last_headlines_digest:
+            return self._cached_assessment
+
+        # Throttle Stage 3 LLM calls: if not forced and within cache_ttl_sec, do not re-query LLM for minor headline changes
+        if not force_refresh and not acute_shock_alert and self._cached_assessment and not is_stale:
             return self._cached_assessment
 
         # Stage 3: New high-severity headlines detected -> Query Google Gemini LLM
@@ -145,6 +164,8 @@ class GeopoliticalThreatAnalyzer:
             )
             self._cached_assessment = fallback_assessment
             self._last_eval_ts = now
+            self._last_headlines_digest = headline_digest
+            self._save_to_disk(fallback_assessment)
             return fallback_assessment
 
         threat_level = str(resp.get("threat_level", "NORMAL")).upper().strip()

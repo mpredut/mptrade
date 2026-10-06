@@ -33,6 +33,8 @@ class IntelligenceTelemetryDaemon:
         derivatives_interval_sec: float = 30.0,
         whale_interval_sec: float = 60.0,
         macro_interval_sec: float = 300.0,
+        macro_llm_interval_sec: Optional[float] = None,
+        thread_prune_interval_sec: float = 3600.0,
         skip_macro: bool = False,
         skip_external: bool = False,
     ) -> None:
@@ -41,6 +43,12 @@ class IntelligenceTelemetryDaemon:
         self.derivatives_interval_sec = derivatives_interval_sec
         self.whale_interval_sec = whale_interval_sec
         self.macro_interval_sec = macro_interval_sec
+        self.macro_llm_interval_sec = (
+            macro_llm_interval_sec
+            if macro_llm_interval_sec is not None
+            else float(os.environ.get("MACRO_LLM_INTERVAL_SEC", "7200.0"))
+        )
+        self.thread_prune_interval_sec = thread_prune_interval_sec
         self.skip_macro = skip_macro
         self.skip_external = skip_external
         self.running = False
@@ -77,7 +85,7 @@ class IntelligenceTelemetryDaemon:
             cache_ttl_sec=max(300.0, macro_interval_sec * 0.8),
         )
         self.geopolitical_analyzer = GeopoliticalThreatAnalyzer(
-            cache_ttl_sec=max(1800.0, macro_interval_sec * 2.0),
+            cache_ttl_sec=self.macro_llm_interval_sec,
             state_file=os.path.join(self.cache_dir, "geopolitical_threat_state.json"),
         )
 
@@ -86,6 +94,7 @@ class IntelligenceTelemetryDaemon:
         self._last_derivatives_ts: Dict[str, float] = {}
         self._last_whale_ts: Dict[str, float] = {}
         self._last_macro_ts: float = 0.0
+        self._last_thread_prune_ts: float = 0.0
         self._last_stdout_hb_ts: float = 0.0
 
         # Heartbeat path
@@ -201,6 +210,18 @@ class IntelligenceTelemetryDaemon:
                     results["macro_updated"] = True
                     self._last_macro_ts = current_ts
 
+        # Periodic retention: automatically prune automated CLI threads older than 2 days
+        if force or (current_ts - self._last_thread_prune_ts) >= self.thread_prune_interval_sec:
+            try:
+                from orchestratorOS.admin.prune_cli_threads import prune_old_cli_threads
+                retention_d = float(os.environ.get("CLI_THREAD_RETENTION_DAYS", "2.0"))
+                pruned_cnt, _ = prune_old_cli_threads(retention_days=retention_d)
+                if pruned_cnt > 0:
+                    logger.info("Periodic CLI cleanup: pruned %d automated threads older than %.1f days", pruned_cnt, retention_d)
+                self._last_thread_prune_ts = current_ts
+            except Exception as e:
+                logger.debug("Automatic CLI thread pruning error: %s", e)
+
         # Periodic stdout/log heartbeat so orchestrator sees continuous activity in log_file
         if force or (current_ts - self._last_stdout_hb_ts) >= 60.0:
             logger.info(
@@ -227,6 +248,7 @@ class IntelligenceTelemetryDaemon:
                     "derivatives": self.derivatives_interval_sec,
                     "whale": self.whale_interval_sec,
                     "macro": self.macro_interval_sec,
+                    "macro_llm": self.macro_llm_interval_sec,
                 },
                 "last_run": status,
             }
@@ -315,6 +337,12 @@ def main():
         help="Macro news & threat assessment refresh interval in seconds (default: 300s).",
     )
     parser.add_argument(
+        "--macro-llm-interval",
+        type=float,
+        default=None,
+        help="Stage 3 Gemini LLM macro reasoning interval in seconds (default: from MACRO_LLM_INTERVAL_SEC or 7200s).",
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -322,6 +350,13 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Load configuration
+    try:
+        from botcore import load_dotenv
+        load_dotenv("config.env")
+    except Exception:
+        pass
 
     # Logging setup
     log_level = logging.DEBUG if args.verbose else logging.INFO
@@ -339,6 +374,7 @@ def main():
         derivatives_interval_sec=args.deriv_interval,
         whale_interval_sec=args.whale_interval,
         macro_interval_sec=args.macro_interval,
+        macro_llm_interval_sec=args.macro_llm_interval,
         skip_macro=args.skip_macro,
         skip_external=args.skip_external,
     )

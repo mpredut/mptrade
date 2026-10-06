@@ -149,6 +149,51 @@ class TestGeopoliticalThreatAnalyzer:
         assert assessment.risk_score == 0.95
         assert "oil supply cut" in assessment.summary
 
+    def test_macro_llm_interval_caching(self, tmp_path, monkeypatch):
+        calls = []
+
+        def counting_runner(prompt, model, timeout):
+            calls.append(prompt)
+            return json.dumps({
+                "threat_level": "ELEVATED",
+                "risk_score": 0.6,
+                "summary": "Regional tensions require defensive sizing.",
+                "recommended_brake": "DOWNSCALE_50",
+            })
+
+        client = GeminiClient(custom_runner=counting_runner)
+        state_file = str(tmp_path / "geopolitical_state.json")
+        analyzer = GeopoliticalThreatAnalyzer(
+            gemini_client=client,
+            cache_ttl_sec=7200.0,
+            state_file=state_file,
+        )
+
+        war_snapshot = NewsFeedCollector.parse_rss_xml(SAMPLE_RSS_XML_WAR)
+        t0 = 1000000.0
+
+        # 1st call at t0 -> calls LLM
+        res1 = analyzer.assess(war_snapshot, now_ts=t0)
+        assert len(calls) == 1
+        assert res1.threat_level == "ELEVATED"
+
+        # 2nd call 1 hour later (3600s < 7200s TTL) -> should NOT call LLM, return cached assessment
+        res2 = analyzer.assess(war_snapshot, now_ts=t0 + 3600.0)
+        assert len(calls) == 1
+        assert res2 == res1
+
+        # 3rd call past TTL (7300s > 7200s) with identical headlines -> Stage 2 digest match avoids LLM query
+        res3 = analyzer.assess(war_snapshot, now_ts=t0 + 7300.0)
+        assert len(calls) == 1
+        assert res3 == res1
+
+        # 4th call with NEW headlines past TTL -> calls LLM
+        war_xml_2 = SAMPLE_RSS_XML_WAR.replace(b"Major military strike", b"Second military strike")
+        war_snap_2 = NewsFeedCollector.parse_rss_xml(war_xml_2)
+        res4 = analyzer.assess(war_snap_2, now_ts=t0 + 7300.0)
+        assert len(calls) == 2
+
+
 
 class TestGeopoliticalShockGuard:
     """Tests for GeopoliticalShockGuard emergency braking."""
