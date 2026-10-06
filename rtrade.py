@@ -1079,7 +1079,7 @@ class TradingBot:
         pending_replacement_qty = None
 
         while True:
-
+            _touch_rtrade_heartbeat()
             current_price = api.get_current_price(self.symbol)
 
             if self.is_sell_filled:
@@ -1103,6 +1103,7 @@ class TradingBot:
                 return self.mark_buy_filled(self.filled_buy_price)
 
             buy_order = None
+            outcome_context = {}
             h = RTRADE_BUY_DESPERATE_HOURS_BASE / failure_count
             try:
                 if self.is_sell_filled:  # Desperate follow-up path.
@@ -1113,19 +1114,26 @@ class TradingBot:
                         safeback_seconds=RTRADE_DESPERATE_SAFEBACK_SEC,
                         force=False, cancelorders=True, hours=h, smart=False,
                         kind="rtrade_legacy_quote",
-                        cache_permit=submit_cache_permit)
+                        cache_permit=submit_cache_permit,
+                        _outcome_context=outcome_context)
                 else:
                     buy_order = mkt.place(
                         self.symbol, "BUY", target_buy_price, target_buy_qty,
                         cancelorders=True, hours=RTRADE_BUY_NORMAL_HOURS,
                         smart=False, kind="rtrade_legacy_quote",
-                        cache_permit=submit_cache_permit)
+                        cache_permit=submit_cache_permit,
+                        _outcome_context=outcome_context)
             except po.WeightLimitBlock as e:
                 print(f"[{self.symbol}] 24h limit reached — exiting without retry ({e})")
                 return None
 
             if buy_order is None:
+                refusal_reason = outcome_context.get("reason")
+                if refusal_reason in {"qty_zero_after_weight", "qty_zero_after_policy", "below_min_notional"}:
+                    print(f"[{self.symbol}] 24h limit reached (BUY: {refusal_reason}) — exiting without retry")
+                    return None
                 print(f"[{self.symbol}] Order BUY failed, retryed {failure_count} times. Retrying again ...")
+                _touch_rtrade_heartbeat()
                 time.sleep(WAIT_FOR_ORDER)
                 failure_count += 1
                 if failure_count > max_failures:
@@ -1209,7 +1217,7 @@ class TradingBot:
         pending_replacement_qty = None
 
         while True:
-
+            _touch_rtrade_heartbeat()
             current_price = api.get_current_price(self.symbol)
 
             if self.is_buy_filled:
@@ -1233,6 +1241,7 @@ class TradingBot:
                 return self.mark_sell_filled(self.filled_sell_price)
 
             sell_order = None
+            outcome_context = {}
             h = RTRADE_SELL_DESPERATE_HOURS_BASE / failure_count
             try:
                 if self.is_buy_filled:  # Desperate follow-up path.
@@ -1243,19 +1252,26 @@ class TradingBot:
                         safeback_seconds=RTRADE_DESPERATE_SAFEBACK_SEC,
                         force=False, cancelorders=True, hours=h, smart=False,
                         kind="rtrade_legacy_quote",
-                        cache_permit=submit_cache_permit)
+                        cache_permit=submit_cache_permit,
+                        _outcome_context=outcome_context)
                 else:
                     sell_order = mkt.place(
                         self.symbol, "SELL", target_sell_price, target_sell_qty,
                         cancelorders=True, hours=RTRADE_SELL_NORMAL_HOURS,
                         smart=False, kind="rtrade_legacy_quote",
-                        cache_permit=submit_cache_permit)
+                        cache_permit=submit_cache_permit,
+                        _outcome_context=outcome_context)
             except po.WeightLimitBlock as e:
                 print(f"[{self.symbol}] 24h limit reached (SELL) — exiting without retry ({e})")
                 return None
 
             if sell_order is None:
+                refusal_reason = outcome_context.get("reason")
+                if refusal_reason in {"qty_zero_after_weight", "qty_zero_after_policy", "below_min_notional"}:
+                    print(f"[{self.symbol}] 24h limit reached (SELL: {refusal_reason}) — exiting without retry")
+                    return None
                 print(f"[{self.symbol}] Order SELL failed, retryed {failure_count} times. Retrying again ...")
+                _touch_rtrade_heartbeat()
                 time.sleep(WAIT_FOR_ORDER)
                 failure_count += 1
                 if failure_count > max_failures:
