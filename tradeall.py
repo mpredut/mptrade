@@ -267,7 +267,12 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
                 mkt.cancel_order(symbol, str(order_id))
             except Exception as _e:
                 print(f"[TRADEALL] cancel existing order {order_id} (or filled): {_e}")
-                alert.check_alert(True, f"Order executed! be Happy :-){order_id}")
+                alert.notify(
+                    title=f"🎉 Order executed! {symbol}",
+                    body=f"Order {order_id} executed! Active order was filled on venue.",
+                    source="tradeall",
+                    symbol=symbol,
+                )
         order_ids.clear()
 
 
@@ -285,7 +290,13 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     if action == 'BUY':
         buy_price = min(float(proposed_price), float(current_price) * 0.999)
         print(f"BUY price: {buy_price:.2f} USDT")
-        alert.check_alert(True, f"BUY order {buy_price:.2f}")
+        alert.notify(
+            title=f"📈 BUY {symbol} @ {buy_price:.2f}",
+            body=f"Strategic BUY placed: proposed={float(proposed_price):.2f}, current={float(current_price):.2f}, reason={reason}",
+            source="tradeall",
+            symbol=symbol,
+            price=buy_price,
+        )
 
         for i in range(num_orders):
             adjusted_buy_price = buy_price * (1 - i * price_step / 100)
@@ -296,7 +307,13 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     elif action == 'SELL':
         sell_price = max(float(proposed_price), float(current_price) * 1.001)
         print(f"SELL price: {sell_price:.2f} USDT")
-        alert.check_alert(True, f"SELL order {sell_price:.2f}")
+        alert.notify(
+            title=f"📉 SELL {symbol} @ {sell_price:.2f}",
+            body=f"Strategic SELL placed: proposed={float(proposed_price):.2f}, current={float(current_price):.2f}, reason={reason}",
+            source="tradeall",
+            symbol=symbol,
+            price=sell_price,
+        )
 
         for i in range(num_orders):
             adjusted_sell_price = sell_price * (1 + i * price_step / 100)
