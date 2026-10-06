@@ -90,8 +90,15 @@ restore_backup() {
     echo "    ✔ dependencies installed in $VENV_DIR"
     
     echo "--- [3/5] systemd + DNS + SSH + cron (needs sudo) ---"
-    if sudo -v 2>/dev/null; then
-        sudo env TRADING_ROOT="$ROOT" TRADING_USER="$(id -un)" TRADING_PYTHON="$VENV_DIR/bin/python" bash "$ROOT/systemd/install_prod.sh"
+    local TARGET_USER="${TRADING_USER:-${SUDO_USER:-$(stat -c %U "$ROOT")}}"
+    local TARGET_GROUP
+    TARGET_GROUP="$(id -gn "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")"
+    if [ "$(id -u)" -eq 0 ]; then
+        chown -R "$TARGET_USER:$TARGET_GROUP" "$ROOT" 2>/dev/null || true
+        env TRADING_ROOT="$ROOT" TRADING_USER="$TARGET_USER" TRADING_PYTHON="$VENV_DIR/bin/python" bash "$ROOT/systemd/install_prod.sh"
+        echo "    ✔ PROD profile installed"
+    elif sudo -v 2>/dev/null; then
+        sudo env TRADING_ROOT="$ROOT" TRADING_USER="$TARGET_USER" TRADING_PYTHON="$VENV_DIR/bin/python" bash "$ROOT/systemd/install_prod.sh"
         echo "    ✔ PROD profile installed"
     else
         echo "    ! no sudo — by hand: sudo bash systemd/install_prod.sh"

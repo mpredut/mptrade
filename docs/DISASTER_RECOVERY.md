@@ -52,8 +52,9 @@ The entire deployment is reproducible and path-agnostic:
   - Installs DNS drop-in `resolved-20-trading-cache.conf` (tunnel wgpia0 owns DNS resolution).
   - Installs direct gateway routing drop-in `netplan-99-force-gateway.yaml`.
   - Installs logrotate cap for PIA daemon debug log.
+  - Installs user-level `antigravity-cli-daemon.service` and enables user lingering (`loginctl enable-linger`).
   - Cleans up and eliminates any legacy `binance.service`.
-  - Sets up dynamic crontab (`systemd/crontab.prod.txt` using `orchestratorOS/run_python.sh`) for trading user and root.
+  - Sets up dynamic crontab (`systemd/crontab.prod.txt` including `manage_agy_update.sh`) for trading user and root.
 - **VPN Supervisor** (`orchestratorOS/livecheck/pia_supervisor.sh`):
   - Reads `PIA_USER`, `PIA_PASS`, and `PIA_DIP_TOKEN_FRANKFURT` directly from `.env` (fail-fast, no persistent token files on disk).
   - Automatically authenticates `piactl`, registers Dedicated IP token, and configures port forwarding on startup.
@@ -66,22 +67,46 @@ The entire deployment is reproducible and path-agnostic:
 
 ## 3. Manual Rebuild Pieces (Off-Repo Requirements)
 
-### 1. Netplan Uplink (Direct to Router .1)
+### 1. Base OS Packages (Fresh Linux Install)
+
+If rebuilding on a fresh Ubuntu/Debian minimal install:
+```bash
+sudo apt update && sudo apt install -y python3 python3-venv python3-pip git curl net-tools wireguard logrotate
+```
+
+### 2. PIA VPN Daemon Installation
+
+PIA is a proprietary client (`/opt/piavpn`). On a bare VM (unless restored from Proxmox PBS/vzdump):
+```bash
+curl -sSLO https://installers.privateinternetaccess.com/download/pia-linux-3.5.7-08120.run
+chmod +x pia-linux-3.5.7-08120.run
+sudo ./pia-linux-3.5.7-08120.run --extra-args "--no-sandbox"
+```
+*(All login credentials and Dedicated IP tokens will be restored automatically from `.env` by `pia_supervisor.sh`).*
+
+### 3. Netplan Uplink (Direct to Router .1)
 
 The VM must route directly to router `192.168.0.1` and not through the Proxmox host (`.2`).
 `systemd/install_prod.sh` installs `systemd/netplan-99-force-gateway.yaml` to `/etc/netplan/99-force-gateway.yaml`.
 It takes effect cleanly on reboot.
 
-### 2. Binance API IP Whitelist
+### 4. Binance API IP Whitelist
 
 The Dedicated IP (`192.109.159.105`) is whitelisted on all Binance API keys.
 If PIA ever issues a new Dedicated IP token resulting in an IP change:
 - Update the API key whitelist in the Binance web console.
 
-### 3. Proxmox Hypervisor (192.168.0.2)
+### 5. Proxmox Hypervisor (192.168.0.2)
 
 See `docs/PROXMOX_DR.md` for hypervisor network and firewall settings.
 - VM 100 must run with **NIC firewall OFF (`firewall=0`)** so PIA's WireGuard TLS handshakes are never dropped.
+
+### 6. Off-Site Backups Notice
+
+Daily backups via `manage_backups.sh local` create `$HOME/mptrade-secrets-backup.tar.gz` and rotate 7 daily copies locally.
+For complete disaster resistance against total VM/hypervisor storage loss:
+- Maintain Proxmox VE backups (vzdump / PBS) of VM 100, OR
+- Periodically copy `~/mptrade-secrets-backup.tar.gz` off-host (e.g., via `scp` or remote storage).
 
 ---
 
@@ -90,13 +115,15 @@ See `docs/PROXMOX_DR.md` for hypervisor network and firewall settings.
 When rebuilding on a fresh VM from scratch:
 
 ```bash
+# 0. On a bare VM, ensure base packages & PIA are installed (see Section 3.1 & 3.2)
+
 # 1. Clone the repository
 git clone https://github.com/mpredut/mptrade.git ~/mptrade
 cd ~/mptrade
 
 # 2. Restore secrets and state from backup tarball (or directory)
-# (Automatically unpacks secrets, sets up venv, installs deps, renders units/crontabs, and starts services)
-sudo ./orchestratorOS/admin/manage_backups.sh restore ~/mptrade-secrets-backup.tar.gz
+# (Automatically unpacks secrets, sets up venv, installs deps, renders units/crontabs, enables linger, and starts services)
+./orchestratorOS/admin/manage_backups.sh restore ~/mptrade-secrets-backup.tar.gz
 
 # 3. Reboot the VM (applies netplan force-gateway and starts all services cleanly)
 sudo reboot
