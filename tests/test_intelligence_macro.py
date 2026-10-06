@@ -109,9 +109,32 @@ class TestNewsFeedCollector:
         collector._last_fetch_ts = time.time()
         assert collector.fetch(force_refresh=False) == dummy_snapshot
 
+    def test_news_feed_collector_aggregation(self, tmp_path):
+        history_file = str(tmp_path / "news_history.json")
+        collector = NewsFeedCollector(
+            cache_ttl_sec=0.0,
+            history_file=history_file,
+            rolling_window_sec=7200.0,
+        )
+
+        snap1 = NewsFeedCollector.parse_rss_xml(SAMPLE_RSS_XML_CALM, now_ts=1000.0)
+        agg1 = collector._aggregate(snap1, now=1000.0)
+        assert agg1.total_fetched == 2
+
+        snap2 = NewsFeedCollector.parse_rss_xml(SAMPLE_RSS_XML_WAR, now_ts=1060.0)
+        agg2 = collector._aggregate(snap2, now=1060.0)
+        # Unique headlines from calm (2) + war (4) = 6 aggregated headlines
+        assert agg2.total_fetched == 6
+        assert agg2.high_severity_count == 3
+
+        # Repeated war snapshot should de-duplicate and not grow the pool
+        agg3 = collector._aggregate(snap2, now=1120.0)
+        assert agg3.total_fetched == 6
+
 
 class TestGeopoliticalThreatAnalyzer:
     """Tests for GeopoliticalThreatAnalyzer two-stage filter and Gemini synthesis."""
+
 
     def test_calm_news_skips_llm(self):
         def failing_runner(prompt, model, timeout):

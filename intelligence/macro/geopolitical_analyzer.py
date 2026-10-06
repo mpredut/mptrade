@@ -14,7 +14,7 @@ from intelligence.sentiment.gemini_client import GeminiClient
 logger = logging.getLogger("intelligence.macro.geopolitical_analyzer")
 
 DEFAULT_STATE_FILE = "cachedb/geopolitical_threat_state.json"
-DEFAULT_CACHE_TTL_SEC = float(os.environ.get("MACRO_LLM_INTERVAL_SEC", "7200.0"))  # 2 hours default (was 30m)
+DEFAULT_CACHE_TTL_SEC = float(os.environ.get("MACRO_LLM_INTERVAL_SEC", "9000.0"))  # 2.5 hours default (was 30m)
 
 
 @dataclass(frozen=True)

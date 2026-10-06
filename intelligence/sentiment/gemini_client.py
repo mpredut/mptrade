@@ -30,10 +30,12 @@ class GeminiClient:
         api_key: Optional[str] = None,
         cli_path: Optional[str] = None,
         custom_runner: Optional[Callable[[str, str, float], str]] = None,
+        project_id: Optional[str] = None,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         self.cli_path = cli_path or (AGY_CLI_PATH if os.path.exists(AGY_CLI_PATH) else shutil.which("agy"))
+        self.project_id = project_id or os.environ.get("AGY_PROJECT", "autonommptrade")
         self._custom_runner = custom_runner
         self._cache: Dict[str, tuple[float, str]] = {}
 
@@ -70,6 +72,7 @@ class GeminiClient:
             try:
                 cmd = [
                     self.cli_path,
+                    "--project", self.project_id,
                     "--model", selected_model,
                     "-p", prompt,
                 ]

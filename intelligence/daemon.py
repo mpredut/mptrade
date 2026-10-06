@@ -32,7 +32,7 @@ class IntelligenceTelemetryDaemon:
         orderbook_interval_sec: float = 15.0,
         derivatives_interval_sec: float = 30.0,
         whale_interval_sec: float = 60.0,
-        macro_interval_sec: float = 300.0,
+        macro_interval_sec: Optional[float] = None,
         macro_llm_interval_sec: Optional[float] = None,
         thread_prune_interval_sec: float = 3600.0,
         skip_macro: bool = False,
@@ -42,11 +42,15 @@ class IntelligenceTelemetryDaemon:
         self.orderbook_interval_sec = orderbook_interval_sec
         self.derivatives_interval_sec = derivatives_interval_sec
         self.whale_interval_sec = whale_interval_sec
-        self.macro_interval_sec = macro_interval_sec
+        self.macro_interval_sec = (
+            float(macro_interval_sec)
+            if macro_interval_sec is not None
+            else float(os.environ.get("MACRO_NEWS_INTERVAL_SEC", "120.0"))
+        )
         self.macro_llm_interval_sec = (
             macro_llm_interval_sec
             if macro_llm_interval_sec is not None
-            else float(os.environ.get("MACRO_LLM_INTERVAL_SEC", "7200.0"))
+            else float(os.environ.get("MACRO_LLM_INTERVAL_SEC", "9000.0"))
         )
         self.thread_prune_interval_sec = thread_prune_interval_sec
         self.skip_macro = skip_macro
@@ -82,7 +86,8 @@ class IntelligenceTelemetryDaemon:
             disk_ttl_sec=300.0,
         )
         self.news_collector = NewsFeedCollector(
-            cache_ttl_sec=max(300.0, macro_interval_sec * 0.8),
+            cache_ttl_sec=max(30.0, self.macro_interval_sec * 0.5),
+            history_file=os.path.join(self.cache_dir, "news_feed_history.json"),
         )
         self.geopolitical_analyzer = GeopoliticalThreatAnalyzer(
             cache_ttl_sec=self.macro_llm_interval_sec,
@@ -210,11 +215,11 @@ class IntelligenceTelemetryDaemon:
                     results["macro_updated"] = True
                     self._last_macro_ts = current_ts
 
-        # Periodic retention: automatically prune automated CLI threads older than 2 days
+        # Periodic retention: automatically prune automated CLI threads older than 1 day (autonommptrade)
         if force or (current_ts - self._last_thread_prune_ts) >= self.thread_prune_interval_sec:
             try:
-                from orchestratorOS.admin.prune_cli_threads import prune_old_cli_threads
-                retention_d = float(os.environ.get("CLI_THREAD_RETENTION_DAYS", "2.0"))
+                from orchestratorOS.admin.prune_autonommptrade import prune_old_cli_threads
+                retention_d = float(os.environ.get("CLI_THREAD_RETENTION_DAYS", "1.0"))
                 pruned_cnt, _ = prune_old_cli_threads(retention_days=retention_d)
                 if pruned_cnt > 0:
                     logger.info("Periodic CLI cleanup: pruned %d automated threads older than %.1f days", pruned_cnt, retention_d)

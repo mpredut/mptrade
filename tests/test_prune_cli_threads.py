@@ -5,12 +5,13 @@ import os
 import sqlite3
 import pytest
 
-from orchestratorOS.admin.prune_cli_threads import (
+from orchestratorOS.admin.prune_autonommptrade import (
     prune_old_cli_threads,
     filter_proto_file,
     is_automated_thread,
     encode_varint,
 )
+
 
 
 class TestPruneCliThreads:
@@ -82,10 +83,10 @@ class TestPruneCliThreads:
         conn.commit()
         conn.close()
 
-        # Run pruner
+        # Run pruner with default retention (1.0 day)
         pruned_count, bytes_freed = prune_old_cli_threads(
             cli_base=cli_base,
-            retention_days=2.0,
+            retention_days=1.0,
             project_id="default-cli-project",
             dry_run=False,
         )
@@ -133,8 +134,50 @@ class TestPruneCliThreads:
 
         pruned, _ = prune_old_cli_threads(
             cli_base=cli_base,
-            retention_days=2.0,
+            retention_days=1.0,
             exclude_cids={cid},
             dry_run=False,
         )
         assert pruned == 0
+
+    def test_autonommptrade_project_pruning(self, tmp_path):
+        cli_base = str(tmp_path / "cli")
+        os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
+        db_path = os.path.join(cli_base, "conversation_summaries.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE conversation_summaries (
+                conversation_id text PRIMARY KEY,
+                title text,
+                preview text,
+                last_modified_time datetime,
+                project_id text
+            )
+        """)
+        now = datetime.now(timezone.utc)
+        ts_old = (now - timedelta(days=2)).isoformat()
+        ts_recent = (now - timedelta(hours=3)).isoformat()
+
+        conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)", (
+            "auto-old-1", "Query", "Automated reasoning", ts_old, "autonommptrade"
+        ))
+        conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)", (
+            "auto-recent-2", "Query", "Automated reasoning", ts_recent, "autonommptrade"
+        ))
+        conn.commit()
+        conn.close()
+
+        # Both default projects (default-cli-project & autonommptrade) checked
+        pruned, _ = prune_old_cli_threads(
+            cli_base=cli_base,
+            retention_days=1.0,
+            dry_run=False,
+        )
+        assert pruned == 1
+
+        conn = sqlite3.connect(db_path)
+        remaining = [r[0] for r in conn.execute("SELECT conversation_id FROM conversation_summaries").fetchall()]
+        conn.close()
+        assert "auto-old-1" not in remaining
+        assert "auto-recent-2" in remaining
+

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import logging
+import os
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -48,17 +50,107 @@ class NewsFeedSnapshot:
 
 
 class NewsFeedCollector:
-    """Collects and filters macro news headlines from free public RSS feeds without API keys."""
+    """Collects and aggregates macro news headlines from free public RSS feeds across rolling windows."""
 
     def __init__(
         self,
         rss_url: str = DEFAULT_RSS_URL,
-        cache_ttl_sec: float = 900.0,  # 15 minutes
+        cache_ttl_sec: float = 60.0,  # 1 minute cache for RSS fetches
+        history_file: str = "cachedb/news_feed_history.json",
+        rolling_window_sec: float = 14400.0,  # 4 hours aggregation horizon
     ) -> None:
         self.rss_url = rss_url
         self.cache_ttl_sec = cache_ttl_sec
+        self.history_file = history_file
+        self.rolling_window_sec = rolling_window_sec
         self._cached_snapshot: Optional[NewsFeedSnapshot] = None
         self._last_fetch_ts: float = 0.0
+        # Map of normalized title -> (first_seen_ts, NewsHeadline)
+        self._aggregated_pool: Dict[str, Tuple[float, NewsHeadline]] = {}
+        self._load_history()
+
+    def _normalize_title(self, title: str) -> str:
+        return re.sub(r"\s+", " ", title.strip().lower())
+
+    def _load_history(self) -> None:
+        if os.path.exists(self.history_file):
+            try:
+                with open(self.history_file, "r") as f:
+                    data = json.load(f)
+                now = time.time()
+                for item in data:
+                    ts = float(item.get("first_seen_ts", now))
+                    if (now - ts) < self.rolling_window_sec:
+                        h = NewsHeadline(
+                            title=str(item.get("title", "")),
+                            source=str(item.get("source", "")),
+                            pub_date=str(item.get("pub_date", "")),
+                            url=str(item.get("url", "")),
+                            matched_keywords=tuple(item.get("matched_keywords", ())),
+                            is_high_severity=bool(item.get("is_high_severity", False)),
+                        )
+                        norm = self._normalize_title(h.title)
+                        if norm:
+                            self._aggregated_pool[norm] = (ts, h)
+            except Exception as e:
+                logger.debug("Could not load news history from %s: %s", self.history_file, e)
+
+    def _save_history(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self.history_file), exist_ok=True)
+            payload = []
+            for norm, (ts, h) in self._aggregated_pool.items():
+                payload.append({
+                    "title": h.title,
+                    "source": h.source,
+                    "pub_date": h.pub_date,
+                    "url": h.url,
+                    "matched_keywords": list(h.matched_keywords),
+                    "is_high_severity": h.is_high_severity,
+                    "first_seen_ts": ts,
+                })
+            with open(self.history_file, "w") as f:
+                json.dump(payload, f, indent=2)
+        except Exception as e:
+            logger.debug("Could not save news history to %s: %s", self.history_file, e)
+
+    def _aggregate(self, latest_snapshot: NewsFeedSnapshot, now: float) -> NewsFeedSnapshot:
+        """Merge latest batch into rolling pool and return aggregated snapshot."""
+        # 1. Merge new headlines
+        for h in latest_snapshot.headlines:
+            norm = self._normalize_title(h.title)
+            if norm and norm not in self._aggregated_pool:
+                self._aggregated_pool[norm] = (now, h)
+
+        # 2. Prune old headlines past rolling horizon
+        cutoff = now - self.rolling_window_sec
+        self._aggregated_pool = {
+            k: v for k, v in self._aggregated_pool.items() if v[0] >= cutoff
+        }
+        self._save_history()
+
+        # 3. Sort pool: high-severity first, then most recent first
+        all_headlines = [
+            v[1]
+            for v in sorted(
+                self._aggregated_pool.values(),
+                key=lambda x: (1 if x[1].is_high_severity else 0, x[0]),
+                reverse=True,
+            )
+        ]
+        high_sev = [h for h in all_headlines if h.is_high_severity]
+        has_shock = len(high_sev) >= 3 or any(
+            any(w in h.title.lower() for w in ("declared war", "nuclear", "strait of hormuz", "major offensive"))
+            for h in high_sev
+        )
+
+        return NewsFeedSnapshot(
+            headlines=tuple(all_headlines[:35]),
+            total_fetched=len(all_headlines),
+            high_severity_count=len(high_sev),
+            has_critical_shock_keywords=has_shock,
+            ts=now,
+        )
 
     @staticmethod
     def parse_rss_xml(xml_bytes: bytes, now_ts: Optional[float] = None) -> Optional[NewsFeedSnapshot]:
@@ -126,7 +218,7 @@ class NewsFeedCollector:
         )
 
     def fetch(self, force_refresh: bool = False) -> Optional[NewsFeedSnapshot]:
-        """Fetch latest geopolitical RSS headlines with caching and error handling."""
+        """Fetch latest geopolitical RSS headlines with caching, aggregation, and error handling."""
         now = time.time()
         if not force_refresh and self._cached_snapshot and (now - self._last_fetch_ts) < self.cache_ttl_sec:
             return self._cached_snapshot
@@ -139,11 +231,12 @@ class NewsFeedCollector:
             with urllib.request.urlopen(req, timeout=8) as resp:
                 data = resp.read()
 
-            snapshot = self.parse_rss_xml(data, now_ts=now)
-            if snapshot:
-                self._cached_snapshot = snapshot
+            latest = self.parse_rss_xml(data, now_ts=now)
+            if latest:
+                aggregated = self._aggregate(latest, now)
+                self._cached_snapshot = aggregated
                 self._last_fetch_ts = now
-                return snapshot
+                return aggregated
         except Exception as e:
             logger.warning("Failed to fetch RSS news feed: %s. Using cached fallback if available.", e)
 
