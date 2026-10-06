@@ -31,6 +31,8 @@ Administrative and disaster recovery tools.
   Unified script for backup and disaster recovery. Handles local tarball creation, remote uploads (e.g. to Storj) with encryption, and full machine restoration from backups. Replaces legacy `backup_local.sh`, `backup_remote.sh`, and `restore.sh`.
 - **`make_venv_portable.sh`**
   Fixes hardcoded absolute paths inside `.venv/bin/` wrappers when the repository is cloned or moved to a new path.
+- **`manage_agy_update.sh`**
+  Scheduled bi-weekly via `crontab.prod.txt`. Checks for Antigravity CLI updates (`agy update`) and restarts `antigravity-cli-daemon.service` only when a new version is applied.
 
 ## `orchestratorOS/`
 Observability and administration scripts.
