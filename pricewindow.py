@@ -302,11 +302,52 @@ class PriceWindow:
     def get_trend(self):
         return self.get_instant_trend()
 
+    def calculate_acceleration(self, window_sec: float = 90.0) -> tuple[float, float]:
+        """Calculate recent price velocity (%/min) and acceleration (%/min^2).
+
+        Fits a quadratic polynomial y(t) = a*t^2 + b*t + c over the latest samples,
+        where t is in minutes and y is percentage move relative to window start.
+        Returns (velocity, acceleration):
+          velocity: dy/dt at the end of the window (in % / min)
+          acceleration: d^2y/dt^2 = 2*a (in % / min^2)
+        """
+        with self._lock:
+            prices = list(self.prices)
+        if len(prices) < 3:
+            return 0.0, 0.0
+
+        rate = max(float(self.sample_rate_sec or 1.0), 0.1)
+        if window_sec is not None and window_sec > 0:
+            n_samples = max(int(round(window_sec / rate)), 3)
+            prices = prices[-n_samples:]
+        n = len(prices)
+        if n < 3:
+            return 0.0, 0.0
+
+        p0 = prices[0]
+        if p0 <= 0:
+            return 0.0, 0.0
+
+        t_minutes = np.arange(n) * (rate / 60.0)
+        y_pct = ((np.array(prices) - p0) / p0) * 100.0
+
+        try:
+            a, b, _ = np.polyfit(t_minutes, y_pct, 2)
+            t_end = t_minutes[-1]
+            velocity = float(2.0 * a * t_end + b)
+            acceleration = float(2.0 * a)
+            return velocity, acceleration
+        except Exception:
+            return 0.0, 0.0
+
 
 class WindowAnalyzer:
     """Trading metrics composed from a ``PriceWindow``."""
     def __init__(self, window: "PriceWindow"):
         self.window = window
+
+    def calculate_acceleration(self, window_sec: float = 90.0) -> tuple[float, float]:
+        return self.window.calculate_acceleration(window_sec)
 
     def calculate_slope_max_min(self):
         w = self.window

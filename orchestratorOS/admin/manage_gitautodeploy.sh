@@ -68,8 +68,6 @@ remote_sha="$(g rev-parse "origin/$BRANCH" 2>/dev/null)"
 # GUARD: clean working tree (a dirty tree would be clobbered by the pull).
 if [ -n "$(g status --porcelain 2>/dev/null)" ]; then
     log "REFUSED: working tree is dirty"
-    alert "autodeploy SKIPPED ($(hostname))" \
-        "origin/$BRANCH moved but the working tree has uncommitted changes; NOT deploying. Resolve by hand."
     exit 0
 fi
 
@@ -98,8 +96,6 @@ if [ "$local_sha" != "$remote_sha" ]; then
     # GUARD: fast-forward only (origin must descend from HEAD; no divergence / history rewrite).
     if [ "$(g merge-base HEAD "origin/$BRANCH" 2>/dev/null)" != "$local_sha" ]; then
         log "REFUSED: origin/$BRANCH is not a fast-forward of HEAD (diverged)"
-        alert "autodeploy SKIPPED ($(hostname))" \
-            "origin/$BRANCH diverged from local HEAD (not a fast-forward); NOT deploying. Resolve by hand."
         exit 0
     fi
 

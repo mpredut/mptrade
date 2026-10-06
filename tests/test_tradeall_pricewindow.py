@@ -1099,7 +1099,7 @@ class TestTrackAndPlaceOrder(unittest.TestCase):
             )
             mock_notify.assert_called_once_with(
                 title="📈 BUY BTCUSDT @ 99.90",
-                body="Strategic BUY placed: proposed=100.00, current=100.00, reason=trend_signal",
+                body="Strategy: TradeAll (trend_signal) | proposed=100.00, current=100.00",
                 source="tradeall",
                 symbol="BTCUSDT",
                 price=99.9,
@@ -1118,12 +1118,20 @@ class TestTrackAndPlaceOrder(unittest.TestCase):
             )
             mock_notify.assert_called_once_with(
                 title="📉 SELL BTCUSDT @ 100.10",
-                body="Strategic SELL placed: proposed=100.00, current=100.00, reason=trend_signal",
+                body="Strategy: TradeAll (trend_signal) | proposed=100.00, current=100.00",
                 source="tradeall",
                 symbol="BTCUSDT",
                 price=100.1,
             )
             self.assertEqual(order_ids, [2002])
+
+    def test_order_skipped_or_refused_does_not_alert(self):
+        with patch.object(ta.api, "cancel_expired_orders"), \
+             patch.object(ta.alert, "notify") as mock_notify, \
+             patch.object(ta, "_fire_order", return_value=None):
+            order_ids = ta.track_and_place_order("SELL", "ARBUSDC", 1, 0.21, 0.21, reason="trend_confirmed_down")
+            mock_notify.assert_not_called()
+            self.assertEqual(order_ids, [])
 
     def test_cancels_previous_order_and_alerts_when_filled(self):
         with patch.object(ta.mkt, "cancel_order", side_effect=RuntimeError("filled")) as mock_cancel, \

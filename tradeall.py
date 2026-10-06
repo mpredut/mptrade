@@ -73,6 +73,14 @@ TREND_UNIFORM_RATE_THRESHOLD = required_float_env("TRADEALL_TREND_UNIFORM_RATE")
 SLOPE_EXTREME_THRESHOLD = required_float_env("TRADEALL_SLOPE_EXTREME_THRESHOLD")
 SMALL_SLOPE_THRESHOLD = float_env("TRADEALL_SMALL_SLOPE_THRESHOLD") or 3.5
 
+# Proactive kinematic parameters (Velocity & Acceleration)
+_accel_raw = str(os.environ.get("TRADEALL_ACCEL_ENABLED", "true") or "").strip().lower()
+ACCEL_ENABLED = _accel_raw in {"1", "true", "yes", "on"}
+ACCEL_WINDOW_SEC = float_env("TRADEALL_ACCEL_WINDOW_SEC") or 90.0
+ACCEL_INFLECTION_THRESHOLD = float_env("TRADEALL_ACCEL_INFLECTION_THRESHOLD") or 0.5
+ACCEL_SURGE_THRESHOLD = float_env("TRADEALL_ACCEL_SURGE_THRESHOLD") or 2.5
+
+
 
 # July 22: per-trend cooldown, based on real July 21-22 data and seven experiments
 # in offline/research/tradeall_trigger_gate/. logic() previously fired on every
@@ -109,6 +117,9 @@ def _validate_tradeall_config():
         "FIRE_SAFEBACK_SEC": FIRE_SAFEBACK_SEC,
         "ORDER_EXPIRY_HOURS": ORDER_EXPIRY_HOURS,
         "SMALL_SLOPE_THRESHOLD": SMALL_SLOPE_THRESHOLD,
+        "ACCEL_WINDOW_SEC": ACCEL_WINDOW_SEC,
+        "ACCEL_INFLECTION_THRESHOLD": ACCEL_INFLECTION_THRESHOLD,
+        "ACCEL_SURGE_THRESHOLD": ACCEL_SURGE_THRESHOLD,
     }
     for name, value in positive.items():
         if not math.isfinite(float(value)) or float(value) <= 0:
@@ -296,36 +307,38 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     if action == 'BUY':
         buy_price = min(float(proposed_price), float(current_price) * 0.999)
         print(f"BUY price: {buy_price:.2f} {quote}".strip())
-        alert.notify(
-            title=f"📈 BUY {symbol} @ {buy_price:.2f}",
-            body=f"Strategic BUY placed: proposed={float(proposed_price):.2f}, current={float(current_price):.2f}, reason={reason}",
-            source="tradeall",
-            symbol=symbol,
-            price=buy_price,
-        )
 
         for i in range(num_orders):
             adjusted_buy_price = buy_price * (1 - i * price_step / 100)
             order = _fire_order(symbol, "BUY", adjusted_buy_price, reason, **kwargs)
-            if order and order.get('orderId'):
-                order_ids.append(order['orderId'])
+            if order and (order.get('orderId') or order.get('id')):
+                oid = order.get('orderId') or order.get('id')
+                order_ids.append(oid)
+                alert.notify(
+                    title=f"📈 BUY {symbol} @ {adjusted_buy_price:.2f}",
+                    body=f"Strategy: TradeAll ({reason}) | proposed={float(proposed_price):.2f}, current={float(current_price):.2f}",
+                    source="tradeall",
+                    symbol=symbol,
+                    price=adjusted_buy_price,
+                )
 
     elif action == 'SELL':
         sell_price = max(float(proposed_price), float(current_price) * 1.001)
         print(f"SELL price: {sell_price:.2f} {quote}".strip())
-        alert.notify(
-            title=f"📉 SELL {symbol} @ {sell_price:.2f}",
-            body=f"Strategic SELL placed: proposed={float(proposed_price):.2f}, current={float(current_price):.2f}, reason={reason}",
-            source="tradeall",
-            symbol=symbol,
-            price=sell_price,
-        )
 
         for i in range(num_orders):
             adjusted_sell_price = sell_price * (1 + i * price_step / 100)
             order = _fire_order(symbol, "SELL", adjusted_sell_price, reason, **kwargs)
-            if order and order.get('orderId'):
-                order_ids.append(order['orderId'])
+            if order and (order.get('orderId') or order.get('id')):
+                oid = order.get('orderId') or order.get('id')
+                order_ids.append(oid)
+                alert.notify(
+                    title=f"📉 SELL {symbol} @ {adjusted_sell_price:.2f}",
+                    body=f"Strategy: TradeAll ({reason}) | proposed={float(proposed_price):.2f}, current={float(current_price):.2f}",
+                    source="tradeall",
+                    symbol=symbol,
+                    price=adjusted_sell_price,
+                )
 
     return order_ids
 

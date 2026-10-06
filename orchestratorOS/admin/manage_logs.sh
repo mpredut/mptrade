@@ -97,3 +97,10 @@ if [ -d "$LOGGER_DIR" ]; then
 
     echo "  after retention:  $(du -sh "$LOGGER_DIR" 2>/dev/null | cut -f1)"
 fi
+
+# 3. Retention for autonomous LLM CLI threads older than 2 days
+PRUNE_SCRIPT="$ROOT/orchestratorOS/admin/prune_cli_threads.py"
+if [ -f "$PRUNE_SCRIPT" ]; then
+    echo "  pruning automated CLI threads older than 2 days..."
+    python3 "$PRUNE_SCRIPT" --days 2 || true
+fi
