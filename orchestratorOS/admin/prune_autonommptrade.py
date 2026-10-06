@@ -24,12 +24,21 @@ AUTONOMOUS_PROMPT_PATTERNS = [
     "macroeconomic geopolitical risk assessment",
     "macroeconomic risk assessment",
     "macro geopolitical risk assessment",
+    "macrogeopolitical risk assessment",
+    "macroeconomic impact",
+    "macroeconomic war",
+    "iran war",
+    "middle east war",
+    "geopolitical risk",
     "crypto risk assessment",
     "crypto risk evaluation",
+    "crypto bot trade risk",
+    "crypto trade risk",
     "analiză risc tranzacție",
     "analiza risc tranzactie",
     "evaluated by gemini",
     "autonommptrade",
+    "ntfy-macro",
 ]
 
 
