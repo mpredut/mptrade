@@ -50,7 +50,7 @@ class IntelligenceTelemetryDaemon:
         self.macro_llm_interval_sec = (
             macro_llm_interval_sec
             if macro_llm_interval_sec is not None
-            else float(os.environ.get("MACRO_LLM_INTERVAL_SEC", "9000.0"))
+            else float(os.environ.get("MACRO_LLM_INTERVAL_SEC", "16200.0"))
         )
         self.thread_prune_interval_sec = thread_prune_interval_sec
         self.skip_macro = skip_macro
@@ -345,7 +345,7 @@ def main():
         "--macro-llm-interval",
         type=float,
         default=None,
-        help="Stage 3 Gemini LLM macro reasoning interval in seconds (default: from MACRO_LLM_INTERVAL_SEC or 7200s).",
+        help="Stage 3 Gemini LLM macro reasoning interval in seconds (default: from MACRO_LLM_INTERVAL_SEC or 16200s).",
     )
     parser.add_argument(
         "--verbose",
