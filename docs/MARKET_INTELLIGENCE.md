@@ -110,14 +110,16 @@ Blends retail sentiment indices with quantitative LLM reasoning:
 ### Pillar 4: Macro Geopolitical & Energy Shock Shield (`intelligence/macro/`)
 
 Protects the portfolio from macroeconomic black swan events:
-- **Collector (`MacroNewsCollector`)**:
-  - Continuously polls Google News RSS feeds for critical geopolitical and energy terms (`war`, `missile`, `iran`, `sanctions`, `oil`, `opec`, `strait of hormuz`, etc.) using regex word boundaries.
-- **Analyzer (`GeopoliticalAnalyzer`)**:
-  - Two-stage filter: fast keyword frequency screening triggers Gemini LLM qualitative synthesis only when significant threat density is detected.
+- **Collector (`NewsFeedCollector`)**:
+  - Continuously polls Google News RSS feeds every 120 seconds, maintaining a 4-hour rolling deduplicated pool in `cachedb/news_feed_history.json`.
+- **Analyzer (`GeopoliticalThreatAnalyzer`)**:
+  - Three-stage pipeline: Stage 1 keyword screening, Stage 2 digest check, and Stage 3 Google Gemini LLM reasoning running every **4.5 hours (16200s)**.
 - **Guard (`GeopoliticalShockGuard`)**:
   - On `CRITICAL_SHOCK`, hard-vetoes BUY orders.
   - On `ELEVATED` risk, scales down BUY order sizing.
   - Never blocks SELL/exit orders, ensuring capital preservation. State persisted to `cachedb/geopolitical_threat_state.json`.
+
+For a dedicated breakdown of the pillars and LLM operational triggers, see [INTELLIGENCE_PILLARS_AND_LLM_ANALYSIS.md](INTELLIGENCE_PILLARS_AND_LLM_ANALYSIS.md).
 
 ---
 
