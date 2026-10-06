@@ -1,0 +1,3 @@
+agy update
+systemctl --user restart antigravity-cli-daemon
+
