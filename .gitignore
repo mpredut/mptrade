@@ -31,8 +31,6 @@ cachedb/
 *.lock
 *.meta
 *.bak
-*.bak_*
-index.html
 
 # State files (*.json in subdirectories are runtime states, except tracked schema/config)
 *.json
@@ -47,15 +45,11 @@ index.html
 logs/*
 !logs/.gitkeep
 logger/
-tradeall_live/
-plots/
 
 # Offline datasets & proposals
-*.jsonl
 backtest_proposals.json
 offline/results/
 
 # Temporary generated artifacts
 nohup.out
-sell_recommendation.csv
 *.patch
