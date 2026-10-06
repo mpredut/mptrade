@@ -1044,9 +1044,9 @@ def _evaluate_intelligence_guards_raw(
                             try:
                                 from notify_engine.alertnotifiers import notify
                                 if not geo_dec.allowed:
-                                    geo_title = f"🛡 [MACRO SHADOW VETO] Would Block {side} {symbol}"
+                                    geo_title = f"🛡 [VETO] Would Block {side} {symbol}"
                                 else:
-                                    geo_title = f"🛡 [MACRO SHADOW DOWNSCALE] Would Scale {int(geo_dec.suggested_scale*100)}% {side} {symbol}"
+                                    geo_title = f"🛡 [DOWNSCALE] Would Scale {int(geo_dec.suggested_scale*100)}% {side} {symbol}"
                                 notify(
                                     title=geo_title,
                                     body=f"Macro shock flagged: {geo_dec.reason} (threat={cached_geo.threat_level}, risk={cached_geo.risk_score:.2f})",

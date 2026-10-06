@@ -680,7 +680,7 @@ class TestOrderGuardWithGemini:
         assert allowed is True
         assert len(dispatched_alerts) == 1
         alert = dispatched_alerts[0]
-        assert alert["title"] == "🛡 [MACRO SHADOW VETO] Would Block BUY TAOUSDC"
+        assert alert["title"] == "🛡 [VETO] Would Block BUY TAOUSDC"
         assert alert["symbol"] == "TAOUSDC"
         assert "veto_critical_geopolitical_shock" in alert["body"]
 

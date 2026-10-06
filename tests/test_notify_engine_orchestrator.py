@@ -116,8 +116,8 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.assertEqual(_topic_for_category("Drawdown alert", "assetguardian"), "ntfy-guard-test")
 
         # MACRO
-        self.assertEqual(_topic_for_category("🛡 [MACRO SHADOW VETO] Would Block BUY TAOUSDC", "macro_shadow"), "ntfy-macro-test")
-        self.assertEqual(_topic_for_category("🛡 [MACRO SHADOW DOWNSCALE] Would Scale 50% BUY TAOUSDC", "order_guard"), "ntfy-macro-test")
+        self.assertEqual(_topic_for_category("🛡 [VETO] Would Block BUY TAOUSDC", "macro_shadow"), "ntfy-macro-test")
+        self.assertEqual(_topic_for_category("🛡 [DOWNSCALE] Would Scale 50% BUY TAOUSDC", "macro_shadow"), "ntfy-macro-test")
 
         # ERROR
         self.assertEqual(_topic_for_category("ORDER FAILED", "kraken"), "ntfy-error-test")
@@ -288,16 +288,16 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         with mock.patch.dict(os.environ, {"NOTIFICATION_GUARD_DEDUP_SECONDS": "1800"}):
             alert1 = {
                 "type": "bot_event",
-                "name": "🛡 [MACRO SHADOW VETO] Would Block BUY TAOUSDC",
+                "name": "🛡 [VETO] Would Block BUY TAOUSDC",
                 "body": "Macro shock flagged: threat=CRITICAL_SHOCK, risk=0.95",
-                "source": "order_guard",
+                "source": "macro_shadow",
                 "symbol": "TAOUSDC",
             }
             alert2 = {
                 "type": "bot_event",
-                "name": "🛡 [MACRO SHADOW VETO] Would Block BUY TAOUSDC",
+                "name": "🛡 [VETO] Would Block BUY TAOUSDC",
                 "body": "Macro shock flagged: threat=CRITICAL_SHOCK, risk=0.92 (wording variation)",
-                "source": "order_guard",
+                "source": "macro_shadow",
                 "symbol": "TAOUSDC",
             }
 
@@ -305,7 +305,7 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             self.dispatched.clear()
             self.server.dispatch_alerts([alert1], bot_name="rtrade")
             self.assertEqual(len(self.dispatched), 1)
-            self.assertEqual(self.dispatched[0]["title"], "[rtrade] 🛡 [MACRO SHADOW VETO] Would Block BUY TAOUSDC")
+            self.assertEqual(self.dispatched[0]["title"], "[rtrade] 🛡 [VETO] Would Block BUY TAOUSDC")
             self.assertEqual(self.dispatched[0]["topic"], "ntfy-macro-test")
 
             # Second delivery within 1800s with slight body variation must be deduplicated
