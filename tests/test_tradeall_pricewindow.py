@@ -1083,5 +1083,112 @@ class TestTrendCoordinator(unittest.TestCase):
             th.join(timeout=5)
         self.assertEqual(errors, [], f"concurrency errors: {errors[:3]}")
 
+
+class TestTrackAndPlaceOrder(unittest.TestCase):
+    def setUp(self):
+        ta._symbol_order_ids.clear()
+
+    def test_buy_cancels_expired_applies_discount_and_tracks_order(self):
+        with patch.object(ta.api, "cancel_expired_orders") as mock_exp, \
+             patch.object(ta.alert, "notify") as mock_notify, \
+             patch.object(ta, "_fire_order", return_value={"orderId": 1001}) as mock_fire:
+            order_ids = ta.track_and_place_order("BUY", "BTCUSDT", 1, 100.0, 100.0)
+            mock_exp.assert_called_once_with("BUY", "BTCUSDT", ta.EXP_TIME_BUY_ORDER)
+            mock_fire.assert_called_once_with(
+                "BTCUSDT", "BUY", 99.9, "trend_signal"
+            )
+            mock_notify.assert_called_once_with(
+                title="📈 BUY BTCUSDT @ 99.90",
+                body="Strategic BUY placed: proposed=100.00, current=100.00, reason=trend_signal",
+                source="tradeall",
+                symbol="BTCUSDT",
+                price=99.9,
+            )
+            self.assertEqual(order_ids, [1001])
+            self.assertEqual(ta._symbol_order_ids["BTCUSDT"], [1001])
+
+    def test_sell_cancels_expired_applies_premium_and_tracks_order(self):
+        with patch.object(ta.api, "cancel_expired_orders") as mock_exp, \
+             patch.object(ta.alert, "notify") as mock_notify, \
+             patch.object(ta, "_fire_order", return_value={"orderId": 2002}) as mock_fire:
+            order_ids = ta.track_and_place_order("SELL", "BTCUSDT", 1, 100.0, 100.0)
+            mock_exp.assert_called_once_with("SELL", "BTCUSDT", ta.EXP_TIME_SELL_ORDER)
+            mock_fire.assert_called_once_with(
+                "BTCUSDT", "SELL", 100.1, "trend_signal"
+            )
+            mock_notify.assert_called_once_with(
+                title="📉 SELL BTCUSDT @ 100.10",
+                body="Strategic SELL placed: proposed=100.00, current=100.00, reason=trend_signal",
+                source="tradeall",
+                symbol="BTCUSDT",
+                price=100.1,
+            )
+            self.assertEqual(order_ids, [2002])
+
+    def test_cancels_previous_order_and_alerts_when_filled(self):
+        with patch.object(ta.mkt, "cancel_order", side_effect=RuntimeError("filled")) as mock_cancel, \
+             patch.object(ta.alert, "notify") as mock_notify, \
+             patch.object(ta, "_fire_order", return_value={"orderId": 3003}):
+            existing = [9999]
+            order_ids = ta.track_and_place_order("BUY", "BTCUSDT", 2, 100.0, 100.0, order_ids=existing)
+            mock_cancel.assert_called_once_with("BTCUSDT", "9999")
+            mock_notify.assert_any_call(
+                title="🎉 Order executed! BTCUSDT",
+                body="Order 9999 executed! Active order was filled on venue.",
+                source="tradeall",
+                symbol="BTCUSDT",
+            )
+            self.assertEqual(order_ids, [3003])
+
+    def test_hold_does_not_fire_or_cancel(self):
+        with patch.object(ta.mkt, "cancel_order") as mock_cancel, \
+             patch.object(ta.alert, "notify") as mock_notify, \
+             patch.object(ta, "_fire_order") as mock_fire:
+            existing = [777]
+            order_ids = ta.track_and_place_order("HOLD", "BTCUSDT", 1, 100.0, 100.0, order_ids=existing)
+            mock_cancel.assert_not_called()
+            mock_fire.assert_not_called()
+            mock_notify.assert_not_called()
+            self.assertEqual(order_ids, [777])
+
+
+class TestLogicSmall(unittest.TestCase):
+    def test_logic_small_fires_buy_on_positive_surge(self):
+        trend_state = ta.TrendState(3600, 300, 300)
+        with patch.object(ta, "track_and_place_order", return_value=[123]) as mock_order:
+            ta.logic_small("SMALL", True, "BTCUSDT", 1, 4.0, trend_state, 60000.0)
+            mock_order.assert_called_once_with(
+                "BUY", "BTCUSDT", 0, 60000.0, 60000.0,
+                reason="small_window_surge_up",
+                safeback_seconds=ta.FIRE_SAFEBACK_SEC, force=False,
+                cancelorders=True, hours=0.3, regime_context=None
+            )
+            self.assertEqual(trend_state._confirmed_count_up, 1)
+
+    def test_logic_small_fires_sell_on_negative_plunge(self):
+        trend_state = ta.TrendState(3600, 300, 300)
+        with patch.object(ta, "track_and_place_order", return_value=[456]) as mock_order:
+            ta.logic_small("SMALL", True, "BTCUSDT", -1, -4.0, trend_state, 60000.0)
+            mock_order.assert_called_once_with(
+                "SELL", "BTCUSDT", 0, 60000.0, 60000.0,
+                reason="small_window_plunge_down",
+                safeback_seconds=ta.FIRE_SAFEBACK_SEC, force=False,
+                cancelorders=True, hours=0.3, regime_context=None
+            )
+            self.assertEqual(trend_state._confirmed_count_down, 1)
+
+    def test_logic_small_respects_enable_and_threshold(self):
+        trend_state = ta.TrendState(3600, 300, 300)
+        with patch.object(ta, "track_and_place_order") as mock_order:
+            # Below threshold
+            ta.logic_small("SMALL", True, "BTCUSDT", 1, 2.0, trend_state, 60000.0)
+            mock_order.assert_not_called()
+            # Disabled
+            ta.logic_small("SMALL", False, "BTCUSDT", 1, 4.0, trend_state, 60000.0)
+            mock_order.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+

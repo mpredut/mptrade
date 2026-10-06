@@ -336,12 +336,19 @@ class T212Provider(MarketDataProvider):
                     f"order_status({order_id}): fill {filled_qty} without an executed cost"
                 ) from None
 
+        raw_orig = raw.get("orderedQuantity", raw.get("quantity"))
+        try:
+            orig_qty = float(raw_orig) if raw_orig is not None else None
+        except (TypeError, ValueError, OverflowError):
+            orig_qty = None
+
         return OrderStatus(
             status=normalized,
             filled_qty=filled_qty,
             cost=cost,
             fee=fee,
             venue_status=venue_status,
+            orig_qty=orig_qty,
         )
 
     def cancel_order(self, symbol: str, order_id: str) -> None:

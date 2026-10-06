@@ -461,7 +461,13 @@ class Instrument:
             if wait_for_trend:
                 try:
                     import cacheManager as cm
-                    if cm.get_short_trend_manager().should_wait(side_u, self.symbol):
+                    short_tm = cm.get_short_trend_manager()
+                    try:
+                        deferred = short_tm.should_wait(
+                            side_u, self.symbol, use_noise_gate=False)
+                    except TypeError:
+                        deferred = short_tm.should_wait(side_u, self.symbol)
+                    if deferred:
                         print(
                             f"[{self.symbol}] {side_u} deferred by trend; "
                             "placement does not wait, the intent stays queued for retry")
@@ -661,16 +667,27 @@ class Instrument:
                     # final check converts that race into a terminal pre-submit
                     # refusal under the producer's exact durable claim.
                     raise SubmissionRefused("execution_disabled")
-                if prequeued_claim is not None and not caller_owns_retry:
-                    # Revalidate exact durable ownership next to the external side
-                    # effect. An expired/stolen/revision-changed claim must never
-                    # race a worker or allow two provider submissions.
-                    import order_retry
-                    refreshed_claim = order_retry.begin_claimed_submit(
-                        prequeued_claim, qty=qty)
-                    if refreshed_claim is None:
-                        raise SubmissionRefused("producer_claim_lost")
-                    prequeued_claim = refreshed_claim
+                if prequeued_claim is not None:
+                    if not caller_owns_retry:
+                        # Revalidate exact durable ownership next to the external side
+                        # effect. An expired/stolen/revision-changed claim must never
+                        # race a worker or allow two provider submissions.
+                        import order_retry
+                        refreshed_claim = order_retry.begin_claimed_submit(
+                            prequeued_claim, qty=qty)
+                        if refreshed_claim is None:
+                            raise SubmissionRefused("producer_claim_lost")
+                        prequeued_claim = refreshed_claim
+                    else:
+                        try:
+                            import order_retry
+                            if order_retry.RETRY_ENABLED:
+                                synced_claim = order_retry.update_claimed_qty(
+                                    prequeued_claim, qty)
+                                if synced_claim is not None:
+                                    prequeued_claim = synced_claim
+                        except Exception:
+                            pass
                 reason = "submit_ambiguous"
                 submit_attempted = True
                 provider_kwargs = dict(kwargs)

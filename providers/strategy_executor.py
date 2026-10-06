@@ -97,6 +97,41 @@ def extract_order_id(native) -> Optional[str]:
     return str(order_id)
 
 
+def extract_order_qty(native) -> Optional[float]:
+    """Extract the venue-accepted original order quantity from common response shapes."""
+    if native is None:
+        return None
+    if isinstance(native, SubmissionOutcome):
+        native = native.native
+        if native is None:
+            return None
+    val = None
+    if isinstance(native, dict):
+        for key in (
+            "origQty", "orig_qty", "origSz", "vol", "qty", "amount",
+            "original_qty", "order_qty", "orderedQuantity", "quantity", "sz",
+        ):
+            if key in native and native[key] is not None:
+                val = native[key]
+                break
+    else:
+        for attr in (
+            "orig_qty", "origQty", "origSz", "vol", "qty", "amount",
+            "original_qty", "order_qty", "orderedQuantity", "quantity", "sz",
+        ):
+            if hasattr(native, attr):
+                val = getattr(native, attr)
+                if val is not None:
+                    break
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        return f if math.isfinite(f) and f > 0 else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 @dataclass(frozen=True)
 class OrderStatus:
     """Normalized order result: ``open``, ``closed``, ``canceled``, or ``expired``."""
@@ -105,6 +140,7 @@ class OrderStatus:
     cost: float                # Executed notional; average price is cost / filled_qty.
     fee: float                 # Actual fee reported by the venue.
     venue_status: str = ""     # Native terminal reason (REJECTED vs CANCELED, etc.).
+    orig_qty: Optional[float] = None  # Original quantity accepted by the venue.
 
     def __post_init__(self):
         if self.status not in {"open", "closed", "canceled", "expired"}:
@@ -117,6 +153,15 @@ class OrderStatus:
                 raise ValueError(f"invalid {name} in OrderStatus: {raw!r}")
             object.__setattr__(self, name, value)
         object.__setattr__(self, "venue_status", str(self.venue_status or "").upper())
+        if self.orig_qty is not None:
+            raw_orig = self.orig_qty
+            try:
+                orig_val = float(raw_orig)
+                if not math.isfinite(orig_val) or orig_val < 0:
+                    raise ValueError(f"invalid orig_qty in OrderStatus: {raw_orig!r}")
+                object.__setattr__(self, "orig_qty", orig_val)
+            except (TypeError, OverflowError):
+                raise ValueError(f"invalid orig_qty in OrderStatus: {raw_orig!r}")
 
     @property
     def terminal(self) -> bool:

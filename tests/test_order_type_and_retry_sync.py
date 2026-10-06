@@ -228,6 +228,89 @@ class OrderTypeAndRetrySyncTest(unittest.TestCase):
         self.assertEqual(durable["lifecycle"], "accepted")
         self.assertEqual(durable["order_id"], "888")
 
+    def test_reconciliation_lost_response_syncs_scaled_venue_qty_after_timeout(self):
+        """Verify that when submit response times out, reconciliation syncs the accepted venue quantity (1.0)
+        rather than keeping the pre-submit intent quantity (4.0), preventing oversized terminal retry."""
+        oq.rewrite([])
+        # 1. Enqueue pre-submit intent for 4.0 that timed out during initial submit:
+        # State is submit_pending, submission_state is unknown, qty on disk is 4.0
+        record_id = oq.enqueue(
+            "BTCUSDC", "BUY", 4.0, {"client_order_id": "OR_timeout_test_0"},
+            requested_price=100.0, provider_name="Binance", now=1000.0,
+            attempts=1, last_attempt_ts=1000.0, failure_reason="submit_ambiguous")
+        oq.mark_failure(record_id, "submit_ambiguous", now=1000.0, submission_state="unknown")
+
+        self.assertEqual(oq.get(record_id)["qty"], 4.0)
+
+        # 2. Worker reconciles the order: venue returns origQty=1.00000000
+        class LostResponseMkt:
+            def __init__(self):
+                self.lookup_calls = []
+
+            def get_current_price(self, symbol, provider_name=None):
+                return 100.0
+
+            def order_by_client_id(self, symbol, client_order_id, provider_name=None):
+                self.lookup_calls.append(client_order_id)
+                return {
+                    "orderId": "ORD_BINANCE_999",
+                    "origQty": "1.00000000",
+                    "executedQty": "0.00000000",
+                    "status": "NEW",
+                }
+
+            def reconciliation_capabilities(self, symbol, provider_name=None):
+                return OrderReconciliationCapabilities(
+                    True, True, True, True, not_found_reliable_for_seconds=3600.0)
+
+        mkt = LostResponseMkt()
+        stats = worker.process_once(mkt, now=1400.0)
+        self.assertEqual(stats["reconciled"], 1)
+        self.assertEqual(stats["succeeded"], 1)
+
+        # 3. Verify queue record on disk was durably updated to venue's origQty (1.0, NOT 4.0!)
+        record = oq.get(record_id)
+        self.assertEqual(record["lifecycle"], "accepted")
+        self.assertEqual(record["order_id"], "ORD_BINANCE_999")
+        self.assertEqual(record["qty"], 1.0)
+        self.assertEqual(record["requested_qty_total"], 1.0)
+
+        # 4. Simulate order expiring on venue with 0.4 executed:
+        # Remainder must be 1.0 - 0.4 = 0.6, NOT 4.0 - 0.4 = 3.6!
+        status = OrderStatus(
+            status="expired", filled_qty=0.4, cost=40.0, fee=0.04,
+            venue_status="EXPIRED", orig_qty=1.0)
+        claimed = oq.claim([record_id], now=2000.0)[0]
+        transition = oq.advance_claimed_status(claimed, status, now=2000.0)
+
+        self.assertEqual(transition.action, "retry_terminal")
+        self.assertAlmostEqual(transition.remaining_qty, 0.6, places=6)
+
+        # Verify new client revision in queue has qty=0.6
+        rescheduled = oq.get(record_id)
+        self.assertEqual(rescheduled["lifecycle"], "submit_pending")
+        self.assertAlmostEqual(rescheduled["qty"], 0.6, places=6)
+
+    def test_kraken_and_hyperliquid_order_by_client_id_quantity_sync(self):
+        """Verify that Kraken vol and Hyperliquid origSz are extracted and synced on reconciliation."""
+        from providers.strategy_executor import extract_order_qty
+
+        # Kraken shape
+        kraken_order = {"orderId": "O-KRAK-1", "status": "open", "vol": 2.5}
+        self.assertEqual(extract_order_qty(kraken_order), 2.5)
+
+        # Hyperliquid shape
+        hl_order = {"orderId": "HL-1", "status": "open", "origSz": 1.75}
+        self.assertEqual(extract_order_qty(hl_order), 1.75)
+
+        # Binance shape
+        binance_order = {"orderId": 12345, "status": "NEW", "origQty": "3.14000000"}
+        self.assertEqual(extract_order_qty(binance_order), 3.14)
+
+        # T212 shape
+        t212_order = {"orderId": "T1", "orderedQuantity": 5.0}
+        self.assertEqual(extract_order_qty(t212_order), 5.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

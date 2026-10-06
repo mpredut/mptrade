@@ -39,7 +39,8 @@ from typing import Callable, Dict, Optional
 from lock import FileLock
 from providers.strategy_executor import (
     OrderStatus, ProviderError, SubmissionOutcome, SubmissionRefused,
-    capture_submission, extract_order_id, reconciliation_capabilities_of,
+    capture_submission, extract_order_id, extract_order_qty,
+    reconciliation_capabilities_of,
 )
 
 from botcore import (load_dotenv as _load_dotenv, required_bool_env,
@@ -263,6 +264,11 @@ def _client_order_id(record_id, revision):
 def order_id_from_response(response):
     """Extract one venue order ID from common Binance/Kraken/HL/T212 shapes."""
     return extract_order_id(response)
+
+
+def order_qty_from_response(response):
+    """Extract one venue-accepted quantity from common response shapes."""
+    return extract_order_qty(response)
 
 
 def valid_record(rec):
@@ -932,6 +938,10 @@ def _apply_accepted(rec, order, now, provider_name=None):
     order_id = order_id_from_response(order)
     if order_id is None:
         return False
+    venue_qty = order_qty_from_response(order)
+    if venue_qty is not None and math.isfinite(venue_qty) and venue_qty > 0:
+        rec["qty"] = venue_qty
+        rec["requested_qty_total"] = venue_qty
     _set_safe_to_discard(rec, False)
     rec["order_id"] = order_id
     rec["lifecycle"] = "accepted"
@@ -1091,7 +1101,11 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                 continue
             if outcome == "accepted" and same_revision:
                 _set_safe_to_discard(rec, False)
-                if claimed.get("qty") is not None:
+                venue_qty = order_qty_from_response(order)
+                if venue_qty is not None and math.isfinite(venue_qty) and venue_qty > 0:
+                    rec["qty"] = venue_qty
+                    rec["requested_qty_total"] = venue_qty
+                elif claimed.get("qty") is not None:
                     try:
                         cq = float(claimed["qty"])
                         if math.isfinite(cq) and cq > 0:
@@ -1110,6 +1124,10 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                 rec["last_status"] = str(getattr(status, "status", "") or "")
                 rec["venue_status"] = str(
                     getattr(status, "venue_status", "") or "")
+                status_orig = getattr(status, "orig_qty", None)
+                if status_orig is not None and math.isfinite(status_orig) and status_orig > 0:
+                    rec["qty"] = float(status_orig)
+                    rec["requested_qty_total"] = float(status_orig)
                 rec["filled_qty"] = float(
                     getattr(status, "filled_qty", 0.0) or 0.0)
                 rec["filled_cost"] = float(getattr(status, "cost", 0.0) or 0.0)
@@ -1123,6 +1141,11 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                 filled_qty = max(0.0, float(
                     getattr(status, "filled_qty", 0.0) or 0.0))
                 current_qty = float(rec.get("qty") or 0.0)
+                status_orig = getattr(status, "orig_qty", None)
+                if status_orig is not None and math.isfinite(status_orig) and status_orig > 0:
+                    current_qty = float(status_orig)
+                    rec["qty"] = current_qty
+                    rec["requested_qty_total"] = current_qty
                 remaining_qty = max(0.0, current_qty - filled_qty)
                 _append_order_history(rec, observed_at=now, status=status)
                 rec["delivered_qty"] = float(rec.get("delivered_qty") or 0.0) + min(
@@ -1287,6 +1310,9 @@ def advance_claimed_status(claimed: dict, status: OrderStatus,
         return OutboxStatusTransition("filled", status_changed=True)
 
     current_qty = float(claimed.get("qty") or 0.0)
+    status_orig = getattr(status, "orig_qty", None)
+    if status_orig is not None and math.isfinite(status_orig) and status_orig > 0:
+        current_qty = float(status_orig)
     remaining_qty = max(0.0, current_qty - status.filled_qty)
     if _outbox_retryable_terminal(status):
         complete_claim(claimed, "retry_terminal", now, status=status)
