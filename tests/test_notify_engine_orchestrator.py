@@ -25,6 +25,7 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             "NOTIFICATION_STATE_FILE": self.state_file,
             "NTFY_TOPIC_TRADES": "ntfy-trades-test",
             "NTFY_TOPIC_GUARD": "ntfy-guard-test",
+            "NTFY_TOPIC_MACRO": "ntfy-macro-test",
             "NTFY_TOPIC_ERROR": "ntfy-error-test",
             "NTFY_TOPIC_PRICE": "ntfy-price-test",
             "NTFY_DAILY_BUDGET": "500",
@@ -113,6 +114,10 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.assertEqual(_topic_for_category("LIQUIDATION IMMINENT", "hl_bot"), "ntfy-guard-test")
         self.assertEqual(_topic_for_category("🛑 order submission quarantined", "order_retry"), "ntfy-guard-test")
         self.assertEqual(_topic_for_category("Drawdown alert", "assetguardian"), "ntfy-guard-test")
+
+        # MACRO
+        self.assertEqual(_topic_for_category("🛡 [MACRO SHADOW VETO] Would Block BUY TAOUSDC", "macro_shadow"), "ntfy-macro-test")
+        self.assertEqual(_topic_for_category("🛡 [MACRO SHADOW DOWNSCALE] Would Scale 50% BUY TAOUSDC", "order_guard"), "ntfy-macro-test")
 
         # ERROR
         self.assertEqual(_topic_for_category("ORDER FAILED", "kraken"), "ntfy-error-test")
@@ -301,7 +306,7 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             self.server.dispatch_alerts([alert1], bot_name="rtrade")
             self.assertEqual(len(self.dispatched), 1)
             self.assertEqual(self.dispatched[0]["title"], "[rtrade] 🛡 [MACRO SHADOW VETO] Would Block BUY TAOUSDC")
-            self.assertEqual(self.dispatched[0]["topic"], "ntfy-guard-test")
+            self.assertEqual(self.dispatched[0]["topic"], "ntfy-macro-test")
 
             # Second delivery within 1800s with slight body variation must be deduplicated
             self.server.dispatch_alerts([alert2], bot_name="rtrade")

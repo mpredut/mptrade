@@ -24,6 +24,8 @@ _OPS_MARKERS = (
 def _category_for_title_and_source(title: str, source: str) -> str:
     t = (title or "").upper()
     s = (source or "").lower()
+    if "MACRO" in t or "macro" in s or "geopolitical" in s:
+        return "MACRO"
     if any(m in t for m in _GUARD_MARKERS) or any(m in s for m in ("guard", "trail", "assetguardian", "stop")):
         return "GUARD"
     if any(m in t for m in _OPS_MARKERS) or "watchdog" in s:
@@ -45,6 +47,8 @@ def _topic_for_category(title: str, source: str) -> str:
         if os.path.isfile(env_path):
             load_dotenv(env_path)
             topic = os.environ.get(f"NTFY_TOPIC_{cat}")
+    if not topic and cat == "MACRO":
+        topic = os.environ.get("NTFY_TOPIC_MACRO", "ntfy-macro-8a35d7")
     return topic or os.environ.get("PHONE_ALERT_URL", "test-mptrade")
 
 def _resolve_provider_label(bot_name: str = "", source: str = "") -> str:
@@ -110,6 +114,8 @@ class NotificationServer:
         cat = category.upper()
         # Fallbacks to old naming if env vars are present
         topic = os.environ.get(f"NTFY_TOPIC_{cat}")
+        if not topic and cat == "MACRO":
+            topic = os.environ.get("NTFY_TOPIC_MACRO", "ntfy-macro-8a35d7")
         return topic or "test-mptrade"
         
     def _enqueue_payload(self, intent_type: str, data: dict):

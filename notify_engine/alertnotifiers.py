@@ -82,7 +82,7 @@ def _is_guard_alert(alerts: list[Any]) -> bool:
         source = str(alert.get("source") or "").lower()
         if (
             any(marker in title for marker in ("🛡", "🛑", "GUARD", "VETO", "SHADOW", "BLOCKED"))
-            or any(src in source for src in ("order_guard", "guard", "assetguardian"))
+            or any(src in source for src in ("order_guard", "guard", "assetguardian", "macro_shadow"))
         ):
             return True
     return False
@@ -94,7 +94,7 @@ def _alert_identity(alert: Any) -> dict:
         source = str(alert.get("source") or "").lower()
         name = str(alert.get("name") or alert.get("title") or "")
         if (
-            source in ("order_guard", "guard", "assetguardian")
+            source in ("order_guard", "guard", "assetguardian", "macro_shadow")
             or any(m in name for m in ("🛡", "🛑", "GUARD", "VETO", "SHADOW", "BLOCKED"))
         ):
             # For guard alerts, dedup on identity fields excluding volatile body reasoning/risk scores

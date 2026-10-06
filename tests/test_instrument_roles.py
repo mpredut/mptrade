@@ -24,7 +24,7 @@ def section(name="BINANCE_TEST", **overrides):
 def test_current_execution_policy_is_preserved():
     assert registry.symbols_for("binance") == ["BTCUSDC", "TAOUSDC", "ARBUSDC"]
     expected = {
-        "tradeall_fire": {"BTCUSDC", "TAOUSDC"}, "kalman_primary": {"BTCUSDC"},
+        "tradeall_fire": {"BTCUSDC", "TAOUSDC", "ARBUSDC"}, "kalman_primary": {"BTCUSDC"},
         "mt": {"BTCUSDC", "TAOUSDC"}, "assetguardian": {"BTCUSDC", "TAOUSDC"},
         "archive": {"BTCUSDC", "TAOUSDC"}, "rtrade": {"TAOUSDC"},
         "force_sell": {"BTCUSDC", "TAOUSDC"},
@@ -34,7 +34,7 @@ def test_current_execution_policy_is_preserved():
         assert set(registry.symbols_for("binance", role)) == symbols
     modes = {item.symbol: item.setting("tradeall.kalman_mode") for item in
              registry.select_instruments("binance", "tradeall_fire").values()}
-    assert modes == {"BTCUSDC": "strict", "TAOUSDC": "permissive"}
+    assert modes == {"BTCUSDC": "strict", "TAOUSDC": "permissive", "ARBUSDC": "permissive"}
     trails = {item.symbol: item.number("trailing.pct") for item in
               registry.select_instruments("binance", "trailing").values()}
     assert trails == {"BTCUSDC": 20, "TAOUSDC": 22, "ARBUSDC": 26}
@@ -126,7 +126,7 @@ def test_one_new_section_reaches_real_consumers_without_source_edits(tmp_path):
         assert "TESTUSDC" in tradeall.KALMAN_PRIMARY_SYMBOLS
         assert tradeall._kalman_gate_blocks("TESTUSDC", "BUY") == (False, "off", None)
         assert "TESTUSDC" in assetguardian.TRACKED_SYMBOLS
-        assert "ARBUSDC" not in tradeall.TRADEALL_FIRE_SYMBOLS
+        assert "ARBUSDC" in tradeall.TRADEALL_FIRE_SYMBOLS
         assert "ARBUSDC" not in assetguardian.TRACKED_SYMBOLS
         assert "TESTUSDC" in registry.symbols_for("binance", "archive")
         assert "BINANCE_TEST" in load_for("mt")

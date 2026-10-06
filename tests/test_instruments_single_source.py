@@ -38,14 +38,12 @@ class TestInstrumentsSingleSource(unittest.TestCase):
         )
 
     def test_tradeall_allowlist_matches_pre_refactor(self):
-        self.assertEqual(ic.tradeall_trade_symbols(), {"BTCUSDC", "TAOUSDC"})
+        self.assertEqual(ic.tradeall_trade_symbols(), {"BTCUSDC", "TAOUSDC", "ARBUSDC"})
 
-    def test_arb_is_trend_tracked_but_not_traded(self):
-        # The whole point of the manual ARB position: observed + trailed, never
-        # traded by tradeall.
+    def test_arb_is_trend_tracked_and_traded(self):
         self.assertIn("ARBUSDC", ic.binance_symbols())
         self.assertIn("ARBUSDC", ic.trail_pct_map())
-        self.assertNotIn("ARBUSDC", ic.tradeall_trade_symbols())
+        self.assertIn("ARBUSDC", ic.tradeall_trade_symbols())
 
     def test_trail_and_trade_are_subsets_of_symbols(self):
         syms = set(ic.binance_symbols())

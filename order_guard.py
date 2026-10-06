@@ -1050,7 +1050,7 @@ def _evaluate_intelligence_guards_raw(
                                 notify(
                                     title=geo_title,
                                     body=f"Macro shock flagged: {geo_dec.reason} (threat={cached_geo.threat_level}, risk={cached_geo.risk_score:.2f})",
-                                    source="order_guard",
+                                    source="macro_shadow",
                                     symbol=symbol,
                                 )
                             except Exception:
