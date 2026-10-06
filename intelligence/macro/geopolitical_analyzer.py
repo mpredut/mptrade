@@ -149,7 +149,15 @@ class GeopoliticalThreatAnalyzer:
             "}"
         )
 
-        resp = self.gemini_client.query_json(prompt, timeout_sec=15.0)
+        # Exact title aligned with ntfy-macro alert naming
+        lead_headline = high_sev[0].title[:60] if high_sev else "Macro Geopolitical Assessment"
+        macro_thread_title = f"ntfy-macro: 🛡 [MACRO SHOCK SHIELD] {lead_headline}"
+
+        resp = self.gemini_client.query_json(
+            prompt,
+            timeout_sec=15.0,
+            thread_title=macro_thread_title,
+        )
         if not resp:
             # Fallback to local heuristic based on shock keywords
             level = "CRITICAL_SHOCK" if news_snapshot.has_critical_shock_keywords else "ELEVATED"

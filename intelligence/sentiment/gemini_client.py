@@ -46,6 +46,7 @@ class GeminiClient:
         model: Optional[str] = None,
         timeout_sec: float = 15.0,
         cache_ttl_sec: float = 0.0,
+        thread_title: Optional[str] = None,
     ) -> Optional[str]:
         """Query Gemini with a prompt and return the text response."""
         now = time.time()
@@ -70,11 +71,12 @@ class GeminiClient:
         # 2. Local authenticated CLI runner (subscription mode)
         if self.cli_path and os.path.exists(self.cli_path):
             try:
+                cli_prompt = f"{thread_title}\n\n{prompt}" if thread_title else prompt
                 cmd = [
                     self.cli_path,
                     "--project", self.project_id,
                     "--model", selected_model,
-                    "-p", prompt,
+                    "-p", cli_prompt,
                 ]
                 proc = subprocess.run(
                     cmd,
@@ -87,6 +89,24 @@ class GeminiClient:
                     output = proc.stdout.strip()
                     if cache_ttl_sec > 0:
                         self._cache[prompt] = (now, output)
+                    if thread_title:
+                        try:
+                            from orchestratorOS.admin.prune_autonommptrade import sync_thread_title
+                            presence_dir = os.path.expanduser("~/.gemini/antigravity-cli/presence")
+                            if os.path.isdir(presence_dir):
+                                locks = [
+                                    os.path.splitext(f)[0]
+                                    for f in os.listdir(presence_dir)
+                                    if f.endswith(".lock")
+                                ]
+                                if locks:
+                                    locks.sort(
+                                        key=lambda cid: os.path.getmtime(os.path.join(presence_dir, f"{cid}.lock")),
+                                        reverse=True,
+                                    )
+                                    sync_thread_title(locks[0], thread_title)
+                        except Exception as e:
+                            logger.debug("Failed syncing thread title: %s", e)
                     return output
                 else:
                     logger.warning(
@@ -132,6 +152,7 @@ class GeminiClient:
         model: Optional[str] = None,
         timeout_sec: float = 15.0,
         cache_ttl_sec: float = 0.0,
+        thread_title: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Query Gemini and parse the response strictly as a JSON object."""
         raw_text = self.query_text(
@@ -139,6 +160,7 @@ class GeminiClient:
             model=model,
             timeout_sec=timeout_sec,
             cache_ttl_sec=cache_ttl_sec,
+            thread_title=thread_title,
         )
         if not raw_text:
             return None

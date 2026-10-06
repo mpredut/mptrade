@@ -72,6 +72,104 @@ def encode_varint(val: int) -> bytes:
     return bytes(res)
 
 
+def sync_thread_title(cid: str, new_title: str, cli_base: str = DEFAULT_CLI_BASE) -> bool:
+    """Update title for a conversation ID across SQLite and protobuf summaries."""
+    updated = False
+    try:
+        db_path = os.path.join(cli_base, "conversation_summaries.db")
+        if os.path.exists(db_path):
+            conn = sqlite3.connect(db_path)
+            cur = conn.cursor()
+            cur.execute("UPDATE conversation_summaries SET title=? WHERE conversation_id=?", (new_title, cid))
+            conn.commit()
+            conn.close()
+            updated = True
+    except Exception as e:
+        logger.debug("Failed updating SQLite title: %s", e)
+
+    for pb_name in ["agyhub_summaries_proto.pb", "jetbox_summaries_proto.pb"]:
+        pb_path = os.path.join(cli_base, pb_name)
+        if not os.path.exists(pb_path):
+            continue
+        try:
+            with open(pb_path, "rb") as f:
+                raw = f.read()
+            stream = io.BytesIO(raw)
+            out = bytearray()
+            while stream.tell() < len(raw):
+                tag = read_varint(stream)
+                if tag is None:
+                    break
+                length = read_varint(stream)
+                if length is None:
+                    break
+                data = stream.read(length)
+                sub = io.BytesIO(data)
+                matched_cid = None
+                new_data = bytearray()
+                while sub.tell() < len(data):
+                    stag = read_varint(sub)
+                    if stag is None:
+                        break
+                    swire = stag & 0x7
+                    fnum = stag >> 3
+                    if swire == 2:
+                        slen = read_varint(sub)
+                        sdata = sub.read(slen)
+                        if fnum == 1:
+                            matched_cid = sdata.decode("utf-8", errors="ignore")
+                            new_data.extend(encode_varint(stag))
+                            new_data.extend(encode_varint(slen))
+                            new_data.extend(sdata)
+                        elif fnum == 2 and matched_cid == cid:
+                            nsub = io.BytesIO(sdata)
+                            new_nested = bytearray()
+                            while nsub.tell() < len(sdata):
+                                ntag = read_varint(nsub)
+                                if ntag is None:
+                                    break
+                                nwire = ntag & 0x7
+                                if ntag == 10:  # title field
+                                    nlen = read_varint(nsub)
+                                    nsub.read(nlen)
+                                    tb = new_title.encode("utf-8")
+                                    new_nested.extend(encode_varint(10))
+                                    new_nested.extend(encode_varint(len(tb)))
+                                    new_nested.extend(tb)
+                                elif nwire == 2:
+                                    nlen = read_varint(nsub)
+                                    nd = nsub.read(nlen)
+                                    new_nested.extend(encode_varint(ntag))
+                                    new_nested.extend(encode_varint(nlen))
+                                    new_nested.extend(nd)
+                                elif nwire == 0:
+                                    nv = read_varint(nsub)
+                                    new_nested.extend(encode_varint(ntag))
+                                    new_nested.extend(encode_varint(nv))
+                            new_data.extend(encode_varint(stag))
+                            new_data.extend(encode_varint(len(new_nested)))
+                            new_data.extend(new_nested)
+                            updated = True
+                        else:
+                            new_data.extend(encode_varint(stag))
+                            new_data.extend(encode_varint(slen))
+                            new_data.extend(sdata)
+                    elif swire == 0:
+                        val = read_varint(sub)
+                        new_data.extend(encode_varint(stag))
+                        new_data.extend(encode_varint(val))
+                out.extend(encode_varint(tag))
+                out.extend(encode_varint(len(new_data)))
+                out.extend(new_data)
+            tmp_path = pb_path + ".tmp"
+            with open(tmp_path, "wb") as f:
+                f.write(out)
+            os.replace(tmp_path, pb_path)
+        except Exception as e:
+            logger.debug("Failed updating proto title in %s: %s", pb_name, e)
+    return updated
+
+
 def filter_proto_file(file_path: str, cids_to_remove: Set[str]) -> int:
     """Filter out entries with matching conversation IDs from a protobuf summaries file."""
     if not os.path.exists(file_path) or not cids_to_remove:
