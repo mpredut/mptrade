@@ -180,7 +180,11 @@ def _reserve_delivery(channel: str, alerts: list[Any], *, urgent: bool) -> tuple
             {"sent": 0, "last": {}, "blocked": False, "budget_warning_sent": False},
         )
         if channel == "ntfy" and channel_state.get("blocked"):
-            return False, "provider_daily_limit", False
+            blocked_until = float(channel_state.get("blocked_until", 0.0) or 0.0)
+            if blocked_until > 0 and now >= blocked_until:
+                channel_state["blocked"] = False
+            else:
+                return False, "provider_daily_limit", False
 
         last = channel_state.setdefault("last", {})
         cutoff = now - 2 * 24 * 60 * 60
@@ -210,8 +214,8 @@ def _reserve_delivery(channel: str, alerts: list[Any], *, urgent: bool) -> tuple
         return True, "reserved", False
 
 
-def _mark_provider_daily_limit(channel: str) -> bool:
-    """Block the channel until UTC reset and request one alternate warning."""
+def _mark_provider_daily_limit(channel: str, cooldown_seconds: float = 900.0) -> bool:
+    """Block the channel with a rolling cooldown and request one alternate warning."""
     now = time.time()
     today = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
     path = _delivery_state_path()
@@ -221,6 +225,7 @@ def _mark_provider_daily_limit(channel: str) -> bool:
         channel_state = state["channels"].setdefault(channel, {})
         first = not bool(channel_state.get("budget_warning_sent"))
         channel_state["blocked"] = True
+        channel_state["blocked_until"] = now + cooldown_seconds
         channel_state["budget_warning_sent"] = True
         _save_delivery_state(path, state)
         return first
