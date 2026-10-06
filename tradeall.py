@@ -236,72 +236,75 @@ def _fire_order(symbol, action, price, reason, **kwargs):
     return mkt.place(symbol, action, price, None, motivation=reason, **kwargs)
 
 
-# July 30: track_and_place_order() has no callers anywhere in the repository. It
-# was superseded by _fire_order()/place_order_smart(qty=None); see _fire_order's
-# docstring. The old implementation remains commented out because it may contain
-# useful ideas such as side-specific price steps, configurable order counts, and
-# alertnotifiers.check_alert on every placement.
-#
-# def track_and_place_order(action, symbol, count, proposed_price, current_price, order_ids=None):
-#     quantity = api.quantities[symbol]
-#     print(f"Iteration {count} generated price {proposed_price} versus {current_price}")
-#
-#     if order_ids is None:
-#         order_ids = []
-#
-#     if action == 'HOLD':
-#         return order_ids
-#
-#     # Cancel any existing orders
-#     if order_ids:
-#         for order_id in order_ids:
-#             if not api.cancel_order(symbol, order_id):
-#                 alert.check_alert(True, f"Order executed! be Happy :-){order_id:.2f}")
-#         order_ids.clear()
-#
-#     api.cancel_expired_orders(action, symbol, EXP_TIME_BUY_ORDER if action == 'BUY' else EXP_TIME_SELL_ORDER)
-#
-#     num_orders, price_step = (1, 0.2) if action == "BUY" else (1, 0.08)
-#
-#     # Price is rising, place fewer, larger orders. # Increase the spacing between orders as percents
-#     # Price is falling, place more, smaller orders # Reduce the spacing between orders as percents
-#
-#     if action == 'BUY':
-#         api.cancel_expired_orders(action, symbol, EXP_TIME_BUY_ORDER)
-#
-#         buy_price = min(proposed_price, current_price * 0.999)
-#         print(f"BUY price: {buy_price:.2f} USDT")
-#
-#         alert.check_alert(True, f"BUY order {buy_price:.2f}")
-#
-#         # Place the custom buy orders
-#         for i in range(num_orders):
-#             adjusted_buy_price = buy_price * (1 - i * price_step / 100)
-#             order_quantity = quantity / num_orders  # Divide quantity among orders
-#             print(f"Placing buy order at price: {adjusted_buy_price:.2f} USDT for {order_quantity:.6f} BTC")
-#             order = po.place_order_smart("BUY", symbol, adjusted_buy_price, order_quantity, cancelorders=True, hours=0.3, pair=True)
-#             if order:
-#                 order_ids.append(order['orderId'])
-#
-#     elif action == 'SELL':
-#         api.cancel_expired_orders(action, symbol, EXP_TIME_SELL_ORDER)
-#
-#         sell_price = max(proposed_price, current_price * 1.001)
-#         print(f"SELL price: {sell_price:.2f} USDT")
-#
-#         alert.check_alert(True, f"SELL order {sell_price:.2f}")
-#
-#         # Place the custom sell orders
-#         for i in range(num_orders):
-#             adjusted_sell_price = sell_price * (1 + i * price_step / 100)
-#             order_quantity = quantity / num_orders  # Divide quantity among orders
-#             print(f"Placing sell order at price: {adjusted_sell_price:.2f} USDT for {order_quantity:.6f} BTC")
-#             order = po.place_order_smart("SELL", symbol, adjusted_sell_price, order_quantity, cancelorders=True, hours=0.3, pair=True)
-#             if order:
-#                 print(f"Sell order placed successfully with ID: {order['orderId']}")
-#                 order_ids.append(order['orderId'])
-#
-#     return order_ids
+_symbol_order_ids = {}
+
+
+def track_and_place_order(action, symbol, count, proposed_price, current_price, order_ids=None,
+                          reason="trend_signal", **kwargs):
+    """Execute trading strategy with order tracking, expiration, and replacement.
+
+    Restores the trading strategy logic of the original track_and_place_order()
+    while routing placements through the guarded proxy (_fire_order / mkt.place).
+    Cancels prior active orders from previous signals (alerting if already executed),
+    cancels expired orders on the venue, applies side-specific strategic pricing,
+    and records newly placed order IDs.
+    """
+    action = str(action or "").upper()
+    print(f"Iteration {count} generated price {proposed_price} versus {current_price}")
+
+    if order_ids is None:
+        if symbol not in _symbol_order_ids:
+            _symbol_order_ids[symbol] = []
+        order_ids = _symbol_order_ids[symbol]
+
+    if action == 'HOLD':
+        return order_ids
+
+    # Cancel any existing active orders from previous iterations
+    if order_ids:
+        for order_id in list(order_ids):
+            try:
+                mkt.cancel_order(symbol, str(order_id))
+            except Exception as _e:
+                print(f"[TRADEALL] cancel existing order {order_id} (or filled): {_e}")
+                alert.check_alert(True, f"Order executed! be Happy :-){order_id}")
+        order_ids.clear()
+
+
+    # Cancel expired orders on venue
+    exp_time = EXP_TIME_BUY_ORDER if action == 'BUY' else EXP_TIME_SELL_ORDER
+    try:
+        api.cancel_expired_orders(action, symbol, exp_time)
+    except Exception as _e:
+        print(f"[TRADEALL] cancel_expired_orders error for {symbol}: {_e}")
+
+    num_orders, price_step = (1, 0.2) if action == "BUY" else (1, 0.08)
+
+    # Price is rising, place fewer, larger orders. Increase spacing between orders as percents.
+    # Price is falling, place more, smaller orders. Reduce spacing between orders as percents.
+    if action == 'BUY':
+        buy_price = min(float(proposed_price), float(current_price) * 0.999)
+        print(f"BUY price: {buy_price:.2f} USDT")
+        alert.check_alert(True, f"BUY order {buy_price:.2f}")
+
+        for i in range(num_orders):
+            adjusted_buy_price = buy_price * (1 - i * price_step / 100)
+            order = _fire_order(symbol, "BUY", adjusted_buy_price, reason, **kwargs)
+            if order and order.get('orderId'):
+                order_ids.append(order['orderId'])
+
+    elif action == 'SELL':
+        sell_price = max(float(proposed_price), float(current_price) * 1.001)
+        print(f"SELL price: {sell_price:.2f} USDT")
+        alert.check_alert(True, f"SELL order {sell_price:.2f}")
+
+        for i in range(num_orders):
+            adjusted_sell_price = sell_price * (1 + i * price_step / 100)
+            order = _fire_order(symbol, "SELL", adjusted_sell_price, reason, **kwargs)
+            if order and order.get('orderId'):
+                order_ids.append(order['orderId'])
+
+    return order_ids
 
 
 class TrendState:
@@ -498,11 +501,12 @@ def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regi
         if not trend_state.can_retry_fire(direction):
             return
         trend_state.mark_fire_attempt(direction)
-        result = _fire_order(symbol, action, current_price, reason,
-            safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
-            cancelorders=True, hours=1, regime_context=regime_ctx)
-        if result is not None:
-            # The provider accepted a submission.  This is intentionally a throttle
+        result = track_and_place_order(
+            action, symbol, trend_state.confirm_count, proposed_price, current_price,
+            reason=reason, safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
+            cancelorders=True, hours=0.3, regime_context=regime_ctx)
+        if result:
+            # The provider accepted a submission. This is intentionally a throttle
             # count, not a claim that the order filled.
             trend_state.mark_confirmed(direction)
 
@@ -802,14 +806,18 @@ class TrendCoordinator:
                         and new_ktrend != prev_ktrend):
                     if new_ktrend == 1:
                         print(f"[KALMAN-PRIMARY] {symbol} ->UP: initiating BUY")
-                        _fire_order(symbol, "BUY", current_price, "kalman_primary_up",
-                                    safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
-                                    cancelorders=True, hours=1)
+                        track_and_place_order(
+                            "BUY", symbol, 1, current_price, current_price,
+                            reason="kalman_primary_up",
+                            safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
+                            cancelorders=True, hours=0.3)
                     elif new_ktrend == -1:
                         print(f"[KALMAN-PRIMARY] {symbol} ->DOWN: initiating SELL")
-                        _fire_order(symbol, "SELL", current_price, "kalman_primary_down",
-                                    safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
-                                    cancelorders=True, hours=1)
+                        track_and_place_order(
+                            "SELL", symbol, 1, current_price, current_price,
+                            reason="kalman_primary_down",
+                            safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
+                            cancelorders=True, hours=0.3)
             except Exception as _e:  # noqa: BLE001
                 print(f"[TrendCoordinator] shadow error {symbol} (continuing): {_e}")
         self.instant_mgr.update_snapshot(symbol, **fields)

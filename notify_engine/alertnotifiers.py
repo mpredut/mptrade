@@ -235,8 +235,10 @@ def _is_provider_daily_limit(response: Any) -> bool:
 
 class AlertNotifier:
 
-    def check_alert(condition, message, alert_interval=60):
-        pass  # Placeholder for alert checking logic, can be implemented as needed
+    @staticmethod
+    def check_alert(condition, message, alert_interval=60, symbol="TRADE"):
+        check_alert(condition, message, alert_interval, symbol)
+
     
     @staticmethod
     def format_human_readable_time(value) -> str:
@@ -513,6 +515,15 @@ def notify(title: str, body: str, source: str, symbol: str,
             "source": source,
             "symbol": symbol
         }])
+ 
+ 
+def check_alert(condition: bool, message: str, alert_interval: int = 60, symbol: str = "TRADE") -> None:
+    """Dispatches a trade alert notification if condition is met."""
+    if condition:
+        try:
+            notify("Trade Alert", str(message), "tradeall", symbol)
+        except Exception:
+            pass
 
 
 def bind_notify(symbol_env_keys: tuple, default_symbol: str):

@@ -1083,5 +1083,52 @@ class TestTrendCoordinator(unittest.TestCase):
             th.join(timeout=5)
         self.assertEqual(errors, [], f"concurrency errors: {errors[:3]}")
 
+
+class TestTrackAndPlaceOrder(unittest.TestCase):
+    def setUp(self):
+        ta._symbol_order_ids.clear()
+
+    def test_buy_cancels_expired_applies_discount_and_tracks_order(self):
+        with patch.object(ta.api, "cancel_expired_orders") as mock_exp, \
+             patch.object(ta, "_fire_order", return_value={"orderId": 1001}) as mock_fire:
+            order_ids = ta.track_and_place_order("BUY", "BTCUSDT", 1, 100.0, 100.0)
+            mock_exp.assert_called_once_with("BUY", "BTCUSDT", ta.EXP_TIME_BUY_ORDER)
+            mock_fire.assert_called_once_with(
+                "BTCUSDT", "BUY", 99.9, "trend_signal"
+            )
+            self.assertEqual(order_ids, [1001])
+            self.assertEqual(ta._symbol_order_ids["BTCUSDT"], [1001])
+
+    def test_sell_cancels_expired_applies_premium_and_tracks_order(self):
+        with patch.object(ta.api, "cancel_expired_orders") as mock_exp, \
+             patch.object(ta, "_fire_order", return_value={"orderId": 2002}) as mock_fire:
+            order_ids = ta.track_and_place_order("SELL", "BTCUSDT", 1, 100.0, 100.0)
+            mock_exp.assert_called_once_with("SELL", "BTCUSDT", ta.EXP_TIME_SELL_ORDER)
+            mock_fire.assert_called_once_with(
+                "BTCUSDT", "SELL", 100.1, "trend_signal"
+            )
+            self.assertEqual(order_ids, [2002])
+
+    def test_cancels_previous_order_and_alerts_when_filled(self):
+        with patch.object(ta.mkt, "cancel_order", side_effect=RuntimeError("filled")) as mock_cancel, \
+             patch.object(ta.alert, "check_alert") as mock_alert, \
+             patch.object(ta, "_fire_order", return_value={"orderId": 3003}):
+            existing = [9999]
+            order_ids = ta.track_and_place_order("BUY", "BTCUSDT", 2, 100.0, 100.0, order_ids=existing)
+            mock_cancel.assert_called_once_with("BTCUSDT", "9999")
+            mock_alert.assert_any_call(True, "Order executed! be Happy :-)9999")
+            self.assertEqual(order_ids, [3003])
+
+    def test_hold_does_not_fire_or_cancel(self):
+        with patch.object(ta.mkt, "cancel_order") as mock_cancel, \
+             patch.object(ta, "_fire_order") as mock_fire:
+            existing = [777]
+            order_ids = ta.track_and_place_order("HOLD", "BTCUSDT", 1, 100.0, 100.0, order_ids=existing)
+            mock_cancel.assert_not_called()
+            mock_fire.assert_not_called()
+            self.assertEqual(order_ids, [777])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
