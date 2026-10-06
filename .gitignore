@@ -33,7 +33,6 @@ cachedb/
 *.bak
 
 # State files (*.json in subdirectories are runtime states, except tracked schema/config)
-*.json
 !notify_engine/rules.json
 !offline/research/hype_dataset/financial_baseline_v1.json
 !offline/research/t212_dataset/manifest.json
@@ -47,9 +46,9 @@ logs/*
 logger/
 
 # Offline datasets & proposals
-backtest_proposals.json
 offline/results/
 
 # Temporary generated artifacts
 nohup.out
 *.patch
+visuals/index.html
