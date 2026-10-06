@@ -1152,6 +1152,43 @@ class TestTrackAndPlaceOrder(unittest.TestCase):
             self.assertEqual(order_ids, [777])
 
 
+class TestLogicSmall(unittest.TestCase):
+    def test_logic_small_fires_buy_on_positive_surge(self):
+        trend_state = ta.TrendState(3600, 300, 300)
+        with patch.object(ta, "track_and_place_order", return_value=[123]) as mock_order:
+            ta.logic_small("SMALL", True, "BTCUSDT", 1, 4.0, trend_state, 60000.0)
+            mock_order.assert_called_once_with(
+                "BUY", "BTCUSDT", 0, 60000.0, 60000.0,
+                reason="small_window_surge_up",
+                safeback_seconds=ta.FIRE_SAFEBACK_SEC, force=False,
+                cancelorders=True, hours=0.3, regime_context=None
+            )
+            self.assertEqual(trend_state._confirmed_count_up, 1)
+
+    def test_logic_small_fires_sell_on_negative_plunge(self):
+        trend_state = ta.TrendState(3600, 300, 300)
+        with patch.object(ta, "track_and_place_order", return_value=[456]) as mock_order:
+            ta.logic_small("SMALL", True, "BTCUSDT", -1, -4.0, trend_state, 60000.0)
+            mock_order.assert_called_once_with(
+                "SELL", "BTCUSDT", 0, 60000.0, 60000.0,
+                reason="small_window_plunge_down",
+                safeback_seconds=ta.FIRE_SAFEBACK_SEC, force=False,
+                cancelorders=True, hours=0.3, regime_context=None
+            )
+            self.assertEqual(trend_state._confirmed_count_down, 1)
+
+    def test_logic_small_respects_enable_and_threshold(self):
+        trend_state = ta.TrendState(3600, 300, 300)
+        with patch.object(ta, "track_and_place_order") as mock_order:
+            # Below threshold
+            ta.logic_small("SMALL", True, "BTCUSDT", 1, 2.0, trend_state, 60000.0)
+            mock_order.assert_not_called()
+            # Disabled
+            ta.logic_small("SMALL", False, "BTCUSDT", 1, 4.0, trend_state, 60000.0)
+            mock_order.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 

@@ -37,16 +37,17 @@ from pricewindow import (PriceTrendAnalyzer, PriceWindow, WindowAnalyzer,
 # botcore.load_dotenv does not overwrite variables already set by the real
 # environment (for example, a systemd EnvironmentFile); it only fills gaps.
 from botcore import (load_dotenv as _load_dotenv,
-                     required_float_env, required_int_env)
+                     float_env, required_float_env, required_int_env)
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "config.env"))
 
 
 TIME_SLEEP_GET_PRICE = 0.8       # Nominal price-collection sleep interval in seconds.
-EXP_TIME_BUY_ORDER = (2.6 * 60) * 60 # After 2.6 hours.
+ORDER_EXPIRY_HOURS = float_env("TRADEALL_ORDER_EXPIRY_HOURS") or 2.6
+EXP_TIME_BUY_ORDER = ORDER_EXPIRY_HOURS * 3600  # Configurable order expiration horizon.
 EXP_TIME_SELL_ORDER = EXP_TIME_BUY_ORDER
 TIME_SLEEP_EVALUATE = TIME_SLEEP_GET_PRICE + 60  # seconds to sleep for buy/sell evaluation
-# Allow six orders per 2.6-hour expiration period, hence the division by six.
+# Allow six orders per expiration period, hence the division by six.
 TIME_SLEEP_PLACE_ORDER = TIME_SLEEP_EVALUATE + EXP_TIME_SELL_ORDER/ 6 + 4*79  # seconds to sleep for order placement
 
 SELL_BUY_THRESHOLD = 5  # Threshold for the number of consecutive signals
@@ -70,6 +71,8 @@ TREND_UNIFORM_RATE_THRESHOLD = required_float_env("TRADEALL_TREND_UNIFORM_RATE")
 # logic(): the extreme-slope threshold used at four symmetric UP/DOWN sites. It
 # bypasses normal validation and treats the trend as old for those branches.
 SLOPE_EXTREME_THRESHOLD = required_float_env("TRADEALL_SLOPE_EXTREME_THRESHOLD")
+SMALL_SLOPE_THRESHOLD = float_env("TRADEALL_SMALL_SLOPE_THRESHOLD") or 3.5
+
 
 # July 22: per-trend cooldown, based on real July 21-22 data and seven experiments
 # in offline/research/tradeall_trigger_gate/. logic() previously fired on every
@@ -104,6 +107,8 @@ def _validate_tradeall_config():
         "SLOPE_EXTREME_THRESHOLD": SLOPE_EXTREME_THRESHOLD,
         "FIRE_MIN_RETRY_INTERVAL_SEC": FIRE_MIN_RETRY_INTERVAL_SEC,
         "FIRE_SAFEBACK_SEC": FIRE_SAFEBACK_SEC,
+        "ORDER_EXPIRY_HOURS": ORDER_EXPIRY_HOURS,
+        "SMALL_SLOPE_THRESHOLD": SMALL_SLOPE_THRESHOLD,
     }
     for name, value in positive.items():
         if not math.isfinite(float(value)) or float(value) <= 0:
@@ -284,12 +289,13 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
         print(f"[TRADEALL] cancel_expired_orders error for {symbol}: {_e}")
 
     num_orders, price_step = (1, 0.2) if action == "BUY" else (1, 0.08)
+    quote = "USDC" if str(symbol).upper().endswith("USDC") else ("USDT" if str(symbol).upper().endswith("USDT") else "")
 
     # Price is rising, place fewer, larger orders. Increase spacing between orders as percents.
     # Price is falling, place more, smaller orders. Reduce spacing between orders as percents.
     if action == 'BUY':
         buy_price = min(float(proposed_price), float(current_price) * 0.999)
-        print(f"BUY price: {buy_price:.2f} USDT")
+        print(f"BUY price: {buy_price:.2f} {quote}".strip())
         alert.notify(
             title=f"📈 BUY {symbol} @ {buy_price:.2f}",
             body=f"Strategic BUY placed: proposed={float(proposed_price):.2f}, current={float(current_price):.2f}, reason={reason}",
@@ -306,7 +312,7 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
 
     elif action == 'SELL':
         sell_price = max(float(proposed_price), float(current_price) * 1.001)
-        print(f"SELL price: {sell_price:.2f} USDT")
+        print(f"SELL price: {sell_price:.2f} {quote}".strip())
         alert.notify(
             title=f"📉 SELL {symbol} @ {sell_price:.2f}",
             body=f"Strategic SELL placed: proposed={float(proposed_price):.2f}, current={float(current_price):.2f}, reason={reason}",
@@ -486,16 +492,31 @@ class TrendState:
 
 
 
-def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price, regime_ctx=None) :
-    # July 30: removed dead d/h/proposed_price locals discovered while extracting
-    # FIRE_SAFEBACK_SEC from logic().
-    print(f" ACTIVATES AFTER 3.5 on slope: gradient={gradient}, slope={slope}")
-    if gradient < 0 and slope < -3.5:
-        if enable:
-            print(f"FINISH FORCE place_order_smart SELL")
-    if gradient > 0 and slope > 3.5:
-        if enable:
-            print(f"FINISH FORCE place_order_smart BUY")
+def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price, regime_ctx=None):
+    """Evaluate fast-momentum impulses on the small price window."""
+    def _fire_small_once(direction, action, reason):
+        if not enable:
+            return
+        if trend_state.fire_limit_reached(direction):
+            return
+        if not trend_state.can_retry_fire(direction):
+            return
+        trend_state.mark_fire_attempt(direction)
+        result = track_and_place_order(
+            action, symbol, trend_state.confirm_count, current_price, current_price,
+            reason=reason, safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
+            cancelorders=True, hours=0.3, regime_context=regime_ctx)
+        if result:
+            trend_state.mark_confirmed(direction)
+
+    if gradient > 0 and slope > SMALL_SLOPE_THRESHOLD:
+        print(f"[SMALL-WINDOW] Momentum BUY surge: gradient={gradient}, slope={slope} > {SMALL_SLOPE_THRESHOLD}")
+        _fire_small_once("UP", "BUY", "small_window_surge_up")
+
+    elif gradient < 0 and slope < -SMALL_SLOPE_THRESHOLD:
+        print(f"[SMALL-WINDOW] Momentum SELL plunge: gradient={gradient}, slope={slope} < -{SMALL_SLOPE_THRESHOLD}")
+        _fire_small_once("DOWN", "SELL", "small_window_plunge_down")
+
 
 
 
@@ -611,7 +632,8 @@ def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regi
 # Windows update autonomously through Cache24 subscriptions; this path only evaluates.
 # Return the trend snapshot that ``TrendCoordinator`` will cache.
 def handle_symbol(symbol, current_price, price_window, price_window_big,
-                  analyzer, analyzer_big, trend_state, trend_state_big):
+                  analyzer, analyzer_big, trend_state, trend_state_big,
+                  regime_ctx=None):
 
     count = 0
 
@@ -641,12 +663,14 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
     else:
         count = 0
 
-    regime_ctx = None
-    try:
-        regime_ctx = mkt.market_regime_context(symbol)
-        print(f"[TRADEALL] {symbol} resolved trend: {regime_ctx.resolved_trend}")
-    except Exception as e:
-        print(f"[TRADEALL] Error resolving regime context for {symbol}: {e}")
+    if regime_ctx is None:
+        try:
+            regime_ctx = mkt.market_regime_context(symbol)
+            print(f"[TRADEALL] {symbol} resolved trend: {getattr(regime_ctx, 'resolved_trend', None)}")
+        except Exception as e:
+            print(f"[TRADEALL] Error resolving regime context for {symbol}: {e}")
+    else:
+        print(f"[TRADEALL] {symbol} resolved trend: {getattr(regime_ctx, 'resolved_trend', None)}")
 
     # SMALL ONE!!
     logic_small("SMALL", True, symbol, gradient, slope, trend_state, current_price, regime_ctx=regime_ctx)
@@ -783,6 +807,12 @@ class TrendCoordinator:
             return None
         if not math.isfinite(current_price) or current_price <= 0:
             return None
+        regime_ctx = None
+        try:
+            regime_ctx = mkt.market_regime_context(symbol)
+        except Exception as e:
+            print(f"[TrendCoordinator] Error resolving regime context for {symbol}: {e}")
+
         snapshot = handle_symbol(
             symbol, current_price,
             self.instant_mgr.get_window(symbol),
@@ -790,6 +820,7 @@ class TrendCoordinator:
             self.instant_mgr.get_analyzer(symbol),
             self.instant_mgr.get_analyzer(symbol, self.instant_mgr.window_big_sec),
             self.trend_states[symbol], self.trend_states_big[symbol],
+            regime_ctx=regime_ctx,
         )
         with self._lock:
             self._dirty[symbol] = False
@@ -827,14 +858,14 @@ class TrendCoordinator:
                             "BUY", symbol, 1, current_price, current_price,
                             reason="kalman_primary_up",
                             safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
-                            cancelorders=True, hours=0.3)
+                            cancelorders=True, hours=0.3, regime_context=regime_ctx)
                     elif new_ktrend == -1:
                         print(f"[KALMAN-PRIMARY] {symbol} ->DOWN: initiating SELL")
                         track_and_place_order(
                             "SELL", symbol, 1, current_price, current_price,
                             reason="kalman_primary_down",
                             safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
-                            cancelorders=True, hours=0.3)
+                            cancelorders=True, hours=0.3, regime_context=regime_ctx)
             except Exception as _e:  # noqa: BLE001
                 print(f"[TrendCoordinator] shadow error {symbol} (continuing): {_e}")
         self.instant_mgr.update_snapshot(symbol, **fields)
