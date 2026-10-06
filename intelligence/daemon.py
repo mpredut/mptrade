@@ -338,8 +338,8 @@ def main():
     parser.add_argument(
         "--macro-interval",
         type=float,
-        default=300.0,
-        help="Macro news & threat assessment refresh interval in seconds (default: 300s).",
+        default=None,
+        help="Macro news RSS aggregation interval in seconds (default: from MACRO_NEWS_INTERVAL_SEC or 120s).",
     )
     parser.add_argument(
         "--macro-llm-interval",
