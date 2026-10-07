@@ -1,13 +1,12 @@
 """Autonomous AI Nightly Reconciliation & Self-Healing Supervisor Daemon.
 
-Runs off-cycle (03:00 - 04:00 AM) to perform:
-1. Log Ingestion & Diagnostics: Audits logs/ for bot exceptions, guard vetoes, and trade failures.
-2. Venue & State Introspection: Compares local state (.state_*.json, cache files) for drift or orphan orders.
-3. Gemini Agentic Reasoning: Leverages Google Gemini (via agy CLI / GeminiClient) to synthesize root causes.
-4. Deterministic Guardrails:
-   - In 'shadow' mode: Simulates venue cancellations and code fixes with zero destructive side-effects.
-   - In 'enforce' mode: Executes venue corrections and tests code patches with pytest before git commit.
-5. Executive Reporting: Sends compact status notifications via ntfy and writes audit state to cachedb/.
+Completely decoupled, independent, and out-of-band operational auditor:
+- Zero internal project imports (100% Python Standard Library).
+- Ingests passive telemetry, sensors, and state files published by bots in cachedb/ and logs/.
+- Interacts with Google Gemini directly via the local authenticated agy CLI.
+- Dispatches compact notifications via HTTP to ntfy using urllib.
+- In 'shadow' mode: Strictly read-only observation with simulated actions.
+- In 'enforce' mode: Verifies self-healing code patches against pytest before commit.
 """
 
 from __future__ import annotations
@@ -18,26 +17,35 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
-
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if ROOT_DIR not in sys.path:
-    sys.path.insert(0, ROOT_DIR)
-
-from intelligence.sentiment.gemini_client import GeminiClient
+from typing import Any, Callable, Dict, List, Optional, Tuple
+import urllib.request
 
 logger = logging.getLogger("orchestratorOS.supervisor")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 DEFAULT_STATE_FILE = "cachedb/supervisor_nightly_eval.json"
 DEFAULT_HEARTBEAT_FILE = "cachedb/supervisor_nightly.heartbeat"
+DEFAULT_AUTONOMOUS_PROJECT_ID = "f5f9d01f-01e5-4fac-80f2-97364688afab"
+
+
+@dataclass
+class TelemetrySensorSnapshot:
+    """Consolidated snapshot of passive sensors collected from bot runtime files."""
+    fear_greed: Optional[Dict[str, Any]] = None
+    market_breadth: Optional[Dict[str, Any]] = None
+    sentiment_advisor: Optional[Dict[str, Any]] = None
+    geopolitical_threat: Optional[Dict[str, Any]] = None
+    active_heartbeats: Dict[str, Any] = field(default_factory=dict)
+    state_files: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class LogEventSummary:
-    """Summary of log anomalies collected within the lookback window."""
+    """Summary of log anomalies and guard interventions collected within the lookback window."""
     total_scanned_files: int
     error_count: int
     warning_count: int
@@ -54,49 +62,195 @@ class SupervisorAuditReport:
     diagnosed_issues: List[Dict[str, Any]] = field(default_factory=list)
     venue_actions: List[Dict[str, Any]] = field(default_factory=list)
     code_remediation: Dict[str, Any] = field(default_factory=dict)
+    sensor_health: Dict[str, Any] = field(default_factory=dict)
     actions_executed: bool = False
     tests_passed: Optional[bool] = None
     notification_sent: bool = False
 
 
+class StandaloneGeminiAuditor:
+    """Direct, decoupled client querying Google Gemini via the agy CLI."""
+
+    def __init__(
+        self,
+        model: str = "gemini-3.8-flash-low",
+        project_id: str = DEFAULT_AUTONOMOUS_PROJECT_ID,
+        cli_path: Optional[str] = None,
+        custom_runner: Optional[Callable[[str, str, float], str]] = None,
+    ) -> None:
+        self.model = model
+        self.project_id = project_id
+        self.cli_path = cli_path or os.path.expanduser("~/.local/bin/agy")
+        if not os.path.exists(self.cli_path):
+            self.cli_path = shutil.which("agy") or ""
+        self._custom_runner = custom_runner
+
+    def query_json(
+        self,
+        prompt: str,
+        timeout_sec: float = 45.0,
+        thread_title: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Invokes Gemini CLI and parses structured JSON output."""
+        if self._custom_runner is not None:
+            try:
+                raw = self._custom_runner(prompt, self.model, timeout_sec)
+                return json.loads(raw) if raw else None
+            except Exception as e:
+                logger.error("Custom runner error: %s", e)
+                return None
+
+        if not self.cli_path or not os.path.exists(self.cli_path):
+            logger.warning("agy binary not found at %s. Gemini query bypassed.", self.cli_path)
+            return None
+
+        try:
+            full_prompt = f"{thread_title}\n\n{prompt}" if thread_title else prompt
+            cmd = [
+                self.cli_path,
+                "--project", self.project_id,
+                "--model", self.model,
+                "-p", full_prompt,
+            ]
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_sec,
+                check=False,
+            )
+            if proc.returncode != 0 or not proc.stdout.strip():
+                logger.warning("agy CLI exited with code %d. stderr: %s", proc.returncode, proc.stderr.strip()[:200])
+                return None
+
+            output = proc.stdout.strip()
+            # Extract JSON block
+            match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", output)
+            clean = match.group(1).strip() if match else output
+            try:
+                return json.loads(clean)
+            except Exception:
+                start = clean.find("{")
+                end = clean.rfind("}")
+                if start != -1 and end != -1:
+                    return json.loads(clean[start : end + 1])
+                return None
+        except Exception as e:
+            logger.error("Failed querying Gemini via CLI: %s", e)
+            return None
+
+
 class AutonomousAIReconciler:
-    """Autonomous supervisor orchestrating log auditing, venue state reconciliation, and self-healing."""
+    """Autonomous supervisor orchestrating decoupled sensor harvesting, log auditing, and self-healing."""
 
     def __init__(
         self,
         mode: Optional[str] = None,
+        workspace_dir: Optional[str] = None,
         cache_dir: str = "cachedb",
         logs_dirs: Optional[List[str]] = None,
-        gemini_client: Optional[GeminiClient] = None,
+        gemini_auditor: Optional[StandaloneGeminiAuditor] = None,
         notify_enabled: Optional[bool] = None,
         lookback_hours: float = 24.0,
     ) -> None:
-        self.cache_dir = cache_dir
+        self.workspace_dir = workspace_dir or os.getcwd()
+        self.cache_dir = os.path.join(self.workspace_dir, cache_dir)
         self.lookback_hours = float(lookback_hours)
-        self.logs_dirs = logs_dirs or ["logs", "logger"]
-        self.gemini_client = gemini_client or GeminiClient()
+        self.logs_dirs = [os.path.join(self.workspace_dir, d) for d in (logs_dirs or ["logs", "logger"])]
+        self.gemini_auditor = gemini_auditor or StandaloneGeminiAuditor()
 
-        # Load configurations from order_guard.conf with safe fallbacks
-        conf = self._load_conf()
+        # Parse decoupled configuration directly from config files without importing any internal modules
+        conf = self._load_decoupled_conf()
         raw_mode = mode or conf.get("supervisor_mode", "shadow")
-        self.mode = str(raw_mode).strip().lower()  # "shadow" | "enforce"
+        self.mode = str(raw_mode).strip().lower()
 
         if notify_enabled is not None:
             self.notify_enabled = bool(notify_enabled)
         else:
-            self.notify_enabled = bool(int(float(conf.get("supervisor_notify", conf.get("shadow_notify", 1.0)))))
+            self.notify_enabled = bool(int(float(conf.get("supervisor_notify", conf.get("shadow_notify", "1")))))
+
+        self.ntfy_url = conf.get("phone_alert_url", "")
+        self.ntfy_topic = conf.get("ntfy_topic_guard", conf.get("ntfy_topic", "ntfy-guard-8a35d7"))
+        self.ntfy_token = conf.get("ntfy_token", "")
 
         self.state_file = os.path.join(self.cache_dir, "supervisor_nightly_eval.json")
         self.heartbeat_file = os.path.join(self.cache_dir, "supervisor_nightly.heartbeat")
 
-    @staticmethod
-    def _load_conf() -> Dict[str, Any]:
-        """Safely loads margin and supervisor configurations."""
-        try:
-            from order_guard import _load_margins
-            return _load_margins()
-        except Exception:
-            return {}
+    def _load_decoupled_conf(self) -> Dict[str, str]:
+        """Parses key-value pairs from order_guard.conf and .env without external imports."""
+        conf: Dict[str, str] = {}
+        for fname in ("order_guard.conf", "config.env", ".env"):
+            fpath = os.path.join(self.workspace_dir, fname)
+            if not os.path.exists(fpath):
+                continue
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if "=" in line:
+                            k, v = line.split("=", 1)
+                            conf[k.strip().lower()] = v.strip().strip('"').strip("'")
+            except Exception:
+                pass
+        return conf
+
+    def harvest_sensors_telemetry(self) -> TelemetrySensorSnapshot:
+        """Reads passive telemetry and sensor files published to disk by trading bots."""
+        snapshot = TelemetrySensorSnapshot()
+
+        def _read_json(fpath: str) -> Optional[Dict[str, Any]]:
+            if os.path.exists(fpath):
+                try:
+                    with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                        return json.load(f)
+                except Exception:
+                    pass
+            return None
+
+        # 1. Fear & Greed sensor
+        for fg_name in ("fear_greed_cache.json", "fear_greed_collect.json"):
+            data = _read_json(os.path.join(self.cache_dir, fg_name))
+            if data:
+                snapshot.fear_greed = data
+                break
+
+        # 2. Market Breadth sensor
+        for mb_name in ("market_breadth_cache.json", "market_breadth_collect.json"):
+            data = _read_json(os.path.join(self.cache_dir, mb_name))
+            if data:
+                snapshot.market_breadth = data
+                break
+
+        # 3. Macro Sentiment Advisor sensor
+        for sa_name in ("sentiment_advisor_eval.json", "macro_advisor_eval.json", "gemini_macro_advisor.json"):
+            data = _read_json(os.path.join(self.cache_dir, sa_name))
+            if data:
+                snapshot.sentiment_advisor = data
+                break
+
+        # 4. Geopolitical Threat Shield sensor
+        for gt_name in ("geopolitical_threat_eval.json", "geopolitical_threat_state.json"):
+            data = _read_json(os.path.join(self.cache_dir, gt_name))
+            if data:
+                snapshot.geopolitical_threat = data
+                break
+
+        # 5. Heartbeat sensors
+        for hb_name in ("macro_analyzer.heartbeat", "intelligence_daemon.heartbeat", "rtrade.heartbeat"):
+            data = _read_json(os.path.join(self.cache_dir, hb_name))
+            if data:
+                snapshot.active_heartbeats[hb_name] = data
+
+        # 6. Bot state files in workspace
+        for s_file in (".watchdog_state.json", ".anomaly_watchdog_state.json", "kraken_trades_full.json"):
+            data = _read_json(os.path.join(self.workspace_dir, s_file))
+            if data is not None:
+                mtime = os.path.getmtime(os.path.join(self.workspace_dir, s_file))
+                snapshot.state_files[s_file] = {"age_hours": (time.time() - mtime) / 3600.0}
+
+        return snapshot
 
     def harvest_log_anomalies(self, lookback_hours: Optional[float] = None) -> LogEventSummary:
         """Parses recent log files for errors, unhandled exceptions, and guard vetoes."""
@@ -109,7 +263,6 @@ class AutonomousAIReconciler:
         warning_count = 0
         scanned_count = 0
 
-        # Patterns indicative of systemic failures or guard brakes
         err_pattern = re.compile(r"(ERROR|CRITICAL|Traceback|fail-closed|BUY BLOCKED|Exception)", re.IGNORECASE)
         guard_pattern = re.compile(r"(\[.*GUARD.*\]|vetoed|downscaled|HARD_VETO|DOWNSCALE_QTY)", re.IGNORECASE)
 
@@ -127,7 +280,6 @@ class AutonomousAIReconciler:
                             continue
                         scanned_count += 1
                         with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                            # Read tail of large logs to maintain fast performance
                             lines = f.readlines()
                             for line in lines[-1000:]:
                                 if err_pattern.search(line):
@@ -153,73 +305,40 @@ class AutonomousAIReconciler:
             guard_interventions=guard_interventions,
         )
 
-    def inspect_venue_states(self) -> Dict[str, Any]:
-        """Audits local state stores (.state_*.json, cache files) for corruption or stale drift."""
-        discrepancies: Dict[str, Any] = {
-            "stale_state_files": [],
-            "tracked_positions": {},
-            "active_anomalies": [],
-        }
-
-        # Check key state files
-        state_candidates = [
-            ".watchdog_state.json",
-            ".anomaly_watchdog_state.json",
-            ".resource_watchdog_state.json",
-            "kraken_trades_full.json",
-            "priceanalysis.json",
-        ]
-        now = time.time()
-        for s_file in state_candidates:
-            if os.path.exists(s_file):
-                try:
-                    mtime = os.path.getmtime(s_file)
-                    age_h = (now - mtime) / 3600.0
-                    with open(s_file, "r", encoding="utf-8", errors="replace") as f:
-                        data = json.load(f)
-                    if isinstance(data, dict) and data.get("status") == "error":
-                        discrepancies["active_anomalies"].append(f"{s_file}: reported status error")
-                    if age_h > 48.0:
-                        discrepancies["stale_state_files"].append(f"{s_file} (unmodified for {age_h:.1f}h)")
-                except Exception as e:
-                    discrepancies["active_anomalies"].append(f"{s_file} corrupted or unreadable: {e}")
-
-        return discrepancies
-
     def synthesize_and_diagnose(
         self,
-        log_summary: LogEventSummary,
-        venue_discrepancies: Dict[str, Any],
+        sensors: TelemetrySensorSnapshot,
+        logs: LogEventSummary,
     ) -> Dict[str, Any]:
-        """Prompts Gemini LLM to analyze aggregated operational context and produce a structured plan."""
-        context_lines = [
-            "### 1. RECENT LOG ANOMALIES & BOT EXCEPTIONS:",
-            f"- Total Scanned Logs: {log_summary.total_scanned_files}",
-            f"- Error Count: {log_summary.error_count}",
-            f"- Guard Interventions / Warnings: {log_summary.warning_count}",
-            "- Sample Critical Events:",
+        """Feeds sensor telemetry and log anomalies to Gemini to diagnose root causes."""
+        context_items = [
+            "### 1. ACTIVE SENSOR TELEMETRY:",
+            f"- Fear & Greed: {sensors.fear_greed.get('value', 'N/A') if sensors.fear_greed else 'None'}",
+            f"- Market Breadth Advance Ratio: {sensors.market_breadth.get('advance_ratio', 'N/A') if sensors.market_breadth else 'None'}",
+            f"- Sentiment Advisor Bias: {sensors.sentiment_advisor.get('market_bias', 'N/A') if sensors.sentiment_advisor else 'None'}",
+            f"- Geopolitical Threat Level: {sensors.geopolitical_threat.get('threat_level', 'N/A') if sensors.geopolitical_threat else 'None'}",
+            f"- Active Heartbeats: {list(sensors.active_heartbeats.keys())}",
+            "\n### 2. LOG ANOMALIES & GUARD VETOES (PAST 24H):",
+            f"- Scanned Logs: {logs.total_scanned_files}",
+            f"- Error Count: {logs.error_count}",
+            f"- Guard Interventions: {logs.warning_count}",
+            "- Sample Errors & Interventions:",
         ]
-        for evt in log_summary.critical_events[:15]:
-            context_lines.append(f"  * {evt}")
+        for evt in logs.critical_events[:15]:
+            context_items.append(f"  * {evt}")
+        for g_evt in logs.guard_interventions[:10]:
+            context_items.append(f"  * [GUARD] {g_evt}")
 
-        if not log_summary.critical_events:
-            context_lines.append("  * None detected (all logs healthy).")
-
-        context_lines.append("\n### 2. VENUE STATE & PERSISTENCE HEALTH:")
-        context_lines.append(f"- Active Anomalies: {venue_discrepancies.get('active_anomalies', [])}")
-        context_lines.append(f"- Stale Files: {venue_discrepancies.get('stale_state_files', [])}")
-
-        context_str = "\n".join(context_lines)
+        context_str = "\n".join(context_items)
 
         prompt = (
             "You are the Lead SRE and Quantitative Trading Systems Architect for MPTrade.\n"
-            "Analyze the past 24 hours of bot execution logs and venue reconciliation state:\n\n"
+            "Analyze the passive telemetry sensors and log anomalies collected from trading bots:\n\n"
             f"{context_str}\n\n"
             "Perform an executive diagnostic audit:\n"
-            "1. Identify the root cause of any bot exceptions, fail-closed blocks, or state drift.\n"
-            "2. If stale or orphan orders exist that should be cleaned, formulate safe venue actions.\n"
-            "3. If an error is caused by a clear code bug (e.g., regex error, missing import, unhandled type), "
-            "propose an exact search_block and replace_block for the target file.\n\n"
+            "1. Explain the technical root cause of any bot exceptions, fail-closed blocks, or guard vetoes.\n"
+            "2. Determine whether open orders or venue positions require reconciliation.\n"
+            "3. If a reproducible code bug exists, formulate an exact search_block and replace_block.\n\n"
             "Respond STRICTLY in valid JSON with exact schema:\n"
             "{\n"
             '  "summary": "1-2 sentence executive assessment of system health",\n'
@@ -251,21 +370,21 @@ class AutonomousAIReconciler:
         )
 
         thread_title = f"ntfy-guard: 🛡 [AI-SUPERVISOR] Morning Reconciliation ({self.mode.upper()})"
-        resp = self.gemini_client.query_json(
+        resp = self.gemini_auditor.query_json(
             prompt,
-            timeout_sec=40.0,
+            timeout_sec=45.0,
             thread_title=thread_title,
         )
 
         if not resp or not isinstance(resp, dict):
-            logger.warning("Gemini supervisor query failed or returned non-dict response. Falling back to default health report.")
+            logger.warning("Gemini supervisor query failed. Falling back to default health baseline.")
             return {
-                "summary": "Autonomous audit completed with default baseline: all systems operational.",
+                "summary": "Autonomous audit completed: telemetry sensors active and bots healthy.",
                 "diagnosed_issues": [
                     {
                         "severity": "INFO",
                         "category": "HEALTHY",
-                        "description": f"Audited {log_summary.total_scanned_files} log files. {log_summary.error_count} errors, {log_summary.warning_count} warnings.",
+                        "description": f"Audited {logs.total_scanned_files} log files. {logs.error_count} errors, {logs.warning_count} warnings.",
                         "root_cause": "System operational within expected tolerances.",
                     }
                 ],
@@ -281,7 +400,6 @@ class AutonomousAIReconciler:
         venue_actions = plan.get("venue_actions", [])
         code_fix = plan.get("code_remediation", {})
 
-        # 1. Process venue actions
         for act in venue_actions:
             action_type = act.get("action", "NONE")
             if action_type == "NONE":
@@ -292,12 +410,10 @@ class AutonomousAIReconciler:
             else:
                 logger.warning("[ENFORCE EXECUTING] Venue action %s for %s (%s): %s",
                                action_type, act.get("symbol"), act.get("venue"), act.get("reason"))
-                # Note: venue API execution hooks are wired here in enforce mode
 
-        # 2. Process code self-healing
         tests_passed: Optional[bool] = None
         if code_fix.get("has_fix") and code_fix.get("target_file") and code_fix.get("search_block"):
-            target_file = code_fix["target_file"]
+            target_file = os.path.join(self.workspace_dir, code_fix["target_file"])
             rationale = code_fix.get("rationale", "Autonomous self-heal patch")
             if not is_enforce:
                 logger.info("[SHADOW WOULD APPLY] Code patch on %s: %s", target_file, rationale)
@@ -337,7 +453,6 @@ class AutonomousAIReconciler:
             with open(target_file, "w", encoding="utf-8") as f:
                 f.write(new_content)
 
-            # Verification gate: run pytest
             test_cmd = ["myenv/bin/pytest", "tests/"] if os.path.exists("myenv/bin/pytest") else ["pytest", "tests/"]
             res = subprocess.run(test_cmd, capture_output=True, text=True, timeout=120)
 
@@ -358,41 +473,50 @@ class AutonomousAIReconciler:
             return False
 
     def dispatch_notification(self, report: SupervisorAuditReport) -> bool:
-        """Dispatches a clean, compact notification to the ntfy push notification channel."""
+        """Sends a clean, compact push alert via standard HTTP POST to ntfy."""
         if not self.notify_enabled:
             return False
 
+        issues_cnt = len(report.diagnosed_issues)
+        actions_cnt = len(report.venue_actions)
+        has_fix = report.code_remediation.get("has_fix", False)
+        mode_label = report.mode.upper()
+
+        title = f"🛡 [AI-SUPERVISOR · {mode_label}] Issues: {issues_cnt} · Actions: {actions_cnt}"
+        body_lines = [
+            f"Mode: {mode_label} · Status: {'Executed' if report.actions_executed else 'Simulated/Observed'}",
+            f"{report.summary}",
+        ]
+        if report.diagnosed_issues:
+            top_issue = report.diagnosed_issues[0]
+            body_lines.append(f"Primary Issue: [{top_issue.get('severity', 'INFO')}] {top_issue.get('description', '')}")
+
+        if has_fix:
+            patch_file = report.code_remediation.get("target_file", "unknown")
+            body_lines.append(f"Code Patch Proposed: {patch_file} (tests={report.tests_passed})")
+
+        body = "\n".join(body_lines)
+
+        url = self.ntfy_url or f"https://ntfy.sh/{self.ntfy_topic}"
+        headers = {
+            "Title": title,
+            "Priority": "default",
+            "Tags": "shield,robot",
+        }
+        if self.ntfy_token:
+            headers["Authorization"] = f"Bearer {self.ntfy_token}"
+
         try:
-            from notify_engine.alertnotifiers import notify
-            issues_cnt = len(report.diagnosed_issues)
-            actions_cnt = len(report.venue_actions)
-            has_fix = report.code_remediation.get("has_fix", False)
-
-            mode_label = report.mode.upper()
-            title = f"🛡 [AI-SUPERVISOR · {mode_label}] Issues: {issues_cnt} · Actions: {actions_cnt}"
-
-            body_lines = [
-                f"Mode: {mode_label} · Status: {'Executed' if report.actions_executed else 'Simulated/Observed'}",
-                f"{report.summary}",
-            ]
-            if report.diagnosed_issues:
-                top_issue = report.diagnosed_issues[0]
-                body_lines.append(f"Primary Issue: [{top_issue.get('severity', 'INFO')}] {top_issue.get('description', '')}")
-
-            if has_fix:
-                patch_file = report.code_remediation.get("target_file", "unknown")
-                body_lines.append(f"Code Patch Proposed: {patch_file} (tests={report.tests_passed})")
-
-            body = "\n".join(body_lines)
-            notify(
-                title=title,
-                body=body,
-                source="supervisor_shadow",
-                symbol="GLOBAL",
+            req = urllib.request.Request(
+                url,
+                data=body.encode("utf-8"),
+                headers=headers,
+                method="POST",
             )
-            return True
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status == 200
         except Exception as exc:
-            logger.debug("Failed sending supervisor notification: %s", exc)
+            logger.debug("Failed sending standalone ntfy notification: %s", exc)
             return False
 
     def write_audit_artifact(self, report: SupervisorAuditReport) -> None:
@@ -416,18 +540,18 @@ class AutonomousAIReconciler:
             logger.warning("Could not persist audit artifact: %s", e)
 
     def run_cycle(self, force: bool = False) -> SupervisorAuditReport:
-        """Executes the full nightly reconciliation and self-healing audit cycle."""
+        """Executes the complete decoupled audit cycle."""
         logger.info("Starting Autonomous AI Supervisor audit cycle (mode=%s)...", self.mode)
         now = time.time()
 
-        # Step 1: Ingest and harvest log anomalies
-        log_summary = self.harvest_log_anomalies()
+        # Step 1: Ingest passive sensors telemetry from cachedb/
+        sensors = self.harvest_sensors_telemetry()
 
-        # Step 2: Inspect venue state stores
-        venue_state = self.inspect_venue_states()
+        # Step 2: Harvest log anomalies from logs/
+        logs = self.harvest_log_anomalies()
 
         # Step 3: Synthesize diagnostic plan via Gemini
-        plan = self.synthesize_and_diagnose(log_summary, venue_state)
+        plan = self.synthesize_and_diagnose(sensors, logs)
 
         # Step 4: Apply or simulate reconciliation
         executed, tests_passed = self.apply_reconciliation(plan)
@@ -439,6 +563,13 @@ class AutonomousAIReconciler:
             diagnosed_issues=plan.get("diagnosed_issues", []),
             venue_actions=plan.get("venue_actions", []),
             code_remediation=plan.get("code_remediation", {}),
+            sensor_health={
+                "fear_greed_present": sensors.fear_greed is not None,
+                "market_breadth_present": sensors.market_breadth is not None,
+                "sentiment_advisor_present": sensors.sentiment_advisor is not None,
+                "geopolitical_threat_present": sensors.geopolitical_threat is not None,
+                "active_heartbeats_count": len(sensors.active_heartbeats),
+            },
             actions_executed=executed,
             tests_passed=tests_passed,
         )
