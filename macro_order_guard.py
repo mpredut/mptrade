@@ -122,28 +122,29 @@ def check_macro_order_guards(
                     object.__setattr__(regime_context, "_gemini_decision", (g_dec.allowed, g_dec.reason, g_dec.suggested_scale))
                 except Exception:
                     pass
-            if not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                prefix = "[LLM_GUARD_SHADOW]" if llm_mode == "shadow" else "[LLM_GUARD_ENFORCE]"
-                print(f"{prefix} {side} {symbol} €{computed_notional:.2f}: {g_dec.reason} (brake={g_dec.brake_action}, suggested_scale={g_dec.suggested_scale})")
-                if llm_mode == "shadow" and shadow_notify:
-                    cd_key = (symbol, side)
-                    now_ts = now if now is not None else time.time()
-                    if now_ts - _GEMINI_SHADOW_NOTIFY_COOLDOWN.get(cd_key, 0.0) >= 1800.0:
-                        _GEMINI_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
-                        try:
-                            from notify_engine.alertnotifiers import notify
-                            if not g_dec.allowed:
-                                g_title = f"🛡 [LLM SHADOW VETO] Would Block {side} {symbol}"
-                            else:
-                                g_title = f"🛡 [LLM SHADOW DOWNSCALE] Would Scale {int(g_dec.suggested_scale*100)}% {side} {symbol}"
-                            notify(
-                                title=g_title,
-                                body=f"High-stake order €{computed_notional:.2f} flagged: {g_dec.reason} (brake={g_dec.brake_action}, scale={g_dec.suggested_scale})",
-                                source="macro_shadow",
-                                symbol=symbol,
-                            )
-                        except Exception:
-                            pass
+            prefix = "[LLM_GUARD_SHADOW]" if llm_mode == "shadow" else "[LLM_GUARD_ENFORCE]"
+            print(f"{prefix} {side} {symbol} €{computed_notional:.2f}: {g_dec.reason} (brake={g_dec.brake_action}, suggested_scale={g_dec.suggested_scale})")
+            if llm_mode == "shadow" and shadow_notify:
+                cd_key = (symbol, side)
+                now_ts = now if now is not None else time.time()
+                if now_ts - _GEMINI_SHADOW_NOTIFY_COOLDOWN.get(cd_key, 0.0) >= 1800.0:
+                    _GEMINI_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
+                    try:
+                        from notify_engine.alertnotifiers import notify
+                        if not g_dec.allowed:
+                            g_title = f"🛡 [LLM SHADOW VETO] Would Block {side} {symbol}"
+                        elif g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                            g_title = f"🛡 [LLM SHADOW DOWNSCALE] Would Scale {int(g_dec.suggested_scale*100)}% {side} {symbol}"
+                        else:
+                            g_title = f"🧭 [LLM SHADOW APPROVE] Approved {side} {symbol}"
+                        notify(
+                            title=g_title,
+                            body=f"High-stake order €{computed_notional:.2f} evaluated: {g_dec.reason} (scale={g_dec.suggested_scale})",
+                            source="macro_shadow",
+                            symbol=symbol,
+                        )
+                    except Exception:
+                        pass
                 if llm_mode == "enforce":
                     if not g_dec.allowed:
                         return False, g_dec.reason, 0.0
