@@ -1,17 +1,18 @@
-"""Market sentiment intelligence (Pillar 3: Fear & Greed, Market Breadth, Macro Dispersion, Google Gemini LLM Reasoning).
+"""Market sentiment intelligence (Pillar 3: Fear & Greed, Market Breadth, Macro Dispersion, LLM Reasoning).
 
-Integrates sentiment telemetry, contrarian drivers, euphoric/panic brakes, and Google Gemini high-stake guard:
+Integrates sentiment telemetry, contrarian drivers, euphoric/panic brakes, and High-Stake Guard:
 - collectors:
   * FearGreedCollector (Alternative.me Crypto Fear & Greed Index with 14d trend)
   * MarketBreadthCollector (Binance 24h market-wide advance/decline and dispersion)
-  * GeminiMarketAdvisor (Periodic macro market synthesis via Google Gemini)
+- advisor:
+  * SentimentAdvisor (Periodic macro market synthesis via LLM)
 - triggers:
   * SentimentContrarianTrigger (Extreme fear dip-buying and extreme greed distribution)
   * MarketBreadthTrigger (Capitulation washout bounces and blowoff exhaustion trimming)
 - guards:
   * ExtremeGreedGuard (Anti-FOMO / top-buying brake at euphoric sentiment peaks)
   * PanicWashoutGuard (Anti-falling-knife protection during market-wide crashes)
-  * GeminiHighStakeGuard (Google Gemini LLM pre-flight risk vetting for purchases >= 1000 EUR)
+  * HighStakeGuard (LLM pre-flight risk vetting for purchases >= 1000 EUR)
 """
 
 from __future__ import annotations
@@ -30,10 +31,6 @@ from intelligence.sentiment.collectors.market_breadth_collector import (
 from intelligence.sentiment.sentiment_advisor import (
     SentimentAdvisor,
     SentimentAdvisorAssessment,
-    LLMMarketAdvisor,
-    GeminiMarketAdvisor,
-    GeminiMacroAssessment,
-    LLMMacroAssessment,
 )
 
 from intelligence.sentiment.triggers.sentiment_contrarian_trigger import (
@@ -51,8 +48,6 @@ from intelligence.sentiment.guards.panic_washout_guard import (
 )
 from intelligence.sentiment.guards.high_stake_guard import (
     HighStakeGuard,
-    LLMHighStakeGuard,
-    GeminiHighStakeGuard,
 )
 
 __all__ = [
@@ -63,15 +58,9 @@ __all__ = [
     "MarketBreadthSnapshot",
     "SentimentAdvisor",
     "SentimentAdvisorAssessment",
-    "LLMMarketAdvisor",
-    "GeminiMarketAdvisor",
-    "GeminiMacroAssessment",
-    "LLMMacroAssessment",
     "SentimentContrarianTrigger",
     "MarketBreadthTrigger",
     "ExtremeGreedGuard",
     "PanicWashoutGuard",
     "HighStakeGuard",
-    "LLMHighStakeGuard",
-    "GeminiHighStakeGuard",
 ]

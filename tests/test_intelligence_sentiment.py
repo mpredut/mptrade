@@ -423,12 +423,12 @@ class TestGeminiClient:
         assert res["suggested_scale"] == 0.5
 
 
-class TestGeminiMarketAdvisor:
-    """Tests for periodic GeminiMarketAdvisor macro evaluations."""
+class TestSentimentAdvisor:
+    """Tests for periodic SentimentAdvisor macro evaluations."""
 
     def test_advisor_review_and_caching(self, tmp_path):
         from intelligence.sentiment.gemini_client import GeminiClient
-        from intelligence.sentiment.sentiment_advisor import SentimentAdvisor, GeminiMarketAdvisor
+        from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
 
         def mock_runner(prompt, model, timeout):
             return json.dumps({
@@ -441,8 +441,8 @@ class TestGeminiMarketAdvisor:
             })
 
         client = GeminiClient(custom_runner=mock_runner)
-        cache_file = str(tmp_path / "gemini_advisor.json")
-        advisor = GeminiMarketAdvisor(gemini_client=client, cache_file=cache_file, cache_ttl_sec=300.0)
+        cache_file = str(tmp_path / "sentiment_advisor.json")
+        advisor = SentimentAdvisor(gemini_client=client, cache_file=cache_file, cache_ttl_sec=300.0)
 
         assessment = advisor.review(force_refresh=True)
         assert assessment is not None
@@ -455,18 +455,18 @@ class TestGeminiMarketAdvisor:
         assert cached == assessment
 
 
-class TestGeminiHighStakeGuard:
-    """Tests for GeminiHighStakeGuard order vetting for >= 1000 EUR."""
+class TestHighStakeGuard:
+    """Tests for HighStakeGuard order vetting for >= 1000 EUR."""
 
     def test_sub_threshold_bypasses_llm(self):
-        from intelligence.sentiment.guards.high_stake_guard import GeminiHighStakeGuard
+        from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
         # Client runner that raises if called
         def failing_runner(prompt, model, timeout):
             raise AssertionError("Should not be called for orders < 1000 EUR")
 
         from intelligence.sentiment.gemini_client import GeminiClient
         client = GeminiClient(custom_runner=failing_runner)
-        guard = GeminiHighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
+        guard = HighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
 
         # 500 EUR order -> instant pass
         dec = guard.check("BTCUSDT", "BUY", price=50000.0, qty=0.01, notional_eur=500.0)
@@ -474,7 +474,7 @@ class TestGeminiHighStakeGuard:
         assert "below_high_stake_threshold" in dec.reason
 
     def test_high_stake_approved(self):
-        from intelligence.sentiment.guards.high_stake_guard import GeminiHighStakeGuard
+        from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
         from intelligence.sentiment.gemini_client import GeminiClient
 
         def approve_runner(prompt, model, timeout):
@@ -482,7 +482,7 @@ class TestGeminiHighStakeGuard:
             return json.dumps({"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Healthy trend and low funding"})
 
         client = GeminiClient(custom_runner=approve_runner)
-        guard = GeminiHighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
+        guard = HighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
 
         dec = guard.check("BTCUSDT", "BUY", price=60000.0, qty=0.025, notional_eur=1500.0)
         assert dec.allowed is True
@@ -490,14 +490,14 @@ class TestGeminiHighStakeGuard:
         assert "Gemini approved" in dec.reason
 
     def test_high_stake_vetoed(self):
-        from intelligence.sentiment.guards.high_stake_guard import GeminiHighStakeGuard
+        from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
         from intelligence.sentiment.gemini_client import GeminiClient
 
         def veto_runner(prompt, model, timeout):
             return json.dumps({"decision": "REJECTED", "suggested_scale": 0.0, "reason": "Massive whale sell wall and euphoric top"})
 
         client = GeminiClient(custom_runner=veto_runner)
-        guard = GeminiHighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
+        guard = HighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
 
         dec = guard.check("BTCUSDT", "BUY", price=70000.0, qty=0.03, notional_eur=2100.0)
         assert dec.allowed is False
@@ -505,14 +505,14 @@ class TestGeminiHighStakeGuard:
         assert "Gemini vetoed" in dec.reason
 
     def test_high_stake_downscaled(self):
-        from intelligence.sentiment.guards.high_stake_guard import GeminiHighStakeGuard
+        from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
         from intelligence.sentiment.gemini_client import GeminiClient
 
         def downscale_runner(prompt, model, timeout):
             return json.dumps({"decision": "DOWNSCALE", "suggested_scale": 0.35, "reason": "Caution: funding is elevated"})
 
         client = GeminiClient(custom_runner=downscale_runner)
-        guard = GeminiHighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
+        guard = HighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
 
         dec = guard.check("BTCUSDT", "BUY", price=60000.0, qty=0.02, notional_eur=1200.0)
         assert dec.allowed is True
@@ -534,19 +534,19 @@ class TestOrderGuardWithGemini:
         }
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
 
-        from intelligence.sentiment.guards.high_stake_guard import GeminiHighStakeGuard
+        from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
         from intelligence.sentiment.gemini_client import GeminiClient
 
         def mock_veto_runner(prompt, model, timeout):
             return json.dumps({"decision": "REJECTED", "suggested_scale": 0.0, "reason": "Risky market"})
 
-        mock_guard = GeminiHighStakeGuard(
+        mock_guard = HighStakeGuard(
             gemini_client=GeminiClient(custom_runner=mock_veto_runner),
             min_notional_eur=1000.0,
         )
 
         with monkeypatch.context() as m:
-            m.setattr("intelligence.sentiment.guards.high_stake_guard.GeminiHighStakeGuard", lambda **kw: mock_guard)
+            m.setattr("intelligence.sentiment.guards.high_stake_guard.HighStakeGuard", lambda **kw: mock_guard)
             # In shadow mode, order is allowed despite LLM rejection (only logged)
             allowed, reason, scale = order_guard.check_intelligence_guards(
                 None, "BTCUSDT", "BUY", 65000.0, notional_eur=1500.0
@@ -594,7 +594,7 @@ class TestOrderGuardWithGemini:
         }
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
 
-        from intelligence.sentiment.guards.high_stake_guard import GeminiHighStakeGuard
+        from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
         from intelligence.sentiment.gemini_client import GeminiClient
 
         called_notionals = []
@@ -602,7 +602,7 @@ class TestOrderGuardWithGemini:
         def tracking_runner(prompt, model, timeout):
             return json.dumps({"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Good trade"})
 
-        class MockGuard(GeminiHighStakeGuard):
+        class MockGuard(HighStakeGuard):
             def check(self, symbol, side, price, qty, notional_eur=None, **kw):
                 called_notionals.append(notional_eur)
                 return super().check(symbol, side, price, qty, notional_eur=notional_eur)
@@ -611,7 +611,7 @@ class TestOrderGuardWithGemini:
             gemini_client=GeminiClient(custom_runner=tracking_runner),
             min_notional_eur=1000.0,
         )
-        monkeypatch.setattr("intelligence.sentiment.guards.high_stake_guard.GeminiHighStakeGuard", lambda **kw: mock_guard)
+        monkeypatch.setattr("intelligence.sentiment.guards.high_stake_guard.HighStakeGuard", lambda **kw: mock_guard)
 
         # Provider mockup
         class _P:
@@ -736,7 +736,7 @@ class TestEnrichedPretradeTelemetry:
         assert "2.0 hours" in telemetry["Trend Duration"]
 
     def test_high_stake_prompt_includes_multi_pillar_telemetry(self, monkeypatch):
-        from intelligence.sentiment.guards.high_stake_guard import LLMHighStakeGuard
+        from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
         from intelligence.sentiment.gemini_client import GeminiClient
 
         captured_prompt = []
@@ -745,7 +745,7 @@ class TestEnrichedPretradeTelemetry:
             return json.dumps({"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Telemetry looks solid"})
 
         client = GeminiClient(custom_runner=capturing_runner)
-        guard = LLMHighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
+        guard = HighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
 
         explicit_telemetry = {
             "Orderbook Depth Imbalance": "0.85 (85% bids vs 15% asks)",

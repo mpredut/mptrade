@@ -96,7 +96,7 @@ orders, `order_guard.check_intelligence_guards` evaluates:
   spikes with falling OI or whale dump), and `FundingCrowdingGuard` (downscaling
   crowded longs). These read local memory and disk snapshots with `allow_network=False`
   (sub-millisecond overhead, failing open safely if snapshot data is missing);
-- **Pillar 3 (Sentiment & LLM)**: `GeminiHighStakeGuard` for high-notional orders
+- **Pillar 3 (Sentiment & LLM)**: `HighStakeGuard` for high-notional orders
   ($\ge 1,000$ EUR, evaluated with a 12s timeout and fail-open fallback; sub-1,000
   EUR orders bypass immediately with 0 ms overhead);
 - **Pillar 4 (Macro shock shield)**: `GeopoliticalShockGuard` evaluating persisted

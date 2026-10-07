@@ -69,17 +69,10 @@ def check_intelligence_order_guards(
             needs_eval = (prev_notional is None) or (abs(computed_notional - prev_notional) > 1.0)
             if needs_eval:
                 dur_sec = getattr(regime_context, "resolved_duration_sec", None) if valid_context else None
-                from intelligence.sentiment.guards import high_stake_guard
-                if getattr(high_stake_guard, "GeminiHighStakeGuard", None) not in (
-                    high_stake_guard.LLMHighStakeGuard,
-                    getattr(high_stake_guard, "_ORIGINAL_LLM_HIGH_STAKE_GUARD", None)
-                ):
-                    GuardCls = high_stake_guard.GeminiHighStakeGuard
-                else:
-                    GuardCls = high_stake_guard.HighStakeGuard
+                from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
                 timeout_sec = float(m.get("llm_timeout_sec", m.get("high_stake_timeout_sec", m.get("gemini_timeout_sec", 25.0))))
                 fallback = str(m.get("llm_fallback", m.get("high_stake_fallback", m.get("gemini_fallback", "allow")))).strip().lower()
-                llm_guard = GuardCls(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
+                llm_guard = HighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
                 try:
                     g_dec = llm_guard.check(
                         symbol,

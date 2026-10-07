@@ -25,7 +25,7 @@ from intelligence.sentiment.triggers.sentiment_contrarian_trigger import Sentime
 from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
 from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
 from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
-from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, GeminiHighStakeGuard
+from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
 from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
 
@@ -58,7 +58,7 @@ class CompositeMarketIntelligence:
         greed_downscale_threshold: int = 80,
         greed_hard_veto_threshold: int = 90,
         gemini_min_notional_eur: float = 1000.0,
-        gemini_guard: Optional[GeminiHighStakeGuard] = None,
+        gemini_guard: Optional[HighStakeGuard] = None,
         geopolitical_guard: Optional[GeopoliticalShockGuard] = None,
     ):
         # Triggers (Drivers - Signals IN and Signals OUT)
@@ -83,7 +83,7 @@ class CompositeMarketIntelligence:
             hard_veto_threshold=greed_hard_veto_threshold,
         )
         self.panic_guard = PanicWashoutGuard()
-        self.gemini_guard = gemini_guard or GeminiHighStakeGuard(min_notional_eur=gemini_min_notional_eur)
+        self.gemini_guard = gemini_guard or HighStakeGuard(min_notional_eur=gemini_min_notional_eur)
 
         # Macro Geopolitical & Energy Shock Shield (Black Swan Brake)
         self.geopolitical_guard = geopolitical_guard or GeopoliticalShockGuard()

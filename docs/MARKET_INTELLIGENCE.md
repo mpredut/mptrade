@@ -42,8 +42,8 @@ Prior to October 2026, market intelligence components were fragmented across exp
      [ PILLAR 3: SENTIMENT & LLM ]                   [ PILLAR 4: MACRO SHIELD ]
    • Fear & Greed Index                            • MacroNewsCollector (Google News RSS)
    • Market Breadth 24h Dispersion                 • GeopoliticalAnalyzer
-   • GeminiAdvisor (30m Macro Context)             • GeopoliticalShockGuard
-   • GeminiHighStakeGuard (Orders >= 1,000 EUR)      (War / Energy Crisis Veto)
+   • SentimentAdvisor (3h Macro Context)           • GeopoliticalShockGuard
+   • HighStakeGuard (Orders >= 1,000 EUR)          (War / Energy Crisis Veto)
    • ExtremeGreedGuard / PanicWashoutGuard
                 │                                               │
                 └───────────────────────┬───────────────────────┘
@@ -102,8 +102,8 @@ Blends retail sentiment indices with quantitative LLM reasoning:
   - Calculates Binance 24h advance/decline ratios across active pairs to detect market-wide exhaustion or panic washouts.
 - **Google Gemini Integration via `agy` CLI (`gemini_client.py`)**:
   - Runs `/home/predut/.local/bin/agy --model gemini-3.8-flash-low -p ...` directly leveraging the active Google paid subscription with zero API keys or external credentials required, with standard REST fallback.
-  - `GeminiAdvisor`: Runs a periodic 30-minute macro market assessment stored in `cachedb/gemini_macro_advisor.json`.
-  - `GeminiHighStakeGuard`: A specialized risk veto triggered **only for large orders ($\ge 1,000$ EUR)**. Evaluates proposed order rationale, risk/reward, and market context before capital commitment. Sub-1,000 EUR orders pass immediately with 0 ms overhead.
+  - `SentimentAdvisor`: Runs a periodic 3-hour macro market assessment stored in `cachedb/sentiment_advisor_eval.json`.
+  - `HighStakeGuard`: A specialized risk veto triggered **only for large orders ($\ge 1,000$ EUR)**. Evaluates proposed order rationale, risk/reward, and market context before capital commitment. Sub-1,000 EUR orders pass immediately with 0 ms overhead.
 
 ---
 

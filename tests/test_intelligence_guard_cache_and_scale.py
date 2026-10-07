@@ -95,9 +95,9 @@ class TestIntelligenceGuardDynamicEvaluation:
                 pass
             def check(self, symbol, side, price, qty, notional_eur=None):
                 gemini_called.append((symbol, side, price, qty, notional_eur))
-                return GuardDecision.veto("GeminiHighStakeGuard", "gemini_risk_block")
+                return GuardDecision.veto("HighStakeGuard", "gemini_risk_block")
 
-        monkeypatch.setattr("intelligence.sentiment.guards.high_stake_guard.GeminiHighStakeGuard", MockGeminiGuard)
+        monkeypatch.setattr("intelligence.sentiment.guards.high_stake_guard.HighStakeGuard", MockGeminiGuard)
 
         # Call with small notional (100 EUR): Gemini guard should NOT be called
         ok1, reason1, _ = order_guard.check_intelligence_guards(
@@ -493,7 +493,7 @@ class TestCase5HistoryFailClosed:
             "regime_context_max_age_sec": 120.0,
         })
         monkeypatch.setattr(
-            "intelligence.sentiment.guards.high_stake_guard.GeminiHighStakeGuard.check",
+            "intelligence.sentiment.guards.high_stake_guard.HighStakeGuard.check",
             fake_gemini_check
         )
 
@@ -760,7 +760,7 @@ class TestSisterArchitecturalDefects:
             "regime_context_max_age_sec": 120.0,
         })
         monkeypatch.setattr(
-            "intelligence.sentiment.guards.high_stake_guard.GeminiHighStakeGuard.check",
+            "intelligence.sentiment.guards.high_stake_guard.HighStakeGuard.check",
             fake_gemini_check
         )
 
@@ -813,7 +813,7 @@ class TestSisterArchitecturalDefects:
             "regime_context_max_age_sec": 120.0,
         })
         monkeypatch.setattr(
-            "intelligence.sentiment.guards.high_stake_guard.GeminiHighStakeGuard.check",
+            "intelligence.sentiment.guards.high_stake_guard.HighStakeGuard.check",
             fake_gemini_check
         )
 

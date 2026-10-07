@@ -35,8 +35,8 @@ flowchart TD
         direction TB
         FG["Fear & Greed Collector (API / TTL 1h)"]
         MB["Market Breadth 24h Advance/Decline"]
-        HSG["GeminiHighStakeGuard<br/>(Event-driven: BUY >= 1000 EUR)"]
-        ADV["GeminiMarketAdvisor<br/>(On-demand / TTL 30m / cachedb)"]
+        HSG["HighStakeGuard<br/>(Event-driven: BUY >= 1000 EUR)"]
+        ADV["SentimentAdvisor<br/>(Periodic 3h / cachedb)"]
         note3["Google Gemini LLM integrat"]
     end
 
@@ -75,8 +75,8 @@ flowchart TD
 - **Tehnologii**:
   - `FearGreedCollector`: Index de frică și lăcomie cu acțiuni contrariene.
   - `MarketBreadthCollector`: Avans/declin pe 24h pe piața Binance.
-  - `GeminiHighStakeGuard`: Verificare în timp real a riscului la ordine mari.
-  - `GeminiMarketAdvisor`: Consilier macro/sentiment calitativ.
+  - `HighStakeGuard`: Verificare în timp real a riscului la ordine mari.
+  - `SentimentAdvisor`: Consilier macro/sentiment calitativ.
 
 ---
 
@@ -84,9 +84,9 @@ flowchart TD
 
 LLM-ul (`gemini-3.8-flash-low` prin CLI-ul local `agy`) este invocat în sistem **strict în două locuri**:
 
-### A. Consilierul Periodic de Piață (`GeminiMarketAdvisor`) — Pilonul 3
+### A. Consilierul Periodic de Piață (`SentimentAdvisor`) — Pilonul 3
 - **Fișier sursă**: `intelligence/sentiment/sentiment_advisor.py`
-- **Output**: `cachedb/gemini_macro_advisor.json`
+- **Output**: `cachedb/sentiment_advisor_eval.json`
 - **Ce evaluează**:
   - Fear & Greed Index (valoare, etichetă, variație pe 7 zile).
   - 24h Market Breadth (% monede pe plus, schimbare mediană, regim).
@@ -99,11 +99,11 @@ LLM-ul (`gemini-3.8-flash-low` prin CLI-ul local `agy`) este invocat în sistem 
   - `key_risks`: Listă de riscuri structurale
   - `recommended_action`: `ACCUMULATE` | `HOLD` | `TRIM_PROFITS` | `DEFENSIVE`
 - **Frecvență și Trigger**:
-  - **Cache TTL**: **30 de minute** (`1800.0` secunde). Dacă cache-ul este valid, returnează instant fără apel extern.
-  - **Trigger**: **On-demand** (la cerere, de ex. din panoul `intelligence/cli.py`).
-  - **Observație de producție**: **Nu rulează automat în bucla din `intelligence_daemon.py`**, evitând consumul redundant de resurse.
+  - **Cache TTL**: **3 ore** (`10800.0` secunde). Dacă cache-ul este valid, returnează instant fără apel extern.
+  - **Trigger**: Periodic prin `intelligence/macro_analyzer.py` sau on-demand.
+  - **Observație de producție**: Decuplat de calea fierbinte de tranzacționare; scrie pasiv în `cachedb/`.
 
-### B. Guardul pentru Ordine de Miză Mare (`GeminiHighStakeGuard`) — Pilonul 3
+### B. Guardul pentru Ordine de Miză Mare (`HighStakeGuard`) — Pilonul 3
 - **Fișier sursă**: `intelligence/sentiment/guards/high_stake_guard.py`
 - **Integrare**: Apelat direct în `order_guard.py` (`check_intelligence_guards`).
 - **Frecvență și Trigger**:

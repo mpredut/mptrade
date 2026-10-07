@@ -11,7 +11,7 @@ import pytest
 
 from intelligence.macro_analyzer import MacroAnalyzer
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
-from intelligence.sentiment.sentiment_advisor import SentimentAdvisorAssessment, GeminiMacroAssessment
+from intelligence.sentiment.sentiment_advisor import SentimentAdvisorAssessment
 
 
 @pytest.fixture
@@ -48,7 +48,7 @@ def test_macro_analyzer_run_cycle_mocked(temp_cache_dir):
         headlines_analyzed=5,
         ts=time.time(),
     )
-    mock_advisor = GeminiMacroAssessment(
+    mock_advisor = SentimentAdvisorAssessment(
         market_bias="NEUTRAL",
         risk_level="MODERATE",
         confidence=0.7,
@@ -59,7 +59,7 @@ def test_macro_analyzer_run_cycle_mocked(temp_cache_dir):
     )
 
     with patch.object(analyzer.geopolitical_analyzer, "assess", return_value=mock_geo), \
-         patch.object(analyzer.gemini_advisor, "review", return_value=mock_advisor), \
+         patch.object(analyzer.sentiment_advisor, "review", return_value=mock_advisor), \
          patch.object(analyzer, "prune_cli_threads", return_value=3):
 
         res = analyzer.run_cycle(force=True)
@@ -87,7 +87,7 @@ def test_macro_advisor_notification_dispatch(temp_cache_dir):
     analyzer = MacroAnalyzer(cache_dir=temp_cache_dir, advisor_interval_sec=10800.0)
     analyzer.shadow_notify = True
 
-    mock_advisor = GeminiMacroAssessment(
+    mock_advisor = SentimentAdvisorAssessment(
         market_bias="BULLISH",
         risk_level="LOW",
         confidence=0.85,
@@ -97,7 +97,7 @@ def test_macro_advisor_notification_dispatch(temp_cache_dir):
         ts=time.time(),
     )
 
-    with patch.object(analyzer.gemini_advisor, "review", return_value=mock_advisor), \
+    with patch.object(analyzer.sentiment_advisor, "review", return_value=mock_advisor), \
          patch("notify_engine.alertnotifiers.notify") as mock_notify:
         ok = analyzer.assess_market_advisor(force=True)
         assert ok is True

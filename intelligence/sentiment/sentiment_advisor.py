@@ -30,11 +30,6 @@ class SentimentAdvisorAssessment:
     ts: float
 
 
-# Canonical and backwards-compatibility aliases
-LLMMacroAssessment = SentimentAdvisorAssessment
-GeminiMacroAssessment = SentimentAdvisorAssessment
-
-
 class SentimentAdvisor:
     """Queries LLM periodically to generate a holistic qualitative macro perspective."""
 
@@ -47,7 +42,7 @@ class SentimentAdvisor:
         self.gemini_client = gemini_client or GeminiClient()
         self.cache_ttl_sec = cache_ttl_sec
         self.cache_file = cache_file
-        self._cached_assessment: Optional[LLMMacroAssessment] = None
+        self._cached_assessment: Optional[SentimentAdvisorAssessment] = None
         self._last_eval_ts: float = 0.0
         self._load_from_disk()
 
@@ -67,7 +62,7 @@ class SentimentAdvisor:
             try:
                 with open(target_file, "r") as f:
                     data = json.load(f)
-                self._cached_assessment = LLMMacroAssessment(
+                self._cached_assessment = SentimentAdvisorAssessment(
                     market_bias=str(data.get("market_bias", "NEUTRAL")),
                     risk_level=str(data.get("risk_level", "MODERATE")),
                     confidence=float(data.get("confidence", 0.5)),
@@ -80,7 +75,7 @@ class SentimentAdvisor:
             except Exception as e:
                 logger.debug("Could not load cached macro file: %s", e)
 
-    def _save_to_disk(self, assessment: LLMMacroAssessment) -> None:
+    def _save_to_disk(self, assessment: SentimentAdvisorAssessment) -> None:
         try:
             os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
             with open(self.cache_file, "w") as f:
@@ -105,7 +100,7 @@ class SentimentAdvisor:
         whale_telemetry: Optional[Dict[str, Any]] = None,
         force_refresh: bool = False,
         now_ts: Optional[float] = None,
-    ) -> Optional[LLMMacroAssessment]:
+    ) -> Optional[SentimentAdvisorAssessment]:
         """Synthesize market conditions and request a periodic qualitative macro assessment."""
         now = now_ts if now_ts is not None else time.time()
         if not force_refresh and self._cached_assessment and (now - self._last_eval_ts) < self.cache_ttl_sec:
@@ -147,7 +142,7 @@ class SentimentAdvisor:
             return self._cached_assessment
 
         try:
-            assessment = LLMMacroAssessment(
+            assessment = SentimentAdvisorAssessment(
                 market_bias=str(resp.get("market_bias", "NEUTRAL")).upper(),
                 risk_level=str(resp.get("risk_level", "MODERATE")).upper(),
                 confidence=float(resp.get("confidence", 0.5)),
@@ -161,10 +156,5 @@ class SentimentAdvisor:
             self._save_to_disk(assessment)
             return assessment
         except Exception as e:
-            logger.error("Failed to construct LLMMacroAssessment: %s", e)
+            logger.error("Failed to construct SentimentAdvisorAssessment: %s", e)
             return self._cached_assessment
-
-
-# Canonical and backwards-compatibility aliases
-LLMMarketAdvisor = SentimentAdvisor
-GeminiMarketAdvisor = SentimentAdvisor

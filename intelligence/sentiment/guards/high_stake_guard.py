@@ -122,7 +122,7 @@ def collect_pretrade_telemetry(
     return telemetry
 
 
-class LLMHighStakeGuard:
+class HighStakeGuard:
     """Invokes LLM reasoning before executing large BUY purchases (>= 1000 EUR).
 
     Sub-1000 EUR orders pass immediately with zero overhead (0 ms).
@@ -157,13 +157,13 @@ class LLMHighStakeGuard:
         """Evaluate order through LLM if value exceeds threshold."""
         # 1. Non-BUY orders (e.g. SELL, Stop-Loss, Take-Profit) are never blocked
         if side.upper() != "BUY":
-            return GuardDecision.allow("LLMHighStakeGuard", "sell_order_exempt")
+            return GuardDecision.allow("HighStakeGuard", "sell_order_exempt")
 
         # 2. Compute effective notional value in EUR/USD
         notional = float(notional_eur if notional_eur is not None else (price * qty))
         if notional < self.min_notional_eur:
             return GuardDecision.allow(
-                "LLMHighStakeGuard",
+                "HighStakeGuard",
                 f"below_high_stake_threshold ({notional:.2f} < {self.min_notional_eur:.2f} EUR)",
                 notional_eur=notional,
             )
@@ -199,7 +199,7 @@ class LLMHighStakeGuard:
             "}"
         )
 
-        thread_title = f"ntfy-guard: 🛡 [LLM HIGH-STAKE GUARD] BUY {symbol} €{notional:,.2f}"
+        thread_title = f"ntfy-guard: 🛡 [HIGH-STAKE GUARD] BUY {symbol} €{notional:,.2f}"
         resp = self.gemini_client.query_json(
             prompt,
             timeout_sec=self.timeout_sec,
@@ -209,10 +209,10 @@ class LLMHighStakeGuard:
             # Fallback on timeout or connectivity failure
             logger.warning("LLM high-stake query failed or timed out for %s €%.2f. Fallback: %s", symbol, notional, self.fallback_action)
             if self.fallback_action == "veto":
-                return GuardDecision.veto("LLMHighStakeGuard", "llm_query_timeout_fail_closed", notional_eur=notional)
+                return GuardDecision.veto("HighStakeGuard", "llm_query_timeout_fail_closed", notional_eur=notional)
             elif self.fallback_action == "downscale":
-                return GuardDecision.downscale("LLMHighStakeGuard", scale=0.5, reason="llm_query_timeout_downscaled", notional_eur=notional)
-            return GuardDecision.allow("LLMHighStakeGuard", "llm_query_timeout_fallback_allowed", notional_eur=notional)
+                return GuardDecision.downscale("HighStakeGuard", scale=0.5, reason="llm_query_timeout_downscaled", notional_eur=notional)
+            return GuardDecision.allow("HighStakeGuard", "llm_query_timeout_fallback_allowed", notional_eur=notional)
 
         decision_str = str(resp.get("decision", "APPROVED")).upper().strip()
         reason = str(resp.get("reason", "evaluated by LLM"))
@@ -220,7 +220,7 @@ class LLMHighStakeGuard:
 
         if decision_str == "REJECTED":
             return GuardDecision.veto(
-                "LLMHighStakeGuard",
+                "HighStakeGuard",
                 f"Gemini vetoed high-stake BUY: {reason}",
                 notional_eur=notional,
                 gemini_reason=reason,
@@ -228,7 +228,7 @@ class LLMHighStakeGuard:
         elif decision_str == "DOWNSCALE":
             clamped_scale = max(0.1, min(1.0, scale))
             return GuardDecision.downscale(
-                "LLMHighStakeGuard",
+                "HighStakeGuard",
                 scale=clamped_scale,
                 reason=f"Gemini downscaled high-stake BUY: {reason}",
                 notional_eur=notional,
@@ -236,14 +236,8 @@ class LLMHighStakeGuard:
             )
         else:
             return GuardDecision.allow(
-                "LLMHighStakeGuard",
+                "HighStakeGuard",
                 f"Gemini approved high-stake BUY: {reason}",
                 notional_eur=notional,
                 gemini_reason=reason,
             )
-
-
-# Canonical and backwards-compatibility aliases
-HighStakeGuard = LLMHighStakeGuard
-_ORIGINAL_LLM_HIGH_STAKE_GUARD = LLMHighStakeGuard
-GeminiHighStakeGuard = LLMHighStakeGuard

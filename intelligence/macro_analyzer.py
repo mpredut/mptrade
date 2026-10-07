@@ -72,18 +72,18 @@ class MacroAnalyzer:
         self.running = False
 
         from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
-        from intelligence.sentiment.sentiment_advisor import SentimentAdvisor, LLMMarketAdvisor
+        from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
 
         self.geopolitical_analyzer = GeopoliticalThreatAnalyzer(
             cache_ttl_sec=self.macro_llm_interval_sec,
             state_file=os.path.join(self.cache_dir, "geopolitical_threat_eval.json"),
         )
-        self.llm_advisor = SentimentAdvisor(
+        self.sentiment_advisor = SentimentAdvisor(
             cache_ttl_sec=self.advisor_interval_sec,
             cache_file=os.path.join(self.cache_dir, "sentiment_advisor_eval.json"),
         )
-        self.sentiment_advisor = self.llm_advisor
-        self.gemini_advisor = self.llm_advisor
+        self.llm_advisor = self.sentiment_advisor
+        self.gemini_advisor = self.sentiment_advisor
 
         self._last_macro_llm_ts: float = 0.0
         self._last_advisor_ts: float = 0.0
