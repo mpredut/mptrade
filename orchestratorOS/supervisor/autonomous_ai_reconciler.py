@@ -618,10 +618,13 @@ class AutonomousAIReconciler:
                     return existing
 
             intents_list.append(intent)
-            tmp_file = f"{self.intents_file}.tmp.{int(now)}"
-            with open(tmp_file, "w", encoding="utf-8") as f:
-                json.dump(intents_list, f, indent=2)
-            os.replace(tmp_file, self.intents_file)
+            try:
+                from state_io import atomic_text_writer
+                with atomic_text_writer(self.intents_file) as f:
+                    json.dump(intents_list, f, indent=2)
+            except Exception:
+                with open(self.intents_file, "w", encoding="utf-8") as f:
+                    json.dump(intents_list, f, indent=2)
             logger.info("Emitted autonomous trade intent %s: %s %s €%.2f (confidence=%.2f)",
                         intent_id, decision, symbol, notional, conf)
             return intent

@@ -231,3 +231,79 @@ def test_full_run_cycle_and_artifacts(temp_env):
         hb = json.load(f)
     assert hb["status"] == "alive"
     assert hb["mode"] == "shadow"
+
+
+def test_harvest_prices_and_trends(temp_env):
+    workspace, cache_dir, logs_dir = temp_env
+
+    # Write cache_currentprice.json
+    cp_file = os.path.join(cache_dir, "cache_currentprice.json")
+    with open(cp_file, "w", encoding="utf-8") as f:
+        json.dump({"items": {"BTCUSDC": [[123456, 85000.0]]}}, f)
+
+    # Write cache_instant_trend.json
+    it_file = os.path.join(cache_dir, "cache_instant_trend.json")
+    with open(it_file, "w", encoding="utf-8") as f:
+        json.dump({
+            "BTCUSDC": {
+                "current_price": 85000.0,
+                "final_trend": 1,
+                "growth_coefficient": 0.05,
+                "slope_full": 0.02,
+            }
+        }, f)
+
+    reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"])
+    snapshot = reconciler.harvest_sensors_telemetry()
+
+    assert "BTCUSDC" in snapshot.prices_and_trends
+    assert snapshot.prices_and_trends["BTCUSDC"]["price"] == 85000.0
+    assert snapshot.prices_and_trends["BTCUSDC"]["trend"] == 1
+    assert snapshot.prices_and_trends["BTCUSDC"]["growth_coefficient"] == 0.05
+
+
+def test_emit_trading_intent_lifecycle(temp_env):
+    workspace, cache_dir, logs_dir = temp_env
+    reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"])
+
+    # 1. HOLD does not emit
+    assert reconciler.emit_trading_intent({"decision": "HOLD", "confidence": 0.95}) is None
+
+    # 2. Low confidence does not emit
+    assert reconciler.emit_trading_intent({"decision": "BUY", "confidence": 0.60}) is None
+
+    # 3. High confidence BUY emits intent
+    intent = reconciler.emit_trading_intent({
+        "decision": "BUY",
+        "symbol": "BTCUSDC",
+        "venue": "binance",
+        "confidence": 0.92,
+        "suggested_notional_eur": 250.0,
+        "urgency": "NORMAL",
+        "thesis": "High breadth advance ratio",
+    })
+    assert intent is not None
+    assert intent["status"] == "PENDING"
+    assert intent["symbol"] == "BTCUSDC"
+    assert intent["suggested_notional_eur"] == 250.0
+
+    # Verify saved on disk
+    intents_file = os.path.join(cache_dir, "autonomous_trade_intents.json")
+    assert os.path.exists(intents_file)
+    with open(intents_file, "r", encoding="utf-8") as f:
+        saved = json.load(f)
+    assert len(saved) == 1
+    assert saved[0]["intent_id"] == intent["intent_id"]
+
+    # 4. Deduplication: second identical call returns existing intent without duplicating
+    dup = reconciler.emit_trading_intent({
+        "decision": "BUY",
+        "symbol": "BTCUSDC",
+        "venue": "binance",
+        "confidence": 0.95,
+        "suggested_notional_eur": 300.0,
+    })
+    assert dup["intent_id"] == intent["intent_id"]
+    with open(intents_file, "r", encoding="utf-8") as f:
+        saved_after = json.load(f)
+    assert len(saved_after) == 1
