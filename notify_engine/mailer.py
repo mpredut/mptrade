@@ -59,6 +59,8 @@ def is_email_mirrored(topic: str | None) -> bool:
 
 
 def _config() -> dict | None:
+    if not os.environ.get("SMTP_USERNAME") or not os.environ.get("ALERT_TO_EMAIL"):
+        load_env()
     cfg = {
         "server": os.environ.get("SMTP_SERVER", "").strip() or "smtp.gmail.com",
         "port": os.environ.get("SMTP_PORT", "").strip() or "587",
