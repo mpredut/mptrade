@@ -717,12 +717,16 @@ def adjust_price_and_cancel_opposite(order_type, symbol, price,
     if cancel_opposite:
         cancel_opposite_orders(order_type, symbol, price)
     current_price = api.get_current_price(symbol)
-    if order_type == "BUY":
-        price = min(price, current_price)
-        price = round(price * 0.999, 0)
-    elif order_type == "SELL":
-        price = max(price, current_price)
-        price = round(price * (1 + 0.001), 0)
+    if current_price and current_price > 0:
+        if order_type == "BUY":
+            price = min(price, current_price) * 0.999
+        elif order_type == "SELL":
+            price = max(price, current_price) * (1 + 0.001)
+    try:
+        from providers.market_api import api as mkt
+        price = mkt.round_price(symbol, price)
+    except Exception:
+        price = round(price, 8)
     return price
 
 

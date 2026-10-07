@@ -43,7 +43,8 @@ def _load_margins():
     _MARGINS_LAST_CHECK = now_ts
     try:
         mtime = os.path.getmtime(path) if os.path.exists(path) else 0.0
-        if _MARGINS is not None and mtime == _MARGINS_FILE_MTIME:
+        if _MARGINS is not None and (_MARGINS_FILE_MTIME == 0.0 or mtime == _MARGINS_FILE_MTIME):
+            _MARGINS_FILE_MTIME = mtime
             return _MARGINS
         _MARGINS_FILE_MTIME = mtime
     except Exception:
@@ -1131,39 +1132,20 @@ def _evaluate_intelligence_guards_raw(
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
 
 
-def profit_guard(
+def _check_math_profit_reference(
     provider,
-    symbol,
-    order_type,
-    price,
-    profit_percentage,
+    symbol: str,
+    order_type: str,
+    price: float,
+    profit_percentage: float,
     window_ref=None,
     *,
     regime_context=None,
-    qty: Optional[float] = None,
-    notional_eur: Optional[float] = None,
-):
-    """Return whether the order is profitable relative to its reference.
-    Reference cascade: caller-provided window_ref first, otherwise
-    provider.last_opposite_fill(symbol, order_type). A missing or non-positive reference
-    allows placement because there is no prior transaction to compare."""
-    # Staged / Shadow intelligence guard evaluation
-    intel_ok, intel_reason, suggested_scale = check_intelligence_guards(
-        provider, symbol, order_type, price, regime_context=regime_context, qty=qty, notional_eur=notional_eur
-    )
-    if not intel_ok:
-        print(f"[GUARD] {order_type} {symbol}: blocked by intelligence guard ({intel_reason})")
-        return False
+) -> bool:
+    """Evaluate deterministic price reference and margin percentage thresholds.
 
-    if regime_context is not None and suggested_scale < 1.0:
-        try:
-            curr = getattr(regime_context, "suggested_scale", None)
-            if curr is None or suggested_scale < curr:
-                object.__setattr__(regime_context, "suggested_scale", float(suggested_scale))
-                object.__setattr__(regime_context, "intelligence_scale_reason", intel_reason)
-        except Exception:
-            pass
-
+    Pure mathematical calculation (0 tokens, deterministic, no AI or macro push alerts).
+    """
     order_type = order_type.upper()
     provider_name = _provider_name(provider)
     if order_type == "BUY":
@@ -1250,4 +1232,52 @@ def profit_guard(
         print(f"Percentage difference ({diff:.2f}%) below threshold {profit_percentage}%. "
               f"The {order_type} order is BLOCKED.")
         return False
+    return True
+
+
+def profit_guard(
+    provider,
+    symbol,
+    order_type,
+    price,
+    profit_percentage,
+    window_ref=None,
+    *,
+    regime_context=None,
+    qty: Optional[float] = None,
+    notional_eur: Optional[float] = None,
+):
+    """Return whether the order is profitable relative to its reference.
+
+    Execution Pipeline:
+    - Stage 1 (Super-Matematică): Deterministic profit margin vs historical reference.
+      If mathematically unprofitable, returns False immediately without evaluating
+      AI/macro sentiment or sending false-positive push alerts.
+    - Stage 2 (Intelligence, Macro & Sentiment): Evaluates Parabolic, Weibull, Gemini LLM,
+      and Geopolitical shock shield only on mathematically cleared orders.
+    """
+    # Stage 1: Deterministic Mathematical Reference Check
+    if not _check_math_profit_reference(
+        provider, symbol, order_type, price, profit_percentage,
+        window_ref=window_ref, regime_context=regime_context,
+    ):
+        return False
+
+    # Stage 2: Intelligence, Macro & Sentiment Guards
+    intel_ok, intel_reason, suggested_scale = check_intelligence_guards(
+        provider, symbol, order_type, price, regime_context=regime_context, qty=qty, notional_eur=notional_eur
+    )
+    if not intel_ok:
+        print(f"[GUARD] {order_type} {symbol}: blocked by intelligence guard ({intel_reason})")
+        return False
+
+    if regime_context is not None and suggested_scale < 1.0:
+        try:
+            curr = getattr(regime_context, "suggested_scale", None)
+            if curr is None or suggested_scale < curr:
+                object.__setattr__(regime_context, "suggested_scale", float(suggested_scale))
+                object.__setattr__(regime_context, "intelligence_scale_reason", intel_reason)
+        except Exception:
+            pass
+
     return True

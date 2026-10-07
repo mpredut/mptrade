@@ -372,6 +372,24 @@ class Instrument:
             if not ok:
                 return None
 
+            # Stage 0: Vendor Pre-flight & Account Balance Check
+            # For BUY orders, ensure valid positive price and verified free balance capacity before mathematical or AI guards.
+            if side_u == "BUY":
+                if price is not None and (not math.isfinite(price) or price <= 0):
+                    print(f"[{self.symbol}] BUY preflight refused: price invalid {price!r}")
+                    reason = "invalid_price"
+                    return None
+                if hasattr(self._provider, "free_balance") and callable(self._provider.free_balance):
+                    quote_asset = self.quote or "USDC"
+                    try:
+                        free_bal = self._provider.free_balance(quote_asset)
+                        if free_bal is not None and free_bal <= 0:
+                            print(f"[{self.symbol}] BUY preflight refused: balance_unavailable asset={quote_asset}")
+                            reason = "balance_unavailable"
+                            return None
+                    except Exception:
+                        pass
+
             if not bypass:
                 if regime_context is None and side_u == "BUY":
                     try:

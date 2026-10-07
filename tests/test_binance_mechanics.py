@@ -35,7 +35,7 @@ class TestAdjustPriceAndCancelOpposite(unittest.TestCase):
                  patch.object(po.api, "get_open_orders", return_value={"1": {"price": 90.0}, "2": {"price": 110.0}}) as goo, \
                  patch.object(po.api, "cancel_order", return_value=True) as cancel:
                 out = po.adjust_price_and_cancel_opposite("BUY", SYMBOL, 105.0, cancel_opposite=True)
-            self.assertEqual(out, round(min(105.0, 100.0) * 0.999, 0))
+            self.assertEqual(out, round(min(105.0, 100.0) * 0.999, 2))
             goo.assert_called_once_with("SELL", SYMBOL, strict=True)
             cancel.assert_called_once_with(SYMBOL, "1")
 
@@ -44,7 +44,7 @@ class TestAdjustPriceAndCancelOpposite(unittest.TestCase):
                  patch.object(po.api, "get_open_orders", return_value={"1": {"price": 110.0}, "2": {"price": 90.0}}), \
                  patch.object(po.api, "cancel_order", return_value=True) as cancel:
                 out = po.adjust_price_and_cancel_opposite("SELL", SYMBOL, 95.0, cancel_opposite=True)
-            self.assertEqual(out, round(max(95.0, 100.0) * 1.001, 0))
+            self.assertEqual(out, round(max(95.0, 100.0) * 1.001, 2))
             cancel.assert_called_once_with(SYMBOL, "1")
 
         with self.subTest(msg="no cancel when disabled"):

@@ -307,6 +307,26 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         self.assertFalse(order_guard.profit_guard(
             provider, "TAOUSDC", "SELL", 270.0, 1.15, window_ref=276.0))
 
+    def test_math_rejection_short_circuits_intelligence_guards(self):
+        """Mathematical failure must return False without executing intelligence or macro shadow checks."""
+        provider = _Provider("binance", last_fill=216.28)
+        intel_called = False
+
+        def fake_intel_check(*args, **kwargs):
+            nonlocal intel_called
+            intel_called = True
+            return True, "ok", 1.0
+
+        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference=1.0)):
+            with mock.patch.object(order_guard, "check_intelligence_guards", side_effect=fake_intel_check):
+                # BUY at 293 with sell anchor 216.28 -> mathematically unprofitable (diff = -35% < 1.15%)
+                allowed = order_guard.profit_guard(
+                    provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28
+                )
+                self.assertFalse(allowed)
+                self.assertFalse(intel_called, "Intelligence guards should not be evaluated on mathematically rejected orders")
+
 
 if __name__ == "__main__":
     unittest.main()
+
