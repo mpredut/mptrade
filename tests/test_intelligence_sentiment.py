@@ -428,7 +428,7 @@ class TestGeminiMarketAdvisor:
 
     def test_advisor_review_and_caching(self, tmp_path):
         from intelligence.sentiment.gemini_client import GeminiClient
-        from intelligence.sentiment.collectors.gemini_advisor import GeminiMarketAdvisor
+        from intelligence.sentiment.sentiment_advisor import SentimentAdvisor, GeminiMarketAdvisor
 
         def mock_runner(prompt, model, timeout):
             return json.dumps({
@@ -680,7 +680,7 @@ class TestOrderGuardWithGemini:
         assert allowed is True
         assert len(dispatched_alerts) == 1
         alert = dispatched_alerts[0]
-        assert alert["title"] == "🛑 [P3 · GEO-SHIELD] BLOCK BUY TAOUSDC"
+        assert alert["title"] == "🛑 [P3A · GEO-SHIELD] BLOCK BUY TAOUSDC"
         assert alert["symbol"] == "TAOUSDC"
         assert "CRITICAL_SHOCK" in alert["body"]
 

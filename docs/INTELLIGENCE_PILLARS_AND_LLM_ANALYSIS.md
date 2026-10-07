@@ -85,7 +85,7 @@ flowchart TD
 LLM-ul (`gemini-3.8-flash-low` prin CLI-ul local `agy`) este invocat în sistem **strict în două locuri**:
 
 ### A. Consilierul Periodic de Piață (`GeminiMarketAdvisor`) — Pilonul 3
-- **Fișier sursă**: `intelligence/sentiment/collectors/gemini_advisor.py`
+- **Fișier sursă**: `intelligence/sentiment/sentiment_advisor.py`
 - **Output**: `cachedb/gemini_macro_advisor.json`
 - **Ce evaluează**:
   - Fear & Greed Index (valoare, etichetă, variație pe 7 zile).

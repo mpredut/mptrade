@@ -27,9 +27,13 @@ from intelligence.sentiment.collectors.market_breadth_collector import (
     MarketBreadthCollector,
     MarketBreadthSnapshot,
 )
-from intelligence.sentiment.collectors.gemini_advisor import (
-    GeminiMacroAssessment,
+from intelligence.sentiment.sentiment_advisor import (
+    SentimentAdvisor,
+    SentimentAdvisorAssessment,
+    LLMMarketAdvisor,
     GeminiMarketAdvisor,
+    GeminiMacroAssessment,
+    LLMMacroAssessment,
 )
 
 from intelligence.sentiment.triggers.sentiment_contrarian_trigger import (
@@ -57,8 +61,12 @@ __all__ = [
     "FearGreedSnapshot",
     "MarketBreadthCollector",
     "MarketBreadthSnapshot",
+    "SentimentAdvisor",
+    "SentimentAdvisorAssessment",
+    "LLMMarketAdvisor",
     "GeminiMarketAdvisor",
     "GeminiMacroAssessment",
+    "LLMMacroAssessment",
     "SentimentContrarianTrigger",
     "MarketBreadthTrigger",
     "ExtremeGreedGuard",

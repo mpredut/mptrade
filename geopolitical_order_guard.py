@@ -75,9 +75,9 @@ def check_geopolitical_order_guards(
                             from notify_engine.alertnotifiers import notify
                             scale_pct = int(geo_dec.suggested_scale * 100)
                             if not geo_dec.allowed:
-                                geo_title = f"🛑 [P3 · GEO-SHIELD] BLOCK {order_side} {symbol}"
+                                geo_title = f"🛑 [P3A · GEO-SHIELD] BLOCK {order_side} {symbol}"
                             else:
-                                geo_title = f"🛡 [P3 · GEO-SHIELD] SCALE {scale_pct}% {order_side} {symbol}"
+                                geo_title = f"🛡 [P3A · GEO-SHIELD] SCALE {scale_pct}% {order_side} {symbol}"
 
                             clean_summary = cached_geo.summary or geo_dec.reason
                             if "(" in geo_dec.reason and geo_dec.reason.endswith(")"):

@@ -23,10 +23,10 @@ flowchart TD
     P2 -- Crowded Perp Funding --> ScaleP2["📉 DOWNSCALE_QTY (Scale: 50%)"]
     P2 -- Passed / Scaled --> P3["🛡 PILLAR 3: intelligence_order_guard.py\nAI & LLM Intelligence Layer\nGeopolitical Shield + High-Stake Vetting"]
     
-    P3 -- War / Energy Critical Shock --> VetoGeo["⛔ VETO_STOP (P3 · GEO-SHIELD)"]
-    P3 -- Elevated Geopolitical Risk --> ScaleGeo["📉 DOWNSCALE_QTY (P3 · GEO-SHIELD: 25-50%)"]
-    P3 -- Large Order (≥ €1k) Vetoed by LLM --> VetoStake["⛔ VETO_STOP (P3 · HIGH-STAKE)"]
-    P3 -- Large Order (≥ €1k) Scaled by LLM --> ScaleStake["📉 DOWNSCALE_QTY (P3 · HIGH-STAKE)"]
+    P3 -- War / Energy Critical Shock --> VetoGeo["⛔ VETO_STOP (P3A · GEO-SHIELD)"]
+    P3 -- Elevated Geopolitical Risk --> ScaleGeo["📉 DOWNSCALE_QTY (P3A · GEO-SHIELD: 25-50%)"]
+    P3 -- Large Order (≥ €1k) Vetoed by LLM --> VetoStake["⛔ VETO_STOP (P3C · HIGH-STAKE)"]
+    P3 -- Large Order (≥ €1k) Scaled by LLM --> ScaleStake["📉 DOWNSCALE_QTY (P3C · HIGH-STAKE)"]
     P3 -- Passed / Approved --> Exec["🚀 EXCHANGE DISPATCH\n(Executed with Final Safe Quantity)"]
 ```
 
@@ -83,11 +83,11 @@ To ensure absolute transparency between microsecond execution and qualitative re
 ---
 
 ### Pillar 3: AI Intelligence Layer (Geopolitical Shield, Sentiment Advisor & High-Stake LLM)
-* **Files:** [`intelligence_order_guard.py`](file:///home/predut/mptrade/intelligence_order_guard.py), [`geopolitical_order_guard.py`](file:///home/predut/mptrade/geopolitical_order_guard.py), [`intelligence/sentiment/guards/high_stake_guard.py`](file:///home/predut/mptrade/intelligence/sentiment/guards/high_stake_guard.py), [`intelligence/macro_analyzer.py`](file:///home/predut/mptrade/intelligence/macro_analyzer.py)
+* **Files:** [`intelligence_order_guard.py`](file:///home/predut/mptrade/intelligence_order_guard.py), [`geopolitical_order_guard.py`](file:///home/predut/mptrade/geopolitical_order_guard.py), [`intelligence/sentiment/sentiment_advisor.py`](file:///home/predut/mptrade/intelligence/sentiment/sentiment_advisor.py), [`intelligence/sentiment/guards/high_stake_guard.py`](file:///home/predut/mptrade/intelligence/sentiment/guards/high_stake_guard.py), [`intelligence/macro_analyzer.py`](file:///home/predut/mptrade/intelligence/macro_analyzer.py)
 * **Role:** Qualitative AI reasoning, macro shock detection, and real-time high-notional risk vetting.
 * **LLM:** 🤖 **ACTIVE & ASYNC LLM** (Google Gemini via isolated `agy` CLI).
 * **Guards & Sub-Components:**
-  1. `GeopoliticalThreatShield` (`[P3 · GEO-SHIELD]`):
+  1. `GeopoliticalThreatShield` (`[P3A · GEO-SHIELD]`):
      - *Async Background Cycle:* Evaluated every 4.5 hours (`macro_llm_interval_h = 4.5`) via LLM reasoning on international news feeds (`cachedb/news_feed_collect.json`).
      - *Output File:* `cachedb/geopolitical_threat_eval.json`.
      - *Pre-Trade Check:* $< 1\text{ ms}$ local disk cache read on every BUY order.
@@ -96,7 +96,7 @@ To ensure absolute transparency between microsecond execution and qualitative re
        - `ELEVATED` ($0.35 \le \text{risk} < 0.70$): `DOWNSCALE_QTY` (scale to 50%).
        - `HIGH` ($0.70 \le \text{risk} < 0.85$): `DOWNSCALE_QTY` (scale to 25%).
        - `CRITICAL_SHOCK` ($\text{risk} \ge 0.85$, kinetic war escalation, oil embargo, systemic banking freeze): `VETO_STOP` (hard block on all new long entries).
-  2. `SentimentAdvisor` (`[P3 · SENTIMENT ADVISOR]`):
+  2. `SentimentAdvisor` (`[P3B · SENTIMENT]`):
      - *Async Trigger:* Periodic background cadence every 3.0 hours (`sentiment_advisor_interval_h = 3.0`).
      - *Telemetry:* `cachedb/fear_greed_collect.json`, 24h market breadth (advancers/decliners), top trader long/short exposure.
      - *Output File:* `cachedb/sentiment_advisor_eval.json`.
@@ -104,7 +104,7 @@ To ensure absolute transparency between microsecond execution and qualitative re
        - **Market Bias:** `BULLISH` | `NEUTRAL` | `CAUTION` | `BEARISH`
        - **Recommended Action:** `ALLOW` | `TRIM_PROFITS` | `DEFENSIVE` | `HALT_NEW_BUYS`
        - **Risk Level:** `LOW` | `MODERATE` | `HIGH` | `EXTREME`
-  3. `HighStakeGuard` (`[P3 · HIGH-STAKE]`):
+  3. `HighStakeGuard` (`[P3C · HIGH-STAKE]`):
      - *Pre-Trade Trigger:* Fires **only** when computed order notional $\ge$ `llm_min_notional_eur = 1000.0`. Orders below 1,000 EUR pass immediately with $0\text{ ms}$ latency (`ACCEPT`).
      - *Context Ingested:* Real-time synthesis of L2 orderbook imbalance, overhead whale walls, funding rates, whale OI positioning, Fear & Greed index, and current geopolitical threat state.
      - *Decisions:*

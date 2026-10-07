@@ -72,16 +72,17 @@ class MacroAnalyzer:
         self.running = False
 
         from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
-        from intelligence.sentiment.collectors.gemini_advisor import LLMMarketAdvisor
+        from intelligence.sentiment.sentiment_advisor import SentimentAdvisor, LLMMarketAdvisor
 
         self.geopolitical_analyzer = GeopoliticalThreatAnalyzer(
             cache_ttl_sec=self.macro_llm_interval_sec,
             state_file=os.path.join(self.cache_dir, "geopolitical_threat_eval.json"),
         )
-        self.llm_advisor = LLMMarketAdvisor(
+        self.llm_advisor = SentimentAdvisor(
             cache_ttl_sec=self.advisor_interval_sec,
             cache_file=os.path.join(self.cache_dir, "sentiment_advisor_eval.json"),
         )
+        self.sentiment_advisor = self.llm_advisor
         self.gemini_advisor = self.llm_advisor
 
         self._last_macro_llm_ts: float = 0.0
@@ -182,7 +183,7 @@ class MacroAnalyzer:
                         from notify_engine.alertnotifiers import notify
                         bias_str = (assessment.market_bias or "NEUTRAL").upper()
                         icon = "🟢" if "BULL" in bias_str else ("🔴" if "BEAR" in bias_str else "🧭")
-                        title = f"{icon} [P3 · MACRO ADVISOR] {assessment.recommended_action} ({assessment.market_bias})"
+                        title = f"{icon} [P3B · SENTIMENT] {assessment.recommended_action} ({assessment.market_bias})"
                         body = (
                             f"Action: {assessment.recommended_action} · Bias: {assessment.market_bias} (Risk: {assessment.risk_level})\n"
                             f"{assessment.summary}"

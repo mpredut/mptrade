@@ -1,4 +1,4 @@
-"""Periodic Google Gemini market intelligence advisor for high-level macro synthesis."""
+"""Periodic macro sentiment advisor synthesizing market breadth, crowd sentiment, and positioning."""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -12,13 +12,13 @@ from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
 
-logger = logging.getLogger("intelligence.sentiment.gemini_advisor")
+logger = logging.getLogger("intelligence.sentiment.sentiment_advisor")
 
 DEFAULT_CACHE_FILE = "cachedb/sentiment_advisor_eval.json"
 
 
 @dataclass(frozen=True)
-class LLMMacroAssessment:
+class SentimentAdvisorAssessment:
     """Qualitative macro assessment produced periodically by the LLM."""
 
     market_bias: str                   # "BULLISH", "BEARISH", "NEUTRAL", "CAUTION"
@@ -30,12 +30,12 @@ class LLMMacroAssessment:
     ts: float
 
 
-# Backwards compatibility alias
-GeminiMacroAssessment = LLMMacroAssessment
-SentimentAdvisorAssessment = LLMMacroAssessment
+# Canonical and backwards-compatibility aliases
+LLMMacroAssessment = SentimentAdvisorAssessment
+GeminiMacroAssessment = SentimentAdvisorAssessment
 
 
-class LLMMarketAdvisor:
+class SentimentAdvisor:
     """Queries LLM periodically to generate a holistic qualitative macro perspective."""
 
     def __init__(
@@ -165,5 +165,6 @@ class LLMMarketAdvisor:
             return self._cached_assessment
 
 
-# Backwards compatibility alias
-GeminiMarketAdvisor = LLMMarketAdvisor
+# Canonical and backwards-compatibility aliases
+LLMMarketAdvisor = SentimentAdvisor
+GeminiMarketAdvisor = SentimentAdvisor

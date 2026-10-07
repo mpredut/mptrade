@@ -117,11 +117,11 @@ def check_intelligence_order_guards(
                         from notify_engine.alertnotifiers import notify
                         scale_pct = int(g_dec.suggested_scale * 100)
                         if not g_dec.allowed:
-                            g_title = f"🛡 [P3 · HIGH-STAKE] BLOCK {side} {symbol}"
+                            g_title = f"🛡 [P3C · HIGH-STAKE] BLOCK {side} {symbol}"
                         elif g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                            g_title = f"🛡 [P3 · HIGH-STAKE] SCALE {scale_pct}% {side} {symbol}"
+                            g_title = f"🛡 [P3C · HIGH-STAKE] SCALE {scale_pct}% {side} {symbol}"
                         else:
-                            g_title = f"🧭 [P3 · HIGH-STAKE] ACCEPT {side} {symbol}"
+                            g_title = f"🧭 [P3C · HIGH-STAKE] ACCEPT {side} {symbol}"
 
                         clean_reason = g_dec.reason
                         for pfx in (

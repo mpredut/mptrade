@@ -35,7 +35,14 @@ from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector, FearGreedSnapshot
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector, MarketBreadthSnapshot
-from intelligence.sentiment.collectors.gemini_advisor import GeminiMarketAdvisor, GeminiMacroAssessment
+from intelligence.sentiment.sentiment_advisor import (
+    SentimentAdvisor,
+    SentimentAdvisorAssessment,
+    GeminiMarketAdvisor,
+    GeminiMacroAssessment,
+    LLMMarketAdvisor,
+    LLMMacroAssessment,
+)
 from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
 from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
 from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
@@ -97,6 +104,8 @@ __all__ = [
     "FearGreedSnapshot",
     "MarketBreadthCollector",
     "MarketBreadthSnapshot",
+    "SentimentAdvisor",
+    "SentimentAdvisorAssessment",
     "GeminiMarketAdvisor",
     "GeminiMacroAssessment",
     "SentimentContrarianTrigger",

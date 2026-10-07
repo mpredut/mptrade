@@ -11,7 +11,7 @@ import pytest
 
 from intelligence.macro_analyzer import MacroAnalyzer
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
-from intelligence.sentiment.collectors.gemini_advisor import GeminiMacroAssessment
+from intelligence.sentiment.sentiment_advisor import SentimentAdvisorAssessment, GeminiMacroAssessment
 
 
 @pytest.fixture
