@@ -827,9 +827,18 @@ def check_intelligence_guards(
                     return False, p_dec.reason, 0.0
 
     # 2. Dynamic High-Stake Guard if notional crossed the threshold
-    gemini_mode = str(m.get("high_stake_guard_mode", m.get("gemini_guard_mode", "shadow"))).strip().lower()
+    gemini_mode = str(
+        m.get("high_stake_guard_mode",
+        m.get("macro_stake_guard_mode",
+        m.get("macro_guard_mode",
+        m.get("gemini_guard_mode", "shadow"))))
+    ).strip().lower()
     if gemini_mode not in ("off", "0", "disabled"):
-        min_notional = float(m.get("high_stake_min_notional_eur", m.get("gemini_min_notional_eur", 1000.0)))
+        min_notional = float(
+            m.get("high_stake_min_notional_eur",
+            m.get("macro_stake_min_notional_eur",
+            m.get("gemini_min_notional_eur", 1000.0)))
+        )
         if computed_notional is not None and computed_notional >= min_notional:
             cached_gemini_notional = getattr(regime_context, "_gemini_evaluated_notional", None)
             if cached_gemini_notional is None:

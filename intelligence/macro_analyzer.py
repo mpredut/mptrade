@@ -31,17 +31,39 @@ class MacroAnalyzer:
         self,
         cache_dir: str = "cachedb",
         macro_llm_interval_sec: Optional[float] = None,
-        advisor_interval_sec: float = 7200.0,  # 2 hours default
+        advisor_interval_sec: Optional[float] = None,
         thread_prune_interval_sec: float = 10800.0,  # 3 hours default
         symbols: Optional[List[str]] = None,
     ) -> None:
         self.cache_dir = cache_dir
+
+        conf_margins: Dict[str, Any] = {}
+        try:
+            from order_guard import _load_margins
+            conf_margins = _load_margins()
+        except Exception:
+            pass
+
         self.macro_llm_interval_sec = (
             float(macro_llm_interval_sec)
             if macro_llm_interval_sec is not None
             else float(os.environ.get("MACRO_LLM_INTERVAL_SEC", "16200.0"))  # 4.5 hours default
         )
-        self.advisor_interval_sec = advisor_interval_sec
+
+        if advisor_interval_sec is not None:
+            self.advisor_interval_sec = float(advisor_interval_sec)
+        else:
+            env_adv = os.environ.get("MACRO_ADVISOR_INTERVAL_SEC")
+            if env_adv is not None:
+                self.advisor_interval_sec = float(env_adv)
+            elif "macro_advisor_interval_sec" in conf_margins:
+                self.advisor_interval_sec = float(conf_margins["macro_advisor_interval_sec"])
+            elif "macro_advisor_interval_h" in conf_margins:
+                self.advisor_interval_sec = float(conf_margins["macro_advisor_interval_h"]) * 3600.0
+            else:
+                self.advisor_interval_sec = 10800.0  # 3 hours default
+
+        self.shadow_notify = bool(int(float(conf_margins.get("shadow_notify", 1.0))))
         self.thread_prune_interval_sec = thread_prune_interval_sec
         self.symbols = symbols or ["BTCUSDC"]
         self.running = False
@@ -151,6 +173,25 @@ class MacroAnalyzer:
                     "Published Gemini macro advisor assessment: bias=%s, risk=%s, action=%s",
                     assessment.market_bias, assessment.risk_level, assessment.recommended_action,
                 )
+                if self.shadow_notify:
+                    try:
+                        from notify_engine.alertnotifiers import notify
+                        bias_str = (assessment.market_bias or "NEUTRAL").upper()
+                        icon = "🟢" if "BULL" in bias_str else ("🔴" if "BEAR" in bias_str else "🧭")
+                        title = f"{icon} [MACRO ADVISOR] {assessment.market_bias} ({assessment.risk_level} Risk)"
+                        body = (
+                            f"Regime: {assessment.market_bias} | Action: {assessment.recommended_action}\n"
+                            f"Risk Level: {assessment.risk_level}\n"
+                            f"Summary: {assessment.summary[:200]}"
+                        )
+                        notify(
+                            title=title,
+                            body=body,
+                            source="macro_shadow",
+                            symbol="GLOBAL",
+                        )
+                    except Exception as exc:
+                        logger.debug("Failed sending macro advisor notification: %s", exc)
                 return True
         except Exception as e:
             logger.warning("Failed assessing market advisor: %s", e)

@@ -75,3 +75,35 @@ def test_macro_analyzer_run_cycle_mocked(temp_cache_dir):
             hb = json.load(f)
         assert hb["status"] == "alive"
         assert hb["last_run"]["geopolitical_updated"] is True
+
+
+def test_macro_analyzer_default_3h_interval(temp_cache_dir):
+    analyzer = MacroAnalyzer(cache_dir=temp_cache_dir)
+    # Default without explicit argument should be 3 hours (10800.0s)
+    assert analyzer.advisor_interval_sec == 10800.0
+
+
+def test_macro_advisor_notification_dispatch(temp_cache_dir):
+    analyzer = MacroAnalyzer(cache_dir=temp_cache_dir, advisor_interval_sec=10800.0)
+    analyzer.shadow_notify = True
+
+    mock_advisor = GeminiMacroAssessment(
+        market_bias="BULLISH",
+        risk_level="LOW",
+        confidence=0.85,
+        summary="Positive macro momentum and accumulation.",
+        key_risks=[],
+        recommended_action="ACCUMULATE",
+        ts=time.time(),
+    )
+
+    with patch.object(analyzer.gemini_advisor, "review", return_value=mock_advisor), \
+         patch("notify_engine.alertnotifiers.notify") as mock_notify:
+        ok = analyzer.assess_market_advisor(force=True)
+        assert ok is True
+        mock_notify.assert_called_once()
+        args, kwargs = mock_notify.call_args
+        assert kwargs.get("source") == "macro_shadow"
+        assert "BULLISH" in kwargs.get("title")
+        assert kwargs.get("symbol") == "GLOBAL"
+
