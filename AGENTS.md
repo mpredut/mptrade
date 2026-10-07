@@ -5,3 +5,4 @@
 # Core Tenets
 - **Unification & Compaction:** Consolidate fragmented logic into single linear choke points; eliminate redundancy.
 - **Single Source of Truth (SSOT):** Canonical definition and resolution for all domain state, config, and rules.
+- **Separation of Concerns (SoC):** Isolate distinct responsibilities and modular boundaries; minimize cross-cutting coupling.
