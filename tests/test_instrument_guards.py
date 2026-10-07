@@ -953,22 +953,6 @@ class InstrumentGuardsTestCase(unittest.TestCase):
                     self.assertEqual(len(oq.load_all()), 1)
                     self.assertEqual(oq.load_all()[0]["lifecycle"], "accepted")
 
-    def test_rtrade_kind_canonically_owns_retry_and_excludes_outbox(self):
-        """rtrade quotes are strategy-owned and must never enter the global outbox."""
-        import order_retry as oq
-
-        for kind in ("rtrade_legacy_quote", "rtrade_pair_quote", "rtrade_legacy_followup"):
-            with self.subTest(kind=kind):
-                self._clear_state()
-                provider = _FakeProvider()
-                inst = self._inst(provider)
-                with patch("order_guard.profit_guard", return_value=False):
-                    result = inst.place(
-                        "BUY", 100.0, 1.0, smart=False, wait_for_trend=False,
-                        kind=kind)
-                self.assertIsNone(result)
-                self.assertEqual(oq.load_all(), [])
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

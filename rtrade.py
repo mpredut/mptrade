@@ -1153,7 +1153,7 @@ class TradingBot:
                 print(f"[{self.symbol}] Starting urgent SELL follow-up (1)")
                 mkt.place(self.symbol, "SELL", api.get_current_price(self.symbol) * (1 + RTRADE_FOLLOWUP_OFFSET_PCT), self.qty,
                     force=_followup_force(self.symbol, "SELL"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                    caller_owns_retry=True, kind="rtrade_legacy_followup")
+                    caller_owns_retry=True)
                 return self.mark_buy_filled(self.filled_buy_price)
 
 
@@ -1164,7 +1164,7 @@ class TradingBot:
                 print(f"[{self.symbol}] Starting urgent SELL follow-up (2)")
                 mkt.place(self.symbol, "SELL", api.get_current_price(self.symbol) * (1 + RTRADE_FOLLOWUP_OFFSET_PCT), self.qty,
                     force=_followup_force(self.symbol, "SELL"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                    caller_owns_retry=True, kind="rtrade_legacy_followup")
+                    caller_owns_retry=True)
                 return self.mark_buy_filled(filled_buy_price)
 
             current_price = api.get_current_price(self.symbol)
@@ -1185,7 +1185,7 @@ class TradingBot:
                     print(f"[{self.symbol}] Starting urgent SELL follow-up (3)")
                     mkt.place(self.symbol, "SELL", api.get_current_price(self.symbol) * (1 + RTRADE_FOLLOWUP_OFFSET_PCT), self.qty,
                     force=_followup_force(self.symbol, "SELL"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                    caller_owns_retry=True, kind="rtrade_legacy_followup")
+                    caller_owns_retry=True)
                     return self.mark_buy_filled(self.filled_buy_price)
                 else:
                     print(
@@ -1206,7 +1206,7 @@ class TradingBot:
                         * (1 + RTRADE_FOLLOWUP_OFFSET_PCT),
                         self.qty, force=_followup_force(self.symbol, "SELL"),
                         cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                        caller_owns_retry=True, kind="rtrade_legacy_followup")
+                        caller_owns_retry=True)
                     return self.mark_buy_filled(self.filled_buy_price)
                 pending_cache_permit = replacement_cache_permit
                 pending_replacement_price = replacement_price
@@ -1296,7 +1296,7 @@ class TradingBot:
                 print(f"[{self.symbol}] Starting urgent BUY follow-up (1)")
                 mkt.place(self.symbol, "BUY", api.get_current_price(self.symbol) * (1 - RTRADE_FOLLOWUP_OFFSET_PCT), self.qty,
                     force=_followup_force(self.symbol, "BUY"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                    caller_owns_retry=True, kind="rtrade_legacy_followup")
+                    caller_owns_retry=True)
                 return self.mark_sell_filled(self.filled_sell_price)
 
 
@@ -1307,7 +1307,7 @@ class TradingBot:
                 print(f"[{self.symbol}] Starting urgent BUY follow-up (2)")
                 mkt.place(self.symbol, "BUY", api.get_current_price(self.symbol) * (1 - RTRADE_FOLLOWUP_OFFSET_PCT), self.qty,
                     force=_followup_force(self.symbol, "BUY"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                    caller_owns_retry=True, kind="rtrade_legacy_followup")
+                    caller_owns_retry=True)
                 return self.mark_sell_filled(filled_sell_price)
 
             current_price = api.get_current_price(self.symbol)
@@ -1328,7 +1328,7 @@ class TradingBot:
                     print(f"[{self.symbol}] Starting urgent BUY follow-up (3)")
                     mkt.place(self.symbol, "BUY", api.get_current_price(self.symbol) * (1 - RTRADE_FOLLOWUP_OFFSET_PCT), self.qty,
                         force=_followup_force(self.symbol, "BUY"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                        caller_owns_retry=True, kind="rtrade_legacy_followup")
+                        caller_owns_retry=True)
                     return self.mark_sell_filled(self.filled_sell_price)
                 else:
                     print(
@@ -1349,7 +1349,7 @@ class TradingBot:
                         * (1 - RTRADE_FOLLOWUP_OFFSET_PCT),
                         self.qty, force=_followup_force(self.symbol, "BUY"),
                         cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                        caller_owns_retry=True, kind="rtrade_legacy_followup")
+                        caller_owns_retry=True)
                     return self.mark_sell_filled(self.filled_sell_price)
                 pending_cache_permit = replacement_cache_permit
                 pending_replacement_price = replacement_price

@@ -195,9 +195,6 @@ class Instrument:
         # A caller such as rtrade or the outbox worker may own its lifecycle and
         # retry; in that case this pipeline does not touch the global queue.
         caller_owns_retry = bool(kwargs.pop("caller_owns_retry", False))
-        kind_val = str(kwargs.get("kind") or kwargs.get("motivation") or "")
-        if not caller_owns_retry and kind_val.startswith("rtrade"):
-            caller_owns_retry = True
         # Internal mutable result channel used by the outbox worker.  It keeps the
         # public return type backward compatible while exposing the exact refusal
         # reason (notably trend deferral) without parsing logs or blocking.
@@ -453,17 +450,6 @@ class Instrument:
             # Stage 2: Quantity Sizing, Gaussian/Chop Weights & Balance Capping.
             # Balance, fee, and venue filters are mechanics, not optional profit
             # policy. Apply them even when an emergency flow bypasses profit/weight.
-            quantity_price = price
-            if is_market:
-                quantity_price = self._provider.get_current_price(self.symbol)
-                try:
-                    quantity_price = float(quantity_price)
-                except (TypeError, ValueError, OverflowError):
-                    quantity_price = float("nan")
-                if not math.isfinite(quantity_price) or quantity_price <= 0:
-                    print(f"[{self.symbol}] {side_u} MARKET BLOCKED: current price unavailable")
-                    reason = "market_price_unavailable"
-                    return None
             decision = self._provider.quantity_decision(
                 self.symbol, side_u, quantity_price, qty,
                 base=base_asset, quote=quote_asset,
