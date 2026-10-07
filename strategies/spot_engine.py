@@ -709,8 +709,10 @@ class Strategy:
             self._adopt_pending_order(tracked.intent)
             return True
         except (ProviderError, RuntimeError, ValueError) as e:
-            if not market and self._insufficient_funds_error(e):
-                self._record_placement_backoff(side, kind, e)
+            if self._insufficient_funds_error(e):
+                self.s["ledger_reconcile_required"] = True
+                if not market:
+                    self._record_placement_backoff(side, kind, e)
             log(f"  ! [STRAT] {side} {kind} failed: {e}")
             return False
 
@@ -1571,11 +1573,27 @@ class Strategy:
                 log(f"  ! [STRAT] ledger reconciliation unavailable ({exc}); decisions blocked")
                 return
             tolerance = max(2 * 10.0 ** -max(self.vol_dec, 1), 1e-12)
+            if ledger_qty <= tolerance:
+                log(
+                    f"  [STRAT] LEDGER RECONCILE: position closed on venue ({base}=0); resetting cycle"
+                )
+                self.s["qty"] = 0.0
+                self.s["cost"] = 0.0
+                self.s["spent"] = 0.0
+                self.s["ledger_reconcile_required"] = False
+                self._save()
+                return
             if ledger_qty + tolerance < held:
                 log(
-                    f"  ! [STRAT] LEDGER MISMATCH: state qty={held:.{self.vol_dec}f}, "
-                    f"available {base}={ledger_qty:.{self.vol_dec}f}; decisions blocked"
+                    f"  ! [STRAT] LEDGER RECONCILE: state qty={held:.{self.vol_dec}f} -> "
+                    f"available {base}={ledger_qty:.{self.vol_dec}f}; synchronizing state"
                 )
+                ratio = ledger_qty / held if held > 0 else 1.0
+                self.s["qty"] = ledger_qty
+                self.s["cost"] = float(self.s.get("cost", 0.0)) * ratio
+                self.s["spent"] = float(self.s.get("spent", 0.0)) * ratio
+                self.s["ledger_reconcile_required"] = False
+                self._save()
                 return
             self.s["ledger_reconcile_required"] = False
             self._save()

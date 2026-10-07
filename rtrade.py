@@ -1133,6 +1133,9 @@ class TradingBot:
                 if refusal_reason in {"qty_zero_after_weight", "qty_zero_after_policy", "below_min_notional"}:
                     print(f"[{self.symbol}] 24h limit reached (BUY: {refusal_reason}) — exiting without retry")
                     return None
+                if refusal_reason == "profit_guard":
+                    print(f"[{self.symbol}] Blocked by profit guard (BUY: {refusal_reason}) — exiting without retry")
+                    return None
                 print(f"[{self.symbol}] Order BUY failed, retryed {failure_count} times. Retrying again ...")
                 _touch_rtrade_heartbeat()
                 time.sleep(WAIT_FOR_ORDER)
@@ -1275,6 +1278,9 @@ class TradingBot:
                 refusal_reason = outcome_context.get("reason")
                 if refusal_reason in {"qty_zero_after_weight", "qty_zero_after_policy", "below_min_notional"}:
                     print(f"[{self.symbol}] 24h limit reached (SELL: {refusal_reason}) — exiting without retry")
+                    return None
+                if refusal_reason == "profit_guard" and not self.is_buy_filled:
+                    print(f"[{self.symbol}] Blocked by profit guard (SELL: {refusal_reason}) — exiting without retry")
                     return None
                 print(f"[{self.symbol}] Order SELL failed, retryed {failure_count} times. Retrying again ...")
                 _touch_rtrade_heartbeat()

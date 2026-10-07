@@ -17,7 +17,7 @@ backup_local() {
     
     cd "$ROOT"
     local LIST
-    LIST="$(git ls-files --others --ignored --exclude-standard | grep -vE '^(myenv|\.venv)/' | grep -vE '(__pycache__|\.pyc$|\.log($|\.)|\.lock$|^index\.html$|^\.claude/)')"
+    LIST="$(git ls-files --others --ignored --exclude-standard | grep -vE '^(myenv|\.venv)/' | grep -vE '(__pycache__|\.pyc$|\.log($|\.)|\.lock$|\.tmp($|\.)|^index\.html$|^\.claude/)')"
     [ -n "$LIST" ] || { echo "❌ nothing to save"; exit 1; }
     
     rm -rf "$OUT"; mkdir -p "$OUT"

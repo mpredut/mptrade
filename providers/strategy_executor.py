@@ -156,8 +156,8 @@ class OrderStatus:
         if self.orig_qty is not None:
             raw_orig = self.orig_qty
             try:
-                orig_val = float(raw_orig)
-                if not math.isfinite(orig_val) or orig_val < 0:
+                orig_val = abs(float(raw_orig))
+                if not math.isfinite(orig_val):
                     raise ValueError(f"invalid orig_qty in OrderStatus: {raw_orig!r}")
                 object.__setattr__(self, "orig_qty", orig_val)
             except (TypeError, OverflowError):
