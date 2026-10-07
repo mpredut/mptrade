@@ -38,9 +38,9 @@ sudo /usr/local/sbin/trading-admin status                                       
 The entire deployment is reproducible and path-agnostic:
 
 - **Unified Backup & Restore** (`orchestratorOS/admin/manage_backups.sh`):
-  - `backup local`: Takes a snapshot of all secrets (`.env`, `212trading/.env`), caches (`cachedb/`), and state files (`lock/trade_cooldown.json`) into `$HOME/mptrade-secrets-backup.tar.gz`. (All PIA credentials and DIP tokens are centralized in `.env`).
+  - `backup local`: Takes a snapshot of all secrets (`.env`, `212trading/.env`), caches (`cachedb/`), state files, and Antigravity CLI credentials (`~/.gemini/antigravity-cli/antigravity-oauth-token`, `~/.gemini/config/config.json`) into `$HOME/mptrade-secrets-backup.tar.gz`.
   - `backup remote`: Uploads encrypted snapshot to Storj.
-  - `restore <tarball_or_folder>`: Rebuilds secrets, establishes virtualenv, installs python dependencies, and runs `systemd/install_prod.sh`.
+  - `restore <tarball_or_folder>`: Rebuilds secrets and Antigravity credentials, establishes virtualenv, installs python dependencies, and runs `systemd/install_prod.sh` (which auto-starts `antigravity-cli-daemon.service` authenticated as `prod-vm`).
 - **Fleet Orchestration** (`orchestratorTrade/orchestrator.py`):
   - Supervised by `python_orchestrator.service` (`systemd`).
   - Reads `procs.conf` manifest to spawn all bots in isolated process groups.
