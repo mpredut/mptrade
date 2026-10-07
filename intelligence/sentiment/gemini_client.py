@@ -98,7 +98,7 @@ class GeminiClient:
                         self._cache[prompt] = (now, output)
                     if thread_title:
                         try:
-                            from orchestratorOS.admin.prune_autonommptrade import sync_thread_title
+                            from orchestratorOS.admin.prune_llm_threads import sync_thread_title
                             presence_dir = os.path.expanduser("~/.gemini/antigravity-cli/presence")
                             if os.path.isdir(presence_dir):
                                 locks = [

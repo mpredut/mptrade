@@ -102,7 +102,7 @@ fi
 # Runs every 3 hours (not every hour) to avoid unnecessary churn
 CURRENT_HOUR="$(date +%-H)"
 if [ $((CURRENT_HOUR % 3)) -eq 0 ]; then
-    PRUNE_SCRIPT="$ROOT/orchestratorOS/admin/prune_autonommptrade.py"
+    PRUNE_SCRIPT="$ROOT/orchestratorOS/admin/prune_llm_threads.py"
     if [ -f "$PRUNE_SCRIPT" ]; then
         echo "  pruning automated CLI threads older than 1 day (3h cycle)..."
         python3 "$PRUNE_SCRIPT" --days 1 || true

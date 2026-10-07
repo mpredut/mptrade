@@ -149,11 +149,17 @@ def check_macro_order_guards(
                                 clean_reason = clean_reason[len(pfx):].strip()
                                 break
 
-                        g_body = f"Order: €{computed_notional:,.0f} (Scale: {scale_pct}%)\n{clean_reason}"
+                        price_str = f"${price:,.2f}" if price else ""
+                        qty_str = f"{qty:g} " if qty else ""
+                        order_header = f"Order: {side} {qty_str}{symbol}"
+                        if price_str:
+                            order_header += f" @ {price_str}"
+                        order_header += f" · €{computed_notional:,.0f} (Scale: {scale_pct}%)"
+                        g_body = f"{order_header}\n{clean_reason}"
                         notify(
                             title=g_title,
                             body=g_body,
-                            source="macro_shadow",
+                            source="order_guard",
                             symbol=symbol,
                         )
                     except Exception:

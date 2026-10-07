@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prune automated autonomous LLM threads (autonommptrade) older than a given age in Antigravity CLI."""
+"""Prune automated autonomous LLM threads older than a given age in Antigravity CLI."""
 from __future__ import annotations
 
 import argparse
@@ -14,7 +14,7 @@ from typing import List, Optional, Set, Tuple
 
 import json
 
-logger = logging.getLogger("prune_autonommptrade")
+logger = logging.getLogger("prune_llm_threads")
 
 DEFAULT_CLI_BASE = os.path.expanduser("~/.gemini/antigravity-cli")
 DEFAULT_PROJECTS = ["autonommptrade", "default-cli-project", "f5f9d01f-01e5-4fac-80f2-97364688afab"]
@@ -404,6 +404,10 @@ def prune_old_cli_threads(
         total_bytes_freed / (1024 * 1024),
     )
     return (len(candidate_cids), total_bytes_freed)
+
+
+# Alias for canonical naming
+prune_llm_threads = prune_old_cli_threads
 
 
 def main() -> None:

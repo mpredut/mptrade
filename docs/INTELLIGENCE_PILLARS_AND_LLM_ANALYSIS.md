@@ -137,7 +137,7 @@ LLM-ul (`gemini-3.8-flash-low` prin CLI-ul local `agy`) este invocat în sistem 
   - În `~/.gemini/config/projects/default-cli-project.json` și `autonommptrade.json`, numele proiectului a fost redenumit în **`autonommptrade`**.
   - Toate interogările autonome din `gemini_client.py` folosesc `--project autonommptrade`, separând istoricul automat de sesiunile manuale.
 - **Curățare automată (Pruning)**:
-  - Scriptul `orchestratorOS/admin/prune_autonommptrade.py` rulează automat prin cron și din daemon la fiecare oră.
+  - Scriptul `orchestratorOS/admin/prune_llm_threads.py` rulează automat prin cron (la fiecare 3h) și din daemon.
   - **Retenție configurată**: **1 zi** (`CLI_THREAD_RETENTION_DAYS=1.0`).
   - Thread-urile automate mai vechi de 24h sunt șterse automat din SQLite și din sistemul de fișiere, prevenind acumularea fișierelor și consumul de memorie.
 

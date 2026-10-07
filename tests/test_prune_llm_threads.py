@@ -5,7 +5,7 @@ import os
 import sqlite3
 import pytest
 
-from orchestratorOS.admin.prune_autonommptrade import (
+from orchestratorOS.admin.prune_llm_threads import (
     prune_old_cli_threads,
     filter_proto_file,
     is_automated_thread,
