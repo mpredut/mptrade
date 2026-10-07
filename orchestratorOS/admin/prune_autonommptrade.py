@@ -12,15 +12,19 @@ import sqlite3
 import sys
 from typing import List, Optional, Set, Tuple
 
+import json
+
 logger = logging.getLogger("prune_autonommptrade")
 
 DEFAULT_CLI_BASE = os.path.expanduser("~/.gemini/antigravity-cli")
-DEFAULT_PROJECTS = ["default-cli-project", "autonommptrade"]
+DEFAULT_PROJECTS = ["autonommptrade"]
+PROTECTED_PROJECT_NAMES = ["mptrade"]
 DEFAULT_RETENTION_DAYS = 1.0  # 1 day default
 
 AUTONOMOUS_PROMPT_PATTERNS = [
     "macroeconomic and geopolitical risk officer",
     "principal quantitative crypto risk officer",
+    "principal crypto quantitative risk strategist",
     "macroeconomic geopolitical risk assessment",
     "macroeconomic risk assessment",
     "macro geopolitical risk assessment",
@@ -38,8 +42,37 @@ AUTONOMOUS_PROMPT_PATTERNS = [
     "analiza risc tranzactie",
     "evaluated by gemini",
     "autonommptrade",
+    "automated reasoning",
     "ntfy-macro",
 ]
+
+
+def resolve_project_ids(project_names_or_ids: List[str] | Set[str], cli_base: str = DEFAULT_CLI_BASE) -> Set[str]:
+    """Resolve project names/IDs into full set of matching IDs and UUIDs from ~/.gemini/config/projects."""
+    resolved = set(project_names_or_ids)
+    projects_dir = os.path.join(os.path.dirname(cli_base), "config", "projects")
+    if not os.path.isdir(projects_dir):
+        alt_dir = os.path.expanduser("~/.gemini/config/projects")
+        if os.path.isdir(alt_dir):
+            projects_dir = alt_dir
+
+    if os.path.isdir(projects_dir):
+        for fname in os.listdir(projects_dir):
+            if fname.endswith(".json"):
+                fpath = os.path.join(projects_dir, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    pid = data.get("id")
+                    pname = data.get("name")
+                    if any(target in (pid, pname) for target in list(resolved)):
+                        if pid:
+                            resolved.add(pid)
+                        if pname:
+                            resolved.add(pname)
+                except Exception:
+                    pass
+    return resolved
 
 
 def read_varint(stream: io.BytesIO) -> Optional[int]:
@@ -271,24 +304,37 @@ def prune_old_cli_threads(
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    target_projects = [project_id] if project_id else DEFAULT_PROJECTS
+    protected_projects = resolve_project_ids(PROTECTED_PROJECT_NAMES, cli_base)
+    if project_id and (project_id in protected_projects or project_id in PROTECTED_PROJECT_NAMES):
+        logger.warning("Project '%s' is a protected user workspace and cannot be pruned.", project_id)
+        conn.close()
+        return (0, 0)
+
+    raw_targets = [project_id] if project_id else DEFAULT_PROJECTS
+    target_projects = resolve_project_ids(raw_targets, cli_base) - protected_projects
+
+    if not target_projects:
+        logger.info("No non-protected target projects found to prune.")
+        conn.close()
+        return (0, 0)
+
     placeholders_proj = ",".join("?" for _ in target_projects)
 
     query = (
         "SELECT conversation_id, title, preview, last_modified_time, project_id "
         f"FROM conversation_summaries WHERE project_id IN ({placeholders_proj})"
     )
-    cursor.execute(query, target_projects)
+    cursor.execute(query, list(target_projects))
     rows = cursor.fetchall()
 
     candidate_cids: Set[str] = set()
     for cid, title, preview, ts_str, proj in rows:
-        if cid in protected:
+        if cid in protected or proj in protected_projects:
             continue
         dt = parse_db_timestamp(ts_str)
         if dt is None or dt < cutoff:
-            # If in autonommptrade project, prune by age automatically; if default project, filter by automated pattern
-            if proj == "autonommptrade" or all_threads_in_project or is_automated_thread(title, preview):
+            # Must match automated thread pattern unless all_threads_in_project is explicitly set
+            if all_threads_in_project or is_automated_thread(title, preview):
                 candidate_cids.add(cid)
 
     if not candidate_cids:

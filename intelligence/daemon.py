@@ -34,7 +34,7 @@ class IntelligenceTelemetryDaemon:
         whale_interval_sec: float = 60.0,
         macro_interval_sec: Optional[float] = None,
         macro_llm_interval_sec: Optional[float] = None,
-        thread_prune_interval_sec: float = 3600.0,
+        thread_prune_interval_sec: float = 10800.0,
         skip_macro: bool = False,
         skip_external: bool = False,
     ) -> None:

@@ -181,3 +181,59 @@ class TestPruneCliThreads:
         assert "auto-old-1" not in remaining
         assert "auto-recent-2" in remaining
 
+    def test_user_manual_projects_and_threads_protected(self, tmp_path):
+        cli_base = str(tmp_path / "cli")
+        os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
+        db_path = os.path.join(cli_base, "conversation_summaries.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE conversation_summaries (
+                conversation_id text PRIMARY KEY,
+                title text,
+                preview text,
+                last_modified_time datetime,
+                project_id text
+            )
+        """)
+        now = datetime.now(timezone.utc)
+        ts_old = (now - timedelta(days=30)).isoformat()
+
+        # Insert user threads in mptrade and default-cli-project
+        conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)", (
+            "user-mptrade-1", "backtesting", "my custom manual discussion", ts_old, "mptrade"
+        ))
+        conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)", (
+            "user-default-2", "my ideas", "user discussion on prompt", ts_old, "default-cli-project"
+        ))
+        conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)", (
+            "bot-auto-3", "Macro Risk", "You are a senior macroeconomic and geopolitical risk officer", ts_old, "autonommptrade"
+        ))
+        conn.commit()
+        conn.close()
+
+        # Default run: should ONLY prune bot-auto-3 in autonommptrade
+        pruned, _ = prune_old_cli_threads(
+            cli_base=cli_base,
+            retention_days=1.0,
+            dry_run=False,
+        )
+        assert pruned == 1
+
+        conn = sqlite3.connect(db_path)
+        remaining = {r[0] for r in conn.execute("SELECT conversation_id FROM conversation_summaries").fetchall()}
+        conn.close()
+
+        assert "user-mptrade-1" in remaining, "User mptrade thread must NEVER be pruned!"
+        assert "user-default-2" in remaining, "User default-cli-project thread must NOT be pruned on default cycle!"
+        assert "bot-auto-3" not in remaining
+
+        # Attempt to prune protected project explicitly: must be refused
+        pruned_protected, _ = prune_old_cli_threads(
+            cli_base=cli_base,
+            retention_days=0.0,
+            project_id="mptrade",
+            dry_run=False,
+        )
+        assert pruned_protected == 0
+
+

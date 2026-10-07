@@ -99,9 +99,13 @@ if [ -d "$LOGGER_DIR" ]; then
 fi
 
 # 3. Retention for autonomous LLM CLI threads older than 1 day (autonommptrade)
-PRUNE_SCRIPT="$ROOT/orchestratorOS/admin/prune_autonommptrade.py"
-if [ -f "$PRUNE_SCRIPT" ]; then
-    echo "  pruning automated CLI threads older than 1 day..."
-    python3 "$PRUNE_SCRIPT" --days 1 || true
+# Runs every 3 hours (not every hour) to avoid unnecessary churn
+CURRENT_HOUR="$(date +%-H)"
+if [ $((CURRENT_HOUR % 3)) -eq 0 ]; then
+    PRUNE_SCRIPT="$ROOT/orchestratorOS/admin/prune_autonommptrade.py"
+    if [ -f "$PRUNE_SCRIPT" ]; then
+        echo "  pruning automated CLI threads older than 1 day (3h cycle)..."
+        python3 "$PRUNE_SCRIPT" --days 1 || true
+    fi
 fi
 
