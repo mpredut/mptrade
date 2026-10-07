@@ -76,6 +76,11 @@ do_restart() {
         log "Executing inside daemon cgroup. Delegating restart to transient user systemd service..."
         local job_unit="agy-restart-$(date +%s)"
         systemd-run --user --unit="$job_unit" bash -c "
+            export PATH=\"\$HOME/.local/bin:\$PATH\"
+            export XDG_RUNTIME_DIR=\"\${XDG_RUNTIME_DIR:-/run/user/\$(id -u)}\"
+            if [ -S \"\${XDG_RUNTIME_DIR}/bus\" ]; then
+                export DBUS_SESSION_BUS_ADDRESS=\"\${DBUS_SESSION_BUS_ADDRESS:-unix:path=\${XDG_RUNTIME_DIR}/bus}\"
+            fi
             '$AGY_BIN' remote-control stop || true
             sleep 2
             '$AGY_BIN' remote-control start --name '$INSTANCE_NAME'
