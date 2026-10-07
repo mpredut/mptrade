@@ -12,7 +12,7 @@ SHELL=/bin/bash
 */20 * * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.portfolio_snapshot.lock /usr/bin/timeout --signal=TERM --kill-after=5s 90s ./orchestratorOS/run_python.sh verify_tools/portfolio_snapshot.py --alert --json >> logs/portfolio_snapshot.jsonl 2>/dev/null
 27 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh hyperliquid/shadow_longterm.py --quiet >> logs/hyperliquid_shadow.log 2>&1
 */5 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh orchestratorOS/livecheck/os_resources_watchdog.py >> logs/os_resources_watchdog.log 2>&1
-*/2 * * * * cd $HOME/mptrade && ./orchestratorOS/livecheck/agy_watchdog.sh >> logs/agy_watchdog.log 2>&1
+*/2 * * * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh watchdog >> logs/manage_agy.log 2>&1
 
-15 4 1,15 * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy_update.sh --cron >> logs/manage_agy_update.log 2>&1
+15 4 1,15 * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh cron-update >> logs/manage_agy.log 2>&1
 
