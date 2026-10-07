@@ -212,11 +212,13 @@ ntfy_topic() {
     echo "$t"
 }
 
-ntfy_push() {  # $1=title $2=body -> 0 if it went out
+# shellcheck source=../lib/os_notify.sh
+source "$ROOT/orchestratorOS/lib/os_notify.sh"
+
+ntfy_push() {  # $1=title $2=body -> 0 if it went out (ERROR topic, mirrored to email)
     local topic; topic=$(ntfy_topic)
     [ -z "$topic" ] && return 1
-    curl --fail-with-body -sS -m 15 --retry 2 --retry-delay 3 --retry-all-errors \
-        -H "Title: $1" -d "$2" "https://ntfy.sh/$topic" >/dev/null 2>&1
+    send_os_ntfy "$1" "$2" default "$topic"
 }
 
 alert() {  # $1=title $2=body

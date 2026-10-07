@@ -10,6 +10,8 @@ import requests
 from collections import defaultdict
 from typing import Dict, Any, List
 
+from notify_engine.mailer import is_configured as email_is_configured, is_email_mirrored, send_email
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] Orchestrator: %(message)s")
 
 _GUARD_MARKERS = (
@@ -138,6 +140,11 @@ class NotificationServer:
         if any(fake in check_text for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ")):
             logging.info(f"Skipping test/fake alert in _send_ntfy: {title}")
             return True
+
+        # ERROR / DEADMAN topics are mirrored to email (policy: notify_engine.mailer).
+        # Sent before the push so an ntfy outage or quota never swallows the email.
+        if not is_retry and is_email_mirrored(topic):
+            self._send_email(title, message)
         
         url = f"https://ntfy.sh/{topic}"
         headers = {
@@ -181,11 +188,11 @@ class NotificationServer:
             return False
             
     def _send_email(self, subject: str, message: str, is_retry: bool = False) -> bool:
-        if os.environ.get("DISABLE_EXTERNAL_NOTIFICATIONS", "").strip().lower() in {"1", "true", "yes", "on"}:
-            return True
-        # Placeholder for actual email delivery. Can be implemented with smtplib.
-        logging.warning(f"Email delivery not fully configured. Intent recorded for: {subject}")
-        return True
+        # Retries bypass dedup: the first attempt already reserved this fingerprint.
+        ok = send_email(subject, message, dedup=not is_retry)
+        if not ok and not is_retry and email_is_configured():
+            self._enqueue_payload("email", {"subject": subject, "message": message})
+        return ok
 
     @staticmethod
     def _format_price_alerts_batch_title(alerts: list) -> str:
@@ -355,6 +362,8 @@ class NotificationServer:
         allowed, reason, _ = _reserve_delivery("ntfy", alerts, urgent=urgent)
         if not allowed:
             logging.info(f"ntfy delivery skipped by policy: {reason}")
+            if reason != "duplicate" and (urgent or is_email_mirrored(topic)):
+                self._send_email(full_title, body)
             return False
 
         priority = "urgent" if urgent else "high"
@@ -430,19 +439,8 @@ class NotificationServer:
                     self.dispatch_alerts(alerts, webhook_url=webhook_url, bot_name=bot_name)
 
                 elif intent == "email":
-                    alerts = payload.get("alerts", [])
-                    subject = payload.get("subject")
-                    if not subject and alerts:
-                        first = alerts[0]
-                        if (isinstance(first, dict) and (first.get("type") == "price_alert" or "alert_type" in first)) or hasattr(first, "alert_type"):
-                            subject = self._format_price_alerts_batch_title(alerts) if len(alerts) > 1 else f"{first.get('symbol', 'N/A') if isinstance(first, dict) else getattr(first, 'symbol', 'N/A')} {first.get('alert_type', 'alert') if isinstance(first, dict) else getattr(first, 'alert_type', 'alert')}"
-                        elif isinstance(first, dict) and first.get("type") == "new_coin_discovered":
-                            subject = self._format_new_coins_batch_title(alerts) if len(alerts) > 1 else f"New Coin: {first.get('symbol', 'N/A')}"
-                        elif isinstance(first, dict):
-                            subject = first.get("name") or first.get("title") or "Alert"
-                    if not subject:
-                        subject = "Alert"
-                    self._send_email(subject, str(alerts))
+                    # Same schema as the retry queue; rendered by AlertNotifier.send_email_batch.
+                    self._send_email(payload.get("subject") or "Alert", payload.get("message") or "")
                 return
             except json.JSONDecodeError as e:
                 logging.warning(f"Failed to decode orchestrator intent JSON from {bot_name}: {e} (raw line: {line.strip()})")

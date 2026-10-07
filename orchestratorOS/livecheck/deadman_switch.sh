@@ -30,6 +30,25 @@ AUTH_HDR=()
 [ -n "$TOKEN" ] && AUTH_HDR=(-H "Authorization: Bearer $TOKEN")
 
 HOST=$(hostname)
+
+# Email side of the switch. ntfy does NOT email scheduled ("In:") messages, and a dead
+# server cannot send mail, so: while DOWN, healthchecks.io (HC_PING_URL, below) emails
+# from outside; once back UP, the heartbeat gap is detected here and the outage window
+# is emailed through the shared mailer (orchestratorOS/lib/os_notify.sh).
+DOWN_AFTER_SEC=$((35 * 60))   # keep in sync with the "In: 35m" header below
+BEAT_FILE="$ROOT/logs/.deadman_last_beat"
+NOW=$(date +%s)
+LAST=$(cat "$BEAT_FILE" 2>/dev/null)
+echo "$NOW" > "$BEAT_FILE"
+if [[ "$LAST" =~ ^[0-9]+$ ]] && (( NOW - LAST >= DOWN_AFTER_SEC )); then
+    GAP_MIN=$(( (NOW - LAST) / 60 ))
+    # shellcheck source=../lib/os_notify.sh
+    source "$ROOT/orchestratorOS/lib/os_notify.sh"
+    send_os_email "SERVER DOWN ($HOST) - back up after ${GAP_MIN} min" \
+        "No heartbeat from $(date -d "@$LAST" '+%F %H:%M') to $(date -d "@$NOW" '+%F %H:%M') (${GAP_MIN} min): crash / reboot / power loss / cron stopped. The server is running again."
+    echo "$(date '+%H:%M') deadman: heartbeat gap ${GAP_MIN} min -> outage email queued"
+fi
+
 # --retry 4 --retry-all-errors: retries on transient DNS/network blips
 curl --fail-with-body -sS -m 10 --retry 4 --retry-delay 5 --retry-all-errors --retry-connrefused \
     "${AUTH_HDR[@]}" \

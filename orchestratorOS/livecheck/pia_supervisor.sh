@@ -31,20 +31,11 @@ REG_DED_DE=""
 REG_DED_BE=""
 REG_DYN_DE="de-frankfurt"
 
-send_ntfy() {
-    local title="$1"
-    local body="$2"
-    local priority="${3:-default}"
-    local topic; topic=$(grep -hs -m1 '^NTFY_TOPIC_ERROR=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
-    [ -n "$topic" ] || topic="ntfy-error-941582"
-    local token; token=$(grep -hs -m1 '^NTFY_TOKEN=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
-    local auth_hdr=()
-    [ -n "$token" ] && auth_hdr=(-H "Authorization: Bearer $token")
-    curl -s -m 10 -X POST "https://ntfy.sh/$topic" \
-        -H "Title: $title" \
-        -H "Priority: $priority" \
-        "${auth_hdr[@]}" \
-        -d "$body" >/dev/null 2>&1 &
+# shellcheck source=../lib/os_notify.sh
+source "$ROOT/orchestratorOS/lib/os_notify.sh"
+
+send_ntfy() {  # $1=title $2=body [$3=priority] — ERROR topic, mirrored to email
+    send_os_ntfy "$1" "$2" "${3:-default}" &
 }
 
 isp_healthy() {

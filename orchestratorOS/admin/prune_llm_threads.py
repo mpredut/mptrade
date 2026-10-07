@@ -106,8 +106,54 @@ def encode_varint(val: int) -> bytes:
     return bytes(res)
 
 
+def ensure_proto_synced(cli_base: str = DEFAULT_CLI_BASE) -> int:
+    """Ensure all records from jetbox_summaries_proto.pb exist in agyhub_summaries_proto.pb."""
+    jb_path = os.path.join(cli_base, "jetbox_summaries_proto.pb")
+    agy_path = os.path.join(cli_base, "agyhub_summaries_proto.pb")
+    if not os.path.exists(jb_path) or not os.path.exists(agy_path):
+        return 0
+
+    def get_records(path: str) -> dict[str, bytes]:
+        recs: dict[str, bytes] = {}
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+            stream = io.BytesIO(raw)
+            while stream.tell() < len(raw):
+                tag = read_varint(stream)
+                if tag is None:
+                    break
+                length = read_varint(stream)
+                if length is None:
+                    break
+                data = stream.read(length)
+                sub = io.BytesIO(data)
+                stag = read_varint(sub)
+                cid = None
+                if stag == 10:
+                    slen = read_varint(sub)
+                    if slen is not None:
+                        cid = sub.read(slen).decode("utf-8", errors="ignore")
+                if cid:
+                    recs[cid] = encode_varint(tag) + encode_varint(length) + data
+        except Exception:
+            pass
+        return recs
+
+    jb_recs = get_records(jb_path)
+    agy_recs = get_records(agy_path)
+    added = 0
+    with open(agy_path, "ab") as f:
+        for cid, rec in jb_recs.items():
+            if cid not in agy_recs:
+                f.write(rec)
+                added += 1
+    return added
+
+
 def sync_thread_title(cid: str, new_title: str, cli_base: str = DEFAULT_CLI_BASE) -> bool:
     """Update title for a conversation ID across SQLite and protobuf summaries."""
+    ensure_proto_synced(cli_base)
     updated = False
     try:
         db_path = os.path.join(cli_base, "conversation_summaries.db")

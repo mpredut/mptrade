@@ -53,21 +53,10 @@ is_active() {
     return 1
 }
 
-send_alert() {
-    local msg="$1"
-    local topic
-    topic=$(grep -hs -m1 '^NTFY_TOPIC_ERROR=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
-    [ -n "$topic" ] || topic=$(grep -hs -m1 '^NTFY_TOPIC=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
-    if [ -n "$topic" ]; then
-        local token
-        token=$(grep -hs -m1 '^NTFY_TOKEN=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
-        local auth_hdr=()
-        [ -n "$token" ] && auth_hdr=(-H "Authorization: Bearer $token")
-        curl -fsS -m 10 --retry 2 "${auth_hdr[@]}" \
-            -H "Title: AGY Manager ($(hostname))" \
-            -d "$msg" \
-            "https://ntfy.sh/$topic" >/dev/null 2>&1 || true
-    fi
+send_alert() {  # ERROR topic (fallback NTFY_TOPIC), mirrored to email by os_notify.sh
+    # shellcheck source=../lib/os_notify.sh
+    source "$ROOT/orchestratorOS/lib/os_notify.sh"
+    send_os_ntfy "AGY Manager ($(hostname))" "$1" default || true
 }
 
 do_restart() {

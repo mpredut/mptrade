@@ -5,12 +5,10 @@ import requests
 import hashlib
 import json
 import os
-import smtplib
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
-from email.mime.text import MIMEText
 from pathlib import Path
 from state_io import atomic_write_json
 from typing import Any, Optional
@@ -404,6 +402,20 @@ class AlertNotifier:
             return False
 
     @staticmethod
+    def email_subject(alerts: list) -> str:
+        first = alerts[0]
+        if isinstance(first, dict) and first.get("type") == "new_coin_discovered":
+            from notify_engine.server import NotificationServer
+            return NotificationServer._format_new_coins_batch_title(alerts) if len(alerts) > 1 \
+                else f"New Coin: {first.get('symbol', 'N/A')}"
+        if (isinstance(first, dict) and "alert_type" in first) or hasattr(first, "alert_type"):
+            from notify_engine.server import NotificationServer
+            return NotificationServer._format_price_alerts_batch_title(alerts)
+        if isinstance(first, dict):
+            return str(first.get("name") or first.get("title") or "Alert")
+        return "Alert"
+
+    @staticmethod
     def send_email_batch(
         alerts: list[dict],
         recipient: Optional[str] = None,
@@ -413,20 +425,17 @@ class AlertNotifier:
             return False
         if os.environ.get("DISABLE_EXTERNAL_NOTIFICATIONS", "").strip().lower() in {"1", "true", "yes", "on"}:
             return True
-        def default_serializer(obj):
-            if hasattr(obj, "to_dict"):
-                return obj.to_dict()
-            if isinstance(obj, datetime):
-                return obj.isoformat()
-            return str(obj)
-        intent = {
-            "__orchestrator_intent__": "email",
-            "subject": subject,
-            "alerts": list(alerts)
-        }
-        sys.stdout.write(json.dumps(intent, default=default_serializer) + "\n")
-        sys.stdout.flush()
-        return True
+        alerts = list(alerts)
+        subject = subject or AlertNotifier.email_subject(alerts)
+        message = AlertNotifier.format_batch_message(alerts)
+        if os.environ.get("MPTRADE_ORCHESTRATED") == "1":
+            # The orchestrator parses child stdout; same schema as its retry queue.
+            intent = {"__orchestrator_intent__": "email", "subject": subject, "message": message}
+            sys.stdout.write(json.dumps(intent, default=str) + "\n")
+            sys.stdout.flush()
+            return True
+        from notify_engine.server import NotificationServer
+        return NotificationServer()._send_email(subject, message)
 
     @staticmethod
     def send_phone_webhook_batch(alerts, webhook_url: Optional[str] = None):
@@ -481,45 +490,33 @@ class AlertNotifier:
         if enable_phone_webhook:
             AlertNotifier.send_phone_webhook_batch(alerts, webhook_url=webhook_url)
 
-    @staticmethod
-    def _send_urgent_email_fallback(alerts) -> None:
-        pass
-
-    @staticmethod
-    def _send_budget_warning(channel: str, reason: str) -> None:
-        pass
 
 def notify(title: str, body: str, source: str, symbol: str,
            price: float = None, desktop: bool = False,
            email: bool = None) -> None:
+    """Shared bot-event notifier: ntfy (routed by category) plus optional email.
+
+    ERROR-category events reach email automatically through the server's topic mirror
+    (notify_engine.mailer). ``email=True`` forces a copy for any other category.
+    """
     if os.environ.get("DISABLE_EXTERNAL_NOTIFICATIONS", "").strip().lower() in {"1", "true", "yes", "on"}:
         return
     if any(fake in f"{title} {body} {symbol} {source}".upper()
            for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ")):
         return
+    alert = {"type": "bot_event", "name": title, "body": body, "source": source, "symbol": symbol}
     if os.environ.get("MPTRADE_ORCHESTRATED") == "1":
-        intent = {
-            "__orchestrator_intent__": "ntfy_webhook",
-            "alerts": [{
-                "type": "bot_event",
-                "name": title,
-                "body": body,
-                "source": source,
-                "symbol": symbol
-            }]
-        }
+        intent = {"__orchestrator_intent__": "ntfy_webhook", "alerts": [alert]}
         sys.stdout.write(json.dumps(intent) + "\n")
         sys.stdout.flush()
     else:
         from notify_engine.server import NotificationServer
-        server = NotificationServer()
-        server.dispatch_alerts([{
-            "type": "bot_event",
-            "name": title,
-            "body": body,
-            "source": source,
-            "symbol": symbol
-        }])
+        NotificationServer().dispatch_alerts([alert])
+    if email:
+        from notify_engine.mailer import is_email_mirrored
+        from notify_engine.server import _topic_for_category
+        if not is_email_mirrored(_topic_for_category(title, source)):
+            AlertNotifier.send_email_batch([alert], subject=title)
  
  
 def check_alert(condition: bool, message: str, alert_interval: int = 60, symbol: str = "TRADE") -> None:

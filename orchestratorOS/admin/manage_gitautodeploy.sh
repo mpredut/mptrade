@@ -50,11 +50,10 @@ mkdir -p "$STATE_DIR" 2>/dev/null
 log() { echo "$(date '+%F %T') $*"; }
 g()   { runuser -u "$OWNER" -- git -C "$ROOT" "$@"; }   # git as the repo owner
 
-alert() {  # best-effort ntfy; delivery failure is fine (informational)
-    local topic
-    topic=$(grep -hs -m1 '^NTFY_TOPIC_ERROR=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d '" ')
-    [ -n "$topic" ] && curl --fail-with-body -sS -m 10 --retry 1 \
-        -H "Title: $1" -d "$2" "https://ntfy.sh/$topic" >/dev/null 2>&1 || true
+alert() {  # best-effort ntfy on the ERROR topic (mirrored to email); failure is fine
+    # shellcheck source=../lib/os_notify.sh
+    source "$ROOT/orchestratorOS/lib/os_notify.sh"
+    send_os_ntfy "$1" "$2" default || true
 }
 
 # Fetch with retry (GitHub over the tunnel is intermittently flaky).

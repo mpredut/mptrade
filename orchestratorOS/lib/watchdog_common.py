@@ -62,16 +62,7 @@ def send_ntfy(title, message):
     return ok
 
 
-def send_email(subject, body):
-    ok = AlertNotifier.send_email_batch(
-        [_watchdog_event(subject, body)], subject=subject,
-    )
-    print(f"[watchdog] email {'sent' if ok else 'skipped/failed'}")
-    return ok
-
-
 def alert(title, message):
-    """Send push + email. Returns True if at least one of them succeeded."""
-    ok_push = send_ntfy(title, message)
-    ok_mail = send_email(title, message)
-    return bool(ok_push or ok_mail)
+    """Send the push to the ERROR topic; notify_engine mirrors that topic to email
+    (policy: notify_engine/mailer.py), so no separate email call is made here."""
+    return bool(send_ntfy(title, message))

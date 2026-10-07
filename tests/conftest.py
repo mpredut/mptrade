@@ -29,6 +29,16 @@ os.environ["NOTIFICATION_STATE_FILE"] = os.path.join(
 
 
 @pytest.fixture(autouse=True)
+def _sink_smtp(monkeypatch):
+    """Never reach a real SMTP server, even in tests that re-enable notifications."""
+    from notify_engine import mailer
+
+    sent = []
+    monkeypatch.setattr(mailer, "_smtp_send", lambda msg, cfg: sent.append(msg))
+    return sent
+
+
+@pytest.fixture(autouse=True)
 def _isolate_order_retry_queue(tmp_path, monkeypatch):
     """Keep every test away from the ignored operational retry outbox."""
     import order_retry
