@@ -23,12 +23,18 @@ backup_local() {
     rm -rf "$OUT"; mkdir -p "$OUT"
     printf '%s\n' "$LIST" | tar cf - -C "$ROOT" -T - | tar xf - -C "$OUT"
     
-    # Preserve Antigravity CLI (agy) OAuth credentials and daemon config for Disaster Recovery
-    if [ -f "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" ]; then
+    # Preserve Antigravity CLI (agy) OAuth credentials, settings, and project configs for Disaster Recovery
+    if [ -f "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" ] || [ -d "$HOME/.gemini/config" ]; then
         mkdir -p "$OUT/.gemini_backup/antigravity-cli" "$OUT/.gemini_backup/config"
-        cp -p "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" "$OUT/.gemini_backup/antigravity-cli/" 2>/dev/null || true
+        [ -f "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" ] && cp -p "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" "$OUT/.gemini_backup/antigravity-cli/" 2>/dev/null || true
         [ -f "$HOME/.gemini/antigravity-cli/installation_id" ] && cp -p "$HOME/.gemini/antigravity-cli/installation_id" "$OUT/.gemini_backup/antigravity-cli/" 2>/dev/null || true
+        [ -f "$HOME/.gemini/antigravity-cli/settings.json" ] && cp -p "$HOME/.gemini/antigravity-cli/settings.json" "$OUT/.gemini_backup/antigravity-cli/" 2>/dev/null || true
         [ -f "$HOME/.gemini/config/config.json" ] && cp -p "$HOME/.gemini/config/config.json" "$OUT/.gemini_backup/config/" 2>/dev/null || true
+        [ -f "$HOME/.gemini/config/mcp_config.json" ] && cp -p "$HOME/.gemini/config/mcp_config.json" "$OUT/.gemini_backup/config/" 2>/dev/null || true
+        if [ -d "$HOME/.gemini/config/projects" ]; then
+            mkdir -p "$OUT/.gemini_backup/config/projects"
+            cp -a "$HOME/.gemini/config/projects/." "$OUT/.gemini_backup/config/projects/" 2>/dev/null || true
+        fi
     fi
     
     tar czf "$OUT.tar.gz" -C "$OUT" .
@@ -88,10 +94,10 @@ restore_backup() {
     tar cf - -C "$SECRETS" --exclude='.gemini_backup' . | tar xf - -C "$ROOT"
     
     if [ -d "$SECRETS/.gemini_backup" ]; then
-        echo "    ✔ restoring Antigravity CLI (agy) OAuth credentials and config to ~/.gemini"
+        echo "    ✔ restoring Antigravity CLI (agy) OAuth credentials, projects, and config to ~/.gemini"
         mkdir -p "$HOME/.gemini/antigravity-cli" "$HOME/.gemini/config"
-        [ -d "$SECRETS/.gemini_backup/antigravity-cli" ] && cp -rp "$SECRETS/.gemini_backup/antigravity-cli/." "$HOME/.gemini/antigravity-cli/" 2>/dev/null || true
-        [ -d "$SECRETS/.gemini_backup/config" ] && cp -rp "$SECRETS/.gemini_backup/config/." "$HOME/.gemini/config/" 2>/dev/null || true
+        [ -d "$SECRETS/.gemini_backup/antigravity-cli" ] && cp -a "$SECRETS/.gemini_backup/antigravity-cli/." "$HOME/.gemini/antigravity-cli/" 2>/dev/null || true
+        [ -d "$SECRETS/.gemini_backup/config" ] && cp -a "$SECRETS/.gemini_backup/config/." "$HOME/.gemini/config/" 2>/dev/null || true
         chmod 600 "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" 2>/dev/null || true
     fi
     
