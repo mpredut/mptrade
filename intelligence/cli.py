@@ -178,15 +178,19 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         else:
             result["pillar3_sentiment"]["fear_greed"] = None
 
-        advisor_path = os.path.join(cache_dir, "macro_advisor_eval.json")
+        advisor_path = os.path.join(cache_dir, "sentiment_advisor_eval.json")
+        if not os.path.exists(advisor_path):
+            advisor_path = os.path.join(cache_dir, "macro_advisor_eval.json")
         if not os.path.exists(advisor_path):
             advisor_path = os.path.join(cache_dir, "gemini_macro_advisor.json")
         if os.path.exists(advisor_path):
             with open(advisor_path, "r", encoding="utf-8") as f:
                 gem_data = json.load(f)
             gem_data["age_formatted"] = _format_age(now - gem_data.get("ts", 0))
+            result["pillar3_sentiment"]["sentiment_advisor"] = gem_data
             result["pillar3_sentiment"]["gemini_macro"] = gem_data
         else:
+            result["pillar3_sentiment"]["sentiment_advisor"] = None
             result["pillar3_sentiment"]["gemini_macro"] = None
     except Exception as e:
         result["pillar3_sentiment"]["error"] = str(e)

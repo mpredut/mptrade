@@ -575,7 +575,7 @@ def get_whale_collector():
     global _whale_collector
     if _whale_collector is not None:
         return _whale_collector
-    from microstructure_order_guard import get_whale_collector as _gwc
+    from external_order_guard import get_whale_collector as _gwc
     return _gwc()
 
 
@@ -583,7 +583,7 @@ def get_orderbook_collector():
     global _orderbook_collector
     if _orderbook_collector is not None:
         return _orderbook_collector
-    from microstructure_order_guard import get_orderbook_collector as _goc
+    from external_order_guard import get_orderbook_collector as _goc
     return _goc()
 
 
@@ -591,7 +591,7 @@ def get_derivatives_collector():
     global _derivatives_collector
     if _derivatives_collector is not None:
         return _derivatives_collector
-    from microstructure_order_guard import get_derivatives_collector as _gdc
+    from external_order_guard import get_derivatives_collector as _gdc
     return _gdc()
 
 
@@ -988,8 +988,8 @@ def _evaluate_intelligence_guards_raw(
         active_reason = int_reason
 
     # 2. External Microstructure, Geopolitical & LLM Guards (Pillars 2, 3, 4)
-    from macro_order_guard import check_macro_order_guards
-    macro_ok, macro_reason, macro_scale = check_macro_order_guards(
+    from intelligence_order_guard import check_intelligence_order_guards
+    macro_ok, macro_reason, macro_scale = check_intelligence_order_guards(
         provider=provider,
         symbol=symbol,
         order_type=order_type,

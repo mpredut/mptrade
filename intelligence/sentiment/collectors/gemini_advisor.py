@@ -14,7 +14,7 @@ from intelligence.sentiment.collectors.market_breadth_collector import MarketBre
 
 logger = logging.getLogger("intelligence.sentiment.gemini_advisor")
 
-DEFAULT_CACHE_FILE = "cachedb/macro_advisor_eval.json"
+DEFAULT_CACHE_FILE = "cachedb/sentiment_advisor_eval.json"
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,7 @@ class LLMMacroAssessment:
 
 # Backwards compatibility alias
 GeminiMacroAssessment = LLMMacroAssessment
+SentimentAdvisorAssessment = LLMMacroAssessment
 
 
 class LLMMarketAdvisor:
@@ -51,13 +52,18 @@ class LLMMarketAdvisor:
         self._load_from_disk()
 
     def _load_from_disk(self) -> None:
-        target_file = self.cache_file
-        if not os.path.exists(target_file):
-            legacy = target_file.replace("macro_advisor_eval.json", "gemini_macro_advisor.json")
-            if os.path.exists(legacy):
-                target_file = legacy
+        candidates = [
+            self.cache_file,
+            self.cache_file.replace("sentiment_advisor_eval.json", "macro_advisor_eval.json"),
+            self.cache_file.replace("sentiment_advisor_eval.json", "gemini_macro_advisor.json"),
+        ]
+        target_file = None
+        for cand in candidates:
+            if os.path.exists(cand):
+                target_file = cand
+                break
 
-        if os.path.exists(target_file):
+        if target_file and os.path.exists(target_file):
             try:
                 with open(target_file, "r") as f:
                     data = json.load(f)
@@ -79,11 +85,15 @@ class LLMMarketAdvisor:
             os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
             with open(self.cache_file, "w") as f:
                 json.dump(asdict(assessment), f, indent=2)
-            # Write legacy file during migration
-            legacy = self.cache_file.replace("macro_advisor_eval.json", "gemini_macro_advisor.json")
-            if legacy != self.cache_file:
-                with open(legacy, "w") as f:
-                    json.dump(asdict(assessment), f, indent=2)
+            # Write legacy files during migration
+            for legacy_name in ("macro_advisor_eval.json", "gemini_macro_advisor.json"):
+                legacy_path = self.cache_file.replace("sentiment_advisor_eval.json", legacy_name)
+                if legacy_path != self.cache_file:
+                    try:
+                        with open(legacy_path, "w") as f:
+                            json.dump(asdict(assessment), f, indent=2)
+                    except Exception:
+                        pass
         except Exception as e:
             logger.warning("Could not persist LLM assessment to %s: %s", self.cache_file, e)
 

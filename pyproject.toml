@@ -79,6 +79,8 @@ py-modules = [
     "intelligence_cli",
     "intelligence_daemon",
     "internal_order_guard",
+    "external_order_guard",
+    "intelligence_order_guard",
     "macro_analyzer",
     "macro_order_guard",
     "microstructure_order_guard",

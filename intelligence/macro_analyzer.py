@@ -80,7 +80,7 @@ class MacroAnalyzer:
         )
         self.llm_advisor = LLMMarketAdvisor(
             cache_ttl_sec=self.advisor_interval_sec,
-            cache_file=os.path.join(self.cache_dir, "macro_advisor_eval.json"),
+            cache_file=os.path.join(self.cache_dir, "sentiment_advisor_eval.json"),
         )
         self.gemini_advisor = self.llm_advisor
 
