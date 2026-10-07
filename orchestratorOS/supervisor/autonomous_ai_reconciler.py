@@ -23,6 +23,10 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 from intelligence.sentiment.gemini_client import GeminiClient
 
 logger = logging.getLogger("orchestratorOS.supervisor")
