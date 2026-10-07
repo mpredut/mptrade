@@ -175,14 +175,14 @@ class BuyReferenceSwitchTest(unittest.TestCase):
                 mock.patch.object(order_guard, "_symbol_trend", return_value="unknown"):
             # With binance_buy_reference = 0: BUY at 293 (above past sell 216.28) is accepted
             with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference=0.0)):
-                res = inst.place("BUY", 293.0, 1.0, motivation="test_buy", cache_permit=object(), smart=False, wait_for_trend=False)
+                res = inst.place("BUY", 293.0, 1.0, motivation="test_buy", cache_permit=object(), smart=False, wait_for_trend=False, caller_owns_retry=True)
                 self.assertIsNotNone(res)
                 self.assertEqual(len(p.placed), 1)
 
             # With binance_buy_reference = 1: BUY at 293 (above past sell 216.28) is refused by profit_guard
             p.placed.clear()
             with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference=1.0)):
-                res = inst.place("BUY", 293.0, 1.0, motivation="test_buy", cache_permit=object(), smart=False, wait_for_trend=False)
+                res = inst.place("BUY", 293.0, 1.0, motivation="test_buy", cache_permit=object(), smart=False, wait_for_trend=False, caller_owns_retry=True)
                 self.assertIsNone(res)
                 self.assertEqual(len(p.placed), 0)
 
