@@ -184,7 +184,8 @@ def test_dispatch_notification_via_urllib(temp_env):
 
     mock_resp = MagicMock()
     mock_resp.status = 200
-    mock_resp.__enter__.return_value.status = 200
+    mock_resp.code = 200
+    mock_resp.__enter__.return_value = mock_resp
 
     with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
         ok = reconciler.dispatch_notification(report)

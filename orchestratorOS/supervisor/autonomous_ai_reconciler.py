@@ -41,6 +41,7 @@ class TelemetrySensorSnapshot:
     geopolitical_threat: Optional[Dict[str, Any]] = None
     active_heartbeats: Dict[str, Any] = field(default_factory=dict)
     state_files: Dict[str, Any] = field(default_factory=dict)
+    prices_and_trends: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -62,6 +63,8 @@ class SupervisorAuditReport:
     diagnosed_issues: List[Dict[str, Any]] = field(default_factory=list)
     venue_actions: List[Dict[str, Any]] = field(default_factory=list)
     code_remediation: Dict[str, Any] = field(default_factory=dict)
+    market_trading_decision: Dict[str, Any] = field(default_factory=dict)
+    intent_emitted: Optional[Dict[str, Any]] = None
     sensor_health: Dict[str, Any] = field(default_factory=dict)
     actions_executed: bool = False
     tests_passed: Optional[bool] = None
@@ -175,6 +178,17 @@ class AutonomousAIReconciler:
 
         self.state_file = os.path.join(self.cache_dir, "supervisor_nightly_eval.json")
         self.heartbeat_file = os.path.join(self.cache_dir, "supervisor_nightly.heartbeat")
+        self.intents_file = os.path.join(self.cache_dir, "autonomous_trade_intents.json")
+
+        self.autonomous_trading_mode = conf.get("autonomous_trading_mode", "shadow").strip().lower()
+        try:
+            self.min_trading_confidence = float(conf.get("autonomous_trading_min_confidence", "0.85"))
+        except (ValueError, TypeError):
+            self.min_trading_confidence = 0.85
+        try:
+            self.max_trading_notional = float(conf.get("autonomous_trading_max_notional_eur", "500.0"))
+        except (ValueError, TypeError):
+            self.max_trading_notional = 500.0
 
     def _load_decoupled_conf(self) -> Dict[str, str]:
         """Parses key-value pairs from order_guard.conf and .env without external imports."""
@@ -249,6 +263,37 @@ class AutonomousAIReconciler:
             if data is not None:
                 mtime = os.path.getmtime(os.path.join(self.workspace_dir, s_file))
                 snapshot.state_files[s_file] = {"age_hours": (time.time() - mtime) / 3600.0}
+
+        # 7. Live market prices and instant trend telemetry
+        prices_data = _read_json(os.path.join(self.cache_dir, "cache_currentprice.json"))
+        trends_data = _read_json(os.path.join(self.cache_dir, "cache_instant_trend.json"))
+
+        price_map: Dict[str, float] = {}
+        if prices_data and isinstance(prices_data.get("items"), dict):
+            for sym, item in prices_data["items"].items():
+                if isinstance(item, list) and item and isinstance(item[0], list) and len(item[0]) > 1:
+                    try:
+                        price_map[sym] = float(item[0][1])
+                    except (ValueError, TypeError):
+                        pass
+
+        if trends_data and isinstance(trends_data, dict):
+            for sym, tinfo in trends_data.items():
+                if isinstance(tinfo, dict):
+                    px = tinfo.get("current_price", price_map.get(sym))
+                    trend = tinfo.get("final_trend", 0)
+                    growth = tinfo.get("growth_coefficient", 0.0)
+                    slope = tinfo.get("slope_full", 0.0)
+                    snapshot.prices_and_trends[sym] = {
+                        "price": px,
+                        "trend": trend,
+                        "growth_coefficient": growth,
+                        "slope_full": slope,
+                    }
+
+        for sym, px in price_map.items():
+            if sym not in snapshot.prices_and_trends:
+                snapshot.prices_and_trends[sym] = {"price": px, "trend": 0, "growth_coefficient": 0.0}
 
         return snapshot
 
@@ -514,7 +559,10 @@ class AutonomousAIReconciler:
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
-                return resp.status == 200
+                status = getattr(resp, "status", None) or getattr(resp, "code", None)
+                if status is None and hasattr(resp, "getcode") and callable(resp.getcode):
+                    status = resp.getcode()
+                return status == 200
         except Exception as exc:
             logger.debug("Failed sending standalone ntfy notification: %s", exc)
             return False

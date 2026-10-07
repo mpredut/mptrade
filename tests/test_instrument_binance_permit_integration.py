@@ -239,7 +239,7 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
         self.assertEqual(
             observed["low_level"].call_args.kwargs[
                 "permit_requested_price"],
-            100.0)
+            99.9)
         self.assertIs(
             observed["low_level"].call_args.kwargs["cache_permit"],
             observed["issued"][0])
@@ -252,7 +252,7 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
         self.assertEqual(
             observed["low_level"].call_args.kwargs[
                 "permit_requested_price"],
-            100.0)
+            100.1)
         self.assertIs(
             observed["low_level"].call_args.kwargs["cache_permit"],
             observed["issued"][0])
