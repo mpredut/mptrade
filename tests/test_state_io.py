@@ -105,3 +105,34 @@ def test_invalid_observational_state_can_reset(tmp_path):
         path, default_factory=lambda: {"paper": True},
         fail_closed=False, label="paper", root_type=dict,
     ) == {"paper": True}
+
+
+def test_trailing_once_commands_share_daemon_lock():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    for relative, lock_name in (
+        ("binance_api/trailing_stop.py", "binance_trailing"),
+        ("kraken/trailing_stop.py", "kraken_trailing"),
+    ):
+        text = (root / relative).read_text(encoding="utf-8")
+        assert "if not args.status:" in text
+        assert f'single_instance("{lock_name}")' in text
+
+
+def test_xstock_once_shares_lock_but_isolated_trial_does_not():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "kraken/kraken_xstock_watch.py").read_text(encoding="utf-8")
+    assert "if not args.status and not args.trial:" in text
+    assert 'single_instance("kraken_xstock_watch")' in text
+
+
+def test_strategy_test_commands_use_instrument_daemon_locks():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    kraken = (root / "kraken/kraken_bot.py").read_text(encoding="utf-8")
+    hyperliquid = (root / "hyperliquid/hl_bot.py").read_text(encoding="utf-8")
+    assert 'single_instance(f"kraken_bot_{args.test_strategy.strip()}")' in kraken
+    assert 'single_instance(f"hl_bot_{args.test_strategy.strip()}")' in hyperliquid
+    assert 'single_instance(f"hl_bot_{token}")' in hyperliquid
+

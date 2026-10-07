@@ -110,5 +110,36 @@ class TestCurrentTrendClock(unittest.TestCase):
         self.assertGreater(age, 1e8)
 
 
+class TestShadowRuntime(unittest.TestCase):
+    """Runtime setup idempotency and interval validation."""
+
+    def test_prepare_shadow_runtime_is_idempotent(self):
+        from shadow_runtime import prepare_shadow_runtime
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            old_val = os.environ.get("BINANCE_AUTO_START_WEBSOCKETS")
+            try:
+                if "BINANCE_AUTO_START_WEBSOCKETS" in os.environ:
+                    del os.environ["BINANCE_AUTO_START_WEBSOCKETS"]
+                prepare_shadow_runtime(tmp_dir)
+                prepare_shadow_runtime(tmp_dir)
+                self.assertEqual(os.environ["BINANCE_AUTO_START_WEBSOCKETS"], "0")
+                self.assertEqual(sys.path.count(tmp_dir), 1)
+            finally:
+                if old_val is not None:
+                    os.environ["BINANCE_AUTO_START_WEBSOCKETS"] = old_val
+                elif "BINANCE_AUTO_START_WEBSOCKETS" in os.environ:
+                    del os.environ["BINANCE_AUTO_START_WEBSOCKETS"]
+                if tmp_dir in sys.path:
+                    sys.path.remove(tmp_dir)
+
+    def test_shadow_interval_validation(self):
+        from shadow_runtime import require_shadow_interval
+        require_shadow_interval(240, 240, "HL shadow")
+        with self.assertRaisesRegex(ValueError, "240m"):
+            require_shadow_interval(60, 240, "HL shadow")
+
+
 if __name__ == "__main__":
     unittest.main()
+

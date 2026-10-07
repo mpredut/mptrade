@@ -55,9 +55,22 @@ def test_versioned_profiles_preserve_effective_values_and_environment():
         assert params.tp_trail_pct == (3 if venue == "kraken" else 2)
 
 
+def test_versioned_profile_is_isolated_from_the_calling_environment():
+    from types import SimpleNamespace
+    from offline.runners.spot_profile_review import revision_params
+    config = (ROOT / "hyperliquid/config.env").read_text()
+    with patch.dict(os.environ, STRAT_ENTRY="999999"), patch(
+            "offline.runners.spot_profile_review.subprocess.run",
+            return_value=SimpleNamespace(stdout=config)):
+        params = revision_params("test:hyperliquid/config.env")
+        assert params.entry_amount == 350
+        assert os.environ["STRAT_ENTRY"] == "999999"
+
+
 def test_nonfinite_or_empty_new_policy_is_rejected():
     for value in ["nan", "inf", "-inf", ""]:
         with pytest.raises(ValueError, match="STRAT_SURGE_GAIN_PCT"):
+
             StratParams.from_env({**PROFILES["kraken"], "STRAT_SURGE_GAIN_PCT": value})
 
 
