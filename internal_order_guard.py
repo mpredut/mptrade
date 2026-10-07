@@ -75,7 +75,7 @@ def check_internal_order_guards(
     else:
         m = margins
 
-    mode = str(m.get("intelligence_guards_mode", "shadow")).strip().lower()
+    mode = str(m.get("internal_guard_mode", m.get("intelligence_guards_mode", "shadow"))).strip().lower()
     if mode in ("off", "0", "disabled"):
         return True, "intelligence_guards_off", 1.0
 

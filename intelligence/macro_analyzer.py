@@ -68,7 +68,9 @@ class MacroAnalyzer:
     def assess_geopolitical_threat(self, force: bool = False) -> bool:
         """Evaluate macro headlines and publish geopolitical threat assessment."""
         try:
-            news_history_path = os.path.join(self.cache_dir, "news_feed_history.json")
+            news_history_path = os.path.join(self.cache_dir, "news_feed_collect.json")
+            if not os.path.exists(news_history_path):
+                news_history_path = os.path.join(self.cache_dir, "news_feed_history.json")
             from intelligence.macro.news_feed_collector import NewsFeedCollector
             news_collector = NewsFeedCollector(history_file=news_history_path)
             news_snap = news_collector.get_pool_snapshot()

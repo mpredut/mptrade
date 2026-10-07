@@ -65,14 +65,14 @@ def check_macro_order_guards(
     if computed_notional is None and qty is not None and price > 0:
         computed_notional = price * qty
 
-    # 1. Google Gemini High-Stake Guard (Pillar 3: >= 1000 EUR purchases)
-    gemini_mode = str(m.get("gemini_guard_mode", "shadow")).strip().lower()
+    # 1. High-Stake LLM Guard (Pillar 3: >= 1000 EUR purchases)
+    gemini_mode = str(m.get("high_stake_guard_mode", m.get("gemini_guard_mode", "shadow"))).strip().lower()
     if gemini_mode not in ("off", "0", "disabled"):
-        min_notional = float(m.get("gemini_min_notional_eur", 1000.0))
+        min_notional = float(m.get("high_stake_min_notional_eur", m.get("gemini_min_notional_eur", 1000.0)))
         if computed_notional is not None and computed_notional >= min_notional:
             from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
-            timeout_sec = float(m.get("gemini_timeout_sec", 12.0))
-            fallback = str(m.get("gemini_fallback", "allow")).strip().lower()
+            timeout_sec = float(m.get("high_stake_timeout_sec", m.get("gemini_timeout_sec", 12.0)))
+            fallback = str(m.get("high_stake_fallback", m.get("gemini_fallback", "allow"))).strip().lower()
             g_guard = GeminiHighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
             g_dec = g_guard.check(symbol, side, price, qty if qty is not None else 1.0, notional_eur=computed_notional)
             if regime_context is not None:
@@ -82,7 +82,7 @@ def check_macro_order_guards(
                 except Exception:
                     pass
             if not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                prefix = "[GEMINI_GUARD_SHADOW]" if gemini_mode == "shadow" else "[GEMINI_GUARD_ENFORCE]"
+                prefix = "[HIGH_STAKE_GUARD_SHADOW]" if gemini_mode == "shadow" else "[HIGH_STAKE_GUARD_ENFORCE]"
                 print(f"{prefix} {side} {symbol} €{computed_notional:.2f}: {g_dec.reason} (brake={g_dec.brake_action}, suggested_scale={g_dec.suggested_scale})")
                 if gemini_mode == "shadow" and shadow_notify:
                     cd_key = (symbol, side)

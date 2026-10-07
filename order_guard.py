@@ -761,7 +761,7 @@ def check_intelligence_guards(
             valid_context = True
 
     m = _load_margins()
-    mode = str(m.get("intelligence_guards_mode", "shadow")).strip().lower()
+    mode = str(m.get("internal_guard_mode", m.get("intelligence_guards_mode", "shadow"))).strip().lower()
     if mode in ("off", "0", "disabled"):
         return True, "intelligence_guards_off", 1.0
 
@@ -826,10 +826,10 @@ def check_intelligence_guards(
                 if mode == "enforce":
                     return False, p_dec.reason, 0.0
 
-    # 2. Dynamic Gemini High-Stake Guard if notional crossed the threshold
-    gemini_mode = str(m.get("gemini_guard_mode", "shadow")).strip().lower()
+    # 2. Dynamic High-Stake Guard if notional crossed the threshold
+    gemini_mode = str(m.get("high_stake_guard_mode", m.get("gemini_guard_mode", "shadow"))).strip().lower()
     if gemini_mode not in ("off", "0", "disabled"):
-        min_notional = float(m.get("gemini_min_notional_eur", 1000.0))
+        min_notional = float(m.get("high_stake_min_notional_eur", m.get("gemini_min_notional_eur", 1000.0)))
         if computed_notional is not None and computed_notional >= min_notional:
             cached_gemini_notional = getattr(regime_context, "_gemini_evaluated_notional", None)
             if cached_gemini_notional is None:
@@ -842,8 +842,8 @@ def check_intelligence_guards(
             if cached_gemini_notional is None or cached_gemini_notional < min_notional or notional_jump:
                 from intelligence.internal.guards.guard_decision import BrakeAction
                 from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
-                timeout_sec = float(m.get("gemini_timeout_sec", 12.0))
-                fallback = str(m.get("gemini_fallback", "allow")).strip().lower()
+                timeout_sec = float(m.get("high_stake_timeout_sec", m.get("gemini_timeout_sec", 12.0)))
+                fallback = str(m.get("high_stake_fallback", m.get("gemini_fallback", "allow"))).strip().lower()
                 g_guard = GeminiHighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
                 g_dec = g_guard.check(symbol, side, price, qty if qty is not None else 1.0, notional_eur=computed_notional)
                 if valid_context:
@@ -853,7 +853,7 @@ def check_intelligence_guards(
                     except Exception:
                         pass
                 if not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                    prefix = "[GEMINI_GUARD_SHADOW]" if gemini_mode == "shadow" else "[GEMINI_GUARD_ENFORCE]"
+                    prefix = "[HIGH_STAKE_GUARD_SHADOW]" if gemini_mode == "shadow" else "[HIGH_STAKE_GUARD_ENFORCE]"
                     print(f"{prefix} {side} {symbol} €{computed_notional:.2f}: {g_dec.reason} (brake={g_dec.brake_action}, suggested_scale={g_dec.suggested_scale})")
                     if gemini_mode == "enforce":
                         if not g_dec.allowed:
@@ -920,7 +920,7 @@ def _evaluate_intelligence_guards_raw(
     now: Optional[float] = None,
 ) -> tuple[bool, str, float]:
     m = _load_margins()
-    mode = str(m.get("intelligence_guards_mode", "shadow")).strip().lower()
+    mode = str(m.get("internal_guard_mode", m.get("intelligence_guards_mode", "shadow"))).strip().lower()
     if mode in ("off", "0", "disabled"):
         return True, "intelligence_guards_off", 1.0
 

@@ -85,7 +85,7 @@ class GlobalTelemetryCollector:
         )
         self.news_collector = NewsFeedCollector(
             cache_ttl_sec=max(30.0, self.news_interval_sec * 0.5),
-            history_file=os.path.join(self.cache_dir, "news_feed_history.json"),
+            history_file=os.path.join(self.cache_dir, "news_feed_collect.json"),
         )
         self.fear_greed_collector = FearGreedCollector(
             cache_ttl_sec=max(300.0, self.fear_greed_interval_sec * 0.8),

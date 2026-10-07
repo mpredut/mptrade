@@ -89,8 +89,10 @@ def check_microstructure_order_guards(
     effective_scale = 1.0
     active_reason = "ok"
 
+    global_micro_mode = str(m.get("microstructure_guard_mode", "")).strip().lower()
+
     # 1. Whale Flow & Open Interest Divergence Guard
-    whale_mode = str(m.get("whale_guard_mode", "shadow")).strip().lower()
+    whale_mode = str(m.get("whale_guard_mode", global_micro_mode or "shadow")).strip().lower()
     if whale_mode not in ("off", "0", "disabled"):
         try:
             from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
@@ -107,7 +109,7 @@ def check_microstructure_order_guards(
             pass
 
     # 2. Orderbook Depth & Whale Limit Wall Guard
-    ob_mode = str(m.get("orderbook_wall_guard_mode", "shadow")).strip().lower()
+    ob_mode = str(m.get("orderbook_wall_guard_mode", global_micro_mode or "shadow")).strip().lower()
     if ob_mode not in ("off", "0", "disabled"):
         try:
             from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
@@ -129,7 +131,7 @@ def check_microstructure_order_guards(
             pass
 
     # 3. Perpetual Derivatives Funding Rate Crowding Guard
-    funding_mode = str(m.get("funding_guard_mode", "shadow")).strip().lower()
+    funding_mode = str(m.get("funding_guard_mode", global_micro_mode or "shadow")).strip().lower()
     if funding_mode not in ("off", "0", "disabled"):
         try:
             from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
