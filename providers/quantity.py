@@ -126,6 +126,7 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
                     enforce_business_minimum: bool = True,
                     regime_context=None,
                     scale: Optional[float] = None,
+                    known_balance: Optional[float] = None,
                     **kwargs) -> QuantityDecision:
     # Historical safe contract: None means "maximum permitted", not missing
     # validation. Balance, policy, and the fee cap determine final quantity.
@@ -136,8 +137,12 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
         if not math.isfinite(requested):
             raise ValueError("requested quantity must be finite")
         requested = max(0.0, requested)
-    balance_cap, asset = balance_cap_quantity(
-        provider.free_balance, symbol, side, price, base=base, quote=quote)
+    if known_balance is not None:
+        balance_cap, asset = balance_cap_quantity(
+            lambda _asset: known_balance, symbol, side, price, base=base, quote=quote)
+    else:
+        balance_cap, asset = balance_cap_quantity(
+            provider.free_balance, symbol, side, price, base=base, quote=quote)
     if balance_cap is None:
         return QuantityDecision(requested, None, None, None, 0.0,
                                 "balance_unavailable", asset)

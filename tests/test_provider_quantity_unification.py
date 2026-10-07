@@ -234,5 +234,84 @@ class TestBinanceTransientBalanceSoftSkip(unittest.TestCase):
             mock_submit.assert_called_once()
 
 
+class TestCentralizedBalanceSingleSourceOfTruth(unittest.TestCase):
+    def test_decide_quantity_reuses_known_balance_without_calling_free_balance(self):
+        """Verify decide_quantity never calls provider.free_balance when known_balance is passed."""
+        p = CustomProvider(decimals=2, min_qty=0.01, balance=500.0)
+        p.free_balance = MagicMock(side_effect=AssertionError("free_balance must not be called when known_balance is supplied"))
+
+        decision = decide_quantity(p, "TESTUSDC", "BUY", 100.0, None, apply_policy=False, known_balance=300.0)
+        self.assertEqual(decision.final_qty, 3.0)
+        p.free_balance.assert_not_called()
+
+    def test_instrument_place_queries_free_balance_exactly_once_on_buy(self):
+        """Verify Instrument.place fetches free_balance exactly once throughout the entire BUY lifecycle."""
+        from lock.trade_cooldown import release_trade
+        release_trade("SSOT_BUY_USDC")
+
+        p = CustomProvider(decimals=2, min_qty=0.01, balance=500.0)
+        p.free_balance = MagicMock(return_value=500.0)
+        placed_orders = []
+        p.place_order = lambda sym, side, px, q, **kw: placed_orders.append((sym, side, px, q, kw)) or {"orderId": 111}
+        p.guards_internally = lambda: False
+        p.execution_enabled = lambda: True
+
+        registry = MarketApi([p])
+        inst = Instrument("SSOT_BUY_USDC", symbol="SSOT_BUY_USDC", provider="custom", api=registry)
+
+        res = inst.place("BUY", 100.0, None, bypass_profit_guard=True, wait_for_trend=False)
+        self.assertIsNotNone(res)
+        self.assertEqual(p.free_balance.call_count, 1)
+        p.free_balance.assert_called_once_with("USDC")
+        self.assertEqual(placed_orders[0][3], 5.0)
+        self.assertEqual(placed_orders[0][4].get("known_balance"), 500.0)
+
+    def test_instrument_place_queries_free_balance_exactly_once_on_sell(self):
+        """Verify Instrument.place fetches free_balance exactly once throughout the entire SELL lifecycle."""
+        from lock.trade_cooldown import release_trade
+        release_trade("SSOT_SELL_USDC")
+
+        p = CustomProvider(decimals=2, min_qty=0.01, balance=2.5)
+        p.free_balance = MagicMock(return_value=2.5)
+        placed_orders = []
+        p.place_order = lambda sym, side, px, q, **kw: placed_orders.append((sym, side, px, q, kw)) or {"orderId": 222}
+        p.guards_internally = lambda: False
+        p.execution_enabled = lambda: True
+
+        registry = MarketApi([p])
+        inst = Instrument("SSOT_SELL_USDC", symbol="SSOT_SELL_USDC", provider="custom",
+                          base="SSOT_SELL", quote="USDC", api=registry)
+
+        res = inst.place("SELL", 100.0, None, bypass_profit_guard=True, wait_for_trend=False)
+        self.assertIsNotNone(res)
+        self.assertEqual(p.free_balance.call_count, 1)
+        p.free_balance.assert_called_once_with("SSOT_SELL")
+        self.assertEqual(placed_orders[0][3], 2.5)
+        self.assertEqual(placed_orders[0][4].get("known_balance"), 2.5)
+
+    def test_instrument_place_fails_fast_on_zero_balance_for_both_sides(self):
+        """Verify Stage 0 fails fast without proceeding to guards when balance is zero."""
+        p = CustomProvider(decimals=2, min_qty=0.01, balance=0.0)
+        p.free_balance = MagicMock(return_value=0.0)
+        p.guards_internally = lambda: False
+        p.execution_enabled = lambda: True
+
+        registry = MarketApi([p])
+        inst = Instrument("ZERO_TEST_USDC", symbol="ZERO_TEST_USDC", provider="custom", api=registry)
+
+        # BUY with 0 quote balance fails in Stage 0
+        outcome_buy = {}
+        res_buy = inst.place("BUY", 100.0, 1.0, _outcome_context=outcome_buy)
+        self.assertIsNone(res_buy)
+        self.assertEqual(outcome_buy.get("reason"), "balance_unavailable")
+
+        # SELL with 0 base balance fails in Stage 0
+        outcome_sell = {}
+        res_sell = inst.place("SELL", 100.0, 1.0, _outcome_context=outcome_sell)
+        self.assertIsNone(res_sell)
+        self.assertEqual(outcome_sell.get("reason"), "balance_unavailable")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

@@ -372,23 +372,28 @@ class Instrument:
             if not ok:
                 return None
 
-            # Stage 0: Vendor Pre-flight & Account Balance Check
-            # For BUY orders, ensure valid positive price and verified free balance capacity before mathematical or AI guards.
-            if side_u == "BUY":
-                if price is not None and (not math.isfinite(price) or price <= 0):
-                    print(f"[{self.symbol}] BUY preflight refused: price invalid {price!r}")
-                    reason = "invalid_price"
-                    return None
-                if hasattr(self._provider, "free_balance") and callable(self._provider.free_balance):
-                    quote_asset = self.quote or "USDC"
-                    try:
-                        free_bal = self._provider.free_balance(quote_asset)
-                        if free_bal is not None and free_bal <= 0:
-                            print(f"[{self.symbol}] BUY preflight refused: balance_unavailable asset={quote_asset}")
-                            reason = "balance_unavailable"
-                            return None
-                    except Exception:
-                        pass
+            # Stage 0: Vendor Pre-flight & Unified Account Balance Check
+            # Resolve target asset (quote for BUY, base for SELL) and query free balance exactly once
+            # as the Single Source of Truth for this order placement across all providers.
+            if side_u == "BUY" and price is not None and (not math.isfinite(price) or price <= 0):
+                print(f"[{self.symbol}] BUY preflight refused: price invalid {price!r}")
+                reason = "invalid_price"
+                return None
+
+            from providers.quantity import resolve_assets
+            base_asset, quote_asset = resolve_assets(self.symbol, self.base, self.quote)
+            target_asset = quote_asset if side_u == "BUY" else base_asset
+
+            known_balance = None
+            if hasattr(self._provider, "free_balance") and callable(self._provider.free_balance) and target_asset:
+                try:
+                    known_balance = self._provider.free_balance(target_asset)
+                    if known_balance is not None and known_balance <= 0:
+                        print(f"[{self.symbol}] {side_u} preflight refused: balance_unavailable asset={target_asset}")
+                        reason = "balance_unavailable"
+                        return None
+                except Exception:
+                    known_balance = None
 
             quantity_price = price
             if is_market:
@@ -458,13 +463,14 @@ class Instrument:
                     return None
             decision = self._provider.quantity_decision(
                 self.symbol, side_u, quantity_price, qty,
-                base=self.base, quote=self.quote,
+                base=base_asset, quote=quote_asset,
                 cancelorders=bool(kwargs.get("cancelorders", False)),
                 hours=float(kwargs.get("hours", 5) or 5),
                 apply_policy=not (bypass or bypass_quantity_policy),
                 market=is_market,
                 enforce_business_minimum=enforce_business_minimum,
                 regime_context=regime_context,
+                known_balance=known_balance,
             )
             qty = decision.final_qty
             applied_scale = getattr(decision, "applied_scale", 1.0) if getattr(decision, "scale_applied", False) else 1.0
@@ -727,6 +733,8 @@ class Instrument:
                 provider_kwargs["market"] = is_market
                 provider_kwargs["force"] = is_market
                 provider_kwargs["_balance_verified"] = True
+                if known_balance is not None:
+                    provider_kwargs["known_balance"] = known_balance
                 if is_binance:
                     provider_kwargs["enforce_business_minimum"] = (
                         enforce_business_minimum)

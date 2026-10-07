@@ -760,8 +760,13 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
     is_market = bool(force or market or kwargs.get("market", False) or kwargs.get("force", False))
     try:
         from providers.quantity import balance_cap_quantity, fee_cap_quantity
+        balance_fn = (
+            (lambda _asset: kwargs["known_balance"])
+            if kwargs.get("known_balance") is not None
+            else api.get_free_balance
+        )
         available_qty, _balance_asset = balance_cap_quantity(
-            api.get_free_balance, symbol, order_type, price)
+            balance_fn, symbol, order_type, price)
         if available_qty is None:
             if kwargs.get("_balance_verified") or kwargs.get("caller_owns_retry"):
                 print(f"Balance check soft-skipped for {order_type} {symbol}; using verified qty={qty:.8f}")

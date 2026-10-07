@@ -256,6 +256,8 @@ class BinanceProvider(MarketDataProvider):
             mechanics_kwargs["_balance_verified"] = kwargs["_balance_verified"]
         if kwargs.get("caller_owns_retry") is not None:
             mechanics_kwargs["caller_owns_retry"] = kwargs["caller_owns_retry"]
+        if kwargs.get("known_balance") is not None:
+            mechanics_kwargs["known_balance"] = kwargs["known_balance"]
         cancel_requested_price = kwargs.get(
             "_cancel_opposite_requested_price")
         if cancel_requested_price is not None:
