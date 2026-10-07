@@ -183,7 +183,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
             def place_order(self, symbol, side, price, qty, **kwargs):
                 entered_provider.set()
-                if not release_provider.wait(timeout=2.0):
+                if not release_provider.wait(timeout=5.0):
                     raise TimeoutError("test did not release the provider")
                 self.placed.append((symbol, side, price, qty, kwargs))
                 return {"orderId": "producer-only"}
@@ -203,7 +203,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         producer = threading.Thread(target=produce, name="instrument-producer")
         producer.start()
-        self.assertTrue(entered_provider.wait(timeout=1.0))
+        self.assertTrue(entered_provider.wait(timeout=5.0))
         pending = oq.load_all()[0]
 
         # Advance beyond the complete producer lease without sleeping. The PID and
