@@ -126,14 +126,24 @@ class KrakenClient:
                 return val
         urlpath = f"/0/private/{method}"
         # A nanosecond nonce is monotonic at maximum resolution and exceeds prior ms/us nonces on the key.
-        data["nonce"] = str(time.time_ns())
-        headers = {
-            "API-Key": self.api_key,
-            "API-Sign": self._signature(urlpath, data, self.api_secret),
-        }
-        status, body = http_post_form(API_URL + urlpath, data, headers=headers)
-        result = self._parse(status, body)
-        if ttl:
+        max_attempts = 3 if method not in _WRITE_METHODS else 1
+        result = None
+        for attempt in range(max_attempts):
+            data["nonce"] = str(time.time_ns())
+            headers = {
+                "API-Key": self.api_key,
+                "API-Sign": self._signature(urlpath, data, self.api_secret),
+            }
+            status, body = http_post_form(API_URL + urlpath, data, headers=headers)
+            try:
+                result = self._parse(status, body)
+                break
+            except KrakenError as e:
+                if "Invalid nonce" in str(e) and attempt < max_attempts - 1:
+                    time.sleep(0.15 * (attempt + 1))
+                    continue
+                raise
+        if ttl and result is not None:
             _cache_put(method, data, ttl, result)
         if method in _WRITE_METHODS:                # AddOrder/CancelOrder changed account state
             _cache_invalidate(_INVALIDATE_ON_WRITE)

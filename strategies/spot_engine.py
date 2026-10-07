@@ -1568,7 +1568,11 @@ class Strategy:
             try:
                 precision = self.client.pair_precision(self.pair)
                 base = precision.base_asset if precision else ""
-                ledger_qty = float(self.client.free_balance(base))
+                ledger_val = self.client.free_balance(base)
+                if ledger_val is None:
+                    log("  ! [STRAT] ledger reconciliation unavailable (balance query returned None); decisions blocked")
+                    return
+                ledger_qty = float(ledger_val)
             except (ProviderError, TypeError, ValueError, OverflowError) as exc:
                 log(f"  ! [STRAT] ledger reconciliation unavailable ({exc}); decisions blocked")
                 return

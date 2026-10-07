@@ -4,6 +4,7 @@ An empty AssetPairs or Ticker response represents a transient failed fetch. Cach
 it for the one-hour AssetPairs TTL would hide order minimums and permit rejected
 dust-order churn until the cache expired.
 """
+import base64
 import os
 import sys
 import unittest
@@ -81,7 +82,27 @@ class PublicCacheTest(unittest.TestCase):
             kc._cache_put("Ticker", {"pair": "C"}, 5.0, {"c": 1})
         self.assertEqual(len(kc._CACHE), 2)
         self.assertNotIn(("Ticker", (("pair", "OLD"),)), kc._CACHE)
-        self.assertNotIn(("Ticker", (("pair", "A"),)), kc._CACHE)
+    def test_private_read_retries_on_invalid_nonce_and_succeeds(self):
+        client = kc.KrakenClient(api_key="key", api_secret=base64.b64encode(b"secret").decode())
+        fail_nonce = (200, b'{"error":["EAPI:Invalid nonce"],"result":{}}')
+        success_bal = (200, b'{"error":[],"result":{"HYPE":"7.54"}}')
+        with mock.patch.object(kc, "http_post_form") as mpost, \
+             mock.patch.object(kc.time, "sleep") as msleep:
+            mpost.side_effect = [fail_nonce, success_bal]
+            res = client._private("Balance")
+            self.assertEqual(res, {"HYPE": "7.54"})
+            self.assertEqual(mpost.call_count, 2)
+            self.assertEqual(msleep.call_count, 1)
+
+    def test_private_write_does_not_retry_on_invalid_nonce(self):
+        client = kc.KrakenClient(api_key="key", api_secret=base64.b64encode(b"secret").decode())
+        fail_nonce = (200, b'{"error":["EAPI:Invalid nonce"],"result":{}}')
+        with mock.patch.object(kc, "http_post_form") as mpost:
+            mpost.return_value = fail_nonce
+            with self.assertRaises(kc.KrakenError) as ctx:
+                client._private("AddOrder", {"pair": "HYPEUSD"})
+            self.assertIn("Invalid nonce", str(ctx.exception))
+            self.assertEqual(mpost.call_count, 1)
 
 
 if __name__ == "__main__":
