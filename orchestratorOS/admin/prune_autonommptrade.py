@@ -17,11 +17,12 @@ import json
 logger = logging.getLogger("prune_autonommptrade")
 
 DEFAULT_CLI_BASE = os.path.expanduser("~/.gemini/antigravity-cli")
-DEFAULT_PROJECTS = ["autonommptrade"]
+DEFAULT_PROJECTS = ["autonommptrade", "default-cli-project", "f5f9d01f-01e5-4fac-80f2-97364688afab"]
 PROTECTED_PROJECT_NAMES = ["mptrade"]
 DEFAULT_RETENTION_DAYS = 1.0  # 1 day default
 
 AUTONOMOUS_PROMPT_PATTERNS = [
+    "ntfy macro veto alert",
     "macroeconomic and geopolitical risk officer",
     "principal quantitative crypto risk officer",
     "principal crypto quantitative risk strategist",

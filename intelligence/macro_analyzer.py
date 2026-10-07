@@ -182,11 +182,10 @@ class MacroAnalyzer:
                         from notify_engine.alertnotifiers import notify
                         bias_str = (assessment.market_bias or "NEUTRAL").upper()
                         icon = "🟢" if "BULL" in bias_str else ("🔴" if "BEAR" in bias_str else "🧭")
-                        title = f"{icon} [MACRO ADVISOR] {assessment.market_bias} ({assessment.risk_level} Risk)"
+                        title = f"{icon} [P3 · MACRO ADVISOR] {assessment.recommended_action} ({assessment.market_bias})"
                         body = (
-                            f"Regime: {assessment.market_bias} | Action: {assessment.recommended_action}\n"
-                            f"Risk Level: {assessment.risk_level}\n"
-                            f"Summary: {assessment.summary[:200]}"
+                            f"Action: {assessment.recommended_action} · Bias: {assessment.market_bias} (Risk: {assessment.risk_level})\n"
+                            f"{assessment.summary}"
                         )
                         notify(
                             title=title,

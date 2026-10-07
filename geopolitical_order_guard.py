@@ -73,13 +73,20 @@ def check_geopolitical_order_guards(
                         _GEO_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
                         try:
                             from notify_engine.alertnotifiers import notify
+                            scale_pct = int(geo_dec.suggested_scale * 100)
                             if not geo_dec.allowed:
-                                geo_title = f"🛡 [VETO] Would Block {order_side} {symbol}"
+                                geo_title = f"🛑 [P4 · GEO-SHIELD] BLOCK {order_side} {symbol}"
                             else:
-                                geo_title = f"🛡 [DOWNSCALE] Would Scale {int(geo_dec.suggested_scale*100)}% {order_side} {symbol}"
+                                geo_title = f"🛡 [P4 · GEO-SHIELD] SCALE {scale_pct}% {order_side} {symbol}"
+
+                            clean_summary = cached_geo.summary or geo_dec.reason
+                            if "(" in geo_dec.reason and geo_dec.reason.endswith(")"):
+                                clean_summary = geo_dec.reason.split("(", 1)[1].rstrip(")")
+
+                            geo_body = f"Threat: {cached_geo.threat_level} (Risk: {cached_geo.risk_score:.2f}, Scale: {scale_pct}%)\n{clean_summary}"
                             notify(
                                 title=geo_title,
-                                body=f"Macro shock flagged: {geo_dec.reason} (threat={cached_geo.threat_level}, risk={cached_geo.risk_score:.2f})",
+                                body=geo_body,
                                 source="macro_shadow",
                                 symbol=symbol,
                             )

@@ -675,14 +675,14 @@ class TestOrderGuardWithGemini:
         dispatched_alerts = []
         monkeypatch.setattr("notify_engine.alertnotifiers.notify", lambda **kw: dispatched_alerts.append(kw))
 
-        # First evaluation: must notify with clear "Would Block" title
+        # First evaluation: must notify with clear P4 Geo-Shield block title
         allowed, reason, scale = order_guard.check_intelligence_guards(None, "TAOUSDC", "BUY", 250.0)
         assert allowed is True
         assert len(dispatched_alerts) == 1
         alert = dispatched_alerts[0]
-        assert alert["title"] == "🛡 [VETO] Would Block BUY TAOUSDC"
+        assert alert["title"] == "🛑 [P4 · GEO-SHIELD] BLOCK BUY TAOUSDC"
         assert alert["symbol"] == "TAOUSDC"
-        assert "veto_critical_geopolitical_shock" in alert["body"]
+        assert "CRITICAL_SHOCK" in alert["body"]
 
         # Immediate second evaluation: must be suppressed by in-memory cooldown
         order_guard.check_intelligence_guards(None, "TAOUSDC", "BUY", 250.0)

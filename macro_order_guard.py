@@ -131,15 +131,28 @@ def check_macro_order_guards(
                     _GEMINI_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
                     try:
                         from notify_engine.alertnotifiers import notify
+                        scale_pct = int(g_dec.suggested_scale * 100)
                         if not g_dec.allowed:
-                            g_title = f"🛡 [LLM SHADOW VETO] Would Block {side} {symbol}"
+                            g_title = f"🛡 [P3 · HIGH-STAKE] BLOCK {side} {symbol}"
                         elif g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                            g_title = f"🛡 [LLM SHADOW DOWNSCALE] Would Scale {int(g_dec.suggested_scale*100)}% {side} {symbol}"
+                            g_title = f"🛡 [P3 · HIGH-STAKE] SCALE {scale_pct}% {side} {symbol}"
                         else:
-                            g_title = f"🧭 [LLM SHADOW APPROVE] Approved {side} {symbol}"
+                            g_title = f"🧭 [P3 · HIGH-STAKE] ACCEPT {side} {symbol}"
+
+                        clean_reason = g_dec.reason
+                        for pfx in (
+                            "Gemini vetoed high-stake BUY: ", "LLM vetoed high-stake BUY: ",
+                            "Gemini approved high-stake BUY: ", "LLM approved high-stake BUY: ",
+                            "Gemini downscaled high-stake BUY: ", "LLM downscaled high-stake BUY: ",
+                        ):
+                            if clean_reason.startswith(pfx):
+                                clean_reason = clean_reason[len(pfx):].strip()
+                                break
+
+                        g_body = f"Order: €{computed_notional:,.0f} (Scale: {scale_pct}%)\n{clean_reason}"
                         notify(
                             title=g_title,
-                            body=f"High-stake order €{computed_notional:.2f} evaluated: {g_dec.reason} (scale={g_dec.suggested_scale})",
+                            body=g_body,
                             source="macro_shadow",
                             symbol=symbol,
                         )
