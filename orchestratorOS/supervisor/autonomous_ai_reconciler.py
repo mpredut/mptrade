@@ -374,6 +374,16 @@ class AutonomousAIReconciler:
         for g_evt in logs.guard_interventions[:10]:
             context_items.append(f"  * [GUARD] {g_evt}")
 
+        if sensors.prices_and_trends:
+            context_items.append("\n### 3. LIVE MARKET PRICES & SHORT-TERM REGIMES:")
+            for sym, pinfo in sorted(sensors.prices_and_trends.items()):
+                px = pinfo.get("price")
+                px_str = f"${px:,.2f}" if isinstance(px, (int, float)) and px > 1 else (f"${px}" if px is not None else "N/A")
+                tr = pinfo.get("trend", 0)
+                tr_label = "BULL (+1)" if tr > 0 else ("BEAR (-1)" if tr < 0 else "FLAT (0)")
+                growth = pinfo.get("growth_coefficient", 0.0)
+                context_items.append(f"  * {sym}: Price={px_str}, Trend={tr_label}, Growth={growth:+.5f}")
+
         context_str = "\n".join(context_items)
 
         prompt = (
@@ -383,7 +393,9 @@ class AutonomousAIReconciler:
             "Perform an executive diagnostic audit:\n"
             "1. Explain the technical root cause of any bot exceptions, fail-closed blocks, or guard vetoes.\n"
             "2. Determine whether open orders or venue positions require reconciliation.\n"
-            "3. If a reproducible code bug exists, formulate an exact search_block and replace_block.\n\n"
+            "3. If a reproducible code bug exists, formulate an exact search_block and replace_block.\n"
+            "4. Formulate an autonomous market trading decision ('BUY', 'SELL', or 'HOLD') based on prevailing macro sentiment, geopolitical threat level, market breadth, and real-time trend coefficients.\n"
+            "   If high-conviction (confidence >= 0.85) opportunities exist, specify symbol (e.g. BTCUSDC), venue ('binance'/'kraken'/'hyperliquid'/'t212'), confidence, suggested_notional_eur (up to 500 EUR), and thesis. Otherwise default to 'HOLD'.\n\n"
             "Respond STRICTLY in valid JSON with exact schema:\n"
             "{\n"
             '  "summary": "1-2 sentence executive assessment of system health",\n'
@@ -410,6 +422,15 @@ class AutonomousAIReconciler:
             '    "rationale": "",\n'
             '    "search_block": "",\n'
             '    "replace_block": ""\n'
+            "  },\n"
+            '  "market_trading_decision": {\n'
+            '    "decision": "BUY" | "SELL" | "HOLD",\n'
+            '    "symbol": "BTCUSDC",\n'
+            '    "venue": "binance" | "kraken" | "hyperliquid" | "t212",\n'
+            '    "confidence": 0.88,\n'
+            '    "suggested_notional_eur": 250.0,\n'
+            '    "urgency": "NORMAL" | "HIGH",\n'
+            '    "thesis": "High market breadth advance ratio and positive sentiment align with bull trend."\n'
             "  }\n"
             "}"
         )
@@ -435,6 +456,15 @@ class AutonomousAIReconciler:
                 ],
                 "venue_actions": [],
                 "code_remediation": {"has_fix": False},
+                "market_trading_decision": {
+                    "decision": "HOLD",
+                    "symbol": "BTCUSDC",
+                    "venue": "binance",
+                    "confidence": 0.5,
+                    "suggested_notional_eur": 0.0,
+                    "urgency": "NORMAL",
+                    "thesis": "Baseline fallback: no autonomous trade triggered.",
+                },
             }
 
         return resp
@@ -517,6 +547,109 @@ class AutonomousAIReconciler:
             subprocess.run(["git", "checkout", "--", target_file], check=False)
             return False
 
+    def emit_trading_intent(self, decision_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Persists a high-confidence BUY/SELL decision into the durable intents queue."""
+        if not isinstance(decision_data, dict):
+            return None
+        decision = str(decision_data.get("decision", "HOLD")).strip().upper()
+        if decision not in ("BUY", "SELL"):
+            logger.info("Autonomous AI market decision is %s (no trade intent generated).", decision)
+            return None
+
+        try:
+            conf = float(decision_data.get("confidence", 0.0))
+        except (ValueError, TypeError):
+            conf = 0.0
+
+        if conf < self.min_trading_confidence:
+            logger.info("Autonomous AI %s confidence %.2f below threshold %.2f (no intent generated).",
+                        decision, conf, self.min_trading_confidence)
+            return None
+
+        symbol = str(decision_data.get("symbol", "BTCUSDC")).strip().upper()
+        venue = str(decision_data.get("venue", "binance")).strip().lower()
+        try:
+            notional = float(decision_data.get("suggested_notional_eur", 250.0))
+        except (ValueError, TypeError):
+            notional = 250.0
+        notional = max(10.0, min(notional, self.max_trading_notional))
+        urgency = str(decision_data.get("urgency", "NORMAL")).strip().upper()
+        thesis = str(decision_data.get("thesis", "Autonomous LLM strategy thesis")).strip()
+
+        now = time.time()
+        intent_id = f"intent_{int(now)}_{decision.lower()}_{symbol.lower()}"
+        intent = {
+            "intent_id": intent_id,
+            "timestamp": now,
+            "decision": decision,
+            "symbol": symbol,
+            "venue": venue,
+            "confidence": conf,
+            "suggested_notional_eur": notional,
+            "urgency": urgency,
+            "thesis": thesis,
+            "status": "PENDING",
+            "created_by": "autonomous_ai_reconciler",
+            "history": [],
+        }
+
+        try:
+            os.makedirs(self.cache_dir, exist_ok=True)
+            intents_list: List[Dict[str, Any]] = []
+            if os.path.exists(self.intents_file):
+                try:
+                    with open(self.intents_file, "r", encoding="utf-8") as f:
+                        intents_list = json.load(f)
+                        if not isinstance(intents_list, list):
+                            intents_list = []
+                except Exception:
+                    intents_list = []
+
+            # Deduplication check: avoid queuing duplicate pending intent for same symbol within 6 hours
+            for existing in intents_list:
+                if (
+                    existing.get("status") == "PENDING"
+                    and existing.get("symbol") == symbol
+                    and existing.get("decision") == decision
+                    and (now - float(existing.get("timestamp", 0.0))) < 21600.0
+                ):
+                    logger.info("Pending intent already active for %s %s (%s). Skipping duplicate.",
+                                decision, symbol, existing.get("intent_id"))
+                    return existing
+
+            intents_list.append(intent)
+            tmp_file = f"{self.intents_file}.tmp.{int(now)}"
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(intents_list, f, indent=2)
+            os.replace(tmp_file, self.intents_file)
+            logger.info("Emitted autonomous trade intent %s: %s %s €%.2f (confidence=%.2f)",
+                        intent_id, decision, symbol, notional, conf)
+            return intent
+        except Exception as e:
+            logger.error("Failed persisting autonomous trade intent: %s", e)
+            return None
+
+    def trigger_intent_gateway(self) -> None:
+        """Invokes the intent gateway out-of-band via subprocess to preserve complete decoupling."""
+        gateway_path = os.path.join(self.workspace_dir, "orchestratorTrade", "autonomous_intent_gateway.py")
+        if not os.path.exists(gateway_path):
+            return
+        py_exec = sys.executable
+        if not py_exec or not os.path.exists(py_exec):
+            py_exec = "python3"
+        try:
+            logger.info("Invoking Autonomous Intent Gateway out-of-band: %s", gateway_path)
+            subprocess.run(
+                [py_exec, gateway_path, "--process-pending"],
+                cwd=self.workspace_dir,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except Exception as e:
+            logger.debug("Failed triggering autonomous intent gateway subprocess: %s", e)
+
     def dispatch_notification(self, report: SupervisorAuditReport) -> bool:
         """Sends a clean, compact push alert via standard HTTP POST to ntfy."""
         if not self.notify_enabled:
@@ -539,6 +672,15 @@ class AutonomousAIReconciler:
         if has_fix:
             patch_file = report.code_remediation.get("target_file", "unknown")
             body_lines.append(f"Code Patch Proposed: {patch_file} (tests={report.tests_passed})")
+
+        if report.market_trading_decision:
+            m_dec = report.market_trading_decision
+            m_decision = m_dec.get("decision", "HOLD")
+            if m_decision in ("BUY", "SELL"):
+                m_sym = m_dec.get("symbol", "")
+                m_conf = m_dec.get("confidence", 0.0)
+                m_eur = m_dec.get("suggested_notional_eur", 0.0)
+                body_lines.append(f"Trading Intent: {m_decision} {m_sym} €{m_eur:.0f} (conf={m_conf:.2f})")
 
         body = "\n".join(body_lines)
 
@@ -581,6 +723,7 @@ class AutonomousAIReconciler:
                 "summary": report.summary,
                 "diagnosed_issues_count": len(report.diagnosed_issues),
                 "venue_actions_count": len(report.venue_actions),
+                "market_trading_decision": report.market_trading_decision,
             }
             with open(self.heartbeat_file, "w", encoding="utf-8") as f:
                 json.dump(hb, f, indent=2)
@@ -604,6 +747,12 @@ class AutonomousAIReconciler:
         # Step 4: Apply or simulate reconciliation
         executed, tests_passed = self.apply_reconciliation(plan)
 
+        # Step 5: Emit autonomous trading intent if high-conviction BUY/SELL
+        market_decision = plan.get("market_trading_decision", {})
+        intent = self.emit_trading_intent(market_decision)
+        if intent:
+            self.trigger_intent_gateway()
+
         report = SupervisorAuditReport(
             ts=now,
             mode=self.mode,
@@ -611,18 +760,21 @@ class AutonomousAIReconciler:
             diagnosed_issues=plan.get("diagnosed_issues", []),
             venue_actions=plan.get("venue_actions", []),
             code_remediation=plan.get("code_remediation", {}),
+            market_trading_decision=market_decision,
+            intent_emitted=intent,
             sensor_health={
                 "fear_greed_present": sensors.fear_greed is not None,
                 "market_breadth_present": sensors.market_breadth is not None,
                 "sentiment_advisor_present": sensors.sentiment_advisor is not None,
                 "geopolitical_threat_present": sensors.geopolitical_threat is not None,
+                "prices_and_trends_count": len(sensors.prices_and_trends),
                 "active_heartbeats_count": len(sensors.active_heartbeats),
             },
             actions_executed=executed,
             tests_passed=tests_passed,
         )
 
-        # Step 5: Notify and persist state
+        # Step 6: Notify and persist state
         report.notification_sent = self.dispatch_notification(report)
         self.write_audit_artifact(report)
 

@@ -156,6 +156,17 @@ class T212ExecutorContractTest(unittest.TestCase):
                 self.assertEqual(observed.status, expected)
                 self.assertEqual(observed.venue_status, venue_status)
 
+        with self.subTest(msg="negative_ordered_quantity_for_sell_is_normalized"):
+            self.fake.status_result = {
+                "ticker": "NVDA_US_EQ", "status": "FILLED",
+                "filledQuantity": -2.83, "filledValue": 339.6,
+                "orderedQuantity": -2.83,
+            }
+            observed = self.provider.order_status("NVDA_US_EQ", "712")
+            self.assertEqual(observed.status, "closed")
+            self.assertEqual(observed.filled_qty, 2.83)
+            self.assertEqual(observed.orig_qty, 2.83)
+
         self.fake.status_result = {
             "ticker": "NVDA_US_EQ", "status": "FILLED", "filledQuantity": 1.0,
         }

@@ -338,7 +338,7 @@ class T212Provider(MarketDataProvider):
 
         raw_orig = raw.get("orderedQuantity", raw.get("quantity"))
         try:
-            orig_qty = float(raw_orig) if raw_orig is not None else None
+            orig_qty = abs(float(raw_orig)) if raw_orig is not None else None
         except (TypeError, ValueError, OverflowError):
             orig_qty = None
 

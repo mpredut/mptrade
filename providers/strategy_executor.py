@@ -126,7 +126,7 @@ def extract_order_qty(native) -> Optional[float]:
     if val is None:
         return None
     try:
-        f = float(val)
+        f = abs(float(val))
         return f if math.isfinite(f) and f > 0 else None
     except (TypeError, ValueError, OverflowError):
         return None
