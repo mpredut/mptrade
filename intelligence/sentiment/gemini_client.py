@@ -21,7 +21,7 @@ DEFAULT_AUTONOMOUS_PROJECT_ID = "f5f9d01f-01e5-4fac-80f2-97364688afab"
 
 
 class GeminiClient:
-    """Wrapper for querying Google Gemini models.
+    """Wrapper for querying LLM models.
 
     Prefers the local authenticated `agy` CLI (leveraging active user subscription)
     with fallback to Google AI Studio REST API if an API key is configured.
@@ -184,3 +184,7 @@ class GeminiClient:
         except json.JSONDecodeError as err:
             logger.warning("Failed to decode JSON from Gemini output: %s (raw text: %s)", err, raw_text[:200])
             return None
+
+
+# Generic LLM alias
+LLMClient = GeminiClient

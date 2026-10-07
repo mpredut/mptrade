@@ -18,8 +18,8 @@ DEFAULT_CACHE_FILE = "cachedb/macro_advisor_eval.json"
 
 
 @dataclass(frozen=True)
-class GeminiMacroAssessment:
-    """Qualitative macro assessment produced periodically by Google Gemini."""
+class LLMMacroAssessment:
+    """Qualitative macro assessment produced periodically by the LLM."""
 
     market_bias: str                   # "BULLISH", "BEARISH", "NEUTRAL", "CAUTION"
     risk_level: str                    # "LOW", "MODERATE", "HIGH", "EXTREME"
@@ -30,19 +30,23 @@ class GeminiMacroAssessment:
     ts: float
 
 
-class GeminiMarketAdvisor:
-    """Queries Google Gemini periodically to generate a holistic qualitative macro perspective."""
+# Backwards compatibility alias
+GeminiMacroAssessment = LLMMacroAssessment
+
+
+class LLMMarketAdvisor:
+    """Queries LLM periodically to generate a holistic qualitative macro perspective."""
 
     def __init__(
         self,
         gemini_client: Optional[GeminiClient] = None,
-        cache_ttl_sec: float = 1800.0,  # 30 minutes cache by default
+        cache_ttl_sec: float = 10800.0,  # 3 hours cache by default
         cache_file: str = DEFAULT_CACHE_FILE,
     ) -> None:
         self.gemini_client = gemini_client or GeminiClient()
         self.cache_ttl_sec = cache_ttl_sec
         self.cache_file = cache_file
-        self._cached_assessment: Optional[GeminiMacroAssessment] = None
+        self._cached_assessment: Optional[LLMMacroAssessment] = None
         self._last_eval_ts: float = 0.0
         self._load_from_disk()
 
@@ -57,7 +61,7 @@ class GeminiMarketAdvisor:
             try:
                 with open(target_file, "r") as f:
                     data = json.load(f)
-                self._cached_assessment = GeminiMacroAssessment(
+                self._cached_assessment = LLMMacroAssessment(
                     market_bias=str(data.get("market_bias", "NEUTRAL")),
                     risk_level=str(data.get("risk_level", "MODERATE")),
                     confidence=float(data.get("confidence", 0.5)),
@@ -68,9 +72,9 @@ class GeminiMarketAdvisor:
                 )
                 self._last_eval_ts = self._cached_assessment.ts
             except Exception as e:
-                logger.debug("Could not load cached Gemini macro file: %s", e)
+                logger.debug("Could not load cached macro file: %s", e)
 
-    def _save_to_disk(self, assessment: GeminiMacroAssessment) -> None:
+    def _save_to_disk(self, assessment: LLMMacroAssessment) -> None:
         try:
             os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
             with open(self.cache_file, "w") as f:
@@ -81,7 +85,7 @@ class GeminiMarketAdvisor:
                 with open(legacy, "w") as f:
                     json.dump(asdict(assessment), f, indent=2)
         except Exception as e:
-            logger.warning("Could not persist Gemini assessment to %s: %s", self.cache_file, e)
+            logger.warning("Could not persist LLM assessment to %s: %s", self.cache_file, e)
 
     def review(
         self,
@@ -91,7 +95,7 @@ class GeminiMarketAdvisor:
         whale_telemetry: Optional[Dict[str, Any]] = None,
         force_refresh: bool = False,
         now_ts: Optional[float] = None,
-    ) -> Optional[GeminiMacroAssessment]:
+    ) -> Optional[LLMMacroAssessment]:
         """Synthesize market conditions and request a periodic qualitative macro assessment."""
         now = now_ts if now_ts is not None else time.time()
         if not force_refresh and self._cached_assessment and (now - self._last_eval_ts) < self.cache_ttl_sec:
@@ -122,12 +126,18 @@ class GeminiMarketAdvisor:
             "}"
         )
 
-        resp = self.gemini_client.query_json(prompt, timeout_sec=15.0)
+        fg_label = f"F&G={fear_greed.value}" if fear_greed else "Pulse"
+        macro_thread_title = f"ntfy-macro: 🧭 [MACRO ADVISOR] {fg_label}"
+        resp = self.gemini_client.query_json(
+            prompt,
+            timeout_sec=25.0,
+            thread_title=macro_thread_title,
+        )
         if not resp:
             return self._cached_assessment
 
         try:
-            assessment = GeminiMacroAssessment(
+            assessment = LLMMacroAssessment(
                 market_bias=str(resp.get("market_bias", "NEUTRAL")).upper(),
                 risk_level=str(resp.get("risk_level", "MODERATE")).upper(),
                 confidence=float(resp.get("confidence", 0.5)),
@@ -141,5 +151,9 @@ class GeminiMarketAdvisor:
             self._save_to_disk(assessment)
             return assessment
         except Exception as e:
-            logger.error("Failed to construct GeminiMacroAssessment: %s", e)
+            logger.error("Failed to construct LLMMacroAssessment: %s", e)
             return self._cached_assessment
+
+
+# Backwards compatibility alias
+GeminiMarketAdvisor = LLMMarketAdvisor

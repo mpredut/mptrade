@@ -44,24 +44,27 @@ class MacroAnalyzer:
         except Exception:
             pass
 
-        self.macro_llm_interval_sec = (
-            float(macro_llm_interval_sec)
-            if macro_llm_interval_sec is not None
-            else float(os.environ.get("MACRO_LLM_INTERVAL_SEC", "16200.0"))  # 4.5 hours default
-        )
+        if macro_llm_interval_sec is not None:
+            self.macro_llm_interval_sec = float(macro_llm_interval_sec)
+        else:
+            if "macro_llm_interval_sec" in conf_margins:
+                self.macro_llm_interval_sec = float(conf_margins["macro_llm_interval_sec"])
+            elif "macro_llm_interval_h" in conf_margins:
+                self.macro_llm_interval_sec = float(conf_margins["macro_llm_interval_h"]) * 3600.0
+            else:
+                import sys
+                sys.exit("[macro_analyzer] FATAL: 'macro_llm_interval_sec' missing in order_guard.conf. Exiting.")
 
         if advisor_interval_sec is not None:
             self.advisor_interval_sec = float(advisor_interval_sec)
         else:
-            env_adv = os.environ.get("MACRO_ADVISOR_INTERVAL_SEC")
-            if env_adv is not None:
-                self.advisor_interval_sec = float(env_adv)
-            elif "macro_advisor_interval_sec" in conf_margins:
+            if "macro_advisor_interval_sec" in conf_margins:
                 self.advisor_interval_sec = float(conf_margins["macro_advisor_interval_sec"])
             elif "macro_advisor_interval_h" in conf_margins:
                 self.advisor_interval_sec = float(conf_margins["macro_advisor_interval_h"]) * 3600.0
             else:
-                self.advisor_interval_sec = 10800.0  # 3 hours default
+                import sys
+                sys.exit("[macro_analyzer] FATAL: 'macro_advisor_interval_sec' missing in order_guard.conf. Exiting.")
 
         self.shadow_notify = bool(int(float(conf_margins.get("shadow_notify", 1.0))))
         self.thread_prune_interval_sec = thread_prune_interval_sec
@@ -69,16 +72,17 @@ class MacroAnalyzer:
         self.running = False
 
         from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
-        from intelligence.sentiment.collectors.gemini_advisor import GeminiMarketAdvisor
+        from intelligence.sentiment.collectors.gemini_advisor import LLMMarketAdvisor
 
         self.geopolitical_analyzer = GeopoliticalThreatAnalyzer(
             cache_ttl_sec=self.macro_llm_interval_sec,
             state_file=os.path.join(self.cache_dir, "geopolitical_threat_eval.json"),
         )
-        self.gemini_advisor = GeminiMarketAdvisor(
+        self.llm_advisor = LLMMarketAdvisor(
             cache_ttl_sec=self.advisor_interval_sec,
             cache_file=os.path.join(self.cache_dir, "macro_advisor_eval.json"),
         )
+        self.gemini_advisor = self.llm_advisor
 
         self._last_macro_llm_ts: float = 0.0
         self._last_advisor_ts: float = 0.0

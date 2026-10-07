@@ -65,25 +65,41 @@ def check_macro_order_guards(
     if computed_notional is None and qty is not None and price > 0:
         computed_notional = price * qty
 
-    # 1. High-Stake LLM Guard (Pillar 3: >= 1000 EUR purchases)
-    gemini_mode = str(
+    # 1. LLM Pre-Trade Guard (Pillar 3: >= 1000 EUR purchases)
+    llm_mode = str(
+        m.get("llm_guard_mode",
         m.get("high_stake_guard_mode",
         m.get("macro_stake_guard_mode",
         m.get("macro_guard_mode",
-        m.get("gemini_guard_mode", "shadow"))))
+        m.get("gemini_guard_mode", "shadow")))))
     ).strip().lower()
-    if gemini_mode not in ("off", "0", "disabled"):
+
+    if llm_mode not in ("off", "0", "disabled"):
         min_notional = float(
+            m.get("llm_min_notional_eur",
             m.get("high_stake_min_notional_eur",
             m.get("macro_stake_min_notional_eur",
-            m.get("gemini_min_notional_eur", 1000.0)))
+            m.get("gemini_min_notional_eur", 1000.0))))
         )
+        timeout_sec = float(
+            m.get("llm_timeout_sec",
+            m.get("high_stake_timeout_sec",
+            m.get("gemini_timeout_sec", 25.0)))
+        )
+        fallback = str(
+            m.get("llm_fallback",
+            m.get("high_stake_fallback",
+            m.get("gemini_fallback", "allow")))
+        ).strip().lower()
+
         if computed_notional is not None and computed_notional >= min_notional:
-            from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
-            timeout_sec = float(m.get("high_stake_timeout_sec", m.get("gemini_timeout_sec", 12.0)))
-            fallback = str(m.get("high_stake_fallback", m.get("gemini_fallback", "allow"))).strip().lower()
-            g_guard = GeminiHighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
-            g_dec = g_guard.check(symbol, side, price, qty if qty is not None else 1.0, notional_eur=computed_notional)
+            from intelligence.sentiment.guards import gemini_high_stake_guard
+            if getattr(gemini_high_stake_guard, "GeminiHighStakeGuard", None) not in (gemini_high_stake_guard.LLMHighStakeGuard, getattr(gemini_high_stake_guard, "_ORIGINAL_LLM_HIGH_STAKE_GUARD", None)):
+                GuardCls = gemini_high_stake_guard.GeminiHighStakeGuard
+            else:
+                GuardCls = gemini_high_stake_guard.LLMHighStakeGuard
+            llm_guard = GuardCls(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
+            g_dec = llm_guard.check(symbol, side, price, qty if qty is not None else 1.0, notional_eur=computed_notional)
             if regime_context is not None:
                 try:
                     object.__setattr__(regime_context, "_gemini_evaluated_notional", computed_notional)
@@ -91,9 +107,9 @@ def check_macro_order_guards(
                 except Exception:
                     pass
             if not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                prefix = "[HIGH_STAKE_GUARD_SHADOW]" if gemini_mode == "shadow" else "[HIGH_STAKE_GUARD_ENFORCE]"
+                prefix = "[LLM_GUARD_SHADOW]" if llm_mode == "shadow" else "[LLM_GUARD_ENFORCE]"
                 print(f"{prefix} {side} {symbol} €{computed_notional:.2f}: {g_dec.reason} (brake={g_dec.brake_action}, suggested_scale={g_dec.suggested_scale})")
-                if gemini_mode == "shadow" and shadow_notify:
+                if llm_mode == "shadow" and shadow_notify:
                     cd_key = (symbol, side)
                     now_ts = now if now is not None else time.time()
                     if now_ts - _GEMINI_SHADOW_NOTIFY_COOLDOWN.get(cd_key, 0.0) >= 1800.0:
@@ -101,18 +117,18 @@ def check_macro_order_guards(
                         try:
                             from notify_engine.alertnotifiers import notify
                             if not g_dec.allowed:
-                                g_title = f"🛡 [GEMINI SHADOW VETO] Would Block {side} {symbol}"
+                                g_title = f"🛡 [LLM SHADOW VETO] Would Block {side} {symbol}"
                             else:
-                                g_title = f"🛡 [GEMINI SHADOW DOWNSCALE] Would Scale {int(g_dec.suggested_scale*100)}% {side} {symbol}"
+                                g_title = f"🛡 [LLM SHADOW DOWNSCALE] Would Scale {int(g_dec.suggested_scale*100)}% {side} {symbol}"
                             notify(
                                 title=g_title,
                                 body=f"High-stake order €{computed_notional:.2f} flagged: {g_dec.reason} (brake={g_dec.brake_action}, scale={g_dec.suggested_scale})",
-                                source="order_guard",
+                                source="macro_shadow",
                                 symbol=symbol,
                             )
                         except Exception:
                             pass
-                if gemini_mode == "enforce":
+                if llm_mode == "enforce":
                     if not g_dec.allowed:
                         return False, g_dec.reason, 0.0
                     effective_scale = min(effective_scale, g_dec.suggested_scale)
