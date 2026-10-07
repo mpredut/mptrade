@@ -826,6 +826,11 @@ def check_intelligence_guards(
                 if mode == "enforce":
                     return False, p_dec.reason, 0.0
 
+    # Resolve trend duration early so both LLM guard and Weibull guard have access
+    dur_sec = trend_duration_seconds or (getattr(regime_context, "trend_duration_seconds", 0.0) if valid_context else 0.0)
+    if not dur_sec and symbol:
+        dur_sec = _resolve_trend_duration(symbol)
+
     # 2. Dynamic LLM Pre-Trade Guard if notional crossed the threshold
     llm_mode = str(
         m.get("llm_guard_mode",
@@ -860,7 +865,24 @@ def check_intelligence_guards(
                 timeout_sec = float(m.get("llm_timeout_sec", m.get("high_stake_timeout_sec", m.get("gemini_timeout_sec", 25.0))))
                 fallback = str(m.get("llm_fallback", m.get("high_stake_fallback", m.get("gemini_fallback", "allow")))).strip().lower()
                 llm_guard = GuardCls(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
-                g_dec = llm_guard.check(symbol, side, price, qty if qty is not None else 1.0, notional_eur=computed_notional)
+                try:
+                    g_dec = llm_guard.check(
+                        symbol,
+                        side,
+                        price,
+                        qty if qty is not None else 1.0,
+                        notional_eur=computed_notional,
+                        regime_context=regime_context if valid_context else None,
+                        dur_sec=dur_sec,
+                    )
+                except TypeError:
+                    g_dec = llm_guard.check(
+                        symbol,
+                        side,
+                        price,
+                        qty if qty is not None else 1.0,
+                        notional_eur=computed_notional,
+                    )
                 if valid_context:
                     try:
                         object.__setattr__(regime_context, "_gemini_evaluated_notional", computed_notional)
@@ -888,9 +910,6 @@ def check_intelligence_guards(
                             active_reason = g_reason
 
     # 3. Dynamic Weibull trend exhaustion check if duration provided or resolved
-    dur_sec = trend_duration_seconds or (getattr(regime_context, "trend_duration_seconds", 0.0) if valid_context else 0.0)
-    if not dur_sec and symbol:
-        dur_sec = _resolve_trend_duration(symbol)
     if dur_sec and dur_sec > 0:
         from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
         from intelligence.internal.guards.guard_decision import BrakeAction

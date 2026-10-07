@@ -99,7 +99,23 @@ def check_macro_order_guards(
             else:
                 GuardCls = gemini_high_stake_guard.LLMHighStakeGuard
             llm_guard = GuardCls(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
-            g_dec = llm_guard.check(symbol, side, price, qty if qty is not None else 1.0, notional_eur=computed_notional)
+            try:
+                g_dec = llm_guard.check(
+                    symbol,
+                    side,
+                    price,
+                    qty if qty is not None else 1.0,
+                    notional_eur=computed_notional,
+                    regime_context=regime_context,
+                )
+            except TypeError:
+                g_dec = llm_guard.check(
+                    symbol,
+                    side,
+                    price,
+                    qty if qty is not None else 1.0,
+                    notional_eur=computed_notional,
+                )
             if regime_context is not None:
                 try:
                     object.__setattr__(regime_context, "_gemini_evaluated_notional", computed_notional)

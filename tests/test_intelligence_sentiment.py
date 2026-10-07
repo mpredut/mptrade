@@ -689,3 +689,80 @@ class TestOrderGuardWithGemini:
         assert len(dispatched_alerts) == 1, "Immediate repeat should be throttled by in-memory cooldown"
 
 
+class TestEnrichedPretradeTelemetry:
+    def test_collect_pretrade_telemetry(self, tmp_path, monkeypatch):
+        from intelligence.sentiment.guards.gemini_high_stake_guard import collect_pretrade_telemetry
+        from market_regime import MarketRegimeContext, MarketRegimeDecision
+
+        # Create dummy cache files
+        cachedb = tmp_path / "cachedb"
+        cachedb.mkdir()
+        (cachedb / "macro_advisor_eval.json").write_text(json.dumps({
+            "market_bias": "CAUTION",
+            "risk_level": "HIGH",
+            "recommended_action": "TRIM_PROFITS",
+        }))
+        (cachedb / "fear_greed_cache.json").write_text(json.dumps({
+            "value": 72,
+            "classification": "Greed",
+        }))
+        (cachedb / "geopolitical_threat_eval.json").write_text(json.dumps({
+            "threat_level": "NORMAL",
+        }))
+
+        regime_ctx = MarketRegimeContext(
+            decision=MarketRegimeDecision(
+                regime="bull",
+                gradient=0.0015,
+                epsilon=0.0003,
+                strength=5.0,
+                fresh=True,
+                reason="trend positive",
+            ),
+            resolved_trend="bull",
+        )
+
+        telemetry = collect_pretrade_telemetry("BTCUSDC", regime_context=regime_ctx, dur_sec=7200.0, cachedb_dir=str(cachedb))
+
+        assert "Macro Sentiment Bias" in telemetry
+        assert "CAUTION" in telemetry["Macro Sentiment Bias"]
+        assert "Fear & Greed Index" in telemetry
+        assert "72 (Greed)" in telemetry["Fear & Greed Index"]
+        assert "Geopolitical Threat Level" in telemetry
+        assert telemetry["Geopolitical Threat Level"] == "NORMAL"
+        assert "Technical Trend Regime" in telemetry
+        assert "bull" in telemetry["Technical Trend Regime"]
+        assert "Trend Duration" in telemetry
+        assert "2.0 hours" in telemetry["Trend Duration"]
+
+    def test_high_stake_prompt_includes_multi_pillar_telemetry(self, monkeypatch):
+        from intelligence.sentiment.guards.gemini_high_stake_guard import LLMHighStakeGuard
+        from intelligence.sentiment.gemini_client import GeminiClient
+
+        captured_prompt = []
+        def capturing_runner(prompt, model, timeout):
+            captured_prompt.append(prompt)
+            return json.dumps({"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Telemetry looks solid"})
+
+        client = GeminiClient(custom_runner=capturing_runner)
+        guard = LLMHighStakeGuard(gemini_client=client, min_notional_eur=1000.0)
+
+        explicit_telemetry = {
+            "Orderbook Depth Imbalance": "0.85 (85% bids vs 15% asks)",
+            "Perpetual Funding Rate": "+0.0001% (8h)",
+            "Whale Positioning": "65.0% Top Traders Long",
+            "Technical Trend Regime": "bull (gradient=+0.0012, epsilon=0.0004)",
+        }
+
+        dec = guard.check("BTCUSDT", "BUY", price=60000.0, qty=0.025, notional_eur=1500.0, telemetry=explicit_telemetry)
+        assert dec.allowed is True
+        assert len(captured_prompt) == 1
+        prompt = captured_prompt[0]
+
+        assert "Orderbook Depth Imbalance: 0.85 (85% bids vs 15% asks)" in prompt
+        assert "Perpetual Funding Rate: +0.0001% (8h)" in prompt
+        assert "Whale Positioning: 65.0% Top Traders Long" in prompt
+        assert "Technical Trend Regime: bull (gradient=+0.0012, epsilon=0.0004)" in prompt
+        assert "€1,500.00 EUR" in prompt
+
+
