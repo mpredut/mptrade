@@ -39,8 +39,11 @@ from intelligence.sentiment.collectors.gemini_advisor import GeminiMarketAdvisor
 from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
 from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
 from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
-from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
-from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
+from intelligence.sentiment.guards.high_stake_guard import (
+    HighStakeGuard,
+    LLMHighStakeGuard,
+    GeminiHighStakeGuard,
+)
 
 # Macro Geopolitical & Energy Shock Shield (Black Swan Brake)
 from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot, NewsHeadline
@@ -100,6 +103,8 @@ __all__ = [
     "MarketBreadthTrigger",
     "ExtremeGreedGuard",
     "PanicWashoutGuard",
+    "HighStakeGuard",
+    "LLMHighStakeGuard",
     "GeminiHighStakeGuard",
     # Macro Black Swan Shield
     "NewsFeedCollector",

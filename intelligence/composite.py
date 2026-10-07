@@ -25,7 +25,7 @@ from intelligence.sentiment.triggers.sentiment_contrarian_trigger import Sentime
 from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
 from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
 from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
-from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
+from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, GeminiHighStakeGuard
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
 from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
 

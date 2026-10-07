@@ -2,7 +2,7 @@
 
 **Data**: 07 Octombrie 2026  
 **Status**: Documentație oficială de producție  
-**Componente cheie**: `globaltelemetry_collector.py`, `macro_analyzer.py`, `macro_order_guard.py`, `order_guard.py`, `intelligence/`
+**Componente cheie**: `globaltelemetry_collector.py`, `macro_analyzer.py`, `intelligence_order_guard.py`, `order_guard.py`, `intelligence/`
 
 ---
 
@@ -104,7 +104,7 @@ LLM-ul (`gemini-3.8-flash-low` prin CLI-ul local `agy`) este invocat în sistem 
   - **Observație de producție**: **Nu rulează automat în bucla din `intelligence_daemon.py`**, evitând consumul redundant de resurse.
 
 ### B. Guardul pentru Ordine de Miză Mare (`GeminiHighStakeGuard`) — Pilonul 3
-- **Fișier sursă**: `intelligence/sentiment/guards/gemini_high_stake_guard.py`
+- **Fișier sursă**: `intelligence/sentiment/guards/high_stake_guard.py`
 - **Integrare**: Apelat direct în `order_guard.py` (`check_intelligence_guards`).
 - **Frecvență și Trigger**:
   - **Fără frecvență de timp (Event-Driven)**: Se declanșează strict în momentul în care un bot de tranzacționare dorește să transmită un ordin.

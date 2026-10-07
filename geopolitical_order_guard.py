@@ -1,4 +1,4 @@
-"""Macro Geopolitical and Energy Crisis Order Guard (Pillar 4).
+"""Macro Geopolitical and Energy Crisis Order Guard (Pillar 3 · Intelligence Layer).
 
 Evaluates pre-trade orders against geopolitical threat and systemic macro shock state:
 - GeopoliticalShockGuard: Evaluates acute conflict, war escalation, and energy supply crisis threats.
@@ -75,9 +75,9 @@ def check_geopolitical_order_guards(
                             from notify_engine.alertnotifiers import notify
                             scale_pct = int(geo_dec.suggested_scale * 100)
                             if not geo_dec.allowed:
-                                geo_title = f"🛑 [P4 · GEO-SHIELD] BLOCK {order_side} {symbol}"
+                                geo_title = f"🛑 [P3 · GEO-SHIELD] BLOCK {order_side} {symbol}"
                             else:
-                                geo_title = f"🛡 [P4 · GEO-SHIELD] SCALE {scale_pct}% {order_side} {symbol}"
+                                geo_title = f"🛡 [P3 · GEO-SHIELD] SCALE {scale_pct}% {order_side} {symbol}"
 
                             clean_summary = cached_geo.summary or geo_dec.reason
                             if "(" in geo_dec.reason and geo_dec.reason.endswith(")"):

@@ -1,4 +1,4 @@
-"""Unit tests for macro_order_guard.py."""
+"""Unit tests for intelligence_order_guard.py (Pillar 3)."""
 
 from __future__ import annotations
 
@@ -7,15 +7,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from macro_order_guard import check_macro_order_guards, get_whale_collector, get_orderbook_collector, get_derivatives_collector
+from intelligence_order_guard import check_intelligence_order_guards
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
-from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
-from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
-from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
 
 
 def test_non_buy_order_passes_immediately():
-    allowed, reason, scale = check_macro_order_guards(
+    allowed, reason, scale = check_intelligence_order_guards(
         provider="binance",
         symbol="BTCUSDC",
         order_type="SELL",
@@ -46,7 +43,7 @@ def test_geopolitical_veto_in_enforce_mode():
 
     from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
     with patch.object(GeopoliticalThreatAnalyzer, "_load_from_disk", lambda self: setattr(self, "_cached_assessment", mock_geo)):
-        allowed, reason, scale = check_macro_order_guards(
+        allowed, reason, scale = check_intelligence_order_guards(
             provider="binance",
             symbol="BTCUSDC",
             order_type="BUY",
@@ -78,7 +75,7 @@ def test_geopolitical_downscale_in_enforce_mode():
 
     from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
     with patch.object(GeopoliticalThreatAnalyzer, "_load_from_disk", lambda self: setattr(self, "_cached_assessment", mock_geo)):
-        allowed, reason, scale = check_macro_order_guards(
+        allowed, reason, scale = check_intelligence_order_guards(
             provider="binance",
             symbol="BTCUSDC",
             order_type="BUY",
@@ -90,11 +87,8 @@ def test_geopolitical_downscale_in_enforce_mode():
         assert scale == 0.50
 
 
-def test_collector_getters():
-    wc = get_whale_collector()
-    oc = get_orderbook_collector()
-    dc = get_derivatives_collector()
-
-    assert wc is not None
-    assert oc is not None
-    assert dc is not None
+def test_collector_getters_reexported_from_external():
+    from external_order_guard import get_whale_collector, get_orderbook_collector, get_derivatives_collector
+    assert get_whale_collector() is not None
+    assert get_orderbook_collector() is not None
+    assert get_derivatives_collector() is not None

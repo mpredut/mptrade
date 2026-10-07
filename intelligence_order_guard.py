@@ -1,13 +1,10 @@
 """Intelligence & LLM Pre-Trade Order Guard Coordinator (Pillar 3).
 
-Evaluates high-stake orders and macro sentiment context using LLM reasoning:
+Evaluates high-stake orders and macro threat context using LLM reasoning:
 - HighStakeGuard: Real-time LLM validation for high-notional orders (BUY >= 1000 EUR).
   Sub-1000 EUR orders pass with 0 ms latency (zero overhead).
+- GeopoliticalShockGuard: Evaluates acute conflict, war escalation, and energy supply crisis threats.
 - Sentiment Advisor context: Incorporates 3h macro sentiment evaluation (sentiment_advisor_eval.json).
-
-Coordinates with:
-- external_order_guard.py (Pillar 2: Orderbook Depth, Funding Crowding, Whale Flow)
-- geopolitical_order_guard.py (Pillar 4: Geopolitical & Black Swan Shield)
 """
 
 from __future__ import annotations
@@ -17,13 +14,6 @@ import os
 import time
 from typing import Any, Dict, Optional, Tuple
 
-from external_order_guard import (
-    check_external_order_guards,
-    check_microstructure_order_guards,
-    get_derivatives_collector,
-    get_orderbook_collector,
-    get_whale_collector,
-)
 from geopolitical_order_guard import check_geopolitical_order_guards
 
 logger = logging.getLogger("intelligence_order_guard")
@@ -79,12 +69,12 @@ def check_intelligence_order_guards(
             needs_eval = (prev_notional is None) or (abs(computed_notional - prev_notional) > 1.0)
             if needs_eval:
                 dur_sec = getattr(regime_context, "resolved_duration_sec", None) if valid_context else None
-                from intelligence.sentiment.guards import high_stake_guard, gemini_high_stake_guard
-                if getattr(gemini_high_stake_guard, "GeminiHighStakeGuard", None) not in (
+                from intelligence.sentiment.guards import high_stake_guard
+                if getattr(high_stake_guard, "GeminiHighStakeGuard", None) not in (
                     high_stake_guard.LLMHighStakeGuard,
                     getattr(high_stake_guard, "_ORIGINAL_LLM_HIGH_STAKE_GUARD", None)
                 ):
-                    GuardCls = gemini_high_stake_guard.GeminiHighStakeGuard
+                    GuardCls = high_stake_guard.GeminiHighStakeGuard
                 else:
                     GuardCls = high_stake_guard.HighStakeGuard
                 timeout_sec = float(m.get("llm_timeout_sec", m.get("high_stake_timeout_sec", m.get("gemini_timeout_sec", 25.0))))
@@ -164,7 +154,7 @@ def check_intelligence_order_guards(
                     effective_scale = min(effective_scale, g_dec.suggested_scale)
                     active_reason = g_dec.reason
 
-    # 2. Geopolitical & Energy Shock Guard (Pillar 4)
+    # 2. Geopolitical & Energy Shock Guard (Pillar 3 Sub-Guard)
     geo_ok, geo_reason, geo_scale = check_geopolitical_order_guards(
         symbol=symbol,
         side=side,
@@ -177,23 +167,4 @@ def check_intelligence_order_guards(
         effective_scale = min(effective_scale, geo_scale)
         active_reason = geo_reason
 
-    # 3. External Microstructure & Derivatives Flow (Pillar 2)
-    micro_ok, micro_reason, micro_scale = check_external_order_guards(
-        symbol=symbol,
-        side=side,
-        price=price,
-        margins=margins,
-        now=now,
-    )
-    if not micro_ok:
-        return False, micro_reason, 0.0
-    if micro_scale < 1.0:
-        effective_scale = min(effective_scale, micro_scale)
-        active_reason = micro_reason
-
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
-
-
-# Aliases for backward compatibility
-check_macro_order_guards = check_intelligence_order_guards
-_GEMINI_SHADOW_NOTIFY_COOLDOWN = _LLM_SHADOW_NOTIFY_COOLDOWN

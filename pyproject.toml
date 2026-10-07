@@ -82,8 +82,6 @@ py-modules = [
     "external_order_guard",
     "intelligence_order_guard",
     "macro_analyzer",
-    "macro_order_guard",
-    "microstructure_order_guard",
     "liquidation_signal",
     "log",
     "market_regime",

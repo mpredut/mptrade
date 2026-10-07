@@ -1,4 +1,4 @@
-"""Unit tests for microstructure_order_guard.py (Pillar 2)."""
+"""Unit tests for external_order_guard.py (Pillar 2)."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from microstructure_order_guard import (
-    check_microstructure_order_guards,
+from external_order_guard import (
+    check_external_order_guards,
     get_whale_collector,
     get_orderbook_collector,
     get_derivatives_collector,
@@ -19,7 +19,7 @@ from intelligence.external.collectors.whale_positioning import WhalePositioningS
 
 
 def test_microstructure_non_buy():
-    allowed, reason, scale = check_microstructure_order_guards(
+    allowed, reason, scale = check_external_order_guards(
         symbol="BTCUSDC",
         side="SELL",
         price=60000.0,
@@ -52,7 +52,7 @@ def test_microstructure_orderbook_wall_veto():
     }
 
     with patch.object(get_orderbook_collector(), "fetch", return_value=wall_snap):
-        allowed, reason, scale = check_microstructure_order_guards(
+        allowed, reason, scale = check_external_order_guards(
             symbol="BTCUSDC",
             side="BUY",
             price=60000.0,
@@ -83,7 +83,7 @@ def test_microstructure_funding_crowding_downscale():
     }
 
     with patch.object(get_derivatives_collector(), "fetch", return_value=crowded_snap):
-        allowed, reason, scale = check_microstructure_order_guards(
+        allowed, reason, scale = check_external_order_guards(
             symbol="BTCUSDC",
             side="BUY",
             price=60000.0,

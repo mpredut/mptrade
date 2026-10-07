@@ -857,11 +857,14 @@ def check_intelligence_guards(
             # If notional wasn't evaluated for high-stake in cached_res, or has jumped significantly (>20%) from evaluated baseline, re-evaluate now
             if cached_gemini_notional is None or cached_gemini_notional < min_notional or notional_jump:
                 from intelligence.internal.guards.guard_decision import BrakeAction
-                from intelligence.sentiment.guards import gemini_high_stake_guard
-                if getattr(gemini_high_stake_guard, "GeminiHighStakeGuard", None) not in (gemini_high_stake_guard.LLMHighStakeGuard, getattr(gemini_high_stake_guard, "_ORIGINAL_LLM_HIGH_STAKE_GUARD", None)):
-                    GuardCls = gemini_high_stake_guard.GeminiHighStakeGuard
+                from intelligence.sentiment.guards import high_stake_guard
+                if getattr(high_stake_guard, "GeminiHighStakeGuard", None) not in (
+                    high_stake_guard.LLMHighStakeGuard,
+                    getattr(high_stake_guard, "_ORIGINAL_LLM_HIGH_STAKE_GUARD", None)
+                ):
+                    GuardCls = high_stake_guard.GeminiHighStakeGuard
                 else:
-                    GuardCls = gemini_high_stake_guard.LLMHighStakeGuard
+                    GuardCls = high_stake_guard.HighStakeGuard
                 timeout_sec = float(m.get("llm_timeout_sec", m.get("high_stake_timeout_sec", m.get("gemini_timeout_sec", 25.0))))
                 fallback = str(m.get("llm_fallback", m.get("high_stake_fallback", m.get("gemini_fallback", "allow")))).strip().lower()
                 llm_guard = GuardCls(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
@@ -987,9 +990,24 @@ def _evaluate_intelligence_guards_raw(
         effective_scale = min(effective_scale, int_scale)
         active_reason = int_reason
 
-    # 2. External Microstructure, Geopolitical & LLM Guards (Pillars 2, 3, 4)
+    # 2. External Microstructure & Derivatives Guards (Pillar 2: Orderbook Depth, Funding, Whale Flow)
+    from external_order_guard import check_external_order_guards
+    ext_ok, ext_reason, ext_scale = check_external_order_guards(
+        symbol=symbol,
+        side=side,
+        price=price,
+        margins=m,
+        now=now,
+    )
+    if not ext_ok:
+        return False, ext_reason, 0.0
+    if ext_scale < 1.0:
+        effective_scale = min(effective_scale, ext_scale)
+        active_reason = ext_reason
+
+    # 3. Intelligence & LLM Guards (Pillar 3: High-Stake Pre-Trade LLM + Geopolitical Black Swan Shield)
     from intelligence_order_guard import check_intelligence_order_guards
-    macro_ok, macro_reason, macro_scale = check_intelligence_order_guards(
+    intel_ok, intel_reason, intel_scale = check_intelligence_order_guards(
         provider=provider,
         symbol=symbol,
         order_type=order_type,
@@ -1000,12 +1018,11 @@ def _evaluate_intelligence_guards_raw(
         margins=m,
         now=now,
     )
-    if not macro_ok:
-        return False, macro_reason, 0.0
-
-    if macro_scale < 1.0:
-        effective_scale = min(effective_scale, macro_scale)
-        active_reason = macro_reason
+    if not intel_ok:
+        return False, intel_reason, 0.0
+    if intel_scale < 1.0:
+        effective_scale = min(effective_scale, intel_scale)
+        active_reason = intel_reason
 
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
 

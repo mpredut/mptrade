@@ -45,7 +45,9 @@ from intelligence.sentiment.guards.extreme_greed_guard import (
 from intelligence.sentiment.guards.panic_washout_guard import (
     PanicWashoutGuard,
 )
-from intelligence.sentiment.guards.gemini_high_stake_guard import (
+from intelligence.sentiment.guards.high_stake_guard import (
+    HighStakeGuard,
+    LLMHighStakeGuard,
     GeminiHighStakeGuard,
 )
 
@@ -61,5 +63,7 @@ __all__ = [
     "MarketBreadthTrigger",
     "ExtremeGreedGuard",
     "PanicWashoutGuard",
+    "HighStakeGuard",
+    "LLMHighStakeGuard",
     "GeminiHighStakeGuard",
 ]

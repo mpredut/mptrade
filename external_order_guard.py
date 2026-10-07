@@ -194,7 +194,3 @@ def check_external_order_guards(
             pass
 
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
-
-
-# Canonical and backward-compatibility aliases
-check_microstructure_order_guards = check_external_order_guards

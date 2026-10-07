@@ -459,7 +459,7 @@ class TestGeminiHighStakeGuard:
     """Tests for GeminiHighStakeGuard order vetting for >= 1000 EUR."""
 
     def test_sub_threshold_bypasses_llm(self):
-        from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
+        from intelligence.sentiment.guards.high_stake_guard import GeminiHighStakeGuard
         # Client runner that raises if called
         def failing_runner(prompt, model, timeout):
             raise AssertionError("Should not be called for orders < 1000 EUR")
@@ -474,7 +474,7 @@ class TestGeminiHighStakeGuard:
         assert "below_high_stake_threshold" in dec.reason
 
     def test_high_stake_approved(self):
-        from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
+        from intelligence.sentiment.guards.high_stake_guard import GeminiHighStakeGuard
         from intelligence.sentiment.gemini_client import GeminiClient
 
         def approve_runner(prompt, model, timeout):
@@ -490,7 +490,7 @@ class TestGeminiHighStakeGuard:
         assert "Gemini approved" in dec.reason
 
     def test_high_stake_vetoed(self):
-        from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
+        from intelligence.sentiment.guards.high_stake_guard import GeminiHighStakeGuard
         from intelligence.sentiment.gemini_client import GeminiClient
 
         def veto_runner(prompt, model, timeout):
@@ -505,7 +505,7 @@ class TestGeminiHighStakeGuard:
         assert "Gemini vetoed" in dec.reason
 
     def test_high_stake_downscaled(self):
-        from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
+        from intelligence.sentiment.guards.high_stake_guard import GeminiHighStakeGuard
         from intelligence.sentiment.gemini_client import GeminiClient
 
         def downscale_runner(prompt, model, timeout):
@@ -534,7 +534,7 @@ class TestOrderGuardWithGemini:
         }
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
 
-        from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
+        from intelligence.sentiment.guards.high_stake_guard import GeminiHighStakeGuard
         from intelligence.sentiment.gemini_client import GeminiClient
 
         def mock_veto_runner(prompt, model, timeout):
@@ -546,7 +546,7 @@ class TestOrderGuardWithGemini:
         )
 
         with monkeypatch.context() as m:
-            m.setattr("intelligence.sentiment.guards.gemini_high_stake_guard.GeminiHighStakeGuard", lambda **kw: mock_guard)
+            m.setattr("intelligence.sentiment.guards.high_stake_guard.GeminiHighStakeGuard", lambda **kw: mock_guard)
             # In shadow mode, order is allowed despite LLM rejection (only logged)
             allowed, reason, scale = order_guard.check_intelligence_guards(
                 None, "BTCUSDT", "BUY", 65000.0, notional_eur=1500.0
@@ -594,7 +594,7 @@ class TestOrderGuardWithGemini:
         }
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
 
-        from intelligence.sentiment.guards.gemini_high_stake_guard import GeminiHighStakeGuard
+        from intelligence.sentiment.guards.high_stake_guard import GeminiHighStakeGuard
         from intelligence.sentiment.gemini_client import GeminiClient
 
         called_notionals = []
@@ -611,7 +611,7 @@ class TestOrderGuardWithGemini:
             gemini_client=GeminiClient(custom_runner=tracking_runner),
             min_notional_eur=1000.0,
         )
-        monkeypatch.setattr("intelligence.sentiment.guards.gemini_high_stake_guard.GeminiHighStakeGuard", lambda **kw: mock_guard)
+        monkeypatch.setattr("intelligence.sentiment.guards.high_stake_guard.GeminiHighStakeGuard", lambda **kw: mock_guard)
 
         # Provider mockup
         class _P:
@@ -680,7 +680,7 @@ class TestOrderGuardWithGemini:
         assert allowed is True
         assert len(dispatched_alerts) == 1
         alert = dispatched_alerts[0]
-        assert alert["title"] == "🛑 [P4 · GEO-SHIELD] BLOCK BUY TAOUSDC"
+        assert alert["title"] == "🛑 [P3 · GEO-SHIELD] BLOCK BUY TAOUSDC"
         assert alert["symbol"] == "TAOUSDC"
         assert "CRITICAL_SHOCK" in alert["body"]
 
@@ -691,7 +691,7 @@ class TestOrderGuardWithGemini:
 
 class TestEnrichedPretradeTelemetry:
     def test_collect_pretrade_telemetry(self, tmp_path, monkeypatch):
-        from intelligence.sentiment.guards.gemini_high_stake_guard import collect_pretrade_telemetry
+        from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
         from market_regime import MarketRegimeContext, MarketRegimeDecision
 
         # Create dummy cache files
@@ -736,7 +736,7 @@ class TestEnrichedPretradeTelemetry:
         assert "2.0 hours" in telemetry["Trend Duration"]
 
     def test_high_stake_prompt_includes_multi_pillar_telemetry(self, monkeypatch):
-        from intelligence.sentiment.guards.gemini_high_stake_guard import LLMHighStakeGuard
+        from intelligence.sentiment.guards.high_stake_guard import LLMHighStakeGuard
         from intelligence.sentiment.gemini_client import GeminiClient
 
         captured_prompt = []
