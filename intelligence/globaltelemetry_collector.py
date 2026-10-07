@@ -176,7 +176,6 @@ class GlobalTelemetryCollector:
         try:
             snap = self.fear_greed_collector.fetch(force_refresh=force)
             if snap:
-                fg_path = os.path.join(self.cache_dir, "fear_greed_cache.json")
                 from state_io import atomic_write_json
                 payload = {
                     "value": snap.value,
@@ -187,7 +186,9 @@ class GlobalTelemetryCollector:
                     "is_extreme_greed": snap.is_extreme_greed,
                     "ts": snap.timestamp or time.time(),
                 }
-                atomic_write_json(fg_path, payload, indent=2)
+                # Standardized collect file + legacy cache file
+                atomic_write_json(os.path.join(self.cache_dir, "fear_greed_collect.json"), payload, indent=2)
+                atomic_write_json(os.path.join(self.cache_dir, "fear_greed_cache.json"), payload, indent=2)
                 logger.debug("Fear & Greed index updated: %d (%s)", snap.value, snap.classification)
                 return True
         except Exception as e:
@@ -199,7 +200,6 @@ class GlobalTelemetryCollector:
         try:
             breadth = self.breadth_collector.fetch(force_refresh=force)
             if breadth:
-                mb_path = os.path.join(self.cache_dir, "market_breadth_cache.json")
                 from state_io import atomic_write_json
                 payload = {
                     "advance_ratio": breadth.advance_ratio,
@@ -210,7 +210,9 @@ class GlobalTelemetryCollector:
                     "declining": breadth.declining_count,
                     "ts": breadth.ts,
                 }
-                atomic_write_json(mb_path, payload, indent=2)
+                # Standardized collect file + legacy cache file
+                atomic_write_json(os.path.join(self.cache_dir, "market_breadth_collect.json"), payload, indent=2)
+                atomic_write_json(os.path.join(self.cache_dir, "market_breadth_cache.json"), payload, indent=2)
                 logger.debug("Market breadth updated: %.1f%% advancing", breadth.advance_ratio * 100)
                 return True
         except Exception as e:

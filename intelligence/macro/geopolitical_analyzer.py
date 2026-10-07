@@ -13,7 +13,7 @@ from intelligence.sentiment.gemini_client import GeminiClient
 
 logger = logging.getLogger("intelligence.macro.geopolitical_analyzer")
 
-DEFAULT_STATE_FILE = "cachedb/geopolitical_threat_state.json"
+DEFAULT_STATE_FILE = "cachedb/geopolitical_threat_eval.json"
 DEFAULT_CACHE_TTL_SEC = float(os.environ.get("MACRO_LLM_INTERVAL_SEC", "16200.0"))  # 4.5 hours default
 
 
@@ -50,9 +50,15 @@ class GeopoliticalThreatAnalyzer:
         self._load_from_disk()
 
     def _load_from_disk(self) -> None:
-        if os.path.exists(self.state_file):
+        target_file = self.state_file
+        if not os.path.exists(target_file):
+            legacy = target_file.replace("geopolitical_threat_eval.json", "geopolitical_threat_state.json")
+            if os.path.exists(legacy):
+                target_file = legacy
+
+        if os.path.exists(target_file):
             try:
-                with open(self.state_file, "r") as f:
+                with open(target_file, "r") as f:
                     data = json.load(f)
                 self._cached_assessment = GeopoliticalThreatAssessment(
                     threat_level=str(data.get("threat_level", "NORMAL")),
@@ -74,6 +80,11 @@ class GeopoliticalThreatAnalyzer:
             data["headlines_digest"] = self._last_headlines_digest
             with open(self.state_file, "w") as f:
                 json.dump(data, f, indent=2)
+            # Write legacy file during migration
+            legacy = self.state_file.replace("geopolitical_threat_eval.json", "geopolitical_threat_state.json")
+            if legacy != self.state_file:
+                with open(legacy, "w") as f:
+                    json.dump(data, f, indent=2)
         except Exception as e:
             logger.warning("Could not persist geopolitical state to %s: %s", self.state_file, e)
 

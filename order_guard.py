@@ -575,7 +575,7 @@ def get_whale_collector():
     global _whale_collector
     if _whale_collector is not None:
         return _whale_collector
-    from macro_order_guard import get_whale_collector as _gwc
+    from microstructure_order_guard import get_whale_collector as _gwc
     return _gwc()
 
 
@@ -583,7 +583,7 @@ def get_orderbook_collector():
     global _orderbook_collector
     if _orderbook_collector is not None:
         return _orderbook_collector
-    from macro_order_guard import get_orderbook_collector as _goc
+    from microstructure_order_guard import get_orderbook_collector as _goc
     return _goc()
 
 
@@ -591,7 +591,7 @@ def get_derivatives_collector():
     global _derivatives_collector
     if _derivatives_collector is not None:
         return _derivatives_collector
-    from macro_order_guard import get_derivatives_collector as _gdc
+    from microstructure_order_guard import get_derivatives_collector as _gdc
     return _gdc()
 
 
@@ -932,53 +932,28 @@ def _evaluate_intelligence_guards_raw(
     if computed_notional is None and qty is not None and price > 0:
         computed_notional = price * qty
 
-    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
-    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
-    from intelligence.internal.guards.guard_decision import BrakeAction
-
-    surge_pct = float(m.get("parabolic_surge_pct", 15.0))
-    pullback_pct = float(m.get("parabolic_pullback_pct", 2.0))
-    exhaust_policy = str(m.get("weibull_exhaustion_policy", "downscale")).strip().lower()
-    exhaust_scale = float(m.get("weibull_exhausted_scale", 0.25))
-
-    p_guard = ParabolicSurgeGuard(surge_threshold_pct=surge_pct, pullback_required_pct=pullback_pct)
-    e_guard = WeibullExhaustionGuard(policy=exhaust_policy, exhausted_scale=exhaust_scale)
-
     effective_scale = 1.0
     active_reason = "ok"
 
-    # 1. Parabolic surge check (if price history is available or in local cache)
-    history = price_history
-    if history is None:
-        history = _read_cached_price_history(symbol, window_seconds=7200.0)
-    if history:
-        p_dec = p_guard.check(symbol, side, price, price_history=history, now=now)
-        if not p_dec.allowed:
-            prefix = "[INTELLIGENCE_GUARD_SHADOW]" if mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
-            print(f"{prefix} {side} {symbol} @ {price}: {p_dec.reason} (brake={p_dec.brake_action})")
-            if mode == "enforce":
-                return False, p_dec.reason, 0.0
+    # 1. Internal Quantitative Mathematical Guards (Pillar 1: Parabolic Surge, Weibull Exhaustion)
+    from internal_order_guard import check_internal_order_guards
+    int_ok, int_reason, int_scale = check_internal_order_guards(
+        symbol=symbol,
+        side=side,
+        price=price,
+        price_history=price_history,
+        trend_duration_seconds=trend_duration_seconds,
+        regime_context=regime_context,
+        margins=m,
+        now=now,
+    )
+    if not int_ok:
+        return False, int_reason, 0.0
+    if int_scale < 1.0:
+        effective_scale = min(effective_scale, int_scale)
+        active_reason = int_reason
 
-    # 2. Weibull trend exhaustion check
-    dur_sec = trend_duration_seconds
-    if not dur_sec:
-        if regime_context is not None:
-            dur_sec = getattr(regime_context, "trend_duration_seconds", 0.0) or 0.0
-        if not dur_sec:
-            dur_sec = _resolve_trend_duration(symbol)
-
-    if dur_sec and dur_sec > 0:
-        e_dec = e_guard.check(symbol, side, trend_duration_seconds=dur_sec)
-        if e_dec.brake_action != BrakeAction.NONE:
-            prefix = "[INTELLIGENCE_GUARD_SHADOW]" if mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
-            print(f"{prefix} {side} {symbol} @ {price}: {e_dec.reason} (brake={e_dec.brake_action}, suggested_scale={e_dec.suggested_scale})")
-            if mode == "enforce":
-                if not e_dec.allowed:
-                    return False, e_dec.reason, 0.0
-                effective_scale = min(effective_scale, e_dec.suggested_scale)
-                active_reason = e_dec.reason
-
-    # 3. Macro, External Microstructure & LLM Guards (Pillars 2, 3, 4)
+    # 2. External Microstructure, Geopolitical & LLM Guards (Pillars 2, 3, 4)
     from macro_order_guard import check_macro_order_guards
     macro_ok, macro_reason, macro_scale = check_macro_order_guards(
         provider=provider,

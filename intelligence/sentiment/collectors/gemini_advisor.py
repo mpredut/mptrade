@@ -14,7 +14,7 @@ from intelligence.sentiment.collectors.market_breadth_collector import MarketBre
 
 logger = logging.getLogger("intelligence.sentiment.gemini_advisor")
 
-DEFAULT_CACHE_FILE = "cachedb/gemini_macro_advisor.json"
+DEFAULT_CACHE_FILE = "cachedb/macro_advisor_eval.json"
 
 
 @dataclass(frozen=True)
@@ -47,9 +47,15 @@ class GeminiMarketAdvisor:
         self._load_from_disk()
 
     def _load_from_disk(self) -> None:
-        if os.path.exists(self.cache_file):
+        target_file = self.cache_file
+        if not os.path.exists(target_file):
+            legacy = target_file.replace("macro_advisor_eval.json", "gemini_macro_advisor.json")
+            if os.path.exists(legacy):
+                target_file = legacy
+
+        if os.path.exists(target_file):
             try:
-                with open(self.cache_file, "r") as f:
+                with open(target_file, "r") as f:
                     data = json.load(f)
                 self._cached_assessment = GeminiMacroAssessment(
                     market_bias=str(data.get("market_bias", "NEUTRAL")),
@@ -69,6 +75,11 @@ class GeminiMarketAdvisor:
             os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
             with open(self.cache_file, "w") as f:
                 json.dump(asdict(assessment), f, indent=2)
+            # Write legacy file during migration
+            legacy = self.cache_file.replace("macro_advisor_eval.json", "gemini_macro_advisor.json")
+            if legacy != self.cache_file:
+                with open(legacy, "w") as f:
+                    json.dump(asdict(assessment), f, indent=2)
         except Exception as e:
             logger.warning("Could not persist Gemini assessment to %s: %s", self.cache_file, e)
 

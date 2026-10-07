@@ -51,11 +51,11 @@ class MacroAnalyzer:
 
         self.geopolitical_analyzer = GeopoliticalThreatAnalyzer(
             cache_ttl_sec=self.macro_llm_interval_sec,
-            state_file=os.path.join(self.cache_dir, "geopolitical_threat_state.json"),
+            state_file=os.path.join(self.cache_dir, "geopolitical_threat_eval.json"),
         )
         self.gemini_advisor = GeminiMarketAdvisor(
             cache_ttl_sec=self.advisor_interval_sec,
-            cache_file=os.path.join(self.cache_dir, "gemini_macro_advisor.json"),
+            cache_file=os.path.join(self.cache_dir, "macro_advisor_eval.json"),
         )
 
         self._last_macro_llm_ts: float = 0.0
@@ -87,9 +87,11 @@ class MacroAnalyzer:
     def assess_market_advisor(self, force: bool = False) -> bool:
         """Synthesize multi-source sentiment & whale telemetry into a macro perspective."""
         try:
-            # 1. Read cached Fear & Greed
+            # 1. Read cached Fear & Greed (collect file with legacy fallback)
             fg_snap = None
-            fg_path = os.path.join(self.cache_dir, "fear_greed_cache.json")
+            fg_path = os.path.join(self.cache_dir, "fear_greed_collect.json")
+            if not os.path.exists(fg_path):
+                fg_path = os.path.join(self.cache_dir, "fear_greed_cache.json")
             if os.path.exists(fg_path):
                 with open(fg_path, "r", encoding="utf-8") as f:
                     fg_data = json.load(f)
@@ -104,9 +106,11 @@ class MacroAnalyzer:
                     is_extreme_greed=bool(fg_data.get("is_extreme_greed", False)),
                 )
 
-            # 2. Read cached market breadth
+            # 2. Read cached market breadth (collect file with legacy fallback)
             mb_snap = None
-            mb_path = os.path.join(self.cache_dir, "market_breadth_cache.json")
+            mb_path = os.path.join(self.cache_dir, "market_breadth_collect.json")
+            if not os.path.exists(mb_path):
+                mb_path = os.path.join(self.cache_dir, "market_breadth_cache.json")
             if os.path.exists(mb_path):
                 with open(mb_path, "r", encoding="utf-8") as f:
                     mb_data = json.load(f)

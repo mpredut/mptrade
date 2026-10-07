@@ -167,7 +167,9 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
 
     # 3. Pillar 3: Sentiment & Gemini Advisor
     try:
-        fg_path = os.path.join(cache_dir, "fear_greed_cache.json")
+        fg_path = os.path.join(cache_dir, "fear_greed_collect.json")
+        if not os.path.exists(fg_path):
+            fg_path = os.path.join(cache_dir, "fear_greed_cache.json")
         if os.path.exists(fg_path):
             with open(fg_path, "r", encoding="utf-8") as f:
                 fg_data = json.load(f)
@@ -176,9 +178,11 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         else:
             result["pillar3_sentiment"]["fear_greed"] = None
 
-        gemini_path = os.path.join(cache_dir, "gemini_macro_advisor.json")
-        if os.path.exists(gemini_path):
-            with open(gemini_path, "r", encoding="utf-8") as f:
+        advisor_path = os.path.join(cache_dir, "macro_advisor_eval.json")
+        if not os.path.exists(advisor_path):
+            advisor_path = os.path.join(cache_dir, "gemini_macro_advisor.json")
+        if os.path.exists(advisor_path):
+            with open(advisor_path, "r", encoding="utf-8") as f:
                 gem_data = json.load(f)
             gem_data["age_formatted"] = _format_age(now - gem_data.get("ts", 0))
             result["pillar3_sentiment"]["gemini_macro"] = gem_data
@@ -189,7 +193,9 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
 
     # 4. Pillar 4: Geopolitical Threat Shield
     try:
-        geo_path = os.path.join(cache_dir, "geopolitical_threat_state.json")
+        geo_path = os.path.join(cache_dir, "geopolitical_threat_eval.json")
+        if not os.path.exists(geo_path):
+            geo_path = os.path.join(cache_dir, "geopolitical_threat_state.json")
         if os.path.exists(geo_path):
             with open(geo_path, "r", encoding="utf-8") as f:
                 geo_data = json.load(f)
