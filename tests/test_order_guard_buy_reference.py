@@ -326,6 +326,61 @@ class BuyReferenceSwitchTest(unittest.TestCase):
                 self.assertFalse(allowed)
                 self.assertFalse(intel_called, "Intelligence guards should not be evaluated on mathematically rejected orders")
 
+    def test_profit_guard_skips_intelligence_when_qty_none_or_non_positive(self):
+        """Mathematically valid orders must skip heavy intelligence evaluation when qty is None or <= 0."""
+        provider = _Provider("binance", last_fill=300.0)
+        intel_called = False
+
+        def fake_intel_check(*args, **kwargs):
+            nonlocal intel_called
+            intel_called = True
+            return True, "ok", 1.0
+
+        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference=1.0)):
+            with mock.patch.object(order_guard, "check_intelligence_guards", side_effect=fake_intel_check):
+                # Mathematically profitable: BUY 280 vs sell anchor 300 (diff 6.67% >= 1.15%)
+                intel_called = False
+                allowed_none = order_guard.profit_guard(
+                    provider, "TAOUSDC", "BUY", 280.0, 1.15, window_ref=300.0, qty=None
+                )
+                self.assertTrue(allowed_none)
+                self.assertFalse(intel_called, "Intelligence guards must be skipped when qty is None")
+
+                intel_called = False
+                allowed_zero = order_guard.profit_guard(
+                    provider, "TAOUSDC", "BUY", 280.0, 1.15, window_ref=300.0, qty=0.0
+                )
+                self.assertTrue(allowed_zero)
+                self.assertFalse(intel_called, "Intelligence guards must be skipped when qty is 0.0")
+
+                intel_called = False
+                allowed_positive = order_guard.profit_guard(
+                    provider, "TAOUSDC", "BUY", 280.0, 1.15, window_ref=300.0, qty=1.5
+                )
+                self.assertTrue(allowed_positive)
+                self.assertTrue(intel_called, "Intelligence guards must be evaluated when qty is positive")
+
+    def test_instrument_preflight_refuses_zero_balance(self):
+        """Instrument.place must refuse BUY orders at Stage 0 if provider free balance is zero or empty."""
+        from instrument import Instrument
+        from providers.market_api import MarketApi
+
+        class _MockBalanceProvider(_Provider):
+            def free_balance(self, asset):
+                return 0.0
+
+            def validate_symbol(self, symbol):
+                pass
+
+            def guards_internally(self):
+                return False
+
+        provider = _MockBalanceProvider("binance", last_fill=300.0)
+        api = MarketApi([provider])
+        inst = Instrument("TAO", "TAOUSDC", provider="binance", quote="USDC", api=api)
+        order = inst.place("BUY", 280.0, 1.0, caller_owns_retry=True)
+        self.assertIsNone(order)
+
 
 if __name__ == "__main__":
     unittest.main()

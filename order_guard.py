@@ -1132,7 +1132,7 @@ def _evaluate_intelligence_guards_raw(
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
 
 
-def _check_math_profit_reference(
+def check_math_profit_reference(
     provider,
     symbol: str,
     order_type: str,
@@ -1172,8 +1172,18 @@ def _check_math_profit_reference(
                 regime_context=regime_context,
             )
             dyn_hours = dyn_window_s / 3600.0
-            if window_ref is not None and window_ref > 0:
-                diff = u.value_diff_to_percent(window_ref, price)
+            def _valid_pos_float(val):
+                if val is None:
+                    return None
+                try:
+                    f = float(val)
+                    return f if math.isfinite(f) and f > 0 else None
+                except (TypeError, ValueError):
+                    return None
+
+            pos_window_ref = _valid_pos_float(window_ref)
+            if pos_window_ref is not None:
+                diff = u.value_diff_to_percent(pos_window_ref, price)
                 if diff < profit_percentage:
                     # In dynamic mode, verify whether this reference actually sits within the dynamic window (dyn_window_s)
                     if hasattr(provider, "get_orders"):
@@ -1195,31 +1205,41 @@ def _check_math_profit_reference(
                                 continue
                         if not recent_prices:
                             print(f"[GUARD] BUY {symbol}: dynamic window ({dyn_hours:.1f}h, trend='{trend}') has no fills; "
-                                  f"anchor {window_ref} from older period bypassed")
+                                  f"anchor {pos_window_ref} from older period bypassed")
                             return True
                     elif trend == "bull" and not hasattr(provider, "get_orders"):
                         print(f"[GUARD] BUY {symbol}: dynamic mode bypassed historical sell reference "
                               f"during confirmed BULL trend; price {price} permitted")
                         return True
                     print(f"[GUARD] BUY {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
-                          f"found recent sell ref {window_ref}, price {price}, diff {diff:.2f}%, threshold {profit_percentage}%")
+                          f"found recent sell ref {pos_window_ref}, price {price}, diff {diff:.2f}%, threshold {profit_percentage}%")
                     print(f"Percentage difference ({diff:.2f}%) below threshold {profit_percentage}%. "
                           f"The BUY order is BLOCKED.")
                     return False
                 print(f"[GUARD] BUY {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
-                      f"recent sell ref {window_ref}, price {price}, diff {diff:.2f}% >= {profit_percentage}%. Permitted.")
+                      f"recent sell ref {pos_window_ref}, price {price}, diff {diff:.2f}% >= {profit_percentage}%. Permitted.")
                 return True
             else:
                 print(f"[GUARD] BUY {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
                       f"has no recent sell reference; price {price} permitted")
                 return True
     has_window = window_for(provider_name, symbol, order_type, regime_context=regime_context) > 0
-    ref = window_ref if window_ref is not None else (
+    raw_ref = window_ref if window_ref is not None else (
         None if has_window else (
             provider.last_opposite_fill(symbol, order_type) if hasattr(provider, "last_opposite_fill") else None
         )
     )
-    if ref is None or ref <= 0:
+    def _parse_ref(val):
+        if val is None:
+            return None
+        try:
+            f = float(val)
+            return f if math.isfinite(f) and f > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    ref = _parse_ref(raw_ref)
+    if ref is None:
         return True
     if order_type == "BUY":
         diff = u.value_diff_to_percent(ref, price)   # (ref_SELL - BUY_price) / ref_SELL
@@ -1235,6 +1255,9 @@ def _check_math_profit_reference(
     return True
 
 
+_check_math_profit_reference = check_math_profit_reference
+
+
 def profit_guard(
     provider,
     symbol,
@@ -1246,6 +1269,7 @@ def profit_guard(
     regime_context=None,
     qty: Optional[float] = None,
     notional_eur: Optional[float] = None,
+    evaluate_intelligence: bool = True,
 ):
     """Return whether the order is profitable relative to its reference.
 
@@ -1254,14 +1278,18 @@ def profit_guard(
       If mathematically unprofitable, returns False immediately without evaluating
       AI/macro sentiment or sending false-positive push alerts.
     - Stage 2 (Intelligence, Macro & Sentiment): Evaluates Parabolic, Weibull, Gemini LLM,
-      and Geopolitical shock shield only on mathematically cleared orders.
+      and Geopolitical shock shield only on mathematically cleared orders when
+      evaluate_intelligence=True.
     """
     # Stage 1: Deterministic Mathematical Reference Check
-    if not _check_math_profit_reference(
+    if not check_math_profit_reference(
         provider, symbol, order_type, price, profit_percentage,
         window_ref=window_ref, regime_context=regime_context,
     ):
         return False
+
+    if not evaluate_intelligence or qty is None or (isinstance(qty, (int, float)) and qty <= 0):
+        return True
 
     # Stage 2: Intelligence, Macro & Sentiment Guards
     intel_ok, intel_reason, suggested_scale = check_intelligence_guards(

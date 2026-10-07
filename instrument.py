@@ -390,6 +390,18 @@ class Instrument:
                     except Exception:
                         pass
 
+            quantity_price = price
+            if is_market:
+                quantity_price = self._provider.get_current_price(self.symbol)
+                try:
+                    quantity_price = float(quantity_price)
+                except (TypeError, ValueError, OverflowError):
+                    quantity_price = float("nan")
+                if not math.isfinite(quantity_price) or quantity_price <= 0:
+                    print(f"[{self.symbol}] {side_u} MARKET BLOCKED: current price unavailable")
+                    reason = "market_price_unavailable"
+                    return None
+
             if not bypass:
                 if regime_context is None and side_u == "BUY":
                     try:
@@ -406,18 +418,21 @@ class Instrument:
                     except Exception:
                         regime_context = None
 
+                profit_margin = order_guard.margin_for(self._provider.name)
+                # Tier-one min/max reference comes from the provider hook. Kraken
+                # and Hyperliquid use their configured venue window; Binance uses
+                # safeback_sec from the order cache. An empty window falls back to
+                # the last opposite fill.
+                profit_window_ref = self._call_profit_guard_window_ref(
+                    self.symbol, side_u, safeback_override, regime_context=regime_context)
+
+                # Stage 1: Deterministic Mathematical Reference Check.
+                # Must beat historical reference before sizing or intelligence evaluation.
                 if bypass_profit_reference:
                     print(
                         f"[GUARD] {side_u} {self.symbol}: the historical price reference "
                         "was explicitly bypassed; the quantity/weight guard remains active")
                 else:
-                    profit_margin = order_guard.margin_for(self._provider.name)
-                    # Tier-one min/max reference comes from the provider hook. Kraken
-                    # and Hyperliquid use their configured venue window; Binance uses
-                    # safeback_sec from the order cache. An empty window falls back to
-                    # the last opposite fill.
-                    profit_window_ref = self._call_profit_guard_window_ref(
-                        self.symbol, side_u, safeback_override, regime_context=regime_context)
                     ok = order_guard.profit_guard(
                         self._provider, self.symbol, side_u, price, profit_margin,
                         window_ref=profit_window_ref, regime_context=regime_context,
@@ -426,6 +441,8 @@ class Instrument:
                     if not ok:
                         reason = "profit_guard"
                         return None
+
+            # Stage 2: Quantity Sizing, Gaussian/Chop Weights & Balance Capping.
             # Balance, fee, and venue filters are mechanics, not optional profit
             # policy. Apply them even when an emergency flow bypasses profit/weight.
             quantity_price = price
@@ -471,9 +488,9 @@ class Instrument:
                     reason = refusal
                     return None
 
-            # 2. Optional provider-agnostic trend gate is instantaneous.  Placement
+            # 2. Optional provider-agnostic trend gate is instantaneous. Placement
             # must never sleep or poll: a negative decision returns immediately and
-            # the durable outbox retries it on a later worker tick.  Callers that own
+            # the durable outbox retries it on a later worker tick. Callers that own
             # their lifecycle (AssetGuardian) apply the same check in their strategy
             # loop and disable this duplicate gate.
             if wait_for_trend:
@@ -494,10 +511,8 @@ class Instrument:
                 except Exception as e:  # noqa: BLE001 — Opportunistic gate.
                     print(f"[{self.symbol}] {side_u} trend gate unavailable: {e}")
 
-            # An early executable-price check avoids persisting an intent that is
-            # already known to be unprofitable. It is repeated at the final dispatch
-            # boundary because cooldown, persistence, and cache validation can take
-            # long enough for a market quote to move.
+            # Stage 3: Post-sizing Profit & Intelligence Guards.
+            # Evaluated with the non-zero finalized quantity and exact notional size.
             if not bypass and not bypass_profit_reference:
                 if is_market:
                     guard_price = quantity_price
