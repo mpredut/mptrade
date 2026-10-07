@@ -214,6 +214,20 @@ def process_once(mkt, now=None):
     now = now if now is not None else time.time()
     snapshot = oq.load_validated(now)
 
+    # Strategy-owned intents (e.g. rtrade) manage their own retry loops and must
+    # never be retried, tracked, or alerted as give-ups by the generic outbox worker.
+    # Purge any leaked legacy strategy records immediately without alert noise.
+    orphaned_strategy_records = [
+        r for r in snapshot
+        if str(r.get("kind") or "").startswith("rtrade")
+    ]
+    if orphaned_strategy_records:
+        oq.discard([r["id"] for r in orphaned_strategy_records if r.get("id")])
+        snapshot = [
+            r for r in snapshot
+            if not str(r.get("kind") or "").startswith("rtrade")
+        ]
+
     to_retry = []       # due pending records; reconciliation precedes price gating
     to_observe = []     # accepted venue orders due for one status snapshot
     to_reconcile_cancel = []  # replacements blocked on the prior order status
@@ -814,6 +828,8 @@ def _alert_giveups(records, now):
     try:
         events = []
         for rec in records:
+            if str(rec.get("kind") or "").startswith("rtrade"):
+                continue
             reason = ("attempt_limit" if oq.RETRY_MAX_ATTEMPTS > 0
                       and rec.get("attempts", 0) >= oq.RETRY_MAX_ATTEMPTS
                       else "active_ttl")

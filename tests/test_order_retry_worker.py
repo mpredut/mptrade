@@ -521,6 +521,21 @@ class ProcessOnceTest(unittest.TestCase):
             self.assertEqual(mkt.calls, [])
             oq.RETRY_MAX_ATTEMPTS = 0
 
+    def test_leaked_strategy_records_purged_without_alerts(self):
+        self.alerts.clear()
+        oq.rewrite([])
+        oq.enqueue("TAOUSDC", "SELL", 1.5, {}, now=1000,
+                   kind="rtrade_legacy_quote", requested_price=300.0)
+        oq.enqueue("BTCUSDC", "BUY", 1.0, {}, now=1000,
+                   requested_price=100.0)
+        mkt = FakeMkt(price=100.0)
+        stats = worker.process_once(mkt, now=1400)
+        self.assertEqual(stats["succeeded"], 1)
+        self.assertEqual(self.alerts, [])
+        records = oq.load_all()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["symbol"], "BTCUSDC")
+
     def test_semantically_invalid_record_fails_closed_without_submit(self):
         oq.rewrite([{
             "id": "legacy", "symbol": "BTCUSDC", "side": "BUY", "qty": None,
