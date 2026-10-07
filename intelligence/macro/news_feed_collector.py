@@ -152,6 +152,32 @@ class NewsFeedCollector:
             ts=now,
         )
 
+    def get_pool_snapshot(self, now_ts: Optional[float] = None) -> NewsFeedSnapshot:
+        """Return snapshot of currently aggregated history pool without fetching network."""
+        now = now_ts if now_ts is not None else time.time()
+        cutoff = now - self.rolling_window_sec
+        active_pool = {k: v for k, v in self._aggregated_pool.items() if v[0] >= cutoff}
+        all_headlines = [
+            v[1]
+            for v in sorted(
+                active_pool.values(),
+                key=lambda x: (1 if x[1].is_high_severity else 0, x[0]),
+                reverse=True,
+            )
+        ]
+        high_sev = [h for h in all_headlines if h.is_high_severity]
+        has_shock = len(high_sev) >= 3 or any(
+            any(w in h.title.lower() for w in ("declared war", "nuclear", "strait of hormuz", "major offensive"))
+            for h in high_sev
+        )
+        return NewsFeedSnapshot(
+            headlines=tuple(all_headlines[:35]),
+            total_fetched=len(all_headlines),
+            high_severity_count=len(high_sev),
+            has_critical_shock_keywords=has_shock,
+            ts=now,
+        )
+
     @staticmethod
     def parse_rss_xml(xml_bytes: bytes, now_ts: Optional[float] = None) -> Optional[NewsFeedSnapshot]:
         """Parse raw XML RSS feed and extract matched high-severity headlines."""

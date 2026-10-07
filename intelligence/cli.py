@@ -27,7 +27,9 @@ def _format_age(seconds: float) -> str:
 
 def get_daemon_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
     """Inspect the running background telemetry daemon."""
-    hb_path = os.path.join(cache_dir, "intelligence_daemon.heartbeat")
+    hb_path = os.path.join(cache_dir, "globaltelemetry_collector.heartbeat")
+    if not os.path.exists(hb_path):
+        hb_path = os.path.join(cache_dir, "intelligence_daemon.heartbeat")
     if not os.path.exists(hb_path):
         return {"running": False, "reason": "no_heartbeat_file"}
 
@@ -55,6 +57,41 @@ def get_daemon_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
             "age_seconds": round(age, 1),
             "age_formatted": _format_age(age),
             "symbols": data.get("symbols", []),
+            "intervals": data.get("intervals", {}),
+            "last_run": data.get("last_run", {}),
+        }
+    except Exception as e:
+        return {"running": False, "error": str(e)}
+
+
+def get_macro_analyzer_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
+    """Inspect the running macro intelligence analyzer daemon."""
+    hb_path = os.path.join(cache_dir, "macro_analyzer.heartbeat")
+    if not os.path.exists(hb_path):
+        return {"running": False, "reason": "no_heartbeat_file"}
+
+    try:
+        with open(hb_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        pid = int(data.get("pid", 0))
+        ts = float(data.get("ts", 0.0))
+        age = time.time() - ts
+
+        is_alive = False
+        if pid > 0:
+            try:
+                os.kill(pid, 0)
+                is_alive = True
+            except OSError:
+                is_alive = False
+
+        status_str = "alive" if (is_alive and age < 300.0) else ("stale" if is_alive else "dead")
+        return {
+            "running": is_alive and age < 300.0,
+            "pid": pid,
+            "status": status_str,
+            "age_seconds": round(age, 1),
+            "age_formatted": _format_age(age),
             "intervals": data.get("intervals", {}),
             "last_run": data.get("last_run", {}),
         }

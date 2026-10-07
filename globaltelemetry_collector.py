@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""Root executable wrapper for Global Market Telemetry Collector Daemon."""
+import os
+import sys
+
+# Ensure repository root is on sys.path
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from intelligence.globaltelemetry_collector import main
+
+if __name__ == "__main__":
+    main()

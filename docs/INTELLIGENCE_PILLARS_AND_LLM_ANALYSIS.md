@@ -2,7 +2,7 @@
 
 **Data**: 07 Octombrie 2026  
 **Status**: Documentație oficială de producție  
-**Componente cheie**: `intelligence/`, `intelligence_daemon.py`, `order_guard.py`, `orchestratorOS/admin/prune_autonommptrade.py`
+**Componente cheie**: `globaltelemetry_collector.py`, `macro_analyzer.py`, `macro_order_guard.py`, `order_guard.py`, `intelligence/`
 
 ---
 
