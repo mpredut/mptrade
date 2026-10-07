@@ -31,12 +31,14 @@ Administrative and disaster recovery tools.
   Unified script for backup and disaster recovery. Handles local tarball creation, remote uploads (e.g. to Storj) with encryption, and full machine restoration from backups. Replaces legacy `backup_local.sh`, `backup_remote.sh`, and `restore.sh`.
 - **`make_venv_portable.sh`**
   Fixes hardcoded absolute paths inside `.venv/bin/` wrappers when the repository is cloned or moved to a new path.
-- **`manage_agy_update.sh`**
-  Scheduled bi-weekly via `crontab.prod.txt`. Checks for Antigravity CLI updates (`agy update`) and restarts `antigravity-cli-daemon.service` only when a new version is applied.
+- **`manage_agy_update.sh`** (symlinked as `update_agy.sh`)
+  Unified updater and lifecycle manager for Antigravity CLI (`agy`). When invoked manually (or via `./update_agy.sh`), checks for updates, then stops and starts `antigravity-cli-daemon.service` registered as instance `prod-vm`. When scheduled via `crontab.prod.txt` with `--cron`, restarts the daemon only when an update is successfully applied.
 
 ## `orchestratorOS/`
 Observability and administration scripts.
 
+- **`agy_watchdog.sh`**
+  Scheduled via `crontab.prod.txt` every 2 minutes. Verifies that `antigravity-cli-daemon.service` is active and healthy. If stopped or inactive, automatically restarts and registers it with instance name `prod-vm`, logging recovery and dispatching an ntfy notification if configured.
 - **`deadman_switch.sh`**
   Cron job that continuously pings a `healthchecks.io` URL to prove the PROD machine is online and scheduling jobs. If this ping stops, `healthchecks.io` sends an alert, ensuring major outages are caught even if local `ntfy` fails.
 - **`check_workload.sh`**

@@ -53,3 +53,4 @@ offline/results/
 nohup.out
 *.patch
 visuals/index.html
+/agy
