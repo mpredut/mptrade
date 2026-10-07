@@ -17,6 +17,9 @@ DEFAULT_MODEL = "gemini-3.8-flash-low"
 AGY_CLI_PATH = "/home/predut/.local/bin/agy"
 
 
+DEFAULT_AUTONOMOUS_PROJECT_ID = "f5f9d01f-01e5-4fac-80f2-97364688afab"
+
+
 class GeminiClient:
     """Wrapper for querying Google Gemini models.
 
@@ -35,7 +38,11 @@ class GeminiClient:
         self.model = model
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         self.cli_path = cli_path or (AGY_CLI_PATH if os.path.exists(AGY_CLI_PATH) else shutil.which("agy"))
-        self.project_id = project_id or os.environ.get("AGY_PROJECT", "autonommptrade")
+        raw_project = project_id or os.environ.get("AGY_PROJECT", "autonommptrade")
+        if raw_project in ("autonommptrade", DEFAULT_AUTONOMOUS_PROJECT_ID):
+            self.project_id = DEFAULT_AUTONOMOUS_PROJECT_ID
+        else:
+            self.project_id = raw_project
         self._custom_runner = custom_runner
         self._cache: Dict[str, tuple[float, str]] = {}
 
