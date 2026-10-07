@@ -118,7 +118,7 @@ install -o "$TRADING_USER" -g "$TRADING_GROUP" -m 0644 "$TMP_DIR/antigravity-cli
 if [ -x "$TRADING_HOME/.local/bin/agy" ]; then
   TRADING_UID="$(id -u "$TRADING_USER")"
   sudo -u "$TRADING_USER" XDG_RUNTIME_DIR="/run/user/$TRADING_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$TRADING_UID/bus" systemctl --user daemon-reload 2>/dev/null || true
-  sudo -u "$TRADING_USER" XDG_RUNTIME_DIR="/run/user/$TRADING_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$TRADING_UID/bus" systemctl --user enable antigravity-cli-daemon.service 2>/dev/null || true
+  sudo -u "$TRADING_USER" XDG_RUNTIME_DIR="/run/user/$TRADING_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$TRADING_UID/bus" systemctl --user enable --now antigravity-cli-daemon.service 2>/dev/null || true
 fi
 
 systemctl daemon-reload
