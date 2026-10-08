@@ -663,7 +663,7 @@ class AutonomousAIReconciler:
         has_fix = report.code_remediation.get("has_fix", False)
         mode_label = report.mode.upper()
 
-        title = f"🛡 [AI-SUPERVISOR · {mode_label}] Issues: {issues_cnt} · Actions: {actions_cnt}"
+        title = f"[AI-SUPERVISOR - {mode_label}] Issues: {issues_cnt} | Actions: {actions_cnt}"
         body_lines = [
             f"Mode: {mode_label} · Status: {'Executed' if report.actions_executed else 'Simulated/Observed'}",
             f"{report.summary}",
@@ -709,7 +709,7 @@ class AutonomousAIReconciler:
                     status = resp.getcode()
                 return status == 200
         except Exception as exc:
-            logger.debug("Failed sending standalone ntfy notification: %s", exc)
+            logger.error("Failed sending standalone ntfy notification: %s", exc)
             return False
 
     def write_audit_artifact(self, report: SupervisorAuditReport) -> None:
