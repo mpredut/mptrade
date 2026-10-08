@@ -8,6 +8,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+source "$ROOT/orchestratorOS/lib/env_common.sh"
 [ -f "$ROOT/config.env" ] && {
     set -a
     . "$ROOT/config.env" 2>/dev/null || true
@@ -222,22 +223,11 @@ fi
 # Require .env file and enforce required PIA variables
 [ -f "$ROOT/.env" ] || { echo "error: missing required $ROOT/.env configuration" >&2; exit 1; }
 
-PIA_USER=""
-PIA_PASS=""
-PIA_DIP_TOKEN_FRANKFURT=""
-PIA_DIP_TOKEN_BELGIUM=""
-while IFS='=' read -r key val; do
-    val="${val%\"}"
-    val="${val#\"}"
-    val="${val%\'}"
-    val="${val#\'}"
-    case "$key" in
-        PIA_USER|PIA_ACCOUNT_USER) PIA_USER="$val" ;;
-        PIA_PASS) PIA_PASS="$val" ;;
-        PIA_DIP_TOKEN|PIA_DIP_TOKEN_FRANKFURT) PIA_DIP_TOKEN_FRANKFURT="$val" ;;
-        PIA_DIP_TOKEN_BELGIUM) PIA_DIP_TOKEN_BELGIUM="$val" ;;
-    esac
-done < <(grep -E '^(PIA_USER|PIA_ACCOUNT_USER|PIA_PASS|PIA_DIP_TOKEN|PIA_DIP_TOKEN_FRANKFURT|PIA_DIP_TOKEN_BELGIUM)=' "$ROOT/.env" 2>/dev/null || true)
+# Load PIA credentials and tokens from .env / config.env using env_get SSOT
+PIA_USER="$(env_get PIA_ACCOUNT_USER "$(env_get PIA_USER)")"
+PIA_PASS="$(env_get PIA_PASS)"
+PIA_DIP_TOKEN_FRANKFURT="$(env_get PIA_DIP_TOKEN_FRANKFURT "$(env_get PIA_DIP_TOKEN)")"
+PIA_DIP_TOKEN_BELGIUM="$(env_get PIA_DIP_TOKEN_BELGIUM)"
 
 [ -n "$PIA_USER" ] || { echo "error: PIA_USER missing in $ROOT/.env" >&2; exit 1; }
 [ -n "$PIA_PASS" ] || { echo "error: PIA_PASS missing in $ROOT/.env" >&2; exit 1; }

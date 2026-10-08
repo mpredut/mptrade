@@ -29,7 +29,7 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             "NTFY_TOPIC_ERROR": "ntfy-error-test",
             "NTFY_TOPIC_PRICE": "ntfy-price-test",
             "NTFY_TOPIC_SERVER": "ntfy-server-test",
-            "NTFY_TOPIC_DEADMAN": "ntfy-server-cazut-test",
+            "NTFY_TOPIC_DEADMAN": "ntfy-deadman-test",
             "NTFY_DAILY_BUDGET": "500",
             "NTFY_URGENT_RESERVE": "50",
             "NOTIFICATION_DEDUP_SECONDS": "0",

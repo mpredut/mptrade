@@ -33,6 +33,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+source "$ROOT/orchestratorOS/lib/env_common.sh"
 CONFIG="$ROOT/config.env"
 [ -r "$CONFIG" ] || { echo "missing required configuration: $CONFIG" >&2; exit 1; }
 set -a
@@ -56,25 +57,11 @@ id "$TRADING_USER" >/dev/null 2>&1 || {
 TRADING_USER_HOME="$(getent passwd "$TRADING_USER" | cut -d: -f6)"
 [ -n "$TRADING_USER_HOME" ] || { echo "home missing for $TRADING_USER" >&2; exit 1; }
 
-# Load PIA credentials and tokens from .env if present
-PIA_ACCOUNT_USER=""
-PIA_PASS=""
-PIA_DIP_TOKEN_FRANKFURT=""
-PIA_DIP_TOKEN_BELGIUM=""
-if [ -f "$ROOT/.env" ]; then
-    while IFS='=' read -r key val; do
-        val="${val%\"}"
-        val="${val#\"}"
-        val="${val%\'}"
-        val="${val#\'}"
-        case "$key" in
-            PIA_USER|PIA_ACCOUNT_USER) PIA_ACCOUNT_USER="$val" ;;
-            PIA_PASS) PIA_PASS="$val" ;;
-            PIA_DIP_TOKEN|PIA_DIP_TOKEN_FRANKFURT) PIA_DIP_TOKEN_FRANKFURT="$val" ;;
-            PIA_DIP_TOKEN_BELGIUM) PIA_DIP_TOKEN_BELGIUM="$val" ;;
-        esac
-    done < <(grep -E '^(PIA_ACCOUNT_USER|PIA_USER|PIA_PASS|PIA_DIP_TOKEN|PIA_DIP_TOKEN_FRANKFURT|PIA_DIP_TOKEN_BELGIUM)=' "$ROOT/.env" 2>/dev/null || true)
-fi
+# Load PIA credentials and tokens from .env / config.env using env_get SSOT
+PIA_ACCOUNT_USER="$(env_get PIA_ACCOUNT_USER "$(env_get PIA_USER)")"
+PIA_PASS="$(env_get PIA_PASS)"
+PIA_DIP_TOKEN_FRANKFURT="$(env_get PIA_DIP_TOKEN_FRANKFURT "$(env_get PIA_DIP_TOKEN)")"
+PIA_DIP_TOKEN_BELGIUM="$(env_get PIA_DIP_TOKEN_BELGIUM)"
 
 PROBE_TIMEOUT="${PIA_PROBE_TIMEOUT:-8}"
 CLI_TIMEOUT="${PIA_CLI_TIMEOUT:-6}"     # Longer than this means the daemon is wedged.
@@ -207,9 +194,7 @@ check_resolved_cpu() {
 # We do not try to deliver at all costs: if the line is down we spool the alert and
 # get on with the repair. The spool drains by itself once connectivity returns.
 ntfy_topic() {
-    local t
-    t=$(grep -hs -m1 '^NTFY_TOPIC_ERROR=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d '" ')
-    echo "$t"
+    env_get NTFY_TOPIC_ERROR "ntfy-error-1978"
 }
 
 # shellcheck source=../lib/os_notify.sh
