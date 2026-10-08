@@ -28,6 +28,8 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             "NTFY_TOPIC_MACRO": "ntfy-macro-test",
             "NTFY_TOPIC_ERROR": "ntfy-error-test",
             "NTFY_TOPIC_PRICE": "ntfy-price-test",
+            "NTFY_TOPIC_SERVER": "ntfy-server-test",
+            "NTFY_TOPIC_DEADMAN": "ntfy-server-cazut-test",
             "NTFY_DAILY_BUDGET": "500",
             "NTFY_URGENT_RESERVE": "50",
             "NOTIFICATION_DEDUP_SECONDS": "0",
@@ -101,11 +103,14 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.assertTrue(any("Failed to decode orchestrator intent JSON" in m for m in log_capture.output))
 
     def test_topic_routing_comprehensive(self):
-        """Verify routing for TRADES, GUARD, ERROR, and PRICE categories."""
-        # TRADES
+        """Verify routing for TRADES, GUARD, ERROR, SERVER, and PRICE categories."""
+        # TRADES (including launched orders, manual attribution, and fills)
         self.assertEqual(_topic_for_category("BUY 10@100", "kraken"), "ntfy-trades-test")
         self.assertEqual(_topic_for_category("SELL 5@200", "binance"), "ntfy-trades-test")
         self.assertEqual(_topic_for_category("TREND_ENTRY", "kraken"), "ntfy-trades-test")
+        self.assertEqual(_topic_for_category("📝 SELL TAOUSDC @ 284.70 [manual]", "monitororder"), "ntfy-trades-test")
+        self.assertEqual(_topic_for_category("📝 BUY TAOUSDC @ 283.92 [manual]", "monitororder"), "ntfy-trades-test")
+        self.assertEqual(_topic_for_category("🎉 [Binance] Order Executed: BUY TAOUSDC", "monitortrades"), "ntfy-trades-test")
 
         # GUARD
         self.assertEqual(_topic_for_category("🛑 STOP_LOSS triggered", "kraken"), "ntfy-guard-test")
@@ -119,13 +124,36 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.assertEqual(_topic_for_category("🛡 [VETO] Would Block BUY TAOUSDC", "macro_shadow"), "ntfy-macro-test")
         self.assertEqual(_topic_for_category("🛡 [DOWNSCALE] Would Scale 50% BUY TAOUSDC", "macro_shadow"), "ntfy-macro-test")
 
+        # SERVER / DEADMAN
+        self.assertEqual(_topic_for_category("Config Reloaded", "orchestrator"), "ntfy-server-test")
+
         # ERROR
         self.assertEqual(_topic_for_category("ORDER FAILED", "kraken"), "ntfy-error-test")
         self.assertEqual(_topic_for_category("CRITICAL EXCEPTION", "watchdog"), "ntfy-error-test")
+        self.assertEqual(_topic_for_category("MANUAL INTERVENTION REQUIRED", "order_retry"), "ntfy-error-test")
+        self.assertEqual(_topic_for_category("ORDER FAILED: BUY BTC [manual]", "binance"), "ntfy-error-test")
 
         # PRICE
         self.assertEqual(_topic_for_category("BTC ▲ +5.20%", "price_alert"), "ntfy-price-test")
         self.assertEqual(_topic_for_category("Threshold reached", "pricechecker"), "ntfy-price-test")
+
+    def test_manual_order_dispatch_formatting_and_topic(self):
+        """Verify manual trade orders route to TRADES with [Binance] prefix, not ERROR topic."""
+        line = (
+            '{"__orchestrator_intent__": "ntfy_webhook", "alerts": [{'
+            '"type": "bot_event", "name": "📝 SELL TAOUSDC @ 284.70 [manual]", '
+            '"body": "Order 12345 (manual) placed on venue.", "source": "monitororder", "symbol": "TAOUSDC"}]}'
+        )
+        self.server.process_line(line, "monitororder")
+        self.assertEqual(len(self.dispatched), 1)
+        self.assertEqual(self.dispatched[0]["title"], "[Binance] 📝 SELL TAOUSDC @ 284.70 [manual]")
+        self.assertEqual(self.dispatched[0]["topic"], "ntfy-trades-test")
+
+    def test_server_topic_fallback_to_deadman(self):
+        """Verify resolve_topic('SERVER') falls back to NTFY_TOPIC_DEADMAN if NTFY_TOPIC_SERVER is absent."""
+        from notify_engine.server import resolve_topic
+        with mock.patch.dict(os.environ, {"NTFY_TOPIC_SERVER": "", "NTFY_TOPIC_DEADMAN": "fallback-deadman"}):
+            self.assertEqual(resolve_topic("SERVER"), "fallback-deadman")
 
     def test_provider_label_resolution(self):
         """Verify provider resolution strips coins and formats providers cleanly."""

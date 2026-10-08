@@ -14,6 +14,8 @@ from notify_engine.mailer import is_configured as email_is_configured, is_email_
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] Orchestrator: %(message)s")
 
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 _GUARD_MARKERS = (
     "🛑", "🛡", "STOP-LOSS", "STOP_LOSS", "TRAILING", "LIQUID", "CATASTROPH", "CRASH",
     "LICHID", "CATASTROF", "IMBALANCE", "DEZECHILIBR", "QUARANTINE", "SL ", " SL",
@@ -22,6 +24,38 @@ _OPS_MARKERS = (
     "FAILED", "ERROR", "MANUAL", "GONE",
     "ESUAT", "ERORI", "DISPARUT",
 )
+_TRADE_MARKERS = (
+    "BUY", "SELL", "FILLED", "TREND_ENTRY", "ADOPT", "EXECUTION", "📝", "🎉",
+)
+_EXPLICIT_ERROR_MARKERS = (
+    "FAILED", "ERROR", "EXCEPTION", "CRASH", "ESUAT", "ERORI", "DISPARUT", "GONE",
+)
+_SERVER_MARKERS = (
+    "CONFIG RELOAD", "SERVER STATUS", "SERVER DOWN", "DEADMAN",
+)
+
+def resolve_topic(category: str) -> str:
+    cat = (category or "").upper()
+    if cat in ("SERVER", "SERVER_STATE", "SERVER_STATUS", "DEADMAN"):
+        topic = (
+            os.environ.get("NTFY_TOPIC_SERVER")
+            or os.environ.get("NTFY_TOPIC_SERVER_STATE")
+            or os.environ.get("NTFY_TOPIC_SERVER_STATUS")
+            or os.environ.get("NTFY_TOPIC_DEADMAN")
+            or "ntfy-server-cazut-1978"
+        )
+        return topic
+    topic = os.environ.get(f"NTFY_TOPIC_{cat}")
+    if not topic:
+        from botcore import load_dotenv
+        for fname in ("config.env", ".env"):
+            p = os.path.join(ROOT_DIR, fname)
+            if os.path.isfile(p):
+                load_dotenv(p)
+        topic = os.environ.get(f"NTFY_TOPIC_{cat}")
+    if not topic and cat == "MACRO":
+        topic = os.environ.get("NTFY_TOPIC_MACRO", "ntfy-macro-8a35d7")
+    return topic or os.environ.get("PHONE_ALERT_URL", "test-mptrade")
 
 def _category_for_title_and_source(title: str, source: str) -> str:
     t = (title or "").upper()
@@ -30,8 +64,25 @@ def _category_for_title_and_source(title: str, source: str) -> str:
         return "MACRO"
     if any(m in t for m in _GUARD_MARKERS) or any(m in s for m in ("guard", "trail", "assetguardian", "stop")):
         return "GUARD"
-    if any(m in t for m in _OPS_MARKERS) or "watchdog" in s:
+    if any(m in t for m in _SERVER_MARKERS) or "deadman" in s:
+        return "SERVER"
+
+    # Real trades (order launched, order executed, fills) route to TRADES unless explicitly failed/errored
+    has_trade_marker = any(m in t for m in _TRADE_MARKERS) or s in ("tradeall", "rtrade", "monitororder")
+    has_explicit_error = any(m in t for m in _EXPLICIT_ERROR_MARKERS) or "watchdog" in s
+    if has_trade_marker and not has_explicit_error:
+        return "TRADES"
+
+    # Strip owner tags like [manual] or (manual) so operational error check is not tricked by order attribution
+    t_no_owner = re.sub(
+        r"\[(MANUAL|TRADEALL|MONITORORDER|RTRADE|MONITORTRADES|ASSETGUARDIAN)\]|\((MANUAL|TRADEALL|MONITORORDER|RTRADE|MONITORTRADES|ASSETGUARDIAN)\)",
+        "",
+        t,
+        flags=re.IGNORECASE,
+    )
+    if any(m in t_no_owner for m in _OPS_MARKERS) or "watchdog" in s:
         return "ERROR"
+
     if (
         "alert" in s or "price" in s or "prag" in t.lower() or "threshold" in t.lower()
         or "coin" in t.lower() or any(src in s for src in ("coinmarketcap", "coingecko", "dexscreener", "pricechecker", "notifier"))
@@ -42,16 +93,7 @@ def _category_for_title_and_source(title: str, source: str) -> str:
 
 def _topic_for_category(title: str, source: str) -> str:
     cat = _category_for_title_and_source(title, source)
-    topic = os.environ.get(f"NTFY_TOPIC_{cat}")
-    if not topic:
-        from botcore import load_dotenv
-        env_path = os.path.join(ROOT_DIR, ".env")
-        if os.path.isfile(env_path):
-            load_dotenv(env_path)
-            topic = os.environ.get(f"NTFY_TOPIC_{cat}")
-    if not topic and cat == "MACRO":
-        topic = os.environ.get("NTFY_TOPIC_MACRO", "ntfy-macro-8a35d7")
-    return topic or os.environ.get("PHONE_ALERT_URL", "test-mptrade")
+    return resolve_topic(cat)
 
 def _resolve_provider_label(bot_name: str = "", source: str = "") -> str:
     s = (source or "").lower()
@@ -67,8 +109,6 @@ def _resolve_provider_label(bot_name: str = "", source: str = "") -> str:
     if "-" in bot_name:
         return bot_name.split("-")[0]
     return bot_name or (source.capitalize() if source else "")
-
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 class NotificationServer:
     def __init__(self):
@@ -111,14 +151,8 @@ class NotificationServer:
             logging.error(f"Failed to load rules.json: {e}")
             return []
 
-
     def _resolve_topic(self, category: str) -> str:
-        cat = category.upper()
-        # Fallbacks to old naming if env vars are present
-        topic = os.environ.get(f"NTFY_TOPIC_{cat}")
-        if not topic and cat == "MACRO":
-            topic = os.environ.get("NTFY_TOPIC_MACRO", "ntfy-macro-8a35d7")
-        return topic or "test-mptrade"
+        return resolve_topic(category)
         
     def _enqueue_payload(self, intent_type: str, data: dict):
         try:
@@ -129,7 +163,7 @@ class NotificationServer:
         except Exception as e:
             logging.error(f"Failed to enqueue notification: {e}")
 
-    def _send_ntfy(self, title: str, message: str, priority: str, topic: str, is_retry: bool = False) -> bool:
+    def _send_ntfy(self, title: str, message: str, priority: str, topic: str, is_retry: bool = False, skip_email: bool = False) -> bool:
         if not topic:
             return True
         if os.environ.get("DISABLE_EXTERNAL_NOTIFICATIONS", "").strip().lower() in {"1", "true", "yes", "on"}:
@@ -143,7 +177,7 @@ class NotificationServer:
 
         # ERROR / DEADMAN topics are mirrored to email (policy: notify_engine.mailer).
         # Sent before the push so an ntfy outage or quota never swallows the email.
-        if not is_retry and is_email_mirrored(topic):
+        if not is_retry and not skip_email and is_email_mirrored(topic):
             self._send_email(title, message)
         
         url = f"https://ntfy.sh/{topic}"

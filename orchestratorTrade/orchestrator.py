@@ -296,7 +296,8 @@ class BotManager:
                         "Config Reloaded",
                         f"Detected change in {os.path.basename(path)}. All bots reloaded automatically.",
                         "high",
-                        self.server._resolve_topic("TRADES")
+                        self.server._resolve_topic("SERVER"),
+                        skip_email=True,
                     )
 
     async def supervise(self):

@@ -60,6 +60,11 @@ class EmailMirrorTest(unittest.TestCase):
             self.server._send_ntfy("SERVER DOWN", "x", "urgent", "t-deadman")
         self.assertEqual(len(self.sent), 1)
 
+    def test_deadman_skip_email_suppresses_mirroring(self):
+        with mock.patch("requests.post", return_value=_Resp()):
+            self.server._send_ntfy("Config Reloaded", "Reloaded", "high", "t-deadman", skip_email=True)
+        self.assertEqual(self.sent, [])
+
     def test_email_survives_ntfy_outage(self):
         with mock.patch("requests.post", side_effect=OSError("network down")):
             self.assertFalse(self.server._send_ntfy("ERROR x", "y", "high", "t-error"))

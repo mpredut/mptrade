@@ -680,7 +680,10 @@ def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=N
     order_type = order_type.upper()
     if order_type == "BUY":
         try:
-            open_orders = api.get_open_orders("SELL", symbol, strict=True, allowed_owners=allowed_owners)
+            if allowed_owners is not None:
+                open_orders = api.get_open_orders("SELL", symbol, strict=True, allowed_owners=allowed_owners)
+            else:
+                open_orders = api.get_open_orders("SELL", symbol, strict=True)
         except Exception as exc:
             raise SubmissionRefused(
                 "opposing_order_discovery_unavailable") from exc
@@ -695,7 +698,10 @@ def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=N
                     raise SubmissionRefused("opposing_cancel_unconfirmed")
     elif order_type == "SELL":
         try:
-            open_orders = api.get_open_orders("BUY", symbol, strict=True, allowed_owners=allowed_owners)
+            if allowed_owners is not None:
+                open_orders = api.get_open_orders("BUY", symbol, strict=True, allowed_owners=allowed_owners)
+            else:
+                open_orders = api.get_open_orders("BUY", symbol, strict=True)
         except Exception as exc:
             raise SubmissionRefused(
                 "opposing_order_discovery_unavailable") from exc
