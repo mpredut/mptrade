@@ -43,22 +43,38 @@ def fetch_candles(sym, rng, interval):
 
 def simulate(ohlc, P):
     """CLI compatibility wrapper over the same ``Strategy.step`` used live."""
+    budget = float(P["budget"])
+    entry_pct = (float(P["entry"]) / budget * 100.0) if budget > 0 else 10.0
+    dca_pct = (float(P["dca"]) / budget * 100.0) if budget > 0 else 10.0
     params = StratParams.from_env({
+        "STRATEGY_MODE": "avg_tp",
         "STRAT_CURRENCY": "USD",
         "YAHOO_SYMBOL": str(P.get("sym") or "REPLAY"),
-        "STRAT_ENTRY": str(P["entry"]),
-        "STRAT_DCA": str(P["dca"]),
+        "STRAT_ENTRY_PCT": str(entry_pct),
+        "STRAT_DCA_PCT": str(dca_pct),
         "STRAT_ENTRY_DISCOUNT_PCT": str(P["disc"]),
         "STRAT_DCA_DROP_PCT": str(P["drop"]),
         "STRAT_TAKEPROFIT_PCT": str(P["tp"]),
         "STRAT_MAX_DCA_BUYS": str(P["maxdca"]),
-        "STRAT_MAX_BUDGET": str(P["budget"]),
+        "STRAT_MAX_BUDGET": str(budget),
         "STRAT_FX_FEE_PCT": str(P["fee"]),
         "STRAT_STOP_LOSS_PCT": str(P["sl"]),
+        "STRAT_CHECK_MINUTES": "1",
+        "STRAT_ORDER_TTL_MIN": "10",
+        "STRAT_REENTRY_DROP_PCT": "0",
+        "STRAT_REENTRY_TOLERANCE_PCT": "0.05",
+        "STRAT_LOSS_ALERT_STEP": "1",
+        "STRAT_LADDER_MIN_FREE": "6",
+        "STRAT_SL_REBUY_ENABLED": "false",
+        "STRAT_SL_REBUY_BOUNCE_PCT": "1.2",
+        "STRAT_DCA_TREND_GATE_PCT": "0",
+        "STRAT_TRAIL_PCT": "0",
+        "STRAT_TRAIL_MIN_PROFIT_PCT": "5",
     })
     return run_replay(
         ohlc, params, bar_minutes=P.get("bar_minutes"), fx_to_usd=1.0,
     )
+
 
 
 def interval_minutes(value: str) -> int | None:
