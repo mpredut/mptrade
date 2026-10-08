@@ -44,3 +44,12 @@ if [ -z "${PYTHON_BIN:-}" ]; then
 fi
 export PYTHON_BIN
 export TRADING_PYTHON="${TRADING_PYTHON:-$PYTHON_BIN}"
+
+# SSOT helper: safely read variable from .env (secrets) or config.env (versioned)
+env_get() {  # $1=KEY [$2=DEFAULT]
+  local key="$1" default="${2:-}"
+  local val
+  val=$(grep -hs -m1 "^${key}=" "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "' | tr -d "'")
+  echo "${val:-$default}"
+}
+

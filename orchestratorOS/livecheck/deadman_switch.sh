@@ -12,20 +12,15 @@
 # If the server dies (or just cron does), nobody pushes the queued ntfy message
 # further out and it delivers itself 35 minutes later — the alert arrives even if
 # the machine is completely off or without power.
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-TOPIC=$(grep -hs -m1 '^NTFY_TOPIC_SERVER=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
-[ -n "$TOPIC" ] || TOPIC=$(grep -hs -m1 '^NTFY_TOPIC_DEADMAN=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
-[ -n "$TOPIC" ] || TOPIC=$(grep -hs -m1 '^NTFY_TOPIC_ERROR=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
-[ -n "$TOPIC" ] || TOPIC=$(grep -hs -m1 '^NTFY_TOPIC=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
-if [ -z "$TOPIC" ]; then
-    echo "$(date '+%H:%M') deadman: no NTFY_TOPIC(_SERVER/_DEADMAN/_ERROR) found in $ROOT/.env or $ROOT/config.env"
-    exit 1
-fi
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$HERE/../lib/env_common.sh"
 
-TOKEN="${NTFY_TOKEN:-}"
-if [ -z "$TOKEN" ]; then
-    TOKEN=$(grep -hs -m1 '^NTFY_TOKEN=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
-fi
+TOPIC=$(env_get NTFY_TOPIC_SERVER)
+[ -n "$TOPIC" ] || TOPIC=$(env_get NTFY_TOPIC_DEADMAN)
+[ -n "$TOPIC" ] || TOPIC=$(env_get NTFY_TOPIC_ERROR)
+[ -n "$TOPIC" ] || TOPIC=$(env_get NTFY_TOPIC "ntfy-server-1978")
+
+TOKEN="${NTFY_TOKEN:-$(env_get NTFY_TOKEN)}"
 
 AUTH_HDR=()
 [ -n "$TOKEN" ] && AUTH_HDR=(-H "Authorization: Bearer $TOKEN")
@@ -63,7 +58,7 @@ curl --fail-with-body -sS -m 10 --retry 4 --retry-delay 5 --retry-all-errors --r
 # quota, so it keeps working when ntfy is 429-throttled.
 # Optional: create a check (period 15m, grace ~20m, e-mail/phone set THERE) and put its ping
 # URL in .env as HC_PING_URL=... (secret, gitignored). Absent -> this block is a no-op.
-HC_URL=$(grep -hs -m1 '^HC_PING_URL=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d '" ')
+HC_URL=$(env_get HC_PING_URL)
 if [ -n "$HC_URL" ]; then
     curl -fsS -m 10 --retry 3 --retry-delay 3 --retry-all-errors "$HC_URL" >/dev/null 2>&1 \
         && echo "$(date '+%H:%M') deadman: hc ping OK" \

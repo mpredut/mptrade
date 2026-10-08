@@ -7,8 +7,8 @@ source "$HERE/../lib/env_common.sh"
 SINCE="${1:-40m}"
 
 # Read from .env or config.env without exposing secrets in output.
-PHONE_URL=$(grep -E -hs -m1 '^\s*(export\s+)?PHONE_ALERT_URL=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d '" ')
-NT_TOPIC=$(grep -E -hs -m1 '^\s*(export\s+)?NTFY_TOPIC_ERROR=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d '" ')
+PHONE_URL=$(env_get PHONE_ALERT_URL)
+NT_TOPIC=$(env_get NTFY_TOPIC_ERROR "ntfy-error-1978")
 
 check_url() {
     local url="$1" label="$2"

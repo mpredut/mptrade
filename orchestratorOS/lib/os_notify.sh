@@ -9,13 +9,17 @@
 
 set -u
 
+if ! declare -f env_get >/dev/null 2>&1; then
+    _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    source "$_script_dir/env_common.sh"
+fi
+
 _os_notify_root() {
-    local script_dir; script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    (cd "$script_dir/../.." && pwd)
+    echo "$ROOT"
 }
 
 _os_notify_env() {  # $1=root $2=KEY -> value from .env/config.env
-    grep -hs -m1 "^$2=" "$1/.env" "$1/config.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "' | tr -d "'"
+    env_get "$2"
 }
 
 # Email copy via the Python mailer (single SMTP choke point + mirror policy).
