@@ -140,7 +140,9 @@ def check_external_order_guards(
         try:
             from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
             w_snap = get_whale_collector().fetch(symbol, allow_network=False)
-            w_guard = WhaleDivergenceGuard()
+            sev_oi = float(m.get("severe_cascade_oi_pct", -5.0))
+            min_tk = float(m.get("min_taker_ratio", 0.65))
+            w_guard = WhaleDivergenceGuard(severe_cascade_oi_pct=sev_oi, min_taker_ratio=min_tk)
             w_dec = w_guard.check(symbol, order_side, snapshot=w_snap)
             if not w_dec.allowed or w_dec.brake_action == BrakeAction.DEFER_WAIT:
                 prefix = "[WHALE_GUARD_SHADOW]" if whale_mode == "shadow" else "[WHALE_GUARD_ENFORCE]"

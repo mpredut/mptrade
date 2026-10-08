@@ -326,14 +326,18 @@ class TrailingStop:
     def reconcile_pending(self, pending, persist):
         return self.order_lifecycle.reconcile(pending, persist=persist)
 
-    def _submit_lifecycle_order(self, intent, persist, pair, side, price, qty):
+    def _submit_lifecycle_order(self, intent, persist, pair, side, price, qty, bypass_guards=None):
         """Submit through Instrument without losing its typed refusal state."""
         outcome_context = {}
+        if bypass_guards is None:
+            bypass_guards = {"all"} if side == "SELL" else {"math_reference"}
 
         def submit_once():
+            is_all_bypassed = "all" in bypass_guards or "*" in bypass_guards
             response = self.po.place(
                 pair, side, price, qty, force=True,
-                bypass_profit_guard=True, smart=False,
+                bypass_guards=bypass_guards,
+                bypass_profit_guard=is_all_bypassed, smart=False,
                 caller_owns_retry=True, wait_for_trend=False,
                 client_order_id=intent["client_order_id"],
                 _outcome_context=outcome_context)
@@ -350,13 +354,13 @@ class TrailingStop:
     def execute_sell(self, key, asset, pair, qty, price, peak, trail, persist):
         # July 30: use the single guarded proxy (self.po = market_api.api, .place()).
         # force=True sells at MARKET for reliable crash execution.
-        # bypass_profit_guard=True bypasses profit/history protection because this is a
+        # bypass_guards={"all"} bypasses profit/history/microstructure protection because this is a
         # STOP-LOSS below the last buy; otherwise the guard would block it. Daily limits
         # and cooldown remain active as before; the bypass skips only profit and weighting.
         intent = self._order_intent(
             "SELL", key, asset, pair, qty, price, anchor=peak, trail=trail)
         result = self._submit_lifecycle_order(
-            intent, persist, pair, "SELL", price, qty)
+            intent, persist, pair, "SELL", price, qty, bypass_guards={"all"})
         if result.outcome == "refused":
             self.log(
                 f"  🛑 [TRAIL] SELL REFUSED {pair} {qty} @ ~{price:.4f} "
@@ -369,12 +373,15 @@ class TrailingStop:
         return result
 
     def execute_rebuy(self, key, asset, pair, qty, price, rb, persist):
+        # Re-buy runs with force=True for reliable fill on bounce, but guards against
+        # falling knife cascades (liquidation cascades, taker dumps) by bypassing only
+        # the historical math reference while keeping microstructure/AI guards active.
         intent = self._order_intent(
             "REBUY", key, asset, pair, qty, price,
             anchor=float(rb.get("low") or price),
             sell_price=float(rb.get("sell_price") or 0.0))
         result = self._submit_lifecycle_order(
-            intent, persist, pair, "BUY", price, qty)
+            intent, persist, pair, "BUY", price, qty, bypass_guards={"math_reference"})
         if result.outcome == "refused":
             self.log(
                 f"  🟢 [TRAIL] RE-BUY REFUSED {pair} {qty} @ ~{price:.4f} "

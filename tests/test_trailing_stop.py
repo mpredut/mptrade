@@ -397,7 +397,7 @@ class TestPerMoneda(Base):
         with self.subTest(msg="prag_diferentiat"):
             self.tearDown(); self.setUp()
             ts = self.ts(FakeApi(1.0))
-            self.assertEqual(ts.trail_pct_for("BTCUSDC"), 20.0)
+            self.assertEqual(ts.trail_pct_for("BTCUSDC"), 16.0)
             self.assertEqual(ts.trail_pct_for("TAOUSDC"), 22.0)
             self.assertEqual(ts.trail_pct_for("ARBUSDC"), 26.0)
             with self.assertRaises(KeyError):

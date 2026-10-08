@@ -23,10 +23,16 @@ class WhaleDivergenceGuard:
         collector: Optional[WhalePositioningCollector] = None,
         block_short_covering_fakeout: bool = True,
         block_aggressive_shorting: bool = True,
+        block_liquidation_cascade: bool = True,
+        severe_cascade_oi_pct: float = -5.0,
+        min_taker_ratio: float = 0.65,
     ) -> None:
         self.collector = collector
         self.block_short_covering_fakeout = block_short_covering_fakeout
         self.block_aggressive_shorting = block_aggressive_shorting
+        self.block_liquidation_cascade = block_liquidation_cascade
+        self.severe_cascade_oi_pct = severe_cascade_oi_pct
+        self.min_taker_ratio = min_taker_ratio
 
     def check(
         self,
@@ -65,7 +71,32 @@ class WhaleDivergenceGuard:
                 divergence_regime=regime,
             )
 
-        # 3. Selling into massive whale accumulation / squeeze
+        # 3. Buying into active severe liquidation cascade (falling price, OI crashing <= severe_cascade_oi_pct, weak taker buy)
+        if (
+            side_norm == "BUY"
+            and self.block_liquidation_cascade
+            and regime == "long_liquidation"
+            and snapshot.open_interest_1h_change_pct <= self.severe_cascade_oi_pct
+            and snapshot.taker_buy_sell_ratio < 0.85
+        ):
+            return GuardDecision.defer(
+                guard_name="WhaleDivergenceGuard",
+                reason=f"liquidation_cascade_active (OI_1h={snapshot.open_interest_1h_change_pct:+.1f}%, taker_ratio={snapshot.taker_buy_sell_ratio:.2f})",
+                open_interest_change=snapshot.open_interest_1h_change_pct,
+                divergence_regime=regime,
+                taker_ratio=snapshot.taker_buy_sell_ratio,
+            )
+
+        # 4. Severe taker selling panic (< min_taker_ratio, heavy market dumping)
+        if side_norm == "BUY" and snapshot.taker_buy_sell_ratio < self.min_taker_ratio:
+            return GuardDecision.defer(
+                guard_name="WhaleDivergenceGuard",
+                reason=f"severe_taker_selling_dominated (taker_ratio={snapshot.taker_buy_sell_ratio:.2f} < {self.min_taker_ratio:.2f})",
+                taker_ratio=snapshot.taker_buy_sell_ratio,
+                divergence_regime=regime,
+            )
+
+        # 5. Selling into massive whale accumulation / squeeze
         if side_norm == "SELL" and regime == "accumulation" and snapshot.top_traders_long_pct >= 0.70:
             return GuardDecision.defer(
                 guard_name="WhaleDivergenceGuard",

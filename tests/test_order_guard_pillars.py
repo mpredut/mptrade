@@ -378,3 +378,130 @@ def test_geopolitical_shock_downscale_enforce():
         assert allowed is True
         assert "downscale_elevated_geopolitical_risk" in reason
         assert scale == 0.50
+
+
+# =====================================================================
+# Pillar Bypass & Re-Buy Guard Tests
+# =====================================================================
+
+def test_profit_guard_rebuy_bypasses_math_reference_but_enforces_microstructure():
+    """Verify that RE-BUY (bypass_guards={'math_reference'}) skips mathematical comparison
+    against historical 14-day sales, but actively blocks on microstructure ask walls / cascades."""
+    import order_guard
+    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
+
+    class _MockProvider:
+        name = "binance"
+        def guards_internally(self):
+            return False
+        def get_orders(self, symbol, side, since_s):
+            # Previous sell was at 200, current price is 250 (math reference would block a BUY at 250)
+            return [{"price": 200.0, "qty": 1.0, "timestamp": time.time() * 1000 - 3600 * 1000}]
+
+    p = _MockProvider()
+
+    # With normal profit_guard (no bypass): blocked by math reference
+    assert not order_guard.profit_guard(
+        p, "TAOUSDC", "BUY", 250.0, 1.15, window_ref=200.0, qty=1.0,
+    )
+
+    # With bypass_guards={"math_reference"}: skips math reference, but checks microstructure
+    # Simulate a severe ask wall / orderbook imbalance (seller domination)
+    ob_collector = OrderbookDepthCollector()
+    ob_collector._cache["TAOUSDC"] = OrderbookSnapshot(
+        symbol="TAOUSDC",
+        mid_price=250.0,
+        bid_depth_usd=200_000.0,
+        ask_depth_usd=2_500_000.0,
+        imbalance_ratio=0.074,
+        largest_bid_wall_usd=50_000.0,
+        largest_bid_wall_price=249.0,
+        largest_ask_wall_usd=2_000_000.0,
+        largest_ask_wall_price=251.0,
+        ts=time.time(),
+    )
+
+    with patch("external_order_guard.get_orderbook_collector", return_value=ob_collector), \
+         patch("order_guard.get_orderbook_collector", return_value=ob_collector), \
+         patch.dict(order_guard._load_margins(), {
+             "external_guard_mode": "enforce",
+             "microstructure_guard_mode": "enforce",
+             "orderbook_wall_guard_mode": "enforce",
+             "max_sell_imbalance": 0.75,
+         }):
+        # Blocked by microstructure despite math reference being bypassed!
+        allowed = order_guard.profit_guard(
+            p, "TAOUSDC", "BUY", 250.0, 1.15, window_ref=200.0, qty=1.0,
+            bypass_guards={"math_reference"},
+        )
+        assert allowed is False
+
+        # If Pillar 2 & Pillar 4 are ALSO bypassed, it goes through
+        allowed_p2_bypassed = order_guard.profit_guard(
+            p, "TAOUSDC", "BUY", 250.0, 1.15, window_ref=200.0, qty=1.0,
+            bypass_guards={"math_reference", "p2", "p4"},
+        )
+        assert allowed_p2_bypassed is True
+
+
+def test_profit_guard_all_bypasses_everything():
+    """Verify emergency stop-loss / 'all' bypasses both math reference and all pillars."""
+    import order_guard
+
+    class _MockProvider:
+        name = "binance"
+        def guards_internally(self):
+            return False
+
+    allowed = order_guard.profit_guard(
+        _MockProvider(), "BTCUSDC", "SELL", 50000.0, 1.15, window_ref=60000.0, qty=1.0,
+        bypass_guards={"all"},
+    )
+    assert allowed is True
+
+
+def test_whale_divergence_liquidation_cascade_blocks():
+    """Verify that severe liquidation cascade (OI 1h change <= -5% with taker sell dominance)
+    actively vetoes BUY entries to prevent catching falling knives."""
+    from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+    from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+
+    guard = WhaleDivergenceGuard(
+        block_liquidation_cascade=True,
+        severe_cascade_oi_pct=-5.0,
+        min_taker_ratio=0.65,
+    )
+
+    # Normal market pullback: OI drops -2%, taker ratio 0.95 -> Allowed
+    normal_snap = WhalePositioningSnapshot(
+        symbol="TAOUSDC",
+        top_traders_long_ratio=1.1,
+        top_traders_long_pct=0.55,
+        open_interest_usd=100_000_000.0,
+        open_interest_1h_change_pct=-2.0,
+        taker_buy_sell_ratio=0.95,
+        taker_buy_vol_usd=48_000_000.0,
+        taker_sell_vol_usd=50_000_000.0,
+        divergence_regime="neutral",
+        ts=time.time(),
+    )
+    dec_normal = guard.check("TAOUSDC", "BUY", snapshot=normal_snap)
+    assert dec_normal.allowed is True
+
+    # Severe liquidation cascade: OI dumps -8.5% in 1 hour with taker buy/sell ratio at 0.72 -> BLOCKED!
+    cascade_snap = WhalePositioningSnapshot(
+        symbol="TAOUSDC",
+        top_traders_long_ratio=0.8,
+        top_traders_long_pct=0.45,
+        open_interest_usd=100_000_000.0,
+        open_interest_1h_change_pct=-8.5,
+        taker_buy_sell_ratio=0.72,
+        taker_buy_vol_usd=36_000_000.0,
+        taker_sell_vol_usd=50_000_000.0,
+        divergence_regime="long_liquidation",
+        ts=time.time(),
+    )
+    dec_cascade = guard.check("TAOUSDC", "BUY", snapshot=cascade_snap)
+    assert dec_cascade.allowed is False
+    assert "liquidation_cascade_active" in dec_cascade.reason
+

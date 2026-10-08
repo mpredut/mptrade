@@ -33,13 +33,15 @@ def check_intelligence_order_guards(
     regime_context: Any = None,
     margins: Optional[Dict[str, Any]] = None,
     now: Optional[float] = None,
+    bypass_guards: Optional[set[str]] = None,
 ) -> Tuple[bool, str, float]:
     """Evaluate external microstructure, geopolitical shock, and high-stake LLM guards (Pillars 2, 3, 4).
 
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    if is_stop_loss:
+    bypassed = bypass_guards or set()
+    if is_stop_loss or "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
     side = (order_type or "").upper()
@@ -69,8 +71,9 @@ def check_intelligence_order_guards(
             return True, "small_sell_exempt", 1.0
 
     # 1. High-Stake LLM Pre-Trade Guard (Pillar 3)
+    skip_llm = "p3" in bypassed or "pillar3" in bypassed or "llm" in bypassed or "ai" in bypassed
     llm_mode = str(m.get("llm_guard_mode", m.get("high_stake_guard_mode", m.get("gemini_guard_mode", "shadow")))).strip().lower()
-    if llm_mode not in ("off", "0", "disabled"):
+    if not skip_llm and llm_mode not in ("off", "0", "disabled"):
         min_notional = float(m.get("llm_min_notional_eur", m.get("high_stake_min_notional_eur", m.get("gemini_min_notional_eur", 1000.0))))
         if computed_notional >= min_notional:
             valid_context = regime_context is not None and hasattr(regime_context, "__dict__")
@@ -157,17 +160,19 @@ def check_intelligence_order_guards(
                     effective_scale = min(effective_scale, g_dec.suggested_scale)
                     active_reason = g_dec.reason
 
-    # 2. Geopolitical & Energy Shock Guard (Pillar 3 Sub-Guard)
-    geo_ok, geo_reason, geo_scale = check_geopolitical_order_guards(
-        symbol=symbol,
-        side=side,
-        margins=m,
-        now=now,
-    )
-    if not geo_ok:
-        return False, geo_reason, 0.0
-    if geo_scale < 1.0:
-        effective_scale = min(effective_scale, geo_scale)
-        active_reason = geo_reason
+    # 2. Geopolitical & Energy Shock Guard (Pillar 4)
+    skip_geo = "p4" in bypassed or "pillar4" in bypassed or "geopolitical" in bypassed
+    if not skip_geo:
+        geo_ok, geo_reason, geo_scale = check_geopolitical_order_guards(
+            symbol=symbol,
+            side=side,
+            margins=m,
+            now=now,
+        )
+        if not geo_ok:
+            return False, geo_reason, 0.0
+        if geo_scale < 1.0:
+            effective_scale = min(effective_scale, geo_scale)
+            active_reason = geo_reason
 
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale

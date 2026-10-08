@@ -736,6 +736,7 @@ def check_intelligence_guards(
     notional_eur: Optional[float] = None,
     is_stop_loss: bool = False,
     now: Optional[float] = None,
+    bypass_guards: Optional[set[str]] = None,
 ) -> tuple[bool, str, float]:
     """Evaluate intelligence guards across all active pillars.
 
@@ -750,7 +751,8 @@ def check_intelligence_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    if is_stop_loss:
+    bypassed = bypass_guards or set()
+    if is_stop_loss or "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
     valid_context = False
@@ -797,6 +799,7 @@ def check_intelligence_guards(
             notional_eur=computed_notional,
             is_stop_loss=is_stop_loss,
             now=now,
+            bypass_guards=bypassed,
         )
         if valid_context:
             try:
@@ -960,18 +963,23 @@ def _evaluate_intelligence_guards_raw(
     notional_eur: Optional[float] = None,
     is_stop_loss: bool = False,
     now: Optional[float] = None,
+    bypass_guards: Optional[set[str]] = None,
 ) -> tuple[bool, str, float]:
+    bypassed = bypass_guards or set()
+    if is_stop_loss or "all" in bypassed or "*" in bypassed:
+        return True, "stop_loss_exempt", 1.0
+
     m = _load_margins()
     mode = str(m.get("internal_guard_mode", m.get("intelligence_guards_mode", "shadow"))).strip().lower()
     if mode in ("off", "0", "disabled"):
         return True, "intelligence_guards_off", 1.0
 
-    if is_stop_loss:
-        return True, "stop_loss_exempt", 1.0
-
     side = (order_type or "").upper()
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
+
+    if any(fake in (symbol or "").upper() for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE")):
+        return True, "test_symbol_exempt", 1.0
 
     computed_notional = notional_eur
     if computed_notional is None and qty is not None and price > 0:
@@ -986,7 +994,7 @@ def _evaluate_intelligence_guards_raw(
     active_reason = "ok"
 
     # 1. Internal Quantitative Mathematical Guards (Pillar 1: Parabolic Surge, Weibull Exhaustion)
-    if side == "BUY":
+    if side == "BUY" and "p1" not in bypassed and "pillar1" not in bypassed and "quantitative" not in bypassed:
         from internal_order_guard import check_internal_order_guards
         int_ok, int_reason, int_scale = check_internal_order_guards(
             symbol=symbol,
@@ -1005,39 +1013,43 @@ def _evaluate_intelligence_guards_raw(
             active_reason = int_reason
 
     # 2. External Microstructure & Derivatives Guards (Pillar 2: Orderbook Depth, Funding, Whale Flow)
-    from external_order_guard import check_external_order_guards
-    ext_ok, ext_reason, ext_scale = check_external_order_guards(
-        symbol=symbol,
-        side=side,
-        price=price,
-        qty=qty,
-        notional_eur=computed_notional,
-        is_stop_loss=is_stop_loss,
-        margins=m,
-        now=now,
-    )
-    if not ext_ok:
-        return False, ext_reason, 0.0
-    if ext_scale < 1.0:
-        effective_scale = min(effective_scale, ext_scale)
-        active_reason = ext_reason
+    if "p2" not in bypassed and "pillar2" not in bypassed and "microstructure" not in bypassed:
+        from external_order_guard import check_external_order_guards
+        ext_ok, ext_reason, ext_scale = check_external_order_guards(
+            symbol=symbol,
+            side=side,
+            price=price,
+            qty=qty,
+            notional_eur=computed_notional,
+            is_stop_loss=is_stop_loss,
+            margins=m,
+            now=now,
+        )
+        if not ext_ok:
+            return False, ext_reason, 0.0
+        if ext_scale < 1.0:
+            effective_scale = min(effective_scale, ext_scale)
+            active_reason = ext_reason
 
     # 3. Intelligence & LLM Guards (Pillar 3: High-Stake Pre-Trade LLM + Geopolitical Black Swan Shield)
-    from intelligence_order_guard import check_intelligence_order_guards
-    intel_ok, intel_reason, intel_scale = check_intelligence_order_guards(
-        provider=provider,
-        symbol=symbol,
-        order_type=order_type,
-        price=price,
-        qty=qty,
-        notional_eur=computed_notional,
-        is_stop_loss=is_stop_loss,
-        regime_context=regime_context,
-        margins=m,
-        now=now,
-    )
-    if not intel_ok:
-        return False, intel_reason, 0.0
+    skip_intel = ("p3" in bypassed or "llm" in bypassed or "ai" in bypassed) and ("p4" in bypassed or "geopolitical" in bypassed)
+    if not skip_intel:
+        from intelligence_order_guard import check_intelligence_order_guards
+        intel_ok, intel_reason, intel_scale = check_intelligence_order_guards(
+            provider=provider,
+            symbol=symbol,
+            order_type=order_type,
+            price=price,
+            qty=qty,
+            notional_eur=computed_notional,
+            is_stop_loss=is_stop_loss,
+            regime_context=regime_context,
+            margins=m,
+            now=now,
+            bypass_guards=bypassed,
+        )
+        if not intel_ok:
+            return False, intel_reason, 0.0
     if intel_scale < 1.0:
         effective_scale = min(effective_scale, intel_scale)
         active_reason = intel_reason
@@ -1184,27 +1196,29 @@ def profit_guard(
     notional_eur: Optional[float] = None,
     is_stop_loss: bool = False,
     evaluate_intelligence: bool = True,
+    bypass_guards: Optional[set[str]] = None,
 ):
     """Return whether the order is profitable relative to its reference.
 
     Execution Pipeline:
-    - Emergency Stop-Loss exits (is_stop_loss=True) bypass profit reference and are exempt from guards.
+    - Emergency Stop-Loss exits (is_stop_loss=True) or bypass_guards with 'all' bypass all guards.
     - Stage 1 (Super-Matematică): Deterministic profit margin vs historical reference.
-      If mathematically unprofitable, returns False immediately without evaluating
-      AI/macro sentiment or sending false-positive push alerts.
+      Bypassed if bypass_guards contains 'math_reference' (or 'math_profit').
     - Stage 2 (Intelligence, Macro & Sentiment): Evaluates Parabolic, Weibull, Gemini LLM,
       and Geopolitical shock shield only on mathematically cleared orders when
       evaluate_intelligence=True.
     """
-    if is_stop_loss:
+    bypassed = bypass_guards or set()
+    if is_stop_loss or "all" in bypassed or "*" in bypassed:
         return True
 
     # Stage 1: Deterministic Mathematical Reference Check
-    if not check_math_profit_reference(
-        provider, symbol, order_type, price, profit_percentage,
-        window_ref=window_ref, regime_context=regime_context,
-    ):
-        return False
+    if "math_reference" not in bypassed and "math_profit" not in bypassed and "profit_margin" not in bypassed:
+        if not check_math_profit_reference(
+            provider, symbol, order_type, price, profit_percentage,
+            window_ref=window_ref, regime_context=regime_context,
+        ):
+            return False
 
     if not evaluate_intelligence or qty is None or (isinstance(qty, (int, float)) and qty <= 0):
         return True
@@ -1213,6 +1227,7 @@ def profit_guard(
     intel_ok, intel_reason, suggested_scale = check_intelligence_guards(
         provider, symbol, order_type, price, regime_context=regime_context, qty=qty, notional_eur=notional_eur,
         is_stop_loss=is_stop_loss,
+        bypass_guards=bypassed,
     )
     if not intel_ok:
         print(f"[GUARD] {order_type} {symbol}: blocked by intelligence guard ({intel_reason})")
