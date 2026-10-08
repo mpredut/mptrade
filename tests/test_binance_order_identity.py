@@ -18,6 +18,7 @@ class TestBinanceOrderIdContext(unittest.TestCase):
             ("SRV_worker_77777777", "server"),
             ("CW_watchdog_66666666", "watchdogfor_cacheandconfig"),
             ("MA_alerts_55555555", "market_alerts"),
+            ("OR_retry_12345678", "order_retry"),
             ("and_123456789", "manual"),
             ("ios_987654321", "manual"),
             ("web_abcdef123", "manual"),
@@ -34,6 +35,7 @@ class TestBinanceOrderIdContext(unittest.TestCase):
         # Repriceable origins: tradeall, monitororder, manual (app/web), unspecified (for test mocks)
         self.assertTrue(rc.is_order_repriceable_by_monitororder("TA_MainThread_123"))
         self.assertTrue(rc.is_order_repriceable_by_monitororder("MO_MainThread_456"))
+        self.assertTrue(rc.is_order_repriceable_by_monitororder("OR_outbox_retry_123"))
         self.assertTrue(rc.is_order_repriceable_by_monitororder("and_mobile_app_123"))
         self.assertTrue(rc.is_order_repriceable_by_monitororder("web_browser_123"))
         self.assertTrue(rc.is_order_repriceable_by_monitororder(""))

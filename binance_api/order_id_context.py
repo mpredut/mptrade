@@ -42,6 +42,8 @@ BOT_PREFIX_MAP = {
     "SD": "spot_dca",
     "AG_": "assetguardian",
     "AG": "assetguardian",
+    "OR_": "order_retry",
+    "OR": "order_retry",
     "SRV_": "server",
     "SRV": "server",
     "CW_": "watchdogfor_cacheandconfig",
@@ -55,7 +57,7 @@ BOT_PREFIX_MAP = {
 
 MANUAL_PREFIXES = ("and_", "ios_", "web_", "x-", "electron_")
 
-REPRICEABLE_BOTS = frozenset({"tradeall", "monitororder", "manual"})
+REPRICEABLE_BOTS = frozenset({"tradeall", "monitororder", "manual", "order_retry"})
 
 _CLIENT_ORDER_COUNTER = itertools.count()
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_-]+")
