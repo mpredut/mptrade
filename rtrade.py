@@ -1699,6 +1699,7 @@ class TradingBot:
                     buy_result, sell_result = self._run_pair(executor, current_price)
 
                     if not buy_result or not sell_result:
+                        time.sleep(RTRADE_PAIR_POLL_SEC)
                         continue
 
                     filled_buy_price = buy_result + RTRADE_ZERO_EPSILON  # avoid zero
