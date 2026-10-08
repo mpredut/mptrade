@@ -154,6 +154,7 @@ RTRADE_FAST_FILL_RATIO = required_float_env("RTRADE_FAST_FILL_RATIO")
 RTRADE_MIN_EDGE_PCT = required_float_env("RTRADE_MIN_EDGE_PCT")
 RTRADE_SHOCK_HARD_STOP_PCT = required_float_env("RTRADE_SHOCK_HARD_STOP_PCT")
 RTRADE_HARD_STOP_PCT = required_float_env("RTRADE_HARD_STOP_PCT")
+RTRADE_BYPASS_PROFIT_GUARD = required_bool_env("RTRADE_BYPASS_PROFIT_GUARD") if "RTRADE_BYPASS_PROFIT_GUARD" in os.environ else False
 
 
 def _validate_intent_recovery_config(
@@ -1113,6 +1114,7 @@ class TradingBot:
                         self.symbol, "BUY", target_buy_price, target_buy_qty,
                         safeback_seconds=RTRADE_DESPERATE_SAFEBACK_SEC,
                         force=False, cancelorders=True, hours=h, smart=False,
+                        bypass_profit_guard=True,
                         kind="rtrade_legacy_quote", caller_owns_retry=True,
                         cache_permit=submit_cache_permit,
                         _outcome_context=outcome_context)
@@ -1121,6 +1123,7 @@ class TradingBot:
                         self.symbol, "BUY", target_buy_price, target_buy_qty,
                         cancelorders=True, hours=RTRADE_BUY_NORMAL_HOURS,
                         smart=False, kind="rtrade_legacy_quote",
+                        bypass_profit_guard=RTRADE_BYPASS_PROFIT_GUARD,
                         caller_owns_retry=True,
                         cache_permit=submit_cache_permit,
                         _outcome_context=outcome_context)
@@ -1156,6 +1159,7 @@ class TradingBot:
                 print(f"[{self.symbol}] Starting urgent SELL follow-up (1)")
                 mkt.place(self.symbol, "SELL", api.get_current_price(self.symbol) * (1 + RTRADE_FOLLOWUP_OFFSET_PCT), self.qty,
                     force=_followup_force(self.symbol, "SELL"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
+                    bypass_profit_guard=True,
                     caller_owns_retry=True)
                 return self.mark_buy_filled(self.filled_buy_price)
 
@@ -1167,6 +1171,7 @@ class TradingBot:
                 print(f"[{self.symbol}] Starting urgent SELL follow-up (2)")
                 mkt.place(self.symbol, "SELL", api.get_current_price(self.symbol) * (1 + RTRADE_FOLLOWUP_OFFSET_PCT), self.qty,
                     force=_followup_force(self.symbol, "SELL"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
+                    bypass_profit_guard=True,
                     caller_owns_retry=True)
                 return self.mark_buy_filled(filled_buy_price)
 
@@ -1188,6 +1193,7 @@ class TradingBot:
                     print(f"[{self.symbol}] Starting urgent SELL follow-up (3)")
                     mkt.place(self.symbol, "SELL", api.get_current_price(self.symbol) * (1 + RTRADE_FOLLOWUP_OFFSET_PCT), self.qty,
                     force=_followup_force(self.symbol, "SELL"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
+                    bypass_profit_guard=True,
                     caller_owns_retry=True)
                     return self.mark_buy_filled(self.filled_buy_price)
                 else:
@@ -1209,6 +1215,7 @@ class TradingBot:
                         * (1 + RTRADE_FOLLOWUP_OFFSET_PCT),
                         self.qty, force=_followup_force(self.symbol, "SELL"),
                         cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
+                        bypass_profit_guard=True,
                         caller_owns_retry=True)
                     return self.mark_buy_filled(self.filled_buy_price)
                 pending_cache_permit = replacement_cache_permit
@@ -1259,6 +1266,7 @@ class TradingBot:
                         self.symbol, "SELL", target_sell_price, target_sell_qty,
                         safeback_seconds=RTRADE_DESPERATE_SAFEBACK_SEC,
                         force=False, cancelorders=True, hours=h, smart=False,
+                        bypass_profit_guard=True,
                         kind="rtrade_legacy_quote", caller_owns_retry=True,
                         cache_permit=submit_cache_permit,
                         _outcome_context=outcome_context)
@@ -1267,6 +1275,7 @@ class TradingBot:
                         self.symbol, "SELL", target_sell_price, target_sell_qty,
                         cancelorders=True, hours=RTRADE_SELL_NORMAL_HOURS,
                         smart=False, kind="rtrade_legacy_quote",
+                        bypass_profit_guard=RTRADE_BYPASS_PROFIT_GUARD,
                         caller_owns_retry=True,
                         cache_permit=submit_cache_permit,
                         _outcome_context=outcome_context)
@@ -1302,6 +1311,7 @@ class TradingBot:
                 print(f"[{self.symbol}] Starting urgent BUY follow-up (1)")
                 mkt.place(self.symbol, "BUY", api.get_current_price(self.symbol) * (1 - RTRADE_FOLLOWUP_OFFSET_PCT), self.qty,
                     force=_followup_force(self.symbol, "BUY"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
+                    bypass_profit_guard=True,
                     caller_owns_retry=True)
                 return self.mark_sell_filled(self.filled_sell_price)
 
@@ -1313,6 +1323,7 @@ class TradingBot:
                 print(f"[{self.symbol}] Starting urgent BUY follow-up (2)")
                 mkt.place(self.symbol, "BUY", api.get_current_price(self.symbol) * (1 - RTRADE_FOLLOWUP_OFFSET_PCT), self.qty,
                     force=_followup_force(self.symbol, "BUY"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
+                    bypass_profit_guard=True,
                     caller_owns_retry=True)
                 return self.mark_sell_filled(filled_sell_price)
 
@@ -1334,6 +1345,7 @@ class TradingBot:
                     print(f"[{self.symbol}] Starting urgent BUY follow-up (3)")
                     mkt.place(self.symbol, "BUY", api.get_current_price(self.symbol) * (1 - RTRADE_FOLLOWUP_OFFSET_PCT), self.qty,
                         force=_followup_force(self.symbol, "BUY"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
+                        bypass_profit_guard=True,
                         caller_owns_retry=True)
                     return self.mark_sell_filled(self.filled_sell_price)
                 else:
@@ -1355,6 +1367,7 @@ class TradingBot:
                         * (1 - RTRADE_FOLLOWUP_OFFSET_PCT),
                         self.qty, force=_followup_force(self.symbol, "BUY"),
                         cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
+                        bypass_profit_guard=True,
                         caller_owns_retry=True)
                     return self.mark_sell_filled(self.filled_sell_price)
                 pending_cache_permit = replacement_cache_permit
