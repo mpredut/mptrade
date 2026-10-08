@@ -24,11 +24,9 @@ def isolated_retry_queue(tmp_path, monkeypatch):
     monkeypatch.setattr(
         monitororder.mkt, "order_filter_refusal",
         lambda *_args, **_kwargs: None)
-    monitororder.initial_sell_prices.clear()
-    monitororder.initial_buy_prices.clear()
+    monitororder.reset_monitororder_state_for_test()
     yield
-    monitororder.initial_sell_prices.clear()
-    monitororder.initial_buy_prices.clear()
+    monitororder.reset_monitororder_state_for_test()
 
 
 def test_failed_replacement_is_submitted_once_and_left_to_shared_outbox():

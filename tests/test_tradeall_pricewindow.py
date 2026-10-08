@@ -1097,13 +1097,8 @@ class TestTrackAndPlaceOrder(unittest.TestCase):
             mock_fire.assert_called_once_with(
                 "BTCUSDT", "BUY", 99.9, "trend_signal"
             )
-            mock_notify.assert_called_once_with(
-                title="📈 BUY BTCUSDT @ 99.90",
-                body="Strategy: TradeAll (trend_signal) | proposed=100.00, current=100.00",
-                source="tradeall",
-                symbol="BTCUSDT",
-                price=99.9,
-            )
+            # Placement alerts are centralized in monitororder, not emitted from tradeall
+            mock_notify.assert_not_called()
             self.assertEqual(order_ids, [1001])
             self.assertEqual(ta._symbol_order_ids["BTCUSDT"], [1001])
 
@@ -1116,13 +1111,8 @@ class TestTrackAndPlaceOrder(unittest.TestCase):
             mock_fire.assert_called_once_with(
                 "BTCUSDT", "SELL", 100.1, "trend_signal"
             )
-            mock_notify.assert_called_once_with(
-                title="📉 SELL BTCUSDT @ 100.10",
-                body="Strategy: TradeAll (trend_signal) | proposed=100.00, current=100.00",
-                source="tradeall",
-                symbol="BTCUSDT",
-                price=100.1,
-            )
+            # Placement alerts are centralized in monitororder, not emitted from tradeall
+            mock_notify.assert_not_called()
             self.assertEqual(order_ids, [2002])
 
     def test_order_skipped_or_refused_does_not_alert(self):
@@ -1140,9 +1130,8 @@ class TestTrackAndPlaceOrder(unittest.TestCase):
             existing = [9999]
             order_ids = ta.track_and_place_order("BUY", "BTCUSDT", 2, 100.0, 100.0, order_ids=existing)
             mock_cancel.assert_called_once_with("BTCUSDT", "9999")
-            # Placed order alert fires, but redundant executed alert is removed in favor of central monitortrades
-            for call_args in mock_notify.call_args_list:
-                self.assertNotIn("Order executed", str(call_args))
+            # Redundant placement and execution alerts are centralized in monitororder and monitortrades
+            mock_notify.assert_not_called()
             self.assertEqual(order_ids, [3003])
 
     def test_hold_does_not_fire_or_cancel(self):

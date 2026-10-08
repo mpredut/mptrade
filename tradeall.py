@@ -308,13 +308,6 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
             if order and (order.get('orderId') or order.get('id')):
                 oid = order.get('orderId') or order.get('id')
                 order_ids.append(oid)
-                alert.notify(
-                    title=f"📈 BUY {symbol} @ {adjusted_buy_price:.2f}",
-                    body=f"Strategy: TradeAll ({reason}) | proposed={float(proposed_price):.2f}, current={float(current_price):.2f}",
-                    source="tradeall",
-                    symbol=symbol,
-                    price=adjusted_buy_price,
-                )
 
     elif action == 'SELL':
         sell_price = max(float(proposed_price), float(current_price) * 1.001)
@@ -326,13 +319,6 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
             if order and (order.get('orderId') or order.get('id')):
                 oid = order.get('orderId') or order.get('id')
                 order_ids.append(oid)
-                alert.notify(
-                    title=f"📉 SELL {symbol} @ {adjusted_sell_price:.2f}",
-                    body=f"Strategy: TradeAll ({reason}) | proposed={float(proposed_price):.2f}, current={float(current_price):.2f}",
-                    source="tradeall",
-                    symbol=symbol,
-                    price=adjusted_sell_price,
-                )
 
     return order_ids
 

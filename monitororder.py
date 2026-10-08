@@ -24,6 +24,41 @@ initial_prices = OrderedDict()
 initial_sell_prices = OrderedDict()
 initial_buy_prices = OrderedDict()
 
+_notified_placed_order_ids = set()
+_derived_replacement_order_ids = set()
+_monitororder_initialized = False
+
+
+def reset_monitororder_state_for_test():
+    """Reset monitororder tracking state (used in testing)."""
+    global _monitororder_initialized
+    _notified_placed_order_ids.clear()
+    _derived_replacement_order_ids.clear()
+    initial_sell_prices.clear()
+    initial_buy_prices.clear()
+    _monitororder_initialized = False
+
+
+def _notify_order_launched(symbol, order_type, order_id, price, quantity):
+    """Notify when a newly placed open order is detected on Binance."""
+    try:
+        import alertnotifiers as alert
+        qty = float(quantity or 0.0)
+        px = float(price or 0.0)
+        val = px * qty
+        quote = "USDC" if str(symbol).upper().endswith("USDC") else ("USDT" if str(symbol).upper().endswith("USDT") else "USD")
+        side = str(order_type).upper()
+        print(f"[MONITORORDER] 📝 New order launched: {side} {qty:.6f} {symbol} @ {px:.2f} (orderId={order_id})")
+        alert.notify(
+            title=f"📝 {side} {symbol} @ {px:.2f}",
+            body=f"Order {order_id} placed on venue. Qty: {qty:.4f} {symbol} (~{val:.2f} {quote})",
+            source="monitororder",
+            symbol=str(symbol),
+            price=px,
+        )
+    except Exception as exc:
+        print(f"[MONITORORDER] Notification failed for order {order_id}: {exc}")
+
 
 def _remember_initial_price(cache, order_id, price):
     cache[order_id] = price
@@ -64,6 +99,12 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         if not price or price <= 0:          # Guard against division by zero for invalid prices.
             print(f"Invalid price ({price}) for order {order_id}, skipping.")
             continue
+
+        oid_str = str(order_id)
+        if oid_str not in _notified_placed_order_ids:
+            _notified_placed_order_ids.add(oid_str)
+            if oid_str not in _derived_replacement_order_ids and _monitororder_initialized:
+                _notify_order_launched(symbol, order_type, order_id, price, order.get("quantity", 0))
 
         if order_id not in initial_prices:
             _remember_initial_price(initial_prices, order_id, price)
@@ -301,19 +342,28 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                         f"replacement intent was removed ({failure_reason}).")
             
             if new_order:
+                new_oid = str(new_order['orderId'])
+                _derived_replacement_order_ids.add(new_oid)
+                _notified_placed_order_ids.add(new_oid)
                 orders[new_order['orderId']] = {
                     'price': new_price,
                     'quantity': quantity
                 }
                 _remember_initial_price(
                     initial_prices, new_order['orderId'], initial_prices.pop(order_id))
-                print(f"Updated order from {price} to {new_price}. New ID: {new_order['orderId']}")
+                print(f"Updated order from {price} to {new_price}. New ID: {new_order['orderId']} (derived replacement)")
             elif not terminal_pre_submit_refusal:
                 print(
                     f"The {order_type} replacement was not accepted immediately; "
                     "the persisted intent stays in the shared outbox for a retry."
                 )
-    
+
+    # Keep tracking set sizes bounded over long continuous execution
+    if len(_notified_placed_order_ids) > MAX_TRACKED_ORDER_IDS:
+        _notified_placed_order_ids.difference_update(list(_notified_placed_order_ids)[:-5000])
+    if len(_derived_replacement_order_ids) > MAX_TRACKED_ORDER_IDS:
+        _derived_replacement_order_ids.difference_update(list(_derived_replacement_order_ids)[:-5000])
+
 
 
 MONITOR_BETWEEN_ORDERS_INTERVAL = 2
@@ -321,10 +371,29 @@ MONITOR_OPEN_ORDER_INTERVAL = 8
 MONITOR_CLOSE_ORDER_INTERVAL = 8
 max_age_seconds = 3 * 24 * 3600  # Maximum age for treating filled orders as recent (three days).
 
+
+def warmup_open_orders():
+    """Seed existing open orders into tracking sets to avoid notifying historical orders on startup."""
+    global _monitororder_initialized
+    for symbol in sym.symbols:
+        for side in ("SELL", "BUY"):
+            try:
+                orders = api.get_open_orders(side, symbol)
+                if orders:
+                    for oid in orders.keys():
+                        _notified_placed_order_ids.add(str(oid))
+            except Exception as exc:
+                print(f"[MONITORORDER] Warmup error for {symbol} {side}: {exc}")
+    _monitororder_initialized = True
+
+
 def monitor_orders():
     # monitor_filled_buy_orders()
     # return
     
+    # Warm up existing open orders so existing orders don't spam notifications on startup
+    warmup_open_orders()
+
     monitor_open_orders_lasttime = time.time() - MONITOR_OPEN_ORDER_INTERVAL - TIME_SLEEP_ERROR
     monitor_close_orders_by_age_lasttime = time.time() - MONITOR_CLOSE_ORDER_INTERVAL - TIME_SLEEP_ERROR
 
@@ -335,7 +404,7 @@ def monitor_orders():
                 for symbol in sym.symbols:
                     monitor_open_orders_by_type(symbol, "SELL")
                     monitor_open_orders_by_type(symbol, "BUY")
-                    monitor_open_orders_lasttime = currenttime
+                monitor_open_orders_lasttime = currenttime
             if(currenttime - monitor_close_orders_by_age_lasttime > MONITOR_CLOSE_ORDER_INTERVAL) :
                 #monitor_close_orders_by_age(max_age_seconds)
                 monitor_close_orders_by_age_lasttime = currenttime   

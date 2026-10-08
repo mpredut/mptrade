@@ -62,7 +62,7 @@ def _resolve_provider_label(bot_name: str = "", source: str = "") -> str:
         return "Hyperliquid"
     if "t212" in s or "trading212" in s or "t212" in b:
         return "T212"
-    if "binance" in s or "binance" in b or b in ("rtrade", "tradeall", "monitortrades", "order_retry"):
+    if "binance" in s or "binance" in b or b in ("rtrade", "tradeall", "monitortrades", "order_retry", "monitororder") or "monitororder" in s:
         return "Binance"
     if "-" in bot_name:
         return bot_name.split("-")[0]
