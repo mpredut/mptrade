@@ -57,6 +57,15 @@ run_step() {
 }
 
 # ------------------------------------------------------------------------------
+# STEP 0: Market Intelligence 4-Pillar Backtest & Chop Weight Benchmark
+# ------------------------------------------------------------------------------
+run_step "0A" "4-Pillar Market Intelligence Backtest (BTCUSDC, TAOUSDC)" \
+    "$PYTHON_BIN offline/research/intelligence_backtest.py BTCUSDC,TAOUSDC"
+
+run_step "0B" "Chop Regime & Dynamic Weight Benchmark (407 days)" \
+    "$PYTHON_BIN offline/research/chop_weight_backtest.py"
+
+# ------------------------------------------------------------------------------
 # STEP 1: Kraken & HYPE Multi-Interval Walk-Forward Baselines & Comparisons
 # ------------------------------------------------------------------------------
 run_step "1A" "HYPE 240m Walk-Forward Baseline (628 days, 31 folds)" \
