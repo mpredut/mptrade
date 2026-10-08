@@ -72,6 +72,87 @@ def print_number_of_orders(maxage_trade_s):
         print(f"get_trade_orders:           Total found {len(orders)} orders in the last {u.secondsToDays(maxage_trade_s)} days.")
 
 
+_notified_trade_ids = set()
+_trades_monitor_initialized = False
+
+
+def reset_trades_monitor_state_for_test():
+    """Reset the executed trades tracking state (used in testing)."""
+    global _notified_trade_ids, _trades_monitor_initialized
+    _notified_trade_ids = set()
+    _trades_monitor_initialized = False
+
+
+def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=None):
+    """Detect and notify newly executed trades on Binance centrally.
+
+    Warms up existing trades on first call to prevent historical spam.
+    Subsequent cycles notify for any newly appeared trade fill across all tracked symbols.
+    Fills sharing the same order ID in the same tick are aggregated into a single notification.
+    """
+    global _notified_trade_ids, _trades_monitor_initialized
+    import alertnotifiers as alert
+
+    symbols_to_check = symbols_list or sym.symbols
+    if not _trades_monitor_initialized:
+        for symbol in symbols_to_check:
+            try:
+                orders = apitrades.get_trade_orders(None, symbol, maxage_trade_s)
+                for t in orders:
+                    _notified_trade_ids.add(str(t['id']))
+            except Exception as _e:
+                print(f"[MONITORTRADES] Error during trades warmup for {symbol}: {_e}")
+        _trades_monitor_initialized = True
+        return
+
+    # Check for newly executed trades
+    for symbol in symbols_to_check:
+        try:
+            orders = apitrades.get_trade_orders(None, symbol, maxage_trade_s)
+            orders.sort(key=lambda x: x.get('time', 0))
+
+            new_trades = []
+            for trade in orders:
+                tid = str(trade['id'])
+                if tid not in _notified_trade_ids:
+                    _notified_trade_ids.add(tid)
+                    new_trades.append(trade)
+
+            if not new_trades:
+                continue
+
+            # Group newly executed fills by orderId
+            trades_by_order = {}
+            for t in new_trades:
+                oid = str(t.get('orderId') or t['id'])
+                trades_by_order.setdefault(oid, []).append(t)
+
+            for oid, group in trades_by_order.items():
+                first = group[0]
+                side = "BUY" if first.get('isBuyer') else "SELL"
+                sym_name = first.get('symbol', symbol)
+                total_qty = sum(float(t.get('qty', 0.0)) for t in group)
+                total_val = sum(float(t.get('qty', 0.0)) * float(t.get('price', 0.0)) for t in group)
+                avg_price = total_val / total_qty if total_qty > 0 else float(first.get('price', 0.0))
+                quote = "USDC" if sym_name.upper().endswith("USDC") else ("USDT" if sym_name.upper().endswith("USDT") else "USD")
+
+                fill_suffix = f" ({len(group)} fills)" if len(group) > 1 else ""
+                print(f"[MONITORTRADES] 🎉 New executed order: {side} {total_qty:.6f} {sym_name} @ {avg_price:.2f} (orderId={oid}{fill_suffix})")
+                alert.notify(
+                    title=f"🎉 {side} {sym_name} @ {avg_price:.2f}",
+                    body=f"Order {oid} executed! Filled: {total_qty:.4f} {sym_name} (~{total_val:.2f} {quote}){fill_suffix}",
+                    source="monitortrades",
+                    symbol=sym_name,
+                    price=avg_price,
+                )
+        except Exception as _e:
+            print(f"[MONITORTRADES] Error checking executed trades for {symbol}: {_e}")
+
+    # Prune seen IDs if memory grows too large over months
+    if len(_notified_trade_ids) > 10000:
+        _notified_trade_ids = set(list(_notified_trade_ids)[-5000:])
+
+
 
 
 
@@ -488,11 +569,15 @@ def main():
             print(f"close_buy_orders ({_sym}) {close_buy_orders}")
             print(f"close_sell_orders ({_sym}) {close_sell_orders}")
 
+    # Warm up executed trades tracking to avoid notifying past trades on startup
+    check_and_notify_executed_trades(maxage_trade_s)
+
     d = MT_GUARD_WINDOW_DAYS
     while True:
 
         print_number_of_orders(maxage_trade_s)
         print_number_of_trades(maxage_trade_s)
+        check_and_notify_executed_trades(maxage_trade_s)
         
         # Reload the authoritative registry so deliberate configuration changes take
         # effect without restart. Validation errors propagate and stop the service

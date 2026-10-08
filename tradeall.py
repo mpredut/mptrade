@@ -283,12 +283,6 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
                 mkt.cancel_order(symbol, str(order_id))
             except Exception as _e:
                 print(f"[TRADEALL] cancel existing order {order_id} (or filled): {_e}")
-                alert.notify(
-                    title=f"🎉 Order executed! {symbol}",
-                    body=f"Order {order_id} executed! Active order was filled on venue.",
-                    source="tradeall",
-                    symbol=symbol,
-                )
         order_ids.clear()
 
 

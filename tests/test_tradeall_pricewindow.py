@@ -1133,19 +1133,16 @@ class TestTrackAndPlaceOrder(unittest.TestCase):
             mock_notify.assert_not_called()
             self.assertEqual(order_ids, [])
 
-    def test_cancels_previous_order_and_alerts_when_filled(self):
+    def test_cancels_previous_order_without_duplicate_alert_when_filled(self):
         with patch.object(ta.mkt, "cancel_order", side_effect=RuntimeError("filled")) as mock_cancel, \
              patch.object(ta.alert, "notify") as mock_notify, \
              patch.object(ta, "_fire_order", return_value={"orderId": 3003}):
             existing = [9999]
             order_ids = ta.track_and_place_order("BUY", "BTCUSDT", 2, 100.0, 100.0, order_ids=existing)
             mock_cancel.assert_called_once_with("BTCUSDT", "9999")
-            mock_notify.assert_any_call(
-                title="🎉 Order executed! BTCUSDT",
-                body="Order 9999 executed! Active order was filled on venue.",
-                source="tradeall",
-                symbol="BTCUSDT",
-            )
+            # Placed order alert fires, but redundant executed alert is removed in favor of central monitortrades
+            for call_args in mock_notify.call_args_list:
+                self.assertNotIn("Order executed", str(call_args))
             self.assertEqual(order_ids, [3003])
 
     def test_hold_does_not_fire_or_cancel(self):
