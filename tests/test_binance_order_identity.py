@@ -31,9 +31,11 @@ class TestBinanceOrderIdContext(unittest.TestCase):
                 self.assertEqual(rc.resolve_order_owner(cid), expected)
 
     def test_is_order_repriceable_by_monitororder(self):
-        # Repriceable bots: tradeall, monitororder, unspecified (for test mocks)
+        # Repriceable origins: tradeall, monitororder, manual (app/web), unspecified (for test mocks)
         self.assertTrue(rc.is_order_repriceable_by_monitororder("TA_MainThread_123"))
         self.assertTrue(rc.is_order_repriceable_by_monitororder("MO_MainThread_456"))
+        self.assertTrue(rc.is_order_repriceable_by_monitororder("and_mobile_app_123"))
+        self.assertTrue(rc.is_order_repriceable_by_monitororder("web_browser_123"))
         self.assertTrue(rc.is_order_repriceable_by_monitororder(""))
         self.assertTrue(rc.is_order_repriceable_by_monitororder(None))
 
@@ -43,13 +45,12 @@ class TestBinanceOrderIdContext(unittest.TestCase):
         self.assertFalse(rc.is_order_repriceable_by_monitororder("MT_stop_loss_123"))
         self.assertFalse(rc.is_order_repriceable_by_monitororder("AG_risk_guard_123"))
         self.assertFalse(rc.is_order_repriceable_by_monitororder("SRV_server_123"))
-        self.assertFalse(rc.is_order_repriceable_by_monitororder("and_mobile_app_123"))
-        self.assertFalse(rc.is_order_repriceable_by_monitororder("web_browser_123"))
         self.assertFalse(rc.is_order_repriceable_by_monitororder("UNKNOWN_12345"))
 
     def test_order_matches_owner(self):
         self.assertTrue(rc.order_matches_owner("TA_123", "tradeall"))
         self.assertTrue(rc.order_matches_owner("TA_123", {"tradeall", "monitororder"}))
+        self.assertTrue(rc.order_matches_owner("web_123", "manual"))
         self.assertFalse(rc.order_matches_owner("RT_123", "tradeall"))
         self.assertTrue(rc.order_matches_owner("RT_123", None))
 
@@ -104,15 +105,17 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
     def tearDown(self):
         monitororder.reset_monitororder_state_for_test()
 
-    def test_monitororder_skips_repricing_for_rtrade_and_manual_orders(self):
+    def test_monitororder_skips_repricing_for_rtrade_and_circuit_breakers(self):
         # Open orders include:
         # - an rtrade grid order close to market (100.1 vs 100.0) -> MUST NOT BE REPRICED
-        # - a manual web order close to market -> MUST NOT BE REPRICED
+        # - a spot_dca trailing stop order close to market -> MUST NOT BE REPRICED
+        # - a monitortrades stop-loss order close to market -> MUST NOT BE REPRICED
         # - a tradeall order close to market -> REPRICED
         open_orders = {
             501: {"price": 100.0, "quantity": 1.0, "remainingQty": 1.0, "clientOrderId": "RT_grid_pair_1"},
-            502: {"price": 100.0, "quantity": 1.0, "remainingQty": 1.0, "clientOrderId": "web_manual_order"},
-            503: {"price": 100.0, "quantity": 1.0, "remainingQty": 1.0, "clientOrderId": "TA_tradeall_order"},
+            502: {"price": 100.0, "quantity": 1.0, "remainingQty": 1.0, "clientOrderId": "SD_trailing_stop"},
+            503: {"price": 100.0, "quantity": 1.0, "remainingQty": 1.0, "clientOrderId": "MT_stop_loss"},
+            504: {"price": 100.0, "quantity": 1.0, "remainingQty": 1.0, "clientOrderId": "TA_tradeall_order"},
         }
 
         with patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
@@ -131,7 +134,33 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
              patch("alertnotifiers.notify"):
             monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
 
-            # Only order 503 (TA_) was canceled and replaced!
-            # Orders 501 (RT_) and 502 (web_) were completely protected!
-            mock_cancel.assert_called_once_with("TAOUSDC", 503)
+            # Only order 504 (TA_) was canceled and replaced!
+            # Orders 501 (RT_), 502 (SD_), and 503 (MT_) were completely protected!
+            mock_cancel.assert_called_once_with("TAOUSDC", 504)
             mock_place.assert_called_once()
+
+    def test_monitororder_reprices_manual_orders(self):
+        # A manual limit order placed by the user via web app
+        open_orders = {
+            601: {"price": 100.0, "quantity": 1.0, "remainingQty": 1.0, "clientOrderId": "web_manual_order"},
+        }
+
+        with patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
+             patch.object(monitororder.api, "get_current_price", return_value=100.1), \
+             patch.object(monitororder.order_retry, "enqueue", return_value="rep-2"), \
+             patch.object(monitororder.order_retry, "claim", return_value=[{"place_kwargs": {"client_order_id": "MO_cid"}}]), \
+             patch.object(monitororder.order_retry, "activate_claimed_replacement", return_value="activated"), \
+             patch.object(monitororder.order_retry, "begin_claimed_submit", return_value={"place_kwargs": {"client_order_id": "MO_cid"}}), \
+             patch.object(monitororder.accepted_order_persistence, "complete_accepted_claim", return_value=True), \
+             patch.object(monitororder.order_retry, "complete_claim", return_value=True), \
+             patch.object(monitororder.mkt, "order_filter_refusal", return_value=None), \
+             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
+             patch.object(monitororder.api, "cancel_order", return_value=True) as mock_cancel, \
+             patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", terminal=False)), \
+             patch.object(monitororder.mkt, "place", return_value={"orderId": 8888}) as mock_place, \
+             patch("alertnotifiers.notify"):
+            monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
+
+            mock_cancel.assert_called_once_with("TAOUSDC", 601)
+            mock_place.assert_called_once()
+
