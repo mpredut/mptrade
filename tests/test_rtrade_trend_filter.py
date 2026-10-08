@@ -70,13 +70,16 @@ class FollowupForceTest(unittest.TestCase):
     def setUp(self):
         self._en = rtrade.RTRADE_TREND_FILTER_ENABLED
         self._k = rtrade.RTRADE_TREND_FILTER_K
+        self._flip = getattr(rtrade, "RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED", False)
         self._cm = sys.modules.get("cacheManager")
         rtrade.RTRADE_TREND_FILTER_ENABLED = True
         rtrade.RTRADE_TREND_FILTER_K = 2.0
+        rtrade.RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED = True
 
     def tearDown(self):
         rtrade.RTRADE_TREND_FILTER_ENABLED = self._en
         rtrade.RTRADE_TREND_FILTER_K = self._k
+        rtrade.RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED = self._flip
         if self._cm is not None:
             sys.modules["cacheManager"] = self._cm
         else:
@@ -112,18 +115,29 @@ class FollowupForceTest(unittest.TestCase):
         self._fake_cm(None)
         self.assertFalse(rtrade._followup_force("TAOUSDC", "SELL"))   # no data -> patient limit (fail-closed)
 
+    def test_market_flip_disabled_always_uses_patient_limit(self):
+        rtrade.RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED = False
+        self._fake_cm({"gradient_recent": 0.5, "epsilon": 0.1})
+        self.assertFalse(rtrade._followup_force("TAOUSDC", "SELL"))
+        self._fake_cm({"gradient_recent": 0.15, "epsilon": 0.1})
+        self.assertFalse(rtrade._followup_force("TAOUSDC", "SELL"))
+        self.assertFalse(rtrade._followup_force("TAOUSDC", "BUY"))
+
 
 class MarketRegimeTest(unittest.TestCase):
     def setUp(self):
         self._en = rtrade.RTRADE_TREND_FILTER_ENABLED
         self._k = rtrade.RTRADE_TREND_FILTER_K
+        self._flip = getattr(rtrade, "RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED", False)
         self._cm = sys.modules.get("cacheManager")
         rtrade.RTRADE_TREND_FILTER_ENABLED = True
         rtrade.RTRADE_TREND_FILTER_K = 2.0
+        rtrade.RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED = True
 
     def tearDown(self):
         rtrade.RTRADE_TREND_FILTER_ENABLED = self._en
         rtrade.RTRADE_TREND_FILTER_K = self._k
+        rtrade.RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED = self._flip
         if self._cm is not None:
             sys.modules["cacheManager"] = self._cm
         else:

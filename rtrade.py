@@ -112,6 +112,7 @@ RTRADE_SELL_NORMAL_HOURS = required_float_env("RTRADE_SELL_NORMAL_HOURS")
 # after the opposite side fills. Shared by both directions.
 RTRADE_FOLLOWUP_OFFSET_PCT = required_float_env("RTRADE_FOLLOWUP_OFFSET_PCT")
 RTRADE_FOLLOWUP_HOURS = required_float_env("RTRADE_FOLLOWUP_HOURS")
+RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED = required_bool_env("RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED")
 
 # ``are_close`` tolerance for detecting a bad day when price crosses the reference,
 # plus the adjustment multiplier used then. Shared by both directions.
@@ -1003,16 +1004,44 @@ def _place_failure_backoff(reason):
     return None, 0.0
 
 
+def _followup_exit_price(symbol, side, fill_ref_price):
+    """Anchor follow-up exit price to ensure the limit order targets profit.
+
+    For SELL: price must be at least fill_ref_price * (1 + RTRADE_FOLLOWUP_OFFSET_PCT).
+    For BUY: price must be at most fill_ref_price * (1 - RTRADE_FOLLOWUP_OFFSET_PCT).
+    """
+    current_price = api.get_current_price(symbol)
+    if fill_ref_price is None or fill_ref_price <= 0:
+        fill_ref_price = current_price or 0.0
+    if current_price is None or current_price <= 0:
+        current_price = fill_ref_price
+    side_u = str(side).upper()
+    if side_u == "SELL":
+        return round(max(
+            current_price * (1 + RTRADE_FOLLOWUP_OFFSET_PCT),
+            fill_ref_price * (1 + RTRADE_FOLLOWUP_OFFSET_PCT)
+        ), 4)
+    elif side_u == "BUY":
+        return round(min(
+            current_price * (1 - RTRADE_FOLLOWUP_OFFSET_PCT),
+            fill_ref_price * (1 - RTRADE_FOLLOWUP_OFFSET_PCT)
+        ), 4)
+    raise ValueError(f"Invalid side: {side}")
+
+
 def _followup_force(symbol, side):
     """Choose MARKET force for a post-fill flip only when trend is not adverse.
 
     Selling into a clear decline or buying into a clear rise is adverse, so return False
     and leave a patient limit at the flip price. A confirmed flat (``sideways``) or
-    favorable trend keeps immediate market behavior. UNAVAILABLE trend data (regime
-    ``unknown``) also returns False: with no data we do not fire an aggressive market
-    flip blind -- leave a patient limit instead. This prevents desperate execution
-    against the trend or during a data outage.
+    favorable trend keeps immediate market behavior only when RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED
+    is true. When disabled (default), follow-ups always use patient limits to avoid dumping
+    at market into the bid-ask spread at a loss.
     """
+    if not RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED:
+        print(f"[{symbol}] follow-up {(side or '').upper()}: market flip disabled "
+              "-> use a patient limit, NOT a market order")
+        return False
     if not RTRADE_TREND_FILTER_ENABLED:
         return True
     decision = _market_regime_decision(symbol)
@@ -1157,7 +1186,8 @@ class TradingBot:
             if _order_fully_filled(self.symbol, order_id):
                 print(f"[{self.symbol}] BUY order filled at {self.filled_buy_price:.2f}")
                 print(f"[{self.symbol}] Starting urgent SELL follow-up (1)")
-                mkt.place(self.symbol, "SELL", api.get_current_price(self.symbol) * (1 + RTRADE_FOLLOWUP_OFFSET_PCT), self.qty,
+                sell_price = _followup_exit_price(self.symbol, "SELL", self.filled_buy_price)
+                mkt.place(self.symbol, "SELL", sell_price, self.qty,
                     force=_followup_force(self.symbol, "SELL"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
                     bypass_profit_guard=True,
                     caller_owns_retry=True)
@@ -1169,7 +1199,8 @@ class TradingBot:
             if filled_buy_price is not None:
                 print(f"[{self.symbol}] BUY order may have been filled :-) at {filled_buy_price:.2f}")
                 print(f"[{self.symbol}] Starting urgent SELL follow-up (2)")
-                mkt.place(self.symbol, "SELL", api.get_current_price(self.symbol) * (1 + RTRADE_FOLLOWUP_OFFSET_PCT), self.qty,
+                sell_price = _followup_exit_price(self.symbol, "SELL", filled_buy_price)
+                mkt.place(self.symbol, "SELL", sell_price, self.qty,
                     force=_followup_force(self.symbol, "SELL"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
                     bypass_profit_guard=True,
                     caller_owns_retry=True)
@@ -1191,7 +1222,8 @@ class TradingBot:
                 if _order_fully_filled(self.symbol, order_id):
                     print(f"[{self.symbol}] Cancel BUY order failed. Maybe it was filled :-)? Moving to SELL ...")
                     print(f"[{self.symbol}] Starting urgent SELL follow-up (3)")
-                    mkt.place(self.symbol, "SELL", api.get_current_price(self.symbol) * (1 + RTRADE_FOLLOWUP_OFFSET_PCT), self.qty,
+                    sell_price = _followup_exit_price(self.symbol, "SELL", self.filled_buy_price)
+                    mkt.place(self.symbol, "SELL", sell_price, self.qty,
                     force=_followup_force(self.symbol, "SELL"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
                     bypass_profit_guard=True,
                     caller_owns_retry=True)
@@ -1209,10 +1241,10 @@ class TradingBot:
                     return None
                 if remaining_qty <= max(1e-12, target_buy_qty * 1e-9):
                     print(f"[{self.symbol}] BUY filled during cancellation; moving to SELL.")
+                    sell_price = _followup_exit_price(self.symbol, "SELL", self.filled_buy_price)
                     mkt.place(
                         self.symbol, "SELL",
-                        api.get_current_price(self.symbol)
-                        * (1 + RTRADE_FOLLOWUP_OFFSET_PCT),
+                        sell_price,
                         self.qty, force=_followup_force(self.symbol, "SELL"),
                         cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
                         bypass_profit_guard=True,
@@ -1309,7 +1341,8 @@ class TradingBot:
             if _order_fully_filled(self.symbol, order_id):
                 print(f"[{self.symbol}] SELL order filled at {self.filled_sell_price:.2f}")
                 print(f"[{self.symbol}] Starting urgent BUY follow-up (1)")
-                mkt.place(self.symbol, "BUY", api.get_current_price(self.symbol) * (1 - RTRADE_FOLLOWUP_OFFSET_PCT), self.qty,
+                buy_price = _followup_exit_price(self.symbol, "BUY", self.filled_sell_price)
+                mkt.place(self.symbol, "BUY", buy_price, self.qty,
                     force=_followup_force(self.symbol, "BUY"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
                     bypass_profit_guard=True,
                     caller_owns_retry=True)
@@ -1321,7 +1354,8 @@ class TradingBot:
             if filled_sell_price is not None:
                 print(f"[{self.symbol}] SELL order may have been filled :-) at {filled_sell_price:.2f}")
                 print(f"[{self.symbol}] Starting urgent BUY follow-up (2)")
-                mkt.place(self.symbol, "BUY", api.get_current_price(self.symbol) * (1 - RTRADE_FOLLOWUP_OFFSET_PCT), self.qty,
+                buy_price = _followup_exit_price(self.symbol, "BUY", filled_sell_price)
+                mkt.place(self.symbol, "BUY", buy_price, self.qty,
                     force=_followup_force(self.symbol, "BUY"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
                     bypass_profit_guard=True,
                     caller_owns_retry=True)
@@ -1343,7 +1377,8 @@ class TradingBot:
                 if _order_fully_filled(self.symbol, order_id):
                     print(f"[{self.symbol}] Cancel SELL order failed. Maybe it was filled :-)? Moving to BUY ...")
                     print(f"[{self.symbol}] Starting urgent BUY follow-up (3)")
-                    mkt.place(self.symbol, "BUY", api.get_current_price(self.symbol) * (1 - RTRADE_FOLLOWUP_OFFSET_PCT), self.qty,
+                    buy_price = _followup_exit_price(self.symbol, "BUY", self.filled_sell_price)
+                    mkt.place(self.symbol, "BUY", buy_price, self.qty,
                         force=_followup_force(self.symbol, "BUY"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
                         bypass_profit_guard=True,
                         caller_owns_retry=True)
@@ -1361,10 +1396,10 @@ class TradingBot:
                     return None
                 if remaining_qty <= max(1e-12, target_sell_qty * 1e-9):
                     print(f"[{self.symbol}] SELL filled during cancellation; moving to BUY.")
+                    buy_price = _followup_exit_price(self.symbol, "BUY", self.filled_sell_price)
                     mkt.place(
                         self.symbol, "BUY",
-                        api.get_current_price(self.symbol)
-                        * (1 - RTRADE_FOLLOWUP_OFFSET_PCT),
+                        buy_price,
                         self.qty, force=_followup_force(self.symbol, "BUY"),
                         cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
                         bypass_profit_guard=True,
