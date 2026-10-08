@@ -48,7 +48,13 @@ RESTART_ON_LOCAL="${AUTODEPLOY_RESTART_ON_LOCAL:-false}"
 mkdir -p "$STATE_DIR" 2>/dev/null
 
 log() { echo "$(date '+%F %T') $*"; }
-g()   { runuser -u "$OWNER" -- git -C "$ROOT" "$@"; }   # git as the repo owner
+g() {
+    if [ "$(id -u)" -eq 0 ]; then
+        runuser -u "$OWNER" -- git -C "$ROOT" "$@"
+    else
+        git -C "$ROOT" "$@"
+    fi
+}
 
 alert() {  # best-effort ntfy on the ERROR topic (mirrored to email); failure is fine
     # shellcheck source=../lib/os_notify.sh
