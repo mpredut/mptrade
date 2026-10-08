@@ -12,6 +12,7 @@ import utils as u
 import symbols as sym
 from binance_api import bapi as api
 from binance_api import bapi_placeorder as po
+from binance_api import order_id_context as rc
 from providers.market_api import api as mkt  # Single guarded proxy (Instrument.place).
 from providers.strategy_executor import SubmissionRefused
 import order_retry
@@ -39,7 +40,7 @@ def reset_monitororder_state_for_test():
     _monitororder_initialized = False
 
 
-def _notify_order_launched(symbol, order_type, order_id, price, quantity):
+def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=None):
     """Notify when a newly placed open order is detected on Binance."""
     try:
         import alertnotifiers as alert
@@ -48,10 +49,12 @@ def _notify_order_launched(symbol, order_type, order_id, price, quantity):
         val = px * qty
         quote = "USDC" if str(symbol).upper().endswith("USDC") else ("USDT" if str(symbol).upper().endswith("USDT") else "USD")
         side = str(order_type).upper()
-        print(f"[MONITORORDER] 📝 New order launched: {side} {qty:.6f} {symbol} @ {px:.2f} (orderId={order_id})")
+        owner_tag = f" [{owner}]" if owner and owner not in ("unspecified", "unknown") else ""
+        owner_body = f" ({owner})" if owner and owner not in ("unspecified", "unknown") else ""
+        print(f"[MONITORORDER] 📝 New order launched{owner_body}: {side} {qty:.6f} {symbol} @ {px:.2f} (orderId={order_id})")
         alert.notify(
-            title=f"📝 {side} {symbol} @ {px:.2f}",
-            body=f"Order {order_id} placed on venue. Qty: {qty:.4f} {symbol} (~{val:.2f} {quote})",
+            title=f"📝 {side} {symbol} @ {px:.2f}{owner_tag}",
+            body=f"Order {order_id}{owner_body} placed on venue. Qty: {qty:.4f} {symbol} (~{val:.2f} {quote})",
             source="monitororder",
             symbol=str(symbol),
             price=px,
@@ -101,10 +104,19 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             continue
 
         oid_str = str(order_id)
+        cid = str(order.get("clientOrderId") or "")
+        owner = rc.resolve_order_owner(cid)
+
         if oid_str not in _notified_placed_order_ids:
             _notified_placed_order_ids.add(oid_str)
             if oid_str not in _derived_replacement_order_ids and _monitororder_initialized:
-                _notify_order_launched(symbol, order_type, order_id, price, order.get("quantity", 0))
+                _notify_order_launched(symbol, order_type, order_id, price, order.get("quantity", 0), owner=owner)
+
+        # Repricing protection: only reprice orders from tradeall or monitororder.
+        # Orders from rtrade, spot_dca, manual, etc. are strictly protected from cancellation/repricing.
+        if not rc.is_order_repriceable_by_monitororder(cid):
+            print(f"Order {order_id} (owner='{owner}', cid='{cid}') is protected from monitororder repricing; skipping.")
+            continue
 
         if order_id not in initial_prices:
             _remember_initial_price(initial_prices, order_id, price)

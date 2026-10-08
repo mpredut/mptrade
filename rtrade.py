@@ -1719,8 +1719,8 @@ class TradingBot:
                 except Exception as e:
                     print(f"[{self.symbol}] Unexpected error: {e}")
                     # Worker exceptions arrive here through Future.result().
-                    api.cancel_recent_orders("SELL", self.symbol, WAIT_FOR_ORDER)
-                    api.cancel_recent_orders("BUY", self.symbol, WAIT_FOR_ORDER)
+                    api.cancel_recent_orders("SELL", self.symbol, WAIT_FOR_ORDER, allowed_owners={"rtrade"})
+                    api.cancel_recent_orders("BUY", self.symbol, WAIT_FOR_ORDER, allowed_owners={"rtrade"})
                     time.sleep(1)
                 
                 

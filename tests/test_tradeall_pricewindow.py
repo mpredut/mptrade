@@ -1093,7 +1093,7 @@ class TestTrackAndPlaceOrder(unittest.TestCase):
              patch.object(ta.alert, "notify") as mock_notify, \
              patch.object(ta, "_fire_order", return_value={"orderId": 1001}) as mock_fire:
             order_ids = ta.track_and_place_order("BUY", "BTCUSDT", 1, 100.0, 100.0)
-            mock_exp.assert_called_once_with("BUY", "BTCUSDT", ta.EXP_TIME_BUY_ORDER)
+            mock_exp.assert_called_once_with("BUY", "BTCUSDT", ta.EXP_TIME_BUY_ORDER, allowed_owners={"tradeall"})
             mock_fire.assert_called_once_with(
                 "BTCUSDT", "BUY", 99.9, "trend_signal"
             )
@@ -1107,7 +1107,7 @@ class TestTrackAndPlaceOrder(unittest.TestCase):
              patch.object(ta.alert, "notify") as mock_notify, \
              patch.object(ta, "_fire_order", return_value={"orderId": 2002}) as mock_fire:
             order_ids = ta.track_and_place_order("SELL", "BTCUSDT", 1, 100.0, 100.0)
-            mock_exp.assert_called_once_with("SELL", "BTCUSDT", ta.EXP_TIME_SELL_ORDER)
+            mock_exp.assert_called_once_with("SELL", "BTCUSDT", ta.EXP_TIME_SELL_ORDER, allowed_owners={"tradeall"})
             mock_fire.assert_called_once_with(
                 "BTCUSDT", "SELL", 100.1, "trend_signal"
             )

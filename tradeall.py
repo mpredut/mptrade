@@ -289,7 +289,7 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     # Cancel expired orders on venue
     exp_time = EXP_TIME_BUY_ORDER if action == 'BUY' else EXP_TIME_SELL_ORDER
     try:
-        api.cancel_expired_orders(action, symbol, exp_time)
+        api.cancel_expired_orders(action, symbol, exp_time, allowed_owners={"tradeall"})
     except Exception as _e:
         print(f"[TRADEALL] cancel_expired_orders error for {symbol}: {_e}")
 

@@ -80,15 +80,14 @@ print("No Binance fees in realized (the API fills do not expose them here); ~0.0
 # (avg_sell - avg_buy). For bots that exchange inventory (tradeall buys TAO while
 # rtrade sells it), net_qty shows which one accumulates versus distributes. The
 # window contains roughly the latest 1,000 orders returned by get_all_orders.
+from binance_api.order_id_context import resolve_order_owner
+
+
 def _bot(cid):
-    for p, n in (("RT_", "rtrade"), ("TA_", "tradeall"), ("SD_", "spot_dca"),
-                 ("MT", "monitortrades"),
-                 ("MO", "monitororder"), ("AG", "assetguardian"), ("SRV", "server")):
-        if cid.startswith(p):
-            return n
-    if cid.startswith(("and_", "web_", "x-")):
+    owner = resolve_order_owner(cid)
+    if owner == "manual":
         return "MANUAL(app/web)"
-    return "alt:" + cid[:4]
+    return owner
 
 
 def per_bot(symbol):

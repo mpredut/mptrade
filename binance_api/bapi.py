@@ -28,6 +28,12 @@ import binance
 print(binance.__version__)
 
 from . import bapi_ws
+from . import order_id_context as rc
+
+resolve_order_owner = rc.resolve_order_owner
+is_order_repriceable_by_monitororder = rc.is_order_repriceable_by_monitororder
+order_matches_owner = rc.order_matches_owner
+create_client_order_id = rc.create_client_order_id
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _load_dotenv(os.path.join(_ROOT, "config.env"))
@@ -180,12 +186,12 @@ def get_account_assets_balances(raise_errors=False):
         return []
 
 
-def cancel_orders_old_or_outlier(order_type, symbol, required_quantity, hours=5, price_difference_percentage=0.1):
+def cancel_orders_old_or_outlier(order_type, symbol, required_quantity, hours=5, price_difference_percentage=0.1, allowed_owners=None):
 
     order_type = order_type.upper()
     sym.validate_params(order_type, symbol, 1, required_quantity)
     
-    open_orders = get_open_orders(order_type, symbol)
+    open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
     available_qty = 0  # Initially no quantity is available.
     current_price = get_current_price(symbol)
     if open_orders:
@@ -220,7 +226,7 @@ def cancel_orders_old_or_outlier(order_type, symbol, required_quantity, hours=5,
 
 
 
-def get_open_orders(order_type, symbol, *, strict=False):
+def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
 
     order_type = order_type.upper()
     sym.validate_params(order_type, symbol)
@@ -232,6 +238,9 @@ def get_open_orders(order_type, symbol, *, strict=False):
         for order in open_orders:
             if order['side'] != order_type.upper():
                 continue
+            cid = str(order.get('clientOrderId') or '')
+            if allowed_owners is not None and not rc.order_matches_owner(cid, allowed_owners):
+                continue
             original_qty = float(order['origQty'])
             executed_qty = float(order.get('executedQty') or 0.0)
             filtered_orders[order['orderId']] = {
@@ -241,7 +250,8 @@ def get_open_orders(order_type, symbol, *, strict=False):
                 'quantity': original_qty,
                 'executedQty': executed_qty,
                 'remainingQty': max(0.0, original_qty - executed_qty),
-                'timestamp': order['time'] / 1000
+                'timestamp': order['time'] / 1000,
+                'clientOrderId': cid,
             }
         
         return filtered_orders
@@ -263,13 +273,13 @@ def cancel_order(symbol, order_id):
         print(f"Error canceling order {order_id}: {e}")
         return False
 
-def cancel_open_orders(order_type, symbol):
+def cancel_open_orders(order_type, symbol, allowed_owners=None):
     
     order_type = order_type.upper()
     sym.validate_params(order_type, symbol) 
     
     try:
-        open_orders = get_open_orders(order_type, symbol)
+        open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
         for order_id, order_details in open_orders.items():
             print(f"Cancelling order {order_id} for {symbol}")
             cancel_order(symbol, order_id)
@@ -277,12 +287,12 @@ def cancel_open_orders(order_type, symbol):
         print(f"Error cancelling orders for {symbol}: {e}")
         
 
-def cancel_expired_orders(order_type, symbol, expire_time):
+def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
     
     order_type = order_type.upper()
     sym.validate_params(order_type, symbol)
     
-    open_orders = get_open_orders(order_type, symbol)
+    open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
 
     #current_time = int(time.time() * 1000)  # Convert current time to milliseconds
     current_time = int(time.time())
@@ -305,12 +315,12 @@ def cancel_expired_orders(order_type, symbol, expire_time):
     print(f"Cancelled {count} orders")
         
 
-def cancel_recent_orders(order_type, symbol, max_age_seconds):
+def cancel_recent_orders(order_type, symbol, max_age_seconds, allowed_owners=None):
 
     order_type = order_type.upper()
     sym.validate_params(order_type, symbol)
     
-    open_orders = get_open_orders(order_type, symbol)
+    open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
     current_time = int(time.time())  # Current time in seconds
 
     if len(open_orders) < 1:

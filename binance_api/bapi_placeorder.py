@@ -675,12 +675,12 @@ def place_order_smart(order_type, symbol, price, qty=None, safeback_seconds=PLAC
 # profit/weight/trend/cooldown guards, and journaling belong to the agnostic layer.
 # ============================================================================
 
-def cancel_opposite_orders(order_type, symbol, requested_price):
+def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=None):
     """Cancel adverse opposing Binance orders without changing the target price."""
     order_type = order_type.upper()
     if order_type == "BUY":
         try:
-            open_orders = api.get_open_orders("SELL", symbol, strict=True)
+            open_orders = api.get_open_orders("SELL", symbol, strict=True, allowed_owners=allowed_owners)
         except Exception as exc:
             raise SubmissionRefused(
                 "opposing_order_discovery_unavailable") from exc
@@ -695,7 +695,7 @@ def cancel_opposite_orders(order_type, symbol, requested_price):
                     raise SubmissionRefused("opposing_cancel_unconfirmed")
     elif order_type == "SELL":
         try:
-            open_orders = api.get_open_orders("BUY", symbol, strict=True)
+            open_orders = api.get_open_orders("BUY", symbol, strict=True, allowed_owners=allowed_owners)
         except Exception as exc:
             raise SubmissionRefused(
                 "opposing_order_discovery_unavailable") from exc
