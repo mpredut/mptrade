@@ -401,17 +401,30 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 print(f"No action taken, because trend is up!")
         elif price_decrease > lost_threshold or u.are_close(price_decrease, lost_threshold, target_tolerance_percent=MT_ARE_CLOSE_TOLERANCE_PCT):
             if not is_trend_up(symbol):
-                print(f"Price decreased with {price_decrease * 100}% by more than {lost_threshold * 100}% versus buy price and not trend up!")
-                if can_sell and sellable_qty > 0:
-                    _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
-                        safeback_seconds=sbs, force=False, cancelorders=True,
-                        hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=True,
-                    )
+                # Pillar 2 Smart Stop-Loss Controller: check for predatory wick hunt / whale absorption
+                from intelligence.external.guards.smart_stop_loss_guard import evaluate_smart_stop_loss
+                should_execute, sl_reason, sl_meta = evaluate_smart_stop_loss(
+                    symbol=symbol,
+                    price_decrease=price_decrease,
+                    lost_threshold=lost_threshold,
+                    now=current_time_s,
+                )
+                if not should_execute:
+                    print(f"[{symbol}] Smart Stop-Loss DEFERRED: {sl_reason}")
                 else:
-                    print(f"No can sell (can_sell={can_sell}, sellable_qty={sellable_qty})")
+                    print(f"Price decreased with {price_decrease * 100}% by more than {lost_threshold * 100}% versus buy price and not trend up! (decision={sl_reason})")
+                    if can_sell and sellable_qty > 0:
+                        _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
+                            safeback_seconds=sbs, force=False, cancelorders=True,
+                            hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=True,
+                        )
+                    else:
+                        print(f"No can sell (can_sell={can_sell}, sellable_qty={sellable_qty})")
             else:
                 print(f"No action taken, because trend is up!")
         else:
+            from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss_if_recovered
+            clear_smart_stop_loss_if_recovered(symbol, price_decrease, lost_threshold, now=current_time_s)
             print(f"Nothing interesting")
 
     # 4. Evaluate SELL history.
