@@ -158,5 +158,39 @@ class TestMinProfitKraken(Base):
         self.assertEqual(c.orders[0]["side"], "sell")
 
 
+class TestRebuyGuardsKraken(Base):
+    """Verify Kraken re-buy uses bypass_guards={'math_reference'} and defers on guard refusal."""
+
+    def test_rebuy_executes_when_guards_allow(self):
+        from unittest.mock import patch
+        c = FakeK(60.0, total=25.0, held=0.0)
+        ts = self.ts(c)
+        rb_state = {"qty": 10.0, "sell_price": 40.0, "low": 40.0}
+
+        with patch("order_guard.check_intelligence_guards", return_value=(True, "ok", 1.0)) as mock_guard:
+            res = ts.execute_rebuy("HYPE", "HYPE", "HYPEUSD", 10.0, 42.0, rb_state, persist=lambda _: None)
+            mock_guard.assert_called_once()
+            self.assertEqual(mock_guard.call_args.kwargs.get("bypass_guards"), {"math_reference"})
+            self.assertEqual(len(c.orders), 1)
+            self.assertEqual(c.orders[0]["side"], "buy")
+            self.assertEqual(res.outcome, "active")
+            self.assertIsNotNone(res.intent.get("order_id"))
+
+    def test_rebuy_defers_when_guards_block_cascade(self):
+        from unittest.mock import patch
+        c = FakeK(60.0, total=25.0, held=0.0)
+        ts = self.ts(c)
+        rb_state = {"qty": 10.0, "sell_price": 40.0, "low": 40.0}
+
+        with patch("order_guard.check_intelligence_guards",
+                   return_value=(False, "liquidation_cascade (OI -6.2%, taker 0.72)", 0.0)):
+            persisted = []
+            res = ts.execute_rebuy("HYPE", "HYPE", "HYPEUSD", 10.0, 42.0, rb_state, persist=persisted.append)
+            self.assertEqual(len(c.orders), 0, "No buy order should be sent during cascade")
+            self.assertEqual(res.outcome, "refused")
+            self.assertEqual(persisted, [None], "Pending order cleared so rebuy intent persists")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

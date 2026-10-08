@@ -50,8 +50,17 @@ def reset_monitororder_state_for_test():
     _monitororder_initialized = False
 
 
+def _should_notify_order_launched(owner):
+    """Return False for fast scalpers (rtrade) to prevent notification spam on placement."""
+    if not owner:
+        return True
+    return str(owner).strip().lower() != "rtrade"
+
+
 def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=None):
     """Notify when a newly placed open order is detected on Binance."""
+    if not _should_notify_order_launched(owner):
+        return
     try:
         import alertnotifiers as alert
         qty = float(quantity or 0.0)
@@ -119,7 +128,9 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
 
         if oid_str not in _notified_placed_order_ids:
             _notified_placed_order_ids.add(oid_str)
-            if oid_str not in _derived_replacement_order_ids and _monitororder_initialized:
+            if (oid_str not in _derived_replacement_order_ids
+                    and _monitororder_initialized
+                    and _should_notify_order_launched(owner)):
                 _notify_order_launched(symbol, order_type, order_id, price, order.get("quantity", 0), owner=owner)
 
         # Repricing protection: only reprice orders from tradeall or monitororder.

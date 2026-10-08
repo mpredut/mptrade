@@ -498,6 +498,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                         _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
                             safeback_seconds=sbs, force=False, cancelorders=True,
                             hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=True,
+                            bypass_guards={"all"},
                         )
                     else:
                         print(f"No can sell (can_sell={can_sell}, sellable_qty={sellable_qty})")

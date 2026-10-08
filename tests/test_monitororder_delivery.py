@@ -24,6 +24,9 @@ def isolated_retry_queue(tmp_path, monkeypatch):
     monkeypatch.setattr(
         monitororder.mkt, "order_filter_refusal",
         lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        monitororder.trade_cooldown, "get_last_trade_age",
+        lambda *_args, **_kwargs: 999.0)
     monitororder.reset_monitororder_state_for_test()
     yield
     monitororder.reset_monitororder_state_for_test()
@@ -206,3 +209,17 @@ def test_crash_after_accepted_replacement_is_reconciled_without_resubmit():
     tracked = monitororder.order_retry.load_all()[0]
     assert tracked["lifecycle"] == "accepted"
     assert tracked["order_id"] == "new-crash"
+
+
+def test_rtrade_order_placement_does_not_emit_launched_notification():
+    with patch("alertnotifiers.notify") as alert_mock:
+        monitororder._notify_order_launched("TAOUSDC", "BUY", "rt-1", 255.5, 1.9, owner="rtrade")
+    alert_mock.assert_not_called()
+
+
+def test_tradeall_order_placement_emits_launched_notification():
+    with patch("alertnotifiers.notify") as alert_mock:
+        monitororder._notify_order_launched("TAOUSDC", "BUY", "ta-1", 255.5, 1.9, owner="tradeall")
+    alert_mock.assert_called_once()
+    assert alert_mock.call_args.kwargs["source"] == "monitororder"
+    assert "tradeall" in alert_mock.call_args.kwargs["title"]

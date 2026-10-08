@@ -190,21 +190,53 @@ class KrakenTrailing:
             )
         return result
 
+    def _submit_lifecycle_order(self, intent, persist, pair, side, qty, price,
+                                kind, bypass_guards=None):
+        """Submit through StrategyExecutor with optional guard pre-checks."""
+        if bypass_guards is None:
+            bypass_guards = {"all"} if side.upper() == "SELL" else {"math_reference"}
+
+        from order_guard import check_intelligence_guards
+        if not ("all" in bypass_guards or "*" in bypass_guards):
+            allowed, reason, _ = check_intelligence_guards(
+                self.executor._executor, pair, side.upper(), price,
+                qty=qty,
+                bypass_guards=bypass_guards,
+            )
+            if not allowed:
+                intent["refusal_reason"] = reason
+                persist(None)
+                from order_retry import TrackedOrderResult
+                return TrackedOrderResult(outcome="refused", intent=intent, status=None)
+
+        result = self.order_lifecycle.submit(
+            intent, persist=persist,
+            submit=lambda: self.executor.submit_order_with_intent(
+                intent["intent_id"], pair, side.lower(), qty, price,
+                market=False, kind=kind,
+                client_order_id=intent["client_order_id"]),
+        )
+        if result.outcome == "refused":
+            persist(None)
+        return result
+
     def execute_sell(self, key, asset, pair, qty, price, peak, trail, persist):
         limit = price * 0.995
         intent = self._order_intent(
             "SELL", key, asset, pair, qty, limit, anchor=peak, trail=trail)
-        result = self.order_lifecycle.submit(
-            intent, persist=persist,
-            submit=lambda: self.executor.submit_order_with_intent(
-                intent["intent_id"], pair, "sell", qty, limit,
-                market=False, kind="TRAIL_SELL",
-                client_order_id=intent["client_order_id"]),
-        )
-        self.log(
-            f"  🛑 [TRAIL-K] SELL PENDING {qty} {asset} @ ~{limit:.4f} "
-            f"(orderId={result.intent.get('order_id')})"
-        )
+        result = self._submit_lifecycle_order(
+            intent, persist, pair, "SELL", qty, limit,
+            kind="TRAIL_SELL", bypass_guards={"all"})
+        if result.outcome == "refused":
+            self.log(
+                f"  🛑 [TRAIL-K] SELL REFUSED {qty} {asset} @ ~{limit:.4f} "
+                f"({result.intent.get('refusal_reason')})"
+            )
+        else:
+            self.log(
+                f"  🛑 [TRAIL-K] SELL PENDING {qty} {asset} @ ~{limit:.4f} "
+                f"(orderId={result.intent.get('order_id')})"
+            )
         return result
 
     def execute_rebuy(self, key, asset, pair, qty, price, rb, persist):
@@ -213,17 +245,19 @@ class KrakenTrailing:
             "REBUY", key, asset, pair, qty, limit,
             anchor=float(rb.get("low") or price),
             sell_price=float(rb.get("sell_price") or 0.0))
-        result = self.order_lifecycle.submit(
-            intent, persist=persist,
-            submit=lambda: self.executor.submit_order_with_intent(
-                intent["intent_id"], pair, "buy", qty, limit,
-                market=False, kind="TRAIL_REBUY",
-                client_order_id=intent["client_order_id"]),
-        )
-        self.log(
-            f"  🟢 [TRAIL-K] REBUY PENDING {qty} {asset} @ ~{limit:.4f} "
-            f"(orderId={result.intent.get('order_id')})"
-        )
+        result = self._submit_lifecycle_order(
+            intent, persist, pair, "BUY", qty, limit,
+            kind="TRAIL_REBUY", bypass_guards={"math_reference"})
+        if result.outcome == "refused":
+            self.log(
+                f"  🟢 [TRAIL-K] RE-BUY REFUSED {qty} {asset} @ ~{limit:.4f} "
+                f"({result.intent.get('refusal_reason')}) (not catching the knife)"
+            )
+        else:
+            self.log(
+                f"  🟢 [TRAIL-K] REBUY PENDING {qty} {asset} @ ~{limit:.4f} "
+                f"(orderId={result.intent.get('order_id')})"
+            )
         return result
 
     def log_dry_sell(self, key, asset, pair, qty, price, peak, trail) -> None:
