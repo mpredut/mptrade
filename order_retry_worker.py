@@ -522,6 +522,7 @@ def process_once(mkt, now=None):
         kwargs["_retry_price_tolerance"] = oq.RETRY_PRICE_TOL
         if r.get("kind") == "monitor_order_replace":
             kwargs["bypass_profit_guard"] = True
+            kwargs["wait_for_trend"] = False
         if provider_name is not None:
             kwargs["provider_name"] = provider_name
         outcome_context = {}

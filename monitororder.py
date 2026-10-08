@@ -166,7 +166,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             # are checked while the existing order is still active.
             replacement_id = order_retry.enqueue(
                 symbol, order_type, quantity,
-                {"smart": False, "kind": "monitor_order_replace", "bypass_profit_guard": True},
+                {"smart": False, "kind": "monitor_order_replace", "bypass_profit_guard": True, "wait_for_trend": False},
                 requested_price=new_price, ref_price=current_price,
                 failure_reason="submit_pending",
                 provider_name="Binance", kind="monitor_order_replace",
@@ -306,6 +306,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     symbol, order_type, new_price, quantity, smart=False,
                     kind="monitor_order_replace",
                     bypass_profit_guard=True,
+                    wait_for_trend=False,
                     caller_owns_retry=True,
                     client_order_id=client_order_id,
                     _outcome_context=outcome,
