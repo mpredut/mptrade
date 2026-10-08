@@ -34,6 +34,13 @@ _SERVER_MARKERS = (
     "CONFIG RELOAD", "SERVER STATUS", "SERVER DOWN", "DEADMAN",
 )
 
+def _ensure_env_loaded() -> None:
+    from botcore import load_dotenv
+    for fname in ("config.env", ".env"):
+        p = os.path.join(ROOT_DIR, fname)
+        if os.path.isfile(p):
+            load_dotenv(p)
+
 def resolve_topic(category: str) -> str:
     cat = (category or "").upper()
     if cat in ("SERVER", "SERVER_STATE", "SERVER_STATUS", "DEADMAN"):
@@ -42,16 +49,20 @@ def resolve_topic(category: str) -> str:
             or os.environ.get("NTFY_TOPIC_SERVER_STATE")
             or os.environ.get("NTFY_TOPIC_SERVER_STATUS")
             or os.environ.get("NTFY_TOPIC_DEADMAN")
-            or "ntfy-server-cazut-1978"
         )
+        if not topic:
+            _ensure_env_loaded()
+            topic = (
+                os.environ.get("NTFY_TOPIC_SERVER")
+                or os.environ.get("NTFY_TOPIC_SERVER_STATE")
+                or os.environ.get("NTFY_TOPIC_SERVER_STATUS")
+                or os.environ.get("NTFY_TOPIC_DEADMAN")
+                or "ntfy-server-1978"
+            )
         return topic
     topic = os.environ.get(f"NTFY_TOPIC_{cat}")
     if not topic:
-        from botcore import load_dotenv
-        for fname in ("config.env", ".env"):
-            p = os.path.join(ROOT_DIR, fname)
-            if os.path.isfile(p):
-                load_dotenv(p)
+        _ensure_env_loaded()
         topic = os.environ.get(f"NTFY_TOPIC_{cat}")
     if not topic and cat == "MACRO":
         topic = os.environ.get("NTFY_TOPIC_MACRO", "ntfy-macro-8a35d7")
