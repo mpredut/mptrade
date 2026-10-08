@@ -419,7 +419,7 @@ class NotificationServer:
         allowed, reason, _ = _reserve_delivery("ntfy", alerts, urgent=urgent)
         if not allowed:
             logging.info(f"ntfy delivery skipped by policy: {reason}")
-            if reason != "duplicate" and (urgent or is_email_mirrored(topic)):
+            if reason != "duplicate" and is_email_mirrored(topic):
                 self._send_email(full_title, body)
             return False
 

@@ -167,7 +167,7 @@ def _reserve_delivery(channel: str, alerts: list[Any], *, urgent: bool) -> tuple
     Return ``(allowed, reason, warn_once)``. Only routine ntfy deliveries have a
     local daily cap. Urgent ntfy and all email bypass that cap, but still deduplicate.
     A network attempt counts conservatively because a timeout can follow acceptance.
-    An actual ntfy provider quota remains binding and requires an email fallback.
+    An actual ntfy provider quota remains binding; mirrored topics (ERROR/DEADMAN) fall back to email.
     """
     now = time.time()
     today = datetime.fromtimestamp(now, timezone.utc).date().isoformat()

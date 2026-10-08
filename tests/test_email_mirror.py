@@ -110,6 +110,54 @@ class EmailMirrorTest(unittest.TestCase):
         self.assertEqual(mailer.main(["--topic", "t-error", "s", "b"]), 0)
         self.assertEqual(len(self.sent), 1)
 
+    def test_trades_never_mirrored_to_email_even_when_ntfy_blocked(self):
+        from notify_engine.alertnotifiers import _mark_provider_daily_limit
+        _mark_provider_daily_limit("ntfy", cooldown_seconds=3600.0)
+
+        trade_alert = {
+            "type": "bot_event",
+            "name": "📝 BUY TAOUSDC @ 255.50 [rtrade]",
+            "body": "BUY order placed",
+            "source": "rtrade",
+            "symbol": "TAOUSDC",
+        }
+        # dispatch_alerts should return False because ntfy is blocked, and NOT send email
+        result = self.server.dispatch_alerts([trade_alert])
+        self.assertFalse(result)
+        self.assertEqual(self.sent, [])
+
+    def test_errors_still_mirrored_to_email_when_ntfy_blocked(self):
+        from notify_engine.alertnotifiers import _mark_provider_daily_limit
+        _mark_provider_daily_limit("ntfy", cooldown_seconds=3600.0)
+
+        error_alert = {
+            "type": "bot_event",
+            "name": "Exception in bot runner",
+            "body": "Fatal traceback details",
+            "source": "watchdog",
+            "symbol": "BTCUSDC",
+        }
+        result = self.server.dispatch_alerts([error_alert])
+        self.assertFalse(result)
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("Exception in bot runner", self.sent[0][0]["Subject"])
+
+    def test_deadman_still_mirrored_to_email_when_ntfy_blocked(self):
+        from notify_engine.alertnotifiers import _mark_provider_daily_limit
+        _mark_provider_daily_limit("ntfy", cooldown_seconds=3600.0)
+
+        server_alert = {
+            "type": "bot_event",
+            "name": "SERVER DOWN",
+            "body": "Heartbeat missing",
+            "source": "deadman",
+            "symbol": "SYS",
+        }
+        result = self.server.dispatch_alerts([server_alert])
+        self.assertFalse(result)
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("SERVER DOWN", self.sent[0][0]["Subject"])
+
 
 if __name__ == "__main__":
     unittest.main()

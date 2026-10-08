@@ -50,8 +50,13 @@ def load_env() -> None:
 
 
 def email_mirrored_topics() -> set[str]:
-    topics = (os.environ.get(f"NTFY_TOPIC_{cat}", "").strip() for cat in EMAIL_MIRRORED_CATEGORIES)
-    return {t for t in topics if t}
+    if not os.environ.get("NTFY_TOPIC_ERROR"):
+        load_env()
+    topics = {os.environ.get(f"NTFY_TOPIC_{cat}", "").strip() for cat in EMAIL_MIRRORED_CATEGORIES}
+    topics.discard("")
+    if not topics:
+        topics.update({"ntfy-error-1978", "ntfy-server-1978"})
+    return topics
 
 
 def is_email_mirrored(topic: str | None) -> bool:
