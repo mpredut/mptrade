@@ -1,3 +1,4 @@
+import os
 import time
 import datetime
 import random
@@ -17,8 +18,17 @@ from providers.market_api import api as mkt  # Single guarded proxy (Instrument.
 from providers.strategy_executor import SubmissionRefused
 import order_retry
 import accepted_order_persistence
+from lock import trade_cooldown
 
-MAX_PROC = 0.77
+def _load_float_env(name, default):
+    try:
+        val = os.getenv(name)
+        return float(val) if val is not None and str(val).strip() else default
+    except (TypeError, ValueError):
+        return default
+
+MAX_PROC = _load_float_env("MONITOR_MAX_PROC", 0.77)
+MONITOR_COOLDOWN_MULTIPLIER = _load_float_env("MONITOR_COOLDOWN_MULTIPLIER", 1.15)
 monitor_interval = 3.7
 MAX_TRACKED_ORDER_IDS = 10_000
 initial_prices = OrderedDict()
@@ -200,6 +210,14 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             # Issue the one-shot permit only after the durable intent exists, so
             # permit acquisition stays immediately adjacent to cancel and submit.
             try:
+                # Preflight check 0: Cooldown gate. Never cancel an active order
+                # if the replacement would be rejected by the rapid-fire trade cooldown.
+                last_trade_age = trade_cooldown.get_last_trade_age(symbol)
+                cooldown_threshold = float(trade_cooldown.DEFAULT_COOLDOWN_SEC)
+                if last_trade_age is not None and last_trade_age < cooldown_threshold:
+                    raise SubmissionRefused(
+                        f"cooldown_active ({last_trade_age:.1f}s < {cooldown_threshold:.0f}s)"
+                    )
                 filter_refusal = mkt.order_filter_refusal(
                     symbol,
                     order_type,
@@ -381,8 +399,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
 
 
 MONITOR_BETWEEN_ORDERS_INTERVAL = 2
-MONITOR_OPEN_ORDER_INTERVAL = 8
-MONITOR_CLOSE_ORDER_INTERVAL = 8
+MONITOR_OPEN_ORDER_INTERVAL = max(8, round(float(trade_cooldown.DEFAULT_COOLDOWN_SEC) * MONITOR_COOLDOWN_MULTIPLIER))
+MONITOR_CLOSE_ORDER_INTERVAL = MONITOR_OPEN_ORDER_INTERVAL
 max_age_seconds = 3 * 24 * 3600  # Maximum age for treating filled orders as recent (three days).
 
 

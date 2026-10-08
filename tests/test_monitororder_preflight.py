@@ -433,6 +433,29 @@ class MonitorOrderPreflightTest(unittest.TestCase):
         self.assertEqual(stats["attempted"], 0)
         self.assertEqual(recovery.place_calls, [])
 
+    def test_cooldown_active_preserves_live_order(self):
+        orders = {101: {"price": 100.0, "quantity": 2.0}}
+        with (
+            mock.patch.object(
+                monitororder.api, "get_open_orders", return_value=orders),
+            mock.patch.object(
+                monitororder.api, "get_current_price", return_value=100.0),
+            mock.patch.object(
+                monitororder.u, "are_close", return_value=True),
+            mock.patch.object(
+                monitororder.trade_cooldown, "get_last_trade_age", return_value=5.0),
+            mock.patch.object(
+                monitororder.api, "cancel_order") as cancel_order,
+            mock.patch.object(
+                monitororder.mkt, "place") as place,
+            mock.patch("builtins.print"),
+        ):
+            monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
+
+        cancel_order.assert_not_called()
+        place.assert_not_called()
+        self.assertEqual(monitororder.order_retry.load_all(), [])
+
 
 if __name__ == "__main__":
     unittest.main()
