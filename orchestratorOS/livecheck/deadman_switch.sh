@@ -13,11 +13,12 @@
 # further out and it delivers itself 35 minutes later — the alert arrives even if
 # the machine is completely off or without power.
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-TOPIC=$(grep -hs -m1 '^NTFY_TOPIC_DEADMAN=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
+TOPIC=$(grep -hs -m1 '^NTFY_TOPIC_SERVER=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
+[ -n "$TOPIC" ] || TOPIC=$(grep -hs -m1 '^NTFY_TOPIC_DEADMAN=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
 [ -n "$TOPIC" ] || TOPIC=$(grep -hs -m1 '^NTFY_TOPIC_ERROR=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
 [ -n "$TOPIC" ] || TOPIC=$(grep -hs -m1 '^NTFY_TOPIC=' "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | cut -d= -f2- | tr -d ' "' | tr -d "'")
 if [ -z "$TOPIC" ]; then
-    echo "$(date '+%H:%M') deadman: no NTFY_TOPIC(_DEADMAN/_ERROR) found in $ROOT/.env or $ROOT/config.env"
+    echo "$(date '+%H:%M') deadman: no NTFY_TOPIC(_SERVER/_DEADMAN/_ERROR) found in $ROOT/.env or $ROOT/config.env"
     exit 1
 fi
 

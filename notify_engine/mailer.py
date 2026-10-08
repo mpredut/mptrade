@@ -29,7 +29,7 @@ from email.mime.text import MIMEText
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Categories whose ntfy topic (NTFY_TOPIC_<CATEGORY>) is mirrored to email.
-EMAIL_MIRRORED_CATEGORIES = ("ERROR", "DEADMAN")
+EMAIL_MIRRORED_CATEGORIES = ("ERROR", "DEADMAN", "SERVER")
 
 _SMTP_TIMEOUT_SEC = 15
 
