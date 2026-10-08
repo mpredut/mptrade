@@ -173,7 +173,7 @@ class AutonomousAIReconciler:
             self.notify_enabled = bool(int(float(conf.get("supervisor_notify", conf.get("shadow_notify", "1")))))
 
         self.ntfy_url = conf.get("phone_alert_url", "")
-        self.ntfy_topic = conf.get("ntfy_topic_guard", conf.get("ntfy_topic", "ntfy-guard-8a35d7"))
+        self.ntfy_topic = conf.get("ntfy_topic_guard", conf.get("ntfy_topic", "ntfy-guard-1978"))
         self.ntfy_token = conf.get("ntfy_token", "")
 
         self.state_file = os.path.join(self.cache_dir, "supervisor_nightly_eval.json")

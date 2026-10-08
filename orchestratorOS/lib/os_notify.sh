@@ -43,7 +43,7 @@ send_os_ntfy() {
     if [ -z "$topic" ]; then
         topic=$(_os_notify_env "$root" NTFY_TOPIC_ERROR)
         [ -n "$topic" ] || topic=$(_os_notify_env "$root" NTFY_TOPIC)
-        [ -n "$topic" ] || topic="ntfy-error-941582"
+        [ -n "$topic" ] || topic="ntfy-error-1978"
     fi
 
     local token="${NTFY_TOKEN:-}"

@@ -41,6 +41,18 @@ def _ensure_env_loaded() -> None:
         if os.path.isfile(p):
             load_dotenv(p)
 
+_CANONICAL_TOPICS = {
+    "TRADES": "ntfy-trades-1978",
+    "GUARD": "ntfy-guard-1978",
+    "PRICE": "ntfy-price-1978",
+    "ERROR": "ntfy-error-1978",
+    "MACRO": "ntfy-macro-1978",
+    "SERVER": "ntfy-server-1978",
+    "SERVER_STATE": "ntfy-server-1978",
+    "SERVER_STATUS": "ntfy-server-1978",
+    "DEADMAN": "ntfy-server-1978",
+}
+
 def resolve_topic(category: str) -> str:
     cat = (category or "").upper()
     if cat in ("SERVER", "SERVER_STATE", "SERVER_STATUS", "DEADMAN"):
@@ -64,8 +76,8 @@ def resolve_topic(category: str) -> str:
     if not topic:
         _ensure_env_loaded()
         topic = os.environ.get(f"NTFY_TOPIC_{cat}")
-    if not topic and cat == "MACRO":
-        topic = os.environ.get("NTFY_TOPIC_MACRO", "ntfy-macro-8a35d7")
+    if not topic:
+        topic = _CANONICAL_TOPICS.get(cat)
     return topic or os.environ.get("PHONE_ALERT_URL", "test-mptrade")
 
 def _category_for_title_and_source(title: str, source: str) -> str:
