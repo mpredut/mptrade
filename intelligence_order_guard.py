@@ -29,6 +29,7 @@ def check_intelligence_order_guards(
     *,
     qty: Optional[float] = None,
     notional_eur: Optional[float] = None,
+    is_stop_loss: bool = False,
     regime_context: Any = None,
     margins: Optional[Dict[str, Any]] = None,
     now: Optional[float] = None,
@@ -38,9 +39,12 @@ def check_intelligence_order_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
+    if is_stop_loss:
+        return True, "stop_loss_exempt", 1.0
+
     side = (order_type or "").upper()
-    if side != "BUY":
-        return True, "not_buy_side", 1.0
+    if side not in ("BUY", "SELL"):
+        return True, "not_supported_side", 1.0
 
     if margins is None:
         try:
@@ -57,7 +61,12 @@ def check_intelligence_order_guards(
     active_reason = "ok"
 
     # Compute notional EUR
-    computed_notional = float(notional_eur) if notional_eur is not None else float(price * (qty or 1.0))
+    computed_notional = float(notional_eur) if notional_eur is not None else (float(price * qty) if (price and qty) else 0.0)
+
+    if side == "SELL":
+        sell_min_notional = float(m.get("sell_guard_min_notional_eur", m.get("llm_min_notional_eur", 1000.0)))
+        if computed_notional < sell_min_notional:
+            return True, "small_sell_exempt", 1.0
 
     # 1. High-Stake LLM Pre-Trade Guard (Pillar 3)
     llm_mode = str(m.get("llm_guard_mode", m.get("high_stake_guard_mode", m.get("gemini_guard_mode", "shadow")))).strip().lower()
@@ -82,6 +91,7 @@ def check_intelligence_order_guards(
                         notional_eur=computed_notional,
                         regime_context=regime_context if valid_context else None,
                         dur_sec=dur_sec,
+                        is_stop_loss=is_stop_loss,
                     )
                 except TypeError:
                     g_dec = llm_guard.check(

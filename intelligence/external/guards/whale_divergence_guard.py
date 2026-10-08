@@ -65,6 +65,16 @@ class WhaleDivergenceGuard:
                 divergence_regime=regime,
             )
 
+        # 3. Selling into massive whale accumulation / squeeze
+        if side_norm == "SELL" and regime == "accumulation" and snapshot.top_traders_long_pct >= 0.70:
+            return GuardDecision.defer(
+                guard_name="WhaleDivergenceGuard",
+                reason=f"whale_accumulation_active (whales {snapshot.top_traders_long_pct*100:.1f}% long, OI_1h={snapshot.open_interest_1h_change_pct:+.1f}%)",
+                open_interest_change=snapshot.open_interest_1h_change_pct,
+                divergence_regime=regime,
+                top_long_pct=snapshot.top_traders_long_pct,
+            )
+
         return GuardDecision.allow(
             guard_name="WhaleDivergenceGuard",
             reason=f"whale_flow_consistent ({regime})",

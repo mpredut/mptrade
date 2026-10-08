@@ -27,7 +27,7 @@ _DEFAULT_REGIME_SERVICE = MarketRegimeService()
 _MARGINS = None   # cache: {provider_lower: percentage, "default": 1.15}
 _MARGINS_FILE_MTIME: float = 0.0
 _MARGINS_LAST_CHECK: float = 0.0
-_SHADOW_NOTIFY_COOLDOWN: Dict[Tuple[str, str, str], float] = {}
+from geopolitical_order_guard import _GEO_SHADOW_NOTIFY_COOLDOWN as _SHADOW_NOTIFY_COOLDOWN
 
 
 def _load_margins():
@@ -734,6 +734,7 @@ def check_intelligence_guards(
     regime_context=None,
     qty: Optional[float] = None,
     notional_eur: Optional[float] = None,
+    is_stop_loss: bool = False,
     now: Optional[float] = None,
 ) -> tuple[bool, str, float]:
     """Evaluate intelligence guards across all active pillars.
@@ -749,6 +750,9 @@ def check_intelligence_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
+    if is_stop_loss:
+        return True, "stop_loss_exempt", 1.0
+
     valid_context = False
     if regime_context is not None:
         max_age = _load_margins().get("regime_context_max_age_sec", 120.0)
@@ -766,12 +770,17 @@ def check_intelligence_guards(
         return True, "intelligence_guards_off", 1.0
 
     side = (order_type or "").upper()
-    if side != "BUY":
-        return True, "not_buy_side", 1.0
+    if side not in ("BUY", "SELL"):
+        return True, "not_supported_side", 1.0
 
     computed_notional = notional_eur
     if computed_notional is None and qty is not None and price > 0:
         computed_notional = price * qty
+
+    if side == "SELL":
+        sell_min_notional = float(m.get("sell_guard_min_notional_eur", 1000.0))
+        if computed_notional is None or computed_notional < sell_min_notional:
+            return True, "small_sell_exempt", 1.0
 
     # Check if expensive static analysis is already cached on regime_context
     cached_res = getattr(regime_context, "_intelligence_decision", None) if valid_context else None
@@ -786,6 +795,7 @@ def check_intelligence_guards(
             regime_context=regime_context if valid_context else None,
             qty=qty,
             notional_eur=computed_notional,
+            is_stop_loss=is_stop_loss,
             now=now,
         )
         if valid_context:
@@ -808,8 +818,8 @@ def check_intelligence_guards(
     active_reason = static_reason
 
     # Dynamic Re-evaluation for cached context:
-    # 1. Dynamic Parabolic Surge Guard (Anti-FOMO spike check evaluated on every verified price)
-    if price > 0:
+    # 1. Dynamic Parabolic Surge Guard (Anti-FOMO spike check evaluated on BUY only)
+    if side == "BUY" and price > 0:
         from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
         from intelligence.internal.guards.guard_decision import BrakeAction
         surge_pct = float(m.get("parabolic_surge_pct", 15.0))
@@ -870,6 +880,7 @@ def check_intelligence_guards(
                         notional_eur=computed_notional,
                         regime_context=regime_context if valid_context else None,
                         dur_sec=dur_sec,
+                        is_stop_loss=is_stop_loss,
                     )
                 except TypeError:
                     g_dec = llm_guard.check(
@@ -905,8 +916,8 @@ def check_intelligence_guards(
                             effective_scale = min(effective_scale, g_scale)
                             active_reason = g_reason
 
-    # 3. Dynamic Weibull trend exhaustion check if duration provided or resolved
-    if dur_sec and dur_sec > 0:
+    # 3. Dynamic Weibull trend exhaustion check if duration provided or resolved (BUY entries only)
+    if side == "BUY" and dur_sec and dur_sec > 0:
         from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
         from intelligence.internal.guards.guard_decision import BrakeAction
         e_policy = str(m.get("weibull_exhaustion_policy", "downscale")).strip().lower()
@@ -947,6 +958,7 @@ def _evaluate_intelligence_guards_raw(
     regime_context=None,
     qty: Optional[float] = None,
     notional_eur: Optional[float] = None,
+    is_stop_loss: bool = False,
     now: Optional[float] = None,
 ) -> tuple[bool, str, float]:
     m = _load_margins()
@@ -954,34 +966,43 @@ def _evaluate_intelligence_guards_raw(
     if mode in ("off", "0", "disabled"):
         return True, "intelligence_guards_off", 1.0
 
+    if is_stop_loss:
+        return True, "stop_loss_exempt", 1.0
+
     side = (order_type or "").upper()
-    if side != "BUY":
-        return True, "not_buy_side", 1.0
+    if side not in ("BUY", "SELL"):
+        return True, "not_supported_side", 1.0
 
     computed_notional = notional_eur
     if computed_notional is None and qty is not None and price > 0:
         computed_notional = price * qty
 
+    if side == "SELL":
+        sell_min_notional = float(m.get("sell_guard_min_notional_eur", 1000.0))
+        if computed_notional is None or computed_notional < sell_min_notional:
+            return True, "small_sell_exempt", 1.0
+
     effective_scale = 1.0
     active_reason = "ok"
 
     # 1. Internal Quantitative Mathematical Guards (Pillar 1: Parabolic Surge, Weibull Exhaustion)
-    from internal_order_guard import check_internal_order_guards
-    int_ok, int_reason, int_scale = check_internal_order_guards(
-        symbol=symbol,
-        side=side,
-        price=price,
-        price_history=price_history,
-        trend_duration_seconds=trend_duration_seconds,
-        regime_context=regime_context,
-        margins=m,
-        now=now,
-    )
-    if not int_ok:
-        return False, int_reason, 0.0
-    if int_scale < 1.0:
-        effective_scale = min(effective_scale, int_scale)
-        active_reason = int_reason
+    if side == "BUY":
+        from internal_order_guard import check_internal_order_guards
+        int_ok, int_reason, int_scale = check_internal_order_guards(
+            symbol=symbol,
+            side=side,
+            price=price,
+            price_history=price_history,
+            trend_duration_seconds=trend_duration_seconds,
+            regime_context=regime_context,
+            margins=m,
+            now=now,
+        )
+        if not int_ok:
+            return False, int_reason, 0.0
+        if int_scale < 1.0:
+            effective_scale = min(effective_scale, int_scale)
+            active_reason = int_reason
 
     # 2. External Microstructure & Derivatives Guards (Pillar 2: Orderbook Depth, Funding, Whale Flow)
     from external_order_guard import check_external_order_guards
@@ -989,6 +1010,9 @@ def _evaluate_intelligence_guards_raw(
         symbol=symbol,
         side=side,
         price=price,
+        qty=qty,
+        notional_eur=computed_notional,
+        is_stop_loss=is_stop_loss,
         margins=m,
         now=now,
     )
@@ -1007,6 +1031,7 @@ def _evaluate_intelligence_guards_raw(
         price=price,
         qty=qty,
         notional_eur=computed_notional,
+        is_stop_loss=is_stop_loss,
         regime_context=regime_context,
         margins=m,
         now=now,
@@ -1157,11 +1182,13 @@ def profit_guard(
     regime_context=None,
     qty: Optional[float] = None,
     notional_eur: Optional[float] = None,
+    is_stop_loss: bool = False,
     evaluate_intelligence: bool = True,
 ):
     """Return whether the order is profitable relative to its reference.
 
     Execution Pipeline:
+    - Emergency Stop-Loss exits (is_stop_loss=True) bypass profit reference and are exempt from guards.
     - Stage 1 (Super-Matematică): Deterministic profit margin vs historical reference.
       If mathematically unprofitable, returns False immediately without evaluating
       AI/macro sentiment or sending false-positive push alerts.
@@ -1169,6 +1196,9 @@ def profit_guard(
       and Geopolitical shock shield only on mathematically cleared orders when
       evaluate_intelligence=True.
     """
+    if is_stop_loss:
+        return True
+
     # Stage 1: Deterministic Mathematical Reference Check
     if not check_math_profit_reference(
         provider, symbol, order_type, price, profit_percentage,
@@ -1181,7 +1211,8 @@ def profit_guard(
 
     # Stage 2: Intelligence, Macro & Sentiment Guards
     intel_ok, intel_reason, suggested_scale = check_intelligence_guards(
-        provider, symbol, order_type, price, regime_context=regime_context, qty=qty, notional_eur=notional_eur
+        provider, symbol, order_type, price, regime_context=regime_context, qty=qty, notional_eur=notional_eur,
+        is_stop_loss=is_stop_loss,
     )
     if not intel_ok:
         print(f"[GUARD] {order_type} {symbol}: blocked by intelligence guard ({intel_reason})")

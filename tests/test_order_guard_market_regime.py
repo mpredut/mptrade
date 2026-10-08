@@ -617,11 +617,12 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         self.assertEqual(reason_btc, "btc_blocked")
 
         # Check for ETHUSDT: mismatched symbol MUST NOT reuse BTC's memoized decision
-        ok_eth, reason_eth, _ = order_guard.check_intelligence_guards(
-            "binance", "ETHUSDT", "BUY", 3000.0, regime_context=ctx
-        )
-        self.assertTrue(ok_eth)
-        self.assertEqual(reason_eth, "ok")
+        with mock.patch.object(order_guard, "_load_margins", return_value={"intelligence_guards_mode": "shadow", "geopolitical_guard_mode": "shadow"}):
+            ok_eth, reason_eth, _ = order_guard.check_intelligence_guards(
+                "binance", "ETHUSDT", "BUY", 3000.0, regime_context=ctx
+            )
+            self.assertTrue(ok_eth)
+            self.assertEqual(reason_eth, "ok")
 
 
 if __name__ == "__main__":

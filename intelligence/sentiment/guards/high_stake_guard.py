@@ -153,11 +153,16 @@ class HighStakeGuard:
         telemetry: Optional[Dict[str, Any]] = None,
         regime_context: Optional[Any] = None,
         dur_sec: Optional[float] = None,
+        is_stop_loss: bool = False,
     ) -> GuardDecision:
         """Evaluate order through LLM if value exceeds threshold."""
-        # 1. Non-BUY orders (e.g. SELL, Stop-Loss, Take-Profit) are never blocked
-        if side.upper() != "BUY":
-            return GuardDecision.allow("HighStakeGuard", "sell_order_exempt")
+        # 1. Emergency Stop-Loss exits are ALWAYS exempt from LLM blocking
+        if is_stop_loss:
+            return GuardDecision.allow("HighStakeGuard", "stop_loss_exempt")
+
+        side_norm = side.upper()
+        if side_norm not in ("BUY", "SELL"):
+            return GuardDecision.allow("HighStakeGuard", "unsupported_side_exempt")
 
         # 2. Compute effective notional value in EUR/USD
         notional = float(notional_eur if notional_eur is not None else (price * qty))
@@ -168,12 +173,13 @@ class HighStakeGuard:
                 notional_eur=notional,
             )
 
-        # 3. High-stake purchase detected: build rich multi-pillar telemetry context for LLM
+        # 3. High-stake order detected: build rich multi-pillar telemetry context for LLM
         effective_telemetry = telemetry if telemetry is not None else collect_pretrade_telemetry(
             symbol, regime_context=regime_context, dur_sec=dur_sec
         )
         context_items = [
             f"- Symbol: {symbol}",
+            f"- Side: {side_norm}",
             f"- Requested Price: {price}",
             f"- Requested Quantity: {qty}",
             f"- Total Notional Value: €{notional:,.2f} EUR",
@@ -184,13 +190,25 @@ class HighStakeGuard:
 
         context_str = "\n".join(context_items)
 
+        if side_norm == "BUY":
+            action_desc = "HIGH-VALUE BUY order"
+            risk_context = (
+                "evaluating whether this entry is sound or if there are critical red flags "
+                "(e.g., euphoric top buying, aggressive whale distribution, severe funding imbalance, or active cascade)."
+            )
+        else:
+            action_desc = "HIGH-VALUE SELL order"
+            risk_context = (
+                "evaluating whether this sale is sound or if there are critical red flags "
+                "(e.g., dumping directly into major whale support/walls, panic-selling at local bottom during whale accumulation, or excessive slippage)."
+            )
+
         prompt = (
             "You are a principal quantitative crypto risk officer. "
-            "An automated trading bot is about to place a HIGH-VALUE BUY order:\n\n"
+            f"An automated trading bot is about to place a {action_desc}:\n\n"
             f"{context_str}\n\n"
-            f"Because this purchase exceeds €{self.min_notional_eur:,.2f} EUR, you must evaluate if executing "
-            "this entry is sound or if there are critical red flags (e.g., euphoric top buying, aggressive whale distribution, "
-            "severe funding imbalance, or active cascade).\n\n"
+            f"Because this order exceeds €{self.min_notional_eur:,.2f} EUR, you must evaluate if executing "
+            f"{risk_context}\n\n"
             "Respond strictly in valid JSON format with exact keys:\n"
             "{\n"
             '  "decision": "APPROVED" | "REJECTED" | "DOWNSCALE",\n'

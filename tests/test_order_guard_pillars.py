@@ -86,15 +86,66 @@ def test_internal_parabolic_surge_guard():
 # Pillar 2: External Order Guard Tests
 # =====================================================================
 
-def test_external_microstructure_non_buy():
+def test_external_microstructure_sell_and_stop_loss_exempt():
+    # Small sell order (< 1000 EUR) passes with 0 ms overhead
     allowed, reason, scale = check_external_order_guards(
         symbol="BTCUSDC",
         side="SELL",
         price=60000.0,
+        qty=0.01, # 600 EUR < 1000 EUR
     )
     assert allowed is True
-    assert reason == "not_buy_side"
+    assert reason == "small_sell_exempt"
     assert scale == 1.0
+
+    # Stop-loss order is explicitly exempt
+    allowed, reason, scale = check_external_order_guards(
+        symbol="BTCUSDC",
+        side="SELL",
+        price=60000.0,
+        notional_eur=5000.0,
+        is_stop_loss=True,
+    )
+    assert allowed is True
+    assert reason == "stop_loss_exempt"
+    assert scale == 1.0
+
+
+def test_external_microstructure_large_sell_whale_support_defer():
+    # Large sell order (5000 EUR >= 1000 EUR) facing massive $2M whale buy wall
+    wall_snap = OrderbookSnapshot(
+        symbol="BTCUSDC",
+        mid_price=60000.0,
+        bid_depth_usd=2_500_000.0,
+        ask_depth_usd=200_000.0,
+        imbalance_ratio=0.926,
+        largest_bid_wall_usd=2_000_000.0,
+        largest_bid_wall_price=59900.0,
+        largest_ask_wall_usd=50_000.0,
+        largest_ask_wall_price=60100.0,
+        ts=time.time(),
+    )
+
+    margins = {
+        "orderbook_wall_guard_mode": "enforce",
+        "whale_guard_mode": "off",
+        "funding_guard_mode": "off",
+        "whale_wall_usd_limit": 1_000_000.0,
+        "max_sell_imbalance": 0.75,
+        "sell_guard_min_notional_eur": 1000.0,
+    }
+
+    with patch.object(get_orderbook_collector(), "fetch", return_value=wall_snap):
+        allowed, reason, scale = check_external_order_guards(
+            symbol="BTCUSDC",
+            side="SELL",
+            price=60000.0,
+            notional_eur=5000.0,
+            margins=margins,
+        )
+        assert allowed is False
+        assert "whale_buy_wall_supporting" in reason or "bid_supported" in reason
+        assert scale == 0.0
 
 
 def test_external_microstructure_orderbook_wall_veto():
@@ -166,16 +217,32 @@ def test_external_microstructure_funding_crowding_downscale():
 # Pillar 3: Intelligence Order Guard Composite Tests
 # =====================================================================
 
-def test_intelligence_non_buy_order_passes_immediately():
+def test_intelligence_sell_and_stop_loss_exempt():
+    # Small sell order (< 1000 EUR)
     allowed, reason, scale = check_intelligence_order_guards(
         provider="binance",
         symbol="BTCUSDC",
         order_type="SELL",
         price=60000.0,
+        qty=0.01,
     )
     assert allowed is True
-    assert reason == "not_buy_side"
+    assert reason == "small_sell_exempt"
     assert scale == 1.0
+
+    # Stop-loss order
+    allowed, reason, scale = check_intelligence_order_guards(
+        provider="binance",
+        symbol="BTCUSDC",
+        order_type="SELL",
+        price=60000.0,
+        notional_eur=5000.0,
+        is_stop_loss=True,
+    )
+    assert allowed is True
+    assert reason == "stop_loss_exempt"
+    assert scale == 1.0
+
 
 
 def test_intelligence_geopolitical_veto_in_enforce_mode():

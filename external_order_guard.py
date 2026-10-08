@@ -65,6 +65,9 @@ def check_external_order_guards(
     side: str,
     price: float,
     *,
+    qty: Optional[float] = None,
+    notional_eur: Optional[float] = None,
+    is_stop_loss: bool = False,
     margins: Optional[Dict[str, Any]] = None,
     now: Optional[float] = None,
 ) -> Tuple[bool, str, float]:
@@ -74,8 +77,11 @@ def check_external_order_guards(
         (allowed: bool, reason: str, suggested_scale: float)
     """
     order_side = (side or "").upper()
-    if order_side != "BUY":
-        return True, "not_buy_side", 1.0
+    if is_stop_loss:
+        return True, "stop_loss_exempt", 1.0
+
+    if order_side not in ("BUY", "SELL"):
+        return True, "not_supported_side", 1.0
 
     if margins is None:
         try:
@@ -85,6 +91,13 @@ def check_external_order_guards(
             m = {}
     else:
         m = margins
+
+    # For SELL orders: small routine orders (< sell_guard_min_notional_eur) bypass with 0 ms overhead
+    computed_notional = float(notional_eur) if notional_eur is not None else (float(price * qty) if (price and qty) else 0.0)
+    if order_side == "SELL":
+        sell_min_notional = float(m.get("sell_guard_min_notional_eur", 1000.0))
+        if computed_notional < sell_min_notional:
+            return True, "small_sell_exempt", 1.0
 
     from intelligence.internal.guards.guard_decision import BrakeAction
 
@@ -147,9 +160,11 @@ def check_external_order_guards(
             from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
             ob_snap = get_orderbook_collector().fetch(symbol, allow_network=False)
             min_imb = float(m.get("min_buy_imbalance", 0.25))
+            max_imb = float(m.get("max_sell_imbalance", 0.75))
             wall_limit = float(m.get("whale_wall_usd_limit", 1_000_000.0))
             ob_guard = OrderbookWallGuard(
                 min_buy_imbalance=min_imb,
+                max_sell_imbalance=max_imb,
                 whale_wall_usd_limit=wall_limit,
             )
             ob_dec = ob_guard.check(symbol, order_side, snapshot=ob_snap)
