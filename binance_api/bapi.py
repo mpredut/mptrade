@@ -41,9 +41,12 @@ if (
     raise ValueError(
         "CM_BINANCE_REST_PRICE_CACHE_TTL_SEC must be finite and positive")
 
+stop = False
+
 # Function to handle Ctrl+C and shut down the WebSocket properly
 def signal_handler(sig, frame):
     global websocket_thread, stop
+    stop = True
     print("Shutting down...")
     bapi_ws.bapi_ws_manager.stop()
     
