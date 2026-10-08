@@ -30,10 +30,16 @@ FLEET_PAUSED
 cachedb/
 *.lock
 *.meta
-*.bak
+*.bak*
 
-# State files (*.json in subdirectories are runtime states, except tracked schema/config)
+# State files (*.json in root and subdirectories are runtime states, except tracked schema/config)
 */**/*.json
+.*_state.json
+priceanalysis.json
+kraken_trades_full.json
+last_watch_config.json
+index.html
+tradeall_live/
 !notify_engine/rules.json
 !offline/research/hype_dataset/financial_baseline_v1.json
 !offline/research/t212_dataset/manifest.json

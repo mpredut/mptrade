@@ -64,9 +64,9 @@ for _i in 1 2 3; do g fetch --quiet origin "$BRANCH" 2>/dev/null && { fetched=1;
 local_sha="$(g rev-parse HEAD 2>/dev/null)"
 remote_sha="$(g rev-parse "origin/$BRANCH" 2>/dev/null)"
 [ -n "$local_sha" ] && [ -n "$remote_sha" ] || { log "cannot resolve SHAs; skipping"; exit 0; }
-# GUARD: clean working tree (a dirty tree would be clobbered by the pull).
-if [ -n "$(g status --porcelain 2>/dev/null)" ]; then
-    log "REFUSED: working tree is dirty"
+# GUARD: clean working tree (a dirty tracked tree would be clobbered by the pull).
+if [ -n "$(g status --porcelain -uno 2>/dev/null)" ]; then
+    log "REFUSED: tracked working tree is dirty"
     exit 0
 fi
 

@@ -28,8 +28,10 @@ from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
 
 
 @pytest.fixture(autouse=True)
-def clean_grace_tracker():
-    """Ensure in-memory grace tracker is clean before and after each test."""
+def clean_grace_tracker(tmp_path, monkeypatch):
+    """Ensure in-memory grace tracker and state file are isolated for each test."""
+    test_state_file = str(tmp_path / "smart_stop_loss_state.json")
+    monkeypatch.setattr("intelligence.external.guards.smart_stop_loss_guard._SMART_SL_STATE_FILE", test_state_file)
     _GRACE_TRACKER.clear()
     yield
     _GRACE_TRACKER.clear()

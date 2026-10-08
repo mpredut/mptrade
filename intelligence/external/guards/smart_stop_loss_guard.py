@@ -46,7 +46,15 @@ def _load_grace_state() -> Dict[str, Dict[str, Any]]:
             with open(_SMART_SL_STATE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, dict):
-                _GRACE_TRACKER = data
+                # Sanitize: purge any ancient, unphysical, or expired entries (> 3600s old or start_ts < 1e9)
+                now_curr = time.time()
+                clean_data = {}
+                for k, v in data.items():
+                    if isinstance(v, dict):
+                        sts = float(v.get("start_ts", 0.0))
+                        if sts > 1_000_000_000 and abs(now_curr - sts) < 3600.0:
+                            clean_data[k] = v
+                _GRACE_TRACKER = clean_data
         except Exception:
             _GRACE_TRACKER = {}
     return _GRACE_TRACKER
@@ -245,9 +253,13 @@ class SmartStopLossGuard:
         if sym_key in tracker:
             grace_info = tracker.pop(sym_key)
             _save_grace_state()
-            init_loss = grace_info.get("initial_loss_pct", lost_threshold * 100.0)
             now_ts = float(now) if now is not None else time.time()
-            elapsed = now_ts - float(grace_info.get("start_ts", now_ts))
+            start_ts = float(grace_info.get("start_ts", now_ts))
+            elapsed = max(0.0, now_ts - start_ts)
+            if elapsed > 3600.0:
+                # Silently discard ancient or unphysical tracker record
+                return False
+            init_loss = grace_info.get("initial_loss_pct", lost_threshold * 100.0)
             print(
                 f"🎉 [P2 · SMART-SL] RECOVERED! {sym_key} bounced back above threshold in {elapsed:.0f}s! "
                 f"Loss dropped to {price_decrease*100:.2f}% <= {lost_threshold*100:.2f}% (was {init_loss:.2f}%). "
