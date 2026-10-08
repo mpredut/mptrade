@@ -147,6 +147,10 @@ def _dedup_seconds(alerts: list[Any], urgent: bool) -> int:
         return 0  # Real trades must never be suppressed by deduplication
     if "DISPONIBIL" in titles:
         return _positive_int_env("NOTIFICATION_STARTUP_DEDUP_SECONDS", 6 * 60 * 60)
+    if any(m in titles for m in ("MACRO", "SENTIMENT")) or any(
+        isinstance(a, dict) and "macro" in str(a.get("source", "")).lower() for a in alerts
+    ):
+        return _positive_int_env("NOTIFICATION_MACRO_DEDUP_SECONDS", 3600)
     if urgent:
         return _positive_int_env("NOTIFICATION_URGENT_DEDUP_SECONDS", 5 * 60)
     if any(

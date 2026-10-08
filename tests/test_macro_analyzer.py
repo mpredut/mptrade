@@ -107,3 +107,30 @@ def test_macro_advisor_notification_dispatch(temp_cache_dir):
         assert "BULLISH" in kwargs.get("title")
         assert kwargs.get("symbol") == "GLOBAL"
 
+
+def test_macro_advisor_skips_redundant_cached_notifications(temp_cache_dir):
+    analyzer = MacroAnalyzer(cache_dir=temp_cache_dir, advisor_interval_sec=10800.0)
+    analyzer.shadow_notify = True
+    now = time.time()
+    mock_advisor = SentimentAdvisorAssessment(
+        market_bias="CAUTION",
+        risk_level="MODERATE",
+        confidence=0.75,
+        summary="Market consolidating.",
+        key_risks=["risk"],
+        recommended_action="HOLD",
+        ts=now,
+    )
+
+    with patch.object(analyzer.sentiment_advisor, "review", return_value=mock_advisor), \
+         patch("notify_engine.alertnotifiers.notify") as mock_notify:
+        ok = analyzer.assess_market_advisor(force=True)
+        assert ok is True
+        assert mock_notify.call_count == 1
+
+        # Second call with the same assessment (same ts) must NOT re-notify
+        ok2 = analyzer.assess_market_advisor(force=True)
+        assert ok2 is True
+        assert mock_notify.call_count == 1
+
+

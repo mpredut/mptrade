@@ -85,8 +85,15 @@ class MacroAnalyzer:
         self.llm_advisor = self.sentiment_advisor
         self.gemini_advisor = self.sentiment_advisor
 
-        self._last_macro_llm_ts: float = 0.0
-        self._last_advisor_ts: float = 0.0
+        cached_geo_ts = float(getattr(self.geopolitical_analyzer, "_last_eval_ts", 0.0) or 0.0)
+        cached_adv_ts = float(
+            getattr(getattr(self.sentiment_advisor, "_cached_assessment", None), "ts", 0.0)
+            or getattr(self.sentiment_advisor, "_last_eval_ts", 0.0)
+            or 0.0
+        )
+        self._last_macro_llm_ts: float = cached_geo_ts
+        self._last_advisor_ts: float = cached_adv_ts
+        self._last_notified_advisor_ts: float = cached_adv_ts
         self._last_thread_prune_ts: float = 0.0
         self._last_stdout_hb_ts: float = 0.0
 
@@ -175,27 +182,40 @@ class MacroAnalyzer:
             )
             if assessment:
                 logger.info(
-                    "Published Gemini macro advisor assessment: bias=%s, risk=%s, action=%s",
-                    assessment.market_bias, assessment.risk_level, assessment.recommended_action,
+                    "Published Gemini macro advisor assessment: bias=%s, risk=%s, action=%s (ts=%.1f)",
+                    assessment.market_bias, assessment.risk_level, assessment.recommended_action, assessment.ts,
                 )
-                if self.shadow_notify:
-                    try:
-                        from notify_engine.alertnotifiers import notify
-                        bias_str = (assessment.market_bias or "NEUTRAL").upper()
-                        icon = "🟢" if "BULL" in bias_str else ("🔴" if "BEAR" in bias_str else "🧭")
-                        title = f"{icon} [P3B · SENTIMENT] {assessment.recommended_action} ({assessment.market_bias})"
-                        body = (
-                            f"Action: {assessment.recommended_action} · Bias: {assessment.market_bias} (Risk: {assessment.risk_level})\n"
-                            f"{assessment.summary}"
-                        )
-                        notify(
-                            title=title,
-                            body=body,
-                            source="macro_shadow",
-                            symbol="GLOBAL",
-                        )
-                    except Exception as exc:
-                        logger.debug("Failed sending macro advisor notification: %s", exc)
+                now = time.time()
+                is_fresh = assessment.ts > getattr(self, "_last_notified_advisor_ts", 0.0)
+                elapsed_since_notify = now - getattr(self, "_last_notified_advisor_ts", 0.0)
+                min_notify_interval = min(self.advisor_interval_sec, 3600.0)
+                if is_fresh and (force or elapsed_since_notify >= min_notify_interval):
+                    if self.shadow_notify:
+                        try:
+                            from notify_engine.alertnotifiers import notify
+                            bias_str = (assessment.market_bias or "NEUTRAL").upper()
+                            icon = "🟢" if "BULL" in bias_str else ("🔴" if "BEAR" in bias_str else "🧭")
+                            title = f"{icon} [P3B · SENTIMENT] {assessment.recommended_action} ({assessment.market_bias})"
+                            body = (
+                                f"Action: {assessment.recommended_action} · Bias: {assessment.market_bias} (Risk: {assessment.risk_level})\n"
+                                f"{assessment.summary}"
+                            )
+                            notify(
+                                title=title,
+                                body=body,
+                                source="macro_shadow",
+                                symbol="GLOBAL",
+                            )
+                            self._last_notified_advisor_ts = assessment.ts
+                        except Exception as exc:
+                            logger.debug("Failed sending macro advisor notification: %s", exc)
+                    else:
+                        self._last_notified_advisor_ts = assessment.ts
+                else:
+                    logger.debug(
+                        "Skipping redundant macro advisor notification (is_fresh=%s, elapsed=%.1fs < %.1fs)",
+                        is_fresh, elapsed_since_notify, min_notify_interval,
+                    )
                 return True
         except Exception as e:
             logger.warning("Failed assessing market advisor: %s", e)
