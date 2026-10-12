@@ -767,7 +767,7 @@ def check_intelligence_guards(
             valid_context = True
 
     m = _load_margins()
-    mode = str(m.get("internal_guard_mode", m.get("intelligence_guards_mode", "shadow"))).strip().lower()
+    mode = str(m.get("intelligence_guards_mode", "shadow")).strip().lower()
     if mode in ("off", "0", "disabled"):
         return True, "intelligence_guards_off", 1.0
 
@@ -970,7 +970,7 @@ def _evaluate_intelligence_guards_raw(
         return True, "stop_loss_exempt", 1.0
 
     m = _load_margins()
-    mode = str(m.get("internal_guard_mode", m.get("intelligence_guards_mode", "shadow"))).strip().lower()
+    mode = str(m.get("intelligence_guards_mode", "shadow")).strip().lower()
     if mode in ("off", "0", "disabled"):
         return True, "intelligence_guards_off", 1.0
 
@@ -1050,9 +1050,9 @@ def _evaluate_intelligence_guards_raw(
         )
         if not intel_ok:
             return False, intel_reason, 0.0
-    if intel_scale < 1.0:
-        effective_scale = min(effective_scale, intel_scale)
-        active_reason = intel_reason
+        if intel_scale < 1.0:
+            effective_scale = min(effective_scale, intel_scale)
+            active_reason = intel_reason
 
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
 

@@ -563,10 +563,16 @@ class T212CancellationLifecycleTest(unittest.TestCase):
         client.cancel_result = True
         with patch.object(strategy, "notify"):
             self.assertTrue(engine._check_stop_loss(70.0))
+        self.assertEqual(len(client.place_calls), 0)
+        self.assertTrue(old["cancel_requested"])
+
+        # Once confirmed absent/canceled by broker and removed from state:
+        engine.s["orders"] = []
+        with patch.object(strategy, "notify"):
+            self.assertTrue(engine._check_stop_loss(70.0))
         self.assertEqual(len(client.place_calls), 1)
         self.assertEqual(client.place_calls[0][0], "market")
-        self.assertEqual(len(engine.s["orders"]), 2)
-        self.assertTrue(old["cancel_requested"])
+        self.assertEqual(len(engine.s["orders"]), 1)
         stop = next(o for o in engine.s["orders"] if o.get("kind") == "SL")
         self.assertTrue(stop["market"])
 

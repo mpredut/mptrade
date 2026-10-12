@@ -48,6 +48,10 @@ class CustomProvider(MarketDataProvider):
             base_asset="TEST",
         )
 
+    def policy_cap_quantity(self, symbol: str, side: str, price: float,
+                            qty: float, available_qty: float, **kwargs):
+        return available_qty
+
 
 class TestProviderQuantityPrecision(unittest.TestCase):
     def test_base_provider_precision_and_rounding(self):

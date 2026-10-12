@@ -505,3 +505,40 @@ def test_whale_divergence_liquidation_cascade_blocks():
     assert dec_cascade.allowed is False
     assert "liquidation_cascade_active" in dec_cascade.reason
 
+
+def test_granular_bypass_p3_p4_avoids_unbound_local_error():
+    from order_guard import check_intelligence_guards
+    # Passing p3 and p4 bypass skips intelligence guards and must NOT raise UnboundLocalError
+    allowed, reason, scale = check_intelligence_guards(
+        provider="binance",
+        symbol="BTCUSDC",
+        order_type="BUY",
+        price=60000.0,
+        qty=0.01,
+        bypass_guards={"p3", "p4"},
+    )
+    assert allowed is True
+    assert scale == 1.0
+
+
+def test_internal_guard_mode_off_does_not_disable_other_pillars(monkeypatch):
+    from order_guard import check_intelligence_guards
+    # internal_guard_mode=off should not return 'intelligence_guards_off' globally
+    import order_guard
+    monkeypatch.setattr(
+        order_guard,
+        "_load_margins",
+        lambda: {"internal_guard_mode": "off", "intelligence_guards_mode": "enforce"},
+    )
+    allowed, reason, scale = check_intelligence_guards(
+        provider="binance",
+        symbol="BTCUSDC",
+        order_type="BUY",
+        price=60000.0,
+        qty=0.01,
+        bypass_guards={"p1", "p3", "p4"},
+    )
+    # With intelligence_guards_mode=enforce, global check does NOT short-circuit
+    assert reason != "intelligence_guards_off"
+
+
