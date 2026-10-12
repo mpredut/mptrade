@@ -715,7 +715,7 @@ class Strategy:
                 if self._cancel_specific(o) and o not in self.s["orders"]:
                     open_sells.pop(lvl, None)
         # Place missing levels. Back off for 30 minutes after persistent tranche failure
-        # instead of retrying on every tick.
+        # instead of retrying on every tick. Defer and break if a submit is already in flight.
         now = self._now()
         fails = self.s.setdefault("tp_fail_until", {})
         for lvl, (q, lim) in desired.items():
@@ -723,8 +723,12 @@ class Strategy:
                 continue
             if now < fails.get(str(lvl), 0):
                 continue
+            if self.s.get("pending_submit"):
+                break
             if not self._place_sell(q, lim, level=lvl):
-                fails[str(lvl)] = now + 1800
+                if not self.s.get("pending_submit"):
+                    fails[str(lvl)] = now + 1800
+                break
 
     def _buy_is_stale(self, order: dict, price: float) -> bool:
         """Return whether a resting limit BUY should be cancelled and placed again.
@@ -1027,6 +1031,8 @@ class Strategy:
             self.s["tr_alerted"] = False
             self.s["tr_armed"] = False          # A new cycle starts with a new warm-up.
             return False
+        if any(o.get("kind") in {"TR", "SL"} for o in self.s["orders"]):
+            return True
         # WARM-UP (matching Binance/Kraken trailing_core): keep trailing inactive until
         # price rises trail_min_profit_pct above average. This protects gains without
         # selling on an ordinary dip; stop_loss_pct still handles catastrophic loss.
@@ -1057,13 +1063,21 @@ class Strategy:
             if not self._cancel_all_orders():
                 log("  ! [STRAT] TRAILING deferred: at least one order could not be cancelled")
                 return True
+            pending_sells = [o for o in self.s["orders"] if o.get("side") == "SELL" and o.get("kind") != "TR"]
+            if pending_sells:
+                log(f"  [STRAT] TRAILING deferred: waiting for {len(pending_sells)} existing SELL order(s) to reconcile cancellation")
+                return True
+            if self.s.get("pending_submit"):
+                log("  [STRAT] TRAILING deferred: waiting for pending submit to reconcile")
+                return True
             sell_qty = self._sellable_qty(self.s["qty"], price)
             placed = self._place_sell(
                 sell_qty, round(price, 2), kind="TR", market=True,
             )
             if not placed:
-                self.s["tr_fail_until"] = self._now() + 1800
-                log("  ! [STRAT] TRAILING sell failed or refused — backoff 30 min (retaining TP ladder)")
+                if not self.s.get("pending_submit"):
+                    self.s["tr_fail_until"] = self._now() + 1800
+                    log("  ! [STRAT] TRAILING sell failed or refused — backoff 30 min (retaining TP ladder)")
                 return True
             self.s["sl_pending"] = True         # Arm bounce reentry as for a catastrophic stop loss.
         if not self.s.get("tr_alerted"):
@@ -1078,6 +1092,8 @@ class Strategy:
         """Close the entire position when unrealized loss exceeds the threshold."""
         if self.p.stop_loss_pct <= 0:
             return False
+        if any(o.get("kind") in {"TR", "SL"} for o in self.s["orders"]):
+            return True
         avg = self._avg_cost()
         if not avg:
             return False
@@ -1095,13 +1111,21 @@ class Strategy:
             if not self._cancel_all_orders():
                 log("  ! [STRAT] STOP deferred: at least one order could not be cancelled")
                 return True
+            pending_sells = [o for o in self.s["orders"] if o.get("side") == "SELL" and o.get("kind") != "SL"]
+            if pending_sells:
+                log(f"  [STRAT] STOP deferred: waiting for {len(pending_sells)} existing SELL order(s) to reconcile cancellation")
+                return True
+            if self.s.get("pending_submit"):
+                log("  [STRAT] STOP deferred: waiting for pending submit to reconcile")
+                return True
             sell_qty = self._sellable_qty(self.s["qty"], price)
             placed = self._place_sell(
                 sell_qty, round(price, 2), kind="SL", market=True,
             )
             if not placed:
-                self.s["sl_fail_until"] = self._now() + 1800
-                log("  ! [STRAT] STOP sell failed or refused — backoff 30 min (retaining TP ladder)")
+                if not self.s.get("pending_submit"):
+                    self.s["sl_fail_until"] = self._now() + 1800
+                    log("  ! [STRAT] STOP sell failed or refused — backoff 30 min (retaining TP ladder)")
                 return True
             self.s["sl_pending"] = True         # Mark this episode so cycle closure arms bounce reentry.
         if not self.s.get("sl_alerted"):           # Notify only once per episode.
@@ -1255,7 +1279,7 @@ class Strategy:
 
         avg = self._avg_cost()
 
-        if self.p.enable_takeprofit and avg:
+        if self.p.enable_takeprofit and avg and not self.s.get("sl_pending"):
             if self.p.tp_ladder:
                 self._manage_tp_ladder(held, avg)        # Scale out in ladder steps.
             else:
@@ -1270,7 +1294,12 @@ class Strategy:
 
         prag_dca = (self.s["last_buy_price"] * (1 - self.p.dca_drop_pct / 100)
                     if self.s["last_buy_price"] else None)
+        in_sl_state = bool(
+            self.s.get("sl_pending")
+            or (self._now() < self.s.get("sl_fail_until", 0))
+        )
         if (not in_backoff
+                and not in_sl_state
                 and self.s["dca_buys"] < self.p.max_dca_buys
                 and prag_dca
                 # Treat a price close to the threshold as reached, using reentry tolerance.

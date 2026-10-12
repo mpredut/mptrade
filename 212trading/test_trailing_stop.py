@@ -153,6 +153,80 @@ class TestTrailingStopAndSellableQty(unittest.TestCase):
         self.strat._check_stop_loss(140.0)
         self.assertNotIn("sl_fail_until", self.strat.s)
 
+    def test_trailing_waits_for_existing_sell_order_cancellation_to_reconcile(self):
+        # Position holds active TP sell order
+        tp_order = {"id": "TP-1", "side": "SELL", "qty": 2.88, "limit": 190.0, "kind": "TP", "level": 30.0}
+        self.strat.s["orders"] = [tp_order]
+        # In live mode (dry_run=False), cancel_order sets cancel_requested, keeping order in s["orders"] until reconciled
+        self.strat._cancel_specific = lambda o: o.update({"cancel_requested": True}) or True
+
+        # Pass 1: Drawdown hits trailing threshold. Cancel is requested, but exit sell is deferred.
+        res = self.strat._check_trailing(160.0)
+        self.assertTrue(res)
+        self.assertTrue(tp_order.get("cancel_requested"))
+        self.assertEqual(len(self.client.placed), 0)
+        self.assertNotIn("tr_fail_until", self.strat.s)
+
+        # Pass 2: Order reconciles and is removed from tracking
+        self.strat.s["orders"] = []
+
+        # Now trailing exit places the market sell cleanly
+        res2 = self.strat._check_trailing(160.0)
+        self.assertTrue(res2)
+        self.assertEqual(len(self.client.placed), 1)
+        self.assertTrue(self.strat.s.get("sl_pending"))
+
+    def test_stop_loss_waits_for_existing_sell_order_cancellation_to_reconcile(self):
+        tp_order = {"id": "TP-1", "side": "SELL", "qty": 2.88, "limit": 190.0, "kind": "TP", "level": 30.0}
+        self.strat.s["orders"] = [tp_order]
+        self.strat._cancel_specific = lambda o: o.update({"cancel_requested": True}) or True
+
+        # Pass 1: Loss hits 31.5% (>= 30%). Cancel is requested, exit sell is deferred.
+        res = self.strat._check_stop_loss(100.0)
+        self.assertTrue(res)
+        self.assertTrue(tp_order.get("cancel_requested"))
+        self.assertEqual(len(self.client.placed), 0)
+        self.assertNotIn("sl_fail_until", self.strat.s)
+
+        # Pass 2: Order reconciles and is removed from tracking
+        self.strat.s["orders"] = []
+        res2 = self.strat._check_stop_loss(100.0)
+        self.assertTrue(res2)
+        self.assertEqual(len(self.client.placed), 1)
+        self.assertTrue(self.strat.s.get("sl_pending"))
+
+    def test_dca_and_tp_inhibited_during_stop_loss_pending_or_backoff(self):
+        # Configure DCA dip met
+        self.strat.s["last_buy_price"] = 150.0
+        self.strat.s["entry_price"] = 150.0
+        self.strat.s["dca_buys"] = 0
+        self.strat.s["spent_cash"] = 400.0
+        # When sl_pending is True with an existing SL order, step should not place DCA or duplicate exits
+        price = 100.0  # Major crash
+        self.strat.s["sl_pending"] = True
+        self.strat.s["orders"] = [{"id": "SL-1", "side": "SELL", "kind": "SL", "market": True, "qty": 2.86}]
+        self.strat.step(price)
+        self.assertEqual(len(self.client.placed), 0)
+
+        # When in sl_fail_until backoff, step should not place DCA
+        self.strat.s["sl_pending"] = False
+        self.strat.s["sl_fail_until"] = self.now_val + 1800
+        self.strat.step(price)
+        self.assertFalse(any(o.get("kind") == "DCA" for o in self.client.placed))
+
+    def test_tp_ladder_does_not_lock_subsequent_levels_when_submit_is_pending(self):
+        self.strat.p.tp_ladder = ((11.0, 0.5), (20.0, 0.5))
+        self.strat.s["orders"] = []
+        self.strat.s["pending_submit"] = {"id": "SUB-1", "side": "SELL"}
+
+        # Attempt to manage ladder while submit is pending
+        self.strat._manage_tp_ladder(2.92, 146.0)
+
+        # Neither level should be locked in tp_fail_until
+        self.assertNotIn("11.0", self.strat.s.get("tp_fail_until", {}))
+        self.assertNotIn("20.0", self.strat.s.get("tp_fail_until", {}))
+
 
 if __name__ == "__main__":
     unittest.main()
+
