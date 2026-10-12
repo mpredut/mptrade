@@ -106,8 +106,12 @@ class OrderbookDepthCollector:
         symbol = symbol.upper()
         now = time.time()
         cached = self._cache.get(symbol)
-        if cached and (now - cached[0]) < self.cache_ttl_sec:
-            return cached[1]
+        if cached:
+            if isinstance(cached, tuple) and len(cached) >= 2:
+                if (now - cached[0]) < self.cache_ttl_sec:
+                    return cached[1]
+            elif isinstance(cached, OrderbookSnapshot):
+                return cached
 
         disk_snap = self._load_from_disk(symbol, now)
         if disk_snap is not None:

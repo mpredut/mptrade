@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from dataclasses import asdict, dataclass
@@ -33,8 +34,27 @@ _SMART_SL_STATE_FILE = os.path.join(
     os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb"), "smart_stop_loss_state.json"
 )
 
-# In-memory grace tracker: symbol -> {start_ts, initial_loss, lost_threshold}
+# In-memory grace tracker: symbol -> {start_ts, initial_loss, lost_threshold, provider, current_price, buy_price}
 _GRACE_TRACKER: Dict[str, Dict[str, Any]] = {}
+_LAST_RECOVERY_ALERT_TS: Dict[str, float] = {}
+_RECOVERY_COOLDOWN_SEC: float = float(os.environ.get("SMART_SL_COOLDOWN_SEC", "1800"))  # 30 minutes default
+_PENDING_RECOVERIES: list[Dict[str, Any]] = []
+
+
+def _format_price(p: Optional[float]) -> str:
+    if p is None:
+        return ""
+    try:
+        pf = float(p)
+        if not math.isfinite(pf) or pf <= 0:
+            return ""
+        if pf >= 100.0:
+            return f"${pf:,.2f}"
+        if pf >= 1.0:
+            return f"${pf:,.4f}"
+        return f"${pf:.6g}"
+    except (TypeError, ValueError):
+        return ""
 
 
 def _load_grace_state() -> Dict[str, Dict[str, Any]]:
@@ -77,6 +97,66 @@ def _send_ntfy_alert(title: str, body: str, symbol: str) -> None:
         pass
 
 
+def _dispatch_recovery_alerts(events: list[Dict[str, Any]]) -> None:
+    if not events:
+        return
+    if len(events) == 1:
+        e = events[0]
+        sym = e["symbol"]
+        prov = e.get("provider", "")
+        prov_tag = f" ({prov})" if prov else ""
+        # Remove 'SAVED' from title as requested
+        title = f"🎉 [P2 · SMART-SL] {sym}{prov_tag}"
+
+        c_str = _format_price(e.get("current_price"))
+        b_str = _format_price(e.get("buy_price"))
+        price_part = f" @ {c_str}" if c_str else ""
+        if c_str and b_str:
+            price_part = f" | {c_str} (Buy: {b_str})"
+
+        body_lines = [
+            f"{sym}{prov_tag}{price_part}",
+            f"Bounce in {e['elapsed']:.0f}s! Dip: {e['price_decrease_pct']:.2f}% <= {e['lost_threshold_pct']:.2f}% (was {e['init_loss_pct']:.2f}%).",
+            "Pozitie salvata de wick hunt!",
+        ]
+        _send_ntfy_alert(title=title, body="\n".join(body_lines), symbol=sym)
+    else:
+        # Multiple positions recovered in the same cycle -> UNIFIED alert
+        providers = {e.get("provider", "") for e in events if e.get("provider")}
+        prov_tag = f" ({', '.join(sorted(providers))})" if providers else ""
+        symbols = [e["symbol"] for e in events]
+        if len(symbols) <= 3:
+            syms_str = ", ".join(symbols)
+            title = f"🎉 [P2 · SMART-SL] {syms_str}{prov_tag}"
+        else:
+            title = f"🎉 [P2 · SMART-SL] {len(events)} pozitii{prov_tag}"
+
+        body_lines = []
+        for e in events:
+            sym = e["symbol"]
+            p_tag = f" ({e['provider']})" if e.get("provider") else ""
+            c_str = _format_price(e.get("current_price"))
+            price_str = f" @ {c_str}" if c_str else ""
+            line = (
+                f"• {sym}{p_tag}: bounce in {e['elapsed']:.0f}s | "
+                f"dip {e['price_decrease_pct']:.2f}% <= {e['lost_threshold_pct']:.2f}% (was {e['init_loss_pct']:.2f}%){price_str}"
+            )
+            body_lines.append(line)
+        body_lines.append(f"Pozitii salvate de wick hunt ({len(events)})!")
+        _send_ntfy_alert(title=title, body="\n".join(body_lines), symbol=",".join(symbols))
+
+
+def flush_smart_stop_loss_alerts() -> int:
+    """Dispatches any pending batched smart stop-loss recovery alerts."""
+    global _PENDING_RECOVERIES
+    if not _PENDING_RECOVERIES:
+        return 0
+    events = list(_PENDING_RECOVERIES)
+    _PENDING_RECOVERIES.clear()
+    _dispatch_recovery_alerts(events)
+    return len(events)
+
+
 class SmartStopLossGuard:
     """Evaluates whether a triggered stop-loss is an artificial wick hunt absorbed by whales."""
 
@@ -103,6 +183,9 @@ class SmartStopLossGuard:
         lost_threshold: float,
         *,
         now: Optional[float] = None,
+        provider: Optional[str] = None,
+        current_price: Optional[float] = None,
+        buy_price: Optional[float] = None,
         whale_snapshot=None,
         orderbook_snapshot=None,
     ) -> Tuple[bool, str, Dict[str, Any]]:
@@ -117,6 +200,7 @@ class SmartStopLossGuard:
         sym_key = symbol.upper()
         meta: Dict[str, Any] = {
             "symbol": sym_key,
+            "provider": provider,
             "price_decrease_pct": round(price_decrease * 100.0, 3),
             "lost_threshold_pct": round(lost_threshold * 100.0, 3),
             "now": now_ts,
@@ -188,21 +272,35 @@ class SmartStopLossGuard:
                     "start_ts": now_ts,
                     "initial_loss_pct": round(price_decrease * 100.0, 3),
                     "lost_threshold_pct": round(lost_threshold * 100.0, 3),
+                    "provider": str(provider or "").strip(),
+                    "current_price": float(current_price) if current_price is not None else None,
+                    "buy_price": float(buy_price) if buy_price is not None else None,
                 }
                 _save_grace_state()
                 reason = (
                     f"suspected_wick_hunt (whales {top_long_pct*100:.1f}% long, taker_ratio={taker_ratio:.2f}, "
                     f"loss={price_decrease*100:.2f}%) -> grace granted for {self.grace_seconds:.0f}s"
                 )
+                prov_str = str(provider or "").strip().upper()
+                prov_tag = f" ({prov_str})" if prov_str else ""
                 prefix = "[SMART_SL_SHADOW]" if self.mode == "shadow" else "[SMART_SL_ENFORCE]"
-                print(f"🛡 {prefix} DEFER {sym_key}: {reason}")
+                print(f"🛡 {prefix} DEFER {sym_key}{prov_tag}: {reason}")
+
+                c_str = _format_price(current_price)
+                b_str = _format_price(buy_price)
+                price_part = f" @ {c_str}" if c_str else ""
+                if c_str and b_str:
+                    price_part = f" | {c_str} (Buy: {b_str})"
+
+                body_lines = [
+                    f"{sym_key}{prov_tag}{price_part}",
+                    f"Dip: {price_decrease*100:.2f}% (SL threshold: {threshold_pct:.2f}%).",
+                    f"Whales: {top_long_pct*100:.1f}% Long, Taker B/S: {taker_ratio:.2f}.",
+                    f"Suspected wick hunt: granting {self.grace_seconds:.0f}s grace window.",
+                ]
                 _send_ntfy_alert(
-                    title=f"🛡 [P2 · SMART-SL] DEFER {sym_key}",
-                    body=(
-                        f"Loss: {price_decrease*100:.2f}% (SL: {threshold_pct:.2f}%).\n"
-                        f"Whales: {top_long_pct*100:.1f}% Long, Taker B/S: {taker_ratio:.2f}.\n"
-                        f"Suspected wick hunt: granting {self.grace_seconds:.0f}s grace window."
-                    ),
+                    title=f"🛡 [P2 · SMART-SL] DEFER {sym_key}{prov_tag}",
+                    body="\n".join(body_lines),
                     symbol=sym_key,
                 )
                 if self.mode == "shadow":
@@ -213,25 +311,42 @@ class SmartStopLossGuard:
                 elapsed = now_ts - start_ts
                 meta["grace_elapsed_sec"] = round(elapsed, 1)
 
+                prov_str = str(provider or active_grace.get("provider") or "").strip().upper()
+                prov_tag = f" ({prov_str})" if prov_str else ""
+
                 if elapsed < self.grace_seconds:
                     reason = (
                         f"grace_active ({elapsed:.0f}s / {self.grace_seconds:.0f}s elapsed, "
                         f"loss={price_decrease*100:.2f}%)"
                     )
                     prefix = "[SMART_SL_SHADOW]" if self.mode == "shadow" else "[SMART_SL_ENFORCE]"
-                    print(f"🛡 {prefix} DEFER {sym_key}: {reason}")
+                    print(f"🛡 {prefix} DEFER {sym_key}{prov_tag}: {reason}")
                     if self.mode == "shadow":
                         return True, f"shadow_defer: {reason}", meta
                     return False, reason, meta
                 else:
                     # Grace period expired without bounce -> Execute Stop-Loss
+                    saved_prov = active_grace.get("provider") or provider or ""
+                    saved_prov_str = str(saved_prov).strip().upper()
+                    saved_prov_tag = f" ({saved_prov_str})" if saved_prov_str else ""
+                    c_p = current_price if current_price is not None else active_grace.get("current_price")
+                    c_str = _format_price(c_p)
+                    price_part = f" @ {c_str}" if c_str else ""
+
                     tracker.pop(sym_key, None)
                     _save_grace_state()
                     reason = f"grace_period_expired ({self.grace_seconds:.0f}s elapsed without bounce)"
-                    print(f"🛑 [P2 · SMART-SL] TIMEOUT {sym_key}: {reason} -> executing stop-loss")
+                    print(f"🛑 [P2 · SMART-SL] TIMEOUT {sym_key}{saved_prov_tag}: {reason} -> executing stop-loss")
+
+                    body_lines = [
+                        f"{sym_key}{saved_prov_tag}{price_part}",
+                        f"Grace period of {self.grace_seconds:.0f}s expired without price recovery.",
+                        f"Dip: {price_decrease*100:.2f}% (SL: {threshold_pct:.2f}%).",
+                        "Executing stop-loss now.",
+                    ]
                     _send_ntfy_alert(
-                        title=f"🛑 [P2 · SMART-SL] EXECUTING {sym_key}",
-                        body=f"Grace period of {self.grace_seconds:.0f}s expired without price recovery. Executing stop-loss now.",
+                        title=f"🛑 [P2 · SMART-SL] TIMEOUT {sym_key}{saved_prov_tag}",
+                        body="\n".join(body_lines),
                         symbol=sym_key,
                     )
                     return True, reason, meta
@@ -246,6 +361,10 @@ class SmartStopLossGuard:
         lost_threshold: float,
         *,
         now: Optional[float] = None,
+        provider: Optional[str] = None,
+        current_price: Optional[float] = None,
+        buy_price: Optional[float] = None,
+        batch: bool = True,
     ) -> bool:
         """Called when price decrease drops back below or equal to threshold."""
         sym_key = symbol.upper()
@@ -259,21 +378,48 @@ class SmartStopLossGuard:
             if elapsed > 3600.0:
                 # Silently discard ancient or unphysical tracker record
                 return False
+
             init_loss = grace_info.get("initial_loss_pct", lost_threshold * 100.0)
+            prov = str(provider or grace_info.get("provider") or "").strip()
+            prov_str = prov.upper() if prov else ""
+            prov_tag = f" ({prov_str})" if prov_str else ""
+
+            c_p = current_price if current_price is not None else grace_info.get("current_price")
+            b_p = buy_price if buy_price is not None else grace_info.get("buy_price")
+
             print(
-                f"🎉 [P2 · SMART-SL] RECOVERED! {sym_key} bounced back above threshold in {elapsed:.0f}s! "
-                f"Loss dropped to {price_decrease*100:.2f}% <= {lost_threshold*100:.2f}% (was {init_loss:.2f}%). "
+                f"🎉 [P2 · SMART-SL] RECOVERED! {sym_key}{prov_tag} bounced back above threshold in {elapsed:.0f}s! "
+                f"Dip dropped to {price_decrease*100:.2f}% <= {lost_threshold*100:.2f}% (was {init_loss:.2f}%). "
                 f"Position successfully saved from wick hunt!"
             )
-            _send_ntfy_alert(
-                title=f"🎉 [P2 · SMART-SL] SAVED {sym_key}",
-                body=(
-                    f"Price bounced back above threshold in {elapsed:.0f}s!\n"
-                    f"Current loss: {price_decrease*100:.2f}% <= {lost_threshold*100:.2f}% (was {init_loss:.2f}%).\n"
-                    f"Position successfully saved from wick hunt!"
-                ),
-                symbol=sym_key,
-            )
+
+            # 30-minute cooldown per symbol to avoid spamming
+            last_alert = _LAST_RECOVERY_ALERT_TS.get(sym_key, 0.0)
+            if now_ts - last_alert < _RECOVERY_COOLDOWN_SEC:
+                logger.info(
+                    "Smart SL recovery alert for %s in %.0fs cooldown; skipping push.",
+                    sym_key,
+                    _RECOVERY_COOLDOWN_SEC,
+                )
+                return True
+            _LAST_RECOVERY_ALERT_TS[sym_key] = now_ts
+
+            rec_event = {
+                "symbol": sym_key,
+                "provider": prov_str,
+                "elapsed": elapsed,
+                "price_decrease_pct": round(price_decrease * 100.0, 2),
+                "lost_threshold_pct": round(lost_threshold * 100.0, 2),
+                "init_loss_pct": round(init_loss, 2),
+                "current_price": c_p,
+                "buy_price": b_p,
+                "ts": now_ts,
+            }
+
+            if batch:
+                _PENDING_RECOVERIES.append(rec_event)
+            else:
+                _dispatch_recovery_alerts([rec_event])
             return True
         return False
 
@@ -284,6 +430,9 @@ def evaluate_smart_stop_loss(
     lost_threshold: float,
     *,
     now: Optional[float] = None,
+    provider: Optional[str] = None,
+    current_price: Optional[float] = None,
+    buy_price: Optional[float] = None,
     whale_snapshot=None,
     orderbook_snapshot=None,
 ) -> Tuple[bool, str, Dict[str, Any]]:
@@ -314,6 +463,9 @@ def evaluate_smart_stop_loss(
         price_decrease=price_decrease,
         lost_threshold=lost_threshold,
         now=now,
+        provider=provider,
+        current_price=current_price,
+        buy_price=buy_price,
         whale_snapshot=whale_snapshot,
         orderbook_snapshot=orderbook_snapshot,
     )
@@ -325,6 +477,10 @@ def clear_smart_stop_loss_if_recovered(
     lost_threshold: float,
     *,
     now: Optional[float] = None,
+    provider: Optional[str] = None,
+    current_price: Optional[float] = None,
+    buy_price: Optional[float] = None,
+    batch: bool = True,
 ) -> bool:
     """Convenience recovery callback for monitortrades.py."""
     guard = SmartStopLossGuard()
@@ -333,4 +489,8 @@ def clear_smart_stop_loss_if_recovered(
         price_decrease=price_decrease,
         lost_threshold=lost_threshold,
         now=now,
+        provider=provider,
+        current_price=current_price,
+        buy_price=buy_price,
+        batch=batch,
     )

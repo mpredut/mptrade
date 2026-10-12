@@ -32,9 +32,14 @@ def clean_grace_tracker(tmp_path, monkeypatch):
     """Ensure in-memory grace tracker and state file are isolated for each test."""
     test_state_file = str(tmp_path / "smart_stop_loss_state.json")
     monkeypatch.setattr("intelligence.external.guards.smart_stop_loss_guard._SMART_SL_STATE_FILE", test_state_file)
+    from intelligence.external.guards.smart_stop_loss_guard import _PENDING_RECOVERIES, _LAST_RECOVERY_ALERT_TS
     _GRACE_TRACKER.clear()
+    _PENDING_RECOVERIES.clear()
+    _LAST_RECOVERY_ALERT_TS.clear()
     yield
     _GRACE_TRACKER.clear()
+    _PENDING_RECOVERIES.clear()
+    _LAST_RECOVERY_ALERT_TS.clear()
 
 
 def _mock_whale(top_long=0.62, taker_ratio=1.05, regime="neutral"):
@@ -190,3 +195,131 @@ def test_smart_sl_shadow_mode():
     # In shadow mode, logs deferral but returns True so trading behavior is unaffected
     assert should_exec is True
     assert "shadow_defer" in reason
+
+
+def test_smart_sl_notifications_detail_and_debounce():
+    from intelligence.external.guards.smart_stop_loss_guard import (
+        _LAST_RECOVERY_ALERT_TS,
+        _PENDING_RECOVERIES,
+        flush_smart_stop_loss_alerts,
+    )
+    _LAST_RECOVERY_ALERT_TS.clear()
+    _PENDING_RECOVERIES.clear()
+
+    guard = SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
+    whale = _mock_whale(top_long=0.65, taker_ratio=1.1)
+    ob = _mock_ob()
+
+    alerts_sent = []
+    with patch("intelligence.external.guards.smart_stop_loss_guard._send_ntfy_alert", side_effect=lambda title, body, symbol: alerts_sent.append({"title": title, "body": body, "symbol": symbol})):
+        t0 = 5000.0
+        # 1. Grace period entered for BTCUSDC on Binance
+        should_exec, _, _ = guard.evaluate(
+            "BTCUSDC", 0.0294, 0.02925, now=t0,
+            provider="binance", current_price=64200.0, buy_price=66150.0,
+            whale_snapshot=whale, orderbook_snapshot=ob,
+        )
+        assert should_exec is False
+        assert len(alerts_sent) == 1
+        defer_alert = alerts_sent[-1]
+        assert "BTCUSDC" in defer_alert["title"]
+        assert "BINANCE" in defer_alert["title"]
+        # Ensure redundant 'Vendor:' and 'Coin:' labels are NOT in the body
+        assert "Vendor:" not in defer_alert["body"]
+        assert "Coin:" not in defer_alert["body"]
+        assert "BTCUSDC (BINANCE)" in defer_alert["body"]
+        assert "$64,200.00" in defer_alert["body"]
+        assert "Dip: 2.94%" in defer_alert["body"]
+
+        # 2. Standalone recovery 40s later (batch=False)
+        recovered = guard.on_recovered(
+            "BTCUSDC", price_decrease=0.022, lost_threshold=0.02925,
+            now=t0 + 40.0, provider="binance", current_price=64800.0, buy_price=66150.0,
+            batch=False,
+        )
+        assert recovered is True
+        assert len(alerts_sent) == 2
+        recovery_alert = alerts_sent[-1]
+        # 'SAVED' removed from title as requested
+        assert "SAVED" not in recovery_alert["title"]
+        assert "BTCUSDC (BINANCE)" in recovery_alert["title"]
+        assert "Vendor:" not in recovery_alert["body"]
+        assert "Coin:" not in recovery_alert["body"]
+        assert "Dip: 2.20% <= 2.93%" in recovery_alert["body"]
+        assert "$64,800.00" in recovery_alert["body"]
+        assert "Bounce in 40s!" in recovery_alert["body"]
+
+        # 3. 30-minute cooldown (1800s): if same symbol recovers again within 1800s, no alert sent
+        guard.evaluate(
+            "BTCUSDC", 0.0294, 0.02925, now=t0 + 100.0,
+            provider="binance", whale_snapshot=whale, orderbook_snapshot=ob,
+        )
+        alerts_before = len(alerts_sent)
+        recovered_within_cd = guard.on_recovered(
+            "BTCUSDC", price_decrease=0.022, lost_threshold=0.02925,
+            now=t0 + 140.0, batch=False,
+        )
+        assert recovered_within_cd is True
+        # Suppressed by 30-minute cooldown
+        assert len(alerts_sent) == alerts_before
+
+        # After 1801s (> 30m), alert is permitted again
+        guard.evaluate(
+            "BTCUSDC", 0.0294, 0.02925, now=t0 + 2000.0,
+            provider="binance", whale_snapshot=whale, orderbook_snapshot=ob,
+        )
+        alerts_before_recovery = len(alerts_sent)
+        recovered_after_cd = guard.on_recovered(
+            "BTCUSDC", price_decrease=0.022, lost_threshold=0.02925,
+            now=t0 + 2040.0, batch=False,
+        )
+        assert recovered_after_cd is True
+        assert len(alerts_sent) == alerts_before_recovery + 1
+
+
+def test_smart_sl_batch_unification_multiple_coins():
+    from intelligence.external.guards.smart_stop_loss_guard import (
+        _LAST_RECOVERY_ALERT_TS,
+        _PENDING_RECOVERIES,
+        flush_smart_stop_loss_alerts,
+    )
+    _LAST_RECOVERY_ALERT_TS.clear()
+    _PENDING_RECOVERIES.clear()
+
+    guard = SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
+    whale = _mock_whale(top_long=0.65, taker_ratio=1.1)
+    ob = _mock_ob()
+
+    alerts_sent = []
+    with patch("intelligence.external.guards.smart_stop_loss_guard._send_ntfy_alert", side_effect=lambda title, body, symbol: alerts_sent.append({"title": title, "body": body, "symbol": symbol})):
+        t0 = 10000.0
+        # Both BTCUSDC and TAOUSDC enter grace on Binance
+        guard.evaluate("BTCUSDC", 0.0293, 0.02925, now=t0, provider="binance", current_price=64200.0, whale_snapshot=whale, orderbook_snapshot=ob)
+        guard.evaluate("TAOUSDC", 0.0522, 0.0525, now=t0 + 4.0, provider="binance", current_price=580.0, whale_snapshot=whale, orderbook_snapshot=ob)
+
+        # Clear DEFER alerts from test log
+        alerts_sent.clear()
+
+        # Both recover during the same monitoring cycle in batch mode (batch=True default)
+        guard.on_recovered("BTCUSDC", price_decrease=0.0289, lost_threshold=0.02925, now=t0 + 39.0, provider="binance", current_price=64500.0)
+        guard.on_recovered("TAOUSDC", price_decrease=0.0498, lost_threshold=0.0525, now=t0 + 43.0, provider="binance", current_price=595.0)
+
+        # Alerts should NOT have been sent immediately (buffered for unification)
+        assert len(alerts_sent) == 0
+
+        # Loop ends -> flush_smart_stop_loss_alerts() called
+        flushed_count = flush_smart_stop_loss_alerts()
+        assert flushed_count == 2
+        assert len(alerts_sent) == 1
+
+        unified = alerts_sent[0]
+        # Title has both coins and no 'SAVED'
+        assert "SAVED" not in unified["title"]
+        assert "BTCUSDC, TAOUSDC (BINANCE)" in unified["title"]
+        # Body contains both positions as bullet points
+        assert "• BTCUSDC (BINANCE): bounce in 39s" in unified["body"]
+        assert "dip 2.89% <= 2.93%" in unified["body"]
+        assert "• TAOUSDC (BINANCE): bounce in 39s" in unified["body"]
+        assert "dip 4.98% <= 5.25%" in unified["body"]
+        assert "Pozitii salvate de wick hunt (2)!" in unified["body"]
+

@@ -484,11 +484,15 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             if not is_trend_up(symbol):
                 # Pillar 2 Smart Stop-Loss Controller: check for predatory wick hunt / whale absorption
                 from intelligence.external.guards.smart_stop_loss_guard import evaluate_smart_stop_loss
+                _prov = getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None)
                 should_execute, sl_reason, sl_meta = evaluate_smart_stop_loss(
                     symbol=symbol,
                     price_decrease=price_decrease,
                     lost_threshold=lost_threshold,
                     now=current_time_s,
+                    provider=_prov,
+                    current_price=current_price,
+                    buy_price=buy_price,
                 )
                 if not should_execute:
                     print(f"[{symbol}] Smart Stop-Loss DEFERRED: {sl_reason}")
@@ -506,7 +510,16 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 print(f"No action taken, because trend is up!")
         else:
             from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss_if_recovered
-            clear_smart_stop_loss_if_recovered(symbol, price_decrease, lost_threshold, now=current_time_s)
+            _prov = getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None)
+            clear_smart_stop_loss_if_recovered(
+                symbol,
+                price_decrease,
+                lost_threshold,
+                now=current_time_s,
+                provider=_prov,
+                current_price=current_price,
+                buy_price=buy_price,
+            )
             print(f"Nothing interesting")
 
     # 4. Evaluate SELL history.
@@ -595,7 +608,14 @@ def main():
             except Exception as _e:
                 print(f"[{_inst.name}] monitoring error: {_e}")
             print("--------------")
-  
+
+        # Flush batched smart stop-loss recovery alerts after all instruments are checked
+        try:
+            from intelligence.external.guards.smart_stop_loss_guard import flush_smart_stop_loss_alerts
+            flush_smart_stop_loss_alerts()
+        except Exception as _e:
+            print(f"flush_smart_stop_loss_alerts error: {_e}")
+
         # Removed a recommendation block consumed only by commented legacy functions.
         # Active trend data now comes directly from cacheManager.
         time.sleep(MT_MAIN_LOOP_SLEEP_SEC)  # Default is 48 seconds.
