@@ -137,9 +137,21 @@ class TestNewCoinDictRobustness(unittest.TestCase):
         self.assertIn("TAO", msg)
 
     def test_send_does_not_raise_on_dict(self):
-        # File channel active, no network — a dict must not raise
+        import tempfile, os
+        path = os.path.join(tempfile.mkdtemp(), "test_alerts.log")
+        # File channel active, no network — a dict must not raise and must not pollute alerts.log
         AlertNotifier.send(self.NEW_COIN, enable_console=False, enable_file=True,
-                           enable_email=False, enable_phone_webhook=False)
+                           enable_email=False, enable_phone_webhook=False, filename=path)
+        self.assertTrue(os.path.exists(path))
+
+    def test_new_coin_identity_deduplication(self):
+        from notify_engine.alertnotifiers import _alert_identity, _delivery_fingerprint
+        coin1 = dict(self.NEW_COIN, price=0.0154, url="https://coinmarketcap.com/currencies/real-world-services/?ref=1")
+        coin2 = dict(self.NEW_COIN, price=0.0210, url="https://coinmarketcap.com/currencies/real-world-services/?ref=2")
+        id1 = _alert_identity(coin1)
+        id2 = _alert_identity(coin2)
+        self.assertEqual(id1, id2)
+        self.assertEqual(_delivery_fingerprint([coin1]), _delivery_fingerprint([coin2]))
 
     def test_non_ascii_symbol_preserved(self):
         # A non-ASCII symbol (e.g. '小蝌蚪') must be preserved, not stripped

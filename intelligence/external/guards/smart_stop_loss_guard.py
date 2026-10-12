@@ -74,9 +74,10 @@ def _load_grace_state() -> Dict[str, Dict[str, Any]]:
                         sts = float(v.get("start_ts", 0.0))
                         if sts > 1_000_000_000 and abs(now_curr - sts) < 3600.0:
                             clean_data[k] = v
-                _GRACE_TRACKER = clean_data
+                _GRACE_TRACKER.clear()
+                _GRACE_TRACKER.update(clean_data)
         except Exception:
-            _GRACE_TRACKER = {}
+            _GRACE_TRACKER.clear()
     return _GRACE_TRACKER
 
 

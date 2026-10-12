@@ -91,6 +91,12 @@ def _alert_identity(alert: Any) -> dict:
     if isinstance(alert, dict):
         source = str(alert.get("source") or "").lower()
         name = str(alert.get("name") or alert.get("title") or "")
+        if alert.get("type") == "new_coin_discovered":
+            return {
+                "type": "new_coin_discovered",
+                "symbol": str(alert.get("symbol") or "").upper(),
+                "source": source,
+            }
         if (
             source in ("order_guard", "guard", "assetguardian", "macro_shadow")
             or any(m in name for m in ("🛡", "🛑", "GUARD", "VETO", "SHADOW", "BLOCKED"))
@@ -481,14 +487,15 @@ class AlertNotifier:
 
     @staticmethod
     def send(alert, enable_console=True, enable_file=True,
-             enable_email=False, enable_phone_webhook=False, webhook_url=None):
+             enable_email=False, enable_phone_webhook=False, webhook_url=None,
+             filename="alerts.log"):
         alerts = [alert] if not isinstance(alert, list) else alert
         if enable_console:
             for item in alerts:
                 AlertNotifier.print_to_console(item)
         if enable_file:
             for item in alerts:
-                AlertNotifier.save_to_file(item)
+                AlertNotifier.save_to_file(item, filename=filename)
         if enable_email:
             AlertNotifier.send_email_batch(alerts)
         if enable_phone_webhook:

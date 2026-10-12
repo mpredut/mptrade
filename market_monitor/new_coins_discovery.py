@@ -408,7 +408,9 @@ class NewCoinsMonitor:
     def is_valid_symbol(self, symbol: str, name: str = "", slug: str = "") -> bool:
         return is_trackable_symbol(symbol, name=name, slug=slug)
 
-    def refresh(self):
+    def refresh(self, refresh_sources: bool = False):
+        if refresh_sources:
+            self.factory.refresh_all()
         self.all_new_coins = self.factory.get_all_new_coins(NEW_COINS_AGE_DAYS)
         self.all_symbols = set()
         print(f"[NewCoinsMonitor] Refreshed new coins from sources: {', '.join(self.all_new_coins.keys())}")
@@ -425,13 +427,6 @@ class NewCoinsMonitor:
         self.alert_callbacks.append(callback)
 
     def _trigger_alerts(self, new_coins: List[Dict], source_name: str, auto_add: bool = True):
-        for callback in self.alert_callbacks:
-            try:
-                print(f"Calling callback: {callback}")
-                callback(alerts)
-            except Exception as e:
-                print(f"[NewCoinsMonitor] Callback {callback} error: {e}")
-
         if not new_coins:
             return
 
@@ -481,7 +476,7 @@ class NewCoinsMonitor:
             while self._running:
                 try:
                     old_symbols = self.all_symbols.copy()
-                    self.refresh()
+                    self.refresh(refresh_sources=True)
                     new_symbols = self.all_symbols - old_symbols
                     if new_symbols:
                         print(f"[NewCoinsMonitor] 🆕 New symbols detected: {new_symbols}")

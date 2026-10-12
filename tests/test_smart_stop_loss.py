@@ -198,13 +198,10 @@ def test_smart_sl_shadow_mode():
 
 
 def test_smart_sl_notifications_detail_and_debounce():
-    from intelligence.external.guards.smart_stop_loss_guard import (
-        _LAST_RECOVERY_ALERT_TS,
-        _PENDING_RECOVERIES,
-        flush_smart_stop_loss_alerts,
-    )
-    _LAST_RECOVERY_ALERT_TS.clear()
-    _PENDING_RECOVERIES.clear()
+    import intelligence.external.guards.smart_stop_loss_guard as ssl_guard
+    ssl_guard._GRACE_TRACKER.clear()
+    ssl_guard._LAST_RECOVERY_ALERT_TS.clear()
+    ssl_guard._PENDING_RECOVERIES.clear()
 
     guard = SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
     whale = _mock_whale(top_long=0.65, taker_ratio=1.1)
