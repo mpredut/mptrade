@@ -268,6 +268,8 @@ class Instrument:
         legacy_bypass_profit_guard = kwargs.pop("bypass_profit_guard", None)
         legacy_bypass_profit_ref = kwargs.pop("bypass_profit_reference", None)
         legacy_bypass_qty_policy = kwargs.pop("bypass_quantity_policy", None)
+        caller_profit_margin = kwargs.pop("profit_margin", None)
+        allow_math_reference_sell = bool(kwargs.pop("allow_math_reference_sell", False))
 
         if not bypass_guards_raw and hasattr(self, "params") and isinstance(self.params, dict):
             bypass_guards_raw = self.params.get("bypass_guards")
@@ -291,11 +293,12 @@ class Instrument:
         wait_for_trend = bool(kwargs.pop("wait_for_trend", True))
         cooldown_pair_id = kwargs.pop("cooldown_pair_id", None)
         side_u = side.upper()
-        # This narrow escape hatch exists only for drawdown BUY flows.  A SELL
-        # must always prove profitability against its historical BUY reference;
+        # This narrow escape hatch exists only for drawdown BUY flows or
+        # explicitly authorized aged retry salvage exits (allow_math_reference_sell=True).
+        # A SELL normally must prove profitability against its historical BUY reference;
         # silently ignore the flag there so a misplaced caller argument cannot
-        # weaken the exit guard.
-        if bypass_math_ref and side_u != "BUY":
+        # weaken the exit guard unless explicitly authorized.
+        if bypass_math_ref and side_u != "BUY" and not allow_math_reference_sell:
             print(
                 f"[GUARD] {side_u} {self.symbol}: bypass math_reference ignored; "
                 "is allowed only for BUY")
@@ -381,6 +384,10 @@ class Instrument:
         retry_kwargs["bypass_quantity_policy"] = bypass_quantity_policy
         retry_kwargs["wait_for_trend"] = wait_for_trend
         retry_kwargs["smart"] = smart
+        if caller_profit_margin is not None:
+            retry_kwargs["profit_margin"] = caller_profit_margin
+        if allow_math_reference_sell:
+            retry_kwargs["allow_math_reference_sell"] = allow_math_reference_sell
         if cooldown_pair_id:
             retry_kwargs["cooldown_pair_id"] = cooldown_pair_id
         # A market order ignores the requested price, so revalidate immediately
@@ -391,6 +398,11 @@ class Instrument:
         enforce_business_minimum = not (
             bypass_all and side_u == "SELL" and is_market)
         profit_margin = None
+        if caller_profit_margin is not None:
+            try:
+                profit_margin = float(caller_profit_margin)
+            except (TypeError, ValueError):
+                profit_margin = None
         profit_window_ref = None
         retry_requested_price = None
         retry_price_tolerance = None
@@ -502,7 +514,8 @@ class Instrument:
                     except Exception:
                         regime_context = None
 
-                profit_margin = order_guard.margin_for(self._provider.name)
+                if profit_margin is None:
+                    profit_margin = order_guard.margin_for(self._provider.name)
                 # Tier-one min/max reference comes from the provider hook. Kraken
                 # and Hyperliquid use their configured venue window; Binance uses
                 # safeback_sec from the order cache. An empty window falls back to

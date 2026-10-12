@@ -470,6 +470,10 @@ class ProcessOnceTest(unittest.TestCase):
                     self.assertEqual(oq.load_all(), [])
                 self.assertEqual(len(self.alerts), 1)
                 self.assertIn("3 intent(s) expired", self.alerts[0]["body"])
+                self.assertIn("SELL TAOUSDC", self.alerts[0]["body"])
+                self.assertIn("size ~1", self.alerts[0]["body"])
+                self.assertIn("TTL: 1d (24h)", self.alerts[0]["body"])
+                self.assertNotIn("sample=", self.alerts[0]["body"])
                 self.assertEqual(audit.call_count, 5)
                 self.assertTrue(all(c.args[0] == "retry_giveup" for c in audit.call_args_list))
                 self.assertEqual(len({c.kwargs["intent_id"] for c in audit.call_args_list}), 5)
@@ -1281,6 +1285,60 @@ class ProcessOnceTest(unittest.TestCase):
                 worker.alert.notify = original_notify
                 worker._ALERTED_QUEUE_CORRUPTIONS.clear()
             self.assertEqual(len(alerts), 2)
+
+    def test_age_staged_retry_progression(self):
+        # Total TTL is 302,400s (3.5 days / 84h).
+        # Stage 1: progress < 0.50 (e.g. at 20h) -> standard profit margin, no math_reference bypass.
+        # Stage 2: 0.50 <= progress < 0.75 (e.g. at 50h) -> profit_margin=0.15, wait_for_trend=True.
+        # Stage 3: progress >= 0.75 (e.g. at 70h) -> SELL gets math_reference bypass, allow_math_reference_sell=True, wait_for_trend=True.
+        prev_ttl = oq.RETRY_TTL_SEC
+        oq.RETRY_TTL_SEC = 302400.0
+        try:
+            t0 = 10000.0
+
+            # 1. Fresh (Stage 1): 20 hours in (progress ~ 0.238 < 0.50)
+            oq.rewrite([])
+            oq.enqueue("TAOUSDC", "SELL", 1.0, {"bypass_guards": ["cooldown"]}, requested_price=500.0, now=t0)
+            mkt1 = FakeMkt(price=500.0, succeed=True)
+            t_stage1 = t0 + 20 * 3600.0
+            stats1 = worker.process_once(mkt1, now=t_stage1)
+            self.assertEqual(stats1["succeeded"], 1)
+            self.assertEqual(len(mkt1.calls), 1)
+            kw1 = mkt1.calls[0]["kw"]
+            self.assertNotIn("profit_margin", kw1)
+            self.assertEqual(kw1.get("bypass_guards"), ["cooldown"])
+            self.assertFalse(kw1.get("allow_math_reference_sell", False))
+            self.assertTrue(kw1.get("wait_for_trend"))
+
+            # 2. Breakeven (Stage 2): 50 hours in (progress ~ 0.595, in [0.50, 0.75))
+            oq.rewrite([])
+            oq.enqueue("TAOUSDC", "SELL", 1.0, {"bypass_guards": ["cooldown"]}, requested_price=500.0, now=t0)
+            mkt2 = FakeMkt(price=500.0, succeed=True)
+            t_stage2 = t0 + 50 * 3600.0
+            stats2 = worker.process_once(mkt2, now=t_stage2)
+            self.assertEqual(stats2["succeeded"], 1)
+            self.assertEqual(len(mkt2.calls), 1)
+            kw2 = mkt2.calls[0]["kw"]
+            self.assertEqual(kw2.get("profit_margin"), 0.15)
+            self.assertEqual(kw2.get("bypass_guards"), ["cooldown"])
+            self.assertFalse(kw2.get("allow_math_reference_sell", False))
+            self.assertTrue(kw2.get("wait_for_trend"))
+
+            # 3. Controlled Salvage (Stage 3): 70 hours in (progress ~ 0.833 >= 0.75)
+            oq.rewrite([])
+            oq.enqueue("TAOUSDC", "SELL", 1.0, {"bypass_guards": ["cooldown"]}, requested_price=500.0, now=t0)
+            mkt3 = FakeMkt(price=500.0, succeed=True)
+            t_stage3 = t0 + 70 * 3600.0
+            stats3 = worker.process_once(mkt3, now=t_stage3)
+            self.assertEqual(stats3["succeeded"], 1)
+            self.assertEqual(len(mkt3.calls), 1)
+            kw3 = mkt3.calls[0]["kw"]
+            self.assertIn("math_reference", kw3.get("bypass_guards", []))
+            self.assertTrue(kw3.get("allow_math_reference_sell"))
+            # Crucial requirement: wait_for_trend MUST REMAIN TRUE!
+            self.assertTrue(kw3.get("wait_for_trend"))
+        finally:
+            oq.RETRY_TTL_SEC = prev_ttl
 
     def test_import_rejects_unsafe_worker_poll_interval(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -982,6 +982,31 @@ class InstrumentGuardsTestCase(unittest.TestCase):
                 self.assertIn("bypass_guards", guard.call_args.kwargs)
                 self.assertIn("p3", guard.call_args.kwargs["bypass_guards"])
 
+    def test_instrument_profit_margin_override_and_allow_math_reference_sell(self):
+        """Verify custom profit_margin and allow_math_reference_sell on SELL."""
+        self._clear_state()
+        provider = _FakeProvider(name="FakeVenue")
+        inst = self._inst(provider)
+
+        # 1. Custom profit_margin passed to place()
+        with patch("order_guard.profit_guard", return_value=True) as guard:
+            inst.place("SELL", 100.0, 1.0, smart=False, wait_for_trend=False, profit_margin=0.15)
+            # The 5th positional argument to profit_guard is profit_margin
+            self.assertEqual(guard.call_args[0][4], 0.15)
+
+        # 2. Standard SELL with math_reference bypass is discarded without permission
+        with patch("order_guard.profit_guard", return_value=True) as guard:
+            inst.place("SELL", 100.0, 1.0, smart=False, wait_for_trend=False, bypass_guards=["math_reference"])
+            self.assertNotIn("math_reference", guard.call_args.kwargs.get("bypass_guards", set()))
+
+        # 3. SELL with allow_math_reference_sell=True retains math_reference in bypass_guards
+        with patch("order_guard.profit_guard", return_value=True) as guard:
+            inst.place(
+                "SELL", 100.0, 1.0, smart=False, wait_for_trend=False,
+                bypass_guards=["math_reference"], allow_math_reference_sell=True,
+            )
+            self.assertIn("math_reference", guard.call_args.kwargs["bypass_guards"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

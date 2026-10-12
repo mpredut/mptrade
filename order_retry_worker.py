@@ -520,11 +520,40 @@ def process_once(mkt, now=None):
         kwargs["caller_owns_retry"] = True
         kwargs["_retry_requested_price"] = r.get("requested_price")
         kwargs["_retry_price_tolerance"] = oq.RETRY_PRICE_TOL
+        if provider_name is not None:
+            kwargs["provider_name"] = provider_name
+
+        # Age-staged retry progression across active TTL (RETRY_TTL_SEC):
+        # - Stage 1 (Fresh, 0% <= progress < 50%): Standard configured profit margin.
+        # - Stage 2 (Breakeven, 50% <= progress < 75%): Relax profit margin to fee buffer (0.15%).
+        # - Stage 3 (Controlled Salvage, progress >= 75%): For SELL, allow math_reference bypass
+        #           while strictly maintaining wait_for_trend=True and P2 whale/orderbook protections.
+        ttl_started = float(r.get("ttl_started_ts") or r.get("created_ts") or now)
+        age_sec = max(0.0, now - ttl_started)
+        total_ttl = float(oq.RETRY_TTL_SEC) if oq.RETRY_TTL_SEC > 0 else 302400.0
+        age_progress = min(1.0, max(0.0, age_sec / total_ttl))
+        side_u = str(r.get("side") or "").upper()
+
+        retry_stage = "standard"
         if r.get("kind") == "monitor_order_replace":
             kwargs["bypass_profit_guard"] = True
             kwargs["wait_for_trend"] = False
-        if provider_name is not None:
-            kwargs["provider_name"] = provider_name
+        else:
+            kwargs["wait_for_trend"] = bool(kwargs.get("wait_for_trend", True))
+            if age_progress >= 0.75:
+                retry_stage = "salvage"
+                if side_u == "SELL":
+                    existing_bypasses = set(kwargs.get("bypass_guards") or [])
+                    existing_bypasses.add("math_reference")
+                    kwargs["bypass_guards"] = sorted(list(existing_bypasses))
+                    kwargs["allow_math_reference_sell"] = True
+                elif "profit_margin" not in kwargs or kwargs["profit_margin"] > 0.15:
+                    kwargs["profit_margin"] = 0.15
+            elif age_progress >= 0.50:
+                retry_stage = "breakeven"
+                if "profit_margin" not in kwargs or kwargs["profit_margin"] > 0.15:
+                    kwargs["profit_margin"] = 0.15
+
         outcome_context = {}
         kwargs["_outcome_context"] = outcome_context
         dispatch_claim = oq.begin_claimed_submit(r, now=now)
@@ -540,7 +569,12 @@ def process_once(mkt, now=None):
         try:
             _audit_event(
                 r, "submit_requested", qty=r.get("qty"), price=price,
-                attempt=int(r.get("attempts") or 0) + 1)
+                attempt=int(r.get("attempts") or 0) + 1,
+                retry_stage=retry_stage,
+                age_progress=round(age_progress, 3))
+            if retry_stage != "standard":
+                print(f"[order_retry] {side_u} {symbol} retrying under Stage {retry_stage.upper()} "
+                      f"(age={age_sec / 3600:.1f}h, progress={age_progress * 100:.1f}%)")
             order = mkt.place(symbol, r.get("side"), price, r.get("qty"), **kwargs)
         except Exception as e:  # noqa: BLE001
             print(f"[order_retry] retry {r.get('side')} {symbol} raised ({e}) — treating it as a failure")
@@ -775,7 +809,8 @@ class IncidentDigest:
             for key, group in list(groups.items()):
                 if (not isinstance(group["count"], int) or group["count"] < 0
                         or not math.isfinite(group["next_at"]) or group["next_at"] <= 0
-                        or not math.isfinite(group["quantity"]) or group["quantity"] < 0):
+                        or not math.isfinite(group["quantity"]) or group["quantity"] < 0
+                        or not isinstance(group.get("attempts", 0), int) or group.get("attempts", 0) < 0):
                     raise ValueError("invalid notification digest group")
                 if group["count"] == 0 and group["next_at"] <= now:
                     del groups[key]
@@ -791,7 +826,7 @@ class IncidentDigest:
                 key = json.dumps(labels, sort_keys=True, separators=(",", ":"))
                 group = groups.setdefault(key, {
                     "labels": labels, "next_at": now, "reported": False,
-                    "count": 0, "quantity": 0.0,
+                    "count": 0, "quantity": 0.0, "attempts": 0,
                 })
                 if group["count"] == 0:
                     group["first_ts"] = now
@@ -799,13 +834,14 @@ class IncidentDigest:
                 group["last_ts"] = now
                 group["count"] += 1
                 group["quantity"] += quantity
+                group["attempts"] = max(group.get("attempts", 0), int(event.get("attempts", 0)))
                 changed = True
             due = []
             for group in groups.values():
                 if group["count"] and group["next_at"] <= now:
                     due.append(dict(group))
                     group.update(next_at=now + self.interval, reported=True,
-                                 count=0, quantity=0.0)
+                                 count=0, quantity=0.0, attempts=0)
                     changed = True
             if changed:
                 atomic_write_json(self.path, state, separators=(",", ":"))
@@ -838,6 +874,7 @@ def _alert_giveups(records, now):
                 },
                 "quantity": rec["qty"],
                 "sample_id": rec.get("intent_id") or rec["id"],
+                "attempts": int(rec.get("attempts") or 0),
             })
         digest = IncidentDigest(
             os.path.join(os.path.dirname(oq.QUEUE_FILE), "order_retry_giveup_alerts.json"),
@@ -845,17 +882,34 @@ def _alert_giveups(records, now):
         for report in digest.collect(events, now=now):
             labels = report["labels"]
             suffix = " summary" if report["reported"] else ""
+            cnt = report["count"]
+            tot_qty = report["quantity"]
+            unit_qty = (tot_qty / cnt) if cnt > 0 else tot_qty
+            attempts = int(report.get("attempts") or 0)
+            attempts_str = f", {attempts} attempts" if attempts > 0 else ""
+            prov = str(labels.get("provider") or "routed").upper()
+            side = str(labels.get("side") or "").upper()
+            sym = str(labels.get("symbol") or "")
+            reason = str(labels.get("reason") or "unspecified")
+            expiry = str(labels.get("expiry") or "active_ttl")
+            kind = labels.get("kind")
+            kind_str = f" [{kind}]" if kind and kind != "unspecified" else ""
+
+            ttl_h = oq.RETRY_TTL_SEC / 3600.0
+            if oq.RETRY_TTL_SEC >= 86400 and (oq.RETRY_TTL_SEC % 43200 == 0):
+                ttl_str = f"{oq.RETRY_TTL_SEC / 86400:g}d ({ttl_h:g}h)"
+            elif oq.RETRY_TTL_SEC >= 3600:
+                ttl_str = f"{ttl_h:g}h"
+            else:
+                ttl_str = f"{oq.RETRY_TTL_SEC / 60.0:g}m"
+            expiry_detail = f"{expiry} (TTL: {ttl_str})" if expiry == "active_ttl" else expiry
             try:
                 alert.notify(
-                    title=f"🛑 order-retry GIVE UP{suffix} {labels['side']} {labels['symbol']}",
-                    body=(f"{report['count']} intent(s) expired; no order submitted for these expiries. "
-                          f"Total requested qty={report['quantity']:.8g}. "
-                          f"Provider={labels['provider']}; kind={labels['kind']}; "
-                          f"last refusal={labels['reason']}; expiry={labels['expiry']}. "
-                          f"Further expiries for this incident are summarized every "
-                          f"{GIVEUP_SUMMARY_SEC / 60:g} minutes. "
-                          f"Per-intent details: execution audit; sample={report['sample_id']}."),
-                    source="order_retry", symbol=labels["symbol"])
+                    title=f"🛑 order-retry GIVE UP{suffix} {side} {sym}",
+                    body=(f"{side} {sym} ({prov}){kind_str}: {cnt} intent(s) expired (size ~{unit_qty:.6g}{attempts_str}). "
+                          f"Blocked by {reason} (expiry={expiry_detail}). "
+                          f"No order submitted to exchange."),
+                    source="order_retry", symbol=sym)
             except Exception as exc:  # One transport failure must not skip other incidents.
                 print(f"[order_retry] the giveup delivery failed (ignored): {exc}")
     except Exception as exc:  # Notification failure must not change order processing.
