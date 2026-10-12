@@ -117,10 +117,10 @@ class InstrumentGuardsTestCase(unittest.TestCase):
     def tearDown(self):
         outcomes_log.ORDER_OUTCOMES_LOG_DIR = self._orig_log_dir
 
-    def _inst(self, provider):
+    def _inst(self, provider, params=None):
         api = MarketApi([provider])
         return Instrument(name="ZZZFAKE", symbol=SYMBOL, provider=provider.name.lower(),
-                          base="ZZZFAKE", quote="USD", api=api)
+                          base="ZZZFAKE", quote="USD", params=params, api=api)
 
     def _log_lines(self):
         files = glob.glob(os.path.join(self._log_tmp, "order_outcomes_*.log"))
@@ -952,6 +952,35 @@ class InstrumentGuardsTestCase(unittest.TestCase):
                     self.assertIs(guard.call_args.kwargs["regime_context"], new)
                     self.assertEqual(len(oq.load_all()), 1)
                     self.assertEqual(oq.load_all()[0]["lifecycle"], "accepted")
+
+
+    def test_bypass_guards_hierarchical_resolution(self):
+        """Verify bypass_guards resolves from call kwargs, instrument params, and order_guard.conf."""
+        self._clear_state()
+        provider = _FakeProvider(name="FakeVenue")
+
+        # 1. Kwargs priority
+        inst = self._inst(provider, params={"bypass_guards": "math_reference"})
+        with patch("order_guard.profit_guard", return_value=True) as guard:
+            inst.place("BUY", 100.0, 1.0, smart=False, wait_for_trend=False, bypass_guards="cooldown")
+            self.assertIn("bypass_guards", guard.call_args.kwargs)
+            self.assertIn("cooldown", guard.call_args.kwargs["bypass_guards"])
+
+        # 2. Instrument params fallback
+        inst_params = self._inst(provider, params={"bypass_guards": "p1,p2"})
+        with patch("order_guard.profit_guard", return_value=True) as guard:
+            inst_params.place("BUY", 100.0, 1.0, smart=False, wait_for_trend=False)
+            self.assertIn("bypass_guards", guard.call_args.kwargs)
+            self.assertIn("p1", guard.call_args.kwargs["bypass_guards"])
+            self.assertIn("p2", guard.call_args.kwargs["bypass_guards"])
+
+        # 3. order_guard.conf venue fallback
+        inst_conf = self._inst(provider, params={})
+        with patch.dict(order_guard._load_margins(), {"fakevenue_bypass_guards": "p3"}):
+            with patch("order_guard.profit_guard", return_value=True) as guard:
+                inst_conf.place("BUY", 100.0, 1.0, smart=False, wait_for_trend=False)
+                self.assertIn("bypass_guards", guard.call_args.kwargs)
+                self.assertIn("p3", guard.call_args.kwargs["bypass_guards"])
 
 
 if __name__ == "__main__":

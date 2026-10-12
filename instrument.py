@@ -78,12 +78,12 @@ def normalize_bypassed_guards(
         elif isinstance(bypass_guards, str):
             for part in bypass_guards.split(","):
                 p = part.strip().lower()
-                if p:
+                if p and p not in ("none", "off", "false", "no", "0"):
                     bypassed.add(p)
         elif isinstance(bypass_guards, (set, list, tuple)):
             for item in bypass_guards:
                 p = str(item).strip().lower()
-                if p:
+                if p and p not in ("none", "off", "false", "no", "0"):
                     bypassed.add(p)
 
     if "all" in bypassed or "*" in bypassed:
@@ -268,6 +268,16 @@ class Instrument:
         legacy_bypass_profit_guard = kwargs.pop("bypass_profit_guard", None)
         legacy_bypass_profit_ref = kwargs.pop("bypass_profit_reference", None)
         legacy_bypass_qty_policy = kwargs.pop("bypass_quantity_policy", None)
+
+        if not bypass_guards_raw and hasattr(self, "params") and isinstance(self.params, dict):
+            bypass_guards_raw = self.params.get("bypass_guards")
+        if not bypass_guards_raw:
+            try:
+                m = order_guard._load_margins()
+                venue_key = f"{str(self._provider.name).lower()}_bypass_guards"
+                bypass_guards_raw = m.get(venue_key, m.get("default_bypass_guards"))
+            except Exception:
+                pass
 
         bypassed_guards = normalize_bypassed_guards(
             bypass_guards=bypass_guards_raw,
