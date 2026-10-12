@@ -2,10 +2,10 @@
 # manage_agy.sh — Unified manager for Antigravity CLI (agy) & remote-control daemon
 # Commands:
 #   update       (default) Check/apply agy update, then stop & start daemon as 'prod-vm'
-#   watchdog     Verify daemon is active; if down/inactive, revive registered as 'prod-vm'
+#   watchdog     Verify daemon is active & tunnel connected; revive/restart if down or stuck
 #   cron-update  Check for updates; restart daemon only if a new version was applied
 #   restart      Restart daemon registered as 'prod-vm'
-#   status       Display daemon status and binary version
+#   status       Display daemon status, tunnel health, and binary version
 #   stop         Stop the daemon
 set -euo pipefail
 
@@ -49,6 +49,29 @@ is_active() {
     status_output="$("$AGY_BIN" remote-control status 2>&1 || true)"
     if echo "$status_output" | grep -qi "Daemon status: active"; then
         return 0
+    fi
+    return 1
+}
+
+is_tunnel_stuck() {
+    local pid log_file last_status
+    pid="$(systemctl --user show -p MainPID --value antigravity-cli-daemon 2>/dev/null || true)"
+    if [ -n "$pid" ] && [ "$pid" -gt 0 ] && [ -d "/proc/$pid" ]; then
+        log_file="$(readlink -f "/proc/$pid/fd/1" 2>/dev/null || true)"
+    fi
+    if [ -z "${log_file:-}" ] || [ ! -f "$log_file" ]; then
+        log_file="$(readlink -f "$HOME/.gemini/antigravity-cli/cli.log" 2>/dev/null || true)"
+    fi
+
+    if [ -n "${log_file:-}" ] && [ -f "$log_file" ]; then
+        last_status="$(grep "Connection status:" "$log_file" 2>/dev/null | tail -n 1 || true)"
+        if [ -n "$last_status" ] && echo "$last_status" | grep -qi "Failed before open"; then
+            local fail_count
+            fail_count="$(grep -c "Connection status: Failed before open" <(tail -n 30 "$log_file" 2>/dev/null) || true)"
+            if [ "$fail_count" -ge 2 ]; then
+                return 0
+            fi
+        fi
     fi
     return 1
 }
@@ -102,6 +125,10 @@ do_watchdog() {
             send_alert "CRITICAL: Failed to revive Antigravity daemon (${INSTANCE_NAME}) on $(hostname)."
             exit 2
         fi
+    elif is_tunnel_stuck; then
+        log "WARNING: Daemon is running but tunnel is STUCK in reconnection failure. Triggering auto-recovery..."
+        do_restart
+        send_alert "Antigravity remote-control daemon tunnel was found stuck/broken and was automatically restarted as '${INSTANCE_NAME}'."
     else
         if [ -t 1 ] || [ "${1:-}" = "--verbose" ]; then
             log "Daemon is active and healthy (instance: ${INSTANCE_NAME})."
@@ -136,6 +163,20 @@ do_update() {
 do_status() {
     log "Binary: $AGY_BIN ($("$AGY_BIN" --version 2>/dev/null || echo 'unknown'))"
     "$AGY_BIN" remote-control status || true
+    local pid log_file last_status
+    pid="$(systemctl --user show -p MainPID --value antigravity-cli-daemon 2>/dev/null || true)"
+    if [ -n "$pid" ] && [ "$pid" -gt 0 ] && [ -d "/proc/$pid" ]; then
+        log_file="$(readlink -f "/proc/$pid/fd/1" 2>/dev/null || true)"
+    fi
+    if [ -z "${log_file:-}" ] || [ ! -f "$log_file" ]; then
+        log_file="$(readlink -f "$HOME/.gemini/antigravity-cli/cli.log" 2>/dev/null || true)"
+    fi
+    if [ -n "${log_file:-}" ] && [ -f "$log_file" ]; then
+        last_status="$(grep "Connection status:" "$log_file" 2>/dev/null | tail -n 1 || true)"
+        if [ -n "$last_status" ]; then
+            log "Tunnel: $last_status"
+        fi
+    fi
 }
 
 CMD="${1:-update}"
@@ -165,10 +206,10 @@ case "$CMD" in
         echo ""
         echo "Commands:"
         echo "  update       (default) Run agy update, then restart daemon as '${INSTANCE_NAME}'"
-        echo "  watchdog     Check if daemon is active; revive as '${INSTANCE_NAME}' if down"
+        echo "  watchdog     Check if daemon is active & tunnel healthy; revive/restart if down or stuck"
         echo "  cron-update  Run update, restart daemon only if an update was applied"
         echo "  restart      Restart daemon registered as '${INSTANCE_NAME}'"
-        echo "  status       Show daemon status and CLI version"
+        echo "  status       Show daemon status, tunnel health, and CLI version"
         echo "  stop         Stop daemon"
         ;;
     *)
