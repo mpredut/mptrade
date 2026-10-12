@@ -2,6 +2,7 @@
 
 import os
 import sys
+import time
 import unittest
 from unittest import mock
 
@@ -237,6 +238,39 @@ class T212ClientTransportTest(unittest.TestCase):
         self.assertEqual(order["filledValue"], 30.0)
         self.assertEqual(order["fee"], 0.045)
 
+    def test_rate_limit_backoff_and_stale_cache_fallback(self):
+        client = t212_client.T212Client(
+            "dummy", "dummy", env="demo", min_gap_sec=0.0,
+            portfolio_ttl_sec=1.0,
+        )
+        client._min_gap = 0.0
+
+        # Step 1: Successful initial fetch populates cache
+        with mock.patch.object(
+            t212_client, "http_get", return_value=(200, b'[{"ticker":"SPCX_US_EQ","quantity":2.92}]')
+        ) as get_mock:
+            pf = client.get_portfolio()
+            self.assertEqual(len(pf), 1)
+            self.assertEqual(get_mock.call_count, 1)
+
+        # Step 2: Simulate TTL expiry and 429 rate limit
+        client._pf_cache = (time.monotonic() - 2.0, pf)  # Expire TTL
+        with mock.patch.object(
+            t212_client, "http_get", return_value=(429, b"Too Many Requests")
+        ) as get_mock:
+            pf_stale = client.get_portfolio()
+            # Stale cache returned rather than None
+            self.assertEqual(len(pf_stale), 1)
+            self.assertEqual(pf_stale[0]["ticker"], "SPCX_US_EQ")
+            # Backoff until is set in the future
+            self.assertGreater(client._backoff_until, time.monotonic())
+
+            # Step 3: Second call within negative cache TTL does NOT call HTTP again
+            pf_stale_2 = client.get_portfolio()
+            self.assertEqual(len(pf_stale_2), 1)
+            self.assertEqual(get_mock.call_count, 1)  # No second stampede!
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

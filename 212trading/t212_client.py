@@ -41,6 +41,8 @@ class T212Client:
         # to avoid T212 rate limits; T212_MIN_GAP_SEC sets the minimum gap.
         self._lock = threading.Lock()
         self._last = 0.0
+        self._backoff_until = 0.0
+        self._fetch_fail: dict[str, float] = {}
         self._min_gap = (required_float_env("T212_MIN_GAP_SEC")
                          if min_gap_sec is None else min_gap_sec)
         # Brief shared account-level caches coalesce redundant per-asset thread
@@ -53,10 +55,19 @@ class T212Client:
         # On TTL expiry, one thread fetches while others wait and reuse its result.
         self._fetch_lock = threading.Lock()
 
-    def _pace(self) -> None:
-        """Enforce at least ``_min_gap`` seconds between calls across all threads."""
+    def notify_rate_limit(self, backoff_sec: float = 5.0) -> None:
+        """Pause all subsequent requests across all threads after HTTP 429."""
         with self._lock:
-            wait = self._min_gap - (time.monotonic() - self._last)
+            self._backoff_until = max(self._backoff_until, time.monotonic() + backoff_sec)
+
+    def _pace(self) -> None:
+        """Enforce at least ``_min_gap`` seconds between calls across all threads,
+        and respect rate limit backoff if any recent call returned HTTP 429."""
+        with self._lock:
+            now = time.monotonic()
+            gap_wait = self._min_gap - (now - self._last)
+            backoff_wait = self._backoff_until - now
+            wait = max(gap_wait, backoff_wait)
             if wait > 0:
                 time.sleep(wait)
             self._last = time.monotonic()
@@ -86,6 +97,7 @@ class T212Client:
             return c[1]
         status, body = http_get(f"{self.base}/equity/metadata/instruments", headers=self._headers())
         if status == 429:
+            self.notify_rate_limit(max(5.0, self._pf_ttl))
             log("  ! T212 rate limit (429)")
             return None
         if status in (401, 403):
@@ -127,6 +139,8 @@ class T212Client:
             payload=payload,
             headers=self._headers(),
         )
+        if status == 429:
+            self.notify_rate_limit(max(5.0, self._pf_ttl))
         try:
             data = json.loads(body) if body else {}
         except ValueError:
@@ -135,6 +149,7 @@ class T212Client:
         # reads fresh state and does not drop a newly placed order from tracking.
         with self._lock:
             self._ord_cache = None
+            self._fetch_fail.pop("_ord_cache", None)
         return status, data
 
     def place_limit_order(
@@ -177,6 +192,8 @@ class T212Client:
             f"{self.base}/equity/history/orders?limit=50",
             headers=self._headers(),
         )
+        if status == 429:
+            self.notify_rate_limit(max(5.0, self._pf_ttl))
         if status != 200 or not body:
             self._log_read_fail("order history", status)
             return None
@@ -236,6 +253,8 @@ class T212Client:
         status, body = http_get(f"{self.base}/equity/orders/{order_id}", headers=self._headers())
         if status == 404:
             return self.get_historical_order(order_id)
+        if status == 429:
+            self.notify_rate_limit(max(5.0, self._pf_ttl))
         if status != 200:
             self._log_read_fail("order status", status)
             return None
@@ -253,11 +272,14 @@ class T212Client:
             from ipo_common import http_request
         status, _ = http_request("DELETE", f"{self.base}/equity/orders/{order_id}",
                                  headers=self._headers())
+        if status == 429:
+            self.notify_rate_limit(max(5.0, self._pf_ttl))
         ok = status in (200, 201, 204)
         if not ok:
             log(f"  ! [T212] cancel order {order_id} -> HTTP {status}")
         with self._lock:
             self._ord_cache = None   # Order list changed; force a fresh read.
+            self._fetch_fail.pop("_ord_cache", None)
         return ok
 
     def _log_read_fail(self, what: str, status: int) -> None:
@@ -291,24 +313,46 @@ class T212Client:
         """
         with self._lock:
             c = getattr(self, attr)
-            if c and (time.monotonic() - c[0]) < self._pf_ttl:
+            now = time.monotonic()
+            if c and (now - c[0]) < self._pf_ttl:
                 return c[1]
+            fail_ts = self._fetch_fail.get(attr, 0.0)
+            if (now - fail_ts) < self._pf_ttl:
+                if c and (now - c[0]) < 60.0:
+                    return c[1]
+                return None
         with self._fetch_lock:
             with self._lock:   # Another thread may have refilled while this one waited.
                 c = getattr(self, attr)
-                if c and (time.monotonic() - c[0]) < self._pf_ttl:
+                now = time.monotonic()
+                if c and (now - c[0]) < self._pf_ttl:
                     return c[1]
+                fail_ts = self._fetch_fail.get(attr, 0.0)
+                if (now - fail_ts) < self._pf_ttl:
+                    if c and (now - c[0]) < 60.0:
+                        return c[1]
+                    return None
             status, body = http_get(f"{self.base}{path}", headers=self._headers())
+            if status == 429:
+                self.notify_rate_limit(max(5.0, self._pf_ttl))
             if status != 200 or not body:
                 self._log_read_fail(what, status)
+                with self._lock:
+                    self._fetch_fail[attr] = time.monotonic()
+                    c = getattr(self, attr)
+                    if c and (time.monotonic() - c[0]) < 60.0:
+                        return c[1]
                 return None
             try:
                 data = json.loads(body)
             except ValueError:
                 self._log_read_fail(f"{what} (JSON invalid)", status)
+                with self._lock:
+                    self._fetch_fail[attr] = time.monotonic()
                 return None
             with self._lock:
                 setattr(self, attr, (time.monotonic(), data))
+                self._fetch_fail.pop(attr, None)
             return data
 
     def get_portfolio(self) -> list[dict] | None:
