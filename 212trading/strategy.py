@@ -492,7 +492,14 @@ class Strategy:
                    body=(f"a{avg:.2f} · br{gross:+.2f} fee{fee:.2f} N{net:+.2f}$ | "
                          f"Ntot{self.s['realized_net_usd']:+.2f}$ | ciclu{self.s['cycle']} inchis"),
                    source="T212", price=price, desktop=self.desktop)
-            if self.s["qty"] <= 1e-9:
+            ladder_levels = {lvl for (lvl, _) in self.p.tp_ladder} if self.p.tp_ladder else set()
+            all_tp_sold = bool(ladder_levels and ladder_levels.issubset(set(self.s.get("tp_sold_levels", []))))
+            is_flat = self.s["qty"] <= 1e-9
+            is_dust_exit = (
+                self._is_dust(self.s["qty"], price)
+                and (all_tp_sold or self.s.get("sl_pending") or not self.p.tp_ladder)
+            )
+            if is_flat or is_dust_exit:
                 was_sl = bool(self.s.get("sl_pending"))
                 pnl, net_tot, fees = (self.s["realized_pnl_usd"],
                                       self.s["realized_net_usd"], self.s["fees_usd"])
@@ -632,6 +639,23 @@ class Strategy:
                 success = False
         return success
 
+    def _is_dust(self, qty: float, ref_price: float | None = None) -> bool:
+        """Return True if qty is negligible dust (below minimum broker holding / trading value)."""
+        if qty <= 1e-9:
+            return True
+        if self.p.ladder_min_free <= 0:
+            return False
+        p = ref_price or self._avg_cost() or 0.0
+        if p <= 0:
+            return False
+        # If ladder_min_free is configured (>0), residual dust value is around ladder_min_free.
+        # Allow up to 1.5x ladder_min_free (or at least $5 broker minimum position value).
+        # Also ensure dust threshold never exceeds half of the configured entry amount.
+        min_dust = max(5.0, self.p.ladder_min_free * 1.5)
+        max_allowed = (self.p.entry_amount * 0.5) if self.p.entry_amount > 0 else min_dust
+        threshold = min(min_dust, max_allowed)
+        return (qty * p) <= threshold
+
     def _sellable_qty(self, held: float, ref_price: float | None = None) -> float:
         """Return the maximum safely sellable quantity avoiding T212 min-opened-position.
 
@@ -641,6 +665,8 @@ class Strategy:
         For clean quantities without dust, sell the exact rounded quantity.
         """
         p = ref_price or self._avg_cost() or 0.0
+        if self._is_dust(held, p):
+            return 0.0
         q_round = round(held, 2)
         dust = held - q_round
         if abs(dust) > 1e-6 and self.p.ladder_min_free > 0 and p > 0:
@@ -867,6 +893,12 @@ class Strategy:
             if source_order is None and pending_for_fill and pending_for_fill.get("side") == "BUY":
                 source_order = pending_for_fill
             is_adoption = source_order is None and prev_qty < 1e-9
+            if is_adoption and self._is_dust(real_qty, real_avg):
+                now = self._now()
+                if now - getattr(self, "_dust_logged", 0) > 600:
+                    log(f"  [STRAT] portfolio dust ({real_qty:.4f} shares, ~{real_qty*real_avg:.2f} USD) ignored — staying flat for new cycle")
+                    self._dust_logged = now
+                return
             is_dca = bool(
                 source_order is not None
                 and source_order.get("kind") == "DCA"
@@ -942,8 +974,16 @@ class Strategy:
                 log(f"  [STRAT] BUY {o['id']} unfilled, the price rose — cancelling and re-placing")
                 self._cancel_specific(o)
 
-        # --- Closed cycle (the full position was sold): start a new cycle. ---
-        if real_qty <= 1e-9 and prev_qty > 1e-9:
+        # --- Closed cycle (the full position or all exit tranches were sold): start a new cycle. ---
+        is_flat = real_qty <= 1e-9
+        ladder_levels = {lvl for (lvl, _) in self.p.tp_ladder} if self.p.tp_ladder else set()
+        all_tp_sold = bool(ladder_levels and ladder_levels.issubset(set(self.s.get("tp_sold_levels", []))))
+        has_open_sells = any(o.get("side") == "SELL" for o in self.s["orders"])
+        is_dust = self._is_dust(real_qty, real_avg or price)
+        cycle_closed = (is_flat and prev_qty > 1e-9) or (
+            prev_qty > 1e-9 and is_dust and not has_open_sells and (all_tp_sold or self.s.get("sl_pending") or not self.p.tp_ladder)
+        )
+        if cycle_closed:
             pnl, net_tot, fees = (self.s["realized_pnl_usd"],
                                   self.s["realized_net_usd"], self.s["fees_usd"])
             was_sl = bool(self.s.get("sl_pending"))   # Was this a catastrophic stop-loss exit?
@@ -1133,7 +1173,8 @@ class Strategy:
 
         in_backoff = self._now() < self.s.get("buy_backoff_until", 0)
 
-        if held <= 1e-9:
+        is_flat = held <= 1e-9 or (self._is_dust(held, price) and not self._has_open("SELL"))
+        if is_flat:
             if in_backoff:   # After insufficient funds, avoid buys while the account is empty.
                 return
             if self._has_open("BUY"):
