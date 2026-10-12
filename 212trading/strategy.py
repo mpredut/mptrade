@@ -632,6 +632,25 @@ class Strategy:
                 success = False
         return success
 
+    def _sellable_qty(self, held: float, ref_price: float | None = None) -> float:
+        """Return the maximum safely sellable quantity avoiding T212 min-opened-position.
+
+        When held has fractional dust beyond 2 decimal places, selling round(held, 2)
+        would leave sub-penny/sub-$5 dust that T212 rejects with min-opened-position.
+        In that case, retain ladder_min_free buffer so the remaining position is >= min.
+        For clean quantities without dust, sell the exact rounded quantity.
+        """
+        p = ref_price or self._avg_cost() or 0.0
+        q_round = round(held, 2)
+        dust = held - q_round
+        if abs(dust) > 1e-6 and self.p.ladder_min_free > 0 and p > 0:
+            dust_val = abs(dust) * p
+            if dust_val < self.p.ladder_min_free:
+                buf = self.p.ladder_min_free / p
+                if held > buf:
+                    return round(held - buf, 2)
+        return q_round
+
     def _manage_tp_ladder(self, held: float, avg: float) -> None:
         """Maintain one SELL per unsold ladder level at its target over average.
 
@@ -971,10 +990,14 @@ class Strategy:
         peak = self.s.get("pos_peak", 0.0) or 0.0
         if price > peak:
             self.s["pos_peak"] = peak = price   # Track the high while holding the position.
+            self.s.pop("tr_fail_until", None)
+            self.s["tr_alerted"] = False
         if peak <= 0:
             return False
         drop_pct = (peak - price) / peak * 100
         if drop_pct < self.p.trail_pct:
+            return False
+        if self._now() < self.s.get("tr_fail_until", 0):
             return False
         # The peak drawdown reached the threshold: sell all once, replacing only a stale limit.
         tr = next((o for o in self.s["orders"] if o.get("kind") == "TR"), None)
@@ -982,10 +1005,13 @@ class Strategy:
             if not self._cancel_all_orders():
                 log("  ! [STRAT] TRAILING deferred: at least one order could not be cancelled")
                 return True
+            sell_qty = self._sellable_qty(self.s["qty"], price)
             placed = self._place_sell(
-                self.s["qty"], round(price, 2), kind="TR", market=True,
+                sell_qty, round(price, 2), kind="TR", market=True,
             )
             if not placed:
+                self.s["tr_fail_until"] = self._now() + 1800
+                log("  ! [STRAT] TRAILING sell failed or refused — backoff 30 min (retaining TP ladder)")
                 return True
             self.s["sl_pending"] = True         # Arm bounce reentry as for a catastrophic stop loss.
         if not self.s.get("tr_alerted"):
@@ -1007,6 +1033,9 @@ class Strategy:
         if loss_pct < self.p.stop_loss_pct:
             self.s["sl_alerted"] = False        # Recovery above threshold permits a new alert.
             self.s["sl_pending"] = False        # End this stop-loss episode after recovery.
+            self.s.pop("sl_fail_until", None)
+            return False
+        if self._now() < self.s.get("sl_fail_until", 0):
             return False
         # Anti-spam: place the stop once and replace it only if price moved below its limit.
         sl = next((o for o in self.s["orders"] if o.get("kind") == "SL"), None)
@@ -1014,10 +1043,13 @@ class Strategy:
             if not self._cancel_all_orders():
                 log("  ! [STRAT] STOP deferred: at least one order could not be cancelled")
                 return True
+            sell_qty = self._sellable_qty(self.s["qty"], price)
             placed = self._place_sell(
-                self.s["qty"], round(price, 2), kind="SL", market=True,
+                sell_qty, round(price, 2), kind="SL", market=True,
             )
             if not placed:
+                self.s["sl_fail_until"] = self._now() + 1800
+                log("  ! [STRAT] STOP sell failed or refused — backoff 30 min (retaining TP ladder)")
                 return True
             self.s["sl_pending"] = True         # Mark this episode so cycle closure arms bounce reentry.
         if not self.s.get("sl_alerted"):           # Notify only once per episode.
@@ -1175,12 +1207,13 @@ class Strategy:
                 self._manage_tp_ladder(held, avg)        # Scale out in ladder steps.
             else:
                 target = avg * (1 + self.p.takeprofit_pct / 100)
+                sell_qty = self._sellable_qty(held, target)
                 sell = self._find_open("SELL")
                 if sell is None:
-                    self._place_sell(held, target)
-                elif abs(sell["limit"] - target) / target > 0.001 or abs(sell["qty"] - held) > 1e-6:
+                    self._place_sell(sell_qty, target)
+                elif abs(sell["limit"] - target) / target > 0.001 or abs(sell["qty"] - sell_qty) > 1e-6:
                     if self._cancel_open("SELL") and sell not in self.s["orders"]:
-                        self._place_sell(held, target)
+                        self._place_sell(sell_qty, target)
 
         prag_dca = (self.s["last_buy_price"] * (1 - self.p.dca_drop_pct / 100)
                     if self.s["last_buy_price"] else None)
