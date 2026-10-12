@@ -408,7 +408,7 @@ def test_profit_guard_rebuy_bypasses_math_reference_but_enforces_microstructure(
     # With bypass_guards={"math_reference"}: skips math reference, but checks microstructure
     # Simulate a severe ask wall / orderbook imbalance (seller domination)
     ob_collector = OrderbookDepthCollector()
-    ob_collector._cache["TAOUSDC"] = OrderbookSnapshot(
+    ob_collector.record_snapshot(OrderbookSnapshot(
         symbol="TAOUSDC",
         mid_price=250.0,
         bid_depth_usd=200_000.0,
@@ -419,7 +419,7 @@ def test_profit_guard_rebuy_bypasses_math_reference_but_enforces_microstructure(
         largest_ask_wall_usd=2_000_000.0,
         largest_ask_wall_price=251.0,
         ts=time.time(),
-    )
+    ))
 
     with patch("external_order_guard.get_orderbook_collector", return_value=ob_collector), \
          patch("order_guard.get_orderbook_collector", return_value=ob_collector), \

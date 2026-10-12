@@ -103,8 +103,13 @@ class TestBapiOrderIdentityFiltering(unittest.TestCase):
 class TestMonitororderProtectsOtherBots(unittest.TestCase):
     def setUp(self):
         monitororder.reset_monitororder_state_for_test()
+        self._cooldown_patcher = patch.object(
+            monitororder.trade_cooldown, "get_last_trade_age", return_value=999.0,
+        )
+        self._cooldown_patcher.start()
 
     def tearDown(self):
+        self._cooldown_patcher.stop()
         monitororder.reset_monitororder_state_for_test()
 
     def test_monitororder_skips_repricing_for_rtrade_and_circuit_breakers(self):

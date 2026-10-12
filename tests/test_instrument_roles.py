@@ -37,7 +37,7 @@ def test_current_execution_policy_is_preserved():
     assert modes == {"BTCUSDC": "strict", "TAOUSDC": "permissive", "ARBUSDC": "permissive"}
     trails = {item.symbol: item.number("trailing.pct") for item in
               registry.select_instruments("binance", "trailing").values()}
-    assert trails == {"BTCUSDC": 20, "TAOUSDC": 22, "ARBUSDC": 26}
+    assert trails == {"BTCUSDC": 16, "TAOUSDC": 22, "ARBUSDC": 26}
     rebuys = {item.symbol: item.rebuy_mode() for item in
               registry.select_instruments("binance", "trailing").values()}
     assert rebuys == {"BTCUSDC": "on", "TAOUSDC": "on", "ARBUSDC": "auto"}

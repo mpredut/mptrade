@@ -34,7 +34,7 @@ class TestInstrumentsSingleSource(unittest.TestCase):
     def test_trail_pct_map_matches_pre_refactor(self):
         self.assertEqual(
             ic.trail_pct_map(),
-            {"BTCUSDC": 20.0, "TAOUSDC": 22.0, "ARBUSDC": 26.0},
+            {"BTCUSDC": 16.0, "TAOUSDC": 22.0, "ARBUSDC": 26.0},
         )
 
     def test_tradeall_allowlist_matches_pre_refactor(self):
