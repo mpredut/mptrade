@@ -45,6 +45,15 @@ AUTONOMOUS_PROMPT_PATTERNS = [
     "autonommptrade",
     "automated reasoning",
     "ntfy-macro",
+    "ntfy-guard",
+    "high-stake",
+    "high-value",
+    "trade review",
+    "trade evaluation",
+    "risk evaluation",
+    "risk assessment",
+    "morning reconciliation",
+    "diagnostic audit",
 ]
 
 

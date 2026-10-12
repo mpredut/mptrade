@@ -105,7 +105,7 @@ if [ $((CURRENT_HOUR % 3)) -eq 0 ]; then
     PRUNE_SCRIPT="$ROOT/orchestratorOS/admin/prune_llm_threads.py"
     if [ -f "$PRUNE_SCRIPT" ]; then
         echo "  pruning automated CLI threads older than 1 day (3h cycle)..."
-        python3 "$PRUNE_SCRIPT" --days 1 || true
+        python3 "$PRUNE_SCRIPT" --days 1 --all || true
     fi
 fi
 

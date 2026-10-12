@@ -800,10 +800,13 @@ class Instrument:
                                 if order_retry.RETRY_ENABLED:
                                     synced_claim = order_retry.update_claimed_qty(
                                         prequeued_claim, qty)
-                                    if synced_claim is not None:
-                                        prequeued_claim = synced_claim
-                            except Exception:
-                                pass
+                                    if synced_claim is None:
+                                        raise SubmissionRefused("durable_qty_sync_failed")
+                                    prequeued_claim = synced_claim
+                            except SubmissionRefused:
+                                raise
+                            except Exception as exc:
+                                raise SubmissionRefused("durable_qty_sync_failed") from exc
                             if prequeued_intent_id and applied_scale < 1.0:
                                 _EXECUTION_AUDIT.record(
                                     "submit_scaled", intent_id=prequeued_intent_id,
@@ -832,10 +835,13 @@ class Instrument:
                             if order_retry.RETRY_ENABLED:
                                 synced_claim = order_retry.update_claimed_qty(
                                     prequeued_claim, qty)
-                                if synced_claim is not None:
-                                    prequeued_claim = synced_claim
-                        except Exception:
-                            pass
+                                if synced_claim is None:
+                                    raise SubmissionRefused("durable_qty_sync_failed")
+                                prequeued_claim = synced_claim
+                        except SubmissionRefused:
+                            raise
+                        except Exception as exc:
+                            raise SubmissionRefused("durable_qty_sync_failed") from exc
                 reason = "submit_ambiguous"
                 submit_attempted = True
                 provider_kwargs = dict(kwargs)
