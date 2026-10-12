@@ -208,6 +208,49 @@ class TestCycleCompletionAndDust(unittest.TestCase):
         self.assertEqual(paper_strat.s["qty"], 0.0)
         self.assertEqual(paper_strat.s["last_sell_price"], 195.0)
 
+    def test_absent_order_released_after_confirmation_passes(self):
+        # Order is tracked, but absent from active orders, and status is unavailable
+        order = {"id": "GHOST-1", "side": "BUY", "qty": 0.03, "limit": 230.0, "ts": 1000.0}
+        self.strat.s["orders"] = [order]
+        self.client.active = []  # Not in active orders
+        self.strat._tracked_order_status = lambda o, c: None  # Status endpoint fails / lags
+
+        # Pass 1: misses becomes 1, order kept
+        self.strat._reconcile_real(230.0)
+        self.assertEqual(len(self.strat.s["orders"]), 1)
+        self.assertEqual(order.get("lookup_misses"), 1)
+
+        # Pass 2: misses becomes 2, order kept
+        self.strat._reconcile_real(230.0)
+        self.assertEqual(len(self.strat.s["orders"]), 1)
+        self.assertEqual(order.get("lookup_misses"), 2)
+
+        # Pass 3: misses becomes 3, order released from tracking!
+        self.strat._reconcile_real(230.0)
+        self.assertEqual(len(self.strat.s["orders"]), 0)
+
+    def test_absent_cancel_requested_released_after_two_passes(self):
+        order = {"id": "CANCEL-1", "side": "SELL", "qty": 0.08, "limit": 250.0,
+                 "cancel_requested": True, "cancel_ts": 1000.0, "ts": 900.0}
+        self.strat.s["orders"] = [order]
+        self.client.active = []
+        self.strat._tracked_order_status = lambda o, c: None
+
+        # Pass 1: misses = 1
+        self.strat._reconcile_real(250.0)
+        self.assertEqual(len(self.strat.s["orders"]), 1)
+
+        # Pass 2: cancel_requested releases after 2 misses
+        self.strat._reconcile_real(250.0)
+        self.assertEqual(len(self.strat.s["orders"]), 0)
+
+    def test_strategy_run_graceful_stop(self):
+        import threading
+        stop_event = threading.Event()
+        stop_event.set()  # Already stopped
+        # Strategy.run should exit immediately without hanging
+        self.strat.run(stop=stop_event)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -964,15 +964,27 @@ class Strategy:
                 continue
             if str(o["id"]) not in active:
                 status = self._tracked_order_status(o, status_cache)
-                if status is None or status.status not in {"closed", "canceled", "expired"}:
-                    continue
-                if (o["side"] == "SELL" and o.get("level") is not None
-                        and float(status.filled_qty or 0.0) > 1e-9):
-                    self.s.setdefault("tp_sold_levels", []).append(o["level"])
-                self._remove_order(o)
-            elif self._buy_is_stale(o, price):
-                log(f"  [STRAT] BUY {o['id']} unfilled, the price rose — cancelling and re-placing")
-                self._cancel_specific(o)
+                if status is not None and status.status in {"closed", "canceled", "expired"}:
+                    if (o["side"] == "SELL" and o.get("level") is not None
+                            and float(status.filled_qty or 0.0) > 1e-9):
+                        self.s.setdefault("tp_sold_levels", []).append(o["level"])
+                    self._remove_order(o)
+                elif status is None:
+                    misses = int(o.get("lookup_misses") or 0) + 1
+                    o["lookup_misses"] = misses
+                    max_misses = 2 if o.get("cancel_requested") else 3
+                    if misses >= max_misses:
+                        log(f"  [STRAT] order {o.get('side', '?')} {o['id']} absent from venue active orders ({misses} misses) — removing from tracking")
+                        if (o.get("side") == "SELL" and o.get("level") is not None
+                                and float(o.get("applied_fill_qty") or 0.0) > 1e-9):
+                            self.s.setdefault("tp_sold_levels", []).append(o["level"])
+                        self._remove_order(o)
+                continue
+            else:
+                o.pop("lookup_misses", None)
+                if self._buy_is_stale(o, price):
+                    log(f"  [STRAT] BUY {o['id']} unfilled, the price rose — cancelling and re-placing")
+                    self._cancel_specific(o)
 
         # --- Closed cycle (the full position or all exit tranches were sold): start a new cycle. ---
         is_flat = real_qty <= 1e-9
@@ -1284,7 +1296,7 @@ class Strategy:
             self._place_buy(self.p.dca_amount, price * disc, kind="DCA")
 
     # -- main loop -------------------------------------------------------------
-    def run(self) -> None:
+    def run(self, stop: threading.Event | None = None) -> None:
         mode = "avg_tp" if self.p.enable_takeprofit else "dca_only"
         log("  === STRATEGIE PORNITA ===")
         log(f"      instrument : {self.ticker}  (price through {self.yahoo_sym})")
@@ -1300,12 +1312,18 @@ class Strategy:
         log(f"      check      : la {self.p.check_minutes:.0f} min   |  1 {self.ccy} = {self.fx_to_usd:.4f} USD")
         log(f"      ! break-even threshold ~{self.p.fx_fee_pct*2:.2f}% (FX) plus spread; TP={self.p.takeprofit_pct}%")
 
+        def _delay(delay_sec: float) -> None:
+            if stop is not None:
+                stop.wait(delay_sec)
+            else:
+                time.sleep(delay_sec)
+
         try:
-            while True:
+            while not (stop is not None and stop.is_set()):
                 price = get_price_usd(self.yahoo_sym)
                 if price is None:
                     log("  [STRAT] price unavailable — reincerc")
-                    time.sleep(self.p.check_minutes * 60)
+                    _delay(self.p.check_minutes * 60)
                     continue
                 try:
                     # After a disk error, make no new decisions until the current
@@ -1317,7 +1335,7 @@ class Strategy:
                     self._save()
                 except Exception as e:  # noqa: BLE001 — Resilience: retry network/API failures.
                     log(f"  ! [STRAT] eroare ({e.__class__.__name__}: {e}) — reincerc")
-                    time.sleep(self.p.check_minutes * 60)
+                    _delay(self.p.check_minutes * 60)
                     continue
 
                 avg = self._avg_cost()
@@ -1332,7 +1350,7 @@ class Strategy:
                     log(f"  [STRAT] price={price:.2f}  qty=0  "
                         f"NET={net:+.2f}USD (brut {self.s['realized_pnl_usd']:+.2f}, fee {fees:.2f})  "
                         f"(waiting for an entry)")
-                time.sleep(self.p.check_minutes * 60)
+                _delay(self.p.check_minutes * 60)
         except KeyboardInterrupt:
             log("  [STRAT] stopped manually.")
             self._save()

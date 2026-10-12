@@ -105,7 +105,7 @@ def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_
                     return
             # Block in the strategy's self-healing loop. It returns only after an
             # unexpected stop, at which point verification and startup are retried.
-            Strategy(client, ticker, StratParams.from_env(cfg), dry_run=strat_dry).run()
+            Strategy(client, ticker, StratParams.from_env(cfg), dry_run=strat_dry).run(stop=STOP)
             return
         except Exception as e:  # noqa: BLE001 — resilience: one asset cannot terminate the process
             log(f"  ! [{label}] eroare ciclu ({e.__class__.__name__}: {e}) — reincerc in 60s")
