@@ -209,11 +209,11 @@ class TestCycleCompletionAndDust(unittest.TestCase):
         self.assertEqual(paper_strat.s["last_sell_price"], 195.0)
 
     def test_absent_order_released_after_confirmation_passes(self):
-        # Order is tracked, but absent from active orders, and status is unavailable
+        # Order is tracked, but absent from active orders, and status is confirmed absent ("not_found")
         order = {"id": "GHOST-1", "side": "BUY", "qty": 0.03, "limit": 230.0, "ts": 1000.0}
         self.strat.s["orders"] = [order]
         self.client.active = []  # Not in active orders
-        self.strat._tracked_order_status = lambda o, c: None  # Status endpoint fails / lags
+        self.strat._tracked_order_status = lambda o, c: "not_found"  # Confirmed absent from venue
 
         # Pass 1: misses becomes 1, order kept
         self.strat._reconcile_real(230.0)
@@ -229,12 +229,25 @@ class TestCycleCompletionAndDust(unittest.TestCase):
         self.strat._reconcile_real(230.0)
         self.assertEqual(len(self.strat.s["orders"]), 0)
 
+    def test_transient_status_error_keeps_order_tracked(self):
+        # Order is tracked, absent from active list, but status lookup fails (returns None)
+        order = {"id": "TRANSIENT-1", "side": "BUY", "qty": 0.03, "limit": 230.0, "ts": 1000.0}
+        self.strat.s["orders"] = [order]
+        self.client.active = []
+        self.strat._tracked_order_status = lambda o, c: None  # Transient error / rate limit
+
+        # Passes 1..5: order must remain tracked and lookup_misses must NOT increment
+        for _ in range(5):
+            self.strat._reconcile_real(230.0)
+            self.assertEqual(len(self.strat.s["orders"]), 1)
+            self.assertEqual(order.get("lookup_misses", 0), 0)
+
     def test_absent_cancel_requested_released_after_two_passes(self):
         order = {"id": "CANCEL-1", "side": "SELL", "qty": 0.08, "limit": 250.0,
                  "cancel_requested": True, "cancel_ts": 1000.0, "ts": 900.0}
         self.strat.s["orders"] = [order]
         self.client.active = []
-        self.strat._tracked_order_status = lambda o, c: None
+        self.strat._tracked_order_status = lambda o, c: "not_found"
 
         # Pass 1: misses = 1
         self.strat._reconcile_real(250.0)

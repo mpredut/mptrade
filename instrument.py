@@ -66,7 +66,7 @@ def normalize_bypassed_guards(
     """Canonical resolver for bypassed guard identifiers (SSOT)."""
     bypassed: set[str] = set()
     if legacy_bypass_profit_guard:
-        bypassed.add("all")
+        bypassed.update({"math_reference", "math_profit", "profit_margin", "quantity_policy"})
     if legacy_bypass_profit_reference:
         bypassed.add("math_reference")
     if legacy_bypass_quantity_policy:
@@ -298,7 +298,7 @@ class Instrument:
         # A SELL normally must prove profitability against its historical BUY reference;
         # silently ignore the flag there so a misplaced caller argument cannot
         # weaken the exit guard unless explicitly authorized.
-        if bypass_math_ref and side_u != "BUY" and not allow_math_reference_sell:
+        if bypass_math_ref and not legacy_bypass_profit_guard and side_u != "BUY" and not allow_math_reference_sell:
             print(
                 f"[GUARD] {side_u} {self.symbol}: bypass math_reference ignored; "
                 "is allowed only for BUY")
@@ -379,7 +379,7 @@ class Instrument:
         # all other placement metadata remains in kwargs.
         retry_kwargs = dict(kwargs)
         retry_kwargs["bypass_guards"] = sorted(list(bypassed_guards))
-        retry_kwargs["bypass_profit_guard"] = bypass_all
+        retry_kwargs["bypass_profit_guard"] = bool(legacy_bypass_profit_guard or bypass_all)
         retry_kwargs["bypass_profit_reference"] = bypass_math_ref
         retry_kwargs["bypass_quantity_policy"] = bypass_quantity_policy
         retry_kwargs["wait_for_trend"] = wait_for_trend
@@ -396,7 +396,7 @@ class Instrument:
         # margin, a financial time-of-check/time-of-use issue.
         is_market = bool(kwargs.get("force", False) or kwargs.get("market", False))
         enforce_business_minimum = not (
-            bypass_all and side_u == "SELL" and is_market)
+            (bypass_all or legacy_bypass_profit_guard) and side_u == "SELL" and is_market)
         profit_margin = None
         if caller_profit_margin is not None:
             try:

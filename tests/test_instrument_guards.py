@@ -1007,6 +1007,20 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             )
             self.assertIn("math_reference", guard.call_args.kwargs["bypass_guards"])
 
+    def test_legacy_bypass_profit_guard_does_not_bypass_intelligence_or_quantity(self):
+        """Verify legacy bypass_profit_guard=True bypasses only profit & quantity guards, not P1-P4 intelligence."""
+        from instrument import normalize_bypassed_guards
+        bypassed = normalize_bypassed_guards(legacy_bypass_profit_guard=True)
+        self.assertIn("math_reference", bypassed)
+        self.assertIn("math_profit", bypassed)
+        self.assertIn("profit_margin", bypassed)
+        self.assertIn("quantity_policy", bypassed)
+        self.assertNotIn("all", bypassed)
+        self.assertNotIn("p1", bypassed)
+        self.assertNotIn("p2", bypassed)
+        self.assertNotIn("p3", bypassed)
+        self.assertNotIn("p4", bypassed)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

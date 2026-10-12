@@ -20,6 +20,10 @@ class ProviderError(Exception):
     """Venue-neutral error raised by strict strategy-execution adapters."""
 
 
+class OrderNotFound(ProviderError):
+    """The venue definitively confirms that the order does not exist."""
+
+
 class SubmissionRefused(ProviderError, RuntimeError):
     """The order was definitively refused before or during synchronous submit."""
 

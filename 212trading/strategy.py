@@ -24,7 +24,7 @@ from ipo_notify import notify
 from market_data import get_eur_usd, get_usd_ron, get_price_usd, t212_to_yahoo, trend_slope_pct
 from t212_client import T212Client
 from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit, new_intent_id
-from providers.strategy_executor import ProviderError
+from providers.strategy_executor import OrderNotFound, ProviderError
 from providers.t212_provider import T212Provider
 from strategies.state_store import JsonStateStore
 from strategies import spot_rules as sr
@@ -801,6 +801,10 @@ class Strategy:
                 order.get("intent_id") or f"legacy-t212-{self.ticker}-{key}",
                 self.ticker, key,
             )
+        except OrderNotFound:
+            log(f"  [STRAT] T212 order {key} definitively not found on venue")
+            cache[key] = "not_found"
+            return "not_found"
         except ProviderError as exc:
             log(f"  ! [STRAT] T212 status {key} unavailable: {exc} — keeping the order")
             cache[key] = None
@@ -819,7 +823,7 @@ class Strategy:
         total_qty = total_cost = 0.0
         for order in [o for o in self.s["orders"] if o.get("side") == side]:
             status = self._tracked_order_status(order, cache)
-            if status is None:
+            if status is None or isinstance(status, str):
                 continue
             try:
                 cumulative_qty = float(status.filled_qty or 0.0)
@@ -968,21 +972,25 @@ class Strategy:
                 continue
             if str(o["id"]) not in active:
                 status = self._tracked_order_status(o, status_cache)
-                if status is not None and status.status in {"closed", "canceled", "expired"}:
+                if status is not None and not isinstance(status, str) and status.status in {"closed", "canceled", "expired"}:
                     if (o["side"] == "SELL" and o.get("level") is not None
                             and float(status.filled_qty or 0.0) > 1e-9):
                         self.s.setdefault("tp_sold_levels", []).append(o["level"])
                     self._remove_order(o)
-                elif status is None:
+                elif status == "not_found":
                     misses = int(o.get("lookup_misses") or 0) + 1
                     o["lookup_misses"] = misses
                     max_misses = 2 if o.get("cancel_requested") else 3
                     if misses >= max_misses:
-                        log(f"  [STRAT] order {o.get('side', '?')} {o['id']} absent from venue active orders ({misses} misses) — removing from tracking")
+                        log(f"  [STRAT] order {o.get('side', '?')} {o['id']} confirmed absent ({misses} misses) — removing from tracking")
                         if (o.get("side") == "SELL" and o.get("level") is not None
                                 and float(o.get("applied_fill_qty") or 0.0) > 1e-9):
                             self.s.setdefault("tp_sold_levels", []).append(o["level"])
                         self._remove_order(o)
+                elif status is None:
+                    # Transient status lookup failure (e.g. rate limit, network);
+                    # retain order tracking without incrementing misses.
+                    continue
                 continue
             else:
                 o.pop("lookup_misses", None)
@@ -1063,9 +1071,9 @@ class Strategy:
             if not self._cancel_all_orders():
                 log("  ! [STRAT] TRAILING deferred: at least one order could not be cancelled")
                 return True
-            pending_sells = [o for o in self.s["orders"] if o.get("side") == "SELL" and o.get("kind") != "TR"]
-            if pending_sells:
-                log(f"  [STRAT] TRAILING deferred: waiting for {len(pending_sells)} existing SELL order(s) to reconcile cancellation")
+            pending_orders = [o for o in self.s["orders"] if o.get("kind") != "TR"]
+            if pending_orders:
+                log(f"  [STRAT] TRAILING deferred: waiting for {len(pending_orders)} existing order(s) to reconcile cancellation")
                 return True
             if self.s.get("pending_submit"):
                 log("  [STRAT] TRAILING deferred: waiting for pending submit to reconcile")
@@ -1111,9 +1119,9 @@ class Strategy:
             if not self._cancel_all_orders():
                 log("  ! [STRAT] STOP deferred: at least one order could not be cancelled")
                 return True
-            pending_sells = [o for o in self.s["orders"] if o.get("side") == "SELL" and o.get("kind") != "SL"]
-            if pending_sells:
-                log(f"  [STRAT] STOP deferred: waiting for {len(pending_sells)} existing SELL order(s) to reconcile cancellation")
+            pending_orders = [o for o in self.s["orders"] if o.get("kind") != "SL"]
+            if pending_orders:
+                log(f"  [STRAT] STOP deferred: waiting for {len(pending_orders)} existing order(s) to reconcile cancellation")
                 return True
             if self.s.get("pending_submit"):
                 log("  [STRAT] STOP deferred: waiting for pending submit to reconcile")

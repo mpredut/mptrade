@@ -168,11 +168,17 @@ class AutonomousIntentGateway:
         sym_norm = symbol.strip().upper()
         venue_norm = venue.strip().lower() if venue else None
 
-        # 1. Match by exact symbol and venue
+        # 1. Match by venue if venue is explicitly specified
         if venue_norm:
             for inst in instruments_map.values():
                 if inst.symbol.upper() == sym_norm and inst.provider_name.lower() == venue_norm:
                     return inst
+            for inst in instruments_map.values():
+                if inst.provider_name.lower() == venue_norm and (
+                    inst.symbol.upper().startswith(sym_norm) or sym_norm.startswith(inst.symbol.upper())
+                ):
+                    return inst
+            return None
 
         # 2. Match by exact symbol
         for inst in instruments_map.values():
@@ -235,7 +241,7 @@ class AutonomousIntentGateway:
         instruments_map: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Validates and processes a single intent according to operational mode."""
-        intent_id = intent.get("intent_id", f"intent_{int(time.time())}")
+        intent_id = intent.get("intent_id") or intent.get("id") or f"intent_{int(time.time())}"
         decision = str(intent.get("decision", "HOLD")).strip().upper()
         symbol = str(intent.get("symbol", "")).strip().upper()
         venue = str(intent.get("venue", "binance")).strip().lower()
@@ -338,6 +344,17 @@ class AutonomousIntentGateway:
             })
             return intent
 
+        # Gate: only "enforce" mode is permitted to execute live orders
+        if self.mode != "enforce":
+            logger.info("[LLM TRADER] Gateway mode is %r — skipping execution for intent %s", self.mode, intent_id)
+            intent["status"] = "REJECTED_GATEWAY_DISABLED"
+            intent.setdefault("history", []).append({
+                "ts": now,
+                "action": "REJECTED_GATEWAY_DISABLED",
+                "mode": self.mode,
+            })
+            return intent
+
         # Mode == "enforce"
         if not guard_allowed:
             logger.warning("[LLM TRADER · ENFORCE] Guard blocked %s %s: %s", decision, inst.symbol, guard_reason)
@@ -363,11 +380,14 @@ class AutonomousIntentGateway:
                        decision, inst.symbol, target_qty, effective_eur, inst.provider_name)
 
         try:
+            intent_cid = f"AI_{intent_id[:28]}" if intent_id else None
             order_res = inst.place(
                 side=decision,
                 qty=target_qty,
                 price=price,
                 is_market=True,
+                intent_id=intent_id,
+                client_order_id=intent_cid,
             )
             if order_res:
                 logger.info("[LLM TRADER · ENFORCE] Successfully placed %s %s: %s",
@@ -442,8 +462,8 @@ class AutonomousIntentGateway:
             updated = self.process_intent(intents[idx], instruments_map=instruments_map)
             intents[idx] = updated
             processed.append(updated)
+            self.save_all_intents(intents)
 
-        self.save_all_intents(intents)
         return processed
 
 

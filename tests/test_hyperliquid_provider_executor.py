@@ -254,7 +254,7 @@ class HLExecutorContractTest(unittest.TestCase):
         os.environ["HL_SECRET_KEY"] = "fake-key"
         self.p._new_client = lambda _s=None: self.signer
 
-        with self.subTest("place_order_market_sends_ioc_with_slippage"):
+        with self.subTest("place_order_market_sends_ioc_with_fresh_market_price_slippage"):
             self.signer.calls.clear()
             self.signer.kwargs_calls.clear()
             res = self.p.place_order("HYPE", "BUY", 100.0, 1.0, market=True)
@@ -264,11 +264,11 @@ class HLExecutorContractTest(unittest.TestCase):
             kw = self.signer.kwargs_calls[-1]
             self.assertEqual(call[1], "@107")
             self.assertTrue(call[2])  # is_buy
-            self.assertAlmostEqual(call[4], 105.0)  # 100.0 * 1.05
+            self.assertAlmostEqual(call[4], 63.0)  # fresh spot_mid 60.0 * 1.05
             self.assertTrue(kw.get("is_market"))
             self.assertEqual(kw.get("tif"), "Ioc")
 
-        with self.subTest("place_order_force_treated_as_market"):
+        with self.subTest("place_order_force_treated_as_market_with_fresh_price"):
             self.signer.calls.clear()
             self.signer.kwargs_calls.clear()
             res = self.p.place_order("HYPE", "SELL", 100.0, 1.0, force=True)
@@ -276,9 +276,18 @@ class HLExecutorContractTest(unittest.TestCase):
             call = self.signer.calls[-1]
             kw = self.signer.kwargs_calls[-1]
             self.assertFalse(call[2])  # is_buy is False
-            self.assertAlmostEqual(call[4], 95.0)  # 100.0 * 0.95
+            self.assertAlmostEqual(call[4], 57.0)  # fresh spot_mid 60.0 * 0.95
             self.assertTrue(kw.get("is_market"))
             self.assertEqual(kw.get("tif"), "Ioc")
+
+        with self.subTest("place_order_market_falls_back_to_input_price_when_current_price_unavailable"):
+            self.signer.calls.clear()
+            self.signer.kwargs_calls.clear()
+            with patch.object(self.p, "get_current_price", return_value=None):
+                res = self.p.place_order("HYPE", "BUY", 100.0, 1.0, market=True)
+            self.assertIsNotNone(res)
+            call = self.signer.calls[-1]
+            self.assertAlmostEqual(call[4], 105.0)  # fallback 100.0 * 1.05
 
         with self.subTest("place_order_limit_sends_gtc"):
             self.signer.calls.clear()

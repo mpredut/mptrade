@@ -19,6 +19,7 @@ from typing import Optional, List
 
 from .base import MarketDataProvider, _normalize_order, env_value
 from .strategy_executor import (
+    OrderNotFound,
     OrderReconciliationCapabilities,
     OrderStatus,
     PairPrecision,
@@ -286,6 +287,8 @@ class T212Provider(MarketDataProvider):
             raw = self._client().get_order_status(order_id)
         except Exception as e:  # noqa: BLE001
             raise ProviderError(f"order_status({order_id}): {e}") from e
+        if raw is False:
+            raise OrderNotFound(f"order_status({order_id}): order definitively absent on venue")
         if not isinstance(raw, dict):
             raise ProviderError(f"order_status({order_id}): the order is unavailable")
 

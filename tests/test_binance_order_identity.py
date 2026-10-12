@@ -35,13 +35,13 @@ class TestBinanceOrderIdContext(unittest.TestCase):
         # Repriceable origins: tradeall, monitororder, manual (app/web), unspecified (for test mocks)
         self.assertTrue(rc.is_order_repriceable_by_monitororder("TA_MainThread_123"))
         self.assertTrue(rc.is_order_repriceable_by_monitororder("MO_MainThread_456"))
-        self.assertTrue(rc.is_order_repriceable_by_monitororder("OR_outbox_retry_123"))
         self.assertTrue(rc.is_order_repriceable_by_monitororder("and_mobile_app_123"))
         self.assertTrue(rc.is_order_repriceable_by_monitororder("web_browser_123"))
         self.assertTrue(rc.is_order_repriceable_by_monitororder(""))
         self.assertTrue(rc.is_order_repriceable_by_monitororder(None))
 
         # Strictly PROTECTED bots & origins: must NEVER be repriced
+        self.assertFalse(rc.is_order_repriceable_by_monitororder("OR_outbox_retry_123"))
         self.assertFalse(rc.is_order_repriceable_by_monitororder("RT_grid_pair_123"))
         self.assertFalse(rc.is_order_repriceable_by_monitororder("SD_trailing_stop_123"))
         self.assertFalse(rc.is_order_repriceable_by_monitororder("MT_stop_loss_123"))

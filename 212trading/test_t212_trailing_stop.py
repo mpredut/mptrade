@@ -195,6 +195,24 @@ class TestTrailingStopAndSellableQty(unittest.TestCase):
         self.assertEqual(len(self.client.placed), 1)
         self.assertTrue(self.strat.s.get("sl_pending"))
 
+    def test_stop_loss_waits_for_existing_buy_order_cancellation_to_reconcile(self):
+        buy_order = {"id": "DCA-1", "side": "BUY", "qty": 1.0, "limit": 90.0, "kind": "DCA"}
+        self.strat.s["orders"] = [buy_order]
+        self.strat._cancel_specific = lambda o: o.update({"cancel_requested": True}) or True
+
+        # Pass 1: Loss hits 33%. Buy cancel is requested, SL sell must be deferred!
+        res = self.strat._check_stop_loss(100.0)
+        self.assertTrue(res)
+        self.assertTrue(buy_order.get("cancel_requested"))
+        self.assertEqual(len(self.client.placed), 0)
+
+        # Pass 2: BUY reconciles and is removed
+        self.strat.s["orders"] = []
+        res2 = self.strat._check_stop_loss(100.0)
+        self.assertTrue(res2)
+        self.assertEqual(len(self.client.placed), 1)
+        self.assertTrue(self.strat.s.get("sl_pending"))
+
     def test_dca_and_tp_inhibited_during_stop_loss_pending_or_backoff(self):
         # Configure DCA dip met
         self.strat.s["last_buy_price"] = 150.0

@@ -14,6 +14,7 @@ does not require the SDK or credentials. Unavailable read dependencies generally
 from __future__ import annotations
 
 import hashlib
+import inspect
 import os
 import re
 import sys
@@ -339,12 +340,8 @@ class HyperliquidProvider(MarketDataProvider):
         is_buy = side.startswith("B")
 
         if is_market:
-            try:
-                base_px = float(price) if price is not None and float(price) > 0 else 0.0
-            except (TypeError, ValueError, OverflowError):
-                base_px = 0.0
-            if base_px <= 0:
-                base_px = float(self.get_current_price(symbol) or 0.0)
+            curr_px = float(self.get_current_price(symbol) or 0.0)
+            base_px = curr_px if curr_px > 0 else (float(price) if price is not None and float(price) > 0 else 0.0)
             if base_px <= 0:
                 print(f"[HL] place_order {side} {symbol}: market price unavailable")
                 return None
@@ -380,14 +377,15 @@ class HyperliquidProvider(MarketDataProvider):
             if qty <= 0:
                 print(f"[HL] place_order {side} {symbol}: refused non-positive qty={qty}")
                 return None
-            try:
-                ok, oid, msg = signer.spot_order(
-                    pair, is_buy, float(qty), float(submit_px),
-                    sz_decimals=sz_dec, cloid=cloid, is_market=is_market, tif=order_tif)
-            except TypeError:
-                ok, oid, msg = signer.spot_order(
-                    pair, is_buy, float(qty), float(submit_px),
-                    sz_decimals=sz_dec, cloid=cloid)
+            sig = inspect.signature(signer.spot_order)
+            call_kwargs = {"sz_decimals": sz_dec, "cloid": cloid}
+            has_var_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+            if "is_market" in sig.parameters or has_var_kwargs:
+                call_kwargs["is_market"] = is_market
+            if "tif" in sig.parameters or has_var_kwargs:
+                call_kwargs["tif"] = order_tif
+            ok, oid, msg = signer.spot_order(
+                pair, is_buy, float(qty), float(submit_px), **call_kwargs)
             print(f"[HL] place_order {side} {symbol} -> ok={ok} oid={oid} ({msg})")
             return {"orderId": oid, "ok": ok, "msg": msg} if ok else None
         except Exception as e:  # noqa: BLE001

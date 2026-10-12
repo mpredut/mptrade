@@ -250,3 +250,83 @@ def test_process_all_pending_lifecycle(temp_workspace):
     assert len(reloaded) == 2
     assert reloaded[0]["status"] == "EXECUTED"
     assert reloaded[1]["status"] == "OBSERVED_SHADOW"
+
+
+def test_resolve_instrument_strict_venue_isolation(temp_workspace):
+    ws, cache = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb")
+
+    mock_binance = MagicMock()
+    mock_binance.symbol = "BTCUSDC"
+    mock_binance.provider_name = "binance"
+
+    mock_kraken = MagicMock()
+    mock_kraken.symbol = "ETHUSD"
+    mock_kraken.provider_name = "kraken"
+
+    inst_map = {"BTC_BINANCE": mock_binance, "ETH_KRAKEN": mock_kraken}
+
+    # BTCUSDC on kraken does NOT exist, must return None (never fall back to binance)
+    resolved = gw.resolve_instrument("BTCUSDC", venue="kraken", instruments_map=inst_map)
+    assert resolved is None
+
+    # BTCUSDC on binance matches binance
+    resolved_binance = gw.resolve_instrument("BTCUSDC", venue="binance", instruments_map=inst_map)
+    assert resolved_binance is mock_binance
+
+
+def test_process_intent_mode_off_rejected(temp_workspace):
+    ws, cache = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="off")
+
+    mock_inst = MagicMock()
+    mock_inst.symbol = "BTCUSDC"
+    mock_inst.provider_name = "binance"
+    mock_inst._provider.get_current_price.return_value = 80000.0
+
+    intent = {
+        "intent_id": "mode_off_1",
+        "decision": "BUY",
+        "symbol": "BTCUSDC",
+        "venue": "binance",
+        "confidence": 0.95,
+        "suggested_notional_eur": 200.0,
+        "status": "PENDING",
+    }
+
+    with patch("order_guard.profit_guard", return_value=True):
+        processed = gw.process_intent(intent, instruments_map={"BTC": mock_inst})
+
+    assert processed["status"] == "REJECTED_GATEWAY_DISABLED"
+    mock_inst.place.assert_not_called()
+
+
+def test_process_intent_enforce_passes_intent_and_client_order_id(temp_workspace):
+    ws, cache = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
+
+    mock_inst = MagicMock()
+    mock_inst.symbol = "BTCUSDC"
+    mock_inst.provider_name = "binance"
+    mock_inst._provider.get_current_price.return_value = 80000.0
+    mock_inst.place.return_value = {"orderId": "12345"}
+
+    intent = {
+        "id": "intent_unique_12345",
+        "decision": "BUY",
+        "symbol": "BTCUSDC",
+        "venue": "binance",
+        "confidence": 0.95,
+        "suggested_notional_eur": 200.0,
+        "status": "PENDING",
+    }
+
+    with patch("order_guard.profit_guard", return_value=True), \
+         patch.object(gw, "_dispatch_notify", return_value=True):
+        processed = gw.process_intent(intent, instruments_map={"BTC": mock_inst})
+
+    assert processed["status"] == "EXECUTED"
+    mock_inst.place.assert_called_once()
+    assert mock_inst.place.call_args.kwargs["intent_id"] == "intent_unique_12345"
+    assert mock_inst.place.call_args.kwargs["client_order_id"] == "AI_intent_unique_12345"
+

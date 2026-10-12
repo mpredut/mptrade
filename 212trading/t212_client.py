@@ -211,7 +211,7 @@ class T212Client:
             if str(order.get("id")) == str(order_id):
                 matches.append((order, item.get("fill")))
         if not matches:
-            return None
+            return False
 
         # History uses {order, fill}, and one order may have several fills. Return
         # the client's order shape enriched with actual aggregate execution data.

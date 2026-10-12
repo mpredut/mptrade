@@ -297,7 +297,7 @@ def process_once(mkt, now=None):
                 try:
                     oid = oq.order_id_from_response(existing_order)
                     if oid:
-                        st = mkt.order_status(symbol, oid)
+                        st = mkt.order_status(symbol, oid, provider_name=provider_name)
                         if st and getattr(st, "orig_qty", None):
                             existing_order = dict(existing_order)
                             existing_order["orig_qty"] = st.orig_qty
@@ -461,7 +461,7 @@ def process_once(mkt, now=None):
                     try:
                         oid = oq.order_id_from_response(existing_order)
                         if oid:
-                            st = mkt.order_status(symbol, oid)
+                            st = mkt.order_status(symbol, oid, provider_name=provider_name)
                             if st and getattr(st, "orig_qty", None):
                                 existing_order = dict(existing_order)
                                 existing_order["orig_qty"] = st.orig_qty
@@ -599,7 +599,7 @@ def process_once(mkt, now=None):
                     try:
                         oid = oq.order_id_from_response(order)
                         if oid:
-                            st = mkt.order_status(symbol, oid)
+                            st = mkt.order_status(symbol, oid, provider_name=provider_name)
                             if st and getattr(st, "orig_qty", None):
                                 order = dict(order)
                                 order["orig_qty"] = st.orig_qty
