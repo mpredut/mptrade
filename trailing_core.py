@@ -232,9 +232,7 @@ class TrailingCore:
             st["peak"] = price                                # new peak moves the trailing level up
         stop_at = st["peak"] * (1 - trail / 100.0)
         if should_sell(price, st["peak"], trail):
-            if self.sell_skip_if_trend_up and self.a.trend(pair) > 0:
-                self.a.log_skip_sell_trend(key, asset, pair, trail)
-                return
+            # Emergency crash circuit breaker (zona de avarie) — brute force unconditional exit.
             sell_qty = round(free * self.sell_fraction, 8)
             if self.enabled and sell_qty * price >= self.min_notional:
                 self.a.execute_sell(
