@@ -500,7 +500,32 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                     print(f"[{symbol}] Smart Stop-Loss DEFERRED: {sl_reason}")
                 else:
                     print(f"Price decreased with {price_decrease * 100}% by more than {lost_threshold * 100}% versus buy price and not trend up! (decision={sl_reason})")
-                    if can_sell and sellable_qty > 0:
+                    # Unlock position if resting Take-Profit sell orders exist on the venue
+                    try:
+                        open_orders_fn = getattr(inst, "open_orders", None)
+                        active_orders = open_orders_fn() if callable(open_orders_fn) else []
+                        for active_ord in (active_orders or []):
+                            if str(active_ord.get("side", "")).upper() == "SELL":
+                                oid = str(active_ord.get("orderId") or active_ord.get("id") or "")
+                                if oid:
+                                    print(f"[{symbol}] Cancelling open resting TP sell order {oid} to unlock coins for Stop-Loss")
+                                    cancel_fn = getattr(inst, "cancel_order", None)
+                                    if callable(cancel_fn):
+                                        cancel_fn(oid)
+                    except Exception as cancel_exc:
+                        print(f"[{symbol}] Warning: error checking/cancelling open TP orders: {cancel_exc}")
+
+                    # Refresh available quantity after unlocking
+                    avail_qty_refreshed = inst.free()
+                    if avail_qty_refreshed is not None:
+                        try:
+                            avail_qty = float(avail_qty_refreshed)
+                            sellable_qty = min(avail_qty, owned_qty) if isolation == "own_ledger" else avail_qty
+                        except (TypeError, ValueError):
+                            pass
+
+                    # Stop-loss is an emergency capital preservation exit: bypass discretionary trade cooldowns
+                    if sellable_qty > 0:
                         _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
                             safeback_seconds=sbs, force=False, cancelorders=True,
                             hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=True,

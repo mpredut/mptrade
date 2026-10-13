@@ -229,6 +229,12 @@ class Instrument:
     def open_orders(self) -> List[dict]:
         return self._provider.open_orders(self.symbol)
 
+    def cancel_order(self, order_id: str) -> None:
+        cancel_fn = getattr(self._provider, "cancel_order", None)
+        if callable(cancel_fn):
+            return cancel_fn(self.symbol, str(order_id))
+        return None
+
     # -- Order placement: dry or real after provider gates. --------------------
     def place(self, side: str, price: float, qty: Optional[float] = None, **kwargs):
         # Complete provider-agnostic guard: profit, daily cap/anti-spam, rapid-fire

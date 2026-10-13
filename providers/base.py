@@ -121,6 +121,9 @@ class MarketDataProvider(ABC):
     def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
         return None
 
+    def cancel_order(self, symbol: str, order_id: str) -> None:
+        return None
+
     def guards_internally(self) -> bool:
         return False
 

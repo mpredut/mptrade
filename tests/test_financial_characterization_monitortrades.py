@@ -48,7 +48,7 @@ class FakeInstrument(mt._Instrument):
     """Instrument-shaped test double that records final financial intents."""
 
     def __init__(self, *, price, free, fills, params=None, min_qty=0.0,
-                 place_result=None):
+                 place_result=None, open_orders=None):
         # Deliberately do not call Instrument.__init__: no provider registry/API.
         self.symbol = SYMBOL
         self.name = "CHAR"
@@ -61,6 +61,8 @@ class FakeInstrument(mt._Instrument):
         self._provider = FakeProvider(self._fills)
         self.placed = []
         self._place_result = place_result
+        self._open_orders = list(open_orders or [])
+        self.cancelled = []
 
     def param(self, consumer, key, default=None, cast=None):
         value = self._params.get(f"{consumer}.{key}", default)
@@ -73,6 +75,18 @@ class FakeInstrument(mt._Instrument):
 
     def orders(self, side, since_s):
         return [dict(x) for x in self._fills if x["side"] == side]
+
+    def open_orders(self):
+        return [dict(x) for x in self._open_orders]
+
+    def cancel_order(self, order_id):
+        self.cancelled.append(str(order_id))
+        self._open_orders = [o for o in self._open_orders if str(o.get("orderId")) != str(order_id)]
+        # Unlocking simulation: when TP order is cancelled, restore free balance from holdings
+        if self._free == 0.0 and self._fills:
+            buy_qty = sum(float(x.get("qty", 0.0)) for x in self._fills if x.get("side") == "BUY")
+            self._free = buy_qty
+        return None
 
     def price(self):
         return self._price
@@ -514,6 +528,48 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.assertEqual((order["side"], order["qty"]), ("SELL", 4.0))
             self.assertTrue(order["kwargs"]["bypass_profit_guard"])
             self.assertEqual(order["kwargs"]["bypass_guards"], {"all"})
+
+
+    def test_stop_loss_unlocks_resting_tp_orders_and_bypasses_cooldown(self):
+        """Verify that when stop-loss triggers:
+        1. Resting TP sell orders on the exchange are automatically cancelled to unlock captive coins.
+        2. Normal anti-churn trade cooldowns (MT_ALL_TRADES_BLOCK_SEC) do not block capital preservation.
+        """
+        mt.HARD_TP_ENABLED = False
+
+        # Subtest 1: Coins locked in open TP order (free=0, but open_orders has SELL) -> cancels TP, unlocks free, executes SELL
+        with self.subTest(msg="cancels_open_tp_order_and_sells_unlocked_qty"):
+            inst = FakeInstrument(
+                price=94.0,  # 6% loss vs 5% threshold
+                free=0.0,   # free balance is 0 because all 4 coins are locked in TP
+                fills=[_fill("BUY", 100, 4)],
+                open_orders=[{"orderId": "tp-order-123", "side": "SELL", "price": 102.0, "origQty": 4.0}],
+            )
+            self.run_tick(inst, trend_up=False, loss=0.05)
+            # Verify TP was cancelled
+            self.assertIn("tp-order-123", inst.cancelled)
+            # Verify Stop-Loss SELL was placed
+            self.assertEqual(len(inst.placed), 1)
+            order = inst.placed[0]
+            self.assertEqual((order["side"], order["qty"]), ("SELL", 4.0))
+            self.assertTrue(order["kwargs"]["bypass_profit_guard"])
+            self.assertEqual(order["kwargs"]["bypass_guards"], {"all"})
+
+        # Subtest 2: Recent trade within MT_ALL_TRADES_BLOCK_SEC does not block Stop-Loss
+        with self.subTest(msg="bypasses_recent_trade_cooldown_for_emergency_exit"):
+            inst = FakeInstrument(
+                price=94.0,
+                free=4.0,
+                fills=[_fill("BUY", 100, 4, age_s=20 * 60)],  # bought only 20 min ago
+            )
+            with (
+                patch.object(mt, "MT_RECENT_TRADE_BLOCK_SEC", 3 * 3600),
+                patch.object(mt, "MT_ALL_TRADES_BLOCK_SEC", 1 * 3600),
+            ):
+                self.run_tick(inst, trend_up=False, loss=0.05)
+            # In contrast to normal TP which is blocked, Stop-Loss must execute immediately
+            self.assertEqual(len(inst.placed), 1)
+            self.assertEqual(inst.placed[0]["side"], "SELL")
 
 
 if __name__ == "__main__":
