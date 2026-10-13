@@ -12,6 +12,9 @@ from .position_exit_manager import (
     PositionExitConfig,
     PositionExitManager,
     PositionSnapshot,
+    ReentryAction,
+    ReentryDecision,
+    ReentrySnapshot,
 )
 from . import spot_engine
 from . import spot_rules
@@ -28,6 +31,9 @@ __all__ = [
     "PositionExitConfig",
     "PositionExitManager",
     "PositionSnapshot",
+    "ReentryAction",
+    "ReentryDecision",
+    "ReentrySnapshot",
     "spot_engine",
     "spot_rules",
     "position_exit_manager",

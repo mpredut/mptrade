@@ -37,6 +37,9 @@ from .position_exit_manager import (
     PositionExitConfig,
     PositionExitManager,
     PositionSnapshot,
+    ReentryAction,
+    ReentryDecision,
+    ReentrySnapshot,
 )
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -436,6 +439,7 @@ def _new_state() -> dict:
         "slow_grind_peak": None,
         "entry_ts": None,
         "sl_bounce_state": {},
+        "reentry_state": {},
     }
 
 
@@ -489,12 +493,21 @@ class Strategy:
                 sl_bounce_min_pullback_pct=self.p.sl_bounce_min_pullback_pct / 100.0,
                 sl_structural_break_enabled=self.p.sl_structural_break_enabled,
                 smart_sl_enabled=False,
+                reentry_enabled=True,
+                reentry_sl_bounce_pct=self.p.reentry_sl_bounce_pct / 100.0,
+                reentry_drop_pct=self.p.reentry_drop_pct / 100.0,
+                reentry_pullback_pct=self.p.reentry_pullback_pct / 100.0,
+                reentry_bear_bounce_pct=self.p.reentry_bear_bounce_pct / 100.0,
+                reentry_ttl_hours=self.p.reentry_ttl_hours,
+                reentry_tolerance_pct=self.p.reentry_tolerance_pct,
             )
             self.exit_manager = PositionExitManager(
                 config=exit_cfg,
                 vol_resolver=self._resolve_volatility_tuple,
             )
+            self.s.setdefault("reentry_state", {})
             self.exit_manager.sl_bounce_state = self.s["sl_bounce_state"]
+            self.exit_manager.reentry_state = self.s["reentry_state"]
         self._paper_seq = 0
         # Observational adaptive-volatility shadow history stays in memory for sigma.
         # It is rebuilt after restart and never enters persistent state.
@@ -1120,6 +1133,7 @@ class Strategy:
         if self.exit_manager is not None:
             self.exit_manager.clear_state(self.pair)
             self.exit_manager.sl_bounce_state = self.s.setdefault("sl_bounce_state", {})
+            self.exit_manager.reentry_state = self.s.setdefault("reentry_state", {})
         log(f"  [STRAT] === cycle closed; restarting (cycle {self.s['cycle']}) ===")
 
     # -- Decision logic --------------------------------------------------------
@@ -1879,8 +1893,32 @@ class Strategy:
                 self.s["post_sell_peak"] = max(cur_peak, price)
                 cur_trough = self.s.get("post_sell_trough") or lsp
                 self.s["post_sell_trough"] = min(cur_trough, price)
-            # Stop-aware reentry rule.
-            if self.s.get("last_exit_kind") == "STOP" and self.p.reentry_sl_bounce_pct > 0 and lsp:
+
+            # Symmetrical Re-entry Evaluation via PositionExitManager
+            if self.exit_manager is not None and self.p.sl_mhdsl_enabled:
+                vol_1h, vol_source = self._vol_1h_ratio()
+                reentry_snap = ReentrySnapshot(
+                    symbol=self.pair,
+                    current_price=price,
+                    last_sell_price=lsp,
+                    last_exit_kind=self.s.get("last_exit_kind"),
+                    post_sell_peak=self.s.get("post_sell_peak"),
+                    post_sell_trough=self.s.get("post_sell_trough"),
+                    current_time_s=tick_time,
+                    last_sell_time_s=self.s.get("last_sell_ts"),
+                    trend_up=self._is_trend_up(regime),
+                    trend_down=self._regime_matches(regime, "bear", min_samples=self.p.regime_min_samples) if regime else False,
+                    vol_1h=vol_1h,
+                    vol_source=vol_source,
+                )
+                reentry_dec = self.exit_manager.evaluate_reentry(reentry_snap)
+                if not reentry_dec.should_enter:
+                    log(f"  [STRAT] re-entry blocked: {reentry_dec.reason}")
+                    return
+                if lsp:
+                    log(f"  [STRAT] re-entry approved: {reentry_dec.reason} — placing ENTRY")
+            # Legacy stop-aware and hybrid reentry fallback
+            elif self.s.get("last_exit_kind") == "STOP" and self.p.reentry_sl_bounce_pct > 0 and lsp:
                 # After stop-loss, reenter on a bounce from the post-sale low instead of
                 # waiting for a deeper drop that could leave the bot outside a recovery.
                 low = min(self.s.get("sl_low") or price, price)

@@ -183,3 +183,37 @@ def test_mhdsl_cycle_finalization_resets_state():
     # State must be cleanly reset
     assert engine.s["sl_bounce_state"] == {}
     assert engine.exit_manager.sl_bounce_state == {}
+
+def test_mhdsl_reentry_mirror_post_stop_bounce_and_ratchet():
+    engine, executor = make_engine(mhdsl_enabled=True, stop_loss_pct=10.0, reentry_sl_bounce_pct=1.5)
+    engine.s["qty"] = 0.0  # Flat position after STOP
+    engine.s["last_sell_price"] = 90.0
+    engine.s["last_exit_kind"] = "STOP"
+    engine.s["last_sell_ts"] = time.time()
+
+    with patch.object(strat, "notify"):
+        # Step 1: Price drops to 88.0 (forming trough) - no bounce yet -> re-entry blocked
+        engine.step(88.0)
+        assert not any(c[0] == "submit_order" and c[2] == "buy" for c in executor.calls)
+
+        # Step 2: Price bounces to 89.4 (bounce: (89.4 - 88.0)/88.0 = 1.59% >= 1.5%) -> re-entry approved
+        engine.step(89.4)
+        assert any(c[0] == "submit_order" and c[2] == "buy" for c in executor.calls)
+
+
+def test_mhdsl_reentry_mirror_bull_trend_pullback():
+    engine, executor = make_engine(mhdsl_enabled=True, stop_loss_pct=10.0, reentry_pullback_pct=2.0)
+    engine.s["qty"] = 0.0
+    engine.s["last_sell_price"] = 100.0
+    engine.s["last_exit_kind"] = "TP"
+    engine.s["last_sell_ts"] = time.time()
+    executor.trend = lambda sym: "up"  # Confirmed bull trend
+
+    with patch.object(strat, "notify"):
+        # Step 1: Price rallies to 105.0 -> waiting for pullback
+        engine.step(105.0)
+        assert not any(c[0] == "submit_order" and c[2] == "buy" for c in executor.calls)
+
+        # Step 2: Price pulls back to 102.8 (pullback: (105.0 - 102.8)/105.0 = 2.095% >= 2.0%) -> approved
+        engine.step(102.8)
+        assert any(c[0] == "submit_order" and c[2] == "buy" for c in executor.calls)

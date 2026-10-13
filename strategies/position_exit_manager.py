@@ -73,6 +73,38 @@ class PositionSnapshot:
     window_move_pct: Optional[float] = None
 
 
+class ReentryAction(str, Enum):
+    """Action recommended by PositionExitManager for market re-entry."""
+    WAIT = "WAIT"    # Do not re-enter yet (blocked by drop, bounce, or trend gate)
+    ENTER = "ENTER"  # Conditions met to execute re-entry buy
+
+
+@dataclass
+class ReentryDecision:
+    """Decision returned after evaluating a re-entry snapshot."""
+    action: ReentryAction
+    should_enter: bool
+    reason: str
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ReentrySnapshot:
+    """Provider-agnostic snapshot of last exit state and market context for re-entry."""
+    symbol: str
+    current_price: float
+    last_sell_price: Optional[float] = None
+    last_exit_kind: Optional[str] = None  # "STOP", "TP", "SELL"
+    post_sell_peak: Optional[float] = None
+    post_sell_trough: Optional[float] = None
+    current_time_s: float = 0.0
+    last_sell_time_s: Optional[float] = None
+    trend_up: bool = False
+    trend_down: bool = False
+    vol_1h: float = 0.0
+    vol_source: str = "default"
+
+
 @dataclass
 class PositionExitConfig:
     """Configuration governing Stop-Loss (MHDSL) and Take-Profit (MDHTP) mechanics."""
@@ -128,6 +160,17 @@ class PositionExitConfig:
     slow_grind_flash_drop_pct: float = 1.5
     slow_grind_structural_drop_pct: float = 2.5
 
+    # --- Re-Entry Mirror (MHDRE) Parameters ---
+    reentry_enabled: bool = True
+    reentry_sl_bounce_pct: float = 0.015       # 1.5% bounce from trough after STOP
+    reentry_drop_pct: float = 0.020            # 2.0% drop below last sell after TP
+    reentry_pullback_pct: float = 0.015        # 1.5% pullback from peak in bull trend
+    reentry_bear_bounce_pct: float = 0.010     # 1.0% bounce from trough in bear trend
+    reentry_ttl_hours: float = 0.0             # 0 = disabled (hours)
+    reentry_tolerance_pct: float = 0.05        # 0.05% tolerance
+    reentry_ratchet_enabled: bool = True       # Ratchet prevents re-entry on rollover
+    reentry_bear_gate_enabled: bool = True     # Block/require stronger bounce in bear trend
+
 
 class PositionExitManager:
     """Fleet-wide centralized manager for Stop-Loss and Take-Profit position exits."""
@@ -145,6 +188,7 @@ class PositionExitManager:
         # In-memory lifecycle states keyed by symbol
         self.sl_bounce_state: Dict[str, Dict[str, Any]] = {}
         self.tp_ride_state: Dict[str, Dict[str, Any]] = {}
+        self.reentry_state: Dict[str, Dict[str, Any]] = {}
         self.hard_tp_last: Dict[str, float] = {}
 
     def clear_state(self, symbol: Optional[str] = None) -> None:
@@ -152,10 +196,12 @@ class PositionExitManager:
         if symbol:
             self.sl_bounce_state.pop(symbol, None)
             self.tp_ride_state.pop(symbol, None)
+            self.reentry_state.pop(symbol, None)
             self.hard_tp_last.pop(symbol, None)
         else:
             self.sl_bounce_state.clear()
             self.tp_ride_state.clear()
+            self.reentry_state.clear()
             self.hard_tp_last.clear()
 
     def get_state(self, symbol: str) -> Dict[str, Any]:
@@ -163,6 +209,7 @@ class PositionExitManager:
         return {
             "sl_bounce_state": self.sl_bounce_state.get(symbol),
             "tp_ride_state": self.tp_ride_state.get(symbol),
+            "reentry_state": self.reentry_state.get(symbol),
             "hard_tp_last": self.hard_tp_last.get(symbol),
         }
 
@@ -660,6 +707,178 @@ class PositionExitManager:
                 reason=reason,
                 forced=False,
                 metadata={"priority": 5, "state": "riding", "peak_px": peak_px, "pullback": pullback_from_peak},
+            )
+
+    # -------------------------------------------------------------------------
+    # Re-Entry Mirror Evaluator (MHDRE)
+    # -------------------------------------------------------------------------
+    def evaluate_reentry(
+        self,
+        snapshot: ReentrySnapshot,
+    ) -> ReentryDecision:
+        """Evaluate market re-entry following position closure (Mirror of Exit).
+
+        Symmetry:
+          - Post-STOP: Mirror of SL Bounce Watch. Tracks trough (low), requires confirmed
+            recovery bounce above trough, prevents re-entry if bounce rolls over (ratchet),
+            and requires stronger support in confirmed bear downtrends.
+          - Post-TP / Sale: Mirror of TP Trailing. In bull trends, tracks peak and awaits
+            pullback (avoids buying top). In chop/range, enforces discount drop below sale.
+          - Safety: Decays restrictions once TTL expires.
+        """
+        symbol = snapshot.symbol
+        current_price = snapshot.current_price
+        last_sell = snapshot.last_sell_price
+        last_kind = snapshot.last_exit_kind or "SELL"
+        now = snapshot.current_time_s or time.time()
+
+        if current_price <= 0:
+            return ReentryDecision(ReentryAction.WAIT, False, "invalid_current_price")
+
+        # Case 0: No prior sale reference to constrain re-entry
+        if not last_sell or last_sell <= 0:
+            self.reentry_state.pop(symbol, None)
+            return ReentryDecision(ReentryAction.ENTER, True, "no_last_sale_barrier")
+
+        # Case 1: TTL barrier expiration
+        if self.config.reentry_ttl_hours > 0 and snapshot.last_sell_time_s:
+            elapsed_sec = now - snapshot.last_sell_time_s
+            ttl_sec = self.config.reentry_ttl_hours * 3600.0
+            if elapsed_sec >= ttl_sec:
+                self.reentry_state.pop(symbol, None)
+                return ReentryDecision(
+                    ReentryAction.ENTER,
+                    True,
+                    f"reentry_ttl_expired (elapsed={elapsed_sec/3600.0:.2f}h >= {self.config.reentry_ttl_hours:.2f}h)",
+                    metadata={"elapsed_hours": elapsed_sec / 3600.0},
+                )
+
+        state = self.reentry_state.setdefault(symbol, {
+            "trough": snapshot.post_sell_trough or min(last_sell, current_price),
+            "peak": snapshot.post_sell_peak or max(last_sell, current_price),
+            "peak_bounce": current_price,
+            "started_at": now,
+        })
+
+        if current_price < state["trough"]:
+            state["trough"] = current_price
+            state["peak_bounce"] = current_price
+        else:
+            state["trough"] = min(state["trough"], current_price)
+        state["peak"] = max(state["peak"], current_price)
+        trough = state["trough"]
+        peak = state["peak"]
+
+        # Case 2: Post-STOP Re-entry (Bounce Trough Mirror)
+        if last_kind == "STOP" and self.config.reentry_sl_bounce_pct > 0:
+            bounce_ratio = (current_price - trough) / trough if trough > 0 else 0.0
+            bounce_required = self.config.reentry_sl_bounce_pct
+
+            # Bear Gate: If trend is actively down, demand extra recovery confirmation
+            if snapshot.trend_down and self.config.reentry_bear_gate_enabled:
+                if self.config.reentry_bear_bounce_pct > 0:
+                    bounce_required = max(bounce_required, self.config.reentry_bear_bounce_pct)
+                else:
+                    return ReentryDecision(
+                        ReentryAction.WAIT,
+                        False,
+                        f"post_stop_reentry_blocked_by_bear_trend (price={current_price:.4f}, trough={trough:.4f})",
+                        metadata={"trough": trough, "bounce_ratio": bounce_ratio, "trend_down": True},
+                    )
+
+            has_bounced = (
+                bounce_ratio >= bounce_required
+                or are_close(current_price, trough * (1.0 + bounce_required), self.config.reentry_tolerance_pct)
+            )
+
+            if not has_bounced:
+                state["peak_bounce"] = current_price
+                target_px = trough * (1.0 + bounce_required)
+                return ReentryDecision(
+                    ReentryAction.WAIT,
+                    False,
+                    f"post_stop_bounce_waiting (price={current_price:.4f} < {target_px:.4f}, bounce={bounce_ratio*100:.2f}% < {bounce_required*100:.2f}%)",
+                    metadata={"trough": trough, "bounce_ratio": bounce_ratio, "target_price": target_px},
+                )
+
+            # Ratchet Rollover Check: Track peak since bounce
+            state["peak_bounce"] = max(state.get("peak_bounce", current_price), current_price)
+            peak_bounce = state["peak_bounce"]
+            if self.config.reentry_ratchet_enabled and peak_bounce > current_price:
+                pullback_from_bounce = (peak_bounce - current_price) / peak_bounce
+                allowed_rollover = bounce_required * 0.50
+                if pullback_from_bounce > allowed_rollover:
+                    return ReentryDecision(
+                        ReentryAction.WAIT,
+                        False,
+                        f"post_stop_bounce_rollover (peak_bounce={peak_bounce:.4f}, drop={pullback_from_bounce*100:.2f}% > {allowed_rollover*100:.2f}%)",
+                        metadata={"peak_bounce": peak_bounce, "pullback": pullback_from_bounce},
+                    )
+
+            self.reentry_state.pop(symbol, None)
+            return ReentryDecision(
+                ReentryAction.ENTER,
+                True,
+                f"post_stop_bounce_confirmed (price={current_price:.4f} >= trough={trough:.4f} + {bounce_required*100:.2f}%)",
+                metadata={"trough": trough, "bounce_ratio": bounce_ratio},
+            )
+
+        # Case 3: Post-TP / Normal Sale Re-entry (Pullback in Bull vs Discount Drop in Range)
+        if snapshot.trend_up:
+            pullback_required = self.config.reentry_pullback_pct
+            pullback_ratio = (peak - current_price) / peak if peak > 0 else 0.0
+            has_pulled_back = (
+                pullback_ratio >= pullback_required
+                or are_close(current_price, peak * (1.0 - pullback_required), self.config.reentry_tolerance_pct)
+            )
+            if not has_pulled_back:
+                target_px = peak * (1.0 - pullback_required)
+                return ReentryDecision(
+                    ReentryAction.WAIT,
+                    False,
+                    f"bull_reentry_pullback_waiting (price={current_price:.4f} > {target_px:.4f}, pullback={pullback_ratio*100:.2f}% < {pullback_required*100:.2f}%)",
+                    metadata={"peak": peak, "pullback_ratio": pullback_ratio, "target_price": target_px},
+                )
+            self.reentry_state.pop(symbol, None)
+            return ReentryDecision(
+                ReentryAction.ENTER,
+                True,
+                f"bull_reentry_pullback_confirmed (price={current_price:.4f} <= peak={peak:.4f} - {pullback_required*100:.2f}%)",
+                metadata={"peak": peak, "pullback_ratio": pullback_ratio},
+            )
+        else:
+            drop_required = self.config.reentry_drop_pct
+            if drop_required > 0:
+                discount_target = last_sell * (1.0 - drop_required)
+                has_dropped = (
+                    current_price <= discount_target
+                    or are_close(current_price, discount_target, self.config.reentry_tolerance_pct)
+                )
+                if not has_dropped:
+                    return ReentryDecision(
+                        ReentryAction.WAIT,
+                        False,
+                        f"range_reentry_drop_waiting (price={current_price:.4f} > {discount_target:.4f}, drop required={drop_required*100:.2f}%)",
+                        metadata={"last_sell": last_sell, "discount_target": discount_target},
+                    )
+
+            if self.config.reentry_bear_bounce_pct > 0:
+                bear_bounce_ratio = (current_price - trough) / trough if trough > 0 else 0.0
+                if bear_bounce_ratio < self.config.reentry_bear_bounce_pct:
+                    target_bear = trough * (1.0 + self.config.reentry_bear_bounce_pct)
+                    return ReentryDecision(
+                        ReentryAction.WAIT,
+                        False,
+                        f"bear_reentry_trough_bounce_waiting (price={current_price:.4f} < {target_bear:.4f}, trough={trough:.4f})",
+                        metadata={"trough": trough, "bear_bounce_ratio": bear_bounce_ratio},
+                    )
+
+            self.reentry_state.pop(symbol, None)
+            return ReentryDecision(
+                ReentryAction.ENTER,
+                True,
+                f"range_reentry_confirmed (price={current_price:.4f} <= last_sell={last_sell:.4f} - {drop_required*100:.2f}%)",
+                metadata={"last_sell": last_sell, "trough": trough},
             )
 
     # -------------------------------------------------------------------------
