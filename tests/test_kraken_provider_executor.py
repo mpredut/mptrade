@@ -35,6 +35,9 @@ class FakeClient:
     def query_orders(self, txids):
         return {txids: {"status": "closed", "vol_exec": "2.5", "cost": "150.0", "fee": "0.39"}}
 
+    def _private(self, endpoint, data=None):
+        return {"trades": {}}
+
     def open_orders(self):
         return {
             "OPEN-1": {
