@@ -183,6 +183,9 @@ class StratParams:
     sl_bounce_ratchet_k: float = 0.50
     sl_bounce_min_pullback_pct: float = 0.15
     sl_structural_break_enabled: bool = True
+    # --- MULTI-HORIZON DYNAMIC TAKE-PROFIT (MDHTP) ---
+    tp_mdhtp_enabled: bool = False
+    tp_stagnation_max_sec: float = 1080.0
 
     def __post_init__(self):
         def finite(name: str, value) -> float:
@@ -379,6 +382,8 @@ class StratParams:
             sl_bounce_ratchet_k = _optional_float_env("STRAT_SL_BOUNCE_RATCHET_K", 0.50, env),
             sl_bounce_min_pullback_pct = _optional_float_env("STRAT_SL_BOUNCE_MIN_PULLBACK_PCT", 0.15, env),
             sl_structural_break_enabled = _optional_bool_env("STRAT_SL_STRUCTURAL_BREAK_ENABLED", True, env),
+            tp_mdhtp_enabled   = _optional_bool_env("STRAT_TP_MDHTP_ENABLED", False, env),
+            tp_stagnation_max_sec = _optional_float_env("STRAT_TP_STAGNATION_MAX_SEC", 1080.0, env),
         )
 
 
@@ -440,6 +445,7 @@ def _new_state() -> dict:
         "entry_ts": None,
         "sl_bounce_state": {},
         "reentry_state": {},
+        "tp_ride_state": {},
     }
 
 
@@ -479,7 +485,7 @@ class Strategy:
         self.s.setdefault("ledger_reconcile_required", False)
         self.s.setdefault("sl_bounce_state", {})
         self.exit_manager: PositionExitManager | None = None
-        if self.p.sl_mhdsl_enabled:
+        if self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled:
             exit_cfg = PositionExitConfig(
                 lost_threshold=self.p.stop_loss_pct / 100.0,
                 sl_disaster_buffer_ratio=self.p.sl_disaster_buffer_ratio,
@@ -493,6 +499,15 @@ class Strategy:
                 sl_bounce_min_pullback_pct=self.p.sl_bounce_min_pullback_pct / 100.0,
                 sl_structural_break_enabled=self.p.sl_structural_break_enabled,
                 smart_sl_enabled=False,
+                gain_threshold=self.p.takeprofit_pct / 100.0,
+                tp_trend_ride_enabled=self.p.tp_trend_hold,
+                tp_profit_floor_min_pct=(self.p.tp_trail_profit_floor_pct or 0.0) / 100.0,
+                tp_pullback_pct=self.p.tp_trail_pct / 100.0,
+                tp_stagnation_max_sec=self.p.tp_stagnation_max_sec,
+                fast_profit_guard_enabled=self.p.fast_profit_guard,
+                fast_profit_mult=self.p.fast_profit_mult,
+                fast_profit_window_sec=self.p.fast_profit_window_min * 60.0,
+                fast_profit_drop_pct=self.p.fast_profit_drop_pct / 100.0,
                 reentry_enabled=True,
                 reentry_sl_bounce_pct=self.p.reentry_sl_bounce_pct / 100.0,
                 reentry_drop_pct=self.p.reentry_drop_pct / 100.0,
@@ -506,8 +521,10 @@ class Strategy:
                 vol_resolver=self._resolve_volatility_tuple,
             )
             self.s.setdefault("reentry_state", {})
+            self.s.setdefault("tp_ride_state", {})
             self.exit_manager.sl_bounce_state = self.s["sl_bounce_state"]
             self.exit_manager.reentry_state = self.s["reentry_state"]
+            self.exit_manager.tp_ride_state = self.s["tp_ride_state"]
         self._paper_seq = 0
         # Observational adaptive-volatility shadow history stays in memory for sigma.
         # It is rebuilt after restart and never enters persistent state.
@@ -1134,6 +1151,7 @@ class Strategy:
             self.exit_manager.clear_state(self.pair)
             self.exit_manager.sl_bounce_state = self.s.setdefault("sl_bounce_state", {})
             self.exit_manager.reentry_state = self.s.setdefault("reentry_state", {})
+            self.exit_manager.tp_ride_state = self.s.setdefault("tp_ride_state", {})
         log(f"  [STRAT] === cycle closed; restarting (cycle {self.s['cycle']}) ===")
 
     # -- Decision logic --------------------------------------------------------
@@ -1249,6 +1267,8 @@ class Strategy:
                 vol_resolver=self._resolve_volatility_tuple,
             )
             self.exit_manager.sl_bounce_state = self.s.setdefault("sl_bounce_state", {})
+            self.exit_manager.reentry_state = self.s.setdefault("reentry_state", {})
+            self.exit_manager.tp_ride_state = self.s.setdefault("tp_ride_state", {})
 
         trend_up = self._is_trend_up()
         vol_1h, vol_source = self._vol_1h_ratio()
@@ -2013,6 +2033,53 @@ class Strategy:
         trend_hold_active = self.p.tp_trend_hold and not bool(self.p.tp_tranches)
         if (self.p.enable_takeprofit and avg and trend_hold_active
                 and (trail_armed or price >= sr.tp_price(avg, eff_tp))):
+            # MDHTP (Multi-Horizon Dynamic Take-Profit) via PositionExitManager
+            if self.exit_manager is not None and self.p.tp_mdhtp_enabled:
+                eff_trail = self._effective_trail_pct()
+                self.exit_manager.config.tp_pullback_pct = eff_trail / 100.0
+                self.exit_manager.config.tp_trend_ride_enabled = self.p.tp_trend_hold
+                self.exit_manager.config.tp_profit_floor_min_pct = (self.p.tp_trail_profit_floor_pct or 0.0) / 100.0
+                self.exit_manager.config.tp_stagnation_max_sec = self.p.tp_stagnation_max_sec
+                self.exit_manager.config.fast_profit_guard_enabled = self.p.fast_profit_guard
+                self.exit_manager.config.fast_profit_mult = self.p.fast_profit_mult
+                self.exit_manager.config.fast_profit_window_sec = self.p.fast_profit_window_min * 60.0
+                self.exit_manager.config.fast_profit_drop_pct = self.p.fast_profit_drop_pct / 100.0
+
+                vol_1h, vol_source = self._vol_1h_ratio()
+                snapshot = PositionSnapshot(
+                    symbol=self.pair,
+                    current_price=price,
+                    avg_buy_price=avg,
+                    net_qty=held,
+                    sellable_qty=held,
+                    current_time_s=tick_time,
+                    trend_up=self._is_trend_up(regime),
+                    vol_1h=vol_1h,
+                    vol_source=vol_source,
+                    shadow_prices=list(self._shadow_prices),
+                    provider=self.venue_label,
+                )
+
+                decision = self.exit_manager.evaluate_take_profit(snapshot, custom_threshold=eff_tp / 100.0)
+                if decision.action == ExitAction.SELL and decision.should_exit:
+                    exit_px = round(price * 0.999, self.price_dec)
+                    use_soft = (decision.reason == "mdhtp_peak_pullback")
+                    if self._request_market_exit(price, "TP", soft_floor=use_soft):
+                        log(f"  [STRAT] MDHTP EXIT ({decision.reason}) -> reference {exit_px}")
+                    return
+                elif decision.action == ExitAction.HOLD:
+                    ride_state = self.exit_manager.tp_ride_state.get(self.pair, {})
+                    peak_px = ride_state.get("peak_price", price)
+                    self.s["trail_peak"] = peak_px
+                    self._cancel_orders("sell", exclude_market=True)
+                    log(f"  [STRAT] above the TP, RIDING IT ({decision.reason}) (peak {peak_px:.{self.price_dec}f})")
+                    return
+                elif decision.reason == "not_in_tp_territory":
+                    self.s["trail_peak"] = None
+                    self.s["trail_stop"] = None
+                    self._cancel_orders("sell", exclude_market=True)
+                    return
+
             # Arm trailing at the first TP crossing and keep it armed through exit, even
             # if price later falls below TP, so the target pullback does not reset the peak.
             peak = max(self.s.get("trail_peak") or price, price)

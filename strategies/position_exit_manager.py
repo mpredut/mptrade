@@ -235,10 +235,12 @@ class PositionExitManager:
         """
         buf_a = lost_threshold * self.config.sl_disaster_buffer_ratio
 
-        eff_vol = vol_1h
+        eff_vol = vol_1h if vol_1h is not None else 0.0
         eff_src = vol_source
         if eff_vol <= 0 and self.vol_resolver is not None:
             eff_vol, eff_src = self.vol_resolver(symbol)
+            if eff_vol is None:
+                eff_vol = 0.0
 
         buf_b = eff_vol * self.config.sl_disaster_vol_multiplier if eff_vol > 0 else 0.0
         min_floor = self.config.sl_disaster_buffer_min_pct
@@ -544,11 +546,15 @@ class PositionExitManager:
         # ---------------------------------------------------------------------
         # Take-Profit Boundary Check
         # ---------------------------------------------------------------------
+        if price_increase <= 0:
+            self.tp_ride_state.pop(symbol, None)
+            return ExitDecision(ExitAction.HOLD, False, "not_in_tp_territory")
+
         profit_floor = max(gain_threshold * self.config.tp_profit_floor_ratio, self.config.tp_profit_floor_min_pct)
         in_tp_territory = (
             price_increase > gain_threshold
             or are_close(price_increase, gain_threshold, self.config.are_close_tolerance_pct)
-            or (symbol in self.tp_ride_state and price_increase >= self.config.tp_profit_floor_min_pct)
+            or (symbol in self.tp_ride_state)
         )
 
         if not in_tp_territory:

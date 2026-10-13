@@ -29,6 +29,14 @@ from providers.strategy_executor import OrderNotFound, ProviderError
 from providers.t212_provider import T212Provider
 from strategies.state_store import JsonStateStore
 from strategies import spot_rules as sr
+from strategies.position_exit_manager import (
+    PositionExitManager,
+    PositionExitConfig,
+    PositionSnapshot,
+    ExitAction,
+    ReentrySnapshot,
+    ReentryDecision,
+)
 from order_rollback import restore_cancelled_orders
 
 FX_FEE_PCT = 0.15  # T212 currency-conversion fee per direction.
@@ -155,6 +163,13 @@ class StratParams:
     reentry_pullback_min: float = 0.8     # Minimum pullback clamp (%)
     reentry_pullback_max: float = 4.0     # Maximum pullback clamp (%)
     reentry_ttl_hours: float = 0.0        # 0 = off. After this many hours, stale sale barrier expires.
+    # --- MULTI-HORIZON DYNAMIC STOP-LOSS (MHDSL) & RE-ENTRY MIRROR ---
+    sl_mhdsl_enabled: bool = False
+    sl_disaster_buffer_ratio: float = 0.30
+    sl_trend_defer_max_sec: float = 220.0
+    sl_bounce_min_recovery_pct: float = 0.40
+    sl_bounce_pullback_pct: float = 0.30
+    sl_structural_break_enabled: bool = True
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> "StratParams":
@@ -262,6 +277,28 @@ class StratParams:
                 float_env("STRAT_REENTRY_TTL_HOURS", e)
                 if float_env("STRAT_REENTRY_TTL_HOURS", e) is not None else 0.0
             ),
+            sl_mhdsl_enabled = (
+                str(e.get("STRAT_SL_MHDSL_ENABLED", "")).lower() in ("true", "1")
+            ),
+            sl_disaster_buffer_ratio = (
+                float_env("STRAT_SL_DISASTER_BUFFER_RATIO", e)
+                if float_env("STRAT_SL_DISASTER_BUFFER_RATIO", e) is not None else 0.30
+            ),
+            sl_trend_defer_max_sec = (
+                float_env("STRAT_SL_TREND_DEFER_MAX_SEC", e)
+                if float_env("STRAT_SL_TREND_DEFER_MAX_SEC", e) is not None else 220.0
+            ),
+            sl_bounce_min_recovery_pct = (
+                float_env("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", e)
+                if float_env("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", e) is not None else 0.40
+            ),
+            sl_bounce_pullback_pct = (
+                float_env("STRAT_SL_BOUNCE_PULLBACK_PCT", e)
+                if float_env("STRAT_SL_BOUNCE_PULLBACK_PCT", e) is not None else 0.30
+            ),
+            sl_structural_break_enabled = (
+                str(e.get("STRAT_SL_STRUCTURAL_BREAK_ENABLED", "true")).lower() in ("true", "1")
+            ),
         )
 
 
@@ -277,6 +314,10 @@ def _new_state() -> dict:
         "last_sell_price": None,
         "last_sell_ts": None,
         "post_sell_peak": None,
+        "post_sell_trough": None,
+        "last_exit_kind": None,
+        "sl_bounce_state": {},
+        "reentry_state": {},
         "realized_pnl_usd": 0.0,   # Cumulative gross profit.
         "realized_net_usd": 0.0,   # Cumulative net profit after FX fees.
         "fees_usd": 0.0,           # Total paid FX fees.
@@ -331,6 +372,30 @@ class Strategy:
         self._state_write_failed = False
         self.s = initial_state if initial_state is not None else self._load()
         self.s.setdefault("pending_submit", None)
+        self.s.setdefault("post_sell_trough", None)
+        self.s.setdefault("last_exit_kind", None)
+        self.s.setdefault("sl_bounce_state", {})
+        self.s.setdefault("reentry_state", {})
+        self.exit_manager: PositionExitManager | None = None
+        if self.p.sl_mhdsl_enabled:
+            exit_cfg = PositionExitConfig(
+                lost_threshold=self.p.stop_loss_pct / 100.0,
+                sl_disaster_buffer_ratio=self.p.sl_disaster_buffer_ratio,
+                sl_trend_defer_max_sec=self.p.sl_trend_defer_max_sec,
+                sl_bounce_min_recovery_pct=self.p.sl_bounce_min_recovery_pct / 100.0,
+                sl_bounce_pullback_pct=self.p.sl_bounce_pullback_pct / 100.0,
+                sl_structural_break_enabled=self.p.sl_structural_break_enabled,
+                smart_sl_enabled=False,
+                reentry_enabled=True,
+                reentry_sl_bounce_pct=self.p.sl_rebuy_bounce_pct / 100.0 if self.p.sl_rebuy_enabled else 0.015,
+                reentry_drop_pct=self.p.reentry_drop_pct / 100.0,
+                reentry_pullback_pct=self.p.reentry_pullback_pct / 100.0,
+                reentry_ttl_hours=self.p.reentry_ttl_hours,
+                reentry_tolerance_pct=self.p.reentry_tolerance_pct,
+            )
+            self.exit_manager = PositionExitManager(config=exit_cfg)
+            self.exit_manager.sl_bounce_state = self.s["sl_bounce_state"]
+            self.exit_manager.reentry_state = self.s["reentry_state"]
         self._paper_seq = 0
 
     def _now(self) -> float:
@@ -1143,7 +1208,13 @@ class Strategy:
             self.s["cycle"] = nxt
             self.s["last_sell_price"] = exit_price
             self.s["post_sell_peak"] = exit_price
+            self.s["post_sell_trough"] = exit_price
+            self.s["last_exit_kind"] = "STOP" if was_sl else "TP"
             self.s["last_sell_ts"] = self._now()
+            if self.exit_manager is not None:
+                self.exit_manager.clear_state(self.ticker)
+                self.exit_manager.sl_bounce_state = self.s.setdefault("sl_bounce_state", {})
+                self.exit_manager.reentry_state = self.s.setdefault("reentry_state", {})
             if was_sl and self.p.sl_rebuy_enabled:   # Rebuy on a bounce, not below the sale, to catch recovery.
                 self.s["sl_rebuy"] = {"low": exit_price, "sell_price": exit_price}
                 log(f"  🟢 [STRAT] pullback re-buy ARMED after the stop-loss (expecting +{self.p.sl_rebuy_bounce_pct}% from the low)")
@@ -1231,6 +1302,98 @@ class Strategy:
         if not avg:
             return False
         loss_pct = (avg - price) / avg * 100   # A long loses when price is below average cost.
+
+        # Multi-Horizon Dynamic Stop Loss (MHDSL) via centralized PositionExitManager
+        if self.exit_manager is not None and self.p.sl_mhdsl_enabled:
+            in_sl = (
+                loss_pct >= self.p.stop_loss_pct
+                or are_close(loss_pct, self.p.stop_loss_pct, self.p.reentry_tolerance_pct)
+            )
+            in_bounce_watch = bool(self.ticker in self.exit_manager.sl_bounce_state)
+            if not in_sl and not in_bounce_watch:
+                self.s["sl_alerted"] = False
+                self.s["sl_pending"] = False
+                self.s.pop("sl_fail_until", None)
+                return False
+
+            trend_up = False
+            if self._trend_slope_provider:
+                try:
+                    slope = self._trend_slope_provider(self.yahoo_sym)
+                    if slope is not None and slope >= 0.0:
+                        trend_up = True
+                except Exception:
+                    pass
+
+            vol_1h = None
+            vol_source = "none"
+            if hasattr(self, "_shadow_vol_1h"):
+                try:
+                    vol_1h = self._shadow_vol_1h()
+                    vol_source = "shadow"
+                except Exception:
+                    pass
+
+            tick_time = self._now()
+            held = self.s.get("qty", 0.0)
+            sell_qty = self._sellable_qty(held, price)
+
+            snapshot = PositionSnapshot(
+                symbol=self.ticker,
+                current_price=price,
+                avg_buy_price=avg,
+                net_qty=held,
+                sellable_qty=sell_qty,
+                current_time_s=tick_time,
+                trend_up=trend_up,
+                vol_1h=vol_1h,
+                vol_source=vol_source,
+                provider="t212",
+            )
+
+            decision = self.exit_manager.evaluate_stop_loss(
+                snapshot, custom_threshold=self.p.stop_loss_pct / 100.0,
+            )
+
+            if decision.action == ExitAction.SELL and decision.should_exit:
+                if self._now() < self.s.get("sl_fail_until", 0):
+                    return False
+                sl = next((o for o in self.s["orders"] if o.get("kind") == "SL"), None)
+                if sl is None or (not sl.get("market") and price < sl["limit"]):
+                    cancelled_orders = [dict(o) for o in self.s["orders"] if o.get("kind") != "SL"]
+                    if not self._cancel_all_orders():
+                        log("  ! [STRAT] STOP deferred: at least one order could not be cancelled")
+                        return True
+                    pending_orders = [o for o in self.s["orders"] if o.get("kind") != "SL"]
+                    if pending_orders:
+                        log(f"  [STRAT] STOP deferred: waiting for {len(pending_orders)} existing order(s) to reconcile cancellation")
+                        return True
+                    if self.s.get("pending_submit"):
+                        log("  [STRAT] STOP deferred: waiting for pending submit to reconcile")
+                        return True
+                    placed = self._place_sell(
+                        sell_qty, round(price, 2), kind="SL", market=True,
+                    )
+                    if not placed:
+                        if not self.s.get("pending_submit"):
+                            self.s["sl_fail_until"] = self._now() + 1800
+                            log("  ! [STRAT] STOP sell failed or refused — backoff 30 min (retaining TP ladder)")
+                            self._restore_cancelled_orders(cancelled_orders, reason="stop-loss sell failed")
+                        return True
+                    self.s["sl_pending"] = True
+                if not self.s.get("sl_alerted"):
+                    self.s["sl_alerted"] = True
+                    log(f"  🛑 [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% ({decision.reason}) — SELLING EVERYTHING (cutting the loss)")
+                    notify(title=f"🛑 SL {self.yahoo_sym} -{loss_pct:.1f}%",
+                           body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}% ({decision.reason}) — selling everything",
+                           source="T212", price=price, desktop=self.desktop)
+                return True
+            elif decision.action == ExitAction.HOLD:
+                if decision.metadata.get("priority") == 2:
+                    log(f"  🛡️ [STRAT] MHDSL BOUNCE DEFERRAL: {decision.reason}")
+                return False
+            return False
+
         if loss_pct < self.p.stop_loss_pct:
             self.s["sl_alerted"] = False        # Recovery above threshold permits a new alert.
             self.s["sl_pending"] = False        # End this stop-loss episode after recovery.
@@ -1350,54 +1513,112 @@ class Strategy:
                 return
             if self._has_open("BUY"):
                 return
-            # Rebuy on a bounce after a catastrophic stop loss, as on Binance/Kraken.
-            # While armed, it takes priority over reentry below the previous sale.
-            if self.s.get("sl_rebuy"):
-                self._handle_sl_rebuy(price)
-                return
             # Kraken-style reentry rule: do not buy back above the previous sale price.
             lsp = self.s.get("last_sell_price")
             if lsp:
                 cur_peak = self.s.get("post_sell_peak") or lsp
                 self.s["post_sell_peak"] = max(cur_peak, price)
-            if self.p.reentry_hybrid_enabled:
-                is_bull = True if self.p.reentry_peak_relative else False
-                if not is_bull and self._trend_slope_provider:
+                cur_trough = self.s.get("post_sell_trough") or lsp
+                self.s["post_sell_trough"] = min(cur_trough, price)
+
+            if self.exit_manager is not None and self.p.sl_mhdsl_enabled:
+                self.exit_manager.config.reentry_drop_pct = self.p.reentry_drop_pct / 100.0
+                pullback_pct, pb_src = self._effective_reentry_pullback_pct()
+                self.exit_manager.config.reentry_pullback_pct = pullback_pct / 100.0
+                self.exit_manager.config.reentry_sl_bounce_pct = (
+                    self.p.sl_rebuy_bounce_pct / 100.0 if self.p.sl_rebuy_enabled else 0.015
+                )
+                self.exit_manager.config.reentry_ttl_hours = self.p.reentry_ttl_hours
+                self.exit_manager.config.reentry_tolerance_pct = self.p.reentry_tolerance_pct
+
+                trend_up = False
+                trend_down = False
+                if self._trend_slope_provider:
                     try:
                         slope = self._trend_slope_provider(self.yahoo_sym)
-                        if slope is not None and slope >= 0.0:
-                            is_bull = True
+                        if slope is not None:
+                            if slope >= 0.0:
+                                trend_up = True
+                            elif slope < (-self.p.dca_trend_gate_pct if self.p.dca_trend_gate_pct > 0 else -0.1):
+                                trend_down = True
                     except Exception:
                         pass
-                pullback_pct, pb_src = self._effective_reentry_pullback_pct()
-                elapsed = (self._now() - self.s["last_sell_ts"]) if self.s.get("last_sell_ts") else None
-                ttl_s = (self.p.reentry_ttl_hours * 3600.0) if self.p.reentry_ttl_hours > 0 else None
-                blocked, reason = sr.reentry_hybrid_blocked(
-                    price=price,
-                    last_sell=lsp,
+
+                vol_1h = None
+                vol_source = "none"
+                if hasattr(self, "_shadow_vol_1h"):
+                    try:
+                        vol_1h = self._shadow_vol_1h()
+                        vol_source = "shadow"
+                    except Exception:
+                        pass
+
+                last_exit_kind = "STOP" if self.s.get("sl_rebuy") or self.s.get("last_exit_kind") == "STOP" else "TP"
+
+                reentry_snap = ReentrySnapshot(
+                    symbol=self.ticker,
+                    current_price=price,
+                    last_sell_price=lsp,
+                    last_exit_kind=last_exit_kind,
                     post_sell_peak=self.s.get("post_sell_peak"),
-                    is_bull=is_bull,
-                    drop_pct=self.p.reentry_drop_pct,
-                    pullback_pct=pullback_pct,
-                    tol_pct=self.p.reentry_tolerance_pct,
-                    elapsed_sec=elapsed,
-                    ttl_sec=ttl_s,
+                    post_sell_trough=self.s.get("post_sell_trough"),
+                    current_time_s=self._now(),
+                    last_sell_time_s=self.s.get("last_sell_ts"),
+                    trend_up=trend_up,
+                    trend_down=trend_down,
+                    vol_1h=vol_1h,
+                    vol_source=vol_source,
                 )
-                if blocked:
-                    log(f"  [STRAT] hybrid re-entry blocked: {reason} "
-                        f"(price {price:.2f}, peak {self.s.get('post_sell_peak', 0.0):.2f}) [{pb_src}]")
+                reentry_dec = self.exit_manager.evaluate_reentry(reentry_snap)
+                if not reentry_dec.should_enter:
+                    log(f"  [STRAT] re-entry blocked: {reentry_dec.reason}")
                     return
                 if lsp:
-                    log(f"  [STRAT] hybrid re-entry unblocked ({reason}) [{pb_src}] — placing ENTRY")
+                    log(f"  [STRAT] re-entry approved: {reentry_dec.reason} — placing ENTRY")
             else:
-                rdp = self.p.reentry_drop_pct
-                if rdp > 0 and lsp:
-                    prag = lsp * (1 - rdp / 100)
-                    # Treat a value close to the threshold as reached (deterministic are_close).
-                    if price > prag and not are_close(price, prag, self.p.reentry_tolerance_pct):
-                        log(f"  [STRAT] re-entry blocked: {price:.2f} > threshold {prag:.2f} "
-                            f"(sold at {lsp:.2f}, waiting for -{rdp}%)")
+                # Rebuy on a bounce after a catastrophic stop loss, as on Binance/Kraken.
+                # While armed, it takes priority over reentry below the previous sale.
+                if self.s.get("sl_rebuy"):
+                    self._handle_sl_rebuy(price)
+                    return
+                if self.p.reentry_hybrid_enabled:
+                    is_bull = True if self.p.reentry_peak_relative else False
+                    if not is_bull and self._trend_slope_provider:
+                        try:
+                            slope = self._trend_slope_provider(self.yahoo_sym)
+                            if slope is not None and slope >= 0.0:
+                                is_bull = True
+                        except Exception:
+                            pass
+                    pullback_pct, pb_src = self._effective_reentry_pullback_pct()
+                    elapsed = (self._now() - self.s["last_sell_ts"]) if self.s.get("last_sell_ts") else None
+                    ttl_s = (self.p.reentry_ttl_hours * 3600.0) if self.p.reentry_ttl_hours > 0 else None
+                    blocked, reason = sr.reentry_hybrid_blocked(
+                        price=price,
+                        last_sell=lsp,
+                        post_sell_peak=self.s.get("post_sell_peak"),
+                        is_bull=is_bull,
+                        drop_pct=self.p.reentry_drop_pct,
+                        pullback_pct=pullback_pct,
+                        tol_pct=self.p.reentry_tolerance_pct,
+                        elapsed_sec=elapsed,
+                        ttl_sec=ttl_s,
+                    )
+                    if blocked:
+                        log(f"  [STRAT] hybrid re-entry blocked: {reason} "
+                            f"(price {price:.2f}, peak {self.s.get('post_sell_peak', 0.0):.2f}) [{pb_src}]")
                         return
+                    if lsp:
+                        log(f"  [STRAT] hybrid re-entry unblocked ({reason}) [{pb_src}] — placing ENTRY")
+                else:
+                    rdp = self.p.reentry_drop_pct
+                    if rdp > 0 and lsp:
+                        prag = lsp * (1 - rdp / 100)
+                        # Treat a value close to the threshold as reached (deterministic are_close).
+                        if price > prag and not are_close(price, prag, self.p.reentry_tolerance_pct):
+                            log(f"  [STRAT] re-entry blocked: {price:.2f} > threshold {prag:.2f} "
+                                f"(sold at {lsp:.2f}, waiting for -{rdp}%)")
+                            return
             if self.s["spent_cash"] + self.p.entry_amount > self.p.max_budget:
                 log(f"  [STRAT] budget cap {self.p.max_budget:.0f} {self.ccy} reached — not entering")
                 return
