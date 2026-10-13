@@ -34,6 +34,7 @@ case "$cmd" in
   stop)    log "stop fleet";          systemctl stop python_orchestrator.service ;;
   start)   log "start fleet + vpn";   systemctl start pia.service python_orchestrator.service ;;
   status)  systemctl status --no-pager python_orchestrator.service pia.service || true ;;
+  reboot)  log "reboot machine";      systemctl reboot ;;
   reinstall)
     R="$(svc_root)"; [ -d "$R" ] || { echo "cannot resolve trading root from python_orchestrator.service" >&2; exit 1; }
     require_clean_repo "$R"
@@ -51,5 +52,5 @@ case "$cmd" in
       /etc/systemd/resolved.conf.d/20-trading-cache.conf
     systemctl restart systemd-resolved
     resolvectl status 2>/dev/null | grep -m1 'Current DNS Server' || true ;;
-  *) echo "usage: trading-admin {restart|stop|start|status|reinstall|pin-dns}" >&2; exit 2 ;;
+  *) echo "usage: trading-admin {restart|stop|start|status|reinstall|pin-dns|reboot}" >&2; exit 2 ;;
 esac
