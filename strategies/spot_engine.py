@@ -31,6 +31,13 @@ from order_retry import (
 
 from . import spot_rules as sr
 from .state_store import JsonStateStore
+from .position_exit_manager import (
+    ExitAction,
+    ExitDecision,
+    PositionExitConfig,
+    PositionExitManager,
+    PositionSnapshot,
+)
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _LEGACY_STATE_DIR = os.path.join(_ROOT, "kraken")
@@ -47,6 +54,20 @@ def state_path_for(pair: str, state_dir: str | None = None) -> str:
     safe = "".join(c for c in pair if c.isalnum() or c in "._-")
     directory = state_dir or _LEGACY_STATE_DIR
     return os.path.join(directory, f".state_{safe}.json")
+
+
+def _optional_bool_env(key: str, default: bool, env: dict | None = None) -> bool:
+    src = os.environ if env is None else env
+    if key not in src or src[key] == "":
+        return default
+    return required_bool_env(key, env)
+
+
+def _optional_float_env(key: str, default: float, env: dict | None = None) -> float:
+    src = os.environ if env is None else env
+    if key not in src or src[key] == "":
+        return default
+    return required_float_env(key, env)
 
 
 @dataclass
@@ -147,6 +168,18 @@ class StratParams:
     slow_grind_flash_window_min: float = 15.0
     slow_grind_flash_drop_pct: float = 1.5
     slow_grind_hourly_drop_pct: float = 2.5
+    # --- MULTI-HORIZON DYNAMIC STOP-LOSS (MHDSL, default OFF) ---
+    sl_mhdsl_enabled: bool = False
+    sl_disaster_buffer_ratio: float = 0.30
+    sl_disaster_vol_multiplier: float = 0.85
+    sl_disaster_buffer_min_pct: float = 0.80
+    sl_trend_defer_max_sec: float = 220.0
+    sl_bounce_min_recovery_pct: float = 0.40
+    sl_bounce_pullback_pct: float = 0.30
+    sl_bounce_ratchet_enabled: bool = True
+    sl_bounce_ratchet_k: float = 0.50
+    sl_bounce_min_pullback_pct: float = 0.15
+    sl_structural_break_enabled: bool = True
 
     def __post_init__(self):
         def finite(name: str, value) -> float:
@@ -174,6 +207,30 @@ class StratParams:
             raise ValueError("STRAT_TAKEPROFIT_PCT must be > 0 when take-profit is enabled")
         if self.stop_loss_pct < 0:
             raise ValueError("STRAT_STOP_LOSS_PCT must be >= 0")
+        self.sl_disaster_buffer_ratio = finite("STRAT_SL_DISASTER_BUFFER_RATIO", self.sl_disaster_buffer_ratio)
+        self.sl_disaster_vol_multiplier = finite("STRAT_SL_DISASTER_VOL_MULTIPLIER", self.sl_disaster_vol_multiplier)
+        self.sl_disaster_buffer_min_pct = finite("STRAT_SL_DISASTER_BUFFER_MIN_PCT", self.sl_disaster_buffer_min_pct)
+        self.sl_trend_defer_max_sec = finite("STRAT_SL_TREND_DEFER_MAX_SEC", self.sl_trend_defer_max_sec)
+        self.sl_bounce_min_recovery_pct = finite("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", self.sl_bounce_min_recovery_pct)
+        self.sl_bounce_pullback_pct = finite("STRAT_SL_BOUNCE_PULLBACK_PCT", self.sl_bounce_pullback_pct)
+        self.sl_bounce_ratchet_k = finite("STRAT_SL_BOUNCE_RATCHET_K", self.sl_bounce_ratchet_k)
+        self.sl_bounce_min_pullback_pct = finite("STRAT_SL_BOUNCE_MIN_PULLBACK_PCT", self.sl_bounce_min_pullback_pct)
+        if self.sl_disaster_buffer_ratio < 0:
+            raise ValueError("STRAT_SL_DISASTER_BUFFER_RATIO must be >= 0")
+        if self.sl_disaster_vol_multiplier < 0:
+            raise ValueError("STRAT_SL_DISASTER_VOL_MULTIPLIER must be >= 0")
+        if self.sl_disaster_buffer_min_pct < 0:
+            raise ValueError("STRAT_SL_DISASTER_BUFFER_MIN_PCT must be >= 0")
+        if self.sl_trend_defer_max_sec < 0:
+            raise ValueError("STRAT_SL_TREND_DEFER_MAX_SEC must be >= 0")
+        if self.sl_bounce_min_recovery_pct < 0:
+            raise ValueError("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT must be >= 0")
+        if self.sl_bounce_pullback_pct < 0:
+            raise ValueError("STRAT_SL_BOUNCE_PULLBACK_PCT must be >= 0")
+        if self.sl_bounce_ratchet_k < 0:
+            raise ValueError("STRAT_SL_BOUNCE_RATCHET_K must be >= 0")
+        if self.sl_bounce_min_pullback_pct < 0:
+            raise ValueError("STRAT_SL_BOUNCE_MIN_PULLBACK_PCT must be >= 0")
         regime_capacity = MarketRegimeService.horizon_sample_capacity(
             "long", self.trend_interval,
         )
@@ -213,6 +270,7 @@ class StratParams:
 
     def effective_max_budget(self) -> float:
         return self.allocated_budget()
+
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> "StratParams":
@@ -307,6 +365,17 @@ class StratParams:
             slow_grind_flash_window_min = required_float_env("STRAT_SLOW_GRIND_FLASH_WINDOW_MIN", env),
             slow_grind_flash_drop_pct = required_float_env("STRAT_SLOW_GRIND_FLASH_DROP_PCT", env),
             slow_grind_hourly_drop_pct = required_float_env("STRAT_SLOW_GRIND_HOURLY_DROP_PCT", env),
+            sl_mhdsl_enabled   = _optional_bool_env("STRAT_SL_MHDSL_ENABLED", False, env),
+            sl_disaster_buffer_ratio = _optional_float_env("STRAT_SL_DISASTER_BUFFER_RATIO", 0.30, env),
+            sl_disaster_vol_multiplier = _optional_float_env("STRAT_SL_DISASTER_VOL_MULTIPLIER", 0.85, env),
+            sl_disaster_buffer_min_pct = _optional_float_env("STRAT_SL_DISASTER_BUFFER_MIN_PCT", 0.80, env),
+            sl_trend_defer_max_sec = _optional_float_env("STRAT_SL_TREND_DEFER_MAX_SEC", 220.0, env),
+            sl_bounce_min_recovery_pct = _optional_float_env("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", 0.40, env),
+            sl_bounce_pullback_pct = _optional_float_env("STRAT_SL_BOUNCE_PULLBACK_PCT", 0.30, env),
+            sl_bounce_ratchet_enabled = _optional_bool_env("STRAT_SL_BOUNCE_RATCHET_ENABLED", True, env),
+            sl_bounce_ratchet_k = _optional_float_env("STRAT_SL_BOUNCE_RATCHET_K", 0.50, env),
+            sl_bounce_min_pullback_pct = _optional_float_env("STRAT_SL_BOUNCE_MIN_PULLBACK_PCT", 0.15, env),
+            sl_structural_break_enabled = _optional_bool_env("STRAT_SL_STRUCTURAL_BREAK_ENABLED", True, env),
         )
 
 
@@ -366,6 +435,7 @@ def _new_state() -> dict:
         "slow_grind_active": False,
         "slow_grind_peak": None,
         "entry_ts": None,
+        "sl_bounce_state": {},
     }
 
 
@@ -403,6 +473,28 @@ class Strategy:
         self.s.setdefault("pending_intent", None)
         self.s.setdefault("placement_backoffs", {})
         self.s.setdefault("ledger_reconcile_required", False)
+        self.s.setdefault("sl_bounce_state", {})
+        self.exit_manager: PositionExitManager | None = None
+        if self.p.sl_mhdsl_enabled:
+            exit_cfg = PositionExitConfig(
+                lost_threshold=self.p.stop_loss_pct / 100.0,
+                sl_disaster_buffer_ratio=self.p.sl_disaster_buffer_ratio,
+                sl_disaster_vol_multiplier=self.p.sl_disaster_vol_multiplier,
+                sl_disaster_buffer_min_pct=self.p.sl_disaster_buffer_min_pct / 100.0,
+                sl_trend_defer_max_sec=self.p.sl_trend_defer_max_sec,
+                sl_bounce_min_recovery_pct=self.p.sl_bounce_min_recovery_pct / 100.0,
+                sl_bounce_pullback_pct=self.p.sl_bounce_pullback_pct / 100.0,
+                sl_bounce_ratchet_enabled=self.p.sl_bounce_ratchet_enabled,
+                sl_bounce_ratchet_k=self.p.sl_bounce_ratchet_k,
+                sl_bounce_min_pullback_pct=self.p.sl_bounce_min_pullback_pct / 100.0,
+                sl_structural_break_enabled=self.p.sl_structural_break_enabled,
+                smart_sl_enabled=False,
+            )
+            self.exit_manager = PositionExitManager(
+                config=exit_cfg,
+                vol_resolver=self._resolve_volatility_tuple,
+            )
+            self.exit_manager.sl_bounce_state = self.s["sl_bounce_state"]
         self._paper_seq = 0
         # Observational adaptive-volatility shadow history stays in memory for sigma.
         # It is rebuilt after restart and never enters persistent state.
@@ -1025,9 +1117,77 @@ class Strategy:
         self.s["post_sell_peak"] = price    # Initial peak for post-sale pullback tracking.
         self.s["post_sell_trough"] = price  # Initial trough for post-sale bear bounce tracking.
         self.s["last_sell_ts"] = self._shadow_prices[-1][0] if self._shadow_prices else time.time()
+        if self.exit_manager is not None:
+            self.exit_manager.clear_state(self.pair)
+            self.exit_manager.sl_bounce_state = self.s.setdefault("sl_bounce_state", {})
         log(f"  [STRAT] === cycle closed; restarting (cycle {self.s['cycle']}) ===")
 
     # -- Decision logic --------------------------------------------------------
+    def _is_trend_up(self, regime: MarketRegimeDecision | None = None) -> bool:
+        """Return True if an uptrend is identified via regime, trend_mode, or venue client."""
+        if self.s.get("trend_mode"):
+            return True
+        if regime is not None and self._regime_matches(regime, "bull", min_samples=self.p.regime_min_samples):
+            return True
+        try:
+            if hasattr(self.client, "trend"):
+                t = self.client.trend(self.pair)
+                if t and str(t).lower() in ("up", "bull", "uptrend"):
+                    return True
+        except Exception:
+            pass
+        if regime is None:
+            try:
+                reg, _ = self._regime_context()
+                if self._regime_matches(reg, "bull", min_samples=self.p.regime_min_samples):
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _vol_1h_ratio(self) -> tuple[float, str]:
+        """Return 1h volatility as a decimal ratio [e.g. 0.025 for 2.5%] and its source."""
+        try:
+            vol = self._trail_vol_1h()
+            if vol is not None and math.isfinite(vol) and vol > 0:
+                v = float(vol)
+                return (v if v < 0.10 else v / 100.0), "trail_ohlc"
+        except Exception:
+            pass
+        try:
+            vol = self._shadow_vol_1h()
+            if vol is not None and math.isfinite(vol) and vol > 0:
+                v = float(vol)
+                return (v if v < 0.10 else v / 100.0), "shadow_ticks"
+        except Exception:
+            pass
+        try:
+            from cachepaths import cache_path
+            state_path = cache_path("shadow_state.json")
+            if os.path.exists(state_path):
+                import json
+                with open(state_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    sym = self.pair.upper()
+                    entry = (
+                        data.get(sym)
+                        or data.get(sym.replace("USDC", "USDT"))
+                        or data.get(sym.replace("USDT", "USDC"))
+                    )
+                    if entry and isinstance(entry, dict):
+                        v = entry.get("vol_1h_pct")
+                        if v is not None and math.isfinite(float(v)) and float(v) > 0:
+                            vf = float(v)
+                            return (vf if vf < 0.10 else vf / 100.0), "cache"
+        except Exception:
+            pass
+        return 0.0, "default"
+
+    def _resolve_volatility_tuple(self, symbol: str) -> tuple[float, str]:
+        """Callable adapter for PositionExitManager vol_resolver."""
+        return self._vol_1h_ratio()
+
     def _check_stop_loss(self, price: float) -> bool:
         """Close everything when unrealized loss crosses the anti-runaway threshold."""
         if self.p.stop_loss_pct <= 0:
@@ -1036,15 +1196,78 @@ class Strategy:
         if not avg:
             return False
         loss_pct = (avg - price) / avg * 100   # A long position loses below average cost.
-        if sr.hit_stop(avg, price, self.p.stop_loss_pct):
-            # Reconcile an already submitted MARKET exit instead of canceling or duplicating it.
+
+        if not self.p.sl_mhdsl_enabled:
+            if sr.hit_stop(avg, price, self.p.stop_loss_pct):
+                # Reconcile an already submitted MARKET exit instead of canceling or duplicating it.
+                if self._has_pending_market_exit():
+                    return True
+                log(f"  🛑 [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% — SELLING EVERYTHING (cutting the loss)")
+                placed = self._request_market_exit(price, "STOP")
+                if not placed:
+                    log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
+                return True
+            return False
+
+        if self.exit_manager is None:
+            exit_cfg = PositionExitConfig(
+                lost_threshold=self.p.stop_loss_pct / 100.0,
+                sl_disaster_buffer_ratio=self.p.sl_disaster_buffer_ratio,
+                sl_disaster_vol_multiplier=self.p.sl_disaster_vol_multiplier,
+                sl_disaster_buffer_min_pct=self.p.sl_disaster_buffer_min_pct / 100.0,
+                sl_trend_defer_max_sec=self.p.sl_trend_defer_max_sec,
+                sl_bounce_min_recovery_pct=self.p.sl_bounce_min_recovery_pct / 100.0,
+                sl_bounce_pullback_pct=self.p.sl_bounce_pullback_pct / 100.0,
+                sl_bounce_ratchet_enabled=self.p.sl_bounce_ratchet_enabled,
+                sl_bounce_ratchet_k=self.p.sl_bounce_ratchet_k,
+                sl_bounce_min_pullback_pct=self.p.sl_bounce_min_pullback_pct / 100.0,
+                sl_structural_break_enabled=self.p.sl_structural_break_enabled,
+                smart_sl_enabled=False,
+            )
+            self.exit_manager = PositionExitManager(
+                config=exit_cfg,
+                vol_resolver=self._resolve_volatility_tuple,
+            )
+            self.exit_manager.sl_bounce_state = self.s.setdefault("sl_bounce_state", {})
+
+        trend_up = self._is_trend_up()
+        vol_1h, vol_source = self._vol_1h_ratio()
+        tick_time = self._shadow_prices[-1][0] if self._shadow_prices else time.time()
+
+        snapshot = PositionSnapshot(
+            symbol=self.pair,
+            current_price=price,
+            avg_buy_price=avg,
+            net_qty=self.s.get("qty", 0.0),
+            sellable_qty=self.s.get("qty", 0.0),
+            current_time_s=tick_time,
+            trend_up=trend_up,
+            vol_1h=vol_1h,
+            vol_source=vol_source,
+            provider=self.venue_label,
+            shadow_prices=list(self._shadow_prices),
+        )
+
+        decision = self.exit_manager.evaluate_stop_loss(
+            snapshot, custom_threshold=self.p.stop_loss_pct / 100.0,
+        )
+
+        if decision.action == ExitAction.SELL and decision.should_exit:
             if self._has_pending_market_exit():
                 return True
-            log(f"  🛑 [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% — SELLING EVERYTHING (cutting the loss)")
+            log(
+                f"  🛑 [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% "
+                f"({decision.reason}) — SELLING EVERYTHING"
+            )
             placed = self._request_market_exit(price, "STOP")
             if not placed:
                 log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
             return True
+        elif decision.action == ExitAction.HOLD:
+            if decision.metadata.get("priority") == 2:
+                log(f"  🛡️ [STRAT] MHDSL BOUNCE DEFERRAL: {decision.reason}")
+            return False
+
         return False
 
     def _trail_profit_floor_price(self, avg: float) -> float | None:
