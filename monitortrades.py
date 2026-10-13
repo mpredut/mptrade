@@ -22,6 +22,7 @@ from binance_api import bapi_allorders as apiorders
 # is portable to HYPE. The facade still routes Binance symbols identically to bapi.
 # Placement and WebSocket paths remain Binance-specific.
 from providers.market_api import api as mkt
+from order_rollback import restore_cancelled_orders
 
 import utils as u
 import log
@@ -708,15 +709,12 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 # Rollback / restore resting TP order if Stop-Loss placement failed
                 if not placed:
                     if cancelled_tp_orders:
-                        print(f"[{symbol}] Stop-Loss was not placed (sellable_qty={sellable_qty}); restoring cancelled resting TP orders...")
-                        for old_tp in cancelled_tp_orders:
-                            try:
-                                tp_px = float(old_tp.get("price") or 0.0)
-                                tp_q = float(old_tp.get("origQty") or old_tp.get("vol") or 0.0)
-                                if tp_px > 0 and tp_q > 0:
-                                    inst.place("SELL", tp_px, tp_q, kind="TP", wait_for_trend=False)
-                            except Exception as restore_err:
-                                print(f"[{symbol}] Warning: could not restore resting TP order: {restore_err}")
+                        restore_cancelled_orders(
+                            cancelled_tp_orders,
+                            restore_fn=lambda p: inst.place("SELL", p["price"], p["qty"], kind="TP", wait_for_trend=False),
+                            log_fn=lambda msg: print(f"[{symbol}] {msg}"),
+                            reason=f"Stop-Loss was not placed (sellable_qty={sellable_qty})",
+                        )
                     print(f"No can sell (sellable_qty={sellable_qty})")
         else:
             if symbol in _SL_BOUNCE_STATE:

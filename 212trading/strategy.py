@@ -28,6 +28,7 @@ from providers.strategy_executor import OrderNotFound, ProviderError
 from providers.t212_provider import T212Provider
 from strategies.state_store import JsonStateStore
 from strategies import spot_rules as sr
+from order_rollback import restore_cancelled_orders
 
 FX_FEE_PCT = 0.15  # T212 currency-conversion fee per direction.
 
@@ -641,22 +642,21 @@ class Strategy:
 
     def _restore_cancelled_orders(self, cancelled_orders: list[dict], reason: str = "") -> None:
         """Best-effort rollback: restore previously resting orders after a replacement or exit fails."""
-        if not cancelled_orders:
-            return
-        tag = f" ({reason})" if reason else ""
-        log(f"  ! [STRAT] atomic rollback: restoring {len(cancelled_orders)} cancelled order(s){tag}")
-        for old_o in cancelled_orders:
-            side = str(old_o.get("side", "")).upper()
-            qty = float(old_o.get("qty", 0.0))
-            limit = float(old_o.get("limit", 0.0))
-            level = old_o.get("level")
-            kind = old_o.get("kind", "TP" if side == "SELL" else "ENTRY")
-            if qty > 0 and limit > 0:
-                if side == "SELL":
-                    self._place_sell(qty, limit, level=level, kind=kind)
-                elif side == "BUY":
-                    amount = old_o.get("amount") or (qty * limit)
-                    self._place_buy(amount, limit, kind=kind)
+        def _restore_one(p: dict) -> bool:
+            if p["side"] == "SELL":
+                return self._place_sell(p["qty"], p["limit"], level=p.get("level"), kind=p.get("kind", "TP"))
+            elif p["side"] == "BUY":
+                amount = p.get("amount") or (p["qty"] * p["limit"])
+                self._place_buy(amount, p["limit"], kind=p.get("kind", "ENTRY"))
+                return True
+            return False
+
+        restore_cancelled_orders(
+            cancelled_orders,
+            restore_fn=_restore_one,
+            log_fn=log,
+            reason=reason,
+        )
 
     def _is_dust(self, qty: float, ref_price: float | None = None) -> bool:
         """Return True if qty is negligible dust (below minimum broker holding / trading value)."""
