@@ -59,14 +59,28 @@ def main() -> int:
 
     params = StratParams.from_env({
         "STRAT_CURRENCY": "USD",          # 1:1 -> no FX network call.
+        "STRATEGY_MODE": "avg_tp",
         "YAHOO_SYMBOL": "SLREBUY",
-        "STRAT_ENTRY": "100",
+        "STRAT_ENTRY_PCT": "10",
+        "STRAT_DCA_PCT": "10",
+        "STRAT_DCA_DROP_PCT": "2",
+        "STRAT_TAKEPROFIT_PCT": "3",
+        "STRAT_MAX_DCA_BUYS": "3",
         "STRAT_MAX_BUDGET": "1000",
+        "STRAT_FX_FEE_PCT": "0.15",
         "STRAT_ENTRY_DISCOUNT_PCT": "0.2",
+        "STRAT_CHECK_MINUTES": "5",
+        "STRAT_ORDER_TTL_MIN": "10",
         "STRAT_STOP_LOSS_PCT": "30",
         "STRAT_SL_REBUY_ENABLED": "true",
         "STRAT_SL_REBUY_BOUNCE_PCT": "1.2",
         "STRAT_REENTRY_DROP_PCT": "1.0",  # profit guard: it would block re-entry above last_sell if sl_rebuy did not take priority
+        "STRAT_REENTRY_TOLERANCE_PCT": "0.05",
+        "STRAT_LOSS_ALERT_STEP": "1",
+        "STRAT_LADDER_MIN_FREE": "6",
+        "STRAT_DCA_TREND_GATE_PCT": "0",
+        "STRAT_TRAIL_PCT": "0",
+        "STRAT_TRAIL_MIN_PROFIT_PCT": "5",
     })
     client = StubClient()
     s = Strategy(client, TICK, params, dry_run=False)
@@ -128,6 +142,10 @@ def main() -> int:
         return 1
     print("=== ALL CHECKS PASSED ===")
     return 0
+
+
+def test_sl_rebuy_workflow():
+    assert main() == 0
 
 
 if __name__ == "__main__":
