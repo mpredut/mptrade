@@ -187,6 +187,7 @@ class SmartStopLossGuard:
         provider: Optional[str] = None,
         current_price: Optional[float] = None,
         buy_price: Optional[float] = None,
+        disaster_buffer_pct: Optional[float] = None,
         whale_snapshot=None,
         orderbook_snapshot=None,
     ) -> Tuple[bool, str, Dict[str, Any]]:
@@ -217,7 +218,8 @@ class SmartStopLossGuard:
             return True, "wide_stop_exempt", meta
 
         # 2. Hard Disaster Floor: absolute safety circuit breaker
-        disaster_floor = lost_threshold + (self.disaster_buffer_pct / 100.0)
+        eff_buf = self.disaster_buffer_pct if disaster_buffer_pct is None else float(disaster_buffer_pct)
+        disaster_floor = lost_threshold + (eff_buf / 100.0)
         meta["disaster_floor_pct"] = round(disaster_floor * 100.0, 3)
         if price_decrease >= disaster_floor:
             # Terminate grace immediately if active
@@ -434,6 +436,7 @@ def evaluate_smart_stop_loss(
     provider: Optional[str] = None,
     current_price: Optional[float] = None,
     buy_price: Optional[float] = None,
+    disaster_buffer_pct: Optional[float] = None,
     whale_snapshot=None,
     orderbook_snapshot=None,
 ) -> Tuple[bool, str, Dict[str, Any]]:
@@ -447,15 +450,17 @@ def evaluate_smart_stop_loss(
     mode = str(m.get("smart_sl_mode", "enforce")).strip().lower()
     max_thresh = float(m.get("smart_sl_max_threshold_pct", 6.0))
     grace_sec = float(m.get("smart_sl_grace_seconds", 120.0))
-    disaster_buf = float(m.get("smart_sl_disaster_buffer_pct", 0.85))
+    default_disaster_buf = float(m.get("smart_sl_disaster_buffer_pct", 0.85))
     min_whale = float(m.get("smart_sl_min_whale_long_pct", 0.60))
     min_taker = float(m.get("smart_sl_min_taker_ratio", 0.85))
+
+    effective_disaster_buf = default_disaster_buf if disaster_buffer_pct is None else float(disaster_buffer_pct)
 
     guard = SmartStopLossGuard(
         mode=mode,
         max_threshold_pct=max_thresh,
         grace_seconds=grace_sec,
-        disaster_buffer_pct=disaster_buf,
+        disaster_buffer_pct=effective_disaster_buf,
         min_whale_long_pct=min_whale,
         min_taker_ratio=min_taker,
     )
@@ -467,6 +472,7 @@ def evaluate_smart_stop_loss(
         provider=provider,
         current_price=current_price,
         buy_price=buy_price,
+        disaster_buffer_pct=effective_disaster_buf,
         whale_snapshot=whale_snapshot,
         orderbook_snapshot=orderbook_snapshot,
     )

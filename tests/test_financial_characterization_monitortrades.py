@@ -179,6 +179,7 @@ class PipelineApi:
 class MonitorTradesFinancialCharacterization(unittest.TestCase):
     def setUp(self):
         mt._hard_tp_last.clear()
+        mt._SL_BOUNCE_STATE.clear()
         mt.clear_position_stats_cache()
         self._hard_tp_enabled = mt.HARD_TP_ENABLED
         mt.HARD_TP_ENABLED = True
@@ -186,9 +187,11 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
     def tearDown(self):
         mt.HARD_TP_ENABLED = self._hard_tp_enabled
         mt._hard_tp_last.clear()
+        mt._SL_BOUNCE_STATE.clear()
         mt.clear_position_stats_cache()
 
-    def run_tick(self, inst, *, trend_up=False, gain=0.10, loss=0.05):
+    def run_tick(self, inst, *, trend_up=False, gain=0.10, loss=0.05, now=None):
+        ts = now if now is not None else NOW
         with patch.object(mt, "is_trend_up", return_value=trend_up):
             mt.monitor_price_and_trade(
                 inst,
@@ -196,7 +199,7 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
                 maxage_trade_s=10 * 24 * 3600,
                 gain_threshold=gain,
                 lost_threshold=loss,
-                now_fn=lambda: NOW,
+                now_fn=lambda: ts,
             )
 
     def test_position_stats_are_gross_averages_and_net_quantity(self):
@@ -466,24 +469,29 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
 
     def test_mhdsl_multi_horizon_stop_loss_tiers(self):
         """Verify MHDSL decision tree:
-        1. Any loss condition (normal dip, disaster floor breach, or active cascade)
-           defers if trend_up is True (micro-trend bounce protection).
-        2. Disaster floor breach executes unconditionally when trend_up is False.
-        3. Active crash cascade executes unconditionally when trend_up is False.
+        1. Normal dip defers if trend_up is True (micro-trend bounce protection).
+        2. Disaster floor breach executes unconditionally even if trend_up is True (emergency circuit breaker).
+        3. Disaster floor breach executes unconditionally when trend_up is False.
+        4. Active crash cascade defers if trend_up is True (bounce protection respected).
+        5. Active crash cascade executes unconditionally when trend_up is False.
         """
         mt.HARD_TP_ENABLED = False
 
-        # Subtest 1: Normal dip (3% loss vs 2.5% threshold, disaster floor = 3.35%), trend_up=True -> DEFER
+        # Subtest 1: Normal dip (3% loss vs 2.5% threshold, disaster floor = 3.25%), trend_up=True -> DEFER
         with self.subTest(msg="normal_dip_deferred_when_trend_up"):
             inst = FakeInstrument(price=97.0, free=4, fills=[_fill("BUY", 100, 4)])
             self.run_tick(inst, trend_up=True, loss=0.025)
             self.assertEqual(inst.placed, [])
 
-        # Subtest 2: Disaster floor breach (4.0% loss >= 2.5% + 0.85% = 3.35%), trend_up=True -> DEFER (bounce protection)
-        with self.subTest(msg="disaster_floor_deferred_when_trend_up"):
+        # Subtest 2: Disaster floor breach (4.0% loss >= 2.5% + 0.75% = 3.25%), trend_up=True -> EXECUTE (emergency circuit breaker overrides trend)
+        with self.subTest(msg="disaster_floor_executes_even_when_trend_up"):
             inst = FakeInstrument(price=96.0, free=4, fills=[_fill("BUY", 100, 4)])
             self.run_tick(inst, trend_up=True, loss=0.025)
-            self.assertEqual(inst.placed, [])
+            self.assertEqual(len(inst.placed), 1)
+            order = inst.placed[0]
+            self.assertEqual((order["side"], order["qty"]), ("SELL", 4.0))
+            self.assertTrue(order["kwargs"]["bypass_profit_guard"])
+            self.assertEqual(order["kwargs"]["bypass_guards"], {"all"})
 
         # Subtest 3: Disaster floor breach, trend_up=False -> EXECUTE
         with self.subTest(msg="disaster_floor_executes_when_trend_not_up"):
@@ -568,6 +576,87 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.assertEqual(len(restore_orders), 1)
             self.assertEqual(restore_orders[0]["price"], 102.0)
             self.assertEqual(restore_orders[0]["qty"], 4.0)
+
+    def test_mhdsl_bounce_timeout_forces_stop_loss(self):
+        """Proposal 2: Time-bounded bounce deferral.
+        If trend_up stays True past MT_SL_TREND_DEFER_MAX_SEC (220s),
+        the deferral timer expires and Stop-Loss executes.
+        """
+        inst = FakeInstrument(price=97.0, free=4.0, fills=[_fill("BUY", 100, 4)])
+        sym = inst.symbol
+        # Tick 1 at t=0: initial dip (3% loss > 2.5% threshold), trend_up=True -> defers
+        self.run_tick(inst, trend_up=True, loss=0.025, now=NOW)
+        self.assertEqual(inst.placed, [])
+        self.assertIn(sym, mt._SL_BOUNCE_STATE)
+
+        # Tick 2 at t=100s: still in window (< 220s), trend_up=True -> still defers
+        self.run_tick(inst, trend_up=True, loss=0.025, now=NOW + 100)
+        self.assertEqual(inst.placed, [])
+
+        # Tick 3 at t=230s: window expired (230s >= 220s), trend_up=True -> forces Stop-Loss!
+        self.run_tick(inst, trend_up=True, loss=0.025, now=NOW + 230)
+        self.assertEqual(len(inst.placed), 1)
+        self.assertEqual((inst.placed[0]["side"], inst.placed[0]["qty"]), ("SELL", 4.0))
+        self.assertNotIn(sym, mt._SL_BOUNCE_STATE)
+
+    def test_mhdsl_bounce_rollover_forces_stop_loss(self):
+        """Proposal 3: Dynamic micro-trailing on bounce rollover.
+        If price bounces significantly (>= min_recovery_pct) and then drops
+        from the bounce peak (>= pullback_pct), Stop-Loss executes without
+        waiting for the timeout.
+        """
+        inst = FakeInstrument(price=94.5, free=4.0, fills=[_fill("BUY", 100, 4)])
+        sym = inst.symbol
+        # Threshold: 5.0% loss. Disaster floor: 5.0% + 1.5% = 6.5%.
+        # Tick 1 at t=0: price=94.5 (dip 5.5% between SL 5.0% and floor 6.5%), trend_up=True -> arms bounce state
+        self.run_tick(inst, trend_up=True, loss=0.05, now=NOW)
+        self.assertEqual(inst.placed, [])
+
+        # Tick 2 at t=10s: price bounces to 94.9 (loss 5.1%, recovery (94.9-94.5)/94.5 = +0.42% >= 0.4%)
+        inst._price = 94.9
+        self.run_tick(inst, trend_up=True, loss=0.05, now=NOW + 10)
+        self.assertEqual(inst.placed, [])
+        self.assertEqual(mt._SL_BOUNCE_STATE[sym]["peak_bounce_price"], 94.9)
+
+        # Tick 3 at t=20s: price rolls over to 94.55 (pulled back 0.37% from peak 94.9 >= 0.3% threshold)
+        inst._price = 94.55
+        self.run_tick(inst, trend_up=True, loss=0.05, now=NOW + 20)
+        self.assertEqual(len(inst.placed), 1)
+        self.assertEqual((inst.placed[0]["side"], inst.placed[0]["qty"]), ("SELL", 4.0))
+        self.assertNotIn(sym, mt._SL_BOUNCE_STATE)
+
+    def test_mhdsl_bounce_full_recovery_clears_state(self):
+        """When price recovers above the lost_threshold, bounce tracking state is cleared."""
+        inst = FakeInstrument(price=97.0, free=4.0, fills=[_fill("BUY", 100, 4)])
+        sym = inst.symbol
+        # Tick 1: dip into SL territory (3% loss > 2.5% threshold), trend_up=True -> arms
+        self.run_tick(inst, trend_up=True, loss=0.025, now=NOW)
+        self.assertIn(sym, mt._SL_BOUNCE_STATE)
+
+        # Tick 2: price recovers to 99.0 (loss 1.0% <= threshold 2.5%) -> cleared!
+        inst._price = 99.0
+        self.run_tick(inst, trend_up=True, loss=0.025, now=NOW + 10)
+        self.assertNotIn(sym, mt._SL_BOUNCE_STATE)
+        self.assertEqual(inst.placed, [])
+
+    def test_mhdsl_parallel_volatility_scaling_disaster_floor(self):
+        """Verify parallel disaster buffer resolution (Variant A proportional + Variant B realized volatility)."""
+        # Case 1: No volatility data -> Variant A dominates (30% of lost_threshold)
+        with patch.object(mt, "get_symbol_volatility_1h", return_value=None):
+            buf, meta = mt.compute_disaster_buffer("BTCUSDT", lost_threshold=0.02925)
+            self.assertAlmostEqual(buf, 0.02925 * 0.30, places=5)
+            self.assertEqual(meta["source"], "variant_a_proportional")
+
+        # Case 2: High realized volatility (2.0%) -> Variant B dominates (1.5 * 2.0% = 3.0% > 0.8775%)
+        with patch.object(mt, "get_symbol_volatility_1h", return_value=0.020):
+            buf, meta = mt.compute_disaster_buffer("BTCUSDT", lost_threshold=0.02925)
+            self.assertAlmostEqual(buf, 0.020 * 1.5, places=5)
+            self.assertEqual(meta["source"], "variant_b_vol1h")
+
+        # Case 3: Very low threshold & low volatility -> Bounded by MT_SL_DISASTER_BUFFER_MIN_PCT (0.5%)
+        with patch.object(mt, "get_symbol_volatility_1h", return_value=0.001):
+            buf, meta = mt.compute_disaster_buffer("BTCUSDT", lost_threshold=0.005)
+            self.assertAlmostEqual(buf, mt.MT_SL_DISASTER_BUFFER_MIN_PCT, places=5)
 
 
 if __name__ == "__main__":
