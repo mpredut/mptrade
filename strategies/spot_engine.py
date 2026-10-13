@@ -171,8 +171,8 @@ class StratParams:
     slow_grind_flash_window_min: float = 15.0
     slow_grind_flash_drop_pct: float = 1.5
     slow_grind_hourly_drop_pct: float = 2.5
-    # --- MULTI-HORIZON DYNAMIC STOP-LOSS (MHDSL, default OFF) ---
-    sl_mhdsl_enabled: bool = False
+    # --- MULTI-HORIZON DYNAMIC STOP-LOSS (MHDSL, default ON) ---
+    sl_mhdsl_enabled: bool = True
     sl_disaster_buffer_ratio: float = 0.30
     sl_disaster_vol_multiplier: float = 0.85
     sl_disaster_buffer_min_pct: float = 0.80
@@ -368,7 +368,7 @@ class StratParams:
             slow_grind_flash_window_min = required_float_env("STRAT_SLOW_GRIND_FLASH_WINDOW_MIN", env),
             slow_grind_flash_drop_pct = required_float_env("STRAT_SLOW_GRIND_FLASH_DROP_PCT", env),
             slow_grind_hourly_drop_pct = required_float_env("STRAT_SLOW_GRIND_HOURLY_DROP_PCT", env),
-            sl_mhdsl_enabled   = _optional_bool_env("STRAT_SL_MHDSL_ENABLED", False, env),
+            sl_mhdsl_enabled   = _optional_bool_env("STRAT_SL_MHDSL_ENABLED", True, env),
             sl_disaster_buffer_ratio = _optional_float_env("STRAT_SL_DISASTER_BUFFER_RATIO", 0.30, env),
             sl_disaster_vol_multiplier = _optional_float_env("STRAT_SL_DISASTER_VOL_MULTIPLIER", 0.85, env),
             sl_disaster_buffer_min_pct = _optional_float_env("STRAT_SL_DISASTER_BUFFER_MIN_PCT", 0.80, env),
@@ -1221,6 +1221,12 @@ class Strategy:
                 if not placed:
                     log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
                 return True
+        in_sl = (
+            loss_pct >= self.p.stop_loss_pct
+            or are_close(loss_pct, self.p.stop_loss_pct, self.p.reentry_tolerance_pct)
+        )
+        in_bounce_watch = bool(self.exit_manager is not None and self.pair in self.exit_manager.sl_bounce_state)
+        if not in_sl and not in_bounce_watch:
             return False
 
         if self.exit_manager is None:
@@ -1893,9 +1899,17 @@ class Strategy:
                 self.s["post_sell_peak"] = max(cur_peak, price)
                 cur_trough = self.s.get("post_sell_trough") or lsp
                 self.s["post_sell_trough"] = min(cur_trough, price)
+                if self.s.get("last_exit_kind") == "STOP":
+                    self.s["sl_low"] = min(self.s.get("sl_low") or price, price)
 
             # Symmetrical Re-entry Evaluation via PositionExitManager
             if self.exit_manager is not None and self.p.sl_mhdsl_enabled:
+                self.exit_manager.config.reentry_drop_pct = self.p.reentry_drop_pct / 100.0
+                self.exit_manager.config.reentry_pullback_pct = self.p.reentry_pullback_pct / 100.0
+                self.exit_manager.config.reentry_bear_bounce_pct = self.p.reentry_bear_bounce_pct / 100.0
+                self.exit_manager.config.reentry_sl_bounce_pct = self.p.reentry_sl_bounce_pct / 100.0
+                self.exit_manager.config.reentry_ttl_hours = self.p.reentry_ttl_hours
+                self.exit_manager.config.reentry_tolerance_pct = self.p.reentry_tolerance_pct
                 vol_1h, vol_source = self._vol_1h_ratio()
                 reentry_snap = ReentrySnapshot(
                     symbol=self.pair,

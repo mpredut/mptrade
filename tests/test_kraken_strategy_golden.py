@@ -75,7 +75,7 @@ def _base_v2_params():
         adopt_cost=0.0, adopt_qty=0.0, reentry_drop_pct=2.2,
         reentry_tolerance_pct=0.05, reentry_adaptive=False,
         reentry_sl_bounce_pct=1.5, tp_tranches=[], tp_trend_hold=True,
-        tp_trail_pct=3.0,
+        tp_trail_pct=3.0, sl_mhdsl_enabled=False,
     )
 
 
