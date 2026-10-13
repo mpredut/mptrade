@@ -16,3 +16,4 @@ SHELL=/bin/bash
 
 15 4 1,15 * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh cron-update >> logs/manage_agy.log 2>&1
 
+35 3 * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py >> logs/supervisor_reconciler.log 2>&1

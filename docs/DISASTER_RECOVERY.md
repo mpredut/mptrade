@@ -53,8 +53,8 @@ The entire deployment is reproducible and path-agnostic:
   - Installs direct gateway routing drop-in `netplan-99-force-gateway.yaml`.
   - Installs logrotate cap for PIA daemon debug log.
   - Installs user-level `antigravity-cli-daemon.service` and enables user lingering (`loginctl enable-linger`).
-  - Cleans up and eliminates any legacy `binance.service`.
-  - Sets up dynamic crontab (`systemd/crontab.prod.txt` including `manage_agy.sh`) for trading user and root.
+  - Sets up dynamic crontab (`systemd/crontab.prod.txt` including `manage_agy.sh` and `autonomous_ai_reconciler.py`) for trading user and root.
+  - DEV machine crontab (`systemd/crontab.dev.txt`) maintains automated continuous CI regression testing (`dev_ci_watcher.sh` & `run_dev_regression.sh`).
 - **VPN Supervisor** (`orchestratorOS/livecheck/pia_supervisor.sh`):
   - Reads `PIA_USER`, `PIA_PASS`, and `PIA_DIP_TOKEN_FRANKFURT` directly from `.env` (fail-fast, no persistent token files on disk).
   - Automatically authenticates `piactl`, registers Dedicated IP token, and configures port forwarding on startup.
