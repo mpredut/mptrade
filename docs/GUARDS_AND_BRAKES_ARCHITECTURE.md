@@ -189,3 +189,54 @@ All bot and guard alerts flow through `notify_engine.alertnotifiers.notify` into
   - `ensure_proto_synced` in [`orchestratorOS/admin/prune_llm_threads.py`](file:///home/predut/mptrade/orchestratorOS/admin/prune_llm_threads.py) continuously mirrors entries from headless `jetbox_summaries_proto.pb` into GUI `agyhub_summaries_proto.pb`, ensuring all autonomous guard threads appear instantly in the Antigravity IDE sidebar.
 * **Automated Retention Management:**
   - Automated autonomous threads older than 24 hours are pruned daily via cron, while manual engineering discussions in `mptrade` are strictly preserved.
+
+---
+
+## 8. In-Trade Fortress: `PositionExitManager` (MHDSL & MDHTP Mirror State Machine)
+
+While `order_guard.py` acts as the **Pre-Trade Fortress** (vetoing or scaling incoming order intents), [`strategies/position_exit_manager.py`](file:///home/predut/mptrade/strategies/position_exit_manager.py) acts as the **In-Trade Fortress** across all fleet engines (`strategies/spot_engine.py`, `monitortrades.py`, and `212trading/strategy.py`).
+
+`PositionExitManager` implements a mathematically symmetrical state machine governing position exits and post-exit re-entries:
+
+```mermaid
+flowchart TD
+    subgraph SMMirror ["PositionExitManager: Mathematical Mirror State Machine"]
+        direction TB
+        subgraph MDHTP ["Take-Profit (MDHTP)"]
+            TP0["Priority 0: Hard TP Spike\n(Partial Sell e.g. +20%)"] --> TP1["Priority 1: Trend Riding\n(Trend UP: Hold & Track Peak)"]
+            TP1 --> TP2["Priority 2: Guaranteed Profit Floor\n(Protect min profit floor e.g. 0.8%)"]
+            TP2 --> TP3["Priority 3: Dynamic Micro-Trailing\n(k=1.5 Volatility Pullback from Peak)"]
+            TP3 --> TP4["Priority 4: Stagnation Timeout\n(18m without fresh peak)"]
+            TP4 --> TP5["Priority 5: Trend Reversal\n(Trend turns down -> Market Exit)"]
+        end
+
+        subgraph MHDSL ["Stop-Loss (MHDSL)"]
+            SL1["Priority 1: Hard Disaster Floor\n(max(ratio, vol_1h * 0.85, 0.8%) -> Immediate Sell)"] --> SL2["Priority 2: Bounce Protection\n(Trend UP: Defer up to 220s)"]
+            SL2 --> SL2A["Structural Breakdown\n(Break below prior swing low)"]
+            SL2 --> SL2B["Bounce Rollover\n(Dynamic Ratchet on Pullback)"]
+            SL2 --> SL2C["Bounce Timeout\n(220s elapsed without recovery)"]
+            SL2 --> SL3["Priority 3: Smart SL Controller\n(Whale Absorption Filter)"]
+        end
+    end
+
+    subgraph PostExit ["Symmetrical Re-Entry Mirror (MHDRE)"]
+        MDHTP -->|Post-TP / Sale| RE_TP["TP Re-entry Mirror\n• Bull: Waits for healthy pullback from peak\n• Range: Requires discount drop below last sale"]
+        MHDSL -->|Post-STOP| RE_SL["SL Re-entry Mirror\n• Tracks trough low\n• Confirmed recovery bounce above trough\n• Anti-Rollover Ratchet & Bear Trend Gate"]
+    end
+```
+
+### Mathematical Symmetry Matrix
+
+| Dimension | Take-Profit (MDHTP) | Stop-Loss (MHDSL) | Re-Entry Mirror (MHDRE) |
+| :--- | :--- | :--- | :--- |
+| **Zone Trigger** | $\text{Gain} \ge \text{gain\_threshold}$ | $\text{Loss} \ge \text{lost\_threshold}$ | Post-sale price evaluation |
+| **Circuit Breaker** | Hard TP spike partial sell & guaranteed profit floor | Hard disaster floor ($\sigma_{1h}$ scaled) bypassing all deferrals | Stale barrier TTL expiration |
+| **Trend Deferral** | Ride uptrend without premature exit | Defer stop on active uptrend, watch recovery | In bull trend, wait for pullback from peak |
+| **Micro-Trailing** | Pullback from peak ($k=1.5 \times \text{vol}_{1h}$) | Bounce rollover from recovery peak | Anti-rollover ratchet on post-stop recovery bounce |
+| **Dynamic Ratchet** | Tightens trail as profit expands | Tightens allowed pullback as bounce recovery expands | Rollover clamp prevents re-entry if bounce fails |
+| **Timeout Guard** | 18-minute (1080s) stagnation timeout | 220-second bounce watch timeout | TTL decay on last sale barrier |
+
+### Strict Isolation & Non-Interference
+1. **Zero Cross-Contamination:** Stop-Loss evaluation and Take-Profit evaluation use isolated in-memory state dictionaries (`sl_bounce_state` vs `tp_ride_state`).
+2. **Sequential Priority Gate:** In profit or neutral territory, Stop-Loss triggers are unreachable ($P_{\text{loss}} \le 0$). Take-Profit exits run autonomously with proven volatility trailing.
+3. **Atomic Rollback:** If Stop-Loss triggers an emergency liquidation in `monitortrades.py`, open resting TP limit orders are preserved if placement is deferred by trend, and restored atomically if placement fails.

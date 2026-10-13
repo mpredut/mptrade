@@ -96,9 +96,9 @@ All order generation flows pass through the 3-stage pipeline in [`instrument.py`
 
 ---
 
-## 6. Multi-Horizon Dynamic Profit Architecture (MHDPA)
+## 6. Multi-Horizon Dynamic Profit Architecture (MHDPA) & Position Exit Manager
 
-The core trading strategy deployed on Kraken and Hyperliquid ([`strategies/spot_engine.py`](file:///home/predut/mptrade/strategies/spot_engine.py)) incorporates:
+The core trading engines deployed across Kraken, Hyperliquid, Binance, and Trading 212 incorporate:
 
 1. **Initial Discount Entry (`STRAT_ENTRY_DISCOUNT_PCT = 0.8%`):** Enters positions via limit orders placed below market price.
 2. **Progressive DCA Spacing (`STRAT_DCA_SPACING_GROWTH_PCT = 0.25pp`):** Widens spacing between consecutive DCA tiers, conserving dry powder for deep market bottoms.
@@ -108,6 +108,22 @@ The core trading strategy deployed on Kraken and Hyperliquid ([`strategies/spot_
    $$\text{Trail Distance} = \text{clamp}(k \times \text{vol\_1h},\; 1.5\%,\; 6.0\%), \quad k = 1.5$$
    Promoted from the 30-candidate overnight sweep: achieved **+96.05% compounding net return** and **4.50 Calmar ratio** across 628 days (31 Walk-Forward folds).
 6. **Micro-Trend Kalman Filter (60s Sampling):** Calibrated on 329 days of real ticks to eliminate high-frequency noise and overtrading (which caused \$10,000+ drag at 20s sampling).
+7. **Centralized `PositionExitManager` (MHDSL Stop-Loss & MDHTP Take-Profit Mirror):**
+   * **Take-Profit (MDHTP):**
+     * *Priority 0 (Hard TP Spike):* Fast partial liquidation on violent upside spikes.
+     * *Priority 1 (Trend Riding):* Defers exit at base target to ride confirmed uptrends, tracking peak price.
+     * *Priority 2 (Guaranteed Profit Floor):* Non-negotiable circuit breaker protecting captured gains.
+     * *Priority 3 (Dynamic Micro-Trailing):* Volatility-scaled pullback exit ($k=1.5$, clamp $1.5\% - 6.0\%$).
+     * *Priority 4 (Stagnation Timeout):* 18-minute (1080s) exit if price consolidates without fresh highs.
+     * *Priority 5 (Trend Reversal):* Liquidates position when the trend turns downward.
+   * **Stop-Loss (MHDSL):**
+     * *Priority 1 (Hard Disaster Floor):* Volatility-scaled circuit breaker ($\max(\text{loss} \times 0.30, \text{vol}_{1h} \times 0.85, 0.8\%)$) with unconditional execution, bypassing trend deferrals.
+     * *Priority 2 (Bounce Protection):* Deferral up to 220s during uptrends with dynamic ratchet and structural support break detection.
+     * *Priority 3 (Smart Stop-Loss):* Microstructure orderbook absorption veto against predatory wick stops.
+   * **Symmetrical Re-Entry Mirror (MHDRE):**
+     * Post-STOP requires confirmed recovery bounce above trough with anti-rollover ratchet and bear trend gate.
+     * Post-TP enforces bull trend pullback or sideways discount drop before allowing repurchases.
+   * **Mathematical Isolation:** SL and TP engines operate on separate state dictionaries, ensuring Stop-Loss enhancements cannot corrupt, preempt, or degrade Take-Profit executions.
 
 ---
 

@@ -46,11 +46,31 @@ used to be 14 — an old sell blocked re-entry after a crash (the TAO incident, 
   (~1.2) from the low, with `bypass_profit_guard`. It skips when the trend is CLEARLY down. There is a
   `min_profit_pct` before activation (so it does not sell at a loss on a normal dip).
 
+## Centralized Position Exit Manager (`PositionExitManager`: MHDSL & MDHTP)
+Consolidated in [`strategies/position_exit_manager.py`](file:///home/predut/mptrade/strategies/position_exit_manager.py), this engine provides a unified, provider-agnostic mirror state machine across Binance (`monitortrades.py`), Kraken/Hyperliquid (`strategies/spot_engine.py`), and Trading 212 (`212trading/strategy.py`):
+- **Take-Profit (MDHTP):**
+  - **Priority 0 (Hard TP Spike):** Optional instant partial liquidation (e.g. +20% spike sells 50%).
+  - **Priority 1 (Trend Riding Initiation):** When trend is UP, defers exit at `gain_threshold` and rides the rally, tracking peak price and peak gain.
+  - **Priority 2 (Guaranteed Profit Floor):** Circuit breaker guaranteeing a minimum locked-in gain (e.g. $\max(\text{gain} \times 0.50, 0.8\%)$).
+  - **Priority 3 (Dynamic Micro-Trailing):** Volatility-scaled pullback from peak ($k=1.5 \times \text{vol}_{1h}$, clamped $1.5\% - 6.0\%$).
+  - **Priority 4 (Stagnation Timeout):** Exits after 18 minutes (1080s) of stagnant consolidation without a fresh high.
+  - **Priority 5 (Trend Reversal):** Immediately liquidates to market when the trend flips down.
+- **Stop-Loss (MHDSL):**
+  - **Priority 1 (Hard Disaster Floor):** Volatility-scaled circuit breaker ($\max(\text{loss} \times 0.30, \text{vol}_{1h} \times 0.85, 0.8\%)$) that exits unconditionally with $0\text{ ms}$ delay, bypassing trend deferral.
+  - **Priority 2 (Bounce Protection):** When trend is UP, defers stop-loss for up to 220s to allow technical mean-reversion. Tracks swing low and peak bounce. Triggers immediate exit on structural break (breaking prior low), bounce rollover (pullback exceeds ratcheted threshold), or 220s timeout.
+  - **Priority 3 (Smart Stop-Loss Controller):** Interrogates microstructure orderbook absorption to prevent selling into temporary predatory wicks.
+- **Symmetrical Re-Entry Mirror (MHDRE):**
+  - **Post-STOP:** Tracks trough; requires confirmed bounce above trough; enforces ratchet against rollover and bear trend gate before allowing re-entry.
+  - **Post-TP / Sale:** In bull trends, tracks peak and awaits healthy pullback; in sideways ranges, demands a discount drop below the last sale price.
+
+
 ## T212 (`212trading/t212_bot.py` — one process, one thread per `config.*.env`)
 - **Profit guard** (SPCX, NVDA): it sells ONLY at a profit (TP); `STRAT_STOP_LOSS_PCT=30` is the
   catastrophe net only; it buys ONLY below the last sale (the re-entry guard). It does not sell at a
   normal loss (the accepted risk: capital locked up during a decline, exiting at a loss only at -30%).
-- **Scale-out TP ladder** (`STRAT_TP_LADDER`, e.g. `11:33,20:33,30:34`): sells in steps at +11/+20/+30%.
+- **Scale-out TP ladder & Range Distribution** (`STRAT_TP_LADDER`, e.g. `11:33,20:33,30:34` or range format `5-25:5:bell`):
+  Supports dynamic generation of ladders using linear, geometric, exponential, front-heavy, back-heavy, or normal bell-curve distributions (`5-25:5:bell` places 5 rungs between +5% and +25% concentrated around the center).
+- **MHDSL & MDHTP Integration:** Configurable via `STRAT_SL_MHDSL_ENABLED=true` and `STRAT_TP_MDHTP_ENABLED=true`, enabling the full PositionExitManager state machine.
 - **Urgent exits:** stop-loss and trailing use MARKET; the TP and the ladder stay LIMIT.
 - **Generic config** (`MAX_BUDGET` plus `STRAT_ENTRY_PCT`/`STRAT_DCA_PCT`, `MAX_DCA_BUYS=auto`):
   change the budget and entry, DCA and the counter scale by themselves.
