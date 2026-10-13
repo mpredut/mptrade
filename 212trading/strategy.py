@@ -639,6 +639,25 @@ class Strategy:
                 success = False
         return success
 
+    def _restore_cancelled_orders(self, cancelled_orders: list[dict], reason: str = "") -> None:
+        """Best-effort rollback: restore previously resting orders after a replacement or exit fails."""
+        if not cancelled_orders:
+            return
+        tag = f" ({reason})" if reason else ""
+        log(f"  ! [STRAT] atomic rollback: restoring {len(cancelled_orders)} cancelled order(s){tag}")
+        for old_o in cancelled_orders:
+            side = str(old_o.get("side", "")).upper()
+            qty = float(old_o.get("qty", 0.0))
+            limit = float(old_o.get("limit", 0.0))
+            level = old_o.get("level")
+            kind = old_o.get("kind", "TP" if side == "SELL" else "ENTRY")
+            if qty > 0 and limit > 0:
+                if side == "SELL":
+                    self._place_sell(qty, limit, level=level, kind=kind)
+                elif side == "BUY":
+                    amount = old_o.get("amount") or (qty * limit)
+                    self._place_buy(amount, limit, kind=kind)
+
     def _is_dust(self, qty: float, ref_price: float | None = None) -> bool:
         """Return True if qty is negligible dust (below minimum broker holding / trading value)."""
         if qty <= 1e-9:
@@ -708,10 +727,12 @@ class Strategy:
                 desired[lvl] = (q, round(avg * (1 + lvl / 100.0), 2))
         open_sells = {o.get("level"): o for o in self.s["orders"]
                       if o["side"] == "SELL" and o.get("level") is not None}
+        cancelled_by_level = {}
         # Cancel unwanted orders or orders whose price/quantity changed after DCA.
         for lvl, o in list(open_sells.items()):
             d = desired.get(lvl)
             if d is None or abs(o["limit"] - d[1]) / d[1] > 0.001 or abs(o["qty"] - d[0]) > 1e-6:
+                cancelled_by_level[lvl] = dict(o)
                 if self._cancel_specific(o) and o not in self.s["orders"]:
                     open_sells.pop(lvl, None)
         # Place missing levels. Back off for 30 minutes after persistent tranche failure
@@ -728,6 +749,9 @@ class Strategy:
             if not self._place_sell(q, lim, level=lvl):
                 if not self.s.get("pending_submit"):
                     fails[str(lvl)] = now + 1800
+                    old_o = cancelled_by_level.get(lvl)
+                    if old_o:
+                        self._restore_cancelled_orders([old_o], reason=f"TP ladder +{lvl:g}% replace failed")
                 break
 
     def _buy_is_stale(self, order: dict, price: float) -> bool:
@@ -1068,6 +1092,7 @@ class Strategy:
         # The peak drawdown reached the threshold: sell all once, replacing only a stale limit.
         tr = next((o for o in self.s["orders"] if o.get("kind") == "TR"), None)
         if tr is None or (not tr.get("market") and price < tr["limit"]):
+            cancelled_orders = [dict(o) for o in self.s["orders"] if o.get("kind") != "TR"]
             if not self._cancel_all_orders():
                 log("  ! [STRAT] TRAILING deferred: at least one order could not be cancelled")
                 return True
@@ -1086,6 +1111,7 @@ class Strategy:
                 if not self.s.get("pending_submit"):
                     self.s["tr_fail_until"] = self._now() + 1800
                     log("  ! [STRAT] TRAILING sell failed or refused — backoff 30 min (retaining TP ladder)")
+                    self._restore_cancelled_orders(cancelled_orders, reason="trailing sell failed")
                 return True
             self.s["sl_pending"] = True         # Arm bounce reentry as for a catastrophic stop loss.
         if not self.s.get("tr_alerted"):
@@ -1116,6 +1142,7 @@ class Strategy:
         # Anti-spam: place the stop once and replace it only if price moved below its limit.
         sl = next((o for o in self.s["orders"] if o.get("kind") == "SL"), None)
         if sl is None or (not sl.get("market") and price < sl["limit"]):
+            cancelled_orders = [dict(o) for o in self.s["orders"] if o.get("kind") != "SL"]
             if not self._cancel_all_orders():
                 log("  ! [STRAT] STOP deferred: at least one order could not be cancelled")
                 return True
@@ -1134,6 +1161,7 @@ class Strategy:
                 if not self.s.get("pending_submit"):
                     self.s["sl_fail_until"] = self._now() + 1800
                     log("  ! [STRAT] STOP sell failed or refused — backoff 30 min (retaining TP ladder)")
+                    self._restore_cancelled_orders(cancelled_orders, reason="stop-loss sell failed")
                 return True
             self.s["sl_pending"] = True         # Mark this episode so cycle closure arms bounce reentry.
         if not self.s.get("sl_alerted"):           # Notify only once per episode.
@@ -1297,8 +1325,11 @@ class Strategy:
                 if sell is None:
                     self._place_sell(sell_qty, target)
                 elif abs(sell["limit"] - target) / target > 0.001 or abs(sell["qty"] - sell_qty) > 1e-6:
+                    old_sell = dict(sell)
                     if self._cancel_open("SELL") and sell not in self.s["orders"]:
-                        self._place_sell(sell_qty, target)
+                        if not self._place_sell(sell_qty, target):
+                            if not self.s.get("pending_submit"):
+                                self._restore_cancelled_orders([old_sell], reason="single TP replace failed")
 
         prag_dca = (self.s["last_buy_price"] * (1 - self.p.dca_drop_pct / 100)
                     if self.s["last_buy_price"] else None)

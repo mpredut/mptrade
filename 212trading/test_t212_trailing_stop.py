@@ -244,6 +244,34 @@ class TestTrailingStopAndSellableQty(unittest.TestCase):
         self.assertNotIn("11.0", self.strat.s.get("tp_fail_until", {}))
         self.assertNotIn("20.0", self.strat.s.get("tp_fail_until", {}))
 
+    def test_trailing_failure_restores_cancelled_tp_orders(self):
+        # Resting TP order exists
+        tp_order = {"id": "TP-1", "side": "SELL", "kind": "TP", "level": 11.0, "qty": 1.45, "limit": 162.0}
+        self.strat.s["orders"] = [tp_order]
+
+        # Simulate _place_sell failure for trailing exit
+        def mock_place_sell(qty, limit, level=None, kind="TP", market=False):
+            if kind == "TR":
+                return False
+            # Rollback re-placement succeeds
+            self.strat.s["orders"].append({
+                "id": f"RESTORED-{len(self.strat.s['orders'])}",
+                "side": "SELL", "qty": qty, "limit": limit, "level": level, "kind": kind,
+            })
+            return True
+
+        self.strat._place_sell = mock_place_sell
+        self.strat._cancel_specific = lambda o: True
+
+        # Trailing triggers at 160.0
+        res = self.strat._check_trailing(160.0)
+        self.assertTrue(res)
+        # Verify rollback restored the TP order
+        restored = [o for o in self.strat.s["orders"] if o.get("kind") == "TP"]
+        self.assertEqual(len(restored), 1)
+        self.assertEqual(restored[0]["qty"], 1.45)
+        self.assertEqual(restored[0]["limit"], 162.0)
+
 
 if __name__ == "__main__":
     unittest.main()
