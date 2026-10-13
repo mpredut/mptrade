@@ -10,6 +10,9 @@ from strategies.position_exit_manager import (
     PositionExitConfig,
     PositionExitManager,
     PositionSnapshot,
+    ReentryAction,
+    ReentryDecision,
+    ReentrySnapshot,
 )
 
 
@@ -458,6 +461,142 @@ class TestPositionExitManager(unittest.TestCase):
         self.assertEqual(dec.action, ExitAction.HOLD)
         self.assertNotIn("BTCUSDT", self.mgr.sl_bounce_state)
         self.assertIn("BTCUSDT", self.mgr.tp_ride_state)
+
+
+class TestPositionReentryManager(unittest.TestCase):
+    def setUp(self):
+        self.config = PositionExitConfig(
+            reentry_enabled=True,
+            reentry_sl_bounce_pct=0.015,
+            reentry_drop_pct=0.020,
+            reentry_pullback_pct=0.015,
+            reentry_bear_bounce_pct=0.010,
+            reentry_ttl_hours=2.0,
+            reentry_tolerance_pct=0.05,
+            reentry_ratchet_enabled=True,
+            reentry_bear_gate_enabled=True,
+            reentry_hybrid_enabled=False,
+        )
+        self.mgr = PositionExitManager(config=self.config)
+        self.now = 1_000_000.0
+
+    def test_reentry_without_prior_sale_barrier(self):
+        snap = ReentrySnapshot(symbol="BTCUSDT", current_price=100.0, last_sell_price=None)
+        dec = self.mgr.evaluate_reentry(snap)
+        self.assertTrue(dec.should_enter)
+        self.assertEqual(dec.action, ReentryAction.ENTER)
+
+    def test_reentry_ttl_expired_allows_entry(self):
+        snap = ReentrySnapshot(
+            symbol="BTCUSDT",
+            current_price=105.0,
+            last_sell_price=100.0,
+            last_sell_time_s=self.now - 3.0 * 3600,  # 3h > 2h TTL
+            current_time_s=self.now,
+        )
+        dec = self.mgr.evaluate_reentry(snap)
+        self.assertTrue(dec.should_enter)
+        self.assertIn("reentry_ttl_expired", dec.reason)
+
+    def test_reentry_post_stop_bounce_watch_and_entry(self):
+        # Sold at 100 on STOP
+        # Price drops to 90 -> establishes trough at 90, bounce is 0% -> wait
+        snap1 = ReentrySnapshot(
+            symbol="BTCUSDT",
+            current_price=90.0,
+            last_sell_price=100.0,
+            last_exit_kind="STOP",
+            current_time_s=self.now,
+            trend_up=True,
+        )
+        dec1 = self.mgr.evaluate_reentry(snap1)
+        self.assertFalse(dec1.should_enter)
+        self.assertEqual(dec1.action, ReentryAction.WAIT)
+        self.assertIn("post_stop_bounce_waiting", dec1.reason)
+
+        # Price bounces to 92 (2.22% >= 1.5% required) -> enter
+        snap2 = ReentrySnapshot(
+            symbol="BTCUSDT",
+            current_price=92.0,
+            last_sell_price=100.0,
+            last_exit_kind="STOP",
+            current_time_s=self.now + 10.0,
+            trend_up=True,
+        )
+        dec2 = self.mgr.evaluate_reentry(snap2)
+        self.assertTrue(dec2.should_enter)
+        self.assertEqual(dec2.action, ReentryAction.ENTER)
+        self.assertIn("post_stop_bounce_confirmed", dec2.reason)
+
+    def test_reentry_post_tp_discount_drop_range(self):
+        # Sold at 100 on TP, drop_pct=2% (target=98)
+        # Price at 99 -> above 98 -> wait
+        snap1 = ReentrySnapshot(
+            symbol="BTCUSDT",
+            current_price=99.0,
+            last_sell_price=100.0,
+            last_exit_kind="TP",
+            current_time_s=self.now,
+            trend_up=False,
+        )
+        dec1 = self.mgr.evaluate_reentry(snap1)
+        self.assertFalse(dec1.should_enter)
+        self.assertIn("range_reentry_drop_waiting", dec1.reason)
+
+        # Price drops to 96.0 <= 98 -> establishes trough at 96.0, waits for knife-catching bounce
+        snap2 = ReentrySnapshot(
+            symbol="BTCUSDT",
+            current_price=96.0,
+            last_sell_price=100.0,
+            last_exit_kind="TP",
+            current_time_s=self.now + 10.0,
+            trend_up=False,
+        )
+        dec2 = self.mgr.evaluate_reentry(snap2)
+        self.assertFalse(dec2.should_enter)
+        self.assertIn("bear_reentry_trough_bounce_waiting", dec2.reason)
+
+        # Price bounces to 97.5 (1.56% >= 1.0% bear bounce and <= 98.0 discount target) -> enter
+        snap3 = ReentrySnapshot(
+            symbol="BTCUSDT",
+            current_price=97.5,
+            last_sell_price=100.0,
+            last_exit_kind="TP",
+            current_time_s=self.now + 20.0,
+            trend_up=False,
+        )
+        dec3 = self.mgr.evaluate_reentry(snap3)
+        self.assertTrue(dec3.should_enter)
+        self.assertIn("range_reentry_confirmed", dec3.reason)
+
+    def test_reentry_hybrid_pullback_in_bull_trend(self):
+        self.mgr.config.reentry_hybrid_enabled = True
+        # Sold at 100 on TP, bull trend, pullback_pct=1.5%
+        # Price rallies to 110 (new peak)
+        snap1 = ReentrySnapshot(
+            symbol="BTCUSDT",
+            current_price=110.0,
+            last_sell_price=100.0,
+            last_exit_kind="TP",
+            current_time_s=self.now,
+            trend_up=True,
+        )
+        dec1 = self.mgr.evaluate_reentry(snap1)
+        self.assertFalse(dec1.should_enter)
+        self.assertIn("bull_reentry_pullback_waiting", dec1.reason)
+
+        # Price pulls back to 108 (drop of 1.82% from 110 >= 1.5%) -> enter
+        snap2 = ReentrySnapshot(
+            symbol="BTCUSDT",
+            current_price=108.0,
+            last_sell_price=100.0,
+            last_exit_kind="TP",
+            current_time_s=self.now + 20.0,
+            trend_up=True,
+        )
+        dec2 = self.mgr.evaluate_reentry(snap2)
+        self.assertTrue(dec2.should_enter)
+        self.assertIn("bull_reentry_pullback_confirmed", dec2.reason)
 
 
 if __name__ == "__main__":

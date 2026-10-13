@@ -1526,6 +1526,108 @@ class Strategy:
         val = max(self.p.reentry_pullback_min, min(self.p.reentry_pullback_max, self.p.reentry_pullback_k * vol))
         return val, f"adaptive (vol {vol:.2f}% x k={self.p.reentry_pullback_k} -> {val:.2f}%)"
 
+    def _evaluate_reentry_gate(self, price: float) -> tuple[bool, str]:
+        """Evaluate re-entry gate conditions symmetrically with PositionExitManager or legacy fallback."""
+        lsp = self.s.get("last_sell_price")
+        if not lsp:
+            return True, "no_last_sell"
+
+        cur_peak = self.s.get("post_sell_peak") or lsp
+        self.s["post_sell_peak"] = max(cur_peak, price)
+        cur_trough = self.s.get("post_sell_trough") or lsp
+        self.s["post_sell_trough"] = min(cur_trough, price)
+
+        if self.exit_manager is not None and (self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled):
+            self.exit_manager.config.reentry_drop_pct = self.p.reentry_drop_pct / 100.0
+            pullback_pct, pb_src = self._effective_reentry_pullback_pct()
+            self.exit_manager.config.reentry_pullback_pct = pullback_pct / 100.0
+            self.exit_manager.config.reentry_sl_bounce_pct = (
+                self.p.sl_rebuy_bounce_pct / 100.0 if self.p.sl_rebuy_enabled else 0.015
+            )
+            self.exit_manager.config.reentry_ttl_hours = self.p.reentry_ttl_hours
+            self.exit_manager.config.reentry_tolerance_pct = self.p.reentry_tolerance_pct
+            self.exit_manager.config.reentry_hybrid_enabled = self.p.reentry_hybrid_enabled
+
+            trend_up = False
+            trend_down = False
+            if self._trend_slope_provider:
+                try:
+                    slope = self._trend_slope_provider(self.yahoo_sym)
+                    if slope is not None:
+                        if slope >= 0.0:
+                            trend_up = True
+                        elif slope < (-self.p.dca_trend_gate_pct if self.p.dca_trend_gate_pct > 0 else -0.1):
+                            trend_down = True
+                except Exception:
+                    pass
+
+            vol_1h = None
+            vol_source = "none"
+            if hasattr(self, "_shadow_vol_1h"):
+                try:
+                    vol_1h = self._shadow_vol_1h()
+                    vol_source = "shadow"
+                except Exception:
+                    pass
+
+            last_exit_kind = "STOP" if self.s.get("sl_rebuy") or self.s.get("last_exit_kind") == "STOP" else "TP"
+
+            reentry_snap = ReentrySnapshot(
+                symbol=self.ticker,
+                current_price=price,
+                last_sell_price=lsp,
+                last_exit_kind=last_exit_kind,
+                post_sell_peak=self.s.get("post_sell_peak"),
+                post_sell_trough=self.s.get("post_sell_trough"),
+                current_time_s=self._now(),
+                last_sell_time_s=self.s.get("last_sell_ts"),
+                trend_up=trend_up,
+                trend_down=trend_down,
+                vol_1h=vol_1h,
+                vol_source=vol_source,
+            )
+            reentry_dec = self.exit_manager.evaluate_reentry(reentry_snap)
+            return reentry_dec.should_enter, reentry_dec.reason
+
+        # Rebuy on a bounce after a catastrophic stop loss, as on Binance/Kraken.
+        # While armed, it takes priority over reentry below the previous sale.
+        if self.s.get("sl_rebuy"):
+            self._handle_sl_rebuy(price)
+            return False, "handling_sl_rebuy"
+        if self.p.reentry_hybrid_enabled:
+            is_bull = True if self.p.reentry_peak_relative else False
+            if not is_bull and self._trend_slope_provider:
+                try:
+                    slope = self._trend_slope_provider(self.yahoo_sym)
+                    if slope is not None and slope >= 0.0:
+                        is_bull = True
+                except Exception:
+                    pass
+            pullback_pct, pb_src = self._effective_reentry_pullback_pct()
+            elapsed = (self._now() - self.s["last_sell_ts"]) if self.s.get("last_sell_ts") else None
+            ttl_s = (self.p.reentry_ttl_hours * 3600.0) if self.p.reentry_ttl_hours > 0 else None
+            blocked, reason = sr.reentry_hybrid_blocked(
+                price=price,
+                last_sell=lsp,
+                post_sell_peak=self.s.get("post_sell_peak"),
+                is_bull=is_bull,
+                drop_pct=self.p.reentry_drop_pct,
+                pullback_pct=pullback_pct,
+                tol_pct=self.p.reentry_tolerance_pct,
+                elapsed_sec=elapsed,
+                ttl_sec=ttl_s,
+            )
+            if blocked:
+                return False, f"hybrid: {reason} [{pb_src}]"
+            return True, f"hybrid_unblocked ({reason}) [{pb_src}]"
+        else:
+            rdp = self.p.reentry_drop_pct
+            if rdp > 0:
+                prag = lsp * (1 - rdp / 100)
+                if price > prag and not are_close(price, prag, self.p.reentry_tolerance_pct):
+                    return False, f"price {price:.2f} > threshold {prag:.2f} (sold at {lsp:.2f}, waiting for -{rdp}%)"
+            return True, "drop_target_met"
+
     def step(self, price: float) -> None:
         held = self.s["qty"]
         self._check_loss_alert(price)   # Alert on deeper loss while holding; never sells.
@@ -1540,111 +1642,13 @@ class Strategy:
             if self._has_open("BUY"):
                 return
             # Kraken-style reentry rule: do not buy back above the previous sale price.
+            allowed, reason = self._evaluate_reentry_gate(price)
+            if not allowed:
+                log(f"  [STRAT] re-entry blocked: {reason}")
+                return
             lsp = self.s.get("last_sell_price")
             if lsp:
-                cur_peak = self.s.get("post_sell_peak") or lsp
-                self.s["post_sell_peak"] = max(cur_peak, price)
-                cur_trough = self.s.get("post_sell_trough") or lsp
-                self.s["post_sell_trough"] = min(cur_trough, price)
-
-            if self.exit_manager is not None and self.p.sl_mhdsl_enabled:
-                self.exit_manager.config.reentry_drop_pct = self.p.reentry_drop_pct / 100.0
-                pullback_pct, pb_src = self._effective_reentry_pullback_pct()
-                self.exit_manager.config.reentry_pullback_pct = pullback_pct / 100.0
-                self.exit_manager.config.reentry_sl_bounce_pct = (
-                    self.p.sl_rebuy_bounce_pct / 100.0 if self.p.sl_rebuy_enabled else 0.015
-                )
-                self.exit_manager.config.reentry_ttl_hours = self.p.reentry_ttl_hours
-                self.exit_manager.config.reentry_tolerance_pct = self.p.reentry_tolerance_pct
-
-                trend_up = False
-                trend_down = False
-                if self._trend_slope_provider:
-                    try:
-                        slope = self._trend_slope_provider(self.yahoo_sym)
-                        if slope is not None:
-                            if slope >= 0.0:
-                                trend_up = True
-                            elif slope < (-self.p.dca_trend_gate_pct if self.p.dca_trend_gate_pct > 0 else -0.1):
-                                trend_down = True
-                    except Exception:
-                        pass
-
-                vol_1h = None
-                vol_source = "none"
-                if hasattr(self, "_shadow_vol_1h"):
-                    try:
-                        vol_1h = self._shadow_vol_1h()
-                        vol_source = "shadow"
-                    except Exception:
-                        pass
-
-                last_exit_kind = "STOP" if self.s.get("sl_rebuy") or self.s.get("last_exit_kind") == "STOP" else "TP"
-
-                reentry_snap = ReentrySnapshot(
-                    symbol=self.ticker,
-                    current_price=price,
-                    last_sell_price=lsp,
-                    last_exit_kind=last_exit_kind,
-                    post_sell_peak=self.s.get("post_sell_peak"),
-                    post_sell_trough=self.s.get("post_sell_trough"),
-                    current_time_s=self._now(),
-                    last_sell_time_s=self.s.get("last_sell_ts"),
-                    trend_up=trend_up,
-                    trend_down=trend_down,
-                    vol_1h=vol_1h,
-                    vol_source=vol_source,
-                )
-                reentry_dec = self.exit_manager.evaluate_reentry(reentry_snap)
-                if not reentry_dec.should_enter:
-                    log(f"  [STRAT] re-entry blocked: {reentry_dec.reason}")
-                    return
-                if lsp:
-                    log(f"  [STRAT] re-entry approved: {reentry_dec.reason} — placing ENTRY")
-            else:
-                # Rebuy on a bounce after a catastrophic stop loss, as on Binance/Kraken.
-                # While armed, it takes priority over reentry below the previous sale.
-                if self.s.get("sl_rebuy"):
-                    self._handle_sl_rebuy(price)
-                    return
-                if self.p.reentry_hybrid_enabled:
-                    is_bull = True if self.p.reentry_peak_relative else False
-                    if not is_bull and self._trend_slope_provider:
-                        try:
-                            slope = self._trend_slope_provider(self.yahoo_sym)
-                            if slope is not None and slope >= 0.0:
-                                is_bull = True
-                        except Exception:
-                            pass
-                    pullback_pct, pb_src = self._effective_reentry_pullback_pct()
-                    elapsed = (self._now() - self.s["last_sell_ts"]) if self.s.get("last_sell_ts") else None
-                    ttl_s = (self.p.reentry_ttl_hours * 3600.0) if self.p.reentry_ttl_hours > 0 else None
-                    blocked, reason = sr.reentry_hybrid_blocked(
-                        price=price,
-                        last_sell=lsp,
-                        post_sell_peak=self.s.get("post_sell_peak"),
-                        is_bull=is_bull,
-                        drop_pct=self.p.reentry_drop_pct,
-                        pullback_pct=pullback_pct,
-                        tol_pct=self.p.reentry_tolerance_pct,
-                        elapsed_sec=elapsed,
-                        ttl_sec=ttl_s,
-                    )
-                    if blocked:
-                        log(f"  [STRAT] hybrid re-entry blocked: {reason} "
-                            f"(price {price:.2f}, peak {self.s.get('post_sell_peak', 0.0):.2f}) [{pb_src}]")
-                        return
-                    if lsp:
-                        log(f"  [STRAT] hybrid re-entry unblocked ({reason}) [{pb_src}] — placing ENTRY")
-                else:
-                    rdp = self.p.reentry_drop_pct
-                    if rdp > 0 and lsp:
-                        prag = lsp * (1 - rdp / 100)
-                        # Treat a value close to the threshold as reached (deterministic are_close).
-                        if price > prag and not are_close(price, prag, self.p.reentry_tolerance_pct):
-                            log(f"  [STRAT] re-entry blocked: {price:.2f} > threshold {prag:.2f} "
-                                f"(sold at {lsp:.2f}, waiting for -{rdp}%)")
-                            return
+                log(f"  [STRAT] re-entry approved: {reason} — placing ENTRY")
             if self.s["spent_cash"] + self.p.entry_amount > self.p.max_budget:
                 log(f"  [STRAT] budget cap {self.p.max_budget:.0f} {self.ccy} reached — not entering")
                 return

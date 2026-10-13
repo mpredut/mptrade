@@ -379,6 +379,39 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.run_tick(inst, trend_up=True, gain=0.09)
             self.assertEqual(inst.placed, [])
 
+        with self.subTest(msg="post_stop_bounce_recovery_triggers_reentry"):
+            mt._REENTRY_STATE.clear()
+            mt._LAST_EXIT_KIND.clear()
+            mt._LAST_EXIT_KIND["CHARUSD"] = "STOP"
+            inst = FakeInstrument(
+                price=90,
+                free=0,
+                fills=[_fill("SELL", 100, 2)],
+                params={"mt.buy_budget": 225, "mt.max_budget": 1_000},
+            )
+            # Tick 1 at 90: establishes trough, bounce is 0% -> waiting
+            self.run_tick(inst, trend_up=True)
+            self.assertEqual(inst.placed, [])
+
+            # Tick 2 at 92.5: bounce is (92.5-90)/90 = 2.78% >= 1.5% -> enters
+            inst._price = 92.5
+            self.run_tick(inst, trend_up=True)
+            self.assertEqual(len(inst.placed), 1)
+            self.assertEqual(inst.placed[0]["side"], "BUY")
+
+        with self.subTest(msg="post_stop_bounce_blocked_if_trend_down"):
+            mt._REENTRY_STATE.clear()
+            mt._LAST_EXIT_KIND.clear()
+            mt._LAST_EXIT_KIND["CHARUSD"] = "STOP"
+            inst = FakeInstrument(
+                price=90,
+                free=0,
+                fills=[_fill("SELL", 100, 2)],
+                params={"mt.buy_budget": 225, "mt.max_budget": 1_000},
+            )
+            self.run_tick(inst, trend_up=False)
+            self.assertEqual(inst.placed, [])
+
     def test_guards_and_blocking_behaviors(self):
         with self.subTest(msg="no_recent_fills_produces_no_financial_intent"):
             inst = FakeInstrument(price=100, free=10, fills=[])

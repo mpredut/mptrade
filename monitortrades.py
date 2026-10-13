@@ -32,6 +32,9 @@ from strategies.position_exit_manager import (
     PositionExitConfig,
     PositionExitManager,
     PositionSnapshot,
+    ReentryAction,
+    ReentryDecision,
+    ReentrySnapshot,
 )
 
 # Load versioned, non-secret global tuning parameters before reading the environment.
@@ -203,6 +206,8 @@ _POSITION_CACHE_HEARTBEAT_SEC = 15.0  # Safety fallback: re-verify after 15s eve
 def clear_position_stats_cache():
     """Clear position cache for test isolation and clean resets."""
     _position_stats_cache.clear()
+    _REENTRY_STATE.clear()
+    _LAST_EXIT_KIND.clear()
 
 
 def _make_order_signature(orders):
@@ -314,7 +319,10 @@ MT_TP_PULLBACK_PCT = float(os.environ.get("MT_TP_PULLBACK_PCT", "0.006"))
 MT_TP_PROFIT_FLOOR_RATIO = float(os.environ.get("MT_TP_PROFIT_FLOOR_RATIO", "0.50"))
 MT_TP_PROFIT_FLOOR_MIN_PCT = float(os.environ.get("MT_TP_PROFIT_FLOOR_MIN_PCT", "0.008"))
 MT_TP_STAGNATION_MAX_SEC = float(os.environ.get("MT_TP_STAGNATION_MAX_SEC", "1080.0"))
+MT_REENTRY_HYBRID_ENABLED = os.environ.get("MT_REENTRY_HYBRID_ENABLED", "0").lower() in ("yes", "true", "1")
 _TP_RIDE_STATE: Dict[str, Dict[str, Any]] = {}
+_REENTRY_STATE: Dict[str, Dict[str, Any]] = {}
+_LAST_EXIT_KIND: Dict[str, str] = {}
 
 
 def _load_mt_conf(path=None):
@@ -415,6 +423,9 @@ def get_exit_manager() -> PositionExitManager:
         tp_stagnation_max_sec=MT_TP_STAGNATION_MAX_SEC,
         hard_tp_enabled=False,  # Evaluated explicitly in block 3.0 of monitortrades.py
         are_close_tolerance_pct=MT_ARE_CLOSE_TOLERANCE_PCT,
+        reentry_enabled=True,
+        reentry_hybrid_enabled=MT_REENTRY_HYBRID_ENABLED,
+        reentry_tolerance_pct=MT_ARE_CLOSE_TOLERANCE_PCT,
     )
     mgr = PositionExitManager(
         config=config,
@@ -423,6 +434,7 @@ def get_exit_manager() -> PositionExitManager:
     # Bind shared references so test fixtures and runtime inspection mutate identical objects
     mgr.sl_bounce_state = _SL_BOUNCE_STATE
     mgr.tp_ride_state = _TP_RIDE_STATE
+    mgr.reentry_state = _REENTRY_STATE
     mgr.hard_tp_last = _hard_tp_last
     return mgr
 
@@ -583,6 +595,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                                   safeback_seconds=sbs, force=True, cancelorders=True,
                                   hours=MT_SELL_SAFEBACK_HOURS):
                     _hard_tp_last[symbol] = current_time_s
+                    _LAST_EXIT_KIND[symbol] = "TP"
                     return   # Already sold this tick; do not use stale balance below.
             else:
                 print(f"[HARD-TP] {symbol} +{price_increase*100:.1f}% but in cooldown (the last one "
@@ -628,6 +641,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                         hours=MT_SELL_SAFEBACK_HOURS)
                     if placed:
                         _TP_RIDE_STATE.pop(symbol, None)
+                        _LAST_EXIT_KIND[symbol] = "TP"
                 else:
                     print(f"No can sell (sellable_qty={sellable_qty})")
                     _TP_RIDE_STATE.pop(symbol, None)
@@ -705,6 +719,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                     )
                 if placed:
                     _SL_BOUNCE_STATE.pop(symbol, None)
+                    _LAST_EXIT_KIND[symbol] = "STOP"
 
                 # Rollback / restore resting TP order if Stop-Loss placement failed
                 if not placed:
@@ -743,25 +758,61 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             return
         price_decrease_versus_sell = (sell_price - current_price) / sell_price
         print(f"(price_decrease_versus_sell: {price_decrease_versus_sell * 100}%)")
-        if price_decrease_versus_sell > gain_threshold or u.are_close(price_decrease_versus_sell, gain_threshold, target_tolerance_percent=MT_ARE_CLOSE_TOLERANCE_PCT):
-            if is_trend_up(symbol):
-                print(f"Price decreased with {price_decrease_versus_sell * 100}% by more than {gain_threshold * 100}% versus sell price: Placing buy order")
-                # Derive quantity from budget, configured fixed quantity, or default.
-                _buy_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
-                # BUY exposure uses the account's actual free base balance.  Own-ledger
-                # attribution restricts SELLs, but must not hide existing holdings from
-                # the post-trade budget cap.
-                _pos_value = avail_qty * current_price
-                _projected_value = _pos_value + (_buy_qty * current_price)
-                if max_budget and _projected_value > max_budget:
-                    print(f"[{symbol}] budget cap depasit post-trade "
-                          f"({_projected_value:.0f} > {max_budget} USD) — not buying")
-                else:
-                    _place_guarded(inst, "BUY", current_price + MT_BUY_PRICE_OFFSET, _buy_qty, min_qty,
-                        safeback_seconds=sbs, cancelorders=True,
-                        hours=MT_BUY_SAFEBACK_HOURS)
-            else :
+        exit_mgr = get_exit_manager()
+        vol_1h = get_symbol_volatility_1h(symbol) or 0.0
+        last_exit_kind = _LAST_EXIT_KIND.get(symbol) or (
+            trade_orders_sell[0].get("kind") if isinstance(trade_orders_sell[0], dict) else None
+        ) or "SELL"
+
+        reentry_snap = ReentrySnapshot(
+            symbol=symbol,
+            current_price=current_price,
+            last_sell_price=sell_price,
+            last_exit_kind=last_exit_kind,
+            post_sell_peak=_REENTRY_STATE.get(symbol, {}).get("peak", max(sell_price, current_price)),
+            post_sell_trough=_REENTRY_STATE.get(symbol, {}).get("trough", min(sell_price, current_price)),
+            current_time_s=current_time_s,
+            last_sell_time_s=sell_time,
+            trend_up=is_trend_up(symbol),
+            trend_down=not is_trend_up(symbol),
+            vol_1h=vol_1h,
+            vol_source="1h_cache" if vol_1h > 0 else "default",
+        )
+
+        reentry_dec = exit_mgr.evaluate_reentry(reentry_snap, custom_drop_pct=gain_threshold)
+        if not reentry_dec.should_enter:
+            if not is_trend_up(symbol):
                 print(f"No action taken, because trend is down!")
+            else:
+                print(f"[{symbol}] Re-entry deferred: {reentry_dec.reason}")
+            return
+
+        if not is_trend_up(symbol):
+            print(f"No action taken, because trend is down!")
+            return
+
+        if last_exit_kind == "STOP":
+            print(f"[{symbol}] Post-STOP recovery bounce confirmed: {reentry_dec.reason}: Placing buy order")
+        else:
+            print(f"Price decreased with {price_decrease_versus_sell * 100}% by more than {gain_threshold * 100}% versus sell price: Placing buy order")
+
+        # Derive quantity from budget, configured fixed quantity, or default.
+        _buy_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
+        # BUY exposure uses the account's actual free base balance.  Own-ledger
+        # attribution restricts SELLs, but must not hide existing holdings from
+        # the post-trade budget cap.
+        _pos_value = avail_qty * current_price
+        _projected_value = _pos_value + (_buy_qty * current_price)
+        if max_budget and _projected_value > max_budget:
+            print(f"[{symbol}] budget cap depasit post-trade "
+                  f"({_projected_value:.0f} > {max_budget} USD) — not buying")
+        else:
+            placed = _place_guarded(inst, "BUY", current_price + MT_BUY_PRICE_OFFSET, _buy_qty, min_qty,
+                safeback_seconds=sbs, cancelorders=True,
+                hours=MT_BUY_SAFEBACK_HOURS)
+            if placed:
+                _REENTRY_STATE.pop(symbol, None)
+                _LAST_EXIT_KIND.pop(symbol, None)
 
     return
 

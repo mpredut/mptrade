@@ -170,6 +170,7 @@ class PositionExitConfig:
     reentry_tolerance_pct: float = 0.05        # 0.05% tolerance
     reentry_ratchet_enabled: bool = True       # Ratchet prevents re-entry on rollover
     reentry_bear_gate_enabled: bool = True     # Block/require stronger bounce in bear trend
+    reentry_hybrid_enabled: bool = False       # Enable hybrid pullback in confirmed bull trends
 
 
 class PositionExitManager:
@@ -721,6 +722,7 @@ class PositionExitManager:
     def evaluate_reentry(
         self,
         snapshot: ReentrySnapshot,
+        custom_drop_pct: Optional[float] = None,
     ) -> ReentryDecision:
         """Evaluate market re-entry following position closure (Mirror of Exit).
 
@@ -853,7 +855,7 @@ class PositionExitManager:
                 metadata={"peak": peak, "pullback_ratio": pullback_ratio},
             )
         else:
-            drop_required = self.config.reentry_drop_pct
+            drop_required = custom_drop_pct if custom_drop_pct is not None else self.config.reentry_drop_pct
             if drop_required > 0:
                 discount_target = last_sell * (1.0 - drop_required)
                 has_dropped = (
@@ -868,16 +870,26 @@ class PositionExitManager:
                         metadata={"last_sell": last_sell, "discount_target": discount_target},
                     )
 
-            if self.config.reentry_bear_bounce_pct > 0:
-                bear_bounce_ratio = (current_price - trough) / trough if trough > 0 else 0.0
-                if bear_bounce_ratio < self.config.reentry_bear_bounce_pct:
-                    target_bear = trough * (1.0 + self.config.reentry_bear_bounce_pct)
+            if not snapshot.trend_up:
+                if snapshot.trend_down and self.config.reentry_bear_gate_enabled and self.config.reentry_bear_bounce_pct <= 0:
                     return ReentryDecision(
                         ReentryAction.WAIT,
                         False,
-                        f"bear_reentry_trough_bounce_waiting (price={current_price:.4f} < {target_bear:.4f}, trough={trough:.4f})",
-                        metadata={"trough": trough, "bear_bounce_ratio": bear_bounce_ratio},
+                        f"reentry_blocked_by_bear_trend (price={current_price:.4f})",
+                        metadata={"trend_down": True},
                     )
+
+                if self.config.reentry_bear_bounce_pct > 0:
+                    bear_bounce_ratio = (current_price - trough) / trough if trough > 0 else 0.0
+                    if bear_bounce_ratio < self.config.reentry_bear_bounce_pct:
+                        target_bear = trough * (1.0 + self.config.reentry_bear_bounce_pct)
+                        return ReentryDecision(
+                            ReentryAction.WAIT,
+                            False,
+                            f"bear_reentry_trough_bounce_waiting (price={current_price:.4f} < {target_bear:.4f}, trough={trough:.4f})",
+                            metadata={"trough": trough, "bear_bounce_ratio": bear_bounce_ratio},
+                        )
+
 
             self.reentry_state.pop(symbol, None)
             return ReentryDecision(
