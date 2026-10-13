@@ -500,7 +500,22 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                     print(f"[{symbol}] Smart Stop-Loss DEFERRED: {sl_reason}")
                 else:
                     print(f"Price decreased with {price_decrease * 100}% by more than {lost_threshold * 100}% versus buy price and not trend up! (decision={sl_reason})")
-                    # Unlock position if resting Take-Profit sell orders exist on the venue
+                    # Pre-flight gate check: verify that Instrument.place will not defer by trend before touching resting orders
+                    try:
+                        import cacheManager as cm
+                        short_tm = cm.get_short_trend_manager()
+                        try:
+                            deferred = short_tm.should_wait("SELL", symbol, use_noise_gate=False)
+                        except TypeError:
+                            deferred = short_tm.should_wait("SELL", symbol)
+                        if deferred:
+                            print(f"[{symbol}] Stop-Loss placement would be deferred by trend gate (trend up) — keeping resting TP orders intact!")
+                            return
+                    except Exception as _tm_err:
+                        pass
+
+                    # Atomic cancel-and-replace: remember cancelled orders for rollback if placement fails
+                    cancelled_tp_orders = []
                     try:
                         open_orders_fn = getattr(inst, "open_orders", None)
                         active_orders = open_orders_fn() if callable(open_orders_fn) else []
@@ -512,6 +527,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                                     cancel_fn = getattr(inst, "cancel_order", None)
                                     if callable(cancel_fn):
                                         cancel_fn(oid)
+                                        cancelled_tp_orders.append(active_ord)
                     except Exception as cancel_exc:
                         print(f"[{symbol}] Warning: error checking/cancelling open TP orders: {cancel_exc}")
 
@@ -525,13 +541,26 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                             pass
 
                     # Stop-loss is an emergency capital preservation exit: bypass discretionary trade cooldowns
+                    placed = False
                     if sellable_qty > 0:
-                        _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
+                        placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
                             safeback_seconds=sbs, force=False, cancelorders=True,
                             hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=True,
-                            bypass_guards={"all"},
+                            bypass_guards={"all"}, wait_for_trend=False,
                         )
-                    else:
+
+                    # Rollback / restore resting TP order if Stop-Loss placement failed
+                    if not placed:
+                        if cancelled_tp_orders:
+                            print(f"[{symbol}] Stop-Loss was not placed (sellable_qty={sellable_qty}); restoring cancelled resting TP orders...")
+                            for old_tp in cancelled_tp_orders:
+                                try:
+                                    tp_px = float(old_tp.get("price") or 0.0)
+                                    tp_q = float(old_tp.get("origQty") or old_tp.get("vol") or 0.0)
+                                    if tp_px > 0 and tp_q > 0:
+                                        inst.place("SELL", tp_px, tp_q, kind="TP", wait_for_trend=False)
+                                except Exception as restore_err:
+                                    print(f"[{symbol}] Warning: could not restore resting TP order: {restore_err}")
                         print(f"No can sell (can_sell={can_sell}, sellable_qty={sellable_qty})")
         else:
             from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss_if_recovered

@@ -571,6 +571,22 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.assertEqual(len(inst.placed), 1)
             self.assertEqual(inst.placed[0]["side"], "SELL")
 
+        # Subtest 3: If placement fails, cancelled TP order is rolled back / restored
+        with self.subTest(msg="restores_cancelled_tp_order_if_placement_fails"):
+            inst = RefusingInstrument(
+                price=94.0,
+                free=0.0,
+                fills=[_fill("BUY", 100, 4)],
+                open_orders=[{"orderId": "tp-order-456", "side": "SELL", "price": 102.0, "origQty": 4.0}],
+            )
+            self.run_tick(inst, trend_up=False, loss=0.05)
+            self.assertIn("tp-order-456", inst.cancelled)
+            # The refusing instrument rejected the SL, so a restore TP placement was attempted
+            restore_orders = [o for o in inst.placed if o.get("kwargs", {}).get("kind") == "TP"]
+            self.assertEqual(len(restore_orders), 1)
+            self.assertEqual(restore_orders[0]["price"], 102.0)
+            self.assertEqual(restore_orders[0]["qty"], 4.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
