@@ -9,6 +9,7 @@ state survives restarts. T212 FX conversion fees apply on both BUY and SELL legs
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import threading
@@ -55,6 +56,7 @@ def generate_tp_ladder(
 
     Supported curves:
     - 'linear' / 'uniform': equal fractions across all rungs.
+    - 'bell' / 'gaussian' / 'pyramid': small start, bulk in the middle, small at the end.
     - 'front_heavy': larger fractions on lower rungs for faster de-risking.
     - 'back_heavy': larger fractions on higher rungs for maximum upside capture.
     - 'geometric': geometrically increasing percentage steps.
@@ -77,7 +79,11 @@ def generate_tp_ladder(
         step_size = (max_f - min_f) / (steps - 1)
         levels = [round(min_f + i * step_size, 1) for i in range(steps)]
 
-    if curve_lower == "front_heavy":
+    if curve_lower in ("bell", "gaussian", "normal", "pyramid"):
+        center = (steps - 1) / 2.0
+        sigma = max(0.5, (steps - 1) / 2.8) if steps > 1 else 1.0
+        weights = [math.exp(-0.5 * ((i - center) / sigma) ** 2) for i in range(steps)]
+    elif curve_lower == "front_heavy":
         weights = [float(steps - i) for i in range(steps)]
     elif curve_lower == "back_heavy":
         weights = [float(i + 1) for i in range(steps)]

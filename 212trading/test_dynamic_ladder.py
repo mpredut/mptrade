@@ -46,6 +46,17 @@ class TestDynamicTPLadder(unittest.TestCase):
         self.assertEqual(geo[0][0], 9.0)
         self.assertEqual(geo[-1][0], 40.0)
 
+        # Bell curve: smaller at edges, bulk in the middle
+        bell = generate_tp_ladder(9.0, 40.0, 5, curve="bell")
+        self.assertEqual(len(bell), 5)
+        fracs_bell = [frac for _, frac in bell]
+        # Middle (index 2) must be the highest fraction
+        self.assertEqual(fracs_bell[2], max(fracs_bell))
+        # Start and end fractions must be lower than adjacent inner fractions
+        self.assertLess(fracs_bell[0], fracs_bell[1])
+        self.assertLess(fracs_bell[4], fracs_bell[3])
+        self.assertAlmostEqual(sum(fracs_bell), 1.0, places=3)
+
     def test_adapt_ladder_rungs(self):
         full = generate_tp_ladder(9.0, 40.0, 10)
 
