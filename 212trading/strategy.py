@@ -45,6 +45,74 @@ def state_path_for(ticker: str) -> str:
     return os.path.join(_HERE, f".state_{safe}.json")
 
 
+def generate_tp_ladder(
+    min_pct: float,
+    max_pct: float,
+    steps: int = 10,
+    curve: str = "linear",
+) -> list[tuple[float, float]]:
+    """Generate a scale-out take-profit ladder from min_pct to max_pct across `steps` rungs.
+
+    Supported curves:
+    - 'linear' / 'uniform': equal fractions across all rungs.
+    - 'front_heavy': larger fractions on lower rungs for faster de-risking.
+    - 'back_heavy': larger fractions on higher rungs for maximum upside capture.
+    - 'geometric': geometrically increasing percentage steps.
+    """
+    if steps < 1:
+        return []
+    if steps == 1:
+        return [(round(float(min_pct), 1), 1.0)]
+
+    min_f = float(min_pct)
+    max_f = float(max_pct)
+    curve_lower = str(curve or "linear").lower()
+
+    if curve_lower == "geometric":
+        r_start = 1.0 + min_f / 100.0
+        r_end = 1.0 + max_f / 100.0
+        ratio = (r_end / r_start) ** (1.0 / (steps - 1)) if steps > 1 else 1.0
+        levels = [round(((r_start * (ratio ** i)) - 1.0) * 100.0, 1) for i in range(steps)]
+    else:
+        step_size = (max_f - min_f) / (steps - 1)
+        levels = [round(min_f + i * step_size, 1) for i in range(steps)]
+
+    if curve_lower == "front_heavy":
+        weights = [float(steps - i) for i in range(steps)]
+    elif curve_lower == "back_heavy":
+        weights = [float(i + 1) for i in range(steps)]
+    else:
+        weights = [1.0 for _ in range(steps)]
+
+    total_w = sum(weights)
+    return [(lvl, round(w / total_w, 4)) for lvl, w in zip(levels, weights)]
+
+
+def adapt_ladder_rungs(
+    remaining: list[tuple[float, float]],
+    held: float,
+    min_tranche_qty: float = 0.01,
+) -> list[tuple[float, float]]:
+    """Dynamically clamp remaining rungs so each order has viable trading quantity.
+
+    If held quantity is too small to distribute across all rungs (e.g. 0.05 shares for 10 rungs),
+    subsamples rungs evenly across the remaining min-to-max span so every order is valid.
+    """
+    if not remaining or held <= 1e-9:
+        return []
+    max_viable_rungs = max(1, int(held / max(1e-6, min_tranche_qty)))
+    if len(remaining) <= max_viable_rungs:
+        return list(remaining)
+    if max_viable_rungs == 1:
+        return [remaining[-1]]
+    indices = [
+        int(round(i * (len(remaining) - 1) / (max_viable_rungs - 1)))
+        for i in range(max_viable_rungs)
+    ]
+    selected_indices = sorted(set(indices))
+    return [remaining[idx] for idx in selected_indices]
+
+
 @dataclass
 class StratParams:
     currency: str            # Currency used by the monetary settings below.
@@ -89,16 +157,35 @@ class StratParams:
         mode = required_env("STRATEGY_MODE", e).lower()
         if mode not in {"avg_tp", "dca_only"}:
             raise ValueError(f"Invalid STRATEGY_MODE: {mode!r}")
-        # Parse scale-out ladder percentages and fractions.
+        # Parse scale-out ladder percentages and fractions (explicit list or dynamic range).
         _ladder = []
-        for _part in (e.get("STRAT_TP_LADDER") or "").split(","):
-            _part = _part.strip()
-            if ":" in _part:
-                _lvl, _frac = _part.split(":", 1)
+        raw_ladder = (e.get("STRAT_TP_LADDER") or "").strip()
+        ladder_curve = (e.get("STRAT_TP_LADDER_CURVE") or "linear").strip().lower()
+        if raw_ladder:
+            clean_raw = raw_ladder.removeprefix("range:")
+            if clean_raw.count(":") == 2 and "," not in clean_raw:
                 try:
-                    _ladder.append((float(_lvl), float(_frac) / 100.0))
+                    p_min, p_max, p_steps = clean_raw.split(":")
+                    _ladder = generate_tp_ladder(float(p_min), float(p_max), int(p_steps), curve=ladder_curve)
                 except ValueError:
-                    pass
+                    _ladder = []
+            else:
+                for _part in raw_ladder.split(","):
+                    _part = _part.strip()
+                    if ":" in _part:
+                        _lvl, _frac = _part.split(":", 1)
+                        try:
+                            _ladder.append((float(_lvl), float(_frac) / 100.0))
+                        except ValueError:
+                            pass
+        elif e.get("STRAT_TP_LADDER_MIN") and e.get("STRAT_TP_LADDER_MAX"):
+            try:
+                p_min = float(e["STRAT_TP_LADDER_MIN"])
+                p_max = float(e["STRAT_TP_LADDER_MAX"])
+                p_steps = int(e.get("STRAT_TP_LADDER_STEPS", 10))
+                _ladder = generate_tp_ladder(p_min, p_max, p_steps, curve=ladder_curve)
+            except (ValueError, TypeError):
+                _ladder = []
         _budget = required_float_env("STRAT_MAX_BUDGET", e)
         # Percentage sizing is the single supported policy; no legacy hidden amounts.
         _entry_pct = required_float_env("STRAT_ENTRY_PCT", e)
@@ -710,8 +797,14 @@ class Strategy:
                 return  # Live: the request is accepted, but we wait for the terminal status.
         sold = set(self.s.get("tp_sold_levels", []))
         remaining = [(lvl, frac) for (lvl, frac) in self.p.tp_ladder if lvl not in sold]
+        if not remaining or held <= 1e-9:
+            return
+
+        # Adapt remaining ladder rungs dynamically to current held volume
+        remaining = adapt_ladder_rungs(remaining, held, min_tranche_qty=0.01)
+
         total = sum(f for _, f in remaining)
-        if total <= 0 or held <= 1e-9:
+        if total <= 0:
             return
         # Highest tranche receives the remainder minus an unreserved buffer, preventing
         # rounding oversell while satisfying T212's minimum-open-position rule.
