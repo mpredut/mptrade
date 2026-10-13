@@ -32,7 +32,7 @@ PULL_OUTPUT=$($SSH "$DEV_USER@$DEV_HOST" "cd ~/$DEV_PATH && git pull --ff-only o
 echo "$PULL_OUTPUT" | sed 's/^/  /'
 if echo "$PULL_OUTPUT" | grep -qv "Already up to date"; then
     echo "[refresh_dev $(date '+%F %T')] code updated on DEV -> launching background regression"
-    $SSH "$DEV_USER@$DEV_HOST" "cd ~/$DEV_PATH && nohup ./offline/runners/run_dev_regression.sh >> logs/dev_regression.log 2>&1 &" || true
+    $SSH "$DEV_USER@$DEV_HOST" "cd ~/$DEV_PATH && nohup ./offline/runners/run_dev_regression.sh </dev/null >> logs/dev_regression.log 2>&1 &" || true
 fi
 
 echo "[refresh_dev $(date '+%F %T')] data: rsync cachedb/ prod -> dev"

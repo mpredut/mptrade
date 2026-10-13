@@ -37,8 +37,8 @@ if [ "$WAIT_MODE" = true ]; then
     scp -P "$DEV_PORT" "$DEV_USER@$DEV_HOST:~/$DEV_PATH/cachedb/dev_regression_status.json" "$REPO_ROOT/cachedb/dev_regression_status.json" >/dev/null 2>&1 || true
     echo "[trigger_dev_ci $(date '+%F %T')] Completed and synced status to prod cachedb/dev_regression_status.json"
 else
-    # Async background trigger on DEV
-    $SSH "$DEV_USER@$DEV_HOST" "cd ~/$DEV_PATH && nohup ./offline/runners/run_dev_regression.sh >> logs/dev_regression.log 2>&1 &"
+    # Async background trigger on DEV (redirect stdin/stdout/stderr to detach cleanly)
+    $SSH "$DEV_USER@$DEV_HOST" "cd ~/$DEV_PATH && nohup ./offline/runners/run_dev_regression.sh </dev/null >> logs/dev_regression.log 2>&1 &"
     echo "[trigger_dev_ci $(date '+%F %T')] Regression triggered asynchronously in background on DEV for commit $LOCAL_SHORT."
     echo "Check status anytime with: ./offline/runners/check_dev_regression.sh"
 fi
