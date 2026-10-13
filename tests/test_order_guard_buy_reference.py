@@ -26,7 +26,7 @@ def _margins(**overrides):
     base = {
         "default": 1.15, "binance": 1.15, "default_window_h": 0.0,
         "default_max_daily_trades": 25, "default_safeback_sec": 14 * 24 * 3600 + 60,
-        "default_recent_transaction_sec": 180, "default_buy_reference": 1.0,
+        "default_recent_transaction_sec": 90, "default_buy_reference": 1.0,
     }
     base.update(overrides)
     return base

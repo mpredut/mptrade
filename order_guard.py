@@ -55,7 +55,7 @@ def _load_margins():
         "default_window_h": 0.0,               # profit-guard window (hours); 0 uses only last_opposite_fill
         "default_max_daily_trades": 25,        # daily trade cap
         "default_safeback_sec": 14 * 24 * 3600 + 60,  # own-trade search window (seconds): 14 days
-        "default_recent_transaction_sec": 180,   # anti-spam window (seconds)
+        "default_recent_transaction_sec": 90,   # anti-spam window (seconds, 1.5 min)
         "default_buy_reference": 1.0,          # 1 = BUY must beat the historical sell reference
         "buy_window_mode": "dynamic",          # dynamic regime-aware lookback window
         "buy_window_bull_h": 8.0,              # Bull lookback: 4h - 12h

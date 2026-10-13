@@ -392,20 +392,6 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.run_tick(inst, trend_up=False)
             self.assertEqual(inst.placed, [])
 
-        with self.subTest(msg="regression_global_recent_trade_gate_must_block_every_new_order"):
-            inst = FakeInstrument(
-                price=112,
-                free=7,
-                fills=[_fill("BUY", 100, 7, age_s=30 * 60)],
-            )
-            mt.HARD_TP_ENABLED = False
-            with (
-                patch.object(mt, "MT_RECENT_TRADE_BLOCK_SEC", 5 * 60),
-                patch.object(mt, "MT_ALL_TRADES_BLOCK_SEC", 60 * 60),
-            ):
-                self.run_tick(inst, trend_up=False, gain=0.10)
-            self.assertEqual(inst.placed, [])
-
         with self.subTest(msg="regression_non_finite_market_price_must_not_reach_executor"):
             inst = FakeInstrument(
                 price=float("inf"),
@@ -530,10 +516,11 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.assertEqual(order["kwargs"]["bypass_guards"], {"all"})
 
 
-    def test_stop_loss_unlocks_resting_tp_orders_and_bypasses_cooldown(self):
+    def test_stop_loss_unlocks_resting_tp_orders(self):
         """Verify that when stop-loss triggers:
         1. Resting TP sell orders on the exchange are automatically cancelled to unlock captive coins.
-        2. Normal anti-churn trade cooldowns (MT_ALL_TRADES_BLOCK_SEC) do not block capital preservation.
+        2. Recent trade fills do not impede stop-loss execution.
+        3. If placement fails, cancelled TP order is restored.
         """
         mt.HARD_TP_ENABLED = False
 
@@ -555,19 +542,14 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.assertTrue(order["kwargs"]["bypass_profit_guard"])
             self.assertEqual(order["kwargs"]["bypass_guards"], {"all"})
 
-        # Subtest 2: Recent trade within MT_ALL_TRADES_BLOCK_SEC does not block Stop-Loss
-        with self.subTest(msg="bypasses_recent_trade_cooldown_for_emergency_exit"):
+        # Subtest 2: Recent trade does not block Stop-Loss
+        with self.subTest(msg="recent_trade_does_not_block_stop_loss"):
             inst = FakeInstrument(
                 price=94.0,
                 free=4.0,
                 fills=[_fill("BUY", 100, 4, age_s=20 * 60)],  # bought only 20 min ago
             )
-            with (
-                patch.object(mt, "MT_RECENT_TRADE_BLOCK_SEC", 3 * 3600),
-                patch.object(mt, "MT_ALL_TRADES_BLOCK_SEC", 1 * 3600),
-            ):
-                self.run_tick(inst, trend_up=False, loss=0.05)
-            # In contrast to normal TP which is blocked, Stop-Loss must execute immediately
+            self.run_tick(inst, trend_up=False, loss=0.05)
             self.assertEqual(len(inst.placed), 1)
             self.assertEqual(inst.placed[0]["side"], "SELL")
 
