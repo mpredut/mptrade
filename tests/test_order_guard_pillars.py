@@ -508,14 +508,14 @@ def test_whale_divergence_liquidation_cascade_blocks():
 
 def test_granular_bypass_p3_p4_avoids_unbound_local_error():
     from order_guard import check_intelligence_guards
-    # Passing p3 and p4 bypass skips intelligence guards and must NOT raise UnboundLocalError
+    # Passing p2, p3, and p4 bypass skips intelligence guards and must NOT raise UnboundLocalError
     allowed, reason, scale = check_intelligence_guards(
         provider="binance",
         symbol="BTCUSDC",
         order_type="BUY",
         price=60000.0,
         qty=0.01,
-        bypass_guards={"p3", "p4"},
+        bypass_guards={"p2", "p3", "p4"},
     )
     assert allowed is True
     assert scale == 1.0

@@ -464,6 +464,42 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
         self.assertEqual(len(provider.submitted), 1)
         self.assertEqual(provider.submitted[0]["side"], "SELL")
 
+    def test_mhdsl_multi_horizon_stop_loss_tiers(self):
+        """Verify MHDSL decision tree:
+        1. Normal dip between lost_threshold and disaster_floor defers if trend_up is True.
+        2. Disaster floor breach executes unconditionally even when trend_up is True.
+        3. Active crash cascade executes unconditionally even when trend_up is True.
+        """
+        mt.HARD_TP_ENABLED = False
+
+        # Subtest 1: Normal dip (3% loss vs 2.5% threshold, disaster floor = 3.35%), trend_up=True -> DEFER
+        with self.subTest(msg="normal_dip_deferred_when_trend_up"):
+            inst = FakeInstrument(price=97.0, free=4, fills=[_fill("BUY", 100, 4)])
+            self.run_tick(inst, trend_up=True, loss=0.025)
+            self.assertEqual(inst.placed, [])
+
+        # Subtest 2: Disaster floor breach (4.0% loss >= 2.5% + 0.85% = 3.35%), trend_up=True -> EXECUTE
+        with self.subTest(msg="disaster_floor_executes_even_when_trend_up"):
+            inst = FakeInstrument(price=96.0, free=4, fills=[_fill("BUY", 100, 4)])
+            self.run_tick(inst, trend_up=True, loss=0.025)
+            self.assertEqual(len(inst.placed), 1)
+            order = inst.placed[0]
+            self.assertEqual((order["side"], order["qty"]), ("SELL", 4.0))
+            self.assertTrue(order["kwargs"]["bypass_profit_guard"])
+            self.assertEqual(order["kwargs"]["bypass_guards"], {"all"})
+
+        # Subtest 3: Active crash cascade (3.0% loss, but cascade detected), trend_up=True -> EXECUTE
+        with self.subTest(msg="active_cascade_executes_even_when_trend_up"):
+            inst = FakeInstrument(price=97.0, free=4, fills=[_fill("BUY", 100, 4)])
+            with patch("intelligence.external.guards.smart_stop_loss_guard.evaluate_smart_stop_loss",
+                       return_value=(True, "active_crash_cascade", {})):
+                self.run_tick(inst, trend_up=True, loss=0.025)
+            self.assertEqual(len(inst.placed), 1)
+            order = inst.placed[0]
+            self.assertEqual((order["side"], order["qty"]), ("SELL", 4.0))
+            self.assertTrue(order["kwargs"]["bypass_profit_guard"])
+            self.assertEqual(order["kwargs"]["bypass_guards"], {"all"})
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
