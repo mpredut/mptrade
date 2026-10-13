@@ -77,7 +77,6 @@ REBUY_BOUNCE_PCT = required_float_env("KRAKEN_TRAILING_REBUY_BOUNCE_PCT")
 # Neutral/unknown does not block, providing safe degradation. Skip re-buy on a clear
 # downtrend. Crash sells are unfiltered by default for reliability; true enables anti-wick.
 REBUY_SKIP_IF_TREND_DOWN = required_bool_env("KRAKEN_TRAILING_REBUY_SKIP_IF_TREND_DOWN")
-SELL_SKIP_IF_TREND_UP = required_bool_env("KRAKEN_TRAILING_SELL_SKIP_IF_TREND_UP")
 # Minimum profit before trailing activates (0 means immediate activation as before).
 # This prevents selling at a loss after a normal dip immediately following a purchase.
 MIN_PROFIT_PCT = required_float_env("KRAKEN_TRAILING_MIN_PROFIT_PCT")
@@ -98,7 +97,6 @@ class KrakenTrailing:
             min_notional=MIN_NOTIONAL_USD, rebuy_enabled=REBUY_ENABLED,
             rebuy_bounce_pct=REBUY_BOUNCE_PCT,
             rebuy_skip_if_trend_down=REBUY_SKIP_IF_TREND_DOWN,
-            sell_skip_if_trend_up=SELL_SKIP_IF_TREND_UP,
             sell_fraction=1.0, item_isolation=False,
             min_profit_pct=min_profit_pct)
         self.executor = AuditedStrategyExecutor(

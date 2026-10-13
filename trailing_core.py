@@ -44,7 +44,7 @@ def should_sell(current: float, peak: float, trail_pct: float) -> bool:
 class TrailingCore:
     def __init__(self, adapter, *, log, enabled, state_file, min_notional,
                  rebuy_enabled, rebuy_bounce_pct, rebuy_skip_if_trend_down,
-                 sell_skip_if_trend_up, sell_fraction=1.0, item_isolation=True,
+                 sell_skip_if_trend_up=False, sell_fraction=1.0, item_isolation=True,
                  min_profit_pct=0.0):
         self.a = adapter
         self.log = log

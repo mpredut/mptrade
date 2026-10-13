@@ -98,7 +98,6 @@ REBUY_TRANCHES = required_int_env("TRAILING_REBUY_TRANCHES")
 # default so the circuit breaker remains reliable; enable the sell filter to avoid
 # selling while the instant trend is clearly up (anti-wick behavior).
 REBUY_SKIP_IF_TREND_DOWN = required_bool_env("TRAILING_REBUY_SKIP_IF_TREND_DOWN")
-SELL_SKIP_IF_TREND_UP = required_bool_env("TRAILING_SELL_SKIP_IF_TREND_UP")
 # Minimum profit before trailing activates (0 means immediate activation as before).
 # This prevents selling at a loss after a normal dip immediately following a purchase.
 MIN_PROFIT_PCT = required_float_env("TRAILING_MIN_PROFIT_PCT")
@@ -153,7 +152,6 @@ class TrailingStop:
             min_notional=MIN_NOTIONAL_USD, rebuy_enabled=REBUY_ENABLED,
             rebuy_bounce_pct=REBUY_BOUNCE_PCT,
             rebuy_skip_if_trend_down=REBUY_SKIP_IF_TREND_DOWN,
-            sell_skip_if_trend_up=SELL_SKIP_IF_TREND_UP,
             sell_fraction=sell_fraction, item_isolation=True,
             min_profit_pct=min_profit_pct)
         self.order_lifecycle = TrackedOrderLifecycle(
