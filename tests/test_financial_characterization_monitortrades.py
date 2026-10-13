@@ -466,9 +466,10 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
 
     def test_mhdsl_multi_horizon_stop_loss_tiers(self):
         """Verify MHDSL decision tree:
-        1. Normal dip between lost_threshold and disaster_floor defers if trend_up is True.
-        2. Disaster floor breach executes unconditionally even when trend_up is True.
-        3. Active crash cascade executes unconditionally even when trend_up is True.
+        1. Any loss condition (normal dip, disaster floor breach, or active cascade)
+           defers if trend_up is True (micro-trend bounce protection).
+        2. Disaster floor breach executes unconditionally when trend_up is False.
+        3. Active crash cascade executes unconditionally when trend_up is False.
         """
         mt.HARD_TP_ENABLED = False
 
@@ -478,22 +479,36 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.run_tick(inst, trend_up=True, loss=0.025)
             self.assertEqual(inst.placed, [])
 
-        # Subtest 2: Disaster floor breach (4.0% loss >= 2.5% + 0.85% = 3.35%), trend_up=True -> EXECUTE
-        with self.subTest(msg="disaster_floor_executes_even_when_trend_up"):
+        # Subtest 2: Disaster floor breach (4.0% loss >= 2.5% + 0.85% = 3.35%), trend_up=True -> DEFER (bounce protection)
+        with self.subTest(msg="disaster_floor_deferred_when_trend_up"):
             inst = FakeInstrument(price=96.0, free=4, fills=[_fill("BUY", 100, 4)])
             self.run_tick(inst, trend_up=True, loss=0.025)
+            self.assertEqual(inst.placed, [])
+
+        # Subtest 3: Disaster floor breach, trend_up=False -> EXECUTE
+        with self.subTest(msg="disaster_floor_executes_when_trend_not_up"):
+            inst = FakeInstrument(price=96.0, free=4, fills=[_fill("BUY", 100, 4)])
+            self.run_tick(inst, trend_up=False, loss=0.025)
             self.assertEqual(len(inst.placed), 1)
             order = inst.placed[0]
             self.assertEqual((order["side"], order["qty"]), ("SELL", 4.0))
             self.assertTrue(order["kwargs"]["bypass_profit_guard"])
             self.assertEqual(order["kwargs"]["bypass_guards"], {"all"})
 
-        # Subtest 3: Active crash cascade (3.0% loss, but cascade detected), trend_up=True -> EXECUTE
-        with self.subTest(msg="active_cascade_executes_even_when_trend_up"):
+        # Subtest 4: Active crash cascade, trend_up=True -> DEFER (bounce protection)
+        with self.subTest(msg="active_cascade_deferred_when_trend_up"):
             inst = FakeInstrument(price=97.0, free=4, fills=[_fill("BUY", 100, 4)])
             with patch("intelligence.external.guards.smart_stop_loss_guard.evaluate_smart_stop_loss",
                        return_value=(True, "active_crash_cascade", {})):
                 self.run_tick(inst, trend_up=True, loss=0.025)
+            self.assertEqual(inst.placed, [])
+
+        # Subtest 5: Active crash cascade, trend_up=False -> EXECUTE
+        with self.subTest(msg="active_cascade_executes_when_trend_not_up"):
+            inst = FakeInstrument(price=97.0, free=4, fills=[_fill("BUY", 100, 4)])
+            with patch("intelligence.external.guards.smart_stop_loss_guard.evaluate_smart_stop_loss",
+                       return_value=(True, "active_crash_cascade", {})):
+                self.run_tick(inst, trend_up=False, loss=0.025)
             self.assertEqual(len(inst.placed), 1)
             order = inst.placed[0]
             self.assertEqual((order["side"], order["qty"]), ("SELL", 4.0))

@@ -481,40 +481,33 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             else :
                 print(f"No action taken, because trend is up!")
         elif price_decrease > lost_threshold or u.are_close(price_decrease, lost_threshold, target_tolerance_percent=MT_ARE_CLOSE_TOLERANCE_PCT):
-            # Pillar 2 Smart Stop-Loss Controller: check for predatory wick hunt / whale absorption
-            from intelligence.external.guards.smart_stop_loss_guard import evaluate_smart_stop_loss
-            _prov = getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None)
-            should_execute, sl_reason, sl_meta = evaluate_smart_stop_loss(
-                symbol=symbol,
-                price_decrease=price_decrease,
-                lost_threshold=lost_threshold,
-                now=current_time_s,
-                provider=_prov,
-                current_price=current_price,
-                buy_price=buy_price,
-            )
-            is_disaster = bool(
-                sl_reason
-                and (
-                    "hard_disaster_floor_breached" in sl_reason
-                    or "active_crash_cascade" in sl_reason
-                )
-            )
-            if not is_disaster and is_trend_up(symbol):
+            if is_trend_up(symbol):
                 print(f"No action taken, because trend is up!")
-            elif not should_execute:
-                print(f"[{symbol}] Smart Stop-Loss DEFERRED: {sl_reason}")
             else:
-                trend_suffix = " and not trend up!" if not is_disaster else "!"
-                print(f"Price decreased with {price_decrease * 100}% by more than {lost_threshold * 100}% versus buy price{trend_suffix} (decision={sl_reason})")
-                if can_sell and sellable_qty > 0:
-                    _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
-                        safeback_seconds=sbs, force=False, cancelorders=True,
-                        hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=True,
-                        bypass_guards={"all"},
-                    )
+                # Pillar 2 Smart Stop-Loss Controller: check for predatory wick hunt / whale absorption
+                from intelligence.external.guards.smart_stop_loss_guard import evaluate_smart_stop_loss
+                _prov = getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None)
+                should_execute, sl_reason, sl_meta = evaluate_smart_stop_loss(
+                    symbol=symbol,
+                    price_decrease=price_decrease,
+                    lost_threshold=lost_threshold,
+                    now=current_time_s,
+                    provider=_prov,
+                    current_price=current_price,
+                    buy_price=buy_price,
+                )
+                if not should_execute:
+                    print(f"[{symbol}] Smart Stop-Loss DEFERRED: {sl_reason}")
                 else:
-                    print(f"No can sell (can_sell={can_sell}, sellable_qty={sellable_qty})")
+                    print(f"Price decreased with {price_decrease * 100}% by more than {lost_threshold * 100}% versus buy price and not trend up! (decision={sl_reason})")
+                    if can_sell and sellable_qty > 0:
+                        _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
+                            safeback_seconds=sbs, force=False, cancelorders=True,
+                            hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=True,
+                            bypass_guards={"all"},
+                        )
+                    else:
+                        print(f"No can sell (can_sell={can_sell}, sellable_qty={sellable_qty})")
         else:
             from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss_if_recovered
             _prov = getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None)
