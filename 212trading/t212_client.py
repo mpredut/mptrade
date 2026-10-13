@@ -16,10 +16,10 @@ import time
 
 try:
     # Package import for the generic provider or installed wheel.
-    from .ipo_common import http_get, http_post_json, log, required_env, required_float_env
+    from .ipo_common import float_env, http_get, http_post_json, log, required_env, required_float_env
 except ImportError:
     # Compatibility with direct launch from the 212trading directory.
-    from ipo_common import http_get, http_post_json, log, required_env, required_float_env
+    from ipo_common import float_env, http_get, http_post_json, log, required_env, required_float_env
 
 LIVE_BASE = "https://live.trading212.com/api/v0"
 DEMO_BASE = "https://demo.trading212.com/api/v0"
@@ -30,7 +30,8 @@ _BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/
 class T212Client:
     def __init__(self, api_key: str, api_secret: str | None = None, env: str | None = None,
                  *, min_gap_sec: float | None = None,
-                 portfolio_ttl_sec: float | None = None):
+                 portfolio_ttl_sec: float | None = None,
+                 order_min_gap_sec: float | None = None):
         self.api_key = api_key
         self.api_secret = api_secret
         self.env = (env if env is not None else required_env("T212_ENV")).lower()
@@ -40,11 +41,19 @@ class T212Client:
         # A shared client may serve one thread per asset. Serialize and space calls
         # to avoid T212 rate limits; T212_MIN_GAP_SEC sets the minimum gap.
         self._lock = threading.Lock()
+        self._order_lock = threading.Lock()
         self._last = 0.0
+        self._last_order = 0.0
         self._backoff_until = 0.0
         self._fetch_fail: dict[str, float] = {}
         self._min_gap = (required_float_env("T212_MIN_GAP_SEC")
                          if min_gap_sec is None else min_gap_sec)
+        configured_order_gap = float_env("T212_ORDER_MIN_GAP_SEC")
+        self._order_min_gap = (
+            (2.1 if configured_order_gap is None else configured_order_gap)
+            if order_min_gap_sec is None
+            else order_min_gap_sec
+        )
         # Brief shared account-level caches coalesce redundant per-asset thread
         # reads. A six-second TTL stays above the approximate five-second limits
         # on portfolio and order endpoints.
@@ -71,6 +80,19 @@ class T212Client:
             if wait > 0:
                 time.sleep(wait)
             self._last = time.monotonic()
+
+    def _pace_order(self) -> None:
+        """Enforce at least ``_order_min_gap`` seconds between mutating order calls
+        across all threads, and respect rate limit backoff if any recent call returned HTTP 429."""
+        with self._order_lock:
+            now = time.monotonic()
+            gap_wait = self._order_min_gap - (now - self._last_order)
+            with self._lock:
+                backoff_wait = self._backoff_until - now
+            wait = max(gap_wait, backoff_wait)
+            if wait > 0:
+                time.sleep(wait)
+            self._last_order = time.monotonic()
 
     # -- auth / headers --------------------------------------------------------
     def _auth(self) -> str:
@@ -133,6 +155,7 @@ class T212Client:
     # -- Orders. ---------------------------------------------------------------
     def _place_order(self, endpoint: str, payload: dict) -> tuple[int, dict]:
         """Send an order without retrying non-idempotent placement endpoints."""
+        self._pace_order()
         log(f"  [ORDER] payload: {json.dumps(payload)}")
         status, body = http_post_json(
             f"{self.base}/equity/orders/{endpoint}",
@@ -145,11 +168,14 @@ class T212Client:
             data = json.loads(body) if body else {}
         except ValueError:
             data = {"raw": body.decode(errors="replace")[:500]}
-        # Invalidate unconditionally, including ambiguous failure, so reconciliation
-        # reads fresh state and does not drop a newly placed order from tracking.
-        with self._lock:
-            self._ord_cache = None
-            self._fetch_fail.pop("_ord_cache", None)
+        # Invalidate unconditionally on non-429 (including ambiguous failure),
+        # so reconciliation reads fresh state and does not drop a newly placed order
+        # from tracking. On 429, keep the cache intact to avoid an immediate cascading
+        # rate limit on subsequent active orders reads.
+        if status != 429:
+            with self._lock:
+                self._ord_cache = None
+                self._fetch_fail.pop("_ord_cache", None)
         return status, data
 
     def place_limit_order(
@@ -270,6 +296,7 @@ class T212Client:
             from .ipo_common import http_request
         except ImportError:
             from ipo_common import http_request
+        self._pace_order()
         status, _ = http_request("DELETE", f"{self.base}/equity/orders/{order_id}",
                                  headers=self._headers())
         if status == 429:
@@ -277,9 +304,10 @@ class T212Client:
         ok = status in (200, 201, 204)
         if not ok:
             log(f"  ! [T212] cancel order {order_id} -> HTTP {status}")
-        with self._lock:
-            self._ord_cache = None   # Order list changed; force a fresh read.
-            self._fetch_fail.pop("_ord_cache", None)
+        if status != 429:
+            with self._lock:
+                self._ord_cache = None   # Order list changed; force a fresh read.
+                self._fetch_fail.pop("_ord_cache", None)
         return ok
 
     def _log_read_fail(self, what: str, status: int) -> None:

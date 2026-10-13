@@ -270,6 +270,46 @@ class T212ClientTransportTest(unittest.TestCase):
             self.assertEqual(len(pf_stale_2), 1)
             self.assertEqual(get_mock.call_count, 1)  # No second stampede!
 
+    def test_order_pacing_and_cache_preservation_on_429(self):
+        client = t212_client.T212Client(
+            "dummy", "dummy", env="demo", min_gap_sec=0.0,
+            portfolio_ttl_sec=6.0, order_min_gap_sec=2.1,
+        )
+        client._min_gap = 0.0
+
+        # Prime the active orders cache
+        cached_orders = [{"id": 1, "ticker": "SPCX_US_EQ"}]
+        client._ord_cache = (time.monotonic(), cached_orders)
+
+        sleep_calls = []
+        with mock.patch("time.sleep", side_effect=sleep_calls.append), \
+             mock.patch.object(t212_client, "http_post_json", return_value=(200, b'{"id": 100}')):
+            # First order: no sleep needed
+            status, _ = client.place_limit_order("SPCX_US_EQ", 0.5, 100.0)
+            self.assertEqual(status, 200)
+            self.assertEqual(len(sleep_calls), 0)
+            # 200 OK invalidates the orders cache for fresh tracking
+            self.assertIsNone(client._ord_cache)
+
+            # Re-prime cache
+            client._ord_cache = (time.monotonic(), cached_orders)
+
+            # Second order placed immediately: should sleep ~2.1s
+            status, _ = client.place_limit_order("SPCX_US_EQ", 0.5, 105.0)
+            self.assertEqual(status, 200)
+            self.assertEqual(len(sleep_calls), 1)
+            self.assertAlmostEqual(sleep_calls[0], 2.1, delta=0.1)
+
+        # Test 429 preserving cache
+        client._ord_cache = (time.monotonic(), cached_orders)
+        with mock.patch("time.sleep"), \
+             mock.patch.object(t212_client, "http_post_json", return_value=(429, b'{"code": "BusinessException"}')):
+            status, _ = client.place_limit_order("SPCX_US_EQ", 0.5, 110.0)
+            self.assertEqual(status, 429)
+            # On 429, the cache is preserved to avoid immediate cascading 429 on active orders lookup
+            self.assertIsNotNone(client._ord_cache)
+            self.assertEqual(client._ord_cache[1], cached_orders)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
