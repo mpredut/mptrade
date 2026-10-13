@@ -180,6 +180,7 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
     def setUp(self):
         mt._hard_tp_last.clear()
         mt._SL_BOUNCE_STATE.clear()
+        mt._TP_RIDE_STATE.clear()
         mt.clear_position_stats_cache()
         self._hard_tp_enabled = mt.HARD_TP_ENABLED
         mt.HARD_TP_ENABLED = True
@@ -188,6 +189,7 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
         mt.HARD_TP_ENABLED = self._hard_tp_enabled
         mt._hard_tp_last.clear()
         mt._SL_BOUNCE_STATE.clear()
+        mt._TP_RIDE_STATE.clear()
         mt.clear_position_stats_cache()
 
     def run_tick(self, inst, *, trend_up=False, gain=0.10, loss=0.05, now=None):
@@ -657,6 +659,98 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
         with patch.object(mt, "get_symbol_volatility_1h", return_value=0.001):
             buf, meta = mt.compute_disaster_buffer("BTCUSDT", lost_threshold=0.005)
             self.assertAlmostEqual(buf, mt.MT_SL_DISASTER_BUFFER_MIN_PCT, places=5)
+
+    def test_mdhtp_trend_riding_and_peak_tracking(self):
+        """Verify MDHTP arms ride state and tracks higher highs while trend_up is True."""
+        mt.HARD_TP_ENABLED = False
+        inst = FakeInstrument(price=108.0, free=5.0, fills=[_fill("BUY", 100, 5)])
+        sym = inst.symbol
+
+        # Tick 1 at t=NOW: price 108 (+8.0% > 7.0% threshold), trend_up=True -> defers TP, arms ride state
+        self.run_tick(inst, trend_up=True, gain=0.07, now=NOW)
+        self.assertEqual(inst.placed, [])
+        self.assertIn(sym, mt._TP_RIDE_STATE)
+        self.assertEqual(mt._TP_RIDE_STATE[sym]["peak_price"], 108.0)
+        self.assertEqual(mt._TP_RIDE_STATE[sym]["last_peak_time"], NOW)
+
+        # Tick 2 at t=NOW+100: price climbs to 112.0 (+12.0%), trend_up=True -> updates peak and resets last_peak_time
+        inst._price = 112.0
+        self.run_tick(inst, trend_up=True, gain=0.07, now=NOW + 100)
+        self.assertEqual(inst.placed, [])
+        self.assertEqual(mt._TP_RIDE_STATE[sym]["peak_price"], 112.0)
+        self.assertEqual(mt._TP_RIDE_STATE[sym]["last_peak_time"], NOW + 100)
+
+    def test_mdhtp_micro_trailing_peak_pullback_triggers_sell(self):
+        """Verify that when price pulls back >= MT_TP_PULLBACK_PCT (0.6%) from the ride peak, TP executes."""
+        mt.HARD_TP_ENABLED = False
+        inst = FakeInstrument(price=110.0, free=5.0, fills=[_fill("BUY", 100, 5)])
+        sym = inst.symbol
+
+        # Tick 1: price=110.0 (+10% gain), trend_up=True -> arms ride state
+        self.run_tick(inst, trend_up=True, gain=0.07, now=NOW)
+        self.assertEqual(inst.placed, [])
+
+        # Tick 2: price pulls back to 109.2 (pullback = (110 - 109.2)/110 = 0.727% >= 0.60%)
+        inst._price = 109.2
+        self.run_tick(inst, trend_up=True, gain=0.07, now=NOW + 30)
+        self.assertEqual(len(inst.placed), 1)
+        self.assertEqual((inst.placed[0]["side"], inst.placed[0]["qty"]), ("SELL", 5.0))
+        self.assertNotIn(sym, mt._TP_RIDE_STATE)
+
+    def test_mdhtp_stagnation_timeout_triggers_sell(self):
+        """Verify that when no new peak is made for >= MT_TP_STAGNATION_MAX_SEC (1080s), TP executes."""
+        mt.HARD_TP_ENABLED = False
+        inst = FakeInstrument(price=110.0, free=5.0, fills=[_fill("BUY", 100, 5)])
+        sym = inst.symbol
+
+        # Tick 1: price=110.0, arms at t=NOW
+        self.run_tick(inst, trend_up=True, gain=0.07, now=NOW)
+        self.assertEqual(inst.placed, [])
+
+        # Tick 2 at t=NOW+500s (< 1080s): slight dip to 109.8 (pullback 0.18% < 0.6%) -> still riding
+        inst._price = 109.8
+        self.run_tick(inst, trend_up=True, gain=0.07, now=NOW + 500)
+        self.assertEqual(inst.placed, [])
+
+        # Tick 3 at t=NOW+1100s (>= 1080s stagnation): still at 109.8 -> stagnation timer expired, forces TP!
+        self.run_tick(inst, trend_up=True, gain=0.07, now=NOW + 1100)
+        self.assertEqual(len(inst.placed), 1)
+        self.assertEqual((inst.placed[0]["side"], inst.placed[0]["qty"]), ("SELL", 5.0))
+        self.assertNotIn(sym, mt._TP_RIDE_STATE)
+
+    def test_mdhtp_guaranteed_profit_floor_breached_triggers_sell(self):
+        """Verify that if price slides below guaranteed profit floor, TP executes immediately to protect gains."""
+        mt.HARD_TP_ENABLED = False
+        inst = FakeInstrument(price=108.0, free=5.0, fills=[_fill("BUY", 100, 5)])
+        sym = inst.symbol
+
+        # Threshold=0.07 (7%), floor = max(0.07 * 0.5, 0.008) = 0.035 (3.5%)
+        # Tick 1: price=108.0 (+8.0%), trend_up=True -> arms ride state
+        self.run_tick(inst, trend_up=True, gain=0.07, now=NOW)
+        self.assertEqual(inst.placed, [])
+
+        # Tick 2: price drops to 103.0 (+3.0% gain < floor 3.5%), trend_up=True -> floor breached, executes!
+        inst._price = 103.0
+        self.run_tick(inst, trend_up=True, gain=0.07, now=NOW + 30)
+        self.assertEqual(len(inst.placed), 1)
+        self.assertEqual((inst.placed[0]["side"], inst.placed[0]["qty"]), ("SELL", 5.0))
+        self.assertNotIn(sym, mt._TP_RIDE_STATE)
+
+    def test_mdhtp_trend_reversal_triggers_sell(self):
+        """Verify that when trend_up flips to False during an active ride, TP executes immediately."""
+        mt.HARD_TP_ENABLED = False
+        inst = FakeInstrument(price=109.0, free=5.0, fills=[_fill("BUY", 100, 5)])
+        sym = inst.symbol
+
+        # Tick 1: price=109.0 (+9.0%), trend_up=True -> arms ride state
+        self.run_tick(inst, trend_up=True, gain=0.07, now=NOW)
+        self.assertEqual(inst.placed, [])
+
+        # Tick 2: price=109.0, trend_up=False -> trend reversal, executes!
+        self.run_tick(inst, trend_up=False, gain=0.07, now=NOW + 15)
+        self.assertEqual(len(inst.placed), 1)
+        self.assertEqual((inst.placed[0]["side"], inst.placed[0]["qty"]), ("SELL", 5.0))
+        self.assertNotIn(sym, mt._TP_RIDE_STATE)
 
 
 if __name__ == "__main__":

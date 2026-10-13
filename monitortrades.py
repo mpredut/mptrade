@@ -294,6 +294,16 @@ MT_SL_DISASTER_BUFFER_RATIO = float(os.environ.get("MT_SL_DISASTER_BUFFER_RATIO"
 MT_SL_DISASTER_VOL_MULTIPLIER = float(os.environ.get("MT_SL_DISASTER_VOL_MULTIPLIER", "1.5"))
 MT_SL_DISASTER_BUFFER_MIN_PCT = float(os.environ.get("MT_SL_DISASTER_BUFFER_MIN_PCT", "0.005"))
 
+# Multi-Horizon Dynamic Take-Profit (MDHTP) Mirror Configuration.
+# Mirroring MHDSL: Trend-riding with peak tracking, dynamic micro-trailing on pullback,
+# guaranteed profit floor, and peak stagnation timeout.
+MT_TP_TREND_RIDE_ENABLED = os.environ.get("MT_TP_TREND_RIDE_ENABLED", "true").lower() in ("yes", "true", "1")
+MT_TP_PULLBACK_PCT = float(os.environ.get("MT_TP_PULLBACK_PCT", "0.006"))
+MT_TP_PROFIT_FLOOR_RATIO = float(os.environ.get("MT_TP_PROFIT_FLOOR_RATIO", "0.50"))
+MT_TP_PROFIT_FLOOR_MIN_PCT = float(os.environ.get("MT_TP_PROFIT_FLOOR_MIN_PCT", "0.008"))
+MT_TP_STAGNATION_MAX_SEC = float(os.environ.get("MT_TP_STAGNATION_MAX_SEC", "1080.0"))
+_TP_RIDE_STATE: Dict[str, Dict[str, Any]] = {}
+
 
 def _load_mt_conf(path=None):
     """Override global hard-TP and reference settings from optional configuration.
@@ -304,6 +314,8 @@ def _load_mt_conf(path=None):
     global HARD_TP_ENABLED, HARD_TP_PCT, HARD_TP_FRACTION, HARD_TP_COOLDOWN_S, TP_REFERENCE
     global MT_SL_TREND_DEFER_MAX_SEC, MT_SL_BOUNCE_MIN_RECOVERY_PCT, MT_SL_BOUNCE_PULLBACK_PCT
     global MT_SL_DISASTER_BUFFER_RATIO, MT_SL_DISASTER_VOL_MULTIPLIER, MT_SL_DISASTER_BUFFER_MIN_PCT
+    global MT_TP_TREND_RIDE_ENABLED, MT_TP_PULLBACK_PCT, MT_TP_PROFIT_FLOOR_RATIO
+    global MT_TP_PROFIT_FLOOR_MIN_PCT, MT_TP_STAGNATION_MAX_SEC
     path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitortrades.conf")
     if not os.path.exists(path):
         return
@@ -325,6 +337,11 @@ def _load_mt_conf(path=None):
                 elif k == "sl_disaster_buffer_ratio":   MT_SL_DISASTER_BUFFER_RATIO = float(v) if float(v) < 1.0 else float(v) / 100.0
                 elif k == "sl_disaster_vol_multiplier": MT_SL_DISASTER_VOL_MULTIPLIER = float(v)
                 elif k == "sl_disaster_buffer_min_pct": MT_SL_DISASTER_BUFFER_MIN_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
+                elif k == "tp_trend_ride_enabled":      MT_TP_TREND_RIDE_ENABLED = v.lower() in ("yes", "true", "1", "on", "da")
+                elif k == "tp_pullback_pct":            MT_TP_PULLBACK_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
+                elif k == "tp_profit_floor_ratio":      MT_TP_PROFIT_FLOOR_RATIO = float(v) if float(v) < 1.0 else float(v) / 100.0
+                elif k == "tp_profit_floor_min_pct":    MT_TP_PROFIT_FLOOR_MIN_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
+                elif k == "tp_stagnation_max_s":        MT_TP_STAGNATION_MAX_SEC = float(v)
     except (OSError, ValueError) as e:
         print(f"monitortrades.conf: {e} — using the values from the code")
 
@@ -524,18 +541,93 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 print(f"[HARD-TP] {symbol} +{price_increase*100:.1f}% but in cooldown (the last one "
                       f"{u.secondsToHours(current_time_s - _hard_tp_last.get(symbol, 0)):.1f}h)")
         # 3.1. Evaluate the existing SELL placement rules.
-        if price_increase > gain_threshold or u.are_close(price_increase, gain_threshold, target_tolerance_percent=MT_ARE_CLOSE_TOLERANCE_PCT):
-            if not is_trend_up(symbol):
-                print(f"Price increased with {price_increase * 100}% by more than {gain_threshold * 100}% versus buy price and not trend up!")
+        # MDHTP (Multi-Horizon Dynamic Take-Profit in mirror with MHDSL):
+        # Trend-riding with peak tracking, micro-trailing pullback, guaranteed profit floor, and stagnation timeout.
+        in_tp_territory = (
+            price_increase > gain_threshold
+            or u.are_close(price_increase, gain_threshold, target_tolerance_percent=MT_ARE_CLOSE_TOLERANCE_PCT)
+            or (symbol in _TP_RIDE_STATE and price_increase >= MT_TP_PROFIT_FLOOR_MIN_PCT)
+        )
+        if in_tp_territory:
+            defer_tp = False
+            tp_forced_reason = None
+            profit_floor = max(gain_threshold * MT_TP_PROFIT_FLOOR_RATIO, MT_TP_PROFIT_FLOOR_MIN_PCT)
+
+            ride_state = _TP_RIDE_STATE.get(symbol)
+            if ride_state is None:
+                if is_trend_up(symbol) and MT_TP_TREND_RIDE_ENABLED:
+                    _TP_RIDE_STATE[symbol] = {
+                        "started_at": current_time_s,
+                        "entry_gain": price_increase,
+                        "peak_price": current_price,
+                        "peak_gain": price_increase,
+                        "last_peak_time": current_time_s,
+                    }
+                    print(f"[{symbol}] Take-Profit entered trend-ride watch (trend up): gain={price_increase*100:.2f}%, "
+                          f"floor={profit_floor*100:.2f}%, starting {MT_TP_STAGNATION_MAX_SEC:.0f}s stagnation timer")
+                    defer_tp = True
+                else:
+                    tp_forced_reason = "gain_threshold_exceeded_and_trend_not_up"
+            else:
+                # Update peak trajectory
+                if current_price > ride_state["peak_price"]:
+                    ride_state["peak_price"] = current_price
+                    ride_state["peak_gain"] = price_increase
+                    ride_state["last_peak_time"] = current_time_s
+
+                peak_px = ride_state["peak_price"]
+                pullback_from_peak = (peak_px - current_price) / peak_px if peak_px > 0 else 0.0
+                stagnation_elapsed = current_time_s - ride_state["last_peak_time"]
+
+                # Priority 2: Guaranteed profit floor breached
+                if price_increase < profit_floor:
+                    tp_forced_reason = (
+                        f"mdhtp_profit_floor_breached (gain {price_increase*100:.2f}% < "
+                        f"floor {profit_floor*100:.2f}%, peak={peak_px:.4f})"
+                    )
+                    _TP_RIDE_STATE.pop(symbol, None)
+                # Priority 3: Dynamic micro-trailing peak pullback (exhaustion)
+                elif pullback_from_peak >= MT_TP_PULLBACK_PCT:
+                    tp_forced_reason = (
+                        f"mdhtp_peak_pullback (peaked at {peak_px:.4f} [+ {ride_state['peak_gain']*100:.2f}%], "
+                        f"pulled back {pullback_from_peak*100:.2f}% >= {MT_TP_PULLBACK_PCT*100:.2f}%)"
+                    )
+                    _TP_RIDE_STATE.pop(symbol, None)
+                # Priority 4: Stagnation timeout (18 minutes without a new peak)
+                elif stagnation_elapsed >= MT_TP_STAGNATION_MAX_SEC:
+                    tp_forced_reason = (
+                        f"mdhtp_stagnation_timeout (no new peak for {stagnation_elapsed:.0f}s >= "
+                        f"{MT_TP_STAGNATION_MAX_SEC:.0f}s, current_gain={price_increase*100:.2f}%)"
+                    )
+                    _TP_RIDE_STATE.pop(symbol, None)
+                # Priority 5: Trend reversal (trend turned down)
+                elif not is_trend_up(symbol):
+                    tp_forced_reason = (
+                        f"mdhtp_trend_reversal (trend turned down after peak {peak_px:.4f} "
+                        f"[+ {ride_state['peak_gain']*100:.2f}%], current={current_price:.4f})"
+                    )
+                    _TP_RIDE_STATE.pop(symbol, None)
+                else:
+                    print(f"[{symbol}] Take-Profit deferred by upward trend (riding peak={peak_px:.4f} "
+                          f"[+ {ride_state['peak_gain']*100:.2f}%], pullback={pullback_from_peak*100:.2f}%, "
+                          f"stagnation={stagnation_elapsed:.0f}s/{MT_TP_STAGNATION_MAX_SEC:.0f}s)")
+                    defer_tp = True
+
+            if defer_tp:
+                pass
+            else:
+                print(f"Price increased with {price_increase * 100:.2f}% by more than {gain_threshold * 100:.2f}% versus buy price! (decision={tp_forced_reason})")
                 if sellable_qty > 0:
-                    _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
+                    placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
                         safeback_seconds=sbs, force=False, cancelorders=True,
                         hours=MT_SELL_SAFEBACK_HOURS)
+                    if placed:
+                        _TP_RIDE_STATE.pop(symbol, None)
                 else:
                     print(f"No can sell (sellable_qty={sellable_qty})")
-            else :
-                print(f"No action taken, because trend is up!")
+                    _TP_RIDE_STATE.pop(symbol, None)
         elif price_decrease > lost_threshold or u.are_close(price_decrease, lost_threshold, target_tolerance_percent=MT_ARE_CLOSE_TOLERANCE_PCT):
+            _TP_RIDE_STATE.pop(symbol, None)
             defer_stop_loss = False
             sl_forced_reason = None
 
@@ -696,6 +788,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 print(f"[{symbol}] 🎉 Stop-Loss bounce successfully recovered! Position saved from dip "
                       f"({price_decrease*100:.2f}% <= {lost_threshold*100:.2f}%).")
                 _SL_BOUNCE_STATE.pop(symbol, None)
+            if symbol in _TP_RIDE_STATE:
+                _TP_RIDE_STATE.pop(symbol, None)
             from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss_if_recovered
             _prov = getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None)
             clear_smart_stop_loss_if_recovered(
