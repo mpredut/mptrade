@@ -25,6 +25,13 @@ from providers.market_api import api as mkt
 
 import utils as u
 import log
+from strategies.position_exit_manager import (
+    ExitAction,
+    ExitDecision,
+    PositionExitConfig,
+    PositionExitManager,
+    PositionSnapshot,
+)
 
 # Load versioned, non-secret global tuning parameters before reading the environment.
 # ``botcore.load_dotenv`` fills missing values without overwriting the real environment.
@@ -384,6 +391,41 @@ def get_symbol_volatility_1h(symbol: str) -> Optional[float]:
     return None
 
 
+def get_exit_manager() -> PositionExitManager:
+    """Return a PositionExitManager instance dynamically configured with module parameters and state."""
+    config = PositionExitConfig(
+        lost_threshold=0.05,
+        sl_disaster_buffer_ratio=MT_SL_DISASTER_BUFFER_RATIO,
+        sl_disaster_vol_multiplier=MT_SL_DISASTER_VOL_MULTIPLIER,
+        sl_disaster_buffer_min_pct=MT_SL_DISASTER_BUFFER_MIN_PCT,
+        sl_trend_defer_max_sec=MT_SL_TREND_DEFER_MAX_SEC,
+        sl_bounce_min_recovery_pct=MT_SL_BOUNCE_MIN_RECOVERY_PCT,
+        sl_bounce_pullback_pct=MT_SL_BOUNCE_PULLBACK_PCT,
+        sl_bounce_ratchet_enabled=MT_SL_BOUNCE_RATCHET_ENABLED,
+        sl_bounce_ratchet_k=MT_SL_BOUNCE_RATCHET_K,
+        sl_bounce_min_pullback_pct=MT_SL_BOUNCE_MIN_PULLBACK_PCT,
+        sl_structural_break_enabled=MT_SL_STRUCTURAL_BREAK_ENABLED,
+        smart_sl_enabled=True,
+        gain_threshold=0.07,
+        tp_trend_ride_enabled=MT_TP_TREND_RIDE_ENABLED,
+        tp_profit_floor_ratio=MT_TP_PROFIT_FLOOR_RATIO,
+        tp_profit_floor_min_pct=MT_TP_PROFIT_FLOOR_MIN_PCT,
+        tp_pullback_pct=MT_TP_PULLBACK_PCT,
+        tp_stagnation_max_sec=MT_TP_STAGNATION_MAX_SEC,
+        hard_tp_enabled=False,  # Evaluated explicitly in block 3.0 of monitortrades.py
+        are_close_tolerance_pct=MT_ARE_CLOSE_TOLERANCE_PCT,
+    )
+    mgr = PositionExitManager(
+        config=config,
+        vol_resolver=lambda sym: (get_symbol_volatility_1h(sym) or 0.0, "1h_cache" if get_symbol_volatility_1h(sym) is not None else "default"),
+    )
+    # Bind shared references so test fixtures and runtime inspection mutate identical objects
+    mgr.sl_bounce_state = _SL_BOUNCE_STATE
+    mgr.tp_ride_state = _TP_RIDE_STATE
+    mgr.hard_tp_last = _hard_tp_last
+    return mgr
+
+
 def compute_disaster_buffer(symbol: str, lost_threshold: float) -> Tuple[float, Dict[str, Any]]:
     """Compute volatility-scaled disaster buffer running Variant A and Variant B in parallel.
 
@@ -391,20 +433,14 @@ def compute_disaster_buffer(symbol: str, lost_threshold: float) -> Tuple[float, 
     Variant B: Scaled to realized 1-hour hourly volatility (vol_1h * multiplier).
     Resolution: max(Variant A, Variant B, Absolute Min Floor).
     """
-    buf_a = lost_threshold * MT_SL_DISASTER_BUFFER_RATIO
+    mgr = get_exit_manager()
     v1h = get_symbol_volatility_1h(symbol)
-    buf_b = (v1h * MT_SL_DISASTER_VOL_MULTIPLIER) if v1h is not None else 0.0
-    chosen = max(buf_a, buf_b, MT_SL_DISASTER_BUFFER_MIN_PCT)
-
-    source = "variant_b_vol1h" if (buf_b > buf_a and buf_b >= MT_SL_DISASTER_BUFFER_MIN_PCT) else "variant_a_proportional"
-    meta = {
-        "variant_a_pct": round(buf_a * 100.0, 3),
-        "variant_b_pct": round(buf_b * 100.0, 3) if v1h is not None else None,
-        "vol_1h_pct": round(v1h * 100.0, 3) if v1h is not None else None,
-        "chosen_buffer_pct": round(chosen * 100.0, 3),
-        "source": source,
-    }
-    return chosen, meta
+    return mgr.compute_disaster_buffer(
+        symbol=symbol,
+        lost_threshold=lost_threshold,
+        vol_1h=v1h if v1h is not None else 0.0,
+        vol_source="1h_cache" if v1h is not None else "default",
+    )
 
 
 from instrument import Instrument as _Instrument
@@ -550,82 +586,40 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             else:
                 print(f"[HARD-TP] {symbol} +{price_increase*100:.1f}% but in cooldown (the last one "
                       f"{u.secondsToHours(current_time_s - _hard_tp_last.get(symbol, 0)):.1f}h)")
-        # 3.1. Evaluate the existing SELL placement rules.
-        # MDHTP (Multi-Horizon Dynamic Take-Profit in mirror with MHDSL):
-        # Trend-riding with peak tracking, micro-trailing pullback, guaranteed profit floor, and stagnation timeout.
-        in_tp_territory = (
-            price_increase > gain_threshold
-            or u.are_close(price_increase, gain_threshold, target_tolerance_percent=MT_ARE_CLOSE_TOLERANCE_PCT)
-            or (symbol in _TP_RIDE_STATE and price_increase >= MT_TP_PROFIT_FLOOR_MIN_PCT)
+        # 3.1. Evaluate the existing SELL placement rules via PositionExitManager.
+        # MDHTP (Take-Profit) & MHDSL (Stop-Loss) mirror engines.
+        exit_mgr = get_exit_manager()
+        vol_1h = get_symbol_volatility_1h(symbol) or 0.0
+        snapshot = PositionSnapshot(
+            symbol=symbol,
+            current_price=current_price,
+            avg_buy_price=buy_price,
+            net_qty=owned_qty,
+            sellable_qty=sellable_qty,
+            current_time_s=current_time_s,
+            trend_up=is_trend_up(symbol),
+            vol_1h=vol_1h,
+            vol_source="1h_cache" if vol_1h > 0 else "default",
+            provider=getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None),
         )
-        if in_tp_territory:
-            defer_tp = False
-            tp_forced_reason = None
-            profit_floor = max(gain_threshold * MT_TP_PROFIT_FLOOR_RATIO, MT_TP_PROFIT_FLOOR_MIN_PCT)
 
-            ride_state = _TP_RIDE_STATE.get(symbol)
-            if ride_state is None:
-                if is_trend_up(symbol) and MT_TP_TREND_RIDE_ENABLED:
-                    _TP_RIDE_STATE[symbol] = {
-                        "started_at": current_time_s,
-                        "entry_gain": price_increase,
-                        "peak_price": current_price,
-                        "peak_gain": price_increase,
-                        "last_peak_time": current_time_s,
-                    }
+        tp_decision = exit_mgr.evaluate_take_profit(snapshot, custom_threshold=gain_threshold)
+        if tp_decision.reason != "not_in_tp_territory":
+            if tp_decision.action == ExitAction.HOLD:
+                ride_state = _TP_RIDE_STATE.get(symbol, {})
+                peak_px = ride_state.get("peak_price", current_price)
+                pullback_from_peak = (peak_px - current_price) / peak_px if peak_px > 0 else 0.0
+                stagnation_elapsed = current_time_s - ride_state.get("last_peak_time", current_time_s)
+                profit_floor = max(gain_threshold * MT_TP_PROFIT_FLOOR_RATIO, MT_TP_PROFIT_FLOOR_MIN_PCT)
+                if tp_decision.metadata.get("state") == "initiated":
                     print(f"[{symbol}] Take-Profit entered trend-ride watch (trend up): gain={price_increase*100:.2f}%, "
                           f"floor={profit_floor*100:.2f}%, starting {MT_TP_STAGNATION_MAX_SEC:.0f}s stagnation timer")
-                    defer_tp = True
-                else:
-                    tp_forced_reason = "gain_threshold_exceeded_and_trend_not_up"
-            else:
-                # Update peak trajectory
-                if current_price > ride_state["peak_price"]:
-                    ride_state["peak_price"] = current_price
-                    ride_state["peak_gain"] = price_increase
-                    ride_state["last_peak_time"] = current_time_s
-
-                peak_px = ride_state["peak_price"]
-                pullback_from_peak = (peak_px - current_price) / peak_px if peak_px > 0 else 0.0
-                stagnation_elapsed = current_time_s - ride_state["last_peak_time"]
-
-                # Priority 2: Guaranteed profit floor breached
-                if price_increase < profit_floor:
-                    tp_forced_reason = (
-                        f"mdhtp_profit_floor_breached (gain {price_increase*100:.2f}% < "
-                        f"floor {profit_floor*100:.2f}%, peak={peak_px:.4f})"
-                    )
-                    _TP_RIDE_STATE.pop(symbol, None)
-                # Priority 3: Dynamic micro-trailing peak pullback (exhaustion)
-                elif pullback_from_peak >= MT_TP_PULLBACK_PCT:
-                    tp_forced_reason = (
-                        f"mdhtp_peak_pullback (peaked at {peak_px:.4f} [+ {ride_state['peak_gain']*100:.2f}%], "
-                        f"pulled back {pullback_from_peak*100:.2f}% >= {MT_TP_PULLBACK_PCT*100:.2f}%)"
-                    )
-                    _TP_RIDE_STATE.pop(symbol, None)
-                # Priority 4: Stagnation timeout (18 minutes without a new peak)
-                elif stagnation_elapsed >= MT_TP_STAGNATION_MAX_SEC:
-                    tp_forced_reason = (
-                        f"mdhtp_stagnation_timeout (no new peak for {stagnation_elapsed:.0f}s >= "
-                        f"{MT_TP_STAGNATION_MAX_SEC:.0f}s, current_gain={price_increase*100:.2f}%)"
-                    )
-                    _TP_RIDE_STATE.pop(symbol, None)
-                # Priority 5: Trend reversal (trend turned down)
-                elif not is_trend_up(symbol):
-                    tp_forced_reason = (
-                        f"mdhtp_trend_reversal (trend turned down after peak {peak_px:.4f} "
-                        f"[+ {ride_state['peak_gain']*100:.2f}%], current={current_price:.4f})"
-                    )
-                    _TP_RIDE_STATE.pop(symbol, None)
                 else:
                     print(f"[{symbol}] Take-Profit deferred by upward trend (riding peak={peak_px:.4f} "
-                          f"[+ {ride_state['peak_gain']*100:.2f}%], pullback={pullback_from_peak*100:.2f}%, "
+                          f"[+ {ride_state.get('peak_gain', 0.0)*100:.2f}%], pullback={pullback_from_peak*100:.2f}%, "
                           f"stagnation={stagnation_elapsed:.0f}s/{MT_TP_STAGNATION_MAX_SEC:.0f}s)")
-                    defer_tp = True
-
-            if defer_tp:
-                pass
             else:
+                tp_forced_reason = tp_decision.reason
                 print(f"Price increased with {price_increase * 100:.2f}% by more than {gain_threshold * 100:.2f}% versus buy price! (decision={tp_forced_reason})")
                 if sellable_qty > 0:
                     placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
@@ -638,190 +632,92 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                     _TP_RIDE_STATE.pop(symbol, None)
         elif price_decrease > lost_threshold or u.are_close(price_decrease, lost_threshold, target_tolerance_percent=MT_ARE_CLOSE_TOLERANCE_PCT):
             _TP_RIDE_STATE.pop(symbol, None)
-            defer_stop_loss = False
-            sl_forced_reason = None
+            sl_decision = exit_mgr.evaluate_stop_loss(snapshot, custom_threshold=lost_threshold)
+            disaster_floor = sl_decision.metadata.get("disaster_floor", lost_threshold + MT_SL_DISASTER_BUFFER_MIN_PCT)
 
-            # MHDSL Tier 1: Parallel Volatility-Scaled Disaster Floor (Variant A + Variant B)
-            disaster_buffer, disaster_meta = compute_disaster_buffer(symbol, lost_threshold)
-            disaster_floor = lost_threshold + disaster_buffer
-
-            # PRIORITY 1: Absolute Hard Disaster Floor Breach (Emergency Circuit Breaker)
-            # If loss breaches disaster floor, execute immediately, overriding micro-trend & bounce watch.
-            if price_decrease >= disaster_floor:
-                sl_forced_reason = (
-                    f"hard_disaster_floor_breached (loss {price_decrease*100:.2f}% >= "
-                    f"floor {disaster_floor*100:.2f}%, buffer={disaster_buffer*100:.2f}% [{disaster_meta['source']}])"
-                )
-                _SL_BOUNCE_STATE.pop(symbol, None)
-                print(f"🛑 [{symbol}] MHDSL DISASTER CIRCUIT BREAKER: {sl_forced_reason} — bypassing bounce deferral!")
-
-            # PRIORITY 2: Bounce Protection (Proposals 2 & 3)
-            # Evaluated only when disaster floor is NOT breached.
-            elif is_trend_up(symbol):
-                bounce_state = _SL_BOUNCE_STATE.get(symbol)
-                if bounce_state is None:
-                    _SL_BOUNCE_STATE[symbol] = {
-                        "started_at": current_time_s,
-                        "entry_loss": price_decrease,
-                        "lowest_price": current_price,
-                        "peak_bounce_price": current_price,
-                        "min_loss": price_decrease,
-                    }
+            if sl_decision.action == ExitAction.HOLD:
+                bounce_state = _SL_BOUNCE_STATE.get(symbol, {})
+                peak_px = bounce_state.get("peak_bounce_price", current_price)
+                elapsed = current_time_s - bounce_state.get("started_at", current_time_s)
+                if sl_decision.metadata.get("state") == "initiated":
                     print(f"[{symbol}] Stop-Loss entered bounce watch (trend up): dip={price_decrease*100:.2f}%, "
                           f"disaster_floor={disaster_floor*100:.2f}%, starting {MT_SL_TREND_DEFER_MAX_SEC:.0f}s timer")
-                    defer_stop_loss = True
+                elif "smart_stop_loss_deferred" in sl_decision.reason:
+                    print(f"[{symbol}] Smart Stop-Loss DEFERRED: {sl_decision.reason}")
                 else:
-                    # Update bounce trajectory
-                    lowest_px = bounce_state["lowest_price"] or 1.0
-                    peak_px = bounce_state["peak_bounce_price"] or 1.0
-                    bounce_recovery = (peak_px - lowest_px) / lowest_px if lowest_px > 0 else 0.0
-                    bounce_attempted = bounce_recovery >= MT_SL_BOUNCE_MIN_RECOVERY_PCT
-
-                    # Dual-variant support for structural support break
-                    if current_price < lowest_px and bounce_attempted and MT_SL_STRUCTURAL_BREAK_ENABLED:
-                        # Variant PROPOSED: Structural Support Break
-                        # The attempted bounce failed and price made a new low below the established trough.
-                        sl_forced_reason = (
-                            f"mhdsl_structural_break (failed bounce from {peak_px:.4f} "
-                            f"[+{bounce_recovery*100:.2f}%] broke below support {lowest_px:.4f} to {current_price:.4f})"
-                        )
-                        _SL_BOUNCE_STATE.pop(symbol, None)
-                    elif current_price <= lowest_px:
-                        # Variant BASELINE: Reset trough and peak since price is still searching for bottom
-                        bounce_state["lowest_price"] = current_price
-                        bounce_state["peak_bounce_price"] = current_price
-                        lowest_px = current_price
-                        peak_px = current_price
-                        bounce_recovery = 0.0
-                    elif current_price > peak_px:
-                        bounce_state["peak_bounce_price"] = current_price
-                        peak_px = current_price
-                        bounce_recovery = (peak_px - lowest_px) / lowest_px if lowest_px > 0 else 0.0
-
-                    if sl_forced_reason:
-                        pass
-                    else:
-                        if price_decrease < bounce_state["min_loss"]:
-                            bounce_state["min_loss"] = price_decrease
-
-                        elapsed = current_time_s - bounce_state["started_at"]
-                        pullback_from_peak = (peak_px - current_price) / peak_px if peak_px > 0 else 0.0
-
-                        # Calculate effective pullback threshold with dynamic ratchet
-                        eff_pullback_pct = MT_SL_BOUNCE_PULLBACK_PCT
-                        if MT_SL_BOUNCE_RATCHET_ENABLED and bounce_recovery > MT_SL_BOUNCE_MIN_RECOVERY_PCT:
-                            excess_rec = bounce_recovery - MT_SL_BOUNCE_MIN_RECOVERY_PCT
-                            tightened = MT_SL_BOUNCE_PULLBACK_PCT - (excess_rec * MT_SL_BOUNCE_RATCHET_K)
-                            eff_pullback_pct = max(MT_SL_BOUNCE_MIN_PULLBACK_PCT, tightened)
-
-                        # Proposal 2: Time-bounded deferral expiration (~3.7 min default)
-                        if elapsed >= MT_SL_TREND_DEFER_MAX_SEC:
-                            sl_forced_reason = f"mhdsl_bounce_timeout ({elapsed:.0f}s >= {MT_SL_TREND_DEFER_MAX_SEC:.0f}s without full recovery)"
-                            _SL_BOUNCE_STATE.pop(symbol, None)
-                        # Proposal 3: Dynamic micro-trailing on bounce (detect rollover / failed bounce with ratchet)
-                        elif bounce_recovery >= MT_SL_BOUNCE_MIN_RECOVERY_PCT and pullback_from_peak >= eff_pullback_pct:
-                            sl_forced_reason = (
-                                f"mhdsl_bounce_rollover (peaked at {peak_px:.4f} [+{bounce_recovery*100:.2f}%], "
-                                f"pulled back {pullback_from_peak*100:.2f}% >= {eff_pullback_pct*100:.2f}%)"
-                            )
-                            _SL_BOUNCE_STATE.pop(symbol, None)
-                        else:
-                            print(f"[{symbol}] Stop-Loss deferred by upward trend ({elapsed:.0f}s/{MT_SL_TREND_DEFER_MAX_SEC:.0f}s, "
-                                  f"loss={price_decrease*100:.2f}%, peak_px={peak_px:.4f}, floor={disaster_floor*100:.2f}%)")
-                            defer_stop_loss = True
+                    print(f"[{symbol}] Stop-Loss deferred by upward trend ({elapsed:.0f}s/{MT_SL_TREND_DEFER_MAX_SEC:.0f}s, "
+                          f"loss={price_decrease*100:.2f}%, peak_px={peak_px:.4f}, floor={disaster_floor*100:.2f}%)")
             else:
-                _SL_BOUNCE_STATE.pop(symbol, None)
-
-            if defer_stop_loss:
-                pass
-            else:
-                if sl_forced_reason:
-                    should_execute = True
-                    sl_reason = sl_forced_reason
-                else:
-                    # PRIORITY 3: Smart Stop-Loss Controller: active when trend is NOT up
-                    from intelligence.external.guards.smart_stop_loss_guard import evaluate_smart_stop_loss
-                    _prov = getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None)
-                    should_execute, sl_reason, sl_meta = evaluate_smart_stop_loss(
-                        symbol=symbol,
-                        price_decrease=price_decrease,
-                        lost_threshold=lost_threshold,
-                        now=current_time_s,
-                        provider=_prov,
-                        current_price=current_price,
-                        buy_price=buy_price,
-                        disaster_buffer_pct=disaster_buffer * 100.0,
-                    )
-                if not should_execute:
-                    print(f"[{symbol}] Smart Stop-Loss DEFERRED: {sl_reason}")
-                else:
-                    print(f"Price decreased with {price_decrease * 100}% by more than {lost_threshold * 100}% versus buy price! (decision={sl_reason})")
-                    # Pre-flight gate check: verify that Instrument.place will not defer by trend before touching resting orders
-                    # (only applies if exit is not forced by timeout/rollover)
-                    if not sl_forced_reason:
-                        try:
-                            import cacheManager as cm
-                            short_tm = cm.get_short_trend_manager()
-                            try:
-                                deferred = short_tm.should_wait("SELL", symbol, use_noise_gate=False)
-                            except TypeError:
-                                deferred = short_tm.should_wait("SELL", symbol)
-                            if deferred:
-                                print(f"[{symbol}] Stop-Loss placement would be deferred by trend gate (trend up) — keeping resting TP orders intact!")
-                                return
-                        except Exception as _tm_err:
-                            pass
-
-                    # Atomic cancel-and-replace: remember cancelled orders for rollback if placement fails
-                    cancelled_tp_orders = []
+                sl_reason = sl_decision.reason
+                if sl_decision.forced and sl_decision.metadata.get("priority") == 1:
+                    print(f"🛑 [{symbol}] MHDSL DISASTER CIRCUIT BREAKER: {sl_reason} — bypassing bounce deferral!")
+                print(f"Price decreased with {price_decrease * 100}% by more than {lost_threshold * 100}% versus buy price! (decision={sl_reason})")
+                # Pre-flight gate check: verify that Instrument.place will not defer by trend before touching resting orders
+                # (only applies if exit is not forced by timeout/rollover/disaster)
+                if not sl_decision.forced:
                     try:
-                        open_orders_fn = getattr(inst, "open_orders", None)
-                        active_orders = open_orders_fn() if callable(open_orders_fn) else []
-                        for active_ord in (active_orders or []):
-                            if str(active_ord.get("side", "")).upper() == "SELL":
-                                oid = str(active_ord.get("orderId") or active_ord.get("id") or "")
-                                if oid:
-                                    print(f"[{symbol}] Cancelling open resting TP sell order {oid} to unlock coins for Stop-Loss")
-                                    cancel_fn = getattr(inst, "cancel_order", None)
-                                    if callable(cancel_fn):
-                                        cancel_fn(oid)
-                                        cancelled_tp_orders.append(active_ord)
-                    except Exception as cancel_exc:
-                        print(f"[{symbol}] Warning: error checking/cancelling open TP orders: {cancel_exc}")
-
-                    # Refresh available quantity after unlocking
-                    avail_qty_refreshed = inst.free()
-                    if avail_qty_refreshed is not None:
+                        import cacheManager as cm
+                        short_tm = cm.get_short_trend_manager()
                         try:
-                            avail_qty = float(avail_qty_refreshed)
-                            sellable_qty = min(avail_qty, owned_qty) if isolation == "own_ledger" else avail_qty
-                        except (TypeError, ValueError):
-                            pass
+                            deferred = short_tm.should_wait("SELL", symbol, use_noise_gate=False)
+                        except TypeError:
+                            deferred = short_tm.should_wait("SELL", symbol)
+                        if deferred:
+                            print(f"[{symbol}] Stop-Loss placement would be deferred by trend gate (trend up) — keeping resting TP orders intact!")
+                            return
+                    except Exception as _tm_err:
+                        pass
 
-                    # Stop-loss is an emergency capital preservation exit: bypass discretionary trade cooldowns
-                    placed = False
-                    if sellable_qty > 0:
-                        placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
-                            safeback_seconds=sbs, force=False, cancelorders=True,
-                            hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=True,
-                            bypass_guards={"all"}, wait_for_trend=False,
-                        )
-                    if placed:
-                        _SL_BOUNCE_STATE.pop(symbol, None)
+                # Atomic cancel-and-replace: remember cancelled orders for rollback if placement fails
+                cancelled_tp_orders = []
+                try:
+                    open_orders_fn = getattr(inst, "open_orders", None)
+                    active_orders = open_orders_fn() if callable(open_orders_fn) else []
+                    for active_ord in (active_orders or []):
+                        if str(active_ord.get("side", "")).upper() == "SELL":
+                            oid = str(active_ord.get("orderId") or active_ord.get("id") or "")
+                            if oid:
+                                print(f"[{symbol}] Cancelling open resting TP sell order {oid} to unlock coins for Stop-Loss")
+                                cancel_fn = getattr(inst, "cancel_order", None)
+                                if callable(cancel_fn):
+                                    cancel_fn(oid)
+                                    cancelled_tp_orders.append(active_ord)
+                except Exception as cancel_exc:
+                    print(f"[{symbol}] Warning: error checking/cancelling open TP orders: {cancel_exc}")
 
-                    # Rollback / restore resting TP order if Stop-Loss placement failed
-                    if not placed:
-                        if cancelled_tp_orders:
-                            print(f"[{symbol}] Stop-Loss was not placed (sellable_qty={sellable_qty}); restoring cancelled resting TP orders...")
-                            for old_tp in cancelled_tp_orders:
-                                try:
-                                    tp_px = float(old_tp.get("price") or 0.0)
-                                    tp_q = float(old_tp.get("origQty") or old_tp.get("vol") or 0.0)
-                                    if tp_px > 0 and tp_q > 0:
-                                        inst.place("SELL", tp_px, tp_q, kind="TP", wait_for_trend=False)
-                                except Exception as restore_err:
-                                    print(f"[{symbol}] Warning: could not restore resting TP order: {restore_err}")
-                        print(f"No can sell (sellable_qty={sellable_qty})")
+                # Refresh available quantity after unlocking
+                avail_qty_refreshed = inst.free()
+                if avail_qty_refreshed is not None:
+                    try:
+                        avail_qty = float(avail_qty_refreshed)
+                        sellable_qty = min(avail_qty, owned_qty) if isolation == "own_ledger" else avail_qty
+                    except (TypeError, ValueError):
+                        pass
+
+                # Stop-loss is an emergency capital preservation exit: bypass discretionary trade cooldowns
+                placed = False
+                if sellable_qty > 0:
+                    placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
+                        safeback_seconds=sbs, force=False, cancelorders=True,
+                        hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=True,
+                        bypass_guards={"all"}, wait_for_trend=False,
+                    )
+                if placed:
+                    _SL_BOUNCE_STATE.pop(symbol, None)
+
+                # Rollback / restore resting TP order if Stop-Loss placement failed
+                if not placed:
+                    if cancelled_tp_orders:
+                        print(f"[{symbol}] Stop-Loss was not placed (sellable_qty={sellable_qty}); restoring cancelled resting TP orders...")
+                        for old_tp in cancelled_tp_orders:
+                            try:
+                                tp_px = float(old_tp.get("price") or 0.0)
+                                tp_q = float(old_tp.get("origQty") or old_tp.get("vol") or 0.0)
+                                if tp_px > 0 and tp_q > 0:
+                                    inst.place("SELL", tp_px, tp_q, kind="TP", wait_for_trend=False)
+                            except Exception as restore_err:
+                                print(f"[{symbol}] Warning: could not restore resting TP order: {restore_err}")
+                    print(f"No can sell (sellable_qty={sellable_qty})")
         else:
             if symbol in _SL_BOUNCE_STATE:
                 print(f"[{symbol}] 🎉 Stop-Loss bounce successfully recovered! Position saved from dip "
