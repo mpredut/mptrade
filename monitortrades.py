@@ -283,6 +283,10 @@ _hard_tp_last = {}
 MT_SL_TREND_DEFER_MAX_SEC = float(os.environ.get("MT_SL_TREND_DEFER_MAX_SEC", "220.0"))
 MT_SL_BOUNCE_MIN_RECOVERY_PCT = float(os.environ.get("MT_SL_BOUNCE_MIN_RECOVERY_PCT", "0.004"))
 MT_SL_BOUNCE_PULLBACK_PCT = float(os.environ.get("MT_SL_BOUNCE_PULLBACK_PCT", "0.003"))
+MT_SL_BOUNCE_RATCHET_ENABLED = os.environ.get("MT_SL_BOUNCE_RATCHET_ENABLED", "true").lower() in ("yes", "true", "1")
+MT_SL_BOUNCE_RATCHET_K = float(os.environ.get("MT_SL_BOUNCE_RATCHET_K", "0.15"))
+MT_SL_BOUNCE_MIN_PULLBACK_PCT = float(os.environ.get("MT_SL_BOUNCE_MIN_PULLBACK_PCT", "0.0015"))
+MT_SL_STRUCTURAL_BREAK_ENABLED = os.environ.get("MT_SL_STRUCTURAL_BREAK_ENABLED", "true").lower() in ("yes", "true", "1")
 _SL_BOUNCE_STATE = {}
 
 # Multi-Horizon Dynamic Stop Loss (MHDSL) Disaster Floor Configuration.
@@ -313,6 +317,8 @@ def _load_mt_conf(path=None):
     """
     global HARD_TP_ENABLED, HARD_TP_PCT, HARD_TP_FRACTION, HARD_TP_COOLDOWN_S, TP_REFERENCE
     global MT_SL_TREND_DEFER_MAX_SEC, MT_SL_BOUNCE_MIN_RECOVERY_PCT, MT_SL_BOUNCE_PULLBACK_PCT
+    global MT_SL_BOUNCE_RATCHET_ENABLED, MT_SL_BOUNCE_RATCHET_K, MT_SL_BOUNCE_MIN_PULLBACK_PCT
+    global MT_SL_STRUCTURAL_BREAK_ENABLED
     global MT_SL_DISASTER_BUFFER_RATIO, MT_SL_DISASTER_VOL_MULTIPLIER, MT_SL_DISASTER_BUFFER_MIN_PCT
     global MT_TP_TREND_RIDE_ENABLED, MT_TP_PULLBACK_PCT, MT_TP_PROFIT_FLOOR_RATIO
     global MT_TP_PROFIT_FLOOR_MIN_PCT, MT_TP_STAGNATION_MAX_SEC
@@ -334,6 +340,10 @@ def _load_mt_conf(path=None):
                 elif k == "sl_trend_defer_max_s":       MT_SL_TREND_DEFER_MAX_SEC = float(v)
                 elif k == "sl_bounce_min_recovery_pct": MT_SL_BOUNCE_MIN_RECOVERY_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
                 elif k == "sl_bounce_pullback_pct":     MT_SL_BOUNCE_PULLBACK_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
+                elif k == "sl_bounce_ratchet_enabled":  MT_SL_BOUNCE_RATCHET_ENABLED = v.lower() in ("yes", "true", "1", "on", "da")
+                elif k == "sl_bounce_ratchet_k":        MT_SL_BOUNCE_RATCHET_K = float(v)
+                elif k == "sl_bounce_min_pullback_pct": MT_SL_BOUNCE_MIN_PULLBACK_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
+                elif k == "sl_structural_break_enabled": MT_SL_STRUCTURAL_BREAK_ENABLED = v.lower() in ("yes", "true", "1", "on", "da")
                 elif k == "sl_disaster_buffer_ratio":   MT_SL_DISASTER_BUFFER_RATIO = float(v) if float(v) < 1.0 else float(v) / 100.0
                 elif k == "sl_disaster_vol_multiplier": MT_SL_DISASTER_VOL_MULTIPLIER = float(v)
                 elif k == "sl_disaster_buffer_min_pct": MT_SL_DISASTER_BUFFER_MIN_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
@@ -662,34 +672,63 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                     defer_stop_loss = True
                 else:
                     # Update bounce trajectory
-                    if current_price <= bounce_state["lowest_price"]:
-                        # New low: reset bounce peak since price has not begun recovering from this low
-                        bounce_state["lowest_price"] = current_price
-                        bounce_state["peak_bounce_price"] = current_price
-                    elif current_price > bounce_state["peak_bounce_price"]:
-                        bounce_state["peak_bounce_price"] = current_price
-
-                    if price_decrease < bounce_state["min_loss"]:
-                        bounce_state["min_loss"] = price_decrease
-
-                    elapsed = current_time_s - bounce_state["started_at"]
                     lowest_px = bounce_state["lowest_price"] or 1.0
                     peak_px = bounce_state["peak_bounce_price"] or 1.0
-                    bounce_recovery = (peak_px - lowest_px) / lowest_px
-                    pullback_from_peak = (peak_px - current_price) / peak_px
+                    bounce_recovery = (peak_px - lowest_px) / lowest_px if lowest_px > 0 else 0.0
+                    bounce_attempted = bounce_recovery >= MT_SL_BOUNCE_MIN_RECOVERY_PCT
 
-                    # Proposal 2: Time-bounded deferral expiration (~3.7 min default)
-                    if elapsed >= MT_SL_TREND_DEFER_MAX_SEC:
-                        sl_forced_reason = f"mhdsl_bounce_timeout ({elapsed:.0f}s >= {MT_SL_TREND_DEFER_MAX_SEC:.0f}s without full recovery)"
+                    # Dual-variant support for structural support break
+                    if current_price < lowest_px and bounce_attempted and MT_SL_STRUCTURAL_BREAK_ENABLED:
+                        # Variant PROPOSED: Structural Support Break
+                        # The attempted bounce failed and price made a new low below the established trough.
+                        sl_forced_reason = (
+                            f"mhdsl_structural_break (failed bounce from {peak_px:.4f} "
+                            f"[+{bounce_recovery*100:.2f}%] broke below support {lowest_px:.4f} to {current_price:.4f})"
+                        )
                         _SL_BOUNCE_STATE.pop(symbol, None)
-                    # Proposal 3: Dynamic micro-trailing on bounce (detect rollover / failed bounce)
-                    elif bounce_recovery >= MT_SL_BOUNCE_MIN_RECOVERY_PCT and pullback_from_peak >= MT_SL_BOUNCE_PULLBACK_PCT:
-                        sl_forced_reason = f"mhdsl_bounce_rollover (peaked at {peak_px:.4f}, pulled back {pullback_from_peak*100:.2f}%)"
-                        _SL_BOUNCE_STATE.pop(symbol, None)
+                    elif current_price <= lowest_px:
+                        # Variant BASELINE: Reset trough and peak since price is still searching for bottom
+                        bounce_state["lowest_price"] = current_price
+                        bounce_state["peak_bounce_price"] = current_price
+                        lowest_px = current_price
+                        peak_px = current_price
+                        bounce_recovery = 0.0
+                    elif current_price > peak_px:
+                        bounce_state["peak_bounce_price"] = current_price
+                        peak_px = current_price
+                        bounce_recovery = (peak_px - lowest_px) / lowest_px if lowest_px > 0 else 0.0
+
+                    if sl_forced_reason:
+                        pass
                     else:
-                        print(f"[{symbol}] Stop-Loss deferred by upward trend ({elapsed:.0f}s/{MT_SL_TREND_DEFER_MAX_SEC:.0f}s, "
-                              f"loss={price_decrease*100:.2f}%, peak_px={peak_px:.4f}, floor={disaster_floor*100:.2f}%)")
-                        defer_stop_loss = True
+                        if price_decrease < bounce_state["min_loss"]:
+                            bounce_state["min_loss"] = price_decrease
+
+                        elapsed = current_time_s - bounce_state["started_at"]
+                        pullback_from_peak = (peak_px - current_price) / peak_px if peak_px > 0 else 0.0
+
+                        # Calculate effective pullback threshold with dynamic ratchet
+                        eff_pullback_pct = MT_SL_BOUNCE_PULLBACK_PCT
+                        if MT_SL_BOUNCE_RATCHET_ENABLED and bounce_recovery > MT_SL_BOUNCE_MIN_RECOVERY_PCT:
+                            excess_rec = bounce_recovery - MT_SL_BOUNCE_MIN_RECOVERY_PCT
+                            tightened = MT_SL_BOUNCE_PULLBACK_PCT - (excess_rec * MT_SL_BOUNCE_RATCHET_K)
+                            eff_pullback_pct = max(MT_SL_BOUNCE_MIN_PULLBACK_PCT, tightened)
+
+                        # Proposal 2: Time-bounded deferral expiration (~3.7 min default)
+                        if elapsed >= MT_SL_TREND_DEFER_MAX_SEC:
+                            sl_forced_reason = f"mhdsl_bounce_timeout ({elapsed:.0f}s >= {MT_SL_TREND_DEFER_MAX_SEC:.0f}s without full recovery)"
+                            _SL_BOUNCE_STATE.pop(symbol, None)
+                        # Proposal 3: Dynamic micro-trailing on bounce (detect rollover / failed bounce with ratchet)
+                        elif bounce_recovery >= MT_SL_BOUNCE_MIN_RECOVERY_PCT and pullback_from_peak >= eff_pullback_pct:
+                            sl_forced_reason = (
+                                f"mhdsl_bounce_rollover (peaked at {peak_px:.4f} [+{bounce_recovery*100:.2f}%], "
+                                f"pulled back {pullback_from_peak*100:.2f}% >= {eff_pullback_pct*100:.2f}%)"
+                            )
+                            _SL_BOUNCE_STATE.pop(symbol, None)
+                        else:
+                            print(f"[{symbol}] Stop-Loss deferred by upward trend ({elapsed:.0f}s/{MT_SL_TREND_DEFER_MAX_SEC:.0f}s, "
+                                  f"loss={price_decrease*100:.2f}%, peak_px={peak_px:.4f}, floor={disaster_floor*100:.2f}%)")
+                            defer_stop_loss = True
             else:
                 _SL_BOUNCE_STATE.pop(symbol, None)
 

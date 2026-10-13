@@ -752,6 +752,79 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
         self.assertEqual((inst.placed[0]["side"], inst.placed[0]["qty"]), ("SELL", 5.0))
         self.assertNotIn(sym, mt._TP_RIDE_STATE)
 
+    def test_mhdsl_structural_break_triggers_sell_when_enabled(self):
+        """Variant PROPOSED: When an attempted bounce breaks below the established support low, exit immediately."""
+        mt.HARD_TP_ENABLED = False
+        inst = FakeInstrument(price=94.5, free=4.0, fills=[_fill("BUY", 100, 4)])
+        sym = inst.symbol
+
+        # Tick 1: dip to 94.5 (loss 5.5% > 5%), trend_up=True -> arms bounce state with lowest=94.5
+        self.run_tick(inst, trend_up=True, loss=0.05, now=NOW)
+        self.assertEqual(inst.placed, [])
+        self.assertIn(sym, mt._SL_BOUNCE_STATE)
+
+        # Tick 2: bounce to 94.9 (+0.42% recovery >= 0.40% min recovery)
+        inst._price = 94.9
+        self.run_tick(inst, trend_up=True, loss=0.05, now=NOW + 10)
+        self.assertEqual(inst.placed, [])
+
+        # Tick 3: drops to 94.4 (below lowest_px 94.5) -> structural support break triggers immediate exit!
+        inst._price = 94.4
+        with patch.object(mt, "MT_SL_STRUCTURAL_BREAK_ENABLED", True):
+            self.run_tick(inst, trend_up=True, loss=0.05, now=NOW + 20)
+        self.assertEqual(len(inst.placed), 1)
+        self.assertEqual((inst.placed[0]["side"], inst.placed[0]["qty"]), ("SELL", 4.0))
+        self.assertNotIn(sym, mt._SL_BOUNCE_STATE)
+
+    def test_mhdsl_structural_break_disabled_resets_trough_variant_baseline(self):
+        """Variant BASELINE: When MT_SL_STRUCTURAL_BREAK_ENABLED is False, a new low resets lowest_price and continues deferring."""
+        mt.HARD_TP_ENABLED = False
+        inst = FakeInstrument(price=94.5, free=4.0, fills=[_fill("BUY", 100, 4)])
+        sym = inst.symbol
+
+        # Tick 1: dip to 94.5
+        self.run_tick(inst, trend_up=True, loss=0.05, now=NOW)
+        self.assertEqual(inst.placed, [])
+
+        # Tick 2: bounce to 94.9
+        inst._price = 94.9
+        self.run_tick(inst, trend_up=True, loss=0.05, now=NOW + 10)
+        self.assertEqual(inst.placed, [])
+
+        # Tick 3: drops to 94.4 with structural break disabled -> resets trough to 94.4 and defers
+        inst._price = 94.4
+        with patch.object(mt, "MT_SL_STRUCTURAL_BREAK_ENABLED", False):
+            self.run_tick(inst, trend_up=True, loss=0.05, now=NOW + 20)
+        self.assertEqual(inst.placed, [])
+        self.assertIn(sym, mt._SL_BOUNCE_STATE)
+        self.assertEqual(mt._SL_BOUNCE_STATE[sym]["lowest_price"], 94.4)
+
+    def test_mhdsl_bounce_ratchet_tightens_pullback(self):
+        """Verify dynamic ratchet tightens pullback threshold when bounce recovery is strong."""
+        mt.HARD_TP_ENABLED = False
+        inst = FakeInstrument(price=91.5, free=4.0, fills=[_fill("BUY", 100, 4)])
+        sym = inst.symbol
+
+        # Threshold: 7.0% loss. Disaster floor: 7.0% + 2.1% = 9.1%.
+        # Tick 1: dip to 91.5 (loss 8.5% between 7.0% and 9.1%)
+        self.run_tick(inst, trend_up=True, loss=0.07, now=NOW)
+        self.assertEqual(inst.placed, [])
+
+        # Tick 2: strong bounce to 92.8 (+1.42% recovery >> 0.4%, loss 7.2% > 7.0% threshold)
+        inst._price = 92.8
+        self.run_tick(inst, trend_up=True, loss=0.07, now=NOW + 10)
+        self.assertEqual(inst.placed, [])
+
+        # Tick 3: price pulls back to 92.6 (pullback (92.8 - 92.6)/92.8 = 0.215%, loss 7.4%).
+        # Standard pullback threshold is 0.30% (which would NOT trigger at 0.215%).
+        # With ratchet enabled, effective pullback is tightened to 0.15%, so 0.215% TRIGGERS exit!
+        inst._price = 92.6
+        with patch.object(mt, "MT_SL_BOUNCE_RATCHET_ENABLED", True):
+            self.run_tick(inst, trend_up=True, loss=0.07, now=NOW + 20)
+        self.assertEqual(len(inst.placed), 1)
+        self.assertEqual((inst.placed[0]["side"], inst.placed[0]["qty"]), ("SELL", 4.0))
+        self.assertNotIn(sym, mt._SL_BOUNCE_STATE)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
