@@ -30,6 +30,21 @@ _PROCESS_NAME_OVERRIDES = {
 
 # Canonical prefix -> bot name mapping.
 BOT_PREFIX_MAP = {
+    # Composite / Lineage prefixes from monitororder replacement
+    "MO_TA_": "tradeall",
+    "MO_MN_": "manual",
+    "MO_RT_": "rtrade",
+    "MO_MT_": "monitortrades",
+    "MO_SD_": "spot_dca",
+    # Composite Outbox / Retry prefixes
+    "TA_OR_": "tradeall",
+    "MN_OR_": "manual",
+    "MO_OR_": "monitororder",
+    "RT_OR_": "rtrade",
+    "MT_OR_": "monitortrades",
+    "SD_OR_": "spot_dca",
+    "AG_OR_": "assetguardian",
+    # Standard bot prefixes
     "RT_": "rtrade",
     "RT": "rtrade",
     "TA_": "tradeall",
@@ -42,6 +57,8 @@ BOT_PREFIX_MAP = {
     "SD": "spot_dca",
     "AG_": "assetguardian",
     "AG": "assetguardian",
+    "MN_": "manual",
+    "MN": "manual",
     "OR_": "order_retry",
     "OR": "order_retry",
     "SRV_": "server",
@@ -145,7 +162,7 @@ def resolve_order_owner(client_order_id: Optional[str]) -> str:
     cid = str(client_order_id or "").strip()
     if not cid:
         return "unspecified"
-    for prefix, bot in BOT_PREFIX_MAP.items():
+    for prefix, bot in sorted(BOT_PREFIX_MAP.items(), key=lambda kv: len(kv[0]), reverse=True):
         if cid.startswith(prefix):
             return bot
     if cid.startswith(MANUAL_PREFIXES):
@@ -178,4 +195,8 @@ def order_matches_owner(client_order_id: Optional[str], allowed_owners: Union[st
     else:
         allowed_set = set(allowed_owners)
     owner = resolve_order_owner(client_order_id)
-    return owner in allowed_set
+    if owner in allowed_set:
+        return True
+    if "monitororder" in allowed_set and str(client_order_id or "").startswith("MO_"):
+        return True
+    return False

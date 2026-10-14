@@ -185,9 +185,23 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             # order. Response loss and transient refusals therefore leave a
             # durable intent for the shared worker; deterministic venue filters
             # are checked while the existing order is still active.
+            if owner == "tradeall":
+                replace_pfx = "MO_TA_OR"
+            elif owner == "manual":
+                replace_pfx = "MO_MN_OR"
+            else:
+                replace_pfx = "MO_OR"
             replacement_id = order_retry.enqueue(
                 symbol, order_type, quantity,
-                {"smart": False, "kind": "monitor_order_replace", "bypass_profit_guard": True, "wait_for_trend": False},
+                {
+                    "smart": False,
+                    "kind": "monitor_order_replace",
+                    "bypass_profit_guard": True,
+                    "wait_for_trend": False,
+                    "prefix": replace_pfx,
+                    "parent_client_order_id": cid,
+                    "parent_owner": owner,
+                },
                 requested_price=new_price, ref_price=current_price,
                 failure_reason="submit_pending",
                 provider_name="Binance", kind="monitor_order_replace",

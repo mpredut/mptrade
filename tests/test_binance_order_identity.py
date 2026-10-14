@@ -19,6 +19,14 @@ class TestBinanceOrderIdContext(unittest.TestCase):
             ("CW_watchdog_66666666", "watchdogfor_cacheandconfig"),
             ("MA_alerts_55555555", "market_alerts"),
             ("OR_retry_12345678", "order_retry"),
+            ("TA_OR_85bea316b24b4a10ab3f_0", "tradeall"),
+            ("MO_TA_OR_85bea316b24b4a10ab_0", "tradeall"),
+            ("MO_MN_OR_85bea316b24b4a10ab_0", "manual"),
+            ("MN_OR_85bea316b24b4a10ab3f_0", "manual"),
+            ("MO_OR_85bea316b24b4a10ab3f_0", "monitororder"),
+            ("RT_OR_85bea316b24b4a10ab3f_0", "rtrade"),
+            ("MT_OR_85bea316b24b4a10ab3f_0", "monitortrades"),
+            ("SD_OR_85bea316b24b4a10ab3f_0", "spot_dca"),
             ("and_123456789", "manual"),
             ("ios_987654321", "manual"),
             ("web_abcdef123", "manual"),
@@ -34,7 +42,12 @@ class TestBinanceOrderIdContext(unittest.TestCase):
     def test_is_order_repriceable_by_monitororder(self):
         # Repriceable origins: tradeall, monitororder, manual (app/web), unspecified (for test mocks)
         self.assertTrue(rc.is_order_repriceable_by_monitororder("TA_MainThread_123"))
+        self.assertTrue(rc.is_order_repriceable_by_monitororder("TA_OR_85bea316b24b4a10ab3f_0"))
+        self.assertTrue(rc.is_order_repriceable_by_monitororder("MO_TA_OR_85bea316b24b4a10ab_0"))
+        self.assertTrue(rc.is_order_repriceable_by_monitororder("MO_MN_OR_85bea316b24b4a10ab_0"))
+        self.assertTrue(rc.is_order_repriceable_by_monitororder("MN_OR_85bea316b24b4a10ab3f_0"))
         self.assertTrue(rc.is_order_repriceable_by_monitororder("MO_MainThread_456"))
+        self.assertTrue(rc.is_order_repriceable_by_monitororder("MO_OR_12345"))
         self.assertTrue(rc.is_order_repriceable_by_monitororder("and_mobile_app_123"))
         self.assertTrue(rc.is_order_repriceable_by_monitororder("web_browser_123"))
         self.assertTrue(rc.is_order_repriceable_by_monitororder(""))
@@ -43,17 +56,25 @@ class TestBinanceOrderIdContext(unittest.TestCase):
         # Strictly PROTECTED bots & origins: must NEVER be repriced
         self.assertFalse(rc.is_order_repriceable_by_monitororder("OR_outbox_retry_123"))
         self.assertFalse(rc.is_order_repriceable_by_monitororder("RT_grid_pair_123"))
+        self.assertFalse(rc.is_order_repriceable_by_monitororder("RT_OR_12345"))
         self.assertFalse(rc.is_order_repriceable_by_monitororder("SD_trailing_stop_123"))
+        self.assertFalse(rc.is_order_repriceable_by_monitororder("SD_OR_12345"))
         self.assertFalse(rc.is_order_repriceable_by_monitororder("MT_stop_loss_123"))
+        self.assertFalse(rc.is_order_repriceable_by_monitororder("MT_OR_12345"))
         self.assertFalse(rc.is_order_repriceable_by_monitororder("AG_risk_guard_123"))
         self.assertFalse(rc.is_order_repriceable_by_monitororder("SRV_server_123"))
         self.assertFalse(rc.is_order_repriceable_by_monitororder("UNKNOWN_12345"))
 
     def test_order_matches_owner(self):
         self.assertTrue(rc.order_matches_owner("TA_123", "tradeall"))
+        self.assertTrue(rc.order_matches_owner("TA_OR_123", "tradeall"))
+        self.assertTrue(rc.order_matches_owner("MO_TA_OR_123", "tradeall"))
+        self.assertTrue(rc.order_matches_owner("MO_TA_OR_123", "monitororder"))
         self.assertTrue(rc.order_matches_owner("TA_123", {"tradeall", "monitororder"}))
         self.assertTrue(rc.order_matches_owner("web_123", "manual"))
+        self.assertTrue(rc.order_matches_owner("MO_MN_OR_123", "manual"))
         self.assertFalse(rc.order_matches_owner("RT_123", "tradeall"))
+        self.assertFalse(rc.order_matches_owner("RT_OR_123", "tradeall"))
         self.assertTrue(rc.order_matches_owner("RT_123", None))
 
 
@@ -127,7 +148,7 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
 
         with patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
              patch.object(monitororder.api, "get_current_price", return_value=100.1), \
-             patch.object(monitororder.order_retry, "enqueue", return_value="rep-1"), \
+             patch.object(monitororder.order_retry, "enqueue", return_value="rep-1") as mock_enqueue, \
              patch.object(monitororder.order_retry, "claim", return_value=[{"place_kwargs": {"client_order_id": "MO_cid"}}]), \
              patch.object(monitororder.order_retry, "activate_claimed_replacement", return_value="activated"), \
              patch.object(monitororder.order_retry, "begin_claimed_submit", return_value={"place_kwargs": {"client_order_id": "MO_cid"}}), \
@@ -145,6 +166,7 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
             # Orders 501 (RT_), 502 (SD_), and 503 (MT_) were completely protected!
             mock_cancel.assert_called_once_with("TAOUSDC", 504)
             mock_place.assert_called_once()
+            self.assertEqual(mock_enqueue.call_args[0][3].get("prefix"), "MO_TA_OR")
 
     def test_monitororder_reprices_manual_orders(self):
         # A manual limit order placed by the user via web app
@@ -154,7 +176,7 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
 
         with patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
              patch.object(monitororder.api, "get_current_price", return_value=100.1), \
-             patch.object(monitororder.order_retry, "enqueue", return_value="rep-2"), \
+             patch.object(monitororder.order_retry, "enqueue", return_value="rep-2") as mock_enqueue, \
              patch.object(monitororder.order_retry, "claim", return_value=[{"place_kwargs": {"client_order_id": "MO_cid"}}]), \
              patch.object(monitororder.order_retry, "activate_claimed_replacement", return_value="activated"), \
              patch.object(monitororder.order_retry, "begin_claimed_submit", return_value={"place_kwargs": {"client_order_id": "MO_cid"}}), \
@@ -170,4 +192,5 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
 
             mock_cancel.assert_called_once_with("TAOUSDC", 601)
             mock_place.assert_called_once()
+            self.assertEqual(mock_enqueue.call_args[0][3].get("prefix"), "MO_MN_OR")
 

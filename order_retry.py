@@ -256,9 +256,14 @@ def _read_nolock(*, validate=False):
     return items
 
 
-def _client_order_id(record_id, revision):
+def _client_order_id(record_id, revision, prefix="OR"):
     """Return a Binance-compatible stable ID for one queued intent revision."""
-    return f"OR_{record_id[:24]}_{int(revision)}"
+    pfx = str(prefix or "OR").strip().rstrip("_")
+    rev_str = str(int(revision))
+    # Max allowed Binance clientOrderId length is 36.
+    overhead = len(pfx) + 1 + len(rev_str) + 1  # pfx + "_" + rev_str + "_"
+    hash_len = max(8, min(24, 36 - overhead))
+    return f"{pfx}_{record_id[:hash_len]}_{rev_str}"
 
 
 def order_id_from_response(response):
@@ -492,9 +497,23 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
         return None
     record_id = uuid.uuid4().hex
     placement = dict(place_kwargs or {})
-    placement.setdefault("client_order_id", _client_order_id(record_id, 0))
+    prefix = placement.get("prefix") or (
+        f"{placement.get('owner')}_OR" if placement.get("owner") else None
+    )
+    if not prefix and kind and "monitor_order_replace" in str(kind):
+        parent_owner = placement.get("parent_owner")
+        if parent_owner == "manual":
+            prefix = "MO_MN_OR"
+        elif parent_owner == "tradeall":
+            prefix = "MO_TA_OR"
+        else:
+            prefix = "MO_OR"
+    if not prefix:
+        prefix = "OR"
+    placement.setdefault("client_order_id", _client_order_id(record_id, 0, prefix=prefix))
     rec = {
         "id": record_id,
+        "prefix": prefix,
         "intent_id": str(intent_id or f"outbox-{record_id}"),
         "provider_name": (None if provider_name is None else str(provider_name)),
         "symbol": symbol,
@@ -580,8 +599,10 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
                     e["requested_qty_total"] = qty
                     revision = int(e.get("revision", 0)) + 1
                     refreshed_kwargs = dict(place_kwargs or {})
+                    pfx = e.get("prefix") or refreshed_kwargs.get("prefix") or prefix or "OR"
                     refreshed_kwargs.setdefault(
-                        "client_order_id", _client_order_id(e.get("id", record_id), revision))
+                        "client_order_id", _client_order_id(e.get("id", record_id), revision, prefix=pfx))
+                    e["prefix"] = pfx
                     e["place_kwargs"] = refreshed_kwargs
                     e["created_ts"] = min(float(e.get("created_ts", cts)), cts)
                     e["attempts"] = max(int(e.get("attempts", 0)), int(attempts))
@@ -1034,8 +1055,9 @@ def claim(ids, now=None, lease_sec=None):
                 continue
             revision = int(rec.get("revision", 0))
             placement = dict(rec.get("place_kwargs") or {})
+            pfx = rec.get("prefix") or placement.get("prefix") or "OR"
             placement.setdefault(
-                "client_order_id", _client_order_id(rec.get("id", ""), revision))
+                "client_order_id", _client_order_id(rec.get("id", ""), revision, prefix=pfx))
             rec["place_kwargs"] = placement
             rec["revision"] = revision
             rec["claim_token"] = token
@@ -1170,8 +1192,9 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                         "filled_fee"):
                     rec.pop(key, None)
                 placement = dict(rec.get("place_kwargs") or {})
+                pfx = rec.get("prefix") or placement.get("prefix") or "OR"
                 placement["client_order_id"] = _client_order_id(
-                    rec.get("id", ""), revision)
+                    rec.get("id", ""), revision, prefix=pfx)
                 rec["place_kwargs"] = placement
             elif outcome == "failure" and same_revision:
                 rec["attempts"] = max(int(rec.get("attempts", 0)),

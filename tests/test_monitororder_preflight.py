@@ -206,7 +206,7 @@ class MonitorOrderPreflightTest(unittest.TestCase):
         self.assertEqual(place_kwargs["kind"], "monitor_order_replace")
         self.assertIs(place_kwargs["cache_permit"], cache_permit)
         self.assertTrue(place_kwargs["caller_owns_retry"])
-        self.assertTrue(place_kwargs["client_order_id"].startswith("OR_"))
+        self.assertTrue(place_kwargs["client_order_id"].startswith(("MO_OR_", "OR_")))
         self.assertIsInstance(place_kwargs["_outcome_context"], dict)
         self.assertEqual(
             list(monitororder.initial_sell_prices.items()), [(202, 100.0)])

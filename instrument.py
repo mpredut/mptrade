@@ -687,6 +687,16 @@ class Instrument:
                         if order_retry.RETRY_ENABLED:
                             prequeue_kwargs = dict(retry_kwargs)
                             prequeue_kwargs["smart"] = smart
+                            if "client_order_id" in kwargs:
+                                prequeue_kwargs["client_order_id"] = kwargs["client_order_id"]
+                            elif "prefix" not in prequeue_kwargs:
+                                try:
+                                    from binance_api.order_id_context import get_process_name
+                                    pname = get_process_name()
+                                    if pname and pname != "PY":
+                                        prequeue_kwargs["prefix"] = f"{pname}_OR"
+                                except Exception:
+                                    pass
                             prequeued_claim = order_retry.enqueue_claimed(
                                 self.symbol, side_u, qty, prequeue_kwargs,
                                 requested_price=orig_price, ref_price=price,
