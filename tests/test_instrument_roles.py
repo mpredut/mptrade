@@ -25,7 +25,7 @@ def test_current_execution_policy_is_preserved():
     assert registry.symbols_for("binance") == ["BTCUSDC", "TAOUSDC", "ARBUSDC"]
     expected = {
         "tradeall_fire": {"BTCUSDC", "TAOUSDC", "ARBUSDC"}, "kalman_primary": {"BTCUSDC"},
-        "mt": {"BTCUSDC", "TAOUSDC"}, "assetguardian": {"BTCUSDC", "TAOUSDC"},
+        "mt": {"BTCUSDC", "TAOUSDC", "ARBUSDC"}, "assetguardian": {"BTCUSDC", "TAOUSDC"},
         "archive": {"BTCUSDC", "TAOUSDC"}, "rtrade": {"TAOUSDC"},
         "force_sell": {"BTCUSDC", "TAOUSDC"},
         "trailing": {"BTCUSDC", "TAOUSDC", "ARBUSDC"},
@@ -42,7 +42,7 @@ def test_current_execution_policy_is_preserved():
               registry.select_instruments("binance", "trailing").values()}
     assert rebuys == {"BTCUSDC": "on", "TAOUSDC": "on", "ARBUSDC": "auto"}
     assert set(registry.select_instruments(role="mt")) == {
-        "BINANCE_BTC", "BINANCE_TAO", "KRAKEN_HYPE"}
+        "BINANCE_BTC", "BINANCE_TAO", "BINANCE_ARB", "KRAKEN_HYPE"}
 
 
 def test_invalid_policy_fails_before_selection(tmp_path):
