@@ -128,7 +128,16 @@ def _load_datasets(report: dict) -> dict[int, tuple[list[dict], dict, int]]:
             datasets[interval] = (records, window_sizes, warmup_bars)
     elif "dataset" in report and "windows" in report:
         interval = int(report.get("runtime", {}).get("interval_minutes", 240))
-        path = Path(report["dataset"]["frozen_file"])
+        frozen_spec = report["dataset"].get("frozen_file")
+        if not frozen_spec:
+            source = str(report["dataset"].get("source", ""))
+            if "frozen to " in source:
+                frozen_spec = source.split("frozen to ", 1)[1].strip()
+            elif "frozen file: " in source:
+                frozen_spec = source.split("frozen file: ", 1)[1].strip()
+        if not frozen_spec:
+            raise ValueError(f"could not determine frozen dataset file path for {interval}m")
+        path = Path(frozen_spec)
         records = load_frozen_dataset(path)
         actual_hash = dataset_sha256(records)
         expected_hash = report["dataset"]["sha256"]
@@ -225,7 +234,11 @@ def main(argv: list[str] | None = None) -> int:
     datasets = _load_datasets(source_report)
     if args.candidate_set == "hype-240" and set(datasets) != {240}:
         parser.error("candidate set hype-240 requires a baseline containing only the 240 interval")
-    base_params = StratParams(**source_report["strategy_params"])
+    valid_strat_fields = {f.name for f in dataclasses.fields(StratParams)}
+    filtered_params = {
+        k: v for k, v in source_report["strategy_params"].items() if k in valid_strat_fields
+    }
+    base_params = StratParams(**filtered_params)
     base_fee = float(source_report.get("fee_pct_per_leg", 0.10))
     execution = ExecutionModel(**source_report.get("execution_model", {}))
 

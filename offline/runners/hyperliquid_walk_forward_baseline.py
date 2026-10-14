@@ -153,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     for interval in args.intervals:
         frozen_file = dataset_map.get(interval)
         if frozen_file:
+            frozen_path = frozen_file
             records = validate_dataset(load_frozen_dataset(frozen_file), interval_minutes=interval)
             source_label = f"frozen file: {frozen_file}"
         else:
@@ -162,9 +163,9 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             records = validate_dataset(raw_candles, interval_minutes=interval)
             meta = dataset_metadata(records, interval_minutes=interval)
-            frozen_dest = output_dir / "datasets" / f"{coin}_{interval}m_{meta['sha256'][:12]}.csv"
-            save_frozen_dataset(records, frozen_dest)
-            source_label = f"Hyperliquid API, frozen to {frozen_dest}"
+            frozen_path = output_dir / "datasets" / f"{coin}_{interval}m_{meta['sha256'][:12]}.csv"
+            save_frozen_dataset(records, frozen_path)
+            source_label = f"Hyperliquid API, frozen to {frozen_path}"
 
         if len(records) < 20:
             print(f"[!] Insufficient bars for {coin} {interval}m ({len(records)} < 20); skipping.")
@@ -213,9 +214,11 @@ def main(argv: list[str] | None = None) -> int:
                 "interval_minutes": interval,
             },
             "strategy_params": dataclasses.asdict(strat_params),
+            "fee_pct_per_leg": fee_pct,
             "execution_model": dataclasses.asdict(execution),
             "dataset": {
                 "source": source_label,
+                "frozen_file": str(frozen_path),
                 **meta,
             },
             "windows": {
