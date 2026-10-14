@@ -1741,12 +1741,16 @@ class TradingBot:
                     # If the asset trends clearly, keep the spread bot idle for this cycle
                     # to avoid catching a falling knife. Retry on the next iteration.
                     if _trend_too_strong(self.symbol):
+                        api.cancel_open_orders("SELL", self.symbol, allowed_owners={"rtrade"})
+                        api.cancel_open_orders("BUY", self.symbol, allowed_owners={"rtrade"})
                         time.sleep(WAIT_FOR_ORDER)
                         continue
 
                     buy_result, sell_result = self._run_pair(executor, current_price)
 
                     if not buy_result or not sell_result:
+                        api.cancel_open_orders("SELL", self.symbol, allowed_owners={"rtrade"})
+                        api.cancel_open_orders("BUY", self.symbol, allowed_owners={"rtrade"})
                         time.sleep(RTRADE_PAIR_POLL_SEC)
                         continue
 
@@ -1766,9 +1770,9 @@ class TradingBot:
                         self.buy_filled = self.sell_filled = False
                 except Exception as e:
                     print(f"[{self.symbol}] Unexpected error: {e}")
-                    # Worker exceptions arrive here through Future.result().
-                    api.cancel_recent_orders("SELL", self.symbol, WAIT_FOR_ORDER, allowed_owners={"rtrade"})
-                    api.cancel_recent_orders("BUY", self.symbol, WAIT_FOR_ORDER, allowed_owners={"rtrade"})
+                    # Guarantee atomic cleanup of all rtrade open orders on worker failure.
+                    api.cancel_open_orders("SELL", self.symbol, allowed_owners={"rtrade"})
+                    api.cancel_open_orders("BUY", self.symbol, allowed_owners={"rtrade"})
                     time.sleep(1)
                 
                 

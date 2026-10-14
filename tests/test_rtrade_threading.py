@@ -1234,6 +1234,29 @@ class RTradeThreadingTest(unittest.TestCase):
         policy.assert_called_once_with("TAOUSDC", "BUY")
         self.assertFalse(place.call_args_list[1].kwargs["force"])
 
+    def test_run_exception_cancels_all_rtrade_open_orders(self):
+        bot = _bot()
+        with patch.object(rtrade.api, "get_current_price", return_value=100.0), \
+             patch.object(rtrade, "_trend_too_strong", return_value=False), \
+             patch.object(bot, "_run_pair", side_effect=[RuntimeError("boom"), SystemExit]), \
+             patch.object(rtrade.api, "cancel_open_orders") as mock_cancel, \
+             patch.object(rtrade.time, "sleep"):
+            with self.assertRaises(SystemExit):
+                bot.run()
+            mock_cancel.assert_any_call("SELL", "TAOUSDC", allowed_owners={"rtrade"})
+            mock_cancel.assert_any_call("BUY", "TAOUSDC", allowed_owners={"rtrade"})
+
+    def test_run_standing_aside_cancels_all_rtrade_open_orders(self):
+        bot = _bot()
+        with patch.object(rtrade.api, "get_current_price", return_value=100.0), \
+             patch.object(rtrade, "_trend_too_strong", side_effect=[True, SystemExit]), \
+             patch.object(rtrade.api, "cancel_open_orders") as mock_cancel, \
+             patch.object(rtrade.time, "sleep"):
+            with self.assertRaises(SystemExit):
+                bot.run()
+            mock_cancel.assert_any_call("SELL", "TAOUSDC", allowed_owners={"rtrade"})
+            mock_cancel.assert_any_call("BUY", "TAOUSDC", allowed_owners={"rtrade"})
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
