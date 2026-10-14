@@ -320,3 +320,62 @@ def test_smart_sl_batch_unification_multiple_coins():
         assert "dip 4.98% <= 5.25%" in unified["body"]
         assert "Pozitii salvate de wick hunt (2)!" in unified["body"]
 
+
+def test_smart_sl_replay_provider_never_emits_notifications(tmp_path):
+    import os
+    import intelligence.external.guards.smart_stop_loss_guard as ssl_guard
+
+    test_state_file = str(tmp_path / "smart_stop_loss_state_replay.json")
+    ssl_guard._SMART_SL_STATE_FILE = test_state_file
+    ssl_guard._GRACE_TRACKER.clear()
+    ssl_guard._LAST_RECOVERY_ALERT_TS.clear()
+    ssl_guard._PENDING_RECOVERIES.clear()
+
+    guard = SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
+    whale = _mock_whale(top_long=0.65, taker_ratio=1.1)
+    ob = _mock_ob()
+
+    alerts_sent = []
+    with patch(
+        "intelligence.external.guards.smart_stop_loss_guard._send_ntfy_alert",
+        side_effect=lambda title, body, symbol: alerts_sent.append({"title": title, "body": body, "symbol": symbol}),
+    ):
+        t0 = 20000.0
+        # 1. Grace period entered for BTCUSDC on replay provider
+        should_exec, reason, meta = guard.evaluate(
+            "BTCUSDC", 0.0294, 0.02925, now=t0,
+            provider="replay", current_price=68248.66, buy_price=70850.0,
+            whale_snapshot=whale, orderbook_snapshot=ob,
+        )
+        assert should_exec is False
+        assert meta["is_simulated"] is True
+        assert len(alerts_sent) == 0
+        assert not os.path.exists(test_state_file)
+
+        # 2. Timeout after 120s in replay
+        should_exec, reason, meta = guard.evaluate(
+            "BTCUSDC", 0.0368, 0.02925, now=t0 + 121.0,
+            provider="replay", current_price=68248.66, buy_price=70850.0,
+            whale_snapshot=whale, orderbook_snapshot=ob,
+        )
+        assert should_exec is True
+        assert "grace_period_expired" in reason
+        assert len(alerts_sent) == 0
+        assert not os.path.exists(test_state_file)
+
+        # 3. Recovery in replay also never emits
+        # Re-enter grace
+        guard.evaluate(
+            "BTCUSDC", 0.0294, 0.02925, now=t0 + 200.0,
+            provider="replay", current_price=68248.66,
+            whale_snapshot=whale, orderbook_snapshot=ob,
+        )
+        recovered = guard.on_recovered(
+            "BTCUSDC", price_decrease=0.022, lost_threshold=0.02925,
+            now=t0 + 240.0, provider="replay", current_price=69500.0,
+        )
+        assert recovered is True
+        assert len(alerts_sent) == 0
+        assert len(ssl_guard._PENDING_RECOVERIES) == 0
+
+
