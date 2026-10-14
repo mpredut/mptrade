@@ -102,6 +102,32 @@ class WalkForwardCompareTest(unittest.TestCase):
         self.assertTrue(hasattr(kraken_compare, "main"))
         self.assertTrue(hasattr(kraken_compare, "_candidate_windows"))
 
+    def test_load_report_supports_both_schemas(self):
+        from offline.runners.walk_forward_compare import _load_report
+        import tempfile
+        import json
+
+        # Multi-interval format (Kraken)
+        with tempfile.NamedTemporaryFile("w+", suffix=".json") as f:
+            json.dump({"schema_version": 1, "intervals": {"240": {}}}, f)
+            f.flush()
+            rep = _load_report(Path(f.name))
+            self.assertEqual(rep["schema_version"], 1)
+
+        # Single-interval format (Binance/Hyperliquid)
+        with tempfile.NamedTemporaryFile("w+", suffix=".json") as f:
+            json.dump({"schema_version": 1, "dataset": {}, "windows": {}}, f)
+            f.flush()
+            rep = _load_report(Path(f.name))
+            self.assertEqual(rep["schema_version"], 1)
+
+        # Invalid format
+        with tempfile.NamedTemporaryFile("w+", suffix=".json") as f:
+            json.dump({"schema_version": 2}, f)
+            f.flush()
+            with self.assertRaises(ValueError):
+                _load_report(Path(f.name))
+
 
 if __name__ == "__main__":
     unittest.main()

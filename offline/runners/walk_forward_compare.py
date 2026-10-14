@@ -103,28 +103,41 @@ def _detect_venue(report: dict, cli_venue: str | None = None) -> str:
 def _load_report(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as handle:
         report = json.load(handle)
-    if report.get("schema_version") != 1 or not report.get("intervals"):
+    has_intervals = report.get("intervals") is not None and len(report.get("intervals", {})) > 0
+    has_single_dataset = report.get("dataset") is not None and report.get("windows") is not None
+    if report.get("schema_version") != 1 or (not has_intervals and not has_single_dataset):
         raise ValueError("an incompatible or empty baseline report")
     return report
 
 
 def _load_datasets(report: dict) -> dict[int, tuple[list[dict], dict, int]]:
     datasets = {}
-    for interval_text, section in report["intervals"].items():
-        interval = int(interval_text)
-        path = Path(section["dataset"]["frozen_file"])
+    warmup_bars = int(report.get("walk_forward", {}).get("signal_warmup_bars", 0))
+    if "intervals" in report:
+        for interval_text, section in report["intervals"].items():
+            interval = int(interval_text)
+            path = Path(section["dataset"]["frozen_file"])
+            records = load_frozen_dataset(path)
+            actual_hash = dataset_sha256(records)
+            expected_hash = section["dataset"]["sha256"]
+            if actual_hash != expected_hash:
+                raise ValueError(
+                    f"a different dataset hash for {interval}m: {actual_hash} != {expected_hash}"
+                )
+            window_sizes = section.get("window_sizes") or section.get("windows")
+            datasets[interval] = (records, window_sizes, warmup_bars)
+    elif "dataset" in report and "windows" in report:
+        interval = int(report.get("runtime", {}).get("interval_minutes", 240))
+        path = Path(report["dataset"]["frozen_file"])
         records = load_frozen_dataset(path)
         actual_hash = dataset_sha256(records)
-        expected_hash = section["dataset"]["sha256"]
+        expected_hash = report["dataset"]["sha256"]
         if actual_hash != expected_hash:
             raise ValueError(
                 f"a different dataset hash for {interval}m: {actual_hash} != {expected_hash}"
             )
-        datasets[interval] = (
-            records,
-            section["window_sizes"],
-            int(report.get("walk_forward", {}).get("signal_warmup_bars", 0)),
-        )
+        window_sizes = report["windows"]
+        datasets[interval] = (records, window_sizes, warmup_bars)
     return datasets
 
 
@@ -213,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.candidate_set == "hype-240" and set(datasets) != {240}:
         parser.error("candidate set hype-240 requires a baseline containing only the 240 interval")
     base_params = StratParams(**source_report["strategy_params"])
-    base_fee = float(source_report["fee_pct_per_leg"])
+    base_fee = float(source_report.get("fee_pct_per_leg", 0.10))
     execution = ExecutionModel(**source_report.get("execution_model", {}))
 
     results = {}
