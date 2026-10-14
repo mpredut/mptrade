@@ -5,18 +5,23 @@ replay.py — Canonical replay engine for Hyperliquid perpetual strategies.
 Executes the production Strategy engine bar-by-bar over historical OHLC candles,
 modeling perpetual funding, limit fills against candle extremes (high/low),
 stop-loss execution, and equity drawdown without network or side-effects.
+Standardizes metrics reporting through calculate_performance_metrics.
 """
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
+_ROOT = os.path.dirname(_HERE)
+for p in (_HERE, _ROOT):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 from strategy import Strategy, StratParams, HL_FEE_PCT
+from offline.backtests.metrics import calculate_performance_metrics
 
 
 def funding_at(fund: list[tuple[int, float]] | None, t_ms: int) -> float:
@@ -41,6 +46,8 @@ def run_replay(
     params: StratParams | dict | None = None,
     direction: str = "long",
     coin: str = "HYPE",
+    bar_minutes: float | None = 60.0,
+    periods_per_year: float | None = None,
 ) -> dict:
     """Replay historical candles through the live Strategy engine."""
     if not ohlc:
@@ -72,9 +79,13 @@ def run_replay(
         replay_mode=True,
     )
 
+    initial_capital = float(strat_params.max_budget)
+    equity_curve = [initial_capital]
+    exposure: list[bool] = []
+    trade_pnls: list[float] = []
+    cycle_net_start = 0.0
+    turnover_notional = 0.0
     funding = 0.0
-    peak = 0.0
-    maxdd = 0.0
     c = ohlc[0][3]
 
     for i in range(len(ohlc)):
@@ -98,6 +109,7 @@ def run_replay(
             if hit:
                 strategy._remove(open_order)
                 strategy._apply_open(sz, px, open_order.get("amount", 0.0), open_order.get("kind"))
+                turnover_notional += sz * px
 
         # Check close order (TP) if position is held
         close_order = next((x for x in list(strategy.s["orders"]) if x["role"] == "close"), None)
@@ -108,20 +120,31 @@ def run_replay(
             if hit:
                 strategy._remove(close_order)
                 avg = strategy._avg() or px
+                cycle_before = strategy.s.get("cycles_completed", 0)
                 strategy._apply_close(avg, px, sz)
+                turnover_notional += sz * px
+                if strategy.s.get("cycles_completed", 0) > cycle_before:
+                    trade_pnls.append(strategy.s["realized_net"] - cycle_net_start)
+                    cycle_net_start = strategy.s["realized_net"]
 
         # 3. Strategy decisions at bar close
         signal_val = sig[i] if sig and i < len(sig) else "__any__"
+        cycle_before_step = strategy.s.get("cycles_completed", 0)
         strategy.step(c, signal=signal_val)
+        if strategy.s.get("cycles_completed", 0) > cycle_before_step:
+            trade_pnls.append(strategy.s["realized_net"] - cycle_net_start)
+            cycle_net_start = strategy.s["realized_net"]
 
-        # 4. Equity curve and drawdown tracking
+        # 4. Equity curve and exposure tracking
         qty = strategy.s["qty"]
         cost = strategy.s["cost"]
         realized = strategy.s["realized_net"]
         upnl = (strategy.sign * (c - cost / qty) * qty) if qty > 1e-12 else 0.0
-        eq = realized + funding + upnl
-        peak = max(peak, eq)
-        maxdd = max(maxdd, peak - eq)
+        fee_pct = getattr(strategy.p, "fee_pct", HL_FEE_PCT)
+        open_fee = (fee_pct / 100.0) * cost if qty > 1e-12 else 0.0
+        current_equity = initial_capital + realized + funding + upnl - open_fee
+        equity_curve.append(current_equity)
+        exposure.append(qty > 1e-12)
 
     qty = strategy.s["qty"]
     cost = strategy.s["cost"]
@@ -134,15 +157,34 @@ def run_replay(
         fee_pct = getattr(strategy.p, "fee_pct", HL_FEE_PCT)
         total_fees += (fee_pct / 100.0) * cost
 
-    return {
-        "net": realized + funding,
-        "realized": realized,
-        "fees": total_fees,
-        "funding": funding,
+    if periods_per_year is None and bar_minutes:
+        periods_per_year = 365.0 * 24 * 60 / bar_minutes
+
+    performance = calculate_performance_metrics(
+        equity_curve,
+        initial_capital=initial_capital,
+        periods_per_year=periods_per_year,
+        exposure=exposure,
+        trade_pnls=trade_pnls,
+        turnover_notional=turnover_notional,
+    )
+
+    rounded = lambda v: round(float(v), 10) if isinstance(v, (int, float)) and math.isfinite(v) else v
+    result = {
+        "net": rounded(realized + funding),
+        "realized": rounded(realized),
+        "fees": rounded(total_fees),
+        "funding": rounded(funding),
         "cycles": cycles,
         "wins": wins,
-        "maxdd": maxdd,
-        "open_qty": qty,
-        "final_upnl": final_upnl,
-        "total": realized + funding + final_upnl,
+        "maxdd": rounded(performance["max_drawdown_abs"]),
+        "open_qty": rounded(qty),
+        "final_upnl": rounded(final_upnl),
+        "total": rounded(realized + funding + final_upnl),
+        "account_currency": strat_params.currency,
     }
+    result.update({
+        key: rounded(value)
+        for key, value in performance.items()
+    })
+    return result

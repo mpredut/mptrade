@@ -182,3 +182,30 @@ def test_hyperliquid_simulate_funding():
 
     assert m_long["funding"] < 0.0    # long pays funding
     assert m_short["funding"] > 0.0   # short receives funding
+
+
+def test_hyperliquid_standardized_performance_metrics():
+    ohlc = [
+        (100.0, 100.5, 99.5, 100.0),
+        (100.0, 100.5, 99.5, 100.0),
+        (100.0, 102.0, 100.0, 101.5),
+    ]
+    ts = [1000, 2000, 3000]
+    fund = [(0, 0.0)]
+    sig = ["__any__"] * len(ohlc)
+    P = dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=1.0, maxdca=2, budget=500.0, fee=0.045, sl=5.0)
+
+    m = simulate(ohlc, ts, fund, sig, P, "long")
+
+    assert "return_pct" in m
+    assert "max_drawdown_pct" in m
+    assert "max_drawdown_abs" in m
+    assert "exposure_pct" in m
+    assert "turnover_pct" in m
+    assert "win_rate_pct" in m
+    assert "net_pnl" in m
+    assert m["win_rate_pct"] == 100.0
+    assert m["return_pct"] > 0.0
+    assert m["trade_count"] == 1
+    assert m["exposure_pct"] > 0.0
+
