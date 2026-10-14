@@ -75,12 +75,20 @@ PILOT_KEYS = {
     "BINANCE_BTC.mt.lost": ("BTCUSDC", "BTC", "mt.lost"),
     "BINANCE_TAO.mt.gain": ("TAOUSDC", "TAO", "mt.gain"),
     "BINANCE_TAO.mt.lost": ("TAOUSDC", "TAO", "mt.lost"),
+    "BINANCE_ARB.mt.gain": ("ARBUSDC", "ARB", "mt.gain"),
+    "BINANCE_ARB.mt.lost": ("ARBUSDC", "ARB", "mt.lost"),
     "BINANCE_BTC.mt.maxage_days": ("BTCUSDC", "BTC", "mt.maxage_days"),
     "BINANCE_TAO.mt.maxage_days": ("TAOUSDC", "TAO", "mt.maxage_days"),
+    "BINANCE_ARB.mt.maxage_days": ("ARBUSDC", "ARB", "mt.maxage_days"),
     "BINANCE_BTC.mt.hardtp": ("BTCUSDC", "BTC", "mt.hardtp"),
     "BINANCE_TAO.mt.hardtp": ("TAOUSDC", "TAO", "mt.hardtp"),
+    "BINANCE_ARB.mt.hardtp": ("ARBUSDC", "ARB", "mt.hardtp"),
     "BINANCE_BTC.mt.hardtp_fraction": ("BTCUSDC", "BTC", "mt.hardtp_fraction"),
     "BINANCE_TAO.mt.hardtp_fraction": ("TAOUSDC", "TAO", "mt.hardtp_fraction"),
+    "BINANCE_ARB.mt.hardtp_fraction": ("ARBUSDC", "ARB", "mt.hardtp_fraction"),
+    "BINANCE_BTC.mt.hardtp_cooldown_h": ("BTCUSDC", "BTC", "mt.hardtp_cooldown_h"),
+    "BINANCE_TAO.mt.hardtp_cooldown_h": ("TAOUSDC", "TAO", "mt.hardtp_cooldown_h"),
+    "BINANCE_ARB.mt.hardtp_cooldown_h": ("ARBUSDC", "ARB", "mt.hardtp_cooldown_h"),
 }
 
 

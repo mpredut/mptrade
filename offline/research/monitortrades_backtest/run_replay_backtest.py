@@ -65,7 +65,11 @@ def _live_mt_params(section):
 class _LiveSymbols:
     """dict-like: SYMBOLS[symbol]["params"] reads instruments.conf ON EVERY
     ACCESS (not at import), so it cannot become a stale copy again."""
-    _SECTIONS = {"BTCUSDC": ("BINANCE_BTC", "BTC"), "TAOUSDC": ("BINANCE_TAO", "TAO")}
+    _SECTIONS = {
+        "BTCUSDC": ("BINANCE_BTC", "BTC"),
+        "TAOUSDC": ("BINANCE_TAO", "TAO"),
+        "ARBUSDC": ("BINANCE_ARB", "ARB"),
+    }
 
     def __getitem__(self, symbol):
         section, base = self._SECTIONS[symbol]
