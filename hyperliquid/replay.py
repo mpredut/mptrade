@@ -85,6 +85,7 @@ def run_replay(
     trade_pnls: list[float] = []
     cycle_net_start = 0.0
     turnover_notional = 0.0
+    fills = 0
     funding = 0.0
     c = ohlc[0][3]
 
@@ -110,6 +111,7 @@ def run_replay(
                 strategy._remove(open_order)
                 strategy._apply_open(sz, px, open_order.get("amount", 0.0), open_order.get("kind"))
                 turnover_notional += sz * px
+                fills += 1
 
         # Check close order (TP) if position is held
         close_order = next((x for x in list(strategy.s["orders"]) if x["role"] == "close"), None)
@@ -123,6 +125,7 @@ def run_replay(
                 cycle_before = strategy.s.get("cycles_completed", 0)
                 strategy._apply_close(avg, px, sz)
                 turnover_notional += sz * px
+                fills += 1
                 if strategy.s.get("cycles_completed", 0) > cycle_before:
                     trade_pnls.append(strategy.s["realized_net"] - cycle_net_start)
                     cycle_net_start = strategy.s["realized_net"]
@@ -134,6 +137,7 @@ def run_replay(
         if strategy.s.get("cycles_completed", 0) > cycle_before_step:
             trade_pnls.append(strategy.s["realized_net"] - cycle_net_start)
             cycle_net_start = strategy.s["realized_net"]
+            fills += 1
 
         # 4. Equity curve and exposure tracking
         qty = strategy.s["qty"]
@@ -171,8 +175,8 @@ def run_replay(
 
     rounded = lambda v: round(float(v), 10) if isinstance(v, (int, float)) and math.isfinite(v) else v
     result = {
-        "net": rounded(realized + funding),
         "realized": rounded(realized),
+        "net": rounded(realized + funding),
         "fees": rounded(total_fees),
         "funding": rounded(funding),
         "cycles": cycles,
@@ -181,6 +185,9 @@ def run_replay(
         "open_qty": rounded(qty),
         "final_upnl": rounded(final_upnl),
         "total": rounded(realized + funding + final_upnl),
+        "fills": fills,
+        "ambiguous_bars": 0,
+        "initial_capital": rounded(initial_capital),
         "account_currency": strat_params.currency,
     }
     result.update({
@@ -188,3 +195,25 @@ def run_replay(
         for key, value in performance.items()
     })
     return result
+
+
+def make_hyperliquid_replay_adapter(
+    params: StratParams | dict,
+    direction: str = "long",
+    coin: str = "HYPE",
+    fund: list[tuple[int, float]] | None = None,
+    bar_minutes: float | None = 60.0,
+):
+    """Return a generic ReplayFunction compatible with evaluation.py walk-forward benchmarks."""
+    def _adapter(ohlc, _warmup_ohlc, context=None):
+        ts = list(context.timestamps) if context and getattr(context, "timestamps", None) else None
+        return run_replay(
+            ohlc,
+            ts=ts,
+            fund=fund,
+            params=params,
+            direction=direction,
+            coin=coin,
+            bar_minutes=bar_minutes,
+        )
+    return _adapter

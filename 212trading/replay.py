@@ -261,6 +261,7 @@ def _run_once(
         "open_qty": rounded(qty),
         "fills": fills,
         "ambiguous_bars": ambiguous_bars,
+        "initial_capital": rounded(initial_capital),
     }
     result.update({
         key: (rounded(value) if isinstance(value, float) and math.isfinite(value) else value)

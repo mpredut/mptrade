@@ -339,6 +339,8 @@ def _run_once(
         "open_qty": rounded(qty),
         "fills": fill_count,
         "ambiguous_bars": ambiguous_bars,
+        "initial_capital": rounded(initial_capital),
+        "account_currency": params.currency,
     }
     result.update({
         key: (round(value, 10) if isinstance(value, float) else value)

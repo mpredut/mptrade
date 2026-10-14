@@ -16,6 +16,11 @@ hl_backtest = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(hl_backtest)
 simulate = hl_backtest.simulate
 
+spec_replay = importlib.util.spec_from_file_location("hl_replay_module", os.path.join(_HL_DIR, "replay.py"))
+hl_replay = importlib.util.module_from_spec(spec_replay)
+spec_replay.loader.exec_module(hl_replay)
+make_hyperliquid_replay_adapter = hl_replay.make_hyperliquid_replay_adapter
+
 from kraken.backtest_trail import simulate_trail
 
 
@@ -204,8 +209,41 @@ def test_hyperliquid_standardized_performance_metrics():
     assert "turnover_pct" in m
     assert "win_rate_pct" in m
     assert "net_pnl" in m
+    assert "fills" in m
+    assert "initial_capital" in m
+    assert m["initial_capital"] == 500.0
+    assert m["fills"] >= 2
     assert m["win_rate_pct"] == 100.0
     assert m["return_pct"] > 0.0
     assert m["trade_count"] == 1
     assert m["exposure_pct"] > 0.0
+
+
+def test_hyperliquid_walk_forward_adapter_compatibility():
+    from offline.backtests.evaluation import evaluate_segment
+
+    records = [
+        {"timestamp": 1000 + i * 3600, "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0}
+        for i in range(10)
+    ]
+    # Price moves to fill entry and TP
+    records[1] = {"timestamp": 1000 + 1 * 3600, "open": 100.0, "high": 100.5, "low": 99.0, "close": 99.8}
+    records[2] = {"timestamp": 1000 + 2 * 3600, "open": 99.8, "high": 102.0, "low": 99.5, "close": 101.5}
+
+    adapter = make_hyperliquid_replay_adapter(
+        params=dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=1.0, maxdca=2, budget=500.0, fee=0.045, sl=5.0),
+        direction="long",
+        coin="HYPE",
+        bar_minutes=60.0,
+    )
+    res = evaluate_segment(records, adapter)
+    assert "metrics" in res
+    assert "return_pct" in res["metrics"]
+    assert "max_drawdown_pct" in res["metrics"]
+    assert "cycles" in res["metrics"]
+    assert "fills" in res["metrics"]
+    assert res["metrics"]["cycles"] == 1
+    assert res["metrics"]["fills"] >= 2
+    assert res["buy_hold_return_pct"] is not None
+
 
