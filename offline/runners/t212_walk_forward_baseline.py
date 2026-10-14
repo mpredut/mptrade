@@ -25,9 +25,24 @@ T212_DIR = ROOT / "212trading"
 sys.path.insert(0, str(T212_DIR))
 sys.path.insert(0, str(ROOT))
 
-from ipo_common import parse_dotenv  # noqa: E402
-import replay as t212_replay  # noqa: E402
-from strategy import StratParams  # noqa: E402
+import importlib.util
+
+from botcore import parse_dotenv  # noqa: E402
+_replay_spec = importlib.util.spec_from_file_location(
+    "t212_wf_replay", str(T212_DIR / "replay.py")
+)
+t212_replay = importlib.util.module_from_spec(_replay_spec)
+_replay_spec.loader.exec_module(t212_replay)
+StratParams = t212_replay._strat.StratParams
+
+_md_spec = importlib.util.spec_from_file_location(
+    "t212_wf_market_data", str(T212_DIR / "market_data.py")
+)
+_t212_md = importlib.util.module_from_spec(_md_spec)
+_md_spec.loader.exec_module(_t212_md)
+fetch_yahoo_candles = _t212_md.fetch_yahoo_candles
+parse_interval_minutes = _t212_md.parse_interval_minutes
+
 from offline.backtests.datasets import (  # noqa: E402
     align_previous_values,
     dataset_metadata,
@@ -45,9 +60,6 @@ from offline.backtests.evaluation import (  # noqa: E402
 from offline.backtests.execution import ExecutionModel  # noqa: E402
 
 
-from market_data import fetch_yahoo_candles, parse_interval_minutes
-
-
 def periods_per_year(interval_minutes: int) -> float:
     # Regular US session: 6.5h and roughly 252 trading days per year.
     if interval_minutes >= 1440:
@@ -63,7 +75,7 @@ def fx_quote(currency: str) -> tuple[str, bool]:
     return f"{currency}USD=X", False
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", default="nvda", help="config.<profile>.env")
     parser.add_argument("--range", default="2y", help="range Yahoo: 60d, 1y, 2y etc.")
@@ -98,7 +110,7 @@ def main() -> int:
     parser.add_argument(
         "--output-dir", type=Path, default=ROOT / "offline/results/t212_walk_forward",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     interval_minutes = parse_interval_minutes(args.interval)
     config_path = T212_DIR / f"config.{args.profile}.env"

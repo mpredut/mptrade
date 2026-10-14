@@ -27,6 +27,7 @@ exec "$PYTHON_BIN" -m pytest -q \
   tests/test_walk_forward.py \
   tests/test_comparison.py \
   tests/test_walk_forward_compare.py \
+  tests/test_walk_forward_facade.py \
   tests/test_financial_benchmark.py \
   tests/test_financial_baseline_artifact.py \
   tests/test_promotion_gate.py

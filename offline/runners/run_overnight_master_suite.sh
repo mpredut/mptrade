@@ -69,14 +69,14 @@ run_step "0B" "Chop Regime & Dynamic Weight Benchmark (407 days)" \
 # STEP 1: Kraken & HYPE Multi-Interval Walk-Forward Baselines & Comparisons
 # ------------------------------------------------------------------------------
 run_step "1A" "HYPE 240m Walk-Forward Baseline (628 days, 31 folds)" \
-    "$PYTHON_BIN offline/runners/kraken_walk_forward_baseline.py \
+    "$PYTHON_BIN offline/runners/walk_forward.py --venue kraken \
         --intervals 240 \
         --dataset 240=offline/research/hype_dataset/HYPEUSDC_240m_hlspot.csv \
         --train 720 --validation 180 --test 90 --step 90 --warmup 40 \
         --output-dir $RESULTS_DIR/kraken_wf_240"
 
 run_step "1B" "HYPE 240m Candidate Comparison" \
-    "$PYTHON_BIN offline/runners/kraken_walk_forward_compare.py \
+    "$PYTHON_BIN offline/runners/walk_forward.py --mode compare \
         \$(ls -t $RESULTS_DIR/kraken_wf_240/baseline_HYPEUSD_*.json | head -1) \
         --candidate-set hype-240"
 
@@ -87,33 +87,33 @@ run_step "1B" "HYPE 240m Candidate Comparison" \
 # STEP 2: Trading212 Walk-Forward Baselines (NVDA, RGNT, SPCX)
 # ------------------------------------------------------------------------------
 run_step "2A" "T212 NVDA 1d Walk-Forward Baseline" \
-    "$PYTHON_BIN offline/runners/t212_walk_forward_baseline.py \
+    "$PYTHON_BIN offline/runners/walk_forward.py --venue t212 \
         --profile nvda \
         --dataset offline/research/t212_dataset/nvda/datasets/NVDA_1d_9e8cbd3c6ff5.csv \
         --train 180 --validation 60 --test 30 --step 30 --warmup 12 \
         --output-dir $RESULTS_DIR/t212_nvda"
 
 run_step "2B" "T212 RGNT 1d Walk-Forward Baseline" \
-    "$PYTHON_BIN offline/runners/t212_walk_forward_baseline.py \
+    "$PYTHON_BIN offline/runners/walk_forward.py --venue t212 \
         --profile rgnt \
         --dataset offline/research/t212_dataset/rgnt/datasets/RGNT_1d_b67a2932ddd6.csv \
         --train 90 --validation 30 --test 20 --step 20 --warmup 12 \
         --output-dir $RESULTS_DIR/t212_rgnt"
 
 run_step "2C" "T212 SPCX 5m Walk-Forward Baseline" \
-    "$PYTHON_BIN offline/runners/t212_walk_forward_baseline.py \
+    "$PYTHON_BIN offline/runners/walk_forward.py --venue t212 \
         --profile spcx --interval 5m \
         --dataset offline/research/t212_dataset/spcx/datasets/SPCX_5m_1cfe20146366.csv \
         --train 720 --validation 180 --test 90 --step 90 --warmup 12 \
         --output-dir $RESULTS_DIR/t212_spcx"
 
 run_step "2D" "Hyperliquid HYPE 240m Walk-Forward Baseline" \
-    "$PYTHON_BIN offline/runners/hyperliquid_walk_forward_baseline.py \
+    "$PYTHON_BIN offline/runners/walk_forward.py --venue hyperliquid \
         --coin HYPE --direction long --intervals 240 \
         --output-dir $RESULTS_DIR/hyperliquid_wf"
 
 run_step "2E" "Binance BTCUSDT 240m Walk-Forward Baseline" \
-    "$PYTHON_BIN offline/runners/binance_walk_forward_baseline.py \
+    "$PYTHON_BIN offline/runners/walk_forward.py --venue binance \
         --symbol BTCUSDT --intervals 240 \
         --output-dir $RESULTS_DIR/binance_wf"
 

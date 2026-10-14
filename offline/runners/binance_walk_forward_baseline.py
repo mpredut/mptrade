@@ -54,7 +54,7 @@ def _parse_dataset_specs(specs: list[str]) -> dict[int, Path]:
     return result
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", default=str(ROOT / ".env"))
     parser.add_argument("--config-file", default=str(ROOT / "config.env"))
@@ -80,7 +80,7 @@ def main() -> int:
     parser.add_argument(
         "--output-dir", type=Path, default=ROOT / "offline/results/binance_walk_forward",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     cfg: dict[str, str] = {}
     for path_str in (args.config_file, args.env_file):
