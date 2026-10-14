@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
 """Fetch Yahoo 1h (last ~730 days) and 1d (10 years) regular-session bars for the grid."""
-import csv, json, os, time, urllib.request
+import csv, json, os, sys, time, urllib.request
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if REPO not in sys.path:
+    sys.path.insert(0, REPO)
+t212_dir = os.path.join(REPO, "212trading")
+if t212_dir not in sys.path:
+    sys.path.insert(0, t212_dir)
+
+import importlib.util
+_spec = importlib.util.spec_from_file_location("t212_md", os.path.join(t212_dir, "market_data.py"))
+_t212_md = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_t212_md)
+fetch_yahoo_candles = _t212_md.fetch_yahoo_candles
+
 DATA = os.path.join(os.environ.get("GRID_OUT") or os.path.join(REPO, "offline", "results", "t212_continuous_grid"), "data")
 ASSETS = ["NVDA", "SPCX", "RGNT", "AAPL", "MSFT", "AMD", "TSLA", "AVGO", "META", "AMZN",
           "GOOGL", "NFLX", "PLTR", "COIN", "QQQ", "SPY"]
 
 
 def fetch(sym, rng, itv):
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range={rng}&interval={itv}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    res = json.loads(urllib.request.urlopen(req, timeout=30).read())["chart"]["result"][0]
-    q = res["indicators"]["quote"][0]
-    rows = [(t, o, h, l, c) for t, o, h, l, c in
-            zip(res["timestamp"], q["open"], q["high"], q["low"], q["close"])
-            if None not in (o, h, l, c)]
-    return rows[:-1]   # drop the forming bar
+    candles = fetch_yahoo_candles(sym, range_=rng, interval=itv, drop_incomplete=True)
+    return [(c["timestamp"], c["open"], c["high"], c["low"], c["close"]) for c in candles]
 
 
 if __name__ == "__main__":

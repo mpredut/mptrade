@@ -24,32 +24,17 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from state_io import atomic_write_json
+from binance_api.market_data import fetch_ohlc_candles
 
 T_CACHE_FILE = os.path.join(_ROOT, "cachedb", "cache_T_trend.json")
 
 
 def fetch_klines(symbol: str, days: int, interval: str = "1h") -> tuple[np.ndarray, np.ndarray]:
     """Return paginated Binance history with 1,000 candles per request."""
-    end = int(time.time() * 1000)
-    start = end - days * 86400 * 1000
-    ts, px = [], []
-    cur = start
-    while cur < end:
-        url = (
-            f"https://api.binance.com/api/v3/klines?symbol={symbol}"
-            f"&interval={interval}&startTime={cur}&limit=1000"
-        )
-        rows = json.loads(urllib.request.urlopen(url, timeout=25).read())
-        if not rows:
-            break
-        for r in rows:
-            ts.append(r[0] / 1000.0)
-            px.append(float(r[4]))
-        cur = rows[-1][0] + 1
-        if len(rows) < 1000:
-            break
-    return np.array(ts), np.array(px)
+    candles = fetch_ohlc_candles(symbol, interval=interval, lookback_days=days, drop_incomplete=False)
+    ts = np.array([float(c["timestamp"]) for c in candles])
+    px = np.array([float(c["close"]) for c in candles])
+    return ts, px
 
 
 def block_slopes(ts, px, window_h, step_h):

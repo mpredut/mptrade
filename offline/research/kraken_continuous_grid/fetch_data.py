@@ -12,7 +12,14 @@ import shutil
 import time
 import urllib.request
 
+import sys
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from binance_api.market_data import fetch_ohlc_candles
+
 EXP = os.environ.get("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
 DATA = os.path.join(EXP, "data")
 ASSETS = ("TAO", "ADA", "SOL", "BTC", "ETH", "XRP", "DOGE", "LINK", "AVAX", "BNB")
@@ -20,26 +27,16 @@ START_MS = 1514764800000   # 2018-01-01
 
 
 def fetch(symbol: str, name: str) -> None:
-    rows, start = [], START_MS
-    while True:
-        url = (f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=4h"
-               f"&startTime={start}&limit=1000")
-        batch = json.loads(urllib.request.urlopen(url, timeout=20).read())
-        if not batch:
-            break
-        rows += batch
-        start = batch[-1][0] + 1
-        if len(batch) < 1000:
-            break
-        time.sleep(0.15)
-    closed = [(int(k[0]) // 1000, k[1], k[2], k[3], k[4]) for k in rows[:-1]]   # drop the forming bar
+    candles = fetch_ohlc_candles(symbol, interval=240, start_ms=START_MS, drop_incomplete=True)
     with open(os.path.join(DATA, f"{name}_240m.csv"), "w", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(["timestamp", "open", "high", "low", "close"])
-        writer.writerows(closed)
-    print(f"[fetch] {name}: {len(closed)} bars "
-          f"{time.strftime('%Y-%m-%d', time.gmtime(closed[0][0]))} -> "
-          f"{time.strftime('%Y-%m-%d', time.gmtime(closed[-1][0]))}", flush=True)
+        for c in candles:
+            writer.writerow([c["timestamp"], c["open"], c["high"], c["low"], c["close"]])
+    if candles:
+        print(f"[fetch] {name}: {len(candles)} bars "
+              f"{time.strftime('%Y-%m-%d', time.gmtime(candles[0]['timestamp']))} -> "
+              f"{time.strftime('%Y-%m-%d', time.gmtime(candles[-1]['timestamp']))}", flush=True)
 
 
 if __name__ == "__main__":
