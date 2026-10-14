@@ -29,6 +29,11 @@ OWNER="$(stat -c %U "$ROOT")"
 STATE_DIR="/var/lib/git_autodeploy"
 LAST_MARK="$STATE_DIR/last_deploy"
 SHADOW_MARK="$STATE_DIR/shadow_seen"
+last_sha=""
+last_ts=0
+if [ -f "$LAST_MARK" ]; then
+    read -r last_sha last_ts < "$LAST_MARK" 2>/dev/null || true
+fi
 
 # --- local config (gitignored; default SHADOW = observe only) ---
 AUTODEPLOY_MODE=shadow
