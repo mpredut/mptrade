@@ -38,10 +38,16 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
     defaults. This assumes ``kraken/config.env`` has already been loaded.
     """
     p = StratParams.from_env()
-    fields = dict(entry_amount=base["entry"], dca_amount=base["dca"],
-                  entry_discount_pct=base["disc"], dca_drop_pct=base["drop"],
-                  takeprofit_pct=base["tp"], max_dca_buys=base["maxdca"],
-                  max_budget=base["budget"], stop_loss_pct=base["sl"])
+    fields = dict(
+        entry_amount=base.get("entry", p.entry_amount),
+        dca_amount=base.get("dca", p.dca_amount),
+        entry_discount_pct=base.get("disc", p.entry_discount_pct),
+        dca_drop_pct=base.get("drop", p.dca_drop_pct),
+        takeprofit_pct=base.get("tp", p.takeprofit_pct),
+        max_dca_buys=base.get("maxdca", p.max_dca_buys),
+        max_budget=base.get("budget", p.max_budget),
+        stop_loss_pct=base.get("sl", p.stop_loss_pct),
+    )
     if over:
         fields.update(over)
     return dataclasses.replace(p, **fields)
@@ -64,91 +70,24 @@ def fetch_candles(pair, interval):
 
 
 def simulate(ohlc, P, reentry_arr=None, sl_bounce_pct=None):
-    """Run the DCA, take-profit, and stop-loss simulation.
+    """Run the DCA, take-profit, and stop-loss simulation using the production engine.
 
-    ``sl_bounce_pct`` is optional; ``None`` preserves the legacy behavior. When
-    provided, re-entry after a stop-loss waits for a rebound of that percentage
-    from the post-sale low instead of another decline below the sale price. This
-    mirrors the August 4 strategy fix that avoids remaining sidelined during a
-    recovery after a stop-loss.
-
-    ``reentry_arr`` is also optional and ``None`` preserves legacy behavior.
-    When supplied, it provides a per-bar threshold (NaN selects
-    ``P["reentry_fallback"]``) for the re-entry barrier after a TP/SL close. The
-    original simulator omitted the production strategy's explicit wait below
-    ``last_sell_price * (1 - reentry_pct / 100)``. The deterministic
-    ``P["reentry_tolerance_pct"]`` value (default zero) controls how close to the
-    threshold counts as reached.
+    Delegates to the faithful replay engine (rp.run_replay) which runs
+    strategies.spot_engine.Strategy directly, eliminating drift between
+    backtest and production.
     """
-    fee = P["fee"]/100
-    reentry_tol = P.get("reentry_tolerance_pct", 0.0)
-    qty = cost = spent = 0.0
-    dca = 0; last_open = None
-    realized = fees = 0.0
-    cycles = wins = 0
-    peak = eq = 0.0; maxdd = 0.0
-    rest_buy = None; rest_sell = None
-    last_sell_price = None
-    last_exit_kind = None; sl_low = None   # stop-aware re-entry rebound reference
-    blocked_ticks = 0
-
-    for i, (o, h, l, c) in enumerate(ohlc):
-        if rest_buy:
-            px, sz = rest_buy
-            if l <= px:
-                qty += sz; cost += sz*px; spent += sz*px; last_open = px
-                if qty > sz + 1e-9:
-                    dca += 1
-                fees += fee*sz*px
-                rest_buy = None; rest_sell = None
-        if rest_sell and qty > 1e-9:
-            px, sz = rest_sell
-            if h >= px:
-                avg = cost/qty
-                realized += (px-avg)*sz; fees += fee*sz*px
-                cycles += 1; wins += 1 if px > avg else 0
-                last_sell_price = px; last_exit_kind = "TP"
-                qty = cost = spent = 0.0; dca = 0; last_open = None
-                rest_sell = None; rest_buy = None
-        if qty > 1e-9 and P["sl"] > 0:                  # STOP-LOSS pe close
-            avg = cost/qty
-            if sr.hit_stop(avg, c, P["sl"]):
-                realized += (c-avg)*qty; fees += fee*qty*c
-                cycles += 1
-                last_sell_price = c; last_exit_kind = "STOP"; sl_low = c
-                qty = cost = spent = 0.0; dca = 0; last_open = None
-                rest_sell = None; rest_buy = None
-        if qty <= 1e-9:
-            if rest_buy is None and spent + P["entry"] <= P["budget"]:
-                blocked = False
-                if sl_bounce_pct and last_exit_kind == "STOP" and last_sell_price:
-                    # Stop-aware re-entry waits for a rebound from the low, not a decline.
-                    sl_low = c if sl_low is None else min(sl_low, c)
-                    if sr.reentry_stop_blocked(c, sl_low, sl_bounce_pct, reentry_tol):
-                        blocked = True
-                        blocked_ticks += 1
-                elif reentry_arr is not None and last_sell_price:
-                    r = reentry_arr[i]
-                    reentry_pct = P.get("reentry_fallback", 0.0) if (isinstance(r, float) and math.isnan(r)) else r
-                    if sr.reentry_drop_blocked(c, last_sell_price, reentry_pct, reentry_tol):
-                        blocked = True
-                        blocked_ticks += 1
-                if not blocked:
-                    px = sr.entry_price(c, P["disc"]); rest_buy = (px, round(P["entry"]/px, 8))
-        else:
-            avg = cost/qty
-            rest_sell = (sr.tp_price(avg, P["tp"]), qty)
-            if (dca < P["maxdca"] and last_open and sr.dca_price_hit(c, last_open, P["drop"], 0.0)
-                    and spent + P["dca"] <= P["budget"] and rest_buy is None):
-                px = sr.entry_price(c, P["disc"]); rest_buy = (px, round(P["dca"]/px, 8))
-        upnl = (c - cost/qty)*qty if qty > 1e-9 else 0
-        eq = realized - fees + upnl; peak = max(peak, eq); maxdd = max(maxdd, peak - eq)
-
-    final_upnl = (ohlc[-1][3] - cost/qty)*qty if qty > 1e-9 else 0.0
-    return {"realized": realized, "fees": fees, "net": realized - fees,
-            "total": realized - fees + final_upnl, "final_upnl": final_upnl,
-            "cycles": cycles, "wins": wins, "maxdd": maxdd, "open_qty": qty,
-            "blocked_ticks": blocked_ticks}
+    over = {}
+    if sl_bounce_pct is not None:
+        over["reentry_sl_bounce_pct"] = sl_bounce_pct
+    params = _bt_params(P, over if over else None)
+    res = rp.run_replay(
+        ohlc,
+        params,
+        fee_pct=P.get("fee", 0.25),
+        bar_minutes=P.get("interval", 60),
+    )
+    res.setdefault("blocked_ticks", 0)
+    return res
 
 
 def main() -> int:
@@ -162,11 +101,11 @@ def main() -> int:
     ap.add_argument("--budget", type=float, default=1000); ap.add_argument("--fee", type=float, default=0.25)
     ap.add_argument("--sl", type=float, default=10.0, help="stop-loss %% (0=stopped)")
     ap.add_argument("--fast", action="store_true",
-                    help="simulate() rapid (fill OHLC aproximativ, optimist pe stop) in loc de motorul LIVE faithful")
+                    help="deprecat; motorul LIVE faithful rp.run_replay este utilizat intotdeauna")
     args = ap.parse_args()
 
     # Load live STRAT_* configuration so the faithful engine uses production
-    # re-entry, tranche, and tolerance values. This does not affect --fast.
+    # re-entry, tranche, and tolerance values.
     import os as _os
     from kraken_common import load_dotenv as _load_dotenv
     try:
@@ -185,9 +124,9 @@ def main() -> int:
     base = dict(entry=args.entry, dca=args.dca, disc=args.disc, drop=args.drop,
                 tp=args.tp, maxdca=args.maxdca, budget=args.budget, fee=args.fee, sl=args.sl)
 
-    engine = "simulate (rapid)" if args.fast else "motor LIVE (faithful)"
+    engine = "motor LIVE (faithful)"
     if args.mode == "single":
-        m = simulate(ohlc, base) if args.fast else rp.run_replay(
+        m = rp.run_replay(
             ohlc, _bt_params(base), fee_pct=args.fee, bar_minutes=args.interval)
         tot = m["total"]/args.budget*100
         wr = 100*m["wins"]/m["cycles"] if m["cycles"] else 0
@@ -196,17 +135,16 @@ def main() -> int:
         print(f"  REAL TOTAL: {tot:+.2f}% of the budget  ⇐ realised ${m['realized']:+.2f} + the open position ${m['final_upnl']:+.2f} - fees ${m['fees']:.2f}")
         print(f"  (realizat singur: {m['net']/args.budget*100:+.2f}%)")
         print(f"  cicluri: {m['cycles']}  win-rate {wr:.0f}%   max drawdown ${m['maxdd']:.2f}")
-        if not args.fast:
-            def metric(name, digits=2):
-                value = m.get(name)
-                return "n/a" if value is None else f"{value:.{digits}f}"
-            print(f"  RISC: maxDD {metric('max_drawdown_pct')}%  "
-                  f"Sharpe {metric('sharpe')}  Sortino {metric('sortino')}  "
-                  f"Calmar {metric('calmar')}  CVaR95 {metric('cvar_95_pct')}%")
-            print(f"  EXECUTIE: expunere {metric('exposure_pct')}%  "
-                  f"turnover {metric('turnover_pct')}%  fills {m['fills']}  "
-                  f"profit-factor {metric('profit_factor')}  "
-                  f"expectancy ${metric('expectancy')}")
+        def metric(name, digits=2):
+            value = m.get(name)
+            return "n/a" if value is None else f"{value:.{digits}f}"
+        print(f"  RISC: maxDD {metric('max_drawdown_pct')}%  "
+              f"Sharpe {metric('sharpe')}  Sortino {metric('sortino')}  "
+              f"Calmar {metric('calmar')}  CVaR95 {metric('cvar_95_pct')}%")
+        print(f"  EXECUTIE: expunere {metric('exposure_pct')}%  "
+              f"turnover {metric('turnover_pct')}%  fills {m['fills']}  "
+              f"profit-factor {metric('profit_factor')}  "
+              f"expectancy ${metric('expectancy')}")
         print(f"  buy&hold: {bh:+.2f}%   pozitie la final: {m['open_qty']:.6f}")
         return 0
 
@@ -216,7 +154,7 @@ def main() -> int:
         for drop in (1.0, 2.0, 3.0, 5.0):
             for sl in (8.0, 15.0):
                 P = dict(base); P["tp"] = tp; P["drop"] = drop; P["sl"] = sl
-                m = simulate(ohlc, P) if args.fast else rp.run_replay(
+                m = rp.run_replay(
                     ohlc, _bt_params(P), fee_pct=args.fee, bar_minutes=args.interval)
                 rows.append((m["total"]/args.budget*100, tp, drop, sl, m["cycles"], m["maxdd"]))
     rows.sort(reverse=True)
