@@ -76,3 +76,109 @@ def test_kraken_simulate_trail_high_peak():
     assert m["cycles"] == 1
     assert m["wins"] == 1
     assert m["open_qty"] == 0.0
+
+
+def test_hyperliquid_simulate_take_profit_long():
+    # Bar 0: c=100.0 -> entry limit buy at 99.8 (0.2% discount)
+    # Bar 1: low=99.5 -> fills buy at 99.8. Close=100.0 -> TP limit sell at 99.8 * 1.01 = 100.798
+    # Bar 2: high=102.0 -> fills TP at 100.798 -> profitable cycle complete
+    ohlc = [
+        (100.0, 100.5, 99.5, 100.0),
+        (100.0, 100.5, 99.5, 100.0),
+        (100.0, 102.0, 100.0, 101.5),
+    ]
+    ts = [1000, 2000, 3000]
+    fund = [(0, 0.0)]
+    sig = ["__any__"] * len(ohlc)
+    P = dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=1.0, maxdca=2, budget=500.0, fee=0.045, sl=5.0)
+
+    m = simulate(ohlc, ts, fund, sig, P, "long")
+    assert m["cycles"] == 1
+    assert m["wins"] == 1
+    assert m["open_qty"] == 0.0
+    assert m["realized"] > 0.0
+
+
+def test_hyperliquid_simulate_take_profit_short():
+    # Bar 0: c=100.0 -> short entry limit sell at 100.2 (0.2% discount)
+    # Bar 1: high=100.5 -> fills short entry at 100.2. Close=100.0 -> TP limit buy at 100.2 * 0.99 = 99.198
+    # Bar 2: low=98.5 -> fills TP buy at 99.198 -> profitable cycle complete
+    ohlc = [
+        (100.0, 100.5, 99.5, 100.0),
+        (100.0, 100.5, 99.5, 100.0),
+        (100.0, 100.5, 98.5, 99.0),
+    ]
+    ts = [1000, 2000, 3000]
+    fund = [(0, 0.0)]
+    sig = ["__any__"] * len(ohlc)
+    P = dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=1.0, maxdca=2, budget=500.0, fee=0.045, sl=5.0)
+
+    m = simulate(ohlc, ts, fund, sig, P, "short")
+    assert m["cycles"] == 1
+    assert m["wins"] == 1
+    assert m["open_qty"] == 0.0
+    assert m["realized"] > 0.0
+
+
+def test_hyperliquid_simulate_dca_execution():
+    # Bar 0: c=100.0 -> buy at 99.8
+    # Bar 1: low=99.5 -> fills entry at 99.8
+    # Bar 2: price drops to 97.0 (> 2% drop from 99.8) -> DCA order placed at 97.0 * (1 - 0.002) = 96.806
+    # Bar 3: low=96.5 -> fills DCA buy. New avg is ~98.3. New TP placed at ~99.28.
+    # Bar 4: high=101.0 -> fills TP sell!
+    ohlc = [
+        (100.0, 100.5, 99.5, 100.0),
+        (100.0, 100.5, 99.5, 99.8),
+        (99.8, 100.0, 97.0, 97.0),
+        (97.0, 97.0, 96.5, 96.8),
+        (96.8, 101.0, 96.8, 100.0),
+    ]
+    ts = [1000, 2000, 3000, 4000, 5000]
+    fund = [(0, 0.0)]
+    sig = ["__any__"] * len(ohlc)
+    P = dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=1.0, maxdca=2, budget=500.0, fee=0.045, sl=5.0)
+
+    m = simulate(ohlc, ts, fund, sig, P, "long")
+    assert m["cycles"] == 1
+    assert m["wins"] == 1
+    assert m["open_qty"] == 0.0
+    assert m["realized"] > 0.0
+
+
+def test_hyperliquid_simulate_signal_gate():
+    # Signal is 'down' on bars 0 and 1 -> long entry gate blocks placement
+    # Signal becomes 'up' on bar 2 -> entry order placed
+    # Bar 3 low fills entry
+    ohlc = [
+        (100.0, 101.0, 99.0, 100.0),
+        (100.0, 101.0, 99.0, 100.0),
+        (100.0, 101.0, 99.0, 100.0),
+        (100.0, 100.5, 99.5, 100.0),
+    ]
+    ts = [1000, 2000, 3000, 4000]
+    fund = [(0, 0.0)]
+    sig = ["down", "down", "up", "up"]
+    P = dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=1.0, maxdca=0, budget=500.0, fee=0.045, sl=5.0, signal_gate=True)
+
+    m = simulate(ohlc, ts, fund, sig, P, "long")
+    # By bar 3, order was placed on bar 2 and filled on bar 3
+    assert m["open_qty"] > 0.0
+
+
+def test_hyperliquid_simulate_funding():
+    # Short position receiving positive funding vs long paying it
+    ohlc = [
+        (100.0, 100.5, 99.5, 100.0),
+        (100.0, 100.5, 99.5, 100.0),
+        (100.0, 100.5, 99.5, 100.0),
+    ]
+    ts = [1000, 2000, 3000]
+    fund = [(0, 0.001)]  # 0.1% positive funding rate
+    sig = ["__any__"] * len(ohlc)
+    P = dict(entry=100.0, dca=50.0, disc=0.0, drop=2.0, tp=10.0, maxdca=0, budget=500.0, fee=0.045, sl=0.0)
+
+    m_long = simulate(ohlc, ts, fund, sig, P, "long")
+    m_short = simulate(ohlc, ts, fund, sig, P, "short")
+
+    assert m_long["funding"] < 0.0    # long pays funding
+    assert m_short["funding"] > 0.0   # short receives funding

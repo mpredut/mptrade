@@ -22,12 +22,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 import sys
 import urllib.request
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
 from common import log
 from hl_client import HLClient
+from replay import run_replay, funding_at
 
 
 def _post(body):
@@ -46,18 +52,6 @@ def fetch_funding(coin, start_ms):
     except Exception as e:  # noqa: BLE001
         log(f"  ! funding history indisponibil: {e}")
         return []
-
-
-def funding_at(fund, t_ms):
-    """Return the funding rate active at t_ms, using the most recent rate at or before t."""
-    lo, hi = 0, len(fund)
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if fund[mid][0] <= t_ms:
-            lo = mid + 1
-        else:
-            hi = mid
-    return fund[lo-1][1] if lo > 0 else (fund[0][1] if fund else 0.0)
 
 
 def precompute_signal(closes, ts, source, fast, slow, band, win_h, step_h):
@@ -80,81 +74,7 @@ def precompute_signal(closes, ts, source, fast, slow, band, win_h, step_h):
 
 def simulate(ohlc, ts, fund, sig, P, direction):
     """Replay the strategy over OHLC bars and millisecond timestamps; return metrics."""
-    sign = 1 if direction == "long" else -1
-    want = "up" if sign > 0 else "down"
-    disc, drop, tp = P["disc"]/100, P["drop"]/100, P["tp"]/100
-    qty = cost = spent = 0.0
-    dca = 0
-    last_open = None
-    realized = fees = funding = 0.0
-    eq = 0.0; peak = 0.0; maxdd = 0.0
-    cycles = wins = 0
-    rest_buy = None    # (price, size, kind) -> open
-    rest_sell = None   # (px, sz)
-
-    for i in range(len(ohlc)):
-        o, h, l, c = ohlc[i]
-        # Funding on held perpetuals: shorts receive positive funding; longs pay it.
-        if qty > 1e-12:
-            f = funding_at(fund, ts[i]) * qty * c
-            funding += (f if sign < 0 else -f)
-        # --- fills: check active orders against the bar range ---
-        if rest_buy:
-            px, sz, _ = rest_buy
-            hit = (l <= px) if sign > 0 else (h >= px)
-            if hit:
-                qty += sz; cost += sz*px; spent += sz*px
-                last_open = px
-                if dca > 0 or qty > sz + 1e-9: dca += 1     # exclude the first entry
-                fees += P["fee"]/100 * sz*px
-                rest_buy = None; rest_sell = None            # average changed; replace TP
-        if rest_sell and qty > 1e-12:
-            px, sz = rest_sell
-            hit = (h >= px) if sign > 0 else (l <= px)
-            if hit:
-                avg = cost/qty
-                gross = sign*(px-avg)*sz
-                fee = P["fee"]/100 * sz*px
-                realized += gross - fee; fees += fee
-                cycles += 1; wins += 1 if gross > 0 else 0
-                qty = cost = spent = 0.0; dca = 0; last_open = None
-                rest_sell = None; rest_buy = None
-        # --- stop-loss on bar close (cutting losses) ---
-        sl = (P.get("sl") or P.get("stop_loss_pct") or 0.0) / 100.0
-        if qty > 1e-12 and sl > 0:
-            avg = cost/qty
-            loss = -sign * (c - avg) / avg
-            if loss >= sl:
-                gross = sign * (c - avg) * qty
-                fee = P["fee"]/100 * qty * c
-                realized += gross - fee; fees += fee
-                cycles += 1
-                qty = cost = spent = 0.0; dca = 0; last_open = None
-                rest_sell = None; rest_buy = None
-        # --- decisions at close ---
-        if qty <= 1e-12:
-            if rest_buy is None and (sig[i] == want or sig[i] == "__any__"):
-                if spent + P["entry"] <= P["budget"]:
-                    px = c*(1 - sign*disc); sz = round(P["entry"]/px, 4)
-                    rest_buy = (px, sz, "ENTRY")
-        else:
-            avg = cost/qty
-            target = avg*(1 + sign*tp)
-            rest_sell = (target, qty)
-            moved = sign*(c - last_open)/last_open if last_open else 0
-            if (dca < P["maxdca"] and moved <= -drop and rest_buy is None
-                    and spent + P["dca"] <= P["budget"]):
-                px = c*(1 - sign*disc); sz = round(P["dca"]/px, 4)
-                rest_buy = (px, sz, "DCA")
-        # Equity curve includes realized and unrealized results.
-        upnl = sign*(c - cost/qty)*qty if qty > 1e-12 else 0
-        e = realized + funding + upnl
-        eq = e; peak = max(peak, eq); maxdd = max(maxdd, peak - eq)
-
-    final_upnl = (sign*(c - cost/qty)*qty) if qty > 1e-12 else 0.0
-    return {"net": realized + funding, "realized": realized, "fees": fees, "funding": funding,
-            "cycles": cycles, "wins": wins, "maxdd": maxdd, "open_qty": qty,
-            "final_upnl": final_upnl, "total": realized + funding + final_upnl}
+    return run_replay(ohlc, ts, fund, sig, P, direction=direction)
 
 
 def run(coin, ohlc, ts, fund, sig, P, direction, budget):

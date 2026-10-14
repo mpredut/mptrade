@@ -20,8 +20,13 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from dataclasses import dataclass
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 from common import (
     log, now_str, are_close, required_env, required_float_env,
@@ -33,7 +38,7 @@ from hl_client import HLClient, HLError
 from market_data import get_price
 from signals import get_signal
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
+HL_FEE_PCT = float(os.environ.get("HL_FEE_PCT", "0.045"))
 
 
 def state_path_for(coin: str, direction: str) -> str:
@@ -43,22 +48,24 @@ def state_path_for(coin: str, direction: str) -> str:
 
 @dataclass
 class StratParams:
-    currency: str
-    direction: str            # "long" | "short"
-    entry_amount: float
-    entry_discount_pct: float
-    dca_amount: float
-    dca_drop_pct: float
-    check_minutes: float
-    takeprofit_pct: float
-    max_budget: float
-    max_dca_buys: int
-    enable_takeprofit: bool
-    order_ttl_min: float
-    signal_gate: bool        # enter only when the trend/prediction favors the direction
-    stop_loss_pct: float     # close all when unrealized loss exceeds this percentage; 0 disables
-    reentry_tolerance_pct: float  # deterministically treat near-threshold as DCA hit via are_close
+    currency: str = "USDC"
+    direction: str = "long"            # "long" | "short"
+    entry_amount: float = 50.0
+    entry_discount_pct: float = 0.2
+    dca_amount: float = 30.0
+    dca_drop_pct: float = 2.0
+    check_minutes: float = 60.0
+    takeprofit_pct: float = 1.0
+    max_budget: float = 500.0
+    max_dca_buys: int = 10
+    enable_takeprofit: bool = True
+    order_ttl_min: float = 60.0
+    signal_gate: bool = False        # enter only when the trend/prediction favors the direction
+    stop_loss_pct: float = 0.0       # close all when unrealized loss exceeds this percentage; 0 disables
+    reentry_tolerance_pct: float = 0.0  # deterministically treat near-threshold as DCA hit via are_close
                                   # 0 preserves the exact legacy behavior; see kraken/212trading
+    fee_pct: float = 0.045
+    sz_decimals: int = 4
 
     @classmethod
     def from_env(cls) -> "StratParams":
@@ -84,12 +91,36 @@ class StratParams:
             signal_gate        = required_bool_env("HL_SIGNAL_GATE"),
             stop_loss_pct      = float(os.environ.get("STRAT_STOP_LOSS_PCT", "0.0")),
             reentry_tolerance_pct = required_float_env("STRAT_REENTRY_TOLERANCE_PCT"),
+            fee_pct            = float(os.environ.get("HL_FEE_PCT", "0.045")),
+        )
+
+    @classmethod
+    def from_dict(cls, d: dict, direction: str | None = None) -> "StratParams":
+        dir_val = direction or d.get("direction", "long")
+        return cls(
+            currency=str(d.get("currency", "USDC")),
+            direction=str(dir_val),
+            entry_amount=float(d.get("entry", d.get("entry_amount", 50.0))),
+            entry_discount_pct=float(d.get("disc", d.get("entry_discount_pct", 0.2))),
+            dca_amount=float(d.get("dca", d.get("dca_amount", 30.0))),
+            dca_drop_pct=float(d.get("drop", d.get("dca_drop_pct", 2.0))),
+            check_minutes=float(d.get("check_minutes", 60.0)),
+            takeprofit_pct=float(d.get("tp", d.get("takeprofit_pct", 1.0))),
+            max_budget=float(d.get("budget", d.get("max_budget", 500.0))),
+            max_dca_buys=int(d.get("maxdca", d.get("max_dca_buys", 10))),
+            enable_takeprofit=bool(d.get("enable_takeprofit", True)),
+            order_ttl_min=float(d.get("order_ttl_min", 60.0)),
+            signal_gate=bool(d.get("signal_gate", False)),
+            stop_loss_pct=float(d.get("sl", d.get("stop_loss_pct", 0.0))),
+            reentry_tolerance_pct=float(d.get("reentry_tolerance_pct", 0.0)),
+            fee_pct=float(d.get("fee", d.get("fee_pct", HL_FEE_PCT))),
+            sz_decimals=int(d.get("sz_decimals", 4)),
         )
 
 
 def _new_state() -> dict:
     return {
-        "cycle": 1, "qty": 0.0, "cost": 0.0, "spent": 0.0, "dca_buys": 0,
+        "cycle": 1, "cycles_completed": 0, "wins": 0, "qty": 0.0, "cost": 0.0, "spent": 0.0, "dca_buys": 0,
         "entry_price": None, "last_open_price": None,
         "realized_gross": 0.0, "realized_net": 0.0, "fees_total": 0.0,
         "orders": [],   # {oid, role(open/close), side, sz, px, amount, kind, ts}
@@ -97,8 +128,9 @@ def _new_state() -> dict:
 
 
 class Strategy:
-    def __init__(self, client: HLClient, coin: str, params: StratParams,
-                 dry_run: bool = True, desktop: bool = False, leverage: int = 1):
+    def __init__(self, client: HLClient | None, coin: str, params: StratParams,
+                 dry_run: bool = True, desktop: bool = False, leverage: int = 1,
+                 initial_state: dict | None = None, replay_mode: bool = False):
         self.client = client
         self.coin = coin
         self.p = params
@@ -106,17 +138,28 @@ class Strategy:
         self.dry_run = dry_run
         self.desktop = desktop
         self.leverage = leverage
+        self.replay_mode = replay_mode
         self.sign = 1 if params.direction == "long" else -1
         self.open_side = "buy" if self.sign > 0 else "sell"     # open or increase the position
         self.close_side = "sell" if self.sign > 0 else "buy"    # reduce-only close
         self.state_file = state_path_for(coin, params.direction)
-        self.s = self._load()
+        if initial_state is not None:
+            merged = _new_state()
+            merged.update(initial_state)
+            self.s = merged
+        elif replay_mode:
+            self.s = _new_state()
+        else:
+            self.s = self._load()
+        if replay_mode:
+            self._save = lambda: None
         self._paper_seq = 0
-        self.sz_dec = 2
-        try:
-            self.sz_dec = client.sz_decimals(coin)
-        except HLError:
-            pass
+        self.sz_dec = getattr(params, "sz_decimals", 4 if replay_mode else 2)
+        if client is not None:
+            try:
+                self.sz_dec = client.sz_decimals(coin)
+            except Exception:
+                pass
 
     # -- persistence -----------------------------------------------------------
     def _load(self) -> dict:
@@ -157,12 +200,15 @@ class Strategy:
     def _place(self, role: str, sz: float, px: float, kind: str, amount: float = 0.0) -> None:
         sz = round(sz, self.sz_dec)
         if sz <= 0:
-            log("  ! [STRAT] sz 0 — sar"); return
+            if not self.replay_mode:
+                log("  ! [STRAT] sz 0 — sar")
+            return
         side = self.open_side if role == "open" else self.close_side
         reduce_only = (role == "close")
-        if self.dry_run:
+        if self.dry_run or self.replay_mode:
             self._paper_seq += 1
-            log(f"  [STRAT] [PAPER] {role.upper()}({side}) {kind} {sz} @ {px:.4f} {self.ccy}")
+            if not self.replay_mode:
+                log(f"  [STRAT] [PAPER] {role.upper()}({side}) {kind} {sz} @ {px:.4f} {self.ccy}")
             self.s["orders"].append({"oid": f"PAPER-{self._paper_seq}", "role": role, "side": side,
                                      "sz": sz, "px": px, "amount": amount, "kind": kind, "ts": time.time()})
             return
@@ -178,10 +224,11 @@ class Strategy:
         o = self._close_order()
         if not o:
             return
-        if not self.dry_run and not str(o["oid"]).startswith("PAPER"):
+        if not self.dry_run and not self.replay_mode and not str(o["oid"]).startswith("PAPER"):
             self.client.cancel(self.coin, o["oid"])
         self._remove(o)
-        log(f"  [STRAT] cancelled close {o['oid']}")
+        if not self.replay_mode:
+            log(f"  [STRAT] cancelled close {o['oid']}")
 
     # -- reconciliation --------------------------------------------------------
     def reconcile(self, price: float) -> None:
@@ -245,32 +292,56 @@ class Strategy:
             self.s["spent"] += amount or fq * fp
         avg = self._avg()
         tag = "[PAPER] " if self.dry_run else ""
-        log(f"  [STRAT] {tag}OPEN {self.p.direction.upper()} {fq:.6f} @ {fp:.4f} "
-            f"({'DCA' if is_dca else 'ENTRY'}) qty={self.s['qty']:.6f} avg={avg:.4f}")
-        notify(title=f"{tag}{self.coin} OPEN {self.p.direction} {fq:.2f}@{fp:.2f}",
-               body=f"{'DCA' if is_dca else 'ENTRY'} | q{self.s['qty']:.2f} a{avg:.2f}",
-               source="hyperliquid", price=fp, desktop=self.desktop)
+        if not self.replay_mode:
+            log(f"  [STRAT] {tag}OPEN {self.p.direction.upper()} {fq:.6f} @ {fp:.4f} "
+                f"({'DCA' if is_dca else 'ENTRY'}) qty={self.s['qty']:.6f} avg={avg:.4f}")
+            notify(title=f"{tag}{self.coin} OPEN {self.p.direction} {fq:.2f}@{fp:.2f}",
+                   body=f"{'DCA' if is_dca else 'ENTRY'} | q{self.s['qty']:.2f} a{avg:.2f}",
+                   source="hyperliquid", price=fp, desktop=self.desktop)
         self._cancel_close()   # average changed; replace the take-profit order
 
     def _apply_close(self, avg, price, sz, real_qty=None, real_avg=None):
         gross = self.sign * (price - avg) * sz
-        fee = (HL_FEE_PCT/100.0) * (avg*sz + price*sz)
+        fee_pct = getattr(self.p, "fee_pct", HL_FEE_PCT)
+        fee = (fee_pct / 100.0) * (avg * sz + price * sz)
         net = gross - fee
         self.s["realized_gross"] += gross; self.s["realized_net"] += net; self.s["fees_total"] += fee
+        if gross > 0:
+            self.s["wins"] = self.s.get("wins", 0) + 1
         tag = "[PAPER] " if self.dry_run else ""
-        log(f"  [STRAT] {tag}CLOSE {sz:.6f} @ {price:.4f}  brut={gross:+.4f} fee={fee:.4f} net={net:+.4f}")
-        notify(title=f"{tag}{self.coin} CLOSE {sz:.2f}@{price:.2f} N{net:+.2f}",
-               body=f"a{avg:.2f} · br{gross:+.2f} fee{fee:.2f} N{net:+.2f} | Ntot{self.s['realized_net']:+.2f}",
-               source="hyperliquid", price=price, desktop=self.desktop)
+        if not self.replay_mode:
+            log(f"  [STRAT] {tag}CLOSE {sz:.6f} @ {price:.4f}  brut={gross:+.4f} fee={fee:.4f} net={net:+.4f}")
+            notify(title=f"{tag}{self.coin} CLOSE {sz:.2f}@{price:.2f} N{net:+.2f}",
+                   body=f"a{avg:.2f} · br{gross:+.2f} fee{fee:.2f} N{net:+.2f} | Ntot{self.s['realized_net']:+.2f}",
+                   source="hyperliquid", price=price, desktop=self.desktop)
         if real_qty is not None:
             self.s["qty"] = real_qty; self.s["cost"] = real_qty * (real_avg or 0)
         else:
             self.s["qty"] -= sz
         if self.s["qty"] <= 1e-12:
-            keep = (self.s["realized_gross"], self.s["realized_net"], self.s["fees_total"], self.s.get("cycle",1)+1)
+            self.s["qty"] = 0.0
+            self.s["cost"] = 0.0
+            self.s["spent"] = 0.0
+            self.s["cycles_completed"] = self.s.get("cycles_completed", 0) + 1
+            keep = (
+                self.s["realized_gross"],
+                self.s["realized_net"],
+                self.s["fees_total"],
+                self.s.get("cycle", 1) + 1,
+                self.s["cycles_completed"],
+                self.s.get("wins", 0),
+            )
             self.s = _new_state()
-            (self.s["realized_gross"], self.s["realized_net"], self.s["fees_total"], self.s["cycle"]) = keep
-            log(f"  [STRAT] === ciclu inchis, reincep (ciclu {self.s['cycle']}) ===")
+            (
+                self.s["realized_gross"],
+                self.s["realized_net"],
+                self.s["fees_total"],
+                self.s["cycle"],
+                self.s["cycles_completed"],
+                self.s["wins"],
+            ) = keep
+            if not self.replay_mode:
+                log(f"  [STRAT] === ciclu inchis, reincep (ciclu {self.s['cycle']}) ===")
 
     def _check_stop_loss(self, price: float) -> bool:
         """Close the entire position when unrealized loss exceeds the configured threshold."""
@@ -281,37 +352,49 @@ class Strategy:
             return False
         loss_pct = -self.sign * (price - avg) / avg * 100   # positive while losing
         if loss_pct >= self.p.stop_loss_pct:
-            log(f"  🛑 [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% — CLOSING everything (cutting the loss)")
+            if not self.replay_mode:
+                log(f"  🛑 [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% — CLOSING everything (cutting the loss)")
             # Cancel every pending order, including DCA, so the position cannot refill.
             for o in list(self.s["orders"]):
-                if not self.dry_run and not str(o["oid"]).startswith("PAPER"):
+                if not self.dry_run and not self.replay_mode and not str(o["oid"]).startswith("PAPER"):
                     self.client.cancel(self.coin, o["oid"])
                 self._remove(o)
+            if self.replay_mode:
+                self._apply_close(avg, price, self.s["qty"])
+                return True
             agg = price * (1 - self.sign * 0.005)           # aggressive price for reliable fill
             self._place("close", self.s["qty"], agg, "STOP")
-            notify(title=f"🛑 SL {self.coin} -{loss_pct:.1f}%",
-                   body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}% — position closed",
-                   source="hyperliquid", price=price, desktop=self.desktop)
+            if not self.replay_mode:
+                notify(title=f"🛑 SL {self.coin} -{loss_pct:.1f}%",
+                       body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}% — position closed",
+                       source="hyperliquid", price=price, desktop=self.desktop)
             return True
         return False
 
     # -- decision --------------------------------------------------------------
-    def step(self, price: float) -> None:
+    def step(self, price: float, signal: str | None = None) -> None:
         held = self.s["qty"]
         d = self.p.entry_discount_pct / 100
         if held <= 1e-12:
             if self._open_pending(): return
             # SIGNAL GATE: do not enter against the trend or prediction.
-            if self.p.signal_gate:
-                sig = get_signal(self.client, self.coin)
+            if self.p.signal_gate or (signal is not None and signal != "__any__"):
+                if signal is not None:
+                    trend = signal
+                else:
+                    sig = get_signal(self.client, self.coin)
+                    trend = sig.get("trend") if isinstance(sig, dict) else sig
                 want = "up" if self.sign > 0 else "down"   # long requires up; short requires down
-                if sig["trend"] != want:
-                    log(f"  [STRAT] semnal={sig['trend']} (conf {sig['confidence']}, {sig['source']}) "
-                        f"!= {want} for {self.p.direction} — NOT entering (waiting for a favourable trend)")
+                if trend != "__any__" and trend != want:
+                    if not self.replay_mode:
+                        log(f"  [STRAT] semnal={trend} != {want} for {self.p.direction} — NOT entering (waiting for a favourable trend)")
                     return
-                log(f"  [STRAT] semnal={sig['trend']} favorabil pt {self.p.direction} — intru")
+                if not self.replay_mode:
+                    log(f"  [STRAT] semnal={trend} favorabil pt {self.p.direction} — intru")
             if self.s["spent"] + self.p.entry_amount > self.p.max_budget:
-                log(f"  [STRAT] plafon {self.p.max_budget} {self.ccy} reached"); return
+                if not self.replay_mode:
+                    log(f"  [STRAT] plafon {self.p.max_budget} {self.ccy} reached")
+                return
             px = price * (1 - self.sign * d)
             self._place("open", self._sz_for(self.p.entry_amount, px), px, "ENTRY", self.p.entry_amount)
             return
@@ -343,7 +426,8 @@ class Strategy:
                 and self.s["spent"] + self.p.dca_amount <= self.p.max_budget
                 and not self._open_pending()):
             px = price * (1 - self.sign * d)
-            log(f"  [STRAT] the price moved against us ({moved*100:.2f}%) — DCA")
+            if not self.replay_mode:
+                log(f"  [STRAT] the price moved against us ({moved*100:.2f}%) — DCA")
             self._place("open", self._sz_for(self.p.dca_amount, px), px, "DCA", self.p.dca_amount)
 
     # -- loop ------------------------------------------------------------------
@@ -351,13 +435,14 @@ class Strategy:
         mode = "avg_tp" if self.p.enable_takeprofit else "dca_only"
         if not self.dry_run and self.client.exchange:
             self.client.set_leverage(self.coin, self.leverage)
+        fee_hl = getattr(self.p, "fee_pct", HL_FEE_PCT)
         log("  === STRATEGIE HYPERLIQUID PORNITA ===")
         log(f"      coin       : {self.coin} perp  DIRECTIE={self.p.direction.upper()} levier {self.leverage}x  {'[PAPER]' if self.dry_run else '⚠ REAL'}")
         log(f"      mod        : {mode}")
         log(f"      intrare    : {self.p.entry_amount} {self.ccy} @ market{'-' if self.sign>0 else '+'}{self.p.entry_discount_pct}%")
         log(f"      DCA        : {self.p.dca_amount} {self.ccy} la {self.p.dca_drop_pct}% contra (max {self.p.max_dca_buys})")
         log(f"      take-profit: {self.p.takeprofit_pct}% in favoare" if self.p.enable_takeprofit else "      TP: off")
-        log(f"      PLAFON     : {self.p.max_budget} {self.ccy} / ciclu  |  fee HL ~{HL_FEE_PCT}%/leg")
+        log(f"      PLAFON     : {self.p.max_budget} {self.ccy} / ciclu  |  fee HL ~{fee_hl}%/leg")
         try:
             while True:
                 price = get_price(self.client, self.coin)
