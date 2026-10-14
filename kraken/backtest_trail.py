@@ -15,10 +15,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.request
 
-from backtest import fetch_candles, simulate  # reuse existing fetch and fixed-TP engine
+_DIR = os.path.dirname(os.path.abspath(__file__))
+if _DIR not in sys.path:
+    sys.path.insert(0, _DIR)
+_ROOT = os.path.dirname(_DIR)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+try:
+    from kraken.backtest import fetch_candles, simulate
+except ImportError:
+    from backtest import fetch_candles, simulate  # reuse existing fetch and fixed-TP engine
 
 
 def fetch_with_time(pair, interval):
@@ -62,10 +73,10 @@ def simulate_trail(ohlc, P):
                 rest_buy = None
         if qty > 1e-9:                                      # 2) trailing exit
             avg = cost/qty
-            if not armed and c >= avg*(1+act):
-                armed = True; peak_px = c
+            if not armed and h >= avg*(1+act):
+                armed = True; peak_px = h
             if armed:
-                peak_px = max(peak_px, c)
+                peak_px = max(peak_px, h)
                 if c <= peak_px*(1-trail):
                     realized += (c-avg)*qty; fees += fee*qty*c
                     cycles += 1; wins += 1 if c > avg else 0

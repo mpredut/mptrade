@@ -412,6 +412,9 @@ def run_intelligence_backtest(
 
         # Final liquidation at end
         final_price = sampled[-1][1]
+        if asset_qty > 0:
+            final_pnl = (asset_qty * final_price * (1.0 - fee_pct)) - (asset_qty * entry_price)
+            trades.append({"entry_price": entry_price, "exit_price": final_price, "pnl": final_pnl, "is_win": final_pnl > 0})
         final_equity = usd + (asset_qty * final_price * (1.0 - fee_pct))
         net_profit = final_equity - initial_balance
         net_return_pct = (net_profit / initial_balance) * 100.0
@@ -452,7 +455,7 @@ def run_intelligence_backtest(
 
 
 if __name__ == "__main__":
-    symbols = sys.argv[1].split(",") if len(sys.argv) > 1 else ["BTCUSDC", "TAOUSDC"]
+    symbols = sys.argv[1].split(",") if len(sys.argv) > 1 else ["BTCUSDC", "TAOUSDC", "ARBUSDC"]
     all_results = {}
 
     for sym in symbols:

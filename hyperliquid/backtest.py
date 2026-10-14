@@ -119,6 +119,18 @@ def simulate(ohlc, ts, fund, sig, P, direction):
                 cycles += 1; wins += 1 if gross > 0 else 0
                 qty = cost = spent = 0.0; dca = 0; last_open = None
                 rest_sell = None; rest_buy = None
+        # --- stop-loss on bar close (cutting losses) ---
+        sl = (P.get("sl") or P.get("stop_loss_pct") or 0.0) / 100.0
+        if qty > 1e-12 and sl > 0:
+            avg = cost/qty
+            loss = -sign * (c - avg) / avg
+            if loss >= sl:
+                gross = sign * (c - avg) * qty
+                fee = P["fee"]/100 * qty * c
+                realized += gross - fee; fees += fee
+                cycles += 1
+                qty = cost = spent = 0.0; dca = 0; last_open = None
+                rest_sell = None; rest_buy = None
         # --- decisions at close ---
         if qty <= 1e-12:
             if rest_buy is None and (sig[i] == want or sig[i] == "__any__"):
@@ -155,51 +167,73 @@ def run(coin, ohlc, ts, fund, sig, P, direction, budget):
 def main() -> int:
     ap = argparse.ArgumentParser(description="Backtester complet DCA+TP pe Hyperliquid.")
     ap.add_argument("--mode", choices=["single", "sweep"], default="single")
-    ap.add_argument("--coin", default="HYPE")
+    ap.add_argument("--coin", default=None)
     ap.add_argument("--days", type=int, default=45)
-    ap.add_argument("--direction", choices=["long", "short"], default="long")
+    ap.add_argument("--direction", choices=["long", "short"], default=None)
     ap.add_argument("--signal", choices=["off", "builtin", "analysis"], default="off")
-    ap.add_argument("--entry", type=float, default=50); ap.add_argument("--dca", type=float, default=30)
-    ap.add_argument("--disc", type=float, default=0.2); ap.add_argument("--drop", type=float, default=2.0)
-    ap.add_argument("--tp", type=float, default=1.0); ap.add_argument("--maxdca", type=int, default=10)
-    ap.add_argument("--budget", type=float, default=500); ap.add_argument("--fee", type=float, default=0.045)
+    ap.add_argument("--entry", type=float, default=None); ap.add_argument("--dca", type=float, default=None)
+    ap.add_argument("--disc", type=float, default=None); ap.add_argument("--drop", type=float, default=None)
+    ap.add_argument("--tp", type=float, default=None); ap.add_argument("--maxdca", type=int, default=None)
+    ap.add_argument("--budget", type=float, default=None); ap.add_argument("--fee", type=float, default=None)
+    ap.add_argument("--sl", type=float, default=None, help="stop-loss %% (0=disabled)")
     ap.add_argument("--fast", type=int, default=12); ap.add_argument("--slow", type=int, default=48)
     ap.add_argument("--band", type=float, default=0.3); ap.add_argument("--win", type=int, default=24)
     ap.add_argument("--step", type=int, default=8)
     args = ap.parse_args()
 
+    import os as _os
+    from common import load_dotenv as _load_dotenv
+    _hl_dir = _os.path.dirname(_os.path.abspath(__file__))
+    try:
+        _load_dotenv(_os.path.join(_hl_dir, ".env"))
+        _load_dotenv(_os.path.join(_hl_dir, "config.env"))
+    except Exception:
+        pass
+
+    coin = args.coin or _os.environ.get("HL_COIN", "HYPE")
+    direction = args.direction or _os.environ.get("HL_DIRECTION", "long")
+    entry = args.entry if args.entry is not None else float(_os.environ.get("STRAT_ENTRY", "50"))
+    dca = args.dca if args.dca is not None else float(_os.environ.get("STRAT_DCA", "30"))
+    disc = args.disc if args.disc is not None else float(_os.environ.get("STRAT_ENTRY_DISCOUNT_PCT", "0.2"))
+    drop = args.drop if args.drop is not None else float(_os.environ.get("STRAT_DCA_DROP_PCT", "2.0"))
+    tp = args.tp if args.tp is not None else float(_os.environ.get("STRAT_TAKEPROFIT_PCT", "1.0"))
+    maxdca = args.maxdca if args.maxdca is not None else int(float(_os.environ.get("STRAT_MAX_DCA_BUYS", "10")))
+    budget = args.budget if args.budget is not None else float(_os.environ.get("STRAT_MAX_BUDGET", "500"))
+    fee = args.fee if args.fee is not None else float(_os.environ.get("HL_FEE_PCT", "0.045"))
+    sl = args.sl if args.sl is not None else float(_os.environ.get("STRAT_STOP_LOSS_PCT", "0.0"))
+
     c = HLClient.public()
-    candles = c.candles(args.coin, "1h", lookback_hours=args.days*24 + 5)
+    candles = c.candles(coin, "1h", lookback_hours=args.days*24 + 5)
     ohlc = [(float(x["o"]), float(x["h"]), float(x["l"]), float(x["c"])) for x in candles]
     ts = [int(x["t"]) for x in candles]
     closes = [x[3] for x in ohlc]
     if len(ohlc) < 50:
         log("! prea putine lumanari"); return 1
-    fund = fetch_funding(args.coin, ts[0])
+    fund = fetch_funding(coin, ts[0])
     sig = precompute_signal(closes, [t/1000 for t in ts], args.signal, args.fast, args.slow, args.band/100, args.win, args.step)
     bh = (closes[-1]-closes[0])/closes[0]*100
 
-    base = dict(entry=args.entry, dca=args.dca, disc=args.disc, drop=args.drop, tp=args.tp,
-                maxdca=args.maxdca, budget=args.budget, fee=args.fee)
+    base = dict(entry=entry, dca=dca, disc=disc, drop=drop, tp=tp,
+                maxdca=maxdca, budget=budget, fee=fee, sl=sl)
 
     if args.mode == "single":
-        total, m, wr = run(args.coin, ohlc, ts, fund, sig, base, args.direction, args.budget)
-        log(f"=== BACKTEST COMPLET {args.coin} {args.days}z {args.direction} semnal={args.signal} ===")
-        log(f"  params: entry={args.entry} dca={args.dca} disc={args.disc}% drop={args.drop}% tp={args.tp}% maxdca={args.maxdca}")
+        total, m, wr = run(coin, ohlc, ts, fund, sig, base, direction, budget)
+        log(f"=== BACKTEST COMPLET {coin} {args.days}z {direction} semnal={args.signal} ===")
+        log(f"  params: entry={entry} dca={dca} disc={disc}% drop={drop}% tp={tp}% sl={sl}% maxdca={maxdca}")
         log(f"  REAL TOTAL: {total:+.2f}% of the budget  ⇐ realised ${m['realized']:+.2f} + funding ${m['funding']:+.2f} + the open position ${m['final_upnl']:+.2f} - fees ${m['fees']:.2f}")
-        log(f"  (the realised part alone: {m['net']/args.budget*100:+.2f}% — MISLEADING if a losing position remains)")
-        log(f"  cycles  : {m['cycles']}  win rate {wr:.0f}%   max drawdown ${m['maxdd']:.2f}  ({m['maxdd']/args.budget*100:.0f}% of the budget)")
+        log(f"  (the realised part alone: {m['net']/budget*100:+.2f}% — MISLEADING if a losing position remains)")
+        log(f"  cycles  : {m['cycles']}  win rate {wr:.0f}%   max drawdown ${m['maxdd']:.2f}  ({m['maxdd']/budget*100:.0f}% of the budget)")
         log(f"  buy&hold: {bh:+.2f}%   pozitie deschisa la final: {m['open_qty']:.4f} ({'PIERZATOARE' if m['final_upnl']<-1 else 'ok'})")
         return 0
 
     # Sweep TP x DROP for tuning.
-    log(f"=== SWEEP {args.coin} {args.days}z {args.direction} semnal={args.signal} (buy&hold {bh:+.1f}%) ===")
+    log(f"=== SWEEP {coin} {args.days}z {direction} semnal={args.signal} (buy&hold {bh:+.1f}%) ===")
     results = []
-    for tp in (0.5, 0.8, 1.0, 1.5, 2.0, 3.0):
-        for drop in (1.0, 2.0, 3.0, 5.0):
-            P = dict(base); P["tp"] = tp; P["drop"] = drop
-            net, m, wr = run(args.coin, ohlc, ts, fund, sig, P, args.direction, args.budget)
-            results.append((net, tp, drop, m["cycles"], wr, m["maxdd"]))
+    for tp_val in (0.5, 0.8, 1.0, 1.5, 2.0, 3.0):
+        for drop_val in (1.0, 2.0, 3.0, 5.0):
+            P = dict(base); P["tp"] = tp_val; P["drop"] = drop_val
+            net, m, wr = run(coin, ohlc, ts, fund, sig, P, direction, budget)
+            results.append((net, tp_val, drop_val, m["cycles"], wr, m["maxdd"]))
     results.sort(reverse=True)
     log("  top 8 combinatii (net% | tp | drop | cicluri | win% | maxDD$):")
     for net, tp, drop, cyc, wr, dd in results[:8]:

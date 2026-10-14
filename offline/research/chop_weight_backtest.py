@@ -402,7 +402,7 @@ def print_comparison_table(symbol: str, stats_list: List[ChopBacktestStats]) -> 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run Chop Weight Backtest")
-    parser.add_argument("--symbols", default="TAOUSDC,BTCUSDC", help="Comma-separated symbols")
+    parser.add_argument("--symbols", default="TAOUSDC,BTCUSDC,ARBUSDC", help="Comma-separated symbols")
     parser.add_argument("--step-sec", type=int, default=900, help="Bar resolution in seconds (default 900 = 15m)")
     args = parser.parse_args()
 
