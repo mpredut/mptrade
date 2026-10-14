@@ -20,6 +20,7 @@ spec_replay = importlib.util.spec_from_file_location("hl_replay_module", os.path
 hl_replay = importlib.util.module_from_spec(spec_replay)
 spec_replay.loader.exec_module(hl_replay)
 make_hyperliquid_replay_adapter = hl_replay.make_hyperliquid_replay_adapter
+run_replay = hl_replay.run_replay
 
 from kraken.backtest_trail import simulate_trail
 
@@ -245,5 +246,156 @@ def test_hyperliquid_walk_forward_adapter_compatibility():
     assert res["metrics"]["cycles"] == 1
     assert res["metrics"]["fills"] >= 2
     assert res["buy_hold_return_pct"] is not None
+
+
+def test_hyperliquid_order_ttl_runaway_cancellation():
+    # Bar 0: price = 100. Entry order placed at 100 * (1 - 0.002) = 99.8
+    # Bar 1: price runs away upwards to 105. Since 105 > 99.8 * 1.003 and order_ttl_min (30m) < bar_minutes (60m),
+    # the stale resting entry order is cancelled and replaced at current market price 105 * 0.998.
+    ohlc = [
+        (100.0, 100.2, 99.9, 100.0),
+        (101.0, 105.0, 100.5, 104.5),
+        (104.5, 104.8, 103.5, 104.0),
+    ]
+    ts = [1000, 1000 + 3600, 1000 + 7200]
+    res = run_replay(
+        ohlc,
+        ts=ts,
+        params=dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=1.0, maxdca=2, budget=500.0, fee=0.045, sl=5.0, order_ttl_min=30.0),
+        direction="long",
+        coin="HYPE",
+        bar_minutes=60.0,
+    )
+    assert res is not None
+    assert "return_pct" in res
+
+
+def test_hyperliquid_intrabar_stop_loss():
+    # Bar 0: places entry at 99.8
+    # Bar 1: fills entry at 99.8 (position is open with avg ~99.8)
+    # Bar 2: plunges intrabar to low 85.0 (-14.8%), breaching 10% SL, but closes at 98.0 (-1.8%)
+    ohlc = [
+        (100.0, 100.2, 99.5, 100.0),
+        (100.0, 100.2, 99.5, 99.8),
+        (99.8, 100.0, 85.0, 98.0),
+    ]
+    ts = [1000, 2000, 3000]
+    res = run_replay(
+        ohlc,
+        ts=ts,
+        params=dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=5.0, maxdca=2, budget=500.0, fee=0.045, sl=10.0),
+        direction="long",
+        coin="HYPE",
+        bar_minutes=60.0,
+    )
+    # Intrabar stop-loss must have triggered (cycles >= 1)
+    assert res["cycles"] >= 1
+    assert res["realized"] < 0  # Took a loss on stop-loss
+    assert res["fills"] >= 2
+
+
+def test_hyperliquid_ambiguous_bars_and_execution_model():
+    from offline.backtests.execution import ExecutionModel
+
+    # Bar 0: places entry at 99.8
+    # Bar 1: fills entry at 99.8, places TP at ~101.8
+    # Bar 2: drop to 97.5 triggers DCA placement at ~97.3
+    # Bar 3: wide candle [96.5, 102.5] touches both resting DCA (open) and resting TP (close)
+    ohlc = [
+        (100.0, 100.2, 99.5, 100.0),
+        (100.0, 100.2, 99.5, 99.8),
+        (99.8, 100.0, 97.5, 97.5),
+        (97.5, 102.5, 96.5, 100.0),
+    ]
+    ts = [1000, 2000, 3000, 4000]
+    res_worst = run_replay(
+        ohlc,
+        ts=ts,
+        params=dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=2.0, maxdca=2, budget=500.0, fee=0.045, sl=15.0),
+        direction="long",
+        coin="HYPE",
+        execution=ExecutionModel(intrabar_policy="worst_case"),
+    )
+    assert res_worst["ambiguous_bars"] >= 1
+    assert "intrabar_policy_selected" in res_worst
+    assert "intrabar_scenarios" in res_worst
+
+
+def test_validate_replay_metrics_across_all_venues():
+    from offline.backtests.metrics import validate_replay_metrics
+    from strategies.spot_engine import StratParams as KrakenStratParams
+    import kraken.replay as kr_replay
+    import importlib.util
+
+    t212_spec = importlib.util.spec_from_file_location(
+        "t212_replay_validation_test",
+        os.path.join(_ROOT, "212trading", "replay.py"),
+    )
+    t212_mod = importlib.util.module_from_spec(t212_spec)
+    sys.modules[t212_spec.name] = t212_mod
+    t212_spec.loader.exec_module(t212_mod)
+
+    ohlc = [
+        (100.0, 100.5, 99.5, 100.0),
+        (100.0, 101.5, 99.0, 101.0),
+    ]
+
+    hl_res = run_replay(
+        ohlc,
+        params=dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=1.0, maxdca=2, budget=500.0, fee=0.045, sl=5.0),
+        direction="long",
+        coin="HYPE",
+    )
+    validate_replay_metrics(hl_res)
+
+    kr_res = kr_replay.run_replay(
+        ohlc,
+        KrakenStratParams(
+            currency="USD",
+            entry_amount=100.0,
+            entry_discount_pct=0.2,
+            dca_amount=50.0,
+            dca_drop_pct=2.0,
+            takeprofit_pct=1.0,
+            max_budget=500.0,
+            max_dca_buys=2,
+            check_minutes=1.0,
+            enable_takeprofit=True,
+            order_ttl_min=60.0,
+            stop_loss_pct=5.0,
+        ),
+        fee_pct=0.25,
+    )
+    validate_replay_metrics(kr_res)
+
+    t212_res = t212_mod.run_replay(
+        ohlc,
+        t212_mod._strat.StratParams(
+            currency="USD",
+            entry_amount=100.0,
+            entry_discount_pct=0.2,
+            dca_amount=50.0,
+            dca_drop_pct=2.0,
+            check_minutes=5.0,
+            takeprofit_pct=1.0,
+            max_budget=500.0,
+            max_dca_buys=2,
+            validity="GOOD_TILL_CANCEL",
+            enable_takeprofit=True,
+            order_ttl_min=10.0,
+            stop_loss_pct=5.0,
+            yahoo_sym="TEST",
+            reentry_drop_pct=0.0,
+            reentry_tolerance_pct=0.05,
+            tp_ladder=[],
+            fx_fee_pct=0.15,
+            loss_alert_step=1.0,
+            ladder_min_free=6.0,
+            sl_rebuy_enabled=False,
+            sl_rebuy_bounce_pct=1.2,
+        ),
+    )
+    validate_replay_metrics(t212_res)
+
 
 

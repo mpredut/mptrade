@@ -745,7 +745,10 @@ class T212CancellationLifecycleTest(unittest.TestCase):
         self.assertEqual(client.place_calls[-1][-1], "GOOD_TILL_CANCEL")
 
     def test_backtest_simulate_with_mhdsl_and_mdhtp(self):
-        from backtest import simulate
+        bt_spec = importlib.util.spec_from_file_location("t212_backtest_module", os.path.join(T212_DIR, "backtest.py"))
+        bt_mod = importlib.util.module_from_spec(bt_spec)
+        bt_spec.loader.exec_module(bt_mod)
+        simulate = bt_mod.simulate
         bars = [
             (100.0, 100.5, 99.5, 100.0),
             (100.0, 100.5, 99.5, 100.0),

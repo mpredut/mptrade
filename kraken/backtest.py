@@ -25,6 +25,7 @@ if _ROOT not in sys.path:
 
 from strategies import spot_rules as sr
 from strategies.spot_engine import StratParams
+from offline.backtests.metrics import format_performance_summary
 
 import dataclasses
 try:
@@ -161,16 +162,8 @@ def main() -> int:
         print(f"  REAL TOTAL: {tot:+.2f}% of the budget  ⇐ realised ${m['realized']:+.2f} + the open position ${m['final_upnl']:+.2f} - fees ${m['fees']:.2f}")
         print(f"  (realizat singur: {m['net']/args.budget*100:+.2f}%)")
         print(f"  cicluri: {m['cycles']}  win-rate {wr:.0f}%   max drawdown ${m['maxdd']:.2f}")
-        def metric(name, digits=2):
-            value = m.get(name)
-            return "n/a" if value is None else f"{value:.{digits}f}"
-        print(f"  RISC: maxDD {metric('max_drawdown_pct')}%  "
-              f"Sharpe {metric('sharpe')}  Sortino {metric('sortino')}  "
-              f"Calmar {metric('calmar')}  CVaR95 {metric('cvar_95_pct')}%")
-        print(f"  EXECUTIE: expunere {metric('exposure_pct')}%  "
-              f"turnover {metric('turnover_pct')}%  fills {m['fills']}  "
-              f"profit-factor {metric('profit_factor')}  "
-              f"expectancy ${metric('expectancy')}")
+        for line in format_performance_summary(m, indent="  "):
+            print(line)
         print(f"  buy&hold: {bh:+.2f}%   pozitie la final: {m['open_qty']:.6f}")
         return 0
 

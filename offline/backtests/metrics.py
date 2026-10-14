@@ -121,3 +121,51 @@ def calculate_performance_metrics(
         "expectancy": statistics.fmean(pnls) if pnls else None,
         "turnover_pct": turnover_notional / initial_capital * 100.0,
     }
+
+
+def format_performance_summary(m: dict, indent: str = "  ") -> list[str]:
+    """Format standardized RISC and EXECUTIE summary lines across backtest harnesses."""
+    def metric(name: str, digits: int = 2) -> str:
+        value = m.get(name)
+        return "n/a" if value is None else f"{value:.{digits}f}"
+
+    lines = [
+        (f"{indent}RISC: maxDD {metric('max_drawdown_pct')}%  "
+         f"Sharpe {metric('sharpe')}  Sortino {metric('sortino')}  "
+         f"Calmar {metric('calmar')}  CVaR95 {metric('cvar_95_pct')}%"),
+        (f"{indent}EXECUTIE: expunere {metric('exposure_pct')}%  "
+         f"turnover {metric('turnover_pct')}%  fills {m.get('fills', 'n/a')}  "
+         f"profit-factor {metric('profit_factor')}  "
+         f"expectancy ${metric('expectancy')}"),
+    ]
+    return lines
+
+
+def validate_replay_metrics(result: dict) -> None:
+    """Assert that a replay result conforms to the canonical metrics schema."""
+    required_keys = (
+        "return_pct",
+        "max_drawdown_pct",
+        "cycles",
+        "fills",
+        "initial_capital",
+        "account_currency",
+        "net_pnl",
+        "realized",
+        "total",
+        "fees",
+    )
+    for key in required_keys:
+        if key not in result:
+            raise AssertionError(f"Missing required metric key: {key}")
+        val = result[key]
+        if key == "account_currency":
+            if not isinstance(val, str) or not val:
+                raise AssertionError(f"account_currency must be a non-empty string, got {val!r}")
+        elif key in ("cycles", "fills"):
+            if not isinstance(val, int) or val < 0:
+                raise AssertionError(f"{key} must be a non-negative int, got {val!r}")
+        else:
+            if not isinstance(val, (int, float)) or not math.isfinite(val):
+                raise AssertionError(f"{key} must be a finite number, got {val!r}")
+

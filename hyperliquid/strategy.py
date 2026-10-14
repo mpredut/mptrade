@@ -274,10 +274,19 @@ class Strategy:
             if str(o["oid"]).startswith("PAPER"): continue
             if o["oid"] not in active:
                 self._remove(o)
-            elif o["role"] == "open" and (time.time()-o.get("ts",0))/60 > self.p.order_ttl_min \
-                    and self.sign*(price - o["px"]) > 0.003*o["px"]:
+            elif self._open_is_stale(o, price):
                 log(f"  [STRAT] open {o['oid']} unfilled, the price ran away — cancelling and re-placing")
                 self.client.cancel(self.coin, o["oid"]); self._remove(o)
+
+    def _open_is_stale(self, order: dict, price: float, elapsed_min: float | None = None) -> bool:
+        """Return whether an unfilled open limit order has expired and price ran away."""
+        if order.get("role") != "open":
+            return False
+        if elapsed_min is None:
+            elapsed_min = (time.time() - order.get("ts", 0)) / 60.0
+        if elapsed_min <= self.p.order_ttl_min:
+            return False
+        return self.sign * (price - order["px"]) > 0.003 * order["px"]
 
     def _apply_open(self, fq, fp, amount, kind, real_qty=None, real_avg=None):
         is_dca = self.s["qty"] > 1e-9

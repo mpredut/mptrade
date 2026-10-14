@@ -28,10 +28,13 @@ import sys
 import urllib.request
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
+_ROOT = os.path.dirname(_HERE)
+for p in (_HERE, _ROOT):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 from common import log
+from offline.backtests.metrics import format_performance_summary
 try:
     import importlib.util
     _hl_spec = importlib.util.spec_from_file_location(
@@ -152,16 +155,8 @@ def main() -> int:
         log(f"  REAL TOTAL: {total:+.2f}% of the budget  ⇐ realised ${m['realized']:+.2f} + funding ${m['funding']:+.2f} + the open position ${m['final_upnl']:+.2f} - fees ${m['fees']:.2f}")
         log(f"  (the realised part alone: {m['net']/budget*100:+.2f}% — MISLEADING if a losing position remains)")
         log(f"  cycles  : {m['cycles']}  win rate {wr:.0f}%   max drawdown ${m['maxdd']:.2f}  ({m['maxdd']/budget*100:.0f}% of the budget)")
-        def metric(name, digits=2):
-            value = m.get(name)
-            return "n/a" if value is None else f"{value:.{digits}f}"
-        log(f"  RISC: maxDD {metric('max_drawdown_pct')}%  "
-            f"Sharpe {metric('sharpe')}  Sortino {metric('sortino')}  "
-            f"Calmar {metric('calmar')}  CVaR95 {metric('cvar_95_pct')}%")
-        log(f"  EXECUTIE: expunere {metric('exposure_pct')}%  "
-            f"turnover {metric('turnover_pct')}%  "
-            f"profit-factor {metric('profit_factor')}  "
-            f"expectancy ${metric('expectancy')}")
+        for line in format_performance_summary(m, indent="  "):
+            log(line)
         log(f"  buy&hold: {bh:+.2f}%   pozitie deschisa la final: {m['open_qty']:.4f} ({'PIERZATOARE' if m['final_upnl']<-1 else 'ok'})")
         return 0
 

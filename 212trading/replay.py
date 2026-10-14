@@ -13,10 +13,29 @@ import os
 import sys
 from unittest.mock import MagicMock
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
+_T212_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(_T212_DIR)
+for p in (_T212_DIR, ROOT):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
-import strategy as _strat
+import importlib.util
+_md_spec = importlib.util.spec_from_file_location("t212_market_data", os.path.join(_T212_DIR, "market_data.py"))
+_md = importlib.util.module_from_spec(_md_spec)
+sys.modules[_md_spec.name] = _md
+_prev_md = sys.modules.get("market_data")
+sys.modules["market_data"] = _md
+_md_spec.loader.exec_module(_md)
+try:
+    _strat_spec = importlib.util.spec_from_file_location("t212_strategy_replay", os.path.join(_T212_DIR, "strategy.py"))
+    _strat = importlib.util.module_from_spec(_strat_spec)
+    sys.modules[_strat_spec.name] = _strat
+    _strat_spec.loader.exec_module(_strat)
+finally:
+    if _prev_md is not None:
+        sys.modules["market_data"] = _prev_md
+    else:
+        sys.modules.pop("market_data", None)
 from offline.backtests.execution import (
     ExecutionModel,
     choose_intrabar_scenario,
