@@ -95,7 +95,10 @@ def _detect_venue(report: dict, cli_venue: str | None = None) -> str:
         return "binance"
     if "hyperliquid" in purpose:
         return "hyperliquid"
-    if "trading 212" in purpose or "t212" in purpose:
+    if "trading212" in purpose or "trading 212" in purpose or "t212" in purpose:
+        return "trading212"
+    runtime = report.get("runtime", {})
+    if "profile" in runtime or str(runtime.get("ticker", "")).endswith("_EQ"):
         return "trading212"
     return "kraken"
 
@@ -104,19 +107,35 @@ def _load_report(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as handle:
         report = json.load(handle)
     has_intervals = report.get("intervals") is not None and len(report.get("intervals", {})) > 0
-    has_single_dataset = report.get("dataset") is not None and report.get("windows") is not None
+    has_single_dataset = report.get("dataset") is not None and (
+        report.get("windows") is not None or report.get("window_sizes") is not None
+    )
     if report.get("schema_version") != 1 or (not has_intervals and not has_single_dataset):
         raise ValueError("an incompatible or empty baseline report")
     return report
 
 
-def _load_datasets(report: dict) -> dict[int, tuple[list[dict], dict, int]]:
+def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, tuple[list[dict], dict, int]]:
     datasets = {}
     warmup_bars = int(report.get("walk_forward", {}).get("signal_warmup_bars", 0))
+
+    def _resolve_frozen_file(raw_path: str | Path) -> Path:
+        p = Path(raw_path).expanduser()
+        if p.exists():
+            return p
+        if baseline_dir:
+            if (baseline_dir / p.name).exists():
+                return baseline_dir / p.name
+            if (baseline_dir / "datasets" / p.name).exists():
+                return baseline_dir / "datasets" / p.name
+        if (ROOT / p).exists():
+            return ROOT / p
+        return p
+
     if "intervals" in report:
         for interval_text, section in report["intervals"].items():
             interval = int(interval_text)
-            path = Path(section["dataset"]["frozen_file"])
+            path = _resolve_frozen_file(section["dataset"]["frozen_file"])
             records = load_frozen_dataset(path)
             actual_hash = dataset_sha256(records)
             expected_hash = section["dataset"]["sha256"]
@@ -125,9 +144,24 @@ def _load_datasets(report: dict) -> dict[int, tuple[list[dict], dict, int]]:
                     f"a different dataset hash for {interval}m: {actual_hash} != {expected_hash}"
                 )
             window_sizes = section.get("window_sizes") or section.get("windows")
-            datasets[interval] = (records, window_sizes, warmup_bars)
-    elif "dataset" in report and "windows" in report:
-        interval = int(report.get("runtime", {}).get("interval_minutes", 240))
+            warmup = int(window_sizes.get("signal_warmup_bars", warmup_bars))
+            datasets[interval] = (records, window_sizes, warmup)
+    elif "dataset" in report and ("windows" in report or "window_sizes" in report):
+        interval_raw = (
+            report.get("runtime", {}).get("interval_minutes")
+            or report.get("runtime", {}).get("interval")
+        )
+        if interval_raw is not None:
+            try:
+                interval = int(interval_raw)
+            except ValueError:
+                from binance_api.market_data import parse_interval_minutes
+                interval = parse_interval_minutes(str(interval_raw))
+        elif report.get("execution_model", {}).get("calendar_periods_per_year") == 252.0:
+            interval = 1440
+        else:
+            interval = 240
+
         frozen_spec = report["dataset"].get("frozen_file")
         if not frozen_spec:
             source = str(report["dataset"].get("source", ""))
@@ -137,7 +171,7 @@ def _load_datasets(report: dict) -> dict[int, tuple[list[dict], dict, int]]:
                 frozen_spec = source.split("frozen file: ", 1)[1].strip()
         if not frozen_spec:
             raise ValueError(f"could not determine frozen dataset file path for {interval}m")
-        path = Path(frozen_spec)
+        path = _resolve_frozen_file(frozen_spec)
         records = load_frozen_dataset(path)
         actual_hash = dataset_sha256(records)
         expected_hash = report["dataset"]["sha256"]
@@ -145,9 +179,96 @@ def _load_datasets(report: dict) -> dict[int, tuple[list[dict], dict, int]]:
             raise ValueError(
                 f"a different dataset hash for {interval}m: {actual_hash} != {expected_hash}"
             )
-        window_sizes = report["windows"]
-        datasets[interval] = (records, window_sizes, warmup_bars)
+        window_sizes = report.get("windows") or report.get("window_sizes")
+        warmup = int(window_sizes.get("signal_warmup_bars", warmup_bars))
+        datasets[interval] = (records, window_sizes, warmup)
     return datasets
+
+
+def _load_hl_replay():
+    import importlib.util
+    hl_dir = ROOT / "hyperliquid"
+    spec = importlib.util.spec_from_file_location("hl_wf_replay", str(hl_dir / "replay.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_t212_replay():
+    import importlib.util
+    t212_dir = ROOT / "212trading"
+    spec = importlib.util.spec_from_file_location("t212_wf_replay", str(t212_dir / "replay.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _build_venue_evaluator(venue: str, source_report: dict):
+    """Return (base_params, base_fee, evaluate_segment_fn)."""
+    norm_venue = venue.lower()
+    raw_params = source_report.get("strategy_params", {})
+
+    if norm_venue in ("kraken", "binance"):
+        valid_fields = {f.name for f in dataclasses.fields(StratParams)}
+        filtered = {k: v for k, v in raw_params.items() if k in valid_fields}
+        base_params = StratParams(**filtered)
+        base_fee = float(source_report.get("fee_pct_per_leg") or (0.26 if norm_venue == "kraken" else 0.10))
+
+        def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
+            adapter = lambda data, warmup=(), _context=None: run_replay(
+                data,
+                params,
+                fee_pct=fee_pct,
+                bar_minutes=interval,
+                warmup_ohlc=warmup,
+                execution=execution,
+            )
+            return _evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
+
+        return base_params, base_fee, segment_fn
+
+    if norm_venue == "hyperliquid":
+        hl_replay = _load_hl_replay()
+        direction = str(source_report.get("runtime", {}).get("direction") or raw_params.get("direction", "long"))
+        coin = str(source_report.get("runtime", {}).get("coin") or "HYPE")
+        base_params = hl_replay.StratParams.from_dict(raw_params, direction=direction)
+        base_fee = float(source_report.get("fee_pct_per_leg") or raw_params.get("fee_pct") or 0.035)
+
+        def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
+            adapter = hl_replay.make_hyperliquid_replay_adapter(
+                params,
+                direction=params.direction,
+                coin=coin,
+                bar_minutes=float(interval),
+                execution=execution,
+                fee_pct=fee_pct,
+            )
+            return _evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
+
+        return base_params, base_fee, segment_fn
+
+    if norm_venue in ("trading212", "t212"):
+        t212_replay = _load_t212_replay()
+        t212_params_cls = t212_replay._strat.StratParams
+        valid_fields = {f.name for f in dataclasses.fields(t212_params_cls)}
+        filtered = {k: v for k, v in raw_params.items() if k in valid_fields}
+        base_params = t212_params_cls(**filtered)
+        base_fee = float(source_report.get("fee_pct_per_leg") or raw_params.get("fx_fee_pct") or 0.0)
+
+        def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
+            if hasattr(params, "fx_fee_pct") and fee_pct != base_fee:
+                params = dataclasses.replace(params, fx_fee_pct=fee_pct)
+            adapter = t212_replay.make_t212_replay_adapter(
+                params,
+                bar_minutes=float(interval),
+                fx_to_usd=1.0,
+                execution=execution,
+            )
+            return _evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
+
+        return base_params, base_fee, segment_fn
+
+    raise ValueError(f"Unsupported venue: {venue}")
 
 
 def _segment_result(
@@ -174,7 +295,14 @@ def _segment_result(
     )
 
 
-def _candidate_windows(datasets: dict, params, fee_pct: float, execution) -> list[dict]:
+def _candidate_windows(
+    datasets: dict,
+    params,
+    fee_pct: float,
+    execution,
+    segment_fn: Any | None = None,
+) -> list[dict]:
+    eval_fn = segment_fn or _segment_result
     windows = []
     for interval, (records, sizes, warmup_bars) in sorted(datasets.items()):
         folds = walk_forward_splits(
@@ -184,8 +312,8 @@ def _candidate_windows(datasets: dict, params, fee_pct: float, execution) -> lis
         )
         for fold_index, fold in enumerate(folds, start=1):
             warmup = records[max(0, fold.test.start - warmup_bars):fold.test.start]
-            segment = _segment_result(
-                records[fold.test], params, fee_pct, interval, warmup,
+            segment = eval_fn(
+                records[fold.test], params, fee_pct, interval, warmup_records=warmup,
                 execution=execution,
             )
             metrics = segment["metrics"]
@@ -205,7 +333,7 @@ def _candidate_windows(datasets: dict, params, fee_pct: float, execution) -> lis
 
 
 def _markdown(report: dict, venue: str = "Kraken") -> str:
-    display_venue = venue.capitalize() if venue.lower() != "t212" else "Trading 212"
+    display_venue = venue.capitalize() if venue.lower() not in ("t212", "trading212") else "Trading 212"
     return format_comparison_markdown(
         report, title=f"{display_venue} walk-forward robustness comparison"
     )
@@ -231,22 +359,26 @@ def main(argv: list[str] | None = None) -> int:
     baseline_path = args.baseline_report.expanduser().resolve()
     source_report = _load_report(baseline_path)
     venue = _detect_venue(source_report, args.venue)
-    datasets = _load_datasets(source_report)
+    datasets = _load_datasets(source_report, baseline_dir=baseline_path.parent)
     if args.candidate_set == "hype-240" and set(datasets) != {240}:
         parser.error("candidate set hype-240 requires a baseline containing only the 240 interval")
-    valid_strat_fields = {f.name for f in dataclasses.fields(StratParams)}
-    filtered_params = {
-        k: v for k, v in source_report["strategy_params"].items() if k in valid_strat_fields
+
+    base_params, base_fee, segment_fn = _build_venue_evaluator(venue, source_report)
+    valid_exec_fields = {f.name for f in dataclasses.fields(ExecutionModel)}
+    filtered_exec = {
+        k: v for k, v in source_report.get("execution_model", {}).items() if k in valid_exec_fields
     }
-    base_params = StratParams(**filtered_params)
-    base_fee = float(source_report.get("fee_pct_per_leg", 0.10))
-    execution = ExecutionModel(**source_report.get("execution_model", {}))
+    execution = ExecutionModel(**filtered_exec)
 
     results = {}
     candidates = hype_240_candidates() if args.candidate_set == "hype-240" else default_candidates()
+    valid_param_fields = {f.name for f in dataclasses.fields(base_params.__class__)}
     for candidate in candidates:
+        incompatible_keys = [k for k in candidate.overrides if k not in valid_param_fields]
+        if incompatible_keys:
+            continue
         params = dataclasses.replace(base_params, **candidate.overrides)
-        windows = _candidate_windows(datasets, params, base_fee, execution)
+        windows = _candidate_windows(datasets, params, base_fee, execution, segment_fn)
         results[candidate.name] = {
             "description": candidate.description,
             "overrides": candidate.overrides,
@@ -274,7 +406,7 @@ def main(argv: list[str] | None = None) -> int:
         fee = float(fee_text.strip())
         if fee < 0:
             parser.error("the fee cannot be negative")
-        windows = _candidate_windows(datasets, base_params, fee, execution)
+        windows = _candidate_windows(datasets, base_params, fee, execution, segment_fn)
         fee_stress[f"{fee:.2f}"] = {
             "summary": summarize_test_windows(windows),
             "windows": windows,

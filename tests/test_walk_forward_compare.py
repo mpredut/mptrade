@@ -121,12 +121,50 @@ class WalkForwardCompareTest(unittest.TestCase):
             rep = _load_report(Path(f.name))
             self.assertEqual(rep["schema_version"], 1)
 
+        # Single-interval format with window_sizes (Trading 212)
+        with tempfile.NamedTemporaryFile("w+", suffix=".json") as f:
+            json.dump({"schema_version": 1, "dataset": {}, "window_sizes": {}}, f)
+            f.flush()
+            rep = _load_report(Path(f.name))
+            self.assertEqual(rep["schema_version"], 1)
+
         # Invalid format
         with tempfile.NamedTemporaryFile("w+", suffix=".json") as f:
             json.dump({"schema_version": 2}, f)
             f.flush()
             with self.assertRaises(ValueError):
                 _load_report(Path(f.name))
+
+    def test_detect_venue_trading212_no_space_and_ticker(self):
+        self.assertEqual(
+            _detect_venue({"purpose": "Trading212 live-engine fixed-config walk-forward baseline"}),
+            "trading212",
+        )
+        self.assertEqual(
+            _detect_venue({"runtime": {"ticker": "NVDA_US_EQ"}}),
+            "trading212",
+        )
+
+    def test_format_number_non_finite(self):
+        from offline.backtests.comparison import format_number
+        import math
+        self.assertEqual(format_number(None), "n/a")
+        self.assertEqual(format_number(float("nan")), "n/a")
+        self.assertEqual(format_number(float("inf")), "n/a")
+        self.assertEqual(format_number(-float("inf")), "n/a")
+        self.assertEqual(format_number(1.23456), "1.235")
+        self.assertEqual(format_number(1.23456, signed=True), "+1.235")
+
+    def test_summarize_test_windows_handles_none_buy_hold(self):
+        from offline.backtests.walk_forward import summarize_test_windows
+        windows = [
+            {"return_pct": 5.0, "max_drawdown_pct": 2.0, "buy_hold_return_pct": None, "cycles": 1, "fills": 2},
+            {"return_pct": -3.0, "max_drawdown_pct": 4.0, "buy_hold_return_pct": 1.5, "cycles": 1, "fills": 3},
+        ]
+        summary = summarize_test_windows(windows)
+        self.assertEqual(summary["window_count"], 2)
+        self.assertEqual(summary["up_market_windows"], 1)
+        self.assertEqual(summary["down_market_windows"], 0)
 
 
 if __name__ == "__main__":

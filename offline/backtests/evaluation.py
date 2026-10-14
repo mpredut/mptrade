@@ -223,9 +223,15 @@ def evaluate_walk_forward(
             "worst_sortino": _optional_min(
                 [fold["test"]["metrics"].get("sortino") for fold in fold_results]
             ),
-            "mean_buy_hold_return_pct": sum(
-                float(window["buy_hold_return_pct"]) for window in test_windows
-            ) / len(test_windows),
+            "mean_buy_hold_return_pct": (
+                sum(
+                    float(window["buy_hold_return_pct"])
+                    for window in test_windows
+                    if window.get("buy_hold_return_pct") is not None
+                ) / sum(1 for window in test_windows if window.get("buy_hold_return_pct") is not None)
+                if any(window.get("buy_hold_return_pct") is not None for window in test_windows)
+                else None
+            ),
             "total_cycles": summary["total_cycles"],
             "total_fills": summary["total_fills"],
             "total_ambiguous_bars": sum(

@@ -88,9 +88,12 @@ def pareto_frontier(
     return sorted(names)
 
 
+import math
+
+
 def format_number(value: float | None, signed: bool = False) -> str:
     """Format floating point numbers consistently across report tables."""
-    if value is None:
+    if value is None or (isinstance(value, (int, float)) and not math.isfinite(value)):
         return "n/a"
     return f"{value:+.3f}" if signed else f"{value:.3f}"
 

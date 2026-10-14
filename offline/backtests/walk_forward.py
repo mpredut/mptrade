@@ -76,11 +76,13 @@ def summarize_test_windows(windows: list[dict]) -> dict:
     drawdowns = [float(window["max_drawdown_pct"]) for window in windows]
     up_market = [
         float(window["return_pct"]) for window in windows
-        if float(window["buy_hold_return_pct"]) > 0
+        if window.get("buy_hold_return_pct") is not None
+        and float(window["buy_hold_return_pct"]) > 0
     ]
     down_market = [
         float(window["return_pct"]) for window in windows
-        if float(window["buy_hold_return_pct"]) <= 0
+        if window.get("buy_hold_return_pct") is not None
+        and float(window["buy_hold_return_pct"]) <= 0
     ]
     return {
         "window_count": len(windows),
