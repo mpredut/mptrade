@@ -275,5 +275,44 @@ A unified, venue-agnostic execution contract eliminates duplicated formatting an
    - 24-hour spike/drop anomaly detection and alert cooldowns reside in `market_monitor/pricechecker.py`.
    - AssetGuardian position tracking and re-arm thresholds are managed exclusively by `AssetGuardianState` in `assetguardian.py`, persisted atomically with fail-closed concurrency locking in `cachedb/assetguardian_state.json`.
 
+## Two-Tier In-Trade Exit Fortress & Fleet Protection Matrix
+
+To guarantee capital preservation across spot, margin, and equity trading venues, MPTrade enforces a hardened **Two-Tier Exit Defense Framework** detailed in [`docs/FLEET_PROTECTION_MATRIX.md`](file:///home/predut/mptrade/docs/FLEET_PROTECTION_MATRIX.md):
+
+```mermaid
+flowchart TD
+    subgraph Market ["Market Tick Stream"]
+        TICK["Tick Ingestion & Mark-to-Market"]
+    end
+
+    subgraph Level1 ["Tier 1: Dynamic Pilot (Fine-Tuning Execution)"]
+        direction TB
+        TICK --> PEM["PositionExitManager\n(strategies/position_exit_manager.py)"]
+        PEM --> MDHTP["MDHTP (Multi-Horizon Dynamic Take Profit)\n• Trend-Riding Deferral on Uptrend\n• Guaranteed Profit Floor (min locked gain)\n• Dynamic Micro-Trailing (k=1.5 x vol_1h)\n• Stagnation Timeout (18m / 1080s)\n• Trend Reversal Market Exit"]
+        PEM --> MHDSL["MHDSL (Multi-Horizon Dynamic Stop Loss)\n• Priority 1: Hard Disaster Floor (vol-scaled)\n• Priority 2: Bounce Watch Deferral (<=220s)\n• Priority 2A: Structural Support Breakout\n• Priority 2B: Bounce Rollover Ratchet\n• Priority 3: Smart SL Controller (Whale Wall)"]
+        PEM --> MHDRE["MHDRE (Symmetrical Re-Entry Mirror)\n• Post-STOP: Confirmed trough bounce + ratchet\n• Post-TP: Bull pullback or range discount"]
+    end
+
+    subgraph Level2 ["Tier 2: Extreme Airbag (Crash Circuit Breaker)"]
+        direction TB
+        TICK --> CORE["TrailingCore State Machine\n(trailing_core.py)"]
+        CORE --> CB["Crash Circuit Breaker\n• Decoupled from profit warmup\n• Wide collapse trigger (-8% to -26%)\n• unlock_qty: Cancels resting sell limits\n• Force market execution (force=True)\n• Guard bypass for emergency exits"]
+    end
+
+    Level1 -->|Orderly Exit| DISPATCH["🚀 Order Dispatch Engine"]
+    Level2 -->|Emergency Breaker| DISPATCH
+```
+
+### Key Safety Invariants & Execution Guarantees
+1. **DCA Buy Suppression on Bounce Watch (`sl_bounce_state`):**
+   - Across Kraken & Hyperliquid (`spot_engine.py`) and Trading 212 (`strategy.py`), when a position breaches stop-loss territory and enters bounce deferral, placing new DCA buy orders is **strictly suppressed** to avoid capital dilution into an unconfirmed breakdown.
+2. **Automatic Balance Unlocking (`unlock_qty`):**
+   - Prevents emergency liquidations from failing due to balances locked in passive resting TP limit orders. Adapters query open orders and cancel conflicting sell limits before executing market stops.
+3. **Exit Intent Persistence (`pending_exit` / `tp_pending_exit`):**
+   - If an exit order is rejected by an exchange due to network blips or rate limits, the exit state does not revert to HOLD; it persists and re-executes until fill confirmation.
+4. **Emergency Floor Under Cost Basis:**
+   - If market price collapses below average cost basis during an active profit ride, an immediate emergency floor liquidation triggers, protecting original principal.
+
+
 
 

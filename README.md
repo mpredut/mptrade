@@ -127,14 +127,65 @@ The core trading engines deployed across Kraken, Hyperliquid, Binance, and Tradi
 
 ---
 
-## 7. Autonomous AI Supervisor & Intent Gateway
+## 7. Two-Tier Defense Architecture & Fleet Protection Matrix
+
+To guarantee capital preservation across all trading venues, MPTrade enforces a hardened **Two-Tier Exit Defense Framework** detailed in [`docs/FLEET_PROTECTION_MATRIX.md`](file:///home/predut/mptrade/docs/FLEET_PROTECTION_MATRIX.md):
+
+```mermaid
+flowchart TD
+    subgraph Market ["Live Market Price Stream"]
+        TICK["Tick Ingestion & Mark-to-Market"]
+    end
+
+    subgraph Level1 ["Tier 1: Dynamic Pilot (Fine-Tuning Execution)"]
+        direction TB
+        TICK --> PEM["PositionExitManager\n(strategies/position_exit_manager.py)"]
+        PEM --> MDHTP["MDHTP (Multi-Horizon Dynamic Take Profit)\n• Trend-Riding Deferral on Uptrend\n• Guaranteed Profit Floor (min locked gain)\n• Dynamic Micro-Trailing (k=1.5 x vol_1h)\n• Stagnation Timeout (18m / 1080s)\n• Trend Reversal Market Exit"]
+        PEM --> MHDSL["MHDSL (Multi-Horizon Dynamic Stop Loss)\n• Priority 1: Hard Disaster Floor (vol-scaled)\n• Priority 2: Bounce Watch Deferral (<=220s)\n• Priority 2A: Structural Support Breakout\n• Priority 2B: Bounce Rollover Ratchet\n• Priority 3: Smart SL Controller (Whale Wall)"]
+        PEM --> MHDRE["MHDRE (Symmetrical Re-Entry Mirror)\n• Post-STOP: Confirmed trough bounce + ratchet\n• Post-TP: Bull pullback or range discount"]
+    end
+
+    subgraph Level2 ["Tier 2: Extreme Airbag (Crash Circuit Breaker)"]
+        direction TB
+        TICK --> CORE["TrailingCore State Machine\n(trailing_core.py)"]
+        CORE --> CB["Crash Circuit Breaker\n• Decoupled from profit warmup\n• Wide collapse trigger (-8% to -26%)\n• unlock_qty: Cancels resting sell limits\n• Force market execution (force=True)\n• Guard bypass for emergency exits"]
+    end
+
+    Level1 -->|Orderly Exit| DISPATCH["🚀 Order Dispatch Engine"]
+    Level2 -->|Emergency Breaker| DISPATCH
+```
+
+### Fleet-Wide Protection Matrix
+
+| Venue | Symbol / Asset | Role | Tier 1: Dynamic Protection (MHDSL / MDHTP / DCA) | Tier 2: Extreme Airbag (Crash Circuit Breaker) | Operational Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Binance** | `BTCUSDC` | Spot Swing / Grid | **MHDSL:** Loss `2.925%`, bounce watch, ratchet, `hard_tp = 17%` (0.5 tranche).<br>**MDHTP:** Active in `monitortrades.py`. | **Trailing Stop:** `16%` from peak.<br>**Decoupled from warmup.** `unlock_qty` active. | **ACTIVE.** Dual-layer protected. |
+| **Binance** | `TAOUSDC` | Spot Swing / Grid | **MHDSL:** Loss `5.25%`, bounce watch, ratchet, `hard_tp = 17%` (0.5 tranche).<br>**MDHTP:** Active in `monitortrades.py`. | **Trailing Stop:** `22%` from peak.<br>**Decoupled from warmup.** `unlock_qty` active. | **ACTIVE.** High-beta AI asset. |
+| **Binance** | `ARBUSDC` | Spot Swing / Grid | **MHDSL:** Loss `5.25%`, gain `9.0%`, bounce watch, ratchet, `hard_tp = 17%`.<br>**MDHTP:** Active in `monitortrades.py`. | **Trailing Stop:** `26%` from peak.<br>**Decoupled from warmup.** MA-100 rebuy. | **ACTIVE (`role.mt = yes`).** Activated in `instruments.conf`. |
+| **Kraken** | `HYPEUSD` | DCA Spot Engine | **MHDSL:** Active via `spot_engine.py` + `PositionExitManager`.<br>**MDHTP:** Enabled (`STRAT_TP_MDHTP_ENABLED=true`).<br>**DCA Brake:** `STRAT_DCA_TREND_BRAKE=true`. | **Multi-Asset Trailing:** `18%` in `kraken/trailing_stop.py`.<br>**Decoupled from warmup.** `unlock_qty` active. | **ACTIVE.** Dual-protected: DCA bot + trailing daemon. |
+| **Kraken** | `TAOUSD` | DCA Spot Engine | **MHDSL:** Active via `PositionExitManager`.<br>**MDHTP:** Enabled (`STRAT_TP_MDHTP_ENABLED=true`).<br>**DCA Brake:** Active with spacing growth `+0.25pp`. | **Multi-Asset Trailing:** `22%` in `kraken/trailing_stop.py`.<br>**Decoupled from warmup.** `unlock_qty` active. | **ACTIVE.** Multi-asset coverage. |
+| **Kraken** | `ADAUSD` | DCA Spot Engine | **MHDSL:** Active via `PositionExitManager`.<br>**MDHTP:** Enabled (`STRAT_TP_MDHTP_ENABLED=true`).<br>**DCA Brake:** Active. | **Multi-Asset Trailing:** `25%` in `kraken/trailing_stop.py`.<br>**Decoupled from warmup.** `unlock_qty` active. | **ACTIVE.** Multi-asset coverage. |
+| **Hyperliquid** | `HYPEUSDC` (Spot) | DCA Long-Term | **MHDSL:** `STRAT_STOP_LOSS_PCT=25%`, `hard_disaster_floor_breached` cuts position immediately.<br>**MDHTP:** Enabled (`STRAT_TP_MDHTP_ENABLED=true`), adaptive trail ($k=1.5$).<br>**DCA Brake:** Active, spacing growth `0.25pp`. | **Circuit Breaker:** `hard_disaster_floor_breached` (urgent market exit via `_request_market_exit`). | **ACTIVE.** Downtrend brake & disaster stop. |
+| **Trading 212** | `SPCX_US_EQ` | Portfolio Stock | **MHDSL:** Active (`STRAT_SL_MHDSL_ENABLED=true`), disaster floor 30%, rebuy 1.2% bounce.<br>**MDHTP:** Active, dynamic 5-rung bell-curve ladder (`5-25:5:bell`). | **Trailing Stop:** `8%` from peak.<br>**Decoupled from warmup.** (+5% warm-up bypassed on extreme drops). | **ACTIVE.** `tp_pending_exit` persistence. |
+| **Trading 212** | `NVDA_US_EQ` | Portfolio Stock | **MHDSL:** Activated (`STRAT_SL_MHDSL_ENABLED=true`), disaster floor 30%, rebuy 1.2% bounce.<br>**MDHTP:** Activated (`STRAT_TP_MDHTP_ENABLED=true`). | **Trailing Stop:** `8%` from peak, decoupled from warmup (+5%). | **ACTIVE.** Modernized to fleet standard. |
+| **Trading 212** | `RGNT_US_EQ` | High-Vol Biotech | **MHDSL:** Activated (`STRAT_SL_MHDSL_ENABLED=true`), disaster floor `50%` (DCA at -40%).<br>**MDHTP:** Activated (`STRAT_TP_MDHTP_ENABLED=true`), pump ride over +35%.<br>**Rebuy:** Active on 3.0% recovery bounce. | **Trailing Crash Breaker:** `20%` from peak with `20%` warmup (avoids intraday noise of +/-15%). | **ACTIVE.** Calibrated for extreme biotech volatility. |
+
+### Fleet-Wide Hardened Invariants & Safety Guarantees
+1. **DCA Buy Suppression on Bounce Watch (`sl_bounce_state`):** When a position breaches stop-loss territory and enters bounce deferral, DCA additions are strictly suppressed to avoid doubling down into an unresolved market drop.
+2. **Automatic Balance Unlocking (`unlock_qty`):** Prevents emergency liquidations from failing due to balances locked in passive resting TP limit orders. Adapters cancel conflicting sell limits before executing market stops.
+3. **Exit Intent Persistence (`pending_exit` / `tp_pending_exit`):** If an exit order is rejected by an exchange due to network blips or rate limits, the exit state does not revert to HOLD; it persists and re-executes until fill confirmation.
+4. **Emergency Floor Under Cost Basis:** If market price collapses below average cost basis during an active profit ride, an immediate emergency floor liquidation triggers, protecting original principal.
+
+---
+
+## 8. Autonomous AI Supervisor & Intent Gateway
 
 * **Nightly AI Supervisor ([`autonomous_ai_reconciler.py`](file:///home/predut/mptrade/orchestratorOS/supervisor/autonomous_ai_reconciler.py)):** Audits system logs, diagnoses anomalies, refreshes balance snapshots (`SYNC_POSITION`), and evaluates macro breadth in `enforce` mode.
 * **Autonomous Intent Gateway ([`autonomous_intent_gateway.py`](file:///home/predut/mptrade/orchestratorTrade/autonomous_intent_gateway.py)):** Evaluates independent algorithmic trade generation, requiring high conviction ($\ge 0.85$), capped at €500 per order, and passing all 4 Risk Pillars.
 
 ---
 
-## 8. Supervised Fleet Process Inventory (21 Processes)
+## 9. Supervised Fleet Process Inventory (21 Processes)
 
 ```text
 PROCS.CONF
@@ -165,25 +216,25 @@ PROCS.CONF
 
 ---
 
-## 9. Dedicated DEV Backtest & Research Cluster (`192.168.0.138:32238`)
+## 10. Dedicated DEV Backtest & Research Cluster (`192.168.0.138:32238`)
 
 Heavy multi-hour parameter sweeps and walk-forward evaluations are offloaded to the dedicated DEV host `backtest`:
-* **Master Suite Runner ([`run_overnight_master_suite.sh`](file:///home/predut/mptrade/offline/runners/run_overnight_master_suite.sh)):** Automated multi-stage sweep running Steps 0–9 (~31h duration):
-  * *Step 0A/0B:* 4-Pillars Intelligence & Chop Weight benchmarks (407 days).
-  * *Step 1:* Kraken HYPE 240m Walk-Forward (628 days, 31 folds).
-  * *Step 2:* Trading 212 Walk-Forward (NVDA, RGNT, SPCX).
-  * *Step 3:* Kraken Adaptive Multipliers (K_REENTRY & K_DCA).
-  * *Step 4:* 30-Candidate Multi-Factor Strategy Sweep.
-  * *Step 5:* TradeAll Trigger Gate, Quality Signal, RSI/Bollinger, and Dual Timeframe experiments.
-  * *Step 6:* TradeAll Adaptive Thresholds & Kalman Sampling Lag sweeps.
-  * *Step 7:* Monitortrades 392-day tick replay.
-  * *Step 8:* Automated proposals generation pushed to branch `backtest-proposals`.
-  * *Step 9:* Kraken continuous 11-asset grid.
+* **Master Suite Execution Status:** Completed 35h 54m autonomous run across all 10 stages (`OVERNIGHT_MASTER_REPORT.md`):
+  * *Step 0A/0B:* 4-Pillars Intelligence & Chop Weight benchmarks (407 days) — **PASSED**
+  * *Step 1:* Kraken HYPE 240m Walk-Forward (628 days, 31 folds) — **PASSED**
+  * *Step 2:* Trading 212 Walk-Forward (NVDA, RGNT, SPCX) — **PASSED**
+  * *Step 3:* Kraken Adaptive Multipliers (K_REENTRY & K_DCA) — **PASSED**
+  * *Step 4:* 30-Candidate Multi-Factor Strategy Sweep — **PASSED**
+  * *Step 5:* TradeAll Trigger Gate, Quality Signal, RSI/Bollinger, and Dual Timeframe experiments — **PASSED**
+  * *Step 6:* TradeAll Adaptive Thresholds & Kalman Sampling Lag (20s/60s/90s/150s) sweeps — **PASSED**
+  * *Step 7:* Monitortrades 392-day tick replay on Binance history — **PASSED**
+  * *Step 8:* Automated proposals generation pushed to branch `backtest-proposals` — **PUBLISHED**
+  * *Step 9:* Kraken continuous multi-asset grid — **COMPLETED**
 * **Sync Pipeline ([`refresh_dev.sh`](file:///home/predut/mptrade/offline/runners/refresh_dev.sh)):** Syncs upstream code via `git pull --ff-only` and mirrors live `cachedb/` tick archives via `rsync`.
 
 ---
 
-## 10. Quick Operations Runbook
+## 11. Quick Operations Runbook
 
 | Objective | Command |
 | :--- | :--- |
@@ -197,7 +248,7 @@ Heavy multi-hour parameter sweeps and walk-forward evaluations are offloaded to 
 
 ---
 
-## 11. Repository Navigation Map
+## 12. Repository Navigation Map
 
 | Directory | Architectural Role |
 | :--- | :--- |

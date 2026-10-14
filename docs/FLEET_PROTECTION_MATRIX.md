@@ -1,44 +1,72 @@
-# MATRICEA DE ACOPERIRE ȘI PROTECȚIE PE FIECARE ACTIV ȘI MONEDĂ (FLEET PROTECTION MATRIX)
+# FLEET PROTECTION MATRIX & ASSET RISK COVERAGE
 
-**Document generat:** 2026-10-14  
-**Status:** VALIDAT, TESTAT ȘI INTEGRAT PE BRANCH-UL `main`  
-**Proiect:** `mptrade` (Flota unificată de tranzacționare automată)
+**Date:** October 2026  
+**Status:** VALIDATED, BENCHMARKED & INTEGRATED ON `main`  
+**System:** `mptrade` (Unified Multi-Venue Autonomous Trading Fleet)
 
 ---
 
-## 1. Arhitectura pe Două Nivele de Protecție
+## 1. Two-Tier Protection Architecture
 
-| Nivel | Rol & Responsabilitate | Module & Algoritmi | Politică de Execuție |
+To ensure flawless capital preservation across high-volatility spot crypto, leveraged derivatives, and equity markets, the fleet enforces a strict **Two-Tier Defense Architecture**:
+
+```mermaid
+flowchart TD
+    subgraph Market ["Live Market Price Stream"]
+        TICK["Tick Ingestion & Mark-to-Market"]
+    end
+
+    subgraph Level1 ["Tier 1: Dynamic Pilot (Fine-Tuning Execution)"]
+        direction TB
+        TICK --> PEM["PositionExitManager\n(strategies/position_exit_manager.py)"]
+        PEM --> MDHTP["MDHTP (Multi-Horizon Dynamic Take Profit)\n• Trend-Riding Deferral on Uptrend\n• Guaranteed Profit Floor (min locked gain)\n• Dynamic Micro-Trailing (k=1.5 x vol_1h)\n• Stagnation Timeout (18m / 1080s)\n• Trend Reversal Exit"]
+        PEM --> MHDSL["MHDSL (Multi-Horizon Dynamic Stop Loss)\n• Priority 1: Hard Disaster Floor (vol-scaled)\n• Priority 2: Bounce Watch Deferral (<=220s)\n• Priority 2A: Structural Support Breakout\n• Priority 2B: Bounce Rollover Ratchet\n• Priority 3: Smart SL Controller (Whale Wall)"]
+        PEM --> MHDRE["MHDRE (Symmetrical Re-Entry Mirror)\n• Post-STOP: Confirmed trough bounce + ratchet\n• Post-TP: Bull pullback or range discount"]
+    end
+
+    subgraph Level2 ["Tier 2: Extreme Airbag (Crash Circuit Breaker)"]
+        direction TB
+        TICK --> CORE["TrailingCore State Machine\n(trailing_core.py)"]
+        CORE --> CB["Crash Circuit Breaker\n• Decoupled from profit warmup\n• Wide collapse trigger (-8% to -26%)\n• unlock_qty: Cancels resting sell limits\n• Force market execution (force=True)\n• Guard bypass for emergency exits"]
+    end
+
+    Level1 -->|Orderly Exit| DISPATCH["🚀 Order Dispatch Engine"]
+    Level2 -->|Emergency Breaker| DISPATCH
+```
+
+| Protection Tier | Responsibility & Scope | Algorithms & Modules | Execution Policy |
 | :--- | :--- | :--- | :--- |
-| **Nivelul 1: Pilotul Dinamic (Fine-tuning)** | Gestionează profitul și pierderile în exploatare normală. Analizează trendul macro, volatilitatea 1h, bounce-ul de recuperare, retragerea din vârf și timpul de stagnare. | `MHDSL` (Multi-Horizon Dynamic Stop Loss)<br>`MDHTP` (Multi-Horizon Dynamic Take Profit)<br>`MHDRE` (Symmetrical Re-entry Mirror)<br>Centralizate în `PositionExitManager` | Evaluare pasivă la fiecare tick / bară. Amână vânzarea dacă trendul este ascendent și piața dă semne de revenire (`sl_bounce_state`). Permite profitului să crească (`tp_ride_state`) până la retragere din maxim. |
-| **Nivelul 2: Airbag-ul de Avarie (Extreme Protection)** | Ultima linie de apărare împotriva flash-crash-urilor, ruperilor structurale violente sau căderilor catastrofale de piață. | `TrailingCore` (Binance & Kraken)<br>`hard_disaster_floor_breached` (Priority 1 în `PositionExitManager`)<br>Trailing Crash Breaker (`212trading`) | **Complet decuplat de warm-up:** vinde necondiționat la spargerea pragului de avarie. Deblochează automat monedele prin anularea ordinelor pasive de SELL (`unlock_qty`). Forțează execuția imediată (`force=True`, bypass guards). |
+| **Tier 1: Dynamic Pilot (Fine-tuning)** | Manages intraday profit capture, stop deferral, and swing re-entries under normal trading regimes. | `MHDSL` (Multi-Horizon Dynamic Stop Loss)<br>`MDHTP` (Multi-Horizon Dynamic Take Profit)<br>`MHDRE` (Symmetrical Re-entry Mirror)<br>Centralized in `PositionExitManager` | Evaluated on every tick/candle. Defers exit if trend is UP and bounce watch is active (`sl_bounce_state`). Allows profit to ride peak expansion (`tp_ride_state`) until volatility pullback triggers exit. |
+| **Tier 2: Extreme Airbag (Extreme Protection)** | Last line of defense against flash-crashes, severe structural breakdown, and liquidity cascades. | `TrailingCore` (Binance & Kraken)<br>`hard_disaster_floor_breached` (`PositionExitManager`)<br>Trailing Crash Breaker (`212trading`) | **Completely decoupled from profit warmup:** fires unconditionally if disaster threshold is breached from peak/basis. Automatically cancels conflicting passive limit orders (`unlock_qty`), forcing instant market liquidation (`force=True`). |
 
 ---
 
-## 2. Matricea de Acoperire Detaliată pe Active și Platforme
+## 2. Comprehensive Fleet Protection Matrix
 
-| Platformă (Vendor) | Activ / Simbol | Rol / Profil | Nivel 1: Protecție Dinamică (MHDSL / MDHTP / DCA) | Nivel 2: Protecție Extremă (Crash Circuit Breaker) | Stare în Flotă & Rationale |
+| Venue | Symbol / Asset | Engine Role | Tier 1: Dynamic Protection (MHDSL / MDHTP / DCA) | Tier 2: Extreme Protection (Crash Circuit Breaker) | Operational Status & Rationale |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Binance** | `BTCUSDC` | Spot Swing / Grid | **MHDSL:** Prag pierdere `2.925%`, bounce watch, ratchet dinamic, `hardtp = 17%` (0.5 tranche).<br>**MDHTP:** Activ prin `monitortrades.py` (Block 3.1). | **Trailing Stop:** `16%` din maxim istoric.<br>**Decuplat de warm-up.**<br>**`unlock_qty`:** Anulează automat ordinele de SELL la semnal de avarie. | **ACTIV.** Complet protejat cu două plase independente. |
-| **Binance** | `TAOUSDC` | Spot Swing / Grid | **MHDSL:** Prag pierdere `5.25%`, bounce watch, ratchet dinamic, `hardtp = 17%` (0.5 tranche).<br>**MDHTP:** Activ prin `monitortrades.py`. | **Trailing Stop:** `22%` din maxim istoric.<br>**Decuplat de warm-up.**<br>**`unlock_qty`:** Activ. | **ACTIV.** Complet protejat. |
-| **Binance** | `ARBUSDC` | Spot Swing / Grid | **MHDSL:** Prag pierdere `5.25%`, gain `9.0%`, bounce watch, ratchet dinamic, `hardtp = 17%` (0.5 tranche).<br>**MDHTP:** Activ prin `monitortrades.py`. | **Trailing Stop:** `26%` din maxim istoric.<br>**Decuplat de warm-up.** Rebuy automat pe medie mobilă 100 de zile.<br>**`unlock_qty`:** Activ. | **ACTIVAT ÎN MONITORTRADES (`role.mt = yes`).** Cicluri dinamice de swing + plasă de siguranță la 26%. |
-| **Kraken** | `HYPEUSD` | DCA Spot | **MHDSL:** Evaluat prin `spot_engine.py` + `PositionExitManager`.<br>**MDHTP:** Activat (`STRAT_TP_MDHTP_ENABLED=true`), trailing `3%`, floor `1%`.<br>**Frână DCA:** `STRAT_DCA_TREND_BRAKE=true`. | **Trailing Stop Multi-Asset:** `18%` în `kraken/trailing_stop.py`.<br>**Decuplat de warm-up.**<br>**`unlock_qty`:** Anulează ordinele deschise pe Kraken. | **ACTIV.** Protejat dual (bot DCA + proces independent de trailing). |
-| **Kraken** | `TAOUSD` | DCA Spot | **MHDSL:** Activ via `PositionExitManager`.<br>**MDHTP:** Activat (`STRAT_TP_MDHTP_ENABLED=true`).<br>**Frână DCA:** Activă. | **Trailing Stop Multi-Asset:** `22%` în `kraken/trailing_stop.py`.<br>**Decuplat de warm-up.**<br>**`unlock_qty`:** Activ. | **ACTIV.** Extins prin integrarea multi-asset din `trailing.conf`. |
-| **Kraken** | `ADAUSD` | DCA Spot | **MHDSL:** Activ via `PositionExitManager`.<br>**MDHTP:** Activat (`STRAT_TP_MDHTP_ENABLED=true`).<br>**Frână DCA:** Activă. | **Trailing Stop Multi-Asset:** `25%` în `kraken/trailing_stop.py`.<br>**Decuplat de warm-up.**<br>**`unlock_qty`:** Activ. | **ACTIV.** Extins prin integrarea multi-asset din `trailing.conf`. |
-| **Hyperliquid** | `HYPEUSDC` (Spot) | DCA Long-Term | **MHDSL:** `STRAT_STOP_LOSS_PCT=25%`. La prăbușiri catastrofale, `hard_disaster_floor_breached` (Priority 1) taie poziția necondiționat.<br>**MDHTP:** Activat (`STRAT_TP_MDHTP_ENABLED=true`), adaptive trailing (k=1.5, clamp 1.5–6%).<br>**Frână DCA:** `STRAT_DCA_TREND_BRAKE=true`, distanțare progresivă `0.25`. | **Circuit Breaker:** `hard_disaster_floor_breached` (vânzare market de urgență prin `_request_market_exit` cu anularea ordinelor deschise). | **ACTIV.** Frână pe trend descendent și stop de catastrofă activat la 25%. |
-| **Trading 212** | `SPCX_US_EQ` | Portfolio Stock | **MHDSL:** Activ (`STRAT_SL_MHDSL_ENABLED=true`), prag catastrofă 30%, rebuy 1.2% bounce.<br>**MDHTP:** Activ (`STRAT_TP_MDHTP_ENABLED=true`), eliminat conflictul cu scara TP. | **Trailing Stop:** `8%` din maxim.<br>**Decuplat de warm-up.** Activare trailing după warm-up de +5%, dar crash breaker-ul vinde instant la cădere severă. | **ACTIV.** Conflictul cu scara TP a fost eliminat; persistență `tp_pending_exit`. |
-| **Trading 212** | `NVDA_US_EQ` | Portfolio Stock | **MHDSL:** Activat (`STRAT_SL_MHDSL_ENABLED=true`), prag catastrofă 30%, rebuy 1.2% bounce.<br>**MDHTP:** Activat (`STRAT_TP_MDHTP_ENABLED=true`). | **Trailing Stop:** `8%` din maxim, decuplat de warm-up (+5%). | **ACTIV.** Modernizat de la stopul fix la standardul flotei. |
-| **Trading 212** | `RGNT_US_EQ` | Penny Biotech (Volatil) | **MHDSL:** Activat (`STRAT_SL_MHDSL_ENABLED=true`), prag catastrofă adaptat la `50%` (treapta DCA normală este la -40%).<br>**MDHTP:** Activat (`STRAT_TP_MDHTP_ENABLED=true`), permite ride pe pump-uri peste +35%.<br>**Rebuy:** Activ pe bounce de 3.0%. | **Trailing Crash Breaker:** `20%` din maxim, cu warm-up de `20%` (nu vinde pe zgomotul intraday de ±15%, dar prinde raliurile mari). | **ACTIVAT.** Adaptat special pentru volatilitatea extremă (evită ieșirea pe zgomot, dar previne pierderea totală a capitalului). |
+| **Binance** | `BTCUSDC` | Spot Swing / Grid | **MHDSL:** Loss threshold `2.925%`, bounce watch, dynamic ratchet, `hard_tp = 17%` (0.5 tranche).<br>**MDHTP:** Active in `monitortrades.py` (Block 3.1). | **Trailing Stop:** `16%` from peak.<br>**Decoupled from warmup.**<br>**`unlock_qty`:** Automatically cancels passive sell orders on alert. | **ACTIVE.** Dual-layer protected swing and trend engine. |
+| **Binance** | `TAOUSDC` | Spot Swing / Grid | **MHDSL:** Loss threshold `5.25%`, bounce watch, dynamic ratchet, `hard_tp = 17%` (0.5 tranche).<br>**MDHTP:** Active in `monitortrades.py`. | **Trailing Stop:** `22%` from peak.<br>**Decoupled from warmup.**<br>**`unlock_qty`:** Active. | **ACTIVE.** High-beta AI asset with tightened trailing crash breaker. |
+| **Binance** | `ARBUSDC` | Spot Swing / Grid | **MHDSL:** Loss threshold `5.25%`, gain `9.0%`, bounce watch, dynamic ratchet, `hard_tp = 17%` (0.5 tranche).<br>**MDHTP:** Active in `monitortrades.py`. | **Trailing Stop:** `26%` from peak.<br>**Decoupled from warmup.** Automatic rebuy on 100-day moving average.<br>**`unlock_qty`:** Active. | **ACTIVATED IN MONITORTRADES (`role.mt = yes`).** Dynamic swing cycles with wide safety net. |
+| **Kraken** | `HYPEUSD` | DCA Spot Engine | **MHDSL:** Evaluated via `spot_engine.py` + `PositionExitManager`.<br>**MDHTP:** Activated (`STRAT_TP_MDHTP_ENABLED=true`), trail `3%`, floor `1%`.<br>**DCA Brake:** `STRAT_DCA_TREND_BRAKE=true`. | **Multi-Asset Trailing Stop:** `18%` in `kraken/trailing_stop.py`.<br>**Decoupled from warmup.**<br>**`unlock_qty`:** Cancels open orders on Kraken before exit. | **ACTIVE.** Dual-protected: DCA spot bot + independent trailing daemon. |
+| **Kraken** | `TAOUSD` | DCA Spot Engine | **MHDSL:** Active via `PositionExitManager`.<br>**MDHTP:** Activated (`STRAT_TP_MDHTP_ENABLED=true`).<br>**DCA Brake:** Active with spacing growth `+0.25pp`. | **Multi-Asset Trailing Stop:** `22%` in `kraken/trailing_stop.py`.<br>**Decoupled from warmup.**<br>**`unlock_qty`:** Active. | **ACTIVE.** Multi-asset coverage defined in `trailing.conf`. |
+| **Kraken** | `ADAUSD` | DCA Spot Engine | **MHDSL:** Active via `PositionExitManager`.<br>**MDHTP:** Activated (`STRAT_TP_MDHTP_ENABLED=true`).<br>**DCA Brake:** Active. | **Multi-Asset Trailing Stop:** `25%` in `kraken/trailing_stop.py`.<br>**Decoupled from warmup.**<br>**`unlock_qty`:** Active. | **ACTIVE.** Multi-asset coverage defined in `trailing.conf`. |
+| **Hyperliquid** | `HYPEUSDC` (Spot) | DCA Long-Term | **MHDSL:** `STRAT_STOP_LOSS_PCT=25%`. On catastrophic break, `hard_disaster_floor_breached` (Priority 1) cuts position immediately.<br>**MDHTP:** Activated (`STRAT_TP_MDHTP_ENABLED=true`), adaptive trail ($k=1.5$, clamp 1.5–6%).<br>**DCA Brake:** `STRAT_DCA_TREND_BRAKE=true`, spacing growth `0.25pp`. | **Circuit Breaker:** `hard_disaster_floor_breached` (urgent market exit via `_request_market_exit` cancelling open orders). | **ACTIVE.** Downtrend DCA brake and emergency disaster stop active at 25%. |
+| **Trading 212** | `SPCX_US_EQ` | Portfolio Stock | **MHDSL:** Active (`STRAT_SL_MHDSL_ENABLED=true`), disaster floor 30%, rebuy on 1.2% bounce.<br>**MDHTP:** Active (`STRAT_TP_MDHTP_ENABLED=true`), dynamic 5-rung bell-curve ladder. | **Trailing Stop:** `8%` from peak.<br>**Decoupled from warmup.** Arming begins at +5% gain, but crash breaker executes instantly on severe drawdown. | **ACTIVE.** Scale-out ladder conflict eliminated; `tp_pending_exit` persistence. |
+| **Trading 212** | `NVDA_US_EQ` | Portfolio Stock | **MHDSL:** Activated (`STRAT_SL_MHDSL_ENABLED=true`), disaster floor 30%, rebuy on 1.2% bounce.<br>**MDHTP:** Activated (`STRAT_TP_MDHTP_ENABLED=true`). | **Trailing Stop:** `8%` from peak, decoupled from warmup (+5%). | **ACTIVE.** Modernized from legacy fixed stop to fleet-standard MHDSL/MDHTP. |
+| **Trading 212** | `RGNT_US_EQ` | High-Vol Biotech | **MHDSL:** Activated (`STRAT_SL_MHDSL_ENABLED=true`), disaster floor adapted to `50%` (standard DCA tier is at -40%).<br>**MDHTP:** Activated (`STRAT_TP_MDHTP_ENABLED=true`), rides pumps over +35%.<br>**Rebuy:** Active on 3.0% recovery bounce. | **Trailing Crash Breaker:** `20%` from peak with `20%` warmup (avoids intraday noise of +/-15%, captures explosive moves). | **ACTIVE.** Specially calibrated for extreme volatility without premature whipsaw. |
 
 ---
 
-## 3. Comportamente Cheie Verificate la Nivel de Flotă
+## 3. Fleet-Wide Hardened Invariants & Safety Guarantees
 
-1. **Blocarea DCA pe Cădere (`sl_bounce_state`):**
-   * Atât pe Kraken & Hyperliquid (`spot_engine.py`), cât și pe Trading 212 (`strategy.py`), dacă o poziție intră sub pragul de stop-loss și analizează un posibil bounce, plasarea de noi ordine de cumpărare DCA este **strict interzisă**.
-2. **Deblocarea Automată a Balanțelor (`unlock_qty`):**
-   * Nu mai există riscul ca o poziție să nu poată fi vândută la crash deoarece monedele sunt „blocate” într-un ordin limită pasiv de Take-Profit. Toate adaptoarele anulează întâi ordinele de SELL concurente.
-3. **Persistența Intenției de Ieșire:**
-   * În caz de refuz de la broker/exchange (ex. API timeout, rețea), intenția de ieșire nu se resetează la HOLD, ci persistă (`pending_exit` / `tp_pending_exit`) și se reîncearcă la fiecare tick până la confirmarea execuției.
-4. **Reîncărcarea Automată a Flotei:**
-   * Orice modificare de configurare este reflectată prin timestamp-ul unic `RELOAD_TRIGGER` din `procs.conf`, semnalizând supraveghetorului de procese (`fleet_supervisor.sh`) să aplice noile parametri fără downtime manual.
+1. **DCA Buy Suppression on Bounce Watch (`sl_bounce_state`):**
+   * Across Kraken & Hyperliquid (`spot_engine.py`) and Trading 212 (`strategy.py`), while a position is in delayed stop bounce watch, placing new DCA buy orders is **strictly suppressed** to prevent capital dilution into unconfirmed breakdowns.
+2. **Automatic Balance Unlocking (`unlock_qty`):**
+   * Eliminates the risk of an emergency exit failing due to tokens/shares being locked inside resting limit Take-Profit orders. Adapters query open orders and cancel conflicting sells before executing market stops.
+3. **Exit Intent Persistence (`pending_exit` / `tp_pending_exit`):**
+   * If an exit order is rejected by an exchange due to transient transport timeout or API limits, the exit state is not reverted to HOLD. The exit intent persists in state and re-executes on subsequent ticks until fill confirmation.
+4. **Emergency Floor Under Cost Basis:**
+   * If market price collapses below cost basis during an active profit ride, an immediate emergency floor exit triggers, guaranteeing capital preservation.
+5. **Dynamic Reload Triggering (`RELOAD_TRIGGER`):**
+   * Any configuration update across `.env` files is registered by updating `RELOAD_TRIGGER` in `procs.conf`, signaling `python_orchestrator.service` to apply changes gracefully with zero manual intervention.
