@@ -2,6 +2,7 @@ import os
 import time
 import datetime
 import random
+import math
 from collections import OrderedDict
 
 # Binance imports.
@@ -31,6 +32,72 @@ MAX_PROC = _load_float_env("MONITOR_MAX_PROC", 0.77)
 MONITOR_COOLDOWN_MULTIPLIER = _load_float_env("MONITOR_COOLDOWN_MULTIPLIER", 1.15)
 monitor_interval = 3.7
 MAX_TRACKED_ORDER_IDS = 10_000
+
+# Order Market TTL configurations (in seconds)
+MAX_GLOBAL_ORDER_TTL_SEC = _load_float_env("MAX_GLOBAL_ORDER_TTL_SEC", 259200.0)  # 3 days hard cap
+DEFAULT_ORDER_TTL_SEC = _load_float_env("DEFAULT_ORDER_TTL_SEC", 14400.0)        # 4 hours
+MODULE_ORDER_TTLS = {
+    "rtrade": _load_float_env("RTRADE_DEFAULT_ORDER_TTL_SEC", 300.0),            # 5 minutes
+    "tradeall": _load_float_env("TRADEALL_DEFAULT_ORDER_TTL_SEC", 7200.0),       # 2 hours
+    "spot_dca": _load_float_env("SPOT_DCA_DEFAULT_ORDER_TTL_SEC", 86400.0),     # 24 hours
+    "manual": _load_float_env("MANUAL_DEFAULT_ORDER_TTL_SEC", 86400.0),         # 24 hours
+    "monitororder": _load_float_env("TRADEALL_DEFAULT_ORDER_TTL_SEC", 7200.0),   # 2 hours
+}
+
+
+def resolve_effective_order_ttl(order_id, client_order_id, owner=None, custom_ttl_map=None) -> float:
+    """Resolve the effective TTL for an open order.
+
+    1. Check custom TTL from placement (order_id or client_order_id).
+    2. Fall back to module default based on resolved owner.
+    3. Fall back to global default.
+    4. Enforce MAX_GLOBAL_ORDER_TTL_SEC hard cap (3 days) without exception.
+    """
+    custom_map = custom_ttl_map or {}
+    oid_str = str(order_id)
+    cid_str = str(client_order_id or "")
+
+    # 1. Custom TTL from placement
+    custom_ttl = custom_map.get(oid_str) or (custom_map.get(cid_str) if cid_str else None)
+    if custom_ttl is not None:
+        try:
+            val = float(custom_ttl)
+            if math.isfinite(val) and val > 0:
+                return min(val, MAX_GLOBAL_ORDER_TTL_SEC)
+        except (TypeError, ValueError):
+            pass
+
+    # 2. Module default based on owner
+    if not owner and cid_str:
+        owner = rc.resolve_order_owner(cid_str)
+
+    norm_owner = str(owner or "").strip().lower()
+    if norm_owner in MODULE_ORDER_TTLS:
+        return min(MODULE_ORDER_TTLS[norm_owner], MAX_GLOBAL_ORDER_TTL_SEC)
+
+    # 3. Global fallback default
+    return min(DEFAULT_ORDER_TTL_SEC, MAX_GLOBAL_ORDER_TTL_SEC)
+
+
+def _notify_order_expired(symbol, order_type, order_id, price, quantity, owner=None, age_str="", ttl_str=""):
+    """Notify when an expired open order is canceled by monitororder."""
+    try:
+        import alertnotifiers as alert
+        qty = float(quantity or 0.0)
+        px = float(price or 0.0)
+        side = str(order_type).upper()
+        owner_tag = f" [{owner}]" if owner and owner not in ("unspecified", "unknown") else ""
+        owner_body = f" ({owner})" if owner and owner not in ("unspecified", "unknown") else ""
+        print(f"[MONITORORDER] ⏰ Order expired & canceled{owner_body}: {side} {qty:.6f} {symbol} @ {px:.2f} (orderId={order_id})")
+        alert.notify(
+            title=f"⏰ Order Expired & Canceled: {side} {symbol}{owner_tag}",
+            body=f"Order {order_id}{owner_body} active for {age_str} exceeded TTL of {ttl_str}. Canceled on venue.",
+            source="monitororder",
+            symbol=str(symbol),
+            price=px,
+        )
+    except Exception as exc:
+        print(f"[MONITORORDER] Expiry notification failed for order {order_id}: {exc}")
 initial_prices = OrderedDict()
 initial_sell_prices = OrderedDict()
 initial_buy_prices = OrderedDict()
@@ -113,7 +180,12 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
     print(f"The current price : {current_price:.2f}")
     
     initial_prices = initial_sell_prices if order_type == "SELL" else initial_buy_prices
-    
+    custom_ttl_map = {}
+    try:
+        custom_ttl_map = order_retry.get_accepted_order_ttl_map()
+    except Exception:
+        pass
+
     for order_id in list(orders.keys()):
         order = orders[order_id]
         price = order['price']
@@ -132,6 +204,27 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     and _monitororder_initialized
                     and _should_notify_order_launched(owner)):
                 _notify_order_launched(symbol, order_type, order_id, price, order.get("quantity", 0), owner=owner)
+
+        # Check order age and Market TTL expiration (hard cap of 3 days or effective TTL).
+        order_ts = float(order.get("timestamp") or 0.0)
+        if order_ts > 0:
+            now = time.time()
+            age_sec = max(0.0, now - order_ts)
+            effective_ttl = resolve_effective_order_ttl(order_id, cid, owner=owner, custom_ttl_map=custom_ttl_map)
+            if age_sec >= MAX_GLOBAL_ORDER_TTL_SEC or age_sec >= effective_ttl:
+                age_str = f"{age_sec / 3600:.1f}h" if age_sec >= 3600 else f"{age_sec / 60:.1f}m"
+                ttl_str = f"{effective_ttl / 3600:.1f}h" if effective_ttl >= 3600 else f"{effective_ttl / 60:.1f}m"
+                print(
+                    f"[MONITORORDER] ⏰ Order {order_id} ({owner}, cid='{cid}') EXPIRED: "
+                    f"age {age_str} >= TTL {ttl_str}. Canceling on venue..."
+                )
+                try:
+                    mkt.cancel_order(symbol, str(order_id))
+                    print(f"[MONITORORDER] 🛑 Successfully canceled expired order {order_id}")
+                    _notify_order_expired(symbol, order_type, order_id, price, order.get("quantity", 0), owner, age_str, ttl_str)
+                except Exception as exc:
+                    print(f"[MONITORORDER] Failed to cancel expired order {order_id}: {exc}")
+                continue
 
         # Repricing protection: only reprice orders from tradeall or monitororder.
         # Orders from rtrade, spot_dca, manual, etc. are strictly protected from cancellation/repricing.

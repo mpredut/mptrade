@@ -703,7 +703,8 @@ class Instrument:
                                 failure_reason="submit_pending",
                                 provider_name=self.provider_name,
                                 intent_id=kwargs.get("intent_id"),
-                                kind=kwargs.get("kind") or kwargs.get("motivation"))
+                                kind=kwargs.get("kind") or kwargs.get("motivation"),
+                                ttl_sec=kwargs.get("ttl_sec"))
                             if prequeued_claim is None:
                                 raise RuntimeError("the intent cannot be read back after persisting")
                             prequeued_record_id = prequeued_claim.get("id")

@@ -61,6 +61,7 @@ RETRY_DEDUP = required_bool_env("RETRY_DEDUP")
 RETRY_MAX_QUEUE = required_int_env("RETRY_MAX_QUEUE")
 RETRY_CLAIM_LEASE_SEC = required_float_env("RETRY_CLAIM_LEASE_SEC")
 RETRY_NOT_FOUND_MAX_AGE_SEC = required_float_env("RETRY_NOT_FOUND_MAX_AGE_SEC")
+MAX_GLOBAL_ORDER_TTL_SEC = required_float_env("MAX_GLOBAL_ORDER_TTL_SEC")
 
 
 def _validate_retry_config():
@@ -429,7 +430,7 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
             now=None, created_ts=None, attempts=0, last_attempt_ts=0.0,
             failure_reason=None, *, provider_name=None, intent_id=None, kind=None,
             lifecycle="submit_pending", replaces_order_id=None,
-            replaces_original_qty=None, _producer_lease_sec=None):
+            replaces_original_qty=None, _producer_lease_sec=None, ttl_sec=None):
     """Persist a submission or a pre-cancel replacement under the queue lock.
 
     Pending submissions may use the configured symbol/side deduplication policy.
@@ -511,6 +512,22 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
     if not prefix:
         prefix = "OR"
     placement.setdefault("client_order_id", _client_order_id(record_id, 0, prefix=prefix))
+    custom_ttl = None
+    if ttl_sec is not None:
+        try:
+            custom_ttl = float(ttl_sec)
+        except (TypeError, ValueError):
+            pass
+    elif placement and "ttl_sec" in placement:
+        try:
+            custom_ttl = float(placement["ttl_sec"])
+        except (TypeError, ValueError):
+            pass
+    if custom_ttl is not None:
+        if math.isfinite(custom_ttl) and custom_ttl > 0:
+            custom_ttl = min(custom_ttl, MAX_GLOBAL_ORDER_TTL_SEC)
+        else:
+            custom_ttl = None
     rec = {
         "id": record_id,
         "prefix": prefix,
@@ -534,6 +551,9 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
         "revision": 0,
         "lifecycle": lifecycle,
     }
+    if custom_ttl is not None:
+        rec["ttl_sec"] = custom_ttl
+        rec["expires_at_ts"] = cts + custom_ttl
     if lifecycle == "awaiting_cancel":
         rec["replaces_order_id"] = str(replaces_order_id)
         rec["replaces_original_qty"] = replaces_original_qty
@@ -678,7 +698,7 @@ def enqueue_claimed(
         symbol, side, qty, place_kwargs=None, requested_price=None,
         ref_price=None, now=None, created_ts=None, attempts=0,
         last_attempt_ts=0.0, failure_reason=None, *, provider_name=None,
-        intent_id=None, kind=None, lease_sec=None):
+        intent_id=None, kind=None, lease_sec=None, ttl_sec=None):
     """Atomically persist and lease one unique producer-owned submission.
 
     The default lease covers the first complete retry interval plus the normal
@@ -699,7 +719,8 @@ def enqueue_claimed(
         now=now, created_ts=created_ts, attempts=attempts,
         last_attempt_ts=last_attempt_ts, failure_reason=failure_reason,
         provider_name=provider_name, intent_id=intent_id, kind=kind,
-        lifecycle="submit_pending", _producer_lease_sec=lease_sec)
+        lifecycle="submit_pending", _producer_lease_sec=lease_sec,
+        ttl_sec=ttl_sec)
 
 
 def update_claimed_qty(claim_snapshot, qty, *, now=None):
@@ -825,6 +846,30 @@ def load_all(now=None):
     _ensure_dir()
     with FileLock(LOCK_FILE):
         return _read_nolock()
+
+
+def get_accepted_order_ttl_map() -> dict:
+    """Return a mapping of order_id and client_order_id to custom ttl_sec for active accepted orders."""
+    res = {}
+    try:
+        records = load_all()
+    except Exception:
+        return res
+    for r in records:
+        ttl = r.get("ttl_sec")
+        if ttl is not None:
+            try:
+                ttl_val = float(ttl)
+                if math.isfinite(ttl_val) and ttl_val > 0:
+                    oid = r.get("order_id")
+                    if oid:
+                        res[str(oid)] = ttl_val
+                    cid = dict(r.get("place_kwargs") or {}).get("client_order_id")
+                    if cid:
+                        res[str(cid)] = ttl_val
+            except (TypeError, ValueError):
+                continue
+    return res
 
 
 def load_validated(now=None):
