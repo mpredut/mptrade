@@ -744,6 +744,32 @@ class T212CancellationLifecycleTest(unittest.TestCase):
 
         self.assertEqual(client.place_calls[-1][-1], "GOOD_TILL_CANCEL")
 
+    def test_backtest_simulate_with_mhdsl_and_mdhtp(self):
+        from backtest import simulate
+        bars = [
+            (100.0, 100.5, 99.5, 100.0),
+            (100.0, 100.5, 99.5, 100.0),
+            (102.0, 103.0, 101.5, 102.5),
+            (104.0, 105.0, 103.5, 104.5),
+        ]
+        P = {
+            "budget": 1000.0,
+            "entry": 100.0,
+            "dca": 100.0,
+            "disc": 0.2,
+            "drop": 2.0,
+            "tp": 2.0,
+            "maxdca": 5,
+            "fee": 0.15,
+            "sl": 10.0,
+            "sym": "NVDA",
+            "sl_mhdsl_enabled": True,
+            "tp_mdhtp_enabled": True,
+        }
+        res = simulate(bars, P)
+        self.assertIn("total", res)
+        self.assertIn("cycles", res)
+
 
 if __name__ == "__main__":
     unittest.main()

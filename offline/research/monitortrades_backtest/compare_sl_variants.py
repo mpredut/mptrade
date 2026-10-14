@@ -24,7 +24,7 @@ def main():
         mt.MT_SL_STRUCTURAL_BREAK_ENABLED = enabled
         results[label] = {}
 
-        for sym in ["BTCUSDC", "TAOUSDC"]:
+        for sym in ["BTCUSDC", "TAOUSDC", "ARBUSDC"]:
             cfg = SYMBOLS[sym]
             print(f"Starting {sym}...")
             res = run_symbol(sym, cfg["params"], cfg["base"], quiet=True)
@@ -34,7 +34,7 @@ def main():
     print("\n\n" + "=" * 60)
     print("           BACKTEST COMPARISON SUMMARY")
     print("=" * 60)
-    for sym in ["BTCUSDC", "TAOUSDC"]:
+    for sym in ["BTCUSDC", "TAOUSDC", "ARBUSDC"]:
         prop = results[variants[0][0]][sym]
         base = results[variants[1][0]][sym]
         diff = prop.get("net", 0.0) - base.get("net", 0.0)

@@ -124,6 +124,7 @@ def run_symbol(symbol, params, base, quiet=True, trend_window_seconds=DEFAULT_WI
 
     orig_is_trend_up = mt.is_trend_up
     mt.is_trend_up = trend_source.is_trend_up
+    mt.clear_position_stats_cache()
     try:
         first_price = provider.advance(symbol)
         if first_price is None:
@@ -160,6 +161,7 @@ def run_symbol(symbol, params, base, quiet=True, trend_window_seconds=DEFAULT_WI
                 sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
     finally:
         mt.is_trend_up = orig_is_trend_up
+        mt.clear_position_stats_cache()
 
     all_buys = provider.get_orders(symbol, "BUY", since_s=1e12)
     all_sells = provider.get_orders(symbol, "SELL", since_s=1e12)

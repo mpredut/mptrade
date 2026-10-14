@@ -204,10 +204,14 @@ _POSITION_CACHE_HEARTBEAT_SEC = 15.0  # Safety fallback: re-verify after 15s eve
 
 
 def clear_position_stats_cache():
-    """Clear position cache for test isolation and clean resets."""
+    """Clear position cache and all stateful exit/re-entry tracking for isolation and clean resets."""
     _position_stats_cache.clear()
     _REENTRY_STATE.clear()
     _LAST_EXIT_KIND.clear()
+    _SL_BOUNCE_STATE.clear()
+    _TP_RIDE_STATE.clear()
+    _hard_tp_last.clear()
+    _notified_trade_ids.clear()
 
 
 def _make_order_signature(orders):

@@ -177,6 +177,7 @@ def _run_one(symbol, base, params, series):
     trend_source = rb.ReplayTrendSource([symbol])
     orig_is_trend_up = rb.mt.is_trend_up
     rb.mt.is_trend_up = trend_source.is_trend_up
+    rb.mt.clear_position_stats_cache()
     try:
         first_price = provider.advance(symbol)
         if first_price is None:
@@ -202,6 +203,7 @@ def _run_one(symbol, base, params, series):
                 sys.stderr.write(f"[{symbol}] error in monitor_price_and_trade: {e}\n")
     finally:
         rb.mt.is_trend_up = orig_is_trend_up
+        rb.mt.clear_position_stats_cache()
 
     all_buys = provider.get_orders(symbol, "BUY", since_s=1e12)
     all_sells = provider.get_orders(symbol, "SELL", since_s=1e12)

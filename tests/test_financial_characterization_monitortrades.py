@@ -858,6 +858,25 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
         self.assertEqual((inst.placed[0]["side"], inst.placed[0]["qty"]), ("SELL", 4.0))
         self.assertNotIn(sym, mt._SL_BOUNCE_STATE)
 
+    def test_clear_position_stats_cache_resets_all_exit_state(self):
+        mt._position_stats_cache["foo"] = "bar"
+        mt._REENTRY_STATE["BTCUSDC"] = {"peak": 100.0}
+        mt._LAST_EXIT_KIND["BTCUSDC"] = "STOP"
+        mt._SL_BOUNCE_STATE["BTCUSDC"] = {"peak_bounce_price": 95.0}
+        mt._TP_RIDE_STATE["BTCUSDC"] = {"peak_price": 105.0}
+        mt._hard_tp_last["BTCUSDC"] = 12345678
+        mt._notified_trade_ids.add("order_1")
+
+        mt.clear_position_stats_cache()
+
+        self.assertEqual(len(mt._position_stats_cache), 0)
+        self.assertEqual(len(mt._REENTRY_STATE), 0)
+        self.assertEqual(len(mt._LAST_EXIT_KIND), 0)
+        self.assertEqual(len(mt._SL_BOUNCE_STATE), 0)
+        self.assertEqual(len(mt._TP_RIDE_STATE), 0)
+        self.assertEqual(len(mt._hard_tp_last), 0)
+        self.assertEqual(len(mt._notified_trade_ids), 0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

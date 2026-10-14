@@ -1,9 +1,9 @@
-﻿import csv
+import csv
 import importlib.util
 import os
 import sys
 
-ROOT = "/home/mariusp/mptrade"
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 
