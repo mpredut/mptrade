@@ -93,6 +93,10 @@ run_step "2A" "T212 NVDA 1d Walk-Forward Baseline" \
         --train 180 --validation 60 --test 30 --step 30 --warmup 12 \
         --output-dir $RESULTS_DIR/t212_nvda"
 
+run_step "2A_COMP" "T212 NVDA 1d Candidate Comparison" \
+    "$PYTHON_BIN offline/runners/walk_forward.py --mode compare \
+        \$(ls -t $RESULTS_DIR/t212_nvda/nvda/baseline_NVDA_*.json 2>/dev/null | head -1)"
+
 run_step "2B" "T212 RGNT 1d Walk-Forward Baseline" \
     "$PYTHON_BIN offline/runners/walk_forward.py --venue t212 \
         --profile rgnt \
@@ -112,10 +116,18 @@ run_step "2D" "Hyperliquid HYPE 240m Walk-Forward Baseline" \
         --coin HYPE --direction long --intervals 240 \
         --output-dir $RESULTS_DIR/hyperliquid_wf"
 
+run_step "2D_COMP" "Hyperliquid HYPE 240m Candidate Comparison" \
+    "$PYTHON_BIN offline/runners/walk_forward.py --mode compare \
+        $RESULTS_DIR/hyperliquid_wf/HYPE_240m_baseline.json"
+
 run_step "2E" "Binance BTCUSDT 240m Walk-Forward Baseline" \
     "$PYTHON_BIN offline/runners/walk_forward.py --venue binance \
         --symbol BTCUSDT --intervals 240 \
         --output-dir $RESULTS_DIR/binance_wf"
+
+run_step "2E_COMP" "Binance BTCUSDT 240m Candidate Comparison" \
+    "$PYTHON_BIN offline/runners/walk_forward.py --mode compare \
+        $RESULTS_DIR/binance_wf/BTCUSDT_240m_baseline.json"
 
 # ------------------------------------------------------------------------------
 # STEP 3: Kraken Adaptive Volatility & Reentry Multiplier Sweeps
