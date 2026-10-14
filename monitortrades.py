@@ -82,14 +82,38 @@ def print_number_of_orders(maxage_trade_s):
         print(f"get_trade_orders:           Total found {len(orders)} orders in the last {u.secondsToDays(maxage_trade_s)} days.")
 
 
-_notified_trade_ids = set()
+class _FifoTradeIdTracker:
+    """Memory-bounded trade ID tracker preserving FIFO insertion order."""
+    def __init__(self, maxsize: int = 10000):
+        self._data: dict[str, None] = {}
+        self._maxsize = maxsize
+
+    def add(self, item: str) -> None:
+        self._data[str(item)] = None
+        if len(self._data) > self._maxsize:
+            # Prune oldest 50% in FIFO insertion order
+            excess = len(self._data) - (self._maxsize // 2)
+            for _ in range(excess):
+                self._data.pop(next(iter(self._data)), None)
+
+    def __contains__(self, item: object) -> bool:
+        return str(item) in self._data
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def clear(self) -> None:
+        self._data.clear()
+
+
+_notified_trade_ids = _FifoTradeIdTracker()
 _trades_monitor_initialized = False
 
 
 def reset_trades_monitor_state_for_test():
     """Reset the executed trades tracking state (used in testing)."""
     global _notified_trade_ids, _trades_monitor_initialized
-    _notified_trade_ids = set()
+    _notified_trade_ids = _FifoTradeIdTracker()
     _trades_monitor_initialized = False
 
 
@@ -157,10 +181,6 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                 )
         except Exception as _e:
             print(f"[MONITORTRADES] Error checking executed trades for {symbol}: {_e}")
-
-    # Prune seen IDs if memory grows too large over months
-    if len(_notified_trade_ids) > 10000:
-        _notified_trade_ids = set(list(_notified_trade_ids)[-5000:])
 
 
 
@@ -554,9 +574,9 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         print(f"POSITION (referinta=AVG {maxage_trade_s/86400:.0f}z) for {symbol} : {position}")
     else:
         print(f"POSITION (reference=the last buy {buy_price}) for {symbol} : {position}")
-    if position["average_sell_price"] > 0:
+    if tp_ref == "average" and position["average_sell_price"] > 0:
         sell_price = position["average_sell_price"]
-        print(f"POSITION for {symbol} : {position}")
+        print(f"POSITION (referinta SELL=AVG) for {symbol} : {position}")
     # 2. Fetch current price through the facade for the instrument's provider.
     current_price = inst.price()
     if current_price is None or not math.isfinite(float(current_price)) or current_price <= 0:

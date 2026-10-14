@@ -123,6 +123,18 @@ class TestMonitortradesExecutedTrades(unittest.TestCase):
             mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])
             mock_notify.assert_not_called()
 
+    def test_fifo_trade_id_tracker_prunes_in_strict_fifo_order(self):
+        tracker = mt._FifoTradeIdTracker(maxsize=10)
+        for i in range(11):
+            tracker.add(f"trade_{i}")
+        # When exceeding 10, oldest 6 (trade_0 through trade_5) are pruned down to 5 items (50% maxsize)
+        self.assertEqual(len(tracker), 5)
+        for i in range(6):
+            self.assertNotIn(f"trade_{i}", tracker)
+        # Most recent (trade_6 through trade_10) are strictly retained in FIFO order
+        for i in range(6, 11):
+            self.assertIn(f"trade_{i}", tracker)
+
 
 if __name__ == "__main__":
     unittest.main()

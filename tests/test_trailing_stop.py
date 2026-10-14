@@ -521,6 +521,25 @@ class TestMinProfit(Base):
             self.assertEqual(len(self.po.orders), 1, "unlocked coins allowed crash sell to execute")
             self.assertEqual(self.po.orders[0]["side"], "SELL")
 
+        with self.subTest(msg="resting_orders_not_unlocked_when_price_healthy"):
+            self.tearDown(); self.setUp()
+            api = FakeApi(250.0)
+            ts = self.ts(api, min_profit_pct=0.0)
+            ts.check_once()
+            # Coins locked in resting order, but price is healthy at 250 (not in crash)
+            api.free = 0.0
+            api.price = 250.0
+
+            unlocked = []
+            def fake_unlock(pair):
+                unlocked.append(pair)
+                return True
+
+            ts.unlock_qty = fake_unlock
+            ts.check_once()
+            self.assertEqual(unlocked, [], "resting orders must NOT be cancelled when price is healthy")
+            self.assertEqual(self.po.orders, [], "no orders placed")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
