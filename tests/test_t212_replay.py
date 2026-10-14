@@ -773,6 +773,19 @@ class T212CancellationLifecycleTest(unittest.TestCase):
         self.assertIn("total", res)
         self.assertIn("cycles", res)
 
+    def test_make_t212_replay_adapter_walk_forward_compatibility(self):
+        from offline.backtests.evaluation import evaluate_segment
+        params = _params()
+        records = [
+            {"timestamp": 1000 + i * 3600, "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0}
+            for i in range(10)
+        ]
+        adapter = replay.make_t212_replay_adapter(params, bar_minutes=60.0)
+        res = evaluate_segment(records, adapter)
+        self.assertIn("metrics", res)
+        self.assertIn("return_pct", res["metrics"])
+        self.assertIn("fills", res["metrics"])
+
 
 if __name__ == "__main__":
     unittest.main()

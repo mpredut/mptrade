@@ -391,6 +391,19 @@ class PercentageSizingReplayTest(unittest.TestCase):
         )
         self.assertEqual(percent_result, fixed_result)
 
+    def test_make_kraken_replay_adapter_walk_forward_compatibility(self):
+        from offline.backtests.evaluation import evaluate_segment
+        params = _params()
+        records = [
+            {"timestamp": 1000 + i * 3600, "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0}
+            for i in range(10)
+        ]
+        adapter = rp.make_kraken_replay_adapter(params, fee_pct=0.25, bar_minutes=60)
+        res = evaluate_segment(records, adapter)
+        self.assertIn("metrics", res)
+        self.assertIn("return_pct", res["metrics"])
+        self.assertIn("fills", res["metrics"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -265,24 +265,18 @@ def main() -> int:
     metadata = dataset_metadata(records)
     frozen_path = output_dir / "datasets" / f"{symbol}_{args.interval}_{metadata['sha256'][:12]}.csv"
     save_dataset(records, frozen_path)
+    adapter = t212_replay.make_t212_replay_adapter(
+        params,
+        bar_minutes=interval_minutes,
+        fx_to_usd=fx_fixed,
+        fx_records=fx_records,
+        fx_invert=fx_invert,
+        periods_per_year=periods_per_year(interval_minutes),
+        execution=execution,
+    )
     result = evaluate_walk_forward(
         records,
-        lambda ohlc, warmup_ohlc, context: t212_replay.run_replay(
-            ohlc,
-            params,
-            bar_minutes=interval_minutes,
-            fx_to_usd=(
-                fx_fixed if fx_records is None else align_previous_values(
-                    context.timestamps,
-                    fx_records,
-                    transform=(lambda value: 1.0 / value) if fx_invert else None,
-                )
-            ),
-            periods_per_year=periods_per_year(interval_minutes),
-            warmup_ohlc=warmup_ohlc,
-            timestamps=context.timestamps,
-            execution=execution,
-        ),
+        adapter,
         train_size=train,
         validation_size=validation,
         test_size=test,

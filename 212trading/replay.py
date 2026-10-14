@@ -287,3 +287,37 @@ def _run_once(
         for key, value in performance.items()
     })
     return result
+
+
+def make_t212_replay_adapter(
+    params: _strat.StratParams,
+    bar_minutes: float | None = None,
+    fx_to_usd: float | Sequence[float] | None = None,
+    fx_records: Sequence[dict] | None = None,
+    fx_invert: bool = False,
+    periods_per_year: float | None = None,
+    execution: ExecutionModel | None = None,
+):
+    """Return a generic ReplayFunction compatible with evaluation.py walk-forward benchmarks."""
+    def _adapter(ohlc, warmup_ohlc, context=None):
+        ts = list(context.timestamps) if context and getattr(context, "timestamps", None) else ()
+        rate = fx_to_usd if fx_to_usd is not None else 1.0
+        if fx_records is not None and ts:
+            from providers.dataset_alignment import align_previous_values
+            rate = align_previous_values(
+                ts,
+                fx_records,
+                transform=(lambda value: 1.0 / value) if fx_invert else None,
+            )
+        return run_replay(
+            ohlc,
+            params,
+            bar_minutes=bar_minutes,
+            fx_to_usd=rate,
+            periods_per_year=periods_per_year,
+            warmup_ohlc=warmup_ohlc,
+            timestamps=ts,
+            execution=execution,
+        )
+    return _adapter
+

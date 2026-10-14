@@ -73,12 +73,12 @@ def _segment_result(records: list[dict], params: StratParams, fee_pct: float,
     original_log = kraken_replay._strat.log
     kraken_replay._strat.log = lambda *_args, **_kwargs: None
     try:
+        adapter = kraken_replay.make_kraken_replay_adapter(
+            params, fee_pct=fee_pct, bar_minutes=interval, execution=execution,
+        )
         return _evaluate_segment(
             records,
-            lambda ohlc, warmup, _context: kraken_replay.run_replay(
-                ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
-                warmup_ohlc=warmup, execution=execution,
-            ),
+            adapter,
             warmup_records=warmup_records,
         )
     finally:
@@ -92,12 +92,12 @@ def evaluate_walk_forward(records: list[dict], params: StratParams, *, fee_pct: 
     original_log = kraken_replay._strat.log
     kraken_replay._strat.log = lambda *_args, **_kwargs: None
     try:
+        adapter = kraken_replay.make_kraken_replay_adapter(
+            params, fee_pct=fee_pct, bar_minutes=interval, execution=execution,
+        )
         return _evaluate_walk_forward(
             records,
-            lambda ohlc, warmup, _context: kraken_replay.run_replay(
-                ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
-                warmup_ohlc=warmup, execution=execution,
-            ),
+            adapter,
             train_size=train_size,
             validation_size=validation_size,
             test_size=test_size,

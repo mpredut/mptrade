@@ -38,6 +38,8 @@ except ImportError:
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_ROOT, "forecast"))
 sys.path.insert(0, _ROOT)
+
+from offline.backtests.metrics import format_performance_summary
 import shadow_signals as ss  # noqa: E402  (reuse the exact K_DCA/vol_1h_pct formula)
 
 WIN = 24            # trailing hours for realized volatility; same window as vol_chronos.py
@@ -106,6 +108,8 @@ def report(name, m, budget):
     print(f"  [{name:16s}] TOTAL {tot:+7.2f}%  realizat ${m['realized']:+8.2f}  "
           f"cicluri={m['cycles']:<3} win-rate={wr:3.0f}%  maxDD=${m['maxdd']:.2f}  "
           f"pozitie deschisa={m['open_qty']:.4f}")
+    for line in format_performance_summary(m, indent="    "):
+        print(line)
 
 
 def main() -> int:
