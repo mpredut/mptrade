@@ -13,22 +13,33 @@ SSH="ssh -o BatchMode=yes -o ConnectTimeout=3 -p $DEV_PORT"
 mkdir -p "$REPO_ROOT/cachedb"
 STATUS_FILE="$REPO_ROOT/cachedb/dev_regression_status.json"
 
-# Try to sync latest status from dev
-scp -o BatchMode=yes -o ConnectTimeout=3 -P "$DEV_PORT" \
-    "$DEV_USER@$DEV_HOST:~/$DEV_PATH/cachedb/dev_regression_status.json" \
-    "$STATUS_FILE" >/dev/null 2>&1 || true
+# Check if DEV host is reachable
+DEV_REACHABLE=true
+if ! $SSH "$DEV_USER@$DEV_HOST" "true" >/dev/null 2>&1; then
+    DEV_REACHABLE=false
+fi
 
-# Also check if a regression is currently executing on dev
 IS_RUNNING=false
-if $SSH "$DEV_USER@$DEV_HOST" "flock -n /tmp/dev_regression.lock true 2>/dev/null"; then
-    IS_RUNNING=false
+if [ "$DEV_REACHABLE" = true ]; then
+    # Try to sync latest status from dev
+    scp -o BatchMode=yes -o ConnectTimeout=3 -P "$DEV_PORT" \
+        "$DEV_USER@$DEV_HOST:~/$DEV_PATH/cachedb/dev_regression_status.json" \
+        "$STATUS_FILE" >/dev/null 2>&1 || true
+    if ! $SSH "$DEV_USER@$DEV_HOST" "flock -n /tmp/dev_regression.lock true 2>/dev/null"; then
+        IS_RUNNING=true
+    fi
 else
-    IS_RUNNING=true
+    # DEV unreachable: check if running locally
+    if ! flock -n /tmp/dev_regression.lock true 2>/dev/null; then
+        IS_RUNNING=true
+    fi
 fi
 
 if [ ! -f "$STATUS_FILE" ]; then
     if [ "$IS_RUNNING" = true ]; then
-        echo "[DEV CI] Regression is currently RUNNING on DEV..."
+        echo "[DEV CI] Regression is currently RUNNING..."
+    elif [ "$DEV_REACHABLE" = false ]; then
+        echo "[DEV CI] DEV machine ($DEV_HOST:$DEV_PORT) is unreachable and no local regression status is available."
     else
         echo "[DEV CI] No regression status available yet."
     fi

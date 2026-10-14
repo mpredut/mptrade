@@ -18,7 +18,10 @@ if ! flock -n 8; then
 fi
 
 # Locate Python / Pytest environment
-if [ -x "$REPO_ROOT/myenv/bin/pytest" ]; then
+if [ -x "$REPO_ROOT/.venv/bin/pytest" ]; then
+    PYTEST_BIN="$REPO_ROOT/.venv/bin/pytest"
+    PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
+elif [ -x "$REPO_ROOT/myenv/bin/pytest" ]; then
     PYTEST_BIN="$REPO_ROOT/myenv/bin/pytest"
     PYTHON_BIN="$REPO_ROOT/myenv/bin/python"
 elif [ -x "$REPO_ROOT/venv/bin/pytest" ]; then
@@ -28,7 +31,7 @@ elif command -v pytest >/dev/null 2>&1; then
     PYTEST_BIN="$(command -v pytest)"
     PYTHON_BIN="$(command -v python3)"
 else
-    echo "[dev_regression $(date '+%F %T')] ERROR: pytest not found in myenv, venv, or PATH" >&2
+    echo "[dev_regression $(date '+%F %T')] ERROR: pytest not found in .venv, myenv, venv, or PATH" >&2
     exit 1
 fi
 
