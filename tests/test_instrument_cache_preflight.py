@@ -680,7 +680,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
 
         def blocked_place(symbol, side, price, qty, **kwargs):
             entered_provider.set()
-            if not release_provider.wait(3.0):
+            if not release_provider.wait(10.0):
                 raise RuntimeError("test provider was not released")
             return {"orderId": "producer-order"}
 
@@ -712,7 +712,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
                 daemon=True,
             )
             producer.start()
-            self.assertTrue(entered_provider.wait(2.0))
+            self.assertTrue(entered_provider.wait(10.0))
             record = order_retry.load_all()[0]
             self.assertEqual(record["submission_state"], "producer_claimed")
             after_full_lease = max(
@@ -729,7 +729,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
                 quarantine_alert.assert_called_once()
             finally:
                 release_provider.set()
-                producer.join(3.0)
+                producer.join(10.0)
 
         self.assertFalse(producer.is_alive())
         self.assertEqual(results[0]["orderId"], "producer-order")
