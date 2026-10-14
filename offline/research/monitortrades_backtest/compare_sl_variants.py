@@ -29,19 +29,27 @@ def main():
             print(f"Starting {sym}...")
             res = run_symbol(sym, cfg["params"], cfg["base"], quiet=True)
             results[label][sym] = res
-            print(f"[{sym}] Net PnL: {res.get('net'):.2f} USD | Sells: {res.get('sells')} | Buys: {res.get('buys')}")
+            if res:
+                print(f"[{sym}] Net PnL: {res.get('net', 0.0):.2f} USD | Sells: {res.get('sells', 0)} | Buys: {res.get('buys', 0)}")
+            else:
+                print(f"[{sym}] No results or no data.")
 
     print("\n\n" + "=" * 60)
     print("           BACKTEST COMPARISON SUMMARY")
     print("=" * 60)
     for sym in ["BTCUSDC", "TAOUSDC", "ARBUSDC"]:
-        prop = results[variants[0][0]][sym]
-        base = results[variants[1][0]][sym]
-        diff = prop.get("net", 0.0) - base.get("net", 0.0)
-        print(f"\n{sym}:")
-        print(f"  Proposed (Break ON) : {prop.get('net'):.2f} USD ({prop.get('sells')} sells)")
-        print(f"  Baseline (Break OFF): {base.get('net'):.2f} USD ({base.get('sells')} sells)")
-        print(f"  Difference          : {'+' if diff >= 0 else ''}{diff:.2f} USD ({'OUTPERFORMS' if diff > 0 else 'UNDERPERFORMS' if diff < 0 else 'EQUAL'})")
+        prop = results[variants[0][0]].get(sym) or {}
+        base = results[variants[1][0]].get(sym) or {}
+        prop_net = prop.get("net")
+        base_net = base.get("net")
+        if prop_net is not None and base_net is not None:
+            diff = prop_net - base_net
+            print(f"\n{sym}:")
+            print(f"  Proposed (Break ON) : {prop_net:.2f} USD ({prop.get('sells', 0)} sells)")
+            print(f"  Baseline (Break OFF): {base_net:.2f} USD ({base.get('sells', 0)} sells)")
+            print(f"  Difference          : {'+' if diff >= 0 else ''}{diff:.2f} USD ({'OUTPERFORMS' if diff > 0 else 'UNDERPERFORMS' if diff < 0 else 'EQUAL'})")
+        else:
+            print(f"\n{sym}: Incomplete data.")
 
 if __name__ == "__main__":
     main()
