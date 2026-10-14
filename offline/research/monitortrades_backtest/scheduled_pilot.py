@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as _futures
 import json
+import math
 import os
 import re
 import sys
@@ -278,7 +279,14 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
     # The winner differs from the current value -> it has to BEAT it by a
     # significant margin on BOTH windows. A margin of ~0 means the parameter is inert on this history
     # (e.g. a hard TP that never triggered), and the "winner" is merely a tie-break artefact.
-    cur_key = next(v for v in results if abs(float(v) - current) < 1e-9)
+    cur_key = next(
+        (v for v in results if math.isclose(float(v), current, rel_tol=1e-5, abs_tol=1e-6)),
+        None,
+    )
+    if cur_key is None or cur_key not in results:
+        entry["action"] = "no_change"
+        entry["reason"] = f"baseline current value {current} has no backtest results"
+        return entry
     margin_h1 = results[winner]["edge_half1"] - results[cur_key]["edge_half1"]
     margin_h2 = results[winner]["edge_half2"] - results[cur_key]["edge_half2"]
     entry["margin_vs_current"] = {"half1": round(margin_h1, 2), "half2": round(margin_h2, 2)}
@@ -410,7 +418,12 @@ def main():
                    for fk, (sym, base, key) in keys.items()}
         entries = {}
         for fut in _futures.as_completed(fut2key):
-            entries[fut2key[fut]] = fut.result()
+            fk = fut2key[fut]
+            try:
+                entries[fk] = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                sys.stderr.write(f"[scheduled_pilot] Error evaluating {fk}: {exc}\n")
+                entries[fk] = {"full_key": fk, "action": "error", "reason": str(exc)}
     for full_key, (symbol, base, key) in keys.items():   # Processing in a stable order.
         entry = entries[full_key]
         _append_audit(entry)

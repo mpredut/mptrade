@@ -67,7 +67,10 @@ def calibrate_execution_events(events: list[dict]) -> dict:
             (event for event in history if event.get("event") == "submit_accepted"),
             None,
         )
-        statuses = [event for event in history if event.get("event") == "order_status"]
+        STATUS_EVENTS = ("order_status", "order_terminal", "order_terminal_retry")
+        statuses = [
+            event for event in history if event.get("event") in STATUS_EVENTS
+        ]
         qty = float(requested.get("qty") or 0.0)
         status_rows = []
         for status in statuses:
@@ -137,7 +140,8 @@ def calibrate_execution_events(events: list[dict]) -> dict:
             "client_order_id": client_order_id,
             "client_order_id_valid": client_order_id_valid,
             "rejected": any(
-                event.get("event") == "submit_rejected" for event in history
+                event.get("event") in ("submit_rejected", "submit_refused")
+                for event in history
             ),
             "filled_qty": filled,
             "requested_qty": qty,

@@ -110,6 +110,53 @@ class ExecutionCalibrationTest(unittest.TestCase):
         )
         self.assertNotIn("T212", validation["first_valid_by_venue"])
 
+    def test_correlates_order_terminal_and_order_terminal_retry_fills(self):
+        events = [
+            {
+                "ts": 100, "event": "submit_requested", "intent_id": "outbox-1",
+                "venue": "binance", "symbol": "BTCUSDC", "side": "buy",
+                "qty": 1.0, "price": 63000.0, "market": False,
+            },
+            {"ts": 101, "event": "submit_accepted", "intent_id": "outbox-1", "order_id": "B-1"},
+            {
+                "ts": 105, "event": "order_terminal", "intent_id": "outbox-1",
+                "status": "closed", "venue_status": "FILLED",
+                "filled_qty": 1.0, "cost": 63000.0, "fee": 1.0,
+            },
+            {
+                "ts": 200, "event": "submit_requested", "intent_id": "outbox-2",
+                "venue": "binance", "symbol": "BTCUSDC", "side": "buy",
+                "qty": 1.0, "price": 100.0, "market": False,
+            },
+            {"ts": 201, "event": "submit_accepted", "intent_id": "outbox-2", "order_id": "B-2"},
+            {
+                "ts": 203, "event": "order_terminal_retry", "intent_id": "outbox-2",
+                "status": "expired", "venue_status": "EXPIRED",
+                "filled_qty": 0.4, "cost": 40.0, "fee": 0.02,
+                "remaining_qty": 0.6,
+            },
+            {
+                "ts": 300, "event": "submit_requested", "intent_id": "outbox-3",
+                "venue": "binance", "symbol": "BTCUSDC", "side": "sell",
+                "qty": 1.0, "price": 100.0, "market": False,
+            },
+            {
+                "ts": 301, "event": "submit_refused", "intent_id": "outbox-3",
+                "reason": "guard refusal",
+            },
+        ]
+
+        report = calibrate_execution_events(events)
+
+        self.assertEqual(report["summary"]["all"]["orders"], 3)
+        self.assertEqual(report["summary"]["all"]["filled"], 2)
+        self.assertEqual(report["summary"]["all"]["rejected"], 1)
+        self.assertEqual(report["summary"]["limit"]["filled"], 2)
+        self.assertEqual(report["summary"]["limit"]["ever_partial"], 1)
+        self.assertAlmostEqual(report["summary"]["all"]["fee_bps"]["p50"], (1.0 / 63000.0 * 10000 + 0.02 / 40.0 * 10000) / 2.0, places=3)
+        self.assertEqual(report["summary"]["all"]["first_fill_latency_s"]["min"], 2.0)
+        self.assertEqual(report["summary"]["all"]["first_fill_latency_s"]["max"], 4.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -95,7 +95,7 @@ run_step "2A" "T212 NVDA 1d Walk-Forward Baseline" \
 
 run_step "2A_COMP" "T212 NVDA 1d Candidate Comparison" \
     "$PYTHON_BIN offline/runners/walk_forward.py --mode compare \
-        \$(ls -t $RESULTS_DIR/t212_nvda/nvda/baseline_NVDA_*.json 2>/dev/null | head -1)"
+        \$(ls -t $RESULTS_DIR/t212_nvda/baseline_NVDA_*.json $RESULTS_DIR/t212_nvda/nvda/baseline_NVDA_*.json 2>/dev/null | head -1)"
 
 run_step "2B" "T212 RGNT 1d Walk-Forward Baseline" \
     "$PYTHON_BIN offline/runners/walk_forward.py --venue t212 \

@@ -305,6 +305,10 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
     with open(SHADOW_OHLC_JSON, encoding="utf-8") as f:
         full_bars = json.load(f)
 
+    if not isinstance(full_bars, list) or len(full_bars) < 2:
+        print(f"Shadow OHLC at {SHADOW_OHLC_JSON} has insufficient bars ({len(full_bars) if isinstance(full_bars, list) else 0} < 2)")
+        return {}
+
     # Load anchor ts
     anchor_path = ROOT / "logs" / "shadow_live" / "HYPEUSD_240m.anchor"
     anchor_ts = 0
@@ -416,12 +420,15 @@ def main():
 
         # Table 3: Kraken Live Forward Shadow Performance
         f.write("\n## 3. Kraken Live Shadow Performance (Forward 34d & Window 120d)\n\n")
-        f.write("| Candidate | Forward Net % | Forward Total % | Forward DD % | 120d Net % | 120d Total % | 120d DD % |\n")
-        f.write("|---|---:|---:|---:|---:|---:|---:|\n")
-        for r in master:
-            f.write(f"| `{r['name']}` | {r.get('fwd_net', 0):+.2f}% | {r.get('fwd_total', 0):+.2f}% | "
-                    f"{r.get('fwd_dd', 0):.2f}% | {r.get('full_net', 0):+.2f}% | {r.get('full_total', 0):+.2f}% | "
-                    f"{r.get('full_dd', 0):.2f}% |\n")
+        if not shadow_results:
+            f.write("*Live shadow evaluation skipped: insufficient forward bars recorded in `logs/shadow_live/` (minimum 2 bars required).* \n")
+        else:
+            f.write("| Candidate | Forward Net % | Forward Total % | Forward DD % | 120d Net % | 120d Total % | 120d DD % |\n")
+            f.write("|---|---:|---:|---:|---:|---:|---:|\n")
+            for r in master:
+                f.write(f"| `{r['name']}` | {r.get('fwd_net', 0):+.2f}% | {r.get('fwd_total', 0):+.2f}% | "
+                        f"{r.get('fwd_dd', 0):.2f}% | {r.get('full_net', 0):+.2f}% | {r.get('full_total', 0):+.2f}% | "
+                        f"{r.get('full_dd', 0):.2f}% |\n")
 
     print(f"Report written to {md_path}")
 
