@@ -7,11 +7,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 
-spec = importlib.util.spec_from_file_location("kraken_replay", os.path.join(ROOT, "kraken", "replay.py"))
-rp = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = rp
-spec.loader.exec_module(rp)
-strat = rp._strat
+from strategies import spot_engine as strat
+from strategies.spot_replay import run_replay
 
 # Quiet logger during bulk backtest
 strat.log = lambda *a, **k: None
@@ -51,8 +48,8 @@ for sl in sl_levels:
         reentry_adaptive=False, reentry_sl_bounce_pct=1.5, tp_tranches=[]
     )
 
-    res_base = rp.run_replay(bars, p_base, fee_pct=0.26, bar_minutes=240)
-    res_prop = rp.run_replay(bars, p_prop, fee_pct=0.26, bar_minutes=240)
+    res_base = run_replay(bars, p_base, fee_pct=0.26, bar_minutes=240)
+    res_prop = run_replay(bars, p_prop, fee_pct=0.26, bar_minutes=240)
     results.append((sl, res_base, res_prop))
 
 print("\n" + "=" * 92)

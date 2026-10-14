@@ -105,9 +105,18 @@ def simulate(ohlc, P):
 
 
 def interval_minutes(value: str) -> int | None:
-    units = {"m": 1, "h": 60, "d": 1440}
     try:
-        return int(value[:-1]) * units[value[-1].lower()]
+        try:
+            from market_data import parse_interval_minutes
+        except ImportError:
+            import importlib.util
+            _spec = importlib.util.spec_from_file_location(
+                "t212_md_parse", os.path.join(T212_DIR, "market_data.py")
+            )
+            _mod = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+            parse_interval_minutes = _mod.parse_interval_minutes
+        return parse_interval_minutes(value)
     except (KeyError, ValueError, IndexError):
         return None
 

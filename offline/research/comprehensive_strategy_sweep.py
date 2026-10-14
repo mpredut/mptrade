@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT))
 
 from kraken_common import load_dotenv
 import replay as kraken_replay
-from strategies.spot_dca import StratParams
+from strategies.spot_engine import StratParams
 from offline.backtests.datasets import load_dataset
 from offline.backtests.walk_forward import walk_forward_splits
 from offline.backtests.evaluation import evaluate_segment

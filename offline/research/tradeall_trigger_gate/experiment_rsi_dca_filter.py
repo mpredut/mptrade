@@ -33,8 +33,8 @@ sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-import strategies.spot_dca as _strat
-import strategies.spot_dca_rules as sr
+import strategies.spot_engine as _strat
+import strategies.spot_rules as sr
 from kraken import replay as rp
 
 

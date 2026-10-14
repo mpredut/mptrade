@@ -107,6 +107,16 @@ run_step "2C" "T212 SPCX 5m Walk-Forward Baseline" \
         --train 720 --validation 180 --test 90 --step 90 --warmup 12 \
         --output-dir $RESULTS_DIR/t212_spcx"
 
+run_step "2D" "Hyperliquid HYPE 240m Walk-Forward Baseline" \
+    "$PYTHON_BIN offline/runners/hyperliquid_walk_forward_baseline.py \
+        --coin HYPE --direction long --intervals 240 \
+        --output-dir $RESULTS_DIR/hyperliquid_wf"
+
+run_step "2E" "Binance BTCUSDT 240m Walk-Forward Baseline" \
+    "$PYTHON_BIN offline/runners/binance_walk_forward_baseline.py \
+        --symbol BTCUSDT --intervals 240 \
+        --output-dir $RESULTS_DIR/binance_wf"
+
 # ------------------------------------------------------------------------------
 # STEP 3: Kraken Adaptive Volatility & Reentry Multiplier Sweeps
 # ------------------------------------------------------------------------------
@@ -192,6 +202,8 @@ Commit: $(git rev-parse --short HEAD)
 ## Executed Modules
 - [x] **Kraken HYPE 240m Walk-Forward (628 days, 31 folds)**: Baseline & Comparative Pareto ranking
 - [x] **Trading212 Walk-Forward**: NVDA (1d), RGNT (1d), SPCX (5m)
+- [x] **Hyperliquid Walk-Forward**: HYPE (240m)
+- [x] **Binance Walk-Forward**: BTCUSDT (240m)
 - [x] **Kraken Adaptive Multipliers**: K_REENTRY & K_DCA sweeps
 - [x] **30-Candidate Multi-Factor Strategy Sweep**: Out-of-sample, continuous compounding, and forward live shadow
 - [x] **TradeAll Trigger Gate Experiments**: Trend gate, quality signal, RSI/BB, dual timeframe
