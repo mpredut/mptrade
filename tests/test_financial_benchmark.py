@@ -66,6 +66,14 @@ class FinancialBenchmarkTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incomplete"):
             aggregate_financial_windows([{"key": "x"}], initial_capital=3900.0)
 
+    def test_multi_venue_default_scenarios(self):
+        for venue in ("binance", "hyperliquid", "t212", "kraken"):
+            central, stress = default_scenarios(venue)
+            self.assertEqual((central.name, stress.name), ("central", "stress"))
+            self.assertGreater(stress.fees.market_fee_pct, central.fees.limit_fee_pct)
+            self.assertGreater(stress.execution.spread_bps, central.execution.spread_bps)
+            self.assertLessEqual(stress.execution.partial_fill_ratio, central.execution.partial_fill_ratio)
+
 
 if __name__ == "__main__":
     unittest.main()
