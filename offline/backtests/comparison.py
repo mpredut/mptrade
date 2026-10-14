@@ -118,7 +118,7 @@ def format_comparison_markdown(
         candidates.items(),
         key=lambda item: (
             item[0] != "live",
-            -float(item[1].get("summary", {}).get("mean_return_pct", 0.0)),
+            -float(item[1].get("summary", {}).get("mean_return_pct") or 0.0),
             item[0],
         ),
     )

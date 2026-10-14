@@ -117,3 +117,17 @@ def test_format_comparison_markdown():
     assert "| `candidate_a` | +6.500 | +5.500 | -0.500 | 2.500 | 9/10 | 7/2/1 | 18 |" in md
     assert "Pareto frontier: `candidate_a`" in md
     assert "## Fee stress — live configuration" in md
+
+
+def test_format_comparison_markdown_none_mean_return():
+    report = {
+        "candidates": {
+            "empty_cand": {
+                "summary": {"mean_return_pct": None, "worst_return_pct": None},
+                "relative_to_live": {},
+            }
+        }
+    }
+    md = format_comparison_markdown(report)
+    assert "| `empty_cand` | n/a | n/a | n/a |" in md
+

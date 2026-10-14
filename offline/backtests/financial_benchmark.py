@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import math
 import statistics
 from typing import Iterable
 
@@ -162,10 +163,18 @@ def _maximum(values: Iterable[float | int | None]) -> float | None:
     return max(present) if present else None
 
 
-def _regime(buy_hold_return_pct: float, threshold_pct: float) -> str:
-    if buy_hold_return_pct >= threshold_pct:
+def _regime(buy_hold_return_pct: float | None, threshold_pct: float) -> str:
+    if buy_hold_return_pct is None:
+        return "sideways"
+    try:
+        val = float(buy_hold_return_pct)
+    except (TypeError, ValueError):
+        return "sideways"
+    if not math.isfinite(val):
+        return "sideways"
+    if val >= threshold_pct:
         return "bull"
-    if buy_hold_return_pct <= -threshold_pct:
+    if val <= -threshold_pct:
         return "bear"
     return "sideways"
 
@@ -205,21 +214,21 @@ def aggregate_financial_windows(
     for name in ("bull", "bear", "sideways"):
         selected = [
             window for window in windows
-            if _regime(float(window["buy_hold_return_pct"]), regime_threshold_pct) == name
+            if _regime(window.get("buy_hold_return_pct"), regime_threshold_pct) == name
         ]
         regimes[name] = {
             "windows": len(selected),
             "mean_return_pct": _mean(window["return_pct"] for window in selected),
             "worst_return_pct": _minimum(window["return_pct"] for window in selected),
             "mean_buy_hold_return_pct": _mean(
-                window["buy_hold_return_pct"] for window in selected
+                window.get("buy_hold_return_pct") for window in selected
             ),
         }
 
     return {
         **summary,
-        "mean_buy_hold_return_pct": statistics.fmean(
-            float(window["buy_hold_return_pct"]) for window in windows
+        "mean_buy_hold_return_pct": _mean(
+            window.get("buy_hold_return_pct") for window in windows
         ),
         "initial_capital_usd": float(initial_capital),
         "mean_net_pnl_usd_per_window": statistics.fmean(net_pnls),

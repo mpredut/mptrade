@@ -320,6 +320,10 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
     full_ohlc = [(b[1], b[2], b[3], b[4]) for b in full_bars]
     fwd_ohlc = [(b[1], b[2], b[3], b[4]) for b in fwd_bars]
 
+    if not fwd_ohlc or not full_ohlc:
+        print(f"Insufficient forward or full bars for shadow replay (fwd: {len(fwd_ohlc)}, full: {len(full_ohlc)})")
+        return {}
+
     results = {}
     fee_pct = 0.26
     interval = 240

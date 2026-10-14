@@ -14,6 +14,10 @@ Reuses grid.py (same live engine, same TTL harness correction, same datasets).
 import contextlib, io, json, os, statistics as st, sys, time, traceback
 from multiprocessing import Pool
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
 import grid
 from grid import CONFIGS, LIVE, OLD, R, ov, load, WARM, W30, W90, WSTEP, DATA, EXP
 

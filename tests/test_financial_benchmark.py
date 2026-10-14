@@ -74,6 +74,17 @@ class FinancialBenchmarkTest(unittest.TestCase):
             self.assertGreater(stress.execution.spread_bps, central.execution.spread_bps)
             self.assertLessEqual(stress.execution.partial_fill_ratio, central.execution.partial_fill_ratio)
 
+    def test_aggregate_handles_none_buy_hold_gracefully(self):
+        windows = [
+            _window("w1", 2.0, None, 1.0, 78.0),
+            _window("w2", -1.0, 4.0, 2.0, -39.0),
+        ]
+        result = aggregate_financial_windows(windows, initial_capital=3900.0)
+        self.assertEqual(result["window_count"], 2)
+        self.assertEqual(result["mean_buy_hold_return_pct"], 4.0)
+        self.assertEqual(result["regimes"]["sideways"]["windows"], 1)
+        self.assertEqual(result["regimes"]["bull"]["windows"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
