@@ -400,4 +400,79 @@ def test_validate_replay_metrics_across_all_venues():
     validate_replay_metrics(t212_res)
 
 
+def test_hyperliquid_market_data_fetchers():
+    import json
+    from unittest.mock import MagicMock, patch
+
+    _spec = importlib.util.spec_from_file_location("hl_md_test", os.path.join(_HL_DIR, "market_data.py"))
+    _hl_md = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_hl_md)
+    fetch_ohlc_candles = _hl_md.fetch_ohlc_candles
+    fetch_funding_history = _hl_md.fetch_funding_history
+
+    fake_candles = [
+        {"t": 1700000000000, "T": 1700003599999, "s": "HYPE", "i": "1h",
+         "o": "20.0", "c": "21.0", "h": "22.0", "l": "19.5", "v": "100.0", "n": 50},
+        {"t": 1700003600000, "T": 1700007199999, "s": "HYPE", "i": "1h",
+         "o": "21.0", "c": "22.5", "h": "23.0", "l": "20.5", "v": "120.0", "n": 60},
+    ]
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = json.dumps(fake_candles).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        records = fetch_ohlc_candles("HYPE", 60, drop_incomplete=False)
+        assert len(records) == 2
+        assert records[0]["timestamp"] == 1700000000
+        assert records[0]["open"] == 20.0
+        assert records[0]["close"] == 21.0
+        assert records[1]["close"] == 22.5
+
+    fake_funding = [
+        {"coin": "HYPE", "fundingRate": "0.0001", "premium": "0.0", "time": 1700000000000},
+        {"coin": "HYPE", "fundingRate": "0.00015", "premium": "0.0", "time": 1700003600000},
+    ]
+    mock_funding_resp = MagicMock()
+    mock_funding_resp.read.return_value = json.dumps(fake_funding).encode("utf-8")
+    mock_funding_resp.__enter__.return_value = mock_funding_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_funding_resp):
+        funding = fetch_funding_history("HYPE", 1700000000000)
+        assert len(funding) == 2
+        assert funding[0] == (1700000000000, 0.0001)
+        assert funding[1] == (1700003600000, 0.00015)
+
+
+def test_hyperliquid_walk_forward_baseline_runner(tmp_path):
+    import json
+    from unittest.mock import patch
+    import importlib.util
+    _wf_spec = importlib.util.spec_from_file_location(
+        "hl_wf_baseline", os.path.join(_ROOT, "offline", "runners", "hyperliquid_walk_forward_baseline.py")
+    )
+    _wf_mod = importlib.util.module_from_spec(_wf_spec)
+    _wf_spec.loader.exec_module(_wf_mod)
+
+    fake_records = [
+        {"timestamp": 1700000000 + i * 3600, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}
+        for i in range(30)
+    ]
+    with patch.object(_wf_mod, "fetch_ohlc_candles", return_value=fake_records):
+        with patch("sys.argv", [
+            "hyperliquid_walk_forward_baseline.py",
+            "--intervals", "60",
+            "--coin", "HYPE",
+            "--output-dir", str(tmp_path),
+        ]):
+            rc = _wf_mod.main()
+            assert rc == 0
+            report_file = tmp_path / "HYPE_60m_baseline.json"
+            assert report_file.exists()
+            data = json.loads(report_file.read_text(encoding="utf-8"))
+            assert data["runtime"]["coin"] == "HYPE"
+            assert "aggregate_test" in data
+            assert "folds" in data
+            assert len(data["folds"]) > 0
+
+
 

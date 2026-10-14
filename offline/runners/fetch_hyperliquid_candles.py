@@ -14,41 +14,21 @@ import sys
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
+HL_DIR = ROOT / "hyperliquid"
+sys.path.insert(0, str(HL_DIR))
 sys.path.insert(0, str(ROOT))
+
+import importlib.util
+_spec = importlib.util.spec_from_file_location("local_hl_market_data", str(HL_DIR / "market_data.py"))
+_hl_md = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_hl_md)
+INTERVALS = _hl_md.INTERVALS
+fetch_ohlc_candles = _hl_md.fetch_ohlc_candles
 
 from offline.backtests.datasets import canonical_bytes, dataset_sha256
 
 
-API_URL = "https://api.hyperliquid.xyz/info"
-INTERVALS = {
-    1: "1m",
-    3: "3m",
-    5: "5m",
-    15: "15m",
-    30: "30m",
-    60: "1h",
-    120: "2h",
-    240: "4h",
-    480: "8h",
-    720: "12h",
-    1440: "1d",
-    4320: "3d",
-    10080: "1w",
-}
-
-
-def _post(body: dict) -> object:
-    request = urllib.request.Request(
-        API_URL,
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "binance-repo/hyperliquid-research-dataset",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=25) as response:
-        return json.loads(response.read())
+_post = _hl_md._post_info
 
 
 def resolve_spot_pair(token: str, quote: str, spot_meta: dict) -> str:
@@ -107,21 +87,13 @@ def fetch_closed_candles(
     start_ms: int,
     end_ms: int,
 ) -> list[dict]:
-    interval = INTERVALS.get(interval_minutes)
-    if interval is None:
-        raise ValueError(f"interval Hyperliquid nesuportat: {interval_minutes} minute")
-    payload = _post({
-        "type": "candleSnapshot",
-        "req": {
-            "coin": coin,
-            "interval": interval,
-            "startTime": start_ms,
-            "endTime": end_ms,
-        },
-    })
-    if not isinstance(payload, list):
-        raise RuntimeError(f"invalid candleSnapshot response: {payload!r}")
-    return normalize_closed_candles(payload, now_ms=end_ms)
+    return fetch_ohlc_candles(
+        coin,
+        interval_minutes,
+        start_ms=start_ms,
+        end_ms=end_ms,
+        drop_incomplete=True,
+    )
 
 
 def _parse_intervals(value: str) -> list[int]:

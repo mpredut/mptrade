@@ -36,6 +36,11 @@ for p in (_HERE, _ROOT):
 from common import log
 from offline.backtests.metrics import format_performance_summary
 try:
+    from market_data import fetch_ohlc_candles, fetch_funding_history
+except ImportError:
+    from hyperliquid.market_data import fetch_ohlc_candles, fetch_funding_history
+
+try:
     import importlib.util
     _hl_spec = importlib.util.spec_from_file_location(
         "hyperliquid_backtest_replay", os.path.join(_HERE, "replay.py")
@@ -48,22 +53,9 @@ except Exception:
     from replay import run_replay, funding_at
 
 
-def _post(body):
-    r = urllib.request.Request("https://api.hyperliquid.xyz/info",
-                               data=json.dumps(body).encode(),
-                               headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(r, timeout=25) as x:
-        return json.loads(x.read())
-
-
 def fetch_funding(coin, start_ms):
     """Return hourly coin funding history sorted for time alignment."""
-    try:
-        data = _post({"type": "fundingHistory", "coin": coin, "startTime": start_ms})
-        return sorted(((int(d["time"]), float(d["fundingRate"])) for d in data), key=lambda x: x[0])
-    except Exception as e:  # noqa: BLE001
-        log(f"  ! funding history indisponibil: {e}")
-        return []
+    return fetch_funding_history(coin, start_ms)
 
 
 def precompute_signal(closes, ts, source, fast, slow, band, win_h, step_h):
@@ -134,10 +126,9 @@ def main() -> int:
     fee = args.fee if args.fee is not None else float(_os.environ.get("HL_FEE_PCT", "0.045"))
     sl = args.sl if args.sl is not None else float(_os.environ.get("STRAT_STOP_LOSS_PCT", "0.0"))
 
-    c = HLClient.public()
-    candles = c.candles(coin, "1h", lookback_hours=args.days*24 + 5)
-    ohlc = [(float(x["o"]), float(x["h"]), float(x["l"]), float(x["c"])) for x in candles]
-    ts = [int(x["t"]) for x in candles]
+    records = fetch_ohlc_candles(coin, "1h", lookback_hours=args.days * 24 + 5, drop_incomplete=True)
+    ohlc = [(r["open"], r["high"], r["low"], r["close"]) for r in records]
+    ts = [r["timestamp"] * 1000 for r in records]
     closes = [x[3] for x in ohlc]
     if len(ohlc) < 50:
         log("! prea putine lumanari"); return 1
