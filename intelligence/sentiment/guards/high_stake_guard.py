@@ -209,6 +209,10 @@ class HighStakeGuard:
             f"{context_str}\n\n"
             f"Because this order exceeds €{self.min_notional_eur:,.2f} EUR, you must evaluate if executing "
             f"{risk_context}\n\n"
+            "CORE RISK POLICIES & PRIORITY RULES:\n"
+            "1. WHALE TAKER FLOW SUPREMACY: Dynamic Whale Taker Flow (Buyer/Seller ratio) strictly trumps static open positions (% Top Traders Long) and Orderbook Bid Depth. Static long holdings can be trapped or liquidated. If Whale Taker Flow is below 0.85 (net sell aggression), you must NEVER issue an unrestricted APPROVED. If Whale Taker Flow is below 0.80 in a FLAT or BEAR market, you must issue REJECTED (or DOWNSCALE <= 0.25 only if at verified structural support).\n"
+            "2. ORDERBOOK SUPPORT LIMITATION: Bid walls and orderbook depth are passive and can be pulled or absorbed by aggressive market selling. Do NOT use orderbook depth alone to override persistent taker selling.\n"
+            "3. MACRO & GEOPOLITICAL RISK: If Macro Sentiment recommends CAUTION or Geopolitical threat is elevated, do not fight negative taker flow.\n\n"
             "Respond strictly in valid JSON format with exact keys:\n"
             "{\n"
             '  "decision": "APPROVED" | "REJECTED" | "DOWNSCALE",\n'

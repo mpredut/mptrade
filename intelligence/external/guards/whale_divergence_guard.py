@@ -25,7 +25,9 @@ class WhaleDivergenceGuard:
         block_aggressive_shorting: bool = True,
         block_liquidation_cascade: bool = True,
         severe_cascade_oi_pct: float = -5.0,
-        min_taker_ratio: float = 0.65,
+        min_taker_ratio: float = 0.75,
+        taker_downscale_threshold: float = 0.90,
+        taker_downscaled_scale: float = 0.50,
     ) -> None:
         self.collector = collector
         self.block_short_covering_fakeout = block_short_covering_fakeout
@@ -33,6 +35,8 @@ class WhaleDivergenceGuard:
         self.block_liquidation_cascade = block_liquidation_cascade
         self.severe_cascade_oi_pct = severe_cascade_oi_pct
         self.min_taker_ratio = min_taker_ratio
+        self.taker_downscale_threshold = taker_downscale_threshold
+        self.taker_downscaled_scale = taker_downscaled_scale
 
     def check(
         self,
@@ -92,6 +96,20 @@ class WhaleDivergenceGuard:
             return GuardDecision.defer(
                 guard_name="WhaleDivergenceGuard",
                 reason=f"severe_taker_selling_dominated (taker_ratio={snapshot.taker_buy_sell_ratio:.2f} < {self.min_taker_ratio:.2f})",
+                taker_ratio=snapshot.taker_buy_sell_ratio,
+                divergence_regime=regime,
+            )
+
+        # 4b. Moderate taker selling pressure (< taker_downscale_threshold: downscale buy order)
+        if (
+            side_norm == "BUY"
+            and self.taker_downscale_threshold > self.min_taker_ratio
+            and snapshot.taker_buy_sell_ratio < self.taker_downscale_threshold
+        ):
+            return GuardDecision.downscale(
+                guard_name="WhaleDivergenceGuard",
+                scale=self.taker_downscaled_scale,
+                reason=f"moderate_taker_selling_pressure (taker_ratio={snapshot.taker_buy_sell_ratio:.2f} < {self.taker_downscale_threshold:.2f})",
                 taker_ratio=snapshot.taker_buy_sell_ratio,
                 divergence_regime=regime,
             )

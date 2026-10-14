@@ -62,6 +62,9 @@ def _load_margins():
         "buy_window_flat_h": 24.0,             # Flat lookback: 24h - 48h
         "buy_window_bear_h": 72.0,             # Bear lookback: 48h - 168h
         "regime_context_max_age_sec": 120.0,   # Pre-computed regime context max age (seconds)
+        "min_taker_ratio": 0.75,               # Whale taker flow hard defer threshold (< 0.75 blocks BUY)
+        "taker_downscale_threshold": 0.90,     # Whale taker flow moderate downscale threshold (< 0.90 downscales)
+        "taker_downscaled_scale": 0.50,        # Scale factor when taker ratio is between min_taker and threshold
     }
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "order_guard.conf")
     try:

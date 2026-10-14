@@ -462,6 +462,137 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
             order_guard._derivatives_collector = orig_collector
             order_guard._MARGINS = orig_margins
 
+    def test_whale_guard_severe_and_moderate_taker_selling(self):
+        import order_guard
+        from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot, WhalePositioningCollector
+
+        collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=None)
+        orig_collector = order_guard._whale_collector
+        orig_margins = order_guard._MARGINS
+        try:
+            order_guard._whale_collector = collector
+            order_guard._MARGINS = {
+                "intelligence_guards_mode": "enforce",
+                "whale_guard_mode": "enforce",
+                "min_taker_ratio": 0.75,
+                "taker_downscale_threshold": 0.90,
+                "taker_downscaled_scale": 0.50,
+                "orderbook_wall_guard_mode": "off",
+                "funding_guard_mode": "off",
+                "gemini_guard_mode": "off",
+                "geopolitical_guard_mode": "off",
+            }
+
+            # 1. Severe taker selling panic (< 0.75): DEFER_WAIT / VETO
+            severe_snap = WhalePositioningSnapshot(
+                symbol="BTCUSDT",
+                top_traders_long_ratio=1.5,
+                top_traders_long_pct=0.60,
+                taker_buy_sell_ratio=0.72,
+                taker_buy_vol_usd=400_000.0,
+                taker_sell_vol_usd=555_000.0,
+                open_interest_usd=5_000_000_000.0,
+                open_interest_1h_change_pct=0.1,
+                divergence_regime="neutral",
+                ts=time.time(),
+            )
+            collector.record_snapshot(severe_snap)
+            ok, reason, scale = order_guard.check_intelligence_guards(None, "BTCUSDT", "BUY", 85000.0)
+            self.assertFalse(ok)
+            self.assertIn("severe_taker_selling_dominated", reason)
+            self.assertEqual(scale, 0.0)
+
+            # 2. Moderate taker selling (0.75 <= ratio < 0.90): DOWNSCALE to 0.50
+            moderate_snap = WhalePositioningSnapshot(
+                symbol="BTCUSDT",
+                top_traders_long_ratio=1.5,
+                top_traders_long_pct=0.60,
+                taker_buy_sell_ratio=0.82,
+                taker_buy_vol_usd=450_000.0,
+                taker_sell_vol_usd=550_000.0,
+                open_interest_usd=5_000_000_000.0,
+                open_interest_1h_change_pct=0.1,
+                divergence_regime="neutral",
+                ts=time.time(),
+            )
+            collector.record_snapshot(moderate_snap)
+            ok, reason, scale = order_guard.check_intelligence_guards(None, "BTCUSDT", "BUY", 85000.0)
+            self.assertTrue(ok)
+            self.assertIn("moderate_taker_selling_pressure", reason)
+            self.assertEqual(scale, 0.50)
+
+            # 3. Healthy taker volume (>= 0.90): ALLOW 1.0
+            healthy_snap = WhalePositioningSnapshot(
+                symbol="BTCUSDT",
+                top_traders_long_ratio=1.5,
+                top_traders_long_pct=0.60,
+                taker_buy_sell_ratio=1.05,
+                taker_buy_vol_usd=525_000.0,
+                taker_sell_vol_usd=500_000.0,
+                open_interest_usd=5_000_000_000.0,
+                open_interest_1h_change_pct=0.1,
+                divergence_regime="neutral",
+                ts=time.time(),
+            )
+            collector.record_snapshot(healthy_snap)
+            ok, reason, scale = order_guard.check_intelligence_guards(None, "BTCUSDT", "BUY", 85000.0)
+            self.assertTrue(ok)
+            self.assertEqual(scale, 1.0)
+        finally:
+            order_guard._whale_collector = orig_collector
+            order_guard._MARGINS = orig_margins
+
+    def test_rtrade_whale_flow_checks(self):
+        from rtrade import _whale_flow_blocks_side, _effective_adjustment_fraction
+        from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot, WhalePositioningCollector
+        import external_order_guard
+
+        collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=None)
+        orig_collector = external_order_guard._whale_collector
+        try:
+            external_order_guard._whale_collector = collector
+
+            # Taker selling (< 0.80) blocks BUY
+            dumping_snap = WhalePositioningSnapshot(
+                symbol="TAOUSDC",
+                top_traders_long_ratio=2.0,
+                top_traders_long_pct=0.66,
+                taker_buy_sell_ratio=0.74,
+                taker_buy_vol_usd=100_000.0,
+                taker_sell_vol_usd=135_000.0,
+                open_interest_usd=50_000_000.0,
+                open_interest_1h_change_pct=0.0,
+                divergence_regime="neutral",
+                ts=time.time(),
+            )
+            collector.record_snapshot(dumping_snap)
+            blocked, b_reason = _whale_flow_blocks_side("TAOUSDC", "BUY")
+            self.assertTrue(blocked)
+            self.assertIn("taker_sell_dominance", b_reason)
+
+            # SELL is unaffected
+            blocked_sell, _ = _whale_flow_blocks_side("TAOUSDC", "SELL")
+            self.assertFalse(blocked_sell)
+
+            # Moderate taker ratio widens adjustment by 1.5x
+            moderate_snap = WhalePositioningSnapshot(
+                symbol="TAOUSDC",
+                top_traders_long_ratio=2.0,
+                top_traders_long_pct=0.66,
+                taker_buy_sell_ratio=0.85,
+                taker_buy_vol_usd=100_000.0,
+                taker_sell_vol_usd=117_000.0,
+                open_interest_usd=50_000_000.0,
+                open_interest_1h_change_pct=0.0,
+                divergence_regime="neutral",
+                ts=time.time(),
+            )
+            collector.record_snapshot(moderate_snap)
+            adj = _effective_adjustment_fraction("TAOUSDC", 0.004)
+            self.assertAlmostEqual(adj, 0.006)
+        finally:
+            external_order_guard._whale_collector = orig_collector
+
 
 if __name__ == "__main__":
     unittest.main()

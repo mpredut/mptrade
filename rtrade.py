@@ -924,6 +924,43 @@ def _market_regime_decision(symbol) -> MarketRegimeDecision:
         allow_fallback=RTRADE_TREND_OHLC_FALLBACK_ENABLED)
 
 
+def _whale_flow_blocks_side(symbol: str, side: str) -> tuple[bool, str]:
+    """Check if whale taker flow or OI divergence conflicts with initiating an rtrade round."""
+    side_u = (side or "").upper()
+    if side_u != "BUY":
+        return False, "ok"
+    try:
+        from external_order_guard import get_whale_collector
+        collector = get_whale_collector()
+        if collector is None:
+            return False, "no_collector"
+        snap = collector.fetch(symbol, allow_network=False)
+        if snap is None:
+            return False, "no_snapshot"
+        if snap.taker_buy_sell_ratio < 0.80:
+            return True, f"taker_sell_dominance (ratio={snap.taker_buy_sell_ratio:.2f} < 0.80)"
+        if snap.divergence_regime == "aggressive_shorting":
+            return True, f"aggressive_shorting_divergence (OI={snap.open_interest_1h_change_pct:+.1f}%)"
+    except Exception as exc:
+        return False, f"error:{exc}"
+    return False, "ok"
+
+
+def _effective_adjustment_fraction(symbol: str, base_adjustment: float) -> float:
+    """Widen grid quote adjustment when moderate taker selling pressure exists (0.80 <= ratio < 0.90)."""
+    try:
+        from external_order_guard import get_whale_collector
+        collector = get_whale_collector()
+        if collector is not None:
+            snap = collector.fetch(symbol, allow_network=False)
+            if snap is not None and snap.taker_buy_sell_ratio < 0.90:
+                # Widen grid spacing by 50% to quote deeper on dips rather than top ticks
+                return base_adjustment * 1.5
+    except Exception:
+        pass
+    return base_adjustment
+
+
 def _order_fully_filled(symbol, order_id):
     """Support the legacy loop through provider-neutral order status."""
     if not order_id:
@@ -1569,6 +1606,7 @@ class TradingBot:
             else None
         )
         next_direction = 0
+        last_whale_log = float("-inf")
         side_backoff_until = {"BUY": 0.0, "SELL": 0.0}
         while True:
             try:
@@ -1666,6 +1704,12 @@ class TradingBot:
                             next_direction = (
                                 next_direction + 1) % len(RTRADE_PAIR_DIRECTIONS)
                             if now >= side_backoff_until[candidate]:
+                                blocked, b_reason = _whale_flow_blocks_side(self.symbol, candidate)
+                                if blocked:
+                                    if now - last_whale_log >= 30.0:
+                                        last_whale_log = now
+                                        print(f"[{self.symbol}] rtrade DEFER {candidate}: {b_reason}")
+                                    continue
                                 start_side = candidate
                                 break
                         if start_side is None:
@@ -1673,8 +1717,22 @@ class TradingBot:
                             continue
                         round_qty = RTRADE_NOTIONAL_USDC / float(current_price)
                         reserved_pair_id = uuid.uuid4().hex
+                        eff_adjustment = _effective_adjustment_fraction(
+                            self.symbol, self.DEFAULT_ADJUSTMENT_PERCENT)
+                        round_policy = (
+                            policy if eff_adjustment == self.DEFAULT_ADJUSTMENT_PERCENT
+                            else PairPolicy(
+                                adjustment_fraction=eff_adjustment,
+                                quote_ttl_sec=WAIT_FOR_ORDER,
+                                poll_sec=RTRADE_PAIR_POLL_SEC,
+                                fast_fill_ratio=RTRADE_FAST_FILL_RATIO,
+                                min_edge_fraction=RTRADE_MIN_EDGE_PCT,
+                                shock_hard_stop_fraction=RTRADE_SHOCK_HARD_STOP_PCT,
+                                hard_stop_fraction=RTRADE_HARD_STOP_PCT,
+                            )
+                        )
                         coordinator = PairCoordinator(
-                            venue, round_qty, policy, start_side=start_side)
+                            venue, round_qty, round_policy, start_side=start_side)
                         outcome = coordinator.start(
                             current_price, pair_id=reserved_pair_id)
                         export_state = getattr(coordinator, "export_state", None)

@@ -99,6 +99,47 @@ class WhalePositioningCollector:
         except Exception as e:
             logger.debug("Failed writing whale snapshot to %s: %s", p, e)
 
+    def _resolve_price_1h_change_pct(self, symbol: str) -> float:
+        """Resolve 1-hour price change percentage from cached price history (0 ms local)."""
+        if not self.cache_dir:
+            return 0.0
+        try:
+            sym_u = symbol.upper()
+            variants = [sym_u]
+            if "USDC" in sym_u:
+                variants.append(sym_u.replace("USDC", "USDT"))
+            elif "USDT" in sym_u:
+                variants.append(sym_u.replace("USDT", "USDC"))
+
+            for sym_key in variants:
+                p = os.path.join(self.cache_dir, f"cache_24price_{sym_key}.json")
+                if not os.path.exists(p):
+                    continue
+                with open(p, "r", encoding="utf-8") as f:
+                    cdata = json.load(f)
+                items_dict = cdata.get("items")
+                pts = None
+                if isinstance(items_dict, dict):
+                    pts = items_dict.get(sym_key) or items_dict.get(sym_u)
+                    if not pts and items_dict:
+                        pts = next(iter(items_dict.values()))
+                elif isinstance(items_dict, list):
+                    pts = items_dict
+                if pts and len(pts) >= 2:
+                    now_ms = pts[-1][0]
+                    target_ms = now_ms - 3600.0 * 1000.0
+                    latest_p = float(pts[-1][1])
+                    ref_p = float(pts[0][1])
+                    for pt in reversed(pts):
+                        if pt[0] <= target_ms:
+                            ref_p = float(pt[1])
+                            break
+                    if ref_p > 0:
+                        return (latest_p - ref_p) / ref_p * 100.0
+        except Exception as e:
+            logger.debug("Failed calculating 1h price change from cache for %s: %s", symbol, e)
+        return 0.0
+
     def fetch(self, symbol: str, price_1h_change_pct: float = 0.0, allow_network: bool = True) -> Optional[WhalePositioningSnapshot]:
         """Fetch latest whale positioning metrics from public Binance Futures endpoints."""
         symbol = symbol.upper()
@@ -114,6 +155,9 @@ class WhalePositioningCollector:
 
         if not allow_network:
             return None
+
+        if abs(price_1h_change_pct) < 1e-6:
+            price_1h_change_pct = self._resolve_price_1h_change_pct(symbol)
 
         lookup_sym = symbol.replace("USDC", "USDT")
         try:
@@ -147,16 +191,24 @@ class WhalePositioningCollector:
             oi_change_pct = ((latest_oi_usd - prev_oi_usd) / prev_oi_usd * 100.0) if prev_oi_usd > 0 else 0.0
 
             # 4. Classify OI-Price divergence regime
-            # Price rising + OI rising = True accumulation
-            # Price rising + OI falling = Short covering (exhaustion)
-            # Price falling + OI rising = Aggressive shorting
-            # Price falling + OI falling = Long liquidation
-            if price_1h_change_pct > 0.5:
-                regime = "accumulation" if oi_change_pct > 0.5 else ("short_covering" if oi_change_pct < -0.5 else "neutral")
-            elif price_1h_change_pct < -0.5:
-                regime = "aggressive_shorting" if oi_change_pct > 0.5 else ("long_liquidation" if oi_change_pct < -0.5 else "neutral")
+            # Price rising (> +0.2%) + OI rising (> +0.3%) = True accumulation
+            # Price rising (> +0.2%) + OI falling (< -0.3%) = Short covering (exhaustion)
+            # Price falling (< -0.2%) + OI rising (> +0.3%) = Aggressive shorting (momentum down)
+            # Price falling (< -0.2%) + OI falling (< -0.3%) = Long liquidation
+            # Flat price (abs <= 0.2%):
+            # - OI expanding (> +0.8%) + Taker sell aggression (< 0.85) = Aggressive short positioning
+            # - OI expanding (> +0.8%) + Taker buy aggression (> 1.15) = Accumulation
+            if price_1h_change_pct > 0.2:
+                regime = "accumulation" if oi_change_pct > 0.3 else ("short_covering" if oi_change_pct < -0.3 else "neutral")
+            elif price_1h_change_pct < -0.2:
+                regime = "aggressive_shorting" if oi_change_pct > 0.3 else ("long_liquidation" if oi_change_pct < -0.3 else "neutral")
             else:
-                regime = "neutral"
+                if oi_change_pct > 0.8 and taker_ratio < 0.85:
+                    regime = "aggressive_shorting"
+                elif oi_change_pct > 0.8 and taker_ratio > 1.15:
+                    regime = "accumulation"
+                else:
+                    regime = "neutral"
 
             snapshot = WhalePositioningSnapshot(
                 symbol=symbol,

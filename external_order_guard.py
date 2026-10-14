@@ -141,17 +141,28 @@ def check_external_order_guards(
             from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
             w_snap = get_whale_collector().fetch(symbol, allow_network=False)
             sev_oi = float(m.get("severe_cascade_oi_pct", -5.0))
-            min_tk = float(m.get("min_taker_ratio", 0.65))
-            w_guard = WhaleDivergenceGuard(severe_cascade_oi_pct=sev_oi, min_taker_ratio=min_tk)
+            min_tk = float(m.get("min_taker_ratio", 0.75))
+            downscale_tk = float(m.get("taker_downscale_threshold", 0.90))
+            downscaled_scale = float(m.get("taker_downscaled_scale", 0.50))
+            w_guard = WhaleDivergenceGuard(
+                severe_cascade_oi_pct=sev_oi,
+                min_taker_ratio=min_tk,
+                taker_downscale_threshold=downscale_tk,
+                taker_downscaled_scale=downscaled_scale,
+            )
             w_dec = w_guard.check(symbol, order_side, snapshot=w_snap)
-            if not w_dec.allowed or w_dec.brake_action == BrakeAction.DEFER_WAIT:
+            if not w_dec.allowed or w_dec.brake_action in (BrakeAction.DEFER_WAIT, BrakeAction.DOWNSCALE_QTY):
                 prefix = "[WHALE_GUARD_SHADOW]" if whale_mode == "shadow" else "[WHALE_GUARD_ENFORCE]"
                 print(f"{prefix} {order_side} {symbol}: {w_dec.reason} (brake={w_dec.brake_action})")
                 if whale_mode == "shadow" and shadow_notify_enabled:
-                    _send_micro_shadow_notify("whale", f"🛡 [P2 · WHALE-FLOW] DEFER {order_side} {symbol}", w_dec.reason)
+                    scale_pct = int(w_dec.suggested_scale * 100) if w_dec.suggested_scale < 1.0 else None
+                    _send_micro_shadow_notify("whale", f"🛡 [P2 · WHALE-FLOW] {w_dec.brake_action.value} {order_side} {symbol}", w_dec.reason, scale_pct=scale_pct)
                 if whale_mode == "enforce":
                     if not w_dec.allowed:
                         return False, w_dec.reason, 0.0
+                    if w_dec.suggested_scale < 1.0:
+                        effective_scale = min(effective_scale, w_dec.suggested_scale)
+                        active_reason = w_dec.reason
         except Exception:
             pass
 
