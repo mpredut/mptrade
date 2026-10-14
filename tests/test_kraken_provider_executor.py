@@ -87,6 +87,7 @@ class FakeClient:
 def _provider(fake):
     p = KrakenProvider()
     p._cli = fake                    # It short-circuits _client() (no keys, no network).
+    p._fills_from_cache = lambda _s: None
     return p
 
 

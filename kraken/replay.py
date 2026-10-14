@@ -275,7 +275,7 @@ def _run_once(
                             and close > order["price"] * 1.003):
                         strategy._remove(order)
             replay_time = bar_index * bar_minutes * 60 if bar_minutes else bar_index
-            strategy.step(close, timestamp=replay_time, high=high)
+            strategy.step(close, timestamp=replay_time)
             qty = strategy.s["qty"]
             unrealized = (
                 (close - strategy.s["cost"] / qty) * qty if qty > 1e-12 else 0.0
