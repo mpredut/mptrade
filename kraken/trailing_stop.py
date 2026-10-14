@@ -70,6 +70,17 @@ DEFAULT_TRAIL_PCT = required_float_env("KRAKEN_TRAILING_DEFAULT_PCT")
 MIN_NOTIONAL_USD = required_float_env("KRAKEN_TRAILING_MIN_NOTIONAL_USD")
 CHECK_SECONDS = required_float_env("KRAKEN_TRAILING_CHECK_SECONDS")
 
+# Discover any additional configured assets (e.g. TAO, ADA)
+for _env_k, _env_v in os.environ.items():
+    if _env_k.startswith("KRAKEN_TRAILING_") and _env_k.endswith("_PAIR") and _env_k != "KRAKEN_TRAILING_HYPE_PAIR":
+        _asset = _env_k[len("KRAKEN_TRAILING_"):-len("_PAIR")]
+        _pct_k = f"KRAKEN_TRAILING_{_asset}_PCT"
+        try:
+            TRAIL_PCT[_asset] = float(os.environ.get(_pct_k, DEFAULT_TRAIL_PCT))
+            PAIR_FOR[_asset] = str(_env_v).strip()
+        except (ValueError, TypeError):
+            pass
+
 # After a crash sale, re-buy when price rebounds BOUNCE% from the post-sale low.
 REBUY_ENABLED = required_bool_env("KRAKEN_TRAILING_REBUY_ENABLED")
 REBUY_BOUNCE_PCT = required_float_env("KRAKEN_TRAILING_REBUY_BOUNCE_PCT")

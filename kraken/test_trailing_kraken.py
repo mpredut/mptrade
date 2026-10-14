@@ -195,6 +195,40 @@ class TestRebuyGuardsKraken(Base):
             self.assertEqual(persisted, [None], "Pending order cleared so rebuy intent persists")
 
 
+    def test_multi_asset_trailing_kraken(self):
+        """Verify trailing protection operates on multiple configured assets (e.g. TAO, ADA)."""
+        balances = {
+            "HYPE": {"balance": "10.0", "hold_trade": "0.0"},
+            "TAO": {"balance": "5.0", "hold_trade": "0.0"},
+            "ADA": {"balance": "1000.0", "hold_trade": "0.0"},
+        }
+        prices = {"HYPEUSD": 50.0, "TAOUSD": 200.0, "ADAUSD": 0.50}
+
+        class FakeMultiK(FakeK):
+            def __init__(self):
+                super().__init__(price=50.0)
+                self.prices = prices
+                self.balances = balances
+            def _private(self, method, data=None):
+                if method == "BalanceEx":
+                    return self.balances
+                return {}
+            def last_price(self, pair):
+                return self.prices.get(pair, 0.0)
+
+        c = FakeMultiK()
+        ts = self.ts(c)
+        ts.check_once()  # tracks initial peaks: HYPE=50, TAO=200, ADA=0.50
+
+        # Crash TAO by -25% (exceeds 22% trail) while HYPE and ADA stay normal
+        c.prices["TAOUSD"] = 150.0  # -25% de la 200
+        ts.check_once()
+
+        self.assertEqual(len(c.orders), 1)
+        self.assertEqual(c.orders[0]["side"], "sell")
+        self.assertEqual(c.orders[0]["volume"], 5.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
