@@ -36,16 +36,15 @@ FLAGS = {"peak": False}
 _orig_step = strat.Strategy.step
 
 
-def _step(self, price, timestamp=None):
+def _step(self, price, *args, **kwargs):
     s = self.s
     if s["qty"] <= 1e-12:
         if FLAGS["peak"] and s.get("last_exit_kind") == "TP" and s.get("last_sell_price"):
             s["last_sell_price"] = max(s["last_sell_price"], price)
-    return _orig_step(self, price, timestamp=timestamp)
+    return _orig_step(self, price, *args, **kwargs)
 
 
 strat.Strategy.step = _step
-strat.log = lambda *a, **k: None
 
 R = dataclasses.replace
 LIVE = strat.StratParams.from_env()

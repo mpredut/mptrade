@@ -73,10 +73,10 @@ class RsiGate:
 _gate = None   # RsiGate for a gated run, None for the baseline (wrappers become no-ops)
 
 _orig_step = _strat.Strategy.step
-def _step_feed_rsi(self, price, timestamp=None):
+def _step_feed_rsi(self, price, *args, **kwargs):
     if _gate is not None:
         _gate.update(float(price))
-    return _orig_step(self, price, timestamp)
+    return _orig_step(self, price, *args, **kwargs)
 
 _orig_hit = sr.dca_price_hit
 def _hit_gated(*a, **k):

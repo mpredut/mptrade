@@ -29,12 +29,12 @@ FLAGS = {"peak": False}
 _orig_step = strat.Strategy.step
 
 
-def _step(self, price):
+def _step(self, price, *args, **kwargs):
     s = self.s
     if (FLAGS["peak"] and s["qty"] <= 1e-9 and s.get("last_sell_price")
             and not s.get("sl_rebuy")):
         s["last_sell_price"] = max(s["last_sell_price"], price)
-    return _orig_step(self, price)
+    return _orig_step(self, price, *args, **kwargs)
 
 
 strat.Strategy.step = _step

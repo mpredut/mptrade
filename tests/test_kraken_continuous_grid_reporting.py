@@ -5,7 +5,15 @@ from __future__ import annotations
 
 import math
 import pytest
+from strategies import spot_engine
 from offline.research.kraken_continuous_grid import grid3, report, report2, report3
+
+
+@pytest.fixture(autouse=True)
+def restore_strategy_step():
+    orig = spot_engine.Strategy.step
+    yield
+    spot_engine.Strategy.step = orig
 
 
 def test_win_stats_empty():
