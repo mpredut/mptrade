@@ -68,6 +68,7 @@ def run_replay(
     initial_cash: float | None = None,
     dca_drop_series=None,
     reentry_series=None,
+    intrabar_high: bool = False,
 ) -> dict:
     """Replay decisions, optionally enforcing a finite cash account and fee reserves.
 
@@ -94,6 +95,7 @@ def run_replay(
             initial_cash=initial_cash,
             dca_drop_series=dca_drop_series,
             reentry_series=reentry_series,
+            intrabar_high=intrabar_high,
         ),
     )
 
@@ -110,6 +112,7 @@ def _run_once(
     initial_cash: float | None,
     dca_drop_series=None,
     reentry_series=None,
+    intrabar_high: bool = False,
 ) -> dict:
     client = MagicMock()
     # Replay declares its synthetic execution precision explicitly; live engines
@@ -275,7 +278,7 @@ def _run_once(
                             and close > order["price"] * 1.003):
                         strategy._remove(order)
             replay_time = bar_index * bar_minutes * 60 if bar_minutes else bar_index
-            strategy.step(close, timestamp=replay_time)
+            strategy.step(close, timestamp=replay_time, high=high if intrabar_high else None)
             qty = strategy.s["qty"]
             unrealized = (
                 (close - strategy.s["cost"] / qty) * qty if qty > 1e-12 else 0.0

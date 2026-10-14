@@ -65,6 +65,7 @@ def simulate_trail(ohlc, P):
         params,
         fee_pct=P.get("fee", 0.25),
         bar_minutes=P.get("interval", 60),
+        intrabar_high=True,
     )
 
 

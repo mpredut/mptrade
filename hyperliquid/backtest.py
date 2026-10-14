@@ -32,8 +32,17 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 from common import log
-from hl_client import HLClient
-from replay import run_replay, funding_at
+try:
+    import importlib.util
+    _hl_spec = importlib.util.spec_from_file_location(
+        "hyperliquid_backtest_replay", os.path.join(_HERE, "replay.py")
+    )
+    _hl_mod = importlib.util.module_from_spec(_hl_spec)
+    _hl_spec.loader.exec_module(_hl_mod)
+    run_replay = _hl_mod.run_replay
+    funding_at = _hl_mod.funding_at
+except Exception:
+    from replay import run_replay, funding_at
 
 
 def _post(body):

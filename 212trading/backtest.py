@@ -25,8 +25,18 @@ for p in (T212_DIR, ROOT):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from replay import run_replay
-from strategy import StratParams
+try:
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location(
+        "t212_backtest_replay", os.path.join(T212_DIR, "replay.py")
+    )
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    run_replay = _mod.run_replay
+    StratParams = _mod._strat.StratParams
+except Exception:
+    from replay import run_replay
+    from strategy import StratParams
 
 
 def fetch_candles(sym, rng, interval):

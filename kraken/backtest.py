@@ -27,7 +27,10 @@ from strategies import spot_rules as sr
 from strategies.spot_engine import StratParams
 
 import dataclasses
-import replay as rp        # Faithful engine: the live strategy over OHLC data.
+try:
+    from kraken import replay as rp
+except ImportError:
+    import replay as rp        # Faithful engine: the live strategy over OHLC data.
 
 
 def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
