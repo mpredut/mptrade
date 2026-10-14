@@ -35,7 +35,7 @@ def _percentile(values: list[float], percentile: float) -> float | None:
 
 
 def distribution(values: list[float]) -> dict:
-    values = [float(value) for value in values]
+    values = [float(value) for value in values if value is not None]
     return {
         "count": len(values),
         "min": min(values) if values else None,

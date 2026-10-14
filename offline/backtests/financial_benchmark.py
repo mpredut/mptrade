@@ -209,7 +209,7 @@ def aggregate_financial_windows(
 
     summary = summarize_test_windows(windows)
     metrics = [window["metrics"] for window in windows]
-    net_pnls = [float(item["net_pnl"]) for item in metrics]
+    net_pnls = [float(item.get("net_pnl") or 0.0) for item in metrics]
     regimes = {}
     for name in ("bull", "bear", "sideways"):
         selected = [

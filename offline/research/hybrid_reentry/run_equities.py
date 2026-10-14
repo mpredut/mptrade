@@ -12,15 +12,11 @@ import importlib.util
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 T212_DIR = os.path.join(ROOT, "212trading")
-sys.path.insert(0, T212_DIR)
-sys.path.insert(0, ROOT)
+if T212_DIR not in sys.path:
+    sys.path.insert(0, T212_DIR)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-_COLLIDING = ("strategy", "market_data", "notify", "ipo_notify", "replay")
-for name in _COLLIDING:
-    sys.modules.pop(name, None)
-
-import strategy as _strat
-import replay as rp
 from offline.research.hybrid_reentry.harness import load_ohlc_csv
 
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
@@ -62,7 +58,16 @@ BASE_CONFIG = {
 }
 
 
-def build_equity_variants(base_p: _strat.StratParams):
+def _import_t212():
+    _COLLIDING = ("strategy", "market_data", "notify", "ipo_notify", "replay")
+    for name in _COLLIDING:
+        sys.modules.pop(name, None)
+    import strategy as _strat
+    import replay as rp
+    return _strat, rp
+
+
+def build_equity_variants(base_p):
     R = dataclasses.replace
     return {
         "Test 0": ("Baseline (Control)", R(base_p, reentry_hybrid_enabled=False, reentry_peak_relative=False, reentry_pullback_pct=1.5, reentry_ttl_hours=0.0)),
@@ -77,6 +82,7 @@ def main():
     print("======================================================================")
     print("TRADING 212 EQUITIES HYBRID RE-ENTRY ABLATION SUITE (Tests 0 to 4)")
     print("======================================================================")
+    _strat, rp = _import_t212()
     results = []
     
     for symbol, csv_path in DATASETS.items():
@@ -84,6 +90,9 @@ def main():
             print(f"Skipping {symbol}: not found at {csv_path}")
             continue
         ohlc = load_ohlc_csv(csv_path)
+        if not ohlc:
+            print(f"Skipping {symbol}: empty OHLC data.")
+            continue
         print(f"Evaluating {symbol} ({len(ohlc)} daily bars)...", flush=True)
         
         cfg = dict(BASE_CONFIG)
@@ -94,35 +103,48 @@ def main():
         warmup_n = min(30, len(ohlc) // 5)
         warmup_ohlc = ohlc[:warmup_n]
         run_ohlc = ohlc[warmup_n:]
+        if not run_ohlc:
+            print(f"Skipping {symbol}: insufficient bars after warmup.")
+            continue
         
         for test_id, (variant_name, params) in variants.items():
-            res = rp.run_replay(
-                ohlc=run_ohlc,
-                params=params,
-                bar_minutes=1440.0,  # 1 day
-                warmup_ohlc=warmup_ohlc,
-            )
-            ret_pct = (res.get("total", 0.0) / params.max_budget) * 100.0
-            max_dd_pct = float(res.get("max_drawdown_pct") or 0.0)
-            exposure_pct = float(res.get("exposure_pct") or 0.0)
-            results.append({
-                "asset": symbol,
-                "test_id": test_id,
-                "variant": variant_name,
-                "total_return_pct": round(ret_pct, 2),
-                "net_profit_usd": round(res.get("total", 0.0), 2),
-                "max_drawdown_pct": round(max_dd_pct, 2),
-                "exposure_pct": round(exposure_pct, 2),
-                "cycles": res.get("cycles", 0),
-                "wins": res.get("wins", 0),
-                "win_rate": round(float(res.get("win_rate") or 0.0) * 100.0, 1),
-                "profit_factor": round(float(res.get("profit_factor") or 0.0), 2),
-                "fills": res.get("fills", 0),
-            })
-            print(f"  {test_id} ({variant_name:<18}): Return {ret_pct:+6.2f}% | MaxDD {max_dd_pct:5.2f}% | Exposure {exposure_pct:5.2f}% | Cycles {res.get('cycles', 0)}")
+            try:
+                res = rp.run_replay(
+                    ohlc=run_ohlc,
+                    params=params,
+                    bar_minutes=1440.0,  # 1 day
+                    warmup_ohlc=warmup_ohlc,
+                )
+                budget = float(params.max_budget) if params.max_budget > 0 else 500.0
+                ret_pct = (res.get("total", 0.0) / budget) * 100.0
+                max_dd_pct = float(res.get("max_drawdown_pct") or 0.0)
+                exposure_pct = float(res.get("exposure_pct") or 0.0)
+                results.append({
+                    "asset": symbol,
+                    "test_id": test_id,
+                    "variant": variant_name,
+                    "total_return_pct": round(ret_pct, 2),
+                    "net_profit_usd": round(res.get("total", 0.0), 2),
+                    "max_drawdown_pct": round(max_dd_pct, 2),
+                    "exposure_pct": round(exposure_pct, 2),
+                    "cycles": res.get("cycles", 0),
+                    "wins": res.get("wins", 0),
+                    "win_rate": round(float(res.get("win_rate") or 0.0) * 100.0, 1),
+                    "profit_factor": round(float(res.get("profit_factor") or 0.0), 2),
+                    "fills": res.get("fills", 0),
+                })
+                print(f"  {test_id} ({variant_name:<18}): Return {ret_pct:+6.2f}% | MaxDD {max_dd_pct:5.2f}% | Exposure {exposure_pct:5.2f}% | Cycles {res.get('cycles', 0)}")
+            except Exception as exc:
+                print(f"  {test_id} ({variant_name:<18}): ERROR {exc}")
+                results.append({
+                    "asset": symbol,
+                    "test_id": test_id,
+                    "variant": variant_name,
+                    "error": str(exc),
+                })
 
     out_json = os.path.join(OUT_DIR, "equities_ablation_results.json")
-    with open(out_json, "w") as f:
+    with open(out_json, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
     print(f"\nEquities results saved to {out_json}")
 

@@ -321,8 +321,10 @@ def main():
 
     # Find baseline
     baseline = next((r for r in results if r["id"] == "BASELINE_SURGE_OFF"), None)
-    if baseline is None or len(results) != total_cands:
-        raise RuntimeError("Incomplete sweep; refusing to rank results against a missing or partial control")
+    if baseline is None:
+        raise RuntimeError("Incomplete sweep; refusing to rank results against a missing control (BASELINE_SURGE_OFF)")
+    if len(results) != total_cands:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] WARNING: {total_cands - len(results)} candidates failed; proceeding with {len(results)} successful candidates.", flush=True)
     base_pnl = baseline["total_profit_usd"]
     base_h1 = baseline["h1_profit_usd"]
     base_h2 = baseline["h2_profit_usd"]

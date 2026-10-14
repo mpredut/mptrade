@@ -76,9 +76,12 @@ def generate_markdown_report() -> str:
         for t in ["Test 0", "Test 1", "Test 2", "Test 3", "Test 4"]:
             if t in a_runs:
                 r = a_runs[t]
-                ret_row.append(f"{r['total_return_pct']:+.2f}%")
-                dd_row.append(f"{r['max_drawdown_pct']:.2f}%")
-                exp_row.append(f"{r['exposure_pct']:.2f}%")
+                tot_ret = r.get("total_return_pct")
+                max_dd = r.get("max_drawdown_pct")
+                exp = r.get("exposure_pct")
+                ret_row.append(f"{tot_ret:+.2f}%" if tot_ret is not None else "N/A")
+                dd_row.append(f"{max_dd:.2f}%" if max_dd is not None else "N/A")
+                exp_row.append(f"{exp:.2f}%" if exp is not None else "N/A")
             else:
                 ret_row.append("N/A")
                 dd_row.append("N/A")
@@ -92,7 +95,15 @@ def generate_markdown_report() -> str:
         md.append("\n| Equity | Test ID | Variant Name | Return (%) | Max DD (%) | Time in Market (%) | Cycles | Win Rate (%) |")
         md.append("|---|---|---|---|---|---|---|---|")
         for eq in equities_data:
-            md.append(f"| **{eq['asset']}** | {eq['test_id']} | {eq['variant']} | **{eq['total_return_pct']:+.2f}%** | {eq['max_drawdown_pct']:.2f}% | {eq['exposure_pct']:.2f}% | {eq['cycles']} | {eq['win_rate']:.1f}% |")
+            tot_ret = eq.get("total_return_pct")
+            max_dd = eq.get("max_drawdown_pct")
+            exp = eq.get("exposure_pct")
+            win_r = eq.get("win_rate")
+            r_str = f"**{tot_ret:+.2f}%**" if tot_ret is not None else "N/A"
+            dd_str = f"{max_dd:.2f}%" if max_dd is not None else "N/A"
+            exp_str = f"{exp:.2f}%" if exp is not None else "N/A"
+            win_str = f"{win_r:.1f}%" if win_r is not None else "N/A"
+            md.append(f"| **{eq.get('asset')}** | {eq.get('test_id')} | {eq.get('variant')} | {r_str} | {dd_str} | {exp_str} | {eq.get('cycles', 0)} | {win_str} |")
 
     md.append("\n---\n")
     md.append("## 3. Key Mathematical Findings & Hypotheses Verification")
@@ -131,8 +142,9 @@ def generate_markdown_report() -> str:
 
 def main():
     report_md = generate_markdown_report()
+    os.makedirs(OUT_DIR, exist_ok=True)
     out_file = os.path.join(OUT_DIR, "HYBRID_REENTRY_ABLATION_REPORT.md")
-    with open(out_file, "w") as f:
+    with open(out_file, "w", encoding="utf-8") as f:
         f.write(report_md)
     print(f"Report generated successfully at {out_file}")
 

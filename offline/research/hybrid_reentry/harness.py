@@ -125,12 +125,16 @@ def evaluate_asset(
     initial_cash: float = 3900.0,
 ) -> list[dict[str, Any]]:
     """Run all ablation tests on an asset and return structured metrics."""
+    if not ohlc:
+        return []
     variants = build_ablation_variants(base_params)
     results = []
     # Warmup first 30 bars if available to seed regime
     warmup_n = min(30, len(ohlc) // 5)
     warmup_ohlc = ohlc[:warmup_n]
     run_ohlc = ohlc[warmup_n:]
+    if not run_ohlc:
+        return []
 
     for test_id, (variant_name, params) in variants.items():
         try:
@@ -142,7 +146,7 @@ def evaluate_asset(
                 warmup_ohlc=warmup_ohlc,
                 initial_cash=initial_cash,
             )
-            ret_pct = (res.get("total", 0.0) / initial_cash) * 100.0
+            ret_pct = (res.get("total", 0.0) / initial_cash * 100.0) if initial_cash > 0 else 0.0
             max_dd_pct = float(res.get("max_drawdown_pct") or 0.0)
             exposure_pct = float(res.get("exposure_pct") or 0.0)
             results.append({

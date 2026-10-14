@@ -107,6 +107,26 @@ def run_single_simulation(
     peak_equity = initial_balance
     max_dd_pct = 0.0
 
+    if not sampled:
+        return ChopBacktestStats(
+            policy=policy,
+            symbol=symbol,
+            initial_balance=initial_balance,
+            final_balance=initial_balance,
+            net_profit_usd=0.0,
+            net_return_pct=0.0,
+            max_drawdown_pct=0.0,
+            profit_factor=1.0,
+            win_rate_pct=0.0,
+            total_trades=0,
+            chop_trades=0,
+            trend_trades=0,
+            chop_pnl_usd=0.0,
+            trend_pnl_usd=0.0,
+            avg_trade_pnl_usd=0.0,
+            avg_chop_pnl_usd=0.0,
+        )
+
     trades: List[Dict[str, Any]] = []
     rolling_prices: List[float] = []
 
@@ -347,6 +367,10 @@ def run_chop_benchmark(
             if (t - last_t) >= step_seconds:
                 sampled.append((t, p))
                 last_t = t
+
+        if not sampled:
+            logger.warning("No sampled bars for %s, skipping.", sym)
+            continue
 
         logger.info("Symbol %s: %d ticks -> %d %ds bars (%.1f days)", sym, len(raw_series), len(sampled), step_seconds, (sampled[-1][0] - sampled[0][0]) / 86400.0)
 

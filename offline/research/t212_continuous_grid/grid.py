@@ -133,7 +133,12 @@ def task(args):
 
 
 if __name__ == "__main__":
+    os.makedirs(DATA, exist_ok=True)
+    os.makedirs(EXP, exist_ok=True)
     assets = sorted({f.split("_")[0] for f in os.listdir(DATA) if f.endswith(".csv")})
+    if not assets:
+        print(f"[t212grid] No CSV data files found in {DATA}. Run fetch.py first.", flush=True)
+        sys.exit(0)
     todo = []
     for profile in PROFILES:
         home = HOME[profile]

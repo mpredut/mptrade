@@ -20,8 +20,8 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
-os.chdir(ROOT)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 from providers.replay_provider import load_price_series
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
@@ -107,6 +107,8 @@ def run_intelligence_backtest(
             last_t = t
 
     logger.info("Total raw ticks: %d | Resampled %ds bars: %d", len(raw_series), step_seconds, len(sampled))
+    if not sampled:
+        raise ValueError(f"Insufficient sampled price bars for {symbol} after resampling at {step_seconds}s")
 
     # Pre-fetch survival metrics once per symbol to eliminate repeated file I/O in the hot simulation loop
     base_survival = get_trend_survival_metrics(symbol, 0.0)
