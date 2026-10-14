@@ -382,7 +382,7 @@ class StratParams:
             sl_bounce_ratchet_k = _optional_float_env("STRAT_SL_BOUNCE_RATCHET_K", 0.50, env),
             sl_bounce_min_pullback_pct = _optional_float_env("STRAT_SL_BOUNCE_MIN_PULLBACK_PCT", 0.15, env),
             sl_structural_break_enabled = _optional_bool_env("STRAT_SL_STRUCTURAL_BREAK_ENABLED", True, env),
-            tp_mdhtp_enabled   = _optional_bool_env("STRAT_TP_MDHTP_ENABLED", False, env),
+            tp_mdhtp_enabled   = required_bool_env("STRAT_TP_MDHTP_ENABLED", env),
             tp_stagnation_max_sec = _optional_float_env("STRAT_TP_STAGNATION_MAX_SEC", 1080.0, env),
         )
 
