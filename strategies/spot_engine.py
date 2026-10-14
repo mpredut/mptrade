@@ -1651,6 +1651,7 @@ class Strategy:
             self.exit_manager.config.reentry_ttl_hours = self.p.reentry_ttl_hours
             self.exit_manager.config.reentry_tolerance_pct = self.p.reentry_tolerance_pct
             self.exit_manager.config.reentry_hybrid_enabled = self.p.reentry_hybrid_enabled
+            self.exit_manager.config.reentry_peak_relative = self.p.reentry_peak_relative
             vol_1h, vol_source = self._vol_1h_ratio()
             drop_pct, _ = self._effective_reentry_drop_pct()
             reentry_snap = ReentrySnapshot(

@@ -97,6 +97,9 @@ class BacktestBroker:
             self.fees += sell_q * price * FEE_PCT / 100
             self.pos_cost -= avg * sell_q
             self.pos_qty -= sell_q
+            if self.pos_qty <= 1e-9:
+                self.pos_qty = 0.0
+                self.pos_cost = 0.0
             self.n_sell += 1
         cols = [self.clock(), symbol, order_type, price, qty, "executed", "", "backtest", motivation]
         with open(self.path, "a", encoding="utf-8") as f:
@@ -129,7 +132,10 @@ class BacktestBroker:
             if o["symbol"] != symbol:
                 still.append(o)
                 continue
-            favorable = not self.trend_gate.should_wait(symbol, o["side"], self.trend_gate_timeout_sec)
+            favorable = (
+                not self.trend_gate.should_wait(symbol, o["side"], self.trend_gate_timeout_sec)
+                if self.trend_gate is not None else True
+            )
             expired = ts >= o["deadline"]
             if favorable or expired:
                 self._execute(o["side"], symbol, price, o["qty_arg"], o["motivation"])

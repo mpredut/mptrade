@@ -626,6 +626,36 @@ class TestPositionReentryManager(unittest.TestCase):
         self.assertTrue(dec2.should_enter)
         self.assertIn("bull_reentry_pullback_confirmed", dec2.reason)
 
+    def test_reentry_hybrid_disabled_enforces_discount_drop_even_in_bull_trend(self):
+        # Baseline mode: hybrid reentry is explicitly False
+        self.mgr.config.reentry_hybrid_enabled = False
+        # Sold at 100 on TP, bull trend, price rallies to 110 and pulls back to 108
+        snap1 = ReentrySnapshot(
+            symbol="BTCUSDT",
+            current_price=108.0,
+            last_sell_price=100.0,
+            last_exit_kind="TP",
+            current_time_s=self.now,
+            trend_up=True,
+        )
+        dec1 = self.mgr.evaluate_reentry(snap1)
+        # Must NOT buy at 108 (which is above last sell of 100) because hybrid pullback is disabled
+        self.assertFalse(dec1.should_enter)
+        self.assertIn("range_reentry_drop_waiting", dec1.reason)
+
+        # Only enters when price drops below the 2.0% discount target (100 * 0.98 = 98.0)
+        snap2 = ReentrySnapshot(
+            symbol="BTCUSDT",
+            current_price=97.5,
+            last_sell_price=100.0,
+            last_exit_kind="TP",
+            current_time_s=self.now + 30.0,
+            trend_up=True,
+        )
+        dec2 = self.mgr.evaluate_reentry(snap2)
+        self.assertTrue(dec2.should_enter)
+        self.assertIn("range_reentry_confirmed", dec2.reason)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

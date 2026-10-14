@@ -171,6 +171,7 @@ class PositionExitConfig:
     reentry_ratchet_enabled: bool = True       # Ratchet prevents re-entry on rollover
     reentry_bear_gate_enabled: bool = True     # Block/require stronger bounce in bear trend
     reentry_hybrid_enabled: bool = False       # Enable hybrid pullback in confirmed bull trends
+    reentry_peak_relative: bool = False        # Enable peak-relative pullback across all regimes
 
 
 class PositionExitManager:
@@ -846,7 +847,11 @@ class PositionExitManager:
             )
 
         # Case 3: Post-TP / Normal Sale Re-entry (Pullback in Bull vs Discount Drop in Range)
-        if snapshot.trend_up:
+        is_bull_reentry = (
+            self.config.reentry_hybrid_enabled
+            and (snapshot.trend_up or self.config.reentry_peak_relative)
+        )
+        if is_bull_reentry:
             pullback_required = self.config.reentry_pullback_pct
             pullback_ratio = (peak - current_price) / peak if peak > 0 else 0.0
             has_pulled_back = (
