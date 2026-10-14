@@ -124,7 +124,9 @@ def _run_once(
     # A mock or unavailable live balance must never imply unlimited buying power.
     client.free_balance.return_value = float(params.effective_max_budget())
     original_notify = _strat.notify
+    original_log = _strat.log
     _strat.notify = _silent
+    _strat.log = _silent
     try:
         strategy = _strat.Strategy(
             client,
@@ -287,33 +289,34 @@ def _run_once(
             )
             equity_curve.append(initial_capital + strategy.s["realized_net"] + unrealized)
             exposure.append(qty > 1e-12)
+
+        for order in list(strategy.s["orders"]):
+            if order.get("market") and order["side"] == "sell" and strategy.s["qty"] > 1e-12:
+                volume = min(float(order["vol"]), strategy.s["qty"])
+                price = execution.market_price("sell", ohlc[-1][3])
+                gross_before = strategy.s["realized_gross"]
+                fee = fee_model.rate_pct(market=True) / 100.0 * volume * price
+                if cash is not None:
+                    cash += volume * price - fee
+                    min_cash = min(min_cash, cash)
+                strategy._remove(order)
+                strategy._apply_fill(
+                    order, volume, price, fee=fee, final=True,
+                )
+                fill_count += 1
+                turnover_notional += volume * price
+                if strategy.s["realized_gross"] > gross_before:
+                    wins += 1
+                if strategy.s.get("cycle", 1) > cycle0 + len(trade_pnls):
+                    trade_pnls.append(
+                        strategy.s["realized_net"] - cycle_net_start
+                    )
+                    cycle_net_start = strategy.s["realized_net"]
+                if equity_curve:
+                    equity_curve[-1] = initial_capital + strategy.s["realized_net"]
     finally:
         _strat.notify = original_notify
-
-    for order in list(strategy.s["orders"]):
-        if order.get("market") and order["side"] == "sell" and strategy.s["qty"] > 1e-12:
-            volume = min(float(order["vol"]), strategy.s["qty"])
-            price = execution.market_price("sell", ohlc[-1][3])
-            gross_before = strategy.s["realized_gross"]
-            fee = fee_model.rate_pct(market=True) / 100.0 * volume * price
-            if cash is not None:
-                cash += volume * price - fee
-                min_cash = min(min_cash, cash)
-            strategy._remove(order)
-            strategy._apply_fill(
-                order, volume, price, fee=fee, final=True,
-            )
-            fill_count += 1
-            turnover_notional += volume * price
-            if strategy.s["realized_gross"] > gross_before:
-                wins += 1
-            if strategy.s.get("cycle", 1) > cycle0 + len(trade_pnls):
-                trade_pnls.append(
-                    strategy.s["realized_net"] - cycle_net_start
-                )
-                cycle_net_start = strategy.s["realized_net"]
-            if equity_curve:
-                equity_curve[-1] = initial_capital + strategy.s["realized_net"]
+        _strat.log = original_log
 
     qty = strategy.s["qty"]
     final_upnl = (
