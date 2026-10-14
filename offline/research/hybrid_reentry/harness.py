@@ -29,8 +29,8 @@ KRAKEN_DIR = os.path.join(ROOT, "kraken")
 if KRAKEN_DIR not in sys.path:
     sys.path.insert(0, KRAKEN_DIR)
 
-from kraken.replay import run_replay
-from strategies import spot_dca as strat
+from strategies.spot_replay import run_replay
+from strategies import spot_engine as strat
 
 
 def load_ohlc_csv(csv_path: str) -> list[tuple[float, float, float, float]]:

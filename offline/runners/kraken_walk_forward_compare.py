@@ -121,105 +121,19 @@ def _candidate_windows(datasets: dict, params, fee_pct: float, execution) -> lis
     return windows
 
 
-def _relative(candidate: list[dict], live: list[dict]) -> dict:
-    live_by_key = {window["key"]: window for window in live}
-    deltas = [
-        window["return_pct"] - live_by_key[window["key"]]["return_pct"]
-        for window in candidate
-    ]
-    tolerance = 1e-10
-    return {
-        "mean_return_delta_pct": sum(deltas) / len(deltas),
-        "wins_vs_live": sum(delta > tolerance for delta in deltas),
-        "ties_vs_live": sum(abs(delta) <= tolerance for delta in deltas),
-        "losses_vs_live": sum(delta < -tolerance for delta in deltas),
-    }
-
-
-def _dominates(left: dict, right: dict, tolerance: float = 1e-10) -> bool:
-    """Conservative dominance: better mean and worst case, drawdown no larger."""
-    no_worse = (
-        left["mean_return_pct"] >= right["mean_return_pct"] - tolerance
-        and left["worst_return_pct"] >= right["worst_return_pct"] - tolerance
-        and left["worst_max_drawdown_pct"] <= (
-            right["worst_max_drawdown_pct"] + tolerance
-        )
-    )
-    strictly_better = (
-        left["mean_return_pct"] > right["mean_return_pct"] + tolerance
-        or left["worst_return_pct"] > right["worst_return_pct"] + tolerance
-        or left["worst_max_drawdown_pct"] < (
-            right["worst_max_drawdown_pct"] - tolerance
-        )
-    )
-    return no_worse and strictly_better
-
-
-def _pareto_names(results: dict[str, dict]) -> list[str]:
-    names = []
-    for name, candidate in results.items():
-        if not any(
-            other_name != name and _dominates(other["summary"], candidate["summary"])
-            for other_name, other in results.items()
-        ):
-            names.append(name)
-    return sorted(names)
-
-
-def _format_number(value: float | None, signed: bool = False) -> str:
-    if value is None:
-        return "n/a"
-    return f"{value:+.3f}" if signed else f"{value:.3f}"
+from offline.backtests.comparison import (
+    dominates as _dominates,
+    format_comparison_markdown,
+    format_number as _format_number,
+    pareto_frontier as _pareto_names,
+    relative_to_baseline as _relative,
+)
 
 
 def _markdown(report: dict) -> str:
-    lines = [
-        "# Kraken walk-forward robustness comparison",
-        "",
-        f"Generated UTC: {report['generated_at_utc']}",
-        "",
-        "Every candidate uses the same frozen TEST windows. No candidate is activated.",
-        "",
-        "| Candidate | Mean % | Median % | Worst % | Worst DD % | Positive | W/T/L vs live | Cycles |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
-    ]
-    ordered = sorted(
-        report["candidates"].items(),
-        key=lambda item: (
-            item[0] != "live", -item[1]["summary"]["mean_return_pct"], item[0]
-        ),
+    return format_comparison_markdown(
+        report, title="Kraken walk-forward robustness comparison"
     )
-    for name, item in ordered:
-        summary = item["summary"]
-        relative = item["relative_to_live"]
-        lines.append(
-            f"| `{name}` | {_format_number(summary['mean_return_pct'], True)} | "
-            f"{_format_number(summary['median_return_pct'], True)} | "
-            f"{_format_number(summary['worst_return_pct'], True)} | "
-            f"{_format_number(summary['worst_max_drawdown_pct'])} | "
-            f"{summary['positive_windows']}/{summary['window_count']} | "
-            f"{relative['wins_vs_live']}/{relative['ties_vs_live']}/"
-            f"{relative['losses_vs_live']} | {summary['total_cycles']} |"
-        )
-    lines.extend([
-        "",
-        f"Pareto frontier: {', '.join(f'`{name}`' for name in report['pareto_frontier'])}",
-        "",
-        "## Fee stress — live configuration",
-        "",
-        "| Fee per leg % | Mean % | Worst % | Worst DD % | Positive |",
-        "|---:|---:|---:|---:|---:|",
-    ])
-    for fee, item in report["fee_stress"].items():
-        summary = item["summary"]
-        lines.append(
-            f"| {fee} | {_format_number(summary['mean_return_pct'], True)} | "
-            f"{_format_number(summary['worst_return_pct'], True)} | "
-            f"{_format_number(summary['worst_max_drawdown_pct'])} | "
-            f"{summary['positive_windows']}/{summary['window_count']} |"
-        )
-    lines.append("")
-    return "\n".join(lines)
 
 
 def main() -> int:

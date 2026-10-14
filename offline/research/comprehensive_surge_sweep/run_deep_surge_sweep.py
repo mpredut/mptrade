@@ -32,8 +32,8 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "kraken"))
 
 from botcore import parse_dotenv
-from kraken.replay import run_replay
-from strategies import spot_dca as strat
+from strategies.spot_replay import run_replay
+from strategies import spot_engine as strat
 from offline.research.hybrid_reentry.harness import load_ohlc_csv
 
 DATA_DIR = os.path.join(ROOT, "offline", "results", "kraken_continuous_grid", "data")
