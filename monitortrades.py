@@ -822,7 +822,9 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             print(f"[{symbol}] budget cap depasit post-trade "
                   f"({_projected_value:.0f} > {max_budget} USD) — not buying")
         else:
-            placed = _place_guarded(inst, "BUY", current_price + MT_BUY_PRICE_OFFSET, _buy_qty, min_qty,
+            _default_offset = min(MT_BUY_PRICE_OFFSET, current_price * 0.01)
+            _buy_offset = inst.param("mt", "buy_price_offset", _default_offset, float)
+            placed = _place_guarded(inst, "BUY", current_price + _buy_offset, _buy_qty, min_qty,
                 safeback_seconds=sbs, cancelorders=True,
                 hours=MT_BUY_SAFEBACK_HOURS)
             if placed:

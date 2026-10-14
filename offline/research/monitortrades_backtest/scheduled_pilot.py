@@ -174,16 +174,15 @@ def _run_one(symbol, base, params, series):
                          base=base, quote="USDC", params=dict(params), api=api)
     maxage_s = int(float(params["mt.maxage_days"]) * 24 * 3600)
 
-    # 23 Jul: the real is_trend_up() reads the LIVE trend cache (contaminating
-    # a historical replay with the REAL current state of the market — see
-    # run_replay_backtest._neutral_is_trend_up). Neutralizat identic aici.
+    trend_source = rb.ReplayTrendSource([symbol])
     orig_is_trend_up = rb.mt.is_trend_up
-    rb.mt.is_trend_up = rb._neutral_is_trend_up
+    rb.mt.is_trend_up = trend_source.is_trend_up
     try:
         first_price = provider.advance(symbol)
         if first_price is None:
             return None
         last_price = first_price
+        trend_source.advance(symbol, provider.now(symbol), first_price)
         provider.place_order(symbol, "BUY", first_price, rb.SEED_NOTIONAL_USD / first_price)
 
         while True:
@@ -191,6 +190,7 @@ def _run_one(symbol, base, params, series):
             if price is None:
                 break
             last_price = price
+            trend_source.advance(symbol, provider.now(symbol), price)
             buys = provider.get_orders(symbol, "BUY", since_s=maxage_s)
             sells = provider.get_orders(symbol, "SELL", since_s=maxage_s)
             if not buys and not sells:

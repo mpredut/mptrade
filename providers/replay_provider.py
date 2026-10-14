@@ -169,11 +169,14 @@ class ReplayMarketDataProvider(MarketDataProvider):
             return None
         ts_ms = int(self.now(symbol) * 1000)
         pos_qty, pos_cost = self._positions.get(symbol, (0.0, 0.0))
+        cur_px = self.get_current_price(symbol)
         if side == "BUY":
+            fill_px = min(price, cur_px) if (cur_px is not None and cur_px > 0) else price
             executed_qty = qty
             pos_qty += executed_qty
-            pos_cost += executed_qty * price
+            pos_cost += executed_qty * fill_px
         else:
+            fill_px = max(price, cur_px) if (cur_px is not None and cur_px > 0) else price
             executed_qty = min(qty, pos_qty)
             if executed_qty <= 0:
                 return None
@@ -183,7 +186,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
             pos_qty = max(pos_qty, 0.0)
             pos_cost = max(pos_cost, 0.0)
         self._orders.setdefault(symbol, []).append(
-            {"side": side, "price": price, "qty": executed_qty,
+            {"side": side, "price": fill_px, "qty": executed_qty,
              "timestamp": ts_ms})
         self._positions[symbol] = (pos_qty, pos_cost)
         return {"orderId": -1, "backtest": True}
