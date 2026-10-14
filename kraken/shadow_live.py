@@ -132,20 +132,12 @@ def _replay_interval_error(interval: int) -> str | None:
 def _fetch_with_ts(pair: str, interval: int):
     """Fetch candles like backtest.fetch_candles while retaining timestamps for anchoring.
     Return [(ts_sec, open, high, low, close), ...], excluding the forming final bar."""
-    import json as _json
-    import urllib.request
-    url = f"https://api.kraken.com/0/public/OHLC?pair={pair}&interval={interval}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (shadow)"})
-    with urllib.request.urlopen(req, timeout=25) as r:
-        data = _json.loads(r.read())
-    if data.get("error"):
-        raise RuntimeError(", ".join(data["error"]))
-    res = data.get("result", {})
-    key = next((k for k in res if k != "last"), None)
-    if not key:
-        return []
-    return [(int(x[0]), float(x[1]), float(x[2]), float(x[3]), float(x[4]))
-            for x in res[key][:-1]]
+    try:
+        from kraken.market_data import fetch_ohlc_candles
+    except ImportError:
+        from market_data import fetch_ohlc_candles
+    records = fetch_ohlc_candles(pair, interval, drop_incomplete=True)
+    return [(r["timestamp"], r["open"], r["high"], r["low"], r["close"]) for r in records]
 
 
 def _anchor_path(pair: str, interval: int) -> str:

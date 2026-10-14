@@ -237,7 +237,7 @@ def test_hyperliquid_walk_forward_adapter_compatibility():
         coin="HYPE",
         bar_minutes=60.0,
     )
-    res = evaluate_segment(records, adapter)
+    res = evaluate_segment(records, adapter, validate_contract=True)
     assert "metrics" in res
     assert "return_pct" in res["metrics"]
     assert "max_drawdown_pct" in res["metrics"]
@@ -245,6 +245,8 @@ def test_hyperliquid_walk_forward_adapter_compatibility():
     assert "fills" in res["metrics"]
     assert res["metrics"]["cycles"] == 1
     assert res["metrics"]["fills"] >= 2
+    assert res["metrics"]["account_currency"] == "USDC"
+    assert "ambiguous_bars" in res["metrics"]
     assert res["buy_hold_return_pct"] is not None
 
 

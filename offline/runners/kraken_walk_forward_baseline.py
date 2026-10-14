@@ -25,6 +25,7 @@ sys.path.insert(0, str(KRAKEN_DIR))
 sys.path.insert(0, str(ROOT))
 
 from kraken_common import load_dotenv  # noqa: E402
+import market_data as kraken_market_data  # noqa: E402
 import replay as kraken_replay  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
@@ -44,27 +45,7 @@ from offline.backtests.execution import ExecutionModel  # noqa: E402
 
 def fetch_closed_candles(pair: str, interval: int) -> list[dict]:
     """Read at most 720 Kraken bars and drop the last, still-forming bar."""
-    url = f"https://api.kraken.com/0/public/OHLC?pair={pair}&interval={interval}"
-    request = urllib.request.Request(
-        url, headers={"User-Agent": "binance-repo/walk-forward-baseline"}
-    )
-    with urllib.request.urlopen(request, timeout=25) as response:
-        payload = json.loads(response.read())
-    if payload.get("error"):
-        raise RuntimeError(", ".join(payload["error"]))
-    result = payload.get("result", {})
-    key = next((name for name in result if name != "last"), None)
-    rows = result.get(key, []) if key else []
-    return [
-        {
-            "timestamp": int(row[0]),
-            "open": float(row[1]),
-            "high": float(row[2]),
-            "low": float(row[3]),
-            "close": float(row[4]),
-        }
-        for row in rows[:-1]
-    ]
+    return kraken_market_data.fetch_ohlc_candles(pair, interval, drop_incomplete=True)
 
 
 def _segment_result(records: list[dict], params: StratParams, fee_pct: float,
@@ -103,6 +84,7 @@ def evaluate_walk_forward(records: list[dict], params: StratParams, *, fee_pct: 
             test_size=test_size,
             step_size=step_size,
             warmup_bars=warmup_bars,
+            validate_contract=True,
         )
     finally:
         kraken_replay._strat.log = original_log

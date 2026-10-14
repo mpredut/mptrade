@@ -112,6 +112,7 @@ def evaluate_segment(
     replay: ReplayFunction,
     *,
     warmup_records: Sequence[dict] = (),
+    validate_contract: bool = False,
 ) -> dict:
     if not records:
         raise ValueError("segmentul de evaluare cannot be empty")
@@ -127,6 +128,9 @@ def evaluate_segment(
     missing = required.difference(metrics)
     if missing:
         raise ValueError(f"the replay adapter did not supply the metrics: {sorted(missing)}")
+    if validate_contract:
+        from offline.backtests.metrics import validate_replay_metrics
+        validate_replay_metrics(metrics)
     first_close = float(records[0]["close"])
     last_close = float(records[-1]["close"])
     buy_hold_pct = (last_close / first_close - 1.0) * 100.0 if first_close > 0 else None
@@ -149,6 +153,7 @@ def evaluate_walk_forward(
     step_size: int,
     anchored_train: bool = False,
     warmup_bars: int = 0,
+    validate_contract: bool = False,
 ) -> dict:
     if warmup_bars < 0:
         raise ValueError("warmup_bars cannot be negative")
@@ -174,12 +179,15 @@ def evaluate_walk_forward(
 
         train = evaluate_segment(
             records[fold.train], replay, warmup_records=warmup_before(fold.train),
+            validate_contract=validate_contract,
         )
         validation = evaluate_segment(
             records[fold.validation], replay, warmup_records=warmup_before(fold.validation),
+            validate_contract=validate_contract,
         )
         test = evaluate_segment(
             records[fold.test], replay, warmup_records=warmup_before(fold.test),
+            validate_contract=validate_contract,
         )
         fold_results.append({
             "fold": index,

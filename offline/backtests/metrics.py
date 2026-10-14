@@ -168,4 +168,8 @@ def validate_replay_metrics(result: dict) -> None:
         else:
             if not isinstance(val, (int, float)) or not math.isfinite(val):
                 raise AssertionError(f"{key} must be a finite number, got {val!r}")
+    if "ambiguous_bars" in result:
+        val = result["ambiguous_bars"]
+        if not isinstance(val, int) or val < 0:
+            raise AssertionError(f"ambiguous_bars must be a non-negative int, got {val!r}")
 

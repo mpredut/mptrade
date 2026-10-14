@@ -30,8 +30,10 @@ from offline.backtests.metrics import format_performance_summary
 import dataclasses
 try:
     from kraken import replay as rp
+    from kraken.market_data import fetch_ohlc_candles
 except ImportError:
     import replay as rp        # Faithful engine: the live strategy over OHLC data.
+    from market_data import fetch_ohlc_candles
 
 
 def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
@@ -80,19 +82,9 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
 
 
 def fetch_candles(pair, interval):
-    url = f"https://api.kraken.com/0/public/OHLC?pair={pair}&interval={interval}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (backtest)"})
-    with urllib.request.urlopen(req, timeout=25) as r:
-        data = json.loads(r.read())
-    if data.get("error"):
-        raise RuntimeError(", ".join(data["error"]))
-    res = data.get("result", {})
-    key = next((k for k in res if k != "last"), None)
-    if not key:
-        return []
-    # The final candle may still be forming; historical decisions use only closed
-    # bars, matching the live signal and walk-forward runner.
-    return [(float(x[1]), float(x[2]), float(x[3]), float(x[4])) for x in res[key][:-1]]
+    """Fetch completed Kraken candles as (open, high, low, close) tuples."""
+    records = fetch_ohlc_candles(pair, interval, drop_incomplete=True)
+    return [(r["open"], r["high"], r["low"], r["close"]) for r in records]
 
 
 def simulate(ohlc, P, reentry_arr=None, sl_bounce_pct=None):

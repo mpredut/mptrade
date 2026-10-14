@@ -28,22 +28,18 @@ if _ROOT not in sys.path:
 
 try:
     from kraken.backtest import _bt_params, fetch_candles, simulate
+    from kraken.market_data import fetch_ohlc_candles
     from kraken import replay as rp
 except ImportError:
     from backtest import _bt_params, fetch_candles, simulate  # reuse existing fetch and fixed-TP engine
+    from market_data import fetch_ohlc_candles
     import replay as rp
 
 
 def fetch_with_time(pair, interval):
-    url = f"https://api.kraken.com/0/public/OHLC?pair={pair}&interval={interval}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (bt)"})
-    with urllib.request.urlopen(req, timeout=25) as r:
-        data = json.loads(r.read())
-    if data.get("error"):
-        raise RuntimeError(", ".join(data["error"]))
-    res = data.get("result", {})
-    key = next((k for k in res if k != "last"), None)
-    return [(int(x[0]), float(x[1]), float(x[2]), float(x[3]), float(x[4])) for x in res[key]] if key else []
+    """Fetch candles with timestamps for intraday distribution analysis."""
+    records = fetch_ohlc_candles(pair, interval, drop_incomplete=False)
+    return [(r["timestamp"], r["open"], r["high"], r["low"], r["close"]) for r in records]
 
 
 def simulate_trail(ohlc, P):

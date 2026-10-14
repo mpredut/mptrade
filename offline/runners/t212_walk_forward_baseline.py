@@ -45,15 +45,7 @@ from offline.backtests.evaluation import (  # noqa: E402
 from offline.backtests.execution import ExecutionModel  # noqa: E402
 
 
-def parse_interval_minutes(value: str) -> int:
-    units = {"m": 1, "h": 60, "d": 1440}
-    try:
-        minutes = int(value[:-1]) * units[value[-1].lower()]
-    except (KeyError, ValueError, IndexError) as exc:
-        raise argparse.ArgumentTypeError("an invalid Yahoo interval; examples: 5m, 1h, 1d") from exc
-    if minutes <= 0:
-        raise argparse.ArgumentTypeError("the interval must be positive")
-    return minutes
+from market_data import fetch_yahoo_candles, parse_interval_minutes
 
 
 def periods_per_year(interval_minutes: int) -> float:
@@ -69,67 +61,6 @@ def fx_quote(currency: str) -> tuple[str, bool]:
     if currency == "RON":
         return "USDRON=X", True
     return f"{currency}USD=X", False
-
-
-def fetch_yahoo_candles(symbol: str, range_: str, interval: str) -> list[dict]:
-    query = {"range": range_, "interval": interval}
-    day_range = re.fullmatch(r"([1-9][0-9]*)d", range_.lower())
-    if day_range:
-        # Yahoo sometimes rounds range=59d up to a larger calendar period and
-        # rejects 5m as being >60d. period1/period2 keep the window exact.
-        end = int(time.time())
-        query = {
-            "period1": end - int(day_range.group(1)) * 24 * 60 * 60,
-            "period2": end,
-            "interval": interval,
-        }
-    url = (
-        "https://query1.finance.yahoo.com/v8/finance/chart/"
-        f"{urllib.parse.quote(symbol)}?{urllib.parse.urlencode(query)}"
-    )
-    request = urllib.request.Request(
-        url, headers={"User-Agent": "binance-repo/t212-walk-forward"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=25) as response:
-            payload = json.loads(response.read())
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:300]
-        raise RuntimeError(
-            f"Yahoo refused {symbol} {range_}/{interval}: HTTP {exc.code} {detail}"
-        ) from exc
-    result = (payload.get("chart", {}).get("result") or [None])[0]
-    if not result:
-        error = payload.get("chart", {}).get("error")
-        raise RuntimeError(f"Yahoo returned no data for {symbol}: {error}")
-    timestamps = result.get("timestamp") or []
-    quote = (result.get("indicators", {}).get("quote") or [{}])[0]
-    records = []
-    for index, timestamp in enumerate(timestamps):
-        values = (
-            quote.get("open", [])[index], quote.get("high", [])[index],
-            quote.get("low", [])[index], quote.get("close", [])[index],
-        )
-        if None in values:
-            continue
-        records.append({
-            "timestamp": int(timestamp),
-            "open": float(values[0]),
-            "high": float(values[1]),
-            "low": float(values[2]),
-            "close": float(values[3]),
-        })
-    regular = ((result.get("meta") or {}).get("currentTradingPeriod") or {}).get(
-        "regular"
-    ) or {}
-    records = drop_incomplete_last_bar(
-        records,
-        interval_minutes=parse_interval_minutes(interval),
-        now_timestamp=int(time.time()),
-        regular_session_start=regular.get("start"),
-        regular_session_end=regular.get("end"),
-    )
-    return validate_dataset(records)
 
 
 def main() -> int:
@@ -282,6 +213,7 @@ def main() -> int:
         test_size=test,
         step_size=step,
         warmup_bars=warmup,
+        validate_contract=True,
     )
     evidence = assess_decision_evidence(records, result["aggregate_test"])
 

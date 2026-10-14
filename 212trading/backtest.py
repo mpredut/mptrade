@@ -42,22 +42,20 @@ except Exception:
 
 
 def fetch_candles(sym, rng, interval):
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range={rng}&interval={interval}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (backtest)"})
-    with urllib.request.urlopen(req, timeout=25) as r:
-        data = json.loads(r.read())
-    res = (data.get("chart", {}).get("result") or [None])[0]
-    if not res:
-        return []
-    ts = res.get("timestamp") or []
-    q = (res.get("indicators", {}).get("quote") or [{}])[0]
-    out = []
-    for i in range(len(ts)):
-        o, h, l, c = q["open"][i], q["high"][i], q["low"][i], q["close"][i]
-        if None in (o, h, l, c):
-            continue
-        out.append((o, h, l, c))
-    return out
+    """Fetch completed Yahoo candles as (open, high, low, close) tuples."""
+    try:
+        from market_data import fetch_yahoo_candles
+    except ImportError:
+        import importlib.util
+        _md_spec = importlib.util.spec_from_file_location(
+            "t212_backtest_md", os.path.join(T212_DIR, "market_data.py")
+        )
+        _md = importlib.util.module_from_spec(_md_spec)
+        sys.modules[_md_spec.name] = _md
+        _md_spec.loader.exec_module(_md)
+        fetch_yahoo_candles = _md.fetch_yahoo_candles
+    records = fetch_yahoo_candles(sym, rng, interval, drop_incomplete=True)
+    return [(r["open"], r["high"], r["low"], r["close"]) for r in records]
 
 
 def simulate(ohlc, P):

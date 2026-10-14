@@ -9,8 +9,53 @@ a valid price. HYPE qualifies; an unlisted future pair does not.
 
 from __future__ import annotations
 
-from kraken_common import log
-from kraken_client import KrakenClient, KrakenError
+import json
+import urllib.request
+
+try:
+    from kraken.kraken_common import log
+    from kraken.kraken_client import KrakenClient, KrakenError
+except ImportError:
+    from kraken_common import log
+    from kraken_client import KrakenClient, KrakenError
+
+
+def fetch_ohlc_candles(
+    pair: str,
+    interval: int,
+    *,
+    drop_incomplete: bool = True,
+    timeout: int = 25,
+) -> list[dict]:
+    """Fetch completed Kraken OHLC bars as canonical records.
+
+    Excludes the final still-forming candle when drop_incomplete is True to ensure
+    reproducible historical backtests and avoid lookahead bias.
+    """
+    url = f"https://api.kraken.com/0/public/OHLC?pair={pair}&interval={interval}"
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "mptrade/kraken-ohlc-fetcher"}
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = json.loads(r.read())
+    if data.get("error"):
+        raise RuntimeError(", ".join(data["error"]))
+    res = data.get("result", {})
+    key = next((k for k in res if k != "last"), None)
+    if not key:
+        return []
+    raw = res[key]
+    rows = raw[:-1] if drop_incomplete else raw
+    return [
+        {
+            "timestamp": int(x[0]),
+            "open": float(x[1]),
+            "high": float(x[2]),
+            "low": float(x[3]),
+            "close": float(x[4]),
+        }
+        for x in rows
+    ]
 
 
 def get_price(client: KrakenClient, pair: str) -> float | None:

@@ -399,10 +399,49 @@ class PercentageSizingReplayTest(unittest.TestCase):
             for i in range(10)
         ]
         adapter = rp.make_kraken_replay_adapter(params, fee_pct=0.25, bar_minutes=60)
-        res = evaluate_segment(records, adapter)
+        res = evaluate_segment(records, adapter, validate_contract=True)
         self.assertIn("metrics", res)
         self.assertIn("return_pct", res["metrics"])
         self.assertIn("fills", res["metrics"])
+        self.assertEqual(res["metrics"]["account_currency"], "USD")
+        self.assertIn("ambiguous_bars", res["metrics"])
+
+    def test_fetch_ohlc_candles_parsing_and_drop_forming_bar(self):
+        import io
+        import json
+        from unittest.mock import MagicMock, patch
+        from kraken.market_data import fetch_ohlc_candles
+        from kraken.backtest import fetch_candles
+
+        fake_payload = {
+            "error": [],
+            "result": {
+                "HYPEUSD": [
+                    ["1700000000", "20.0", "22.0", "19.5", "21.0", "100.0", "50", "20.5"],
+                    ["1700003600", "21.0", "23.0", "20.5", "22.5", "120.0", "60", "21.5"],
+                    ["1700007200", "22.5", "24.0", "22.0", "23.0", "80.0", "30", "22.8"],
+                ],
+                "last": 1700007200,
+            },
+        }
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(fake_payload).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            records_closed = fetch_ohlc_candles("HYPEUSD", 60, drop_incomplete=True)
+            self.assertEqual(len(records_closed), 2)
+            self.assertEqual(records_closed[0]["timestamp"], 1700000000)
+            self.assertEqual(records_closed[0]["close"], 21.0)
+            self.assertEqual(records_closed[1]["close"], 22.5)
+
+            records_all = fetch_ohlc_candles("HYPEUSD", 60, drop_incomplete=False)
+            self.assertEqual(len(records_all), 3)
+            self.assertEqual(records_all[-1]["close"], 23.0)
+
+            candles = fetch_candles("HYPEUSD", 60)
+            self.assertEqual(len(candles), 2)
+            self.assertEqual(candles[0], (20.0, 22.0, 19.5, 21.0))
 
 
 if __name__ == "__main__":

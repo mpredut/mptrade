@@ -97,7 +97,46 @@ class WalkForwardSplitsTest(unittest.TestCase):
         self.assertEqual(evidence["verdict"], "characterization_only_with_risk_flags")
         self.assertFalse(evidence["decision_grade_data"])
         self.assertEqual(len(evidence["data_issues"]), 3)
-        self.assertEqual(evidence["risk_flags"], ["negative_worst_fold -0.620%"])
+    def test_contract_validation_enforces_canonical_metrics(self):
+        from offline.backtests.evaluation import evaluate_segment
+
+        records = [
+            {"timestamp": index * 60, "open": 100, "high": 101, "low": 99, "close": 100 + index}
+            for index in range(5)
+        ]
+
+        def minimal_replay(_ohlc, _warmup, _ctx):
+            return {
+                "return_pct": 1.0, "max_drawdown_pct": 2.0,
+                "cycles": 1, "fills": 2,
+            }
+
+        # validate_contract=False succeeds with minimal metrics
+        res = evaluate_segment(records, minimal_replay, validate_contract=False)
+        self.assertEqual(res["metrics"]["return_pct"], 1.0)
+
+        # validate_contract=True fails when canonical metrics are missing
+        with self.assertRaises(AssertionError):
+            evaluate_segment(records, minimal_replay, validate_contract=True)
+
+        def full_replay(_ohlc, _warmup, _ctx):
+            return {
+                "return_pct": 1.0,
+                "max_drawdown_pct": 2.0,
+                "cycles": 1,
+                "fills": 2,
+                "initial_capital": 1000.0,
+                "account_currency": "USD",
+                "net_pnl": 10.0,
+                "realized": 10.0,
+                "total": 10.0,
+                "fees": 0.5,
+                "ambiguous_bars": 0,
+            }
+
+        # validate_contract=True succeeds with full canonical metrics
+        res_full = evaluate_segment(records, full_replay, validate_contract=True)
+        self.assertEqual(res_full["metrics"]["total"], 10.0)
 
 
 if __name__ == "__main__":

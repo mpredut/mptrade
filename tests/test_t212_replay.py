@@ -781,10 +781,66 @@ class T212CancellationLifecycleTest(unittest.TestCase):
             for i in range(10)
         ]
         adapter = replay.make_t212_replay_adapter(params, bar_minutes=60.0)
-        res = evaluate_segment(records, adapter)
+        res = evaluate_segment(records, adapter, validate_contract=True)
         self.assertIn("metrics", res)
         self.assertIn("return_pct", res["metrics"])
         self.assertIn("fills", res["metrics"])
+        self.assertEqual(res["metrics"]["account_currency"], "USD")
+        self.assertIn("ambiguous_bars", res["metrics"])
+
+    def test_fetch_yahoo_candles_parsing_and_drop_forming_bar(self):
+        import json
+        import time
+        from unittest.mock import MagicMock, patch
+        import importlib.util
+        _md_spec = importlib.util.spec_from_file_location(
+            "t212_md_test", os.path.join(T212_DIR, "market_data.py")
+        )
+        _md = importlib.util.module_from_spec(_md_spec)
+        sys.modules[_md_spec.name] = _md
+        _md_spec.loader.exec_module(_md)
+
+        self.assertEqual(_md.parse_interval_minutes("5m"), 5)
+        self.assertEqual(_md.parse_interval_minutes("1h"), 60)
+        self.assertEqual(_md.parse_interval_minutes("1d"), 1440)
+        with self.assertRaises(ValueError):
+            _md.parse_interval_minutes("invalid")
+
+        now = int(time.time())
+        fake_payload = {
+            "chart": {
+                "result": [{
+                    "meta": {
+                        "currentTradingPeriod": {
+                            "regular": {"start": now - 7200, "end": now + 7200}
+                        }
+                    },
+                    "timestamp": [now - 7200, now - 3600, now],
+                    "indicators": {
+                        "quote": [{
+                            "open": [100.0, 101.0, 102.0],
+                            "high": [102.0, 103.0, 104.0],
+                            "low": [99.0, 100.0, 101.0],
+                            "close": [101.0, 102.0, 103.0],
+                        }]
+                    }
+                }],
+                "error": None,
+            }
+        }
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(fake_payload).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            records_closed = _md.fetch_yahoo_candles("NVDA", "1d", "1h", drop_incomplete=True)
+            self.assertEqual(len(records_closed), 2)
+            self.assertEqual(records_closed[0]["close"], 101.0)
+            self.assertEqual(records_closed[1]["close"], 102.0)
+
+            records_all = _md.fetch_yahoo_candles("NVDA", "1d", "1h", drop_incomplete=False)
+            self.assertEqual(len(records_all), 3)
+            self.assertEqual(records_all[-1]["close"], 103.0)
 
 
 if __name__ == "__main__":
