@@ -202,7 +202,12 @@ def test_mhdsl_reentry_mirror_post_stop_bounce_and_ratchet():
 
 
 def test_mhdsl_reentry_mirror_bull_trend_pullback():
-    engine, executor = make_engine(mhdsl_enabled=True, stop_loss_pct=10.0, reentry_pullback_pct=2.0)
+    engine, executor = make_engine(
+        mhdsl_enabled=True,
+        stop_loss_pct=10.0,
+        reentry_pullback_pct=2.0,
+        reentry_hybrid_enabled=True,
+    )
     engine.s["qty"] = 0.0
     engine.s["last_sell_price"] = 100.0
     engine.s["last_exit_kind"] = "TP"
