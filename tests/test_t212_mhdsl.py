@@ -210,3 +210,54 @@ class T212MHDSLTest(unittest.TestCase):
         self.assertEqual(strat.s["cycle"], 2)
         self.assertNotIn("TEST_US_EQ", strat.exit_manager.sl_bounce_state)
         self.assertEqual(strat.s["sl_bounce_state"], {})
+
+    def test_mhdsl_blocks_dca_during_bounce_deferral(self):
+        """When in MHDSL bounce deferral, DCA buying is blocked."""
+        params = _params(
+            STRAT_SL_MHDSL_ENABLED="true",
+            STRAT_STOP_LOSS_PCT="10",
+            STRAT_DCA_DROP_PCT="2",
+            STRAT_MAX_DCA_BUYS="3",
+        )
+        now_time = 1000.0
+        strat = strategy.Strategy(
+            client=self.mock_client,
+            ticker="TEST_US_EQ",
+            params=params,
+            dry_run=True,
+            clock=lambda: now_time,
+            trend_slope_provider=lambda _sym: 0.25,  # Confirmed uptrend defers SL
+        )
+        strat.s.update(qty=10.0, cost_usd=1000.0, spent_cash=1000.0, entry_price=100.0, last_buy_price=100.0)
+
+        with patch.object(strategy, "notify"):
+            # Price 89.0 -> 11% loss breaches 10% SL, but deferred due to uptrend
+            strat.step(89.0)
+            self.assertIn("TEST_US_EQ", strat.exit_manager.sl_bounce_state)
+            # DCA buy must be blocked
+            dca_buys = [o for o in strat.s["orders"] if o.get("kind") == "DCA" or o.get("side") == "buy"]
+            self.assertEqual(len(dca_buys), 0)
+
+    def test_trailing_crash_bypasses_warmup(self):
+        """When trailing stop is configured with warm-up, a sudden crash exceeding trail_pct triggers exit immediately."""
+        params = _params(
+            STRAT_TRAIL_PCT="8.0",
+            STRAT_TRAIL_MIN_PROFIT_PCT="5.0",
+            STRAT_STOP_LOSS_PCT="30.0",
+        )
+        now_time = 1000.0
+        strat = strategy.Strategy(
+            client=self.mock_client,
+            ticker="TEST_US_EQ",
+            params=params,
+            dry_run=True,
+            clock=lambda: now_time,
+        )
+        strat.s.update(qty=10.0, cost_usd=1000.0, spent_cash=1000.0, entry_price=100.0, last_buy_price=100.0)
+
+        # Price never reached 105 (+5% warmup), crashes directly to 91 (-9% from 100 peak)
+        with patch.object(strategy, "notify"):
+            strat.step(91.0)
+            self.assertEqual(len(strat.s["orders"]), 1)
+            self.assertEqual(strat.s["orders"][0]["kind"], "TR")
+

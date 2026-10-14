@@ -1304,7 +1304,7 @@ class Strategy:
                 log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
             return True
         elif decision.action == ExitAction.HOLD:
-            if decision.metadata.get("priority") == 2:
+            if decision.metadata.get("priority") in (1, 2) or self.pair in self.exit_manager.sl_bounce_state:
                 log(f"  🛡️ [STRAT] MHDSL BOUNCE DEFERRAL: {decision.reason}")
             return False
 
@@ -2213,7 +2213,13 @@ class Strategy:
             self.s["dca_buys"],
         )
         effective_dca_amount = self._effective_dca_amount()
+        in_sl_bounce = (
+            self.pair in self.exit_manager.sl_bounce_state
+            if self.exit_manager is not None
+            else False
+        )
         if (self.s["dca_buys"] < self.p.max_dca_buys
+                and not in_sl_bounce
                 and self.s["last_buy_price"]
                 # DCA threshold + "close to the threshold" = reached (rule shared with the backtest)
                 and sr.dca_price_hit(

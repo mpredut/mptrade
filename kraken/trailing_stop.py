@@ -153,6 +153,21 @@ class KrakenTrailing:
     def free_qty(self, asset: str) -> float:
         return self._free(asset)
 
+    def unlock_qty(self, pair: str) -> bool:
+        """Cancel open SELL orders to release locked quantity for emergency stop."""
+        try:
+            open_ords = self.client.open_orders() or {}
+            cancelled_any = False
+            for txid, ord_info in open_ords.items():
+                descr = ord_info.get("descr", {})
+                if str(descr.get("type", "")).lower() == "sell" and descr.get("pair") == pair:
+                    self.client.cancel_order(txid)
+                    cancelled_any = True
+            return cancelled_any
+        except Exception as e:  # noqa: BLE001
+            self.log(f"  ! [TRAIL-K] failed to cancel open orders for {pair}: {e}")
+            return False
+
     def price(self, pair: str):
         return self.client.last_price(pair)
 

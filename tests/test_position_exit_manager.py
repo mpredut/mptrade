@@ -355,6 +355,34 @@ class TestPositionExitManager(unittest.TestCase):
         self.assertIn("mdhtp_profit_floor_breached", dec.reason)
         self.assertNotIn("BTCUSDT", self.mgr.tp_ride_state)
 
+    def test_tp_p2_profit_floor_breached_on_gap_down_below_cost(self):
+        """Priority 2: Price gaps down below entry cost while in tp_ride_state forces TP exit."""
+        # Initiate at 108.0 (entry 100.0)
+        snap1 = PositionSnapshot(
+            symbol="BTCUSDT",
+            current_price=108.0,
+            avg_buy_price=100.0,
+            current_time_s=self.now,
+            trend_up=True,
+        )
+        self.mgr.evaluate_take_profit(snap1)
+        self.assertIn("BTCUSDT", self.mgr.tp_ride_state)
+
+        # Price violently drops to 99.0 (-1.0% below cost)
+        snap2 = PositionSnapshot(
+            symbol="BTCUSDT",
+            current_price=99.0,
+            avg_buy_price=100.0,
+            current_time_s=self.now + 10.0,
+            trend_up=True,
+        )
+        dec = self.mgr.evaluate_take_profit(snap2)
+        self.assertEqual(dec.action, ExitAction.SELL)
+        self.assertTrue(dec.should_exit)
+        self.assertTrue(dec.forced)
+        self.assertIn("mdhtp_profit_floor_breached", dec.reason)
+        self.assertNotIn("BTCUSDT", self.mgr.tp_ride_state)
+
     def test_tp_p3_peak_pullback_forces_exit(self):
         """Priority 3: Price pulls back >= 0.60% from peak forces TP."""
         snap1 = PositionSnapshot(

@@ -617,7 +617,21 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             provider=getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None),
         )
 
-        tp_decision = exit_mgr.evaluate_take_profit(snapshot, custom_threshold=gain_threshold)
+        in_sl_territory = (
+            price_decrease > lost_threshold
+            or u.are_close(price_decrease, lost_threshold, target_tolerance_percent=MT_ARE_CLOSE_TOLERANCE_PCT)
+            or symbol in _SL_BOUNCE_STATE
+        )
+
+        if not in_sl_territory and symbol in _SL_BOUNCE_STATE:
+            print(f"[{symbol}] Price recovered above stop-loss threshold ({price_decrease*100:.2f}% < {lost_threshold*100:.2f}%) — clearing bounce watch")
+            _SL_BOUNCE_STATE.pop(symbol, None)
+
+        tp_decision = (
+            exit_mgr.evaluate_take_profit(snapshot, custom_threshold=gain_threshold)
+            if not in_sl_territory
+            else ExitDecision(ExitAction.HOLD, False, "not_in_tp_territory")
+        )
         if tp_decision.reason != "not_in_tp_territory":
             if tp_decision.action == ExitAction.HOLD:
                 ride_state = _TP_RIDE_STATE.get(symbol, {})
@@ -636,16 +650,17 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 tp_forced_reason = tp_decision.reason
                 print(f"Price increased with {price_increase * 100:.2f}% by more than {gain_threshold * 100:.2f}% versus buy price! (decision={tp_forced_reason})")
                 if sellable_qty > 0:
+                    bypass_pg = current_price < buy_price or bool(tp_decision.forced)
                     placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
-                        safeback_seconds=sbs, force=False, cancelorders=True,
-                        hours=MT_SELL_SAFEBACK_HOURS)
+                        safeback_seconds=sbs, force=bool(tp_decision.forced), cancelorders=True,
+                        hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=bypass_pg)
                     if placed:
                         _TP_RIDE_STATE.pop(symbol, None)
                         _LAST_EXIT_KIND[symbol] = "TP"
                 else:
                     print(f"No can sell (sellable_qty={sellable_qty})")
                     _TP_RIDE_STATE.pop(symbol, None)
-        elif price_decrease > lost_threshold or u.are_close(price_decrease, lost_threshold, target_tolerance_percent=MT_ARE_CLOSE_TOLERANCE_PCT):
+        elif in_sl_territory:
             _TP_RIDE_STATE.pop(symbol, None)
             sl_decision = exit_mgr.evaluate_stop_loss(snapshot, custom_threshold=lost_threshold)
             disaster_floor = sl_decision.metadata.get("disaster_floor", lost_threshold + MT_SL_DISASTER_BUFFER_MIN_PCT)
@@ -713,7 +728,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 placed = False
                 if sellable_qty > 0:
                     placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
-                        safeback_seconds=sbs, force=False, cancelorders=True,
+                        safeback_seconds=sbs, force=True, cancelorders=True,
                         hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=True,
                         bypass_guards={"all"}, wait_for_trend=False,
                     )

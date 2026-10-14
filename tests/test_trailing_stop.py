@@ -439,14 +439,18 @@ class TestMinProfit(Base):
             self.po.position_cost_basis.assert_not_called()
             self.assertEqual(ts._load()["TAOUSDC"]["warmup_at"], 262.5)
 
-        with self.subTest(msg="warming_up_does_not_sell_below_the_threshold"):
+        with self.subTest(msg="warming_up_does_not_sell_on_normal_dips_but_sells_on_crash"):
             self.tearDown(); self.setUp()
             api = FakeApi(250.0)
             ts = self.ts(api, min_profit_pct=5.0)
-            ts.check_once()                    # initial=250, activ la 262.5
-            api.price = 190.0                  # a crash of -24% but below the activation threshold
+            ts.check_once()                    # initial=250, activ la 262.5, stop la 195.0 (-22%)
+            api.price = 230.0                  # normal dip of -8% (<22% stop): warmup suppresses sell
             ts.check_once()
-            self.assertEqual(self.po.orders, [], "it does not sell before the profit threshold is reached")
+            self.assertEqual(self.po.orders, [], "it does not sell on normal dips before profit threshold is reached")
+            api.price = 190.0                  # crash of -24% (exceeds 22% stop): extreme protection triggers regardless of warmup
+            ts.check_once()
+            self.assertEqual(len(self.po.orders), 1, "extreme crash protection triggers even before warmup")
+            self.assertEqual(self.po.orders[0]["side"], "SELL")
 
         with self.subTest(msg="active_past_the_threshold_sells"):
             self.tearDown(); self.setUp()
@@ -491,6 +495,30 @@ class TestMinProfit(Base):
             api.price = 190.0                  # -24% from peak 250, below the 22% TAO stop (195)
             ts.check_once()
             self.assertEqual(len(self.po.orders), 1, "armed via real cost basis -> the crash sells")
+            self.assertEqual(self.po.orders[0]["side"], "SELL")
+
+        with self.subTest(msg="resting_orders_unlocked_when_free_balance_low"):
+            self.tearDown(); self.setUp()
+            api = FakeApi(250.0)
+            ts = self.ts(api, min_profit_pct=0.0)
+            # Simulate initial tick with free balance
+            ts.check_once()
+            # Now simulate coins getting locked in a TP order (free=0)
+            api.free = 0.0
+            api.price = 190.0  # Crash of 24% (exceeds 22% TAO stop)
+
+            unlocked = []
+            def fake_unlock(pair):
+                unlocked.append(pair)
+                # Unlocking restores free balance
+                api.free = 5.0
+                ts._balances = api.get_account_assets_balances()
+                return True
+
+            ts.unlock_qty = fake_unlock
+            ts.check_once()
+            self.assertEqual(unlocked, ["TAOUSDC"])
+            self.assertEqual(len(self.po.orders), 1, "unlocked coins allowed crash sell to execute")
             self.assertEqual(self.po.orders[0]["side"], "SELL")
 
 

@@ -341,6 +341,7 @@ def _new_state() -> dict:
         "pos_peak": 0.0,        # Highest price while holding, for trailing crash breaker.
         "tr_alerted": False,    # Current-episode trailing notification anti-spam.
         "tr_armed": False,      # Arm only after the configured gain over average.
+        "tp_pending_exit": None, # Persistent MDHTP exit intent awaiting execution.
     }
 
 
@@ -388,6 +389,7 @@ class Strategy:
         self.s.setdefault("sl_bounce_state", {})
         self.s.setdefault("tp_ride_state", {})
         self.s.setdefault("reentry_state", {})
+        self.s.setdefault("tp_pending_exit", None)
         self.exit_manager: PositionExitManager | None = None
         if self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled:
             exit_cfg = PositionExitConfig(
@@ -1254,34 +1256,40 @@ class Strategy:
         a sustained decline earlier. It reuses ``sl_rebuy`` to reenter on a bounce.
         Return ``True`` when triggered so processing of the current tick stops.
         """
-        if self.p.trail_pct <= 0 or self.s["qty"] <= 1e-9 or self.p.tp_mdhtp_enabled:
+        if self.p.trail_pct <= 0 or self.s["qty"] <= 1e-9:
             self.s["pos_peak"] = 0.0            # Flat or disabled trailing: reset the peak.
             self.s["tr_alerted"] = False
             self.s["tr_armed"] = False          # A new cycle starts with a new warm-up.
             return False
         if any(o.get("kind") in {"TR", "SL"} for o in self.s["orders"]):
             return True
-        # WARM-UP (matching Binance/Kraken trailing_core): keep trailing inactive until
-        # price rises trail_min_profit_pct above average. This protects gains without
-        # selling on an ordinary dip; stop_loss_pct still handles catastrophic loss.
-        # A value of zero arms trailing immediately.
-        if not self.s.get("tr_armed"):
-            minp = self.p.trail_min_profit_pct
-            avg = self._avg_cost()
-            if minp > 0 and (not avg or price < avg * (1 + minp / 100.0)):
-                return False                    # Warming up: do not track a peak or sell.
-            self.s["tr_armed"] = True
-            self.s["pos_peak"] = price          # Start the peak at the activation price.
-            log(f"  [STRAT] trailing ARMED: price {price:.2f} >= avg{(avg or 0):.2f}+{minp}% — protecting from now on (-{self.p.trail_pct}% from the peak)")
+        if self.p.tp_mdhtp_enabled and self.exit_manager and self.ticker in self.exit_manager.tp_ride_state:
+            return False
+
+        avg = self._avg_cost()
         peak = self.s.get("pos_peak", 0.0) or 0.0
+        if not peak or peak <= 0:
+            self.s["pos_peak"] = peak = max(avg or price, price)
         if price > peak:
             self.s["pos_peak"] = peak = price   # Track the high while holding the position.
             self.s.pop("tr_fail_until", None)
             self.s["tr_alerted"] = False
-        if peak <= 0:
-            return False
-        drop_pct = (peak - price) / peak * 100
-        if drop_pct < self.p.trail_pct:
+
+        drop_pct = (peak - price) / peak * 100 if peak > 0 else 0.0
+        is_crash = peak > 0 and drop_pct >= self.p.trail_pct
+
+        # WARM-UP (matching Binance/Kraken trailing_core): keep trailing inactive on normal dips
+        # until price rises trail_min_profit_pct above average.
+        # Extreme crash protection is decoupled: a crash exceeding trail_pct triggers exit immediately.
+        if not self.s.get("tr_armed"):
+            minp = self.p.trail_min_profit_pct
+            if minp > 0 and (not avg or price < avg * (1 + minp / 100.0)):
+                if not is_crash:
+                    return False                # Warming up: do not sell on normal dip.
+            self.s["tr_armed"] = True
+            log(f"  [STRAT] trailing ARMED: price {price:.2f} >= avg{(avg or 0):.2f}+{minp}% — protecting from now on (-{self.p.trail_pct}% from the peak)")
+
+        if not is_crash:
             return False
         if self._now() < self.s.get("tr_fail_until", 0):
             return False
@@ -1407,6 +1415,7 @@ class Strategy:
                             self._restore_cancelled_orders(cancelled_orders, reason="stop-loss sell failed")
                         return True
                     self.s["sl_pending"] = True
+                    self.s["tp_pending_exit"] = None
                 if not self.s.get("sl_alerted"):
                     self.s["sl_alerted"] = True
                     log(f"  🛑 [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% ({decision.reason}) — SELLING EVERYTHING (cutting the loss)")
@@ -1415,7 +1424,9 @@ class Strategy:
                            source="T212", price=price, desktop=self.desktop)
                 return True
             elif decision.action == ExitAction.HOLD:
-                if decision.metadata.get("priority") == 2:
+                if decision.metadata.get("priority") in (1, 2) or (
+                    self.exit_manager and self.ticker in self.exit_manager.sl_bounce_state
+                ):
                     log(f"  🛡️ [STRAT] MHDSL BOUNCE DEFERRAL: {decision.reason}")
                 return False
             return False
@@ -1637,6 +1648,7 @@ class Strategy:
 
         is_flat = held <= 1e-9 or (self._is_dust(held, price) and not self._has_open("SELL"))
         if is_flat:
+            self.s["tp_pending_exit"] = None
             if in_backoff:   # After insufficient funds, avoid buys while the account is empty.
                 return
             if self._has_open("BUY"):
@@ -1666,9 +1678,22 @@ class Strategy:
         avg = self._avg_cost()
 
         if self.p.enable_takeprofit and avg and not self.s.get("sl_pending"):
-            if self.p.tp_ladder:
-                self._manage_tp_ladder(held, avg)        # Scale out in ladder steps.
-            elif self.p.tp_mdhtp_enabled and self.exit_manager is not None:
+            if self.p.tp_mdhtp_enabled and self.exit_manager is not None:
+                pending_exit = self.s.get("tp_pending_exit")
+                sell_qty = self._sellable_qty(held, price)
+                if pending_exit:
+                    exit_qty = pending_exit.get("qty", sell_qty)
+                    exit_qty = min(exit_qty, sell_qty)
+                    exit_px = round(price * 0.999, 2)
+                    self._cancel_open("SELL")
+                    if self._place_sell(exit_qty, exit_px, kind="TP", market=True):
+                        log(f"  [STRAT] MDHTP PENDING EXIT RETRIED ({pending_exit.get('reason')}) -> reference {exit_px}")
+                        self.s["tp_pending_exit"] = None
+                        return
+                    else:
+                        log("  ! [STRAT] MDHTP PENDING EXIT retry failed, retaining persistent exit intent")
+                        return
+
                 trend_up = False
                 if self._trend_slope_provider:
                     try:
@@ -1689,7 +1714,6 @@ class Strategy:
                         pass
 
                 tick_time = self._now()
-                sell_qty = self._sellable_qty(held, price)
 
                 self.exit_manager.config.tp_trend_ride_enabled = True
                 self.exit_manager.config.tp_profit_floor_min_pct = (
@@ -1727,6 +1751,16 @@ class Strategy:
                     self._cancel_open("SELL")
                     if self._place_sell(exit_qty, exit_px, kind="TP", market=True):
                         log(f"  [STRAT] MDHTP EXIT ({decision.reason}) -> reference {exit_px}")
+                        self.s["tp_pending_exit"] = None
+                        return
+                    else:
+                        self.s["tp_pending_exit"] = {
+                            "qty": exit_qty,
+                            "reason": decision.reason,
+                            "action": decision.action.value,
+                            "time": tick_time,
+                        }
+                        log(f"  ! [STRAT] MDHTP EXIT order refused/failed ({decision.reason}) — intent persisted for retry")
                         return
                 elif decision.action == ExitAction.HOLD:
                     if self.ticker in self.exit_manager.tp_ride_state:
@@ -1742,6 +1776,8 @@ class Strategy:
                 elif decision.reason == "not_in_tp_territory":
                     self.s["trail_peak"] = None
                     self._cancel_open("SELL")
+            elif self.p.tp_ladder:
+                self._manage_tp_ladder(held, avg)        # Scale out in ladder steps.
             else:
                 target = avg * (1 + self.p.takeprofit_pct / 100)
                 sell_qty = self._sellable_qty(held, target)
@@ -1760,6 +1796,7 @@ class Strategy:
         in_sl_state = bool(
             self.s.get("sl_pending")
             or (self._now() < self.s.get("sl_fail_until", 0))
+            or (self.ticker in self.exit_manager.sl_bounce_state if self.exit_manager else False)
         )
         if (not in_backoff
                 and not in_sl_state

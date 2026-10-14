@@ -143,10 +143,14 @@ class TestMinProfitKraken(Base):
     def test_warming_up_does_not_sell_below_the_threshold(self):
         c = FakeK(60.0)
         ts = self.ts(c, min_profit_pct=5.0)
-        ts.check_once()                    # initial=60, activ la 63.0
-        c.price = 48.0                     # A 20% crash is below the activation threshold.
+        ts.check_once()                    # initial=60, activ la 63.0, stop la 49.2 (-18%)
+        c.price = 55.0                     # normal dip of -8.3% (<18% stop): warmup suppresses sell
         ts.check_once()
-        self.assertEqual(c.orders, [], "it does not sell before reaching the profit threshold")
+        self.assertEqual(c.orders, [], "it does not sell on normal dips before reaching the profit threshold")
+        c.price = 48.0                     # crash of -20% (exceeds 18% stop): extreme crash protection triggers
+        ts.check_once()
+        self.assertEqual(len(c.orders), 1, "extreme crash protection triggers even before warmup")
+        self.assertEqual(c.orders[0]["side"], "sell")
 
     def test_active_past_the_threshold_sells(self):
         c = FakeK(60.0)

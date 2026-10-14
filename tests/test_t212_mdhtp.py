@@ -262,6 +262,64 @@ class T212MDHTPTest(unittest.TestCase):
             self.assertEqual(o["kind"], "TP")
             self.assertTrue(o.get("market", False))
 
+    def test_mdhtp_takes_precedence_over_tp_ladder(self):
+        """When MDHTP is enabled, MDHTP dynamic management takes precedence over passive TP ladder."""
+        params = _params(
+            STRAT_TP_MDHTP_ENABLED="true",
+            STRAT_TAKEPROFIT_PCT="3",
+            STRAT_TRAIL_PCT="5.0",
+            STRAT_TP_LADDER="105:20,110:30,115:50",
+        )
+        strat = strategy.Strategy(
+            client=self.mock_client,
+            ticker="TEST_US_EQ",
+            params=params,
+            dry_run=True,
+            clock=lambda: 1000.0,
+            trend_slope_provider=lambda _sym: 0.2,
+        )
+        strat.s.update(qty=10.0, cost_usd=1000.0, spent_cash=1000.0, entry_price=100.0, last_buy_price=100.0)
+
+        with patch.object(strategy, "notify"):
+            # Ladder would normally place limit orders; MDHTP will ride trend without placing ladder limits
+            strat.step(105.0)
+            # In MDHTP trend ride, no orders placed while riding
+            self.assertEqual(len(strat.s["orders"]), 0)
+            self.assertIn("TEST_US_EQ", strat.exit_manager.tp_ride_state)
+
+    def test_mdhtp_order_refusal_intent_persistence_and_retry(self):
+        """When MDHTP exit order is refused, intent is persisted in tp_pending_exit and retried on next step."""
+        params = _params(
+            STRAT_TP_MDHTP_ENABLED="true",
+            STRAT_TAKEPROFIT_PCT="3",
+            STRAT_TRAIL_PCT="5.0",
+        )
+        current_time = 1000.0
+        trend_slope = -0.1  # downward trend immediately signals SELL
+        strat = strategy.Strategy(
+            client=self.mock_client,
+            ticker="TEST_US_EQ",
+            params=params,
+            dry_run=True,
+            clock=lambda: current_time,
+            trend_slope_provider=lambda _sym: trend_slope,
+        )
+        strat.s.update(qty=10.0, cost_usd=1000.0, spent_cash=1000.0, entry_price=100.0, last_buy_price=100.0)
+
+        with patch.object(strategy, "notify"), patch.object(strat, "_place_sell", return_value=False) as mock_place_sell:
+            strat.step(105.0)
+            # Order was refused by mock_place_sell
+            self.assertIsNotNone(strat.s.get("tp_pending_exit"))
+            self.assertEqual(strat.s["tp_pending_exit"]["reason"], "gain_threshold_exceeded_and_trend_not_up")
+
+        # Next tick: order placement succeeds
+        with patch.object(strategy, "notify"), patch.object(strat, "_place_sell", return_value=True) as mock_place_sell:
+            current_time = 1005.0
+            strat.step(104.9)
+            mock_place_sell.assert_called_once()
+            # Pending exit is cleared after successful placement
+            self.assertIsNone(strat.s.get("tp_pending_exit"))
+
 
 if __name__ == "__main__":
     unittest.main()

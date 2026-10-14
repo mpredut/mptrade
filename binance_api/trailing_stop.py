@@ -297,6 +297,18 @@ class TrailingStop:
     def free_qty(self, asset: str) -> float:
         return self._free_qty(self._balances, asset)
 
+    def unlock_qty(self, pair: str) -> bool:
+        """Cancel open SELL orders to release locked quantity for emergency stop."""
+        try:
+            cancel_fn = getattr(self.api, "cancel_open_orders", None)
+            if callable(cancel_fn):
+                cancel_fn("SELL", pair)
+                self._balances = self.api.get_account_assets_balances() or []
+                return True
+        except Exception as e:  # noqa: BLE001
+            self.log(f"  ! [TRAIL] failed to cancel open orders for {pair}: {e}")
+        return False
+
     def price(self, pair: str):
         value = self.api.get_current_price(pair)
         try:

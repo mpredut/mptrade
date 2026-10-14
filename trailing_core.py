@@ -208,6 +208,7 @@ class TrailingCore:
                 if (isinstance(basis, (int, float)) and not isinstance(basis, bool)
                         and math.isfinite(basis) and basis > 0):
                     ref = float(basis)
+            st["peak"] = max(st.get("peak", price), ref)
             st["warmup_at"] = ref * (1 + self.min_profit_pct / 100.0)  # activation threshold
         if self._reconcile_pending(state, st, price, pair):
             return
@@ -220,19 +221,24 @@ class TrailingCore:
                 if st.get("pending_order"):
                     return
         if free * price < self.min_notional:
-            return                                            # nothing to protect
-        if "warmup_at" in st:
-            # Warm up until price exceeds the threshold set on the first tick or after re-buy.
-            if price < st["warmup_at"]:
-                self.log(f"  [TRAIL] {asset}: {price:.4f}  warming up — activ la {st['warmup_at']:.4f}"
-                         f" (+{self.min_profit_pct}%)")
-                return
-            st.pop("warmup_at")                              # threshold reached; trailing is now active
+            # Check if balance is locked in resting orders (e.g. TP orders); attempt unlock if supported
+            unlock_getter = getattr(self.a, "unlock_qty", None)
+            if unlock_getter is not None and callable(unlock_getter):
+                try:
+                    if unlock_getter(pair):
+                        free = self.a.free_qty(asset)
+                except Exception:
+                    pass
+            if free * price < self.min_notional:
+                return                                            # nothing to protect
         if price > st["peak"]:
             st["peak"] = price                                # new peak moves the trailing level up
         stop_at = st["peak"] * (1 - trail / 100.0)
+
+        # Emergency crash circuit breaker (zona de avarie) — brute force unconditional exit.
+        # Extreme crash protection is decoupled from profit warm-up.
         if should_sell(price, st["peak"], trail):
-            # Emergency crash circuit breaker (zona de avarie) — brute force unconditional exit.
+            st.pop("warmup_at", None)
             sell_qty = round(free * self.sell_fraction, 8)
             if self.enabled and sell_qty * price >= self.min_notional:
                 self.a.execute_sell(
@@ -241,8 +247,18 @@ class TrailingCore:
                 )
             else:
                 self.a.log_dry_sell(key, asset, pair, sell_qty, price, st["peak"], trail)
-        else:
-            self.a.log_hold(key, asset, pair, price, st["peak"], stop_at, trail, free)
+            return
+
+        if "warmup_at" in st:
+            # Warm up until price exceeds the threshold set on the first tick or after re-buy.
+            # Normal dips do not sell, but crash circuit breaker above still protects against collapse.
+            if price < st["warmup_at"]:
+                self.log(f"  [TRAIL] {asset}: {price:.4f}  warming up — activ la {st['warmup_at']:.4f}"
+                         f" (+{self.min_profit_pct}%)")
+                return
+            st.pop("warmup_at")                              # threshold reached; trailing is now active
+
+        self.a.log_hold(key, asset, pair, price, st["peak"], stop_at, trail, free)
 
     # -- one step -------------------------------------------------------------
     def check_once(self) -> None:

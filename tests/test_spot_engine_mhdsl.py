@@ -1,4 +1,4 @@
-﻿"""Tests for Centralized PositionExitManager (MHDSL) integration into spot_engine.py."""
+"""Tests for Centralized PositionExitManager (MHDSL) integration into spot_engine.py."""
 
 import time
 from unittest.mock import patch
@@ -217,3 +217,28 @@ def test_mhdsl_reentry_mirror_bull_trend_pullback():
         # Step 2: Price pulls back to 102.8 (pullback: (105.0 - 102.8)/105.0 = 2.095% >= 2.0%) -> approved
         engine.step(102.8)
         assert any(c[0] == "submit_order" and c[2] == "buy" for c in executor.calls)
+
+
+def test_mhdsl_blocks_dca_during_bounce_deferral():
+    engine, executor = make_engine(
+        mhdsl_enabled=True,
+        stop_loss_pct=10.0,
+        dca_drop_pct=5.0,
+        max_dca_buys=3,
+    )
+    engine.s["qty"] = 1.0
+    engine.s["entry_price"] = 100.0
+    engine.s["last_buy_price"] = 100.0
+    engine.s["dca_buys"] = 0
+    engine.s["trend_mode"] = True
+    executor.trend = lambda sym: "up"
+
+    with patch.object(strat, "notify"):
+        # Price drops 11% to 89.0: breaches 10% SL, but in uptrend triggers bounce deferral
+        engine.step(89.0)
+        assert engine.pair in engine.exit_manager.sl_bounce_state
+
+        # Even though price 89.0 is well below the 5% DCA threshold (100 -> 95), DCA buy must be blocked
+        dca_buys = [c for c in executor.calls if c[0] == "submit_order" and c[2] == "buy"]
+        assert len(dca_buys) == 0, "DCA buys must be blocked when position is deferred in SL bounce state"
+

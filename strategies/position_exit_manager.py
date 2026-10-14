@@ -547,11 +547,25 @@ class PositionExitManager:
         # ---------------------------------------------------------------------
         # Take-Profit Boundary Check
         # ---------------------------------------------------------------------
-        if price_increase <= 0:
-            self.tp_ride_state.pop(symbol, None)
-            return ExitDecision(ExitAction.HOLD, False, "not_in_tp_territory")
-
         profit_floor = max(gain_threshold * self.config.tp_profit_floor_ratio, self.config.tp_profit_floor_min_pct)
+
+        # Gap down below cost while riding profit is an emergency breach of the profit floor
+        if price_increase <= 0:
+            if symbol in self.tp_ride_state:
+                ride_state = self.tp_ride_state.pop(symbol)
+                peak_px = ride_state.get("peak_price", current_price)
+                reason = (
+                    f"mdhtp_profit_floor_breached (price {current_price:.4f} dropped below cost "
+                    f"under floor {profit_floor*100:.2f}%, peak={peak_px:.4f})"
+                )
+                return ExitDecision(
+                    action=ExitAction.SELL,
+                    should_exit=True,
+                    reason=reason,
+                    forced=True,
+                    metadata={"priority": 2, "profit_floor": profit_floor, "peak_px": peak_px, "gap_down_below_cost": True},
+                )
+            return ExitDecision(ExitAction.HOLD, False, "not_in_tp_territory")
         in_tp_territory = (
             price_increase > gain_threshold
             or are_close(price_increase, gain_threshold, self.config.are_close_tolerance_pct)
