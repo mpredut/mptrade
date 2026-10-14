@@ -1,1 +1,16 @@
-[]
+[
+  {
+    "ts": "2026-10-14T07:37:16",
+    "full_key": "BINANCE_TAO.mt.lost",
+    "section": "BINANCE_TAO",
+    "key": "mt.lost",
+    "symbol": "TAOUSDC",
+    "current_on_dev": 5.25,
+    "winner_value": 5.6,
+    "margin_vs_current": {
+      "half1": 3.61,
+      "half2": 127.62
+    },
+    "dev_commit": "da9d1f0"
+  }
+]
