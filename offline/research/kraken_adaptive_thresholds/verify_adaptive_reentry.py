@@ -25,9 +25,10 @@ Rulare:  python3 offline/research/kraken_adaptive_thresholds/verify_adaptive_ree
 import sys, os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-sys.path.insert(0, os.path.join(ROOT, "kraken"))
-sys.path.insert(0, ROOT)
-os.chdir(ROOT)
+if os.path.join(ROOT, "kraken") not in sys.path:
+    sys.path.insert(0, os.path.join(ROOT, "kraken"))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 import numpy as np
 from backtest import fetch_candles, simulate as simulate_with_reentry_gate
@@ -74,4 +75,5 @@ def run():
 
 
 if __name__ == "__main__":
+    os.chdir(ROOT)
     run()

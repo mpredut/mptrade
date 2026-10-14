@@ -15,10 +15,12 @@ Rulare:  python3 offline/research/kraken_adaptive_thresholds/sweep_k_multiplier.
 import sys, os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-sys.path.insert(0, os.path.join(ROOT, "kraken"))
-sys.path.insert(0, os.path.join(ROOT, "offline", "research", "kraken_adaptive_thresholds"))
-sys.path.insert(0, ROOT)
-os.chdir(ROOT)
+if os.path.join(ROOT, "kraken") not in sys.path:
+    sys.path.insert(0, os.path.join(ROOT, "kraken"))
+if os.path.join(ROOT, "offline", "research", "kraken_adaptive_thresholds") not in sys.path:
+    sys.path.insert(0, os.path.join(ROOT, "offline", "research", "kraken_adaptive_thresholds"))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 import numpy as np
 from backtest import fetch_candles
@@ -82,4 +84,5 @@ def main():
 
 
 if __name__ == "__main__":
+    os.chdir(ROOT)
     main()
