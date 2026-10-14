@@ -66,6 +66,8 @@ def run_replay(
     fee_model: FeeModel | None = None,
     include_decision_trace: bool = False,
     initial_cash: float | None = None,
+    dca_drop_series=None,
+    reentry_series=None,
 ) -> dict:
     """Replay decisions, optionally enforcing a finite cash account and fee reserves.
 
@@ -90,6 +92,8 @@ def run_replay(
             execution=scenario,
             include_decision_trace=include_decision_trace,
             initial_cash=initial_cash,
+            dca_drop_series=dca_drop_series,
+            reentry_series=reentry_series,
         ),
     )
 
@@ -104,6 +108,8 @@ def _run_once(
     execution: ExecutionModel,
     include_decision_trace: bool,
     initial_cash: float | None,
+    dca_drop_series=None,
+    reentry_series=None,
 ) -> dict:
     client = MagicMock()
     # Replay declares its synthetic execution precision explicitly; live engines
@@ -179,8 +185,24 @@ def _run_once(
         equity_curve = [initial_capital]
         exposure = []
 
+        default_dca_drop = params.dca_drop_pct
+        default_reentry_drop = params.reentry_drop_pct
+
         for bar_index, (open_, high, low, close) in enumerate(ohlc):
             current_bar = bar_index
+            if dca_drop_series is not None and bar_index < len(dca_drop_series):
+                drop_val = dca_drop_series[bar_index]
+                if drop_val is not None and not (isinstance(drop_val, float) and math.isnan(drop_val)):
+                    strategy.p.dca_drop_pct = float(drop_val)
+                else:
+                    strategy.p.dca_drop_pct = default_dca_drop
+            if reentry_series is not None and bar_index < len(reentry_series):
+                re_val = reentry_series[bar_index]
+                if re_val is not None and not (isinstance(re_val, float) and math.isnan(re_val)):
+                    strategy.p.reentry_drop_pct = float(re_val)
+                else:
+                    strategy.p.reentry_drop_pct = default_reentry_drop
+
             def eligible(order: dict) -> bool:
                 if order.get("market"):
                     return True
@@ -253,7 +275,7 @@ def _run_once(
                             and close > order["price"] * 1.003):
                         strategy._remove(order)
             replay_time = bar_index * bar_minutes * 60 if bar_minutes else bar_index
-            strategy.step(close, timestamp=replay_time)
+            strategy.step(close, timestamp=replay_time, high=high)
             qty = strategy.s["qty"]
             unrealized = (
                 (close - strategy.s["cost"] / qty) * qty if qty > 1e-12 else 0.0
@@ -262,6 +284,31 @@ def _run_once(
             exposure.append(qty > 1e-12)
     finally:
         _strat.notify = original_notify
+
+    for order in list(strategy.s["orders"]):
+        if order.get("market") and order["side"] == "sell" and strategy.s["qty"] > 1e-12:
+            volume = min(float(order["vol"]), strategy.s["qty"])
+            price = execution.market_price("sell", ohlc[-1][3])
+            gross_before = strategy.s["realized_gross"]
+            fee = fee_model.rate_pct(market=True) / 100.0 * volume * price
+            if cash is not None:
+                cash += volume * price - fee
+                min_cash = min(min_cash, cash)
+            strategy._remove(order)
+            strategy._apply_fill(
+                order, volume, price, fee=fee, final=True,
+            )
+            fill_count += 1
+            turnover_notional += volume * price
+            if strategy.s["realized_gross"] > gross_before:
+                wins += 1
+            if strategy.s.get("cycle", 1) > cycle0 + len(trade_pnls):
+                trade_pnls.append(
+                    strategy.s["realized_net"] - cycle_net_start
+                )
+                cycle_net_start = strategy.s["realized_net"]
+            if equity_curve:
+                equity_curve[-1] = initial_capital + strategy.s["realized_net"]
 
     qty = strategy.s["qty"]
     final_upnl = (

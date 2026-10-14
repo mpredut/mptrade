@@ -1873,7 +1873,7 @@ class Strategy:
             return True
         return False
 
-    def step(self, price: float, timestamp: float | None = None) -> None:
+    def step(self, price: float, timestamp: float | None = None, high: float | None = None) -> None:
         if self.s.get("pending_intent"):
             log("  [STRAT] intentie pre-submit in reconciliere — aman deciziile noi")
             return
@@ -2000,8 +2000,9 @@ class Strategy:
 
         trail_armed = self.s.get("trail_peak") is not None
         trend_hold_active = self.p.tp_trend_hold and not bool(self.p.tp_tranches)
+        tp_ref_price = high if high is not None else price
         if (self.p.enable_takeprofit and avg and trend_hold_active
-                and (trail_armed or price >= sr.tp_price(avg, eff_tp))):
+                and (trail_armed or tp_ref_price >= sr.tp_price(avg, eff_tp))):
             # MDHTP (Multi-Horizon Dynamic Take-Profit) via PositionExitManager
             if self.exit_manager is not None and self.p.tp_mdhtp_enabled:
                 eff_trail = self._effective_trail_pct()
@@ -2051,7 +2052,7 @@ class Strategy:
 
             # Arm trailing at the first TP crossing and keep it armed through exit, even
             # if price later falls below TP, so the target pullback does not reset the peak.
-            peak = max(self.s.get("trail_peak") or price, price)
+            peak = max(self.s.get("trail_peak") or tp_ref_price, tp_ref_price)
             self.s["trail_peak"] = peak
 
             # 1. Micro-gradient 2X Fast Profit Guard (Horizon 3)

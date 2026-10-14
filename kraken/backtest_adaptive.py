@@ -28,7 +28,12 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from backtest import fetch_candles  # noqa: E402
+try:
+    from kraken.backtest import _bt_params, fetch_candles
+    from kraken import replay as rp
+except ImportError:
+    from backtest import _bt_params, fetch_candles  # noqa: E402
+    import replay as rp  # noqa: E402
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_ROOT, "forecast"))
@@ -76,57 +81,23 @@ def chronos_forecast_series(vol_trail: np.ndarray, refresh: int, horizon: int) -
 
 
 def simulate_variant(ohlc, P, drop_arr):
-    """Match ``backtest.simulate`` but read ``drop`` per bar from ``drop_arr``."""
-    disc, tp, sl = P["disc"]/100, P["tp"]/100, P["sl"]/100
-    fee = P["fee"]/100
-    qty = cost = spent = 0.0
-    dca = 0; last_open = None
-    realized = fees = 0.0
-    cycles = wins = 0
-    peak = eq = 0.0; maxdd = 0.0
-    rest_buy = None; rest_sell = None
+    """Match ``backtest.simulate`` but dynamically apply ``drop_arr`` per bar.
 
-    for i, (o, h, l, c) in enumerate(ohlc):
-        drop = drop_arr[i]/100 if not np.isnan(drop_arr[i]) else P["drop_fallback"]/100
-        if rest_buy:
-            px, sz = rest_buy
-            if l <= px:
-                qty += sz; cost += sz*px; spent += sz*px; last_open = px
-                if qty > sz + 1e-9:
-                    dca += 1
-                fees += fee*sz*px
-                rest_buy = None; rest_sell = None
-        if rest_sell and qty > 1e-9:
-            px, sz = rest_sell
-            if h >= px:
-                avg = cost/qty
-                realized += (px-avg)*sz; fees += fee*sz*px
-                cycles += 1; wins += 1 if px > avg else 0
-                qty = cost = spent = 0.0; dca = 0; last_open = None
-                rest_sell = None; rest_buy = None
-        if qty > 1e-9 and sl > 0:
-            avg = cost/qty
-            if (avg - c)/avg >= sl:
-                realized += (c-avg)*qty; fees += fee*qty*c
-                cycles += 1
-                qty = cost = spent = 0.0; dca = 0; last_open = None
-                rest_sell = None; rest_buy = None
-        if qty <= 1e-9:
-            if rest_buy is None and spent + P["entry"] <= P["budget"]:
-                px = c*(1-disc); rest_buy = (px, round(P["entry"]/px, 8))
-        else:
-            avg = cost/qty
-            rest_sell = (avg*(1+tp), qty)
-            if (dca < P["maxdca"] and last_open and c <= last_open*(1-drop)
-                    and spent + P["dca"] <= P["budget"] and rest_buy is None):
-                px = c*(1-disc); rest_buy = (px, round(P["dca"]/px, 8))
-        upnl = (c - cost/qty)*qty if qty > 1e-9 else 0
-        eq = realized - fees + upnl; peak = max(peak, eq); maxdd = max(maxdd, peak - eq)
-
-    final_upnl = (ohlc[-1][3] - cost/qty)*qty if qty > 1e-9 else 0.0
-    return {"realized": realized, "fees": fees, "net": realized - fees,
-            "total": realized - fees + final_upnl, "final_upnl": final_upnl,
-            "cycles": cycles, "wins": wins, "maxdd": maxdd, "open_qty": qty}
+    Delegates to the faithful replay engine (rp.run_replay) which runs
+    strategies.spot_engine.Strategy directly with dynamic per-bar DCA drop thresholds,
+    eliminating parity bugs and duplicate simulation drift.
+    """
+    params = _bt_params(P, {
+        "dca_drop_pct": P.get("drop_fallback", P.get("drop", 2.0)),
+        "reentry_drop_pct": P.get("reentry_drop", P.get("reentry", 0.0)),
+    })
+    return rp.run_replay(
+        ohlc,
+        params,
+        fee_pct=P.get("fee", 0.25),
+        bar_minutes=P.get("interval", 60),
+        dca_drop_series=drop_arr,
+    )
 
 
 def report(name, m, budget):

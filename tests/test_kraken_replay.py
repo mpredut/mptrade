@@ -354,6 +354,25 @@ class ReplayEngineTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reentry_adaptive"):
             rp.run_replay(_series(), _params(reentry_adaptive=True), fee_pct=0.26)
 
+    def test_dca_drop_series_adapts_threshold_per_bar(self):
+        bars = [
+            (100.0, 100.5, 99.5, 100.0),
+            (100.0, 100.5, 99.0, 100.0),  # fills ENTRY at 99.8
+            (99.0, 99.0, 98.0, 98.0),     # price drops to 98.0 (1.8% below 99.8) -> places DCA limit at 97.8
+            (98.0, 98.0, 97.0, 97.0),     # low 97.0 fills DCA limit if placed
+        ]
+        # Standard params: drop=1.0%. 98.0 is -1.8% -> triggers DCA BUY
+        p_std = _params(dca_drop_pct=1.0)
+        res_std = rp.run_replay(bars, p_std, fee_pct=0.26, bar_minutes=60)
+
+        # Dynamic series with 3.0% drop on bar 2: 98.0 is NOT -3.0% -> skips DCA BUY
+        res_dyn = rp.run_replay(
+            bars, p_std, fee_pct=0.26, bar_minutes=60,
+            dca_drop_series=[1.0, 1.0, 3.0, 3.0],
+        )
+        self.assertEqual(res_std["fills"], 2)  # ENTRY + DCA filled
+        self.assertEqual(res_dyn["fills"], 1)  # Only initial ENTRY filled
+
 
 class PercentageSizingReplayTest(unittest.TestCase):
     def test_equivalent_fixed_and_percentage_models_are_financially_identical(self):

@@ -27,9 +27,11 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 try:
-    from kraken.backtest import fetch_candles, simulate
+    from kraken.backtest import _bt_params, fetch_candles, simulate
+    from kraken import replay as rp
 except ImportError:
-    from backtest import fetch_candles, simulate  # reuse existing fetch and fixed-TP engine
+    from backtest import _bt_params, fetch_candles, simulate  # reuse existing fetch and fixed-TP engine
+    import replay as rp
 
 
 def fetch_with_time(pair, interval):
@@ -47,62 +49,23 @@ def fetch_with_time(pair, interval):
 def simulate_trail(ohlc, P):
     """Match ``backtest.simulate`` except for trailing exit behavior.
 
-    Once price reaches the ``tp`` activation profit, arm the trailing exit and
-    sell when the close falls ``trail`` percent below the post-activation peak,
-    following the trend instead of selling immediately at +tp.
+    Delegates to the faithful replay engine (rp.run_replay) which runs
+    strategies.spot_engine.Strategy directly with trailing take-profit enabled,
+    eliminating parity bugs and duplicate simulation drift.
     """
-    disc, drop, sl = P["disc"]/100, P["drop"]/100, P["sl"]/100
-    act, trail = P["tp"]/100, P["trail"]/100
-    fee = P["fee"]/100
-    qty = cost = spent = 0.0
-    dca = 0; last_open = None
-    realized = fees = 0.0
-    cycles = wins = 0
-    peak = eq = 0.0; maxdd = 0.0
-    rest_buy = None
-    armed = False; peak_px = 0.0
-
-    for (o, h, l, c) in ohlc:
-        if rest_buy:                                        # 1) pending buy, filled on the low
-            px, sz = rest_buy
-            if l <= px:
-                qty += sz; cost += sz*px; spent += sz*px; last_open = px
-                if qty > sz + 1e-9:
-                    dca += 1
-                fees += fee*sz*px
-                rest_buy = None
-        if qty > 1e-9:                                      # 2) trailing exit
-            avg = cost/qty
-            if not armed and h >= avg*(1+act):
-                armed = True; peak_px = h
-            if armed:
-                peak_px = max(peak_px, h)
-                if c <= peak_px*(1-trail):
-                    realized += (c-avg)*qty; fees += fee*qty*c
-                    cycles += 1; wins += 1 if c > avg else 0
-                    qty = cost = spent = 0.0; dca = 0; last_open = None
-                    armed = False; peak_px = 0.0
-        if qty > 1e-9 and sl > 0:                           # 3) stop-loss on the close
-            avg = cost/qty
-            if (avg - c)/avg >= sl:
-                realized += (c-avg)*qty; fees += fee*qty*c
-                cycles += 1
-                qty = cost = spent = 0.0; dca = 0; last_open = None
-                armed = False; peak_px = 0.0
-        if qty <= 1e-9:                                     # 4) place the next order
-            if rest_buy is None and spent + P["entry"] <= P["budget"]:
-                px = c*(1-disc); rest_buy = (px, round(P["entry"]/px, 8))
-        else:
-            if (dca < P["maxdca"] and last_open and c <= last_open*(1-drop)
-                    and spent + P["dca"] <= P["budget"] and rest_buy is None):
-                px = c*(1-disc); rest_buy = (px, round(P["dca"]/px, 8))
-        upnl = (c - cost/qty)*qty if qty > 1e-9 else 0
-        eq = realized - fees + upnl; peak = max(peak, eq); maxdd = max(maxdd, peak - eq)
-
-    final_upnl = (ohlc[-1][3] - cost/qty)*qty if qty > 1e-9 else 0.0
-    return {"realized": realized, "fees": fees, "net": realized-fees,
-            "total": realized-fees+final_upnl, "final_upnl": final_upnl,
-            "cycles": cycles, "wins": wins, "maxdd": maxdd, "open_qty": qty}
+    over = {
+        "tp_trend_hold": True,
+        "tp_trail_pct": P.get("trail", 3.0),
+        "tp_mdhtp_enabled": False,
+        "reentry_drop_pct": P.get("reentry_drop", P.get("reentry", 0.0)),
+    }
+    params = _bt_params(P, over)
+    return rp.run_replay(
+        ohlc,
+        params,
+        fee_pct=P.get("fee", 0.25),
+        bar_minutes=P.get("interval", 60),
+    )
 
 
 def base_params(budget=3000):
