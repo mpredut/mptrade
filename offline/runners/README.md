@@ -3,6 +3,26 @@
 Orchestration of the backtests and of the prod -> dev flow. The scripts are run from the
 repository root, or through the absolute paths kept up to date in `systemd/crontab.prod.txt`.
 
+For the full architectural specification, multi-venue execution matrix, and replay mechanics, see
+[`docs/UNIFIED_BACKTEST_AND_OFFLINE_ARCHITECTURE.md`](../../docs/UNIFIED_BACKTEST_AND_OFFLINE_ARCHITECTURE.md).
+
+## Unified Walk-Forward Facade (`walk_forward.py`)
+
+All venues and modes are accessible through a single linear dispatcher:
+
+```bash
+# Baseline evaluation
+.venv/bin/python offline/runners/walk_forward.py --venue binance --symbol BTCUSDT --intervals 240
+.venv/bin/python offline/runners/walk_forward.py --venue kraken --intervals 240 --dataset 240=path/to/candles.csv
+.venv/bin/python offline/runners/walk_forward.py --venue hyperliquid --coin HYPE --direction long --intervals 240
+.venv/bin/python offline/runners/walk_forward.py --venue t212 --profile nvda --range 2y --interval 1d
+
+# Candidate robustness comparison
+.venv/bin/python offline/runners/walk_forward.py --mode compare offline/results/binance_wf/BTCUSDT_240m_baseline.json
+.venv/bin/python offline/runners/walk_forward.py --mode compare offline/results/kraken_wf/baseline_HYPEUSD_*.json --candidate-set hype-240
+.venv/bin/python offline/runners/walk_forward.py --mode compare offline/results/hyperliquid_wf/HYPE_240m_baseline.json --candidate-set hype-240
+```
+
 ## A generic baseline through adapters
 
 The dataset, the walk-forward windows and the metrics are shared in `offline/backtests/`.
@@ -15,8 +35,10 @@ canonical OHLC + hash
         ▼
 shared walk-forward evaluator
         │
-        ├── Kraken adapter ─────► kraken/Strategy.step
-        └── Trading212 adapter ─► 212trading/Strategy.step
+        ├── Kraken adapter ──────► kraken/Strategy.step
+        ├── Binance adapter ─────► binance_api/Strategy.step
+        ├── Hyperliquid adapter ─► hyperliquid/Strategy.step
+        └── Trading212 adapter ──► 212trading/Strategy.step
 ```
 
 Kraken:

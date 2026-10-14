@@ -47,6 +47,9 @@ their code (a deliberate convention — they are linked below).
   the shared refactor and an inventory of the migrated paths.
 - [ORDER_INTENT_DEDUP_DESIGN.md](ORDER_INTENT_DEDUP_DESIGN.md) — the saved analysis of
   the rejected semantic-deduplication proposal and why `RETRY_DEDUP=false` remains in force.
+- [UNIFIED_BACKTEST_AND_OFFLINE_ARCHITECTURE.md](UNIFIED_BACKTEST_AND_OFFLINE_ARCHITECTURE.md) — Unified
+  cross-venue walk-forward backtesting framework, linear CLI dispatcher (`walk_forward.py`),
+  canonical replay engine (`strategies/spot_replay.py`), and multi-criteria Pareto robustness comparison.
 - [REFACTOR_STATUS.md](REFACTOR_STATUS.md) — the active implementation status,
   remaining safe work, verification gates, and explicit architectural non-goals.
 - [../offline/research/intelligence_backtest_results.json](../offline/research/intelligence_backtest_results.json) — empirical 14-month backtest dataset for Pillars 1 & 2.
