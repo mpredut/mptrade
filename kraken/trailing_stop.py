@@ -91,6 +91,7 @@ REBUY_SKIP_IF_TREND_DOWN = required_bool_env("KRAKEN_TRAILING_REBUY_SKIP_IF_TREN
 # Minimum profit before trailing activates (0 means immediate activation as before).
 # This prevents selling at a loss after a normal dip immediately following a purchase.
 MIN_PROFIT_PCT = required_float_env("KRAKEN_TRAILING_MIN_PROFIT_PCT")
+TRAILING_MARKET = os.environ.get("KRAKEN_TRAILING_MARKET", "true").strip().lower() in ("1", "true", "yes")
 
 
 class KrakenTrailing:
@@ -98,10 +99,11 @@ class KrakenTrailing:
     limit sell/buy, and trend APIs plus provider-specific logging and notifications."""
 
     def __init__(self, client: KrakenClient, log=log, enabled=None, state_file=STATE_FILE,
-                 min_profit_pct=MIN_PROFIT_PCT):
+                 min_profit_pct=MIN_PROFIT_PCT, trailing_market: bool | None = None):
         self.client = client
         self.log = log
         self.enabled = required_bool_env("KRAKEN_TRAILING_ENABLED") if enabled is None else enabled
+        self.trailing_market = TRAILING_MARKET if trailing_market is None else bool(trailing_market)
         self.state_file = state_file
         self.core = TrailingCore(
             self, log=log, enabled=self.enabled, state_file=state_file,
@@ -225,7 +227,7 @@ class KrakenTrailing:
         return result
 
     def _submit_lifecycle_order(self, intent, persist, pair, side, qty, price,
-                                kind, bypass_guards=None):
+                                kind, bypass_guards=None, market=False):
         """Submit through StrategyExecutor with optional guard pre-checks."""
         if bypass_guards is None:
             bypass_guards = {"all"} if side.upper() == "SELL" else {"math_reference"}
@@ -247,7 +249,7 @@ class KrakenTrailing:
             intent, persist=persist,
             submit=lambda: self.executor.submit_order_with_intent(
                 intent["intent_id"], pair, side.lower(), qty, price,
-                market=False, kind=kind,
+                market=market, kind=kind,
                 client_order_id=intent["client_order_id"]),
         )
         if result.outcome == "refused":
@@ -255,20 +257,23 @@ class KrakenTrailing:
         return result
 
     def execute_sell(self, key, asset, pair, qty, price, peak, trail, persist):
-        limit = price * 0.995
+        use_market = bool(getattr(self, "trailing_market", True))
+        limit = price if use_market else (price * 0.995)
         intent = self._order_intent(
-            "SELL", key, asset, pair, qty, limit, anchor=peak, trail=trail)
+            "SELL", key, asset, pair, qty, limit, anchor=peak, trail=trail,
+            metadata={"market": use_market})
         result = self._submit_lifecycle_order(
             intent, persist, pair, "SELL", qty, limit,
-            kind="TRAIL_SELL", bypass_guards={"all"})
+            kind="TRAIL_SELL", bypass_guards={"all"}, market=use_market)
+        order_desc = "MARKET" if use_market else f"@ ~{limit:.4f}"
         if result.outcome == "refused":
             self.log(
-                f"  🛑 [TRAIL-K] SELL REFUSED {qty} {asset} @ ~{limit:.4f} "
+                f"  🛑 [TRAIL-K] SELL REFUSED {qty} {asset} {order_desc} "
                 f"({result.intent.get('refusal_reason')})"
             )
         else:
             self.log(
-                f"  🛑 [TRAIL-K] SELL PENDING {qty} {asset} @ ~{limit:.4f} "
+                f"  🛑 [TRAIL-K] SELL PENDING {qty} {asset} {order_desc} "
                 f"(orderId={result.intent.get('order_id')})"
             )
         return result

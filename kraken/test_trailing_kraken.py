@@ -27,9 +27,10 @@ class FakeK:
         return {"txid": ["X"]}
     def query_orders(self, txids):
         order = self.orders[-1]
+        px = order["price"] if order["price"] is not None else self.price
         return {str(txids): {
             "status": "closed", "vol_exec": str(order["volume"]),
-            "cost": str(order["volume"] * order["price"]), "fee": "0",
+            "cost": str(order["volume"] * px), "fee": "0",
         }}
     def open_orders(self):
         return {}
@@ -85,7 +86,19 @@ class TestTrailingKraken(Base):
         ts.check_once()
         self.assertEqual(len(c.orders), 1)
         self.assertEqual(c.orders[0]["side"], "sell")
+        self.assertEqual(c.orders[0]["ordertype"], "market")
         self.assertAlmostEqual(c.orders[0]["volume"], 21.62, places=2)   # only the free balance, not 25
+
+    def test_trailing_market_false_places_limit_order(self):
+        c = FakeK(60.0, total=25.0, held=3.38)
+        ts = KrakenTrailing(c, log=lambda *a: None, enabled=True, state_file=self.sf,
+                            trailing_market=False)
+        ts.check_once()
+        c.price = 49.0
+        ts.check_once()
+        self.assertEqual(len(c.orders), 1)
+        self.assertEqual(c.orders[0]["ordertype"], "limit")
+        self.assertAlmostEqual(c.orders[0]["price"], 49.0 * 0.995, places=4)
 
     def test_a_small_fall_does_not_sell(self):
         c = FakeK(60.0)

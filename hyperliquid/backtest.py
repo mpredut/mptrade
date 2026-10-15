@@ -36,9 +36,21 @@ for p in (_HERE, _ROOT):
 from common import log
 from offline.backtests.metrics import format_performance_summary
 try:
-    from market_data import fetch_ohlc_candles, fetch_funding_history
+    import market_data as _md_local
+    if hasattr(_md_local, "fetch_funding_history"):
+        fetch_ohlc_candles = _md_local.fetch_ohlc_candles
+        fetch_funding_history = _md_local.fetch_funding_history
+    else:
+        raise ImportError("colliding market_data module")
 except ImportError:
-    from hyperliquid.market_data import fetch_ohlc_candles, fetch_funding_history
+    import importlib.util
+    _md_spec = importlib.util.spec_from_file_location(
+        "hyperliquid_market_data", os.path.join(_HERE, "market_data.py")
+    )
+    _md_local = importlib.util.module_from_spec(_md_spec)
+    _md_spec.loader.exec_module(_md_local)
+    fetch_ohlc_candles = _md_local.fetch_ohlc_candles
+    fetch_funding_history = _md_local.fetch_funding_history
 
 try:
     import importlib.util
