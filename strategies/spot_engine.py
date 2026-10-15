@@ -497,49 +497,9 @@ class Strategy:
         self.s.setdefault("placement_backoffs", {})
         self.s.setdefault("ledger_reconcile_required", False)
         self.s.setdefault("sl_bounce_state", {})
-        self.exit_manager: PositionExitManager | None = None
-        if self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled:
-            exit_cfg = PositionExitConfig(
-                lost_threshold=self.p.stop_loss_pct / 100.0,
-                sl_disaster_buffer_ratio=self.p.sl_disaster_buffer_ratio,
-                sl_disaster_vol_multiplier=self.p.sl_disaster_vol_multiplier,
-                sl_disaster_buffer_min_pct=self.p.sl_disaster_buffer_min_pct / 100.0,
-                sl_disaster_buffer_max_pct=self.p.sl_disaster_buffer_max_pct / 100.0,
-                sl_trend_defer_max_sec=self.p.sl_trend_defer_max_sec,
-                sl_bounce_min_recovery_pct=self.p.sl_bounce_min_recovery_pct / 100.0,
-                sl_bounce_pullback_pct=self.p.sl_bounce_pullback_pct / 100.0,
-                sl_bounce_ratchet_enabled=self.p.sl_bounce_ratchet_enabled,
-                sl_bounce_ratchet_k=self.p.sl_bounce_ratchet_k,
-                sl_bounce_min_pullback_pct=self.p.sl_bounce_min_pullback_pct / 100.0,
-                sl_structural_break_enabled=self.p.sl_structural_break_enabled,
-                smart_sl_enabled=False,
-                gain_threshold=self.p.takeprofit_pct / 100.0,
-                tp_trend_ride_enabled=self.p.tp_trend_hold,
-                tp_profit_floor_min_pct=(self.p.tp_trail_profit_floor_pct or 0.0) / 100.0,
-                tp_pullback_pct=self.p.tp_trail_pct / 100.0,
-                tp_stagnation_max_sec=self.p.tp_stagnation_max_sec,
-                fast_profit_guard_enabled=self.p.fast_profit_guard,
-                fast_profit_mult=self.p.fast_profit_mult,
-                fast_profit_window_sec=self.p.fast_profit_window_min * 60.0,
-                fast_profit_drop_pct=self.p.fast_profit_drop_pct / 100.0,
-                reentry_enabled=True,
-                reentry_sl_bounce_pct=self.p.reentry_sl_bounce_pct / 100.0,
-                reentry_drop_pct=self.p.reentry_drop_pct / 100.0,
-                reentry_pullback_pct=self.p.reentry_pullback_pct / 100.0,
-                reentry_bear_bounce_pct=self.p.reentry_bear_bounce_pct / 100.0,
-                reentry_ttl_hours=self.p.reentry_ttl_hours,
-                reentry_tolerance_pct=self.p.reentry_tolerance_pct,
-                allow_external_cache=not self.replay_mode,
-            )
-            self.exit_manager = PositionExitManager(
-                config=exit_cfg,
-                vol_resolver=self._resolve_volatility_tuple,
-            )
-            self.s.setdefault("reentry_state", {})
-            self.s.setdefault("tp_ride_state", {})
-            self.exit_manager.sl_bounce_state = self.s["sl_bounce_state"]
-            self.exit_manager.reentry_state = self.s["reentry_state"]
-            self.exit_manager.tp_ride_state = self.s["tp_ride_state"]
+        self.exit_manager: PositionExitManager | None = (
+            self._init_exit_manager() if (self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled) else None
+        )
         self._paper_seq = 0
         # Observational adaptive-volatility shadow history stays in memory for sigma.
         # It is rebuilt after restart and never enters persistent state.
@@ -1230,6 +1190,48 @@ class Strategy:
         """Callable adapter for PositionExitManager vol_resolver."""
         return self._vol_1h_ratio()
 
+    def _init_exit_manager(self) -> PositionExitManager:
+        exit_cfg = PositionExitConfig(
+            lost_threshold=self.p.stop_loss_pct / 100.0,
+            sl_disaster_buffer_ratio=self.p.sl_disaster_buffer_ratio,
+            sl_disaster_vol_multiplier=self.p.sl_disaster_vol_multiplier,
+            sl_disaster_buffer_min_pct=self.p.sl_disaster_buffer_min_pct / 100.0,
+            sl_disaster_buffer_max_pct=self.p.sl_disaster_buffer_max_pct / 100.0,
+            sl_trend_defer_max_sec=self.p.sl_trend_defer_max_sec,
+            sl_bounce_min_recovery_pct=self.p.sl_bounce_min_recovery_pct / 100.0,
+            sl_bounce_pullback_pct=self.p.sl_bounce_pullback_pct / 100.0,
+            sl_bounce_ratchet_enabled=self.p.sl_bounce_ratchet_enabled,
+            sl_bounce_ratchet_k=self.p.sl_bounce_ratchet_k,
+            sl_bounce_min_pullback_pct=self.p.sl_bounce_min_pullback_pct / 100.0,
+            sl_structural_break_enabled=self.p.sl_structural_break_enabled,
+            smart_sl_enabled=False,
+            gain_threshold=self.p.takeprofit_pct / 100.0,
+            tp_trend_ride_enabled=self.p.tp_trend_hold,
+            tp_profit_floor_min_pct=(self.p.tp_trail_profit_floor_pct or 0.0) / 100.0,
+            tp_pullback_pct=self.p.tp_trail_pct / 100.0,
+            tp_stagnation_max_sec=self.p.tp_stagnation_max_sec,
+            fast_profit_guard_enabled=self.p.fast_profit_guard,
+            fast_profit_mult=self.p.fast_profit_mult,
+            fast_profit_window_sec=self.p.fast_profit_window_min * 60.0,
+            fast_profit_drop_pct=self.p.fast_profit_drop_pct / 100.0,
+            reentry_enabled=True,
+            reentry_sl_bounce_pct=self.p.reentry_sl_bounce_pct / 100.0,
+            reentry_drop_pct=self.p.reentry_drop_pct / 100.0,
+            reentry_pullback_pct=self.p.reentry_pullback_pct / 100.0,
+            reentry_bear_bounce_pct=self.p.reentry_bear_bounce_pct / 100.0,
+            reentry_ttl_hours=self.p.reentry_ttl_hours,
+            reentry_tolerance_pct=self.p.reentry_tolerance_pct,
+            allow_external_cache=not self.replay_mode,
+        )
+        mgr = PositionExitManager(
+            config=exit_cfg,
+            vol_resolver=self._resolve_volatility_tuple,
+        )
+        mgr.sl_bounce_state = self.s.setdefault("sl_bounce_state", {})
+        mgr.reentry_state = self.s.setdefault("reentry_state", {})
+        mgr.tp_ride_state = self.s.setdefault("tp_ride_state", {})
+        return mgr
+
     def _create_position_snapshot(
         self,
         price: float,
@@ -1283,28 +1285,7 @@ class Strategy:
             return False
 
         if self.exit_manager is None:
-            exit_cfg = PositionExitConfig(
-                lost_threshold=self.p.stop_loss_pct / 100.0,
-                sl_disaster_buffer_ratio=self.p.sl_disaster_buffer_ratio,
-                sl_disaster_vol_multiplier=self.p.sl_disaster_vol_multiplier,
-                sl_disaster_buffer_min_pct=self.p.sl_disaster_buffer_min_pct / 100.0,
-                sl_trend_defer_max_sec=self.p.sl_trend_defer_max_sec,
-                sl_bounce_min_recovery_pct=self.p.sl_bounce_min_recovery_pct / 100.0,
-                sl_bounce_pullback_pct=self.p.sl_bounce_pullback_pct / 100.0,
-                sl_bounce_ratchet_enabled=self.p.sl_bounce_ratchet_enabled,
-                sl_bounce_ratchet_k=self.p.sl_bounce_ratchet_k,
-                sl_bounce_min_pullback_pct=self.p.sl_bounce_min_pullback_pct / 100.0,
-                sl_structural_break_enabled=self.p.sl_structural_break_enabled,
-                smart_sl_enabled=False,
-                allow_external_cache=not self.replay_mode,
-            )
-            self.exit_manager = PositionExitManager(
-                config=exit_cfg,
-                vol_resolver=self._resolve_volatility_tuple,
-            )
-            self.exit_manager.sl_bounce_state = self.s.setdefault("sl_bounce_state", {})
-            self.exit_manager.reentry_state = self.s.setdefault("reentry_state", {})
-            self.exit_manager.tp_ride_state = self.s.setdefault("tp_ride_state", {})
+            self.exit_manager = self._init_exit_manager()
 
         snapshot = self._create_position_snapshot(price, avg, self.s.get("qty", 0.0))
         decision = self.exit_manager.evaluate_stop_loss(
@@ -1672,75 +1653,35 @@ class Strategy:
             self.s["sl_low"] = min(self.s.get("sl_low") or price, price)
 
         # Symmetrical Re-entry Evaluation via PositionExitManager
-        if self.exit_manager is not None and (self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled):
-            self.exit_manager.config.reentry_drop_pct = vol_pct_to_ratio(self.p.reentry_drop_pct)
-            self.exit_manager.config.reentry_pullback_pct = vol_pct_to_ratio(self.p.reentry_pullback_pct)
-            self.exit_manager.config.reentry_bear_bounce_pct = vol_pct_to_ratio(self.p.reentry_bear_bounce_pct)
-            self.exit_manager.config.reentry_sl_bounce_pct = vol_pct_to_ratio(self.p.reentry_sl_bounce_pct)
-            self.exit_manager.config.reentry_ttl_hours = self.p.reentry_ttl_hours
-            self.exit_manager.config.reentry_tolerance_pct = self.p.reentry_tolerance_pct
-            self.exit_manager.config.reentry_hybrid_enabled = self.p.reentry_hybrid_enabled
-            self.exit_manager.config.reentry_peak_relative = self.p.reentry_peak_relative
-            vol_1h, vol_source = self._vol_1h_ratio()
-            drop_pct, _ = self._effective_reentry_drop_pct()
-            reentry_snap = ReentrySnapshot(
-                symbol=self.pair,
-                current_price=price,
-                last_sell_price=lsp,
-                last_exit_kind=self.s.get("last_exit_kind"),
-                post_sell_peak=self.s.get("post_sell_peak"),
-                post_sell_trough=self.s.get("post_sell_trough"),
-                current_time_s=tick_time,
-                last_sell_time_s=self.s.get("last_sell_ts"),
-                trend_up=self._is_trend_up(regime),
-                trend_down=self._regime_matches(regime, "bear", min_samples=self.p.regime_min_samples) if regime else False,
-                vol_1h=vol_1h,
-                vol_source=vol_source,
-            )
-            reentry_dec = self.exit_manager.evaluate_reentry(reentry_snap, custom_drop_pct=vol_pct_to_ratio(drop_pct))
-            return reentry_dec.should_enter, reentry_dec.reason
-
-        # Legacy stop-aware and hybrid reentry fallback
-        if self.s.get("last_exit_kind") == "STOP" and self.p.reentry_sl_bounce_pct > 0:
-            low = min(self.s.get("sl_low") or price, price)
-            self.s["sl_low"] = low
-            if sr.reentry_stop_blocked(price, low, self.p.reentry_sl_bounce_pct, self.p.reentry_tolerance_pct):
-                prag_bounce = low * (1 + self.p.reentry_sl_bounce_pct / 100)
-                return False, f"price {price} < recovery threshold {prag_bounce:.{self.price_dec}f} (min {low}, +{self.p.reentry_sl_bounce_pct}%)"
-            return True, "recovery_reached"
-        elif self.p.reentry_hybrid_enabled:
-            up = True if self.p.reentry_peak_relative else (
-                self._regime_matches(regime, "bull", min_samples=self.p.regime_min_samples) if regime else False
-            )
-            drop_pct, _ = self._effective_reentry_drop_pct()
-            pullback_pct, pb_src = self._effective_reentry_pullback_pct()
-            elapsed = (tick_time - self.s["last_sell_ts"]) if self.s.get("last_sell_ts") else None
-            ttl_s = (self.p.reentry_ttl_hours * 3600.0) if self.p.reentry_ttl_hours > 0 else None
-            blocked, reason = sr.reentry_hybrid_blocked(
-                price=price,
-                last_sell=lsp,
-                post_sell_peak=self.s.get("post_sell_peak"),
-                is_bull=up,
-                drop_pct=drop_pct,
-                pullback_pct=pullback_pct,
-                tol_pct=self.p.reentry_tolerance_pct,
-                elapsed_sec=elapsed,
-                ttl_sec=ttl_s,
-                post_sell_trough=self.s.get("post_sell_trough"),
-                bounce_pct=self.p.reentry_bear_bounce_pct,
-            )
-            if blocked:
-                return False, f"{reason} [{pb_src}]"
-            return True, f"hybrid_unblocked ({reason}) [{pb_src}]"
-        else:
-            drop_pct, drop_source = self._effective_reentry_drop_pct()
-            if drop_pct > 0:
-                prag = lsp * (1 - drop_pct / 100)
-                if sr.reentry_drop_blocked(price, lsp, drop_pct, self.p.reentry_tolerance_pct):
-                    if not self.p.reentry_adaptive:
-                        self._shadow_reentry_line(price, lsp, prag)
-                    return False, f"price {price} > threshold {prag:.2f} [{drop_source}] (sold at {lsp}, waiting for -{drop_pct:.2f}%)"
-            return True, "drop_target_met"
+        if self.exit_manager is None:
+            self.exit_manager = self._init_exit_manager()
+        mgr = self.exit_manager
+        mgr.config.reentry_drop_pct = vol_pct_to_ratio(self.p.reentry_drop_pct)
+        mgr.config.reentry_pullback_pct = vol_pct_to_ratio(self.p.reentry_pullback_pct)
+        mgr.config.reentry_bear_bounce_pct = vol_pct_to_ratio(self.p.reentry_bear_bounce_pct)
+        mgr.config.reentry_sl_bounce_pct = vol_pct_to_ratio(self.p.reentry_sl_bounce_pct)
+        mgr.config.reentry_ttl_hours = self.p.reentry_ttl_hours
+        mgr.config.reentry_tolerance_pct = self.p.reentry_tolerance_pct
+        mgr.config.reentry_hybrid_enabled = self.p.reentry_hybrid_enabled
+        mgr.config.reentry_peak_relative = self.p.reentry_peak_relative
+        vol_1h, vol_source = self._vol_1h_ratio()
+        drop_pct, _ = self._effective_reentry_drop_pct()
+        reentry_snap = ReentrySnapshot(
+            symbol=self.pair,
+            current_price=price,
+            last_sell_price=lsp,
+            last_exit_kind=self.s.get("last_exit_kind"),
+            post_sell_peak=self.s.get("post_sell_peak"),
+            post_sell_trough=self.s.get("post_sell_trough"),
+            current_time_s=tick_time,
+            last_sell_time_s=self.s.get("last_sell_ts"),
+            trend_up=self._is_trend_up(regime),
+            trend_down=self._regime_matches(regime, "bear", min_samples=self.p.regime_min_samples) if regime else False,
+            vol_1h=vol_1h,
+            vol_source=vol_source,
+        )
+        reentry_dec = mgr.evaluate_reentry(reentry_snap, custom_drop_pct=vol_pct_to_ratio(drop_pct))
+        return reentry_dec.should_enter, reentry_dec.reason
 
     def _overlay_step(self, price: float, regime: MarketRegimeDecision,
                       closes: list, tick_time: float | None = None) -> bool:

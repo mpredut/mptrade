@@ -403,38 +403,42 @@ class Strategy:
         self.s.setdefault("tp_ride_state", {})
         self.s.setdefault("reentry_state", {})
         self.s.setdefault("tp_pending_exit", None)
-        self.exit_manager: PositionExitManager | None = None
-        if self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled:
-            exit_cfg = PositionExitConfig(
-                lost_threshold=vol_pct_to_ratio(self.p.stop_loss_pct),
-                sl_disaster_buffer_ratio=self.p.sl_disaster_buffer_ratio,
-                sl_disaster_buffer_max_pct=vol_pct_to_ratio(self.p.sl_disaster_buffer_max_pct),
-                sl_trend_defer_max_sec=self.p.sl_trend_defer_max_sec,
-                sl_bounce_min_recovery_pct=vol_pct_to_ratio(self.p.sl_bounce_min_recovery_pct),
-                sl_bounce_pullback_pct=vol_pct_to_ratio(self.p.sl_bounce_pullback_pct),
-                sl_structural_break_enabled=self.p.sl_structural_break_enabled,
-                smart_sl_enabled=False,
-                reentry_enabled=True,
-                reentry_sl_bounce_pct=vol_pct_to_ratio(self.p.sl_rebuy_bounce_pct) if self.p.sl_rebuy_enabled else 0.015,
-                reentry_drop_pct=vol_pct_to_ratio(self.p.reentry_drop_pct),
-                reentry_pullback_pct=vol_pct_to_ratio(self.p.reentry_pullback_pct),
-                reentry_ttl_hours=self.p.reentry_ttl_hours,
-                reentry_tolerance_pct=self.p.reentry_tolerance_pct,
-                gain_threshold=vol_pct_to_ratio(self.p.takeprofit_pct),
-                tp_trend_ride_enabled=self.p.tp_mdhtp_enabled,
-                tp_profit_floor_min_pct=vol_pct_to_ratio(self.p.trail_min_profit_pct) if self.p.trail_min_profit_pct > 0 else 0.0,
-                tp_pullback_pct=vol_pct_to_ratio(self.p.trail_pct) if self.p.trail_pct > 0 else 0.015,
-                tp_stagnation_max_sec=self.p.tp_stagnation_max_sec,
-                allow_external_cache=not self.replay_mode,
-            )
-            self.exit_manager = PositionExitManager(
-                config=exit_cfg,
-                vol_resolver=self._resolve_volatility_tuple,
-            )
-            self.exit_manager.sl_bounce_state = self.s["sl_bounce_state"]
-            self.exit_manager.tp_ride_state = self.s["tp_ride_state"]
-            self.exit_manager.reentry_state = self.s["reentry_state"]
+        self.exit_manager: PositionExitManager | None = (
+            self._init_exit_manager() if (self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled) else None
+        )
         self._paper_seq = 0
+
+    def _init_exit_manager(self) -> PositionExitManager:
+        exit_cfg = PositionExitConfig(
+            lost_threshold=vol_pct_to_ratio(self.p.stop_loss_pct),
+            sl_disaster_buffer_ratio=self.p.sl_disaster_buffer_ratio,
+            sl_disaster_buffer_max_pct=vol_pct_to_ratio(self.p.sl_disaster_buffer_max_pct),
+            sl_trend_defer_max_sec=self.p.sl_trend_defer_max_sec,
+            sl_bounce_min_recovery_pct=vol_pct_to_ratio(self.p.sl_bounce_min_recovery_pct),
+            sl_bounce_pullback_pct=vol_pct_to_ratio(self.p.sl_bounce_pullback_pct),
+            sl_structural_break_enabled=self.p.sl_structural_break_enabled,
+            smart_sl_enabled=False,
+            reentry_enabled=True,
+            reentry_sl_bounce_pct=vol_pct_to_ratio(self.p.sl_rebuy_bounce_pct) if self.p.sl_rebuy_enabled else 0.015,
+            reentry_drop_pct=vol_pct_to_ratio(self.p.reentry_drop_pct),
+            reentry_pullback_pct=vol_pct_to_ratio(self.p.reentry_pullback_pct),
+            reentry_ttl_hours=self.p.reentry_ttl_hours,
+            reentry_tolerance_pct=self.p.reentry_tolerance_pct,
+            gain_threshold=vol_pct_to_ratio(self.p.takeprofit_pct),
+            tp_trend_ride_enabled=self.p.tp_mdhtp_enabled,
+            tp_profit_floor_min_pct=vol_pct_to_ratio(self.p.trail_min_profit_pct) if self.p.trail_min_profit_pct > 0 else 0.0,
+            tp_pullback_pct=vol_pct_to_ratio(self.p.trail_pct) if self.p.trail_pct > 0 else 0.015,
+            tp_stagnation_max_sec=self.p.tp_stagnation_max_sec,
+            allow_external_cache=not self.replay_mode,
+        )
+        mgr = PositionExitManager(
+            config=exit_cfg,
+            vol_resolver=self._resolve_volatility_tuple,
+        )
+        mgr.sl_bounce_state = self.s.setdefault("sl_bounce_state", {})
+        mgr.tp_ride_state = self.s.setdefault("tp_ride_state", {})
+        mgr.reentry_state = self.s.setdefault("reentry_state", {})
+        return mgr
 
     def _resolve_volatility_tuple(self, symbol: str) -> tuple[float, str]:
         """Callable adapter for PositionExitManager vol_resolver."""

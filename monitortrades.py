@@ -731,7 +731,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         price_increase = snapshot.gain_ratio
         price_decrease = snapshot.loss_ratio
 
-        print(f"(increase: {price_increase * 100}%, decrease: {price_decrease * 100}%)")
+        print(f"(increase: {snapshot.gain_pct}%, decrease: {snapshot.loss_pct}%)")
         # 3.0. Hard TP sells a fraction on a large gain regardless of trend. Tolerance
         # prevents permanently missing a peak that fell just short on one tick.
         hard_tp_hit = snapshot.in_tp_territory(hard_tp_pct, MT_ARE_CLOSE_TOLERANCE_PCT)
@@ -989,8 +989,6 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         if not sell_price:
             print(f"No sell_price !!!!!")
             return
-        price_decrease_versus_sell = (sell_price - current_price) / sell_price
-        print(f"(price_decrease_versus_sell: {price_decrease_versus_sell * 100}%)")
         exit_mgr = get_exit_manager()
         vol_1h = get_symbol_volatility_1h(symbol) or 0.0
         last_exit_kind = _LAST_EXIT_KIND.get(symbol) or (
@@ -1011,6 +1009,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             vol_1h=vol_1h,
             vol_source="1h_cache" if vol_1h > 0 else "default",
         )
+        price_decrease_versus_sell = reentry_snap.sale_drop_ratio
+        print(f"(price_decrease_versus_sell: {reentry_snap.sale_drop_pct}%)")
 
         prev_reentry_state = dict(_REENTRY_STATE.get(symbol, {}))
         if not prev_reentry_state:

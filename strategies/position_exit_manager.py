@@ -188,6 +188,16 @@ class ReentrySnapshot:
             return 0.0
         return (reference_price - self.current_price) / reference_price
 
+    @property
+    def sale_drop_ratio(self) -> float:
+        """Calculate price discount ratio below last_sell_price."""
+        return self.discount_drop_ratio(self.last_sell_price) if self.last_sell_price else 0.0
+
+    @property
+    def sale_drop_pct(self) -> float:
+        """Calculate price discount percentage below last_sell_price."""
+        return self.sale_drop_ratio * 100.0
+
     def has_bounced(self, trough_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if price has bounced above trough honoring fuzzy tolerance."""
         if trough_price <= 0 or threshold <= 0:
