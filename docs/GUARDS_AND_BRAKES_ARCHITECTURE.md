@@ -76,10 +76,17 @@ To ensure absolute transparency between microsecond execution and qualitative re
      - *Trigger:* Perpetual funding rate exceeds `funding_max_long_rate = 0.0005` (0.05% per 8h), signaling overcrowded long positioning prone to long squeezes.
      - *Brake:* `DOWNSCALE_QTY` (scales down size by `funding_crowded_scale = 0.50`) or `VETO_STOP`.
   3. `WhaleDivergenceGuard` (`[P2 · WHALE-FLOW]`):
-     - *Telemetry:* `cachedb/whale_oi_collect.json` + real-time taker volume prints.
-     - *Trigger 1 (OI Divergence):* Open Interest surging alongside aggressive net whale short positioning divergence.
-       - *Brake:* `DEFER_WAIT` or `VETO_STOP`.
+     - *Telemetry:* `cachedb/whale_snapshot_<SYM>.json` (correlating $\Delta P_{1h}$, $\Delta OI_{1h}$, Taker Buy/Sell ratio, and perpetual funding rate).
+     - *Trigger 1 (OI Divergence & Regime Matrix):* Classifies 8 distinct microstructural regimes:
+       - `aggressive_shorting`: Heavy short expansion ($P \downarrow, OI \uparrow, \text{Taker} < 0.85$). *Brake:* `DEFER_WAIT` on BUY.
+       - `short_squeeze_primed`: Shorts trapped underwater ($P \uparrow, OI \uparrow$ with negative funding or crowded shorts). *Brake:* `DEFER_WAIT` on SELL (allows rally to mature); permits BUY.
+       - `short_squeeze`: Active forced liquidation cascade ($P \uparrow, OI \downarrow, \text{Taker} \ge 1.25$). *Brake:* Permits BUY momentum; `DEFER_WAIT` on SELL.
+       - `short_covering`: Passive low-volume fakeout ($P \uparrow, OI \downarrow, \text{Taker} < 1.25$). *Brake:* `DEFER_WAIT` on BUY (`short_covering_fakeout`).
+       - `long_liquidation`: Involuntary forced liquidation cascade ($\Delta OI \le -3.0\%$, taker dump $< 0.85$). *Brake:* `DEFER_WAIT` on BUY (`liquidation_cascade_active`).
+       - `long_unwinding`: Orderly voluntary position closing (gentle OI drop, healthy taker ratio). *Brake:* Permits BUY with progressive downscaling (`DOWNSCALE_QTY`) only if taker selling is noticeable.
      - *Trigger 2 (Whale Taker Flow Supremacy):* Evaluates aggressive market taker sells against depth (`min_taker_ratio = 0.75`). If taker sell volume ratio breaches `taker_downscale_threshold = 0.90`, it triggers progressive size downscaling (`taker_downscaled_scale = 0.50`, `DOWNSCALE_QTY`) or absolute `VETO_STOP` before entering falling knives.
+  4. `SmartStopLossGuard` (`[P2 · SMART-SL]`):
+     - *Anti-Wick Hunt & Squeeze Protection:* Recognizes `short_squeeze_primed` and `short_squeeze` alongside whale long positioning ($\ge 60\%$) and book absorption, granting a 120s grace period instead of prematurely selling out of predatory wick hunts.
 
 ---
 
@@ -106,7 +113,7 @@ To ensure absolute transparency between microsecond execution and qualitative re
        - **Recommended Action:** `ALLOW` | `TRIM_PROFITS` | `DEFENSIVE` | `HALT_NEW_BUYS`
        - **Risk Level:** `LOW` | `MODERATE` | `HIGH` | `EXTREME`
   3. `HighStakeGuard` (`[P3C · HIGH-STAKE]`):
-     - *Pre-Trade Trigger:* Fires **only** when computed order notional $\ge$ `llm_min_notional_eur = 1000.0`. Orders below 1,000 EUR pass immediately with $0\text{ ms}$ latency (`ACCEPT`).
+     - *Pre-Trade Trigger:* Fires **for orders $\ge$ `llm_min_notional_eur = 400.0`**. Orders below 400 EUR pass immediately with $0\text{ ms}$ latency (`ACCEPT`).
      - *Context Ingested:* Real-time synthesis of L2 orderbook imbalance, overhead whale walls, funding rates, whale OI positioning, Fear & Greed index, and current geopolitical threat state.
      - *Decisions:*
        - `APPROVED`: Allows execution (`ALLOW`, 100% scale).

@@ -175,8 +175,8 @@ line-for-line across the two `trailing_stop.py` files, so it moved into
 ## Market Intelligence Architecture
 The `intelligence/` framework provides a four-pillar decision and capital protection layer:
 1. **Internal Quantitative**: Kalman trend state, linear gradients, mean reversion, and mathematical guards (anti-FOMO parabolic surge guard, Weibull trend exhaustion guard downscaling mature moves past P90, noise floor guard).
-2. **External Microstructure**: Whale flow volume prints, orderbook depth imbalance, liquidation cascade vetoes, and **Whale Taker Flow Supremacy** (evaluates aggressive market taker sells against depth, triggering progressive downscaling at threshold 0.90 to scale 0.50 or absolute veto before entering falling knives).
-3. **Sentiment & LLM Reasoning**: Fear & Greed contrarian triggers, market breadth, and Google Gemini LLM reasoning (30m macro assessments and pre-flight vetoes on orders >= 1,000 EUR).
+2. **External Microstructure**: Whale flow volume prints, orderbook depth imbalance, liquidation cascade vetoes, **Whale Taker Flow Supremacy**, and an 8-regime divergence classifier correlating $\Delta P_{1h}$, $\Delta OI_{1h}$, taker buy/sell ratios, and funding rates (detecting trapped shorts in `short_squeeze_primed`, explosive buying in `short_squeeze`, and distinguishing forced `long_liquidation` from orderly `long_unwinding`).
+3. **Sentiment & LLM Reasoning**: Fear & Greed contrarian triggers, market breadth, and Google Gemini LLM reasoning (periodic macro assessments and pre-flight risk vetting on orders >= 400 EUR).
 4. **Macro Geopolitical Shield**: Real-time Google News RSS screening with Gemini risk scoring to veto BUYs during international conflict or energy supply shocks.
 
 Wired into `order_guard.py` via `check_intelligence_guards()` and configured in `order_guard.conf`. For complete specifications and backtest verification evidence, see [MARKET_INTELLIGENCE.md](MARKET_INTELLIGENCE.md).

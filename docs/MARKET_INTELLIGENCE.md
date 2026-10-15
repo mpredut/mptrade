@@ -75,17 +75,30 @@ Mathematical triggers and guards operating purely on price time-series and volat
 
 ### Pillar 2: External Orderbook Flow & Whale Dynamics (`intelligence/external/`)
 
-Market microstructure monitoring that tracks institutional and leveraged market participants:
+Market microstructure monitoring that tracks institutional and leveraged market participants across spot and derivatives:
 - **Collectors**:
-  - `WhalePositioningCollector`: Tracks Binance Futures top-trader long/short ratio, taker aggression ratio, and Open Interest flow history. Detects divergence regimes (`accumulation`, `short_covering`, `aggressive_shorting`, `long_liquidation`, `neutral`).
+  - `WhalePositioningCollector`: Tracks Binance Futures top-trader long/short ratio, taker aggression ratio, Open Interest flow history, and perpetual funding rate. Correlates 3 core variables ($\Delta P_{1h}$, $\Delta OI_{1h}$, Taker Buy/Sell Ratio) plus Funding Rate into 8 microstructural divergence regimes:
+    - `aggressive_shorting` ($P \downarrow, OI \uparrow, Taker < 0.85$): Aggressive opening of new short positions (heavy downward momentum).
+    - `short_squeeze_primed` ($P \uparrow, OI \uparrow, Taker \ge 1.15$ with negative funding or previous aggressive shorting): Trapped underwater shorts at risk of imminent liquidation cascade.
+    - `short_squeeze` ($P \uparrow, OI \downarrow, Taker \ge 1.25$): Active forced liquidation cascade / explosive short squeeze (aggressive taker market buying).
+    - `short_covering` ($P \uparrow, OI \downarrow, Taker < 1.25$): Passive low-conviction short covering / low-volume fakeout.
+    - `long_liquidation` ($P \downarrow, OI \downarrow$ with severe OI destruction $\le -3.0\%$ and taker dump $< 0.85$): Involuntary forced liquidation cascade (falling knife).
+    - `long_unwinding` ($P \downarrow, OI \downarrow$ with mild OI contraction and normal taker flow $\ge 0.85$): Orderly voluntary de-risking and profit-taking (distinguished from forced liquidations).
+    - `accumulation` ($P \uparrow, OI \uparrow, Taker > 1.15$ with normal funding): True institutional spot/perp accumulation.
+    - `neutral`: Balanced range consolidation.
   - `OrderbookDepthCollector`: Evaluates real-time spot depth within 1.5% of mid-price, computing the order book imbalance ratio ($Bids / (Bids + Asks)$) and detecting massive limit walls ($\ge \$1,000,000$).
   - `DerivativesTelemetryCollector`: Collects public Binance perpetual funding rates and total open interest in real time.
   - `BybitLiquidationCollector`: Streams live Bybit linear liquidations via WebSocket and calculates rolling liquidation burst velocity and capitulation/squeeze ratios.
 - **Guards & Triggers**:
-  - `WhaleDivergenceGuard`: Vetoes BUY orders during short-covering fakeouts (price up, but falling OI indicating no whale accumulation) and aggressive whale shorting expansion.
+  - `WhaleDivergenceGuard`:
+    - Vetoes BUY orders during low-conviction `short_covering` fakeouts, but **permits BUY execution during explosive `short_squeeze` momentum**.
+    - Vetoes BUY orders during `aggressive_shorting` expansion.
+    - Defers premature SELL orders during `short_squeeze` or `short_squeeze_primed` to avoid selling at the onset of a squeeze rally.
+    - Differentiates `long_liquidation` (vetoes knife-catching) from `long_unwinding` (permits orderly entries with gentle downscaling if taker sell pressure is elevated).
   - `OrderbookWallGuard`: Defers BUY orders when the book is heavily ask-dominated (imbalance $< 0.25$) or blocked by large whale ask walls ($\ge \$1,000,000$).
   - `FundingCrowdingGuard`: Downscales orders entering hyper-crowded long markets (funding $> +0.05\% / 8\text{h}$) to avoid liquidation cascades.
   - `LiquidationCascadeGuard`: Blocks catching falling knives during active liquidation storms ($> \$500,000$ in 60s).
+  - `SmartStopLossGuard`: Incorporates `short_squeeze_primed` and `short_squeeze` as absorption indicators, granting grace periods against predatory wick hunts.
 - **Latency & Concurrency Architecture**:
   - `order_guard.py` evaluates local memory and disk snapshots with `allow_network=False` in microseconds (sub-millisecond overhead). Network polling is decoupled into background telemetry syncs, and missing snapshots fail open safely (`reason="no_whale_snapshot_data"`).
 
@@ -102,8 +115,8 @@ Blends retail sentiment indices with quantitative LLM reasoning:
   - Calculates Binance 24h advance/decline ratios across active pairs to detect market-wide exhaustion or panic washouts.
 - **Google Gemini Integration via `agy` CLI (`gemini_client.py`)**:
   - Runs `/home/predut/.local/bin/agy --model gemini-3.8-flash-low -p ...` directly leveraging the active Google paid subscription with zero API keys or external credentials required, with standard REST fallback.
-  - `SentimentAdvisor`: Runs a periodic 3-hour macro market assessment stored in `cachedb/sentiment_advisor_eval.json`.
-  - `HighStakeGuard`: A specialized risk veto triggered **only for large orders ($\ge 1,000$ EUR)**. Evaluates proposed order rationale, risk/reward, and market context before capital commitment. Sub-1,000 EUR orders pass immediately with 0 ms overhead.
+  - `SentimentAdvisor`: Runs a periodic 3-hour macro market assessment stored in `cachedb/sentiment_advisor_eval.json`. Gemini's analytical prompt correlates $\Delta P$, $\Delta OI$, Taker Buy/Sell ratio, and funding rates to explicitly evaluate short squeeze probability and differentiate forced liquidations from orderly de-risking.
+  - `HighStakeGuard`: A specialized risk veto triggered **for orders $\ge 400$ EUR** (`llm_min_notional_eur = 400.0`). Evaluates proposed order rationale, risk/reward, and market context before capital commitment. Sub-400 EUR orders pass immediately with 0 ms overhead.
 
 ---
 
@@ -145,9 +158,9 @@ funding_max_long_rate = 0.0005
 funding_crowding_policy = downscale
 funding_crowded_scale = 0.50
 
-# Pillar 3: Google Gemini High-Stake Guard (> 1000 EUR purchases)
+# Pillar 3: Google Gemini High-Stake Guard (>= 400 EUR purchases)
 gemini_guard_mode = shadow
-gemini_min_notional_eur = 1000.0
+gemini_min_notional_eur = 400.0
 gemini_timeout_sec = 12.0
 gemini_fallback = allow
 

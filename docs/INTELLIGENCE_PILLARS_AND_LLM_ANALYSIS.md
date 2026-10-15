@@ -156,7 +156,7 @@ AGY_PROJECT=autonommptrade            # Spațiu de lucru dedicat apelurilor auto
 
 # Pilonul 3: Guard Noțional Mare (order_guard.conf)
 gemini_guard_mode=shadow              # Mod rulare: off | shadow | enforce
-gemini_min_notional_eur=1000.0        # Prag noțional minim pentru activare LLM
+gemini_min_notional_eur=400.0         # Prag noțional minim pentru activare LLM
 gemini_timeout_sec=12.0               # Timeout maxim pentru răspunsul LLM
 gemini_fallback=allow                 # Acțiune de siguranță în caz de timeout LLM
 ```
