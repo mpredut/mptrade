@@ -583,6 +583,57 @@ def _place_guarded(inst, side, price, qty, min_qty, **kwargs):
     return result is not None
 
 
+def _is_pending_exit_active(symbol: str, inst, sellable_qty: float, min_qty: float, current_time_s: float) -> bool:
+    """Reconcile in-flight exit intent, returning True if submission must be deferred."""
+    pending_stop = _PENDING_STOP_EXIT.get(symbol)
+    if not pending_stop:
+        return False
+    if sellable_qty <= 0 or (min_qty and sellable_qty < min_qty):
+        print(f"[{symbol}] Pending Stop-Loss resolved: position is closed or below min_qty.")
+        _PENDING_STOP_EXIT.pop(symbol, None)
+        _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
+        _save_mt_state()
+        return False
+
+    active_sell_exists = False
+    p_cid = pending_stop.get("client_order_id")
+    prov = getattr(inst, "_provider", None)
+    if p_cid and prov and hasattr(prov, "order_by_client_id"):
+        try:
+            found = prov.order_by_client_id(symbol, p_cid)
+            if found and found.get("orderId"):
+                st = str(found.get("status") or "").upper()
+                if st in ("FILLED", "RESOLVED"):
+                    print(f"[{symbol}] Pending Stop-Loss {p_cid} resolved filled on venue.")
+                    _PENDING_STOP_EXIT.pop(symbol, None)
+                    _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
+                    _save_mt_state()
+                    return True
+                elif st in ("NEW", "OPEN", "PARTIALLY_FILLED"):
+                    active_sell_exists = True
+        except Exception:
+            pass
+
+    if not active_sell_exists:
+        open_orders_fn = getattr(inst, "open_orders", None)
+        if callable(open_orders_fn):
+            try:
+                for active_ord in (open_orders_fn() or []):
+                    if str(active_ord.get("side", "")).upper() in ("SELL", "S"):
+                        active_sell_exists = True
+                        break
+            except Exception:
+                pass
+
+    elapsed = current_time_s - int(pending_stop.get("time", current_time_s))
+    if active_sell_exists or elapsed < 60:
+        print(f"[{symbol}] Pending Stop-Loss in flight (elapsed={elapsed}s, active_sell={active_sell_exists}) — deferring duplicate submission pending reconciliation.")
+        return True
+
+    print(f"[{symbol}] Pending Stop-Loss reconciliation timeout ({elapsed}s >= 60s) with no active sell order — allowing retry with original intent.")
+    return False
+
+
 def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None, lost_threshold=None,
                             now_fn=None):
     """Use injectable ``now_fn`` so replay time can follow its market-data provider."""
@@ -661,14 +712,29 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         if not buy_price:
             print(f"No buy_price !!!!!")
             return
-        price_increase = (current_price - buy_price) / buy_price
-        price_decrease = (buy_price - current_price) / buy_price
+
+        exit_mgr = get_exit_manager()
+        vol_1h = get_symbol_volatility_1h(symbol) or 0.0
+        snapshot = PositionSnapshot(
+            symbol=symbol,
+            current_price=current_price,
+            avg_buy_price=buy_price,
+            net_qty=owned_qty,
+            sellable_qty=sellable_qty,
+            current_time_s=current_time_s,
+            trend_up=is_trend_up(symbol),
+            vol_1h=vol_1h,
+            vol_source="1h_cache" if vol_1h > 0 else "default",
+            provider=getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None),
+        )
+
+        price_increase = snapshot.gain_ratio
+        price_decrease = snapshot.loss_ratio
 
         print(f"(increase: {price_increase * 100}%, decrease: {price_decrease * 100}%)")
         # 3.0. Hard TP sells a fraction on a large gain regardless of trend. Tolerance
         # prevents permanently missing a peak that fell just short on one tick.
-        hard_tp_hit = price_increase >= hard_tp_pct or u.are_close(
-            price_increase, hard_tp_pct, target_tolerance_percent=MT_ARE_CLOSE_TOLERANCE_PCT)
+        hard_tp_hit = snapshot.in_tp_territory(hard_tp_pct, MT_ARE_CLOSE_TOLERANCE_PCT)
         hard_tp_config_valid = 0 < hard_tp_frac <= 1 and hard_tp_pct > 0 and hard_tp_cd >= 0
         if HARD_TP_ENABLED and hard_tp_hit and sellable_qty > 0 and hard_tp_config_valid:
             if current_time_s - _hard_tp_last.get(symbol, 0) >= hard_tp_cd:
@@ -691,21 +757,6 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                       f"{u.secondsToHours(current_time_s - _hard_tp_last.get(symbol, 0)):.1f}h)")
         # 3.1. Evaluate the existing SELL placement rules via PositionExitManager.
         # MDHTP (Take-Profit) & MHDSL (Stop-Loss) mirror engines.
-        exit_mgr = get_exit_manager()
-        vol_1h = get_symbol_volatility_1h(symbol) or 0.0
-        snapshot = PositionSnapshot(
-            symbol=symbol,
-            current_price=current_price,
-            avg_buy_price=buy_price,
-            net_qty=owned_qty,
-            sellable_qty=sellable_qty,
-            current_time_s=current_time_s,
-            trend_up=is_trend_up(symbol),
-            vol_1h=vol_1h,
-            vol_source="1h_cache" if vol_1h > 0 else "default",
-            provider=getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None),
-        )
-
         sl_price_territory = snapshot.in_sl_territory(lost_threshold, MT_ARE_CLOSE_TOLERANCE_PCT)
 
         if not sl_price_territory and symbol in _SL_BOUNCE_STATE:
@@ -779,47 +830,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                         _save_mt_state()
         elif in_sl_territory:
             pending_stop = _PENDING_STOP_EXIT.get(symbol)
-            if pending_stop:
-                if sellable_qty <= 0 or (min_qty and sellable_qty < min_qty):
-                    print(f"[{symbol}] Pending Stop-Loss resolved: position is closed or below min_qty.")
-                    _PENDING_STOP_EXIT.pop(symbol, None)
-                    _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
-                    _save_mt_state()
-                else:
-                    active_sell_exists = False
-                    p_cid = pending_stop.get("client_order_id")
-                    prov = getattr(inst, "_provider", None)
-                    if p_cid and prov and hasattr(prov, "order_by_client_id"):
-                        try:
-                            found = prov.order_by_client_id(symbol, p_cid)
-                            if found and found.get("orderId"):
-                                st = str(found.get("status") or "").upper()
-                                if st in ("FILLED", "RESOLVED"):
-                                    print(f"[{symbol}] Pending Stop-Loss {p_cid} resolved filled on venue.")
-                                    _PENDING_STOP_EXIT.pop(symbol, None)
-                                    _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
-                                    _save_mt_state()
-                                    return
-                                elif st in ("NEW", "OPEN", "PARTIALLY_FILLED"):
-                                    active_sell_exists = True
-                        except Exception:
-                            pass
-                    if not active_sell_exists:
-                        open_orders_fn = getattr(inst, "open_orders", None)
-                        if callable(open_orders_fn):
-                            try:
-                                for active_ord in (open_orders_fn() or []):
-                                    if str(active_ord.get("side", "")).upper() in ("SELL", "S"):
-                                        active_sell_exists = True
-                                        break
-                            except Exception:
-                                pass
-                    elapsed = current_time_s - int(pending_stop.get("time", current_time_s))
-                    if active_sell_exists or elapsed < 60:
-                        print(f"[{symbol}] Pending Stop-Loss in flight (elapsed={elapsed}s, active_sell={active_sell_exists}) — deferring duplicate submission pending reconciliation.")
-                        return
-                    else:
-                        print(f"[{symbol}] Pending Stop-Loss reconciliation timeout ({elapsed}s >= 60s) with no active sell order — allowing retry with original intent.")
+            if _is_pending_exit_active(symbol, inst, sellable_qty, min_qty, current_time_s):
+                return
 
             _TP_RIDE_STATE.pop(symbol, None)
             prev_sl_state = dict(_SL_BOUNCE_STATE.get(symbol, {}))

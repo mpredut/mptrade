@@ -127,6 +127,12 @@ class PositionSnapshot:
             return True
         return False
 
+    def pullback_ratio(self, peak_price: float) -> float:
+        """Normalized pullback ratio from peak: (peak - current) / peak."""
+        if peak_price <= 0:
+            return 0.0
+        return max(0.0, (peak_price - self.current_price) / peak_price)
+
 
 class ReentryAction(str, Enum):
     """Action recommended by PositionExitManager for market re-entry."""
@@ -158,6 +164,54 @@ class ReentrySnapshot:
     trend_down: bool = False
     vol_1h: float = 0.0  # Hourly realized volatility as decimal ratio (e.g. 0.02 for 2.0%)
     vol_source: str = "default"
+
+    @property
+    def is_valid_price(self) -> bool:
+        """Verify whether current market price is valid and strictly positive."""
+        return self.current_price > 0
+
+    def bounce_ratio(self, trough_price: float) -> float:
+        """Calculate recovery bounce ratio above trough: (current - trough) / trough."""
+        if trough_price <= 0:
+            return 0.0
+        return max(0.0, (self.current_price - trough_price) / trough_price)
+
+    def pullback_ratio(self, peak_price: float) -> float:
+        """Calculate pullback ratio from peak: (peak - current) / peak."""
+        if peak_price <= 0:
+            return 0.0
+        return max(0.0, (peak_price - self.current_price) / peak_price)
+
+    def discount_drop_ratio(self, reference_price: float) -> float:
+        """Calculate price discount ratio below reference sale: (reference - current) / reference."""
+        if reference_price <= 0:
+            return 0.0
+        return (reference_price - self.current_price) / reference_price
+
+    def has_bounced(self, trough_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
+        """Determine if price has bounced above trough honoring fuzzy tolerance."""
+        if trough_price <= 0 or threshold <= 0:
+            return False
+        if self.bounce_ratio(trough_price) >= threshold:
+            return True
+        return tol_pct > 0 and are_close(self.current_price, trough_price * (1.0 + threshold), tol_pct)
+
+    def has_pulled_back(self, peak_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
+        """Determine if price has pulled back from peak honoring fuzzy tolerance."""
+        if peak_price <= 0 or threshold <= 0:
+            return False
+        if self.pullback_ratio(peak_price) >= threshold:
+            return True
+        return tol_pct > 0 and are_close(self.current_price, peak_price * (1.0 - threshold), tol_pct)
+
+    def has_dropped(self, reference_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
+        """Determine if price has dropped below reference sale honoring fuzzy tolerance."""
+        if reference_price <= 0:
+            return False
+        target = reference_price * (1.0 - threshold)
+        if self.current_price <= target:
+            return True
+        return tol_pct > 0 and are_close(self.current_price, target, tol_pct)
 
 
 @dataclass
@@ -492,7 +546,7 @@ class PositionExitManager:
                     bounce_state["min_loss"] = price_decrease
 
                 elapsed = now - bounce_state["started_at"]
-                pullback_from_peak = (peak_px - current_price) / peak_px if peak_px > 0 else 0.0
+                pullback_from_peak = snapshot.pullback_ratio(peak_px)
 
                 eff_pullback_pct = self.config.sl_bounce_pullback_pct
                 if self.config.sl_bounce_ratchet_enabled and bounce_recovery > self.config.sl_bounce_min_recovery_pct:
@@ -632,15 +686,13 @@ class PositionExitManager:
         # ---------------------------------------------------------------------
         # PRIORITY 0: Hard TP Spike Exit
         # ---------------------------------------------------------------------
-        hard_hit = price_increase >= self.config.hard_tp_pct or are_close(
-            price_increase, self.config.hard_tp_pct, self.config.are_close_tolerance_pct
-        )
+        hard_hit = snapshot.in_tp_territory(self.config.hard_tp_pct, self.config.are_close_tolerance_pct)
         hard_valid = 0 < self.config.hard_tp_frac <= 1.0 and self.config.hard_tp_pct > 0
         if self.config.hard_tp_enabled and hard_hit and hard_valid:
             last_hard = self.hard_tp_last.get(symbol, 0.0)
             if now - last_hard >= self.config.hard_tp_cooldown_sec:
                 reason = (
-                    f"hard_tp_spike (+{price_increase*100:.1f}% >= {self.config.hard_tp_pct*100:.0f}%, "
+                    f"hard_tp_spike (+{snapshot.gain_pct:.1f}% >= {self.config.hard_tp_pct*100:.0f}%, "
                     f"selling {self.config.hard_tp_frac*100:.0f}%)"
                 )
                 return ExitDecision(
@@ -649,7 +701,7 @@ class PositionExitManager:
                     reason=reason,
                     forced=True,
                     sell_fraction=self.config.hard_tp_frac,
-                    metadata={"priority": 0, "gain": price_increase},
+                    metadata={"priority": 0, "gain": snapshot.gain_ratio},
                 )
 
         # ---------------------------------------------------------------------
@@ -658,7 +710,7 @@ class PositionExitManager:
         profit_floor = max(gain_threshold * self.config.tp_profit_floor_ratio, self.config.tp_profit_floor_min_pct)
 
         # Gap down below cost while riding profit is an emergency breach of the profit floor
-        if price_increase <= 0:
+        if snapshot.gain_ratio <= 0:
             if symbol in self.tp_ride_state:
                 ride_state = self.tp_ride_state.pop(symbol)
                 peak_px = ride_state.get("peak_price", current_price)
@@ -721,7 +773,7 @@ class PositionExitManager:
                 ride_state["last_peak_time"] = now
 
             peak_px = ride_state["peak_price"]
-            pullback_from_peak = (peak_px - current_price) / peak_px if peak_px > 0 else 0.0
+            pullback_from_peak = snapshot.pullback_ratio(peak_px)
             stagnation_elapsed = now - ride_state["last_peak_time"]
 
             # Optional Advanced Guard: Fast profit reversal
@@ -900,7 +952,7 @@ class PositionExitManager:
 
         # Case 2: Post-STOP Re-entry (Bounce Trough Mirror)
         if last_kind == "STOP" and self.config.reentry_sl_bounce_pct > 0:
-            bounce_ratio = (current_price - trough) / trough if trough > 0 else 0.0
+            bounce_ratio = snapshot.bounce_ratio(trough)
             bounce_required = self.config.reentry_sl_bounce_pct
 
             # Bear Gate: If trend is actively down, demand extra recovery confirmation
@@ -915,12 +967,7 @@ class PositionExitManager:
                         metadata={"trough": trough, "bounce_ratio": bounce_ratio, "trend_down": True},
                     )
 
-            has_bounced = (
-                bounce_ratio >= bounce_required
-                or are_close(current_price, trough * (1.0 + bounce_required), self.config.reentry_tolerance_pct)
-            )
-
-            if not has_bounced:
+            if not snapshot.has_bounced(trough, bounce_required, self.config.reentry_tolerance_pct):
                 state["peak_bounce"] = current_price
                 target_px = trough * (1.0 + bounce_required)
                 return ReentryDecision(
@@ -959,12 +1006,8 @@ class PositionExitManager:
         )
         if is_bull_reentry:
             pullback_required = self.config.reentry_pullback_pct
-            pullback_ratio = (peak - current_price) / peak if peak > 0 else 0.0
-            has_pulled_back = (
-                pullback_ratio >= pullback_required
-                or are_close(current_price, peak * (1.0 - pullback_required), self.config.reentry_tolerance_pct)
-            )
-            if not has_pulled_back:
+            pullback_ratio = snapshot.pullback_ratio(peak)
+            if not snapshot.has_pulled_back(peak, pullback_required, self.config.reentry_tolerance_pct):
                 target_px = peak * (1.0 - pullback_required)
                 return ReentryDecision(
                     ReentryAction.WAIT,
@@ -982,12 +1025,8 @@ class PositionExitManager:
         else:
             drop_required = custom_drop_pct if custom_drop_pct is not None else self.config.reentry_drop_pct
             if drop_required > 0:
-                discount_target = last_sell * (1.0 - drop_required)
-                has_dropped = (
-                    current_price <= discount_target
-                    or are_close(current_price, discount_target, self.config.reentry_tolerance_pct)
-                )
-                if not has_dropped:
+                if not snapshot.has_dropped(last_sell, drop_required, self.config.reentry_tolerance_pct):
+                    discount_target = last_sell * (1.0 - drop_required)
                     return ReentryDecision(
                         ReentryAction.WAIT,
                         False,
@@ -1005,7 +1044,7 @@ class PositionExitManager:
                     )
 
                 if self.config.reentry_bear_bounce_pct > 0:
-                    bear_bounce_ratio = (current_price - trough) / trough if trough > 0 else 0.0
+                    bear_bounce_ratio = snapshot.bounce_ratio(trough)
                     if bear_bounce_ratio < self.config.reentry_bear_bounce_pct:
                         target_bear = trough * (1.0 + self.config.reentry_bear_bounce_pct)
                         return ReentryDecision(

@@ -160,12 +160,10 @@ def secondsToMinutes(max_age_seconds):
 def asymptotic_decrease(initial_procent, expired_duration, passs, half_life_duration=24*60*60):
     k = expired_duration / half_life_duration  # Calculate the constant k
     return initial_procent / (1 + k * passs)  # Asymptotic decrease formula
-    """
-    Decreases the percentage exponentially as `passs` increases like asymptotic_decrease but exponential.
-    """
+
 
 def exponential_decrease(initial_procent, expired_duration, passs, half_life_duration=24*60*60):
-
+    """Decreases the percentage exponentially as `passs` increases."""
     T = half_life_duration / expired_duration  # Calculate the time constant T
     return initial_procent * math.exp(-passs / T)  # Exponential decrease formula using e
     
@@ -176,23 +174,6 @@ def decrese_value_by_increment_exp(increment_factor, value, coeficient=0.05):
     return adjustment_v1, adjustment_v2
 
 
-def gaussian_weights(T, idx: int):
-    """
-    Return ``t`` as the position axis ``[idx..T-1]`` and ``w`` as its Gaussian weights.
-    """
-    if idx >= T:
-        return np.array([]), np.array([])
-
-    # Gaussian over the complete T domain.
-    t_full = np.linspace(0, T - 1, T)
-    mu = (T - 1) / 2
-    sigma = T / 4
-
-    w_full = np.exp(-0.5 * ((t_full - mu) / sigma) ** 2)
-    w_full = w_full / w_full.sum()  # normalize to sum 1
-    return t_full, w_full
-
-    
 def gaussian_weights_from_idx(T, idx: int):
     """
     Return ``t`` as the position axis ``[idx..T-1]`` and ``w`` as its Gaussian weights.
@@ -210,43 +191,8 @@ def gaussian_weights_from_idx(T, idx: int):
     return t_full[idx:], w_full[idx:]
 
 
-
-###remove -----
-def gaussian_full_shifted(T, last_period, trend="down", steps=None):
-    remaining = T - last_period
-    
-    # Special case for an over-age trend.
-    if remaining <= 1:
-        if trend == "down":
-            # A persistent bearish trend sells aggressively.
-            return np.array([0.0]), np.array([1.0])
-        else:
-            # Use conservative buying after an exhausted bullish trend.
-            return np.array([0.0]), np.array([0.1])
-
-    remaining = int(remaining)
-    if steps is None:
-        steps = remaining
-    else:
-        steps = int(steps)
-
-    t = np.linspace(0, remaining - 1, steps)
-    mu = (remaining - 1) / 2
-    sigma = remaining / 4
-
-    w = np.exp(-0.5 * ((t - mu) / sigma) ** 2)
-
-    if trend == "down":
-        w_normalized = w / w.max()
-        w = 1 - w_normalized
-        w_sum = w.sum()
-        if w_sum == 0:  # remaining==2 can produce a zero sum
-            return t, np.full(steps, 0.5)
-        w = w / w_sum
-    else:
-        w = w / w.sum()
-
-    return t, w
+# Canonical alias for full Gaussian domain
+gaussian_weights = gaussian_weights_from_idx
 
 
 
