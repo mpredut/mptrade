@@ -287,27 +287,20 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
 
     # Price is rising, place fewer, larger orders. Increase spacing between orders as percents.
     # Price is falling, place more, smaller orders. Reduce spacing between orders as percents.
-    if action == 'BUY':
-        buy_price = min(float(proposed_price), float(current_price) * 0.999)
-        print(f"BUY price: {buy_price:.2f} {quote}".strip())
+    base_price = (
+        min(float(proposed_price), float(current_price) * 0.999)
+        if action == "BUY"
+        else max(float(proposed_price), float(current_price) * 1.001)
+    )
+    print(f"{action} price: {base_price:.2f} {quote}".strip())
 
-        for i in range(num_orders):
-            adjusted_buy_price = buy_price * (1 - i * price_step / 100)
-            order = _fire_order(symbol, "BUY", adjusted_buy_price, reason, **kwargs)
-            if order and (order.get('orderId') or order.get('id')):
-                oid = order.get('orderId') or order.get('id')
-                order_ids.append(oid)
-
-    elif action == 'SELL':
-        sell_price = max(float(proposed_price), float(current_price) * 1.001)
-        print(f"SELL price: {sell_price:.2f} {quote}".strip())
-
-        for i in range(num_orders):
-            adjusted_sell_price = sell_price * (1 + i * price_step / 100)
-            order = _fire_order(symbol, "SELL", adjusted_sell_price, reason, **kwargs)
-            if order and (order.get('orderId') or order.get('id')):
-                oid = order.get('orderId') or order.get('id')
-                order_ids.append(oid)
+    direction = -1 if action == "BUY" else 1
+    for i in range(num_orders):
+        adjusted_price = base_price * (1 + direction * i * price_step / 100)
+        order = _fire_order(symbol, action, adjusted_price, reason, **kwargs)
+        if order and (order.get("orderId") or order.get("id")):
+            oid = order.get("orderId") or order.get("id")
+            order_ids.append(oid)
 
     return order_ids
 
@@ -520,64 +513,42 @@ def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regi
 
     print(f"LOGIC gradient={gradient}, slope={slope}")
 
-    #todo adjust safeback_seconds
-    if gradient > 0 and slope < 0 :
-        # Confirm an upward trend.
-        print(f"DIFERENTA MARE {win} DOWN!")
-        if trend_state.is_trend_up():
-            count = trend_state.confirm_trend() # Confirm that the upward trend continues.
+    # Check for trend confirmation or initiation
+    if (gradient > 0 and slope < 0) or (gradient < 0 and slope > 0):
+        direction = "UP" if gradient > 0 else "DOWN"
+        action = "BUY" if direction == "UP" else "SELL"
+        label = "DOWN" if direction == "UP" else "UP"
+        print(f"DIFERENTA MARE {win} {label}!")
+        is_matching = trend_state.is_trend_up() if direction == "UP" else trend_state.is_trend_down()
+        if is_matching:
+            trend_state.confirm_trend()
             if trend_state.is_trend_uniform_confirmed() and trend_state.is_trend_fresh():
-                _fire_once("UP", "BUY", "trend_confirmed_up")
-                print(f"place_order_smart BUY")
+                _fire_once(direction, action, f"trend_confirmed_{direction.lower()}")
+                print(f"place_order_smart {action}")
         else:
-            prev_confirm_count = trend_state.confirm_count  # Strength of the previous near-miss trend.
-            old_trend = trend_state.start_trend('UP')  # Start a new upward trend.
-            log_decision(symbol, "trend_start", state="UP", old_state=old_trend, price=current_price,
-                         prev_confirm_count=prev_confirm_count)
-
-    if gradient < 0 and slope > 0 :
-        # Confirm a downward trend.
-        print(f"DIFERENTA MARE {win} UP!")
-        if trend_state.is_trend_down():
-            count = trend_state.confirm_trend() # Confirm that the downward trend continues.
-            if trend_state.is_trend_uniform_confirmed() and trend_state.is_trend_fresh() :
-                _fire_once("DOWN", "SELL", "trend_confirmed_down")
-                print(f"place_order_smart SELL")
-        else:
-            prev_confirm_count = trend_state.confirm_count  # Strength of the previous near-miss trend.
-            old_trend = trend_state.start_trend('DOWN')  # Start a new downward trend.
-            log_decision(symbol, "trend_start", state="DOWN", old_state=old_trend, price=current_price,
+            prev_confirm_count = trend_state.confirm_count
+            old_trend = trend_state.start_trend(direction)
+            log_decision(symbol, "trend_start", state=direction, old_state=old_trend, price=current_price,
                          prev_confirm_count=prev_confirm_count)
 
     # Originally 18 confirmations per minute * 3; effectively six per minute.
-    if slope <= 0 and trend_state.is_trend_up():
+    if (slope <= 0 and trend_state.is_trend_up()) or (slope >= 0 and trend_state.is_trend_down()):
+        direction = "UP" if trend_state.is_trend_up() else "DOWN"
+        action = "BUY" if direction == "UP" else "SELL"
         if (trend_state.is_trend_consistent_validated()
-        or trend_state.is_started_trend_older_than(TREND_TO_BE_OLD_SECONDS)) :
-            print(f"ATENTIE BUY ALL {win} .... ")
-            _fire_once("UP", "BUY", "consistent_or_old_up")
-    # Eighteen confirmations per minute for three minutes.
-    if slope >= 0 and trend_state.is_trend_down():
-        if (trend_state.is_trend_consistent_validated()
-        or trend_state.is_started_trend_older_than(TREND_TO_BE_OLD_SECONDS)) :
-            print(f"ATENTIE SELL ALL {win} .... ")
-            _fire_once("DOWN", "SELL", "consistent_or_old_down")
-                    
+        or trend_state.is_started_trend_older_than(TREND_TO_BE_OLD_SECONDS)):
+            print(f"ATENTIE {action} ALL {win} .... ")
+            _fire_once(direction, action, f"consistent_or_old_{direction.lower()}")
 
-                                                                                                                                                                 
-    #
-    # New case.
-    #
-    if slope <= -SLOPE_EXTREME_THRESHOLD and trend_state.is_trend_down():
+    # Extreme slope counter-trend exhaustion / reversal case
+    if (slope <= -SLOPE_EXTREME_THRESHOLD and trend_state.is_trend_down()) or (slope >= SLOPE_EXTREME_THRESHOLD and trend_state.is_trend_up()):
+        direction = "UP" if slope <= -SLOPE_EXTREME_THRESHOLD else "DOWN"
+        action = "BUY" if direction == "UP" else "SELL"
         if (trend_state.is_trend_consistent_validated()
-        and trend_state.is_started_trend_older_than(TREND_TO_BE_OLD_SECONDS)) :
-            print(f"ATENTIE 3: BUY ALL {win} .... ")
-            _fire_once("UP", "BUY", "slope<=-5.1_and_old_down")
-    # Eighteen confirmations per minute for three minutes.
-    if slope >= SLOPE_EXTREME_THRESHOLD and trend_state.is_trend_up():
-        if (trend_state.is_trend_consistent_validated()
-        and trend_state.is_started_trend_older_than(TREND_TO_BE_OLD_SECONDS)) :
-            print(f"ATENTIE 3: SELL ALL {win} .... ")
-            _fire_once("DOWN", "SELL", "slope>=5.1_and_old_up")
+        and trend_state.is_started_trend_older_than(TREND_TO_BE_OLD_SECONDS)):
+            print(f"ATENTIE 3: {action} ALL {win} .... ")
+            reason = "slope<=-5.1_and_old_down" if direction == "UP" else "slope>=5.1_and_old_up"
+            _fire_once(direction, action, reason)
    
 # TODO: measure short-term acceleration over one to three minutes and buy when high.
 
