@@ -1,32 +1,17 @@
 
 import os
 import time
-import datetime
 import math
 import sys
+import threading
 from datetime import datetime, timedelta
-
 import signal
 
-import json
-#from twisted.internet import reactor
-
-####Binance
-#from binance.streams import BinanceSocketManager
-#from binance.streams import BinanceSocketManager
-#print(dir(BinanceSocketManager))
-
-
-####MYLIB
+#### MYLIB
 from botcore import load_dotenv as _load_dotenv, required_float_env
-import utils as u
 import symbols as sym
 
 from .bapi_client import client
-
-import binance
-print(binance.__version__)
-
 from . import bapi_ws
 from . import order_id_context as rc
 
@@ -55,48 +40,14 @@ def signal_handler(sig, frame):
     stop = True
     print("Shutting down...")
     bapi_ws.bapi_ws_manager.stop()
-    
-    # Invoke the default SIGINT handler.
-    #signal.default_int_handler(sig, frame)
     sys.exit(0)
 
-    
-signal.signal(signal.SIGINT, signal_handler)
 
-
-
-
-def normalize_quantity(symbol, quantity):
-    min_qty, max_qty, step_size = get_symbol_limits(symbol)
-    if quantity < min_qty:
-        print(f"Quantity {quantity} is below the minimum limit. Setting to minimum: {min_qty}")
-        quantity = min_qty
-    elif quantity > max_qty:
-        print(f"Quantity {quantity} is above the maximum limit. Setting to maximum: {max_qty}")
-        quantity = max_qty
-    
-    adjusted_quantity = round(quantity // step_size * step_size, 5)
-    
-    if adjusted_quantity < min_qty:
-        adjusted_quantity = min_qty
-    elif adjusted_quantity > max_qty:
-        adjusted_quantity = max_qty
-    
-    return adjusted_quantity
-
-
-def get_symbol_limits(symbol):
-    info = client.get_symbol_info(symbol)
-    if info:
-        filters = info['filters']
-        for f in filters:
-            if f['filterType'] == 'LOT_SIZE':
-                min_qty = float(f['minQty'])
-                max_qty = float(f['maxQty'])
-                step_size = float(f['stepSize'])
-                print(f"Min quantity: {min_qty}, Max quantity: {max_qty}, Step size: {step_size}")
-                return min_qty, max_qty, step_size
-    return None, None, None
+try:
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGINT, signal_handler)
+except (ValueError, AttributeError):
+    pass
 
 cprice = {}
 cprice_time = {}
@@ -184,44 +135,6 @@ def get_account_assets_balances(raise_errors=False):
         if raise_errors:
             raise
         return []
-
-
-def cancel_orders_old_or_outlier(order_type, symbol, required_quantity, hours=5, price_difference_percentage=0.1, allowed_owners=None):
-
-    order_type = order_type.upper()
-    sym.validate_params(order_type, symbol, 1, required_quantity)
-    
-    open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
-    available_qty = 0  # Initially no quantity is available.
-    current_price = get_current_price(symbol)
-    if open_orders:
-        # Sort SELL orders descending and BUY orders ascending.
-        sorted_orders = sorted(
-            open_orders.items(),
-            key=lambda x: (x[1]['price'] if order_type == 'BUY' else -x[1]['price'])
-        )
-
-        # Cutoff time for recent orders.
-        cutoff_time = datetime.now().timestamp() - timedelta(hours=hours).total_seconds()
-
-        for order_id, order_info in sorted_orders:
-            cancel = False
-            if order_info['timestamp'] <= cutoff_time:
-                cancel = True
-            else:
-                price_diff_percentage = abs(float(order_info['price']) - current_price) / current_price * 100
-                if price_diff_percentage >= price_difference_percentage * 100:  # Convert 0.1 to 10%.
-                    cancel = True
-
-            if cancel:
-                cancel_order(symbol, order_id)
-                available_qty += float(order_info['quantity'])
-                print(f"New available quantity: {available_qty:.8f}")
-
-            if available_qty >= required_quantity:
-                break
-
-    return available_qty
 
 
 

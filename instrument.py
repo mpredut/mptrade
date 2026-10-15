@@ -9,12 +9,10 @@ same asset can be represented independently on multiple venues.
 when no base is configured). ``place()`` either delegates to an internally guarded
 provider or runs the shared policy pipeline before provider mechanics.
 """
-import contextlib
 import inspect
 import os
 import math
 import sys
-import time
 from typing import Optional, List, Callable, Any
 
 from providers.market_api import api as _default_api
@@ -58,24 +56,8 @@ def _is_terminal_filter_refusal(reason) -> bool:
 
 
 from guard_hierarchy import (
-    BaseGuard,
-    OperationalGuard,
-    TrendGuard,
-    FinancialGuard,
-    IntelligenceGuard,
-    DailyLimitGuard,
-    ShortTrendGuard,
-    MediumTrendGuard,
-    LongTrendGuard,
-    MathProfitGuard,
-    QuantityPolicyGuard,
-    Pillar1QuantitativeGuard,
-    Pillar2MicrostructureGuard,
-    Pillar3LLMGuard,
-    Pillar4GeopoliticalGuard,
     GUARD_CATALOG,
     GUARD_REGISTRY,
-    GUARD_CATEGORIES,
     normalize_bypassed_guards,
 )
 

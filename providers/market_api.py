@@ -16,7 +16,7 @@ import math
 import time
 from typing import Any, Callable, List, Optional
 
-from .base import MarketDataProvider, _normalize_order, env_value
+from .base import MarketDataProvider, _normalize_order
 from .binance_filters import (
     BinanceFilterError,
     BinanceOrderRules,

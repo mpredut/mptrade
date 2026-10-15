@@ -1,37 +1,25 @@
 import os
 import time
 import datetime
-import json
 import math
 import threading
-from binance.exceptions import BinanceAPIException
-from collections import deque
 
 # Local imports.
-import log
 import alertnotifiers as alert
 import utils as u
 import symbols as sym
 from instrument_registry import select_instruments, symbols_for
 from binance_api import bapi as api
-from binance_api import bapi_placeorder as po   # Retained for legacy compatibility.
+from binance_api import bapi_trades as apitrades
 import order_outcomes_log
 from providers.market_api import api as mkt      # Single guarded proxy (Instrument.place).
 
-from binance_api import bapi_trades as apitrades
-from binance_api import bapi_allorders as apiorders
-
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.stats import linregress
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression
-
-
-from pricewindow import (PriceTrendAnalyzer, PriceWindow, WindowAnalyzer,
-                         RECENT_GRADIENT_SECONDS,
-                         WINDOW_SECONDS_SMALL, WINDOW_SECONDS_BIG)
+from pricewindow import (
+    PriceTrendAnalyzer,
+    PriceWindow,
+    WindowAnalyzer,
+    RECENT_GRADIENT_SECONDS,
+)
 
 # July 23: load tunable parameters from the versioned, secret-free
 # config.env before reading any environment variables below.

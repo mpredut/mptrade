@@ -3,23 +3,15 @@ import time
 import math
 import sys
 import threading
-import json
-import signal
-import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 
 #### Binance
-import binance
 from binance.exceptions import BinanceAPIException
 
-
-####MYLIB
-import utils as u
+#### MYLIB
 import order_guard
 import symbols as sym
 import config as cfg
-import priceAnalysis as pa
 from . import order_id_context as rc   # client_order_id and tag context moved into binance_api.
 
 from . import bapi as api

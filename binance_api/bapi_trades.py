@@ -1,18 +1,12 @@
 
 import time
-import datetime
 import math
-import sys
 import json
 import threading
 from datetime import datetime, timedelta
 from state_io import atomic_write_json
 
-####Binance
-#from binance.exceptions import BinanceAPIException
-
 # Repository imports.
-import log
 import utils as u
 import symbols as sym
 from . import bapi as api
@@ -180,70 +174,6 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
         return []
 
 
-# Dead code with no callers: experimental ``get_all_orders`` variant.
-def get_my_trades_24_NEW(order_type, symbol, days_ago=0, limit=1000):
-    import time
-    sym.validate_ordertype(order_type)
-    sym.validate_symbols(symbol)
-
-    all_orders = []
-    try:
-        current_time = int(time.time() * 1000)
-        end_time = current_time - days_ago * 24 * 60 * 60 * 1000
-        start_time = end_time - 24 * 60 * 60 * 1000
-
-        # Simple timestamp pagination.
-        while True:
-            orders = api.client.get_all_orders(
-                symbol=symbol, 
-                limit=limit, 
-                startTime=start_time, 
-                endTime=end_time
-            )
-
-            if not orders:
-                break
-
-            # Filter by side.
-            if order_type == "BUY":
-                filtered_orders = [o for o in orders if o['side'] == "BUY"]
-            elif order_type == "SELL":
-                filtered_orders = [o for o in orders if o['side'] == "SELL"]
-            else:
-                filtered_orders = orders
-
-            # Convert each order into the shared fill-like shape.
-            for o in filtered_orders:
-                trade_like = {
-                    'symbol': o['symbol'],
-                    'id': o['orderId'],            # Consumers expect lowercase ``id``.
-                    'orderId': o['orderId'],
-                    'price': o['price'],
-                    'qty': o['executedQty'],       # Total executed quantity.
-                    'quoteQty': o.get('cummulativeQuoteQty', 0),
-                    'time': o['updateTime'],
-                    'isBuyer': o['side'] == "BUY",
-                    'isMaker': None,               # This endpoint does not expose maker/taker directly.
-                    'commission': None,
-                    'commissionAsset': None,
-                }
-                all_orders.append(trade_like)
-
-            # A short page is terminal.
-            if len(orders) < limit:
-                break
-
-            # Continue after the last order update time.
-            start_time = orders[-1]['updateTime'] + 1
-
-        return all_orders
-
-    except Exception as e:
-        print(f"get_my_trades_24_NEW An error occurred: {e}")
-        return []
-
-
-
 def get_my_trades(order_type, symbol, backdays: int = 3, limit=1000):
     
     sym.validate_ordertype(order_type)
@@ -314,108 +244,6 @@ def get_my_trades_simple(order_type, symbol, backdays=3, limit=1000):
         print(f"An error occurred: {e}")
         return []
 
-
-
-def test_get_my_trades():
-    symbol = 'BTCUSDC'
-    limit = 4
-
-    for days_ago in range (0,20):
-        print(f"Testing get_my_trades_24 for {symbol} on day {days_ago}...")
-        trades = get_my_trades_24(None, symbol, days_ago=days_ago, limit=limit)
-        if trades:
-            print(f"Found {len(trades)} trades for day {days_ago}.")
-            for trade in trades[:10]:  # Display the first ten fills.
-                print(trade)
-        else:
-            print(f"No trades found for day {days_ago}.")
-
-    backdays = 30
-    limit = 10000
-
-    # Exercise the unfiltered path.
-    print("Testing get_my_trades with pagination (no order_type)...")
-    trades_pagination = get_my_trades(None, symbol, backdays=backdays, limit=limit)
-
-    print("Testing get_my_trades_simple without pagination (no order_type)...")
-    trades_simple = get_my_trades_simple(None, symbol, backdays=backdays, limit=limit)
-
-    # Exercise BUY filtering.
-    print("Testing get_my_trades with pagination (buy orders)...")
-    trades_pagination_buy = get_my_trades("BUY", symbol, backdays=backdays, limit=limit)
-
-    print("Testing get_my_trades_simple without pagination (buy orders)...")
-    trades_simple_buy = get_my_trades_simple("BUY", symbol, backdays=backdays, limit=limit)
-
-    # Exercise SELL filtering.
-    print("Testing get_my_trades with pagination (sell orders)...")
-    trades_pagination_sell = get_my_trades("SELL", symbol, backdays=backdays, limit=limit)
-
-    print("Testing get_my_trades_simple without pagination (sell orders)...")
-    trades_simple_sell = get_my_trades_simple("SELL", symbol, backdays=backdays, limit=limit)
-
-    # Compare unfiltered results.
-    print("\nComparing unfiltered results...")
-    if trades_pagination == trades_simple:
-        print("Both functions returned the same results for unfiltered trades.")
-    else:
-        print("The functions returned different results for unfiltered trades.")
-        print(f"Trades with pagination: {len(trades_pagination)}")
-        print(f"Trades without pagination: {len(trades_simple)}")
-        print("Differences found in content for unfiltered trades.")
-        for i, (trade_p, trade_s) in enumerate(zip(trades_pagination, trades_simple)):
-            if trade_p != trade_s:
-                print(f"Difference at trade {i}:")
-                print(f"Pagination trade: {trade_p}")
-                print(f"Simple trade: {trade_s}")
-
-    # Compare BUY results.
-    print("\nComparing buy order results...")
-    if trades_pagination_buy == trades_simple_buy:
-        print("Both functions returned the same results for buy orders.")
-    else:
-        print("The functions returned different results for buy orders.")
-        print(f"Buy trades with pagination: {len(trades_pagination_buy)}")
-        print(f"Buy trades without pagination: {len(trades_simple_buy)}")
-        print("Differences found in content for buy trades.")
-        for i, (trade_p, trade_s) in enumerate(zip(trades_pagination_buy, trades_simple_buy)):
-            if trade_p != trade_s:
-                print(f"Difference at trade {i}:")
-                print(f"Pagination trade: {trade_p}")
-                print(f"Simple trade: {trade_s}")
-
-    # Compare SELL results.
-    print("\nComparing sell order results...")
-    if trades_pagination_sell == trades_simple_sell:
-        print("Both functions returned the same results for sell orders.")
-    else:
-        print("The functions returned different results for sell orders.")
-        print(f"Sell trades with pagination: {len(trades_pagination_sell)}")
-        print(f"Sell trades without pagination: {len(trades_simple_sell)}")
-        print("Differences found in content for sell trades.")
-        for i, (trade_p, trade_s) in enumerate(zip(trades_pagination_sell, trades_simple_sell)):
-            if trade_p != trade_s:
-                print(f"Difference at trade {i}:")
-                print(f"Pagination trade: {trade_p}")
-                print(f"Simple trade: {trade_s}")
-
-    # Display a few examples from each path.
-    print("\nFirst few trades for unfiltered pagination:")
-    for trade in trades_pagination[:5]:
-        print(trade)
-
-    print("\nFirst few buy trades with pagination:")
-    for trade in trades_pagination_buy[:5]:
-        print(trade)
-
-    print("\nFirst few sell trades with pagination:")
-    for trade in trades_pagination_sell[:5]:
-        print(trade)
-
-# Optional manual test entry point.
-#test_get_my_trades()
-
-import os
 
 # Append newly fetched fills to an existing file.
 def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=2):
@@ -511,30 +339,7 @@ def load_trades_from_file(filename):
         
     print(set(trade['symbol'] for trade in trade_cache))
 
-  
-# Return cached BUY or SELL fills for one symbol.
-def get_trade_orders_pt_referinta(order_type, symbol, max_age_seconds):
 
-    sym.validate_ordertype(order_type)
-    sym.validate_symbols(symbol)
-    
-    current_time_ms = int(time.time() * 1000)
-    max_age_ms = max_age_seconds * 1000
-
-    filtered_trades = [
-        {
-            key: (float(value) if isinstance(value, str) and value.replace('.', '', 1).isdigit() else value)
-            for key, value in trade.items()
-        }
-        for trade in trade_cache
-        if trade.get('symbol', None) == symbol
-        and (order_type is None or trade.get('isBuyer') == (order_type == "BUY"))  # Apply side filtering only when requested.
-        and (current_time_ms - trade.get('time', 0)) <= max_age_ms
-    ]
-
-    return filtered_trades
-
-  
 # Return recent BUY or SELL fills from the manager cache.
 def get_trade_orders(order_type, symbol, max_age_seconds):
    
@@ -577,155 +382,3 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     #  filtered_trades.sort(key=lambda x: x['price'])
     
     return filtered_trades
-
-    
-    # Return cached BUY or SELL fills for a selected calendar day.
-def get_trade_orders_for_day_24(order_type, symbol, day_back):
-
-    sym.validate_ordertype(order_type)
-    sym.validate_symbols(symbol)
-    
-    manager = init_cache_trade_manager()
-
-    # Copy one coherent snapshot while the manager may reload a new generation.
-    with manager.lock:
-        trades = [dict(trade) for trade in manager.cache.get(symbol, [])]
-    if not trades:
-        return []
-        
-    # Calculate the selected historical day's boundaries.
-    target_day_start = (datetime.now() - timedelta(days=day_back)).replace(hour=0, minute=0, second=0, microsecond=0)
-    target_day_end = target_day_start.replace(hour=23, minute=59, second=59, microsecond=999999)
-    
-    # Convert boundaries to millisecond timestamps.
-    start_timestamp = int(target_day_start.timestamp() * 1000)
-    end_timestamp = int(target_day_end.timestamp() * 1000)
-    
-    # Apply symbol, side, and time filters.
-    filtered_trades = [
-        {
-            key: (float(value) if isinstance(value, str) and value.replace('.', '', 1).isdigit() else value)
-            for key, value in trade.items()
-        }
-        for trade in trades
-        #if trade.get('symbol') == symbol
-        if (order_type is None or trade.get('isBuyer') == (order_type == "BUY"))  # Apply side filtering only when requested.
-        and start_timestamp <= trade.get('time', 0) <= end_timestamp
-    ]
-
-    # Optional chronological sorting.
-    # filtered_trades.sort(key=lambda x: x['time'])
-    
-    return filtered_trades
-
-
-def format_trade(trade, time_limit):
-    is_within_limit = trade['time'] >= time_limit
-    buy_or_sell = "BUY" if trade['isBuyer'] else "SELL"
-    trade_time = u.timestampToTime(trade['time'])
-    return f"Time: {trade_time}, OrderID: {trade['orderId']}, {buy_or_sell}, Price: {trade['price']}, Selected: {is_within_limit}"
-    
-
-def validate_keys_in_trades(trades):
-    required_keys = ['time', 'price', 'qty', 'orderId']
-    for idx, trade in enumerate(trades):
-        for key in required_keys:
-            if key not in trade:
-                raise ValueError(
-                    f"Trade {idx} is invalid. Missing key '{key}'. Data: {trade}")
-
-
-def print_trade(trade):
-    if not trade:
-        return
-    print(json.dumps(trade, indent=2))
-
-# Dead diagnostic code; its only call site in ``bapi_placeorder`` is commented out.
-def compare_trade_sources(symbol, order_type="BUY", max_age_seconds=3600, limit=1000):
-    
-    print(f"\n🔍 A comparison for the symbol {symbol}, order_type {order_type}")
-
-    current_time_ms = int(time.time() * 1000)
-    max_age_ms = max_age_seconds * 1000
-
-    def filter_trades(trades):
-        return {
-            trade['id']: trade for trade in trades
-            if trade['symbol'] == symbol
-            and (order_type is None or trade['isBuyer'] == (order_type == "BUY"))
-            and (current_time_ms - trade['time']) <= max_age_ms
-        }
-
-    # 1. Main cache: ``trade_cache`` is a list of fills.
-    main_map = filter_trades(trade_cache)
-
-    # 2. TCM cache: ``cache`` maps symbols to fill lists. Iterating the mapping itself
-    # would yield symbol strings and make ``trade['symbol']`` fail.
-    manager = init_cache_trade_manager()
-    tcm_map = filter_trades(manager.cache.get(symbol, []))
-
-    # 3. Binance API.
-    try:
-        api_raw = api.client.get_my_trades(symbol=symbol, limit=limit)
-        api_map = filter_trades(api_raw)
-    except Exception as e:
-        print(f"❌ Binance API query failed: {e}")
-        return
-
-    # Fill-ID sets.
-    main_ids = set(main_map)
-    tcm_ids = set(tcm_map)
-    api_ids = set(api_map)
-
-    all_ids = main_ids | tcm_ids | api_ids
-
-    # Compare source membership by fill ID.
-    for tid in sorted(all_ids):
-        sources = []
-        if tid in main_map: sources.append("main")
-        if tid in tcm_map: sources.append("tcm")
-        if tid in api_map: sources.append("api")
-
-        if len(sources) == 1:
-            print(f"⚠️ Trade ID {tid} exists only in: {sources[0]}")
-            print_trade(main_map.get(tid) or tcm_map.get(tid) or api_map.get(tid))
-        elif len(sources) == 2:
-            missing = {"main", "tcm", "api"} - set(sources)
-            print(f"ℹ️ Trade ID {tid} exists in {sources}, but is missing from {list(missing)[0]}")
-            
-            # Compare the two available sources.
-            ref = main_map.get(tid) or tcm_map.get(tid)
-            inconsistencies = {}
-            for source_name, trade in [('main', main_map.get(tid)),
-                                       ('tcm', tcm_map.get(tid)),
-                                       ('api', api_map.get(tid))]:
-                if trade and ref:
-                    diffs = {k: (ref[k], trade[k]) for k in ref if k in trade and ref[k] != trade[k]}
-                    if diffs:
-                        inconsistencies[source_name] = diffs
-
-            if inconsistencies:
-                print(f"🔄 Trade ID {tid} differs between the two sources found:")
-                for src, diff in inconsistencies.items():
-                    print(f"  ↪️ {src}:")
-                    for k, (v1, v2) in diff.items():
-                        print(f"    {k}: {v1} ≠ {v2}")
-        else:
-            # Compare content when a fill appears in multiple sources.
-            ref = main_map.get(tid) or tcm_map.get(tid)
-            inconsistencies = {}
-
-            for source_name, trade in [('main', main_map.get(tid)),
-                                       ('tcm', tcm_map.get(tid)),
-                                       ('api', api_map.get(tid))]:
-                if trade and ref:
-                    diffs = {k: (ref[k], trade[k]) for k in ref if k in trade and ref[k] != trade[k]}
-                    if diffs:
-                        inconsistencies[source_name] = diffs
-
-            if inconsistencies:
-                print(f"🔄 Trade ID {tid} differs between sources:")
-                for src, diff in inconsistencies.items():
-                    print(f"  ↪️ {src}:")
-                    for k, (v1, v2) in diff.items():
-                        print(f"    {k}: {v1} ≠ {v2}")

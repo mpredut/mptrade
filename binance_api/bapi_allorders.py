@@ -1,88 +1,13 @@
 
 import time
-import datetime
-import math
-import sys
+from collections import defaultdict
 
-#BINANCE
+# BINANCE
 from binance.exceptions import BinanceAPIException
 
-#my imports
-import utils as u
+# MYLIB
 from .bapi_client import client
 import symbols as sym
-  
-#######
-#######      get_all_orders     #######
-#######
-
-####fixed
-# Dead code with no callers, retained as a reference; see ``get_filled_orders``.
-def get_filled_orders_bed(order_type, symbol, backdays=3, limit=1000):
-    try:
-        # Validare simbol
-        sym.validate_symbols(symbol)
-        sym.validate_ordertype(order_type)
-
-        # Validate order type only when supplied.
-        if order_type is not None:
-            order_type = order_type.upper()
-
-        end_time = int(time.time() * 1000)  # ms
-        interval_hours = 24
-        interval_ms = interval_hours * 60 * 60 * 1000
-        start_time = end_time - backdays * 24 * 60 * 60 * 1000
-
-        all_filtered_orders = []
-
-        while start_time < end_time:
-            current_end_time = min(start_time + interval_ms, end_time)
-            try:
-                time.sleep(2)
-                orders = client.get_all_orders(
-                    symbol=symbol,
-                    startTime=start_time,
-                    endTime=current_end_time,
-                    limit=limit
-                ) or []
-            except Exception as api_err:
-                print(f"[Binance error] {symbol}: {api_err}")
-                orders = []
-
-            # One request is capped at ``limit``. Larger intervals are truncated because
-            # this path does not paginate by order ID.
-            print(f"{len(orders)} orders retrieved for interval {interval_ms/(60*60*1000):.0f}h")
-
-            filtered_orders = [
-                {
-                    'orderId': order.get('orderId'),
-                    'price': float(order.get('price', 0)),
-                    'quantity': float(order.get('origQty', 0)),
-                    'timestamp': order.get('time'),  # ms
-                    'side': order.get('side', '').upper()
-                }
-                for order in orders
-                if order.get('status') == 'FILLED'
-                and (
-                    order_type is None  # None accepts every side.
-                    or order.get('side', '').upper() == order_type
-                )
-            ]
-
-            all_filtered_orders.extend(filtered_orders)
-            start_time = current_end_time
-
-        print(f"Filtered filled orders ({'ALL' if order_type is None else order_type}): {len(all_filtered_orders)}")
-        for filled_order in all_filtered_orders[:5]:
-            print(filled_order)
-
-        return all_filtered_orders
-
-    except Exception as e:
-        print(f"Unexpected error in get_filled_orders: {e}")
-        return []
-
-from collections import defaultdict
 
 
 def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
