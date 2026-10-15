@@ -1055,6 +1055,71 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
             mock_slot.assert_not_called()
 
+    def test_fine_grained_bypass_guards_granularity(self):
+        """Verify fine-grained bypass combinations and ensure non-bypassed guards apply by default."""
+        from instrument import normalize_bypassed_guards
+
+        # 1. Default (None) bypasses nothing
+        none_bypassed = normalize_bypassed_guards(None)
+        self.assertEqual(none_bypassed, set())
+
+        # 2. Specific opt-out: only daily_limit and trend
+        dt_bypassed = normalize_bypassed_guards("daily_limit, trend")
+        self.assertIn("daily_limit", dt_bypassed)
+        self.assertIn("daily_cap", dt_bypassed)
+        self.assertIn("trend", dt_bypassed)
+        self.assertNotIn("math_reference", dt_bypassed)
+        self.assertNotIn("quantity_policy", dt_bypassed)
+        self.assertNotIn("p1", dt_bypassed)
+        self.assertNotIn("p2", dt_bypassed)
+        self.assertNotIn("p3", dt_bypassed)
+        self.assertNotIn("p4", dt_bypassed)
+
+        # 3. Specific opt-out: only intelligence pillars P1 and P3
+        p_bypassed = normalize_bypassed_guards(["p1", "p3"])
+        self.assertIn("p1", p_bypassed)
+        self.assertIn("pillar1", p_bypassed)
+        self.assertIn("quantitative", p_bypassed)
+        self.assertIn("p3", p_bypassed)
+        self.assertIn("pillar3", p_bypassed)
+        self.assertIn("llm", p_bypassed)
+        self.assertNotIn("p2", p_bypassed)
+        self.assertNotIn("p4", p_bypassed)
+        self.assertNotIn("daily_limit", p_bypassed)
+        self.assertNotIn("math_reference", p_bypassed)
+
+        # 4. 'all' or '*' bypasses every gate
+        all_bypassed = normalize_bypassed_guards("all")
+        self.assertIn("all", all_bypassed)
+        self.assertIn("daily_limit", all_bypassed)
+        self.assertIn("trend", all_bypassed)
+        self.assertIn("math_reference", all_bypassed)
+        self.assertIn("quantity_policy", all_bypassed)
+        self.assertIn("p1", all_bypassed)
+        self.assertIn("p2", all_bypassed)
+        self.assertIn("p3", all_bypassed)
+        self.assertIn("p4", all_bypassed)
+
+        # 5. Runtime execution: non-bypassed guards apply by default in Instrument.place
+        prov = _FakeProvider()
+        inst = self._inst(prov)
+
+        with patch("order_guard.daily_limit_guard", return_value=(True, None)) as mock_daily, \
+             patch("order_guard.profit_guard", return_value=True) as mock_profit:
+
+            # 5a. Default: both daily_limit and profit_guard are called
+            inst.place("BUY", 100.0, 1.0, smart=False, wait_for_trend=False)
+            mock_daily.assert_called_once()
+            mock_profit.assert_called()
+
+        with patch("order_guard.daily_limit_guard", return_value=(True, None)) as mock_daily, \
+             patch("order_guard.profit_guard", return_value=True) as mock_profit:
+
+            # 5b. Bypassing only daily_limit: daily_limit is NOT called, profit_guard IS called
+            inst.place("BUY", 100.0, 1.0, smart=False, wait_for_trend=False, bypass_guards={"daily_limit"})
+            mock_daily.assert_not_called()
+            mock_profit.assert_called()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

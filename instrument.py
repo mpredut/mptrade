@@ -23,7 +23,7 @@ from providers.strategy_executor import SubmissionRefused
 import order_guard
 import order_outcomes_log as _outcomes_log
 import accepted_order_persistence
-from lock import trade_cooldown
+import lock.trade_cooldown as trade_cooldown  # Retained for namespace compatibility with test patches
 
 
 _EXECUTION_AUDIT = ExecutionAudit()
@@ -63,14 +63,30 @@ def normalize_bypassed_guards(
     legacy_bypass_profit_reference=None,
     legacy_bypass_quantity_policy=None,
 ) -> set[str]:
-    """Canonical resolver for bypassed guard identifiers (SSOT)."""
+    """Canonical resolver for bypassed guard identifiers (SSOT).
+
+    Supports fine-grained guard opt-out: any guard not in the returned set
+    executes with its standard default behavior.
+
+    Supported guard keys:
+      - 'all' / '*': bypasses all checks (emergency stop-loss exits).
+      - 'profit_guard': bypasses math reference, profit margin, and quantity policy.
+      - 'math_reference' / 'math_profit' / 'profit_margin': historical ref check.
+      - 'quantity_policy' / 'weight': dynamic weight / exposure sizing policy.
+      - 'daily_limit' / 'daily_cap': daily trade volume cap and anti-spam check.
+      - 'trend': short-term trend deferral wait.
+      - 'p1' / 'pillar1' / 'quantitative': Parabolic Surge, Weibull Exhaustion.
+      - 'p2' / 'pillar2' / 'microstructure': Orderbook Ask Wall, Funding, Whale flow.
+      - 'p3' / 'pillar3' / 'ai' / 'llm': High-stake pre-trade LLM validation.
+      - 'p4' / 'pillar4' / 'geopolitical': Geopolitical Black Swan shock shield.
+    """
     bypassed: set[str] = set()
     if legacy_bypass_profit_guard:
-        bypassed.update({"math_reference", "math_profit", "profit_margin", "quantity_policy"})
+        bypassed.update({"profit_guard", "math_reference", "math_profit", "profit_margin", "quantity_policy", "weight"})
     if legacy_bypass_profit_reference:
-        bypassed.add("math_reference")
+        bypassed.update({"math_reference", "math_profit", "profit_margin"})
     if legacy_bypass_quantity_policy:
-        bypassed.add("quantity_policy")
+        bypassed.update({"quantity_policy", "weight"})
 
     if bypass_guards is not None:
         if bypass_guards is True or bypass_guards == "all" or bypass_guards == "*":
@@ -88,13 +104,21 @@ def normalize_bypassed_guards(
 
     if "all" in bypassed or "*" in bypassed:
         bypassed.update({
-            "all", "math_reference", "math_profit", "profit_margin",
+            "all", "*", "profit_guard", "math_reference", "math_profit", "profit_margin",
             "p1", "pillar1", "quantitative",
             "p2", "pillar2", "microstructure",
             "p3", "pillar3", "ai", "llm",
             "p4", "pillar4", "geopolitical",
-            "quantity_policy", "cooldown",
+            "quantity_policy", "weight", "daily_limit", "daily_cap", "trend",
         })
+    if "profit_guard" in bypassed:
+        bypassed.update({"profit_guard", "math_reference", "math_profit", "profit_margin", "quantity_policy", "weight"})
+    if "math_reference" in bypassed or "math_profit" in bypassed or "profit_margin" in bypassed:
+        bypassed.update({"math_reference", "math_profit", "profit_margin"})
+    if "quantity_policy" in bypassed or "weight" in bypassed:
+        bypassed.update({"quantity_policy", "weight"})
+    if "daily_limit" in bypassed or "daily_cap" in bypassed:
+        bypassed.update({"daily_limit", "daily_cap"})
     if "p1" in bypassed:
         bypassed.update({"pillar1", "quantitative"})
     if "p2" in bypassed:
@@ -103,8 +127,6 @@ def normalize_bypassed_guards(
         bypassed.update({"pillar3", "ai", "llm"})
     if "p4" in bypassed:
         bypassed.update({"pillar4", "geopolitical"})
-    if "math_reference" in bypassed:
-        bypassed.update({"math_profit", "profit_margin"})
 
     return bypassed
 
@@ -294,17 +316,18 @@ class Instrument:
             legacy_bypass_quantity_policy=legacy_bypass_qty_policy,
         )
         bypass_all = "all" in bypassed_guards
-        bypass_math_ref = "math_reference" in bypassed_guards
-        bypass_quantity_policy = "quantity_policy" in bypassed_guards
-        wait_for_trend = bool(kwargs.pop("wait_for_trend", True))
-        cooldown_pair_id = kwargs.pop("cooldown_pair_id", None)
+        bypass_profit_guard = "profit_guard" in bypassed_guards or bypass_all
+        bypass_math_ref = "math_reference" in bypassed_guards or bypass_profit_guard
+        bypass_quantity_policy = "quantity_policy" in bypassed_guards or bypass_profit_guard
+        wait_for_trend = bool(kwargs.pop("wait_for_trend", True)) and ("trend" not in bypassed_guards) and not bypass_all
+        kwargs.pop("cooldown_pair_id", None)
         side_u = side.upper()
         # This narrow escape hatch exists only for drawdown BUY flows or
         # explicitly authorized aged retry salvage exits (allow_math_reference_sell=True).
         # A SELL normally must prove profitability against its historical BUY reference;
         # silently ignore the flag there so a misplaced caller argument cannot
         # weaken the exit guard unless explicitly authorized.
-        if bypass_math_ref and not legacy_bypass_profit_guard and side_u != "BUY" and not allow_math_reference_sell:
+        if bypass_math_ref and not bypass_profit_guard and side_u != "BUY" and not allow_math_reference_sell:
             print(
                 f"[GUARD] {side_u} {self.symbol}: bypass math_reference ignored; "
                 "is allowed only for BUY")
@@ -314,11 +337,12 @@ class Instrument:
             bypass_math_ref = False
         # Quantity-policy bypass reduces exposure and is therefore SELL-only.
         # Ignore it on BUY so a misplaced argument can never increase exposure.
-        if bypass_quantity_policy and side_u != "SELL":
+        if bypass_quantity_policy and not bypass_profit_guard and side_u != "SELL":
             print(
                 f"[GUARD] {side_u} {self.symbol}: bypass_quantity_policy ignored; "
                 "is allowed only for SELL")
             bypassed_guards.discard("quantity_policy")
+            bypassed_guards.discard("weight")
             bypass_quantity_policy = False
         is_binance = str(self._provider.name).casefold() == "binance"
         if cache_permit is not None and not is_binance:
@@ -385,7 +409,7 @@ class Instrument:
         # all other placement metadata remains in kwargs.
         retry_kwargs = dict(kwargs)
         retry_kwargs["bypass_guards"] = sorted(list(bypassed_guards))
-        retry_kwargs["bypass_profit_guard"] = bool(legacy_bypass_profit_guard or bypass_all)
+        retry_kwargs["bypass_profit_guard"] = bool(bypass_profit_guard or bypass_all)
         retry_kwargs["bypass_profit_reference"] = bypass_math_ref
         retry_kwargs["bypass_quantity_policy"] = bypass_quantity_policy
         retry_kwargs["wait_for_trend"] = wait_for_trend
@@ -394,15 +418,13 @@ class Instrument:
             retry_kwargs["profit_margin"] = caller_profit_margin
         if allow_math_reference_sell:
             retry_kwargs["allow_math_reference_sell"] = allow_math_reference_sell
-        if cooldown_pair_id:
-            retry_kwargs["cooldown_pair_id"] = cooldown_pair_id
         # A market order ignores the requested price, so revalidate immediately
         # before submission at the current executable price. This prevents a
         # force-market sell from passing at +1% then executing below the validated
         # margin, a financial time-of-check/time-of-use issue.
         is_market = bool(kwargs.get("force", False) or kwargs.get("market", False))
         enforce_business_minimum = not (
-            (bypass_all or legacy_bypass_profit_guard) and side_u == "SELL" and is_market)
+            (bypass_all or bypass_profit_guard) and side_u == "SELL" and is_market)
         profit_margin = None
         if caller_profit_margin is not None:
             try:
@@ -512,7 +534,8 @@ class Instrument:
                     reason = "market_price_unavailable"
                     return None
 
-            if not bypass_all:
+            profit_window_ref = None
+            if not bypass_all and not bypass_profit_guard:
                 if regime_context is None and side_u == "BUY":
                     try:
                         resolve_context = getattr(
@@ -619,7 +642,7 @@ class Instrument:
 
             # Stage 3: Post-sizing Profit & Intelligence Guards.
             # Evaluated with the non-zero finalized quantity and exact notional size.
-            if not bypass_all:
+            if not bypass_all and not bypass_profit_guard:
                 pg_kwargs = dict(
                     window_ref=profit_window_ref,
                     regime_context=regime_context,
@@ -746,7 +769,7 @@ class Instrument:
             # executable quote after final cache/version validation and before
             # any Binance cancellation. Protective bypasses intentionally
             # remain exempt.
-            final_profit_check = (not bypass_all and is_market)
+            final_profit_check = (not bypass_all and not bypass_profit_guard and is_market)
             if is_market and (final_profit_check
                               or retry_constraint_supplied):
                 final_market_price = self._provider.get_current_price(

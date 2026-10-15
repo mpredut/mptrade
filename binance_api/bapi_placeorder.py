@@ -29,7 +29,6 @@ from . import order_id_context as rc   # client_order_id and tag context moved i
 
 from . import bapi as api
 from .bapi_client import client
-from lock import trade_cooldown   # Rapid-fire gate moved into the lock package.
 from providers.strategy_executor import SubmissionRefused
 import binance_cache_health
 

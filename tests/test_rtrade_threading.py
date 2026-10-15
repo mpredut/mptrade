@@ -198,6 +198,7 @@ class RTradeThreadingTest(unittest.TestCase):
              patch.object(rtrade, "RTRADE_PAIR_DIRECTIONS", ("BUY", "SELL")), \
              patch.object(rtrade, "RTRADE_PAIR_POLL_SEC", 1), \
              patch.object(rtrade, "_trend_too_strong", return_value=False), \
+             patch.object(rtrade, "_whale_flow_blocks_side", return_value=(False, "ok")), \
              patch.object(rtrade.time, "monotonic", side_effect=[0.0, 8.0, 16.0]), \
              patch.object(rtrade.time, "sleep",
                           side_effect=[None, None, KeyboardInterrupt]):
@@ -302,6 +303,7 @@ class RTradeThreadingTest(unittest.TestCase):
              patch.object(rtrade, "RTRADE_PAIR_POLL_SEC", 1), \
              patch.object(rtrade, "RTRADE_PLACE_FAILURE_BACKOFF_SEC", 180), \
              patch.object(rtrade, "_trend_too_strong", return_value=False), \
+             patch.object(rtrade, "_whale_flow_blocks_side", return_value=(False, "ok")), \
              patch.object(rtrade.time, "monotonic", side_effect=[0.0, 8.0, 16.0]), \
              patch.object(rtrade.time, "sleep",
                           side_effect=[None, None, KeyboardInterrupt]):

@@ -19,7 +19,7 @@ from providers.market_api import api as mkt  # Single guarded proxy (Instrument.
 from providers.strategy_executor import SubmissionRefused
 import order_retry
 import accepted_order_persistence
-from lock import trade_cooldown
+import lock.trade_cooldown as trade_cooldown  # Retained for namespace compatibility with test patches
 
 def _load_float_env(name, default):
     try:
@@ -29,7 +29,6 @@ def _load_float_env(name, default):
         return default
 
 MAX_PROC = _load_float_env("MONITOR_MAX_PROC", 0.77)
-MONITOR_COOLDOWN_MULTIPLIER = _load_float_env("MONITOR_COOLDOWN_MULTIPLIER", 1.15)
 monitor_interval = 3.7
 MAX_TRACKED_ORDER_IDS = 10_000
 
