@@ -1069,6 +1069,74 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
         self.run_tick(inst, trend_up=False, now=NOW + 10)
         self.assertNotIn(sym, mt._PENDING_STOP_EXIT)
 
+    def test_bounce_recovery_triggers_take_profit_on_same_tick(self):
+        """When price recovers from bounce and crosses into TP territory, TP must execute on that same tick without a 1-tick delay."""
+        inst = FakeInstrument(
+            price=95.0,
+            free=4.0,
+            fills=[_fill("BUY", 100.0, 4.0)],
+        )
+        sym = inst.symbol
+
+        # Tick 1: Dip to 95 (-5%) with trend up -> enters bounce watch
+        self.run_tick(inst, trend_up=True, now=NOW)
+        self.assertEqual(len(inst.placed), 0, "Stop-Loss should be deferred by upward trend")
+        self.assertIn(sym, mt._SL_BOUNCE_STATE)
+
+        # Tick 2: Price surges to 110 (+10% > gain_threshold 7%). Trend down (so TP executes immediately rather than riding).
+        inst._price = 110.0
+        self.run_tick(inst, trend_up=False, now=NOW + 10)
+        self.assertEqual(len(inst.placed), 1, "Take-Profit must trigger immediately on the recovery tick without a 1-tick delay")
+        self.assertEqual(inst.placed[0]["side"], "SELL")
+        self.assertEqual(inst.placed[0]["price"], 110.0)
+        self.assertEqual(mt._LAST_EXIT_KIND.get(sym), "TP")
+        self.assertNotIn(sym, mt._SL_BOUNCE_STATE)
+
+    def test_mt_state_persists_across_restart(self):
+        """In-flight MHDSL bounce, MDHTP ride, and exit kinds must survive monitor restart via persistent state file."""
+        sym = "TESTSYM"
+        mt._SL_BOUNCE_STATE[sym] = {"started_at": NOW - 50, "peak_bounce_price": 98.0, "disaster_floor": 0.04}
+        mt._TP_RIDE_STATE[sym] = {"started_at": NOW - 30, "peak_price": 115.0, "peak_gain": 0.15}
+        mt._LAST_EXIT_KIND[sym] = "TP"
+        mt._save_mt_state()
+
+        self.assertTrue(os.path.exists(mt._MT_STATE_FILE))
+
+        # Simulate monitor restart: wipe in-memory structures
+        mt._SL_BOUNCE_STATE.clear()
+        mt._TP_RIDE_STATE.clear()
+        mt._LAST_EXIT_KIND.clear()
+
+        # Reload from disk
+        mt._load_mt_state()
+        self.assertIn(sym, mt._SL_BOUNCE_STATE)
+        self.assertEqual(mt._SL_BOUNCE_STATE[sym]["peak_bounce_price"], 98.0)
+        self.assertIn(sym, mt._TP_RIDE_STATE)
+        self.assertEqual(mt._TP_RIDE_STATE[sym]["peak_price"], 115.0)
+        self.assertEqual(mt._LAST_EXIT_KIND.get(sym), "TP")
+
+    def test_smart_sl_grace_cleared_on_exit(self):
+        """Smart-SL grace tracker entries must be cleaned up when an exit executes."""
+        from intelligence.external.guards.smart_stop_loss_guard import _GRACE_TRACKER
+        inst = FakeInstrument(
+            price=95.0,
+            free=4.0,
+            fills=[_fill("BUY", 100.0, 4.0)],
+        )
+        sym = inst.symbol
+        _GRACE_TRACKER[sym] = {
+            "start_ts": NOW - 10,
+            "initial_loss_pct": 5.0,
+            "lost_threshold_pct": 3.3,
+            "provider": "binance",
+        }
+
+        # Trend down -> STOP loss executes
+        self.run_tick(inst, trend_up=False, now=NOW)
+        self.assertEqual(len(inst.placed), 1)
+        self.assertEqual(inst.placed[0]["side"], "SELL")
+        self.assertNotIn(sym, _GRACE_TRACKER, "Active Smart-SL grace must be cleared after protective STOP placement")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

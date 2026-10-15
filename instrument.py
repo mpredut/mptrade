@@ -93,7 +93,7 @@ def normalize_bypassed_guards(
             "p2", "pillar2", "microstructure",
             "p3", "pillar3", "ai", "llm",
             "p4", "pillar4", "geopolitical",
-            "quantity_policy",
+            "quantity_policy", "cooldown",
         })
     if "p1" in bypassed:
         bypassed.update({"pillar1", "quantitative"})
@@ -658,9 +658,14 @@ class Instrument:
                 def commit(self, *args, **kwargs):
                     pass
 
+            is_stop_loss = bool(
+                kwargs.get("is_stop_loss")
+                or str(kwargs.get("kind", "")).upper() == "STOP"
+                or str(kwargs.get("motivation", "")).upper() == "STOP"
+            )
             slot_ctx = (
                 contextlib.nullcontext(_BypassSlot())
-                if "cooldown" in bypassed_guards
+                if ("cooldown" in bypassed_guards or bypass_all or is_stop_loss)
                 else trade_cooldown.trade_slot(side_u, self.symbol, pair_id=cooldown_pair_id)
             )
 

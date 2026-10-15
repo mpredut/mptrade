@@ -272,6 +272,11 @@ class SmartStopLossGuard:
 
         # 4. Crash / Active Cascade Detection: dumping with heavy momentum
         if taker_ratio < 0.70 and divergence_regime == "aggressive_shorting":
+            tracker = _load_grace_state()
+            if sym_key in tracker:
+                tracker.pop(sym_key, None)
+                if not is_sim:
+                    _save_grace_state()
             reason = f"active_crash_cascade (taker_ratio={taker_ratio:.2f}, regime={divergence_regime})"
             print(f"🛑 [P2 · SMART-SL] {sym_key}: {reason} -> executing stop-loss without delay")
             return True, reason, meta
@@ -378,6 +383,11 @@ class SmartStopLossGuard:
                     return True, reason, meta
 
         # Microstructure not supportive of wick bounce
+        tracker = _load_grace_state()
+        if sym_key in tracker:
+            tracker.pop(sym_key, None)
+            if not is_sim:
+                _save_grace_state()
         return True, "microstructure_not_supportive", meta
 
     def on_recovered(
@@ -529,3 +539,14 @@ def clear_smart_stop_loss_if_recovered(
         buy_price=buy_price,
         batch=batch,
     )
+
+
+def clear_smart_stop_loss(symbol: str, *, provider: Optional[str] = None) -> None:
+    """Clear any active grace state for symbol across in-memory tracker and persistent state."""
+    sym_key = symbol.upper()
+    tracker = _load_grace_state()
+    if sym_key in tracker:
+        grace_info = tracker.pop(sym_key, None)
+        is_sim = _is_simulated_provider(provider or (grace_info.get("provider") if isinstance(grace_info, dict) else None))
+        if not is_sim:
+            _save_grace_state()

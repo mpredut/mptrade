@@ -23,6 +23,8 @@ from binance_api import bapi_allorders as apiorders
 # Placement and WebSocket paths remain Binance-specific.
 from providers.market_api import api as mkt
 from order_rollback import restore_cancelled_orders
+import cachepaths
+from state_io import atomic_write_json
 
 import utils as u
 import log
@@ -233,6 +235,11 @@ def clear_position_stats_cache():
     _PENDING_STOP_EXIT.clear()
     _hard_tp_last.clear()
     _notified_trade_ids.clear()
+    if "_MT_STATE_FILE" in globals() and os.path.exists(_MT_STATE_FILE):
+        try:
+            os.remove(_MT_STATE_FILE)
+        except OSError:
+            pass
 
 
 def _make_order_signature(orders):
@@ -349,6 +356,75 @@ _TP_RIDE_STATE: Dict[str, Dict[str, Any]] = {}
 _REENTRY_STATE: Dict[str, Dict[str, Any]] = {}
 _LAST_EXIT_KIND: Dict[str, str] = {}
 _PENDING_STOP_EXIT: Dict[str, Dict[str, Any]] = {}
+
+_MT_STATE_FILE = cachepaths.cache_path("mt_state.json")
+_MT_PERSISTENCE_ENABLED = os.environ.get("MT_DISABLE_STATE_PERSISTENCE", "0").lower() not in ("1", "true", "yes")
+
+
+def _save_mt_state():
+    """Durably persist in-flight MHDSL bounce, MDHTP ride, and pending stop exits."""
+    if not _MT_PERSISTENCE_ENABLED:
+        return
+    try:
+        data = {
+            "version": 1,
+            "ts": time.time(),
+            "sl_bounce_state": _SL_BOUNCE_STATE,
+            "tp_ride_state": _TP_RIDE_STATE,
+            "reentry_state": _REENTRY_STATE,
+            "last_exit_kind": _LAST_EXIT_KIND,
+            "pending_stop_exit": _PENDING_STOP_EXIT,
+        }
+        atomic_write_json(_MT_STATE_FILE, data, indent=2)
+    except Exception:
+        pass
+
+
+def _load_mt_state():
+    """Restore in-flight MHDSL/MDHTP states upon monitor restart to prevent state loss."""
+    if not _MT_PERSISTENCE_ENABLED or not os.path.exists(_MT_STATE_FILE):
+        return
+    try:
+        with open(_MT_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return
+        now_curr = time.time()
+        for sym, state in (data.get("sl_bounce_state") or {}).items():
+            if isinstance(state, dict):
+                started = float(state.get("started_at", 0))
+                if started > 0 and (now_curr - started) < 86400:
+                    _SL_BOUNCE_STATE[str(sym).upper()] = state
+        for sym, state in (data.get("tp_ride_state") or {}).items():
+            if isinstance(state, dict):
+                started = float(state.get("started_at", 0))
+                if started > 0 and (now_curr - started) < 86400:
+                    _TP_RIDE_STATE[str(sym).upper()] = state
+        for sym, state in (data.get("reentry_state") or {}).items():
+            if isinstance(state, dict):
+                _REENTRY_STATE[str(sym).upper()] = state
+        for sym, kind in (data.get("last_exit_kind") or {}).items():
+            if isinstance(kind, str):
+                _LAST_EXIT_KIND[str(sym).upper()] = kind
+        for sym, state in (data.get("pending_stop_exit") or {}).items():
+            if isinstance(state, dict):
+                p_ts = float(state.get("time", 0))
+                if p_ts > 0 and (now_curr - p_ts) < 300:
+                    _PENDING_STOP_EXIT[str(sym).upper()] = state
+    except Exception:
+        pass
+
+
+def _clear_smart_sl_exit(symbol: str, provider: Optional[str] = None):
+    """Cleanly purge Smart-SL grace records whenever an actual protective exit executes."""
+    try:
+        from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss
+        clear_smart_stop_loss(symbol, provider=provider)
+    except Exception:
+        pass
+
+
+_load_mt_state()
 
 
 def _load_mt_conf(path=None):
@@ -606,6 +682,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 if placed or hard_tp_outcome_ctx.get("state") == "unknown":
                     _hard_tp_last[symbol] = current_time_s
                     _LAST_EXIT_KIND[symbol] = "TP"
+                    _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
+                    _save_mt_state()
                     return   # Already sold this tick; do not use stale balance below.
             else:
                 print(f"[HARD-TP] {symbol} +{price_increase*100:.1f}% but in cooldown (the last one "
@@ -627,15 +705,17 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             provider=getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None),
         )
 
-        in_sl_territory = (
+        sl_price_territory = (
             price_decrease > lost_threshold
             or u.are_close(price_decrease, lost_threshold, target_tolerance_percent=MT_ARE_CLOSE_TOLERANCE_PCT)
-            or symbol in _SL_BOUNCE_STATE
         )
 
-        if not in_sl_territory and symbol in _SL_BOUNCE_STATE:
+        if not sl_price_territory and symbol in _SL_BOUNCE_STATE:
             print(f"[{symbol}] Price recovered above stop-loss threshold ({price_decrease*100:.2f}% < {lost_threshold*100:.2f}%) — clearing bounce watch")
             _SL_BOUNCE_STATE.pop(symbol, None)
+            _save_mt_state()
+
+        in_sl_territory = sl_price_territory or symbol in _SL_BOUNCE_STATE
 
         prev_tp_state = dict(_TP_RIDE_STATE.get(symbol, {}))
         tp_decision = (
@@ -671,18 +751,24 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                     if placed or tp_outcome_ctx.get("state") == "unknown":
                         _TP_RIDE_STATE.pop(symbol, None)
                         _LAST_EXIT_KIND[symbol] = "TP"
+                        _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
+                        _save_mt_state()
                     elif prev_tp_state:
                         _TP_RIDE_STATE[symbol] = prev_tp_state
+                        _save_mt_state()
                 else:
                     print(f"No can sell (sellable_qty={sellable_qty})")
                     if prev_tp_state:
                         _TP_RIDE_STATE[symbol] = prev_tp_state
+                        _save_mt_state()
         elif in_sl_territory:
             pending_stop = _PENDING_STOP_EXIT.get(symbol)
             if pending_stop:
                 if sellable_qty <= 0 or (min_qty and sellable_qty < min_qty):
                     print(f"[{symbol}] Pending Stop-Loss resolved: position is closed or below min_qty.")
                     _PENDING_STOP_EXIT.pop(symbol, None)
+                    _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
+                    _save_mt_state()
                 else:
                     active_sell_exists = False
                     open_orders_fn = getattr(inst, "open_orders", None)
@@ -701,6 +787,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                     else:
                         print(f"[{symbol}] Pending Stop-Loss reconciliation timeout ({elapsed}s >= 60s) with no active sell order — allowing retry.")
                         _PENDING_STOP_EXIT.pop(symbol, None)
+                        _save_mt_state()
 
             _TP_RIDE_STATE.pop(symbol, None)
             prev_sl_state = dict(_SL_BOUNCE_STATE.get(symbol, {}))
@@ -776,12 +863,15 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                         safeback_seconds=sbs, force=True, cancelorders=True,
                         hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=True,
                         bypass_guards={"all"}, wait_for_trend=False,
+                        kind="STOP", is_stop_loss=True,
                         _outcome_context=outcome_ctx,
                     )
                 if placed:
                     _SL_BOUNCE_STATE.pop(symbol, None)
                     _PENDING_STOP_EXIT.pop(symbol, None)
                     _LAST_EXIT_KIND[symbol] = "STOP"
+                    _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
+                    _save_mt_state()
 
                 # Rollback / restore resting TP order if Stop-Loss placement failed
                 if not placed:
@@ -798,9 +888,12 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                             "price": current_price,
                             "reason": outcome_ctx.get("reason", "unknown"),
                         }
+                        _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
+                        _save_mt_state()
                     else:
                         if prev_sl_state:
                             _SL_BOUNCE_STATE[symbol] = prev_sl_state
+                            _save_mt_state()
                         if cancelled_tp_orders:
                             restore_cancelled_orders(
                                 cancelled_tp_orders,
@@ -824,6 +917,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 _PENDING_STOP_EXIT.pop(symbol, None)
             if symbol in _TP_RIDE_STATE:
                 _TP_RIDE_STATE.pop(symbol, None)
+            _save_mt_state()
             from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss_if_recovered
             _prov = getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None)
             clear_smart_stop_loss_if_recovered(
@@ -916,9 +1010,12 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             if placed or reentry_outcome_ctx.get("state") == "unknown":
                 _REENTRY_STATE.pop(symbol, None)
                 _LAST_EXIT_KIND.pop(symbol, None)
+                _save_mt_state()
             elif prev_reentry_state:
                 _REENTRY_STATE[symbol] = prev_reentry_state
+                _save_mt_state()
 
+    _save_mt_state()
     return
 
     #except Exception as e:

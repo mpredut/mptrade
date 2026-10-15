@@ -1021,6 +1021,33 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         self.assertNotIn("p3", bypassed)
         self.assertNotIn("p4", bypassed)
 
+    def test_emergency_stop_loss_bypasses_cooldown(self):
+        """Emergency Stop-Loss exits must never be blocked by rapid-fire cooldown."""
+        prov = _FakeProvider()
+        inst = self._inst(prov)
+
+        class BlockedSlot:
+            allowed = False
+            info = {"side": "SELL", "timestamp": time.time() - 5}
+            def commit(self, *a, **kw): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+
+        with patch("lock.trade_cooldown.trade_slot", return_value=BlockedSlot()), \
+             patch("order_guard.daily_limit_guard", return_value=(True, "ok")), \
+             patch("order_guard.profit_guard", return_value=True):
+            # Normal SELL is blocked by cooldown
+            res_normal = inst.place("SELL", 100.0, 1.0, smart=False, wait_for_trend=False)
+            self.assertIsNone(res_normal)
+
+            # Emergency STOP with kind="STOP" bypasses cooldown
+            res_stop = inst.place("SELL", 100.0, 1.0, smart=False, wait_for_trend=False, kind="STOP")
+            self.assertIsNotNone(res_stop)
+
+            # Emergency STOP with bypass_guards={"all"} bypasses cooldown
+            res_all = inst.place("SELL", 100.0, 1.0, smart=False, wait_for_trend=False, bypass_guards={"all"})
+            self.assertIsNotNone(res_all)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

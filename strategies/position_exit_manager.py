@@ -180,6 +180,13 @@ class PositionExitConfig:
     reentry_peak_relative: bool = False        # Enable peak-relative pullback across all regimes
     allow_external_cache: bool = True          # False in replay/backtests to enforce strict simulation determinism
 
+def _clear_smart_sl(symbol: str, provider: Optional[str] = None) -> None:
+    try:
+        from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss
+        clear_smart_stop_loss(symbol, provider=provider)
+    except Exception:
+        pass
+
 
 class PositionExitManager:
     """Fleet-wide centralized manager for Stop-Loss and Take-Profit position exits."""
@@ -296,6 +303,16 @@ class PositionExitManager:
     # Stop-Loss: Evaluation Engine (MHDSL)
     # -------------------------------------------------------------------------
     def evaluate_stop_loss(
+        self,
+        snapshot: PositionSnapshot,
+        custom_threshold: Optional[float] = None,
+    ) -> ExitDecision:
+        decision = self._evaluate_stop_loss_core(snapshot, custom_threshold=custom_threshold)
+        if decision.action == ExitAction.SELL or decision.should_exit:
+            _clear_smart_sl(snapshot.symbol, snapshot.provider)
+        return decision
+
+    def _evaluate_stop_loss_core(
         self,
         snapshot: PositionSnapshot,
         custom_threshold: Optional[float] = None,
@@ -530,10 +547,17 @@ class PositionExitManager:
             metadata={"priority": 3, "loss": price_decrease},
         )
 
-    # -------------------------------------------------------------------------
-    # Take-Profit: Evaluation Engine (MDHTP)
-    # -------------------------------------------------------------------------
     def evaluate_take_profit(
+        self,
+        snapshot: PositionSnapshot,
+        custom_threshold: Optional[float] = None,
+    ) -> ExitDecision:
+        decision = self._evaluate_take_profit_core(snapshot, custom_threshold=custom_threshold)
+        if decision.action == ExitAction.SELL or decision.should_exit:
+            _clear_smart_sl(snapshot.symbol, snapshot.provider)
+        return decision
+
+    def _evaluate_take_profit_core(
         self,
         snapshot: PositionSnapshot,
         custom_threshold: Optional[float] = None,
