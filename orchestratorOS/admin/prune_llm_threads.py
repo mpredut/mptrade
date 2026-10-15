@@ -461,12 +461,72 @@ def prune_old_cli_threads(
     return (len(candidate_cids), total_bytes_freed)
 
 
+def clean_orphan_summaries(cli_base: str = DEFAULT_CLI_BASE, dry_run: bool = False) -> int:
+    """Find and remove records from conversation_summaries.db that have no physical .db on disk."""
+    db_path = os.path.join(cli_base, "conversation_summaries.db")
+    conv_dir = os.path.join(cli_base, "conversations")
+    if not os.path.exists(db_path) or not os.path.isdir(conv_dir):
+        return 0
+
+    active_cid = os.environ.get("CURRENT_CONVERSATION_ID")
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT conversation_id, title FROM conversation_summaries")
+    rows = cur.fetchall()
+
+    orphans: Set[str] = set()
+    for cid, title in rows:
+        if active_cid and cid == active_cid:
+            continue
+        db_file = os.path.join(conv_dir, f"{cid}.db")
+        if not os.path.exists(db_file):
+            orphans.add(cid)
+            logger.info("Found orphan summary: %s (%s)", cid, title)
+
+    if not orphans:
+        logger.info("No orphan summaries found.")
+        conn.close()
+        return 0
+
+    if dry_run:
+        logger.info("[DRY RUN] Would remove %d orphan summaries.", len(orphans))
+        conn.close()
+        return len(orphans)
+
+    placeholders = ",".join("?" for _ in orphans)
+    cur.execute(f"DELETE FROM conversation_summaries WHERE conversation_id IN ({placeholders})", list(orphans))
+    conn.commit()
+    conn.close()
+
+    for pb_name in ["agyhub_summaries_proto.pb", "jetbox_summaries_proto.pb"]:
+        pb_path = os.path.join(cli_base, pb_name)
+        if os.path.exists(pb_path):
+            filter_proto_file(pb_path, orphans)
+
+    for cid in orphans:
+        pbtxt = os.path.join(cli_base, "annotations", f"{cid}.pbtxt")
+        if os.path.exists(pbtxt):
+            try:
+                os.remove(pbtxt)
+            except Exception:
+                pass
+
+    logger.info("Successfully cleaned %d orphan summaries from database.", len(orphans))
+    return len(orphans)
+
+
 # Alias for canonical naming
 prune_llm_threads = prune_old_cli_threads
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Prune old automated LLM threads in Antigravity CLI.")
+    parser.add_argument(
+        "--clean-orphans",
+        action="store_true",
+        help="Remove entries from conversation_summaries.db that have no physical .db on disk.",
+    )
     parser.add_argument(
         "--days",
         type=float,
@@ -510,6 +570,10 @@ def main() -> None:
         format="[%(asctime)s] [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+
+    if args.clean_orphans:
+        clean_orphan_summaries(cli_base=args.cli_base, dry_run=args.dry_run)
+        return
 
     prune_old_cli_threads(
         cli_base=args.cli_base,
