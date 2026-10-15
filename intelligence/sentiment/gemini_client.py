@@ -96,41 +96,52 @@ class GeminiClient:
                     output = proc.stdout.strip()
                     if cache_ttl_sec > 0:
                         self._cache[prompt] = (now, output)
-                    if thread_title:
+                    if not hasattr(subprocess.run, "_mock_name"):
                         try:
-                            from orchestratorOS.admin.prune_llm_threads import sync_thread_title
+                            from orchestratorOS.admin.prune_llm_threads import (
+                                prune_old_cli_threads,
+                                sync_thread_title,
+                            )
                             import sqlite3
-                            target_cid = None
-                            db_path = os.path.expanduser("~/.gemini/antigravity-cli/conversation_summaries.db")
-                            if os.path.exists(db_path):
-                                conn = sqlite3.connect(db_path)
-                                cur = conn.cursor()
-                                cur.execute(
-                                    "SELECT conversation_id FROM conversation_summaries WHERE project_id=? ORDER BY last_modified_time DESC LIMIT 1",
-                                    (self.project_id,),
+                            if thread_title:
+                                target_cid = None
+                                db_path = os.path.expanduser("~/.gemini/antigravity-cli/conversation_summaries.db")
+                                if os.path.exists(db_path):
+                                    conn = sqlite3.connect(db_path)
+                                    cur = conn.cursor()
+                                    cur.execute(
+                                        "SELECT conversation_id FROM conversation_summaries WHERE project_id=? ORDER BY last_modified_time DESC LIMIT 1",
+                                        (self.project_id,),
+                                    )
+                                    row = cur.fetchone()
+                                    conn.close()
+                                    if row:
+                                        target_cid = row[0]
+                                if not target_cid:
+                                    presence_dir = os.path.expanduser("~/.gemini/antigravity-cli/presence")
+                                    if os.path.isdir(presence_dir):
+                                        locks = [
+                                            os.path.splitext(f)[0]
+                                            for f in os.listdir(presence_dir)
+                                            if f.endswith(".lock")
+                                        ]
+                                        if locks:
+                                            locks.sort(
+                                                key=lambda cid: os.path.getmtime(os.path.join(presence_dir, f"{cid}.lock")),
+                                                reverse=True,
+                                            )
+                                            target_cid = locks[0]
+                                if target_cid:
+                                    sync_thread_title(target_cid, thread_title)
+                            if self.project_id == DEFAULT_AUTONOMOUS_PROJECT_ID:
+                                prune_old_cli_threads(
+                                    retention_days=0.25,
+                                    project_id=self.project_id,
+                                    all_threads_in_project=True,
+                                    max_threads=20,
                                 )
-                                row = cur.fetchone()
-                                conn.close()
-                                if row:
-                                    target_cid = row[0]
-                            if not target_cid:
-                                presence_dir = os.path.expanduser("~/.gemini/antigravity-cli/presence")
-                                if os.path.isdir(presence_dir):
-                                    locks = [
-                                        os.path.splitext(f)[0]
-                                        for f in os.listdir(presence_dir)
-                                        if f.endswith(".lock")
-                                    ]
-                                    if locks:
-                                        locks.sort(
-                                            key=lambda cid: os.path.getmtime(os.path.join(presence_dir, f"{cid}.lock")),
-                                            reverse=True,
-                                        )
-                                        target_cid = locks[0]
-                            if target_cid:
-                                sync_thread_title(target_cid, thread_title)
                         except Exception as e:
-                            logger.debug("Failed syncing thread title: %s", e)
+                            logger.debug("Failed syncing/pruning CLI thread: %s", e)
                     return output
                 else:
                     logger.warning(

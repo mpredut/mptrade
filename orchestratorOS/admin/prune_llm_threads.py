@@ -20,6 +20,7 @@ DEFAULT_CLI_BASE = os.path.expanduser("~/.gemini/antigravity-cli")
 DEFAULT_PROJECTS = ["autonommptrade", "default-cli-project", "f5f9d01f-01e5-4fac-80f2-97364688afab"]
 PROTECTED_PROJECT_NAMES = ["mptrade"]
 DEFAULT_RETENTION_DAYS = 1.0  # 1 day default
+DEFAULT_MAX_AUTONOMOUS_THREADS = 30  # Keep well below agy's 500-thread global eviction cap
 
 AUTONOMOUS_PROMPT_PATTERNS = [
     "ntfy macro veto alert",
@@ -338,8 +339,9 @@ def prune_old_cli_threads(
     all_threads_in_project: bool = False,
     exclude_cids: Optional[Set[str]] = None,
     dry_run: bool = False,
+    max_threads: Optional[int] = DEFAULT_MAX_AUTONOMOUS_THREADS,
 ) -> Tuple[int, int]:
-    """Find and delete automated LLM threads older than retention_days.
+    """Find and delete automated LLM threads older than retention_days or exceeding max_threads.
 
     Returns:
         (pruned_count, total_bytes_freed)
@@ -384,14 +386,24 @@ def prune_old_cli_threads(
     rows = cursor.fetchall()
 
     candidate_cids: Set[str] = set()
+    kept_automated: List[Tuple[datetime, str]] = []
     for cid, title, preview, ts_str, proj in rows:
         if cid in protected or proj in protected_projects:
             continue
+        is_auto = all_threads_in_project or is_automated_thread(title, preview)
+        if not is_auto:
+            continue
         dt = parse_db_timestamp(ts_str)
         if dt is None or dt < cutoff:
-            # Must match automated thread pattern unless all_threads_in_project is explicitly set
-            if all_threads_in_project or is_automated_thread(title, preview):
-                candidate_cids.add(cid)
+            candidate_cids.add(cid)
+        else:
+            kept_automated.append((dt, cid))
+
+    # Enforce hard count cap so autonomous threads never approach agy's 500-conversation eviction limit
+    if max_threads is not None and max_threads >= 0 and len(kept_automated) > max_threads:
+        kept_automated.sort(key=lambda item: item[0], reverse=True)
+        for _, overflow_cid in kept_automated[max_threads:]:
+            candidate_cids.add(overflow_cid)
 
     if not candidate_cids:
         logger.info("No candidate threads older than %.1f days found in %s.", retention_days, target_projects)
@@ -399,10 +411,10 @@ def prune_old_cli_threads(
         return (0, 0)
 
     logger.info(
-        "Found %d candidate automated threads older than %.1f days (cutoff: %s UTC).",
+        "Found %d candidate automated threads to prune (cutoff: %s UTC, max_threads=%s).",
         len(candidate_cids),
-        retention_days,
         cutoff.strftime("%Y-%m-%d %H:%M:%S"),
+        max_threads,
     )
 
     total_bytes_freed = 0
@@ -410,6 +422,8 @@ def prune_old_cli_threads(
     for cid in candidate_cids:
         files_to_check = [
             os.path.join(cli_base, "conversations", f"{cid}.db"),
+            os.path.join(cli_base, "conversations", f"{cid}.db-shm"),
+            os.path.join(cli_base, "conversations", f"{cid}.db-wal"),
             os.path.join(cli_base, "annotations", f"{cid}.pbtxt"),
             os.path.join(cli_base, "presence", f"{cid}.lock"),
         ]
@@ -551,6 +565,12 @@ def main() -> None:
         help="Prune all threads older than retention in the project, not only automated ones.",
     )
     parser.add_argument(
+        "--max-threads",
+        type=int,
+        default=DEFAULT_MAX_AUTONOMOUS_THREADS,
+        help=f"Maximum number of automated threads to retain (default: {DEFAULT_MAX_AUTONOMOUS_THREADS}).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Simulate pruning without modifying files or database.",
@@ -581,6 +601,7 @@ def main() -> None:
         project_id=args.project,
         all_threads_in_project=args.all,
         dry_run=args.dry_run,
+        max_threads=args.max_threads,
     )
 
 

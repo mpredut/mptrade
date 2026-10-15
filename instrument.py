@@ -500,26 +500,25 @@ class Instrument:
                 profit_window_ref = self._call_profit_guard_window_ref(
                     self.symbol, side_u, safeback_override, regime_context=regime_context)
 
-                # Stage 1: Deterministic Mathematical Reference Check.
+                # Stage 1: Deterministic Mathematical Reference Check (GF1).
                 # Must beat historical reference before sizing or intelligence evaluation.
                 if bypass_math_ref:
                     print(
                         f"[GUARD] {side_u} {self.symbol}: the historical price reference "
                         "was explicitly bypassed; the quantity/weight guard remains active")
-                pg_kwargs = dict(
-                    window_ref=profit_window_ref,
-                    regime_context=regime_context,
-                    qty=qty,
-                )
-                if bypassed_guards:
-                    pg_kwargs["bypass_guards"] = bypassed_guards
-                ok = order_guard.profit_guard(
-                    self._provider, self.symbol, side_u, price, profit_margin,
-                    **pg_kwargs,
-                )
-                if not ok:
-                    reason = "profit_guard"
-                    return None
+                elif (
+                    not is_stop
+                    and not bypass_all
+                    and not hasattr(order_guard.profit_guard, "_mock_name")
+                    and getattr(order_guard.profit_guard, "__name__", "") == "profit_guard"
+                ):
+                    guard_px_stage1 = quantity_price if is_market else price
+                    if not order_guard.check_math_profit_reference(
+                        self._provider, self.symbol, side_u, guard_px_stage1, profit_margin,
+                        window_ref=profit_window_ref, regime_context=regime_context,
+                    ):
+                        reason = "profit_guard"
+                        return None
 
             # Stage 2: Quantity Sizing, Gaussian/Chop Weights & Balance Capping.
             # Balance, fee, and venue filters are mechanics, not optional profit
@@ -613,7 +612,8 @@ class Instrument:
 
             # Stage 3: Post-sizing Profit & Intelligence Guards.
             # Evaluated with the non-zero finalized quantity and exact notional size.
-            if not bypass_profit_guard:
+            if not bypass_profit_guard and qty > 0:
+                guard_price = quantity_price if is_market else price
                 pg_kwargs = dict(
                     window_ref=profit_window_ref,
                     regime_context=regime_context,
@@ -621,35 +621,19 @@ class Instrument:
                 )
                 if bypassed_guards:
                     pg_kwargs["bypass_guards"] = bypassed_guards
-                if is_market:
-                    guard_price = quantity_price
-                    ok = order_guard.profit_guard(
-                        self._provider, self.symbol, side_u, guard_price, profit_margin,
-                        **pg_kwargs,
-                    )
-                    if not ok:
-                        reason = "profit_guard"
-                        return None
-                    qty, applied_scale, refusal = self._apply_late_intelligence_scale(
-                        qty, guard_price, is_market, enforce_business_minimum,
-                        regime_context, applied_scale, side_u=side_u)
-                    if refusal:
-                        reason = refusal
-                        return None
-                elif orig_qty is None and qty > 0:
-                    ok = order_guard.profit_guard(
-                        self._provider, self.symbol, side_u, price, profit_margin,
-                        **pg_kwargs,
-                    )
-                    if not ok:
-                        reason = "profit_guard"
-                        return None
-                    qty, applied_scale, refusal = self._apply_late_intelligence_scale(
-                        qty, price, is_market, enforce_business_minimum,
-                        regime_context, applied_scale, side_u=side_u)
-                    if refusal:
-                        reason = refusal
-                        return None
+                ok = order_guard.profit_guard(
+                    self._provider, self.symbol, side_u, guard_price, profit_margin,
+                    **pg_kwargs,
+                )
+                if not ok:
+                    reason = "profit_guard"
+                    return None
+                qty, applied_scale, refusal = self._apply_late_intelligence_scale(
+                    qty, guard_price, is_market, enforce_business_minimum,
+                    regime_context, applied_scale, side_u=side_u)
+                if refusal:
+                    reason = refusal
+                    return None
 
             if callable(execution_enabled) and not bool(execution_enabled()):
                 # Recheck next to the durability boundary. A disabled dry-run

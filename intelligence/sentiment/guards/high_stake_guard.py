@@ -122,6 +122,12 @@ def collect_pretrade_telemetry(
     return telemetry
 
 
+import time
+
+DEFAULT_HIGH_STAKE_CACHE_TTL_SEC = 600.0
+_HIGH_STAKE_DECISION_CACHE: Dict[tuple[str, str, int], tuple[float, GuardDecision]] = {}
+
+
 class HighStakeGuard:
     """Invokes LLM reasoning before executing large BUY purchases (>= 1000 EUR).
 
@@ -136,11 +142,19 @@ class HighStakeGuard:
         min_notional_eur: float = DEFAULT_MIN_NOTIONAL_EUR,
         timeout_sec: float = 25.0,
         fallback_action: str = "allow",  # "allow" | "downscale" | "veto"
+        cache_ttl_sec: Optional[float] = None,
     ) -> None:
+        self._explicit_client = gemini_client is not None
         self.gemini_client = gemini_client or GeminiClient()
         self.min_notional_eur = float(min_notional_eur)
         self.timeout_sec = float(timeout_sec)
         self.fallback_action = fallback_action.strip().lower()
+        if cache_ttl_sec is not None:
+            self.cache_ttl_sec = float(cache_ttl_sec)
+        elif not self._explicit_client and getattr(self.gemini_client, "_custom_runner", None) is None:
+            self.cache_ttl_sec = DEFAULT_HIGH_STAKE_CACHE_TTL_SEC
+        else:
+            self.cache_ttl_sec = 0.0
 
     def check(
         self,
@@ -172,6 +186,13 @@ class HighStakeGuard:
                 f"below_high_stake_threshold ({notional:.2f} < {self.min_notional_eur:.2f} EUR)",
                 notional_eur=notional,
             )
+
+        now = time.time()
+        cache_key = (symbol.upper(), side_norm, int(notional // 100.0))
+        if self.cache_ttl_sec > 0:
+            cached = _HIGH_STAKE_DECISION_CACHE.get(cache_key)
+            if cached is not None and (now - cached[0]) < self.cache_ttl_sec:
+                return cached[1]
 
         # 3. High-stake order detected: build rich multi-pillar telemetry context for LLM
         effective_telemetry = telemetry if telemetry is not None else collect_pretrade_telemetry(
@@ -241,7 +262,7 @@ class HighStakeGuard:
         scale = float(resp.get("suggested_scale", 1.0))
 
         if decision_str == "REJECTED":
-            return GuardDecision.veto(
+            dec = GuardDecision.veto(
                 "HighStakeGuard",
                 f"Gemini vetoed high-stake BUY: {reason}",
                 notional_eur=notional,
@@ -249,7 +270,7 @@ class HighStakeGuard:
             )
         elif decision_str == "DOWNSCALE":
             clamped_scale = max(0.1, min(1.0, scale))
-            return GuardDecision.downscale(
+            dec = GuardDecision.downscale(
                 "HighStakeGuard",
                 scale=clamped_scale,
                 reason=f"Gemini downscaled high-stake BUY: {reason}",
@@ -257,9 +278,13 @@ class HighStakeGuard:
                 gemini_reason=reason,
             )
         else:
-            return GuardDecision.allow(
+            dec = GuardDecision.allow(
                 "HighStakeGuard",
                 f"Gemini approved high-stake BUY: {reason}",
                 notional_eur=notional,
                 gemini_reason=reason,
             )
+
+        if self.cache_ttl_sec > 0:
+            _HIGH_STAKE_DECISION_CACHE[cache_key] = (now, dec)
+        return dec

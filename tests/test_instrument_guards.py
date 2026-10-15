@@ -845,7 +845,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
                         patch.object(
                             provider, "profit_guard_window_ref", return_value=None) as window, \
                         patch("order_guard.profit_guard",
-                              side_effect=[True, True, final_allowed]) as guard:
+                              side_effect=[True, final_allowed]) as guard:
                     result = inst.place(
                         "BUY", 100.0, 1.0, smart=False, wait_for_trend=False,
                         force=True, caller_owns_retry=True)
@@ -853,11 +853,26 @@ class InstrumentGuardsTestCase(unittest.TestCase):
                     SYMBOL, provider_name=inst.provider_name)
                 window.assert_called_once_with(
                     SYMBOL, "BUY", None, regime_context=ctx)
-                self.assertEqual(guard.call_count, 3)
+                self.assertEqual(guard.call_count, 2)
                 for call in guard.call_args_list:
                     self.assertIs(call.kwargs["regime_context"], ctx)
                 self.assertEqual(result is not None, final_allowed)
                 self.assertEqual(len(provider.placed), int(final_allowed))
+
+    def test_profit_guard_not_called_when_quantity_refused(self):
+        """Ensure post-sizing profit_guard (and LLM HighStakeGuard) never runs when 24h weight policy refuses qty."""
+        self._clear_state()
+
+        class _ZeroWeightProvider(_FakeProvider):
+            def policy_cap_quantity(self, *args, **kwargs):
+                return 0.0
+
+        provider = _ZeroWeightProvider(price=100.0)
+        inst = self._inst(provider)
+        with patch("order_guard.profit_guard", return_value=True) as guard:
+            result = inst.place("BUY", 100.0, 10.0, smart=False, wait_for_trend=False, caller_owns_retry=True)
+        self.assertIsNone(result)
+        guard.assert_not_called()
 
     def test_window_reference_hook_compatibility_and_internal_type_error(self):
         provider = _FakeProvider()

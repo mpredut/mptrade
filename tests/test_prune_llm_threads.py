@@ -236,4 +236,47 @@ class TestPruneCliThreads:
         )
         assert pruned_protected == 0
 
+    def test_max_threads_cap_and_wal_cleanup(self, tmp_path):
+        cli_base = str(tmp_path / "cli")
+        os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
+        db_path = os.path.join(cli_base, "conversation_summaries.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE conversation_summaries (
+                conversation_id text PRIMARY KEY,
+                title text,
+                preview text,
+                last_modified_time datetime,
+                project_id text
+            )
+        """)
+        now = datetime.now(timezone.utc)
+        for i in range(5):
+            cid = f"auto-recent-{i}"
+            ts = (now - timedelta(minutes=10 - i)).isoformat()
+            conn.execute(
+                "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)",
+                (cid, "ntfy-guard", "Automated reasoning", ts, "autonommptrade"),
+            )
+            for ext in (".db", ".db-shm", ".db-wal"):
+                with open(os.path.join(cli_base, "conversations", f"{cid}{ext}"), "w") as f:
+                    f.write("data")
+        conn.commit()
+        conn.close()
+
+        pruned, _ = prune_old_cli_threads(
+            cli_base=cli_base,
+            retention_days=1.0,
+            max_threads=2,
+            dry_run=False,
+        )
+        assert pruned == 3
+
+        conn = sqlite3.connect(db_path)
+        remaining = {r[0] for r in conn.execute("SELECT conversation_id FROM conversation_summaries").fetchall()}
+        conn.close()
+        assert remaining == {"auto-recent-3", "auto-recent-4"}
+        assert not os.path.exists(os.path.join(cli_base, "conversations", "auto-recent-0.db-wal"))
+        assert not os.path.exists(os.path.join(cli_base, "conversations", "auto-recent-0.db-shm"))
+
 
