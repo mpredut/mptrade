@@ -1035,6 +1035,39 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
         self.assertNotIn(sym, mt._REENTRY_STATE)
         self.assertNotIn(sym, mt._LAST_EXIT_KIND)
 
+    def test_stop_loss_unknown_outcome_defers_duplicate_submission(self):
+        """When Stop-Loss submit has unknown/ambiguous outcome, in-flight state is tracked and duplicate submission deferred."""
+        class UnknownOutcomeInstrument(FakeInstrument):
+            def place(self, side, price, qty, **kwargs):
+                super().place(side, price, qty, **kwargs)
+                ctx = kwargs.get("_outcome_context")
+                if isinstance(ctx, dict):
+                    ctx.update(accepted=False, reason="timeout", state="unknown")
+                return None
+
+        # Position bought at 100, now dropped to 95 (-5% > lost_threshold 3.3%)
+        inst = UnknownOutcomeInstrument(
+            price=95.0,
+            free=4.0,
+            fills=[_fill("BUY", 100.0, 4.0)],
+        )
+        sym = inst.symbol
+
+        # Tick 1: Trend down -> Stop loss triggers and attempts SELL with unknown outcome
+        self.run_tick(inst, trend_up=False, now=NOW)
+        self.assertEqual(len(inst.placed), 1)
+        self.assertEqual(inst.placed[0]["side"], "SELL")
+        self.assertIn(sym, mt._PENDING_STOP_EXIT)
+        self.assertEqual(mt._LAST_EXIT_KIND.get(sym), "STOP")
+
+        # Tick 2: Trend still down, next tick 5 seconds later. Should DEFER duplicate submission!
+        self.run_tick(inst, trend_up=False, now=NOW + 5)
+        self.assertEqual(len(inst.placed), 1, "Duplicate STOP order must not be submitted while pending reconciliation")
+
+        # Tick 3: Position closed (free=0.0). Pending stop is resolved cleanly.
+        inst._free = 0.0
+        self.run_tick(inst, trend_up=False, now=NOW + 10)
+        self.assertNotIn(sym, mt._PENDING_STOP_EXIT)
 
 
 if __name__ == "__main__":

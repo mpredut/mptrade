@@ -373,6 +373,50 @@ class T212MDHTPTest(unittest.TestCase):
             self.assertEqual(called_qty, 12.0)
             self.assertIsNone(strat.s.get("tp_pending_exit"))
 
+    def test_mdhtp_restart_with_accepted_market_exit_order_does_not_cancel_it(self):
+        """When bot restarts with an accepted protective market exit order and pending intent, it must not cancel it."""
+        params = _params(
+            STRAT_TP_MDHTP_ENABLED="true",
+            STRAT_TAKEPROFIT_PCT="3",
+        )
+        current_time = 1000.0
+        strat = strategy.Strategy(
+            client=self.mock_client,
+            ticker="TEST_US_EQ",
+            params=params,
+            dry_run=True,
+            clock=lambda: current_time,
+        )
+        strat.s.update(
+            qty=10.0, cost_usd=1000.0, spent_cash=1000.0, entry_price=100.0, last_buy_price=100.0,
+            tp_pending_exit={"action": "SELL", "sell_fraction": 1.0, "reason": "mdhtp_exit", "time": 990.0},
+            orders=[
+                {"id": "MKT-EXIT-1", "side": "SELL", "market": True, "kind": "TP", "qty": 10.0},
+                {"id": "DCA-RESTING-2", "side": "BUY", "market": False, "kind": "DCA", "qty": 2.0},
+            ]
+        )
+
+        cancelled = []
+        def fake_cancel_specific(o):
+            cancelled.append(o)
+            return True
+
+        with patch.object(strategy, "notify"), \
+             patch.object(strat, "_cancel_specific", side_effect=fake_cancel_specific), \
+             patch.object(strat, "_place_sell") as mock_place_sell:
+            # Step after restart: should cancel DCA-RESTING-2, but NOT MKT-EXIT-1!
+            strat.step(105.0)
+            self.assertEqual(len(cancelled), 1)
+            self.assertEqual(cancelled[0]["id"], "DCA-RESTING-2")
+            mock_place_sell.assert_not_called()
+            self.assertIsNotNone(strat.s.get("tp_pending_exit"))
+
+            # Step after fill reconciles qty to 0
+            strat.s["qty"] = 0.0
+            strat.s["orders"] = []
+            strat.step(105.0)
+            self.assertIsNone(strat.s.get("tp_pending_exit"))
+
 
 if __name__ == "__main__":
     unittest.main()

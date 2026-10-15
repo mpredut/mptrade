@@ -178,6 +178,7 @@ class PositionExitConfig:
     reentry_bear_gate_enabled: bool = True     # Block/require stronger bounce in bear trend
     reentry_hybrid_enabled: bool = False       # Enable hybrid pullback in confirmed bull trends
     reentry_peak_relative: bool = False        # Enable peak-relative pullback across all regimes
+    allow_external_cache: bool = True          # False in replay/backtests to enforce strict simulation determinism
 
 
 class PositionExitManager:
@@ -250,7 +251,7 @@ class PositionExitManager:
                 eff_vol, eff_src = self.vol_resolver(symbol)
                 if eff_vol is None:
                     eff_vol = 0.0
-            else:
+            elif getattr(self.config, "allow_external_cache", True):
                 cached = resolve_cached_volatility_1h(symbol)
                 if cached is not None and cached > 0:
                     eff_vol = cached

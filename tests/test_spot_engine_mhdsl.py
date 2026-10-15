@@ -1,5 +1,8 @@
 """Tests for Centralized PositionExitManager (MHDSL) integration into spot_engine.py."""
 
+import os
+import json
+import tempfile
 import time
 from unittest.mock import patch
 
@@ -279,6 +282,24 @@ def test_spot_engine_vol_1h_ratio_explicit_conversion():
             ratio, src = engine._vol_1h_ratio()
             assert abs(ratio - 0.0004) < 1e-7
             assert src == "cache"
+
+
+def test_replay_mode_ignores_external_cached_volatility():
+    """In replay mode, SpotEngine must ignore cachedb files on disk to guarantee simulation determinism."""
+    engine, _ = make_engine()
+    engine.replay_mode = True
+    engine._trail_vol_1h = lambda: None
+    engine._shadow_vol_1h = lambda: None
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        with open(os.path.join(tmp_dir, "shadow_state.json"), "w", encoding="utf-8") as f:
+            json.dump({engine.pair.upper(): {"vol_1h_pct": 5.0}}, f)
+
+        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp_dir}):
+            ratio, src = engine._vol_1h_ratio()
+            assert ratio == 0.0
+            assert src == "default"
+
 
 
 

@@ -166,6 +166,25 @@ class WalkForwardCompareTest(unittest.TestCase):
         self.assertEqual(summary["up_market_windows"], 1)
         self.assertEqual(summary["down_market_windows"], 0)
 
+    def test_build_venue_evaluator_hyperliquid_spot(self):
+        from offline.runners.walk_forward_compare import _build_venue_evaluator
+        source_report = {
+            "venue": "hyperliquid",
+            "runtime": {"engine": "spot", "coin": "HYPE"},
+            "strategy_params": {
+                "pair": "HYPEUSDC",
+                "entry_amount": 50.0,
+                "takeprofit_pct": 5.0,
+                "tp_mdhtp_enabled": True,
+            },
+            "fee_pct_per_leg": 0.035,
+        }
+        base_params, base_fee, segment_fn = _build_venue_evaluator("hyperliquid", source_report)
+        self.assertEqual(base_fee, 0.035)
+        self.assertEqual(base_params.currency, "USDC")
+        self.assertTrue(base_params.tp_mdhtp_enabled)
+        self.assertTrue(callable(segment_fn))
+
 
 if __name__ == "__main__":
     unittest.main()

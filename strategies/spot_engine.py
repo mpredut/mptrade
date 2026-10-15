@@ -529,6 +529,7 @@ class Strategy:
                 reentry_bear_bounce_pct=self.p.reentry_bear_bounce_pct / 100.0,
                 reentry_ttl_hours=self.p.reentry_ttl_hours,
                 reentry_tolerance_pct=self.p.reentry_tolerance_pct,
+                allow_external_cache=not self.replay_mode,
             )
             self.exit_manager = PositionExitManager(
                 config=exit_cfg,
@@ -1205,9 +1206,10 @@ class Strategy:
                 return vol_pct_to_ratio(vol), "shadow_ticks"
         except Exception:
             pass
-        cached = resolve_cached_volatility_1h(self.pair)
-        if cached is not None:
-            return cached, "cache"
+        if not self.replay_mode:
+            cached = resolve_cached_volatility_1h(self.pair)
+            if cached is not None:
+                return cached, "cache"
         return 0.0, "default"
 
     def _resolve_volatility_tuple(self, symbol: str) -> tuple[float, str]:
@@ -1255,6 +1257,7 @@ class Strategy:
                 sl_bounce_min_pullback_pct=self.p.sl_bounce_min_pullback_pct / 100.0,
                 sl_structural_break_enabled=self.p.sl_structural_break_enabled,
                 smart_sl_enabled=False,
+                allow_external_cache=not self.replay_mode,
             )
             self.exit_manager = PositionExitManager(
                 config=exit_cfg,
@@ -1426,7 +1429,7 @@ class Strategy:
         try:
             k_re = float_env("SHADOW_K_REENTRY") or 2.0
             vol = self._shadow_vol_1h()
-            if vol is None:
+            if vol is None and not self.replay_mode:
                 vol = resolve_cached_volatility_1h_pct(self.pair)
             if vol is None:
                 log(f"  [SHADOW] adaptive threshold: warm-up ({len(self._shadow_prices)}/20 points)")
@@ -1452,7 +1455,7 @@ class Strategy:
         try:
             k_re = float_env("SHADOW_K_REENTRY") or 2.0
             vol = self._shadow_vol_1h()
-            if vol is None:
+            if vol is None and not self.replay_mode:
                 vol = resolve_cached_volatility_1h_pct(self.pair)
         except Exception as e:  # noqa: BLE001 — observational failure must not stop trading.
             log(f"  [REINTRARE-ADAPTIV] eroare calcul ({e}) — fallback pe fix")
@@ -1473,7 +1476,7 @@ class Strategy:
             return self.p.reentry_pullback_pct, "fixed"
         try:
             vol = self._shadow_vol_1h()
-            if vol is None:
+            if vol is None and not self.replay_mode:
                 vol = resolve_cached_volatility_1h_pct(self.pair)
         except Exception as e:
             log(f"  [REENTRY-PULLBACK-ADAPTIVE] calculation error ({e}) — fallback to fixed")

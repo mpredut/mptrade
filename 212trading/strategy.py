@@ -1762,10 +1762,29 @@ class Strategy:
                             self._cancel_open("SELL")
 
                 if pending_exit:
+                    existing_exit = next(
+                        (o for o in self.s.get("orders", [])
+                         if o.get("market") and str(o.get("side", "")).upper() == "SELL" and o.get("kind") in ("TP", "SL")),
+                        None
+                    )
+                    if existing_exit:
+                        non_exit_orders = [o for o in list(self.s["orders"])
+                                           if not (o.get("market") and str(o.get("side", "")).upper() == "SELL" and o.get("kind") in ("TP", "SL"))]
+                        for o in non_exit_orders:
+                            self._cancel_specific(o)
+
+                        if self.s["qty"] <= 1e-6:
+                            log("  [STRAT] MDHTP exit: position closed — clearing exit intent")
+                            self.s["tp_pending_exit"] = None
+                        else:
+                            log(f"  [STRAT] MDHTP exit: existing market exit order {existing_exit.get('id')} in progress — awaiting fill reconciliation")
+                        return
+
                     if not self._cancel_all_orders():
                         log("  ! [STRAT] MDHTP exit deferred: at least one order could not be cancelled")
                         return
-                    pending_orders = [o for o in self.s["orders"] if not (o.get("market") and o.get("side") == "sell" and o.get("kind") == "TP")]
+                    pending_orders = [o for o in self.s["orders"]
+                                      if not (o.get("market") and str(o.get("side", "")).upper() == "SELL" and o.get("kind") in ("TP", "SL"))]
                     if pending_orders:
                         log(f"  [STRAT] MDHTP exit deferred: waiting for {len(pending_orders)} existing order(s) to reconcile cancellation")
                         return

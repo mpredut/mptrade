@@ -230,6 +230,7 @@ def clear_position_stats_cache():
     _LAST_EXIT_KIND.clear()
     _SL_BOUNCE_STATE.clear()
     _TP_RIDE_STATE.clear()
+    _PENDING_STOP_EXIT.clear()
     _hard_tp_last.clear()
     _notified_trade_ids.clear()
 
@@ -347,6 +348,7 @@ MT_REENTRY_HYBRID_ENABLED = os.environ.get("MT_REENTRY_HYBRID_ENABLED", "0").low
 _TP_RIDE_STATE: Dict[str, Dict[str, Any]] = {}
 _REENTRY_STATE: Dict[str, Dict[str, Any]] = {}
 _LAST_EXIT_KIND: Dict[str, str] = {}
+_PENDING_STOP_EXIT: Dict[str, Dict[str, Any]] = {}
 
 
 def _load_mt_conf(path=None):
@@ -676,6 +678,30 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                     if prev_tp_state:
                         _TP_RIDE_STATE[symbol] = prev_tp_state
         elif in_sl_territory:
+            pending_stop = _PENDING_STOP_EXIT.get(symbol)
+            if pending_stop:
+                if sellable_qty <= 0 or (min_qty and sellable_qty < min_qty):
+                    print(f"[{symbol}] Pending Stop-Loss resolved: position is closed or below min_qty.")
+                    _PENDING_STOP_EXIT.pop(symbol, None)
+                else:
+                    active_sell_exists = False
+                    open_orders_fn = getattr(inst, "open_orders", None)
+                    if callable(open_orders_fn):
+                        try:
+                            for active_ord in (open_orders_fn() or []):
+                                if str(active_ord.get("side", "")).upper() in ("SELL", "S"):
+                                    active_sell_exists = True
+                                    break
+                        except Exception:
+                            pass
+                    elapsed = current_time_s - int(pending_stop.get("time", current_time_s))
+                    if active_sell_exists or elapsed < 60:
+                        print(f"[{symbol}] Pending Stop-Loss in flight (elapsed={elapsed}s, active_sell={active_sell_exists}) — deferring duplicate submission pending reconciliation.")
+                        return
+                    else:
+                        print(f"[{symbol}] Pending Stop-Loss reconciliation timeout ({elapsed}s >= 60s) with no active sell order — allowing retry.")
+                        _PENDING_STOP_EXIT.pop(symbol, None)
+
             _TP_RIDE_STATE.pop(symbol, None)
             prev_sl_state = dict(_SL_BOUNCE_STATE.get(symbol, {}))
             sl_decision = exit_mgr.evaluate_stop_loss(snapshot, custom_threshold=lost_threshold)
@@ -754,6 +780,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                     )
                 if placed:
                     _SL_BOUNCE_STATE.pop(symbol, None)
+                    _PENDING_STOP_EXIT.pop(symbol, None)
                     _LAST_EXIT_KIND[symbol] = "STOP"
 
                 # Rollback / restore resting TP order if Stop-Loss placement failed
@@ -761,8 +788,16 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                     sl_state = outcome_ctx.get("state")
                     if sl_state == "unknown":
                         # The stop submit was attempted, but outcome is unknown / ambiguous / pending reconciliation.
-                        # Do NOT restore cancelled TP orders; restoring TP while STOP is in-flight creates competing orders.
+                        # Do NOT restore cancelled TP orders; record pending stop exit to reconcile on next tick without duplicate submission.
                         print(f"[{symbol}] Stop-Loss submit outcome unknown/in-flight ({outcome_ctx.get('reason')}) — TP restoration deferred pending stop reconciliation")
+                        _SL_BOUNCE_STATE.pop(symbol, None)
+                        _LAST_EXIT_KIND[symbol] = "STOP"
+                        _PENDING_STOP_EXIT[symbol] = {
+                            "time": current_time_s,
+                            "qty": sellable_qty,
+                            "price": current_price,
+                            "reason": outcome_ctx.get("reason", "unknown"),
+                        }
                     else:
                         if prev_sl_state:
                             _SL_BOUNCE_STATE[symbol] = prev_sl_state
@@ -785,6 +820,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 print(f"[{symbol}] 🎉 Stop-Loss bounce successfully recovered! Position saved from dip "
                       f"({price_decrease*100:.2f}% <= {lost_threshold*100:.2f}%).")
                 _SL_BOUNCE_STATE.pop(symbol, None)
+            if symbol in _PENDING_STOP_EXIT:
+                _PENDING_STOP_EXIT.pop(symbol, None)
             if symbol in _TP_RIDE_STATE:
                 _TP_RIDE_STATE.pop(symbol, None)
             from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss_if_recovered

@@ -229,23 +229,67 @@ def _build_venue_evaluator(venue: str, source_report: dict):
 
     if norm_venue == "hyperliquid":
         hl_replay = _load_hl_replay()
-        direction = str(source_report.get("runtime", {}).get("direction") or raw_params.get("direction", "long"))
-        coin = str(source_report.get("runtime", {}).get("coin") or "HYPE")
-        base_params = hl_replay.StratParams.from_dict(raw_params, direction=direction)
+        runtime_cfg = source_report.get("runtime", {})
+        engine = str(runtime_cfg.get("engine") or raw_params.get("engine") or "perp").lower()
         base_fee = float(source_report.get("fee_pct_per_leg") or raw_params.get("fee_pct") or 0.035)
 
-        def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
-            adapter = hl_replay.make_hyperliquid_replay_adapter(
-                params,
-                direction=params.direction,
-                coin=coin,
-                bar_minutes=float(interval),
-                execution=execution,
-                fee_pct=fee_pct,
-            )
-            return _evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
+        if engine == "spot":
+            defaults = {
+                "currency": "USDC",
+                "entry_amount": 50.0,
+                "entry_discount_pct": 0.2,
+                "dca_amount": 30.0,
+                "dca_drop_pct": 2.0,
+                "check_minutes": 60.0,
+                "takeprofit_pct": 5.0,
+                "max_budget": 500.0,
+                "max_dca_buys": 10,
+                "enable_takeprofit": True,
+                "order_ttl_min": 120.0,
+            }
+            merged = {**defaults, **raw_params}
+            valid_fields = {f.name for f in dataclasses.fields(StratParams)}
+            filtered = {k: v for k, v in merged.items() if k in valid_fields}
+            base_params = StratParams(**filtered)
 
-        return base_params, base_fee, segment_fn
+            def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
+                if getattr(params, "trend_interval", None) != interval:
+                    interval_params = dataclasses.replace(
+                        params,
+                        trend_interval=interval,
+                        tp_trail_vol_interval=interval,
+                        dca_vol_interval=interval,
+                    )
+                else:
+                    interval_params = params
+                adapter = hl_replay.make_hyperliquid_replay_adapter(
+                    interval_params,
+                    bar_minutes=float(interval),
+                    execution=execution,
+                    fee_pct=fee_pct,
+                    engine="spot",
+                )
+                return _evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
+
+            return base_params, base_fee, segment_fn
+        else:
+            direction = str(runtime_cfg.get("direction") or raw_params.get("direction", "long"))
+            coin = str(runtime_cfg.get("coin") or "HYPE")
+            base_params = hl_replay.StratParams.from_dict(raw_params, direction=direction)
+
+            def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
+                adapter = hl_replay.make_hyperliquid_replay_adapter(
+                    params,
+                    direction=params.direction,
+                    coin=coin,
+                    bar_minutes=float(interval),
+                    execution=execution,
+                    fee_pct=fee_pct,
+                    engine="perp",
+                )
+                return _evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
+
+            return base_params, base_fee, segment_fn
 
     if norm_venue in ("trading212", "t212"):
         t212_replay = _load_t212_replay()
