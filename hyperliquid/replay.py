@@ -25,6 +25,7 @@ from strategy import Strategy, StratParams, HL_FEE_PCT
 from offline.backtests.execution import (
     ExecutionModel,
     choose_intrabar_scenario,
+    split_order_fill,
 )
 from offline.backtests.metrics import calculate_performance_metrics
 
@@ -190,17 +191,35 @@ def _run_once(
         for side in exec_model.side_order():
             if side == open_side and open_eligible and open_order in strategy.s["orders"]:
                 px = open_order["px"]
-                sz = open_order["sz"]
-                strategy._remove(open_order)
-                strategy._apply_open(sz, px, open_order.get("amount", 0.0), open_order.get("kind"))
+                fill_order, sz, complete = split_order_fill(
+                    open_order,
+                    quantity_key="sz",
+                    amount_key="amount",
+                    ratio=exec_model.partial_fill_ratio,
+                    force_full=False,
+                )
+                if complete:
+                    strategy._remove(open_order)
+                    order_placed_bar.pop(open_order.get("oid", ""), None)
+                strategy._apply_open(sz, px, fill_order.get("amount", 0.0), fill_order.get("kind"))
                 turnover_notional += sz * px
                 fills += 1
-                order_placed_bar.pop(open_order.get("oid", ""), None)
 
             if side == close_side and close_eligible and close_order in strategy.s["orders"] and strategy.s["qty"] > 1e-12:
                 px = close_order["px"]
-                sz = close_order["sz"]
-                strategy._remove(close_order)
+                fill_order, sz, complete = split_order_fill(
+                    close_order,
+                    quantity_key="sz",
+                    amount_key=None,
+                    ratio=exec_model.partial_fill_ratio,
+                    force_full=False,
+                )
+                sz = min(sz, strategy.s["qty"])
+                if sz <= 1e-12:
+                    strategy._remove(close_order)
+                    continue
+                if complete:
+                    strategy._remove(close_order)
                 avg = strategy._avg() or px
                 cycle_before = strategy.s.get("cycles_completed", 0)
                 strategy._apply_close(avg, px, sz)
@@ -234,7 +253,7 @@ def _run_once(
         if open_order:
             oid = open_order.get("oid", "")
             placed_b = order_placed_bar.setdefault(oid, i)
-            elapsed_min = (i - placed_b + 1) * (bar_minutes or 60.0)
+            elapsed_min = (i - placed_b) * (bar_minutes or 60.0)
             if strategy._open_is_stale(open_order, c, elapsed_min=elapsed_min):
                 strategy._remove(open_order)
                 order_placed_bar.pop(oid, None)
@@ -311,6 +330,40 @@ def _run_once(
     return result
 
 
+def make_hyperliquid_spot_replay_adapter(
+    params: Any,
+    fee_pct: float = 0.035,
+    bar_minutes: float | None = 60.0,
+    execution: ExecutionModel | None = None,
+    fee_model: Any | None = None,
+    include_decision_trace: bool = False,
+    initial_cash: float | None = None,
+    dca_drop_series=None,
+    reentry_series=None,
+    intrabar_high: bool = False,
+):
+    """Return a spot ReplayFunction using strategies.spot_replay (SSOT) compatible with evaluation.py."""
+    from strategies.spot_replay import run_replay as run_spot_replay
+
+    def _adapter(ohlc, warmup_ohlc=None, _context=None):
+        return run_spot_replay(
+            ohlc,
+            params,
+            fee_pct=fee_pct,
+            bar_minutes=bar_minutes,
+            warmup_ohlc=warmup_ohlc,
+            execution=execution,
+            fee_model=fee_model,
+            include_decision_trace=include_decision_trace,
+            initial_cash=initial_cash,
+            dca_drop_series=dca_drop_series,
+            reentry_series=reentry_series,
+            intrabar_high=intrabar_high,
+        )
+
+    return _adapter
+
+
 def make_hyperliquid_replay_adapter(
     params: StratParams | dict,
     direction: str = "long",
@@ -319,9 +372,21 @@ def make_hyperliquid_replay_adapter(
     bar_minutes: float | None = 60.0,
     execution: ExecutionModel | None = None,
     fee_pct: float | None = None,
+    engine: str = "perp",
 ):
-    """Return a generic ReplayFunction compatible with evaluation.py walk-forward benchmarks."""
-    def _adapter(ohlc, _warmup_ohlc, context=None):
+    """Return a generic ReplayFunction compatible with evaluation.py walk-forward benchmarks.
+
+    Supports both 'perp' (Strategy engine) and 'spot' (strategies.spot_replay SSOT).
+    """
+    if engine == "spot":
+        return make_hyperliquid_spot_replay_adapter(
+            params=params,
+            fee_pct=fee_pct if fee_pct is not None else 0.035,
+            bar_minutes=bar_minutes,
+            execution=execution,
+        )
+
+    def _adapter(ohlc, _warmup_ohlc=None, context=None):
         ts = list(context.timestamps) if context and getattr(context, "timestamps", None) else None
         return run_replay(
             ohlc,

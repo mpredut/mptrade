@@ -178,6 +178,7 @@ class StratParams:
     sl_disaster_buffer_ratio: float = 0.30
     sl_disaster_vol_multiplier: float = 0.85
     sl_disaster_buffer_min_pct: float = 0.80
+    sl_disaster_buffer_max_pct: float = 15.0
     sl_trend_defer_max_sec: float = 220.0
     sl_bounce_min_recovery_pct: float = 0.40
     sl_bounce_pullback_pct: float = 0.30
@@ -218,6 +219,7 @@ class StratParams:
         self.sl_disaster_buffer_ratio = finite("STRAT_SL_DISASTER_BUFFER_RATIO", self.sl_disaster_buffer_ratio)
         self.sl_disaster_vol_multiplier = finite("STRAT_SL_DISASTER_VOL_MULTIPLIER", self.sl_disaster_vol_multiplier)
         self.sl_disaster_buffer_min_pct = finite("STRAT_SL_DISASTER_BUFFER_MIN_PCT", self.sl_disaster_buffer_min_pct)
+        self.sl_disaster_buffer_max_pct = finite("STRAT_SL_DISASTER_BUFFER_MAX_PCT", self.sl_disaster_buffer_max_pct)
         self.sl_trend_defer_max_sec = finite("STRAT_SL_TREND_DEFER_MAX_SEC", self.sl_trend_defer_max_sec)
         self.sl_bounce_min_recovery_pct = finite("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", self.sl_bounce_min_recovery_pct)
         self.sl_bounce_pullback_pct = finite("STRAT_SL_BOUNCE_PULLBACK_PCT", self.sl_bounce_pullback_pct)
@@ -229,6 +231,8 @@ class StratParams:
             raise ValueError("STRAT_SL_DISASTER_VOL_MULTIPLIER must be >= 0")
         if self.sl_disaster_buffer_min_pct < 0:
             raise ValueError("STRAT_SL_DISASTER_BUFFER_MIN_PCT must be >= 0")
+        if self.sl_disaster_buffer_max_pct <= 0:
+            raise ValueError("STRAT_SL_DISASTER_BUFFER_MAX_PCT must be > 0")
         if self.sl_trend_defer_max_sec < 0:
             raise ValueError("STRAT_SL_TREND_DEFER_MAX_SEC must be >= 0")
         if self.sl_bounce_min_recovery_pct < 0:
@@ -377,6 +381,7 @@ class StratParams:
             sl_disaster_buffer_ratio = _optional_float_env("STRAT_SL_DISASTER_BUFFER_RATIO", 0.30, env),
             sl_disaster_vol_multiplier = _optional_float_env("STRAT_SL_DISASTER_VOL_MULTIPLIER", 0.85, env),
             sl_disaster_buffer_min_pct = _optional_float_env("STRAT_SL_DISASTER_BUFFER_MIN_PCT", 0.80, env),
+            sl_disaster_buffer_max_pct = _optional_float_env("STRAT_SL_DISASTER_BUFFER_MAX_PCT", 15.0, env),
             sl_trend_defer_max_sec = _optional_float_env("STRAT_SL_TREND_DEFER_MAX_SEC", 220.0, env),
             sl_bounce_min_recovery_pct = _optional_float_env("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", 0.40, env),
             sl_bounce_pullback_pct = _optional_float_env("STRAT_SL_BOUNCE_PULLBACK_PCT", 0.30, env),
@@ -493,6 +498,7 @@ class Strategy:
                 sl_disaster_buffer_ratio=self.p.sl_disaster_buffer_ratio,
                 sl_disaster_vol_multiplier=self.p.sl_disaster_vol_multiplier,
                 sl_disaster_buffer_min_pct=self.p.sl_disaster_buffer_min_pct / 100.0,
+                sl_disaster_buffer_max_pct=self.p.sl_disaster_buffer_max_pct / 100.0,
                 sl_trend_defer_max_sec=self.p.sl_trend_defer_max_sec,
                 sl_bounce_min_recovery_pct=self.p.sl_bounce_min_recovery_pct / 100.0,
                 sl_bounce_pullback_pct=self.p.sl_bounce_pullback_pct / 100.0,

@@ -326,7 +326,11 @@ class Strategy:
         if real_qty is not None:
             self.s["qty"] = real_qty; self.s["cost"] = real_qty * (real_avg or 0)
         else:
+            prev_qty = self.s["qty"]
             self.s["qty"] -= sz
+            self.s["cost"] = max(0.0, self.s["cost"] - sz * avg)
+            if self.s["qty"] > 1e-12 and prev_qty > 0:
+                self.s["spent"] = max(0.0, self.s["spent"] * (self.s["qty"] / prev_qty))
         if self.s["qty"] <= 1e-12:
             self.s["qty"] = 0.0
             self.s["cost"] = 0.0

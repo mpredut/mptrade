@@ -119,6 +119,7 @@ class PositionExitConfig:
     sl_disaster_buffer_ratio: float = 0.30
     sl_disaster_vol_multiplier: float = 0.85
     sl_disaster_buffer_min_pct: float = 0.008
+    sl_disaster_buffer_max_pct: float = 0.15  # Upper bound clamp on disaster buffer (15% decimal)
     sl_trend_defer_max_sec: float = 220.0
     sl_bounce_min_recovery_pct: float = 0.004
     sl_bounce_pullback_pct: float = 0.003
@@ -257,9 +258,20 @@ class PositionExitManager:
 
         buf_b = eff_vol * self.config.sl_disaster_vol_multiplier if eff_vol > 0 else 0.0
         min_floor = self.config.sl_disaster_buffer_min_pct
-        buf_effective = max(buf_a, buf_b, min_floor)
+        buf_raw = max(buf_a, buf_b, min_floor)
+        max_cap = self.config.sl_disaster_buffer_max_pct
+        capped = False
+        if max_cap > 0 and buf_raw > max_cap:
+            buf_effective = max_cap
+            capped = True
+        else:
+            buf_effective = buf_raw
 
-        source = "variant_b_vol1h" if (buf_b > buf_a and buf_b >= min_floor) else "variant_a_proportional"
+        source = (
+            "capped_max"
+            if capped
+            else ("variant_b_vol1h" if (buf_b > buf_a and buf_b >= min_floor) else "variant_a_proportional")
+        )
 
         metadata = {
             "variant_a_buffer": buf_a,
@@ -268,6 +280,8 @@ class PositionExitManager:
             "variant_b_pct": round(vol_ratio_to_pct(buf_b), 3) if eff_vol > 0 else None,
             "vol_1h_pct": round(vol_ratio_to_pct(eff_vol), 3) if eff_vol > 0 else None,
             "floor_min": min_floor,
+            "buffer_max": max_cap,
+            "capped": capped,
             "effective_buffer": buf_effective,
             "chosen_buffer_pct": round(vol_ratio_to_pct(buf_effective), 3),
             "source": source,
@@ -322,6 +336,15 @@ class PositionExitManager:
         )
         disaster_floor = lost_threshold + disaster_buffer
 
+        # Preserve already activated protection: once armed, disaster floor cannot loosen (retreat)
+        bounce_state = self.sl_bounce_state.get(symbol)
+        if bounce_state is not None:
+            prev_floor = bounce_state.get("disaster_floor")
+            if prev_floor is not None and prev_floor < disaster_floor:
+                disaster_floor = prev_floor
+            else:
+                bounce_state["disaster_floor"] = disaster_floor
+
         # ---------------------------------------------------------------------
         # PRIORITY 1: Hard Disaster Floor Circuit Breaker
         # ---------------------------------------------------------------------
@@ -351,6 +374,7 @@ class PositionExitManager:
                     "lowest_price": current_price,
                     "peak_bounce_price": current_price,
                     "min_loss": price_decrease,
+                    "disaster_floor": disaster_floor,
                 }
                 reason = (
                     f"mhdsl_bounce_watch_initiated (dip={price_decrease*100:.2f}%, "

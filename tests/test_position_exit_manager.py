@@ -73,6 +73,56 @@ class TestPositionExitManager(unittest.TestCase):
         self.assertAlmostEqual(buf, 0.008, places=5)
         self.assertEqual(meta["source"], "variant_a_proportional")
 
+    def test_disaster_buffer_capped_by_max_pct(self):
+        """Extreme volatility spikes cannot expand the disaster buffer beyond sl_disaster_buffer_max_pct."""
+        self.mgr.config.sl_disaster_buffer_max_pct = 0.10  # 10% maximum buffer cap
+        buf, meta = self.mgr.compute_disaster_buffer(
+            symbol="BTCUSDT",
+            lost_threshold=0.05,
+            vol_1h=0.25,  # 25% vol * 0.85 = 0.2125 > 0.10 cap
+        )
+        self.assertAlmostEqual(buf, 0.10, places=5)
+        self.assertTrue(meta["capped"])
+        self.assertEqual(meta["source"], "capped_max")
+        self.assertEqual(meta["buffer_max"], 0.10)
+
+    def test_sl_disaster_floor_cannot_loosen_when_volatility_surges(self):
+        """Once armed in SL territory, disaster floor preserves protection and cannot loosen when volatility spikes."""
+        # 1. Enter SL territory at 5.5% loss with vol_1h = 0.01 (buffer = 1.5%, floor = 6.5%)
+        snap1 = PositionSnapshot(
+            symbol="BTCUSDT",
+            current_price=94.5,
+            avg_buy_price=100.0,
+            current_time_s=self.now,
+            trend_up=True,
+            vol_1h=0.01,
+        )
+        dec1 = self.mgr.evaluate_stop_loss(snap1)
+        self.assertEqual(dec1.action, ExitAction.HOLD)
+        self.assertIn("mhdsl_bounce_watch_initiated", dec1.reason)
+        armed_floor = dec1.metadata["disaster_floor"]
+        self.assertAlmostEqual(armed_floor, 0.065, places=4)
+
+        # 2. Next tick: volatility explodes to 20% (raw buffer would be 17%, raw floor 22%)
+        # Price drops to 93.0 (loss 7.0% >= armed floor 6.5%).
+        # Protection MUST NOT retreat to 22%; it must trigger Priority 1 immediate disaster exit.
+        snap2 = PositionSnapshot(
+            symbol="BTCUSDT",
+            current_price=93.0,
+            avg_buy_price=100.0,
+            current_time_s=self.now + 10.0,
+            trend_up=True,
+            vol_1h=0.20,
+        )
+        dec2 = self.mgr.evaluate_stop_loss(snap2)
+        self.assertEqual(dec2.action, ExitAction.SELL)
+        self.assertTrue(dec2.should_exit)
+        self.assertTrue(dec2.forced)
+        self.assertEqual(dec2.metadata["priority"], 1)
+        self.assertIn("hard_disaster_floor_breached", dec2.reason)
+        # Floor must remain at or below the armed 6.5% floor
+        self.assertAlmostEqual(dec2.metadata["disaster_floor"], 0.065, places=4)
+
     # -------------------------------------------------------------------------
     # 2. Stop-Loss (MHDSL) Hierarchy & Symmetry
     # -------------------------------------------------------------------------

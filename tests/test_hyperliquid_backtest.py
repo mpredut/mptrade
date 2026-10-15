@@ -470,9 +470,78 @@ def test_hyperliquid_walk_forward_baseline_runner(tmp_path):
             assert report_file.exists()
             data = json.loads(report_file.read_text(encoding="utf-8"))
             assert data["runtime"]["coin"] == "HYPE"
+            assert data["runtime"]["engine"] == "spot"
             assert "aggregate_test" in data
             assert "folds" in data
             assert len(data["folds"]) > 0
+
+
+def test_hyperliquid_walk_forward_baseline_runner_perp_engine(tmp_path):
+    import json
+    from unittest.mock import patch
+    import importlib.util
+    _wf_spec = importlib.util.spec_from_file_location(
+        "hl_wf_baseline", os.path.join(_ROOT, "offline", "runners", "hyperliquid_walk_forward_baseline.py")
+    )
+    _wf_mod = importlib.util.module_from_spec(_wf_spec)
+    _wf_spec.loader.exec_module(_wf_mod)
+
+    fake_records = [
+        {"timestamp": 1700000000 + i * 3600, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}
+        for i in range(30)
+    ]
+    with patch.object(_wf_mod, "fetch_ohlc_candles", return_value=fake_records):
+        with patch("sys.argv", [
+            "hyperliquid_walk_forward_baseline.py",
+            "--intervals", "60",
+            "--coin", "HYPE",
+            "--engine", "perp",
+            "--output-dir", str(tmp_path),
+        ]):
+            rc = _wf_mod.main()
+            assert rc == 0
+            report_file = tmp_path / "HYPE_60m_baseline.json"
+            assert report_file.exists()
+            data = json.loads(report_file.read_text(encoding="utf-8"))
+            assert data["runtime"]["engine"] == "perp"
+            assert "aggregate_test" in data
+            assert len(data["folds"]) > 0
+
+
+def test_hyperliquid_replay_partial_fills():
+    from offline.backtests.execution import ExecutionModel
+    # Bars:
+    # Bar 0: places limit open at 99.8 (100 * (1 - 0.002))
+    # Bar 1: low touches 99.5 -> fills first 50% chunk (partial_fill_ratio=0.5)
+    # Bar 2: low touches 99.5 -> fills remaining 50% chunk
+    # Bar 3: high touches 105.0 -> fills take-profit
+    ohlc = [
+        (100.0, 100.5, 99.9, 100.0),  # bar 0: step places limit buy at 99.8
+        (100.0, 100.2, 99.5, 100.0),  # bar 1: limit buy touched, 50% tranche filled
+        (100.0, 100.2, 99.5, 100.0),  # bar 2: second 50% tranche filled -> order completed
+        (100.0, 105.0, 100.0, 104.0),  # bar 3: reaches TP, 50% close filled
+        (100.0, 105.0, 100.0, 104.0),  # bar 4: reaches TP, remaining 50% close filled
+    ]
+    P = dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=2.0, maxdca=0, budget=500.0, fee=0.045)
+    model = ExecutionModel(partial_fill_ratio=0.5)
+    res = run_replay(ohlc, params=P, execution=model, bar_minutes=60.0)
+    assert res["fills"] >= 3  # 2 fills for open + 2 for close
+    assert res["cycles"] == 1
+    assert res["open_qty"] == 0.0
+
+
+def test_hyperliquid_replay_ttl_not_premature_on_bar_zero():
+    # Verify TTL elapsed calculation is (i - placed_b) * bar_minutes,
+    # so an order placed at bar 0 is NOT marked stale on bar 0 itself.
+    ohlc = [
+        (100.0, 101.5, 99.9, 101.0),  # bar 0: close 101 > 99.8 * 1.003, but elapsed = 0 min <= 10 min TTL
+        (101.0, 102.0, 99.5, 101.5),  # bar 1: entry fills before being stale
+    ]
+    P = dict(entry=100.0, dca=50.0, disc=0.2, drop=2.0, tp=2.0, maxdca=0, budget=500.0, fee=0.045)
+    # With (i - placed_b) * 60: at i=0, elapsed = 0 -> not stale -> order survives to fill at bar 1
+    res = run_replay(ohlc, params=P, bar_minutes=60.0)
+    assert res["fills"] >= 1
+
 
 
 

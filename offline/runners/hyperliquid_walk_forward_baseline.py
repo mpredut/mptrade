@@ -38,6 +38,7 @@ _hl_replay = importlib.util.module_from_spec(_replay_spec)
 _replay_spec.loader.exec_module(_hl_replay)
 make_hyperliquid_replay_adapter = _hl_replay.make_hyperliquid_replay_adapter
 StratParams = _hl_replay.StratParams
+from strategies.spot_engine import StratParams as SpotStratParams
 
 from offline.backtests.datasets import (
     dataset_metadata,
@@ -79,6 +80,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config-file", default=str(HL_DIR / "config.env"))
     parser.add_argument("--coin", help="defaults to HL_COIN from live config")
     parser.add_argument("--direction", choices=["long", "short"], help="defaults to HL_DIRECTION")
+    parser.add_argument(
+        "--engine", choices=["spot", "perp"], default="spot",
+        help="replay engine: 'spot' (default, matches live hl_bot.py spot engine) or 'perp' (legacy perpetuals engine)",
+    )
     parser.add_argument("--intervals", type=_parse_intervals, default=[60, 240, 1440])
     parser.add_argument("--fee", type=float, default=None, help="fee per leg (pct), defaults to HL_FEE_PCT")
     parser.add_argument("--spread-bps", type=float, default=0.0)
@@ -112,28 +117,31 @@ def main(argv: list[str] | None = None) -> int:
     direction = (args.direction or cfg.get("HL_DIRECTION", "long")).strip().lower()
     fee_pct = args.fee if args.fee is not None else float(cfg.get("HL_FEE_PCT", "0.035"))
 
-    entry = float(cfg.get("STRAT_ENTRY", "350"))
-    dca = float(cfg.get("STRAT_DCA", "100"))
-    disc = float(cfg.get("STRAT_ENTRY_DISCOUNT_PCT", "0.2"))
-    drop = float(cfg.get("STRAT_DCA_DROP_PCT", "2.0"))
-    tp = float(cfg.get("STRAT_TAKEPROFIT_PCT", "5.0"))
-    budget = float(cfg.get("STRAT_MAX_BUDGET", "1050"))
-    maxdca = int(float(cfg.get("STRAT_MAX_DCA_BUYS", "7")))
-    sl = float(cfg.get("STRAT_STOP_LOSS_PCT", "0.0"))
+    if args.engine == "spot":
+        strat_params = SpotStratParams.from_env(env=cfg)
+    else:
+        entry = float(cfg.get("STRAT_ENTRY", "350"))
+        dca = float(cfg.get("STRAT_DCA", "100"))
+        disc = float(cfg.get("STRAT_ENTRY_DISCOUNT_PCT", "0.2"))
+        drop = float(cfg.get("STRAT_DCA_DROP_PCT", "2.0"))
+        tp = float(cfg.get("STRAT_TAKEPROFIT_PCT", "5.0"))
+        budget = float(cfg.get("STRAT_MAX_BUDGET", "1050"))
+        maxdca = int(float(cfg.get("STRAT_MAX_DCA_BUYS", "7")))
+        sl = float(cfg.get("STRAT_STOP_LOSS_PCT", "0.0"))
 
-    strat_params = StratParams(
-        currency="USDC",
-        direction=direction,
-        entry_amount=entry,
-        entry_discount_pct=disc,
-        dca_amount=dca,
-        dca_drop_pct=drop,
-        takeprofit_pct=tp,
-        max_budget=budget,
-        max_dca_buys=maxdca,
-        stop_loss_pct=sl,
-        fee_pct=fee_pct,
-    )
+        strat_params = StratParams(
+            currency="USDC",
+            direction=direction,
+            entry_amount=entry,
+            entry_discount_pct=disc,
+            dca_amount=dca,
+            dca_drop_pct=drop,
+            takeprofit_pct=tp,
+            max_budget=budget,
+            max_dca_buys=maxdca,
+            stop_loss_pct=sl,
+            fee_pct=fee_pct,
+        )
 
     try:
         execution = ExecutionModel(
@@ -180,14 +188,33 @@ def main(argv: list[str] | None = None) -> int:
         else:
             train_size, val_size, test_size, step_size = automatic_window_sizes(len(records))
 
-        adapter = make_hyperliquid_replay_adapter(
-            params=strat_params,
-            direction=direction,
-            coin=coin,
-            bar_minutes=float(interval),
-            execution=execution,
-            fee_pct=fee_pct,
-        )
+        if args.engine == "spot":
+            if getattr(strat_params, "trend_interval", None) != interval:
+                interval_params = dataclasses.replace(
+                    strat_params,
+                    trend_interval=interval,
+                    tp_trail_vol_interval=interval,
+                    dca_vol_interval=interval,
+                )
+            else:
+                interval_params = strat_params
+            adapter = make_hyperliquid_replay_adapter(
+                params=interval_params,
+                bar_minutes=float(interval),
+                execution=execution,
+                fee_pct=fee_pct,
+                engine="spot",
+            )
+        else:
+            adapter = make_hyperliquid_replay_adapter(
+                params=strat_params,
+                direction=direction,
+                coin=coin,
+                bar_minutes=float(interval),
+                execution=execution,
+                fee_pct=fee_pct,
+                engine="perp",
+            )
 
         wf_result = _evaluate_walk_forward(
             records,
@@ -207,11 +234,12 @@ def main(argv: list[str] | None = None) -> int:
         report = {
             "schema_version": 1,
             "generated_at_utc": generated_at.isoformat(),
-            "purpose": "Hyperliquid live-engine fixed-config walk-forward baseline",
+            "purpose": f"Hyperliquid live-{args.engine}-engine fixed-config walk-forward baseline",
             "runtime": {
                 "coin": coin,
                 "direction": direction,
                 "interval_minutes": interval,
+                "engine": args.engine,
             },
             "strategy_params": dataclasses.asdict(strat_params),
             "fee_pct_per_leg": fee_pct,

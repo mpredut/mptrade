@@ -1681,6 +1681,7 @@ class Strategy:
         if self.p.enable_takeprofit and avg and not self.s.get("sl_pending"):
             if self.p.tp_mdhtp_enabled and self.exit_manager is not None:
                 tick_time = self._now()
+                pending_exit = self.s.get("tp_pending_exit")
 
                 if pending_exit is None:
                     trend_up = False
