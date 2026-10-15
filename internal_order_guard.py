@@ -19,31 +19,12 @@ logger = logging.getLogger("internal_order_guard")
 
 
 def _resolve_trend_duration(symbol: str) -> float:
-    """Read trend duration in seconds from cache_price_long_trend.json."""
+    """Read trend duration in seconds, delegating to order_guard SSOT."""
     try:
-        cachedb_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
-        p = os.path.join(cachedb_dir, "cache_price_long_trend.json")
-        if os.path.exists(p):
-            import json
-            with open(p, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            su = (symbol or "").strip().upper()
-            items = data.get("items", {}).get(su, [])
-            if not items:
-                for q in ("USDC", "USDT", "FDUSD", "USD", "EUR", "RON", "GBP"):
-                    if su.endswith(q) and len(su) > len(q):
-                        items = data.get("items", {}).get(su[:-len(q)], [])
-                        if items:
-                            break
-            if items and isinstance(items, list):
-                last_item = items[-1]
-                if isinstance(last_item, dict):
-                    dur = last_item.get("duration_seconds")
-                    if dur is not None:
-                        return float(dur)
+        from order_guard import _resolve_trend_duration as _og_resolve
+        return _og_resolve(symbol)
     except Exception:
-        pass
-    return 0.0
+        return 0.0
 
 
 def check_internal_order_guards(
