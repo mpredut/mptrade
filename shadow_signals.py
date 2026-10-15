@@ -165,7 +165,14 @@ class ShadowSet:
                 import numpy as _np
                 eps_eff = float(_np.std(_np.gradient(_np.asarray(fed))))
             else:
-                eps_eff = epsilon
+                step_scale = math.sqrt(KALMAN_SAMPLE_SEC / max(float(big_sample_rate or 1.0), 0.1))
+                base_eps = max(float(epsilon or 0.0) * step_scale, price * 0.0008)
+                if len(fed) >= 2:
+                    import numpy as _np
+                    grad_std = float(_np.std(_np.gradient(_np.asarray(fed))))
+                    eps_eff = max(base_eps, grad_std)
+                else:
+                    eps_eff = base_eps
             k = kf.update(ts, price, eps_eff)
             self._last_fed[symbol] = ts
             self._last_kfields[symbol] = k

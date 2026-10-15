@@ -68,6 +68,9 @@ ACCEL_ENABLED = _accel_raw in {"1", "true", "yes", "on"}
 ACCEL_WINDOW_SEC = float_env("TRADEALL_ACCEL_WINDOW_SEC") or 90.0
 ACCEL_INFLECTION_THRESHOLD = float_env("TRADEALL_ACCEL_INFLECTION_THRESHOLD") or 0.5
 ACCEL_SURGE_THRESHOLD = float_env("TRADEALL_ACCEL_SURGE_THRESHOLD") or 2.5
+ACCEL_MIN_VEL_SHORT = float_env("TRADEALL_ACCEL_MIN_VEL_SHORT") or 0.28
+ACCEL_MIN_ACC_SHORT = float_env("TRADEALL_ACCEL_MIN_ACC_SHORT") or 0.20
+ACCEL_MIN_VEL_MED = float_env("TRADEALL_ACCEL_MIN_VEL_MED") or 0.15
 
 
 
@@ -493,8 +496,8 @@ def _fire_trend_order(enable, symbol, trend_state, direction, action, price, rea
     return result
 
 
-def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price, regime_ctx=None):
-    """Evaluate fast-momentum impulses on the small price window."""
+def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price, regime_ctx=None, price_window=None):
+    """Evaluate fast-momentum and short-term acceleration impulses on the small price window."""
     if gradient > 0 and slope > SMALL_SLOPE_THRESHOLD:
         print(f"[SMALL-WINDOW] Momentum BUY surge: gradient={gradient}, slope={slope} > {SMALL_SLOPE_THRESHOLD}")
         _fire_trend_order(enable, symbol, trend_state, "UP", "BUY", current_price,
@@ -504,6 +507,26 @@ def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price
         print(f"[SMALL-WINDOW] Momentum SELL plunge: gradient={gradient}, slope={slope} < -{SMALL_SLOPE_THRESHOLD}")
         _fire_trend_order(enable, symbol, trend_state, "DOWN", "SELL", current_price,
                           "small_window_plunge_down", regime_ctx=regime_ctx)
+
+    elif ACCEL_ENABLED and price_window is not None and gradient > 0 and slope >= PRICE_CHANGE_THRESHOLD_EUR:
+        try:
+            vel_short, acc_short = price_window.calculate_acceleration(window_sec=ACCEL_WINDOW_SEC)
+            vel_med, _ = price_window.calculate_acceleration(window_sec=max(ACCEL_WINDOW_SEC * 2.0, 180.0))
+            if (
+                vel_short >= ACCEL_MIN_VEL_SHORT
+                and acc_short >= ACCEL_MIN_ACC_SHORT
+                and vel_med >= ACCEL_MIN_VEL_MED
+            ):
+                print(
+                    f"[SMALL-WINDOW] Acceleration BUY surge: gradient={gradient}, slope={slope:.3f}, "
+                    f"vel_90s={vel_short:.3f}%/m, acc_90s={acc_short:.3f}%/m^2, vel_180s={vel_med:.3f}%/m"
+                )
+                _fire_trend_order(
+                    enable, symbol, trend_state, "UP", "BUY", current_price,
+                    "accel_surge_up", regime_ctx=regime_ctx,
+                )
+        except Exception as e:
+            print(f"[SMALL-WINDOW] Acceleration calculation error for {symbol}: {e}")
 
 
 def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regime_ctx=None):
@@ -549,8 +572,6 @@ def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regi
             print(f"ATENTIE 3: {action} ALL {win} .... ")
             reason = "slope<=-5.1_and_old_down" if direction == "UP" else "slope>=5.1_and_old_up"
             _fire_once(direction, action, reason)
-   
-# TODO: measure short-term acceleration over one to three minutes and buy when high.
 
 
 # Function to handle the price logic for a specific currency.
@@ -598,7 +619,8 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
         print(f"[TRADEALL] {symbol} resolved trend: {getattr(regime_ctx, 'resolved_trend', None)}")
 
     # SMALL ONE!!
-    logic_small("SMALL", True, symbol, gradient, slope, trend_state, current_price, regime_ctx=regime_ctx)
+    logic_small("SMALL", True, symbol, gradient, slope, trend_state, current_price,
+                regime_ctx=regime_ctx, price_window=price_window)
 
     # BIG ONE!!!
     slope_big, price_diff = analyzer_big.check_price_change(PRICE_CHANGE_THRESHOLD_BIG_EUR)

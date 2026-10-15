@@ -792,6 +792,64 @@ class TestPositionReentryManager(unittest.TestCase):
         self.assertTrue(dec2.should_enter)
         self.assertIn("range_reentry_confirmed", dec2.reason)
 
+    def test_reentry_post_stop_stabilization_cooldown_waits_and_tracks_trough(self):
+        self.mgr.config.reentry_post_stop_cooldown_sec = 300.0
+        # Tick 1 at t=now+30s (< 300s cooldown): price drops to 90.0 -> tracks trough=90.0, waits
+        snap1 = ReentrySnapshot(
+            symbol="BTCUSDT",
+            current_price=90.0,
+            last_sell_price=100.0,
+            last_exit_kind="STOP",
+            last_sell_time_s=self.now,
+            current_time_s=self.now + 30.0,
+            trend_up=True,
+        )
+        dec1 = self.mgr.evaluate_reentry(snap1)
+        self.assertFalse(dec1.should_enter)
+        self.assertIn("post_stop_stabilization_cooldown", dec1.reason)
+
+        # Tick 2 at t=now+120s (< 300s cooldown): premature bounce to 92.0 (+2.2%) -> still in cooldown!
+        snap2 = ReentrySnapshot(
+            symbol="BTCUSDT",
+            current_price=92.0,
+            last_sell_price=100.0,
+            last_exit_kind="STOP",
+            last_sell_time_s=self.now,
+            current_time_s=self.now + 120.0,
+            trend_up=True,
+        )
+        dec2 = self.mgr.evaluate_reentry(snap2)
+        self.assertFalse(dec2.should_enter)
+        self.assertIn("post_stop_stabilization_cooldown", dec2.reason)
+
+        # Tick 3 at t=now+180s (< 300s cooldown): deeper leg down to 88.0 -> updates trough to 88.0
+        snap3 = ReentrySnapshot(
+            symbol="BTCUSDT",
+            current_price=88.0,
+            last_sell_price=100.0,
+            last_exit_kind="STOP",
+            last_sell_time_s=self.now,
+            current_time_s=self.now + 180.0,
+            trend_up=True,
+        )
+        dec3 = self.mgr.evaluate_reentry(snap3)
+        self.assertFalse(dec3.should_enter)
+        self.assertEqual(self.mgr.reentry_state["BTCUSDT"]["trough"], 88.0)
+
+        # Tick 4 at t=now+310s (>= 300s cooldown): bounce to 89.5 (+1.70% from 88.0 >= 1.5%) -> enters!
+        snap4 = ReentrySnapshot(
+            symbol="BTCUSDT",
+            current_price=89.5,
+            last_sell_price=100.0,
+            last_exit_kind="STOP",
+            last_sell_time_s=self.now,
+            current_time_s=self.now + 310.0,
+            trend_up=True,
+        )
+        dec4 = self.mgr.evaluate_reentry(snap4)
+        self.assertTrue(dec4.should_enter)
+        self.assertIn("post_stop_bounce_confirmed", dec4.reason)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

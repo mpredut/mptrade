@@ -19,7 +19,6 @@ Mathematical symmetry:
 
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -296,6 +295,7 @@ class PositionExitConfig:
     reentry_bear_gate_enabled: bool = True     # Block/require stronger bounce in bear trend
     reentry_hybrid_enabled: bool = False       # Enable hybrid pullback in confirmed bull trends
     reentry_peak_relative: bool = False        # Enable peak-relative pullback across all regimes
+    reentry_post_stop_cooldown_sec: float = 0.0  # Minimum stabilization cooldown (seconds) after STOP before re-entry
     allow_external_cache: bool = True          # False in replay/backtests to enforce strict simulation determinism
 
 def _clear_smart_sl(symbol: str, provider: Optional[str] = None) -> None:
@@ -1020,6 +1020,20 @@ class PositionExitManager:
 
         # Case 2: Post-STOP Re-entry (Bounce Trough Mirror)
         if last_kind == "STOP" and self.config.reentry_sl_bounce_pct > 0:
+            if (
+                self.config.reentry_post_stop_cooldown_sec > 0
+                and snapshot.last_sell_time_s
+                and now > 0
+                and (now - snapshot.last_sell_time_s) < self.config.reentry_post_stop_cooldown_sec
+            ):
+                elapsed_s = now - snapshot.last_sell_time_s
+                return ReentryDecision(
+                    ReentryAction.WAIT,
+                    False,
+                    f"post_stop_stabilization_cooldown (elapsed={elapsed_s:.0f}s < {self.config.reentry_post_stop_cooldown_sec:.0f}s)",
+                    metadata={"trough": trough, "elapsed_sec": elapsed_s},
+                )
+
             bounce_ratio = snapshot.bounce_ratio(trough)
             bounce_required = self.config.reentry_sl_bounce_pct
 

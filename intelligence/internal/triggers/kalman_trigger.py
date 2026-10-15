@@ -65,7 +65,9 @@ class KalmanTrend:
         self.last_ts = ts
 
         F = np.array([[1.0, dt], [0.0, 1.0]])
-        q = self.qr * R
+        # Normalize R across sampling intervals so multi-second steps (e.g. 60s)
+        # do not cube dt against an already step-scaled measurement variance R.
+        q = self.qr * (R / (max(dt, 1.0) ** 1.25))
         Q = q * np.array([[dt ** 3 / 3.0, dt ** 2 / 2.0],
                           [dt ** 2 / 2.0, dt]])
         # Predict
@@ -79,21 +81,22 @@ class KalmanTrend:
         self.P = self.P - np.outer(K, self.P[0, :])
 
         old_trend = self.trend
-        out = self._out(price, old_trend=old_trend)
+        out = self._out(price, old_trend=old_trend, dt=dt)
         self.trend = out["trend"]
         return out
 
-    def _out(self, price: float, old_trend: int) -> dict:
+    def _out(self, price: float, old_trend: int, dt: float = 1.0) -> dict:
         vel = float(self.x[1])
         vel_std = math.sqrt(max(float(self.P[1, 1]), 0.0))
         vel_pct_min = vel / price * 100.0 * 60.0
         std_pct_min = vel_std / price * 100.0 * 60.0
+        min_vel = max(MIN_VEL_PCT_MIN, 0.045) if dt >= 30.0 else MIN_VEL_PCT_MIN
         trend = old_trend
         if old_trend == 0:
-            if abs(vel_pct_min) > max(CONF_ENTER * std_pct_min, MIN_VEL_PCT_MIN):
+            if abs(vel_pct_min) > max(CONF_ENTER * std_pct_min, min_vel):
                 trend = 1 if vel_pct_min > 0 else -1
         else:
-            if vel_pct_min * old_trend < 0 and abs(vel_pct_min) > CONF_ENTER * std_pct_min:
+            if vel_pct_min * old_trend < 0 and abs(vel_pct_min) > max(CONF_ENTER * std_pct_min, min_vel):
                 trend = -old_trend
             elif abs(vel_pct_min) < CONF_EXIT * std_pct_min:
                 trend = 0

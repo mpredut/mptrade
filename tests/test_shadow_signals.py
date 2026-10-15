@@ -139,6 +139,58 @@ class TestShadowRuntime(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "240m"):
             require_shadow_interval(60, 240, "HL shadow")
 
+    def test_kalman_60s_step_noise_transitions_after_60_samples(self):
+        """At 60s sampling with adaptive step-noise epsilon, KalmanTrend must not lock at 0 after 60 samples."""
+        import numpy as np
+        kf = ss.KalmanTrend()
+        fed = []
+        ts = 1_000_000.0
+        price = 74000.0
+        # 60 minutes of mild chop
+        for i in range(60):
+            ts += 60.0
+            price += (15.0 if i % 2 == 0 else -15.0)
+            fed.append(price)
+            eps = float(np.std(np.gradient(np.asarray(fed)))) if len(fed) >= 5 else 60.0
+            out = kf.update(ts, price, eps)
+        self.assertEqual(out["trend"], 0)
+
+        # Breakout (+75 USD/min ~ +0.10%/min for 6 minutes)
+        for _ in range(6):
+            ts += 60.0
+            price += 75.0
+            fed.append(price)
+            if len(fed) > 60:
+                fed.pop(0)
+            eps = float(np.std(np.gradient(np.asarray(fed))))
+            out = kf.update(ts, price, eps)
+        self.assertEqual(out["trend"], 1)
+
+    def test_tradeall_logic_small_acceleration_surge(self):
+        """logic_small triggers accel_surge_up when short-term velocity and acceleration are strongly positive."""
+        from unittest.mock import patch
+        import tradeall as ta
+        from pricewindow import PriceWindow
+
+        pw = PriceWindow("BTCUSDC", 220, sample_rate_sec=1.0)
+        # Parabolic upward curve over 180s
+        px = 74000.0
+        for i in range(180):
+            t_min = i / 60.0
+            px = 74000.0 * (1.0 + 0.0012 * t_min + 0.0018 * (t_min ** 2))
+            pw.process_price(px)
+
+        trend_state = ta.TrendState("BTCUSDC", 3600.0, 222.0)
+        with patch.object(ta, "track_and_place_order", return_value={"orderId": "1"}) as mock_place:
+            ta.logic_small(
+                "SMALL", True, "BTCUSDC",
+                gradient=1, slope=ta.PRICE_CHANGE_THRESHOLD_EUR + 0.05,
+                trend_state=trend_state, current_price=px,
+                price_window=pw,
+            )
+            self.assertEqual(mock_place.call_count, 1)
+            self.assertEqual(mock_place.call_args.kwargs.get("reason"), "accel_surge_up")
+
 
 if __name__ == "__main__":
     unittest.main()

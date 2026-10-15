@@ -343,6 +343,7 @@ MT_TP_PROFIT_FLOOR_RATIO = float(os.environ.get("MT_TP_PROFIT_FLOOR_RATIO", "0.5
 MT_TP_PROFIT_FLOOR_MIN_PCT = float(os.environ.get("MT_TP_PROFIT_FLOOR_MIN_PCT", "0.008"))
 MT_TP_STAGNATION_MAX_SEC = float(os.environ.get("MT_TP_STAGNATION_MAX_SEC", "1080.0"))
 MT_REENTRY_HYBRID_ENABLED = os.environ.get("MT_REENTRY_HYBRID_ENABLED", "0").lower() in ("yes", "true", "1")
+MT_REENTRY_POST_STOP_COOLDOWN_SEC = float(os.environ.get("MT_REENTRY_POST_STOP_COOLDOWN_SEC", "300.0"))
 _TP_RIDE_STATE: Dict[str, Dict[str, Any]] = {}
 _REENTRY_STATE: Dict[str, Dict[str, Any]] = {}
 _LAST_EXIT_KIND: Dict[str, str] = {}
@@ -472,7 +473,7 @@ def _load_mt_conf(path=None):
     global MT_SL_STRUCTURAL_BREAK_ENABLED
     global MT_SL_DISASTER_BUFFER_RATIO, MT_SL_DISASTER_VOL_MULTIPLIER, MT_SL_DISASTER_BUFFER_MIN_PCT
     global MT_TP_TREND_RIDE_ENABLED, MT_TP_PULLBACK_PCT, MT_TP_PROFIT_FLOOR_RATIO
-    global MT_TP_PROFIT_FLOOR_MIN_PCT, MT_TP_STAGNATION_MAX_SEC
+    global MT_TP_PROFIT_FLOOR_MIN_PCT, MT_TP_STAGNATION_MAX_SEC, MT_REENTRY_POST_STOP_COOLDOWN_SEC
     path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitortrades.conf")
     if not os.path.exists(path):
         return
@@ -503,6 +504,7 @@ def _load_mt_conf(path=None):
                 elif k == "tp_profit_floor_ratio":      MT_TP_PROFIT_FLOOR_RATIO = float(v) if float(v) < 1.0 else float(v) / 100.0
                 elif k == "tp_profit_floor_min_pct":    MT_TP_PROFIT_FLOOR_MIN_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
                 elif k == "tp_stagnation_max_s":        MT_TP_STAGNATION_MAX_SEC = float(v)
+                elif k == "reentry_post_stop_cooldown_s": MT_REENTRY_POST_STOP_COOLDOWN_SEC = float(v)
     except (OSError, ValueError) as e:
         print(f"monitortrades.conf: {e} — using the values from the code")
 
@@ -542,6 +544,7 @@ def get_exit_manager() -> PositionExitManager:
         reentry_enabled=True,
         reentry_hybrid_enabled=MT_REENTRY_HYBRID_ENABLED,
         reentry_tolerance_pct=MT_ARE_CLOSE_TOLERANCE_PCT,
+        reentry_post_stop_cooldown_sec=MT_REENTRY_POST_STOP_COOLDOWN_SEC,
     )
     mgr = PositionExitManager(
         config=config,
@@ -976,6 +979,7 @@ def _apply_post_stop_ai_guard(
             qty=_est_qty,
             notional_eur=_est_notional,
             last_sell_time_s=sell_time,
+            now=reentry_snap.current_time_s,
         )
         if not _ps_dec.allowed:
             print(f"[{symbol}] Post-STOP re-entry VETOED by Pillar 3 AI: {_ps_dec.reason}")
@@ -1008,7 +1012,7 @@ def _execute_reentry_buy(
     _default_offset = min(MT_BUY_PRICE_OFFSET, current_price * 0.01)
     _buy_offset = inst.param("mt", "buy_price_offset", _default_offset, float)
     reentry_outcome_ctx = {}
-    reentry_bypass = {"GI3"} if last_exit_kind == "STOP" else None
+    reentry_bypass = {"GF1", "GI3"} if last_exit_kind == "STOP" else ({"GF1"} if MT_REENTRY_HYBRID_ENABLED else None)
     placed = _place_guarded(
         inst, "BUY", current_price + _buy_offset, buy_qty, min_qty,
         safeback_seconds=sbs, cancelorders=True,
@@ -1100,8 +1104,14 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     owned_qty = max(float(position["net_qty"]), 0.0)
     sellable_qty = min(avail_qty, owned_qty) if isolation == "own_ledger" else avail_qty
 
-    # 3. Evaluate BUY history.
-    if trade_orders_buy:
+    # 3. Evaluate BUY history (skip if position was already closed by a subsequent SELL and only dust/zero remains).
+    position_closed_by_sell = (
+        bool(trade_orders_sell)
+        and sell_time > buy_time
+        and (sellable_qty <= 0 or (min_qty > 0 and sellable_qty < min_qty))
+        and symbol not in _PENDING_STOP_EXIT
+    )
+    if trade_orders_buy and not position_closed_by_sell:
         if not buy_price:
             print(f"No buy_price !!!!!")
             return
@@ -1174,9 +1184,15 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             return
         exit_mgr = get_exit_manager()
         vol_1h = get_symbol_volatility_1h(symbol) or 0.0
-        last_exit_kind = _LAST_EXIT_KIND.get(symbol) or (
+        explicit_exit_kind = _LAST_EXIT_KIND.get(symbol) or (
             trade_orders_sell[0].get("kind") if isinstance(trade_orders_sell[0], dict) else None
-        ) or "SELL"
+        )
+        if not explicit_exit_kind and buy_price and sell_time >= buy_time:
+            ref_buy_px = max(float(buy_price), float(position.get("average_buy_price") or 0.0))
+            if sell_price < ref_buy_px * (1.0 - min(lost_threshold * 0.25, 0.002)):
+                explicit_exit_kind = "STOP"
+                _LAST_EXIT_KIND[symbol] = "STOP"
+        last_exit_kind = explicit_exit_kind or "SELL"
 
         reentry_snap = ReentrySnapshot(
             symbol=symbol,

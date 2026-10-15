@@ -194,7 +194,10 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
 
     def run_tick(self, inst, *, trend_up=False, gain=0.10, loss=0.05, now=None):
         ts = now if now is not None else NOW
-        with patch.object(mt, "is_trend_up", return_value=trend_up):
+        with (
+            patch.object(mt, "is_trend_up", return_value=trend_up),
+            patch.object(mt, "_apply_post_stop_ai_guard", side_effect=lambda sym, px, spx, st, snap, bb, bq, q: (True, bb, bq, q)),
+        ):
             mt.monitor_price_and_trade(
                 inst,
                 sbs=12 * 24 * 3600 + 60,
@@ -1147,6 +1150,36 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
         self.assertEqual(len(inst.placed), 1)
         self.assertEqual(inst.placed[0]["side"], "SELL")
         self.assertNotIn(sym, _GRACE_TRACKER, "Active Smart-SL grace must be cleared after protective STOP placement")
+
+    def test_closed_position_skips_ghost_stop_loss_and_infers_stop_reentry(self):
+        """After a STOP exit closes the position (sell_time > buy_time, free < min_qty), Step 3 must not
+        fire ghost Stop-Loss evaluations, and Step 4 must infer STOP exit kind even if state was cleared."""
+        mt.HARD_TP_ENABLED = False
+        mt._LAST_EXIT_KIND.clear()
+        mt._REENTRY_STATE.clear()
+        inst = FakeInstrument(
+            price=90.0,
+            free=0.000005,
+            min_qty=0.00001,
+            fills=[
+                _fill("BUY", 100.0, 2.0, age_s=6 * 3600),
+                _fill("SELL", 95.0, 1.999995, age_s=4 * 3600),
+            ],
+            params={"mt.buy_budget": 200, "mt.max_budget": 1000},
+        )
+        sym = inst.symbol
+        # Tick 1 at 90.0: skips Step 3 (no ghost SELL), infers STOP, records trough=90.0
+        self.run_tick(inst, trend_up=True, now=NOW)
+        self.assertEqual(inst.placed, [])
+        self.assertEqual(mt._LAST_EXIT_KIND.get(sym), "STOP")
+        self.assertEqual(mt._REENTRY_STATE[sym]["trough"], 90.0)
+
+        # Tick 2 at 92.0 (+2.22% bounce >= 1.5%): places Post-STOP re-entry BUY with GF1+GI3 bypass
+        inst._price = 92.0
+        self.run_tick(inst, trend_up=True, now=NOW + 60)
+        self.assertEqual(len(inst.placed), 1)
+        self.assertEqual(inst.placed[0]["side"], "BUY")
+        self.assertEqual(inst.placed[0]["kwargs"]["bypass_guards"], {"GF1", "GI3"})
 
 
 if __name__ == "__main__":
