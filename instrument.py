@@ -60,10 +60,13 @@ def _is_terminal_filter_refusal(reason) -> bool:
 from guard_hierarchy import (
     BaseGuard,
     OperationalGuard,
+    TrendGuard,
     FinancialGuard,
     IntelligenceGuard,
     DailyLimitGuard,
     ShortTrendGuard,
+    MediumTrendGuard,
+    LongTrendGuard,
     MathProfitGuard,
     QuantityPolicyGuard,
     Pillar1QuantitativeGuard,
@@ -566,7 +569,7 @@ class Instrument:
                     reason = refusal
                     return None
 
-            # 2. Optional provider-agnostic trend gate is instantaneous. Placement
+            # 2. Optional provider-agnostic short trend gate (GT1) is instantaneous. Placement
             # must never sleep or poll: a negative decision returns immediately and
             # the durable outbox retries it on a later worker tick. Callers that own
             # their lifecycle (AssetGuardian) apply the same check in their strategy
@@ -588,6 +591,37 @@ class Instrument:
                         return None
                 except Exception as e:  # noqa: BLE001 — Opportunistic gate.
                     print(f"[{self.symbol}] {side_u} trend gate unavailable: {e}")
+
+            # 2b. Medium-Term Trend Gate (GT2 / medium_trend, 4h - 24h):
+            # Evaluates the broader directional regime (bull / bear / flat / chop).
+            # Supports configurable action: 'defer' (postpones retry), 'scale' (scales down risk),
+            # or observational pass-through.
+            check_medium_trend = (
+                not bypass_all
+                and "medium_trend" not in bypassed_guards
+                and "gt2" not in bypassed_guards
+                and "trend" not in bypassed_guards
+            )
+            if check_medium_trend and regime_context is not None:
+                resolved_regime = getattr(regime_context, "regime", None) or getattr(regime_context, "resolved_trend", None)
+                medium_trend_action = kwargs.get("medium_trend_action")
+                if medium_trend_action == "defer":
+                    if side_u == "BUY" and resolved_regime == "bear":
+                        print(f"[{self.symbol}] BUY deferred by medium-term trend (4h-24h BEAR regime)")
+                        reason = "medium_trend_deferred"
+                        return None
+                    elif side_u == "SELL" and resolved_regime == "bull" and not kwargs.get("is_stop_loss"):
+                        print(f"[{self.symbol}] SELL deferred by medium-term trend (4h-24h BULL regime, riding trend)")
+                        reason = "medium_trend_deferred"
+                        return None
+                elif medium_trend_action == "scale":
+                    if side_u == "BUY" and resolved_regime == "bear":
+                        scale_factor = float(kwargs.get("medium_trend_scale", 0.5))
+                        qty = max(0.0, qty * scale_factor)
+                        print(f"[{self.symbol}] BUY scaled by medium-term trend ({scale_factor*100:.0f}%, new qty={qty})")
+                        if qty <= 0:
+                            reason = "medium_trend_qty_zero"
+                            return None
 
             # Stage 3: Post-sizing Profit & Intelligence Guards.
             # Evaluated with the non-zero finalized quantity and exact notional size.

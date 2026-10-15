@@ -1059,33 +1059,40 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         """Verify fine-grained bypass combinations and ensure non-bypassed guards apply by default."""
         from instrument import normalize_bypassed_guards, GUARD_CATALOG
 
-        # 0. GUARD_CATALOG completeness
-        self.assertEqual(set(GUARD_CATALOG.keys()), {"G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8"})
+        # 0. GUARD_CATALOG completeness (both new canonical codes and legacy G1..G8 exist)
+        canonical_codes = {"GO1", "GT1", "GT2", "GT3", "GF1", "GF2", "GI1", "GI2", "GI3", "GI4"}
+        legacy_codes = {"G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8"}
+        self.assertTrue(canonical_codes.issubset(set(GUARD_CATALOG.keys())))
+        self.assertTrue(legacy_codes.issubset(set(GUARD_CATALOG.keys())))
 
         # 1. Default (None) bypasses nothing
         none_bypassed = normalize_bypassed_guards(None)
         self.assertEqual(none_bypassed, set())
 
-        # 2. G-code resolution (e.g. G1 + G2 + G3)
-        g_bypassed = normalize_bypassed_guards(["G1", "G2", "G3"])
+        # 2. Canonical and legacy code resolution (e.g. GO1 + GT1 + GF1, or G1 + G2 + G3)
+        g_bypassed = normalize_bypassed_guards(["GO1", "GT1", "GF1"])
+        self.assertIn("go1", g_bypassed)
         self.assertIn("g1", g_bypassed)
         self.assertIn("daily_limit", g_bypassed)
+        self.assertIn("gt1", g_bypassed)
         self.assertIn("g2", g_bypassed)
         self.assertIn("short_trend", g_bypassed)
-        self.assertIn("trend", g_bypassed)
+        self.assertIn("gf1", g_bypassed)
         self.assertIn("g3", g_bypassed)
         self.assertIn("math_profit", g_bypassed)
         self.assertIn("math_reference", g_bypassed)
         self.assertNotIn("quantity_policy", g_bypassed)
-        self.assertNotIn("g4", g_bypassed)
-        self.assertNotIn("p1", g_bypassed)
+        self.assertNotIn("gf2", g_bypassed)
+        self.assertNotIn("medium_trend", g_bypassed)
+        self.assertNotIn("gt2", g_bypassed)
+        self.assertNotIn("gi1", g_bypassed)
 
         # 3. Specific opt-out: only daily_limit and short_trend
         dt_bypassed = normalize_bypassed_guards("daily_limit, short_trend")
         self.assertIn("daily_limit", dt_bypassed)
         self.assertIn("daily_cap", dt_bypassed)
         self.assertIn("short_trend", dt_bypassed)
-        self.assertIn("trend", dt_bypassed)
+        self.assertNotIn("medium_trend", dt_bypassed)
         self.assertNotIn("math_reference", dt_bypassed)
         self.assertNotIn("quantity_policy", dt_bypassed)
         self.assertNotIn("p1", dt_bypassed)
@@ -1094,18 +1101,20 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         self.assertNotIn("p4", dt_bypassed)
 
         # 4. Unrecognized tokens are ignored without crashing or breaking valid guards
-        mixed_bypassed = normalize_bypassed_guards(["G1", "invalid_foobar_token", "short_trend"])
+        mixed_bypassed = normalize_bypassed_guards(["GO1", "invalid_foobar_token", "short_trend"])
         self.assertIn("daily_limit", mixed_bypassed)
         self.assertIn("short_trend", mixed_bypassed)
         self.assertNotIn("invalid_foobar_token", mixed_bypassed)
         self.assertNotIn("math_profit", mixed_bypassed)
 
-        # 5. Specific opt-out: only intelligence pillars P1 and P3
+        # 5. Specific opt-out: only intelligence pillars GI1 (P1) and GI3 (P3)
         p_bypassed = normalize_bypassed_guards(["p1", "p3"])
         self.assertIn("p1", p_bypassed)
+        self.assertIn("gi1", p_bypassed)
         self.assertIn("pillar1", p_bypassed)
         self.assertIn("quantitative", p_bypassed)
         self.assertIn("p3", p_bypassed)
+        self.assertIn("gi3", p_bypassed)
         self.assertIn("pillar3", p_bypassed)
         self.assertIn("llm", p_bypassed)
         self.assertNotIn("p2", p_bypassed)
@@ -1113,11 +1122,13 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         self.assertNotIn("daily_limit", p_bypassed)
         self.assertNotIn("math_reference", p_bypassed)
 
-        # 6. 'all' or '*' bypasses every gate G1..G8
+        # 6. 'all' or '*' bypasses every gate
         all_bypassed = normalize_bypassed_guards("all")
         self.assertIn("all", all_bypassed)
         self.assertIn("daily_limit", all_bypassed)
         self.assertIn("short_trend", all_bypassed)
+        self.assertIn("medium_trend", all_bypassed)
+        self.assertIn("long_trend", all_bypassed)
         self.assertIn("math_profit", all_bypassed)
         self.assertIn("math_reference", all_bypassed)
         self.assertIn("quantity_policy", all_bypassed)
@@ -1141,8 +1152,8 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         with patch("order_guard.daily_limit_guard", return_value=(True, None)) as mock_daily, \
              patch("order_guard.profit_guard", return_value=True) as mock_profit:
 
-            # 7b. Bypassing only G1 (daily_limit): daily_limit is NOT called, profit_guard IS called
-            inst.place("BUY", 100.0, 1.0, smart=False, wait_for_trend=False, bypass_guards={"G1"})
+            # 7b. Bypassing only GO1 (daily_limit): daily_limit is NOT called, profit_guard IS called
+            inst.place("BUY", 100.0, 1.0, smart=False, wait_for_trend=False, bypass_guards={"GO1"})
             mock_daily.assert_not_called()
             mock_profit.assert_called()
 
@@ -1151,6 +1162,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         from guard_hierarchy import (
             BaseGuard,
             OperationalGuard,
+            TrendGuard,
             FinancialGuard,
             IntelligenceGuard,
             GUARD_REGISTRY,
@@ -1159,14 +1171,26 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         )
 
         # Hierarchy validation
-        self.assertIsInstance(GUARD_REGISTRY["G1"], OperationalGuard)
-        self.assertIsInstance(GUARD_REGISTRY["G2"], OperationalGuard)
-        self.assertIsInstance(GUARD_REGISTRY["G3"], FinancialGuard)
-        self.assertIsInstance(GUARD_REGISTRY["G4"], FinancialGuard)
-        self.assertIsInstance(GUARD_REGISTRY["G5"], IntelligenceGuard)
-        self.assertIsInstance(GUARD_REGISTRY["G6"], IntelligenceGuard)
-        self.assertIsInstance(GUARD_REGISTRY["G7"], IntelligenceGuard)
-        self.assertIsInstance(GUARD_REGISTRY["G8"], IntelligenceGuard)
+        self.assertIsInstance(GUARD_REGISTRY["GO1"], OperationalGuard)
+        self.assertIsInstance(GUARD_REGISTRY["GT1"], TrendGuard)
+        self.assertIsInstance(GUARD_REGISTRY["GT2"], TrendGuard)
+        self.assertIsInstance(GUARD_REGISTRY["GT3"], TrendGuard)
+        self.assertIsInstance(GUARD_REGISTRY["GF1"], FinancialGuard)
+        self.assertIsInstance(GUARD_REGISTRY["GF2"], FinancialGuard)
+        self.assertIsInstance(GUARD_REGISTRY["GI1"], IntelligenceGuard)
+        self.assertIsInstance(GUARD_REGISTRY["GI2"], IntelligenceGuard)
+        self.assertIsInstance(GUARD_REGISTRY["GI3"], IntelligenceGuard)
+        self.assertIsInstance(GUARD_REGISTRY["GI4"], IntelligenceGuard)
+
+        # Legacy aliases resolution
+        self.assertIs(GUARD_REGISTRY["G1"], GUARD_REGISTRY["GO1"])
+        self.assertIs(GUARD_REGISTRY["G2"], GUARD_REGISTRY["GT1"])
+        self.assertIs(GUARD_REGISTRY["G3"], GUARD_REGISTRY["GF1"])
+        self.assertIs(GUARD_REGISTRY["G4"], GUARD_REGISTRY["GF2"])
+        self.assertIs(GUARD_REGISTRY["G5"], GUARD_REGISTRY["GI1"])
+        self.assertIs(GUARD_REGISTRY["G6"], GUARD_REGISTRY["GI2"])
+        self.assertIs(GUARD_REGISTRY["G7"], GUARD_REGISTRY["GI3"])
+        self.assertIs(GUARD_REGISTRY["G8"], GUARD_REGISTRY["GI4"])
 
         for g in GUARD_REGISTRY.values():
             self.assertIsInstance(g, BaseGuard)
@@ -1175,32 +1199,87 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertTrue(bool(g.canonical))
 
         # Categories mapping
-        self.assertEqual(len(GUARD_CATEGORIES["operational"]), 2)
+        self.assertEqual(len(GUARD_CATEGORIES["trend"]), 3)
         self.assertEqual(len(GUARD_CATEGORIES["financial"]), 2)
         self.assertEqual(len(GUARD_CATEGORIES["intelligence"]), 4)
 
-        # Category bypass: 'operational' bypasses G1 & G2, but not G3..G8
-        op_bypassed = normalize_bypassed_guards("operational")
-        self.assertTrue(GUARD_REGISTRY["G1"].is_bypassed(op_bypassed))
-        self.assertTrue(GUARD_REGISTRY["G2"].is_bypassed(op_bypassed))
-        self.assertFalse(GUARD_REGISTRY["G3"].is_bypassed(op_bypassed))
-        self.assertFalse(GUARD_REGISTRY["G5"].is_bypassed(op_bypassed))
+        # Category bypass: 'trend' bypasses GT1, GT2 & GT3, but not GF1 or GI1
+        trend_bypassed = normalize_bypassed_guards("trend")
+        self.assertTrue(GUARD_REGISTRY["GT1"].is_bypassed(trend_bypassed))
+        self.assertTrue(GUARD_REGISTRY["GT2"].is_bypassed(trend_bypassed))
+        self.assertTrue(GUARD_REGISTRY["GT3"].is_bypassed(trend_bypassed))
+        self.assertFalse(GUARD_REGISTRY["GF1"].is_bypassed(trend_bypassed))
+        self.assertFalse(GUARD_REGISTRY["GI1"].is_bypassed(trend_bypassed))
 
-        # Category bypass: 'financial' bypasses G3 & G4
-        fin_bypassed = normalize_bypassed_guards("financial")
-        self.assertFalse(GUARD_REGISTRY["G1"].is_bypassed(fin_bypassed))
-        self.assertTrue(GUARD_REGISTRY["G3"].is_bypassed(fin_bypassed))
-        self.assertTrue(GUARD_REGISTRY["G4"].is_bypassed(fin_bypassed))
-        self.assertFalse(GUARD_REGISTRY["G5"].is_bypassed(fin_bypassed))
+        # Category bypass: 'financial' (or 'gf') bypasses GF1 & GF2
+        fin_bypassed = normalize_bypassed_guards("gf")
+        self.assertFalse(GUARD_REGISTRY["GO1"].is_bypassed(fin_bypassed))
+        self.assertTrue(GUARD_REGISTRY["GF1"].is_bypassed(fin_bypassed))
+        self.assertTrue(GUARD_REGISTRY["GF2"].is_bypassed(fin_bypassed))
+        self.assertFalse(GUARD_REGISTRY["GI1"].is_bypassed(fin_bypassed))
 
-        # Category bypass: 'intelligence' bypasses G5..G8
-        intel_bypassed = normalize_bypassed_guards("intelligence")
-        self.assertFalse(GUARD_REGISTRY["G1"].is_bypassed(intel_bypassed))
-        self.assertFalse(GUARD_REGISTRY["G3"].is_bypassed(intel_bypassed))
-        self.assertTrue(GUARD_REGISTRY["G5"].is_bypassed(intel_bypassed))
-        self.assertTrue(GUARD_REGISTRY["G6"].is_bypassed(intel_bypassed))
-        self.assertTrue(GUARD_REGISTRY["G7"].is_bypassed(intel_bypassed))
-        self.assertTrue(GUARD_REGISTRY["G8"].is_bypassed(intel_bypassed))
+        # Category bypass: 'intelligence' (or 'gi') bypasses GI1..GI4
+        intel_bypassed = normalize_bypassed_guards("gi")
+        self.assertFalse(GUARD_REGISTRY["GO1"].is_bypassed(intel_bypassed))
+        self.assertFalse(GUARD_REGISTRY["GF1"].is_bypassed(intel_bypassed))
+        self.assertTrue(GUARD_REGISTRY["GI1"].is_bypassed(intel_bypassed))
+        self.assertTrue(GUARD_REGISTRY["GI2"].is_bypassed(intel_bypassed))
+        self.assertTrue(GUARD_REGISTRY["GI3"].is_bypassed(intel_bypassed))
+        self.assertTrue(GUARD_REGISTRY["GI4"].is_bypassed(intel_bypassed))
+
+    def test_medium_trend_guard_runtime(self):
+        """Verify GT2 (medium_trend) gate runtime actions (defer, scale, bypass)."""
+        from market_regime import MarketRegimeContext, MarketRegimeDecision
+
+        bear_ctx = MarketRegimeContext.from_decision(
+            MarketRegimeDecision(
+                regime="bear", gradient=-0.8, epsilon=0.1, strength=5.0,
+                fresh=True, reason="directional_bear",
+            )
+        )
+        bull_ctx = MarketRegimeContext.from_decision(
+            MarketRegimeDecision(
+                regime="bull", gradient=0.8, epsilon=0.1, strength=5.0,
+                fresh=True, reason="directional_bull",
+            )
+        )
+
+        prov = _FakeProvider()
+        inst = self._inst(prov)
+
+        with patch("order_guard.daily_limit_guard", return_value=(True, None)), \
+             patch("order_guard.profit_guard", return_value=True):
+
+            # 1. Action = 'defer' on BUY during bear: returns None with reason 'medium_trend_deferred'
+            res = inst.place(
+                "BUY", 100.0, 1.0, smart=False, wait_for_trend=False,
+                regime_context=bear_ctx, medium_trend_action="defer",
+            )
+            self.assertIsNone(res)
+
+            # 2. Action = 'defer' on BUY during bear but bypassed with GT2: passes through!
+            res_bypassed = inst.place(
+                "BUY", 100.0, 1.0, smart=False, wait_for_trend=False,
+                regime_context=bear_ctx, medium_trend_action="defer",
+                bypass_guards={"GT2"},
+            )
+            self.assertIsNotNone(res_bypassed)
+
+            # 3. Action = 'defer' on BUY during bull: passes through
+            res_bull = inst.place(
+                "BUY", 100.0, 1.0, smart=False, wait_for_trend=False,
+                regime_context=bull_ctx, medium_trend_action="defer",
+            )
+            self.assertIsNotNone(res_bull)
+
+            # 4. Action = 'scale' on BUY during bear: scales quantity down by medium_trend_scale (0.5)
+            res_scaled = inst.place(
+                "BUY", 100.0, 2.0, smart=False, wait_for_trend=False,
+                regime_context=bear_ctx, medium_trend_action="scale",
+                medium_trend_scale=0.5,
+            )
+            self.assertIsNotNone(res_scaled)
+            self.assertEqual(prov.placed[-1][3], 1.0)
 
 
 if __name__ == "__main__":
