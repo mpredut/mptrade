@@ -62,9 +62,18 @@ class IfPlaceSafeOrderDailyLimitTestCase(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "recent_transaction")
 
-    def test_old_trades_below_threshold_allowed(self):
-        # 10 old trades (>3min, under the threshold of 75) -> it passes.
-        ok, reason = self._run(same_side_trades=_trades(10, age_sec=4000.0))
+    def _run_sell(self, same_side_trades):
+        def fake_get_trade_orders(order_type, symbol, max_age_seconds):
+            return same_side_trades if order_type == "SELL" else []
+
+        with patch("binance_api.bapi_allorders.get_trade_orders", side_effect=fake_get_trade_orders), \
+             patch("binance_api.bapi.get_current_price", return_value=100.0):
+            return po.if_place_safe_order("SELL", SYMBOL, 100.0, 1.0,
+                                          time_back_in_seconds=48 * 3600 + 60,
+                                          bypass_profit_guard=True)
+
+    def test_recent_transaction_does_not_block_sell(self):
+        ok, reason = self._run_sell(same_side_trades=_trades(1, side="SELL", age_sec=5.0))
         self.assertTrue(ok)
         self.assertIsNone(reason)
 

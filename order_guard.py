@@ -559,13 +559,14 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
         print(f"[DAILY-LIMIT] {order_type} {symbol}: {len(trades)} trades in "
               f"{safeback_sec/3600:.1f}h, a cap of {max_daily_trades}/day -> BLOCKED")
         return False, "daily_limit"
-    cutoff_ms = time.time() * 1000 - recent_transaction_sec * 1000
-    for t in trades:
-        ts = t.get("timestamp")
-        if ts is not None and float(ts) >= cutoff_ms:
-            print(f"[DAILY-LIMIT] {order_type} {symbol}: recent trade "
-                  f"(<{recent_transaction_sec:.0f}s) -> BLOCKED")
-            return False, "recent_transaction"
+    if order_type != "SELL":
+        cutoff_ms = time.time() * 1000 - recent_transaction_sec * 1000
+        for t in trades:
+            ts = t.get("timestamp")
+            if ts is not None and float(ts) >= cutoff_ms:
+                print(f"[DAILY-LIMIT] {order_type} {symbol}: recent trade "
+                      f"(<{recent_transaction_sec:.0f}s) -> BLOCKED")
+                return False, "recent_transaction"
     return True, None
 
 

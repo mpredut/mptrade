@@ -277,6 +277,15 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             lines = self._log_lines()
             self.assertTrue(any("|refused|recent_transaction|" in l for l in lines), lines)
 
+        with self.subTest("recent_transaction_does_not_block_sell"):
+            self._clear_state()
+            p = _FakeProvider()
+            p.seed_trade("SELL", age_sec=5.0)   # 5s ago
+            inst = self._inst(p)
+            order = inst.place("SELL", 100.0, 1.0, bypass_profit_guard=True)
+            self.assertIsNotNone(order)
+            self.assertEqual(len(p.placed), 1)
+
         with self.subTest("bypass_profit_guard_does_not_skip_daily_limit"):
             p = _FakeProvider()
             for _ in range(90):   # See the 48-hour threshold of 75 tested above.

@@ -745,13 +745,31 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 tp_outcome_ctx = {}
                 if sellable_qty > 0:
                     bypass_pg = current_price < buy_price or bool(tp_decision.forced)
+                    tp_intent_id = f"mt_tp_{symbol}_{int(current_time_s)}"
                     placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
                         safeback_seconds=sbs, force=bool(tp_decision.forced), cancelorders=True,
                         hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=bypass_pg,
+                        intent_id=tp_intent_id,
                         _outcome_context=tp_outcome_ctx)
-                    if placed or tp_outcome_ctx.get("state") == "unknown":
+                    if placed:
+                        _TP_RIDE_STATE.pop(symbol, None)
+                        _PENDING_STOP_EXIT.pop(symbol, None)
+                        _LAST_EXIT_KIND[symbol] = "TP"
+                        _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
+                        _save_mt_state()
+                    elif tp_outcome_ctx.get("state") == "unknown":
                         _TP_RIDE_STATE.pop(symbol, None)
                         _LAST_EXIT_KIND[symbol] = "TP"
+                        print(f"[{symbol}] Take-Profit submit outcome unknown/in-flight ({tp_outcome_ctx.get('reason')}) — deferring duplicate submission")
+                        _PENDING_STOP_EXIT[symbol] = {
+                            "time": current_time_s,
+                            "qty": sellable_qty,
+                            "price": current_price,
+                            "reason": tp_outcome_ctx.get("reason", "unknown"),
+                            "intent_id": tp_outcome_ctx.get("intent_id") or tp_intent_id,
+                            "client_order_id": tp_outcome_ctx.get("client_order_id"),
+                            "kind": "TP",
+                        }
                         _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
                         _save_mt_state()
                     elif prev_tp_state:
@@ -772,23 +790,39 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                     _save_mt_state()
                 else:
                     active_sell_exists = False
-                    open_orders_fn = getattr(inst, "open_orders", None)
-                    if callable(open_orders_fn):
+                    p_cid = pending_stop.get("client_order_id")
+                    prov = getattr(inst, "_provider", None)
+                    if p_cid and prov and hasattr(prov, "order_by_client_id"):
                         try:
-                            for active_ord in (open_orders_fn() or []):
-                                if str(active_ord.get("side", "")).upper() in ("SELL", "S"):
+                            found = prov.order_by_client_id(symbol, p_cid)
+                            if found and found.get("orderId"):
+                                st = str(found.get("status") or "").upper()
+                                if st in ("FILLED", "RESOLVED"):
+                                    print(f"[{symbol}] Pending Stop-Loss {p_cid} resolved filled on venue.")
+                                    _PENDING_STOP_EXIT.pop(symbol, None)
+                                    _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
+                                    _save_mt_state()
+                                    return
+                                elif st in ("NEW", "OPEN", "PARTIALLY_FILLED"):
                                     active_sell_exists = True
-                                    break
                         except Exception:
                             pass
+                    if not active_sell_exists:
+                        open_orders_fn = getattr(inst, "open_orders", None)
+                        if callable(open_orders_fn):
+                            try:
+                                for active_ord in (open_orders_fn() or []):
+                                    if str(active_ord.get("side", "")).upper() in ("SELL", "S"):
+                                        active_sell_exists = True
+                                        break
+                            except Exception:
+                                pass
                     elapsed = current_time_s - int(pending_stop.get("time", current_time_s))
                     if active_sell_exists or elapsed < 60:
                         print(f"[{symbol}] Pending Stop-Loss in flight (elapsed={elapsed}s, active_sell={active_sell_exists}) — deferring duplicate submission pending reconciliation.")
                         return
                     else:
-                        print(f"[{symbol}] Pending Stop-Loss reconciliation timeout ({elapsed}s >= 60s) with no active sell order — allowing retry.")
-                        _PENDING_STOP_EXIT.pop(symbol, None)
-                        _save_mt_state()
+                        print(f"[{symbol}] Pending Stop-Loss reconciliation timeout ({elapsed}s >= 60s) with no active sell order — allowing retry with original intent.")
 
             _TP_RIDE_STATE.pop(symbol, None)
             prev_sl_state = dict(_SL_BOUNCE_STATE.get(symbol, {}))
@@ -860,13 +894,19 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 placed = False
                 outcome_ctx = {}
                 if sellable_qty > 0:
-                    placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
-                        safeback_seconds=sbs, force=True, cancelorders=True,
-                        hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=True,
-                        bypass_guards={"all"}, wait_for_trend=False,
-                        kind="STOP", is_stop_loss=True,
-                        _outcome_context=outcome_ctx,
-                    )
+                    stop_intent_id = (pending_stop or {}).get("intent_id") or f"mt_sl_{symbol}_{int(current_time_s)}"
+                    stop_cid = (pending_stop or {}).get("client_order_id")
+                    place_kw = {
+                        "safeback_seconds": sbs, "force": True, "cancelorders": True,
+                        "hours": MT_SELL_SAFEBACK_HOURS, "bypass_profit_guard": True,
+                        "bypass_guards": {"all"}, "wait_for_trend": False,
+                        "kind": "STOP", "is_stop_loss": True,
+                        "intent_id": stop_intent_id,
+                        "_outcome_context": outcome_ctx,
+                    }
+                    if stop_cid:
+                        place_kw["client_order_id"] = stop_cid
+                    placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty, **place_kw)
                 if placed:
                     _SL_BOUNCE_STATE.pop(symbol, None)
                     _PENDING_STOP_EXIT.pop(symbol, None)
@@ -888,10 +928,13 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                             "qty": sellable_qty,
                             "price": current_price,
                             "reason": outcome_ctx.get("reason", "unknown"),
+                            "intent_id": outcome_ctx.get("intent_id") or stop_intent_id,
+                            "client_order_id": outcome_ctx.get("client_order_id") or stop_cid,
                         }
                         _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
                         _save_mt_state()
                     else:
+                        _PENDING_STOP_EXIT.pop(symbol, None)
                         if prev_sl_state:
                             _SL_BOUNCE_STATE[symbol] = prev_sl_state
                             _save_mt_state()

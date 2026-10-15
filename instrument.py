@@ -463,11 +463,19 @@ class Instrument:
                     except (TypeError, ValueError):
                         pass
 
-            # 1. Provider-agnostic daily cap and anti-spam, never bypassed.
-            ok, reason = order_guard.daily_limit_guard(self._provider, self.symbol, side_u,
-                                                       safeback_sec=safeback_override)
-            if not ok:
-                return None
+            # 1. Provider-agnostic daily cap and anti-spam.
+            is_exempt_daily_limit = bool(
+                bypass_all
+                or "daily_limit" in bypassed_guards
+                or kwargs.get("is_stop_loss")
+                or str(kwargs.get("kind", "")).upper() == "STOP"
+                or str(kwargs.get("motivation", "")).upper() == "STOP"
+            )
+            if not is_exempt_daily_limit:
+                ok, reason = order_guard.daily_limit_guard(self._provider, self.symbol, side_u,
+                                                           safeback_sec=safeback_override)
+                if not ok:
+                    return None
 
             # Stage 0: Vendor Pre-flight & Unified Account Balance Check
             # Resolve target asset (quote for BUY, base for SELL) and query free balance exactly once
@@ -884,6 +892,12 @@ class Instrument:
                 if order is not None or submit_attempted:
                     outcome_context["submitted_qty"] = qty
                     outcome_context["submitted_price"] = price
+                cid = prequeued_client_order_id or kwargs.get("client_order_id")
+                if cid:
+                    outcome_context["client_order_id"] = cid
+                iid = prequeued_intent_id or kwargs.get("intent_id")
+                if iid:
+                    outcome_context["intent_id"] = iid
             try:
                 caller = os.path.basename(sys._getframe(1).f_code.co_filename)
             except Exception:
