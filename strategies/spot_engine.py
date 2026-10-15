@@ -29,6 +29,8 @@ from order_retry import (
     TrackedOrderLifecycle,
 )
 
+from intelligence.internal.state.volatility import resolve_cached_volatility_1h, vol_pct_to_ratio
+
 from . import spot_rules as sr
 from .state_store import JsonStateStore
 from .position_exit_manager import (
@@ -1182,38 +1184,18 @@ class Strategy:
         try:
             vol = self._trail_vol_1h()
             if vol is not None and math.isfinite(vol) and vol > 0:
-                return float(vol) / 100.0, "trail_ohlc"
+                return vol_pct_to_ratio(vol), "trail_ohlc"
         except Exception:
             pass
         try:
             vol = self._shadow_vol_1h()
             if vol is not None and math.isfinite(vol) and vol > 0:
-                return float(vol) / 100.0, "shadow_ticks"
+                return vol_pct_to_ratio(vol), "shadow_ticks"
         except Exception:
             pass
-        try:
-            try:
-                from cachepaths import cache_path
-                state_path = cache_path("shadow_state.json")
-            except Exception:
-                state_path = os.path.join(os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb"), "shadow_state.json")
-            if os.path.exists(state_path):
-                import json
-                with open(state_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    sym = self.pair.upper()
-                    entry = (
-                        data.get(sym)
-                        or data.get(sym.replace("USDC", "USDT"))
-                        or data.get(sym.replace("USDT", "USDC"))
-                    )
-                    if entry and isinstance(entry, dict):
-                        v = entry.get("vol_1h_pct")
-                        if v is not None and math.isfinite(float(v)) and float(v) > 0:
-                            return float(v) / 100.0, "cache"
-        except Exception:
-            pass
+        cached = resolve_cached_volatility_1h(self.pair)
+        if cached is not None:
+            return cached, "cache"
         return 0.0, "default"
 
     def _resolve_volatility_tuple(self, symbol: str) -> tuple[float, str]:

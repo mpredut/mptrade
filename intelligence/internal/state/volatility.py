@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import deque
+import json
 import math
 import os
 from typing import Optional, Sequence, Tuple
@@ -116,3 +117,55 @@ def adaptive_thresholds(
 
 # Direct backwards-compatible alias
 vol_1h_pct = calculate_volatility_1h
+
+
+def vol_pct_to_ratio(vol_pct: float) -> float:
+    """Convert an hourly volatility percentage to decimal ratio (e.g. 2.5% -> 0.025, 0.05% -> 0.0005)."""
+    return float(vol_pct) / 100.0
+
+
+def vol_ratio_to_pct(vol_ratio: float) -> float:
+    """Convert an hourly volatility decimal ratio to percentage (e.g. 0.025 -> 2.5%, 0.0005 -> 0.05%)."""
+    return float(vol_ratio) * 100.0
+
+
+def resolve_cached_volatility_1h(
+    symbol: str, state_path: Optional[str] = None
+) -> Optional[float]:
+    """Retrieve 1h realized volatility for symbol from shared shadow cache as a decimal ratio.
+
+    Producers (e.g. shadow_signals / calculate_volatility_1h) output percentages (e.g. 2.5 for 2.5%,
+    0.05 for 0.05%). This function acts as the Single Source of Truth (SSOT) to explicitly convert
+    the percentage to a decimal ratio by dividing by 100.0.
+    Returns None if cache is missing, symbol is not found, or value is non-positive/non-finite.
+    """
+    if not state_path:
+        try:
+            from cachepaths import cache_path
+            state_path = cache_path("shadow_state.json")
+        except Exception:
+            state_path = os.path.join(
+                os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb"), "shadow_state.json"
+            )
+
+    if not os.path.exists(state_path):
+        return None
+
+    try:
+        with open(state_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            sym_key = str(symbol).upper()
+            entry = (
+                data.get(sym_key)
+                or data.get(sym_key.replace("USDC", "USDT"))
+                or data.get(sym_key.replace("USDT", "USDC"))
+            )
+            if entry and isinstance(entry, dict):
+                v = entry.get("vol_1h_pct")
+                if v is not None and math.isfinite(float(v)) and float(v) > 0:
+                    return vol_pct_to_ratio(float(v))
+    except Exception:
+        pass
+    return None
+

@@ -38,6 +38,7 @@ from strategies.position_exit_manager import (
     ReentryDecision,
 )
 from order_rollback import restore_cancelled_orders
+from intelligence.internal.state.volatility import resolve_cached_volatility_1h, vol_pct_to_ratio
 
 FX_FEE_PCT = 0.15  # T212 currency-conversion fee per direction.
 
@@ -1326,6 +1327,20 @@ class Strategy:
                    source="T212", price=price, desktop=self.desktop)
         return True
 
+    def _vol_1h_ratio(self) -> tuple[float, str]:
+        """Return 1h volatility as a decimal ratio [e.g. 0.025 for 2.5%] and its source."""
+        if hasattr(self, "_shadow_vol_1h"):
+            try:
+                vol = self._shadow_vol_1h()
+                if vol is not None and math.isfinite(float(vol)) and float(vol) > 0:
+                    return vol_pct_to_ratio(vol), "shadow"
+            except Exception:
+                pass
+        cached = resolve_cached_volatility_1h(self.ticker)
+        if cached is not None:
+            return cached, "cache"
+        return 0.0, "none"
+
     def _check_stop_loss(self, price: float) -> bool:
         """Close the entire position when unrealized loss exceeds the threshold."""
         if self.p.stop_loss_pct <= 0:
@@ -1359,16 +1374,7 @@ class Strategy:
                 except Exception:
                     pass
 
-            vol_1h = None
-            vol_source = "none"
-            if hasattr(self, "_shadow_vol_1h"):
-                try:
-                    vol = self._shadow_vol_1h()
-                    if vol is not None and math.isfinite(float(vol)) and float(vol) > 0:
-                        vol_1h = float(vol) / 100.0
-                        vol_source = "shadow"
-                except Exception:
-                    pass
+            vol_1h, vol_source = self._vol_1h_ratio()
 
             tick_time = self._now()
             held = self.s.get("qty", 0.0)
@@ -1574,16 +1580,7 @@ class Strategy:
                 except Exception:
                     pass
 
-            vol_1h = None
-            vol_source = "none"
-            if hasattr(self, "_shadow_vol_1h"):
-                try:
-                    vol = self._shadow_vol_1h()
-                    if vol is not None and math.isfinite(float(vol)) and float(vol) > 0:
-                        vol_1h = float(vol) / 100.0
-                        vol_source = "shadow"
-                except Exception:
-                    pass
+            vol_1h, vol_source = self._vol_1h_ratio()
 
             last_exit_kind = "STOP" if self.s.get("sl_rebuy") or self.s.get("last_exit_kind") == "STOP" else "TP"
 
@@ -1695,16 +1692,7 @@ class Strategy:
                         except Exception:
                             pass
 
-                    vol_1h = None
-                    vol_source = "none"
-                    if hasattr(self, "_shadow_vol_1h"):
-                        try:
-                            vol = self._shadow_vol_1h()
-                            if vol is not None and math.isfinite(float(vol)) and float(vol) > 0:
-                                vol_1h = float(vol) / 100.0
-                                vol_source = "shadow"
-                        except Exception:
-                            pass
+                    vol_1h, vol_source = self._vol_1h_ratio()
 
                     self.exit_manager.config.tp_trend_ride_enabled = True
                     self.exit_manager.config.tp_profit_floor_min_pct = (

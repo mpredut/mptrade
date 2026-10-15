@@ -399,32 +399,10 @@ def _load_mt_conf(path=None):
 _load_mt_conf()
 
 
-def get_symbol_volatility_1h(symbol: str) -> Optional[float]:
-    """Retrieve 1h realized volatility for symbol from shared cache or state as a decimal ratio.
+from intelligence.internal.state.volatility import resolve_cached_volatility_1h
 
-    Producers (e.g. shadow_signals / intelligence.vol_1h_pct) output percentages (e.g. 2.0 for 2.0%,
-    0.05 for 0.05%). This function explicitly converts the percentage to a decimal ratio by dividing by 100.0.
-    """
-    try:
-        from cachepaths import cache_path
-        state_path = cache_path("shadow_state.json")
-    except Exception:
-        state_path = os.path.join(os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb"), "shadow_state.json")
-
-    if os.path.exists(state_path):
-        try:
-            with open(state_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                sym_key = str(symbol).upper()
-                entry = data.get(sym_key) or data.get(sym_key.replace("USDC", "USDT")) or data.get(sym_key.replace("USDT", "USDC"))
-                if entry and isinstance(entry, dict):
-                    v = entry.get("vol_1h_pct")
-                    if v is not None and math.isfinite(float(v)) and float(v) > 0:
-                        return float(v) / 100.0
-        except Exception:
-            pass
-    return None
+# Canonical Single Source of Truth (SSOT) alias for 1h realized volatility decimal ratio
+get_symbol_volatility_1h = resolve_cached_volatility_1h
 
 
 def get_exit_manager() -> PositionExitManager:

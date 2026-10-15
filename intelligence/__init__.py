@@ -13,7 +13,14 @@ from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
 from intelligence.internal.guards.noise_guard import NoiseFloorGuard
 from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
 
-from intelligence.internal.state.volatility import calculate_volatility_1h, adaptive_thresholds, vol_1h_pct
+from intelligence.internal.state.volatility import (
+    calculate_volatility_1h,
+    adaptive_thresholds,
+    vol_1h_pct,
+    vol_pct_to_ratio,
+    vol_ratio_to_pct,
+    resolve_cached_volatility_1h,
+)
 from intelligence.internal.state.survival import get_trend_survival_metrics, estimate_T, hybrid_T
 from intelligence.internal.state.persistence import calculate_mann_kendall, calculate_hurst_exponent, classify_hurst_regime
 
@@ -70,6 +77,9 @@ __all__ = [
     "calculate_volatility_1h",
     "adaptive_thresholds",
     "vol_1h_pct",
+    "vol_pct_to_ratio",
+    "vol_ratio_to_pct",
+    "resolve_cached_volatility_1h",
     "get_trend_survival_metrics",
     "estimate_T",
     "hybrid_T",

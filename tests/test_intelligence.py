@@ -9,7 +9,13 @@ from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecisi
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
 from intelligence.internal.guards.noise_guard import NoiseFloorGuard
-from intelligence.internal.state.volatility import calculate_volatility_1h, adaptive_thresholds
+from intelligence.internal.state.volatility import (
+    calculate_volatility_1h,
+    adaptive_thresholds,
+    vol_pct_to_ratio,
+    vol_ratio_to_pct,
+    resolve_cached_volatility_1h,
+)
 from intelligence.internal.state.survival import get_trend_survival_metrics
 from intelligence.composite import CompositeMarketIntelligence
 
@@ -152,6 +158,41 @@ class TestIntelligenceState(unittest.TestCase):
         self.assertEqual(metrics["duration_days"], 10.0)
         self.assertGreater(metrics["p90_days"], 0.0)
         self.assertTrue(metrics["is_exhausted"])
+
+    def test_vol_pct_and_ratio_conversions(self):
+        self.assertAlmostEqual(vol_pct_to_ratio(2.5), 0.025)
+        self.assertAlmostEqual(vol_pct_to_ratio(0.05), 0.0005)
+        self.assertAlmostEqual(vol_ratio_to_pct(0.025), 2.5)
+        self.assertAlmostEqual(vol_ratio_to_pct(0.0005), 0.05)
+
+    def test_resolve_cached_volatility_1h(self):
+        import json
+        import os
+        import tempfile
+
+        data = {
+            "BTCUSDC": {"vol_1h_pct": 2.5},
+            "ETHUSDT": {"vol_1h_pct": 0.05},
+            "BADSYM": {"vol_1h_pct": -0.5},
+            "ZEROSYM": {"vol_1h_pct": 0.0},
+        }
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json") as f:
+            json.dump(data, f)
+            temp_path = f.name
+
+        try:
+            self.assertAlmostEqual(resolve_cached_volatility_1h("BTCUSDC", state_path=temp_path), 0.025)
+            # Cross-currency fallback USDC <-> USDT
+            self.assertAlmostEqual(resolve_cached_volatility_1h("BTCUSDT", state_path=temp_path), 0.025)
+            self.assertAlmostEqual(resolve_cached_volatility_1h("ETHUSDC", state_path=temp_path), 0.0005)
+            self.assertIsNone(resolve_cached_volatility_1h("BADSYM", state_path=temp_path))
+            self.assertIsNone(resolve_cached_volatility_1h("ZEROSYM", state_path=temp_path))
+            self.assertIsNone(resolve_cached_volatility_1h("NONEXISTENT", state_path=temp_path))
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+        self.assertIsNone(resolve_cached_volatility_1h("BTCUSDC", state_path="/non/existent/path.json"))
 
 
 class TestCompositeMarketIntelligence(unittest.TestCase):

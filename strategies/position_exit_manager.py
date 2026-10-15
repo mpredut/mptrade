@@ -36,6 +36,11 @@ except ImportError:
     def are_close(v1: float, v2: float, tol_pct: float) -> bool:
         return diff_percent(v1, v2) <= tol_pct
 
+try:
+    from intelligence.internal.state.volatility import resolve_cached_volatility_1h, vol_ratio_to_pct
+except ImportError:
+    from intelligence import resolve_cached_volatility_1h, vol_ratio_to_pct
+
 
 class ExitAction(str, Enum):
     """Action recommended by PositionExitManager."""
@@ -239,10 +244,16 @@ class PositionExitManager:
 
         eff_vol = vol_1h if vol_1h is not None else 0.0
         eff_src = vol_source
-        if eff_vol <= 0 and self.vol_resolver is not None:
-            eff_vol, eff_src = self.vol_resolver(symbol)
-            if eff_vol is None:
-                eff_vol = 0.0
+        if eff_vol <= 0:
+            if self.vol_resolver is not None:
+                eff_vol, eff_src = self.vol_resolver(symbol)
+                if eff_vol is None:
+                    eff_vol = 0.0
+            else:
+                cached = resolve_cached_volatility_1h(symbol)
+                if cached is not None and cached > 0:
+                    eff_vol = cached
+                    eff_src = "cache"
 
         buf_b = eff_vol * self.config.sl_disaster_vol_multiplier if eff_vol > 0 else 0.0
         min_floor = self.config.sl_disaster_buffer_min_pct
@@ -253,16 +264,16 @@ class PositionExitManager:
         metadata = {
             "variant_a_buffer": buf_a,
             "variant_b_buffer": buf_b,
-            "variant_a_pct": round(buf_a * 100.0, 3),
-            "variant_b_pct": round(buf_b * 100.0, 3) if eff_vol > 0 else None,
-            "vol_1h_pct": round(eff_vol * 100.0, 3) if eff_vol > 0 else None,
+            "variant_a_pct": round(vol_ratio_to_pct(buf_a), 3),
+            "variant_b_pct": round(vol_ratio_to_pct(buf_b), 3) if eff_vol > 0 else None,
+            "vol_1h_pct": round(vol_ratio_to_pct(eff_vol), 3) if eff_vol > 0 else None,
             "floor_min": min_floor,
             "effective_buffer": buf_effective,
-            "chosen_buffer_pct": round(buf_effective * 100.0, 3),
+            "chosen_buffer_pct": round(vol_ratio_to_pct(buf_effective), 3),
             "source": source,
             "vol_1h": eff_vol,
             "vol_source": eff_src,
-            "divergence_pct": (buf_b - buf_a) * 100.0,
+            "divergence_pct": vol_ratio_to_pct(buf_b - buf_a),
         }
         return buf_effective, metadata
 
