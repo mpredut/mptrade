@@ -457,6 +457,7 @@ def _new_state() -> dict:
         "slow_grind_peak": None,
         "entry_ts": None,
         "sl_bounce_state": {},
+        "sl_episode_state": {},
         "reentry_state": {},
         "tp_ride_state": {},
     }
@@ -1138,9 +1139,7 @@ class Strategy:
         self.s["last_sell_ts"] = self._shadow_prices[-1][0] if self._shadow_prices else self._now()
         if self.exit_manager is not None:
             self.exit_manager.clear_state(self.pair)
-            self.exit_manager.sl_bounce_state = self.s.setdefault("sl_bounce_state", {})
-            self.exit_manager.reentry_state = self.s.setdefault("reentry_state", {})
-            self.exit_manager.tp_ride_state = self.s.setdefault("tp_ride_state", {})
+            self.exit_manager.bind_state(self.s)
         log(f"  [STRAT] === cycle closed; restarting (cycle {self.s['cycle']}) ===")
 
     # -- Decision logic --------------------------------------------------------
@@ -1227,9 +1226,7 @@ class Strategy:
             config=exit_cfg,
             vol_resolver=self._resolve_volatility_tuple,
         )
-        mgr.sl_bounce_state = self.s.setdefault("sl_bounce_state", {})
-        mgr.reentry_state = self.s.setdefault("reentry_state", {})
-        mgr.tp_ride_state = self.s.setdefault("tp_ride_state", {})
+        mgr.bind_state(self.s)
         return mgr
 
     def _create_position_snapshot(
@@ -1282,6 +1279,8 @@ class Strategy:
         )
         in_bounce_watch = bool(self.exit_manager is not None and self.pair in self.exit_manager.sl_bounce_state)
         if not in_sl and not in_bounce_watch:
+            if self.exit_manager is not None:
+                self.exit_manager.reset_sl_episode(self.pair)  # Leaving SL territory ends the episode floor lock
             return False
 
         if self.exit_manager is None:

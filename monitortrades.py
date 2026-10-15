@@ -220,6 +220,7 @@ def clear_position_stats_cache():
     _REENTRY_STATE.clear()
     _LAST_EXIT_KIND.clear()
     _SL_BOUNCE_STATE.clear()
+    _SL_EPISODE_STATE.clear()
     _TP_RIDE_STATE.clear()
     _PENDING_STOP_EXIT.clear()
     _hard_tp_last.clear()
@@ -322,6 +323,7 @@ MT_SL_BOUNCE_RATCHET_K = float(os.environ.get("MT_SL_BOUNCE_RATCHET_K", "0.15"))
 MT_SL_BOUNCE_MIN_PULLBACK_PCT = float(os.environ.get("MT_SL_BOUNCE_MIN_PULLBACK_PCT", "0.0015"))
 MT_SL_STRUCTURAL_BREAK_ENABLED = os.environ.get("MT_SL_STRUCTURAL_BREAK_ENABLED", "true").lower() in ("yes", "true", "1")
 _SL_BOUNCE_STATE = {}
+_SL_EPISODE_STATE: Dict[str, Dict[str, Any]] = {}  # SSOT: per-episode locked disaster floor
 
 # Multi-Horizon Dynamic Stop Loss (MHDSL) Disaster Floor Configuration.
 # Parallel Volatility Scaling:
@@ -359,6 +361,7 @@ def _save_mt_state(ts: float | None = None):
             "version": 1,
             "ts": float(ts) if ts is not None else time.time(),
             "sl_bounce_state": _SL_BOUNCE_STATE,
+            "sl_episode_state": _SL_EPISODE_STATE,
             "tp_ride_state": _TP_RIDE_STATE,
             "reentry_state": _REENTRY_STATE,
             "last_exit_kind": _LAST_EXIT_KIND,
@@ -379,16 +382,16 @@ def _load_mt_state(now_curr: float | None = None):
         if not isinstance(data, dict):
             return
         now_curr = float(now_curr) if now_curr is not None else time.time()
-        for sym, state in (data.get("sl_bounce_state") or {}).items():
-            if isinstance(state, dict):
-                started = float(state.get("started_at", 0))
-                if started > 0 and (now_curr - started) < 86400:
-                    _SL_BOUNCE_STATE[str(sym).upper()] = state
-        for sym, state in (data.get("tp_ride_state") or {}).items():
-            if isinstance(state, dict):
-                started = float(state.get("started_at", 0))
-                if started > 0 and (now_curr - started) < 86400:
-                    _TP_RIDE_STATE[str(sym).upper()] = state
+        for key, target in (
+            ("sl_bounce_state", _SL_BOUNCE_STATE),
+            ("sl_episode_state", _SL_EPISODE_STATE),
+            ("tp_ride_state", _TP_RIDE_STATE),
+        ):
+            for sym, state in (data.get(key) or {}).items():
+                if isinstance(state, dict):
+                    started = float(state.get("started_at", 0))
+                    if started > 0 and (now_curr - started) < 86400:
+                        target[str(sym).upper()] = state
         for sym, state in (data.get("reentry_state") or {}).items():
             if isinstance(state, dict):
                 _REENTRY_STATE[str(sym).upper()] = state
@@ -546,6 +549,7 @@ def get_exit_manager() -> PositionExitManager:
     )
     # Bind shared references so test fixtures and runtime inspection mutate identical objects
     mgr.sl_bounce_state = _SL_BOUNCE_STATE
+    mgr.sl_episode_state = _SL_EPISODE_STATE
     mgr.tp_ride_state = _TP_RIDE_STATE
     mgr.reentry_state = _REENTRY_STATE
     mgr.hard_tp_last = _hard_tp_last
@@ -1128,6 +1132,9 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
 
         # 3.1. Evaluate the existing SELL placement rules via PositionExitManager.
         sl_price_territory = snapshot.in_sl_territory(lost_threshold, MT_ARE_CLOSE_TOLERANCE_PCT)
+        if not sl_price_territory and symbol in _SL_EPISODE_STATE:
+            exit_mgr.reset_sl_episode(symbol)   # Leaving SL territory ends the SL episode floor lock
+            _save_mt_state()
         if not sl_price_territory and symbol in _SL_BOUNCE_STATE:
             print(f"[{symbol}] Price recovered above stop-loss threshold ({snapshot.loss_pct:.2f}% < {lost_threshold*100:.2f}%) — clearing bounce watch")
             _SL_BOUNCE_STATE.pop(symbol, None)

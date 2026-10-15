@@ -335,6 +335,7 @@ def _new_state() -> dict:
         "post_sell_trough": None,
         "last_exit_kind": None,
         "sl_bounce_state": {},
+        "sl_episode_state": {},
         "tp_ride_state": {},
         "reentry_state": {},
         "realized_pnl_usd": 0.0,   # Cumulative gross profit.
@@ -434,9 +435,7 @@ class Strategy:
             config=exit_cfg,
             vol_resolver=self._resolve_volatility_tuple,
         )
-        mgr.sl_bounce_state = self.s.setdefault("sl_bounce_state", {})
-        mgr.tp_ride_state = self.s.setdefault("tp_ride_state", {})
-        mgr.reentry_state = self.s.setdefault("reentry_state", {})
+        mgr.bind_state(self.s)
         return mgr
 
     def _resolve_volatility_tuple(self, symbol: str) -> tuple[float, str]:
@@ -720,9 +719,7 @@ class Strategy:
                 self.s["last_sell_ts"] = self._now()
                 if self.exit_manager is not None:
                     self.exit_manager.clear_state(self.ticker)
-                    self.exit_manager.sl_bounce_state = self.s.setdefault("sl_bounce_state", {})
-                    self.exit_manager.tp_ride_state = self.s.setdefault("tp_ride_state", {})
-                    self.exit_manager.reentry_state = self.s.setdefault("reentry_state", {})
+                    self.exit_manager.bind_state(self.s)
                 if was_sl and self.p.sl_rebuy_enabled:
                     self.s["sl_rebuy"] = {"low": price, "sell_price": price}
                     log(f"  🟢 [STRAT] pullback re-buy ARMED after the stop-loss "
@@ -1265,9 +1262,7 @@ class Strategy:
             self.s["last_sell_ts"] = self._now()
             if self.exit_manager is not None:
                 self.exit_manager.clear_state(self.ticker)
-                self.exit_manager.sl_bounce_state = self.s.setdefault("sl_bounce_state", {})
-                self.exit_manager.tp_ride_state = self.s.setdefault("tp_ride_state", {})
-                self.exit_manager.reentry_state = self.s.setdefault("reentry_state", {})
+                self.exit_manager.bind_state(self.s)
             if was_sl and self.p.sl_rebuy_enabled:   # Rebuy on a bounce, not below the sale, to catch recovery.
                 self.s["sl_rebuy"] = {"low": exit_price, "sell_price": exit_price}
                 log(f"  🟢 [STRAT] pullback re-buy ARMED after the stop-loss (expecting +{self.p.sl_rebuy_bounce_pct}% from the low)")
@@ -1429,6 +1424,7 @@ class Strategy:
             )
             in_bounce_watch = bool(self.ticker in self.exit_manager.sl_bounce_state)
             if not in_sl and not in_bounce_watch:
+                self.exit_manager.reset_sl_episode(self.ticker)  # Leaving SL territory ends the episode floor lock
                 self.s["sl_alerted"] = False
                 self.s["sl_pending"] = False
                 self.s.pop("sl_fail_until", None)

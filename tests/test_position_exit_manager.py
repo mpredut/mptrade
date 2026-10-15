@@ -123,6 +123,92 @@ class TestPositionExitManager(unittest.TestCase):
         # Floor must remain at or below the armed 6.5% floor
         self.assertAlmostEqual(dec2.metadata["disaster_floor"], 0.065, places=4)
 
+    def _smart_sl_manager(self):
+        """Manager with a Smart-SL stub that mirrors the guard: defer unless its own disaster floor is breached."""
+        calls = []
+
+        def smart_sl_stub(**kw):
+            calls.append(kw)
+            floor = kw["lost_threshold"] + kw["disaster_buffer_pct"] / 100.0
+            if kw["price_decrease"] >= floor:
+                return True, "hard_disaster_floor_breached", {}
+            return False, "whale_supported_wick", {}
+
+        self.config.smart_sl_enabled = True
+        return PositionExitManager(config=self.config, smart_sl_evaluator=smart_sl_stub), calls
+
+    def _snap(self, price, t, trend_up, vol):
+        return PositionSnapshot(
+            symbol="BTCUSDT", current_price=price, avg_buy_price=100.0,
+            current_time_s=self.now + t, trend_up=trend_up, vol_1h=vol,
+        )
+
+    def test_sl_episode_floor_survives_trend_to_smart_sl_handoff(self):
+        """Floor armed under trend-up bounce protection must persist after Smart-SL takes over deferral."""
+        mgr, calls = self._smart_sl_manager()
+
+        # 1. Trend up, 5.5% loss, low vol -> bounce watch armed with floor 6.5%
+        dec1 = mgr.evaluate_stop_loss(self._snap(94.5, 0, True, 0.01))
+        self.assertIn("mhdsl_bounce_watch_initiated", dec1.reason)
+        self.assertAlmostEqual(dec1.metadata["disaster_floor"], 0.065, places=4)
+
+        # 2. Trend flips, 6.0% loss -> bounce state cleared, Smart-SL defers; episode lock persists
+        dec2 = mgr.evaluate_stop_loss(self._snap(94.0, 10, False, 0.01))
+        self.assertEqual(dec2.action, ExitAction.HOLD)
+        self.assertIn("smart_stop_loss_deferred", dec2.reason)
+        self.assertNotIn("BTCUSDT", mgr.sl_bounce_state)
+        self.assertAlmostEqual(mgr.sl_episode_state["BTCUSDT"]["disaster_floor"], 0.065, places=4)
+
+        # 3. Volatility spikes (raw floor would be 20%), loss 6.2% -> Smart-SL receives the locked 1.5% buffer
+        dec3 = mgr.evaluate_stop_loss(self._snap(93.8, 20, False, 0.20))
+        self.assertEqual(dec3.action, ExitAction.HOLD)
+        self.assertAlmostEqual(calls[-1]["disaster_buffer_pct"], 1.5, places=4)
+        self.assertAlmostEqual(dec3.metadata["disaster_floor"], 0.065, places=4)
+
+        # 4. Loss 7.0% >= locked 6.5% -> immediate forced disaster exit (no further waiting)
+        dec4 = mgr.evaluate_stop_loss(self._snap(93.0, 30, False, 0.20))
+        self.assertEqual(dec4.action, ExitAction.SELL)
+        self.assertTrue(dec4.forced)
+        self.assertEqual(dec4.metadata["priority"], 1)
+        self.assertAlmostEqual(dec4.metadata["disaster_floor"], 0.065, places=4)
+        self.assertEqual(dec4.metadata["disaster_meta"]["source"], "episode_locked")
+
+    def test_sl_episode_floor_resets_when_episode_ends(self):
+        """Leaving SL territory or changing the entry price starts a fresh episode with a recomputed floor."""
+        mgr, _ = self._smart_sl_manager()
+        mgr.evaluate_stop_loss(self._snap(94.5, 0, False, 0.01))
+        self.assertAlmostEqual(mgr.sl_episode_state["BTCUSDT"]["disaster_floor"], 0.065, places=4)
+
+        # Recovery out of SL territory ends the episode
+        dec = mgr.evaluate_stop_loss(self._snap(99.0, 10, False, 0.01))
+        self.assertEqual(dec.reason, "not_in_sl_territory")
+        self.assertNotIn("BTCUSDT", mgr.sl_episode_state)
+
+        # New episode under high vol arms its own (wider, capped) floor
+        dec = mgr.evaluate_stop_loss(self._snap(94.0, 20, False, 0.20))
+        self.assertAlmostEqual(dec.metadata["disaster_floor"], 0.20, places=4)
+
+        # Entry price change (DCA / new position) also starts a fresh episode
+        mgr.evaluate_stop_loss(self._snap(94.0, 30, False, 0.01))  # same episode: stays tightened to 6.5%
+        self.assertAlmostEqual(mgr.sl_episode_state["BTCUSDT"]["disaster_floor"], 0.065, places=4)
+        snap = PositionSnapshot(
+            symbol="BTCUSDT", current_price=90.0, avg_buy_price=95.0,
+            current_time_s=self.now + 40, trend_up=False, vol_1h=0.20,
+        )
+        dec = mgr.evaluate_stop_loss(snap)
+        self.assertAlmostEqual(dec.metadata["disaster_floor"], 0.20, places=4)
+        self.assertEqual(mgr.sl_episode_state["BTCUSDT"]["buy_price"], 95.0)
+
+    def test_bind_state_wires_all_persisted_exit_dicts(self):
+        """bind_state must expose every durable lifecycle dict (incl. SL episode) to the external store."""
+        store = {}
+        self.mgr.bind_state(store)
+        self.mgr.evaluate_stop_loss(self._snap(94.5, 0, True, 0.01))
+        self.assertIn("BTCUSDT", store["sl_episode_state"])
+        self.assertIn("BTCUSDT", store["sl_bounce_state"])
+        self.mgr.clear_state("BTCUSDT")
+        self.assertNotIn("BTCUSDT", store["sl_episode_state"])
+
     # -------------------------------------------------------------------------
     # 2. Stop-Loss (MHDSL) Hierarchy & Symmetry
     # -------------------------------------------------------------------------

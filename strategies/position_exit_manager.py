@@ -306,6 +306,14 @@ def _clear_smart_sl(symbol: str, provider: Optional[str] = None) -> None:
         pass
 
 
+PERSISTED_EXIT_STATE_KEYS: Tuple[str, ...] = (
+    "sl_bounce_state",
+    "sl_episode_state",
+    "tp_ride_state",
+    "reentry_state",
+)
+
+
 class PositionExitManager:
     """Fleet-wide centralized manager for Stop-Loss and Take-Profit position exits."""
 
@@ -321,19 +329,28 @@ class PositionExitManager:
 
         # In-memory lifecycle states keyed by symbol
         self.sl_bounce_state: Dict[str, Dict[str, Any]] = {}
+        # SSOT for the whole Stop-Loss episode (shared by every deferral layer)
+        self.sl_episode_state: Dict[str, Dict[str, Any]] = {}
         self.tp_ride_state: Dict[str, Dict[str, Any]] = {}
         self.reentry_state: Dict[str, Dict[str, Any]] = {}
         self.hard_tp_last: Dict[str, float] = {}
+
+    def bind_state(self, store: Dict[str, Any]) -> None:
+        """Bind durable lifecycle dicts to an external persisted state store."""
+        for key in PERSISTED_EXIT_STATE_KEYS:
+            setattr(self, key, store.setdefault(key, {}))
 
     def clear_state(self, symbol: Optional[str] = None) -> None:
         """Clear tracking state for a single symbol or all symbols."""
         if symbol:
             self.sl_bounce_state.pop(symbol, None)
+            self.sl_episode_state.pop(symbol, None)
             self.tp_ride_state.pop(symbol, None)
             self.reentry_state.pop(symbol, None)
             self.hard_tp_last.pop(symbol, None)
         else:
             self.sl_bounce_state.clear()
+            self.sl_episode_state.clear()
             self.tp_ride_state.clear()
             self.reentry_state.clear()
             self.hard_tp_last.clear()
@@ -342,10 +359,46 @@ class PositionExitManager:
         """Return the current active states for a symbol."""
         return {
             "sl_bounce_state": self.sl_bounce_state.get(symbol),
+            "sl_episode_state": self.sl_episode_state.get(symbol),
             "tp_ride_state": self.tp_ride_state.get(symbol),
             "reentry_state": self.reentry_state.get(symbol),
             "hard_tp_last": self.hard_tp_last.get(symbol),
         }
+
+    def reset_sl_episode(self, symbol: str) -> None:
+        """End the current Stop-Loss episode (position left SL territory, closed or was replaced)."""
+        self.sl_episode_state.pop(symbol, None)
+
+    def _lock_episode_disaster_floor(
+        self,
+        symbol: str,
+        candidate_floor: float,
+        buy_price: float,
+        now: float,
+    ) -> Tuple[float, bool]:
+        """Monotonic ratchet: the disaster floor armed for an SL episode can only tighten.
+
+        Applies to the whole episode regardless of which module defers the exit
+        (trend bounce protection or Smart-SL), so a regime switch or a volatility
+        spike can never loosen an already armed emergency limit. A change of the
+        average entry price (new position / DCA) starts a fresh episode.
+
+        Returns:
+            (effective_floor, locked) where locked=True when the armed floor overrode the candidate.
+        """
+        episode = self.sl_episode_state.get(symbol)
+        if episode is None or episode.get("buy_price") != buy_price:
+            self.sl_episode_state[symbol] = {
+                "started_at": now,
+                "buy_price": buy_price,
+                "disaster_floor": candidate_floor,
+            }
+            return candidate_floor, False
+        armed = episode.get("disaster_floor")
+        if armed is not None and armed < candidate_floor:
+            return float(armed), True
+        episode["disaster_floor"] = candidate_floor
+        return candidate_floor, False
 
     def record_hard_tp(self, symbol: str, timestamp: Optional[float] = None) -> None:
         """Record successful execution of a Hard-TP order to arm cooldown."""
@@ -456,8 +509,9 @@ class PositionExitManager:
         in_sl_territory = snapshot.in_sl_territory(lost_threshold, self.config.are_close_tolerance_pct)
 
         if not in_sl_territory:
-            # Full recovery above stop-loss territory
+            # Full recovery above stop-loss territory ends the SL episode
             self.sl_bounce_state.pop(symbol, None)
+            self.reset_sl_episode(symbol)
             return ExitDecision(ExitAction.HOLD, False, "not_in_sl_territory")
 
         # Compute dynamic disaster floor
@@ -467,16 +521,14 @@ class PositionExitManager:
             vol_1h=snapshot.vol_1h,
             vol_source=snapshot.vol_source,
         )
-        disaster_floor = lost_threshold + disaster_buffer
-
-        # Preserve already activated protection: once armed, disaster floor cannot loosen (retreat)
-        bounce_state = self.sl_bounce_state.get(symbol)
-        if bounce_state is not None:
-            prev_floor = bounce_state.get("disaster_floor")
-            if prev_floor is not None and prev_floor < disaster_floor:
-                disaster_floor = prev_floor
-            else:
-                bounce_state["disaster_floor"] = disaster_floor
+        # Preserve already activated protection for the whole SL episode: once armed,
+        # the disaster floor cannot loosen, whichever layer (bounce / Smart-SL) defers.
+        disaster_floor, floor_locked = self._lock_episode_disaster_floor(
+            symbol, lost_threshold + disaster_buffer, buy_price, now
+        )
+        if floor_locked:
+            disaster_buffer = max(0.0, disaster_floor - lost_threshold)
+            disaster_meta = {**disaster_meta, "source": "episode_locked", "effective_buffer": disaster_buffer}
 
         # ---------------------------------------------------------------------
         # PRIORITY 1: Hard Disaster Floor Circuit Breaker
@@ -507,7 +559,6 @@ class PositionExitManager:
                     "lowest_price": current_price,
                     "peak_bounce_price": current_price,
                     "min_loss": price_decrease,
-                    "disaster_floor": disaster_floor,
                 }
                 reason = (
                     f"mhdsl_bounce_watch_initiated (dip={price_decrease*100:.2f}%, "
@@ -603,10 +654,13 @@ class PositionExitManager:
                         should_exit=False,
                         reason=reason,
                         forced=False,
-                        metadata={"priority": 2, "state": "riding_bounce", "elapsed": elapsed, "peak_px": peak_px},
+                        metadata={
+                            "priority": 2, "state": "riding_bounce", "elapsed": elapsed,
+                            "peak_px": peak_px, "disaster_floor": disaster_floor,
+                        },
                     )
 
-        # Trend is NOT UP: clear any bounce deferral
+        # Trend is NOT UP: clear any bounce deferral (the SL episode floor lock persists)
         self.sl_bounce_state.pop(symbol, None)
 
         # ---------------------------------------------------------------------
@@ -631,7 +685,7 @@ class PositionExitManager:
                         provider=snapshot.provider,
                         current_price=current_price,
                         buy_price=buy_price,
-                        disaster_buffer_pct=disaster_buffer * 100.0,
+                        disaster_buffer_pct=disaster_buffer * 100.0,  # episode-locked effective buffer
                     )
                     if not should_exec:
                         return ExitDecision(
@@ -639,7 +693,7 @@ class PositionExitManager:
                             should_exit=False,
                             reason=f"smart_stop_loss_deferred: {sl_reason}",
                             forced=False,
-                            metadata={"priority": 3, "smart_sl_meta": sl_meta},
+                            metadata={"priority": 3, "smart_sl_meta": sl_meta, "disaster_floor": disaster_floor},
                         )
                     else:
                         return ExitDecision(
@@ -647,7 +701,7 @@ class PositionExitManager:
                             should_exit=True,
                             reason=sl_reason,
                             forced=False,
-                            metadata={"priority": 3, "smart_sl_meta": sl_meta},
+                            metadata={"priority": 3, "smart_sl_meta": sl_meta, "disaster_floor": disaster_floor},
                         )
                 except Exception:
                     pass
