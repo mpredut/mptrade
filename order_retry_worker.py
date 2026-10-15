@@ -536,7 +536,11 @@ def process_once(mkt, now=None):
 
         retry_stage = "standard"
         if r.get("kind") == "monitor_order_replace":
-            kwargs["bypass_profit_guard"] = True
+            existing_bypasses = set(kwargs.get("bypass_guards") or [])
+            existing_bypasses.update({"GF1", "math_reference"})
+            kwargs["bypass_guards"] = sorted(list(existing_bypasses))
+            if side_u == "SELL":
+                kwargs["allow_math_reference_sell"] = True
             kwargs["wait_for_trend"] = False
         else:
             kwargs["wait_for_trend"] = bool(kwargs.get("wait_for_trend", True))
@@ -544,7 +548,7 @@ def process_once(mkt, now=None):
                 retry_stage = "salvage"
                 if side_u == "SELL":
                     existing_bypasses = set(kwargs.get("bypass_guards") or [])
-                    existing_bypasses.add("math_reference")
+                    existing_bypasses.update({"GF1", "math_reference"})
                     kwargs["bypass_guards"] = sorted(list(existing_bypasses))
                     kwargs["allow_math_reference_sell"] = True
                 elif "profit_margin" not in kwargs or kwargs["profit_margin"] > 0.15:

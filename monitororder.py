@@ -288,7 +288,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 {
                     "smart": False,
                     "kind": "monitor_order_replace",
-                    "bypass_profit_guard": True,
+                    "bypass_guards": ["GF1"],
+                    "allow_math_reference_sell": True,
                     "wait_for_trend": False,
                     "prefix": replace_pfx,
                     "parent_client_order_id": cid,
@@ -432,7 +433,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 new_order = mkt.place(
                     symbol, order_type, new_price, quantity, smart=False,
                     kind="monitor_order_replace",
-                    bypass_profit_guard=True,
+                    bypass_guards={"GF1"},
+                    allow_math_reference_sell=True,
                     wait_for_trend=False,
                     caller_owns_retry=True,
                     client_order_id=client_order_id,

@@ -1180,7 +1180,7 @@ class TradingBot:
                         self.symbol, "BUY", target_buy_price, target_buy_qty,
                         safeback_seconds=RTRADE_DESPERATE_SAFEBACK_SEC,
                         force=False, cancelorders=True, hours=h, smart=False,
-                        bypass_profit_guard=True,
+                        bypass_guards={"GF1"},
                         kind="rtrade_legacy_quote", caller_owns_retry=True,
                         cache_permit=submit_cache_permit,
                         _outcome_context=outcome_context)
@@ -1189,7 +1189,7 @@ class TradingBot:
                         self.symbol, "BUY", target_buy_price, target_buy_qty,
                         cancelorders=True, hours=RTRADE_BUY_NORMAL_HOURS,
                         smart=False, kind="rtrade_legacy_quote",
-                        bypass_profit_guard=RTRADE_BYPASS_PROFIT_GUARD,
+                        bypass_guards={"GF1"} if RTRADE_BYPASS_PROFIT_GUARD else None,
                         caller_owns_retry=True,
                         cache_permit=submit_cache_permit,
                         _outcome_context=outcome_context)
@@ -1226,7 +1226,7 @@ class TradingBot:
                 sell_price = _followup_exit_price(self.symbol, "SELL", self.filled_buy_price)
                 mkt.place(self.symbol, "SELL", sell_price, self.qty,
                     force=_followup_force(self.symbol, "SELL"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                    bypass_profit_guard=True,
+                    bypass_guards={"GF1"}, allow_math_reference_sell=True,
                     caller_owns_retry=True)
                 return self.mark_buy_filled(self.filled_buy_price)
 
@@ -1239,7 +1239,7 @@ class TradingBot:
                 sell_price = _followup_exit_price(self.symbol, "SELL", filled_buy_price)
                 mkt.place(self.symbol, "SELL", sell_price, self.qty,
                     force=_followup_force(self.symbol, "SELL"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                    bypass_profit_guard=True,
+                    bypass_guards={"GF1"}, allow_math_reference_sell=True,
                     caller_owns_retry=True)
                 return self.mark_buy_filled(filled_buy_price)
 
@@ -1262,7 +1262,7 @@ class TradingBot:
                     sell_price = _followup_exit_price(self.symbol, "SELL", self.filled_buy_price)
                     mkt.place(self.symbol, "SELL", sell_price, self.qty,
                     force=_followup_force(self.symbol, "SELL"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                    bypass_profit_guard=True,
+                    bypass_guards={"GF1"}, allow_math_reference_sell=True,
                     caller_owns_retry=True)
                     return self.mark_buy_filled(self.filled_buy_price)
                 else:
@@ -1284,7 +1284,7 @@ class TradingBot:
                         sell_price,
                         self.qty, force=_followup_force(self.symbol, "SELL"),
                         cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                        bypass_profit_guard=True,
+                        bypass_guards={"GF1"}, allow_math_reference_sell=True,
                         caller_owns_retry=True)
                     return self.mark_buy_filled(self.filled_buy_price)
                 pending_cache_permit = replacement_cache_permit
@@ -1335,7 +1335,7 @@ class TradingBot:
                         self.symbol, "SELL", target_sell_price, target_sell_qty,
                         safeback_seconds=RTRADE_DESPERATE_SAFEBACK_SEC,
                         force=False, cancelorders=True, hours=h, smart=False,
-                        bypass_profit_guard=True,
+                        bypass_guards={"GF1"}, allow_math_reference_sell=True,
                         kind="rtrade_legacy_quote", caller_owns_retry=True,
                         cache_permit=submit_cache_permit,
                         _outcome_context=outcome_context)
@@ -1344,7 +1344,8 @@ class TradingBot:
                         self.symbol, "SELL", target_sell_price, target_sell_qty,
                         cancelorders=True, hours=RTRADE_SELL_NORMAL_HOURS,
                         smart=False, kind="rtrade_legacy_quote",
-                        bypass_profit_guard=RTRADE_BYPASS_PROFIT_GUARD,
+                        bypass_guards={"GF1"} if RTRADE_BYPASS_PROFIT_GUARD else None,
+                        allow_math_reference_sell=bool(RTRADE_BYPASS_PROFIT_GUARD),
                         caller_owns_retry=True,
                         cache_permit=submit_cache_permit,
                         _outcome_context=outcome_context)
@@ -1381,7 +1382,7 @@ class TradingBot:
                 buy_price = _followup_exit_price(self.symbol, "BUY", self.filled_sell_price)
                 mkt.place(self.symbol, "BUY", buy_price, self.qty,
                     force=_followup_force(self.symbol, "BUY"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                    bypass_profit_guard=True,
+                    bypass_guards={"GF1"},
                     caller_owns_retry=True)
                 return self.mark_sell_filled(self.filled_sell_price)
 
@@ -1394,7 +1395,7 @@ class TradingBot:
                 buy_price = _followup_exit_price(self.symbol, "BUY", filled_sell_price)
                 mkt.place(self.symbol, "BUY", buy_price, self.qty,
                     force=_followup_force(self.symbol, "BUY"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                    bypass_profit_guard=True,
+                    bypass_guards={"GF1"},
                     caller_owns_retry=True)
                 return self.mark_sell_filled(filled_sell_price)
 
@@ -1417,7 +1418,7 @@ class TradingBot:
                     buy_price = _followup_exit_price(self.symbol, "BUY", self.filled_sell_price)
                     mkt.place(self.symbol, "BUY", buy_price, self.qty,
                         force=_followup_force(self.symbol, "BUY"), cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                        bypass_profit_guard=True,
+                        bypass_guards={"GF1"},
                         caller_owns_retry=True)
                     return self.mark_sell_filled(self.filled_sell_price)
                 else:
@@ -1439,7 +1440,7 @@ class TradingBot:
                         buy_price,
                         self.qty, force=_followup_force(self.symbol, "BUY"),
                         cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                        bypass_profit_guard=True,
+                        bypass_guards={"GF1"},
                         caller_owns_retry=True)
                     return self.mark_sell_filled(self.filled_sell_price)
                 pending_cache_permit = replacement_cache_permit
