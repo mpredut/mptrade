@@ -3,7 +3,6 @@ import time
 import threading
 
 from binance.client import Client
-from binance.exceptions import BinanceAPIException
 
 ####MYLIB
 _client = None

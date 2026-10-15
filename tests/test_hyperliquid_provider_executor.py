@@ -18,7 +18,7 @@ from providers import hyperliquid_provider as hl_provider  # noqa: E402
 from providers.hyperliquid_provider import HyperliquidProvider  # noqa: E402
 from providers.market_api import MarketApi  # noqa: E402
 from providers.strategy_executor import (  # noqa: E402
-    StrategyExecutor, OrderStatus, PairPrecision, ProviderError)
+    StrategyExecutor, PairPrecision, ProviderError)
 
 
 class FakeInfo:
@@ -586,5 +586,201 @@ class HLExecutorContractTest(unittest.TestCase):
         self.assertIn(102, canceled_oids)
 
 
+# ─── Hyperliquid Launcher, Client Timeout, Shadow Longterm & Candles ────────
+
+class HLLauncherTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "repo_hl_bot", os.path.join(ROOT, "hyperliquid", "hl_bot.py"),
+        )
+        cls.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.module)
+
+    def setUp(self):
+        import tempfile
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.original_here = self.module._HERE
+        self.module._HERE = self.tempdir.name
+
+    def tearDown(self):
+        self.module._HERE = self.original_here
+        self.tempdir.cleanup()
+
+    def test_live_state_is_hyperliquid_scoped(self):
+        self.assertEqual(self.module.state_dir_for(False), self.tempdir.name)
+
+    def test_paper_state_is_created_and_separate_from_live(self):
+        paper_dir = self.module.state_dir_for(True)
+        self.assertEqual(paper_dir, os.path.join(self.tempdir.name, ".paper_state"))
+        self.assertTrue(os.path.isdir(paper_dir))
+        self.assertNotEqual(paper_dir, self.module.state_dir_for(False))
+
+
+class _TimeoutSession:
+    def __init__(self):
+        self.timeouts = []
+
+    def request(self, *_args, **kwargs):
+        self.timeouts.append(kwargs.get("timeout"))
+        return kwargs.get("timeout")
+
+
+class _TimeoutApi:
+    def __init__(self, timeout=None):
+        self.timeout = timeout
+        self.session = _TimeoutSession()
+
+
+class HyperliquidTimeoutTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "hl_client_timeout_under_test", os.path.join(ROOT, "hyperliquid", "hl_client.py"),
+        )
+        cls.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.module)
+
+    def test_timeouts_are_passed_before_sdk_constructors_run(self):
+        info = _TimeoutApi(timeout=self.module.INFO_TIMEOUT_SECONDS)
+        exchange = _TimeoutApi(timeout=self.module.EXCHANGE_TIMEOUT_SECONDS)
+        wallet = object()
+
+        with (
+            patch.object(self.module, "Info", return_value=info) as info_constructor,
+            patch.object(self.module, "Exchange", return_value=exchange) as exchange_constructor,
+            patch.object(self.module.eth_account.Account, "from_key", return_value=wallet),
+        ):
+            client = self.module.HLClient(
+                secret_key="secret", account_address="0xaccount", mainnet=True,
+            )
+
+        info_constructor.assert_called_once_with(
+            self.module.constants.MAINNET_API_URL,
+            skip_ws=True,
+            timeout=self.module.INFO_TIMEOUT_SECONDS,
+        )
+        exchange_constructor.assert_called_once_with(
+            wallet,
+            self.module.constants.MAINNET_API_URL,
+            account_address="0xaccount",
+            timeout=self.module.EXCHANGE_TIMEOUT_SECONDS,
+        )
+        self.assertIs(client.info, info)
+        self.assertIs(client.exchange, exchange)
+
+    def test_replaces_sdk_timeout_none_on_api_and_request(self):
+        api = _TimeoutApi(timeout=None)
+        self.module._force_timeout(api, seconds=10)
+        self.assertEqual(api.timeout, 10)
+        self.assertEqual(api.session.request("POST", "/info", timeout=None), 10)
+
+    def test_preserves_explicit_shorter_timeout(self):
+        api = _TimeoutApi(timeout=3)
+        self.module._force_timeout(api, seconds=10)
+        self.assertEqual(api.timeout, 3)
+        self.assertEqual(api.session.request("POST", "/info", timeout=2), 2)
+
+    def test_connect_only_retries_are_mounted_for_dns_blips(self):
+        import requests
+        api = _TimeoutApi(timeout=None)
+        api.session = requests.Session()
+        self.module._force_timeout(api, seconds=10)
+        retries = api.session.get_adapter("https://api.hyperliquid.xyz").max_retries
+        self.assertEqual((retries.connect, retries.read, retries.status), (3, 0, 0))
+
+
+class HyperliquidLongtermShadowTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        for p in (os.path.join(ROOT, "hyperliquid"), os.path.join(ROOT, "kraken")):
+            if p not in sys.path:
+                sys.path.insert(0, p)
+        spec = importlib.util.spec_from_file_location(
+            "hl_shadow_longterm_under_test", os.path.join(ROOT, "hyperliquid", "shadow_longterm.py"),
+        )
+        cls.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.module)
+
+    def test_variants_are_fixed_and_paper_only_parameters(self):
+        variants = self.module._variants(240)
+        self.assertEqual(list(variants), [
+            "current", "tp_regime_gate", "long_tp3_trail3", "reentry4",
+            "trail_profit_floor_sl18", "overlay650t8_regime_v2",
+            "B_dcabrake_regime_v2",
+        ])
+        candidate = variants["long_tp3_trail3"]
+        self.assertTrue(variants["tp_regime_gate"].tp_regime_gate)
+        self.assertEqual(candidate.takeprofit_pct, 3.0)
+        self.assertTrue(candidate.tp_trend_hold)
+        self.assertFalse(candidate.tp_trail_adaptive)
+        self.assertEqual(candidate.tp_trail_pct, 3.0)
+        self.assertEqual(variants["reentry4"].reentry_drop_pct, 4.0)
+        floor = variants["trail_profit_floor_sl18"]
+        self.assertEqual(floor.tp_trail_profit_floor_pct, 1.0)
+        self.assertEqual(floor.stop_loss_pct, 18.0)
+        overlay = variants["overlay650t8_regime_v2"]
+        self.assertTrue(overlay.trend_overlay)
+        self.assertEqual(overlay.trend_topup, 650.0)
+        self.assertEqual(overlay.trend_trail_pct, 8.0)
+        self.assertFalse(overlay.trend_exit_break)
+        self.assertTrue(variants["B_dcabrake_regime_v2"].dca_trend_brake)
+
+    def test_rejects_non_native_interval(self):
+        with self.assertRaisesRegex(ValueError, "240m"):
+            self.module._variants(60)
+
+    def test_public_fetch_constructs_client_without_secret_and_drops_open_bar(self):
+        from unittest.mock import MagicMock
+        fake = MagicMock()
+        fake.candles.return_value = [
+            {"t": 1000, "o": "1", "h": "2", "l": "0.5", "c": "1.5"},
+            {"t": 2000, "o": "1.5", "h": "3", "l": "1", "c": "2.5"},
+        ]
+        with patch("hl_client.HLClient.public", return_value=fake) as constructor:
+            rows = self.module._fetch_with_ts("ignored", 240)
+        constructor.assert_called_once_with()
+        self.assertEqual(rows, [(1, 1.0, 2.0, 0.5, 1.5)])
+
+    def test_snapshot_injects_isolated_log_dir_and_public_fetch(self):
+        with patch.object(self.module.shadow, "snapshot", return_value={"ok": True}) as call:
+            result = self.module.snapshot(quiet=True)
+        self.assertEqual(result, {"ok": True})
+        call.assert_called_once_with("HYPE-HL", 240, 0.07, quiet=True)
+        self.assertEqual(self.module.shadow.LOG_DIR, self.module.LOG_DIR)
+
+
+class HyperliquidDatasetTest(unittest.TestCase):
+    def test_spot_pair_normalization_and_continuity(self):
+        from offline.runners.fetch_hyperliquid_candles import (
+            normalize_closed_candles,
+            resolve_spot_pair,
+            validate_continuity,
+        )
+
+        meta = {
+            "tokens": [{"name": "USDC", "index": 0}, {"name": "HYPE", "index": 150}],
+            "universe": [{"name": "@107", "tokens": [150, 0]}],
+        }
+        self.assertEqual(resolve_spot_pair("hype", "usdc", meta), "@107")
+
+        rows = [
+            {"t": 2_000, "T": 2_999, "o": "2", "h": "4", "l": "1", "c": "3"},
+            {"t": 1_000, "T": 1_999, "o": "1", "h": "3", "l": "0.5", "c": "2"},
+            {"t": 2_000, "T": 2_999, "o": "2", "h": "5", "l": "1", "c": "4"},
+            {"t": 3_000, "T": 3_999, "o": "4", "h": "6", "l": "3", "c": "5"},
+        ]
+        records = normalize_closed_candles(rows, now_ms=3_500)
+        self.assertEqual([row["timestamp"] for row in records], [1, 2])
+        self.assertEqual((records[-1]["high"], records[-1]["close"]), (5.0, 4.0))
+
+        with self.assertRaisesRegex(ValueError, "discontinuous dataset"):
+            validate_continuity([{"timestamp": 0}, {"timestamp": 3_600}, {"timestamp": 10_800}], 60)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

@@ -2,13 +2,28 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import urllib.error
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import alertnotifiers
 import botcore
+from botcore import load_env_stack, parse_dotenv
+from cachepaths import cache_path, get_cachedb_dir
+from credentials import (
+    CredentialConfigurationError,
+    kraken_credentials,
+    t212_credentials,
+)
+import utils
+
+
+ROOT = Path(__file__).resolve().parents[1]
+RUNNERS = ROOT / "offline" / "runners"
 
 
 def _response(status=200, body=b"ok"):
@@ -156,6 +171,195 @@ class NotificationIsolationTest(unittest.TestCase):
         ntfy.assert_not_called()
         email.assert_not_called()
         desktop.assert_not_called()
+
+
+class TestCachepaths(unittest.TestCase):
+    def test_mptrade_cachedb_dir_override(self):
+        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": "/custom/mptrade/cache"}, clear=False):
+            self.assertEqual(get_cachedb_dir(), "/custom/mptrade/cache")
+            path = cache_path("test.json")
+            self.assertEqual(path.replace("\\", "/"), "/custom/mptrade/cache/test.json")
+
+    def test_binance_cache_dir_fallback(self):
+        env = dict(os.environ)
+        env.pop("MPTRADE_CACHEDB_DIR", None)
+        env["BINANCE_CACHE_DIR"] = "/custom/binance/cache"
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(get_cachedb_dir(), "/custom/binance/cache")
+            path = cache_path("test.json")
+            self.assertEqual(path.replace("\\", "/"), "/custom/binance/cache/test.json")
+
+    def test_default_dir_ends_with_cachedb(self):
+        env = dict(os.environ)
+        env.pop("MPTRADE_CACHEDB_DIR", None)
+        env.pop("BINANCE_CACHE_DIR", None)
+        with patch.dict(os.environ, env, clear=True):
+            d = get_cachedb_dir()
+            self.assertTrue(d.replace("\\", "/").endswith("cachedb"))
+            self.assertTrue(cache_path("test.json").replace("\\", "/").endswith("cachedb/test.json"))
+
+    def test_preserves_absolute_paths(self):
+        abs_path = os.path.abspath("already/absolute/file.json")
+        self.assertEqual(cache_path(abs_path), abs_path)
+
+    def test_empty_or_none(self):
+        self.assertEqual(cache_path(""), "")
+        self.assertIsNone(cache_path(None))
+
+    def test_utils_cache_path_integration(self):
+        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": "/tmp/custom_cache"}, clear=False):
+            p = utils.cache_path("my_cache.json")
+            self.assertEqual(p.replace("\\", "/"), "/tmp/custom_cache/my_cache.json")
+
+
+def test_env_stack_preserves_process_secret_and_versioned_precedence(tmp_path, monkeypatch):
+    env_file = tmp_path / "profile.env"
+    config_file = tmp_path / "config.env"
+    env_file.write_text(
+        "STACK_SHARED=secret-file\nSTACK_SECRET_ONLY=secret\n",
+        encoding="utf-8",
+    )
+    config_file.write_text(
+        "STACK_SHARED=versioned\nSTACK_CONFIG_ONLY=config\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("STACK_SHARED", "process")
+    monkeypatch.delenv("STACK_SECRET_ONLY", raising=False)
+    monkeypatch.delenv("STACK_CONFIG_ONLY", raising=False)
+
+    load_env_stack(str(env_file))
+
+    assert os.environ["STACK_SHARED"] == "process"
+    assert os.environ["STACK_SECRET_ONLY"] == "secret"
+    assert os.environ["STACK_CONFIG_ONLY"] == "config"
+
+
+def test_env_stack_resolves_config_next_to_selected_env_file(tmp_path, monkeypatch):
+    nested = tmp_path / "venue"
+    nested.mkdir()
+    env_file = nested / ".env"
+    env_file.write_text("", encoding="utf-8")
+    (nested / "runtime.env").write_text("STACK_ADJACENT=yes\n", encoding="utf-8")
+    monkeypatch.delenv("STACK_ADJACENT", raising=False)
+
+    load_env_stack(str(env_file), "runtime.env")
+
+    assert os.environ["STACK_ADJACENT"] == "yes"
+
+
+def test_venue_env_stack_overrides_root_config_env(tmp_path, monkeypatch):
+    root_cfg = tmp_path / "root_config.env"
+    root_cfg.write_text("VENUE_FALLBACK=root_val\nVENUE_ROOT_ONLY=root_only\n", encoding="utf-8")
+    monkeypatch.setattr(botcore, "_ROOT_CONFIG_PATH", str(root_cfg.resolve()))
+    monkeypatch.delenv("VENUE_FALLBACK", raising=False)
+    monkeypatch.delenv("VENUE_ROOT_ONLY", raising=False)
+    monkeypatch.delenv("VENUE_CFG_ONLY", raising=False)
+
+    botcore.load_dotenv(str(root_cfg))
+    assert os.environ["VENUE_FALLBACK"] == "root_val"
+    assert os.environ["VENUE_ROOT_ONLY"] == "root_only"
+
+    venue_dir = tmp_path / "venue"
+    venue_dir.mkdir()
+    venue_cfg = venue_dir / "config.env"
+    venue_cfg.write_text("VENUE_FALLBACK=venue_val\nVENUE_CFG_ONLY=venue_only\n", encoding="utf-8")
+    venue_env = venue_dir / ".env"
+    venue_env.write_text("", encoding="utf-8")
+
+    load_env_stack(str(venue_env))
+
+    assert os.environ["VENUE_FALLBACK"] == "venue_val"
+    assert os.environ["VENUE_CFG_ONLY"] == "venue_only"
+    assert os.environ["VENUE_ROOT_ONLY"] == "root_only"
+
+
+def test_root_config_defines_no_venue_key():
+    root_dir = str(ROOT)
+    root_keys = set(botcore.parse_dotenv(os.path.join(root_dir, "config.env")))
+    for venue in ("kraken", "hyperliquid"):
+        venue_keys = set(botcore.parse_dotenv(os.path.join(root_dir, venue, "config.env")))
+        assert sorted(root_keys & venue_keys) == [], f"Conflict for {venue}"
+
+
+def test_venue_strategy_survives_root_config_loaded_first():
+    root_dir = str(ROOT)
+    for venue in ("kraken", "hyperliquid"):
+        venue_cfg = botcore.parse_dotenv(os.path.join(root_dir, venue, "config.env"))
+        with patch.dict(os.environ, {}, clear=True):
+            botcore.load_dotenv(os.path.join(root_dir, "config.env"))
+            botcore.load_env_stack(os.path.join(root_dir, venue, ".env.absent-for-test"))
+            for key in ("STRAT_EXECUTE", "STRAT_TAKEPROFIT_PCT", "STRAT_DCA_DROP_PCT"):
+                if key in venue_cfg:
+                    assert os.environ.get(key) == venue_cfg[key], f"{key} in {venue}"
+
+
+def test_versioned_dev_profile_has_every_required_field():
+    profile = parse_dotenv(str(RUNNERS / "dev_backtest.env"))
+    required = {
+        "DEV_HOST", "DEV_PORT", "DEV_USER", "DEV_PATH",
+        "DEV_CODE_BRANCH", "BACKTEST_PROPOSALS_BRANCH",
+    }
+    assert required <= profile.keys()
+    assert all(profile[key].strip() for key in required)
+
+
+def test_shell_profile_loader_exports_the_versioned_values():
+    env = dict(os.environ, RUNNER_DIR=str(RUNNERS))
+    result = subprocess.run(
+        ["bash", "-c", "source offline/runners/load_dev_backtest_env.sh; "
+         "printf '%s|%s|%s' \"$DEV_HOST\" \"$DEV_CODE_BRANCH\" "
+         "\"$BACKTEST_PROPOSALS_BRANCH\""],
+        cwd=ROOT, env=env, check=True, capture_output=True, text=True,
+    )
+    profile = parse_dotenv(str(RUNNERS / "dev_backtest.env"))
+    assert result.stdout == "|".join([
+        profile["DEV_HOST"], profile["DEV_CODE_BRANCH"],
+        profile["BACKTEST_PROPOSALS_BRANCH"],
+    ])
+
+
+def test_kraken_cache_uses_complete_dedicated_pair():
+    pair = kraken_credentials("cache", values={
+        "KRAKEN_API_KEY_CACHE": "cache-key",
+        "KRAKEN_API_SECRET_CACHE": "cache-secret",
+        "KRAKEN_API_KEY_BOT": "bot-key",
+        "KRAKEN_API_SECRET_BOT": "bot-secret",
+    })
+    assert (pair.key, pair.secret, pair.profile) == (
+        "cache-key", "cache-secret", "Kraken CACHE",
+    )
+
+
+def test_kraken_cache_fallback_is_an_explicit_complete_pair():
+    pair = kraken_credentials("cache", values={
+        "KRAKEN_API_KEY_BOT": "bot-key",
+        "KRAKEN_API_SECRET_BOT": "bot-secret",
+    })
+    assert pair.profile == "Kraken BOT fallback"
+
+
+def test_partial_primary_profile_does_not_hide_behind_fallback():
+    with pytest.raises(CredentialConfigurationError, match="CACHE"):
+        kraken_credentials("cache", values={
+            "KRAKEN_API_KEY_CACHE": "partial",
+            "KRAKEN_API_KEY_BOT": "bot-key",
+            "KRAKEN_API_SECRET_BOT": "bot-secret",
+        })
+
+
+def test_fleet_never_mixes_key_and_secret_from_different_profiles():
+    with pytest.raises(CredentialConfigurationError, match="primary"):
+        kraken_credentials("fleet", values={
+            "KRAKEN_API_KEY": "primary-key",
+            "KRAKEN_API_SECRET_SPARE": "spare-secret",
+            "KRAKEN_API_KEY_BOT": "bot-key",
+            "KRAKEN_API_SECRET_BOT": "bot-secret",
+        })
+
+
+def test_t212_requires_both_halves():
+    with pytest.raises(CredentialConfigurationError, match="T212"):
+        t212_credentials(values={"T212_API_KEY": "key-only"})
 
 
 if __name__ == "__main__":

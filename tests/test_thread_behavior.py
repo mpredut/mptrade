@@ -1,7 +1,7 @@
 """
 Tests the behaviour of the fallback thread in CacheCurrentPriceManager.
 
-Scenarii:
+Scenarios:
   1. At startup with a cache loaded from file, the thread does NOT overwrite immediately.
   2. If the WS is healthy, the thread does NOT poll over HTTP.
   3. If the WS is dead, the thread DOES poll over HTTP after sync_ts.
@@ -10,7 +10,7 @@ Scenarii:
 Isolation: each test uses a local MagicMock for api_client, avoiding the
 cross-contamination caused by daemon threads left running.
 """
-import os, sys, json, time, tempfile, unittest, threading
+import os, sys, json, time, tempfile, unittest
 from unittest.mock import MagicMock
 
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")

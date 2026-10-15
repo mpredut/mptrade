@@ -1,18 +1,22 @@
-"""Unit tests for decoupled AutonomousAIReconciler."""
+"""Unit tests for AutonomousAIReconciler and AutonomousOvernightMonitor."""
 from __future__ import annotations
 
 import json
 import os
 import time
 from unittest.mock import MagicMock, patch
-import urllib.request
+
 import pytest
 
+from orchestratorOS.livecheck.autonomous_overnight_monitor import (
+    AutonomousOvernightMonitor,
+    OvernightMonitorReport,
+)
 from orchestratorOS.supervisor.autonomous_ai_reconciler import (
     AutonomousAIReconciler,
     LogEventSummary,
-    SupervisorAuditReport,
     StandaloneGeminiAuditor,
+    SupervisorAuditReport,
     TelemetrySensorSnapshot,
 )
 
@@ -29,7 +33,7 @@ def temp_env(tmp_path):
 
 
 def test_reconciler_initialization_defaults(temp_env):
-    workspace, cache_dir, logs_dir = temp_env
+    workspace, cache_dir, _ = temp_env
     reconciler = AutonomousAIReconciler(
         workspace_dir=workspace,
         cache_dir="cachedb",
@@ -41,8 +45,7 @@ def test_reconciler_initialization_defaults(temp_env):
 
 
 def test_harvest_sensors_telemetry(temp_env):
-    workspace, cache_dir, logs_dir = temp_env
-    # Create sample sensor files in cachedb
+    workspace, cache_dir, _ = temp_env
     fg_file = os.path.join(cache_dir, "fear_greed_cache.json")
     with open(fg_file, "w", encoding="utf-8") as f:
         json.dump({"value": 72, "classification": "Greed"}, f)
@@ -66,7 +69,7 @@ def test_harvest_sensors_telemetry(temp_env):
 
 
 def test_harvest_log_anomalies(temp_env):
-    workspace, cache_dir, logs_dir = temp_env
+    workspace, _, logs_dir = temp_env
     sample_log = os.path.join(logs_dir, "rtrade_test.log")
     with open(sample_log, "w", encoding="utf-8") as f:
         f.write("2026-10-07 12:00:00 [INFO] Bot started\n")
@@ -85,7 +88,7 @@ def test_harvest_log_anomalies(temp_env):
 
 
 def test_synthesize_and_diagnose_mocked(temp_env):
-    workspace, cache_dir, logs_dir = temp_env
+    workspace, _, _ = temp_env
 
     mock_resp = {
         "summary": "1 transient network timeout diagnosed; all open orders aligned.",
@@ -136,7 +139,7 @@ def test_synthesize_and_diagnose_mocked(temp_env):
 
 
 def test_shadow_mode_does_not_execute_destructive_actions(temp_env):
-    workspace, cache_dir, logs_dir = temp_env
+    workspace, _, _ = temp_env
     reconciler = AutonomousAIReconciler(
         workspace_dir=workspace,
         cache_dir="cachedb",
@@ -163,7 +166,7 @@ def test_shadow_mode_does_not_execute_destructive_actions(temp_env):
 
 
 def test_dispatch_notification_via_urllib(temp_env):
-    workspace, cache_dir, logs_dir = temp_env
+    workspace, _, _ = temp_env
     reconciler = AutonomousAIReconciler(
         workspace_dir=workspace,
         cache_dir="cachedb",
@@ -196,7 +199,7 @@ def test_dispatch_notification_via_urllib(temp_env):
 
 
 def test_full_run_cycle_and_artifacts(temp_env):
-    workspace, cache_dir, logs_dir = temp_env
+    workspace, cache_dir, _ = temp_env
 
     mock_resp = {
         "summary": "Daily audit clean.",
@@ -234,14 +237,12 @@ def test_full_run_cycle_and_artifacts(temp_env):
 
 
 def test_harvest_prices_and_trends(temp_env):
-    workspace, cache_dir, logs_dir = temp_env
+    workspace, cache_dir, _ = temp_env
 
-    # Write cache_currentprice.json
     cp_file = os.path.join(cache_dir, "cache_currentprice.json")
     with open(cp_file, "w", encoding="utf-8") as f:
         json.dump({"items": {"BTCUSDC": [[123456, 85000.0]]}}, f)
 
-    # Write cache_instant_trend.json
     it_file = os.path.join(cache_dir, "cache_instant_trend.json")
     with open(it_file, "w", encoding="utf-8") as f:
         json.dump({
@@ -263,16 +264,12 @@ def test_harvest_prices_and_trends(temp_env):
 
 
 def test_emit_trading_intent_lifecycle(temp_env):
-    workspace, cache_dir, logs_dir = temp_env
+    workspace, cache_dir, _ = temp_env
     reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"])
 
-    # 1. HOLD does not emit
     assert reconciler.emit_trading_intent({"decision": "HOLD", "confidence": 0.95}) is None
-
-    # 2. Low confidence does not emit
     assert reconciler.emit_trading_intent({"decision": "BUY", "confidence": 0.60}) is None
 
-    # 3. High confidence BUY emits intent
     intent = reconciler.emit_trading_intent({
         "decision": "BUY",
         "symbol": "BTCUSDC",
@@ -287,7 +284,6 @@ def test_emit_trading_intent_lifecycle(temp_env):
     assert intent["symbol"] == "BTCUSDC"
     assert intent["suggested_notional_eur"] == 250.0
 
-    # Verify saved on disk
     intents_file = os.path.join(cache_dir, "autonomous_trade_intents.json")
     assert os.path.exists(intents_file)
     with open(intents_file, "r", encoding="utf-8") as f:
@@ -295,7 +291,6 @@ def test_emit_trading_intent_lifecycle(temp_env):
     assert len(saved) == 1
     assert saved[0]["intent_id"] == intent["intent_id"]
 
-    # 4. Deduplication: second identical call returns existing intent without duplicating
     dup = reconciler.emit_trading_intent({
         "decision": "BUY",
         "symbol": "BTCUSDC",
@@ -307,3 +302,79 @@ def test_emit_trading_intent_lifecycle(temp_env):
     with open(intents_file, "r", encoding="utf-8") as f:
         saved_after = json.load(f)
     assert len(saved_after) == 1
+
+
+@pytest.fixture
+def mock_workspace(tmp_path):
+    procs_file = tmp_path / "procs.conf"
+    procs_file.write_text(
+        "bot1.py|$ROOT|python bot1.py|bot1|logs/bot1.log|600|bot\n"
+        "fleet1.py|$ROOT|python fleet1.py|fleet1|cachedb/fleet1.heartbeat|180|fleet\n"
+    )
+
+    cachedb = tmp_path / "cachedb"
+    cachedb.mkdir()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+
+    (logs / "bot1.log").write_text("heartbeat")
+    (cachedb / "fleet1.heartbeat").write_text("heartbeat")
+
+    (cachedb / "geopolitical_threat_eval.json").write_text(json.dumps({
+        "threat_level": "ELEVATED",
+        "risk_score": 0.65,
+        "summary": "Active conflict attrition",
+        "ts": time.time(),
+    }))
+
+    (cachedb / "supervisor_nightly_eval.json").write_text(json.dumps({
+        "mode": "enforce",
+        "summary": "Core execution nominal",
+        "market_trading_decision": {"decision": "HOLD", "confidence": 0.52},
+        "ts": time.time(),
+    }))
+
+    (tmp_path / "order_guard.conf").write_text(
+        "llm_guard_mode = enforce\nsupervisor_mode = enforce\nautonomous_trading_mode = enforce\n"
+    )
+
+    return tmp_path
+
+
+def test_monitor_procs_inventory_parsing(mock_workspace):
+    monitor = AutonomousOvernightMonitor(workspace_dir=str(mock_workspace))
+    procs = monitor.parse_process_manifest()
+    assert len(procs) == 2
+    assert procs[0]["name"] == "bot1"
+    assert procs[1]["name"] == "fleet1"
+
+
+def test_monitor_gather_sensor_status(mock_workspace):
+    monitor = AutonomousOvernightMonitor(workspace_dir=str(mock_workspace))
+    sensors = monitor.gather_sensor_status()
+    assert sensors["geopolitical_threat"]["threat_level"] == "ELEVATED"
+    assert sensors["supervisor_eval"]["mode"] == "enforce"
+    assert sensors["supervisor_eval"]["decision"] == "HOLD"
+
+
+def test_monitor_run_cycle_report(mock_workspace, monkeypatch):
+    monitor = AutonomousOvernightMonitor(workspace_dir=str(mock_workspace))
+    monkeypatch.setattr(monitor, "check_dev_backtest_progress", lambda: {
+        "reachable": True,
+        "running": True,
+        "current_step": "STEP 0A",
+        "last_log_line": "Starting simulation in mode: FULL_COMPOSITE ...",
+    })
+    monkeypatch.setattr(monitor, "_is_process_running", lambda pat: True)
+
+    report = monitor.run_cycle(persist=True)
+    assert isinstance(report, OvernightMonitorReport)
+    assert report.fleet_healthy is True
+    assert report.dev_backtest_status["running"] is True
+    assert report.autonomous_ai_mode == "enforce"
+
+    status_file = mock_workspace / "cachedb" / "overnight_monitor_status.json"
+    assert status_file.exists()
+    data = json.loads(status_file.read_text())
+    assert data["autonomous_ai_mode"] == "enforce"
+    assert data["fleet_healthy"] is True

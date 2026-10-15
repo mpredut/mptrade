@@ -3,7 +3,6 @@ import time
 import math
 import json
 import threading
-from datetime import datetime, timedelta
 from state_io import atomic_write_json
 
 # Repository imports.

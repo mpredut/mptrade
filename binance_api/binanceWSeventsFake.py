@@ -1,11 +1,6 @@
-import json
 import threading
 import time
 
-#my imports
-import log
-import utils as u
-import symbols as sym
 from . import bapi as api   # package-local Binance API facade
 
 
@@ -53,7 +48,7 @@ def handle_execution_report(data):
 
 def handle_balance_update(asset, delta, timestamp):
     balances_cache[asset] = balances_cache.get(asset, 0) + delta
-    print(f"[BALANCE UPDATE] {asset}: {delta:+f} (la {timestamp})")
+    print(f"[BALANCE UPDATE] {asset}: {delta:+f} (at {timestamp})")
 
 def handle_account_position(balances):
     for bal in balances:
@@ -62,7 +57,7 @@ def handle_account_position(balances):
         locked = float(bal.get("l", bal.get("locked", 0)))
         balances_cache[asset] = free + locked
         #print(f"asset {asset}, {balances_cache[asset]}")
-    print(f"[ACCOUNT UPDATE] {len(balances)} active actualizate")
+    print(f"[ACCOUNT UPDATE] {len(balances)} assets updated")
 
 # ------------------------------
 # POLLING — WebSocket replacement
@@ -159,7 +154,7 @@ def _poll_loop(handler=None, interval_sec=47):
             # print(f"Orders: {len(orders_cache)}, Trades: {len(trades_cache)}, Balances: {len(balances_cache)}")
 
         except Exception as e:
-            print(f"[POLLING] Eroare generala: {e}")
+            print(f"[POLLING] General error: {e}")
 
         time.sleep(interval_sec)
 

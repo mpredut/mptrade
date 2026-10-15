@@ -2,19 +2,18 @@
 Tests for tradeall.py — PriceWindow, PriceTrendAnalyzer, TrendState
 and the integration with Cache24PriceManager.
 
-Acoperire:
-  - PriceTrendAnalyzer: linreg, gradient, date insuficiente
+Coverage:
+  - PriceTrendAnalyzer: linreg, gradient, insufficient data
   - PriceWindow: sample_rate_sec, recent_n, process_price, get_trend (4 values)
   - PriceWindow.from_cache24: the factory from Cache24PriceManager with real data
   - PriceWindow._sample_rate_from_entries: rate computed from timestamps
-  - TrendState: lifecycle complet
-  - TrendState: cooldown per instanta de trend (fire_limit_reached/mark_confirmed
+  - TrendState: complete lifecycle
+  - TrendState: cooldown per trend instance (fire_limit_reached/mark_confirmed
     with FIRE_MAX_PER_TREND executions, can_retry_fire/mark_fire_attempt with
-    FIRE_MIN_RETRY_INTERVAL_SEC, reset la start_trend nou) — 22 iul
+    FIRE_MIN_RETRY_INTERVAL_SEC, reset on new start_trend) — Jul 22
   - CacheCurrentPriceManager: get_sample_rate / get_update_frequency
 """
 import os, sys, json, time, tempfile, threading, unittest
-from collections import deque
 from unittest.mock import MagicMock, patch
 
 # ── mocks for the external dependencies (before any local import) ─────────
@@ -547,7 +546,7 @@ class TestTrendState(unittest.TestCase):
             self.assertFalse(ts.is_started_trend_older_than(9999))
 
 class TestTrendStateCooldown(unittest.TestCase):
-    """Cooldown per instanta de trend (22 iul) — vezi FIRE_MIN_RETRY_INTERVAL_SEC.
+    """Cooldown per trend instance (Jul 22) — see FIRE_MIN_RETRY_INTERVAL_SEC.
     A fake clock (a mutable counter) so we do not depend on real 30-minute sleeps."""
 
     def _ts_with_clock(self):
@@ -720,7 +719,7 @@ class TestSubscriberPatternInheritance(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PriceWindow — wiring complet Cache24PriceManager → PriceWindow
+# PriceWindow — complete Cache24PriceManager → PriceWindow wiring
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestPriceWindowCache24Wiring(unittest.TestCase):

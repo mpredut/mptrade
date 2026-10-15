@@ -8,9 +8,7 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import patch
 
 from internal_order_guard import check_internal_order_guards
 from external_order_guard import (

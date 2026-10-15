@@ -12,11 +12,9 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from strategies.position_exit_manager import (
-    ExitAction,
     PositionExitConfig,
     PositionExitManager,
     PositionSnapshot,
-    ReentryAction,
     ReentrySnapshot,
 )
 from strategies.spot_engine import StratParams, Strategy

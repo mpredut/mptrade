@@ -20,8 +20,6 @@ import pytest
 from intelligence.external.guards.smart_stop_loss_guard import (
     SmartStopLossGuard,
     _GRACE_TRACKER,
-    clear_smart_stop_loss_if_recovered,
-    evaluate_smart_stop_loss,
 )
 from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
 from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
@@ -226,7 +224,7 @@ def test_smart_sl_notifications_detail_and_debounce():
         assert "Coin:" not in defer_alert["body"]
         assert "BTCUSDC (BINANCE)" in defer_alert["body"]
         assert "$64,200.00" in defer_alert["body"]
-        assert "(Ultimul preț Buy: $66,150.00)" in defer_alert["body"]
+        assert "(Last Buy Price: $66,150.00)" in defer_alert["body"]
         assert "Dip: 2.94%" in defer_alert["body"]
 
         # 2. Standalone recovery 40s later (batch=False)
@@ -245,7 +243,7 @@ def test_smart_sl_notifications_detail_and_debounce():
         assert "Coin:" not in recovery_alert["body"]
         assert "Dip: 2.20% <= 2.93%" in recovery_alert["body"]
         assert "$64,800.00" in recovery_alert["body"]
-        assert "(Ultimul preț Buy: $66,150.00)" in recovery_alert["body"]
+        assert "(Last Buy Price: $66,150.00)" in recovery_alert["body"]
         assert "Bounce in 40s!" in recovery_alert["body"]
 
         # 3. 30-minute cooldown (1800s): if same symbol recovers again within 1800s, no alert sent
@@ -320,7 +318,7 @@ def test_smart_sl_batch_unification_multiple_coins():
         assert "dip 2.89% <= 2.93%" in unified["body"]
         assert "• TAOUSDC (BINANCE): bounce in 39s" in unified["body"]
         assert "dip 4.98% <= 5.25%" in unified["body"]
-        assert "Pozitii salvate de wick hunt (2)!" in unified["body"]
+        assert "Positions saved from wick hunt (2)!" in unified["body"]
 
 
 def test_smart_sl_replay_provider_never_emits_notifications(tmp_path):

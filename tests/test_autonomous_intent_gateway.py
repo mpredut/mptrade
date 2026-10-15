@@ -1,13 +1,11 @@
 """Unit tests for AutonomousIntentGateway in orchestratorTrade."""
 from __future__ import annotations
 
-import json
-import os
 import time
 from unittest.mock import MagicMock, patch
 import pytest
 
-from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway, TradeIntentRecord
+from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
 
 
 @pytest.fixture

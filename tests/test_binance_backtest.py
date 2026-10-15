@@ -15,7 +15,6 @@ from binance_api.market_data import (
 from binance_api.replay import make_binance_replay_adapter, StratParams, run_replay
 from kraken.replay import make_kraken_replay_adapter
 from offline.backtests.evaluation import evaluate_segment, evaluate_walk_forward
-from offline.backtests.execution import ExecutionModel, FeeModel
 from offline.backtests.metrics import validate_replay_metrics
 
 

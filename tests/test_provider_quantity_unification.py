@@ -2,7 +2,6 @@
 filter refusal, and available-balance order placement across all providers.
 """
 
-import math
 import os
 import sys
 import unittest
@@ -19,7 +18,7 @@ from providers.hyperliquid_provider import HyperliquidProvider
 from providers.market_api import BinanceProvider, MarketApi
 from providers.quantity import decide_quantity
 from providers.replay_provider import ReplayMarketDataProvider
-from providers.strategy_executor import PairPrecision, ProviderError
+from providers.strategy_executor import PairPrecision
 from providers.t212_provider import T212Provider
 
 

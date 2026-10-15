@@ -1,13 +1,20 @@
-"""Live financial policy is explicit; offline profiles do not inherit process state."""
+"""Live financial policy is explicit; offline profiles do not inherit process state, and SpotEngine module boundaries are preserved."""
 
-import os
 from dataclasses import replace
+import importlib.util
+import json
+import os
 from pathlib import Path
+import tempfile
+from types import SimpleNamespace
+import unittest
 from unittest.mock import patch
 
 import pytest
 
 from botcore import parse_dotenv
+from providers.strategy_executor import PairPrecision
+from strategies import spot_dca, spot_engine
 from strategies.spot_engine import StratParams
 
 
@@ -16,6 +23,77 @@ PROFILES = {venue: parse_dotenv(str(ROOT / venue / "config.env"))
             for venue in ("kraken", "hyperliquid")}
 REQUIRED_KEYS = sorted(key for key in PROFILES["kraken"]
                        if key.startswith("STRAT_") and key != "STRAT_EXECUTE") + ["STRATEGY_MODE"]
+
+
+class _Executor:
+    def pair_precision(self, _symbol):
+        return PairPrecision(2, 4, 0.01, "ASSET")
+
+
+def _params():
+    return spot_engine.StratParams(
+        currency="USD", entry_amount=100.0, entry_discount_pct=0.2,
+        dca_amount=50.0, dca_drop_pct=2.0, check_minutes=2.0,
+        takeprofit_pct=5.0, max_budget=1000.0, max_dca_buys=10,
+        enable_takeprofit=True, order_ttl_min=10.0, stop_loss_pct=12.5,
+        adopt_cost=0.0, adopt_qty=0.0, reentry_drop_pct=2.2,
+        reentry_tolerance_pct=0.0, reentry_adaptive=False,
+        reentry_sl_bounce_pct=1.5, tp_tranches=[],
+    )
+
+
+class SpotModuleBoundaryTest(unittest.TestCase):
+    def test_spot_dca_shim_matches_spot_engine_canonical(self):
+        self.assertIs(spot_dca.Strategy, spot_engine.Strategy)
+        self.assertIs(spot_dca.StratParams, spot_engine.StratParams)
+        self.assertEqual(spot_dca._new_state(), spot_engine._new_state())
+        self.assertEqual(spot_dca.state_path_for("HYPEUSD"), spot_engine.state_path_for("HYPEUSD"))
+
+    def test_missing_venue_precision_fails_before_strategy_start(self):
+        executor = _Executor()
+        executor.pair_precision = lambda _symbol: None
+        with self.assertRaisesRegex(RuntimeError, "no pair metadata"):
+            spot_engine.Strategy(
+                executor, "ASSETUSD", _params(), dry_run=False,
+                initial_state=spot_engine._new_state(),
+            )
+
+    def test_legacy_kraken_module_reexports_canonical_engine(self):
+        path = os.path.join(ROOT, "kraken", "strategy.py")
+        spec = importlib.util.spec_from_file_location("legacy_kraken_strategy", path)
+        legacy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(legacy)
+
+        self.assertIs(legacy.Strategy, spot_engine.Strategy)
+        self.assertIs(legacy.StratParams, spot_engine.StratParams)
+        self.assertEqual(legacy._new_state(), spot_engine._new_state())
+
+    def test_default_state_path_stays_in_legacy_kraken_directory(self):
+        expected = os.path.join(ROOT, "kraken", ".state_HYPEUSD.json")
+        self.assertEqual(spot_engine.state_path_for("HYPE/USD"), expected)
+
+    def test_state_directory_is_injectable_for_another_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = spot_engine.Strategy(
+                _Executor(), "ASSET/USD", _params(), dry_run=True,
+                initial_state=spot_engine._new_state(), state_dir=directory,
+            )
+            self.assertEqual(engine.state_file, os.path.join(directory, ".state_ASSETUSD.json"))
+
+    def test_notification_sink_and_source_are_injectable(self):
+        events = []
+        engine = spot_engine.Strategy(
+            _Executor(), "ASSETUSD", _params(), dry_run=True,
+            initial_state=spot_engine._new_state(), notifier=lambda **event: events.append(event),
+            notification_source="paper-venue",
+        )
+        order = {
+            "side": "buy", "kind": "ENTRY", "amount": 100.0,
+            "vol": 1.0, "price": 100.0,
+        }
+        engine._apply_fill(order, 1.0, 100.0, 0.0)
+        self.assertEqual(events[0]["source"], "paper-venue")
+        self.assertEqual(events[0]["price"], 100.0)
 
 
 def test_every_live_strategy_setting_must_exist(monkeypatch):
@@ -56,7 +134,6 @@ def test_versioned_profiles_preserve_effective_values_and_environment():
 
 
 def test_versioned_profile_is_isolated_from_the_calling_environment():
-    from types import SimpleNamespace
     from offline.runners.spot_profile_review import revision_params
     config = (ROOT / "hyperliquid/config.env").read_text()
     with patch.dict(os.environ, STRAT_ENTRY="999999"), patch(
@@ -70,7 +147,6 @@ def test_versioned_profile_is_isolated_from_the_calling_environment():
 def test_nonfinite_or_empty_new_policy_is_rejected():
     for value in ["nan", "inf", "-inf", ""]:
         with pytest.raises(ValueError, match="STRAT_SURGE_GAIN_PCT"):
-
             StratParams.from_env({**PROFILES["kraken"], "STRAT_SURGE_GAIN_PCT": value})
 
 
@@ -135,7 +211,6 @@ def test_sweep_refuses_missing_datasets(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("fail_control", [False, True])
 def test_sweep_report_is_complete_and_records_effective_policy(tmp_path, monkeypatch, fail_control):
-    import json
     from concurrent.futures import ThreadPoolExecutor
     from offline.research.comprehensive_surge_sweep import run_deep_surge_sweep as sweep
 

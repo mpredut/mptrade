@@ -61,7 +61,7 @@ class Base(unittest.TestCase):
                               min_profit_pct=min_profit_pct)
 
 
-class TestLogica(unittest.TestCase):
+class TestLogic(unittest.TestCase):
     def test_should_sell(self):
         self.assertTrue(should_sell(82, 100, 18))
         self.assertFalse(should_sell(83, 100, 18))
@@ -79,10 +79,10 @@ class TestTrailingKraken(Base):
         self.assertEqual(json.load(open(self.sf))["HYPE"]["peak"], 65.0)
 
     def test_a_crash_beyond_18pct_sells_the_free_balance(self):
-        c = FakeK(60.0, total=25.0, held=3.38)        # 21.62 liber
+        c = FakeK(60.0, total=25.0, held=3.38)        # 21.62 free
         ts = self.ts(c)
-        ts.check_once()                                # varf 60
-        c.price = 49.0                                 # -18.3% (prag HYPE 18%)
+        ts.check_once()                                # peak 60
+        c.price = 49.0                                 # -18.3% (HYPE threshold 18%)
         ts.check_once()
         self.assertEqual(len(c.orders), 1)
         self.assertEqual(c.orders[0]["side"], "sell")
@@ -128,11 +128,11 @@ class TestTrailingKraken(Base):
     def test_the_peak_survives_a_restart(self):
         c = FakeK(65.0)
         self.ts(c).check_once()
-        c.price = 53.0                                 # -18.5% de la 65
+        c.price = 53.0                                 # -18.5% from 65
         self.ts(c).check_once()
         self.assertEqual(len(c.orders), 1)
 
-    def test_sub_notional_ignora(self):
+    def test_sub_notional_ignored(self):
         c = FakeK(60.0, total=0.1)                     # 0.1*60 = $6 < $10
         ts = self.ts(c); ts.check_once()
         c.price = 40.0
@@ -156,7 +156,7 @@ class TestMinProfitKraken(Base):
     def test_warming_up_does_not_sell_below_the_threshold(self):
         c = FakeK(60.0)
         ts = self.ts(c, min_profit_pct=5.0)
-        ts.check_once()                    # initial=60, activ la 63.0, stop la 49.2 (-18%)
+        ts.check_once()                    # initial=60, active at 63.0, stop at 49.2 (-18%)
         c.price = 55.0                     # normal dip of -8.3% (<18% stop): warmup suppresses sell
         ts.check_once()
         self.assertEqual(c.orders, [], "it does not sell on normal dips before reaching the profit threshold")
@@ -169,8 +169,8 @@ class TestMinProfitKraken(Base):
         c = FakeK(60.0)
         ts = self.ts(c, min_profit_pct=5.0)
         ts.check_once()                    # initial=60
-        c.price = 64.0; ts.check_once()   # +6.7% > 5% -> trailing activ, peak=64
-        c.price = 52.0; ts.check_once()   # -18.8% de la peak 64 (prag HYPE 18%)
+        c.price = 64.0; ts.check_once()   # +6.7% > 5% -> trailing active, peak=64
+        c.price = 52.0; ts.check_once()   # -18.8% from peak 64 (HYPE threshold 18%)
         self.assertEqual(len(c.orders), 1, "it sells once the profit threshold is passed")
         self.assertEqual(c.orders[0]["side"], "sell")
 

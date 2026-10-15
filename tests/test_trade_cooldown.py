@@ -1,4 +1,4 @@
-import os, sys, time, threading, tempfile, unittest
+import os, sys, threading, tempfile, unittest
 import multiprocessing as mp
 from unittest import mock
 
@@ -16,7 +16,7 @@ def _proc_attempt(state_file, lock_file, q):
 
 class TestTradeCooldown(unittest.TestCase):
     def setUp(self):
-        # state/lock izolate per test
+        # isolated state/lock per test
         self.tmp = tempfile.mkdtemp()
         tc.STATE_FILE = os.path.join(self.tmp, "trade_cooldown.json")
         tc.LOCK_FILE = os.path.join(self.tmp, "trade_cooldown.lock")

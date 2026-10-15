@@ -11,7 +11,7 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 from providers import market_api  # noqa: E402
 from providers.market_api import BinanceProvider  # noqa: E402
 from providers.strategy_executor import (  # noqa: E402
-    StrategyExecutor, OrderStatus, PairPrecision, ProviderError,
+    StrategyExecutor, PairPrecision, ProviderError,
     SubmissionRefused,
 )
 

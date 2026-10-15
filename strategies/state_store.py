@@ -7,7 +7,6 @@ duplicate entry.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from state_io import StateReadError, atomic_write_json, load_json_state
 
@@ -36,12 +35,12 @@ class JsonStateStore:
                 raise TypeError("default_factory did not return a dict")
             merged.update(loaded)
             self.logger(
-                f"  [STRAT] stare incarcata (ciclu {merged.get('cycle')}, "
+                f"  [STRAT] state loaded (cycle {merged.get('cycle')}, "
                 f"qty {merged.get('qty')})"
             )
             return merged
         except (OSError, StateReadError, TypeError, ValueError) as exc:
-            message = f"stare {self.label} invalida in {self.path}: {exc}"
+            message = f"invalid {self.label} state in {self.path}: {exc}"
             if self.fail_closed:
                 raise StatePersistenceError(message) from exc
             self.logger(f"  ! [STRAT] {message}; reset allowed only in PAPER")

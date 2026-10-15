@@ -13,17 +13,12 @@ Verifies:
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock, patch
-import pytest
 
 import monitortrades as mt
-from intelligence.internal.guards.guard_decision import BrakeAction
+from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
 from intelligence.sentiment.gemini_client import GeminiClient
-from intelligence.sentiment.guards.post_stop_reentry_guard import (
-    PostStopReentryGuard,
-    get_post_stop_reentry_guard,
-)
+from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
 
 
 class FakeGeminiClient(GeminiClient):
@@ -223,111 +218,55 @@ class MockInstrument(mt._Instrument):
         return self._orders_dict.get(side, [])
 
 
-def test_monitortrades_integration_veto(tmp_path, monkeypatch):
+def _run_monitortrades_reentry_tick(decision, *, buy_qty=None, place_return=True):
+    fake_guard = MagicMock()
+    fake_guard.check.return_value = decision
+
+    mt._LAST_EXIT_KIND["TAOUSDC"] = "STOP"
+    mt._REENTRY_STATE["TAOUSDC"] = {
+        "trough": 100.0,
+        "peak": 105.0,
+        "peak_bounce": 102.0,
+        "started_at": 1000.0,
+    }
+    inst = MockInstrument(
+        symbol="TAOUSDC",
+        price=103.0,
+        buy_qty=buy_qty,
+        orders_dict={"SELL": [{"price": 101.0, "time": 1000.0, "timestamp": 1000000, "qty": buy_qty or 1.0, "kind": "STOP"}]},
+    )
+    exit_mgr = MagicMock()
+    exit_mgr.evaluate_reentry.return_value = MagicMock(should_enter=True, reason="bounce confirmed")
+
+    with patch("intelligence.sentiment.guards.post_stop_reentry_guard.get_post_stop_reentry_guard", return_value=fake_guard), \
+         patch.object(mt, "_place_guarded", return_value=place_return) as mock_place, \
+         patch.object(mt, "get_position_stats", return_value={"average_buy_price": 0.0, "average_sell_price": 0.0, "net_qty": 0.0}), \
+         patch.object(mt, "get_exit_manager", return_value=exit_mgr), \
+         patch.object(mt, "is_trend_up", return_value=True), \
+         patch.object(mt, "get_symbol_volatility_1h", return_value=0.01):
+        mt.monitor_price_and_trade(inst, sbs=10, now_fn=lambda: 1500.0)
+
+    return fake_guard, mock_place
+
+
+def test_monitortrades_integration_veto():
     """Verify monitortrades aborts buy order when PostStopReentryGuard vetoes."""
-    import monitortrades as mt
-    from intelligence.internal.guards.guard_decision import GuardDecision
-
-    fake_guard = MagicMock()
-    fake_guard.check.return_value = GuardDecision.veto(
-        "PostStopReentryGuard", "Gemini vetoed post-stop re-entry: trap detected"
+    fake_guard, mock_place = _run_monitortrades_reentry_tick(
+        GuardDecision.veto("PostStopReentryGuard", "Gemini vetoed post-stop re-entry: trap detected"),
     )
-
-    with patch("intelligence.sentiment.guards.post_stop_reentry_guard.get_post_stop_reentry_guard", return_value=fake_guard), \
-         patch.object(mt, "_place_guarded") as mock_place, \
-         patch.object(mt, "get_position_stats", return_value={"average_buy_price": 0.0, "average_sell_price": 0.0, "net_qty": 0.0}):
-
-        # Setup state
-        mt._LAST_EXIT_KIND["TAOUSDC"] = "STOP"
-        mt._REENTRY_STATE["TAOUSDC"] = {
-            "trough": 100.0,
-            "peak": 105.0,
-            "peak_bounce": 102.0,
-            "started_at": 1000.0,
-        }
-
-        inst = MockInstrument(
-            symbol="TAOUSDC",
-            price=103.0,
-            orders_dict={"SELL": [{"price": 101.0, "time": 1000.0, "timestamp": 1000000, "qty": 1.0, "kind": "STOP"}]},
-        )
-
-        exit_mgr = MagicMock()
-        reentry_dec = MagicMock()
-        reentry_dec.should_enter = True
-        reentry_dec.reason = "bounce confirmed"
-        exit_mgr.evaluate_reentry.return_value = reentry_dec
-
-        with patch.object(mt, "get_exit_manager", return_value=exit_mgr), \
-             patch.object(mt, "is_trend_up", return_value=True), \
-             patch.object(mt, "get_symbol_volatility_1h", return_value=0.01):
-
-            mt.monitor_price_and_trade(
-                inst,
-                sbs=10,
-                now_fn=lambda: 1500.0,
-            )
-
-        # Confirm guard was called
-        fake_guard.check.assert_called_once()
-        # Order should NOT be placed
-        mock_place.assert_not_called()
-        # Re-entry state must be preserved
-        assert "TAOUSDC" in mt._REENTRY_STATE
+    fake_guard.check.assert_called_once()
+    mock_place.assert_not_called()
+    assert "TAOUSDC" in mt._REENTRY_STATE
 
 
-def test_monitortrades_integration_downscale(tmp_path, monkeypatch):
+def test_monitortrades_integration_downscale():
     """Verify monitortrades scales down quantity when PostStopReentryGuard downscales."""
-    import monitortrades as mt
-    from intelligence.internal.guards.guard_decision import GuardDecision
-
-    fake_guard = MagicMock()
-    fake_guard.check.return_value = GuardDecision.downscale(
-        "PostStopReentryGuard", scale=0.5, reason="moderate whale momentum"
+    fake_guard, mock_place = _run_monitortrades_reentry_tick(
+        GuardDecision.downscale("PostStopReentryGuard", scale=0.5, reason="moderate whale momentum"),
+        buy_qty=2.0,
     )
-
-    with patch("intelligence.sentiment.guards.post_stop_reentry_guard.get_post_stop_reentry_guard", return_value=fake_guard), \
-         patch.object(mt, "_place_guarded", return_value=True) as mock_place, \
-         patch.object(mt, "get_position_stats", return_value={"average_buy_price": 0.0, "average_sell_price": 0.0, "net_qty": 0.0}):
-
-        # Setup state
-        mt._LAST_EXIT_KIND["TAOUSDC"] = "STOP"
-        mt._REENTRY_STATE["TAOUSDC"] = {
-            "trough": 100.0,
-            "peak": 105.0,
-            "peak_bounce": 102.0,
-            "started_at": 1000.0,
-        }
-
-        inst = MockInstrument(
-            symbol="TAOUSDC",
-            price=103.0,
-            buy_qty=2.0,
-            orders_dict={"SELL": [{"price": 101.0, "time": 1000.0, "timestamp": 1000000, "qty": 2.0, "kind": "STOP"}]},
-        )
-
-        exit_mgr = MagicMock()
-        reentry_dec = MagicMock()
-        reentry_dec.should_enter = True
-        reentry_dec.reason = "bounce confirmed"
-        exit_mgr.evaluate_reentry.return_value = reentry_dec
-
-        with patch.object(mt, "get_exit_manager", return_value=exit_mgr), \
-             patch.object(mt, "is_trend_up", return_value=True), \
-             patch.object(mt, "get_symbol_volatility_1h", return_value=0.01):
-
-            mt.monitor_price_and_trade(
-                inst,
-                sbs=10,
-                now_fn=lambda: 1500.0,
-            )
-
-        fake_guard.check.assert_called_once()
-        mock_place.assert_called_once()
-        # Initial buy_qty was 2.0, with scale 0.5 it should be placed with 1.0
-        args, kwargs = mock_place.call_args
-        placed_qty = args[3]
-        assert placed_qty == 1.0
-        # Should bypass GF1 (reentry reference) and GI3 (already vetted by post-stop guard)
-        assert kwargs.get("bypass_guards") == {"GF1", "GI3"}
-
+    fake_guard.check.assert_called_once()
+    mock_place.assert_called_once()
+    args, kwargs = mock_place.call_args
+    assert args[3] == 1.0
+    assert kwargs.get("bypass_guards") == {"GF1", "GI3"}

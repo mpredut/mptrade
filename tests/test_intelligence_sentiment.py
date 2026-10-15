@@ -1,7 +1,6 @@
 """Unit tests for Pillar 3: Sentiment Intelligence (Fear & Greed, Market Breadth, Contrarian Triggers, Euphoria/Panic Guards)."""
 import json
 import time
-import pytest
 
 from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerSide
 from intelligence.internal.guards.guard_decision import BrakeAction

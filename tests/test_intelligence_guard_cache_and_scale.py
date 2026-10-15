@@ -12,13 +12,13 @@ import os
 import sys
 import time
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import order_guard
 from market_regime import MarketRegimeDecision, MarketRegimeContext
-from providers.quantity import decide_quantity, QuantityDecision
+from providers.quantity import decide_quantity
 
 
 def _build_test_context(symbol="BTCUSDC", provider="binance"):

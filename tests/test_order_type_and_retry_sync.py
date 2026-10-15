@@ -1,11 +1,8 @@
 """Tests for order type normalization, retry worker quantity synchronization, and zombie recovery."""
-import math
 import os
 import sys
 import tempfile
-import time
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

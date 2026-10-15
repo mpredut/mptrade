@@ -25,7 +25,6 @@ import logging
 import math
 import os
 import time
-from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger("intelligence.external.smart_stop_loss")
@@ -129,12 +128,12 @@ def _dispatch_recovery_alerts(events: list[Dict[str, Any]]) -> None:
         b_str = _format_price(e.get("buy_price"))
         price_part = f" @ {c_str}" if c_str else ""
         if c_str and b_str:
-            price_part = f" | {c_str} (Ultimul preț Buy: {b_str})"
+            price_part = f" | {c_str} (Last Buy Price: {b_str})"
 
         body_lines = [
             f"{sym}{prov_tag}{price_part}",
             f"Bounce in {e['elapsed']:.0f}s! Dip: {e['price_decrease_pct']:.2f}% <= {e['lost_threshold_pct']:.2f}% (was {e['init_loss_pct']:.2f}%).",
-            "Pozitie salvata de wick hunt!",
+            "Position saved from wick hunt!",
         ]
         _send_ntfy_alert(title=title, body="\n".join(body_lines), symbol=sym)
     else:
@@ -146,7 +145,7 @@ def _dispatch_recovery_alerts(events: list[Dict[str, Any]]) -> None:
             syms_str = ", ".join(symbols)
             title = f"🎉 [P2 · SMART-SL] {syms_str}{prov_tag}"
         else:
-            title = f"🎉 [P2 · SMART-SL] {len(events)} pozitii{prov_tag}"
+            title = f"🎉 [P2 · SMART-SL] {len(events)} positions{prov_tag}"
 
         body_lines = []
         for e in events:
@@ -156,13 +155,13 @@ def _dispatch_recovery_alerts(events: list[Dict[str, Any]]) -> None:
             b_str = _format_price(e.get("buy_price"))
             price_str = f" @ {c_str}" if c_str else ""
             if c_str and b_str:
-                price_str = f" | {c_str} (Ultimul preț Buy: {b_str})"
+                price_str = f" | {c_str} (Last Buy Price: {b_str})"
             line = (
                 f"• {sym}{p_tag}: bounce in {e['elapsed']:.0f}s | "
                 f"dip {e['price_decrease_pct']:.2f}% <= {e['lost_threshold_pct']:.2f}% (was {e['init_loss_pct']:.2f}%){price_str}"
             )
             body_lines.append(line)
-        body_lines.append(f"Pozitii salvate de wick hunt ({len(events)})!")
+        body_lines.append(f"Positions saved from wick hunt ({len(events)})!")
         _send_ntfy_alert(title=title, body="\n".join(body_lines), symbol=",".join(symbols))
 
 
@@ -322,7 +321,7 @@ class SmartStopLossGuard:
                     b_str = _format_price(buy_price)
                     price_part = f" @ {c_str}" if c_str else ""
                     if c_str and b_str:
-                        price_part = f" | {c_str} (Ultimul preț Buy: {b_str})"
+                        price_part = f" | {c_str} (Last Buy Price: {b_str})"
 
                     body_lines = [
                         f"{sym_key}{prov_tag}{price_part}",
@@ -367,7 +366,7 @@ class SmartStopLossGuard:
                     b_str = _format_price(b_p)
                     price_part = f" @ {c_str}" if c_str else ""
                     if c_str and b_str:
-                        price_part = f" | {c_str} (Ultimul preț Buy: {b_str})"
+                        price_part = f" | {c_str} (Last Buy Price: {b_str})"
 
                     tracker.pop(sym_key, None)
                     if not is_sim:

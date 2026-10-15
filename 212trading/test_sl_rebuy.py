@@ -52,7 +52,7 @@ class StubClient:
 
 
 def main() -> int:
-    # stare curata
+    # clean state
     sf = state_path_for(TICK)
     if os.path.exists(sf):
         os.remove(sf)

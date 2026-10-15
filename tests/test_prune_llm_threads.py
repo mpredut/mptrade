@@ -1,15 +1,11 @@
 """Unit tests for Antigravity CLI automated thread pruner."""
 from datetime import datetime, timezone, timedelta
-import io
 import os
 import sqlite3
-import pytest
 
 from orchestratorOS.admin.prune_llm_threads import (
     prune_old_cli_threads,
-    filter_proto_file,
     is_automated_thread,
-    encode_varint,
 )
 
 

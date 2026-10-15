@@ -1,25 +1,47 @@
-"""Comprehensive unit tests for the intelligence package (triggers, guards, and state)."""
-import unittest
+"""Comprehensive unit tests for the intelligence package (triggers, guards, state, daemon, and backtest)."""
+from __future__ import annotations
 
-from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
-from intelligence.internal.triggers.kalman_trigger import KalmanTrend, KalmanTrendTrigger
-from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
-from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
-from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
-from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+import json
+import os
+import tempfile
+import time
+import unittest
+from unittest.mock import MagicMock, patch
+
+import numpy as np
+import pytest
+
+from intelligence.cli import get_daemon_status, inspect_symbol_intelligence
+from intelligence.composite import CompositeMarketIntelligence
+from intelligence.daemon import IntelligenceTelemetryDaemon
+from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
+from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
+from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+from intelligence.internal.guards.guard_decision import BrakeAction
 from intelligence.internal.guards.noise_guard import NoiseFloorGuard
+from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+from intelligence.internal.state.persistence import (
+    calculate_mann_kendall,
+    classify_hurst_regime,
+)
+from intelligence.internal.state.survival import get_trend_survival_metrics
 from intelligence.internal.state.volatility import (
-    calculate_volatility_1h,
     adaptive_thresholds,
-    vol_pct_to_ratio,
-    vol_ratio_to_pct,
+    calculate_volatility_1h,
     get_shadow_state_path,
     resolve_cached_volatility_1h,
     resolve_cached_volatility_1h_pct,
+    vol_pct_to_ratio,
+    vol_ratio_to_pct,
 )
-from intelligence.internal.state.survival import get_trend_survival_metrics
-from intelligence.composite import CompositeMarketIntelligence
+from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
+from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
+from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
+from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
+from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
+from offline.research.intelligence_backtest import BacktestStats, run_intelligence_backtest
 
 
 class TestIntelligenceTriggers(unittest.TestCase):
@@ -48,11 +70,9 @@ class TestIntelligenceTriggers(unittest.TestCase):
         trigger = KalmanTrendTrigger(qr=0.001)
         symbol = "BTCUSDC"
 
-        # Initialize flat
         trigger.evaluate(symbol, 100.0, 80000.0, 10.0)
         trigger.evaluate(symbol, 160.0, 80005.0, 10.0)
 
-        # Sharp upward price movement should trigger transition to UP (1)
         event = None
         for i in range(1, 10):
             t = 160.0 + i * 60.0
@@ -71,12 +91,10 @@ class TestIntelligenceTriggers(unittest.TestCase):
         trigger = LinearGradientTrigger(strength_threshold=2.0)
         symbol = "BTCUSDC"
 
-        # Within noise floor: |gradient| <= 2 * eps
         regime, ev = trigger.evaluate(symbol, 80000.0, gradient=1.5, epsilon=1.0)
         self.assertEqual(regime, "sideways")
         self.assertIsNone(ev)
 
-        # Breakout UP: gradient = 3.0, eps = 1.0 (strength = 3.0 > 2.0)
         regime, ev = trigger.evaluate(symbol, 80500.0, gradient=3.0, epsilon=1.0)
         self.assertEqual(regime, "bull")
         self.assertIsNotNone(ev)
@@ -88,12 +106,10 @@ class TestIntelligenceGuards(unittest.TestCase):
     def test_noise_floor_guard(self):
         guard = NoiseFloorGuard(min_strength_ratio=1.0)
 
-        # In noise: |gradient| = 0.5 <= eps = 1.0
         dec = guard.check("BTCUSDC", "BUY", gradient=0.5, epsilon=1.0)
         self.assertFalse(dec.allowed)
         self.assertEqual(dec.brake_action, BrakeAction.DEFER_WAIT)
 
-        # Above noise: |gradient| = 1.5 > eps = 1.0
         dec_ok = guard.check("BTCUSDC", "BUY", gradient=1.5, epsilon=1.0)
         self.assertTrue(dec_ok.allowed)
         self.assertEqual(dec_ok.brake_action, BrakeAction.NONE)
@@ -102,20 +118,16 @@ class TestIntelligenceGuards(unittest.TestCase):
         guard = ParabolicSurgeGuard(surge_threshold_pct=5.0, pullback_required_pct=2.0)
         symbol = "BTCUSDC"
 
-        # Simulated price surge from 80k to 86k (+7.5% > 5%)
         history = [(1000.0, 80000.0), (1060.0, 83000.0), (1120.0, 86000.0)]
 
-        # Buying at peak (86k) without pullback should be deferred
         dec = guard.check(symbol, "BUY", 86000.0, price_history=history, now=1120.0)
         self.assertFalse(dec.allowed)
         self.assertEqual(dec.brake_action, BrakeAction.DEFER_WAIT)
         self.assertIn("parabolic_surge_active", dec.reason)
 
-        # Non-BUY (e.g. SELL) is always allowed even during surge
         dec_sell = guard.check(symbol, "SELL", 86000.0, price_history=history, now=1120.0)
         self.assertTrue(dec_sell.allowed)
 
-        # After a pullback from 86k to 84k (pullback = (86-84)/86 = 2.32% > 2.0%), allowed
         dec_pullback = guard.check(symbol, "BUY", 84000.0, price_history=history, now=1200.0)
         self.assertTrue(dec_pullback.allowed)
 
@@ -123,19 +135,16 @@ class TestIntelligenceGuards(unittest.TestCase):
         guard = WeibullExhaustionGuard(default_p90_days=7.0, policy="downscale", exhausted_scale=0.25)
         symbol = "BTCUSDC"
 
-        # Trend duration = 3 days <= P90 (7.0 days)
         dec_young = guard.check(symbol, "BUY", trend_duration_seconds=3.0 * 86400, p90_days=7.0)
         self.assertTrue(dec_young.allowed)
         self.assertEqual(dec_young.suggested_scale, 1.0)
 
-        # Trend duration = 10 days > P90 (7.0 days) -> Downscale brake!
         dec_old = guard.check(symbol, "BUY", trend_duration_seconds=10.0 * 86400, p90_days=7.0)
         self.assertTrue(dec_old.allowed)
         self.assertEqual(dec_old.brake_action, BrakeAction.DOWNSCALE_QTY)
         self.assertEqual(dec_old.suggested_scale, 0.25)
         self.assertIn("trend_exhausted", dec_old.reason)
 
-        # Veto policy blocks completely
         guard_veto = WeibullExhaustionGuard(default_p90_days=7.0, policy="veto")
         dec_veto = guard_veto.check(symbol, "BUY", trend_duration_seconds=10.0 * 86400, p90_days=7.0)
         self.assertFalse(dec_veto.allowed)
@@ -168,10 +177,6 @@ class TestIntelligenceState(unittest.TestCase):
         self.assertAlmostEqual(vol_ratio_to_pct(0.0005), 0.05)
 
     def test_resolve_cached_volatility_1h(self):
-        import json
-        import os
-        import tempfile
-
         data = {
             "BTCUSDC": {"vol_1h_pct": 2.5},
             "ETHUSDT": {"vol_1h_pct": 0.05},
@@ -185,7 +190,6 @@ class TestIntelligenceState(unittest.TestCase):
         try:
             self.assertAlmostEqual(resolve_cached_volatility_1h("BTCUSDC", state_path=temp_path), 0.025)
             self.assertAlmostEqual(resolve_cached_volatility_1h_pct("BTCUSDC", state_path=temp_path), 2.5)
-            # Cross-currency fallback USDC <-> USDT
             self.assertAlmostEqual(resolve_cached_volatility_1h("BTCUSDT", state_path=temp_path), 0.025)
             self.assertAlmostEqual(resolve_cached_volatility_1h_pct("BTCUSDT", state_path=temp_path), 2.5)
             self.assertAlmostEqual(resolve_cached_volatility_1h("ETHUSDC", state_path=temp_path), 0.0005)
@@ -204,9 +208,6 @@ class TestIntelligenceState(unittest.TestCase):
         self.assertIsNone(resolve_cached_volatility_1h_pct("BTCUSDC", state_path="/non/existent/path.json"))
 
     def test_get_shadow_state_path(self):
-        import os
-        from unittest.mock import patch
-
         with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": "/custom/cache"}):
             path = get_shadow_state_path()
             self.assertTrue(path.endswith("shadow_state.json"))
@@ -218,10 +219,8 @@ class TestCompositeMarketIntelligence(unittest.TestCase):
         intel = CompositeMarketIntelligence(parabolic_surge_pct=5.0)
         symbol = "BTCUSDC"
 
-        # Simulate surge history
         history = [(1000.0, 80000.0), (1060.0, 83000.0), (1120.0, 86000.0)]
 
-        # Direct guard evaluation at peak
         guard_dec = intel.evaluate_guards(
             symbol,
             "BUY",
@@ -235,13 +234,11 @@ class TestCompositeMarketIntelligence(unittest.TestCase):
         self.assertEqual(guard_dec.brake_action, BrakeAction.DEFER_WAIT)
 
 
-
 class TestMeanReversionTrigger(unittest.TestCase):
     def test_oversold_triggers_buy_entry(self):
         trigger = MeanReversionTrigger(mode="rsi", rsi_period=14, rsi_low=30.0)
         symbol = "BTCUSDC"
 
-        # Feed dropping prices to reach oversold
         ev = None
         price = 100.0
         for i in range(30):
@@ -271,9 +268,7 @@ class TestMeanReversionTrigger(unittest.TestCase):
 
 class TestTrendSignificanceGuard(unittest.TestCase):
     def test_significant_trend_allowed(self):
-        from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
         guard = TrendSignificanceGuard(max_p_value=0.05)
-        # Clear upward trend
         prices = [100.0 + 1.0 * i for i in range(24)]
         ev = TriggerEvent(
             action=TriggerAction.ENTRY,
@@ -288,10 +283,7 @@ class TestTrendSignificanceGuard(unittest.TestCase):
         self.assertEqual(dec.brake_action, BrakeAction.NONE)
 
     def test_noisy_trend_deferred(self):
-        from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
-        import numpy as np
         guard = TrendSignificanceGuard(max_p_value=0.05)
-        # Random noise around 100
         rng = np.random.default_rng(42)
         prices = list(100.0 + rng.normal(0, 1.0, 24))
         ev = TriggerEvent(
@@ -308,11 +300,8 @@ class TestTrendSignificanceGuard(unittest.TestCase):
         self.assertIn("trend_slope_not_statistically_significant", dec.reason)
 
     def test_inverted_direction_vetoed(self):
-        from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
         guard = TrendSignificanceGuard(max_p_value=0.05)
-        # Downward series
         prices = [100.0 - 1.0 * i for i in range(24)]
-        # But trying to BUY
         ev = TriggerEvent(
             action=TriggerAction.ENTRY,
             side=TriggerSide.BUY,
@@ -329,25 +318,220 @@ class TestTrendSignificanceGuard(unittest.TestCase):
 
 class TestPersistenceState(unittest.TestCase):
     def test_mann_kendall_and_hurst(self):
-        from intelligence.internal.state.persistence import (
-            calculate_mann_kendall,
-            calculate_hurst_exponent,
-            classify_hurst_regime,
-        )
-        import numpy as np
-        # Linear slope
         y = [100.0 + 0.5 * i for i in range(24)]
-        s, z, p = calculate_mann_kendall(y)
+        _, z, p = calculate_mann_kendall(y)
         self.assertGreater(z, 0)
         self.assertLess(p, 0.01)
 
-        # Regimes classification
         self.assertEqual(classify_hurst_regime(0.65), "persistent")
         self.assertEqual(classify_hurst_regime(0.35), "mean_reverting")
         self.assertEqual(classify_hurst_regime(0.50), "random_walk")
         self.assertEqual(classify_hurst_regime(None), "unknown")
 
 
+class TestIntelligenceBacktest(unittest.TestCase):
+    """Verifies backtest simulation engine and guard statistics across all 4 pillars."""
+
+    def test_run_intelligence_backtest_synthetic_series(self):
+        synthetic_series = []
+        base_t = 1_700_000_000.0
+        p = 100.0
+        for i in range(60):
+            if i < 30:
+                p += 0.5
+            elif i < 45:
+                p -= 0.8
+            else:
+                p += 0.3
+            synthetic_series.append((base_t + (i * 300), p))
+
+        with patch("offline.research.intelligence_backtest.load_price_series", return_value=synthetic_series):
+            res = run_intelligence_backtest(symbol="TESTPAIR", cache_path="/dummy/path")
+
+        self.assertIn("BASELINE_UNGUARDED", res)
+        self.assertIn("PILLAR1_GUARDED", res)
+        self.assertIn("PILLAR1_PLUS_PILLAR2", res)
+        self.assertIn("FULL_COMPOSITE", res)
+
+        for _, stats in res.items():
+            self.assertIsInstance(stats, BacktestStats)
+            self.assertEqual(stats.symbol, "TESTPAIR")
+            self.assertGreaterEqual(stats.initial_balance, 1000.0)
+            self.assertGreaterEqual(stats.final_balance, 0.0)
+            self.assertGreaterEqual(stats.win_rate_pct, 0.0)
+            self.assertLessEqual(stats.win_rate_pct, 100.0)
+            self.assertGreaterEqual(stats.max_drawdown_pct, 0.0)
+            self.assertLessEqual(stats.max_drawdown_pct, 100.0)
+
+    def test_backtest_stats_fields_complete(self):
+        stats = BacktestStats(
+            symbol="BTCUSDC",
+            mode="FULL_COMPOSITE",
+            initial_balance=10000.0,
+            final_balance=10500.0,
+            total_trades=10,
+            winning_trades=7,
+            losing_trades=3,
+            win_rate_pct=70.0,
+            net_profit_usd=500.0,
+            net_return_pct=5.0,
+            max_drawdown_pct=2.5,
+            profit_factor=2.1,
+            parabolic_vetoes=1,
+            weibull_downscales=2,
+            noise_vetoes=1,
+            whale_vetoes=1,
+            orderbook_vetoes=1,
+            cascade_vetoes=1,
+            funding_downscales=1,
+            geopolitical_vetoes=1,
+            sentiment_downscales=1,
+        )
+        self.assertEqual(stats.symbol, "BTCUSDC")
+        self.assertEqual(stats.mode, "FULL_COMPOSITE")
+        self.assertEqual(stats.geopolitical_vetoes, 1)
+        self.assertEqual(stats.funding_downscales, 1)
+
+
+@pytest.fixture
+def temp_cache_dir(tmp_path):
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return str(cache_dir)
+
+
+def test_daemon_initialization(temp_cache_dir):
+    daemon = IntelligenceTelemetryDaemon(
+        symbols=["BTCUSDC", "TAOUSDC"],
+        cache_dir=temp_cache_dir,
+        orderbook_interval_sec=10.0,
+        derivatives_interval_sec=20.0,
+        whale_interval_sec=30.0,
+        macro_interval_sec=60.0,
+    )
+    assert daemon.symbols == ["BTCUSDC", "TAOUSDC"]
+    assert daemon.orderbook_interval_sec == 10.0
+    assert daemon.derivatives_interval_sec == 20.0
+    assert daemon.whale_interval_sec == 30.0
+    assert daemon.macro_interval_sec == 60.0
+
+
+def test_daemon_run_cycle_mocked(temp_cache_dir):
+    daemon = IntelligenceTelemetryDaemon(
+        symbols=["BTCUSDC"],
+        cache_dir=temp_cache_dir,
+    )
+
+    mock_ob_snap = OrderbookSnapshot(
+        symbol="BTCUSDC",
+        mid_price=60000.0,
+        bid_depth_usd=100000.0,
+        ask_depth_usd=80000.0,
+        imbalance_ratio=0.55,
+        largest_bid_wall_usd=20000.0,
+        largest_bid_wall_price=59900.0,
+        largest_ask_wall_usd=15000.0,
+        largest_ask_wall_price=60100.0,
+        ts=time.time(),
+    )
+    mock_deriv = DerivativesTelemetry(
+        symbol="BTCUSDC",
+        funding_rate=0.0001,
+        predicted_funding_rate=0.0001,
+        open_interest=5000.0,
+        open_interest_usd=300000000.0,
+        ts=time.time(),
+    )
+    mock_whale = WhalePositioningSnapshot(
+        symbol="BTCUSDC",
+        top_traders_long_ratio=1.5,
+        top_traders_long_pct=0.6,
+        taker_buy_sell_ratio=1.2,
+        taker_buy_vol_usd=500000.0,
+        taker_sell_vol_usd=400000.0,
+        open_interest_usd=300000000.0,
+        open_interest_1h_change_pct=1.5,
+        divergence_regime="accumulation",
+        ts=time.time(),
+    )
+    mock_geo = GeopoliticalThreatAssessment(
+        threat_level="NORMAL",
+        risk_score=0.1,
+        summary="Calm",
+        recommended_brake="NONE",
+        headlines_analyzed=5,
+        ts=time.time(),
+    )
+
+    with patch.object(daemon.orderbook_collector, "fetch", return_value=mock_ob_snap), \
+         patch.object(daemon.derivatives_collector, "fetch", return_value=mock_deriv), \
+         patch.object(daemon.whale_collector, "fetch", return_value=mock_whale), \
+         patch.object(daemon.news_collector, "fetch", return_value=MagicMock()), \
+         patch.object(daemon.geopolitical_analyzer, "assess", return_value=mock_geo):
+
+        res = daemon.run_cycle(force=True)
+
+        assert res["orderbook_updated"] == 1
+        assert res["derivatives_updated"] == 1
+        assert res["whale_updated"] == 1
+        assert res["macro_updated"] is True
+
+        hb_path = os.path.join(temp_cache_dir, "intelligence_daemon.heartbeat")
+        assert os.path.exists(hb_path)
+        with open(hb_path, "r", encoding="utf-8") as f:
+            hb = json.load(f)
+        assert hb["status"] == "alive"
+        assert hb["symbols"] == ["BTCUSDC"]
+        assert hb["last_run"]["orderbook_updated"] == 1
+
+
+def test_daemon_heartbeat_inspection(temp_cache_dir):
+    hb_path = os.path.join(temp_cache_dir, "intelligence_daemon.heartbeat")
+    with open(hb_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "pid": os.getpid(),
+                "status": "alive",
+                "ts": time.time(),
+                "symbols": ["BTCUSDC"],
+                "intervals": {"orderbook": 15.0},
+            },
+            f,
+        )
+
+    status = get_daemon_status(temp_cache_dir)
+    assert status["running"] is True
+    assert status["pid"] == os.getpid()
+    assert status["status"] == "alive"
+    assert status["symbols"] == ["BTCUSDC"]
+
+
+def test_inspect_symbol_intelligence(temp_cache_dir):
+    ob_path = os.path.join(temp_cache_dir, "orderbook_depth_BTCUSDC.json")
+    with open(ob_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "symbol": "BTCUSDC",
+                "mid_price": 65000.0,
+                "bid_depth_usd": 500000.0,
+                "ask_depth_usd": 400000.0,
+                "imbalance_ratio": 0.556,
+                "largest_bid_wall_usd": 50000.0,
+                "largest_bid_wall_price": 64900.0,
+                "largest_ask_wall_usd": 30000.0,
+                "largest_ask_wall_price": 65100.0,
+                "ts": time.time(),
+            },
+            f,
+        )
+
+    with patch("order_guard.check_intelligence_guards", return_value=(True, "ok", 1.0)):
+        report = inspect_symbol_intelligence("BTCUSDC", cache_dir=temp_cache_dir)
+    assert report["symbol"] == "BTCUSDC"
+    assert report["pillar2_external"]["orderbook"]["mid_price"] == 65000.0
+    assert report["pillar2_external"]["orderbook"]["imbalance_ratio"] == 0.556
+    assert "buy_standard" in report["guard_preview"]
+
+
 if __name__ == "__main__":
     unittest.main()
-

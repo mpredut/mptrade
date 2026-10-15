@@ -122,8 +122,8 @@ class TestTrailing(Base):
             self.tearDown(); self.setUp()
             api = FakeApi(250.0)
             ts = self.ts(api)
-            ts.check_once()                                # varf 250
-            api.price = 190.0                              # -24% de la 250 (prag TAO 22%)
+            ts.check_once()                                # peak 250
+            api.price = 190.0                              # -24% from 250 (TAO threshold 22%)
             ts.check_once()
             self.assertEqual(len(self.po.orders), 1)
             self.assertEqual(self.po.orders[0]["side"], "SELL")
@@ -142,7 +142,7 @@ class TestTrailing(Base):
             ts.check_once()
             self.assertEqual(self.po.orders, [])
 
-        with self.subTest(msg="sub_notional_minim_ignora"):
+        with self.subTest(msg="below_min_notional_ignored"):
             self.tearDown(); self.setUp()
             api = FakeApi(250.0, free=0.01)                # 0.01*250 = $2.5 < $11
             ts = self.ts(api)
@@ -210,10 +210,10 @@ class TestTrailing(Base):
         with self.subTest(msg="the_peak_survives_a_restart"):
             self.tearDown(); self.setUp()
             api = FakeApi(260.0)
-            self.ts(api).check_once()                      # varf 260, instanta 1
-            api.price = 200.0                              # -23% de la 260 (prag 22%)
+            self.ts(api).check_once()                      # peak 260, instance 1
+            api.price = 200.0                              # -23% from 260 (threshold 22%)
             self.ts(api).check_once()                      # instance 2 (a restart) — it reads the peak
-            self.assertEqual(len(self.po.orders), 1, "varful 260 supravietuieste restartului")
+            self.assertEqual(len(self.po.orders), 1, "peak 260 survives restart")
 
         with self.subTest(msg="a_partial_sale"):
             self.tearDown(); self.setUp()
@@ -230,7 +230,7 @@ class TestTrailing(Base):
             ts = self.ts(api)
             ts.check_once()
             api.price = 190.0; ts.check_once()             # it sells, the peak resets to 190
-            ts.check_once()                                # status terminal confirmat
+            ts.check_once()                                # terminal status confirmed
             import json
             self.assertEqual(json.load(open(self.sf))["TAOUSDC"]["peak"], 190.0)
 
@@ -368,7 +368,7 @@ class TestPerCoinRebuy(Base):
             self.assertEqual(self.po.orders, [])
 
 
-class TestPerMoneda(Base):
+class TestPerCoin(Base):
     def test_per_coin_configurations(self):
         with self.subTest(msg="market_data_only_symbol_is_not_trailed_or_logged_as_managed"):
             from types import SimpleNamespace
@@ -397,7 +397,7 @@ class TestPerMoneda(Base):
                                      state_file=self.sf, min_profit_pct=5, log=lambda *_args: None)
             self.assertEqual(restarted._load(), saved)
 
-        with self.subTest(msg="prag_diferentiat"):
+        with self.subTest(msg="per_coin_threshold"):
             self.tearDown(); self.setUp()
             ts = self.ts(FakeApi(1.0))
             self.assertEqual(ts.trail_pct_for("BTCUSDC"), 16.0)
@@ -406,7 +406,7 @@ class TestPerMoneda(Base):
             with self.assertRaises(KeyError):
                 ts.trail_pct_for("XYZUSDC")  # No invented policy for an unconfigured asset.
 
-        with self.subTest(msg="sell_fraction_invalid_esueaza_la_start"):
+        with self.subTest(msg="invalid_sell_fraction_fails_at_start"):
             self.tearDown(); self.setUp()
             with self.assertRaises(ValueError):
                 self.ts(FakeApi(1.0), frac=1.01)
@@ -446,7 +446,7 @@ class TestMinProfit(Base):
             self.tearDown(); self.setUp()
             api = FakeApi(250.0)
             ts = self.ts(api, min_profit_pct=5.0)
-            ts.check_once()                    # initial=250, activ la 262.5, stop la 195.0 (-22%)
+            ts.check_once()                    # initial=250, active at 262.5, stop at 195.0 (-22%)
             api.price = 230.0                  # normal dip of -8% (<22% stop): warmup suppresses sell
             ts.check_once()
             self.assertEqual(self.po.orders, [], "it does not sell on normal dips before profit threshold is reached")
@@ -460,9 +460,9 @@ class TestMinProfit(Base):
             api = FakeApi(250.0)
             ts = self.ts(api, min_profit_pct=5.0)
             ts.check_once()                    # initial=250
-            api.price = 263.0                  # +5.2% > 5% prag -> trailing activ
+            api.price = 263.0                  # +5.2% > 5% threshold -> trailing active
             ts.check_once()                    # peak=263
-            api.price = 200.0                  # -23.9% de la peak 263 (prag TAO 22%)
+            api.price = 200.0                  # -23.9% from peak 263 (TAO threshold 22%)
             ts.check_once()
             self.assertEqual(len(self.po.orders), 1, "it sells once the profit threshold is passed")
             self.assertEqual(self.po.orders[0]["side"], "SELL")
@@ -472,13 +472,13 @@ class TestMinProfit(Base):
             api = FakeApi(250.0)
             ts = self.ts(api, min_profit_pct=5.0)
             ts.check_once()                    # initial=250, peak=250
-            api.price = 263.0; ts.check_once() # trece de prag -> activ
+            api.price = 263.0; ts.check_once() # passes threshold -> active
             api.price = 200.0; ts.check_once() # a crash of -23.9% -> it sells; it arms the rebuy
             self.assertEqual(len(self.po.orders), 1)
             ts.check_once()                    # it confirms the SELL fill and arms the re-buy
             # simulate the rebuy: the price rises 1.2% from 200 -> 202.4
             api.price = 199.0; ts.check_once() # low=199
-            api.price = 201.5; ts.check_once() # +1.26% de la 199 -> re-buy; initial=201.5
+            api.price = 201.5; ts.check_once() # +1.26% from 199 -> re-buy; initial=201.5
             ts.check_once()                    # it confirms the REBUY fill and sets the warmup
             # now the trailing is inactive until 201.5*1.05=211.6
             api.price = 180.0; ts.check_once() # a crash from 201.5 but below the activation threshold

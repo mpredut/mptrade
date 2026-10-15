@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import offline.runners.binance_walk_forward_baseline
 import offline.runners.hyperliquid_walk_forward_baseline

@@ -1330,5 +1330,86 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             manager.shutdown()
 
 
+class AccountCacheReaderConfirmationTest(unittest.TestCase):
+    def setUp(self):
+        from binance_api import bapi_placeorder as placeorder
+        self._placeorder = placeorder
+        self.trade_enabled = patch.object(
+            placeorder.cfg, "is_trade_enabled", return_value=True)
+        self.trade_enabled.start()
+
+    def tearDown(self):
+        self.trade_enabled.stop()
+
+    @staticmethod
+    def _status(order_version, trade_version, *, age=1.0):
+        return health.CacheHealthStatus(
+            True, "", age, age, order_version, trade_version)
+
+    def test_reader_is_confirmed_against_a_post_load_marker(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        requested = self._status("order-1", "trade-1")
+        confirmed = self._status("order-1", "trade-1", age=2.0)
+        cache_module = SimpleNamespace(
+            ensure_account_cache_readers=MagicMock())
+        with patch.dict(sys.modules, {"cacheManager": cache_module}), \
+             patch.object(
+                 self._placeorder.binance_cache_health,
+                 "require_fresh_account_cache",
+                 side_effect=[requested, confirmed],
+             ):
+            result = self._placeorder.require_account_cache_for_submit()
+
+        self.assertIs(result, confirmed)
+        cache_module.ensure_account_cache_readers.assert_called_once_with(
+            requested)
+
+    def test_one_bounded_retry_loads_a_marker_that_advanced(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, call
+        first = self._status("order-1", "trade-1")
+        advanced = self._status("order-2", "trade-2")
+        cache_module = SimpleNamespace(
+            ensure_account_cache_readers=MagicMock())
+        with patch.dict(sys.modules, {"cacheManager": cache_module}), \
+             patch.object(
+                 self._placeorder.binance_cache_health,
+                 "require_fresh_account_cache",
+                 side_effect=[first, advanced, advanced, advanced],
+             ):
+            result = self._placeorder.require_account_cache_for_submit()
+
+        self.assertIs(result, advanced)
+        self.assertEqual(
+            cache_module.ensure_account_cache_readers.call_args_list,
+            [call(first), call(advanced)],
+        )
+
+    def test_marker_becoming_stale_during_reader_load_refuses(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        from providers.strategy_executor import SubmissionRefused
+        requested = self._status("order-1", "trade-1")
+        cache_module = SimpleNamespace(
+            ensure_account_cache_readers=MagicMock())
+        with patch.dict(sys.modules, {"cacheManager": cache_module}), \
+             patch.object(
+                 self._placeorder.binance_cache_health,
+                 "require_fresh_account_cache",
+                 side_effect=[
+                     requested,
+                     health.AccountCacheNotReady("trade_cache_stale"),
+                 ],
+             ):
+            with self.assertRaisesRegex(
+                    SubmissionRefused, "account_cache_not_fresh") as raised:
+                self._placeorder.require_account_cache_for_submit()
+
+        self.assertEqual(raised.exception.__cause__.reason, "trade_cache_stale")
+        cache_module.ensure_account_cache_readers.assert_called_once_with(
+            requested)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

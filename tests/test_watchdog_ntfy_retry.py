@@ -1,15 +1,17 @@
-"""watchdog_common.send_ntfy: retries once on 429 (burst rate-limit on ntfy.sh),
-honouring Retry-After instead of losing the message."""
+"""Watchdog tests: ntfy retry/rate-limit handling and OS resource watchdog checks."""
 import os
 import sys
 import tempfile
 import unittest
 from unittest import mock
+from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "orchestratorOS", "lib"))
+sys.path.insert(0, os.path.join(ROOT, "orchestratorOS", "livecheck"))
 
-import watchdog_common as wc
+import os_resources_watchdog as wd  # noqa: E402
+import watchdog_common as wc  # noqa: E402
 
 
 class _Resp:
@@ -42,14 +44,14 @@ class SendNtfyRetryTest(unittest.TestCase):
             mpost.side_effect = [_Resp(429, {"Retry-After": "1"}), _Resp(200)]
             ok = wc.send_ntfy("title", "message")
         self.assertTrue(ok)
-        self.assertEqual(mpost.call_count, 2)     # retried
-        msleep.assert_called_once()               # waited Retry-After
+        self.assertEqual(mpost.call_count, 2)
+        msleep.assert_called_once()
 
     def test_daily_429_does_not_retry_and_blocks_following_attempts(self):
         with mock.patch("requests.post") as mpost, mock.patch("time.sleep"):
             mpost.return_value = _Resp(429, text='{"code":42908,"error":"daily limit reached"}')
-            ok = wc.send_ntfy("titlu", "mesaj")
-            blocked = wc.send_ntfy("alt titlu", "alt mesaj")
+            ok = wc.send_ntfy("title", "message")
+            blocked = wc.send_ntfy("second title", "second message")
         self.assertFalse(ok)
         self.assertFalse(blocked)
         self.assertEqual(mpost.call_count, 1)
@@ -57,10 +59,64 @@ class SendNtfyRetryTest(unittest.TestCase):
     def test_success_first_try_no_sleep(self):
         with mock.patch("requests.post") as mpost, mock.patch("time.sleep") as msleep:
             mpost.side_effect = [_Resp(200)]
-            ok = wc.send_ntfy("titlu", "mesaj")
+            ok = wc.send_ntfy("title", "message")
         self.assertTrue(ok)
         self.assertEqual(mpost.call_count, 1)
         msleep.assert_not_called()
+
+
+def _proc(pid=10, ticks=100, rss=100, command="worker.py"):
+    return {f"{pid}:1": {"pid": pid, "ticks": ticks, "rss_mb": rss, "command": command}}
+
+
+def test_alerts_only_after_sustained_cpu_use():
+    with tempfile.TemporaryDirectory() as tmp, patch.object(wd, "STATE_FILE", os.path.join(tmp, "state")), \
+            patch.object(wd, "CONSECUTIVE", 3), patch.object(wd.wc, "alert") as alert:
+        wd.check_once(now=0, total_ticks=1000, processes=_proc(ticks=100), cpu_count=1)
+        wd.check_once(now=120, total_ticks=1100, processes=_proc(ticks=160), cpu_count=1)
+        wd.check_once(now=240, total_ticks=1200, processes=_proc(ticks=220), cpu_count=1)
+        alert.assert_not_called()
+        wd.check_once(now=360, total_ticks=1300, processes=_proc(ticks=280), cpu_count=1)
+        alert.assert_called_once()
+
+
+def test_short_memory_spike_does_not_alert():
+    with tempfile.TemporaryDirectory() as tmp, patch.object(wd, "STATE_FILE", os.path.join(tmp, "state")), \
+            patch.object(wd, "CONSECUTIVE", 3), patch.object(wd.wc, "alert") as alert:
+        wd.check_once(now=0, total_ticks=1000, processes=_proc(rss=800), cpu_count=1)
+        wd.check_once(now=120, total_ticks=1100, processes=_proc(ticks=101, rss=100), cpu_count=1)
+        alert.assert_not_called()
+
+
+def test_sustained_memory_use_alerts_and_then_recovers():
+    with tempfile.TemporaryDirectory() as tmp, patch.object(wd, "STATE_FILE", os.path.join(tmp, "state")), \
+            patch.object(wd, "CONSECUTIVE", 2), patch.object(wd, "RECOVERY_CHECKS", 2), \
+            patch.object(wd.wc, "alert") as alert:
+        wd.check_once(now=0, total_ticks=1000, processes=_proc(rss=800), cpu_count=1)
+        wd.check_once(now=120, total_ticks=1100, processes=_proc(ticks=101, rss=800), cpu_count=1)
+        wd.check_once(now=240, total_ticks=1200, processes=_proc(ticks=102, rss=100), cpu_count=1)
+        wd.check_once(now=360, total_ticks=1300, processes=_proc(ticks=103, rss=100), cpu_count=1)
+        assert alert.call_count == 2
+
+
+def test_managed_process_is_restarted_after_sustained_breach():
+    proc = next(iter(_proc(rss=800, command="python worker.py").values()))
+    state = {}
+    with patch.object(wd, "AUTO_RESTART", True), \
+            patch.object(wd, "_managed_script", return_value="worker.py"), \
+            patch.object(wd, "_restart_allowed", return_value=True), \
+            patch.object(wd.os, "kill") as kill:
+        assert wd._restart_managed(proc, state, 1000) is True
+        kill.assert_called_once_with(10, wd.signal.SIGTERM)
+        assert state["restart_history"]["worker.py"] == [1000]
+
+
+def test_unmanaged_process_is_never_restarted():
+    proc = next(iter(_proc(rss=800, command="foreign").values()))
+    with patch.object(wd, "_managed_script", return_value=None), \
+            patch.object(wd.os, "kill") as kill:
+        assert wd._restart_managed(proc, {}, 1000) is None
+        kill.assert_not_called()
 
 
 if __name__ == "__main__":

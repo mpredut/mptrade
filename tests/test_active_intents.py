@@ -1,5 +1,4 @@
 import json
-import os
 
 from active_intents import build_active_intent_index, format_summary
 

@@ -32,7 +32,7 @@ class JsonStateStoreTest(unittest.TestCase):
 
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write('{"qty":')
-            with self.assertRaisesRegex(StatePersistenceError, "stare TEST invalida"):
+            with self.assertRaisesRegex(StatePersistenceError, "invalid TEST state"):
                 store.load()
 
             paper, messages = self._store(path, fail_closed=False)
@@ -54,7 +54,7 @@ class JsonStateStoreTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "state.json")
             store, _messages = self._store(path, fail_closed=True)
-            with patch("strategies.state_store.os.replace", side_effect=OSError("disk")):
+            with patch("state_io.os.replace", side_effect=OSError("disk")):
                 with self.assertRaisesRegex(StatePersistenceError, "persisting the"):
                     store.save(_defaults())
             self.assertEqual(os.listdir(directory), [])
@@ -63,7 +63,7 @@ class JsonStateStoreTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "state.json")
             store, messages = self._store(path, fail_closed=False)
-            with patch("strategies.state_store.os.replace", side_effect=OSError("disk")):
+            with patch("state_io.os.replace", side_effect=OSError("disk")):
                 self.assertFalse(store.save(_defaults()))
             self.assertIn("cannot save the state", messages[-1])
             self.assertEqual(os.listdir(directory), [])

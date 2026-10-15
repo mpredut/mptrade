@@ -1,16 +1,16 @@
 """
 CONSOLIDATED tests for extracting the constants into config files (28 Jul —
 unified from 4 nearly identical files: test_{tradeall,monitortrades,rtrade,
-assetguardian}_config_extraction.py, ~56 teste sparse -> table-driven aici).
+assetguardian}_config_extraction.py, ~56 sparse tests -> table-driven here).
 
 The intent is PRESERVED in full for the legacy modules and strict for AssetGuardian:
   - DEFAULTS: the values loaded from config are the expected versioned ones;
     AssetGuardian no longer has hidden fallbacks in the code.
-  - OVERRIDE: setarea variabilei de mediu + reload chiar schimba valoarea
+  - OVERRIDE: setting the environment variable + reload actually changes the value
     (the override mechanism really works, not just apparently).
   - Per-module specifics: import safety (rtrade/assetguardian do NOT start
     the live loop on import), dead code removed (monitortrades SYMBOL_PARAMS),
-    asimetria BUY/SELL pastrata (rtrade).
+    BUY/SELL asymmetry preserved (rtrade).
 """
 import importlib
 import os
@@ -134,7 +134,7 @@ class TestConfigDefaults(unittest.TestCase):
 
 
 class TestConfigOverrides(unittest.TestCase):
-    """Setarea variabilei de mediu + reload chiar schimba valoarea constantei."""
+    """Setting the environment variable + reload actually changes the constant value."""
 
     def test_env_overrides_take_effect(self):
         for module, env, val, attr, expected in OVERRIDES:
@@ -145,7 +145,7 @@ class TestConfigOverrides(unittest.TestCase):
                     self.assertAlmostEqual(getattr(module, attr), expected, places=6)
                 finally:
                     os.environ.pop(env, None)
-                    importlib.reload(module)   # readuce modulul la default pt restul
+                    importlib.reload(module)   # restore module to default for remaining tests
 
 
 class TestModuleSpecifics(unittest.TestCase):

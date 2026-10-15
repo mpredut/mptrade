@@ -1,17 +1,13 @@
 """Unit tests for Centralized PositionExitManager (MHDSL Stop-Loss & MDHTP Take-Profit Mirror)."""
 
-import time
 import unittest
-from unittest.mock import MagicMock
 
 from strategies.position_exit_manager import (
     ExitAction,
-    ExitDecision,
     PositionExitConfig,
     PositionExitManager,
     PositionSnapshot,
     ReentryAction,
-    ReentryDecision,
     ReentrySnapshot,
 )
 

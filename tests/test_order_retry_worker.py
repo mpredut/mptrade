@@ -3,7 +3,6 @@ FAKE `mkt` (no network). The queue is isolated in tmp."""
 import os
 import subprocess
 import sys
-import time
 import tempfile
 import unittest
 from types import SimpleNamespace

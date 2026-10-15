@@ -11,8 +11,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import log
-from notify_engine.alertnotifiers import notify, AlertNotifier
+from notify_engine.alertnotifiers import notify
 from notify_engine.server import NotificationServer, _topic_for_category
 from market_monitor.pricechecker import PriceAlert
 

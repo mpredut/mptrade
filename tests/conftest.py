@@ -1,6 +1,7 @@
 """Global safety and cleanup for the test suite."""
 
 import os
+import shutil
 import tempfile
 import threading
 
@@ -11,6 +12,20 @@ import pytest
 # made at import time, and subprocesses started by tests cannot send
 # real notifications towards ntfy, email or the desktop.
 os.environ["DISABLE_EXTERNAL_NOTIFICATIONS"] = "1"
+
+# Track all tempfile.mkdtemp() directories created during the test session so
+# tests that omit explicit shutil.rmtree() never leak directories into /tmp.
+_REAL_MKDTEMP = tempfile.mkdtemp
+_TRACKED_MKDTEMP_DIRS: list[str] = []
+
+
+def _tracked_mkdtemp(*args, **kwargs) -> str:
+    path = _REAL_MKDTEMP(*args, **kwargs)
+    _TRACKED_MKDTEMP_DIRS.append(path)
+    return path
+
+
+tempfile.mkdtemp = _tracked_mkdtemp
 
 # Some tests build the live engines with fake executors. Without a separate
 # directory, the default audit ended up in logger/execution_audit and mixed
@@ -99,4 +114,9 @@ def _shutdown_runtime_threads_after_suite():
     leaked = sorted(thread.name for thread in threading.enumerate()
                     if thread.name in forbidden)
     assert not leaked, f"runtime threads left behind after the suite: {leaked}"
+    for path in _TRACKED_MKDTEMP_DIRS:
+        shutil.rmtree(path, ignore_errors=True)
+    _TRACKED_MKDTEMP_DIRS.clear()
     _execution_audit_tmp.cleanup()
+    _notification_state_tmp.cleanup()
+

@@ -341,5 +341,93 @@ class KrakenExecutorContractTest(unittest.TestCase):
             self.assertIsNone(series.last_closed_at)
 
 
+class _SequentialPairInfoClient:
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = 0
+
+    def pair_info(self, symbol):
+        self.calls += 1
+        r = self._responses.pop(0) if self._responses else {}
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+class MinOrderQtyCacheTest(unittest.TestCase):
+    def test_failed_lookup_not_cached_then_recovers(self):
+        for label, first_response in (("empty", {}), ("exception", RuntimeError("DNS blip"))):
+            with self.subTest(case=label):
+                fake = _SequentialPairInfoClient([first_response, {"ordermin": "0.1"}])
+                p = _provider(fake)
+                self.assertEqual(p.min_order_qty("HYPEUSD"), 0.0)
+                self.assertNotIn("HYPEUSD", p._minqty)
+                self.assertEqual(p.min_order_qty("HYPEUSD"), 0.1)
+                self.assertEqual(p._minqty.get("HYPEUSD"), 0.1)
+
+    def test_positive_cached_no_refetch(self):
+        fake = _SequentialPairInfoClient([{"ordermin": "0.1"}])
+        p = _provider(fake)
+        self.assertEqual(p.min_order_qty("HYPEUSD"), 0.1)
+        self.assertEqual(p.min_order_qty("HYPEUSD"), 0.1)
+        self.assertEqual(fake.calls, 1)
+
+
+class AddOrderRoundingTest(unittest.TestCase):
+    def _client(self, pair_decimals):
+        if os.path.join(ROOT, "kraken") not in sys.path:
+            sys.path.insert(0, os.path.join(ROOT, "kraken"))
+        from kraken_client import KrakenClient
+
+        c = KrakenClient.__new__(KrakenClient)
+        c.pair_info = lambda pair: {"pair_decimals": pair_decimals}
+        sent = {}
+        c._private = lambda method, data: sent.update(data) or {"ok": True}
+        return c, sent
+
+    def test_limit_price_respects_pair_decimals(self):
+        cases = (
+            (2, "HYPEUSD", "sell", 1.23456789, 53.839 * 0.995, "53.57"),
+            (5, "XBTUSD", "buy", 1.0, 0.123456789, "0.12346"),
+        )
+        for decimals, pair, side, volume, price, expected in cases:
+            with self.subTest(pair=pair, decimals=decimals):
+                c, sent = self._client(decimals)
+                c.add_order(pair, side, volume, price, ordertype="limit")
+                self.assertEqual(sent["price"], expected)
+
+    def test_price_decimals_fallback(self):
+        if os.path.join(ROOT, "kraken") not in sys.path:
+            sys.path.insert(0, os.path.join(ROOT, "kraken"))
+        from kraken_client import KrakenClient
+
+        def boom(pair):
+            raise RuntimeError("API down")
+
+        for label, pair_info in (("missing", lambda pair: None), ("exception", boom)):
+            with self.subTest(case=label):
+                c = KrakenClient.__new__(KrakenClient)
+                c.pair_info = pair_info
+                self.assertEqual(c.price_decimals("WHATEVERUSD"), 2)
+
+    def test_market_order_no_price_field(self):
+        c, sent = self._client(2)
+        c.add_order("HYPEUSD", "sell", 1.0, None, ordertype="market")
+        self.assertNotIn("price", sent)
+
+    def test_client_order_id_is_validated_and_sent(self):
+        c, sent = self._client(2)
+        client_id = "0123456789ABCDEF0123456789ABCDEF"
+        c.add_order(
+            "HYPEUSD", "buy", 1.0, 60.0, ordertype="limit",
+            cl_ord_id=client_id,
+        )
+        self.assertEqual(sent["cl_ord_id"], client_id.lower())
+
+        with self.assertRaisesRegex(ValueError, "128-bit hex UUID"):
+            c.add_order("HYPEUSD", "buy", 1.0, 60.0, cl_ord_id="too-short")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

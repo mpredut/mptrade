@@ -247,7 +247,7 @@ class KrakenStatePersistenceTest(unittest.TestCase):
             with open(state_file, "w", encoding="utf-8") as handle:
                 handle.write('{"qty":')
             with patch.object(strat, "state_path_for", return_value=state_file):
-                with self.assertRaisesRegex(RuntimeError, "stare.*invalida"):
+                with self.assertRaisesRegex(RuntimeError, "invalid.*state"):
                     strat.Strategy(self._client(), "PAIR", _params(), dry_run=False)
 
     def test_corrupt_state_may_reset_only_in_paper_mode(self):

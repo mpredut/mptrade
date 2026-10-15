@@ -4,7 +4,6 @@ import time
 import math
 import sys
 import threading
-from datetime import datetime, timedelta
 import signal
 
 #### MYLIB

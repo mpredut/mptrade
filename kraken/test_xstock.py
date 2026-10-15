@@ -80,7 +80,7 @@ class FakeKraken:
 
 
 class Base(unittest.TestCase):
-    """Izolare completa: env restaurat, stare in temp, notify capturat."""
+    """Complete isolation: restored env, state in temp, captured notify."""
 
     def setUp(self):
         self._env = dict(os.environ)

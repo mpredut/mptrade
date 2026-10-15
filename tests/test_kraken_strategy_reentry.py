@@ -158,8 +158,8 @@ class TestStopAwareReentry(unittest.TestCase):
             s.step(50.0)                                  # Still falling -> it tracks the low, it does not enter.
             self.assertFalse(s._has_open("buy"))
             self.assertEqual(s.s["sl_low"], 50.0)
-            s.step(50.8)                                  # +1.6% de la minim 50 -> bounce atins
-            self.assertTrue(s._has_open("buy"), "bounce >= prag -> reintra")
+            s.step(50.8)                                  # +1.6% from low 50 -> bounce reached
+            self.assertTrue(s._has_open("buy"), "bounce >= threshold -> re-enters")
 
         with self.subTest(msg="tp_exit_keeps_old_drop_below_sell_rule"):
             # after a TP (not a STOP) the old rule stands: do not rebuy higher than you sold
@@ -169,7 +169,7 @@ class TestStopAwareReentry(unittest.TestCase):
             s.s["last_exit_kind"] = "TP"
             s.step(98.5)                                  # 98.5 > the threshold of 97.8 -> blocked (the old rule).
             self.assertFalse(s._has_open("buy"))
-            s.step(97.0)                                  # 97.0 < 97.8 -> reintra
+            s.step(97.0)                                  # 97.0 < 97.8 -> re-enters
             self.assertTrue(s._has_open("buy"))
 
 

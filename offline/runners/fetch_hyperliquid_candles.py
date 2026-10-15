@@ -74,7 +74,7 @@ def validate_continuity(records: list[dict], interval_minutes: int) -> None:
         actual_seconds = current["timestamp"] - previous["timestamp"]
         if actual_seconds != expected_seconds:
             raise ValueError(
-                "dataset discontinuu: "
+                "discontinuous dataset: "
                 f"{previous['timestamp']} -> {current['timestamp']} "
                 f"({actual_seconds}s, expected {expected_seconds}s)"
             )

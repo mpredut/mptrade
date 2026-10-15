@@ -95,6 +95,17 @@ if [ -d "$LOGGER_DIR" ]; then
         fi
     done
 
+    # Prune dated backtest and overnight run subdirectories older than LOG_BACKTEST_DELETE_AFTER_DAYS (default 14d)
+    BACKTEST_RETENTION_DAYS="${LOG_BACKTEST_DELETE_AFTER_DAYS:-14}"
+    for run_dir in "$LOGGER_DIR/backtest" "$ROOT/logs/overnight_runs"; do
+        if [ -d "$run_dir" ]; then
+            find "$run_dir" -mindepth 1 -maxdepth 1 -mtime +"$BACKTEST_RETENTION_DAYS" -exec rm -rf {} + 2>/dev/null || true
+        fi
+    done
+
+    # Prune stale user-owned temporary test directories in /tmp older than 1 day
+    find /tmp -maxdepth 1 -user "$(id -un)" \( -name "tmp*" -o -name "pytest-of-*" -o -name "binance-tests-*" -o -name "mptrade-tests-*" -o -name "rtrade-*" -o -name "test_reentry_state_*" \) -mtime +1 -exec rm -rf {} + 2>/dev/null || true
+
     echo "  after retention:  $(du -sh "$LOGGER_DIR" 2>/dev/null | cut -f1)"
 fi
 

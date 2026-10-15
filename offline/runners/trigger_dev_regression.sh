@@ -30,12 +30,16 @@ $SSH "$DEV_USER@$DEV_HOST" "cd ~/$DEV_PATH && git pull --ff-only origin $DEV_COD
 # Step 2: Trigger regression on dev
 if [ "$WAIT_MODE" = true ]; then
     echo "[trigger_dev_ci $(date '+%F %T')] Running regression on DEV (synchronous / waiting)..."
+    set +e
     $SSH "$DEV_USER@$DEV_HOST" "cd ~/$DEV_PATH && ./offline/runners/run_dev_regression.sh" 2>&1 | sed 's/^/  [dev] /'
-    
-    # Sync status back to prod
+    RC=${PIPESTATUS[0]}
+    set -e
+
+    # Sync status back to prod regardless of pass/fail
     mkdir -p "$REPO_ROOT/cachedb"
     scp -P "$DEV_PORT" "$DEV_USER@$DEV_HOST:~/$DEV_PATH/cachedb/dev_regression_status.json" "$REPO_ROOT/cachedb/dev_regression_status.json" >/dev/null 2>&1 || true
-    echo "[trigger_dev_ci $(date '+%F %T')] Completed and synced status to prod cachedb/dev_regression_status.json"
+    echo "[trigger_dev_ci $(date '+%F %T')] Completed (exit=$RC) and synced status to prod cachedb/dev_regression_status.json"
+    exit "$RC"
 else
     # Async background trigger on DEV (full nohup subshell detachment)
     $SSH "$DEV_USER@$DEV_HOST" "nohup bash -c 'cd ~/$DEV_PATH && ./offline/runners/run_dev_regression.sh' </dev/null >/dev/null 2>&1 &"

@@ -263,7 +263,7 @@ class T212StatePersistenceTest(unittest.TestCase):
                 with open(path, "w", encoding="utf-8") as handle:
                     handle.write("not-json")
                 with patch.object(strategy, "state_path_for", return_value=path):
-                    with self.assertRaisesRegex(RuntimeError, "stare T212 invalida"):
+                    with self.assertRaisesRegex(RuntimeError, "invalid T212 state"):
                         strategy.Strategy(
                             self._client(), "TEST_US_EQ", _params(), dry_run=False,
                             fx_to_usd=1.0,
@@ -301,7 +301,7 @@ class T212StatePersistenceTest(unittest.TestCase):
                         )
                         engine.state_file = path
                         with patch(
-                            "strategies.state_store.os.replace", side_effect=OSError("disk")
+                            "state_io.os.replace", side_effect=OSError("disk")
                         ):
                             if dry_run:
                                 engine._save()

@@ -22,7 +22,6 @@ mock_bapi.get_current_price = MagicMock(return_value=50000.0)
 mock_bapi.client = MagicMock()
 sys.modules.setdefault("bapi", mock_bapi)
 
-from binance_api import bapi_ws  # noqa: E402,F401
 from binance_api.bapi_ws import BinanceWebSocketManager  # noqa: E402
 import cacheManager as cm  # noqa: E402
 
