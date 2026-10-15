@@ -90,7 +90,7 @@ All order generation flows pass through the 3-stage pipeline in [`instrument.py`
 | Pillar | Module | Latency | LLM Status | Enforced Policies & Safeguards |
 | :--- | :--- | :--- | :--- | :--- |
 | **Pillar 1** | [`internal_order_guard.py`](file:///home/predut/mptrade/internal_order_guard.py) | **0 ms** (in-memory) | 🚫 **NO LLM** | **Anti-FOMO Parabolic Surge:** Vetoes buys during parabolic spikes (>18% gain without 3.5% pullback).<br>**Weibull Exhaustion:** Statistical hazard ratio scales down aged trends by 75% (`scale=0.25`).<br>**Daily Loss Budget:** Blocks orders when rolling 24h drawdown limit is reached. |
-| **Pillar 2** | [`external_order_guard.py`](file:///home/predut/mptrade/external_order_guard.py) | **0 ms** (local cache) | 🚫 **NO LLM** | **Orderbook Depth & Walls:** Vetoes or defers orders facing overhead ask walls > \$1,000,000 or bid depth < 25%.<br>**Funding Crowding:** Downscales order by 50% if perpetual funding rate exceeds 0.05% (squeeze risk).<br>**Whale Flow & Cascades:** Blocks entries during net whale short cascades (preventing falling knives).<br>**Smart Stop Loss:** Pauses tight stop-loss orders ($\le 6\%$) for 120s if whale absorption indicates a predatory wick hunt. |
+| **Pillar 2** | [`external_order_guard.py`](file:///home/predut/mptrade/external_order_guard.py) | **0 ms** (local cache) | 🚫 **NO LLM** | **Orderbook Depth & Walls:** Vetoes or defers orders facing overhead ask walls > \$1,000,000 or bid depth < 25%.<br>**Whale Taker Flow Supremacy:** Evaluates aggressive whale taker selling vs bid liquidity; progressively downscales sizing (downscale threshold 0.90 -> scale 0.50) or vetoes entries during acute short waterfalls.<br>**Funding Crowding:** Downscales order by 50% if perpetual funding rate exceeds 0.05% (squeeze risk).<br>**Whale Flow & Cascades:** Blocks entries during net whale short cascades (preventing falling knives).<br>**Smart Stop Loss:** Pauses tight stop-loss orders ($\le 6\%$) for 120s if whale absorption indicates a predatory wick hunt. |
 | **Pillar 3** | [`high_stake_guard.py`](file:///home/predut/mptrade/intelligence/sentiment/guards/high_stake_guard.py) | **10–15 s** (event-driven) | 🤖 **ACTIVE LLM** | Pre-trade qualitative risk vetting via Gemini LLM **strictly for large orders ($\ge 1,000\text{ EUR}$)**. Evaluates macro sentiment, liquidity conditions, and market breadth. |
 | **Pillar 4** | [`geopolitical_order_guard.py`](file:///home/predut/mptrade/geopolitical_order_guard.py) | **< 1 ms** (local cache) | 🤖 **BACKGROUND LLM** | Evaluates international news, military conflicts, and energy crises asynchronously every 4.5 hours. Enforces immediate `HARD_VETO` during `CRITICAL_SHOCK` events. |
 
@@ -117,12 +117,14 @@ The core trading engines deployed across Kraken, Hyperliquid, Binance, and Tradi
      * *Priority 4 (Stagnation Timeout):* 18-minute (1080s) exit if price consolidates without fresh highs.
      * *Priority 5 (Trend Reversal):* Liquidates position when the trend turns downward.
    * **Stop-Loss (MHDSL):**
-     * *Priority 1 (Hard Disaster Floor):* Volatility-scaled circuit breaker ($\max(\text{loss} \times 0.30, \text{vol}_{1h} \times 0.85, 0.8\%)$) with unconditional execution, bypassing trend deferrals.
+     * *Priority 1 (Hard Disaster Floor):* Volatility-scaled circuit breaker ($\max(\text{loss} \times 0.30, \text{vol}_{1h} \times 0.85, 0.8\%)$) capped at `sl_disaster_buffer_max_pct = 15%`. Unconditional execution bypassing trend deferrals.
+     * *Monotonic Ratchet:* Armed disaster floor ratchets monotonically; once active, subsequent volatility surges cannot loosen or retreat the protective stop floor.
      * *Priority 2 (Bounce Protection):* Deferral up to 220s during uptrends with dynamic ratchet and structural support break detection.
      * *Priority 3 (Smart Stop-Loss):* Microstructure orderbook absorption veto against predatory wick stops.
    * **Symmetrical Re-Entry Mirror (MHDRE):**
      * Post-STOP requires confirmed recovery bounce above trough with anti-rollover ratchet and bear trend gate.
      * Post-TP enforces bull trend pullback or sideways discount drop before allowing repurchases.
+   * **Single Source of Truth (SSOT) Volatility Resolution:** Unified in `intelligence.internal.state.volatility`, guaranteeing seamless decimal ratio conversion ($1\% \to 0.01$) across all callers.
    * **Mathematical Isolation:** SL and TP engines operate on separate state dictionaries, ensuring Stop-Loss enhancements cannot corrupt, preempt, or degrade Take-Profit executions.
 
 ---
@@ -141,14 +143,14 @@ flowchart TD
         direction TB
         TICK --> PEM["PositionExitManager\n(strategies/position_exit_manager.py)"]
         PEM --> MDHTP["MDHTP (Multi-Horizon Dynamic Take Profit)\n• Trend-Riding Deferral on Uptrend\n• Guaranteed Profit Floor (min locked gain)\n• Dynamic Micro-Trailing (k=1.5 x vol_1h)\n• Stagnation Timeout (18m / 1080s)\n• Trend Reversal Market Exit"]
-        PEM --> MHDSL["MHDSL (Multi-Horizon Dynamic Stop Loss)\n• Priority 1: Hard Disaster Floor (vol-scaled)\n• Priority 2: Bounce Watch Deferral (<=220s)\n• Priority 2A: Structural Support Breakout\n• Priority 2B: Bounce Rollover Ratchet\n• Priority 3: Smart SL Controller (Whale Wall)"]
+        PEM --> MHDSL["MHDSL (Multi-Horizon Dynamic Stop Loss)\n• Priority 1: Hard Disaster Floor (vol-scaled, capped 15%)\n• Monotonic Ratchet (Floor never loosens)\n• Priority 2: Bounce Watch Deferral (<=220s)\n• Priority 2A: Structural Support Breakout\n• Priority 2B: Bounce Rollover Ratchet\n• Priority 3: Smart SL Controller (Whale Wall)"]
         PEM --> MHDRE["MHDRE (Symmetrical Re-Entry Mirror)\n• Post-STOP: Confirmed trough bounce + ratchet\n• Post-TP: Bull pullback or range discount"]
     end
 
     subgraph Level2 ["Tier 2: Extreme Airbag (Crash Circuit Breaker)"]
         direction TB
         TICK --> CORE["TrailingCore State Machine\n(trailing_core.py)"]
-        CORE --> CB["Crash Circuit Breaker\n• Decoupled from profit warmup\n• Wide collapse trigger (-8% to -26%)\n• unlock_qty: Cancels resting sell limits\n• Force market execution (force=True)\n• Guard bypass for emergency exits"]
+        CORE --> CB["Crash Circuit Breaker\n• Decoupled from profit warmup\n• Wide collapse trigger (-8% to -26%)\n• unlock_qty: Cancels resting sell limits\n• target_exit_qty: Accumulates partial fills\n• Force market execution (force=True)\n• Guard bypass for emergency exits"]
     end
 
     Level1 -->|Orderly Exit| DISPATCH["🚀 Order Dispatch Engine"]
@@ -159,10 +161,10 @@ flowchart TD
 
 | Venue | Symbol / Asset | Role | Tier 1: Dynamic Protection (MHDSL / MDHTP / DCA) | Tier 2: Extreme Airbag (Crash Circuit Breaker) | Operational Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Binance** | `BTCUSDC` | Spot Swing / Grid | **MHDSL:** Loss `2.925%`, bounce watch, ratchet, `hard_tp = 17%` (0.5 tranche).<br>**MDHTP:** Active in `monitortrades.py`. | **Trailing Stop:** `16%` from peak.<br>**Decoupled from warmup.** `unlock_qty` active. | **ACTIVE.** Dual-layer protected. |
+| **Binance** | `BTCUSDC` | Spot Swing / Grid | **MHDSL:** Loss `2.925%`, bounce watch, ratchet, `hard_tp = 18.5%` (0.5 tranche, 6h cooldown).<br>**MDHTP:** Active in `monitortrades.py`. | **Trailing Stop:** `16%` from peak.<br>**Decoupled from warmup.** `unlock_qty` active. | **ACTIVE.** Dual-layer protected (Backtest winner applied). |
 | **Binance** | `TAOUSDC` | Spot Swing / Grid | **MHDSL:** Loss `5.25%`, bounce watch, ratchet, `hard_tp = 17%` (0.5 tranche).<br>**MDHTP:** Active in `monitortrades.py`. | **Trailing Stop:** `22%` from peak.<br>**Decoupled from warmup.** `unlock_qty` active. | **ACTIVE.** High-beta AI asset. |
-| **Binance** | `ARBUSDC` | Spot Swing / Grid | **MHDSL:** Loss `5.25%`, gain `9.0%`, bounce watch, ratchet, `hard_tp = 17%`.<br>**MDHTP:** Active in `monitortrades.py`. | **Trailing Stop:** `26%` from peak.<br>**Decoupled from warmup.** MA-100 rebuy. | **ACTIVE (`role.mt = yes`).** Activated in `instruments.conf`. |
-| **Kraken** | `HYPEUSD` | DCA Spot Engine | **MHDSL:** Active via `spot_engine.py` + `PositionExitManager`.<br>**MDHTP:** Enabled (`STRAT_TP_MDHTP_ENABLED=true`).<br>**DCA Brake:** `STRAT_DCA_TREND_BRAKE=true`. | **Multi-Asset Trailing:** `18%` in `kraken/trailing_stop.py`.<br>**Decoupled from warmup.** `unlock_qty` active. | **ACTIVE.** Dual-protected: DCA bot + trailing daemon. |
+| **Binance** | `ARBUSDC` | Spot Swing / Grid | **MHDSL:** Loss `4.375%`, gain `9.0%`, bounce watch, ratchet, `hard_tp = 17%`.<br>**MDHTP:** Active in `monitortrades.py`. | **Trailing Stop:** `26%` from peak.<br>**Decoupled from warmup.** MA-100 rebuy. | **ACTIVE (`role.mt = yes`).** Activated in `instruments.conf` (Backtest winner applied). |
+| **Kraken** | `HYPEUSD` | DCA Spot Engine | **MHDSL:** Active via `spot_engine.py` + `PositionExitManager`.<br>**MDHTP:** Enabled (`STRAT_TP_MDHTP_ENABLED=true`), trail `3%`, floor `1%`.<br>**DCA Brake:** `STRAT_DCA_TREND_BRAKE=true`. | **Multi-Asset Trailing:** `18%` in `kraken/trailing_stop.py`.<br>**Decoupled from warmup.** `unlock_qty` active. | **ACTIVE.** Dual-protected: DCA bot + trailing daemon. |
 | **Kraken** | `TAOUSD` | DCA Spot Engine | **MHDSL:** Active via `PositionExitManager`.<br>**MDHTP:** Enabled (`STRAT_TP_MDHTP_ENABLED=true`).<br>**DCA Brake:** Active with spacing growth `+0.25pp`. | **Multi-Asset Trailing:** `22%` in `kraken/trailing_stop.py`.<br>**Decoupled from warmup.** `unlock_qty` active. | **ACTIVE.** Multi-asset coverage. |
 | **Kraken** | `ADAUSD` | DCA Spot Engine | **MHDSL:** Active via `PositionExitManager`.<br>**MDHTP:** Enabled (`STRAT_TP_MDHTP_ENABLED=true`).<br>**DCA Brake:** Active. | **Multi-Asset Trailing:** `25%` in `kraken/trailing_stop.py`.<br>**Decoupled from warmup.** `unlock_qty` active. | **ACTIVE.** Multi-asset coverage. |
 | **Hyperliquid** | `HYPEUSDC` (Spot) | DCA Long-Term | **MHDSL:** `STRAT_STOP_LOSS_PCT=25%`, `hard_disaster_floor_breached` cuts position immediately.<br>**MDHTP:** Enabled (`STRAT_TP_MDHTP_ENABLED=true`), adaptive trail ($k=1.5$).<br>**DCA Brake:** Active, spacing growth `0.25pp`. | **Circuit Breaker:** `hard_disaster_floor_breached` (urgent market exit via `_request_market_exit`). | **ACTIVE.** Downtrend brake & disaster stop. |
@@ -173,8 +175,11 @@ flowchart TD
 ### Fleet-Wide Hardened Invariants & Safety Guarantees
 1. **DCA Buy Suppression on Bounce Watch (`sl_bounce_state`):** When a position breaches stop-loss territory and enters bounce deferral, DCA additions are strictly suppressed to avoid doubling down into an unresolved market drop.
 2. **Automatic Balance Unlocking (`unlock_qty`):** Prevents emergency liquidations from failing due to balances locked in passive resting TP limit orders. Adapters cancel conflicting sell limits before executing market stops.
-3. **Exit Intent Persistence (`pending_exit` / `tp_pending_exit`):** If an exit order is rejected by an exchange due to network blips or rate limits, the exit state does not revert to HOLD; it persists and re-executes until fill confirmation.
-4. **Emergency Floor Under Cost Basis:** If market price collapses below average cost basis during an active profit ride, an immediate emergency floor liquidation triggers, protecting original principal.
+3. **Partial Exit Tracking (`target_exit_qty`):** `TrailingCore` accumulates sold quantities and cost basis across partial fills, preserving peak protection and armed rebuy sizing until the entire target position is cleared.
+4. **Composite Client Order Identity (`client_order_id`):** Orders embed strategy and bot lineage (`inst.client_order_id`), allowing `monitororder` to safely reprice and track orders without identity collisions.
+5. **Exit Intent Persistence (`pending_exit` / `tp_pending_exit`):** If an exit order is rejected by an exchange due to network blips or rate limits, the exit state does not revert to HOLD; it persists and re-executes until fill confirmation.
+6. **Emergency Floor Under Cost Basis:** If market price collapses below average cost basis during an active profit ride, an immediate emergency floor liquidation triggers, protecting original principal.
+7. **Monitortrades STOP Rollback Protection:** If stop-loss placement fails or is rejected, active TP orders are restored safely without race conditions.
 
 ---
 

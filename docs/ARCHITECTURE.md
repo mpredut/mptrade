@@ -175,7 +175,7 @@ line-for-line across the two `trailing_stop.py` files, so it moved into
 ## Market Intelligence Architecture
 The `intelligence/` framework provides a four-pillar decision and capital protection layer:
 1. **Internal Quantitative**: Kalman trend state, linear gradients, mean reversion, and mathematical guards (anti-FOMO parabolic surge guard, Weibull trend exhaustion guard downscaling mature moves past P90, noise floor guard).
-2. **External Microstructure**: Whale flow volume prints, orderbook depth imbalance, and liquidation cascade vetoes.
+2. **External Microstructure**: Whale flow volume prints, orderbook depth imbalance, liquidation cascade vetoes, and **Whale Taker Flow Supremacy** (evaluates aggressive market taker sells against depth, triggering progressive downscaling at threshold 0.90 to scale 0.50 or absolute veto before entering falling knives).
 3. **Sentiment & LLM Reasoning**: Fear & Greed contrarian triggers, market breadth, and Google Gemini LLM reasoning (30m macro assessments and pre-flight vetoes on orders >= 1,000 EUR).
 4. **Macro Geopolitical Shield**: Real-time Google News RSS screening with Gemini risk scoring to veto BUYs during international conflict or energy supply shocks.
 
@@ -195,6 +195,7 @@ To maintain sub-millisecond execution loops across high-frequency price analysis
    - Instead of recalculating unmemoized cumulative position statistics on every tick, `_pos_stats_cache_by_symbol` caches the result and invalidates strictly on order placements, cancellations, or a 15-second heartbeat timeout.
 3. **Analytical Single-Ratio Return Volatility (`intelligence/internal/state/volatility.py`)**:
    - Uses single logarithmic division rather than computing and allocating full difference arrays, achieving zero discrepancy ($0.00\text{e}+00$) with baseline array slicing.
+   - Provides canonical SSOT for volatility ratio and percentage resolution across `PositionExitManager`, `monitortrades`, and `spot_engine`.
 4. **Zero-Latency Non-blocking Snapshot Policy (`allow_network=False`)**:
    - `order_guard.py` evaluates external Pillar 2 (orderbook depth, whale flow, funding rates) and Pillar 4 (geopolitical threat state) guards strictly from in-memory structures or cached local JSON snapshots.
    - Network polling is decoupled into background collectors. If snapshot data is absent, guards fail open safely without blocking order placement.
@@ -289,14 +290,14 @@ flowchart TD
         direction TB
         TICK --> PEM["PositionExitManager\n(strategies/position_exit_manager.py)"]
         PEM --> MDHTP["MDHTP (Multi-Horizon Dynamic Take Profit)\n• Trend-Riding Deferral on Uptrend\n• Guaranteed Profit Floor (min locked gain)\n• Dynamic Micro-Trailing (k=1.5 x vol_1h)\n• Stagnation Timeout (18m / 1080s)\n• Trend Reversal Market Exit"]
-        PEM --> MHDSL["MHDSL (Multi-Horizon Dynamic Stop Loss)\n• Priority 1: Hard Disaster Floor (vol-scaled)\n• Priority 2: Bounce Watch Deferral (<=220s)\n• Priority 2A: Structural Support Breakout\n• Priority 2B: Bounce Rollover Ratchet\n• Priority 3: Smart SL Controller (Whale Wall)"]
+        PEM --> MHDSL["MHDSL (Multi-Horizon Dynamic Stop Loss)\n• Priority 1: Hard Disaster Floor (vol-scaled, capped 15%)\n• Monotonic Ratchet (Floor never loosens)\n• Priority 2: Bounce Watch Deferral (<=220s)\n• Priority 2A: Structural Support Breakout\n• Priority 2B: Bounce Rollover Ratchet\n• Priority 3: Smart SL Controller (Whale Wall)"]
         PEM --> MHDRE["MHDRE (Symmetrical Re-Entry Mirror)\n• Post-STOP: Confirmed trough bounce + ratchet\n• Post-TP: Bull pullback or range discount"]
     end
 
     subgraph Level2 ["Tier 2: Extreme Airbag (Crash Circuit Breaker)"]
         direction TB
         TICK --> CORE["TrailingCore State Machine\n(trailing_core.py)"]
-        CORE --> CB["Crash Circuit Breaker\n• Decoupled from profit warmup\n• Wide collapse trigger (-8% to -26%)\n• unlock_qty: Cancels resting sell limits\n• Force market execution (force=True)\n• Guard bypass for emergency exits"]
+        CORE --> CB["Crash Circuit Breaker\n• Decoupled from profit warmup\n• Wide collapse trigger (-8% to -26%)\n• unlock_qty: Cancels resting sell limits\n• target_exit_qty: Accumulates partial fills\n• Force market execution (force=True)\n• Guard bypass for emergency exits"]
     end
 
     Level1 -->|Orderly Exit| DISPATCH["🚀 Order Dispatch Engine"]
@@ -308,10 +309,21 @@ flowchart TD
    - Across Kraken & Hyperliquid (`spot_engine.py`) and Trading 212 (`strategy.py`), when a position breaches stop-loss territory and enters bounce deferral, placing new DCA buy orders is **strictly suppressed** to avoid capital dilution into an unconfirmed breakdown.
 2. **Automatic Balance Unlocking (`unlock_qty`):**
    - Prevents emergency liquidations from failing due to balances locked in passive resting TP limit orders. Adapters query open orders and cancel conflicting sell limits before executing market stops.
-3. **Exit Intent Persistence (`pending_exit` / `tp_pending_exit`):**
+3. **Partial Exit Tracking (`target_exit_qty`):**
+   - `TrailingCore` accumulates sold quantities and cost basis across partial fills, preserving peak protection and armed rebuy sizing until the entire target position is cleared.
+4. **Composite Client Order Identity (`client_order_id`):**
+   - Orders embed strategy and bot lineage (`inst.client_order_id`), allowing `monitororder` to safely reprice and track orders without identity collisions.
+5. **Exit Intent Persistence (`pending_exit` / `tp_pending_exit`):**
    - If an exit order is rejected by an exchange due to network blips or rate limits, the exit state does not revert to HOLD; it persists and re-executes until fill confirmation.
-4. **Emergency Floor Under Cost Basis:**
+6. **Emergency Floor Under Cost Basis:**
    - If market price collapses below average cost basis during an active profit ride, an immediate emergency floor liquidation triggers, protecting original principal.
+7. **Monitortrades STOP Rollback Protection:**
+   - If stop-loss placement fails or is rejected, active TP orders are restored safely without race conditions.
+8. **Disaster Buffer Capping (15% Cap) & Monotonic Ratchet:**
+   - `sl_disaster_buffer_max_pct = 0.15` caps volatility-induced buffer expansion, preventing runaway stop-loss degradation during extreme spikes. Once armed, the disaster floor operates monotonically and never loosens upward in loss.
+9. **Single Source of Truth for Volatility Resolution:**
+   - `intelligence.internal.state.volatility` standardizes ratio vs percentage conversions across all exit engines, preventing scaling mismatches.
+
 
 
 

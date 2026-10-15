@@ -76,9 +76,10 @@ To ensure absolute transparency between microsecond execution and qualitative re
      - *Trigger:* Perpetual funding rate exceeds `funding_max_long_rate = 0.0005` (0.05% per 8h), signaling overcrowded long positioning prone to long squeezes.
      - *Brake:* `DOWNSCALE_QTY` (scales down size by `funding_crowded_scale = 0.50`) or `VETO_STOP`.
   3. `WhaleDivergenceGuard` (`[P2 · WHALE-FLOW]`):
-     - *Telemetry:* `cachedb/whale_oi_collect.json`
-     - *Trigger:* Open Interest surging alongside aggressive net whale short positioning divergence.
-     - *Brake:* `DEFER_WAIT` or `VETO_STOP`.
+     - *Telemetry:* `cachedb/whale_oi_collect.json` + real-time taker volume prints.
+     - *Trigger 1 (OI Divergence):* Open Interest surging alongside aggressive net whale short positioning divergence.
+       - *Brake:* `DEFER_WAIT` or `VETO_STOP`.
+     - *Trigger 2 (Whale Taker Flow Supremacy):* Evaluates aggressive market taker sells against depth (`min_taker_ratio = 0.75`). If taker sell volume ratio breaches `taker_downscale_threshold = 0.90`, it triggers progressive size downscaling (`taker_downscaled_scale = 0.50`, `DOWNSCALE_QTY`) or absolute `VETO_STOP` before entering falling knives.
 
 ---
 
@@ -211,7 +212,7 @@ flowchart TD
         end
 
         subgraph MHDSL ["Stop-Loss (MHDSL)"]
-            SL1["Priority 1: Hard Disaster Floor\n(max(ratio, vol_1h * 0.85, 0.8%) -> Immediate Sell)"] --> SL2["Priority 2: Bounce Protection\n(Trend UP: Defer up to 220s)"]
+            SL1["Priority 1: Hard Disaster Floor\n(max(ratio, vol_1h * 0.85, 0.8%), capped 15%)\nMonotonic Ratchet: never loosens"] --> SL2["Priority 2: Bounce Protection\n(Trend UP: Defer up to 220s)"]
             SL2 --> SL2A["Structural Breakdown\n(Break below prior swing low)"]
             SL2 --> SL2B["Bounce Rollover\n(Dynamic Ratchet on Pullback)"]
             SL2 --> SL2C["Bounce Timeout\n(220s elapsed without recovery)"]
@@ -230,13 +231,16 @@ flowchart TD
 | Dimension | Take-Profit (MDHTP) | Stop-Loss (MHDSL) | Re-Entry Mirror (MHDRE) |
 | :--- | :--- | :--- | :--- |
 | **Zone Trigger** | $\text{Gain} \ge \text{gain\_threshold}$ | $\text{Loss} \ge \text{lost\_threshold}$ | Post-sale price evaluation |
-| **Circuit Breaker** | Hard TP spike partial sell & guaranteed profit floor | Hard disaster floor ($\sigma_{1h}$ scaled) bypassing all deferrals | Stale barrier TTL expiration |
+| **Circuit Breaker** | Hard TP spike partial sell & guaranteed profit floor | Hard disaster floor ($\sigma_{1h}$ scaled, capped 15%) bypassing all deferrals | Stale barrier TTL expiration |
 | **Trend Deferral** | Ride uptrend without premature exit | Defer stop on active uptrend, watch recovery | In bull trend, wait for pullback from peak |
 | **Micro-Trailing** | Pullback from peak ($k=1.5 \times \text{vol}_{1h}$) | Bounce rollover from recovery peak | Anti-rollover ratchet on post-stop recovery bounce |
-| **Dynamic Ratchet** | Tightens trail as profit expands | Tightens allowed pullback as bounce recovery expands | Rollover clamp prevents re-entry if bounce fails |
+| **Dynamic Ratchet** | Tightens trail as profit expands | Tightens allowed pullback as bounce recovery expands (Monotonic Floor) | Rollover clamp prevents re-entry if bounce fails |
 | **Timeout Guard** | 18-minute (1080s) stagnation timeout | 220-second bounce watch timeout | TTL decay on last sale barrier |
 
 ### Strict Isolation & Non-Interference
 1. **Zero Cross-Contamination:** Stop-Loss evaluation and Take-Profit evaluation use isolated in-memory state dictionaries (`sl_bounce_state` vs `tp_ride_state`).
 2. **Sequential Priority Gate:** In profit or neutral territory, Stop-Loss triggers are unreachable ($P_{\text{loss}} \le 0$). Take-Profit exits run autonomously with proven volatility trailing.
 3. **Atomic Rollback:** If Stop-Loss triggers an emergency liquidation in `monitortrades.py`, open resting TP limit orders are preserved if placement is deferred by trend, and restored atomically if placement fails.
+4. **Capped Disaster Buffer & Monotonic Floor:** `sl_disaster_buffer_max_pct = 0.15` (15% decimal) caps disaster buffer expansion under extreme volatility spikes. Once armed, the disaster floor operates monotonically and never loosens upward in loss.
+5. **SSOT Volatility Normalization:** `intelligence.internal.state.volatility` standardizes ratio vs percentage conversions across all exit engines, preventing scaling mismatches.
+
