@@ -253,14 +253,22 @@ class ReplayDeterminismTest(unittest.TestCase):
         """T212 strategy in replay mode must isolate from external volatility cache."""
         import importlib.util
         t212_dir = os.path.join(ROOT, "212trading")
-        if t212_dir not in sys.path:
+        colliding = ("strategy", "market_data", "notify", "ipo_notify", "replay")
+        preloaded = {name: sys.modules.pop(name) for name in colliding if name in sys.modules}
+        try:
+            if t212_dir in sys.path:
+                sys.path.remove(t212_dir)
             sys.path.insert(0, t212_dir)
-        spec = importlib.util.spec_from_file_location(
-            "t212_strat_test", os.path.join(t212_dir, "strategy.py")
-        )
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = mod
-        spec.loader.exec_module(mod)
+            spec = importlib.util.spec_from_file_location(
+                "t212_strat_test", os.path.join(t212_dir, "strategy.py")
+            )
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod
+            spec.loader.exec_module(mod)
+        finally:
+            for name in colliding:
+                sys.modules.pop(name, None)
+            sys.modules.update(preloaded)
 
         client = MagicMock()
         client.get_order.return_value = None
