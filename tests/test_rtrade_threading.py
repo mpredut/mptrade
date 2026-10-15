@@ -338,6 +338,7 @@ class RTradeThreadingTest(unittest.TestCase):
                          ("7", 0.8, "pair-1"))
         kwargs = place.call_args.kwargs
         self.assertEqual(kwargs["cooldown_pair_id"], "pair-1")
+        self.assertIn("GI3", kwargs["bypass_guards"])
         self.assertTrue(kwargs["caller_owns_retry"])
         self.assertFalse(kwargs["force"])
         self.assertFalse(kwargs["smart"])
