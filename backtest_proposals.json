@@ -1,16 +1,1 @@
-[
-  {
-    "ts": "2026-10-15T01:02:49",
-    "full_key": "BINANCE_BTC.mt.hardtp",
-    "section": "BINANCE_BTC",
-    "key": "mt.hardtp",
-    "symbol": "BTCUSDC",
-    "current_on_dev": 17.0,
-    "winner_value": 24.0,
-    "margin_vs_current": {
-      "half1": 5.12,
-      "half2": 231.11
-    },
-    "dev_commit": "0b81ca0"
-  }
-]
+[]
