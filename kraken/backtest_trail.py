@@ -14,10 +14,8 @@ walk-forward segments. TOTAL is realized P&L plus the open position, versus buy-
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
-import urllib.request
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 if _DIR not in sys.path:

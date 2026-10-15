@@ -27,7 +27,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from kraken_common import (log, now_str, required_bool_env, required_env,
+from kraken_common import (log, required_bool_env, required_env,
                            required_int_env, load_env_stack,
                            single_instance)
 from kraken_client import KrakenClient, KrakenError

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from common import log, float_env
+from common import float_env
 
 MIN_POINTS_PER_WINDOW = 3
 

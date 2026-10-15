@@ -31,9 +31,9 @@ import os
 import sys
 import time
 
-from kraken_common import (load_dotenv, load_env_stack, log, float_env, required_bool_env,
+from kraken_common import (load_dotenv, load_env_stack, log, required_bool_env,
                            required_env, required_float_env, single_instance)
-from kraken_client import KrakenClient, KrakenError
+from kraken_client import KrakenClient
 from notify import notify
 
 _HERE = os.path.dirname(os.path.abspath(__file__))

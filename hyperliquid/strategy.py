@@ -18,7 +18,6 @@ HL fees are small enough for a tight take profit. HL_LEVERAGE=1 approximates spo
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 import time
@@ -29,7 +28,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 from common import (
-    log, now_str, are_close, required_env, required_float_env,
+    log, are_close, required_env, required_float_env,
     required_int_env, required_bool_env,
 )
 from notify import notify

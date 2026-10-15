@@ -21,11 +21,9 @@ Run with the virtual environment:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import statistics
 import sys
-import urllib.request
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)

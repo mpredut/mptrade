@@ -13,17 +13,13 @@ is honest: TOTAL includes the mark-to-market open position, not just realized pr
 from __future__ import annotations
 
 import argparse
-import json
-import math
 import os
 import sys
-import urllib.request
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from strategies import spot_rules as sr
 from strategies.spot_engine import StratParams
 from offline.backtests.metrics import format_performance_summary
 
