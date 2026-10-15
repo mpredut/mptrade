@@ -474,61 +474,49 @@ class TrendState:
 
 
 
+def _fire_trend_order(enable, symbol, trend_state, direction, action, price, reason, regime_ctx=None):
+    """Enforce the per-trend cooldown and accepted-submission limit.
+
+    A non-None result means the provider accepted the submission; it is not a
+    confirmed fill. Gate, weight-limit, or budget rejection imposes the retry
+    interval but does not block the trend permanently. Permit up to
+    FIRE_MAX_PER_TREND accepted submissions per direction and trend.
+    """
+    if not enable:
+        return None
+    if trend_state.fire_limit_reached(direction):
+        return None
+    if not trend_state.can_retry_fire(direction):
+        return None
+    trend_state.mark_fire_attempt(direction)
+    result = track_and_place_order(
+        action, symbol, trend_state.confirm_count, price, price,
+        reason=reason, safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
+        cancelorders=True, hours=0.3, regime_context=regime_ctx)
+    if result:
+        # The provider accepted a submission. This is intentionally a throttle
+        # count, not a claim that the order filled.
+        trend_state.mark_confirmed(direction)
+    return result
+
+
 def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price, regime_ctx=None):
     """Evaluate fast-momentum impulses on the small price window."""
-    def _fire_small_once(direction, action, reason):
-        if not enable:
-            return
-        if trend_state.fire_limit_reached(direction):
-            return
-        if not trend_state.can_retry_fire(direction):
-            return
-        trend_state.mark_fire_attempt(direction)
-        result = track_and_place_order(
-            action, symbol, trend_state.confirm_count, current_price, current_price,
-            reason=reason, safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
-            cancelorders=True, hours=0.3, regime_context=regime_ctx)
-        if result:
-            trend_state.mark_confirmed(direction)
-
     if gradient > 0 and slope > SMALL_SLOPE_THRESHOLD:
         print(f"[SMALL-WINDOW] Momentum BUY surge: gradient={gradient}, slope={slope} > {SMALL_SLOPE_THRESHOLD}")
-        _fire_small_once("UP", "BUY", "small_window_surge_up")
+        _fire_trend_order(enable, symbol, trend_state, "UP", "BUY", current_price,
+                          "small_window_surge_up", regime_ctx=regime_ctx)
 
     elif gradient < 0 and slope < -SMALL_SLOPE_THRESHOLD:
         print(f"[SMALL-WINDOW] Momentum SELL plunge: gradient={gradient}, slope={slope} < -{SMALL_SLOPE_THRESHOLD}")
-        _fire_small_once("DOWN", "SELL", "small_window_plunge_down")
+        _fire_trend_order(enable, symbol, trend_state, "DOWN", "SELL", current_price,
+                          "small_window_plunge_down", regime_ctx=regime_ctx)
 
 
-
-
-def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regime_ctx=None) :
-
-    proposed_price = current_price
-
+def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regime_ctx=None):
     def _fire_once(direction, action, reason):
-        """Enforce the per-trend cooldown and accepted-submission limit.
-
-        A non-None result means the provider accepted the submission; it is not a
-        confirmed fill. Gate, weight-limit, or budget rejection imposes the retry
-        interval but does not block the trend permanently. Permit up to
-        FIRE_MAX_PER_TREND accepted submissions per direction and trend.
-        """
-        if not enable:
-            return
-        if trend_state.fire_limit_reached(direction):
-            return
-        if not trend_state.can_retry_fire(direction):
-            return
-        trend_state.mark_fire_attempt(direction)
-        result = track_and_place_order(
-            action, symbol, trend_state.confirm_count, proposed_price, current_price,
-            reason=reason, safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
-            cancelorders=True, hours=0.3, regime_context=regime_ctx)
-        if result:
-            # The provider accepted a submission. This is intentionally a throttle
-            # count, not a claim that the order filled.
-            trend_state.mark_confirmed(direction)
+        return _fire_trend_order(enable, symbol, trend_state, direction, action,
+                                 current_price, reason, regime_ctx=regime_ctx)
 
     print(f"LOGIC gradient={gradient}, slope={slope}")
 
@@ -536,7 +524,6 @@ def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regi
     if gradient > 0 and slope < 0 :
         # Confirm an upward trend.
         print(f"DIFERENTA MARE {win} DOWN!")
-        proposed_price = current_price # * (1 - 0.01)
         if trend_state.is_trend_up():
             count = trend_state.confirm_trend() # Confirm that the upward trend continues.
             if trend_state.is_trend_uniform_confirmed() and trend_state.is_trend_fresh():
@@ -551,7 +538,6 @@ def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regi
     if gradient < 0 and slope > 0 :
         # Confirm a downward trend.
         print(f"DIFERENTA MARE {win} UP!")
-        proposed_price = current_price #  * (1 + 0.01)
         if trend_state.is_trend_down():
             count = trend_state.confirm_trend() # Confirm that the downward trend continues.
             if trend_state.is_trend_uniform_confirmed() and trend_state.is_trend_fresh() :
@@ -563,7 +549,6 @@ def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regi
             log_decision(symbol, "trend_start", state="DOWN", old_state=old_trend, price=current_price,
                          prev_confirm_count=prev_confirm_count)
 
-    proposed_price = current_price
     # Originally 18 confirmations per minute * 3; effectively six per minute.
     if slope <= 0 and trend_state.is_trend_up():
         if (trend_state.is_trend_consistent_validated()
@@ -577,20 +562,7 @@ def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regi
             print(f"ATENTIE SELL ALL {win} .... ")
             _fire_once("DOWN", "SELL", "consistent_or_old_down")
                     
-    #
-    # New case.
-    #
-    if slope <= -SLOPE_EXTREME_THRESHOLD and trend_state.is_trend_up():
-        if (trend_state.is_trend_consistent_validated()
-        or trend_state.is_started_trend_older_than(TREND_TO_BE_OLD_SECONDS)) :
-            print(f"ATENTIE 2: BUY ALL {win} .... ")
-            _fire_once("UP", "BUY", "slope<=-5.1_up")
-    # Eighteen confirmations per minute for three minutes.
-    if slope >= SLOPE_EXTREME_THRESHOLD and trend_state.is_trend_down():
-        if (trend_state.is_trend_consistent_validated()
-        or trend_state.is_started_trend_older_than(TREND_TO_BE_OLD_SECONDS)) :
-            print(f"ATENTIE 2: SELL ALL {win} .... ")
-            _fire_once("DOWN", "SELL", "slope>=5.1_down")
+
                                                                                                                                                                  
     #
     # New case.

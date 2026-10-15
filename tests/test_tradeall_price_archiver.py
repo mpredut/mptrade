@@ -93,6 +93,8 @@ class TestArchiverLifecycle(unittest.TestCase):
         fd, path = tempfile.mkstemp(suffix=".jsonl")
         os.close(fd)
         try:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps({"s": "BTCUSDC", "i": [1, 10.0]}) + "\n")
             manager = cm.Cache24LongPriceManager(60, ["BTCUSDC"], path)
             manager.KEEP_HOURS = 1
             manager.cache = {"BTCUSDC": [[1, 10.0]]}
