@@ -1,1 +1,16 @@
-[]
+[
+  {
+    "ts": "2026-10-15T12:09:37",
+    "full_key": "BINANCE_ARB.mt.maxage_days",
+    "section": "BINANCE_ARB",
+    "key": "mt.maxage_days",
+    "symbol": "ARBUSDC",
+    "current_on_dev": 17.0,
+    "winner_value": 7.0,
+    "margin_vs_current": {
+      "half1": 2.68,
+      "half2": 14.42
+    },
+    "dev_commit": "976add4"
+  }
+]
