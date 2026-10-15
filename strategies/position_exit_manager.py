@@ -65,7 +65,7 @@ class PositionSnapshot:
     sellable_qty: float = 0.0
     current_time_s: float = 0.0
     trend_up: bool = False
-    vol_1h: float = 0.0
+    vol_1h: float = 0.0  # Hourly realized volatility as decimal ratio (e.g. 0.02 for 2.0%)
     vol_source: str = "default"
     provider: Optional[str] = None
     shadow_prices: List[Tuple[float, float]] = field(default_factory=list)
@@ -101,7 +101,7 @@ class ReentrySnapshot:
     last_sell_time_s: Optional[float] = None
     trend_up: bool = False
     trend_down: bool = False
-    vol_1h: float = 0.0
+    vol_1h: float = 0.0  # Hourly realized volatility as decimal ratio (e.g. 0.02 for 2.0%)
     vol_source: str = "default"
 
 

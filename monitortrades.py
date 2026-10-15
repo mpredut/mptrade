@@ -400,7 +400,11 @@ _load_mt_conf()
 
 
 def get_symbol_volatility_1h(symbol: str) -> Optional[float]:
-    """Retrieve 1h realized volatility for symbol from shared cache or state."""
+    """Retrieve 1h realized volatility for symbol from shared cache or state as a decimal ratio.
+
+    Producers (e.g. shadow_signals / intelligence.vol_1h_pct) output percentages (e.g. 2.0 for 2.0%,
+    0.05 for 0.05%). This function explicitly converts the percentage to a decimal ratio by dividing by 100.0.
+    """
     try:
         from cachepaths import cache_path
         state_path = cache_path("shadow_state.json")
@@ -417,8 +421,7 @@ def get_symbol_volatility_1h(symbol: str) -> Optional[float]:
                 if entry and isinstance(entry, dict):
                     v = entry.get("vol_1h_pct")
                     if v is not None and math.isfinite(float(v)) and float(v) > 0:
-                        vf = float(v)
-                        return vf if vf < 0.10 else vf / 100.0
+                        return float(v) / 100.0
         except Exception:
             pass
     return None

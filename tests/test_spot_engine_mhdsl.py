@@ -247,3 +247,38 @@ def test_mhdsl_blocks_dca_during_bounce_deferral():
         dca_buys = [c for c in executor.calls if c[0] == "submit_order" and c[2] == "buy"]
         assert len(dca_buys) == 0, "DCA buys must be blocked when position is deferred in SL bounce state"
 
+
+def test_spot_engine_vol_1h_ratio_explicit_conversion():
+    """Verify _vol_1h_ratio converts percentage to ratio without blowing up small volatilities."""
+    import tempfile
+    import json
+    import os
+
+    engine, _ = make_engine()
+
+    # 1. trail_ohlc source with small percentage (0.05%) -> ratio 0.0005
+    engine._trail_vol_1h = lambda: 0.05
+    ratio, src = engine._vol_1h_ratio()
+    assert abs(ratio - 0.0005) < 1e-7
+    assert src == "trail_ohlc"
+
+    # 2. shadow_ticks source with small percentage (0.08%) -> ratio 0.0008
+    engine._trail_vol_1h = lambda: None
+    engine._shadow_vol_1h = lambda: 0.08
+    ratio, src = engine._vol_1h_ratio()
+    assert abs(ratio - 0.0008) < 1e-7
+    assert src == "shadow_ticks"
+
+    # 3. cache source with low percentage from shadow_state.json
+    engine._shadow_vol_1h = lambda: None
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        with open(os.path.join(tmp_dir, "shadow_state.json"), "w", encoding="utf-8") as f:
+            json.dump({engine.pair.upper(): {"vol_1h_pct": 0.04}}, f)
+
+        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp_dir}):
+            ratio, src = engine._vol_1h_ratio()
+            assert abs(ratio - 0.0004) < 1e-7
+            assert src == "cache"
+
+
+

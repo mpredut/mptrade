@@ -1363,8 +1363,10 @@ class Strategy:
             vol_source = "none"
             if hasattr(self, "_shadow_vol_1h"):
                 try:
-                    vol_1h = self._shadow_vol_1h()
-                    vol_source = "shadow"
+                    vol = self._shadow_vol_1h()
+                    if vol is not None and math.isfinite(float(vol)) and float(vol) > 0:
+                        vol_1h = float(vol) / 100.0
+                        vol_source = "shadow"
                 except Exception:
                     pass
 
@@ -1576,8 +1578,10 @@ class Strategy:
             vol_source = "none"
             if hasattr(self, "_shadow_vol_1h"):
                 try:
-                    vol_1h = self._shadow_vol_1h()
-                    vol_source = "shadow"
+                    vol = self._shadow_vol_1h()
+                    if vol is not None and math.isfinite(float(vol)) and float(vol) > 0:
+                        vol_1h = float(vol) / 100.0
+                        vol_source = "shadow"
                 except Exception:
                     pass
 
@@ -1679,7 +1683,6 @@ class Strategy:
 
         if self.p.enable_takeprofit and avg and not self.s.get("sl_pending"):
             if self.p.tp_mdhtp_enabled and self.exit_manager is not None:
-                pending_exit = self.s.get("tp_pending_exit")
                 tick_time = self._now()
 
                 if pending_exit is None:
@@ -1696,8 +1699,9 @@ class Strategy:
                     vol_source = "none"
                     if hasattr(self, "_shadow_vol_1h"):
                         try:
-                            vol_1h = self._shadow_vol_1h()
-                            if vol_1h is not None:
+                            vol = self._shadow_vol_1h()
+                            if vol is not None and math.isfinite(float(vol)) and float(vol) > 0:
+                                vol_1h = float(vol) / 100.0
                                 vol_source = "shadow"
                         except Exception:
                             pass

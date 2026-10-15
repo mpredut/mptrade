@@ -777,6 +777,31 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             buf, meta = mt.compute_disaster_buffer("BTCUSDT", lost_threshold=0.005)
             self.assertAlmostEqual(buf, mt.MT_SL_DISASTER_BUFFER_MIN_PCT, places=5)
 
+    def test_get_symbol_volatility_1h_explicit_percentage_to_ratio_conversion(self):
+        """Verify get_symbol_volatility_1h explicitly converts percentage to decimal ratio (no 100x blowup for vol < 0.10%)."""
+        import tempfile
+        import json
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_data = {
+                "BTCUSDT": {"vol_1h_pct": 2.5},     # 2.5% normal vol -> ratio 0.025
+                "ETHUSDT": {"vol_1h_pct": 0.05},    # 0.05% low vol -> ratio 0.0005 (NOT 0.05!)
+                "USDCUSDT": {"vol_1h_pct": 0.0031}, # 0.0031% very low vol -> ratio 0.000031
+            }
+            with open(os.path.join(tmp_dir, "shadow_state.json"), "w", encoding="utf-8") as f:
+                json.dump(state_data, f)
+
+            with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp_dir}):
+                # 1. Normal volatility: 2.5% -> 0.025
+                self.assertAlmostEqual(mt.get_symbol_volatility_1h("BTCUSDT"), 0.025, places=6)
+                # 2. Low volatility < 0.10%: 0.05% -> 0.0005, MUST NOT return 0.05
+                vol_eth = mt.get_symbol_volatility_1h("ETHUSDT")
+                self.assertAlmostEqual(vol_eth, 0.0005, places=6)
+                self.assertNotAlmostEqual(vol_eth, 0.05, places=3)
+                # 3. Very low volatility: 0.0031% -> 0.000031
+                self.assertAlmostEqual(mt.get_symbol_volatility_1h("USDCUSDT"), 0.000031, places=6)
+                # 4. Unknown symbol returns None
+                self.assertIsNone(mt.get_symbol_volatility_1h("UNKNOWN"))
+
     def test_mdhtp_trend_riding_and_peak_tracking(self):
         """Verify MDHTP arms ride state and tracks higher highs while trend_up is True."""
         mt.HARD_TP_ENABLED = False

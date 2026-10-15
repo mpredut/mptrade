@@ -1182,20 +1182,21 @@ class Strategy:
         try:
             vol = self._trail_vol_1h()
             if vol is not None and math.isfinite(vol) and vol > 0:
-                v = float(vol)
-                return (v if v < 0.10 else v / 100.0), "trail_ohlc"
+                return float(vol) / 100.0, "trail_ohlc"
         except Exception:
             pass
         try:
             vol = self._shadow_vol_1h()
             if vol is not None and math.isfinite(vol) and vol > 0:
-                v = float(vol)
-                return (v if v < 0.10 else v / 100.0), "shadow_ticks"
+                return float(vol) / 100.0, "shadow_ticks"
         except Exception:
             pass
         try:
-            from cachepaths import cache_path
-            state_path = cache_path("shadow_state.json")
+            try:
+                from cachepaths import cache_path
+                state_path = cache_path("shadow_state.json")
+            except Exception:
+                state_path = os.path.join(os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb"), "shadow_state.json")
             if os.path.exists(state_path):
                 import json
                 with open(state_path, "r", encoding="utf-8") as f:
@@ -1210,8 +1211,7 @@ class Strategy:
                     if entry and isinstance(entry, dict):
                         v = entry.get("vol_1h_pct")
                         if v is not None and math.isfinite(float(v)) and float(v) > 0:
-                            vf = float(v)
-                            return (vf if vf < 0.10 else vf / 100.0), "cache"
+                            return float(v) / 100.0, "cache"
         except Exception:
             pass
         return 0.0, "default"

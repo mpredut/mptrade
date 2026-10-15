@@ -261,3 +261,34 @@ class T212MHDSLTest(unittest.TestCase):
             self.assertEqual(len(strat.s["orders"]), 1)
             self.assertEqual(strat.s["orders"][0]["kind"], "TR")
 
+    def test_t212_vol_1h_percentage_converted_to_ratio_for_exit_manager(self):
+        """Verify _shadow_vol_1h percentage (2.5%) is converted to ratio (0.025) for PositionExitManager."""
+        params = _params(
+            STRAT_SL_MHDSL_ENABLED="true",
+            STRAT_STOP_LOSS_PCT="10.0",
+        )
+        strat = strategy.Strategy(
+            client=self.mock_client,
+            ticker="TEST_US_EQ",
+            params=params,
+            dry_run=True,
+            clock=lambda: 1000.0,
+        )
+        strat.s.update(qty=10.0, cost_usd=1000.0, spent_cash=1000.0, entry_price=100.0, last_buy_price=100.0)
+        strat._shadow_vol_1h = lambda: 2.5  # 2.5% volatility
+
+        captured_snapshots = []
+        orig_eval = strat.exit_manager.evaluate_stop_loss
+
+        def mock_eval(snap, custom_threshold=None):
+            captured_snapshots.append(snap)
+            return orig_eval(snap, custom_threshold=custom_threshold)
+
+        strat.exit_manager.evaluate_stop_loss = mock_eval
+
+        strat._check_stop_loss(89.0)
+        self.assertEqual(len(captured_snapshots), 1)
+        self.assertAlmostEqual(captured_snapshots[0].vol_1h, 0.025, places=5)
+        self.assertNotAlmostEqual(captured_snapshots[0].vol_1h, 2.5, places=2)
+
+
