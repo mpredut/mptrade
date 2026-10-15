@@ -596,9 +596,12 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 hard_qty = round(sellable_qty * hard_tp_frac, 4)
                 print(f"[HARD-TP] {symbol} +{price_increase*100:.1f}% >= {hard_tp_pct*100:.0f}% "
                       f"-> vand {hard_tp_frac*100:.0f}% ({hard_qty}) INDIFERENT de trend")
-                if _place_guarded(inst, "SELL", current_price, hard_qty, min_qty,
+                hard_tp_outcome_ctx = {}
+                placed = _place_guarded(inst, "SELL", current_price, hard_qty, min_qty,
                                   safeback_seconds=sbs, force=True, cancelorders=True,
-                                  hours=MT_SELL_SAFEBACK_HOURS):
+                                  hours=MT_SELL_SAFEBACK_HOURS,
+                                  _outcome_context=hard_tp_outcome_ctx)
+                if placed or hard_tp_outcome_ctx.get("state") == "unknown":
                     _hard_tp_last[symbol] = current_time_s
                     _LAST_EXIT_KIND[symbol] = "TP"
                     return   # Already sold this tick; do not use stale balance below.
@@ -868,10 +871,12 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         else:
             _default_offset = min(MT_BUY_PRICE_OFFSET, current_price * 0.01)
             _buy_offset = inst.param("mt", "buy_price_offset", _default_offset, float)
+            reentry_outcome_ctx = {}
             placed = _place_guarded(inst, "BUY", current_price + _buy_offset, _buy_qty, min_qty,
                 safeback_seconds=sbs, cancelorders=True,
-                hours=MT_BUY_SAFEBACK_HOURS)
-            if placed:
+                hours=MT_BUY_SAFEBACK_HOURS,
+                _outcome_context=reentry_outcome_ctx)
+            if placed or reentry_outcome_ctx.get("state") == "unknown":
                 _REENTRY_STATE.pop(symbol, None)
                 _LAST_EXIT_KIND.pop(symbol, None)
             elif prev_reentry_state:

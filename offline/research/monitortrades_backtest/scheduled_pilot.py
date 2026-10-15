@@ -90,6 +90,15 @@ PILOT_KEYS = {
     "BINANCE_BTC.mt.hardtp_cooldown_h": ("BTCUSDC", "BTC", "mt.hardtp_cooldown_h"),
     "BINANCE_TAO.mt.hardtp_cooldown_h": ("TAOUSDC", "TAO", "mt.hardtp_cooldown_h"),
     "BINANCE_ARB.mt.hardtp_cooldown_h": ("ARBUSDC", "ARB", "mt.hardtp_cooldown_h"),
+    "KRAKEN_HYPE.mt.gain": ("HYPEUSD", "HYPE", "mt.gain"),
+    "KRAKEN_HYPE.mt.lost": ("HYPEUSD", "HYPE", "mt.lost"),
+    "KRAKEN_HYPE.mt.maxage_days": ("HYPEUSD", "HYPE", "mt.maxage_days"),
+    "KRAKEN_HYPE.mt.hardtp": ("HYPEUSD", "HYPE", "mt.hardtp"),
+    "KRAKEN_HYPE.mt.hardtp_fraction": ("HYPEUSD", "HYPE", "mt.hardtp_fraction"),
+    "KRAKEN_HYPE.mt.hardtp_cooldown_h": ("HYPEUSD", "HYPE", "mt.hardtp_cooldown_h"),
+    "BINANCE_BTC.trailing.pct": ("BTCUSDC", "BTC", "trailing.pct"),
+    "BINANCE_TAO.trailing.pct": ("TAOUSDC", "TAO", "trailing.pct"),
+    "BINANCE_ARB.trailing.pct": ("ARBUSDC", "ARB", "trailing.pct"),
 }
 
 
@@ -187,16 +196,31 @@ def _run_one(symbol, base, params, series):
         trend_source.advance(symbol, provider.now(symbol), first_price)
         provider.place_order(symbol, "BUY", first_price, rb.SEED_NOTIONAL_USD / first_price)
 
+        trail_pct = float(params.get("trailing.pct") or 0.0)
+        trail_peak = first_price
+
         while True:
             price = provider.advance(symbol)
             if price is None:
                 break
             last_price = price
             trend_source.advance(symbol, provider.now(symbol), price)
+
+            open_qty, _ = provider.position(symbol)
+            if open_qty > 0:
+                trail_peak = max(trail_peak, price)
+                if trail_pct > 0 and (trail_peak - price) / trail_peak >= trail_pct / 100.0:
+                    provider.place_order(symbol, "SELL", price, open_qty)
+                    trail_peak = price
+                    continue
+            else:
+                trail_peak = price
+
             buys = provider.get_orders(symbol, "BUY", since_s=maxage_s)
             sells = provider.get_orders(symbol, "SELL", since_s=maxage_s)
             if not buys and not sells:
                 provider.place_order(symbol, "BUY", price, rb.SEED_NOTIONAL_USD / price)
+                trail_peak = price
                 continue
             try:
                 rb.mt.monitor_price_and_trade(inst, sbs=rb.SBS, now_fn=lambda: provider.now(symbol))

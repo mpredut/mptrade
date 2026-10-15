@@ -238,12 +238,14 @@ class T212MHDSLTest(unittest.TestCase):
             dca_buys = [o for o in strat.s["orders"] if o.get("kind") == "DCA" or o.get("side") == "buy"]
             self.assertEqual(len(dca_buys), 0)
 
-    def test_trailing_crash_bypasses_warmup(self):
-        """When trailing stop is configured with warm-up, a sudden crash exceeding trail_pct triggers exit immediately."""
+    def test_trailing_warmup_protects_dca_and_mhdsl_layers(self):
+        """When trailing stop is configured with warm-up, ordinary dips do not exit;
+        profit trailing arms only upon reaching warmup, and catastrophic stop loss cuts deep crashes."""
         params = _params(
             STRAT_TRAIL_PCT="8.0",
             STRAT_TRAIL_MIN_PROFIT_PCT="5.0",
             STRAT_STOP_LOSS_PCT="30.0",
+            STRAT_DCA_DROP_PCT="2.0",
         )
         now_time = 1000.0
         strat = strategy.Strategy(
@@ -255,11 +257,35 @@ class T212MHDSLTest(unittest.TestCase):
         )
         strat.s.update(qty=10.0, cost_usd=1000.0, spent_cash=1000.0, entry_price=100.0, last_buy_price=100.0)
 
-        # Price never reached 105 (+5% warmup), crashes directly to 91 (-9% from 100 peak)
+        # 1. Price dips to 91 (-9% from 100): in warm-up (and loss 9% < 30% SL), so trailing does NOT exit
         with patch.object(strategy, "notify"):
             strat.step(91.0)
-            self.assertEqual(len(strat.s["orders"]), 1)
-            self.assertEqual(strat.s["orders"][0]["kind"], "TR")
+            self.assertFalse(any(o.get("kind") == "TR" for o in strat.s["orders"]))
+            self.assertFalse(strat.s.get("tr_armed", False))
+
+        # 2. Catastrophic crash to 68 (loss 32% >= 30% SL) triggers catastrophic MHDSL stop-loss
+        strat.s["orders"] = []
+        with patch.object(strategy, "notify"):
+            strat.step(68.0)
+            self.assertTrue(any(o.get("kind") == "SL" for o in strat.s["orders"]))
+
+        # 3. If price reaches profit (106 >= 105), trailing arms and subsequently protects gains
+        strat2 = strategy.Strategy(
+            client=self.mock_client,
+            ticker="TEST_US_EQ",
+            params=params,
+            dry_run=True,
+            clock=lambda: now_time,
+        )
+        strat2.s.update(qty=10.0, cost_usd=1000.0, spent_cash=1000.0, entry_price=100.0, last_buy_price=100.0)
+        with patch.object(strategy, "notify"):
+            strat2.step(106.0)
+            self.assertTrue(strat2.s.get("tr_armed"))
+            self.assertEqual(strat2.s.get("pos_peak"), 106.0)
+            # Retracement from 106 to 97 (-8.5% >= 8%) triggers trailing exit
+            strat2.step(97.0)
+            self.assertEqual(len(strat2.s["orders"]), 1)
+            self.assertEqual(strat2.s["orders"][0]["kind"], "TR")
 
     def test_t212_vol_1h_percentage_converted_to_ratio_for_exit_manager(self):
         """Verify _shadow_vol_1h percentage (2.5%) is converted to ratio (0.025) for PositionExitManager."""

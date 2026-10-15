@@ -272,6 +272,33 @@ class TestTrailingStopAndSellableQty(unittest.TestCase):
         self.assertEqual(restored[0]["qty"], 1.45)
         self.assertEqual(restored[0]["limit"], 162.0)
 
+    def test_trailing_warmup_prevents_loss_exit_on_initial_dip(self):
+        # Configure +5% profit warmup with 8% trailing stop
+        self.strat.p.trail_min_profit_pct = 5.0
+        self.strat.s["tr_armed"] = False
+        self.strat.s["pos_peak"] = 146.0
+        self.strat.s["qty"] = 2.9229
+        self.strat.s["cost_usd"] = 146.0 * 2.9229
+
+        # 1. Price dips to 134.0 (8.2% drop from 146.0 peak/cost): in warm-up, MUST NOT trigger trailing exit
+        res = self.strat._check_trailing(134.0)
+        self.assertFalse(res)
+        self.assertFalse(self.strat.s.get("tr_armed"))
+        self.assertEqual(len(self.client.placed), 0)
+
+        # 2. Price rises to 154.0 (>= 146 * 1.05 = 153.30): warmup satisfied, trailing ARMED
+        res = self.strat._check_trailing(154.0)
+        self.assertFalse(res)  # Not a drawdown from peak, so returns False (no sell yet)
+        self.assertTrue(self.strat.s.get("tr_armed"))
+        self.assertEqual(self.strat.s.get("pos_peak"), 154.0)
+
+        # 3. Price drops to 141.0 (8.44% drawdown from 154.0 peak >= 8%): triggers trailing exit
+        res = self.strat._check_trailing(141.0)
+        self.assertTrue(res)
+        self.assertEqual(len(self.client.placed), 1)
+        self.assertEqual(self.client.placed[0]["quantity"], -2.88)
+        self.assertTrue(self.strat.s.get("sl_pending"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1281,21 +1281,20 @@ class Strategy:
             self.s.pop("tr_fail_until", None)
             self.s["tr_alerted"] = False
 
-        drop_pct = (peak - price) / peak * 100 if peak > 0 else 0.0
-        is_crash = peak > 0 and drop_pct >= self.p.trail_pct
-
-        # WARM-UP (matching Binance/Kraken trailing_core): keep trailing inactive on normal dips
-        # until price rises trail_min_profit_pct above average.
-        # Extreme crash protection is decoupled: a crash exceeding trail_pct triggers exit immediately.
+        # WARM-UP: keep trailing inactive until price rises trail_min_profit_pct above average.
+        # This protects gains without selling on ordinary dips during accumulation;
+        # DCA manages dips, and STRAT_STOP_LOSS_PCT / MHDSL handles catastrophic loss.
+        # When trail_min_profit_pct == 0, trailing arms immediately on entry.
         if not self.s.get("tr_armed"):
             minp = self.p.trail_min_profit_pct
             if minp > 0 and (not avg or price < avg * (1 + minp / 100.0)):
-                if not is_crash:
-                    return False                # Warming up: do not sell on normal dip.
+                return False                    # Warming up: do not sell; let DCA and MHDSL operate.
             self.s["tr_armed"] = True
+            self.s["pos_peak"] = peak = price   # Reset peak anchor to activation price
             log(f"  [STRAT] trailing ARMED: price {price:.2f} >= avg{(avg or 0):.2f}+{minp}% — protecting from now on (-{self.p.trail_pct}% from the peak)")
 
-        if not is_crash:
+        drop_pct = (peak - price) / peak * 100 if peak > 0 else 0.0
+        if drop_pct < self.p.trail_pct:
             return False
         if self._now() < self.s.get("tr_fail_until", 0):
             return False

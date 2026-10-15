@@ -59,7 +59,7 @@ def _live_mt_params(section):
     cp.read(os.path.join(ROOT, "instruments.conf"))
     if section not in cp:
         return {}
-    return {k: v for k, v in cp[section].items() if k.startswith("mt.")}
+    return {k: v for k, v in cp[section].items() if k.startswith("mt.") or k.startswith("trailing.")}
 
 
 class _LiveSymbols:
@@ -69,6 +69,7 @@ class _LiveSymbols:
         "BTCUSDC": ("BINANCE_BTC", "BTC"),
         "TAOUSDC": ("BINANCE_TAO", "TAO"),
         "ARBUSDC": ("BINANCE_ARB", "ARB"),
+        "HYPEUSD": ("KRAKEN_HYPE", "HYPE"),
     }
 
     def __getitem__(self, symbol):
@@ -135,6 +136,9 @@ def run_symbol(symbol, params, base, quiet=True, trend_window_seconds=DEFAULT_WI
         n_seeds = 1
         n_ticks = 0
 
+        trail_pct = float(params.get("trailing.pct") or 0.0)
+        trail_peak = first_price
+
         while True:
             price = provider.advance(symbol)
             if price is None:
@@ -145,13 +149,23 @@ def run_symbol(symbol, params, base, quiet=True, trend_window_seconds=DEFAULT_WI
             # it reflects only what would have been visible up to this tick (no look-ahead).
             trend_source.advance(symbol, provider.now(symbol), price)
 
+            open_qty, _ = provider.position(symbol)
+            if open_qty > 0:
+                trail_peak = max(trail_peak, price)
+                if trail_pct > 0 and (trail_peak - price) / trail_peak >= trail_pct / 100.0:
+                    provider.place_order(symbol, "SELL", price, open_qty)
+                    trail_peak = price
+                    continue
+            else:
+                trail_peak = price
+
             buys = provider.get_orders(symbol, "BUY", since_s=maxage_s)
             sells = provider.get_orders(symbol, "SELL", since_s=maxage_s)
             if not buys and not sells:
                 provider.place_order(symbol, "BUY", price, SEED_NOTIONAL_USD / price)
+                trail_peak = price
                 n_seeds += 1
                 continue
-
             try:
                 mt.monitor_price_and_trade(inst, sbs=SBS, now_fn=lambda: provider.now(symbol))
             except Exception as e:  # noqa: BLE001

@@ -986,6 +986,56 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
         self.assertEqual(len(mt._hard_tp_last), 0)
         self.assertEqual(len(mt._notified_trade_ids), 0)
 
+    def test_hard_tp_unknown_outcome_sets_cooldown_and_returns(self):
+        """When Hard-TP submit has unknown/ambiguous outcome (timeout), cooldown is set and tick returns."""
+        class UnknownOutcomeInstrument(FakeInstrument):
+            def place(self, side, price, qty, **kwargs):
+                super().place(side, price, qty, **kwargs)
+                ctx = kwargs.get("_outcome_context")
+                if isinstance(ctx, dict):
+                    ctx.update(accepted=False, reason="timeout", state="unknown")
+                return None
+
+        inst = UnknownOutcomeInstrument(price=125.0, free=4.0, fills=[_fill("BUY", 100, 4)])
+        sym = inst.symbol
+        # Hard TP is triggered at 25% gain (>= hardtp 17%)
+        with patch.object(mt, "HARD_TP_ENABLED", True):
+            self.run_tick(inst, trend_up=True, now=NOW)
+        self.assertEqual(len(inst.placed), 1)
+        self.assertEqual(inst.placed[0]["side"], "SELL")
+        self.assertEqual(mt._hard_tp_last.get(sym), NOW)
+        self.assertEqual(mt._LAST_EXIT_KIND.get(sym), "TP")
+
+    def test_reentry_unknown_outcome_clears_reentry_state(self):
+        """When Reentry BUY submit has unknown/ambiguous outcome, reentry state is cleared to prevent repeated spam."""
+        class UnknownOutcomeInstrument(FakeInstrument):
+            def place(self, side, price, qty, **kwargs):
+                super().place(side, price, qty, **kwargs)
+                ctx = kwargs.get("_outcome_context")
+                if isinstance(ctx, dict):
+                    ctx.update(accepted=False, reason="timeout", state="unknown")
+                return None
+
+        inst = UnknownOutcomeInstrument(
+            price=85.0,
+            free=0.0,
+            fills=[_fill("SELL", 100.0, 4.0)],
+        )
+        sym = inst.symbol
+        mt._LAST_EXIT_KIND[sym] = "STOP"
+        mt._REENTRY_STATE[sym] = {
+            "trough": 80.0,
+            "peak": 100.0,
+            "peak_bounce": 85.0,
+            "started_at": NOW - 300,
+        }
+        self.run_tick(inst, trend_up=True, now=NOW)
+        self.assertEqual(len(inst.placed), 1)
+        self.assertEqual(inst.placed[0]["side"], "BUY")
+        self.assertNotIn(sym, mt._REENTRY_STATE)
+        self.assertNotIn(sym, mt._LAST_EXIT_KIND)
+
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
