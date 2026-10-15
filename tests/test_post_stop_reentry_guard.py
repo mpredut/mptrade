@@ -328,5 +328,6 @@ def test_monitortrades_integration_downscale(tmp_path, monkeypatch):
         args, kwargs = mock_place.call_args
         placed_qty = args[3]
         assert placed_qty == 1.0
-        # Should bypass GI3 because post-stop guard already vetted it
-        assert kwargs.get("bypass_guards") == {"GI3"}
+        # Should bypass GF1 (reentry reference) and GI3 (already vetted by post-stop guard)
+        assert kwargs.get("bypass_guards") == {"GF1", "GI3"}
+
