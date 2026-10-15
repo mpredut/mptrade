@@ -9,6 +9,11 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$ROOT/orchestratorOS/lib/env_common.sh"
+[ -f "$ROOT/.env" ] && {
+    set -a
+    . "$ROOT/.env" 2>/dev/null || true
+    set +a
+}
 [ -f "$ROOT/config.env" ] && {
     set -a
     . "$ROOT/config.env" 2>/dev/null || true
@@ -21,11 +26,19 @@ PROBE_TIMEOUT="${PIA_PROBE_TIMEOUT:-7}"
 CLI_TIMEOUT="${PIA_CLI_TIMEOUT:-6}"
 VPN_IF="${PIA_VPN_IF:-wgpia0}"
 PREWARM_INTERVAL="${PIA_PREWARM_INTERVAL:-300}"
+RESTORE_INTERVAL="${PIA_RESTORE_INTERVAL:-300}"
 BACKOFF_MIN_SEC="${PIA_BACKOFF_MIN_SEC:-${PIA_FALLBACK_COOLDOWN_SEC:-60}}"
 BACKOFF_MAX_SEC="${PIA_BACKOFF_MAX_SEC:-7200}"
 
+# Load PIA credentials and tokens from .env / config.env using env_get SSOT
+PIA_USER="$(env_get PIA_ACCOUNT_USER "$(env_get PIA_USER)")"
+PIA_PASS="$(env_get PIA_PASS)"
+PIA_DIP_TOKEN_FRANKFURT="$(env_get PIA_DIP_TOKEN_FRANKFURT "$(env_get PIA_DIP_TOKEN)")"
+PIA_DIP_TOKEN_BELGIUM="$(env_get PIA_DIP_TOKEN_BELGIUM)"
+
 failures=0
 last_prewarm=0
+last_restore_attempt=0
 current_cooldown_sec="$BACKOFF_MIN_SEC"
 
 REG_DED_DE=""
@@ -91,7 +104,38 @@ prewarm_dns() {
     fi
 }
 
+ensure_dedicated_ips_registered() {
+    if [ -n "${PIA_DIP_TOKEN_FRANKFURT:-}" ] && ! pia get regions 2>/dev/null | grep -q "^dedicated-de-frankfurt"; then
+        echo "Registering Frankfurt Dedicated IP from .env..."
+        local tok_tmp
+        tok_tmp="$(mktemp -p /dev/shm 2>/dev/null || mktemp)"
+        chmod 0600 "$tok_tmp"
+        printf "%s\n" "$PIA_DIP_TOKEN_FRANKFURT" > "$tok_tmp"
+        if pia dedicatedip add "$tok_tmp" >/dev/null 2>&1; then
+            echo "Successfully added Frankfurt Dedicated IP token from .env"
+        else
+            echo "warning: Failed to add Frankfurt Dedicated IP token from .env" >&2
+        fi
+        rm -f "$tok_tmp"
+    fi
+
+    if [ -n "${PIA_DIP_TOKEN_BELGIUM:-}" ] && ! pia get regions 2>/dev/null | grep -q "^dedicated-belgium"; then
+        echo "Registering Belgium Dedicated IP from .env..."
+        local tok_tmp
+        tok_tmp="$(mktemp -p /dev/shm 2>/dev/null || mktemp)"
+        chmod 0600 "$tok_tmp"
+        printf "%s\n" "$PIA_DIP_TOKEN_BELGIUM" > "$tok_tmp"
+        if pia dedicatedip add "$tok_tmp" >/dev/null 2>&1; then
+            echo "Successfully added Belgium Dedicated IP token from .env"
+        else
+            echo "warning: Failed to add Belgium Dedicated IP token from .env" >&2
+        fi
+        rm -f "$tok_tmp"
+    fi
+}
+
 discover_regions() {
+    ensure_dedicated_ips_registered
     REG_DED_DE=$(pia get regions 2>/dev/null | tr -d '\r' | grep -m1 "^dedicated-de-frankfurt" || true)
     REG_DED_BE=$(pia get regions 2>/dev/null | tr -d '\r' | grep -m1 "^dedicated-belgium" || true)
     REG_DYN_DE="de-frankfurt"
@@ -205,9 +249,18 @@ if [ "${1:-}" = "--check" ] || [ "${1:-}" = "-c" ] || [ "${1:-}" = "--status" ];
     vpnip=$(pia get vpnip 2>/dev/null | tr -d '\r')
     region=$(pia get region 2>/dev/null | tr -d '\r')
     port=$(pia get portforward 2>/dev/null | tr -d '\r')
+    discover_regions
     echo "Connection State: ${state:-Unknown}"
     echo "VPN IP:           ${vpnip:-Unknown}"
     echo "Region:           ${region:-Unknown}"
+    echo "Primary DIP:      ${REG_DED_DE:-Unknown}"
+    if [ -n "$REG_DED_DE" ] && [ "$region" = "$REG_DED_DE" ]; then
+        echo "Region Role:      PRIMARY (Frankfurt Dedicated IP - Whitelisted)"
+    elif [ -n "$REG_DED_BE" ] && [ "$region" = "$REG_DED_BE" ]; then
+        echo "Region Role:      FALLBACK (Belgium Dedicated IP - Not Whitelisted on Binance)"
+    else
+        echo "Region Role:      FALLBACK (Dynamic Pool - Not Whitelisted on Binance)"
+    fi
     echo "Port Forward:     ${port:-Unknown}"
     echo "Interface:        $VPN_IF"
     if vpn_healthy; then
@@ -222,12 +275,6 @@ fi
 # --- Daemon Configuration & Initialization ---
 # Require .env file and enforce required PIA variables
 [ -f "$ROOT/.env" ] || { echo "error: missing required $ROOT/.env configuration" >&2; exit 1; }
-
-# Load PIA credentials and tokens from .env / config.env using env_get SSOT
-PIA_USER="$(env_get PIA_ACCOUNT_USER "$(env_get PIA_USER)")"
-PIA_PASS="$(env_get PIA_PASS)"
-PIA_DIP_TOKEN_FRANKFURT="$(env_get PIA_DIP_TOKEN_FRANKFURT "$(env_get PIA_DIP_TOKEN)")"
-PIA_DIP_TOKEN_BELGIUM="$(env_get PIA_DIP_TOKEN_BELGIUM)"
 
 [ -n "$PIA_USER" ] || { echo "error: PIA_USER missing in $ROOT/.env" >&2; exit 1; }
 [ -n "$PIA_PASS" ] || { echo "error: PIA_PASS missing in $ROOT/.env" >&2; exit 1; }
@@ -268,31 +315,7 @@ if ! pia get connectionstate 2>/dev/null | grep -Eq '^(Connected|Connecting|Disc
 fi
 
 # Register Dedicated IP from tokens if not present in daemon regions
-if [ -n "$PIA_DIP_TOKEN_FRANKFURT" ] && ! pia get regions 2>/dev/null | grep -q "^dedicated-de-frankfurt"; then
-    echo "Registering Frankfurt Dedicated IP from .env..."
-    tok_tmp="$(mktemp -p /dev/shm 2>/dev/null || mktemp)"
-    chmod 0600 "$tok_tmp"
-    printf "%s\n" "$PIA_DIP_TOKEN_FRANKFURT" > "$tok_tmp"
-    if pia dedicatedip add "$tok_tmp" >/dev/null 2>&1; then
-        echo "Successfully added Frankfurt Dedicated IP token from .env"
-    else
-        echo "warning: Failed to add Frankfurt Dedicated IP token from .env" >&2
-    fi
-    rm -f "$tok_tmp"
-fi
-
-if [ -n "$PIA_DIP_TOKEN_BELGIUM" ] && ! pia get regions 2>/dev/null | grep -q "^dedicated-belgium"; then
-    echo "Registering Belgium Dedicated IP from .env..."
-    tok_tmp="$(mktemp -p /dev/shm 2>/dev/null || mktemp)"
-    chmod 0600 "$tok_tmp"
-    printf "%s\n" "$PIA_DIP_TOKEN_BELGIUM" > "$tok_tmp"
-    if pia dedicatedip add "$tok_tmp" >/dev/null 2>&1; then
-        echo "Successfully added Belgium Dedicated IP token from .env"
-    else
-        echo "warning: Failed to add Belgium Dedicated IP token from .env" >&2
-    fi
-    rm -f "$tok_tmp"
-fi
+ensure_dedicated_ips_registered
 
 # Establish tunnel on startup across the fallback ladder
 while ! establish_vpn_tunnel; do
@@ -306,6 +329,7 @@ done
 
 current_cooldown_sec="$BACKOFF_MIN_SEC"
 failures=0
+last_restore_attempt=$(date +%s)
 
 echo "VPN connected with region $(pia get region 2>/dev/null | tr -d '\r'):"
 pia get vpnip
@@ -333,6 +357,28 @@ while true; do
         failures=0
         current_cooldown_sec="$BACKOFF_MIN_SEC"
         echo "PIA healthy (tun0 + DNS + HTTPS)"
+
+        # Periodic failback probe if operating on a degraded fallback region
+        discover_regions
+        current_reg=$(pia get region 2>/dev/null | tr -d '\r')
+        if [ -n "$REG_DED_DE" ] && [ "$current_reg" != "$REG_DED_DE" ]; then
+            now=$(date +%s)
+            elapsed=$((now - last_restore_attempt))
+            if [ "$elapsed" -ge "$RESTORE_INTERVAL" ]; then
+                last_restore_attempt=$now
+                prev_reg="$current_reg"
+                echo "Operating on fallback region '$prev_reg' (IP: $(pia get vpnip 2>/dev/null | tr -d '\r')). Attempting automatic failback to Primary Frankfurt DIP ($REG_DED_DE)..."
+                if connect_to_region "$REG_DED_DE" "Primary Frankfurt Dedicated IP"; then
+                    echo "Successfully restored connection to Primary Frankfurt DIP ($REG_DED_DE, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))"
+                    send_ntfy "PIA VPN: Restored to Primary DIP" "Successfully restored connection to Frankfurt Dedicated IP ($REG_DED_DE, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
+                else
+                    echo "Primary Frankfurt DIP restoration attempt failed. Re-connecting to fallback region ($prev_reg)..."
+                    if ! connect_to_region "$prev_reg" "Fallback Region ($prev_reg)"; then
+                        echo "Warning: Immediate return to fallback region failed, relying on supervisor fallback ladder."
+                    fi
+                fi
+            fi
+        fi
         continue
     fi
 
@@ -355,6 +401,7 @@ while true; do
                     send_ntfy "PIA VPN: Switched to Belgium DIP" "Successfully switched to Belgium Dedicated IP ($REG_DED_BE, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
                     failures=0
                     current_cooldown_sec="$BACKOFF_MIN_SEC"
+                    last_restore_attempt=$(date +%s)
                     recovered=1
                 fi
             fi
@@ -366,6 +413,7 @@ while true; do
                     send_ntfy "PIA VPN: Switched to Dynamic Frankfurt" "Successfully switched to Dynamic Frankfurt ($REG_DYN_DE, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
                     failures=0
                     current_cooldown_sec="$BACKOFF_MIN_SEC"
+                    last_restore_attempt=$(date +%s)
                     recovered=1
                 fi
             fi
@@ -378,6 +426,7 @@ while true; do
                 send_ntfy "PIA VPN: Switched to Dynamic Frankfurt" "Successfully switched to Dynamic Frankfurt ($REG_DYN_DE, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
                 failures=0
                 current_cooldown_sec="$BACKOFF_MIN_SEC"
+                last_restore_attempt=$(date +%s)
                 recovered=1
             fi
         fi
@@ -397,6 +446,7 @@ while true; do
             send_ntfy "PIA VPN: Reconnected After Cooldown" "PIA reconnected successfully (Region: $(pia get region 2>/dev/null | tr -d '\r'), IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))." "default"
             current_cooldown_sec="$BACKOFF_MIN_SEC"
             failures=0
+            last_restore_attempt=$(date +%s)
         else
             echo "PIA reconnection attempt failed after cooldown. Increasing exponential backoff..."
             current_cooldown_sec=$((current_cooldown_sec * 2))

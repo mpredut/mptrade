@@ -104,6 +104,13 @@ When all VPN regions fail, the supervisor enters a direct Romanian ISP cooldown:
 - During cooldown, local DNS cache is pre-warmed every 30 seconds for all critical endpoints (Binance, Kraken, Hyperliquid, Trading 212, NTFY).
 - NTFY alerts are dispatched for every ladder transition and recovery.
 
+### Automatic Failback to Primary Dedicated IP
+If the supervisor falls back to a lower rung (Belgium Dedicated IP or Dynamic Frankfurt), it automatically probes and restores the connection back to the **Primary Frankfurt Dedicated IP** (`dedicated-de-frankfurt-*`):
+- Runs every **`PIA_RESTORE_INTERVAL`** (default: **300 seconds / 5 minutes**).
+- Tests reconnection to Primary Dedicated IP. If successful, verifies health, sends NTFY alert, and resumes primary operation so Binance whitelisted API trading continues uninterrupted.
+- If Primary DIP is still unavailable, it immediately returns to the fallback region and waits another interval.
+- Manual diagnostics (`./orchestratorOS/livecheck/pia_supervisor.sh --check`) display whether the active tunnel is `PRIMARY` or `FALLBACK`.
+
 **`python_orchestrator.service` has `Requires=pia.service`.** Because `pia_supervisor.sh` remains active
 and manages cooldown internally rather than crashing, `pia.service` stays healthy, preventing systemd
 restart thrashing and allowing continuous fleet trading. Check the processes: `./healthcheck.sh --check`.
