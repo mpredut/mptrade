@@ -63,6 +63,15 @@ def _isolate_order_outcomes_journal(tmp_path, monkeypatch):
         order_outcomes_log, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path / "order_outcomes"))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_monitortrades_state(tmp_path, monkeypatch):
+    """Keep every test away from the shared monitortrades state file (cachedb/mt_state.json)."""
+    import monitortrades as mt
+
+    monkeypatch.setattr(
+        mt, "_MT_STATE_FILE", str(tmp_path / "mt_state.json"))
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _shutdown_runtime_threads_after_suite():
     yield

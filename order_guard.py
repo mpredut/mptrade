@@ -524,7 +524,8 @@ def recent_transaction_sec_for(provider_name):
 
 
 def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
-                      safeback_sec=None, recent_transaction_sec=None):
+                      safeback_sec=None, recent_transaction_sec=None,
+                      *, bypass_guards=None):
     """Enforce the daily cap and anti-spam policy as the SINGLE implementation.
     Since July 30, Binance bapi_placeorder.if_place_safe_order delegates here instead of
     maintaining a second inline version; Kraken and Hyperliquid use it through
@@ -537,6 +538,11 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
 
     Return (True, None) or (False, reason). Read errors propagate so the caller can fail
     closed, consistently with profit_guard and weight_limit."""
+    if bypass_guards:
+        from guard_hierarchy import normalize_bypassed_guards, GUARD_REGISTRY
+        bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
+        if "all" in bypassed or "*" in bypassed or GUARD_REGISTRY["GO1"].is_bypassed(bypassed):
+            return True, None
     name = _provider_name(provider)
     max_daily_trades = max_daily_trades if max_daily_trades is not None else max_daily_trades_for(name)
     safeback_sec = float(safeback_sec if safeback_sec is not None else safeback_sec_for(name))
@@ -755,7 +761,8 @@ def check_intelligence_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    bypassed = bypass_guards or set()
+    from guard_hierarchy import normalize_bypassed_guards
+    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
     if is_stop_loss or "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
@@ -969,7 +976,8 @@ def _evaluate_intelligence_guards_raw(
     now: Optional[float] = None,
     bypass_guards: Optional[set[str]] = None,
 ) -> tuple[bool, str, float]:
-    bypassed = bypass_guards or set()
+    from guard_hierarchy import normalize_bypassed_guards, GUARD_REGISTRY
+    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
     if is_stop_loss or "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
@@ -997,8 +1005,8 @@ def _evaluate_intelligence_guards_raw(
     effective_scale = 1.0
     active_reason = "ok"
 
-    # 1. Internal Quantitative Mathematical Guards (Pillar 1: Parabolic Surge, Weibull Exhaustion)
-    if side == "BUY" and "p1" not in bypassed and "pillar1" not in bypassed and "quantitative" not in bypassed:
+    # 1. Internal Quantitative Mathematical Guards (Pillar 1 / GI1: Parabolic Surge, Weibull Exhaustion)
+    if side == "BUY" and not GUARD_REGISTRY["GI1"].is_bypassed(bypassed):
         from internal_order_guard import check_internal_order_guards
         int_ok, int_reason, int_scale = check_internal_order_guards(
             symbol=symbol,
@@ -1016,8 +1024,8 @@ def _evaluate_intelligence_guards_raw(
             effective_scale = min(effective_scale, int_scale)
             active_reason = int_reason
 
-    # 2. External Microstructure & Derivatives Guards (Pillar 2: Orderbook Depth, Funding, Whale Flow)
-    if "p2" not in bypassed and "pillar2" not in bypassed and "microstructure" not in bypassed:
+    # 2. External Microstructure & Derivatives Guards (Pillar 2 / GI2: Orderbook Depth, Funding, Whale Flow)
+    if not GUARD_REGISTRY["GI2"].is_bypassed(bypassed):
         from external_order_guard import check_external_order_guards
         ext_ok, ext_reason, ext_scale = check_external_order_guards(
             symbol=symbol,
@@ -1035,8 +1043,8 @@ def _evaluate_intelligence_guards_raw(
             effective_scale = min(effective_scale, ext_scale)
             active_reason = ext_reason
 
-    # 3. Intelligence & LLM Guards (Pillar 3: High-Stake Pre-Trade LLM + Geopolitical Black Swan Shield)
-    skip_intel = ("p3" in bypassed or "llm" in bypassed or "ai" in bypassed) and ("p4" in bypassed or "geopolitical" in bypassed)
+    # 3. Intelligence & LLM Guards (Pillar 3 / GI3 + Pillar 4 / GI4)
+    skip_intel = GUARD_REGISTRY["GI3"].is_bypassed(bypassed) and GUARD_REGISTRY["GI4"].is_bypassed(bypassed)
     if not skip_intel:
         from intelligence_order_guard import check_intelligence_order_guards
         intel_ok, intel_reason, intel_scale = check_intelligence_order_guards(
@@ -1212,12 +1220,13 @@ def profit_guard(
       and Geopolitical shock shield only on mathematically cleared orders when
       evaluate_intelligence=True.
     """
-    bypassed = bypass_guards or set()
+    from guard_hierarchy import normalize_bypassed_guards, GUARD_REGISTRY
+    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
     if is_stop_loss or "all" in bypassed or "*" in bypassed:
         return True
 
-    # Stage 1: Deterministic Mathematical Reference Check
-    if "math_reference" not in bypassed and "math_profit" not in bypassed and "profit_margin" not in bypassed:
+    # Stage 1: Deterministic Mathematical Reference Check (GF1)
+    if not GUARD_REGISTRY["GF1"].is_bypassed(bypassed):
         if not check_math_profit_reference(
             provider, symbol, order_type, price, profit_percentage,
             window_ref=window_ref, regime_context=regime_context,

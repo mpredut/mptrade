@@ -40,7 +40,8 @@ def check_intelligence_order_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    bypassed = bypass_guards or set()
+    from guard_hierarchy import normalize_bypassed_guards, GUARD_REGISTRY
+    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
     if is_stop_loss or "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
@@ -70,8 +71,8 @@ def check_intelligence_order_guards(
         if computed_notional < sell_min_notional:
             return True, "small_sell_exempt", 1.0
 
-    # 1. High-Stake LLM Pre-Trade Guard (Pillar 3)
-    skip_llm = "p3" in bypassed or "pillar3" in bypassed or "llm" in bypassed or "ai" in bypassed
+    # 1. High-Stake LLM Pre-Trade Guard (Pillar 3 / GI3)
+    skip_llm = GUARD_REGISTRY["GI3"].is_bypassed(bypassed)
     llm_mode = str(m.get("llm_guard_mode", m.get("high_stake_guard_mode", m.get("gemini_guard_mode", "shadow")))).strip().lower()
     if not skip_llm and llm_mode not in ("off", "0", "disabled"):
         min_notional = float(m.get("llm_min_notional_eur", m.get("high_stake_min_notional_eur", m.get("gemini_min_notional_eur", 1000.0))))
@@ -160,8 +161,8 @@ def check_intelligence_order_guards(
                     effective_scale = min(effective_scale, g_dec.suggested_scale)
                     active_reason = g_dec.reason
 
-    # 2. Geopolitical & Energy Shock Guard (Pillar 4)
-    skip_geo = "p4" in bypassed or "pillar4" in bypassed or "geopolitical" in bypassed
+    # 2. Geopolitical & Energy Shock Guard (Pillar 4 / GI4)
+    skip_geo = GUARD_REGISTRY["GI4"].is_bypassed(bypassed)
     if not skip_geo:
         geo_ok, geo_reason, geo_scale = check_geopolitical_order_guards(
             symbol=symbol,

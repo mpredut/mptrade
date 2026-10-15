@@ -512,7 +512,8 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         ok, reason = order_guard.daily_limit_guard(
             provider, symbol, order_type,
             max_daily_trades=PLACE_ORDER_MAX_DAILY_TRADES,
-            safeback_sec=time_back_in_seconds)
+            safeback_sec=time_back_in_seconds,
+            bypass_guards=bypass_guards)
         if not ok:
             return False, reason
 

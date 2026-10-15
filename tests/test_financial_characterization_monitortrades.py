@@ -1094,26 +1094,37 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
 
     def test_mt_state_persists_across_restart(self):
         """In-flight MHDSL bounce, MDHTP ride, and exit kinds must survive monitor restart via persistent state file."""
-        sym = "TESTSYM"
-        mt._SL_BOUNCE_STATE[sym] = {"started_at": NOW - 50, "peak_bounce_price": 98.0, "disaster_floor": 0.04}
-        mt._TP_RIDE_STATE[sym] = {"started_at": NOW - 30, "peak_price": 115.0, "peak_gain": 0.15}
-        mt._LAST_EXIT_KIND[sym] = "TP"
-        mt._save_mt_state()
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            temp_state_file = tf.name
+        try:
+            with patch.object(mt, "_MT_STATE_FILE", temp_state_file):
+                sym = "TESTSYM"
+                mt._SL_BOUNCE_STATE[sym] = {"started_at": NOW - 50, "peak_bounce_price": 98.0, "disaster_floor": 0.04}
+                mt._TP_RIDE_STATE[sym] = {"started_at": NOW - 30, "peak_price": 115.0, "peak_gain": 0.15}
+                mt._LAST_EXIT_KIND[sym] = "TP"
+                mt._save_mt_state()
 
-        self.assertTrue(os.path.exists(mt._MT_STATE_FILE))
+                self.assertTrue(os.path.exists(temp_state_file))
 
-        # Simulate monitor restart: wipe in-memory structures
-        mt._SL_BOUNCE_STATE.clear()
-        mt._TP_RIDE_STATE.clear()
-        mt._LAST_EXIT_KIND.clear()
+                # Simulate monitor restart: wipe in-memory structures
+                mt._SL_BOUNCE_STATE.clear()
+                mt._TP_RIDE_STATE.clear()
+                mt._LAST_EXIT_KIND.clear()
 
-        # Reload from disk
-        mt._load_mt_state()
-        self.assertIn(sym, mt._SL_BOUNCE_STATE)
-        self.assertEqual(mt._SL_BOUNCE_STATE[sym]["peak_bounce_price"], 98.0)
-        self.assertIn(sym, mt._TP_RIDE_STATE)
-        self.assertEqual(mt._TP_RIDE_STATE[sym]["peak_price"], 115.0)
-        self.assertEqual(mt._LAST_EXIT_KIND.get(sym), "TP")
+                # Reload from disk
+                mt._load_mt_state()
+                self.assertIn(sym, mt._SL_BOUNCE_STATE)
+                self.assertEqual(mt._SL_BOUNCE_STATE[sym]["peak_bounce_price"], 98.0)
+                self.assertIn(sym, mt._TP_RIDE_STATE)
+                self.assertEqual(mt._TP_RIDE_STATE[sym]["peak_price"], 115.0)
+                self.assertEqual(mt._LAST_EXIT_KIND.get(sym), "TP")
+        finally:
+            if os.path.exists(temp_state_file):
+                try:
+                    os.remove(temp_state_file)
+                except OSError:
+                    pass
 
     def test_smart_sl_grace_cleared_on_exit(self):
         """Smart-SL grace tracker entries must be cleaned up when an exit executes."""
