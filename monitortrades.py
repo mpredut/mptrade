@@ -706,10 +706,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             provider=getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None),
         )
 
-        sl_price_territory = (
-            price_decrease > lost_threshold
-            or u.are_close(price_decrease, lost_threshold, target_tolerance_percent=MT_ARE_CLOSE_TOLERANCE_PCT)
-        )
+        sl_price_territory = snapshot.in_sl_territory(lost_threshold, MT_ARE_CLOSE_TOLERANCE_PCT)
 
         if not sl_price_territory and symbol in _SL_BOUNCE_STATE:
             print(f"[{symbol}] Price recovered above stop-loss threshold ({price_decrease*100:.2f}% < {lost_threshold*100:.2f}%) — clearing bounce watch")
@@ -1012,18 +1009,15 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 "started_at": current_time_s,
             }
 
-        reentry_dec = exit_mgr.evaluate_reentry(reentry_snap, custom_drop_pct=gain_threshold)
-        if not reentry_dec.should_enter:
-            if not is_trend_up(symbol):
-                print(f"No action taken, because trend is down!")
-            else:
-                print(f"[{symbol}] Re-entry deferred: {reentry_dec.reason}")
-            return
-
         if not is_trend_up(symbol):
             if prev_reentry_state:
                 _REENTRY_STATE[symbol] = prev_reentry_state
             print(f"No action taken, because trend is down!")
+            return
+
+        reentry_dec = exit_mgr.evaluate_reentry(reentry_snap, custom_drop_pct=gain_threshold)
+        if not reentry_dec.should_enter:
+            print(f"[{symbol}] Re-entry deferred: {reentry_dec.reason}")
             return
 
         if last_exit_kind == "STOP":

@@ -1230,6 +1230,31 @@ class Strategy:
         """Callable adapter for PositionExitManager vol_resolver."""
         return self._vol_1h_ratio()
 
+    def _create_position_snapshot(
+        self,
+        price: float,
+        avg: float,
+        held: float,
+        regime: MarketRegimeDecision | None = None,
+    ) -> PositionSnapshot:
+        """Construct a standardized PositionSnapshot using the strategy's current context."""
+        tick_time = self._shadow_prices[-1][0] if self._shadow_prices else self._now()
+        vol_1h, vol_source = self._vol_1h_ratio()
+        trend_up = self._is_trend_up(regime)
+        return PositionSnapshot(
+            symbol=self.pair,
+            current_price=price,
+            avg_buy_price=avg,
+            net_qty=held,
+            sellable_qty=held,
+            current_time_s=tick_time,
+            trend_up=trend_up,
+            vol_1h=vol_1h,
+            vol_source=vol_source,
+            provider=self.venue_label,
+            shadow_prices=list(self._shadow_prices),
+        )
+
     def _check_stop_loss(self, price: float) -> bool:
         """Close everything when unrealized loss crosses the anti-runaway threshold."""
         if self.p.stop_loss_pct <= 0:
@@ -1281,24 +1306,7 @@ class Strategy:
             self.exit_manager.reentry_state = self.s.setdefault("reentry_state", {})
             self.exit_manager.tp_ride_state = self.s.setdefault("tp_ride_state", {})
 
-        trend_up = self._is_trend_up()
-        vol_1h, vol_source = self._vol_1h_ratio()
-        tick_time = self._shadow_prices[-1][0] if self._shadow_prices else self._now()
-
-        snapshot = PositionSnapshot(
-            symbol=self.pair,
-            current_price=price,
-            avg_buy_price=avg,
-            net_qty=self.s.get("qty", 0.0),
-            sellable_qty=self.s.get("qty", 0.0),
-            current_time_s=tick_time,
-            trend_up=trend_up,
-            vol_1h=vol_1h,
-            vol_source=vol_source,
-            provider=self.venue_label,
-            shadow_prices=list(self._shadow_prices),
-        )
-
+        snapshot = self._create_position_snapshot(price, avg, self.s.get("qty", 0.0))
         decision = self.exit_manager.evaluate_stop_loss(
             snapshot, custom_threshold=self.p.stop_loss_pct / 100.0,
         )
@@ -2041,20 +2049,7 @@ class Strategy:
                 self.exit_manager.config.fast_profit_window_sec = self.p.fast_profit_window_min * 60.0
                 self.exit_manager.config.fast_profit_drop_pct = self.p.fast_profit_drop_pct / 100.0
 
-                vol_1h, vol_source = self._vol_1h_ratio()
-                snapshot = PositionSnapshot(
-                    symbol=self.pair,
-                    current_price=price,
-                    avg_buy_price=avg,
-                    net_qty=held,
-                    sellable_qty=held,
-                    current_time_s=tick_time,
-                    trend_up=self._is_trend_up(regime),
-                    vol_1h=vol_1h,
-                    vol_source=vol_source,
-                    shadow_prices=list(self._shadow_prices),
-                    provider=self.venue_label,
-                )
+                snapshot = self._create_position_snapshot(price, avg, held, regime=regime)
 
                 decision = self.exit_manager.evaluate_take_profit(snapshot, custom_threshold=eff_tp / 100.0)
                 if decision.action == ExitAction.SELL and decision.should_exit:

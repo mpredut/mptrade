@@ -77,6 +77,56 @@ class PositionSnapshot:
     sma_value: Optional[float] = None
     window_move_pct: Optional[float] = None
 
+    @property
+    def price_change_ratio(self) -> float:
+        """Normalized price change relative to cost: (current - buy) / buy."""
+        if self.avg_buy_price <= 0:
+            return 0.0
+        return (self.current_price - self.avg_buy_price) / self.avg_buy_price
+
+    @property
+    def gain_ratio(self) -> float:
+        """Positive price gain ratio, or 0.0 if position is in loss."""
+        return max(0.0, self.price_change_ratio)
+
+    @property
+    def loss_ratio(self) -> float:
+        """Positive price loss ratio, or 0.0 if position is in profit."""
+        return max(0.0, -self.price_change_ratio)
+
+    @property
+    def gain_pct(self) -> float:
+        """Percentage gain: e.g. 7.5 for +7.5%."""
+        return self.gain_ratio * 100.0
+
+    @property
+    def loss_pct(self) -> float:
+        """Percentage loss: e.g. 3.2 for -3.2%."""
+        return self.loss_ratio * 100.0
+
+    @property
+    def is_valid_price(self) -> bool:
+        """Verify whether price geometry is valid and strictly positive."""
+        return self.avg_buy_price > 0 and self.current_price > 0
+
+    def in_sl_territory(self, threshold: float, tol_pct: float = 0.0) -> bool:
+        """Determine if position is in stop-loss territory honoring fuzzy tolerance."""
+        loss = self.loss_ratio
+        if loss >= threshold:
+            return True
+        if tol_pct > 0 and are_close(loss, threshold, tol_pct):
+            return True
+        return False
+
+    def in_tp_territory(self, threshold: float, tol_pct: float = 0.0) -> bool:
+        """Determine if position is in take-profit territory honoring fuzzy tolerance."""
+        gain = self.gain_ratio
+        if gain >= threshold:
+            return True
+        if tol_pct > 0 and are_close(gain, threshold, tol_pct):
+            return True
+        return False
+
 
 class ReentryAction(str, Enum):
     """Action recommended by PositionExitManager for market re-entry."""
@@ -329,16 +379,13 @@ class PositionExitManager:
         now = snapshot.current_time_s if snapshot.current_time_s is not None else time.time()
         lost_threshold = custom_threshold if custom_threshold is not None else self.config.lost_threshold
 
-        if buy_price <= 0 or current_price <= 0:
+        if not snapshot.is_valid_price:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
 
-        price_decrease = (buy_price - current_price) / buy_price
+        price_decrease = snapshot.loss_ratio
 
         # Stop-loss boundary check
-        in_sl_territory = (
-            price_decrease >= lost_threshold
-            or are_close(price_decrease, lost_threshold, self.config.are_close_tolerance_pct)
-        )
+        in_sl_territory = snapshot.in_sl_territory(lost_threshold, self.config.are_close_tolerance_pct)
 
         if not in_sl_territory:
             # Full recovery above stop-loss territory
@@ -577,10 +624,10 @@ class PositionExitManager:
         now = snapshot.current_time_s if snapshot.current_time_s is not None else time.time()
         gain_threshold = custom_threshold if custom_threshold is not None else self.config.gain_threshold
 
-        if buy_price <= 0 or current_price <= 0:
+        if not snapshot.is_valid_price:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
 
-        price_increase = (current_price - buy_price) / buy_price
+        price_increase = snapshot.gain_ratio
 
         # ---------------------------------------------------------------------
         # PRIORITY 0: Hard TP Spike Exit
@@ -628,8 +675,7 @@ class PositionExitManager:
                 )
             return ExitDecision(ExitAction.HOLD, False, "not_in_tp_territory")
         in_tp_territory = (
-            price_increase > gain_threshold
-            or are_close(price_increase, gain_threshold, self.config.are_close_tolerance_pct)
+            snapshot.in_tp_territory(gain_threshold, self.config.are_close_tolerance_pct)
             or (symbol in self.tp_ride_state)
         )
 
@@ -988,14 +1034,11 @@ class PositionExitManager:
         tp_threshold: Optional[float] = None,
     ) -> ExitDecision:
         """Unified entrypoint evaluating position exits in strict mirror sequence."""
-        if snapshot.avg_buy_price <= 0 or snapshot.current_price <= 0:
+        if not snapshot.is_valid_price:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
 
-        price_increase = (snapshot.current_price - snapshot.avg_buy_price) / snapshot.avg_buy_price
-        price_decrease = (snapshot.avg_buy_price - snapshot.current_price) / snapshot.avg_buy_price
-
         # Check Hard TP (Spike Exit) first
-        if self.config.hard_tp_enabled and price_increase >= self.config.hard_tp_pct:
+        if self.config.hard_tp_enabled and snapshot.gain_ratio >= self.config.hard_tp_pct:
             tp_spike = self.evaluate_take_profit(snapshot, custom_threshold=tp_threshold)
             if tp_spike.action == ExitAction.PARTIAL_SELL:
                 return tp_spike
@@ -1003,8 +1046,8 @@ class PositionExitManager:
         # Check Stop-Loss
         eff_sl = sl_threshold if sl_threshold is not None else self.config.lost_threshold
         in_sl = (
-            price_decrease >= eff_sl
-            or are_close(price_decrease, eff_sl, self.config.are_close_tolerance_pct)
+            snapshot.in_sl_territory(eff_sl, self.config.are_close_tolerance_pct)
+            or (snapshot.symbol in self.sl_bounce_state)
         )
         if in_sl:
             sl_decision = self.evaluate_stop_loss(snapshot, custom_threshold=sl_threshold)
@@ -1020,8 +1063,7 @@ class PositionExitManager:
         # Check Take-Profit
         eff_tp = tp_threshold if tp_threshold is not None else self.config.gain_threshold
         in_tp = (
-            price_increase >= eff_tp
-            or are_close(price_increase, eff_tp, self.config.are_close_tolerance_pct)
+            snapshot.in_tp_territory(eff_tp, self.config.are_close_tolerance_pct)
             or (snapshot.symbol in self.tp_ride_state)
         )
         if in_tp:

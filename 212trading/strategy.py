@@ -1362,6 +1362,32 @@ class Strategy:
                 return cached, "cache"
         return 0.0, "none"
 
+    def _create_position_snapshot(self, price: float, avg: float, held: float) -> PositionSnapshot:
+        """Create a standardized PositionSnapshot using T212 state and time source."""
+        trend_up = False
+        if self._trend_slope_provider:
+            try:
+                slope = self._trend_slope_provider(self.yahoo_sym)
+                if slope is not None and slope >= 0.0:
+                    trend_up = True
+            except Exception:
+                pass
+
+        vol_1h, vol_source = self._vol_1h_ratio()
+        sell_qty = self._sellable_qty(held, price)
+        return PositionSnapshot(
+            symbol=self.ticker,
+            current_price=price,
+            avg_buy_price=avg,
+            net_qty=held,
+            sellable_qty=sell_qty,
+            current_time_s=self._now(),
+            trend_up=trend_up,
+            vol_1h=vol_1h,
+            vol_source=vol_source,
+            provider="t212",
+        )
+
     def _check_stop_loss(self, price: float) -> bool:
         """Close the entire position when unrealized loss exceeds the threshold."""
         if self.p.stop_loss_pct <= 0:
@@ -1386,33 +1412,9 @@ class Strategy:
                 self.s.pop("sl_fail_until", None)
                 return False
 
-            trend_up = False
-            if self._trend_slope_provider:
-                try:
-                    slope = self._trend_slope_provider(self.yahoo_sym)
-                    if slope is not None and slope >= 0.0:
-                        trend_up = True
-                except Exception:
-                    pass
-
-            vol_1h, vol_source = self._vol_1h_ratio()
-
-            tick_time = self._now()
             held = self.s.get("qty", 0.0)
-            sell_qty = self._sellable_qty(held, price)
-
-            snapshot = PositionSnapshot(
-                symbol=self.ticker,
-                current_price=price,
-                avg_buy_price=avg,
-                net_qty=held,
-                sellable_qty=sell_qty,
-                current_time_s=tick_time,
-                trend_up=trend_up,
-                vol_1h=vol_1h,
-                vol_source=vol_source,
-                provider="t212",
-            )
+            snapshot = self._create_position_snapshot(price, avg, held)
+            sell_qty = snapshot.sellable_qty
 
             decision = self.exit_manager.evaluate_stop_loss(
                 snapshot, custom_threshold=self.p.stop_loss_pct / 100.0,
@@ -1709,17 +1711,6 @@ class Strategy:
                 pending_exit = self.s.get("tp_pending_exit")
 
                 if pending_exit is None:
-                    trend_up = False
-                    if self._trend_slope_provider:
-                        try:
-                            slope = self._trend_slope_provider(self.yahoo_sym)
-                            if slope is not None and slope >= 0.0:
-                                trend_up = True
-                        except Exception:
-                            pass
-
-                    vol_1h, vol_source = self._vol_1h_ratio()
-
                     self.exit_manager.config.tp_trend_ride_enabled = True
                     self.exit_manager.config.tp_profit_floor_min_pct = (
                         (self.p.trail_min_profit_pct or 0.0) / 100.0
@@ -1729,19 +1720,7 @@ class Strategy:
                     )
                     self.exit_manager.config.tp_stagnation_max_sec = self.p.tp_stagnation_max_sec
 
-                    sell_qty_eval = self._sellable_qty(held, price)
-                    snapshot = PositionSnapshot(
-                        symbol=self.ticker,
-                        current_price=price,
-                        avg_buy_price=avg,
-                        net_qty=held,
-                        sellable_qty=sell_qty_eval,
-                        current_time_s=tick_time,
-                        trend_up=trend_up,
-                        vol_1h=vol_1h,
-                        vol_source=vol_source,
-                        provider="t212",
-                    )
+                    snapshot = self._create_position_snapshot(price, avg, held)
 
                     decision = self.exit_manager.evaluate_take_profit(
                         snapshot, custom_threshold=self.p.takeprofit_pct / 100.0
