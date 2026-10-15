@@ -57,129 +57,24 @@ def _is_terminal_filter_refusal(reason) -> bool:
     return order_retry.is_terminal_filter_refusal(reason)
 
 
-GUARD_CATALOG = {
-    "G1": {
-        "canonical": "daily_limit",
-        "aliases": {"daily_limit", "daily_cap", "g1"},
-        "description": "Daily trade count cap and anti-spam temporal filter",
-    },
-    "G2": {
-        "canonical": "short_trend",
-        "aliases": {"short_trend", "trend", "trend_short", "g2"},
-        "description": "Short-term trend deferral via short_trend_manager",
-    },
-    "G3": {
-        "canonical": "math_profit",
-        "aliases": {"math_profit", "math_reference", "profit_margin", "g3"},
-        "description": "Deterministic historical profit margin reference check",
-    },
-    "G4": {
-        "canonical": "quantity_policy",
-        "aliases": {"quantity_policy", "weight", "weight_sizing", "g4"},
-        "description": "Dynamic exposure and risk-weighted quantity sizing",
-    },
-    "G5": {
-        "canonical": "p1_quantitative",
-        "aliases": {"p1_quantitative", "p1", "pillar1", "quantitative", "g5"},
-        "description": "Pillar 1: Parabolic Surge and Weibull trend exhaustion",
-    },
-    "G6": {
-        "canonical": "p2_microstructure",
-        "aliases": {"p2_microstructure", "p2", "pillar2", "microstructure", "g6"},
-        "description": "Pillar 2: Orderbook Ask Wall, Funding crowding, and Whale flow",
-    },
-    "G7": {
-        "canonical": "p3_llm",
-        "aliases": {"p3_llm", "p3", "pillar3", "ai", "llm", "g7"},
-        "description": "Pillar 3: High-stake pre-trade LLM validation",
-    },
-    "G8": {
-        "canonical": "p4_geopolitical",
-        "aliases": {"p4_geopolitical", "p4", "pillar4", "geopolitical", "g8"},
-        "description": "Pillar 4: Geopolitical Black Swan shock shield",
-    },
-}
-
-_ALL_GUARD_ALIASES: set[str] = set().union(*(g["aliases"] for g in GUARD_CATALOG.values())) | {
-    "all", "*", "profit_guard", "legacy_profit_guard", "cooldown"
-}
-
-
-def normalize_bypassed_guards(
-    bypass_guards=None,
-    legacy_bypass_profit_guard=None,
-    legacy_bypass_profit_reference=None,
-    legacy_bypass_quantity_policy=None,
-) -> set[str]:
-    """Canonical resolver for bypassed guard identifiers (SSOT).
-
-    Supports fine-grained guard opt-out: any guard not in the returned set
-    executes with its standard default behavior.
-
-    Supported catalog keys (G1..G8):
-      - G1 / 'daily_limit' / 'daily_cap': daily trade volume cap & anti-spam.
-      - G2 / 'short_trend' / 'trend': short-term trend deferral wait.
-      - G3 / 'math_profit' / 'math_reference' / 'profit_margin': historical profit ref.
-      - G4 / 'quantity_policy' / 'weight' / 'weight_sizing': dynamic sizing policy.
-      - G5 / 'p1' / 'pillar1' / 'quantitative': Parabolic Surge, Weibull Exhaustion.
-      - G6 / 'p2' / 'pillar2' / 'microstructure': Orderbook Walls, Funding, Whale flow.
-      - G7 / 'p3' / 'pillar3' / 'ai' / 'llm': High-stake pre-trade LLM validation.
-      - G8 / 'p4' / 'pillar4' / 'geopolitical': Geopolitical Black Swan shock shield.
-
-    Composite / Legacy aliases:
-      - 'all' / '*': bypasses all checks G1..G8 (emergency stop-loss exits).
-      - 'profit_guard': bypasses math profit (G3) + quantity policy (G4).
-    """
-    bypassed: set[str] = set()
-    if legacy_bypass_profit_guard:
-        bypassed.add("profit_guard")
-    if legacy_bypass_profit_reference:
-        bypassed.add("math_profit")
-    if legacy_bypass_quantity_policy:
-        bypassed.add("quantity_policy")
-
-    raw_tokens: list[str] = []
-    if bypass_guards is not None:
-        if bypass_guards is True or bypass_guards == "all" or bypass_guards == "*":
-            raw_tokens.append("all")
-        elif isinstance(bypass_guards, str):
-            for part in bypass_guards.split(","):
-                p = part.strip().lower()
-                if p and p not in ("none", "off", "false", "no", "0"):
-                    raw_tokens.append(p)
-        elif isinstance(bypass_guards, (set, list, tuple)):
-            for item in bypass_guards:
-                p = str(item).strip().lower()
-                if p and p not in ("none", "off", "false", "no", "0"):
-                    raw_tokens.append(p)
-
-    for token in raw_tokens:
-        if token in _ALL_GUARD_ALIASES:
-            bypassed.add(token)
-        else:
-            print(f"[GUARD] Warning: unrecognized bypass guard token {token!r} ignored; "
-                  f"known guards are G1..G8 ({', '.join(sorted(GUARD_CATALOG.keys()))})")
-
-    if "all" in bypassed or "*" in bypassed:
-        bypassed.update({"all", "*", "profit_guard"})
-        for g_info in GUARD_CATALOG.values():
-            bypassed.update(g_info["aliases"])
-            bypassed.add(g_info["canonical"])
-    if "profit_guard" in bypassed or "legacy_profit_guard" in bypassed:
-        bypassed.update({"profit_guard", "legacy_profit_guard"})
-        bypassed.update(GUARD_CATALOG["G3"]["aliases"])
-        bypassed.add(GUARD_CATALOG["G3"]["canonical"])
-        bypassed.update(GUARD_CATALOG["G4"]["aliases"])
-        bypassed.add(GUARD_CATALOG["G4"]["canonical"])
-
-    # Expand any individual G1..G8 token to include its canonical name and all alias variations
-    for g_key, g_info in GUARD_CATALOG.items():
-        if bypassed.intersection(g_info["aliases"]) or g_key.lower() in bypassed:
-            bypassed.update(g_info["aliases"])
-            bypassed.add(g_info["canonical"])
-            bypassed.add(g_key.lower())
-
-    return bypassed
+from guard_hierarchy import (
+    BaseGuard,
+    OperationalGuard,
+    FinancialGuard,
+    IntelligenceGuard,
+    DailyLimitGuard,
+    ShortTrendGuard,
+    MathProfitGuard,
+    QuantityPolicyGuard,
+    Pillar1QuantitativeGuard,
+    Pillar2MicrostructureGuard,
+    Pillar3LLMGuard,
+    Pillar4GeopoliticalGuard,
+    GUARD_CATALOG,
+    GUARD_REGISTRY,
+    GUARD_CATEGORIES,
+    normalize_bypassed_guards,
+)
 
 
 class Instrument:

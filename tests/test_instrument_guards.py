@@ -1146,6 +1146,63 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             mock_daily.assert_not_called()
             mock_profit.assert_called()
 
+    def test_guard_hierarchy_and_categories(self):
+        """Verify object-oriented guard hierarchy, category grouping, and is_bypassed behavior."""
+        from guard_hierarchy import (
+            BaseGuard,
+            OperationalGuard,
+            FinancialGuard,
+            IntelligenceGuard,
+            GUARD_REGISTRY,
+            GUARD_CATEGORIES,
+            normalize_bypassed_guards,
+        )
+
+        # Hierarchy validation
+        self.assertIsInstance(GUARD_REGISTRY["G1"], OperationalGuard)
+        self.assertIsInstance(GUARD_REGISTRY["G2"], OperationalGuard)
+        self.assertIsInstance(GUARD_REGISTRY["G3"], FinancialGuard)
+        self.assertIsInstance(GUARD_REGISTRY["G4"], FinancialGuard)
+        self.assertIsInstance(GUARD_REGISTRY["G5"], IntelligenceGuard)
+        self.assertIsInstance(GUARD_REGISTRY["G6"], IntelligenceGuard)
+        self.assertIsInstance(GUARD_REGISTRY["G7"], IntelligenceGuard)
+        self.assertIsInstance(GUARD_REGISTRY["G8"], IntelligenceGuard)
+
+        for g in GUARD_REGISTRY.values():
+            self.assertIsInstance(g, BaseGuard)
+            self.assertTrue(g.code.startswith("G"))
+            self.assertTrue(bool(g.description))
+            self.assertTrue(bool(g.canonical))
+
+        # Categories mapping
+        self.assertEqual(len(GUARD_CATEGORIES["operational"]), 2)
+        self.assertEqual(len(GUARD_CATEGORIES["financial"]), 2)
+        self.assertEqual(len(GUARD_CATEGORIES["intelligence"]), 4)
+
+        # Category bypass: 'operational' bypasses G1 & G2, but not G3..G8
+        op_bypassed = normalize_bypassed_guards("operational")
+        self.assertTrue(GUARD_REGISTRY["G1"].is_bypassed(op_bypassed))
+        self.assertTrue(GUARD_REGISTRY["G2"].is_bypassed(op_bypassed))
+        self.assertFalse(GUARD_REGISTRY["G3"].is_bypassed(op_bypassed))
+        self.assertFalse(GUARD_REGISTRY["G5"].is_bypassed(op_bypassed))
+
+        # Category bypass: 'financial' bypasses G3 & G4
+        fin_bypassed = normalize_bypassed_guards("financial")
+        self.assertFalse(GUARD_REGISTRY["G1"].is_bypassed(fin_bypassed))
+        self.assertTrue(GUARD_REGISTRY["G3"].is_bypassed(fin_bypassed))
+        self.assertTrue(GUARD_REGISTRY["G4"].is_bypassed(fin_bypassed))
+        self.assertFalse(GUARD_REGISTRY["G5"].is_bypassed(fin_bypassed))
+
+        # Category bypass: 'intelligence' bypasses G5..G8
+        intel_bypassed = normalize_bypassed_guards("intelligence")
+        self.assertFalse(GUARD_REGISTRY["G1"].is_bypassed(intel_bypassed))
+        self.assertFalse(GUARD_REGISTRY["G3"].is_bypassed(intel_bypassed))
+        self.assertTrue(GUARD_REGISTRY["G5"].is_bypassed(intel_bypassed))
+        self.assertTrue(GUARD_REGISTRY["G6"].is_bypassed(intel_bypassed))
+        self.assertTrue(GUARD_REGISTRY["G7"].is_bypassed(intel_bypassed))
+        self.assertTrue(GUARD_REGISTRY["G8"].is_bypassed(intel_bypassed))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
