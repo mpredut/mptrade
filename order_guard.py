@@ -56,6 +56,7 @@ def _load_margins():
         "default_max_daily_trades": 25,        # daily trade cap
         "default_safeback_sec": 14 * 24 * 3600 + 60,  # own-trade search window (seconds): 14 days
         "default_recent_transaction_sec": 90,   # anti-spam window (seconds, 1.5 min)
+        "default_recent_transaction_side": "buy", # anti-spam side policy: 'buy', 'sell', 'both', or 'off'
         "default_buy_reference": 1.0,          # 1 = BUY must beat the historical sell reference
         "buy_window_mode": "dynamic",          # dynamic regime-aware lookback window
         "buy_window_bull_h": 8.0,              # Bull lookback: 4h - 12h
@@ -516,15 +517,75 @@ def safeback_sec_for(provider_name):
     return float(m.get(key, m["default_safeback_sec"]))
 
 
-def recent_transaction_sec_for(provider_name):
-    """Return the anti-spam window that rejects a recent same-symbol, same-side order."""
+def normalize_recent_transaction_side(side_policy: Any) -> str:
+    """Normalize anti-spam side policy to 'buy', 'sell', 'both', or 'off'.
+
+    Values:
+      - 'buy', 'only_buy', 'buys' -> 'buy' (default, rejects rapid BUY on recent BUY)
+      - 'sell', 'only_sell', 'sells' -> 'sell' (rejects rapid SELL on recent SELL)
+      - 'both', 'symmetric', 'all', 'buy_sell', 'two_way' -> 'both' (rejects on both sides)
+      - 'off', 'none', 'disabled', '0', False -> 'off' (disables recent transaction check)
+    """
+    if side_policy is None:
+        return "buy"
+    raw = str(side_policy).strip().lower()
+    if raw in ("both", "symmetric", "all", "buy_sell", "buy,sell", "buy/sell", "two_way", "twoway"):
+        return "both"
+    if raw in ("sell", "only_sell", "sells"):
+        return "sell"
+    if raw in ("off", "none", "disabled", "disable", "0", "false"):
+        return "off"
+    return "buy"
+
+
+def recent_transaction_side_for(provider_name):
+    """Return the venue's anti-spam side policy ('buy', 'sell', 'both', or 'off')."""
+    env_side = os.environ.get("RECENT_TRANSACTION_SIDE")
+    if env_side:
+        return normalize_recent_transaction_side(env_side)
     m = _load_margins()
-    key = (provider_name or "").lower() + "_recent_transaction_sec"
-    return float(m.get(key, m["default_recent_transaction_sec"]))
+    name = _provider_name(provider_name)
+    key = name.lower() + "_recent_transaction_side"
+    raw = m.get(key, m.get("default_recent_transaction_side", "buy"))
+    return normalize_recent_transaction_side(raw)
+
+
+def recent_transaction_sec_for(provider_name, order_type=None):
+    """Return the anti-spam window that rejects a recent same-symbol, same-side order.
+
+    Supports side-specific overrides (<venue>_recent_transaction_<side>_sec or
+    default_recent_transaction_<side>_sec), falling back to venue or default
+    recent_transaction_sec.
+    """
+    m = _load_margins()
+    name = _provider_name(provider_name)
+    pfx = name.lower()
+    side = str(order_type or "").strip().lower()
+    if side:
+        env_side_key = f"RECENT_TRANSACTION_{side.upper()}_SEC"
+        if env_side_key in os.environ:
+            try:
+                return float(os.environ[env_side_key])
+            except ValueError:
+                pass
+        side_key = f"{pfx}_recent_transaction_{side}_sec"
+        if side_key in m:
+            return float(m[side_key])
+        default_side_key = f"default_recent_transaction_{side}_sec"
+        if default_side_key in m:
+            return float(m[default_side_key])
+    if "RECENT_TRANSACTION_SEC" in os.environ:
+        try:
+            return float(os.environ["RECENT_TRANSACTION_SEC"])
+        except ValueError:
+            pass
+    key = f"{pfx}_recent_transaction_sec"
+    return float(m.get(key, m.get("default_recent_transaction_sec", 90)))
 
 
 def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
                       safeback_sec=None, recent_transaction_sec=None,
+                      recent_transaction_side=None,
                       *, bypass_guards=None):
     """Enforce the daily cap and anti-spam policy as the SINGLE implementation.
     Since July 30, Binance bapi_placeorder.if_place_safe_order delegates here instead of
@@ -538,17 +599,23 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
 
     Return (True, None) or (False, reason). Read errors propagate so the caller can fail
     closed, consistently with profit_guard and weight_limit."""
+    bypass_anti_spam = False
     if bypass_guards:
         from guard_hierarchy import normalize_bypassed_guards, GUARD_REGISTRY
         bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
         if "all" in bypassed or "*" in bypassed or GUARD_REGISTRY["GO1"].is_bypassed(bypassed):
             return True, None
+        if "recent_transaction" in bypassed or "anti_spam" in bypassed:
+            bypass_anti_spam = True
     name = _provider_name(provider)
+    order_type = order_type.upper()
     max_daily_trades = max_daily_trades if max_daily_trades is not None else max_daily_trades_for(name)
     safeback_sec = float(safeback_sec if safeback_sec is not None else safeback_sec_for(name))
     recent_transaction_sec = float(recent_transaction_sec if recent_transaction_sec is not None
-                                   else recent_transaction_sec_for(name))
-    order_type = order_type.upper()
+                                   else recent_transaction_sec_for(name, order_type=order_type))
+    side_policy = (normalize_recent_transaction_side(recent_transaction_side)
+                   if recent_transaction_side is not None
+                   else recent_transaction_side_for(name))
     try:
         trades = provider.get_orders(symbol, order_type, safeback_sec)
     except ProviderError as exc:
@@ -565,15 +632,28 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
         print(f"[DAILY-LIMIT] {order_type} {symbol}: {len(trades)} trades in "
               f"{safeback_sec/3600:.1f}h, a cap of {max_daily_trades}/day -> BLOCKED")
         return False, "daily_limit"
-    if order_type != "SELL":
+
+    enforce_anti_spam = False
+    if not bypass_anti_spam and recent_transaction_sec > 0 and side_policy != "off":
+        if side_policy == "both":
+            enforce_anti_spam = True
+        elif side_policy == "sell":
+            enforce_anti_spam = (order_type == "SELL")
+        else:  # default "buy"
+            enforce_anti_spam = (order_type != "SELL")
+
+    if enforce_anti_spam:
         cutoff_ms = time.time() * 1000 - recent_transaction_sec * 1000
         for t in trades:
             ts = t.get("timestamp")
             if ts is not None and float(ts) >= cutoff_ms:
+                age_s = max(0.0, time.time() - float(ts) / 1000.0)
                 print(f"[DAILY-LIMIT] {order_type} {symbol}: recent trade "
-                      f"(<{recent_transaction_sec:.0f}s) -> BLOCKED")
+                      f"(age={age_s:.1f}s < threshold={recent_transaction_sec:.0f}s, "
+                      f"policy={side_policy}) -> BLOCKED")
                 return False, "recent_transaction"
     return True, None
+
 
 
 _whale_collector = None

@@ -205,6 +205,7 @@ for g in GUARD_INSTANCES:
 
 _ALL_GUARD_ALIASES: set[str] = set().union(*(g.aliases for g in GUARD_INSTANCES)) | {
     "all", "*", "profit_guard", "legacy_profit_guard", "cooldown",
+    "recent_transaction", "anti_spam",
     "operational", "trend", "financial", "intelligence",
     "go", "gt", "gf", "gi",
 }

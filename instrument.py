@@ -443,8 +443,15 @@ class Instrument:
             )
             is_exempt_daily_limit = bool("daily_limit" in bypassed_guards or is_stop)
             if not is_exempt_daily_limit:
-                ok, reason = order_guard.daily_limit_guard(self._provider, self.symbol, side_u,
-                                                           safeback_sec=safeback_override)
+                recent_tx_sec = kwargs.get("recent_transaction_sec")
+                recent_tx_side = kwargs.get("recent_transaction_side")
+                ok, reason = order_guard.daily_limit_guard(
+                    self._provider, self.symbol, side_u,
+                    safeback_sec=safeback_override,
+                    recent_transaction_sec=recent_tx_sec,
+                    recent_transaction_side=recent_tx_side,
+                    bypass_guards=bypassed_guards,
+                )
                 if not ok:
                     return None
 

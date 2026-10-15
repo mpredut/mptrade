@@ -1683,6 +1683,105 @@ class Strategy:
         reentry_dec = mgr.evaluate_reentry(reentry_snap, custom_drop_pct=vol_pct_to_ratio(drop_pct))
         return reentry_dec.should_enter, reentry_dec.reason
 
+    def _check_advanced_profit_guards(
+        self, price: float, avg: float, held: float,
+        closes: list | None = None, tick_time: float | None = None,
+    ) -> bool:
+        if not avg or held <= 1e-12:
+            return False
+
+        # 1. Micro-gradient 2X Fast Profit Guard (Horizon 3)
+        if self.p.fast_profit_guard:
+            triggered, gain, drop = sr.check_fast_profit_reversal(
+                current_price=price,
+                avg_cost=avg,
+                base_tp_pct=self.p.takeprofit_pct,
+                mult=self.p.fast_profit_mult,
+                shadow_prices=list(self._shadow_prices),
+                window_sec=self.p.fast_profit_window_min * 60.0,
+                drop_pct=self.p.fast_profit_drop_pct,
+                current_time=tick_time,
+            )
+            if triggered:
+                exit_px = round(price * 0.999, self.price_dec)
+                if self._request_market_exit(price, "TP"):
+                    log(f"  [STRAT] FAST PROFIT GUARD EXIT (+{gain:.2f}% gain, -{drop:.2f}% drop in {self.p.fast_profit_window_min:.0f}m) -> reference {exit_px}")
+                    return True
+
+        # 2. Parabolic Surge Guard (2-3 Day Exhaustion, Horizon 4)
+        if self.p.surge_guard:
+            surge_peak = max(self.s.get("surge_peak") or price, price)
+            self.s["surge_peak"] = surge_peak
+            window_move = self._surge_window_move_pct(
+                price, None if self.replay_mode else closes)
+            eff_surge_gain = self._effective_surge_gain_pct()
+            current_gain = (price - avg) / avg * 100.0
+            peak_gain = (surge_peak - avg) / avg * 100.0
+            is_armed = bool(self.s.get("surge_active"))
+            if not is_armed:
+                pos_surged = eff_surge_gain > 0 and (current_gain >= eff_surge_gain or peak_gain >= eff_surge_gain)
+                win_surged = (
+                    window_move is not None
+                    and self.p.surge_move_pct > 0
+                    and window_move >= self.p.surge_move_pct
+                    and current_gain >= eff_surge_gain * 0.8
+                )
+                if pos_surged or win_surged:
+                    is_armed = True
+                    self.s["surge_active"] = True
+                    log(f"  [STRAT] PARABOLIC SURGE ARMED (+{peak_gain:.2f}% peak gain, window move {window_move})")
+            elif current_gain < self.p.takeprofit_pct:
+                self.s["surge_active"] = False
+                is_armed = False
+
+            triggered, reason = sr.check_parabolic_surge_exhaustion(
+                current_price=price,
+                avg_cost=avg,
+                surge_peak=surge_peak,
+                surge_gain_pct=eff_surge_gain,
+                exit_pullback_pct=self.p.surge_exit_pullback_pct,
+                window_move_pct=window_move,
+                surge_move_pct=self.p.surge_move_pct,
+                surge_active=is_armed,
+            )
+            if triggered:
+                exit_px = round(price * 0.999, self.price_dec)
+                if self._request_market_exit(
+                    price, "TP", min_profit_pct=sr.parabolic_surge_profit_floor_pct(
+                        eff_surge_gain, self.p.surge_exit_pullback_pct),
+                ):
+                    log(f"  [STRAT] SURGE EXHAUSTION EXIT ({reason}) peak {surge_peak:.{self.price_dec}f} -> reference {exit_px}")
+                    return True
+
+        # 3. Slow-Grind Guard (1-3 Week Drift, Horizon 5)
+        if self.p.slow_grind_guard:
+            slow_peak = max(self.s.get("slow_grind_peak") or price, price)
+            self.s["slow_grind_peak"] = slow_peak
+            entry_ts = self.s.get("entry_ts")
+            n = self.p.trend_sma_n
+            sma = sum(closes[-n:]) / n if closes and len(closes) >= n else None
+            triggered, reason = sr.check_slow_grind_exhaustion(
+                current_price=price,
+                avg_cost=avg,
+                entry_ts=entry_ts,
+                current_ts=tick_time if tick_time is not None else self._now(),
+                min_days=self.p.slow_grind_days,
+                min_gain_pct=self.p.slow_grind_min_gain_pct,
+                recent_peak=slow_peak,
+                shadow_prices=list(self._shadow_prices),
+                flash_window_sec=self.p.slow_grind_flash_window_min * 60.0,
+                flash_drop_pct=self.p.slow_grind_flash_drop_pct,
+                structural_drop_pct=self.p.slow_grind_hourly_drop_pct,
+                sma_value=sma,
+            )
+            if triggered:
+                exit_px = round(price * 0.999, self.price_dec)
+                if self._request_market_exit(price, "TP"):
+                    log(f"  [STRAT] SLOW GRIND EXIT ({reason}) peak {slow_peak:.{self.price_dec}f} -> reference {exit_px}")
+                    return True
+
+        return False
+
     def _overlay_step(self, price: float, regime: MarketRegimeDecision,
                       closes: list, tick_time: float | None = None) -> bool:
         """Apply the regime overlay and return whether it handled the tick.
@@ -1703,95 +1802,8 @@ class Strategy:
         if self.s.get("trend_mode"):
             avg = self._avg()
 
-            # 1. Micro-gradient 2X Fast Profit Guard (Horizon 3)
-            if self.p.fast_profit_guard and avg and self.s["qty"] > 1e-12:
-                triggered, gain, drop = sr.check_fast_profit_reversal(
-                    current_price=price,
-                    avg_cost=avg,
-                    base_tp_pct=self.p.takeprofit_pct,
-                    mult=self.p.fast_profit_mult,
-                    shadow_prices=list(self._shadow_prices),
-                    window_sec=self.p.fast_profit_window_min * 60.0,
-                    drop_pct=self.p.fast_profit_drop_pct,
-                    current_time=tick_time,
-                )
-                if triggered:
-                    exit_px = round(price * 0.999, self.price_dec)
-                    if self._request_market_exit(price, "TP"):
-                        log(f"  [STRAT] FAST PROFIT GUARD EXIT (+{gain:.2f}% gain, -{drop:.2f}% drop in {self.p.fast_profit_window_min:.0f}m) -> reference {exit_px}")
-                        return True
-
-            # 2. Parabolic Surge Guard (2-3 Day Exhaustion, Horizon 4)
-            if self.p.surge_guard and avg and self.s["qty"] > 1e-12:
-                surge_peak = max(self.s.get("surge_peak") or price, price)
-                self.s["surge_peak"] = surge_peak
-                window_move = self._surge_window_move_pct(
-                    price, None if self.replay_mode else closes)
-                eff_surge_gain = self._effective_surge_gain_pct()
-                current_gain = (price - avg) / avg * 100.0
-                peak_gain = (surge_peak - avg) / avg * 100.0
-                is_armed = bool(self.s.get("surge_active"))
-                if not is_armed:
-                    pos_surged = eff_surge_gain > 0 and (current_gain >= eff_surge_gain or peak_gain >= eff_surge_gain)
-                    win_surged = (
-                        window_move is not None
-                        and self.p.surge_move_pct > 0
-                        and window_move >= self.p.surge_move_pct
-                        and current_gain >= eff_surge_gain * 0.8
-                    )
-                    if pos_surged or win_surged:
-                        is_armed = True
-                        self.s["surge_active"] = True
-                        log(f"  [STRAT] PARABOLIC SURGE ARMED (+{peak_gain:.2f}% peak gain, window move {window_move})")
-                elif current_gain < self.p.takeprofit_pct:
-                    self.s["surge_active"] = False
-                    is_armed = False
-
-                triggered, reason = sr.check_parabolic_surge_exhaustion(
-                    current_price=price,
-                    avg_cost=avg,
-                    surge_peak=surge_peak,
-                    surge_gain_pct=eff_surge_gain,
-                    exit_pullback_pct=self.p.surge_exit_pullback_pct,
-                    window_move_pct=window_move,
-                    surge_move_pct=self.p.surge_move_pct,
-                    surge_active=is_armed,
-                )
-                if triggered:
-                    exit_px = round(price * 0.999, self.price_dec)
-                    if self._request_market_exit(
-                        price, "TP", min_profit_pct=sr.parabolic_surge_profit_floor_pct(
-                            eff_surge_gain, self.p.surge_exit_pullback_pct),
-                    ):
-                        log(f"  [STRAT] SURGE EXHAUSTION EXIT ({reason}) peak {surge_peak:.{self.price_dec}f} -> reference {exit_px}")
-                        return True
-
-            # 3. Slow-Grind Guard (1-3 Week Drift, Horizon 5)
-            if self.p.slow_grind_guard and avg and self.s["qty"] > 1e-12:
-                slow_peak = max(self.s.get("slow_grind_peak") or price, price)
-                self.s["slow_grind_peak"] = slow_peak
-                entry_ts = self.s.get("entry_ts")
-                n = self.p.trend_sma_n
-                sma = sum(closes[-n:]) / n if len(closes) >= n else None
-                triggered, reason = sr.check_slow_grind_exhaustion(
-                    current_price=price,
-                    avg_cost=avg,
-                    entry_ts=entry_ts,
-                    current_ts=tick_time if tick_time is not None else self._now(),
-                    min_days=self.p.slow_grind_days,
-                    min_gain_pct=self.p.slow_grind_min_gain_pct,
-                    recent_peak=slow_peak,
-                    shadow_prices=list(self._shadow_prices),
-                    flash_window_sec=self.p.slow_grind_flash_window_min * 60.0,
-                    flash_drop_pct=self.p.slow_grind_flash_drop_pct,
-                    structural_drop_pct=self.p.slow_grind_hourly_drop_pct,
-                    sma_value=sma,
-                )
-                if triggered:
-                    exit_px = round(price * 0.999, self.price_dec)
-                    if self._request_market_exit(price, "TP"):
-                        log(f"  [STRAT] SLOW GRIND EXIT ({reason}) peak {slow_peak:.{self.price_dec}f} -> reference {exit_px}")
-                        return True
+            if self._check_advanced_profit_guards(price, avg, self.s["qty"], closes, tick_time):
+                return True
 
             # 4. Dynamic Profit Ratchet Trailing (Horizon 2)
             peak = max(self.s.get("trend_peak") or price, price)
@@ -2017,95 +2029,9 @@ class Strategy:
             peak = max(self.s.get("trail_peak") or tp_ref_price, tp_ref_price)
             self.s["trail_peak"] = peak
 
-            # 1. Micro-gradient 2X Fast Profit Guard (Horizon 3)
-            if self.p.fast_profit_guard and avg and held > 1e-12:
-                triggered, gain, drop = sr.check_fast_profit_reversal(
-                    current_price=price,
-                    avg_cost=avg,
-                    base_tp_pct=self.p.takeprofit_pct,
-                    mult=self.p.fast_profit_mult,
-                    shadow_prices=list(self._shadow_prices),
-                    window_sec=self.p.fast_profit_window_min * 60.0,
-                    drop_pct=self.p.fast_profit_drop_pct,
-                    current_time=tick_time,
-                )
-                if triggered:
-                    exit_px = round(price * 0.999, self.price_dec)
-                    if self._request_market_exit(price, "TP"):
-                        log(f"  [STRAT] FAST PROFIT GUARD EXIT (+{gain:.2f}% gain, -{drop:.2f}% drop in {self.p.fast_profit_window_min:.0f}m) -> reference {exit_px}")
-                        return
+            if self._check_advanced_profit_guards(price, avg, held, regime_closes, tick_time):
+                return
 
-            # 2. Parabolic Surge Guard (2-3 Day Exhaustion, Horizon 4)
-            if self.p.surge_guard and avg and held > 1e-12:
-                surge_peak = max(self.s.get("surge_peak") or price, price)
-                self.s["surge_peak"] = surge_peak
-                window_move = self._surge_window_move_pct(
-                    price, None if self.replay_mode else regime_closes)
-                eff_surge_gain = self._effective_surge_gain_pct()
-                current_gain = (price - avg) / avg * 100.0
-                peak_gain = (surge_peak - avg) / avg * 100.0
-                is_armed = bool(self.s.get("surge_active"))
-                if not is_armed:
-                    pos_surged = eff_surge_gain > 0 and (current_gain >= eff_surge_gain or peak_gain >= eff_surge_gain)
-                    win_surged = (
-                        window_move is not None
-                        and self.p.surge_move_pct > 0
-                        and window_move >= self.p.surge_move_pct
-                        and current_gain >= eff_surge_gain * 0.8
-                    )
-                    if pos_surged or win_surged:
-                        is_armed = True
-                        self.s["surge_active"] = True
-                        log(f"  [STRAT] PARABOLIC SURGE ARMED (+{peak_gain:.2f}% peak gain, window move {window_move})")
-                elif current_gain < self.p.takeprofit_pct:
-                    self.s["surge_active"] = False
-                    is_armed = False
-
-                triggered, reason = sr.check_parabolic_surge_exhaustion(
-                    current_price=price,
-                    avg_cost=avg,
-                    surge_peak=surge_peak,
-                    surge_gain_pct=eff_surge_gain,
-                    exit_pullback_pct=self.p.surge_exit_pullback_pct,
-                    window_move_pct=window_move,
-                    surge_move_pct=self.p.surge_move_pct,
-                    surge_active=is_armed,
-                )
-                if triggered:
-                    exit_px = round(price * 0.999, self.price_dec)
-                    if self._request_market_exit(
-                        price, "TP", min_profit_pct=sr.parabolic_surge_profit_floor_pct(
-                            eff_surge_gain, self.p.surge_exit_pullback_pct),
-                    ):
-                        log(f"  [STRAT] SURGE EXHAUSTION EXIT ({reason}) peak {surge_peak:.{self.price_dec}f} -> reference {exit_px}")
-                        return
-
-            # 3. Slow-Grind Guard (1-3 Week Drift, Horizon 5)
-            if self.p.slow_grind_guard and avg and held > 1e-12:
-                slow_peak = max(self.s.get("slow_grind_peak") or price, price)
-                self.s["slow_grind_peak"] = slow_peak
-                entry_ts = self.s.get("entry_ts")
-                n = self.p.trend_sma_n
-                sma = sum(regime_closes[-n:]) / n if len(regime_closes) >= n else None
-                triggered, reason = sr.check_slow_grind_exhaustion(
-                    current_price=price,
-                    avg_cost=avg,
-                    entry_ts=entry_ts,
-                    current_ts=tick_time,
-                    min_days=self.p.slow_grind_days,
-                    min_gain_pct=self.p.slow_grind_min_gain_pct,
-                    recent_peak=slow_peak,
-                    shadow_prices=list(self._shadow_prices),
-                    flash_window_sec=self.p.slow_grind_flash_window_min * 60.0,
-                    flash_drop_pct=self.p.slow_grind_flash_drop_pct,
-                    structural_drop_pct=self.p.slow_grind_hourly_drop_pct,
-                    sma_value=sma,
-                )
-                if triggered:
-                    exit_px = round(price * 0.999, self.price_dec)
-                    if self._request_market_exit(price, "TP"):
-                        log(f"  [STRAT] SLOW GRIND EXIT ({reason}) peak {slow_peak:.{self.price_dec}f} -> reference {exit_px}")
-                        return
             eff_trail = self._effective_trail_pct()   # Adaptive when enabled, otherwise fixed.
             candidate_stop = peak * (1 - eff_trail / 100)
             # A trailing stop ratchets one way: volatility may widen distance for future
