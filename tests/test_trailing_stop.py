@@ -617,7 +617,71 @@ class TestMinProfit(Base):
             st = json.load(open(self.sf))["TAOUSDC"]
             self.assertEqual(st["peak"], 190.0, "peak is now reset after completing the targeted position")
             self.assertIn("rebuy", st, "rebuy is armed once position is flat")
-            self.assertEqual(st["rebuy"]["qty"], 5.0, "rebuy tracks full accumulated quantity")
+        with self.subTest(msg="new_position_does_not_inherit_stale_peak_from_unheld_period"):
+            self.tearDown(); self.setUp()
+            api = FakeApi(100.0, free=0.0)
+            ts = self.ts(api, min_profit_pct=5.0)
+            ts.check_once()  # Tick 1: flat at 100
+
+            api.price = 200.0  # Climbs to 200 while holding 0
+            ts.check_once()
+
+            # Now a new position is bought at 150
+            api.price = 150.0
+            api.free = 1.0
+            ts.check_once()
+
+            self.assertEqual(self.po.orders, [], "new position must not be sold using stale peak from unheld period")
+            import json
+            st = json.load(open(self.sf))["TAOUSDC"]
+            self.assertEqual(st["peak"], 150.0, "peak must re-anchor to new position entry, not unheld 200 high")
+
+        with self.subTest(msg="partial_exit_state_retained_on_bounce_above_stop"):
+            self.tearDown(); self.setUp()
+            api = FakeApi(250.0, free=5.0)
+            ts = self.ts(api, min_profit_pct=0.0)
+            ts.check_once()  # Establishes peak 250.0
+            api.price = 190.0
+
+            # Step 1: partial exit of 0.2 out of 5.0 (4.8 locked)
+            api.free = 0.2
+            ts.total_qty = lambda asset: 5.0
+            ts.check_once()
+            self.assertEqual(len(self.po.orders), 1)
+            self.assertEqual(self.po.orders[0]["qty"], 0.2)
+
+            # Confirm 0.2 fill
+            ts.check_once()
+            import json
+            st = json.load(open(self.sf))["TAOUSDC"]
+            self.assertEqual(st["exit_sold_qty"], 0.2)
+
+            # Step 2: price bounces to 240 (above stop 195), free is 0, 4.8 still held
+            api.price = 240.0
+            api.free = 0.0
+            ts.total_qty = lambda asset: 4.8
+            ts.check_once()
+
+            # Verify partial exit state is NOT wiped by the bounce
+            st = json.load(open(self.sf))["TAOUSDC"]
+            self.assertEqual(st.get("target_exit_qty"), 5.0, "target_exit_qty must survive rebound while position held")
+            self.assertEqual(st.get("exit_sold_qty"), 0.2, "exit_sold_qty must survive rebound while position held")
+
+            # Step 3: price falls back to 190, 4.8 is unlocked and sold
+            api.price = 190.0
+            api.free = 4.8
+            ts.total_qty = lambda asset: 4.8
+            ts.check_once()
+            self.assertEqual(len(self.po.orders), 2)
+            self.assertEqual(self.po.orders[1]["qty"], 4.8, "remaining 4.8 target must be sold")
+
+            # Confirm fill of 4.8
+            ts.total_qty = lambda asset: 0.0
+            api.free = 0.0
+            ts.check_once()
+            st = json.load(open(self.sf))["TAOUSDC"]
+            self.assertIn("rebuy", st, "rebuy must be armed once position is completed")
+            self.assertEqual(st["rebuy"]["qty"], 5.0, "rebuy must track full 5.0 units")
 
 
 if __name__ == "__main__":

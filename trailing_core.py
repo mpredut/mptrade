@@ -138,6 +138,8 @@ class TrailingCore:
                 st.pop("target_exit_qty", None)
                 st.pop("exit_sold_qty", None)
                 st.pop("exit_sold_cost", None)
+                if is_flat:
+                    st["is_flat"] = True
                 if self._rebuy_for(pair, arm=True):
                     st["rebuy"] = {"qty": accum_qty, "sell_price": overall_avg, "low": avg}
             else:
@@ -234,25 +236,31 @@ class TrailingCore:
             return
         is_new = key not in state
         st = state.setdefault(key, {"peak": price})
-        if is_new and self.min_profit_pct > 0:
-            # Arm the warm-up relative to the REAL entry when the provider can supply
-            # it (the Binance adapter reads recent fills), so an already-profitable
-            # MANUAL position activates immediately instead of only after a further
-            # +min_profit% above the first observed price — no state pre-seed needed.
-            # Fallback to the first-tick price (previous behaviour) for a provider
-            # without a cost basis (Kraken) or a position not bought here.
-            ref = price
-            basis_getter = getattr(self.a, "cost_basis", None)
-            if basis_getter is not None:
-                try:
-                    basis = basis_getter(pair)
-                except Exception:
-                    basis = None
-                if (isinstance(basis, (int, float)) and not isinstance(basis, bool)
-                        and math.isfinite(basis) and basis > 0):
-                    ref = float(basis)
-            st["peak"] = max(st.get("peak", price), ref)
-            st["warmup_at"] = ref * (1 + self.min_profit_pct / 100.0)  # activation threshold
+
+        total_pos = self._remaining_qty(asset)
+        if total_pos <= 0:
+            total_pos = free
+        has_pos = (total_pos * price >= self.min_notional)
+
+        if has_pos:
+            if is_new or st.get("is_flat", False):
+                st["is_flat"] = False
+                ref = price
+                basis_getter = getattr(self.a, "cost_basis", None)
+                if basis_getter is not None:
+                    try:
+                        basis = basis_getter(pair)
+                    except Exception:
+                        basis = None
+                    if (isinstance(basis, (int, float)) and not isinstance(basis, bool)
+                            and math.isfinite(basis) and basis > 0):
+                        ref = float(basis)
+                st["peak"] = max(price, ref)
+                if self.min_profit_pct > 0:
+                    st["warmup_at"] = ref * (1 + self.min_profit_pct / 100.0)  # activation threshold
+        elif is_new:
+            st["is_flat"] = True
+
         if self._reconcile_pending(state, st, price, pair):
             return
         if st.get("rebuy") and not st.get("exit_sold_qty"):
@@ -263,7 +271,8 @@ class TrailingCore:
                 self._handle_rebuy(key, asset, pair, st, price, state)
                 if st.get("pending_order"):
                     return
-        if price > st["peak"]:
+
+        if not st.get("is_flat", False) and price > st["peak"]:
             st["peak"] = price                                # new peak moves the trailing level up
         stop_at = st["peak"] * (1 - trail / 100.0)
 
@@ -300,11 +309,18 @@ class TrailingCore:
                 self.a.log_dry_sell(key, asset, pair, sell_qty, price, st["peak"], trail)
             return
 
-        if free * price < self.min_notional:
+        total_pos = self._remaining_qty(asset)
+        if total_pos <= 0:
+            total_pos = free
+        if total_pos * price < self.min_notional:
+            st["is_flat"] = True
             st.pop("target_exit_qty", None)
             st.pop("exit_sold_qty", None)
             st.pop("exit_sold_cost", None)
             return                                            # nothing to protect; keep resting orders intact
+
+        if free * price < self.min_notional:
+            return                                            # nothing free to protect; keep resting orders intact
 
         if "warmup_at" in st:
             # Warm up until price exceeds the threshold set on the first tick or after re-buy.
