@@ -60,8 +60,66 @@ class ExitDecision:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+class PriceGeometrySnapshot:
+    """Base mixin providing unified, fuzzy-tolerant price geometry primitives."""
+
+    @property
+    def is_valid_price(self) -> bool:
+        """Verify whether current market price is valid and strictly positive."""
+        return getattr(self, "current_price", 0.0) > 0
+
+    def bounce_ratio(self, trough_price: float) -> float:
+        """Calculate recovery bounce ratio above trough: (current - trough) / trough."""
+        if trough_price <= 0:
+            return 0.0
+        px = getattr(self, "current_price", 0.0)
+        return max(0.0, (px - trough_price) / trough_price)
+
+    def pullback_ratio(self, peak_price: float) -> float:
+        """Normalized pullback ratio from peak: (peak - current) / peak."""
+        if peak_price <= 0:
+            return 0.0
+        px = getattr(self, "current_price", 0.0)
+        return max(0.0, (peak_price - px) / peak_price)
+
+    def discount_drop_ratio(self, reference_price: float) -> float:
+        """Calculate price discount ratio below reference sale: (reference - current) / reference."""
+        if reference_price <= 0:
+            return 0.0
+        px = getattr(self, "current_price", 0.0)
+        return (reference_price - px) / reference_price
+
+    def has_bounced(self, trough_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
+        """Determine if price has bounced above trough honoring fuzzy tolerance."""
+        if trough_price <= 0 or threshold <= 0:
+            return False
+        if self.bounce_ratio(trough_price) >= threshold:
+            return True
+        px = getattr(self, "current_price", 0.0)
+        return tol_pct > 0 and are_close(px, trough_price * (1.0 + threshold), tol_pct)
+
+    def has_pulled_back(self, peak_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
+        """Determine if price has pulled back from peak honoring fuzzy tolerance."""
+        if peak_price <= 0 or threshold <= 0:
+            return False
+        if self.pullback_ratio(peak_price) >= threshold:
+            return True
+        px = getattr(self, "current_price", 0.0)
+        return tol_pct > 0 and are_close(px, peak_price * (1.0 - threshold), tol_pct)
+
+    def has_dropped(self, reference_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
+        """Determine if price has dropped below reference sale honoring fuzzy tolerance."""
+        if reference_price <= 0:
+            return False
+        target = reference_price * (1.0 - threshold)
+        px = getattr(self, "current_price", 0.0)
+        if px <= target:
+            return True
+        return tol_pct > 0 and are_close(px, target, tol_pct)
+
+
 @dataclass
-class PositionSnapshot:
+class PositionSnapshot(PriceGeometrySnapshot):
     """Provider-agnostic snapshot of an open position and current market state."""
     symbol: str
     current_price: float
@@ -127,12 +185,6 @@ class PositionSnapshot:
             return True
         return False
 
-    def pullback_ratio(self, peak_price: float) -> float:
-        """Normalized pullback ratio from peak: (peak - current) / peak."""
-        if peak_price <= 0:
-            return 0.0
-        return max(0.0, (peak_price - self.current_price) / peak_price)
-
 
 class ReentryAction(str, Enum):
     """Action recommended by PositionExitManager for market re-entry."""
@@ -150,7 +202,7 @@ class ReentryDecision:
 
 
 @dataclass
-class ReentrySnapshot:
+class ReentrySnapshot(PriceGeometrySnapshot):
     """Provider-agnostic snapshot of last exit state and market context for re-entry."""
     symbol: str
     current_price: float
@@ -166,29 +218,6 @@ class ReentrySnapshot:
     vol_source: str = "default"
 
     @property
-    def is_valid_price(self) -> bool:
-        """Verify whether current market price is valid and strictly positive."""
-        return self.current_price > 0
-
-    def bounce_ratio(self, trough_price: float) -> float:
-        """Calculate recovery bounce ratio above trough: (current - trough) / trough."""
-        if trough_price <= 0:
-            return 0.0
-        return max(0.0, (self.current_price - trough_price) / trough_price)
-
-    def pullback_ratio(self, peak_price: float) -> float:
-        """Calculate pullback ratio from peak: (peak - current) / peak."""
-        if peak_price <= 0:
-            return 0.0
-        return max(0.0, (peak_price - self.current_price) / peak_price)
-
-    def discount_drop_ratio(self, reference_price: float) -> float:
-        """Calculate price discount ratio below reference sale: (reference - current) / reference."""
-        if reference_price <= 0:
-            return 0.0
-        return (reference_price - self.current_price) / reference_price
-
-    @property
     def sale_drop_ratio(self) -> float:
         """Calculate price discount ratio below last_sell_price."""
         return self.discount_drop_ratio(self.last_sell_price) if self.last_sell_price else 0.0
@@ -197,31 +226,6 @@ class ReentrySnapshot:
     def sale_drop_pct(self) -> float:
         """Calculate price discount percentage below last_sell_price."""
         return self.sale_drop_ratio * 100.0
-
-    def has_bounced(self, trough_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
-        """Determine if price has bounced above trough honoring fuzzy tolerance."""
-        if trough_price <= 0 or threshold <= 0:
-            return False
-        if self.bounce_ratio(trough_price) >= threshold:
-            return True
-        return tol_pct > 0 and are_close(self.current_price, trough_price * (1.0 + threshold), tol_pct)
-
-    def has_pulled_back(self, peak_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
-        """Determine if price has pulled back from peak honoring fuzzy tolerance."""
-        if peak_price <= 0 or threshold <= 0:
-            return False
-        if self.pullback_ratio(peak_price) >= threshold:
-            return True
-        return tol_pct > 0 and are_close(self.current_price, peak_price * (1.0 - threshold), tol_pct)
-
-    def has_dropped(self, reference_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
-        """Determine if price has dropped below reference sale honoring fuzzy tolerance."""
-        if reference_price <= 0:
-            return False
-        target = reference_price * (1.0 - threshold)
-        if self.current_price <= target:
-            return True
-        return tol_pct > 0 and are_close(self.current_price, target, tol_pct)
 
 
 @dataclass
