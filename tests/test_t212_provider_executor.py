@@ -85,6 +85,19 @@ class T212ExecutorContractTest(unittest.TestCase):
         self.fake.portfolio_result = None
         self.assertIsNone(self.provider.free_balance("NVDA_US_EQ"))
 
+    def test_get_current_price_portfolio_and_fallback(self):
+        # 1. Position held in portfolio: returns currentPrice (120.0)
+        self.assertEqual(self.provider.get_current_price("NVDA_US_EQ"), 120.0)
+
+        # 2. Position NOT held in portfolio: fallback to get_price_usd via t212_to_yahoo
+        self.fake.portfolio_result = []
+        import importlib
+        md = importlib.import_module("212trading.market_data")
+        with mock.patch.object(md, "get_price_usd", return_value=125.50) as mock_feed:
+            price = self.provider.get_current_price("NVDA_US_EQ")
+            self.assertEqual(price, 125.50)
+            mock_feed.assert_called_once_with("NVDA")
+
     def test_submit_order_behaviors(self):
         with self.subTest(msg="submit_limit_market_and_the_live_gate"):
             oid = self.provider.submit_order("NVDA_US_EQ", "buy", 0.5, price=119.25)

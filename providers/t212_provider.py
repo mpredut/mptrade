@@ -131,12 +131,23 @@ class T212Provider(MarketDataProvider):
     # -- Market data. ----------------------------------------------------------
     def get_current_price(self, symbol: str) -> Optional[float]:
         p = self._position(symbol)
-        if not p:
-            return None
+        if p:
+            try:
+                px = float(p.get("currentPrice"))
+                if math.isfinite(px) and px > 0:
+                    return px
+            except (TypeError, ValueError):
+                pass
+        # Fallback to market data feed when no open position is held in the account
         try:
-            return float(p.get("currentPrice"))
-        except (TypeError, ValueError):
-            return None
+            market_data = importlib.import_module("212trading.market_data")
+            yahoo_sym = market_data.t212_to_yahoo(symbol)
+            px = market_data.get_price_usd(yahoo_sym)
+            if px is not None and math.isfinite(float(px)) and float(px) > 0:
+                return float(px)
+        except Exception as e:
+            print(f"[T212] get_current_price fallback {symbol}: {e}")
+        return None
 
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         return None  # This client exposes no granular T212 history.
