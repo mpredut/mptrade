@@ -484,39 +484,31 @@ def _last_opposite_fill_price_api(symbol, order_type):
 
 
 def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
-                        bypass_profit_guard=False, *, regime_context=None):
-    # Removed dead max_daily_trades and profit_percentage parameters. The only real caller
-    # always supplied these exact configured values, now read here as the source of truth.
-    # ``bypass_profit_guard=True`` skips profit/history and fail-closed checks, unlike
-    # ``force``, which only selects MARKET execution. Daily limits and anti-spam remain.
-    # The crash circuit breaker uses both flags; normal trading keeps this bypass disabled.
-    #import bapi_trades as apitrades
+                        bypass_profit_guard=False, *, regime_context=None,
+                        bypass_guards=None):
+    """Legacy preflight safety check for Binance orders.
+
+    Validates daily trade counts, temporal spam gates, dynamic market regimes,
+    and historical price profit references before order placement.
+    """
     from . import bapi_allorders as apiorders
     from providers.market_api import BinanceProvider
 
     order_type = order_type.upper()
     sym.validate_params(order_type, symbol, price, qty)
-    #apitrades.compare_trade_sources(symbol, order_type=order_type, max_age_seconds=time_back_in_seconds, limit=1000)
     provider = BinanceProvider()
 
     try:
-
         current_price = api.get_current_price(symbol)
-
         if order_type == "BUY":
             price = round(min(price, current_price), 0)
         else:  # SELL
             price = round(max(price, current_price), 0)
 
         qty = round(qty, 4)
-
         opposite_order_type = "SELL" if order_type == "BUY" else "BUY"
-        backdays = math.ceil(time_back_in_seconds / 86400)
 
-        # Delegate daily limits and anti-spam to order_guard.daily_limit_guard, removing
-        # a duplicate of the provider-neutral logic. BinanceProvider.get_orders wraps
-        # the same apiorders data source. Keep Binance's own limit and lookback settings
-        # instead of introducing a second potentially divergent order_guard knob.
+        # Delegate daily limits and anti-spam to order_guard.daily_limit_guard
         ok, reason = order_guard.daily_limit_guard(
             provider, symbol, order_type,
             max_daily_trades=PLACE_ORDER_MAX_DAILY_TRADES,
@@ -524,16 +516,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         if not ok:
             return False, reason
 
-        oposite_trades = apiorders.get_trade_orders(opposite_order_type, symbol, max_age_seconds=time_back_in_seconds)  # current data
-        print(f"I have {len(oposite_trades)} trades of type {opposite_order_type} for {backdays} days. ")
-
-        if (
-            regime_context is None
-            and order_type == "BUY"
-            and not bypass_profit_guard
-        ):
-            # This legacy Binance boundary owns runtime data-source resolution.
-            # Compute one context and reuse it for both window and guard decisions.
+        if regime_context is None and order_type == "BUY" and not bypass_profit_guard:
             from providers.market_api import api as market_api
             regime_context = market_api.market_regime_context(
                 symbol, provider_name="binance")
@@ -547,36 +530,33 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         if not ref_window or ref_window <= 0:
             ref_window = time_back_in_seconds
 
-        time_limit = float(time.time() * 1000) - (ref_window * 1000)  # milliseconds
-        # Keep opposite trades in the requested interval. Requiring price > 0 remains a
-        # defensive safety net even though canceled orders no longer enter the cache.
+        time_limit = float(time.time() * 1000) - (ref_window * 1000)
+        oposite_trades = apiorders.get_trade_orders(opposite_order_type, symbol, max_age_seconds=time_back_in_seconds) or []
         recent_opposite_trades = [trade for trade in oposite_trades
-                                  if float(trade['timestamp']) >= float(time_limit)
+                                  if float(trade.get('timestamp') or 0) >= time_limit
                                   and float(trade.get('price', 0)) > 0]
-        print(f"Considering only those within the last {ref_window:.0f}s, {len(recent_opposite_trades)} of them")
-        for trade in recent_opposite_trades:
-            readable = datetime.fromtimestamp(trade['timestamp'] / 1000)
-            print(f"[CHECK] {readable} - price: {trade['price']} - included: {float(trade['timestamp']) >= time_limit}")
-        
-        # Provider-neutral profit guard. Reference priority is the window's minimum SELL
-        # or maximum BUY, then the provider's latest opposite fill. The bypass skips both;
-        # read errors reach the handler below and fail closed.
+
         if not bypass_profit_guard:
             window_ref = None
-            if recent_opposite_trades:                       # Primary time-window reference.
+            if recent_opposite_trades:
                 _prices = [float(t['price']) for t in recent_opposite_trades]
                 window_ref = min(_prices) if order_type == "BUY" else max(_prices)
-            # Resolve the configured margin lazily only when the guard is used. Reuse the
-            # stateless provider already created for the daily-limit guard.
+
+            pg_kwargs = dict(
+                window_ref=window_ref,
+                regime_context=regime_context,
+                qty=qty,
+            )
+            if bypass_guards is not None:
+                pg_kwargs["bypass_guards"] = bypass_guards
+
             if not order_guard.profit_guard(
                 provider,
                 symbol,
                 order_type,
                 price,
                 order_guard.margin_for("binance"),
-                window_ref=window_ref,
-                regime_context=regime_context,
-                qty=qty,
+                **pg_kwargs,
             ):
                 return False, "profit_guard"
         return True, None
@@ -585,7 +565,6 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         print(f"Error checking whether the {order_type} order is safe: {e}")
         return False, "guard_check_api_exception"
     except Exception as e:
-        # Data or manager errors fail closed unless the crash circuit breaker explicitly bypasses.
         print(f"[GUARD] {order_type} {symbol}: the check failed ({e}) -> "
               f"{'PASSING (bypass)' if bypass_profit_guard else 'BLOCKED (fail-closed)'}")
         return bool(bypass_profit_guard), (None if bypass_profit_guard else "guard_check_failed")
@@ -606,7 +585,7 @@ def _guarded_market_place(symbol, order_type, price, qty, **kwargs):
 def place_safe_order(order_type, symbol, price, qty=None,
                      safeback_seconds=PLACE_ORDER_SAFEBACK_SEC, force=False,
                      cancelorders=False, hours=PLACE_ORDER_HOURS,
-                     bypass_profit_guard=False, _reason_out=None):
+                     bypass_profit_guard=False, _reason_out=None, **kwargs):
     """Adapt the compatible safe API to the common pipeline without smart repricing."""
     order_type = order_type.upper()
     # ``None`` is the legacy "maximum permitted" request. Preserve it until the
@@ -622,6 +601,7 @@ def place_safe_order(order_type, symbol, price, qty=None,
         cancelorders=cancelorders,
         hours=hours,
         bypass_profit_guard=bypass_profit_guard,
+        **kwargs,
     )
     # The common pipeline logs the exact reason. Retain dict compatibility without
     # duplicating guard evaluation in the legacy chain.
@@ -652,7 +632,7 @@ def _log_order_outcome(symbol, side, price, qty, outcome, refuse_reason, motivat
 
 # Retain ``pair`` only for compatibility with callers that explicitly pass it. It is
 # intentionally ignored legacy code; do not remove it without updating those callers.
-def place_order_smart(order_type, symbol, price, qty=None, safeback_seconds=PLACE_ORDER_SAFEBACK_SEC, force=False, cancelorders=True, hours=PLACE_ORDER_HOURS, pair=None, motivation=None):
+def place_order_smart(order_type, symbol, price, qty=None, safeback_seconds=PLACE_ORDER_SAFEBACK_SEC, force=False, cancelorders=True, hours=PLACE_ORDER_HOURS, pair=None, motivation=None, **kwargs):
     order_type = order_type.upper()
     sym.validate_params(
         order_type, symbol, price, 1.0 if qty is None else qty)
@@ -664,6 +644,7 @@ def place_order_smart(order_type, symbol, price, qty=None, safeback_seconds=PLAC
         cancelorders=cancelorders,
         hours=hours,
         motivation=motivation,
+        **kwargs,
     )
 
 
