@@ -67,7 +67,6 @@ def _load_margins():
         "taker_downscale_threshold": 0.90,     # Whale taker flow moderate downscale threshold (< 0.90 downscales)
         "taker_downscaled_scale": 0.50,        # Scale factor when taker ratio is between min_taker and threshold
     }
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "order_guard.conf")
     try:
         with open(path) as f:
             for line in f:
