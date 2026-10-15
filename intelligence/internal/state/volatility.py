@@ -129,6 +129,17 @@ def vol_ratio_to_pct(vol_ratio: float) -> float:
     return float(vol_ratio) * 100.0
 
 
+def get_shadow_state_path() -> str:
+    """Return the canonical path to shadow_state.json honoring MPTRADE_CACHEDB_DIR."""
+    try:
+        from cachepaths import cache_path
+        return cache_path("shadow_state.json")
+    except Exception:
+        return os.path.join(
+            os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb"), "shadow_state.json"
+        )
+
+
 def resolve_cached_volatility_1h(
     symbol: str, state_path: Optional[str] = None
 ) -> Optional[float]:
@@ -139,20 +150,12 @@ def resolve_cached_volatility_1h(
     the percentage to a decimal ratio by dividing by 100.0.
     Returns None if cache is missing, symbol is not found, or value is non-positive/non-finite.
     """
-    if not state_path:
-        try:
-            from cachepaths import cache_path
-            state_path = cache_path("shadow_state.json")
-        except Exception:
-            state_path = os.path.join(
-                os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb"), "shadow_state.json"
-            )
-
-    if not os.path.exists(state_path):
+    path = state_path or get_shadow_state_path()
+    if not os.path.exists(path):
         return None
 
     try:
-        with open(state_path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
             sym_key = str(symbol).upper()
@@ -167,5 +170,15 @@ def resolve_cached_volatility_1h(
                     return vol_pct_to_ratio(float(v))
     except Exception:
         pass
+    return None
+
+
+def resolve_cached_volatility_1h_pct(
+    symbol: str, state_path: Optional[str] = None
+) -> Optional[float]:
+    """Retrieve 1h realized volatility for symbol from shared shadow cache as a percentage (e.g. 2.5 for 2.5%)."""
+    ratio = resolve_cached_volatility_1h(symbol, state_path=state_path)
+    if ratio is not None:
+        return vol_ratio_to_pct(ratio)
     return None
 

@@ -37,8 +37,18 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+import sys
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+try:
+    from intelligence.internal.state.volatility import get_shadow_state_path
+except ImportError:
+    from intelligence import get_shadow_state_path
 LOGGER_DIR = os.path.join(ROOT, "logger")
-CACHE_TREND_PATH = os.path.join(ROOT, "cachedb", "cache_instant_trend.json")
+CACHE_TREND_PATH = os.path.join(
+    os.environ.get("MPTRADE_CACHEDB_DIR", os.path.join(ROOT, "cachedb")),
+    "cache_instant_trend.json",
+)
 
 # Dedicated live-mode output directory (PNGs and HTML), deliberately separated
 # from the repository. Unlike ROOT, it contains only generated charts and never
@@ -717,7 +727,7 @@ def build_analysis_state_text(symbol, active_summary=None):
     if not entry:
         return None
     try:
-        with open(os.path.join(ROOT, "cachedb", "shadow_state.json"), "r", encoding="utf-8") as f:
+        with open(get_shadow_state_path(), "r", encoding="utf-8") as f:
             sh = json.load(f).get(symbol)
         if sh:
             entry = {**entry, **{k: v for k, v in sh.items() if k not in ("ts", "price")}}

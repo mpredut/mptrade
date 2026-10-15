@@ -735,8 +735,9 @@ class TrendCoordinator:
         # KALMAN_PRIMARY_SYMBOLS. Guard setup and calls so a failure cannot stop trading.
         try:
             import shadow_signals
+            from intelligence.internal.state.volatility import get_shadow_state_path
             self._shadow = shadow_signals.ShadowSet(
-                state_path=os.path.join("cachedb", "shadow_state.json"))
+                state_path=get_shadow_state_path())
             global _shadow_ref
             _shadow_ref = self._shadow   # _fire_order's gate reads this signal.
             print(f"[KALMAN-GATE] active, modes={KALMAN_MODES}")

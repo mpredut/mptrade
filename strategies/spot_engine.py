@@ -29,7 +29,13 @@ from order_retry import (
     TrackedOrderLifecycle,
 )
 
-from intelligence.internal.state.volatility import resolve_cached_volatility_1h, vol_pct_to_ratio
+from intelligence.internal.state.volatility import (
+    adaptive_thresholds,
+    resolve_cached_volatility_1h,
+    resolve_cached_volatility_1h_pct,
+    vol_pct_to_ratio,
+    vol_ratio_to_pct,
+)
 
 from . import spot_rules as sr
 from .state_store import JsonStateStore
@@ -1421,9 +1427,13 @@ class Strategy:
             k_re = float_env("SHADOW_K_REENTRY") or 2.0
             vol = self._shadow_vol_1h()
             if vol is None:
+                vol = resolve_cached_volatility_1h_pct(self.pair)
+            if vol is None:
                 log(f"  [SHADOW] adaptive threshold: warm-up ({len(self._shadow_prices)}/20 points)")
                 return
-            adapt_pct = k_re * vol
+            adapt_pct, _ = adaptive_thresholds(vol, k_reentry=k_re)
+            if adapt_pct is None:
+                adapt_pct = k_re * vol
             prag_adapt = lsp * (1 - adapt_pct / 100)
             verdict = "WOULD HAVE ENTERED" if price <= prag_adapt else "would not have entered either"
             log(f"  [SHADOW] fixed threshold {prag_fix:.2f} vs adaptive {prag_adapt:.2f} "
@@ -1442,12 +1452,16 @@ class Strategy:
         try:
             k_re = float_env("SHADOW_K_REENTRY") or 2.0
             vol = self._shadow_vol_1h()
+            if vol is None:
+                vol = resolve_cached_volatility_1h_pct(self.pair)
         except Exception as e:  # noqa: BLE001 — observational failure must not stop trading.
             log(f"  [REINTRARE-ADAPTIV] eroare calcul ({e}) — fallback pe fix")
             return self.p.reentry_drop_pct, "fix (fallback, eroare)"
         if vol is None:
             return self.p.reentry_drop_pct, f"fix (fallback, warm-up {len(self._shadow_prices)}/20)"
-        return k_re * vol, f"adaptiv (vol_1h {vol:.2f}% x k={k_re})"
+        adapt_drop, _ = adaptive_thresholds(vol, k_reentry=k_re)
+        eff_drop = adapt_drop if adapt_drop is not None else (k_re * vol)
+        return eff_drop, f"adaptiv (vol_1h {vol:.2f}% x k={k_re})"
 
     def _effective_reentry_pullback_pct(self) -> tuple[float, str]:
         """Return the dynamic volatility-scaled or fixed pullback threshold from peak.
@@ -1459,6 +1473,8 @@ class Strategy:
             return self.p.reentry_pullback_pct, "fixed"
         try:
             vol = self._shadow_vol_1h()
+            if vol is None:
+                vol = resolve_cached_volatility_1h_pct(self.pair)
         except Exception as e:
             log(f"  [REENTRY-PULLBACK-ADAPTIVE] calculation error ({e}) — fallback to fixed")
             vol = None
@@ -1632,10 +1648,10 @@ class Strategy:
 
         # Symmetrical Re-entry Evaluation via PositionExitManager
         if self.exit_manager is not None and (self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled):
-            self.exit_manager.config.reentry_drop_pct = self.p.reentry_drop_pct / 100.0
-            self.exit_manager.config.reentry_pullback_pct = self.p.reentry_pullback_pct / 100.0
-            self.exit_manager.config.reentry_bear_bounce_pct = self.p.reentry_bear_bounce_pct / 100.0
-            self.exit_manager.config.reentry_sl_bounce_pct = self.p.reentry_sl_bounce_pct / 100.0
+            self.exit_manager.config.reentry_drop_pct = vol_pct_to_ratio(self.p.reentry_drop_pct)
+            self.exit_manager.config.reentry_pullback_pct = vol_pct_to_ratio(self.p.reentry_pullback_pct)
+            self.exit_manager.config.reentry_bear_bounce_pct = vol_pct_to_ratio(self.p.reentry_bear_bounce_pct)
+            self.exit_manager.config.reentry_sl_bounce_pct = vol_pct_to_ratio(self.p.reentry_sl_bounce_pct)
             self.exit_manager.config.reentry_ttl_hours = self.p.reentry_ttl_hours
             self.exit_manager.config.reentry_tolerance_pct = self.p.reentry_tolerance_pct
             self.exit_manager.config.reentry_hybrid_enabled = self.p.reentry_hybrid_enabled
@@ -1656,7 +1672,7 @@ class Strategy:
                 vol_1h=vol_1h,
                 vol_source=vol_source,
             )
-            reentry_dec = self.exit_manager.evaluate_reentry(reentry_snap, custom_drop_pct=drop_pct / 100.0)
+            reentry_dec = self.exit_manager.evaluate_reentry(reentry_snap, custom_drop_pct=vol_pct_to_ratio(drop_pct))
             return reentry_dec.should_enter, reentry_dec.reason
 
         # Legacy stop-aware and hybrid reentry fallback

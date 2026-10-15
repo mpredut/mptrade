@@ -14,7 +14,9 @@ from intelligence.internal.state.volatility import (
     adaptive_thresholds,
     vol_pct_to_ratio,
     vol_ratio_to_pct,
+    get_shadow_state_path,
     resolve_cached_volatility_1h,
+    resolve_cached_volatility_1h_pct,
 )
 from intelligence.internal.state.survival import get_trend_survival_metrics
 from intelligence.composite import CompositeMarketIntelligence
@@ -182,17 +184,33 @@ class TestIntelligenceState(unittest.TestCase):
 
         try:
             self.assertAlmostEqual(resolve_cached_volatility_1h("BTCUSDC", state_path=temp_path), 0.025)
+            self.assertAlmostEqual(resolve_cached_volatility_1h_pct("BTCUSDC", state_path=temp_path), 2.5)
             # Cross-currency fallback USDC <-> USDT
             self.assertAlmostEqual(resolve_cached_volatility_1h("BTCUSDT", state_path=temp_path), 0.025)
+            self.assertAlmostEqual(resolve_cached_volatility_1h_pct("BTCUSDT", state_path=temp_path), 2.5)
             self.assertAlmostEqual(resolve_cached_volatility_1h("ETHUSDC", state_path=temp_path), 0.0005)
+            self.assertAlmostEqual(resolve_cached_volatility_1h_pct("ETHUSDC", state_path=temp_path), 0.05)
             self.assertIsNone(resolve_cached_volatility_1h("BADSYM", state_path=temp_path))
+            self.assertIsNone(resolve_cached_volatility_1h_pct("BADSYM", state_path=temp_path))
             self.assertIsNone(resolve_cached_volatility_1h("ZEROSYM", state_path=temp_path))
+            self.assertIsNone(resolve_cached_volatility_1h_pct("ZEROSYM", state_path=temp_path))
             self.assertIsNone(resolve_cached_volatility_1h("NONEXISTENT", state_path=temp_path))
+            self.assertIsNone(resolve_cached_volatility_1h_pct("NONEXISTENT", state_path=temp_path))
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
         self.assertIsNone(resolve_cached_volatility_1h("BTCUSDC", state_path="/non/existent/path.json"))
+        self.assertIsNone(resolve_cached_volatility_1h_pct("BTCUSDC", state_path="/non/existent/path.json"))
+
+    def test_get_shadow_state_path(self):
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": "/custom/cache"}):
+            path = get_shadow_state_path()
+            self.assertTrue(path.endswith("shadow_state.json"))
+            self.assertIn("/custom/cache", path.replace("\\", "/"))
 
 
 class TestCompositeMarketIntelligence(unittest.TestCase):

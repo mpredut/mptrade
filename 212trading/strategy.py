@@ -38,7 +38,12 @@ from strategies.position_exit_manager import (
     ReentryDecision,
 )
 from order_rollback import restore_cancelled_orders
-from intelligence.internal.state.volatility import resolve_cached_volatility_1h, vol_pct_to_ratio
+from intelligence.internal.state.volatility import (
+    resolve_cached_volatility_1h,
+    resolve_cached_volatility_1h_pct,
+    vol_pct_to_ratio,
+    vol_ratio_to_pct,
+)
 
 FX_FEE_PCT = 0.15  # T212 currency-conversion fee per direction.
 
@@ -1537,9 +1542,13 @@ class Strategy:
         vol = None
         if hasattr(self, "_shadow_vol_1h"):
             try:
-                vol = self._shadow_vol_1h()
+                v = self._shadow_vol_1h()
+                if v is not None and math.isfinite(float(v)) and float(v) > 0:
+                    vol = float(v)
             except Exception:
                 vol = None
+        if vol is None:
+            vol = resolve_cached_volatility_1h_pct(self.ticker)
         if vol is None:
             return self.p.reentry_pullback_pct, "fixed (fallback)"
         val = max(self.p.reentry_pullback_min, min(self.p.reentry_pullback_max, self.p.reentry_pullback_k * vol))
@@ -1557,11 +1566,11 @@ class Strategy:
         self.s["post_sell_trough"] = min(cur_trough, price)
 
         if self.exit_manager is not None and (self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled):
-            self.exit_manager.config.reentry_drop_pct = self.p.reentry_drop_pct / 100.0
+            self.exit_manager.config.reentry_drop_pct = vol_pct_to_ratio(self.p.reentry_drop_pct)
             pullback_pct, pb_src = self._effective_reentry_pullback_pct()
-            self.exit_manager.config.reentry_pullback_pct = pullback_pct / 100.0
+            self.exit_manager.config.reentry_pullback_pct = vol_pct_to_ratio(pullback_pct)
             self.exit_manager.config.reentry_sl_bounce_pct = (
-                self.p.sl_rebuy_bounce_pct / 100.0 if self.p.sl_rebuy_enabled else 0.015
+                vol_pct_to_ratio(self.p.sl_rebuy_bounce_pct) if self.p.sl_rebuy_enabled else 0.015
             )
             self.exit_manager.config.reentry_ttl_hours = self.p.reentry_ttl_hours
             self.exit_manager.config.reentry_tolerance_pct = self.p.reentry_tolerance_pct
