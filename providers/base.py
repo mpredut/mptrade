@@ -137,6 +137,18 @@ class MarketDataProvider(ABC):
     def guards_internally(self) -> bool:
         return False
 
+    def requires_cache_permit(self) -> bool:
+        """Return whether this provider enforces account-cache submit permits."""
+        return str(getattr(self, "name", "") or "").casefold() == "binance"
+
+    def defers_smart_cancellation(self) -> bool:
+        """Return whether opposing order cancellation is deferred until dispatch."""
+        return str(getattr(self, "name", "") or "").casefold() == "binance"
+
+    def supports_business_minimum(self) -> bool:
+        """Return whether this provider enforces venue business minimum rules."""
+        return str(getattr(self, "name", "") or "").casefold() == "binance"
+
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
         """Return normalized pair precision and limits, or None if unavailable."""
         return None

@@ -276,8 +276,10 @@ class Instrument:
             bypassed_guards.discard(GUARD_REGISTRY["GF2"].canonical)
             bypassed_guards.discard(GUARD_REGISTRY["GF2"].code.lower())
             bypass_quantity_policy = False
-        is_binance = str(self._provider.name).casefold() == "binance"
-        if cache_permit is not None and not is_binance:
+        requires_permit = bool(getattr(self._provider, "requires_cache_permit", lambda: False)())
+        defers_smart_cancel = bool(getattr(self._provider, "defers_smart_cancellation", lambda: False)())
+        supports_biz_min = bool(getattr(self._provider, "supports_business_minimum", lambda: False)())
+        if cache_permit is not None and not requires_permit:
             reason = "invalid_cache_permit_provider"
             print(f"[{self.symbol}] {side_u} BLOCKED (pre-submit): {reason}")
             if outcome_context is not None:
@@ -380,13 +382,13 @@ class Instrument:
                         or not 0 <= retry_price_tolerance < 1):
                     raise SubmissionRefused("invalid_retry_price_constraint")
             preflight_order = getattr(self._provider, "preflight_order", None)
-            if is_binance and smart and caller_supplied_cache_permit:
+            if requires_permit and smart and caller_supplied_cache_permit:
                 # Smart cancellation accepts only the exact permit issued inside
                 # this pipeline after its guards. External replacement flows use
                 # smart=False and own their durable cancel/recovery lifecycle.
                 raise SubmissionRefused(
                     "external_cache_permit_not_allowed_for_smart_cancel")
-            if is_binance and cache_permit is None:
+            if requires_permit and cache_permit is None:
                 prepare_order_state = getattr(
                     self._provider, "prepare_order_state", None)
                 if not callable(prepare_order_state):
@@ -394,19 +396,19 @@ class Instrument:
                 guarded_order_state = prepare_order_state()
                 if guarded_order_state is None:
                     raise SubmissionRefused("account_cache_not_fresh")
-            if not is_binance and callable(preflight_order):
+            if not requires_permit and callable(preflight_order):
                 preflight_order(
                     self.symbol, side_u, qty, price, market=is_market,
                     kind=kwargs.get("kind") or kwargs.get("motivation"))
 
-            # 0. Compute smart venue pricing before the guards. Binance defers the
-            # separate opposing-order cancellation until after finite quantity
+            # 0. Compute smart venue pricing before the guards. When deferred (e.g. Binance),
+            # separate opposing-order cancellation is held until after finite quantity
             # resolution, durable intent persistence, and exact permit issuance.
             # Other providers retain their existing combined hook behavior.
             if smart:
                 price = self._provider.adjust_order_price(
                     self.symbol, side_u, price,
-                    cancel_opposite=not is_binance)
+                    cancel_opposite=not defers_smart_cancel)
             if not is_market and price is not None:
                 round_px = getattr(self._provider, "round_price", None)
                 if callable(round_px):
@@ -719,7 +721,7 @@ class Instrument:
                 )
 
             permit_requested_price = None if is_market else orig_price
-            if is_binance and cache_permit is None:
+            if requires_permit and cache_permit is None:
                 if not callable(preflight_order):
                     raise SubmissionRefused("account_cache_not_fresh")
                 cache_permit = preflight_order(
@@ -843,15 +845,15 @@ class Instrument:
             provider_kwargs["_balance_verified"] = True
             if known_balance is not None:
                 provider_kwargs["known_balance"] = known_balance
-            if is_binance:
+            if supports_biz_min:
                 provider_kwargs["enforce_business_minimum"] = (
                     enforce_business_minimum)
             if cache_permit is not None:
                 provider_kwargs["permit_requested_price"] = permit_requested_price
                 provider_kwargs["cache_permit"] = cache_permit
-            if smart and is_binance:
-                # The Binance low-level dispatch consumes the exact permit
-                # before applying this cancellation prerequisite. Keeping the
+            if smart and defers_smart_cancel:
+                # When smart cancellation is deferred, low-level dispatch consumes the exact
+                # permit before applying this cancellation prerequisite. Keeping the
                 # two venue side effects together leaves no local policy gate
                 # between a successful cancellation and the replacement.
                 provider_kwargs["_cancel_opposite_requested_price"] = orig_price

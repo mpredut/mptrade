@@ -329,6 +329,15 @@ class BinanceProvider(MarketDataProvider):
         # place_order prevents duplicated guards.
         return False
 
+    def requires_cache_permit(self) -> bool:
+        return True
+
+    def defers_smart_cancellation(self) -> bool:
+        return True
+
+    def supports_business_minimum(self) -> bool:
+        return True
+
     # -- StrategyExecutor contract. --------------------------------------------
     # get_current_price and free_balance already satisfy it.
     def pair_precision(self, symbol: str):
