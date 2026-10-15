@@ -29,6 +29,17 @@ class BotManager:
         self.recent_lines: Dict[str, deque] = defaultdict(lambda: deque(maxlen=20))
         self.last_hb_status_log = time.time()
         self.running = True
+        self.venv = self._resolve_venv()
+
+    @staticmethod
+    def _resolve_venv() -> str:
+        venv = os.environ.get("VENV")
+        if not venv:
+            for cand in (".venv", "myenv"):
+                if os.path.exists(os.path.join(ROOT_DIR, cand, "bin", "activate")):
+                    venv = cand
+                    break
+        return venv or "myenv"
 
     def parse_procs_conf(self) -> List[Dict[str, Any]]:
         bots = []
@@ -47,13 +58,7 @@ class BotManager:
                     # pat | dir | start_cmd | label | hb_log | hb_stale_s | role
                     pat, dr, cmd, label, hblog, hbstale, role = parts[:7]
 
-                    venv = os.environ.get("VENV")
-                    if not venv:
-                        for cand in (".venv", "myenv"):
-                            if os.path.exists(os.path.join(ROOT_DIR, cand, "bin", "activate")):
-                                venv = cand
-                                break
-                    venv = venv or "myenv"
+                    venv = self.venv
                     dr = dr.replace("$ROOT", ROOT_DIR)
                     cmd = cmd.replace("$ROOT", ROOT_DIR).replace("$VENV", venv)
 
@@ -149,7 +154,14 @@ class BotManager:
                             fresh_env[k] = v
                 except Exception as env_err:
                     logging.warning(f"Could not parse fresh config.env for {name}: {env_err}")
-            bot_env = {**fresh_env, "MPTRADE_ORCHESTRATED": "1", "PYTHONUNBUFFERED": "1"}
+            venv_bin = os.path.join(ROOT_DIR, self.venv, "bin")
+            bot_env = {
+                **fresh_env,
+                "MPTRADE_ORCHESTRATED": "1",
+                "PYTHONUNBUFFERED": "1",
+                "VIRTUAL_ENV": os.path.join(ROOT_DIR, self.venv),
+                "PATH": f"{venv_bin}:{fresh_env.get('PATH', '')}",
+            }
             process = await asyncio.create_subprocess_shell(
                 cmd,
                 executable='/bin/bash',

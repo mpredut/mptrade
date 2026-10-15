@@ -174,6 +174,32 @@ class OrchestratorZombieDetectionTest(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(is_hung)
 
+    async def test_start_bot_injects_venv_in_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot_entry = {
+                "name": "test_env_bot",
+                "dir": tmp,
+                "cmd": "python -c 'pass'",
+                "log_file": os.path.join(tmp, "bot.log"),
+                "hb_file": "",
+                "hb_stale_s": 0.0,
+            }
+            with patch("asyncio.create_subprocess_shell", new_callable=AsyncMock) as mock_shell:
+                mock_proc = MagicMock()
+                mock_proc.pid = 1234
+                mock_proc.stdout = None
+                mock_proc.returncode = 0
+                mock_proc.wait = AsyncMock(return_value=0)
+                mock_shell.return_value = mock_proc
+
+                await self.manager.start_bot(bot_entry)
+
+                mock_shell.assert_called_once()
+                call_env = mock_shell.call_args.kwargs.get("env", {})
+                self.assertIn("VIRTUAL_ENV", call_env)
+                self.assertIn(self.manager.venv, call_env["VIRTUAL_ENV"])
+                self.assertTrue(call_env["PATH"].startswith(os.path.join(str(ROOT), self.manager.venv, "bin")))
+
 
 if __name__ == "__main__":
     unittest.main()

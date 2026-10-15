@@ -42,6 +42,8 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from cachepaths import cache_path
 
+load_env_stack(os.environ.get("ENV_FILE", os.path.join(_HERE, ".env")))
+
 # ── mandatory configuration ──────────────────────────────────────────────────
 PAIRS = [p for p in required_env("KRAKEN_CACHE_PAIRS").split(",") if p]
 POLL_INTERVAL = required_float_env("KRAKEN_CACHE_POLL_S")   # Ledgers is expensive and all Kraken processes

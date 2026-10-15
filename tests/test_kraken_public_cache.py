@@ -105,5 +105,11 @@ class PublicCacheTest(unittest.TestCase):
             self.assertEqual(mpost.call_count, 1)
 
 
+    def test_kraken_cachemanager_loads_mandatory_env_stack(self):
+        import kraken.kraken_cachemanager as km
+        self.assertTrue(len(km.PAIRS) > 0)
+        self.assertIn("HYPEUSD", km.PAIRS)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
