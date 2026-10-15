@@ -420,7 +420,8 @@ def main():
     # monitor_price_and_trade() is VERY chatty (a print() on every tick) —
     # the pilot runs dozens of variants over hundreds of thousands of ticks, so
     # output suppression is required (otherwise console I/O dominates execution time).
-    rb.mt.log.disable_print()
+    import log
+    log.disable_print()
 
     only_terms = [t.strip() for t in args.only.split(",") if t.strip()]
     keys = {k: v for k, v in PILOT_KEYS.items()

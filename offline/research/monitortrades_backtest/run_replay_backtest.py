@@ -107,7 +107,11 @@ def run_symbol(symbol, params, base, quiet=True, trend_window_seconds=DEFAULT_WI
         return None
 
     if quiet:
-        mt.log.disable_print() if hasattr(mt, "log") and hasattr(mt.log, "disable_print") else None
+        try:
+            import log
+            log.disable_print()
+        except Exception:
+            pass
 
     provider = ReplayMarketDataProvider({symbol: series}, fee_pct=FEE_PCT)
     api = MarketApi([provider])
@@ -178,6 +182,12 @@ def run_symbol(symbol, params, base, quiet=True, trend_window_seconds=DEFAULT_WI
             if n_ticks % 20000 == 0:
                 sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
     finally:
+        if quiet:
+            try:
+                import log
+                log.enable_print()
+            except Exception:
+                pass
         mt.is_trend_up = orig_is_trend_up
         mt.get_symbol_volatility_1h = orig_get_vol
         mt._MT_PERSISTENCE_ENABLED = orig_persist

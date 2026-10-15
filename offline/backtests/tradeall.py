@@ -261,7 +261,11 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
         # disk (log.py) — on DENSE data (cache24, tens of thousands of ticks) that dominates the
         # run time. log.disable_print() suppresses print() globally (OUR messages use
         # sys.stderr.write, which stays visible).
-        ta.log.disable_print()
+        try:
+            import log
+            log.disable_print()
+        except Exception:
+            pass
 
     # 29 Jul (user's idea): a "wait for a favourable moment" gate for the
     # BUY/SELL retry intents — an isolated DynamicReplayTrendSource (it does not touch
@@ -277,7 +281,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     # an adapter that swaps the order (symbol,side)->(side,symbol) and calls the simulated broker
     # -> it does NOT touch the network. (We also patch ta.po.place_order_smart as a safety net for
     # any residual path.)
-    orig_place_smart = getattr(ta.po, "place_order_smart", None)
+    orig_place_smart = getattr(getattr(ta, "po", None), "place_order_smart", None)
     orig_mkt_place = getattr(ta.mkt, "place", None)
     orig_log_decision = getattr(ta, "log_decision", None)
     orig_shadow_ref = getattr(ta, "_shadow_ref", None)
@@ -291,11 +295,13 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
             def _journal_only(order_type, symbol_, price_, qty_=None, motivation=None, **kw):
                 _old_attempts["n"] += 1
                 return None
-            ta.po.place_order_smart = _journal_only
+            if hasattr(ta, "po"):
+                ta.po.place_order_smart = _journal_only
             ta.mkt.place = lambda symbol_, side_, price_, qty_=None, **kw: _journal_only(
                 side_, symbol_, price_, qty_, **kw)
         else:
-            ta.po.place_order_smart = broker.place_order_smart           # A stub — it does NOT touch the network.
+            if hasattr(ta, "po"):
+                ta.po.place_order_smart = broker.place_order_smart           # A stub — it does NOT touch the network.
             ta.mkt.place = lambda symbol_, side_, price_, qty_=None, **kw: broker.place_order_smart(
                 side_, symbol_, price_, qty_, **kw)
         ta.log_decision = make_decision_logger(out_dir, clock)            # redirect — it does NOT write into the live logs
@@ -433,7 +439,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
         sys.stderr.write(f"[tradeall_backtest] view: "
                           f"python -m visuals.tradeall_observe --backtest-dir {out_dir} --symbols {symbol}\n")
     finally:
-        if orig_place_smart is not None:
+        if orig_place_smart is not None and hasattr(ta, "po"):
             ta.po.place_order_smart = orig_place_smart
         if orig_mkt_place is not None:
             ta.mkt.place = orig_mkt_place
@@ -442,8 +448,12 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
         ta._shadow_ref = orig_shadow_ref
         if orig_gate_log is not None:
             ta.GATE_OUTCOME_LOG = orig_gate_log
-        if quiet and hasattr(ta, "log") and hasattr(ta.log, "enable_print"):
-            ta.log.enable_print()
+        if quiet:
+            try:
+                import log
+                log.enable_print()
+            except Exception:
+                pass
 
 
 def main():

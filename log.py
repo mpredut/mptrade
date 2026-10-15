@@ -440,6 +440,11 @@ def disable_print() -> None:
     builtins.print = _dummy_print
 
 
+def enable_print() -> None:
+    """Restore print output globally."""
+    builtins.print = _patched_print
+
+
 def _patched_stderr_write(message: str) -> None:
     """Mirror stderr writes to the log file, stripping ANSI codes."""
     _original_stderr_write(message)
