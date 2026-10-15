@@ -52,9 +52,10 @@ from order_retry import (  # noqa: E402
     TrackedOrderLifecycle,
 )
 from credentials import kraken_credentials  # noqa: E402
+from cachepaths import cache_path  # noqa: E402
 
 STATE_FILE = os.path.join(_HERE, "trailing_state.json")
-CACHE_TREND = os.path.join(_ROOT, "cachedb", "cache_instant_trend.json")
+CACHE_TREND = cache_path("cache_instant_trend.json")
 
 
 # Match the launch order used by every Kraken process: real environment, secrets,

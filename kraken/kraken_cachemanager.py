@@ -37,7 +37,10 @@ from state_io import atomic_write_json
 from credentials import CredentialConfigurationError, kraken_credentials
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-load_env_stack(os.path.join(_HERE, ".env"))
+_ROOT = os.path.dirname(_HERE)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+from cachepaths import cache_path
 
 # ── mandatory configuration ──────────────────────────────────────────────────
 PAIRS = [p for p in required_env("KRAKEN_CACHE_PAIRS").split(",") if p]
@@ -48,8 +51,7 @@ POLL_BACKOFF_INIT = required_float_env("KRAKEN_CACHE_BACKOFF_INIT_S")
 POLL_BACKOFF_MAX = required_float_env("KRAKEN_CACHE_BACKOFF_MAX_S")
 MODE = required_env("KRAKEN_CACHE_MODE").lower()
 WS_URL = "wss://ws-auth.kraken.com/"      # authenticated endpoint for private ownTrades
-CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                          "cachedb", "cache_trade_kraken.json")
+CACHE_FILE = cache_path("cache_trade_kraken.json")
 LEDGER_LOOKBACK_S = required_float_env("KRAKEN_CACHE_LOOKBACK_H") * 3600
 # USD-like quote assets map to symbol suffixes; all others (HYPE, BTC, etc.) are base assets.
 _QUOTE = {"ZUSD": "USD", "USD": "USD", "USDC": "USDC", "USDG": "USDG", "ZEUR": "EUR"}

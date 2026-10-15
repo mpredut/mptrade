@@ -358,7 +358,20 @@ class HLClient:
             return False
         try:
             res = self.exchange.cancel(coin, oid)
-            return res.get("status") == "ok"
+            if not isinstance(res, dict) or res.get("status") != "ok":
+                return False
+            statuses = res.get("response", {}).get("data", {}).get("statuses", [])
+            if statuses:
+                st = statuses[0]
+                if st == "success":
+                    return True
+                if isinstance(st, dict) and "error" in st:
+                    log(f"  ! cancel oid={oid} rejected: {st['error']}")
+                    return False
+                if isinstance(st, str) and "error" in st.lower():
+                    log(f"  ! cancel oid={oid} rejected: {st}")
+                    return False
+            return True
         except Exception as e:  # noqa: BLE001
             log(f"  ! cancel failed: {e}")
             return False

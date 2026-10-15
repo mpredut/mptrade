@@ -172,6 +172,7 @@ class StratParams:
     # --- MULTI-HORIZON DYNAMIC STOP-LOSS (MHDSL) & RE-ENTRY MIRROR ---
     sl_mhdsl_enabled: bool = False
     sl_disaster_buffer_ratio: float = 0.30
+    sl_disaster_buffer_max_pct: float = 15.0  # Max ceiling cap for disaster buffer (15% default)
     sl_trend_defer_max_sec: float = 220.0
     sl_bounce_min_recovery_pct: float = 0.40
     sl_bounce_pullback_pct: float = 0.30
@@ -293,6 +294,10 @@ class StratParams:
                 float_env("STRAT_SL_DISASTER_BUFFER_RATIO", e)
                 if float_env("STRAT_SL_DISASTER_BUFFER_RATIO", e) is not None else 0.30
             ),
+            sl_disaster_buffer_max_pct = (
+                float_env("STRAT_SL_DISASTER_BUFFER_MAX_PCT", e)
+                if float_env("STRAT_SL_DISASTER_BUFFER_MAX_PCT", e) is not None else 15.0
+            ),
             sl_trend_defer_max_sec = (
                 float_env("STRAT_SL_TREND_DEFER_MAX_SEC", e)
                 if float_env("STRAT_SL_TREND_DEFER_MAX_SEC", e) is not None else 220.0
@@ -399,23 +404,24 @@ class Strategy:
         self.exit_manager: PositionExitManager | None = None
         if self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled:
             exit_cfg = PositionExitConfig(
-                lost_threshold=self.p.stop_loss_pct / 100.0,
+                lost_threshold=vol_pct_to_ratio(self.p.stop_loss_pct),
                 sl_disaster_buffer_ratio=self.p.sl_disaster_buffer_ratio,
+                sl_disaster_buffer_max_pct=vol_pct_to_ratio(self.p.sl_disaster_buffer_max_pct),
                 sl_trend_defer_max_sec=self.p.sl_trend_defer_max_sec,
-                sl_bounce_min_recovery_pct=self.p.sl_bounce_min_recovery_pct / 100.0,
-                sl_bounce_pullback_pct=self.p.sl_bounce_pullback_pct / 100.0,
+                sl_bounce_min_recovery_pct=vol_pct_to_ratio(self.p.sl_bounce_min_recovery_pct),
+                sl_bounce_pullback_pct=vol_pct_to_ratio(self.p.sl_bounce_pullback_pct),
                 sl_structural_break_enabled=self.p.sl_structural_break_enabled,
                 smart_sl_enabled=False,
                 reentry_enabled=True,
-                reentry_sl_bounce_pct=self.p.sl_rebuy_bounce_pct / 100.0 if self.p.sl_rebuy_enabled else 0.015,
-                reentry_drop_pct=self.p.reentry_drop_pct / 100.0,
-                reentry_pullback_pct=self.p.reentry_pullback_pct / 100.0,
+                reentry_sl_bounce_pct=vol_pct_to_ratio(self.p.sl_rebuy_bounce_pct) if self.p.sl_rebuy_enabled else 0.015,
+                reentry_drop_pct=vol_pct_to_ratio(self.p.reentry_drop_pct),
+                reentry_pullback_pct=vol_pct_to_ratio(self.p.reentry_pullback_pct),
                 reentry_ttl_hours=self.p.reentry_ttl_hours,
                 reentry_tolerance_pct=self.p.reentry_tolerance_pct,
-                gain_threshold=self.p.takeprofit_pct / 100.0,
+                gain_threshold=vol_pct_to_ratio(self.p.takeprofit_pct),
                 tp_trend_ride_enabled=self.p.tp_mdhtp_enabled,
-                tp_profit_floor_min_pct=(self.p.trail_min_profit_pct / 100.0) if self.p.trail_min_profit_pct > 0 else 0.0,
-                tp_pullback_pct=(self.p.trail_pct / 100.0) if self.p.trail_pct > 0 else 0.015,
+                tp_profit_floor_min_pct=vol_pct_to_ratio(self.p.trail_min_profit_pct) if self.p.trail_min_profit_pct > 0 else 0.0,
+                tp_pullback_pct=vol_pct_to_ratio(self.p.trail_pct) if self.p.trail_pct > 0 else 0.015,
                 tp_stagnation_max_sec=self.p.tp_stagnation_max_sec,
             )
             self.exit_manager = PositionExitManager(config=exit_cfg)

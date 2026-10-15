@@ -256,7 +256,7 @@ class Strategy:
         except HLError as e:
             log(f"  [STRAT] pozitie indisponibila ({e})"); return
         qty_now = abs(szi)
-        active = {o.get("oid") for o in self.client.open_orders(self.coin)}
+        active = {str(o.get("oid")) for o in self.client.open_orders(self.coin)}
         prev = self.s["qty"]
 
         if qty_now > prev + 1e-9:        # position opened or increased
@@ -271,11 +271,11 @@ class Strategy:
             if qty_now > 1e-12: self.s["cost"] = qty_now * entry
 
         for o in list(self.s["orders"]):
-            if str(o["oid"]).startswith("PAPER"): continue
-            if o["oid"] not in active:
+            if str(o.get("oid", "")).startswith("PAPER"): continue
+            if str(o.get("oid")) not in active:
                 self._remove(o)
             elif self._open_is_stale(o, price):
-                log(f"  [STRAT] open {o['oid']} unfilled, the price ran away — cancelling and re-placing")
+                log(f"  [STRAT] open {o.get('oid')} unfilled, the price ran away — cancelling and re-placing")
                 self.client.cancel(self.coin, o["oid"]); self._remove(o)
 
     def _open_is_stale(self, order: dict, price: float, elapsed_min: float | None = None) -> bool:
@@ -283,7 +283,7 @@ class Strategy:
         if order.get("role") != "open":
             return False
         if elapsed_min is None:
-            elapsed_min = (time.time() - order.get("ts", 0)) / 60.0
+            elapsed_min = (time.time() - (order.get("ts") or 0)) / 60.0
         if elapsed_min <= self.p.order_ttl_min:
             return False
         return self.sign * (price - order["px"]) > 0.003 * order["px"]
@@ -336,6 +336,12 @@ class Strategy:
             self.s["cost"] = 0.0
             self.s["spent"] = 0.0
             self.s["cycles_completed"] = self.s.get("cycles_completed", 0) + 1
+            for o in list(self.s.get("orders", [])):
+                if not self.dry_run and not self.replay_mode and self.client and not str(o.get("oid", "")).startswith("PAPER"):
+                    try:
+                        self.client.cancel(self.coin, o["oid"])
+                    except Exception as e:
+                        log(f"  ! [STRAT] failed to cancel leftover order {o.get('oid')}: {e}")
             keep = (
                 self.s["realized_gross"],
                 self.s["realized_net"],

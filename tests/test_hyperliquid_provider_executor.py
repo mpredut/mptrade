@@ -6,6 +6,9 @@ from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+_HL_DIR = os.path.join(ROOT, "hyperliquid")
+if _HL_DIR not in sys.path:
+    sys.path.insert(0, _HL_DIR)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from instrument import Instrument  # noqa: E402
@@ -29,8 +32,14 @@ class FakeInfo:
     def query_order_by_oid(self, addr, oid):
         if self._status == "unknownOid":
             return {"status": "unknownOid"}
-        filled = sum(float(item.get("sz") or 0.0) for item in self._fills
-                     if int(item.get("oid", -1)) == oid)
+        filled = 0.0
+        for item in self._fills:
+            try:
+                item_oid = int(item.get("oid") or -1)
+            except (TypeError, ValueError):
+                continue
+            if item_oid == oid:
+                filled += float(item.get("sz") or 0.0)
         original = max(1.0, filled)
         remaining = 0.0 if self._status == "filled" else original - filled
         return {
@@ -461,6 +470,120 @@ class HLExecutorContractTest(unittest.TestCase):
             self.p._signer = lambda: FakeSigner(cancel_res=False)
             with self.assertRaises(ProviderError):
                 self.p.cancel_order("HYPE", "5")
+
+    def test_open_orders_standard_fields_for_recovery(self):
+        self.p._client = FakeRead(opens=[{
+            "coin": "@107",
+            "side": "B",
+            "limitPx": "55.5",
+            "sz": "1.5",
+            "origSz": "2.0",
+            "oid": 8888,
+            "cloid": "0x1234567890abcdef1234567890abcdef",
+            "timestamp": 123456789,
+        }])
+        orders = self.p.open_orders("HYPE")
+        self.assertEqual(len(orders), 1)
+        o = orders[0]
+        self.assertEqual(o["orderId"], "8888")
+        self.assertEqual(o["clientOrderId"], "0x1234567890abcdef1234567890abcdef")
+        self.assertEqual(o["side"], "BUY")
+        self.assertAlmostEqual(o["price"], 55.5)
+        self.assertAlmostEqual(o["qty"], 1.5)
+        self.assertAlmostEqual(o["origQty"], 2.0)
+        self.assertAlmostEqual(o["executedQty"], 0.5)
+        self.assertEqual(o["status"], "OPEN")
+        self.assertEqual(o["timestamp"], 123456789)
+
+    def test_order_status_resilience_and_fee_conversion(self):
+        with self.subTest(msg="safe with null oid and invalid user_fills type"):
+            # A fill with None oid should be gracefully skipped instead of raising TypeError
+            read = FakeRead(
+                fills=[
+                    {"oid": None, "sz": "0.1", "px": "50"},
+                    {"oid": "not_an_int", "sz": "0.1", "px": "50"},
+                    {"oid": 999, "sz": "0.5", "px": "60", "fee": "0.01"},
+                ],
+                status="open",
+            )
+            self.p._client = read
+            st = self.p.order_status("HYPE", "999")
+            self.assertAlmostEqual(st.filled_qty, 0.5)
+
+            # user_fills returning dict (e.g. rate limit error) raises ProviderError fail-closed
+            read.info.user_fills = lambda _addr: {"error": "rate limited"}
+            with self.assertRaisesRegex(ProviderError, "unexpected type"):
+                self.p.order_status("HYPE", "999")
+
+        with self.subTest(msg="converts hype fee for non-hype token"):
+            purr_p = HyperliquidProvider(token="PURR")
+            purr_client = FakeRead(
+                fills=[{
+                    "oid": 10, "sz": "100", "px": "0.5", "fee": "0.1",
+                    "feeToken": "HYPE",
+                }],
+                status="filled",
+            )
+            purr_client.resolve_spot_pair = lambda token: "@107" if token == "HYPE" else "@150"
+            purr_client.spot_mid = lambda pair: 50.0 if pair == "@107" else 0.5
+            purr_p._client = purr_client
+            purr_p._client_tried = True
+            purr_p._spot_pair = "@150"
+            st = purr_p.order_status("PURR", "10")
+            # 0.1 HYPE fee * $50 mid = $5.0 USDC fee
+            self.assertAlmostEqual(st.fee, 5.0)
+
+    def test_hl_client_cancel_inspects_statuses_error(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "hl_client_under_test", os.path.join(ROOT, "hyperliquid", "hl_client.py")
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        HLClient = mod.HLClient
+        client = HLClient(secret_key="0x" + "1" * 64, account_address="0xABC")
+        client.exchange = FakeSigner()
+        # Mock exchange cancel returning status ok but error status inside data
+        client.exchange.cancel = lambda coin, oid: {
+            "status": "ok",
+            "response": {"type": "cancel", "data": {"statuses": [{"error": "Order already filled"}]}},
+        }
+        self.assertFalse(client.cancel("HYPE", 123))
+
+        # Successful cancel
+        client.exchange.cancel = lambda coin, oid: {
+            "status": "ok",
+            "response": {"type": "cancel", "data": {"statuses": ["success"]}},
+        }
+        self.assertTrue(client.cancel("HYPE", 123))
+
+    def test_strategy_apply_close_cancels_resting_orders_on_cycle_end(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "hl_strategy_under_test", os.path.join(ROOT, "hyperliquid", "strategy.py")
+        )
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["hl_strategy_under_test"] = mod
+        try:
+            spec.loader.exec_module(mod)
+        finally:
+            sys.modules.pop("hl_strategy_under_test", None)
+        Strategy, StratParams = mod.Strategy, mod.StratParams
+        client = FakeSigner()
+        params = StratParams(direction="long", entry_amount=50.0)
+        strat = Strategy(client, "HYPE", params, dry_run=False, replay_mode=False)
+        strat.s["qty"] = 1.0
+        strat.s["cost"] = 60.0
+        strat.s["orders"] = [
+            {"oid": 101, "role": "open", "sz": 1.0, "px": 55.0},
+            {"oid": 102, "role": "close", "sz": 1.0, "px": 65.0},
+        ]
+        strat._apply_close(avg=60.0, price=65.0, sz=1.0)
+        self.assertEqual(strat.s["qty"], 0.0)
+        # Verify cancel was called for both resting orders
+        canceled_oids = [call[2] for call in client.calls if call[0] == "cancel"]
+        self.assertIn(101, canceled_oids)
+        self.assertIn(102, canceled_oids)
 
 
 if __name__ == "__main__":

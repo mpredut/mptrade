@@ -317,4 +317,21 @@ class T212MHDSLTest(unittest.TestCase):
         self.assertAlmostEqual(captured_snapshots[0].vol_1h, 0.025, places=5)
         self.assertNotAlmostEqual(captured_snapshots[0].vol_1h, 2.5, places=2)
 
+    def test_t212_sl_disaster_buffer_max_pct_propagates_to_exit_manager(self):
+        """Verify STRAT_SL_DISASTER_BUFFER_MAX_PCT parses from env and converts to ratio in PositionExitConfig."""
+        params = _params(
+            STRAT_SL_MHDSL_ENABLED="true",
+            STRAT_SL_DISASTER_BUFFER_MAX_PCT="12.5",
+        )
+        self.assertEqual(params.sl_disaster_buffer_max_pct, 12.5)
+        strat = strategy.Strategy(
+            client=self.mock_client,
+            ticker="TEST_US_EQ",
+            params=params,
+            dry_run=True,
+        )
+        self.assertIsNotNone(strat.exit_manager)
+        self.assertAlmostEqual(strat.exit_manager.config.sl_disaster_buffer_max_pct, 0.125, places=5)
+
+
 

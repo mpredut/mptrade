@@ -296,12 +296,29 @@ class HyperliquidProvider(MarketDataProvider):
                     f"open_orders({symbol}): open_orders returned unexpected type {type(orders).__name__ if orders is not None else 'None'}"
                 )
             for o in orders:
-                out.append(_normalize_order({
-                    "side": "BUY" if (o.get("side") == "B") else "SELL",
-                    "price": o.get("limitPx"),
-                    "qty": o.get("sz"),
+                if not isinstance(o, dict):
+                    continue
+                try:
+                    price = float(o.get("limitPx", o.get("price", 0.0)) or 0.0)
+                    sz = float(o.get("sz", o.get("qty", 0.0)) or 0.0)
+                    orig_sz = float(o.get("origSz", o.get("origQty", sz)) or sz)
+                    exec_sz = max(0.0, float(o.get("executedQty", orig_sz - sz)) or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                oid_val = o.get("oid", o.get("orderId"))
+                side_raw = str(o.get("side") or "").upper()
+                side = "BUY" if side_raw in {"B", "BUY"} else "SELL"
+                out.append({
+                    "orderId": str(oid_val) if oid_val is not None else "",
+                    "clientOrderId": o.get("cloid") or o.get("clientOrderId"),
+                    "side": side,
+                    "price": price,
+                    "qty": sz,
+                    "origQty": orig_sz,
+                    "executedQty": exec_sz,
+                    "status": str(o.get("status") or "OPEN").upper(),
                     "timestamp": o.get("timestamp"),
-                }))
+                })
             return out
         except ProviderError:
             raise
@@ -606,9 +623,22 @@ class HyperliquidProvider(MarketDataProvider):
 
             # user_fills is the cumulative source for quantity, cost, and fee. Read
             # it while an order is open so partial fills are not lost.
+            user_fills_data = c.info.user_fills(addr)
+            if user_fills_data is None:
+                raise ProviderError(f"order_status({order_id}): user_fills returned None")
+            if not isinstance(user_fills_data, list):
+                raise ProviderError(
+                    f"order_status({order_id}): user_fills returned unexpected type {type(user_fills_data).__name__}"
+                )
             filled = cost = fee = 0.0
-            for f in (c.info.user_fills(addr) or []):
-                if int(f.get("oid", -1)) != oid:
+            for f in user_fills_data:
+                if not isinstance(f, dict):
+                    continue
+                try:
+                    f_oid = int(f.get("oid") or -1)
+                except (TypeError, ValueError):
+                    continue
+                if f_oid != oid:
                     continue
                 sz = float(f.get("sz") or 0.0)
                 fill_price = float(f.get("px") or 0.0)
@@ -622,6 +652,9 @@ class HyperliquidProvider(MarketDataProvider):
                     fee += raw_fee * fill_price
                 elif not fee_token or fee_token == "USDC":
                     fee += raw_fee
+                elif fee_token == "HYPE" and self._token != "HYPE":
+                    hype_mid = c.spot_mid(c.resolve_spot_pair("HYPE")) or fill_price
+                    fee += raw_fee * hype_mid
                 else:
                     raise ProviderError(
                         f"order_status({order_id}): unknown feeToken {fee_token!r}"

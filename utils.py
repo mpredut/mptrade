@@ -314,12 +314,9 @@ All cache files (cache_*.json/.jsonl + .meta) live in the
 
 The folder can be overridden through the environment variable BINANCE_CACHE_DIR.
 """
-import os
+from cachepaths import cache_path as _cp_cache_path, get_cachedb_dir
 
-CACHE_DIR = os.environ.get(
-    "BINANCE_CACHE_DIR",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "cachedb"),
-)
+CACHE_DIR = get_cachedb_dir()
 
 
 def cache_path(name):
@@ -331,5 +328,4 @@ def cache_path(name):
         return name
     if os.path.isabs(name) or os.sep in name or (os.altsep and os.altsep in name):
         return name
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    return os.path.join(CACHE_DIR, name)
+    return _cp_cache_path(name)

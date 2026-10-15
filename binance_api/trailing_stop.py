@@ -53,8 +53,9 @@ from order_retry import (
 from trailing_core import TrailingCore, should_sell  # noqa: E402  (re-export should_sell for tests/compatibility)
 from botcore import (load_dotenv, required_bool_env, required_float_env,
                      required_int_env, single_instance)  # noqa: E402
+from cachepaths import cache_path  # noqa: E402
 
-DEFAULT_STATE = os.path.join(_ROOT, "cachedb", "trailing_state.json")
+DEFAULT_STATE = cache_path("trailing_state.json")
 
 
 # Load KEY=VALUE configuration from trailing.conf into the environment; external values override it.
