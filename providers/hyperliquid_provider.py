@@ -22,7 +22,7 @@ import threading
 import time
 from typing import List, Optional
 
-from .base import MarketDataProvider, _normalize_order
+from .base import MarketDataProvider, _normalize_order, bool_env
 from .strategy_executor import (
     OrderReconciliationCapabilities,
     OrderStatus,
@@ -101,7 +101,7 @@ class HyperliquidProvider(MarketDataProvider):
 
     def execution_enabled(self) -> bool:
         """Return whether the generic pipeline may create a real spot order."""
-        return os.environ.get(_LIVE_ENV, "false").strip().lower() == "true"
+        return bool_env(_LIVE_ENV)
 
     def reconciliation_capabilities(self) -> OrderReconciliationCapabilities:
         return OrderReconciliationCapabilities(
@@ -462,9 +462,6 @@ class HyperliquidProvider(MarketDataProvider):
                 closes, interval, observed_at, timestamps)
         except Exception as exc:
             raise ProviderError(f"ohlc_series({symbol}): {exc}") from exc
-
-    def ohlc_closes(self, symbol: str, interval_min: int) -> list:
-        return list(self.ohlc_series(symbol, interval_min).closes)
 
     def submit_order(self, symbol: str, side: str, qty: float,
                      price: Optional[float] = None, *, market: bool = False,

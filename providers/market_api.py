@@ -346,39 +346,6 @@ class BinanceProvider(MarketDataProvider):
             order_min=float(rules.lot_min), base_asset=rules.base_asset,
         )
 
-    def min_order_qty(self, symbol: str) -> float:
-        try:
-            pp = self.pair_precision(symbol)
-            if pp is not None:
-                return float(pp.order_min)
-        except Exception:
-            pass
-        return 0.0
-
-    def round_quantity(self, symbol: str, qty: float) -> float:
-        try:
-            pp = self.pair_precision(symbol)
-            if pp is not None and getattr(pp, "volume_decimals", None) is not None:
-                dec = int(pp.volume_decimals)
-                if dec >= 0:
-                    factor = 10 ** dec
-                    return math.floor(float(qty) * factor + 1e-12) / factor
-        except Exception:
-            pass
-        return float(qty)
-
-    def round_amount(self, symbol: str, qty: float) -> float:
-        return self.round_quantity(symbol, qty)
-
-    def round_price(self, symbol: str, price: float) -> float:
-        try:
-            pp = self.pair_precision(symbol)
-            if pp is not None and pp.price_decimals >= 0:
-                return round(float(price), pp.price_decimals)
-        except Exception:
-            pass
-        return super().round_price(symbol, price)
-
     def order_filter_refusal(self, symbol: str, side: str, price: float,
                              qty: float, *, market: bool = False,
                              enforce_business_minimum: bool = True
@@ -428,9 +395,6 @@ class BinanceProvider(MarketDataProvider):
             observed_at,
             timestamps,
         )
-
-    def ohlc_closes(self, symbol: str, interval_min: int) -> list:
-        return list(self.ohlc_series(symbol, interval_min).closes)
 
     def submit_order(self, symbol: str, side: str, qty: float,
                      price: Optional[float] = None, *, market: bool = False,

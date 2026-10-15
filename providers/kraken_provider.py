@@ -21,7 +21,7 @@ import math
 import time
 from typing import Optional, List
 
-from .base import MarketDataProvider, _normalize_order, env_value
+from .base import MarketDataProvider, _normalize_order, bool_env, env_value
 from .strategy_executor import (
     OrderReconciliationCapabilities,
     OrderStatus,
@@ -79,10 +79,7 @@ def _kraken_client_order_id(client_order_id: str) -> str:
 
 def _live() -> bool:
     # os.environ takes precedence, with kraken/.env as the API-key-style fallback.
-    v = os.environ.get("KRAKEN_LIVE_ORDERS")
-    if v is None:
-        v = env_value(_KRAKEN_DIR, "KRAKEN_LIVE_ORDERS")
-    return (v or "false").strip().lower() == "true"
+    return bool_env("KRAKEN_LIVE_ORDERS", _KRAKEN_DIR)
 
 
 def kraken_strategy_dry_run(force_paper: bool, strategy_execute: bool) -> bool:
@@ -577,6 +574,3 @@ class KrakenProvider(MarketDataProvider):
             )
         except Exception as exc:
             raise ProviderError(f"ohlc_series {symbol}: {exc}") from exc
-
-    def ohlc_closes(self, symbol: str, interval_min: int) -> list:
-        return list(self.ohlc_series(symbol, interval_min).closes)

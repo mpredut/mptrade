@@ -32,6 +32,16 @@ def env_value(folder: str, key: str) -> Optional[str]:
     return None
 
 
+def bool_env(key: str, folder: Optional[str] = None, default: bool = False) -> bool:
+    """Resolve a boolean flag from os.environ or optional provider .env/config.env."""
+    v = os.environ.get(key)
+    if v is None and folder is not None:
+        v = env_value(folder, key)
+    if v is None:
+        return default
+    return v.strip().lower() == "true"
+
+
 def normalize_order(order: dict) -> dict:
     """Normalize a native order to ``side``, ``price``, ``qty``, and ``timestamp``."""
     return {
@@ -234,3 +244,9 @@ class MarketDataProvider(ABC):
         latest = max(fills, key=lambda order: order.get("timestamp") or 0)
         price = float(latest.get("price") or 0)
         return price or None
+
+    def ohlc_closes(self, symbol: str, interval_min: int) -> list:
+        """Return completed-bar closing prices from closed interval series."""
+        if hasattr(self, "ohlc_series"):
+            return list(self.ohlc_series(symbol, interval_min).closes)
+        return []

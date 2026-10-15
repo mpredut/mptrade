@@ -17,7 +17,7 @@ import math
 import importlib
 from typing import Optional, List
 
-from .base import MarketDataProvider, _normalize_order, env_value
+from .base import MarketDataProvider, _normalize_order, bool_env, env_value
 from .strategy_executor import (
     OrderNotFound,
     OrderReconciliationCapabilities,
@@ -56,7 +56,7 @@ def _definitive_submit_failure(status: int, payload) -> bool:
 
 
 def _live() -> bool:
-    return os.environ.get("T212_LIVE_ORDERS", "false").strip().lower() == "true"
+    return bool_env("T212_LIVE_ORDERS")
 
 
 class T212Provider(MarketDataProvider):
@@ -398,11 +398,3 @@ class T212Provider(MarketDataProvider):
             order_min=_ORDER_MIN,
             base_asset=symbol,
         )
-
-    def min_order_qty(self, symbol: str) -> float:
-        return _ORDER_MIN if symbol else 0.0
-
-    def ohlc_closes(self, symbol: str, interval_min: int) -> list[float]:
-        # The T212 account feed exposes no OHLC. Its engine keeps the Yahoo feed and
-        # dedicated strategy; the generic engine treats [] as unavailable.
-        return []

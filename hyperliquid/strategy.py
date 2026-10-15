@@ -24,8 +24,14 @@ import time
 from dataclasses import dataclass
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
+if sys.path[:1] != [_HERE]:
+    if _HERE in sys.path:
+        sys.path.remove(_HERE)
     sys.path.insert(0, _HERE)
+for _mod_name in ("common", "notify", "hl_client", "market_data", "signals"):
+    _mod_file = getattr(sys.modules.get(_mod_name), "__file__", None)
+    if _mod_file and os.path.dirname(os.path.abspath(_mod_file)) != _HERE:
+        sys.modules.pop(_mod_name, None)
 
 from common import (
     log, are_close, required_env, required_float_env,
