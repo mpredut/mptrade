@@ -481,7 +481,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             inst = self._inst(p)
             first = inst.place("BUY", 100.0, 1.0)
             self.assertIsNotNone(first)
-            second = inst.place("SELL", 101.0, 1.0)   # < cooldown_sec after the first one.
+            second = inst.place("BUY", 101.0, 1.0)   # < cooldown_sec after the first one.
             self.assertIsNone(second)
             self.assertEqual(len(p.placed), 1)   # Only the first one reached the provider.
             lines = self._log_lines()
@@ -512,7 +512,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
                 bypass_profit_guard=True,
                 cooldown_pair_id="pair-1", caller_owns_retry=True)
             duplicate = inst.place(
-                "SELL", 102.0, 1.0, smart=False, wait_for_trend=False,
+                "BUY", 98.0, 1.0, smart=False, wait_for_trend=False,
                 bypass_profit_guard=True,
                 cooldown_pair_id="pair-1", caller_owns_retry=True)
 
@@ -529,7 +529,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             first = mkt.place(SYMBOL, "BUY", 100.0, 1.0)
             self.assertIsNotNone(first)
             self.assertEqual(len(p.placed), 1)
-            second = mkt.place(SYMBOL, "SELL", 101.0, 1.0)
+            second = mkt.place(SYMBOL, "BUY", 101.0, 1.0)
             self.assertIsNone(second)
             self.assertEqual(len(p.placed), 1)
 
@@ -1022,13 +1022,13 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         self.assertNotIn("p4", bypassed)
 
     def test_emergency_stop_loss_bypasses_cooldown(self):
-        """Emergency Stop-Loss exits must never be blocked by rapid-fire cooldown."""
+        """All SELL / exit orders must never be blocked by rapid-fire cooldown."""
         prov = _FakeProvider()
         inst = self._inst(prov)
 
         class BlockedSlot:
             allowed = False
-            info = {"side": "SELL", "timestamp": time.time() - 5}
+            info = {"side": "BUY", "timestamp": time.time() - 5}
             def commit(self, *a, **kw): pass
             def __enter__(self): return self
             def __exit__(self, *a): pass
@@ -1036,9 +1036,13 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         with patch("lock.trade_cooldown.trade_slot", return_value=BlockedSlot()), \
              patch("order_guard.daily_limit_guard", return_value=(True, "ok")), \
              patch("order_guard.profit_guard", return_value=True):
-            # Normal SELL is blocked by cooldown
+            # BUY is blocked by active cooldown
+            res_buy = inst.place("BUY", 100.0, 1.0, smart=False, wait_for_trend=False)
+            self.assertIsNone(res_buy)
+
+            # Normal SELL bypasses cooldown unconditionally (exits never blocked)
             res_normal = inst.place("SELL", 100.0, 1.0, smart=False, wait_for_trend=False)
-            self.assertIsNone(res_normal)
+            self.assertIsNotNone(res_normal)
 
             # Emergency STOP with kind="STOP" bypasses cooldown
             res_stop = inst.place("SELL", 100.0, 1.0, smart=False, wait_for_trend=False, kind="STOP")

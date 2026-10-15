@@ -658,14 +658,18 @@ class Instrument:
                 def commit(self, *args, **kwargs):
                     pass
 
-            is_stop_loss = bool(
-                kwargs.get("is_stop_loss")
+            # Cooldown anti-rapid-fire never blocks SELL / exits: risk reduction is unconditional.
+            is_exempt = bool(
+                side_u == "SELL"
+                or "cooldown" in bypassed_guards
+                or bypass_all
+                or kwargs.get("is_stop_loss")
                 or str(kwargs.get("kind", "")).upper() == "STOP"
                 or str(kwargs.get("motivation", "")).upper() == "STOP"
             )
             slot_ctx = (
                 contextlib.nullcontext(_BypassSlot())
-                if ("cooldown" in bypassed_guards or bypass_all or is_stop_loss)
+                if is_exempt
                 else trade_cooldown.trade_slot(side_u, self.symbol, pair_id=cooldown_pair_id)
             )
 
