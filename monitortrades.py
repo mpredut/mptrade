@@ -924,10 +924,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                     placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty, **place_kw)
                 if placed:
                     _SL_BOUNCE_STATE.pop(symbol, None)
-                    _PENDING_STOP_EXIT.pop(symbol, None)
-                    _LAST_EXIT_KIND[symbol] = "STOP"
-                    _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
-                    _save_mt_state()
+                    _resolve_exit(symbol, inst, kind="STOP")
 
                 # Rollback / restore resting TP order if Stop-Loss placement failed
                 if not placed:
@@ -937,7 +934,6 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                         # Do NOT restore cancelled TP orders; record pending stop exit to reconcile on next tick without duplicate submission.
                         print(f"[{symbol}] Stop-Loss submit outcome unknown/in-flight ({outcome_ctx.get('reason')}) — TP restoration deferred pending stop reconciliation")
                         _SL_BOUNCE_STATE.pop(symbol, None)
-                        _LAST_EXIT_KIND[symbol] = "STOP"
                         _PENDING_STOP_EXIT[symbol] = {
                             "time": current_time_s,
                             "qty": sellable_qty,
@@ -946,8 +942,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                             "intent_id": outcome_ctx.get("intent_id") or stop_intent_id,
                             "client_order_id": outcome_ctx.get("client_order_id") or stop_cid,
                         }
-                        _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
-                        _save_mt_state()
+                        _resolve_exit(symbol, inst, kind="STOP", clear_pending=False)
                     else:
                         _PENDING_STOP_EXIT.pop(symbol, None)
                         if prev_sl_state:
@@ -978,13 +973,12 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 _TP_RIDE_STATE.pop(symbol, None)
             _save_mt_state()
             from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss_if_recovered
-            _prov = getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None)
             clear_smart_stop_loss_if_recovered(
                 symbol,
                 price_decrease,
                 lost_threshold,
                 now=current_time_s,
-                provider=_prov,
+                provider=_inst_provider(inst),
                 current_price=current_price,
                 buy_price=buy_price,
             )
