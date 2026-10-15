@@ -636,6 +636,383 @@ def _is_pending_exit_active(symbol: str, inst, sellable_qty: float, min_qty: flo
     return False
 
 
+def _is_trend_gate_deferred(symbol: str) -> bool:
+    """Check whether the trend gate would defer a SELL placement."""
+    try:
+        import cacheManager as cm
+        short_tm = cm.get_short_trend_manager()
+        try:
+            return bool(short_tm.should_wait("SELL", symbol, use_noise_gate=False))
+        except TypeError:
+            return bool(short_tm.should_wait("SELL", symbol))
+    except Exception:
+        return False
+
+
+def _cancel_resting_tp_orders(inst, symbol: str) -> list[dict]:
+    """Cancel open resting TP SELL orders to unlock balance for Stop-Loss; return cancelled orders."""
+    cancelled = []
+    try:
+        open_orders_fn = getattr(inst, "open_orders", None)
+        active_orders = open_orders_fn() if callable(open_orders_fn) else []
+        for active_ord in (active_orders or []):
+            if str(active_ord.get("side", "")).upper() == "SELL":
+                oid = str(active_ord.get("orderId") or active_ord.get("id") or "")
+                if oid:
+                    print(f"[{symbol}] Cancelling open resting TP sell order {oid} to unlock coins for Stop-Loss")
+                    cancel_fn = getattr(inst, "cancel_order", None)
+                    if callable(cancel_fn):
+                        cancel_fn(oid)
+                        cancelled.append(active_ord)
+    except Exception as cancel_exc:
+        print(f"[{symbol}] Warning: error checking/cancelling open TP orders: {cancel_exc}")
+    return cancelled
+
+
+def _restore_resting_tp_orders(inst, symbol: str, cancelled_orders: list[dict], sellable_qty: float, sl_state: Optional[str]):
+    """Restore previously cancelled TP orders if Stop-Loss submission failed."""
+    if not cancelled_orders:
+        return
+    restore_cancelled_orders(
+        cancelled_orders,
+        restore_fn=lambda p: inst.place(
+            "SELL",
+            float(p.get("price") or p.get("limit") or 0.0),
+            float(p.get("qty") or p.get("origQty") or p.get("vol") or 0.0),
+            kind="TP",
+            wait_for_trend=False,
+        ),
+        log_fn=lambda msg: print(f"[{symbol}] {msg}"),
+        reason=f"Stop-Loss was not placed (sellable_qty={sellable_qty}, state={sl_state})",
+    )
+
+
+def _evaluate_hard_take_profit(
+    inst,
+    snapshot: PositionSnapshot,
+    hard_tp_pct: float,
+    hard_tp_frac: float,
+    hard_tp_cd: float,
+    min_qty: float,
+    sbs: float,
+) -> bool:
+    """Evaluate and execute Hard Take-Profit if eligible, returning True if sold."""
+    symbol = snapshot.symbol
+    sellable_qty = snapshot.sellable_qty
+    valid_cfg = 0 < hard_tp_frac <= 1 and hard_tp_pct > 0 and hard_tp_cd >= 0
+    if not (sellable_qty > 0 and valid_cfg):
+        return False
+    current_time_s = snapshot.current_time_s
+    last_hard = _hard_tp_last.get(symbol, 0)
+    if current_time_s - last_hard < hard_tp_cd:
+        print(f"[HARD-TP] {symbol} +{snapshot.gain_pct:.1f}% but in cooldown (the last one "
+              f"{u.secondsToHours(current_time_s - last_hard):.1f}h)")
+        return False
+    hard_qty = round(sellable_qty * hard_tp_frac, 4)
+    print(f"[HARD-TP] {symbol} +{snapshot.gain_pct:.1f}% >= {hard_tp_pct*100:.0f}% "
+          f"-> vand {hard_tp_frac*100:.0f}% ({hard_qty}) INDIFERENT de trend")
+    hard_tp_outcome_ctx = {}
+    placed = _place_guarded(
+        inst, "SELL", snapshot.current_price, hard_qty, min_qty,
+        safeback_seconds=sbs, force=True, cancelorders=True,
+        hours=MT_SELL_SAFEBACK_HOURS,
+        _outcome_context=hard_tp_outcome_ctx,
+    )
+    if placed or hard_tp_outcome_ctx.get("state") == "unknown":
+        _hard_tp_last[symbol] = current_time_s
+        _resolve_exit(symbol, inst, kind="TP")
+        return True
+    return False
+
+
+def _log_tp_hold_state(symbol: str, snapshot: PositionSnapshot, decision: ExitDecision, gain_threshold: float):
+    ride_state = _TP_RIDE_STATE.get(symbol, {})
+    peak_px = ride_state.get("peak_price", snapshot.current_price)
+    pullback_from_peak = snapshot.pullback_ratio(peak_px)
+    stagnation_elapsed = snapshot.current_time_s - ride_state.get("last_peak_time", snapshot.current_time_s)
+    profit_floor = max(gain_threshold * MT_TP_PROFIT_FLOOR_RATIO, MT_TP_PROFIT_FLOOR_MIN_PCT)
+    if decision.metadata.get("state") == "initiated":
+        print(f"[{symbol}] Take-Profit entered trend-ride watch (trend up): gain={snapshot.gain_pct:.2f}%, "
+              f"floor={profit_floor*100:.2f}%, starting {MT_TP_STAGNATION_MAX_SEC:.0f}s stagnation timer")
+    else:
+        print(f"[{symbol}] Take-Profit deferred by upward trend (riding peak={peak_px:.4f} "
+              f"[+ {ride_state.get('peak_gain', 0.0)*100:.2f}%], pullback={pullback_from_peak*100:.2f}%, "
+              f"stagnation={stagnation_elapsed:.0f}s/{MT_TP_STAGNATION_MAX_SEC:.0f}s)")
+
+
+def _execute_take_profit(
+    inst,
+    snapshot: PositionSnapshot,
+    tp_decision: ExitDecision,
+    sbs: float,
+    min_qty: float,
+    prev_tp_state: dict,
+    gain_threshold: float,
+) -> bool:
+    """Execute Take-Profit exit order with state persistence and rollback."""
+    symbol = snapshot.symbol
+    current_price = snapshot.current_price
+    sellable_qty = snapshot.sellable_qty
+    current_time_s = snapshot.current_time_s
+
+    print(f"Price increased with {snapshot.gain_pct:.2f}% by more than {gain_threshold * 100:.2f}% versus buy price! (decision={tp_decision.reason})")
+    if sellable_qty <= 0:
+        print(f"No can sell (sellable_qty={sellable_qty})")
+        if prev_tp_state:
+            _TP_RIDE_STATE[symbol] = prev_tp_state
+            _save_mt_state()
+        return False
+
+    bypass_pg = current_price < snapshot.avg_buy_price or bool(tp_decision.forced)
+    tp_intent_id = f"mt_tp_{symbol}_{int(current_time_s)}"
+    tp_outcome_ctx = {}
+    placed = _place_guarded(
+        inst, "SELL", current_price, sellable_qty, min_qty,
+        safeback_seconds=sbs, force=bool(tp_decision.forced), cancelorders=True,
+        hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=bypass_pg,
+        intent_id=tp_intent_id,
+        _outcome_context=tp_outcome_ctx,
+    )
+    if placed:
+        _TP_RIDE_STATE.pop(symbol, None)
+        _resolve_exit(symbol, inst, kind="TP")
+        return True
+    elif tp_outcome_ctx.get("state") == "unknown":
+        _TP_RIDE_STATE.pop(symbol, None)
+        print(f"[{symbol}] Take-Profit submit outcome unknown/in-flight ({tp_outcome_ctx.get('reason')}) — deferring duplicate submission")
+        _PENDING_STOP_EXIT[symbol] = {
+            "time": current_time_s,
+            "qty": sellable_qty,
+            "price": current_price,
+            "reason": tp_outcome_ctx.get("reason", "unknown"),
+            "intent_id": tp_outcome_ctx.get("intent_id") or tp_intent_id,
+            "client_order_id": tp_outcome_ctx.get("client_order_id"),
+            "kind": "TP",
+        }
+        _resolve_exit(symbol, inst, kind="TP", clear_pending=False)
+        return True
+    elif prev_tp_state:
+        _TP_RIDE_STATE[symbol] = prev_tp_state
+        _save_mt_state()
+    return False
+
+
+def _log_sl_hold_state(symbol: str, snapshot: PositionSnapshot, decision: ExitDecision, lost_threshold: float):
+    bounce_state = _SL_BOUNCE_STATE.get(symbol, {})
+    peak_px = bounce_state.get("peak_bounce_price", snapshot.current_price)
+    elapsed = snapshot.current_time_s - bounce_state.get("started_at", snapshot.current_time_s)
+    disaster_floor = decision.metadata.get("disaster_floor", lost_threshold + MT_SL_DISASTER_BUFFER_MIN_PCT)
+    if decision.metadata.get("state") == "initiated":
+        print(f"[{symbol}] Stop-Loss entered bounce watch (trend up): dip={snapshot.loss_pct:.2f}%, "
+              f"disaster_floor={disaster_floor*100:.2f}%, starting {MT_SL_TREND_DEFER_MAX_SEC:.0f}s timer")
+    elif "smart_stop_loss_deferred" in decision.reason:
+        print(f"[{symbol}] Smart Stop-Loss DEFERRED: {decision.reason}")
+    else:
+        print(f"[{symbol}] Stop-Loss deferred by upward trend ({elapsed:.0f}s/{MT_SL_TREND_DEFER_MAX_SEC:.0f}s, "
+              f"loss={snapshot.loss_pct:.2f}%, peak_px={peak_px:.4f}, floor={disaster_floor*100:.2f}%)")
+
+
+def _execute_stop_loss(
+    inst,
+    snapshot: PositionSnapshot,
+    sl_decision: ExitDecision,
+    sbs: float,
+    min_qty: float,
+    lost_threshold: float,
+    prev_sl_state: dict,
+    pending_stop: Optional[dict] = None,
+) -> bool:
+    """Execute Stop-Loss exit order, cancelling resting orders and managing rollback."""
+    symbol = snapshot.symbol
+    current_price = snapshot.current_price
+    current_time_s = snapshot.current_time_s
+    sl_reason = sl_decision.reason
+
+    if sl_decision.forced and sl_decision.metadata.get("priority") == 1:
+        print(f"🛑 [{symbol}] MHDSL DISASTER CIRCUIT BREAKER: {sl_reason} — bypassing bounce deferral!")
+    print(f"Price decreased with {snapshot.loss_pct}% by more than {lost_threshold * 100}% versus buy price! (decision={sl_reason})")
+
+    # Pre-flight gate check: verify trend manager will not defer
+    if not sl_decision.forced and _is_trend_gate_deferred(symbol):
+        print(f"[{symbol}] Stop-Loss placement would be deferred by trend gate (trend up) — keeping resting TP orders intact!")
+        if prev_sl_state:
+            _SL_BOUNCE_STATE[symbol] = prev_sl_state
+        return False
+
+    # Atomic cancel-and-replace: unlock coins for Stop-Loss
+    cancelled_tp_orders = _cancel_resting_tp_orders(inst, symbol)
+
+    # Refresh available volume
+    avail_qty_refreshed = inst.free()
+    owned_qty = snapshot.net_qty
+    isolation = inst.isolation
+    sellable_qty = snapshot.sellable_qty
+    if avail_qty_refreshed is not None:
+        try:
+            avail_qty = float(avail_qty_refreshed)
+            sellable_qty = min(avail_qty, owned_qty) if isolation == "own_ledger" else avail_qty
+        except (TypeError, ValueError):
+            pass
+
+    placed = False
+    outcome_ctx = {}
+    if sellable_qty > 0:
+        stop_intent_id = (pending_stop or {}).get("intent_id") or f"mt_sl_{symbol}_{int(current_time_s)}"
+        stop_cid = (pending_stop or {}).get("client_order_id")
+        place_kw = {
+            "safeback_seconds": sbs, "force": True, "cancelorders": True,
+            "hours": MT_SELL_SAFEBACK_HOURS, "bypass_profit_guard": True,
+            "bypass_guards": {"all"}, "wait_for_trend": False,
+            "kind": "STOP", "is_stop_loss": True,
+            "intent_id": stop_intent_id,
+            "_outcome_context": outcome_ctx,
+        }
+        if stop_cid:
+            place_kw["client_order_id"] = stop_cid
+        placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty, **place_kw)
+
+    if placed:
+        _SL_BOUNCE_STATE.pop(symbol, None)
+        _resolve_exit(symbol, inst, kind="STOP")
+        return True
+
+    # Rollback / restore resting TP order if Stop-Loss placement failed
+    sl_state = outcome_ctx.get("state")
+    if sl_state == "unknown":
+        print(f"[{symbol}] Stop-Loss submit outcome unknown/in-flight ({outcome_ctx.get('reason')}) — TP restoration deferred pending stop reconciliation")
+        _SL_BOUNCE_STATE.pop(symbol, None)
+        _PENDING_STOP_EXIT[symbol] = {
+            "time": current_time_s,
+            "qty": sellable_qty,
+            "price": current_price,
+            "reason": outcome_ctx.get("reason", "unknown"),
+            "intent_id": outcome_ctx.get("intent_id") or stop_intent_id,
+            "client_order_id": outcome_ctx.get("client_order_id") or stop_cid,
+            "kind": "STOP",
+        }
+        _resolve_exit(symbol, inst, kind="STOP", clear_pending=False)
+        return True
+    else:
+        _PENDING_STOP_EXIT.pop(symbol, None)
+        if prev_sl_state:
+            _SL_BOUNCE_STATE[symbol] = prev_sl_state
+            _save_mt_state()
+        if cancelled_tp_orders:
+            _restore_resting_tp_orders(inst, symbol, cancelled_tp_orders, sellable_qty, sl_state)
+        print(f"No can sell (sellable_qty={sellable_qty})")
+        return False
+
+
+def _handle_position_recovery(
+    inst,
+    snapshot: PositionSnapshot,
+    lost_threshold: float,
+):
+    """Reset tracking structures and notify Smart-SL guard when position recovers into neutral/safe territory."""
+    symbol = snapshot.symbol
+    if symbol in _SL_BOUNCE_STATE:
+        print(f"[{symbol}] 🎉 Stop-Loss bounce successfully recovered! Position saved from dip "
+              f"({snapshot.loss_pct:.2f}% <= {lost_threshold*100:.2f}%).")
+        _SL_BOUNCE_STATE.pop(symbol, None)
+    if symbol in _PENDING_STOP_EXIT:
+        _PENDING_STOP_EXIT.pop(symbol, None)
+    if symbol in _TP_RIDE_STATE:
+        _TP_RIDE_STATE.pop(symbol, None)
+    _save_mt_state()
+    try:
+        from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss_if_recovered
+        clear_smart_stop_loss_if_recovered(
+            symbol,
+            snapshot.loss_ratio,
+            lost_threshold,
+            now=snapshot.current_time_s,
+            provider=_inst_provider(inst),
+            current_price=snapshot.current_price,
+            buy_price=snapshot.avg_buy_price,
+        )
+    except Exception:
+        pass
+    print("Nothing interesting")
+
+
+def _apply_post_stop_ai_guard(
+    symbol: str,
+    current_price: float,
+    sell_price: float,
+    sell_time: float,
+    reentry_snap: ReentrySnapshot,
+    buy_budget: Optional[float],
+    buy_qty_cfg: Optional[float],
+    qty: float,
+) -> tuple[bool, Optional[float], Optional[float], float]:
+    """Validate post-STOP re-entry via Pillar 3 AI guard, returning (allowed, budget, cfg, qty)."""
+    try:
+        from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
+        _ps_guard = get_post_stop_reentry_guard()
+        _trough_px = reentry_snap.post_sell_trough or min(sell_price, current_price)
+        _bounce_ratio = reentry_snap.bounce_ratio(_trough_px)
+        _est_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
+        _est_notional = _est_qty * current_price
+        _ps_dec = _ps_guard.check(
+            symbol=symbol,
+            current_price=current_price,
+            last_sell_price=sell_price,
+            trough=_trough_px,
+            bounce_pct=_bounce_ratio,
+            qty=_est_qty,
+            notional_eur=_est_notional,
+            last_sell_time_s=sell_time,
+        )
+        if not _ps_dec.allowed:
+            print(f"[{symbol}] Post-STOP re-entry VETOED by Pillar 3 AI: {_ps_dec.reason}")
+            return False, buy_budget, buy_qty_cfg, qty
+        elif _ps_dec.suggested_scale < 1.0:
+            print(f"[{symbol}] Post-STOP re-entry DOWNSCALED by Pillar 3 AI to {_ps_dec.suggested_scale * 100:.0f}%: {_ps_dec.reason}")
+            scale = _ps_dec.suggested_scale
+            if buy_budget:
+                buy_budget *= scale
+            elif buy_qty_cfg:
+                buy_qty_cfg *= scale
+            else:
+                qty *= scale
+    except Exception as e:
+        print(f"[{symbol}] Post-STOP AI guard error (fail-open fallback): {e}")
+    return True, buy_budget, buy_qty_cfg, qty
+
+
+def _execute_reentry_buy(
+    inst,
+    symbol: str,
+    current_price: float,
+    buy_qty: float,
+    min_qty: float,
+    sbs: float,
+    last_exit_kind: str,
+    prev_reentry_state: dict,
+) -> bool:
+    """Submit guarded re-entry BUY order and clear tracking state upon submission."""
+    _default_offset = min(MT_BUY_PRICE_OFFSET, current_price * 0.01)
+    _buy_offset = inst.param("mt", "buy_price_offset", _default_offset, float)
+    reentry_outcome_ctx = {}
+    reentry_bypass = {"GI3"} if last_exit_kind == "STOP" else None
+    placed = _place_guarded(
+        inst, "BUY", current_price + _buy_offset, buy_qty, min_qty,
+        safeback_seconds=sbs, cancelorders=True,
+        hours=MT_BUY_SAFEBACK_HOURS,
+        bypass_guards=reentry_bypass,
+        _outcome_context=reentry_outcome_ctx,
+    )
+    if placed or reentry_outcome_ctx.get("state") == "unknown":
+        _REENTRY_STATE.pop(symbol, None)
+        _LAST_EXIT_KIND.pop(symbol, None)
+        _save_mt_state()
+        return True
+    elif prev_reentry_state:
+        _REENTRY_STATE[symbol] = prev_reentry_state
+        _save_mt_state()
+    return False
+
+
 def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None, lost_threshold=None,
                             now_fn=None):
     """Use injectable ``now_fn`` so replay time can follow its market-data provider."""
@@ -734,244 +1111,44 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         price_decrease = snapshot.loss_ratio
 
         print(f"(increase: {snapshot.gain_pct}%, decrease: {snapshot.loss_pct}%)")
-        # 3.0. Hard TP sells a fraction on a large gain regardless of trend. Tolerance
-        # prevents permanently missing a peak that fell just short on one tick.
-        hard_tp_hit = snapshot.in_tp_territory(hard_tp_pct, MT_ARE_CLOSE_TOLERANCE_PCT)
-        hard_tp_config_valid = 0 < hard_tp_frac <= 1 and hard_tp_pct > 0 and hard_tp_cd >= 0
-        if HARD_TP_ENABLED and hard_tp_hit and sellable_qty > 0 and hard_tp_config_valid:
-            if current_time_s - _hard_tp_last.get(symbol, 0) >= hard_tp_cd:
-                hard_qty = round(sellable_qty * hard_tp_frac, 4)
-                print(f"[HARD-TP] {symbol} +{price_increase*100:.1f}% >= {hard_tp_pct*100:.0f}% "
-                      f"-> vand {hard_tp_frac*100:.0f}% ({hard_qty}) INDIFERENT de trend")
-                hard_tp_outcome_ctx = {}
-                placed = _place_guarded(inst, "SELL", current_price, hard_qty, min_qty,
-                                  safeback_seconds=sbs, force=True, cancelorders=True,
-                                  hours=MT_SELL_SAFEBACK_HOURS,
-                                  _outcome_context=hard_tp_outcome_ctx)
-                if placed or hard_tp_outcome_ctx.get("state") == "unknown":
-                    _hard_tp_last[symbol] = current_time_s
-                    _resolve_exit(symbol, inst, kind="TP")
-                    return   # Already sold this tick; do not use stale balance below.
-            else:
-                print(f"[HARD-TP] {symbol} +{price_increase*100:.1f}% but in cooldown (the last one "
-                      f"{u.secondsToHours(current_time_s - _hard_tp_last.get(symbol, 0)):.1f}h)")
-        # 3.1. Evaluate the existing SELL placement rules via PositionExitManager.
-        # MDHTP (Take-Profit) & MHDSL (Stop-Loss) mirror engines.
-        sl_price_territory = snapshot.in_sl_territory(lost_threshold, MT_ARE_CLOSE_TOLERANCE_PCT)
+        # 3.0. Hard TP sells a fraction on a large gain regardless of trend.
+        if HARD_TP_ENABLED and snapshot.in_tp_territory(hard_tp_pct, MT_ARE_CLOSE_TOLERANCE_PCT):
+            if _evaluate_hard_take_profit(inst, snapshot, hard_tp_pct, hard_tp_frac, hard_tp_cd, min_qty, sbs):
+                return   # Already sold this tick; do not use stale balance below.
 
+        # 3.1. Evaluate the existing SELL placement rules via PositionExitManager.
+        sl_price_territory = snapshot.in_sl_territory(lost_threshold, MT_ARE_CLOSE_TOLERANCE_PCT)
         if not sl_price_territory and symbol in _SL_BOUNCE_STATE:
-            print(f"[{symbol}] Price recovered above stop-loss threshold ({price_decrease*100:.2f}% < {lost_threshold*100:.2f}%) — clearing bounce watch")
+            print(f"[{symbol}] Price recovered above stop-loss threshold ({snapshot.loss_pct:.2f}% < {lost_threshold*100:.2f}%) — clearing bounce watch")
             _SL_BOUNCE_STATE.pop(symbol, None)
             _save_mt_state()
 
         in_sl_territory = sl_price_territory or symbol in _SL_BOUNCE_STATE
-
         prev_tp_state = dict(_TP_RIDE_STATE.get(symbol, {}))
         tp_decision = (
             exit_mgr.evaluate_take_profit(snapshot, custom_threshold=gain_threshold)
             if not in_sl_territory
             else ExitDecision(ExitAction.HOLD, False, "not_in_tp_territory")
         )
+
         if tp_decision.reason != "not_in_tp_territory":
             if tp_decision.action == ExitAction.HOLD:
-                ride_state = _TP_RIDE_STATE.get(symbol, {})
-                peak_px = ride_state.get("peak_price", current_price)
-                pullback_from_peak = (peak_px - current_price) / peak_px if peak_px > 0 else 0.0
-                stagnation_elapsed = current_time_s - ride_state.get("last_peak_time", current_time_s)
-                profit_floor = max(gain_threshold * MT_TP_PROFIT_FLOOR_RATIO, MT_TP_PROFIT_FLOOR_MIN_PCT)
-                if tp_decision.metadata.get("state") == "initiated":
-                    print(f"[{symbol}] Take-Profit entered trend-ride watch (trend up): gain={price_increase*100:.2f}%, "
-                          f"floor={profit_floor*100:.2f}%, starting {MT_TP_STAGNATION_MAX_SEC:.0f}s stagnation timer")
-                else:
-                    print(f"[{symbol}] Take-Profit deferred by upward trend (riding peak={peak_px:.4f} "
-                          f"[+ {ride_state.get('peak_gain', 0.0)*100:.2f}%], pullback={pullback_from_peak*100:.2f}%, "
-                          f"stagnation={stagnation_elapsed:.0f}s/{MT_TP_STAGNATION_MAX_SEC:.0f}s)")
+                _log_tp_hold_state(symbol, snapshot, tp_decision, gain_threshold)
             else:
-                tp_forced_reason = tp_decision.reason
-                print(f"Price increased with {price_increase * 100:.2f}% by more than {gain_threshold * 100:.2f}% versus buy price! (decision={tp_forced_reason})")
-                placed = False
-                tp_outcome_ctx = {}
-                if sellable_qty > 0:
-                    bypass_pg = current_price < buy_price or bool(tp_decision.forced)
-                    tp_intent_id = f"mt_tp_{symbol}_{int(current_time_s)}"
-                    placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
-                        safeback_seconds=sbs, force=bool(tp_decision.forced), cancelorders=True,
-                        hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=bypass_pg,
-                        intent_id=tp_intent_id,
-                        _outcome_context=tp_outcome_ctx)
-                    if placed:
-                        _TP_RIDE_STATE.pop(symbol, None)
-                        _resolve_exit(symbol, inst, kind="TP")
-                    elif tp_outcome_ctx.get("state") == "unknown":
-                        _TP_RIDE_STATE.pop(symbol, None)
-                        print(f"[{symbol}] Take-Profit submit outcome unknown/in-flight ({tp_outcome_ctx.get('reason')}) — deferring duplicate submission")
-                        _PENDING_STOP_EXIT[symbol] = {
-                            "time": current_time_s,
-                            "qty": sellable_qty,
-                            "price": current_price,
-                            "reason": tp_outcome_ctx.get("reason", "unknown"),
-                            "intent_id": tp_outcome_ctx.get("intent_id") or tp_intent_id,
-                            "client_order_id": tp_outcome_ctx.get("client_order_id"),
-                            "kind": "TP",
-                        }
-                        _resolve_exit(symbol, inst, kind="TP", clear_pending=False)
-                    elif prev_tp_state:
-                        _TP_RIDE_STATE[symbol] = prev_tp_state
-                        _save_mt_state()
-                else:
-                    print(f"No can sell (sellable_qty={sellable_qty})")
-                    if prev_tp_state:
-                        _TP_RIDE_STATE[symbol] = prev_tp_state
-                        _save_mt_state()
+                _execute_take_profit(inst, snapshot, tp_decision, sbs, min_qty, prev_tp_state, gain_threshold)
         elif in_sl_territory:
             pending_stop = _PENDING_STOP_EXIT.get(symbol)
             if _is_pending_exit_active(symbol, inst, sellable_qty, min_qty, current_time_s):
                 return
-
             _TP_RIDE_STATE.pop(symbol, None)
             prev_sl_state = dict(_SL_BOUNCE_STATE.get(symbol, {}))
             sl_decision = exit_mgr.evaluate_stop_loss(snapshot, custom_threshold=lost_threshold)
-            disaster_floor = sl_decision.metadata.get("disaster_floor", lost_threshold + MT_SL_DISASTER_BUFFER_MIN_PCT)
-
             if sl_decision.action == ExitAction.HOLD:
-                bounce_state = _SL_BOUNCE_STATE.get(symbol, {})
-                peak_px = bounce_state.get("peak_bounce_price", current_price)
-                elapsed = current_time_s - bounce_state.get("started_at", current_time_s)
-                if sl_decision.metadata.get("state") == "initiated":
-                    print(f"[{symbol}] Stop-Loss entered bounce watch (trend up): dip={price_decrease*100:.2f}%, "
-                          f"disaster_floor={disaster_floor*100:.2f}%, starting {MT_SL_TREND_DEFER_MAX_SEC:.0f}s timer")
-                elif "smart_stop_loss_deferred" in sl_decision.reason:
-                    print(f"[{symbol}] Smart Stop-Loss DEFERRED: {sl_decision.reason}")
-                else:
-                    print(f"[{symbol}] Stop-Loss deferred by upward trend ({elapsed:.0f}s/{MT_SL_TREND_DEFER_MAX_SEC:.0f}s, "
-                          f"loss={price_decrease*100:.2f}%, peak_px={peak_px:.4f}, floor={disaster_floor*100:.2f}%)")
+                _log_sl_hold_state(symbol, snapshot, sl_decision, lost_threshold)
             else:
-                sl_reason = sl_decision.reason
-                if sl_decision.forced and sl_decision.metadata.get("priority") == 1:
-                    print(f"🛑 [{symbol}] MHDSL DISASTER CIRCUIT BREAKER: {sl_reason} — bypassing bounce deferral!")
-                print(f"Price decreased with {price_decrease * 100}% by more than {lost_threshold * 100}% versus buy price! (decision={sl_reason})")
-                # Pre-flight gate check: verify that Instrument.place will not defer by trend before touching resting orders
-                # (only applies if exit is not forced by timeout/rollover/disaster)
-                if not sl_decision.forced:
-                    try:
-                        import cacheManager as cm
-                        short_tm = cm.get_short_trend_manager()
-                        try:
-                            deferred = short_tm.should_wait("SELL", symbol, use_noise_gate=False)
-                        except TypeError:
-                            deferred = short_tm.should_wait("SELL", symbol)
-                        if deferred:
-                            print(f"[{symbol}] Stop-Loss placement would be deferred by trend gate (trend up) — keeping resting TP orders intact!")
-                            if prev_sl_state:
-                                _SL_BOUNCE_STATE[symbol] = prev_sl_state
-                            return
-                    except Exception as _tm_err:
-                        pass
-
-                # Atomic cancel-and-replace: remember cancelled orders for rollback if placement fails
-                cancelled_tp_orders = []
-                try:
-                    open_orders_fn = getattr(inst, "open_orders", None)
-                    active_orders = open_orders_fn() if callable(open_orders_fn) else []
-                    for active_ord in (active_orders or []):
-                        if str(active_ord.get("side", "")).upper() == "SELL":
-                            oid = str(active_ord.get("orderId") or active_ord.get("id") or "")
-                            if oid:
-                                print(f"[{symbol}] Cancelling open resting TP sell order {oid} to unlock coins for Stop-Loss")
-                                cancel_fn = getattr(inst, "cancel_order", None)
-                                if callable(cancel_fn):
-                                    cancel_fn(oid)
-                                    cancelled_tp_orders.append(active_ord)
-                except Exception as cancel_exc:
-                    print(f"[{symbol}] Warning: error checking/cancelling open TP orders: {cancel_exc}")
-
-                # Refresh available quantity after unlocking
-                avail_qty_refreshed = inst.free()
-                if avail_qty_refreshed is not None:
-                    try:
-                        avail_qty = float(avail_qty_refreshed)
-                        sellable_qty = min(avail_qty, owned_qty) if isolation == "own_ledger" else avail_qty
-                    except (TypeError, ValueError):
-                        pass
-
-                # Stop-loss is an emergency capital preservation exit: bypass discretionary trade cooldowns
-                placed = False
-                outcome_ctx = {}
-                if sellable_qty > 0:
-                    stop_intent_id = (pending_stop or {}).get("intent_id") or f"mt_sl_{symbol}_{int(current_time_s)}"
-                    stop_cid = (pending_stop or {}).get("client_order_id")
-                    place_kw = {
-                        "safeback_seconds": sbs, "force": True, "cancelorders": True,
-                        "hours": MT_SELL_SAFEBACK_HOURS, "bypass_profit_guard": True,
-                        "bypass_guards": {"all"}, "wait_for_trend": False,
-                        "kind": "STOP", "is_stop_loss": True,
-                        "intent_id": stop_intent_id,
-                        "_outcome_context": outcome_ctx,
-                    }
-                    if stop_cid:
-                        place_kw["client_order_id"] = stop_cid
-                    placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty, **place_kw)
-                if placed:
-                    _SL_BOUNCE_STATE.pop(symbol, None)
-                    _resolve_exit(symbol, inst, kind="STOP")
-
-                # Rollback / restore resting TP order if Stop-Loss placement failed
-                if not placed:
-                    sl_state = outcome_ctx.get("state")
-                    if sl_state == "unknown":
-                        # The stop submit was attempted, but outcome is unknown / ambiguous / pending reconciliation.
-                        # Do NOT restore cancelled TP orders; record pending stop exit to reconcile on next tick without duplicate submission.
-                        print(f"[{symbol}] Stop-Loss submit outcome unknown/in-flight ({outcome_ctx.get('reason')}) — TP restoration deferred pending stop reconciliation")
-                        _SL_BOUNCE_STATE.pop(symbol, None)
-                        _PENDING_STOP_EXIT[symbol] = {
-                            "time": current_time_s,
-                            "qty": sellable_qty,
-                            "price": current_price,
-                            "reason": outcome_ctx.get("reason", "unknown"),
-                            "intent_id": outcome_ctx.get("intent_id") or stop_intent_id,
-                            "client_order_id": outcome_ctx.get("client_order_id") or stop_cid,
-                        }
-                        _resolve_exit(symbol, inst, kind="STOP", clear_pending=False)
-                    else:
-                        _PENDING_STOP_EXIT.pop(symbol, None)
-                        if prev_sl_state:
-                            _SL_BOUNCE_STATE[symbol] = prev_sl_state
-                            _save_mt_state()
-                        if cancelled_tp_orders:
-                            restore_cancelled_orders(
-                                cancelled_tp_orders,
-                                restore_fn=lambda p: inst.place(
-                                    "SELL",
-                                    float(p.get("price") or p.get("limit") or 0.0),
-                                    float(p.get("qty") or p.get("origQty") or p.get("vol") or 0.0),
-                                    kind="TP",
-                                    wait_for_trend=False,
-                                ),
-                                log_fn=lambda msg: print(f"[{symbol}] {msg}"),
-                                reason=f"Stop-Loss was not placed (sellable_qty={sellable_qty}, state={sl_state})",
-                            )
-                        print(f"No can sell (sellable_qty={sellable_qty})")
+                _execute_stop_loss(inst, snapshot, sl_decision, sbs, min_qty, lost_threshold, prev_sl_state, pending_stop)
         else:
-            if symbol in _SL_BOUNCE_STATE:
-                print(f"[{symbol}] 🎉 Stop-Loss bounce successfully recovered! Position saved from dip "
-                      f"({price_decrease*100:.2f}% <= {lost_threshold*100:.2f}%).")
-                _SL_BOUNCE_STATE.pop(symbol, None)
-            if symbol in _PENDING_STOP_EXIT:
-                _PENDING_STOP_EXIT.pop(symbol, None)
-            if symbol in _TP_RIDE_STATE:
-                _TP_RIDE_STATE.pop(symbol, None)
-            _save_mt_state()
-            from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss_if_recovered
-            clear_smart_stop_loss_if_recovered(
-                symbol,
-                price_decrease,
-                lost_threshold,
-                now=current_time_s,
-                provider=_inst_provider(inst),
-                current_price=current_price,
-                buy_price=buy_price,
-            )
-            print(f"Nothing interesting")
+            _handle_position_recovery(inst, snapshot, lost_threshold)
 
     # 4. Evaluate SELL history.
     if trade_orders_sell:     
@@ -1023,40 +1200,15 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
 
         if last_exit_kind == "STOP":
             print(f"[{symbol}] Post-STOP recovery bounce confirmed: {reentry_dec.reason}")
-            # --- PILLAR 3: Post-Stop Re-entry AI Validator (Gemini LLM) ---
-            try:
-                from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
-                _ps_guard = get_post_stop_reentry_guard()
-                _trough_px = reentry_snap.post_sell_trough or min(sell_price, current_price)
-                _bounce_ratio = (current_price - _trough_px) / _trough_px if _trough_px > 0 else 0.0
-                _est_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
-                _est_notional = _est_qty * current_price
-                _ps_dec = _ps_guard.check(
-                    symbol=symbol,
-                    current_price=current_price,
-                    last_sell_price=sell_price,
-                    trough=_trough_px,
-                    bounce_pct=_bounce_ratio,
-                    qty=_est_qty,
-                    notional_eur=_est_notional,
-                    last_sell_time_s=sell_time,
-                )
-                if not _ps_dec.allowed:
-                    print(f"[{symbol}] Post-STOP re-entry VETOED by Pillar 3 AI: {_ps_dec.reason}")
-                    if prev_reentry_state:
-                        _REENTRY_STATE[symbol] = prev_reentry_state
-                        _save_mt_state()
-                    return
-                elif _ps_dec.suggested_scale < 1.0:
-                    print(f"[{symbol}] Post-STOP re-entry DOWNSCALED by Pillar 3 AI to {_ps_dec.suggested_scale * 100:.0f}%: {_ps_dec.reason}")
-                    if buy_budget:
-                        buy_budget = buy_budget * _ps_dec.suggested_scale
-                    elif buy_qty_cfg:
-                        buy_qty_cfg = buy_qty_cfg * _ps_dec.suggested_scale
-                    else:
-                        qty = qty * _ps_dec.suggested_scale
-            except Exception as e:
-                print(f"[{symbol}] Post-STOP AI guard error (fail-open fallback): {e}")
+            allowed, buy_budget, buy_qty_cfg, qty = _apply_post_stop_ai_guard(
+                symbol, current_price, sell_price, sell_time, reentry_snap,
+                buy_budget, buy_qty_cfg, qty
+            )
+            if not allowed:
+                if prev_reentry_state:
+                    _REENTRY_STATE[symbol] = prev_reentry_state
+                    _save_mt_state()
+                return
         else:
             print(f"Price decreased with {price_decrease_versus_sell * 100}% by more than {gain_threshold * 100}% versus sell price: Placing buy order")
 
@@ -1073,22 +1225,10 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             print(f"[{symbol}] budget cap depasit post-trade "
                   f"({_projected_value:.0f} > {max_budget} USD) — not buying")
         else:
-            _default_offset = min(MT_BUY_PRICE_OFFSET, current_price * 0.01)
-            _buy_offset = inst.param("mt", "buy_price_offset", _default_offset, float)
-            reentry_outcome_ctx = {}
-            reentry_bypass = {"GI3"} if last_exit_kind == "STOP" else None
-            placed = _place_guarded(inst, "BUY", current_price + _buy_offset, _buy_qty, min_qty,
-                safeback_seconds=sbs, cancelorders=True,
-                hours=MT_BUY_SAFEBACK_HOURS,
-                bypass_guards=reentry_bypass,
-                _outcome_context=reentry_outcome_ctx)
-            if placed or reentry_outcome_ctx.get("state") == "unknown":
-                _REENTRY_STATE.pop(symbol, None)
-                _LAST_EXIT_KIND.pop(symbol, None)
-                _save_mt_state()
-            elif prev_reentry_state:
-                _REENTRY_STATE[symbol] = prev_reentry_state
-                _save_mt_state()
+            _execute_reentry_buy(
+                inst, symbol, current_price, _buy_qty, min_qty, sbs,
+                last_exit_kind, prev_reentry_state
+            )
 
     _save_mt_state()
     return
