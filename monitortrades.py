@@ -430,6 +430,30 @@ def _resolve_exit(symbol: str, inst: Any = None, kind: Optional[str] = None, cle
     _save_mt_state()
 
 
+def _record_pending_exit(
+    symbol: str,
+    inst: Any,
+    kind: str,
+    current_time_s: float,
+    sellable_qty: float,
+    current_price: float,
+    outcome_ctx: dict,
+    default_intent_id: Optional[str] = None,
+    client_order_id: Optional[str] = None,
+):
+    """Record an in-flight exit whose outcome is unknown/in-flight and update state."""
+    _PENDING_STOP_EXIT[symbol] = {
+        "time": current_time_s,
+        "qty": sellable_qty,
+        "price": current_price,
+        "reason": outcome_ctx.get("reason", "unknown"),
+        "intent_id": outcome_ctx.get("intent_id") or default_intent_id,
+        "client_order_id": outcome_ctx.get("client_order_id") or client_order_id,
+        "kind": kind,
+    }
+    _resolve_exit(symbol, inst, kind=kind, clear_pending=False)
+
+
 _load_mt_state()
 
 
@@ -780,16 +804,10 @@ def _execute_take_profit(
     elif tp_outcome_ctx.get("state") == "unknown":
         _TP_RIDE_STATE.pop(symbol, None)
         print(f"[{symbol}] Take-Profit submit outcome unknown/in-flight ({tp_outcome_ctx.get('reason')}) — deferring duplicate submission")
-        _PENDING_STOP_EXIT[symbol] = {
-            "time": current_time_s,
-            "qty": sellable_qty,
-            "price": current_price,
-            "reason": tp_outcome_ctx.get("reason", "unknown"),
-            "intent_id": tp_outcome_ctx.get("intent_id") or tp_intent_id,
-            "client_order_id": tp_outcome_ctx.get("client_order_id"),
-            "kind": "TP",
-        }
-        _resolve_exit(symbol, inst, kind="TP", clear_pending=False)
+        _record_pending_exit(
+            symbol, inst, "TP", current_time_s, sellable_qty, current_price,
+            tp_outcome_ctx, default_intent_id=tp_intent_id,
+        )
         return True
     elif prev_tp_state:
         _TP_RIDE_STATE[symbol] = prev_tp_state
@@ -881,16 +899,10 @@ def _execute_stop_loss(
     if sl_state == "unknown":
         print(f"[{symbol}] Stop-Loss submit outcome unknown/in-flight ({outcome_ctx.get('reason')}) — TP restoration deferred pending stop reconciliation")
         _SL_BOUNCE_STATE.pop(symbol, None)
-        _PENDING_STOP_EXIT[symbol] = {
-            "time": current_time_s,
-            "qty": sellable_qty,
-            "price": current_price,
-            "reason": outcome_ctx.get("reason", "unknown"),
-            "intent_id": outcome_ctx.get("intent_id") or stop_intent_id,
-            "client_order_id": outcome_ctx.get("client_order_id") or stop_cid,
-            "kind": "STOP",
-        }
-        _resolve_exit(symbol, inst, kind="STOP", clear_pending=False)
+        _record_pending_exit(
+            symbol, inst, "STOP", current_time_s, sellable_qty, current_price,
+            outcome_ctx, default_intent_id=stop_intent_id, client_order_id=stop_cid,
+        )
         return True
     else:
         _PENDING_STOP_EXIT.pop(symbol, None)
@@ -914,10 +926,8 @@ def _handle_position_recovery(
         print(f"[{symbol}] 🎉 Stop-Loss bounce successfully recovered! Position saved from dip "
               f"({snapshot.loss_pct:.2f}% <= {lost_threshold*100:.2f}%).")
         _SL_BOUNCE_STATE.pop(symbol, None)
-    if symbol in _PENDING_STOP_EXIT:
-        _PENDING_STOP_EXIT.pop(symbol, None)
-    if symbol in _TP_RIDE_STATE:
-        _TP_RIDE_STATE.pop(symbol, None)
+    _PENDING_STOP_EXIT.pop(symbol, None)
+    _TP_RIDE_STATE.pop(symbol, None)
     _save_mt_state()
     try:
         from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss_if_recovered
