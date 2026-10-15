@@ -412,6 +412,68 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.run_tick(inst, trend_up=False)
             self.assertEqual(inst.placed, [])
 
+        with self.subTest(msg="post_stop_bounce_state_preserved_if_budget_cap_exceeded"):
+            mt._REENTRY_STATE.clear()
+            mt._LAST_EXIT_KIND.clear()
+            mt._LAST_EXIT_KIND["CHARUSD"] = "STOP"
+            inst = FakeInstrument(
+                price=90,
+                free=0,
+                fills=[_fill("SELL", 100, 2)],
+                params={"mt.buy_budget": 225, "mt.max_budget": 100},
+            )
+            # Tick 1 at 90: establishes trough
+            self.run_tick(inst, trend_up=True)
+            self.assertEqual(inst.placed, [])
+            self.assertIn("CHARUSD", mt._REENTRY_STATE)
+            self.assertEqual(mt._REENTRY_STATE["CHARUSD"]["trough"], 90)
+
+            # Tick 2 at 92.5: bounce is 2.78% >= 1.5% -> would enter, but blocked by max_budget
+            inst._price = 92.5
+            self.run_tick(inst, trend_up=True)
+            self.assertEqual(inst.placed, [])
+            # Crucial: _REENTRY_STATE must NOT be wiped out!
+            self.assertIn("CHARUSD", mt._REENTRY_STATE)
+            self.assertEqual(mt._REENTRY_STATE["CHARUSD"]["trough"], 90)
+
+            # Tick 3 at 92.5: budget cap lifted -> places buy using original trough (90), not resetting to 92.5
+            inst._params["mt.max_budget"] = 1_000
+            self.run_tick(inst, trend_up=True)
+            self.assertEqual(len(inst.placed), 1)
+            self.assertEqual(inst.placed[0]["side"], "BUY")
+            self.assertNotIn("CHARUSD", mt._REENTRY_STATE)
+
+    def test_tp_ride_state_preserved_when_sell_placement_fails(self):
+        mt.HARD_TP_ENABLED = False
+        mt._TP_RIDE_STATE.clear()
+        inst = FakeInstrument(
+            price=110,
+            free=10,
+            fills=[_fill("BUY", 100, 10)],
+            params={"mt.gain": 7},
+        )
+        t0 = NOW
+        # Tick 1 at t0: initiates trend ride watch
+        self.run_tick(inst, trend_up=True, now=t0)
+        self.assertEqual(inst.placed, [])
+        self.assertIn("CHARUSD", mt._TP_RIDE_STATE)
+        self.assertEqual(mt._TP_RIDE_STATE["CHARUSD"]["last_peak_time"], t0)
+
+        # Tick 2 at t0 + 1085s: stagnation timeout triggers (1085s >= 1080s)
+        # Simulate placement failure
+        with patch.object(mt, "_place_guarded", return_value=False):
+            self.run_tick(inst, trend_up=True, now=t0 + 1085)
+
+        # State must be preserved, not wiped!
+        self.assertIn("CHARUSD", mt._TP_RIDE_STATE)
+        self.assertEqual(mt._TP_RIDE_STATE["CHARUSD"]["last_peak_time"], t0)
+
+        # Tick 3 at t0 + 1090s: placement succeeds, so state is popped
+        self.run_tick(inst, trend_up=True, now=t0 + 1090)
+        self.assertEqual(len(inst.placed), 1)
+        self.assertEqual(inst.placed[0]["side"], "SELL")
+        self.assertNotIn("CHARUSD", mt._TP_RIDE_STATE)
+
     def test_guards_and_blocking_behaviors(self):
         with self.subTest(msg="no_recent_fills_produces_no_financial_intent"):
             inst = FakeInstrument(price=100, free=10, fills=[])

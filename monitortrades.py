@@ -651,6 +651,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             print(f"[{symbol}] Price recovered above stop-loss threshold ({price_decrease*100:.2f}% < {lost_threshold*100:.2f}%) — clearing bounce watch")
             _SL_BOUNCE_STATE.pop(symbol, None)
 
+        prev_tp_state = dict(_TP_RIDE_STATE.get(symbol, {}))
         tp_decision = (
             exit_mgr.evaluate_take_profit(snapshot, custom_threshold=gain_threshold)
             if not in_sl_territory
@@ -673,6 +674,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             else:
                 tp_forced_reason = tp_decision.reason
                 print(f"Price increased with {price_increase * 100:.2f}% by more than {gain_threshold * 100:.2f}% versus buy price! (decision={tp_forced_reason})")
+                placed = False
                 if sellable_qty > 0:
                     bypass_pg = current_price < buy_price or bool(tp_decision.forced)
                     placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
@@ -681,11 +683,15 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                     if placed:
                         _TP_RIDE_STATE.pop(symbol, None)
                         _LAST_EXIT_KIND[symbol] = "TP"
+                    elif prev_tp_state:
+                        _TP_RIDE_STATE[symbol] = prev_tp_state
                 else:
                     print(f"No can sell (sellable_qty={sellable_qty})")
-                    _TP_RIDE_STATE.pop(symbol, None)
+                    if prev_tp_state:
+                        _TP_RIDE_STATE[symbol] = prev_tp_state
         elif in_sl_territory:
             _TP_RIDE_STATE.pop(symbol, None)
+            prev_sl_state = dict(_SL_BOUNCE_STATE.get(symbol, {}))
             sl_decision = exit_mgr.evaluate_stop_loss(snapshot, custom_threshold=lost_threshold)
             disaster_floor = sl_decision.metadata.get("disaster_floor", lost_threshold + MT_SL_DISASTER_BUFFER_MIN_PCT)
 
@@ -718,6 +724,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                             deferred = short_tm.should_wait("SELL", symbol)
                         if deferred:
                             print(f"[{symbol}] Stop-Loss placement would be deferred by trend gate (trend up) — keeping resting TP orders intact!")
+                            if prev_sl_state:
+                                _SL_BOUNCE_STATE[symbol] = prev_sl_state
                             return
                     except Exception as _tm_err:
                         pass
@@ -762,6 +770,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
 
                 # Rollback / restore resting TP order if Stop-Loss placement failed
                 if not placed:
+                    if prev_sl_state:
+                        _SL_BOUNCE_STATE[symbol] = prev_sl_state
                     if cancelled_tp_orders:
                         restore_cancelled_orders(
                             cancelled_tp_orders,
@@ -818,6 +828,15 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             vol_source="1h_cache" if vol_1h > 0 else "default",
         )
 
+        prev_reentry_state = dict(_REENTRY_STATE.get(symbol, {}))
+        if not prev_reentry_state:
+            prev_reentry_state = {
+                "trough": reentry_snap.post_sell_trough or min(sell_price, current_price),
+                "peak": reentry_snap.post_sell_peak or max(sell_price, current_price),
+                "peak_bounce": current_price,
+                "started_at": current_time_s,
+            }
+
         reentry_dec = exit_mgr.evaluate_reentry(reentry_snap, custom_drop_pct=gain_threshold)
         if not reentry_dec.should_enter:
             if not is_trend_up(symbol):
@@ -827,6 +846,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             return
 
         if not is_trend_up(symbol):
+            if prev_reentry_state:
+                _REENTRY_STATE[symbol] = prev_reentry_state
             print(f"No action taken, because trend is down!")
             return
 
@@ -843,6 +864,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         _pos_value = avail_qty * current_price
         _projected_value = _pos_value + (_buy_qty * current_price)
         if max_budget and _projected_value > max_budget:
+            if prev_reentry_state:
+                _REENTRY_STATE[symbol] = prev_reentry_state
             print(f"[{symbol}] budget cap depasit post-trade "
                   f"({_projected_value:.0f} > {max_budget} USD) — not buying")
         else:
@@ -854,6 +877,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             if placed:
                 _REENTRY_STATE.pop(symbol, None)
                 _LAST_EXIT_KIND.pop(symbol, None)
+            elif prev_reentry_state:
+                _REENTRY_STATE[symbol] = prev_reentry_state
 
     return
 
