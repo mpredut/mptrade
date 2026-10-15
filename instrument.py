@@ -57,6 +57,54 @@ def _is_terminal_filter_refusal(reason) -> bool:
     return order_retry.is_terminal_filter_refusal(reason)
 
 
+GUARD_CATALOG = {
+    "G1": {
+        "canonical": "daily_limit",
+        "aliases": {"daily_limit", "daily_cap", "g1"},
+        "description": "Daily trade count cap and anti-spam temporal filter",
+    },
+    "G2": {
+        "canonical": "short_trend",
+        "aliases": {"short_trend", "trend", "trend_short", "g2"},
+        "description": "Short-term trend deferral via short_trend_manager",
+    },
+    "G3": {
+        "canonical": "math_profit",
+        "aliases": {"math_profit", "math_reference", "profit_margin", "g3"},
+        "description": "Deterministic historical profit margin reference check",
+    },
+    "G4": {
+        "canonical": "quantity_policy",
+        "aliases": {"quantity_policy", "weight", "weight_sizing", "g4"},
+        "description": "Dynamic exposure and risk-weighted quantity sizing",
+    },
+    "G5": {
+        "canonical": "p1_quantitative",
+        "aliases": {"p1_quantitative", "p1", "pillar1", "quantitative", "g5"},
+        "description": "Pillar 1: Parabolic Surge and Weibull trend exhaustion",
+    },
+    "G6": {
+        "canonical": "p2_microstructure",
+        "aliases": {"p2_microstructure", "p2", "pillar2", "microstructure", "g6"},
+        "description": "Pillar 2: Orderbook Ask Wall, Funding crowding, and Whale flow",
+    },
+    "G7": {
+        "canonical": "p3_llm",
+        "aliases": {"p3_llm", "p3", "pillar3", "ai", "llm", "g7"},
+        "description": "Pillar 3: High-stake pre-trade LLM validation",
+    },
+    "G8": {
+        "canonical": "p4_geopolitical",
+        "aliases": {"p4_geopolitical", "p4", "pillar4", "geopolitical", "g8"},
+        "description": "Pillar 4: Geopolitical Black Swan shock shield",
+    },
+}
+
+_ALL_GUARD_ALIASES: set[str] = set().union(*(g["aliases"] for g in GUARD_CATALOG.values())) | {
+    "all", "*", "profit_guard", "legacy_profit_guard", "cooldown"
+}
+
+
 def normalize_bypassed_guards(
     bypass_guards=None,
     legacy_bypass_profit_guard=None,
@@ -68,65 +116,68 @@ def normalize_bypassed_guards(
     Supports fine-grained guard opt-out: any guard not in the returned set
     executes with its standard default behavior.
 
-    Supported guard keys:
-      - 'all' / '*': bypasses all checks (emergency stop-loss exits).
-      - 'profit_guard': bypasses math reference, profit margin, and quantity policy.
-      - 'math_reference' / 'math_profit' / 'profit_margin': historical ref check.
-      - 'quantity_policy' / 'weight': dynamic weight / exposure sizing policy.
-      - 'daily_limit' / 'daily_cap': daily trade volume cap and anti-spam check.
-      - 'trend': short-term trend deferral wait.
-      - 'p1' / 'pillar1' / 'quantitative': Parabolic Surge, Weibull Exhaustion.
-      - 'p2' / 'pillar2' / 'microstructure': Orderbook Ask Wall, Funding, Whale flow.
-      - 'p3' / 'pillar3' / 'ai' / 'llm': High-stake pre-trade LLM validation.
-      - 'p4' / 'pillar4' / 'geopolitical': Geopolitical Black Swan shock shield.
+    Supported catalog keys (G1..G8):
+      - G1 / 'daily_limit' / 'daily_cap': daily trade volume cap & anti-spam.
+      - G2 / 'short_trend' / 'trend': short-term trend deferral wait.
+      - G3 / 'math_profit' / 'math_reference' / 'profit_margin': historical profit ref.
+      - G4 / 'quantity_policy' / 'weight' / 'weight_sizing': dynamic sizing policy.
+      - G5 / 'p1' / 'pillar1' / 'quantitative': Parabolic Surge, Weibull Exhaustion.
+      - G6 / 'p2' / 'pillar2' / 'microstructure': Orderbook Walls, Funding, Whale flow.
+      - G7 / 'p3' / 'pillar3' / 'ai' / 'llm': High-stake pre-trade LLM validation.
+      - G8 / 'p4' / 'pillar4' / 'geopolitical': Geopolitical Black Swan shock shield.
+
+    Composite / Legacy aliases:
+      - 'all' / '*': bypasses all checks G1..G8 (emergency stop-loss exits).
+      - 'profit_guard': bypasses math profit (G3) + quantity policy (G4).
     """
     bypassed: set[str] = set()
     if legacy_bypass_profit_guard:
-        bypassed.update({"profit_guard", "math_reference", "math_profit", "profit_margin", "quantity_policy", "weight"})
+        bypassed.add("profit_guard")
     if legacy_bypass_profit_reference:
-        bypassed.update({"math_reference", "math_profit", "profit_margin"})
+        bypassed.add("math_profit")
     if legacy_bypass_quantity_policy:
-        bypassed.update({"quantity_policy", "weight"})
+        bypassed.add("quantity_policy")
 
+    raw_tokens: list[str] = []
     if bypass_guards is not None:
         if bypass_guards is True or bypass_guards == "all" or bypass_guards == "*":
-            bypassed.add("all")
+            raw_tokens.append("all")
         elif isinstance(bypass_guards, str):
             for part in bypass_guards.split(","):
                 p = part.strip().lower()
                 if p and p not in ("none", "off", "false", "no", "0"):
-                    bypassed.add(p)
+                    raw_tokens.append(p)
         elif isinstance(bypass_guards, (set, list, tuple)):
             for item in bypass_guards:
                 p = str(item).strip().lower()
                 if p and p not in ("none", "off", "false", "no", "0"):
-                    bypassed.add(p)
+                    raw_tokens.append(p)
+
+    for token in raw_tokens:
+        if token in _ALL_GUARD_ALIASES:
+            bypassed.add(token)
+        else:
+            print(f"[GUARD] Warning: unrecognized bypass guard token {token!r} ignored; "
+                  f"known guards are G1..G8 ({', '.join(sorted(GUARD_CATALOG.keys()))})")
 
     if "all" in bypassed or "*" in bypassed:
-        bypassed.update({
-            "all", "*", "profit_guard", "math_reference", "math_profit", "profit_margin",
-            "p1", "pillar1", "quantitative",
-            "p2", "pillar2", "microstructure",
-            "p3", "pillar3", "ai", "llm",
-            "p4", "pillar4", "geopolitical",
-            "quantity_policy", "weight", "daily_limit", "daily_cap", "trend",
-        })
-    if "profit_guard" in bypassed:
-        bypassed.update({"profit_guard", "math_reference", "math_profit", "profit_margin", "quantity_policy", "weight"})
-    if "math_reference" in bypassed or "math_profit" in bypassed or "profit_margin" in bypassed:
-        bypassed.update({"math_reference", "math_profit", "profit_margin"})
-    if "quantity_policy" in bypassed or "weight" in bypassed:
-        bypassed.update({"quantity_policy", "weight"})
-    if "daily_limit" in bypassed or "daily_cap" in bypassed:
-        bypassed.update({"daily_limit", "daily_cap"})
-    if "p1" in bypassed:
-        bypassed.update({"pillar1", "quantitative"})
-    if "p2" in bypassed:
-        bypassed.update({"pillar2", "microstructure"})
-    if "p3" in bypassed:
-        bypassed.update({"pillar3", "ai", "llm"})
-    if "p4" in bypassed:
-        bypassed.update({"pillar4", "geopolitical"})
+        bypassed.update({"all", "*", "profit_guard"})
+        for g_info in GUARD_CATALOG.values():
+            bypassed.update(g_info["aliases"])
+            bypassed.add(g_info["canonical"])
+    if "profit_guard" in bypassed or "legacy_profit_guard" in bypassed:
+        bypassed.update({"profit_guard", "legacy_profit_guard"})
+        bypassed.update(GUARD_CATALOG["G3"]["aliases"])
+        bypassed.add(GUARD_CATALOG["G3"]["canonical"])
+        bypassed.update(GUARD_CATALOG["G4"]["aliases"])
+        bypassed.add(GUARD_CATALOG["G4"]["canonical"])
+
+    # Expand any individual G1..G8 token to include its canonical name and all alias variations
+    for g_key, g_info in GUARD_CATALOG.items():
+        if bypassed.intersection(g_info["aliases"]) or g_key.lower() in bypassed:
+            bypassed.update(g_info["aliases"])
+            bypassed.add(g_info["canonical"])
+            bypassed.add(g_key.lower())
 
     return bypassed
 
@@ -317,9 +368,9 @@ class Instrument:
         )
         bypass_all = "all" in bypassed_guards
         bypass_profit_guard = "profit_guard" in bypassed_guards or bypass_all
-        bypass_math_ref = "math_reference" in bypassed_guards or bypass_profit_guard
-        bypass_quantity_policy = "quantity_policy" in bypassed_guards or bypass_profit_guard
-        wait_for_trend = bool(kwargs.pop("wait_for_trend", True)) and ("trend" not in bypassed_guards) and not bypass_all
+        bypass_math_ref = "math_reference" in bypassed_guards or "math_profit" in bypassed_guards or bypass_profit_guard
+        bypass_quantity_policy = "quantity_policy" in bypassed_guards or "weight" in bypassed_guards or bypass_profit_guard
+        wait_for_trend = bool(kwargs.pop("wait_for_trend", True)) and ("short_trend" not in bypassed_guards) and not bypass_all
         kwargs.pop("cooldown_pair_id", None)
         side_u = side.upper()
         # This narrow escape hatch exists only for drawdown BUY flows or
@@ -329,11 +380,12 @@ class Instrument:
         # weaken the exit guard unless explicitly authorized.
         if bypass_math_ref and not bypass_profit_guard and side_u != "BUY" and not allow_math_reference_sell:
             print(
-                f"[GUARD] {side_u} {self.symbol}: bypass math_reference ignored; "
+                f"[GUARD] {side_u} {self.symbol}: bypass math_profit/math_reference ignored; "
                 "is allowed only for BUY")
             bypassed_guards.discard("math_reference")
             bypassed_guards.discard("math_profit")
             bypassed_guards.discard("profit_margin")
+            bypassed_guards.discard("g3")
             bypass_math_ref = False
         # Quantity-policy bypass reduces exposure and is therefore SELL-only.
         # Ignore it on BUY so a misplaced argument can never increase exposure.
@@ -343,6 +395,8 @@ class Instrument:
                 "is allowed only for SELL")
             bypassed_guards.discard("quantity_policy")
             bypassed_guards.discard("weight")
+            bypassed_guards.discard("weight_sizing")
+            bypassed_guards.discard("g4")
             bypass_quantity_policy = False
         is_binance = str(self._provider.name).casefold() == "binance"
         if cache_permit is not None and not is_binance:
