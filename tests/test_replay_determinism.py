@@ -259,11 +259,17 @@ class ReplayDeterminismTest(unittest.TestCase):
             if t212_dir in sys.path:
                 sys.path.remove(t212_dir)
             sys.path.insert(0, t212_dir)
+            _md_spec = importlib.util.spec_from_file_location("t212_md_test", os.path.join(t212_dir, "market_data.py"))
+            _md = importlib.util.module_from_spec(_md_spec)
+            sys.modules["market_data"] = _md
+            _md_spec.loader.exec_module(_md)
+
             spec = importlib.util.spec_from_file_location(
                 "t212_strat_test", os.path.join(t212_dir, "strategy.py")
             )
             mod = importlib.util.module_from_spec(spec)
             sys.modules[spec.name] = mod
+            sys.modules["strategy"] = mod
             spec.loader.exec_module(mod)
         finally:
             for name in colliding:
