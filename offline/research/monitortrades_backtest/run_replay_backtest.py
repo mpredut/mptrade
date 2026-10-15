@@ -125,6 +125,10 @@ def run_symbol(symbol, params, base, quiet=True, trend_window_seconds=DEFAULT_WI
 
     orig_is_trend_up = mt.is_trend_up
     mt.is_trend_up = trend_source.is_trend_up
+    orig_get_vol = mt.get_symbol_volatility_1h
+    mt.get_symbol_volatility_1h = lambda s: None
+    orig_persist = mt._MT_PERSISTENCE_ENABLED
+    mt._MT_PERSISTENCE_ENABLED = False
     mt.clear_position_stats_cache()
     try:
         first_price = provider.advance(symbol)
@@ -175,6 +179,8 @@ def run_symbol(symbol, params, base, quiet=True, trend_window_seconds=DEFAULT_WI
                 sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
     finally:
         mt.is_trend_up = orig_is_trend_up
+        mt.get_symbol_volatility_1h = orig_get_vol
+        mt._MT_PERSISTENCE_ENABLED = orig_persist
         mt.clear_position_stats_cache()
 
     all_buys = provider.get_orders(symbol, "BUY", since_s=1e12)

@@ -116,6 +116,7 @@ def test_mhdsl_bounce_timeout():
     engine, executor = make_engine(
         mhdsl_enabled=True, stop_loss_pct=10.0, sl_trend_defer_max_sec=220.0
     )
+    engine.replay_mode = True
     executor.trend = lambda sym: "up"
     start_time = 1000.0
 

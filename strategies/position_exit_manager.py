@@ -326,7 +326,7 @@ class PositionExitManager:
         symbol = snapshot.symbol
         current_price = snapshot.current_price
         buy_price = snapshot.avg_buy_price
-        now = snapshot.current_time_s or time.time()
+        now = snapshot.current_time_s if snapshot.current_time_s is not None else time.time()
         lost_threshold = custom_threshold if custom_threshold is not None else self.config.lost_threshold
 
         if buy_price <= 0 or current_price <= 0:
@@ -574,7 +574,7 @@ class PositionExitManager:
         symbol = snapshot.symbol
         current_price = snapshot.current_price
         buy_price = snapshot.avg_buy_price
-        now = snapshot.current_time_s or time.time()
+        now = snapshot.current_time_s if snapshot.current_time_s is not None else time.time()
         gain_threshold = custom_threshold if custom_threshold is not None else self.config.gain_threshold
 
         if buy_price <= 0 or current_price <= 0:
@@ -813,7 +813,7 @@ class PositionExitManager:
         current_price = snapshot.current_price
         last_sell = snapshot.last_sell_price
         last_kind = snapshot.last_exit_kind or "SELL"
-        now = snapshot.current_time_s or time.time()
+        now = snapshot.current_time_s if snapshot.current_time_s is not None else time.time()
 
         if current_price <= 0:
             return ReentryDecision(ReentryAction.WAIT, False, "invalid_current_price")

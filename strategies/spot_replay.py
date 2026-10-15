@@ -142,6 +142,7 @@ def _run_once(
             strategy._shadow_prices.append((index * warmup_step, float(close)))
             if strategy._surge_replay_closes is not None:
                 strategy._surge_replay_closes.append(float(close))
+        strategy.set_simulated_time(0.0)
         strategy._save = _silent
         decision_trace = []
         current_bar = -1
@@ -197,6 +198,8 @@ def _run_once(
 
         for bar_index, (open_, high, low, close) in enumerate(ohlc):
             current_bar = bar_index
+            replay_time = bar_index * bar_minutes * 60 if bar_minutes else bar_index
+            strategy.set_simulated_time(replay_time)
             if dca_drop_series is not None and bar_index < len(dca_drop_series):
                 drop_val = dca_drop_series[bar_index]
                 if drop_val is not None and not (isinstance(drop_val, float) and math.isnan(drop_val)):

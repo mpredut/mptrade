@@ -370,7 +370,8 @@ class Strategy:
                  fx_to_usd: float | None = None,
                  clock: Callable[[], float] | None = None,
                  trend_slope_provider: Callable[[str], float | None] | None = None,
-                 execution_audit: ExecutionAudit | None = None):
+                 execution_audit: ExecutionAudit | None = None,
+                 replay_mode: bool = False):
         self.client = client
         self.ticker = ticker
         self.yahoo_sym = params.yahoo_sym or t212_to_yahoo(ticker)
@@ -378,6 +379,7 @@ class Strategy:
         self.dry_run = dry_run
         self.desktop = desktop
         self.ccy = params.currency
+        self.replay_mode = replay_mode or (clock is not None)
         self._clock = clock or time.time
         self._trend_slope_provider = trend_slope_provider or trend_slope_pct
         self.execution_audit = execution_audit or ExecutionAudit()
@@ -423,12 +425,20 @@ class Strategy:
                 tp_profit_floor_min_pct=vol_pct_to_ratio(self.p.trail_min_profit_pct) if self.p.trail_min_profit_pct > 0 else 0.0,
                 tp_pullback_pct=vol_pct_to_ratio(self.p.trail_pct) if self.p.trail_pct > 0 else 0.015,
                 tp_stagnation_max_sec=self.p.tp_stagnation_max_sec,
+                allow_external_cache=not self.replay_mode,
             )
-            self.exit_manager = PositionExitManager(config=exit_cfg)
+            self.exit_manager = PositionExitManager(
+                config=exit_cfg,
+                vol_resolver=self._resolve_volatility_tuple,
+            )
             self.exit_manager.sl_bounce_state = self.s["sl_bounce_state"]
             self.exit_manager.tp_ride_state = self.s["tp_ride_state"]
             self.exit_manager.reentry_state = self.s["reentry_state"]
         self._paper_seq = 0
+
+    def _resolve_volatility_tuple(self, symbol: str) -> tuple[float, str]:
+        """Callable adapter for PositionExitManager vol_resolver."""
+        return self._vol_1h_ratio()
 
     def _now(self) -> float:
         return float(self._clock())
@@ -1346,9 +1356,10 @@ class Strategy:
                     return vol_pct_to_ratio(vol), "shadow"
             except Exception:
                 pass
-        cached = resolve_cached_volatility_1h(self.ticker)
-        if cached is not None:
-            return cached, "cache"
+        if not self.replay_mode:
+            cached = resolve_cached_volatility_1h(self.ticker)
+            if cached is not None:
+                return cached, "cache"
         return 0.0, "none"
 
     def _check_stop_loss(self, price: float) -> bool:
@@ -1552,7 +1563,7 @@ class Strategy:
                     vol = float(v)
             except Exception:
                 vol = None
-        if vol is None:
+        if vol is None and not self.replay_mode:
             vol = resolve_cached_volatility_1h_pct(self.ticker)
         if vol is None:
             return self.p.reentry_pullback_pct, "fixed (fallback)"

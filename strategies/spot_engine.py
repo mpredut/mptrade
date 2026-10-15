@@ -561,6 +561,7 @@ class Strategy:
         self.price_dec = precision.price_decimals
         self.vol_dec = precision.volume_decimals
         self.ordermin = precision.order_min
+        self._simulated_ts: float | None = None
         self._order_lifecycle = TrackedOrderLifecycle(
             StrategyExecutorLifecycleApi(client),
             provider_name=self.venue_label,
@@ -568,6 +569,20 @@ class Strategy:
             missing_confirmations=2,
             retry_on_lookup_error=False,
         )
+
+    def _now(self) -> float:
+        """Return the current timestamp honoring simulated time in replay mode."""
+        if self.replay_mode:
+            if self._simulated_ts is not None:
+                return self._simulated_ts
+            if self._shadow_prices:
+                return self._shadow_prices[-1][0]
+            return 0.0
+        return time.time()
+
+    def set_simulated_time(self, ts: float | None) -> None:
+        """Explicitly set simulated timestamp for replay and backtesting drivers."""
+        self._simulated_ts = float(ts) if ts is not None else None
 
     def _emit(self, **event) -> None:
         """Send an event through the venue sink or legacy compatibility wrapper."""
@@ -605,8 +620,7 @@ class Strategy:
             f"{kind}:{side}:{vol:.{self.vol_dec}f}:{price:.{self.price_dec}f}"
         )
 
-    @staticmethod
-    def _order_from_pending(pending: dict) -> dict:
+    def _order_from_pending(self, pending: dict) -> dict:
         return {
             "txid": str(pending["order_id"]),
             "side": str(pending["side"]).lower(),
@@ -616,7 +630,7 @@ class Strategy:
             "kind": pending.get("kind"),
             "market": bool(pending.get("market")),
             "intent_id": pending.get("intent_id"),
-            "ts": float(pending.get("created_at") or time.time()),
+            "ts": float(pending.get("created_at") or self._now()),
         }
 
     def _adopt_pending_order(self, pending: dict) -> None:
@@ -693,7 +707,7 @@ class Strategy:
         key = self._placement_backoff_key(side, kind)
         record = self.s.get("placement_backoffs", {}).get(key) or {}
         try:
-            return max(0.0, float(record.get("until") or 0.0) - time.time())
+            return max(0.0, float(record.get("until") or 0.0) - self._now())
         except (TypeError, ValueError, OverflowError):
             # Corrupt observational cooldown state must fail open; order lifecycle
             # and venue preflight remain the financial safety boundaries.
@@ -711,7 +725,7 @@ class Strategy:
         delay = min(_PLACEMENT_BACKOFF_CAP_SEC, base * (2 ** min(attempts - 1, 10)))
         records[key] = {
             "attempts": attempts,
-            "until": time.time() + delay,
+            "until": self._now() + delay,
             "reason": str(error),
         }
         self._save()
@@ -762,7 +776,7 @@ class Strategy:
             log(f"  [STRAT] [PAPER] {side.upper()} {kind}{' MKT' if market else ''} {vol} @ {price} {self.ccy}")
             self.s["orders"].append({"txid": f"PAPER-{self._paper_seq}", "side": side,
                                      "vol": vol, "price": price, "amount": amount,
-                                     "kind": kind, "market": market, "ts": time.time()})
+                                     "kind": kind, "market": market, "ts": self._now()})
             return True
         if self.s.get("pending_intent"):
             log("  ! [STRAT] an unreconciled pre-submit intent exists — not duplicating")
@@ -878,7 +892,7 @@ class Strategy:
             log(f"  ! [STRAT] cancel failed for {o['txid']}: {e} — the order stays tracked")
             return False
         o["cancel_requested"] = True
-        o["cancel_ts"] = time.time()
+        o["cancel_ts"] = self._now()
         # Persist cancellation intent across restart and track through terminal status.
         self._save()
         log(f"  [STRAT] cancel requested {o['side']} {o['txid']} — waiting for a terminal status")
@@ -1072,7 +1086,7 @@ class Strategy:
                         self._finalize_cycle_if_flat(o, reported_price)
                     log(f"  [STRAT] {o['txid']} {st} (executed {total_vol}/{o['vol']})")
                 else:
-                    age = (time.time() - o.get("ts", 0)) / 60
+                    age = (self._now() - o.get("ts", 0)) / 60
                     if (side == "buy" and not o.get("cancel_requested")
                             and age > self.p.order_ttl_min and price > o["price"] * 1.003):
                         log(f"  [STRAT] buy {o['txid']} unfilled, the price rose — cancelling and re-placing")
@@ -1093,7 +1107,7 @@ class Strategy:
             if self.s["entry_price"] is None:
                 self.s["entry_price"] = price
             if self.s.get("entry_ts") is None:
-                self.s["entry_ts"] = self._shadow_prices[-1][0] if self._shadow_prices else time.time()
+                self.s["entry_ts"] = self._shadow_prices[-1][0] if self._shadow_prices else self._now()
             self.s["spent"] += o.get("amount", vol * price)
             if o.get("kind") == "DCA":
                 self.s["dca_buys"] += 1
@@ -1161,7 +1175,7 @@ class Strategy:
         self.s["sl_low"] = price            # Initial low for post-stop bounce reentry.
         self.s["post_sell_peak"] = price    # Initial peak for post-sale pullback tracking.
         self.s["post_sell_trough"] = price  # Initial trough for post-sale bear bounce tracking.
-        self.s["last_sell_ts"] = self._shadow_prices[-1][0] if self._shadow_prices else time.time()
+        self.s["last_sell_ts"] = self._shadow_prices[-1][0] if self._shadow_prices else self._now()
         if self.exit_manager is not None:
             self.exit_manager.clear_state(self.pair)
             self.exit_manager.sl_bounce_state = self.s.setdefault("sl_bounce_state", {})
@@ -1269,7 +1283,7 @@ class Strategy:
 
         trend_up = self._is_trend_up()
         vol_1h, vol_source = self._vol_1h_ratio()
-        tick_time = self._shadow_prices[-1][0] if self._shadow_prices else time.time()
+        tick_time = self._shadow_prices[-1][0] if self._shadow_prices else self._now()
 
         snapshot = PositionSnapshot(
             symbol=self.pair,
@@ -1602,7 +1616,7 @@ class Strategy:
     def _regime_context(self) -> tuple[MarketRegimeDecision, list]:
         """Classify and reuse one completed-bar snapshot across regime policies."""
         if not self.replay_mode:
-            now = time.time()
+            now = self._now()
             interval_sec = max(60, self.p.trend_interval * 60)
             slot = int(now // interval_sec)
             settle_sec = min(_REGIME_BAR_SETTLE_MAX_SEC, interval_sec / 4)
@@ -1814,7 +1828,7 @@ class Strategy:
                     current_price=price,
                     avg_cost=avg,
                     entry_ts=entry_ts,
-                    current_ts=tick_time if tick_time is not None else time.time(),
+                    current_ts=tick_time if tick_time is not None else self._now(),
                     min_days=self.p.slow_grind_days,
                     min_gain_pct=self.p.slow_grind_min_gain_pct,
                     recent_peak=slow_peak,
@@ -1928,7 +1942,11 @@ class Strategy:
         # Live uses wall time while replay injects bar time. Without this distinction, a
         # backtest processing hundreds of bars per second produces meaningless hourly
         # volatility and changes the adaptive threshold.
-        tick_time = time.time() if timestamp is None else float(timestamp)
+        if timestamp is not None:
+            self.set_simulated_time(timestamp)
+            tick_time = float(timestamp)
+        else:
+            tick_time = self._now()
         self._shadow_prices.append((tick_time, price))
         if self._surge_replay_closes is not None:
             self._surge_replay_closes.append(price)

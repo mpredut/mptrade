@@ -259,14 +259,14 @@ def _api_cache_identity(api) -> tuple[str, int]:
     return (str(name), id(api))
 
 
-def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_orders=None, force_refresh=False):
+def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_orders=None, force_refresh=False, now_ts=None):
     api = api or mkt
     if buy_orders is None:
         buy_orders = api.get_orders(symbol, "BUY", maxage_trade_s)
     if sell_orders is None:
         sell_orders = api.get_orders(symbol, "SELL", maxage_trade_s)
 
-    now_ts = time.time()
+    now_ts = float(now_ts) if now_ts is not None else time.time()
     cache_key = (_api_cache_identity(api), str(symbol).upper(), float(maxage_trade_s))
     buy_sig = _make_order_signature(buy_orders)
     sell_sig = _make_order_signature(sell_orders)
@@ -361,14 +361,14 @@ _MT_STATE_FILE = cachepaths.cache_path("mt_state.json")
 _MT_PERSISTENCE_ENABLED = os.environ.get("MT_DISABLE_STATE_PERSISTENCE", "0").lower() not in ("1", "true", "yes")
 
 
-def _save_mt_state():
+def _save_mt_state(ts: float | None = None):
     """Durably persist in-flight MHDSL bounce, MDHTP ride, and pending stop exits."""
     if not _MT_PERSISTENCE_ENABLED:
         return
     try:
         data = {
             "version": 1,
-            "ts": time.time(),
+            "ts": float(ts) if ts is not None else time.time(),
             "sl_bounce_state": _SL_BOUNCE_STATE,
             "tp_ride_state": _TP_RIDE_STATE,
             "reentry_state": _REENTRY_STATE,
@@ -380,7 +380,7 @@ def _save_mt_state():
         pass
 
 
-def _load_mt_state():
+def _load_mt_state(now_curr: float | None = None):
     """Restore in-flight MHDSL/MDHTP states upon monitor restart to prevent state loss."""
     if not _MT_PERSISTENCE_ENABLED or not os.path.exists(_MT_STATE_FILE):
         return
@@ -389,7 +389,7 @@ def _load_mt_state():
             data = json.load(f)
         if not isinstance(data, dict):
             return
-        now_curr = time.time()
+        now_curr = float(now_curr) if now_curr is not None else time.time()
         for sym, state in (data.get("sl_bounce_state") or {}).items():
             if isinstance(state, dict):
                 started = float(state.get("started_at", 0))
@@ -626,6 +626,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         api=inst.provider,
         buy_orders=trade_orders_buy,
         sell_orders=trade_orders_sell,
+        now_ts=current_time_s,
     )
     # Profit reference is configurable: latest BUY by default or the lookback average.
     if tp_ref == "average" and position["average_buy_price"] > 0:

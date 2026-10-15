@@ -47,7 +47,7 @@ def test_versioned_profiles_preserve_effective_values_and_environment():
             assert StratParams.from_env() == params
         assert params.stop_loss_pct == float(env["STRAT_STOP_LOSS_PCT"])
         assert params.reentry_peak_relative is False
-        assert params.reentry_pullback_pct == 1.5
+        assert params.reentry_pullback_pct == float(env["STRAT_REENTRY_PULLBACK_PCT"])
         assert params.reentry_hybrid_enabled is True
         assert params.surge_gain_pct == float(env["STRAT_SURGE_GAIN_PCT"])
         assert params.trend_sma_n == 30
