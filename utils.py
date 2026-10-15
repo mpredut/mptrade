@@ -84,9 +84,7 @@ def are_close(value1, value2, target_tolerance_percent=1.0):
     The pre-July-16 implementation used random.randint and could return either result
     for identical input in [tol*1.01, tol*1.5], which is unacceptable for trading."""
     return botcore.are_close(value1, value2, target_tolerance_percent)
-    
-    
-    from datetime import datetime
+
 
 def timestampToTime(timestamp_ms):
     # Convert milliseconds to seconds.
@@ -100,20 +98,15 @@ def timestampToTime(timestamp_ms):
 
 
 def timeMsToHMS(timestamp_ms):
-    # Convert milliseconds to seconds.
-    timestamp_sec = timestamp_ms / 1000.0
-    
-    # Convert to datetime.
-    human_readable_time = datetime.fromtimestamp(timestamp_sec)
-    
-    # Return an hours, minutes, and seconds string.
-    return human_readable_time.strftime('%H:%M:%S')
+    return timeToHMS(timestamp_ms / 1000.0)
+
 
 def timeToHMS(timestamp_sec):
     human_readable_time = datetime.fromtimestamp(timestamp_sec)
     return human_readable_time.strftime('%H:%M:%S')
-    
-    # Convert seconds to days.
+
+
+# Convert seconds to days.
 def secondsToDays(max_age_seconds):
     # Seconds per day.
     seconds_in_a_day = 86400  # 24 hours * 60 minutes * 60 seconds
@@ -144,6 +137,7 @@ def secondsToMinutes(max_age_seconds):
     return minutes
 
 
+def asymptotic_decrease(initial_procent, expired_duration, passs, half_life_duration=24*60*60):
     """
     Gradually decreases the percentage asymptotically as `passs` increases.
     Once `passs` reaches a point where expired_duration * passs > half_life_duration 
@@ -157,7 +151,6 @@ def secondsToMinutes(max_age_seconds):
     :param half_life_duration: The default value after which the percentage is halved (24 hours in seconds)
     :return: The adjusted percentage based on `passs`
     """
-def asymptotic_decrease(initial_procent, expired_duration, passs, half_life_duration=24*60*60):
     k = expired_duration / half_life_duration  # Calculate the constant k
     return initial_procent / (1 + k * passs)  # Asymptotic decrease formula
 
@@ -226,28 +219,6 @@ def _load_ed25519_signing_key():
 def _sign_ed25519(signing_key, payload: str) -> str:
     signed = signing_key.sign(payload.encode())
     return base64.b64encode(signed.signature).decode()
-
-
-# ─── DEAD CODE retained INTENTIONALLY as a possible reactivation/fix reference ─
-# Ed25519 signing for Binance WS: load a PEM key and sign a payload. Currently
-# inactive, but retained for potential Ed25519 authentication reactivation; requires
-# the `cryptography` package.
-# from cryptography.hazmat.primitives import serialization
-# from cryptography.hazmat.primitives.asymmetric import ed25519
-# import base64
-# def _load_ed25519_signing_key():
-#     try:
-#         with open("keys/ed25519_private.pem", "rb") as f:
-#             private_key = serialization.load_pem_private_key(f.read(), password=None)
-#         if not isinstance(private_key, ed25519.Ed25519PrivateKey):
-#             raise ValueError("The key is not Ed25519")
-#         return private_key
-#     except Exception as e:
-#         print(f"[cacheManager][WS] Error loading the Ed25519 key: {e}")
-#         return None
-# def _sign_ed25519(signing_key, payload: str) -> str:
-#     return base64.b64encode(signing_key.sign(payload.encode())).decode()
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 """

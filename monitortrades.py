@@ -415,13 +415,30 @@ def _load_mt_state(now_curr: float | None = None):
         pass
 
 
-def _clear_smart_sl_exit(symbol: str, provider: Optional[str] = None):
+def _inst_provider(inst: Any = None) -> Optional[str]:
+    """Resolve canonical provider label from an instrument instance or string."""
+    if inst is None or isinstance(inst, str):
+        return inst
+    return getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None)
+
+
+def _clear_smart_sl_exit(symbol: str, provider: Any = None):
     """Cleanly purge Smart-SL grace records whenever an actual protective exit executes."""
     try:
         from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss
-        clear_smart_stop_loss(symbol, provider=provider)
+        clear_smart_stop_loss(symbol, provider=_inst_provider(provider))
     except Exception:
         pass
+
+
+def _resolve_exit(symbol: str, inst: Any = None, kind: Optional[str] = None, clear_pending: bool = True):
+    """Unified cleanup of tracking and guard state when an exit executes or resolves."""
+    if kind:
+        _LAST_EXIT_KIND[symbol] = kind
+    if clear_pending:
+        _PENDING_STOP_EXIT.pop(symbol, None)
+    _clear_smart_sl_exit(symbol, inst)
+    _save_mt_state()
 
 
 _load_mt_state()
@@ -590,9 +607,7 @@ def _is_pending_exit_active(symbol: str, inst, sellable_qty: float, min_qty: flo
         return False
     if sellable_qty <= 0 or (min_qty and sellable_qty < min_qty):
         print(f"[{symbol}] Pending Stop-Loss resolved: position is closed or below min_qty.")
-        _PENDING_STOP_EXIT.pop(symbol, None)
-        _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
-        _save_mt_state()
+        _resolve_exit(symbol, inst)
         return False
 
     active_sell_exists = False
@@ -605,9 +620,7 @@ def _is_pending_exit_active(symbol: str, inst, sellable_qty: float, min_qty: flo
                 st = str(found.get("status") or "").upper()
                 if st in ("FILLED", "RESOLVED"):
                     print(f"[{symbol}] Pending Stop-Loss {p_cid} resolved filled on venue.")
-                    _PENDING_STOP_EXIT.pop(symbol, None)
-                    _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
-                    _save_mt_state()
+                    _resolve_exit(symbol, inst)
                     return True
                 elif st in ("NEW", "OPEN", "PARTIALLY_FILLED"):
                     active_sell_exists = True
@@ -725,7 +738,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             trend_up=is_trend_up(symbol),
             vol_1h=vol_1h,
             vol_source="1h_cache" if vol_1h > 0 else "default",
-            provider=getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None),
+            provider=_inst_provider(inst),
         )
 
         price_increase = snapshot.gain_ratio
@@ -748,9 +761,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                                   _outcome_context=hard_tp_outcome_ctx)
                 if placed or hard_tp_outcome_ctx.get("state") == "unknown":
                     _hard_tp_last[symbol] = current_time_s
-                    _LAST_EXIT_KIND[symbol] = "TP"
-                    _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
-                    _save_mt_state()
+                    _resolve_exit(symbol, inst, kind="TP")
                     return   # Already sold this tick; do not use stale balance below.
             else:
                 print(f"[HARD-TP] {symbol} +{price_increase*100:.1f}% but in cooldown (the last one "
@@ -801,13 +812,9 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                         _outcome_context=tp_outcome_ctx)
                     if placed:
                         _TP_RIDE_STATE.pop(symbol, None)
-                        _PENDING_STOP_EXIT.pop(symbol, None)
-                        _LAST_EXIT_KIND[symbol] = "TP"
-                        _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
-                        _save_mt_state()
+                        _resolve_exit(symbol, inst, kind="TP")
                     elif tp_outcome_ctx.get("state") == "unknown":
                         _TP_RIDE_STATE.pop(symbol, None)
-                        _LAST_EXIT_KIND[symbol] = "TP"
                         print(f"[{symbol}] Take-Profit submit outcome unknown/in-flight ({tp_outcome_ctx.get('reason')}) — deferring duplicate submission")
                         _PENDING_STOP_EXIT[symbol] = {
                             "time": current_time_s,
@@ -818,8 +825,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                             "client_order_id": tp_outcome_ctx.get("client_order_id"),
                             "kind": "TP",
                         }
-                        _clear_smart_sl_exit(symbol, getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None))
-                        _save_mt_state()
+                        _resolve_exit(symbol, inst, kind="TP", clear_pending=False)
                     elif prev_tp_state:
                         _TP_RIDE_STATE[symbol] = prev_tp_state
                         _save_mt_state()

@@ -477,7 +477,8 @@ def _last_opposite_fill_price_api(symbol, order_type):
 
 def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
                         bypass_profit_guard=False, *, regime_context=None,
-                        bypass_guards=None):
+                        bypass_guards=None, recent_transaction_sec=None,
+                        recent_transaction_side=None, **kwargs):
     """Legacy preflight safety check for Binance orders.
 
     Validates daily trade counts, temporal spam gates, dynamic market regimes,
@@ -505,6 +506,8 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
             provider, symbol, order_type,
             max_daily_trades=PLACE_ORDER_MAX_DAILY_TRADES,
             safeback_sec=time_back_in_seconds,
+            recent_transaction_sec=recent_transaction_sec,
+            recent_transaction_side=recent_transaction_side,
             bypass_guards=bypass_guards)
         if not ok:
             return False, reason
