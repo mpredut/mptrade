@@ -1033,7 +1033,41 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             return
 
         if last_exit_kind == "STOP":
-            print(f"[{symbol}] Post-STOP recovery bounce confirmed: {reentry_dec.reason}: Placing buy order")
+            print(f"[{symbol}] Post-STOP recovery bounce confirmed: {reentry_dec.reason}")
+            # --- PILLAR 3: Post-Stop Re-entry AI Validator (Gemini LLM) ---
+            try:
+                from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
+                _ps_guard = get_post_stop_reentry_guard()
+                _trough_px = reentry_snap.post_sell_trough or min(sell_price, current_price)
+                _bounce_ratio = (current_price - _trough_px) / _trough_px if _trough_px > 0 else 0.0
+                _est_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
+                _est_notional = _est_qty * current_price
+                _ps_dec = _ps_guard.check(
+                    symbol=symbol,
+                    current_price=current_price,
+                    last_sell_price=sell_price,
+                    trough=_trough_px,
+                    bounce_pct=_bounce_ratio,
+                    qty=_est_qty,
+                    notional_eur=_est_notional,
+                    last_sell_time_s=sell_time,
+                )
+                if not _ps_dec.allowed:
+                    print(f"[{symbol}] Post-STOP re-entry VETOED by Pillar 3 AI: {_ps_dec.reason}")
+                    if prev_reentry_state:
+                        _REENTRY_STATE[symbol] = prev_reentry_state
+                        _save_mt_state()
+                    return
+                elif _ps_dec.suggested_scale < 1.0:
+                    print(f"[{symbol}] Post-STOP re-entry DOWNSCALED by Pillar 3 AI to {_ps_dec.suggested_scale * 100:.0f}%: {_ps_dec.reason}")
+                    if buy_budget:
+                        buy_budget = buy_budget * _ps_dec.suggested_scale
+                    elif buy_qty_cfg:
+                        buy_qty_cfg = buy_qty_cfg * _ps_dec.suggested_scale
+                    else:
+                        qty = qty * _ps_dec.suggested_scale
+            except Exception as e:
+                print(f"[{symbol}] Post-STOP AI guard error (fail-open fallback): {e}")
         else:
             print(f"Price decreased with {price_decrease_versus_sell * 100}% by more than {gain_threshold * 100}% versus sell price: Placing buy order")
 
@@ -1053,9 +1087,11 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             _default_offset = min(MT_BUY_PRICE_OFFSET, current_price * 0.01)
             _buy_offset = inst.param("mt", "buy_price_offset", _default_offset, float)
             reentry_outcome_ctx = {}
+            reentry_bypass = {"GI3"} if last_exit_kind == "STOP" else None
             placed = _place_guarded(inst, "BUY", current_price + _buy_offset, _buy_qty, min_qty,
                 safeback_seconds=sbs, cancelorders=True,
                 hours=MT_BUY_SAFEBACK_HOURS,
+                bypass_guards=reentry_bypass,
                 _outcome_context=reentry_outcome_ctx)
             if placed or reentry_outcome_ctx.get("state") == "unknown":
                 _REENTRY_STATE.pop(symbol, None)
