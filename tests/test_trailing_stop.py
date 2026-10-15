@@ -42,9 +42,12 @@ class FakePo:
                                 kw.get("bypass_profit_guard", False)
                             )}
         self.orders.append(order)
-        if self.result and order["client_order_id"]:
-            self.by_client_id[order["client_order_id"]] = self.result
-        return self.result
+        order_res = dict(self.result) if isinstance(self.result, dict) else self.result
+        if isinstance(order_res, dict) and "orderId" in order_res:
+            order_res["orderId"] = len(self.orders)
+        if order_res and order["client_order_id"]:
+            self.by_client_id[order["client_order_id"]] = order_res
+        return order_res
     def order_by_client_id(self, symbol, client_order_id, *, provider_name=None):
         return self.by_client_id.get(client_order_id)
     def order_status(self, symbol, order_id, *, provider_name=None):
@@ -537,8 +540,84 @@ class TestMinProfit(Base):
 
             ts.unlock_qty = fake_unlock
             ts.check_once()
-            self.assertEqual(unlocked, [], "resting orders must NOT be cancelled when price is healthy")
-            self.assertEqual(self.po.orders, [], "no orders placed")
+        with self.subTest(msg="resting_orders_not_unlocked_when_dry_run"):
+            self.tearDown(); self.setUp()
+            api = FakeApi(250.0)
+            ts = self.ts(api, enabled=False, min_profit_pct=0.0)
+            ts.check_once()
+            api.free = 0.0
+            api.price = 190.0  # Crash of 24% (exceeds 22% TAO stop)
+
+            unlocked = []
+            def fake_unlock(pair):
+                unlocked.append(pair)
+                return True
+
+            ts.unlock_qty = fake_unlock
+            ts.check_once()
+            self.assertEqual(unlocked, [], "resting orders must NOT be cancelled in dry-run mode")
+            self.assertEqual(self.po.orders, [], "no orders placed in dry run")
+
+        with self.subTest(msg="resting_orders_unlocked_when_partial_free_available"):
+            self.tearDown(); self.setUp()
+            api = FakeApi(250.0)
+            ts = self.ts(api, min_profit_pct=0.0)
+            ts.check_once()
+            # Partial free: 0.2 free, 4.8 locked
+            api.free = 0.2
+            api.price = 190.0  # Crash
+
+            unlocked = []
+            def fake_unlock(pair):
+                unlocked.append(pair)
+                api.free = 5.0
+                ts._balances = api.get_account_assets_balances()
+                return True
+
+            ts.unlock_qty = fake_unlock
+            ts.check_once()
+            self.assertEqual(unlocked, ["TAOUSDC"], "resting orders must be unlocked even if partial free balance exists")
+            self.assertEqual(len(self.po.orders), 1)
+            self.assertEqual(self.po.orders[0]["qty"], 5.0)
+
+        with self.subTest(msg="partial_fill_retains_peak_until_flat"):
+            self.tearDown(); self.setUp()
+            api = FakeApi(250.0)
+            ts = self.ts(api, min_profit_pct=0.0)
+            ts.check_once()  # establishes peak 250.0
+            api.price = 190.0
+
+            # First tick: only 0.2 is available to sell
+            api.free = 0.2
+            # Total holdings = 5.0 (0.2 free + 4.8 locked in orders)
+            ts.total_qty = lambda asset: 5.0
+            ts.check_once()
+            self.assertEqual(len(self.po.orders), 1)
+            self.assertEqual(self.po.orders[0]["qty"], 0.2)
+
+            # Confirm terminal fill of the 0.2 order
+            ts.check_once()
+            import json
+            st = json.load(open(self.sf))["TAOUSDC"]
+            self.assertEqual(st["peak"], 250.0, "peak must NOT be reset to 190 while position remains incomplete")
+            self.assertEqual(st["exit_sold_qty"], 0.2)
+            self.assertNotIn("rebuy", st, "rebuy must not be armed until exit is completed")
+
+            # Second tick: remaining 4.8 is unlocked and sold at 190.0
+            api.free = 4.8
+            ts.total_qty = lambda asset: 4.8
+            ts.check_once()
+            self.assertEqual(len(self.po.orders), 2)
+            self.assertEqual(self.po.orders[1]["qty"], 4.8)
+
+            # Confirm terminal fill of the 4.8 order
+            ts.total_qty = lambda asset: 0.0
+            api.free = 0.0
+            ts.check_once()
+            st = json.load(open(self.sf))["TAOUSDC"]
+            self.assertEqual(st["peak"], 190.0, "peak is now reset after completing the targeted position")
+            self.assertIn("rebuy", st, "rebuy is armed once position is flat")
+            self.assertEqual(st["rebuy"]["qty"], 5.0, "rebuy tracks full accumulated quantity")
 
 
 if __name__ == "__main__":

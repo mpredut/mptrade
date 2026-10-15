@@ -1680,87 +1680,108 @@ class Strategy:
         if self.p.enable_takeprofit and avg and not self.s.get("sl_pending"):
             if self.p.tp_mdhtp_enabled and self.exit_manager is not None:
                 pending_exit = self.s.get("tp_pending_exit")
-                sell_qty = self._sellable_qty(held, price)
-                if pending_exit:
-                    exit_qty = pending_exit.get("qty", sell_qty)
-                    exit_qty = min(exit_qty, sell_qty)
-                    exit_px = round(price * 0.999, 2)
-                    self._cancel_open("SELL")
-                    if self._place_sell(exit_qty, exit_px, kind="TP", market=True):
-                        log(f"  [STRAT] MDHTP PENDING EXIT RETRIED ({pending_exit.get('reason')}) -> reference {exit_px}")
-                        self.s["tp_pending_exit"] = None
-                        return
-                    else:
-                        log("  ! [STRAT] MDHTP PENDING EXIT retry failed, retaining persistent exit intent")
-                        return
-
-                trend_up = False
-                if self._trend_slope_provider:
-                    try:
-                        slope = self._trend_slope_provider(self.yahoo_sym)
-                        if slope is not None and slope >= 0.0:
-                            trend_up = True
-                    except Exception:
-                        pass
-
-                vol_1h = None
-                vol_source = "none"
-                if hasattr(self, "_shadow_vol_1h"):
-                    try:
-                        vol_1h = self._shadow_vol_1h()
-                        if vol_1h is not None:
-                            vol_source = "shadow"
-                    except Exception:
-                        pass
-
                 tick_time = self._now()
 
-                self.exit_manager.config.tp_trend_ride_enabled = True
-                self.exit_manager.config.tp_profit_floor_min_pct = (
-                    (self.p.trail_min_profit_pct or 0.0) / 100.0
-                )
-                self.exit_manager.config.tp_pullback_pct = (
-                    (self.p.trail_pct / 100.0) if self.p.trail_pct > 0 else 0.015
-                )
-                self.exit_manager.config.tp_stagnation_max_sec = self.p.tp_stagnation_max_sec
+                if pending_exit is None:
+                    trend_up = False
+                    if self._trend_slope_provider:
+                        try:
+                            slope = self._trend_slope_provider(self.yahoo_sym)
+                            if slope is not None and slope >= 0.0:
+                                trend_up = True
+                        except Exception:
+                            pass
 
-                snapshot = PositionSnapshot(
-                    symbol=self.ticker,
-                    current_price=price,
-                    avg_buy_price=avg,
-                    net_qty=held,
-                    sellable_qty=sell_qty,
-                    current_time_s=tick_time,
-                    trend_up=trend_up,
-                    vol_1h=vol_1h,
-                    vol_source=vol_source,
-                    provider="t212",
-                )
+                    vol_1h = None
+                    vol_source = "none"
+                    if hasattr(self, "_shadow_vol_1h"):
+                        try:
+                            vol_1h = self._shadow_vol_1h()
+                            if vol_1h is not None:
+                                vol_source = "shadow"
+                        except Exception:
+                            pass
 
-                decision = self.exit_manager.evaluate_take_profit(
-                    snapshot, custom_threshold=self.p.takeprofit_pct / 100.0
-                )
-
-                if decision.action in (ExitAction.SELL, ExitAction.PARTIAL_SELL) and decision.should_exit:
-                    exit_qty = (
-                        self._sellable_qty(held * decision.sell_fraction, price)
-                        if decision.action == ExitAction.PARTIAL_SELL and decision.sell_fraction
-                        else sell_qty
+                    self.exit_manager.config.tp_trend_ride_enabled = True
+                    self.exit_manager.config.tp_profit_floor_min_pct = (
+                        (self.p.trail_min_profit_pct or 0.0) / 100.0
                     )
+                    self.exit_manager.config.tp_pullback_pct = (
+                        (self.p.trail_pct / 100.0) if self.p.trail_pct > 0 else 0.015
+                    )
+                    self.exit_manager.config.tp_stagnation_max_sec = self.p.tp_stagnation_max_sec
+
+                    sell_qty_eval = self._sellable_qty(held, price)
+                    snapshot = PositionSnapshot(
+                        symbol=self.ticker,
+                        current_price=price,
+                        avg_buy_price=avg,
+                        net_qty=held,
+                        sellable_qty=sell_qty_eval,
+                        current_time_s=tick_time,
+                        trend_up=trend_up,
+                        vol_1h=vol_1h,
+                        vol_source=vol_source,
+                        provider="t212",
+                    )
+
+                    decision = self.exit_manager.evaluate_take_profit(
+                        snapshot, custom_threshold=self.p.takeprofit_pct / 100.0
+                    )
+
+                    if decision.action in (ExitAction.SELL, ExitAction.PARTIAL_SELL) and decision.should_exit:
+                        pending_exit = {
+                            "action": decision.action.value,
+                            "sell_fraction": (
+                                decision.sell_fraction
+                                if decision.action == ExitAction.PARTIAL_SELL and decision.sell_fraction
+                                else 1.0
+                            ),
+                            "reason": decision.reason,
+                            "time": tick_time,
+                        }
+                        self.s["tp_pending_exit"] = pending_exit
+                        log(f"  [STRAT] MDHTP EXIT TRIGGERED ({decision.reason}) — initiating cancellation & exit sequence")
+                    elif decision.action == ExitAction.HOLD:
+                        if self.ticker in self.exit_manager.tp_ride_state:
+                            ride_state = self.exit_manager.tp_ride_state.get(self.ticker, {})
+                            peak_px = ride_state.get("peak_price", price)
+                            self.s["trail_peak"] = peak_px
+                            self._cancel_open("SELL")
+                            log(f"  [STRAT] above the TP, RIDING IT ({decision.reason}) (peak {peak_px:.2f})")
+                            return
+                        else:
+                            self.s["trail_peak"] = None
+                            self._cancel_open("SELL")
+
+                if pending_exit:
+                    if not self._cancel_all_orders():
+                        log("  ! [STRAT] MDHTP exit deferred: at least one order could not be cancelled")
+                        return
+                    pending_orders = [o for o in self.s["orders"] if not (o.get("market") and o.get("side") == "sell" and o.get("kind") == "TP")]
+                    if pending_orders:
+                        log(f"  [STRAT] MDHTP exit deferred: waiting for {len(pending_orders)} existing order(s) to reconcile cancellation")
+                        return
+                    if self.s.get("pending_submit"):
+                        log("  [STRAT] MDHTP exit deferred: waiting for pending submit to reconcile")
+                        return
+
+                    fresh_held = self.s["qty"]
+                    sell_fraction = float(pending_exit.get("sell_fraction", 1.0) or 1.0)
+                    target_qty = fresh_held * sell_fraction if sell_fraction < 1.0 else fresh_held
+                    sell_qty = self._sellable_qty(target_qty, price)
+                    if sell_qty <= 0 or self._is_dust(sell_qty, price):
+                        log("  [STRAT] MDHTP exit: no sellable quantity remaining — clearing exit intent")
+                        self.s["tp_pending_exit"] = None
+                        return
+
                     exit_px = round(price * 0.999, 2)
-                    self._cancel_open("SELL")
-                    if self._place_sell(exit_qty, exit_px, kind="TP", market=True):
-                        log(f"  [STRAT] MDHTP EXIT ({decision.reason}) -> reference {exit_px}")
+                    if self._place_sell(sell_qty, exit_px, kind="TP", market=True):
+                        log(f"  [STRAT] MDHTP EXIT ({pending_exit.get('reason')}) -> reference {exit_px} ({sell_qty} shares)")
                         self.s["tp_pending_exit"] = None
                         return
                     else:
-                        self.s["tp_pending_exit"] = {
-                            "qty": exit_qty,
-                            "reason": decision.reason,
-                            "action": decision.action.value,
-                            "time": tick_time,
-                        }
-                        log(f"  ! [STRAT] MDHTP EXIT order refused/failed ({decision.reason}) — intent persisted for retry")
+                        log(f"  ! [STRAT] MDHTP EXIT order refused/failed ({pending_exit.get('reason')}) — intent retained for retry")
                         return
                 elif decision.action == ExitAction.HOLD:
                     if self.ticker in self.exit_manager.tp_ride_state:

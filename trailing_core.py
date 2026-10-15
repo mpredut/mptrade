@@ -92,6 +92,25 @@ class TrailingCore:
                 raise RuntimeError("the pending trailing state could not be persisted")
         return persist
 
+    def _asset_for_pair(self, pair: str, default: str = "") -> str:
+        for _k, asset, p, _t in self.a.assets():
+            if p == pair:
+                return asset
+        return default
+
+    def _remaining_qty(self, asset: str) -> float:
+        if not asset:
+            return 0.0
+        total_getter = getattr(self.a, "total_qty", None)
+        if callable(total_getter):
+            try:
+                tot = total_getter(asset)
+                if isinstance(tot, (int, float)) and math.isfinite(tot) and tot >= 0:
+                    return float(tot)
+            except Exception:
+                pass
+        return float(self.a.free_qty(asset) or 0.0)
+
     def _finish_pending(self, st: dict, result, price: float, pair) -> None:
         """Apply one terminal fill exactly once, then acknowledge pending state."""
         status = result.status
@@ -101,9 +120,33 @@ class TrailingCore:
         avg = (float(status.cost) / filled
                if filled > 0 and float(status.cost or 0.0) > 0 else price)
         if action == "SELL" and filled > 0:
-            st["peak"] = avg
-            if self._rebuy_for(pair, arm=True):
-                st["rebuy"] = {"qty": filled, "sell_price": avg, "low": avg}
+            asset = pending.get("asset") or (pending.get("metadata") or {}).get("asset")
+            if not asset:
+                asset = self._asset_for_pair(pair)
+
+            accum_qty = float(st.get("exit_sold_qty", 0.0) or 0.0) + filled
+            accum_cost = float(st.get("exit_sold_cost", 0.0) or 0.0) + (avg * filled)
+            overall_avg = accum_cost / accum_qty if accum_qty > 0 else avg
+
+            target_qty = float(st.get("target_exit_qty", 0.0) or 0.0)
+            remaining_balance = self._remaining_qty(asset)
+            is_flat = (remaining_balance * price < self.min_notional)
+            is_complete = (target_qty <= 0 or accum_qty >= target_qty - 1e-6 or is_flat)
+
+            if is_complete:
+                st["peak"] = avg
+                st.pop("target_exit_qty", None)
+                st.pop("exit_sold_qty", None)
+                st.pop("exit_sold_cost", None)
+                if self._rebuy_for(pair, arm=True):
+                    st["rebuy"] = {"qty": accum_qty, "sell_price": overall_avg, "low": avg}
+            else:
+                st["exit_sold_qty"] = accum_qty
+                st["exit_sold_cost"] = accum_cost
+                self.log(
+                    f"  [TRAIL] partial exit: sold {filled:.4f} @ {avg:.4f} (accum {accum_qty:.4f}/{target_qty:.4f}), "
+                    f"remaining position still protected under peak {st.get('peak', avg):.4f}"
+                )
         elif action == "REBUY" and filled > 0:
             rb = st.get("rebuy") or {}
             remaining = max(0.0, float(rb.get("qty") or 0.0) - filled)
@@ -212,7 +255,7 @@ class TrailingCore:
             st["warmup_at"] = ref * (1 + self.min_profit_pct / 100.0)  # activation threshold
         if self._reconcile_pending(state, st, price, pair):
             return
-        if st.get("rebuy"):
+        if st.get("rebuy") and not st.get("exit_sold_qty"):
             # Keep the low while a dynamic gate is closed, so later recovery can
             # resume the existing intent without forgetting the intervening dip.
             st["rebuy"]["low"] = min(st["rebuy"].get("low", price), price)
@@ -228,7 +271,7 @@ class TrailingCore:
         # Extreme crash protection is decoupled from profit warm-up.
         if should_sell(price, st["peak"], trail):
             st.pop("warmup_at", None)
-            if free * price < self.min_notional:
+            if self.enabled:
                 # Emergency stop triggered: attempt to unlock coins locked in resting TP orders
                 unlock_getter = getattr(self.a, "unlock_qty", None)
                 if unlock_getter is not None and callable(unlock_getter):
@@ -240,7 +283,14 @@ class TrailingCore:
             if free * price < self.min_notional:
                 return                                        # nothing to sell even after unlock attempt
 
-            sell_qty = round(free * self.sell_fraction, 8)
+            if "target_exit_qty" not in st:
+                total_pos = self._remaining_qty(asset)
+                if total_pos <= 0:
+                    total_pos = free
+                st["target_exit_qty"] = round(total_pos * self.sell_fraction, 8)
+
+            target_rem = max(0.0, float(st.get("target_exit_qty", 0.0)) - float(st.get("exit_sold_qty", 0.0) or 0.0))
+            sell_qty = round(min(free, target_rem) if target_rem > 0 else (free * self.sell_fraction), 8)
             if self.enabled and sell_qty * price >= self.min_notional:
                 self.a.execute_sell(
                     key, asset, pair, sell_qty, price, st["peak"], trail,
@@ -251,6 +301,9 @@ class TrailingCore:
             return
 
         if free * price < self.min_notional:
+            st.pop("target_exit_qty", None)
+            st.pop("exit_sold_qty", None)
+            st.pop("exit_sold_cost", None)
             return                                            # nothing to protect; keep resting orders intact
 
         if "warmup_at" in st:

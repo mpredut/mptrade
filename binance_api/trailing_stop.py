@@ -297,6 +297,18 @@ class TrailingStop:
     def free_qty(self, asset: str) -> float:
         return self._free_qty(self._balances, asset)
 
+    def total_qty(self, asset: str) -> float:
+        for bal in self._balances or []:
+            if bal.get("asset") == asset:
+                try:
+                    f = float(bal.get("free", 0.0))
+                    l = float(bal.get("locked", 0.0))
+                    tot = f + l
+                    return tot if math.isfinite(tot) and tot >= 0 else 0.0
+                except (TypeError, ValueError, OverflowError):
+                    return 0.0
+        return 0.0
+
     def unlock_qty(self, pair: str) -> bool:
         """Cancel open SELL orders to release locked quantity for emergency stop."""
         try:

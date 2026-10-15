@@ -320,6 +320,59 @@ class T212MDHTPTest(unittest.TestCase):
             # Pending exit is cleared after successful placement
             self.assertIsNone(strat.s.get("tp_pending_exit"))
 
+    def test_mdhtp_defers_and_cancels_all_orders_including_dca_and_resizes_on_late_fill(self):
+        """MDHTP exit cancels all orders (including DCA BUYs), waits for cancellation reconciliation,
+        and recalculates exit quantity dynamically when held increases from late BUY fills."""
+        params = _params(
+            STRAT_TP_MDHTP_ENABLED="true",
+            STRAT_TAKEPROFIT_PCT="3",
+            STRAT_TRAIL_PCT="5.0",
+        )
+        current_time = 1000.0
+        trend_slope = -0.1
+        strat = strategy.Strategy(
+            client=self.mock_client,
+            ticker="TEST_US_EQ",
+            params=params,
+            dry_run=True,
+            clock=lambda: current_time,
+            trend_slope_provider=lambda _sym: trend_slope,
+        )
+        strat.s.update(qty=10.0, cost_usd=1000.0, spent_cash=1000.0, entry_price=100.0, last_buy_price=100.0)
+
+        # DCA BUY order is resting on the book
+        dca_order = {"id": "DCA-BUY-1", "side": "BUY", "qty": 2.0, "limit": 95.0, "kind": "DCA", "market": False}
+        strat.s["orders"] = [dca_order]
+
+        cancelled_orders = []
+        def fake_cancel_all():
+            cancelled_orders.extend(strat.s["orders"])
+            return True
+
+        with patch.object(strategy, "notify"), \
+             patch.object(strat, "_cancel_all_orders", side_effect=fake_cancel_all), \
+             patch.object(strat, "_place_sell", return_value=True) as mock_place_sell:
+
+            # Tick 1: MDHTP triggers -> initiates cancel_all, but DCA order is still in orders (reconciling)
+            strat.step(105.0)
+            self.assertEqual(len(cancelled_orders), 1)
+            self.assertEqual(cancelled_orders[0]["id"], "DCA-BUY-1")
+            self.assertIsNotNone(strat.s.get("tp_pending_exit"))
+            # Market sell is NOT sent yet while pending orders are reconciling!
+            mock_place_sell.assert_not_called()
+
+            # Tick 2: Late DCA BUY filled before cancel, increasing held from 10 to 12
+            strat.s["orders"] = []
+            strat.s["qty"] = 12.0
+            current_time = 1005.0
+            strat.step(104.9)
+
+            # Market sell must be executed for the fresh 12 shares, NOT the old 10!
+            mock_place_sell.assert_called_once()
+            called_qty = mock_place_sell.call_args[0][0]
+            self.assertEqual(called_qty, 12.0)
+            self.assertIsNone(strat.s.get("tp_pending_exit"))
+
 
 if __name__ == "__main__":
     unittest.main()

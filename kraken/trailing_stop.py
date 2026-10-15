@@ -164,6 +164,16 @@ class KrakenTrailing:
     def free_qty(self, asset: str) -> float:
         return self._free(asset)
 
+    def total_qty(self, asset: str) -> float:
+        bx = self.client._private("BalanceEx").get(asset)
+        if not bx:
+            return 0.0
+        try:
+            val = float(bx.get("balance", 0))
+            return val if math.isfinite(val) and val >= 0 else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
     def unlock_qty(self, pair: str) -> bool:
         """Cancel open SELL orders to release locked quantity for emergency stop."""
         try:

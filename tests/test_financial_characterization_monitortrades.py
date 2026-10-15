@@ -674,6 +674,28 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.assertEqual(restore_orders[0]["price"], 102.0)
             self.assertEqual(restore_orders[0]["qty"], 4.0)
 
+        # Subtest 4: If STOP placement outcome is unknown (in-flight / timeout), do NOT restore cancelled TP order!
+        with self.subTest(msg="does_not_restore_tp_when_stop_outcome_unknown"):
+            class UnknownOutcomeInstrument(FakeInstrument):
+                def place(self, side, price, qty, **kwargs):
+                    super().place(side, price, qty, **kwargs)
+                    outcome_ctx = kwargs.get("_outcome_context")
+                    if outcome_ctx is not None and isinstance(outcome_ctx, dict):
+                        outcome_ctx.update(accepted=False, reason="timeout", state="unknown")
+                    return None
+
+            inst = UnknownOutcomeInstrument(
+                price=94.0,
+                free=0.0,
+                fills=[_fill("BUY", 100, 4)],
+                open_orders=[{"orderId": "tp-order-789", "side": "SELL", "price": 102.0, "origQty": 4.0}],
+            )
+            self.run_tick(inst, trend_up=False, loss=0.05)
+            self.assertIn("tp-order-789", inst.cancelled)
+            # TP must NOT be restored while STOP outcome is unknown/ambiguous
+            restore_orders = [o for o in inst.placed if o.get("kwargs", {}).get("kind") == "TP"]
+            self.assertEqual(restore_orders, [], "TP must NOT be restored after unknown/ambiguous STOP outcome")
+
     def test_mhdsl_bounce_timeout_forces_stop_loss(self):
         """Proposal 2: Time-bounded bounce deferral.
         If trend_up stays True past MT_SL_TREND_DEFER_MAX_SEC (220s),

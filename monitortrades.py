@@ -675,12 +675,14 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 tp_forced_reason = tp_decision.reason
                 print(f"Price increased with {price_increase * 100:.2f}% by more than {gain_threshold * 100:.2f}% versus buy price! (decision={tp_forced_reason})")
                 placed = False
+                tp_outcome_ctx = {}
                 if sellable_qty > 0:
                     bypass_pg = current_price < buy_price or bool(tp_decision.forced)
                     placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
                         safeback_seconds=sbs, force=bool(tp_decision.forced), cancelorders=True,
-                        hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=bypass_pg)
-                    if placed:
+                        hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=bypass_pg,
+                        _outcome_context=tp_outcome_ctx)
+                    if placed or tp_outcome_ctx.get("state") == "unknown":
                         _TP_RIDE_STATE.pop(symbol, None)
                         _LAST_EXIT_KIND[symbol] = "TP"
                     elif prev_tp_state:
@@ -758,11 +760,13 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
 
                 # Stop-loss is an emergency capital preservation exit: bypass discretionary trade cooldowns
                 placed = False
+                outcome_ctx = {}
                 if sellable_qty > 0:
                     placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty,
                         safeback_seconds=sbs, force=True, cancelorders=True,
                         hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=True,
                         bypass_guards={"all"}, wait_for_trend=False,
+                        _outcome_context=outcome_ctx,
                     )
                 if placed:
                     _SL_BOUNCE_STATE.pop(symbol, None)
@@ -770,16 +774,28 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
 
                 # Rollback / restore resting TP order if Stop-Loss placement failed
                 if not placed:
-                    if prev_sl_state:
-                        _SL_BOUNCE_STATE[symbol] = prev_sl_state
-                    if cancelled_tp_orders:
-                        restore_cancelled_orders(
-                            cancelled_tp_orders,
-                            restore_fn=lambda p: inst.place("SELL", p["price"], p["qty"], kind="TP", wait_for_trend=False),
-                            log_fn=lambda msg: print(f"[{symbol}] {msg}"),
-                            reason=f"Stop-Loss was not placed (sellable_qty={sellable_qty})",
-                        )
-                    print(f"No can sell (sellable_qty={sellable_qty})")
+                    sl_state = outcome_ctx.get("state")
+                    if sl_state == "unknown":
+                        # The stop submit was attempted, but outcome is unknown / ambiguous / pending reconciliation.
+                        # Do NOT restore cancelled TP orders; restoring TP while STOP is in-flight creates competing orders.
+                        print(f"[{symbol}] Stop-Loss submit outcome unknown/in-flight ({outcome_ctx.get('reason')}) — TP restoration deferred pending stop reconciliation")
+                    else:
+                        if prev_sl_state:
+                            _SL_BOUNCE_STATE[symbol] = prev_sl_state
+                        if cancelled_tp_orders:
+                            restore_cancelled_orders(
+                                cancelled_tp_orders,
+                                restore_fn=lambda p: inst.place(
+                                    "SELL",
+                                    float(p.get("price") or p.get("limit") or 0.0),
+                                    float(p.get("qty") or p.get("origQty") or p.get("vol") or 0.0),
+                                    kind="TP",
+                                    wait_for_trend=False,
+                                ),
+                                log_fn=lambda msg: print(f"[{symbol}] {msg}"),
+                                reason=f"Stop-Loss was not placed (sellable_qty={sellable_qty}, state={sl_state})",
+                            )
+                        print(f"No can sell (sellable_qty={sellable_qty})")
         else:
             if symbol in _SL_BOUNCE_STATE:
                 print(f"[{symbol}] 🎉 Stop-Loss bounce successfully recovered! Position saved from dip "
