@@ -1276,6 +1276,48 @@ class Strategy:
             log(f"  [STRAT] === ciclu inchis, reincep (ciclu {nxt}) ===")
 
     # -- decision step ---------------------------------------------------------
+    def _execute_protective_exit(
+        self,
+        kind: str,
+        price: float,
+        label: str,
+        fail_key: str,
+        sell_qty: float | None = None,
+    ) -> bool:
+        """Cancel existing non-protective orders and submit a protective market sell.
+
+        Returns True if the protective exit order was successfully placed or is
+        already resting active. Returns False if submission was deferred or failed
+        (caller should not alert yet).
+        """
+        existing = next((o for o in self.s["orders"] if o.get("kind") == kind), None)
+        if existing is None or (not existing.get("market") and price < existing["limit"]):
+            cancelled_orders = [dict(o) for o in self.s["orders"] if o.get("kind") != kind]
+            if not self._cancel_all_orders():
+                log(f"  ! [STRAT] {label} deferred: at least one order could not be cancelled")
+                return False
+            pending_orders = [o for o in self.s["orders"] if o.get("kind") != kind]
+            if pending_orders:
+                log(f"  [STRAT] {label} deferred: waiting for {len(pending_orders)} existing order(s) to reconcile cancellation")
+                return False
+            if self.s.get("pending_submit"):
+                log(f"  [STRAT] {label} deferred: waiting for pending submit to reconcile")
+                return False
+            target_qty = sell_qty if sell_qty is not None else self._sellable_qty(self.s["qty"], price)
+            placed = self._place_sell(
+                target_qty, round(price, 2), kind=kind, market=True,
+            )
+            if not placed:
+                if not self.s.get("pending_submit"):
+                    self.s[fail_key] = self._now() + 1800
+                    log(f"  ! [STRAT] {label} sell failed or refused — backoff 30 min (retaining TP ladder)")
+                    self._restore_cancelled_orders(cancelled_orders, reason=f"{label.lower()} sell failed")
+                return False
+            self.s["sl_pending"] = True
+            if kind == "SL":
+                self.s["tp_pending_exit"] = None
+        return True
+
     def _check_trailing(self, price: float) -> bool:
         """Sell the entire position after a ``trail_pct`` drop from its peak.
 
@@ -1320,36 +1362,13 @@ class Strategy:
         if self._now() < self.s.get("tr_fail_until", 0):
             return False
         # The peak drawdown reached the threshold: sell all once, replacing only a stale limit.
-        tr = next((o for o in self.s["orders"] if o.get("kind") == "TR"), None)
-        if tr is None or (not tr.get("market") and price < tr["limit"]):
-            cancelled_orders = [dict(o) for o in self.s["orders"] if o.get("kind") != "TR"]
-            if not self._cancel_all_orders():
-                log("  ! [STRAT] TRAILING deferred: at least one order could not be cancelled")
-                return True
-            pending_orders = [o for o in self.s["orders"] if o.get("kind") != "TR"]
-            if pending_orders:
-                log(f"  [STRAT] TRAILING deferred: waiting for {len(pending_orders)} existing order(s) to reconcile cancellation")
-                return True
-            if self.s.get("pending_submit"):
-                log("  [STRAT] TRAILING deferred: waiting for pending submit to reconcile")
-                return True
-            sell_qty = self._sellable_qty(self.s["qty"], price)
-            placed = self._place_sell(
-                sell_qty, round(price, 2), kind="TR", market=True,
-            )
-            if not placed:
-                if not self.s.get("pending_submit"):
-                    self.s["tr_fail_until"] = self._now() + 1800
-                    log("  ! [STRAT] TRAILING sell failed or refused — backoff 30 min (retaining TP ladder)")
-                    self._restore_cancelled_orders(cancelled_orders, reason="trailing sell failed")
-                return True
-            self.s["sl_pending"] = True         # Arm bounce reentry as for a catastrophic stop loss.
-        if not self.s.get("tr_alerted"):
-            self.s["tr_alerted"] = True
-            log(f"  📉 [STRAT] TRAILING: -{drop_pct:.2f}% de la peak {peak:.2f} >= {self.p.trail_pct}% — VAND TOT")
-            notify(title=f"📉 TRAILING {self.yahoo_sym} -{drop_pct:.1f}%",
-                   body=f"de la peak{peak:.2f} ≥{self.p.trail_pct}% — vand tot",
-                   source="T212", price=price, desktop=self.desktop)
+        if self._execute_protective_exit("TR", price, "TRAILING", "tr_fail_until"):
+            if not self.s.get("tr_alerted"):
+                self.s["tr_alerted"] = True
+                log(f"  📉 [STRAT] TRAILING: -{drop_pct:.2f}% de la peak {peak:.2f} >= {self.p.trail_pct}% — VAND TOT")
+                notify(title=f"📉 TRAILING {self.yahoo_sym} -{drop_pct:.1f}%",
+                       body=f"de la peak{peak:.2f} ≥{self.p.trail_pct}% — vand tot",
+                       source="T212", price=price, desktop=self.desktop)
         return True
 
     def _vol_1h_ratio(self) -> tuple[float, str]:
@@ -1428,36 +1447,13 @@ class Strategy:
             if decision.action == ExitAction.SELL and decision.should_exit:
                 if self._now() < self.s.get("sl_fail_until", 0):
                     return False
-                sl = next((o for o in self.s["orders"] if o.get("kind") == "SL"), None)
-                if sl is None or (not sl.get("market") and price < sl["limit"]):
-                    cancelled_orders = [dict(o) for o in self.s["orders"] if o.get("kind") != "SL"]
-                    if not self._cancel_all_orders():
-                        log("  ! [STRAT] STOP deferred: at least one order could not be cancelled")
-                        return True
-                    pending_orders = [o for o in self.s["orders"] if o.get("kind") != "SL"]
-                    if pending_orders:
-                        log(f"  [STRAT] STOP deferred: waiting for {len(pending_orders)} existing order(s) to reconcile cancellation")
-                        return True
-                    if self.s.get("pending_submit"):
-                        log("  [STRAT] STOP deferred: waiting for pending submit to reconcile")
-                        return True
-                    placed = self._place_sell(
-                        sell_qty, round(price, 2), kind="SL", market=True,
-                    )
-                    if not placed:
-                        if not self.s.get("pending_submit"):
-                            self.s["sl_fail_until"] = self._now() + 1800
-                            log("  ! [STRAT] STOP sell failed or refused — backoff 30 min (retaining TP ladder)")
-                            self._restore_cancelled_orders(cancelled_orders, reason="stop-loss sell failed")
-                        return True
-                    self.s["sl_pending"] = True
-                    self.s["tp_pending_exit"] = None
-                if not self.s.get("sl_alerted"):
-                    self.s["sl_alerted"] = True
-                    log(f"  🛑 [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% ({decision.reason}) — SELLING EVERYTHING (cutting the loss)")
-                    notify(title=f"🛑 SL {self.yahoo_sym} -{loss_pct:.1f}%",
-                           body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}% ({decision.reason}) — selling everything",
-                           source="T212", price=price, desktop=self.desktop)
+                if self._execute_protective_exit("SL", price, "STOP", "sl_fail_until", sell_qty=sell_qty):
+                    if not self.s.get("sl_alerted"):
+                        self.s["sl_alerted"] = True
+                        log(f"  🛑 [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% ({decision.reason}) — SELLING EVERYTHING (cutting the loss)")
+                        notify(title=f"🛑 SL {self.yahoo_sym} -{loss_pct:.1f}%",
+                               body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}% ({decision.reason}) — selling everything",
+                               source="T212", price=price, desktop=self.desktop)
                 return True
             elif decision.action == ExitAction.HOLD:
                 if decision.metadata.get("priority") in (1, 2) or (
@@ -1475,36 +1471,13 @@ class Strategy:
         if self._now() < self.s.get("sl_fail_until", 0):
             return False
         # Anti-spam: place the stop once and replace it only if price moved below its limit.
-        sl = next((o for o in self.s["orders"] if o.get("kind") == "SL"), None)
-        if sl is None or (not sl.get("market") and price < sl["limit"]):
-            cancelled_orders = [dict(o) for o in self.s["orders"] if o.get("kind") != "SL"]
-            if not self._cancel_all_orders():
-                log("  ! [STRAT] STOP deferred: at least one order could not be cancelled")
-                return True
-            pending_orders = [o for o in self.s["orders"] if o.get("kind") != "SL"]
-            if pending_orders:
-                log(f"  [STRAT] STOP deferred: waiting for {len(pending_orders)} existing order(s) to reconcile cancellation")
-                return True
-            if self.s.get("pending_submit"):
-                log("  [STRAT] STOP deferred: waiting for pending submit to reconcile")
-                return True
-            sell_qty = self._sellable_qty(self.s["qty"], price)
-            placed = self._place_sell(
-                sell_qty, round(price, 2), kind="SL", market=True,
-            )
-            if not placed:
-                if not self.s.get("pending_submit"):
-                    self.s["sl_fail_until"] = self._now() + 1800
-                    log("  ! [STRAT] STOP sell failed or refused — backoff 30 min (retaining TP ladder)")
-                    self._restore_cancelled_orders(cancelled_orders, reason="stop-loss sell failed")
-                return True
-            self.s["sl_pending"] = True         # Mark this episode so cycle closure arms bounce reentry.
-        if not self.s.get("sl_alerted"):           # Notify only once per episode.
-            self.s["sl_alerted"] = True
-            log(f"  🛑 [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% — SELLING EVERYTHING (cutting the loss)")
-            notify(title=f"🛑 SL {self.yahoo_sym} -{loss_pct:.1f}%",
-                   body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}% — selling everything",
-                   source="T212", price=price, desktop=self.desktop)
+        if self._execute_protective_exit("SL", price, "STOP", "sl_fail_until"):
+            if not self.s.get("sl_alerted"):           # Notify only once per episode.
+                self.s["sl_alerted"] = True
+                log(f"  🛑 [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% — SELLING EVERYTHING (cutting the loss)")
+                notify(title=f"🛑 SL {self.yahoo_sym} -{loss_pct:.1f}%",
+                       body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}% — selling everything",
+                       source="T212", price=price, desktop=self.desktop)
         return True
 
     def _check_loss_alert(self, price: float) -> None:
