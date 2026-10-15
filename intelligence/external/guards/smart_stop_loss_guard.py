@@ -129,7 +129,7 @@ def _dispatch_recovery_alerts(events: list[Dict[str, Any]]) -> None:
         b_str = _format_price(e.get("buy_price"))
         price_part = f" @ {c_str}" if c_str else ""
         if c_str and b_str:
-            price_part = f" | {c_str} (Buy: {b_str})"
+            price_part = f" | {c_str} (Ultimul preț Buy: {b_str})"
 
         body_lines = [
             f"{sym}{prov_tag}{price_part}",
@@ -153,7 +153,10 @@ def _dispatch_recovery_alerts(events: list[Dict[str, Any]]) -> None:
             sym = e["symbol"]
             p_tag = f" ({e['provider']})" if e.get("provider") else ""
             c_str = _format_price(e.get("current_price"))
+            b_str = _format_price(e.get("buy_price"))
             price_str = f" @ {c_str}" if c_str else ""
+            if c_str and b_str:
+                price_str = f" | {c_str} (Ultimul preț Buy: {b_str})"
             line = (
                 f"• {sym}{p_tag}: bounce in {e['elapsed']:.0f}s | "
                 f"dip {e['price_decrease_pct']:.2f}% <= {e['lost_threshold_pct']:.2f}% (was {e['init_loss_pct']:.2f}%){price_str}"
@@ -319,7 +322,7 @@ class SmartStopLossGuard:
                     b_str = _format_price(buy_price)
                     price_part = f" @ {c_str}" if c_str else ""
                     if c_str and b_str:
-                        price_part = f" | {c_str} (Buy: {b_str})"
+                        price_part = f" | {c_str} (Ultimul preț Buy: {b_str})"
 
                     body_lines = [
                         f"{sym_key}{prov_tag}{price_part}",
@@ -359,8 +362,12 @@ class SmartStopLossGuard:
                     saved_prov_str = str(saved_prov).strip().upper()
                     saved_prov_tag = f" ({saved_prov_str})" if saved_prov_str else ""
                     c_p = current_price if current_price is not None else active_grace.get("current_price")
+                    b_p = buy_price if buy_price is not None else active_grace.get("buy_price")
                     c_str = _format_price(c_p)
+                    b_str = _format_price(b_p)
                     price_part = f" @ {c_str}" if c_str else ""
+                    if c_str and b_str:
+                        price_part = f" | {c_str} (Ultimul preț Buy: {b_str})"
 
                     tracker.pop(sym_key, None)
                     if not is_sim:

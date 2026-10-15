@@ -226,6 +226,7 @@ def test_smart_sl_notifications_detail_and_debounce():
         assert "Coin:" not in defer_alert["body"]
         assert "BTCUSDC (BINANCE)" in defer_alert["body"]
         assert "$64,200.00" in defer_alert["body"]
+        assert "(Ultimul preț Buy: $66,150.00)" in defer_alert["body"]
         assert "Dip: 2.94%" in defer_alert["body"]
 
         # 2. Standalone recovery 40s later (batch=False)
@@ -244,6 +245,7 @@ def test_smart_sl_notifications_detail_and_debounce():
         assert "Coin:" not in recovery_alert["body"]
         assert "Dip: 2.20% <= 2.93%" in recovery_alert["body"]
         assert "$64,800.00" in recovery_alert["body"]
+        assert "(Ultimul preț Buy: $66,150.00)" in recovery_alert["body"]
         assert "Bounce in 40s!" in recovery_alert["body"]
 
         # 3. 30-minute cooldown (1800s): if same symbol recovers again within 1800s, no alert sent
