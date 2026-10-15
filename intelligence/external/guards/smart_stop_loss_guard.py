@@ -285,7 +285,7 @@ class SmartStopLossGuard:
             return True, reason, meta
 
         # 5. Whale Absorption & Suspected Stop-Hunt Wick Detection
-        is_whale_supported = top_long_pct >= self.min_whale_long_pct
+        is_whale_supported = top_long_pct >= self.min_whale_long_pct or divergence_regime in ("short_squeeze_primed", "short_squeeze")
         has_absorption = (
             taker_ratio >= self.min_taker_ratio
             or imbalance >= 0.70

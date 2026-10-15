@@ -57,7 +57,7 @@ class WhaleDivergenceGuard:
 
         regime = snapshot.divergence_regime
 
-        # 1. Buying into a short-covering fakeout (price up, but OI falling: no new whale money!)
+        # 1. Buying into a short-covering fakeout (price up, but OI falling: no new whale money and passive taker flow)
         if side_norm == "BUY" and self.block_short_covering_fakeout and regime == "short_covering":
             return GuardDecision.defer(
                 guard_name="WhaleDivergenceGuard",
@@ -67,7 +67,7 @@ class WhaleDivergenceGuard:
             )
 
         # 2. Buying into aggressive whale short expansion (price down, but OI expanding: heavy short momentum)
-        if side_norm == "BUY" and self.block_aggressive_shorting and regime == "aggressive_shorting":
+        if side_norm == "BUY" and self.block_aggressive_shorting and regime in ("aggressive_shorting", "short_building"):
             return GuardDecision.defer(
                 guard_name="WhaleDivergenceGuard",
                 reason=f"aggressive_whale_shorting (OI_1h={snapshot.open_interest_1h_change_pct:+.1f}% expanding down)",
@@ -114,11 +114,17 @@ class WhaleDivergenceGuard:
                 divergence_regime=regime,
             )
 
-        # 5. Selling into massive whale accumulation / squeeze
-        if side_norm == "SELL" and regime == "accumulation" and snapshot.top_traders_long_pct >= 0.70:
+        # 5. Selling into massive whale accumulation or active short squeeze
+        if (
+            side_norm == "SELL"
+            and (
+                (regime == "accumulation" and snapshot.top_traders_long_pct >= 0.70)
+                or (regime in ("short_squeeze", "short_squeeze_primed") and snapshot.top_traders_long_pct >= 0.50)
+            )
+        ):
             return GuardDecision.defer(
                 guard_name="WhaleDivergenceGuard",
-                reason=f"whale_accumulation_active (whales {snapshot.top_traders_long_pct*100:.1f}% long, OI_1h={snapshot.open_interest_1h_change_pct:+.1f}%)",
+                reason=f"whale_squeeze_or_accumulation_active (regime={regime}, whales {snapshot.top_traders_long_pct*100:.1f}% long, taker_ratio={snapshot.taker_buy_sell_ratio:.2f})",
                 open_interest_change=snapshot.open_interest_1h_change_pct,
                 divergence_regime=regime,
                 top_long_pct=snapshot.top_traders_long_pct,

@@ -32,14 +32,16 @@ class WhalePositioningSnapshot:
     taker_sell_vol_usd: float
     open_interest_usd: float
     open_interest_1h_change_pct: float # e.g. +2.5%
-    divergence_regime: str             # "accumulation", "short_covering", "aggressive_shorting", "long_liquidation", "neutral"
+    divergence_regime: str             # "accumulation", "short_covering", "aggressive_shorting", "long_liquidation", "neutral", "short_squeeze", "short_squeeze_primed", "long_unwinding"
     ts: float
+    funding_rate: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> WhalePositioningSnapshot:
+        fr = data.get("funding_rate")
         return cls(
             symbol=str(data.get("symbol", "")),
             top_traders_long_ratio=float(data.get("top_traders_long_ratio", 1.0)),
@@ -51,6 +53,7 @@ class WhalePositioningSnapshot:
             open_interest_1h_change_pct=float(data.get("open_interest_1h_change_pct", 0.0)),
             divergence_regime=str(data.get("divergence_regime", "neutral")),
             ts=float(data.get("ts", 0.0)),
+            funding_rate=float(fr) if fr is not None else None,
         )
 
 
@@ -140,6 +143,101 @@ class WhalePositioningCollector:
             logger.debug("Failed calculating 1h price change from cache for %s: %s", symbol, e)
         return 0.0
 
+    def _resolve_cached_funding_rate(self, symbol: str) -> Optional[float]:
+        """Lookup cached funding rate from derivatives telemetry if available."""
+        if not self.cache_dir:
+            return None
+        try:
+            sym_u = symbol.upper()
+            variants = [sym_u]
+            if "USDC" in sym_u:
+                variants.append(sym_u.replace("USDC", "USDT"))
+            elif "USDT" in sym_u:
+                variants.append(sym_u.replace("USDT", "USDC"))
+            for s in variants:
+                p = os.path.join(self.cache_dir, f"derivatives_telemetry_{s}.json")
+                if os.path.exists(p):
+                    with open(p, "r", encoding="utf-8") as f:
+                        d = json.load(f)
+                    fr = d.get("funding_rate")
+                    if fr is not None:
+                        return float(fr)
+        except Exception as e:
+            logger.debug("Failed reading funding rate from cache for %s: %s", symbol, e)
+        return None
+
+    @staticmethod
+    def classify_regime(
+        price_1h_change_pct: float,
+        oi_change_pct: float,
+        taker_ratio: float,
+        funding_rate: Optional[float] = None,
+        prev_regime: Optional[str] = None,
+        top_long_pct: Optional[float] = None,
+    ) -> str:
+        """Classify derivatives OI-Price divergence regime with short squeeze & liquidation distinction.
+
+        Correlates:
+        1. Price 1h change (trend direction)
+        2. Open Interest 1h change (capital expansion vs contraction)
+        3. Taker Buy/Sell ratio (aggressive market execution dominance)
+        4. Funding Rate (crowded short vs long pressure)
+        """
+        # 1. Price rising (> +0.2%)
+        if price_1h_change_pct > 0.2:
+            if oi_change_pct > 0.3:
+                # True accumulation vs Trapped shorts / Short Squeeze Primed
+                is_trapped_shorts = (
+                    taker_ratio >= 1.15
+                    and (
+                        (funding_rate is not None and funding_rate < -0.00005)
+                        or prev_regime in ("aggressive_shorting", "short_squeeze_primed")
+                        or (top_long_pct is not None and top_long_pct < 0.45)
+                    )
+                )
+                return "short_squeeze_primed" if is_trapped_shorts else "accumulation"
+            elif oi_change_pct < -0.3:
+                # Distinguish active short squeeze (forced buying cascade) from passive short covering (fakeout)
+                if taker_ratio >= 1.25 or (oi_change_pct <= -2.5 and taker_ratio >= 1.10):
+                    return "short_squeeze"
+                return "short_covering"
+            else:
+                # Flat OI with rising price: check for trapped shorts pressure
+                if taker_ratio >= 1.20 and (
+                    prev_regime in ("aggressive_shorting", "short_squeeze_primed")
+                    or (funding_rate is not None and funding_rate < 0.0)
+                ):
+                    return "short_squeeze_primed"
+                return "neutral"
+
+        # 2. Price falling (< -0.2%)
+        elif price_1h_change_pct < -0.2:
+            if oi_change_pct > 0.3:
+                # Aggressive short expansion vs mild short building
+                return "aggressive_shorting" if (taker_ratio < 0.85 or oi_change_pct > 1.0) else "aggressive_shorting"
+            elif oi_change_pct < -0.3:
+                # Distinguish forced liquidation cascade from orderly voluntary position unwinding
+                is_severe_oi_drop = oi_change_pct <= -3.0
+                is_aggressive_sell = taker_ratio < 0.85
+                is_violent_dump = price_1h_change_pct < -1.5 and taker_ratio < 0.80
+                if (is_severe_oi_drop and is_aggressive_sell) or is_violent_dump or (taker_ratio < 0.80 and oi_change_pct <= -1.5):
+                    return "long_liquidation"
+                return "long_unwinding"
+            else:
+                if taker_ratio < 0.80:
+                    return "aggressive_shorting"
+                return "neutral"
+
+        # 3. Flat price (abs <= 0.2%): consolidation / range absorption
+        else:
+            if oi_change_pct > 0.8 and taker_ratio < 0.85:
+                return "aggressive_shorting"
+            elif oi_change_pct > 0.8 and taker_ratio > 1.15:
+                if funding_rate is not None and funding_rate < -0.00005:
+                    return "short_squeeze_primed"
+                return "accumulation"
+            return "neutral"
+
     def fetch(self, symbol: str, price_1h_change_pct: float = 0.0, allow_network: bool = True) -> Optional[WhalePositioningSnapshot]:
         """Fetch latest whale positioning metrics from public Binance Futures endpoints."""
         symbol = symbol.upper()
@@ -191,24 +289,18 @@ class WhalePositioningCollector:
             oi_change_pct = ((latest_oi_usd - prev_oi_usd) / prev_oi_usd * 100.0) if prev_oi_usd > 0 else 0.0
 
             # 4. Classify OI-Price divergence regime
-            # Price rising (> +0.2%) + OI rising (> +0.3%) = True accumulation
-            # Price rising (> +0.2%) + OI falling (< -0.3%) = Short covering (exhaustion)
-            # Price falling (< -0.2%) + OI rising (> +0.3%) = Aggressive shorting (momentum down)
-            # Price falling (< -0.2%) + OI falling (< -0.3%) = Long liquidation
-            # Flat price (abs <= 0.2%):
-            # - OI expanding (> +0.8%) + Taker sell aggression (< 0.85) = Aggressive short positioning
-            # - OI expanding (> +0.8%) + Taker buy aggression (> 1.15) = Accumulation
-            if price_1h_change_pct > 0.2:
-                regime = "accumulation" if oi_change_pct > 0.3 else ("short_covering" if oi_change_pct < -0.3 else "neutral")
-            elif price_1h_change_pct < -0.2:
-                regime = "aggressive_shorting" if oi_change_pct > 0.3 else ("long_liquidation" if oi_change_pct < -0.3 else "neutral")
-            else:
-                if oi_change_pct > 0.8 and taker_ratio < 0.85:
-                    regime = "aggressive_shorting"
-                elif oi_change_pct > 0.8 and taker_ratio > 1.15:
-                    regime = "accumulation"
-                else:
-                    regime = "neutral"
+            prev_snap = cached[1] if cached else self._load_from_disk(symbol, now)
+            prev_reg = prev_snap.divergence_regime if prev_snap else None
+            funding_rate = self._resolve_cached_funding_rate(symbol)
+
+            regime = self.classify_regime(
+                price_1h_change_pct=price_1h_change_pct,
+                oi_change_pct=oi_change_pct,
+                taker_ratio=taker_ratio,
+                funding_rate=funding_rate,
+                prev_regime=prev_reg,
+                top_long_pct=top_long_pct,
+            )
 
             snapshot = WhalePositioningSnapshot(
                 symbol=symbol,
@@ -221,6 +313,7 @@ class WhalePositioningCollector:
                 open_interest_1h_change_pct=round(oi_change_pct, 2),
                 divergence_regime=regime,
                 ts=now,
+                funding_rate=funding_rate,
             )
             self._cache[symbol] = (now, snapshot)
             self._save_to_disk(snapshot)

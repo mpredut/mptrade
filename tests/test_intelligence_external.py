@@ -593,7 +593,110 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
         finally:
             external_order_guard._whale_collector = orig_collector
 
+    def test_whale_positioning_regime_classification_short_squeeze_and_unwinding(self):
+        """Verify regime classification handles short squeeze and distinguishes liquidations from unwinding."""
+        from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+
+        # 1. Price rising + OI falling with aggressive taker buys = short_squeeze
+        reg_squeeze = WhalePositioningCollector.classify_regime(
+            price_1h_change_pct=1.2,
+            oi_change_pct=-3.5,
+            taker_ratio=1.45,
+        )
+        self.assertEqual(reg_squeeze, "short_squeeze")
+
+        # 2. Price rising + OI falling with passive taker flow = short_covering (fakeout)
+        reg_fakeout = WhalePositioningCollector.classify_regime(
+            price_1h_change_pct=1.2,
+            oi_change_pct=-3.5,
+            taker_ratio=0.95,
+        )
+        self.assertEqual(reg_fakeout, "short_covering")
+
+        # 3. Price rising + OI rising with negative funding rate = short_squeeze_primed
+        reg_trapped = WhalePositioningCollector.classify_regime(
+            price_1h_change_pct=0.8,
+            oi_change_pct=1.5,
+            taker_ratio=1.25,
+            funding_rate=-0.0002,
+        )
+        self.assertEqual(reg_trapped, "short_squeeze_primed")
+
+        # 4. Price rising + OI rising with positive funding rate = accumulation
+        reg_accum = WhalePositioningCollector.classify_regime(
+            price_1h_change_pct=0.8,
+            oi_change_pct=1.5,
+            taker_ratio=1.25,
+            funding_rate=0.0001,
+        )
+        self.assertEqual(reg_accum, "accumulation")
+
+        # 5. Price falling + OI falling with severe destruction = long_liquidation
+        reg_liq = WhalePositioningCollector.classify_regime(
+            price_1h_change_pct=-2.5,
+            oi_change_pct=-6.0,
+            taker_ratio=0.65,
+        )
+        self.assertEqual(reg_liq, "long_liquidation")
+
+        # 6. Price falling + OI falling gently with healthy taker ratio = long_unwinding (orderly closure)
+        reg_unwind = WhalePositioningCollector.classify_regime(
+            price_1h_change_pct=-0.5,
+            oi_change_pct=-1.2,
+            taker_ratio=0.92,
+        )
+        self.assertEqual(reg_unwind, "long_unwinding")
+
+    def test_whale_divergence_guard_short_squeeze_and_unwinding(self):
+        """Verify WhaleDivergenceGuard allows short squeeze buys, defers premature sells, and permits long unwinding."""
+        from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+        from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+        from intelligence.internal.guards.guard_decision import BrakeAction
+
+        guard = WhaleDivergenceGuard()
+
+        # Active short squeeze: BUY is ALLOWED (not blocked as fakeout)
+        snap_squeeze = WhalePositioningSnapshot(
+            symbol="BTCUSDT",
+            top_traders_long_ratio=1.5,
+            top_traders_long_pct=0.60,
+            taker_buy_sell_ratio=1.40,
+            taker_buy_vol_usd=2_000_000.0,
+            taker_sell_vol_usd=1_420_000.0,
+            open_interest_usd=5_000_000_000.0,
+            open_interest_1h_change_pct=-4.0,
+            divergence_regime="short_squeeze",
+            ts=time.time(),
+        )
+        dec_buy = guard.check("BTCUSDT", "BUY", snapshot=snap_squeeze)
+        self.assertTrue(dec_buy.allowed)
+        self.assertEqual(dec_buy.brake_action, BrakeAction.NONE)
+
+        # Active short squeeze: SELL is DEFERRED to let squeeze run
+        dec_sell = guard.check("BTCUSDT", "SELL", snapshot=snap_squeeze)
+        self.assertFalse(dec_sell.allowed)
+        self.assertEqual(dec_sell.brake_action, BrakeAction.DEFER_WAIT)
+        self.assertIn("whale_squeeze_or_accumulation_active", dec_sell.reason)
+
+        # Orderly long unwinding: BUY is allowed with clean scaling
+        snap_unwind = WhalePositioningSnapshot(
+            symbol="BTCUSDT",
+            top_traders_long_ratio=1.2,
+            top_traders_long_pct=0.55,
+            taker_buy_sell_ratio=0.95,
+            taker_buy_vol_usd=1_000_000.0,
+            taker_sell_vol_usd=1_050_000.0,
+            open_interest_usd=5_000_000_000.0,
+            open_interest_1h_change_pct=-1.5,
+            divergence_regime="long_unwinding",
+            ts=time.time(),
+        )
+        dec_unwind = guard.check("BTCUSDT", "BUY", snapshot=snap_unwind)
+        self.assertTrue(dec_unwind.allowed)
+        self.assertEqual(dec_unwind.brake_action, BrakeAction.NONE)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

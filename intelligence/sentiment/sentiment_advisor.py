@@ -120,6 +120,10 @@ class SentimentAdvisor:
             "You are a principal crypto quantitative risk strategist. "
             "Synthesize the following real-time telemetry into a periodic macro market perspective:\n"
             f"{context_str}\n\n"
+            "Key analytical framework:\n"
+            "- Correlate price change, open interest change, taker buy/sell ratio, and funding rates.\n"
+            "- If divergence regime is 'short_squeeze_primed' or 'short_squeeze', evaluate if trapped shorts or cascade buying can drive sudden upside squeezes.\n"
+            "- Distinguish true forced liquidations ('long_liquidation') from voluntary orderly de-risking ('long_unwinding').\n\n"
             "Return strictly valid JSON with exact keys:\n"
             "{\n"
             '  "market_bias": "BULLISH" | "BEARISH" | "NEUTRAL" | "CAUTION",\n'
