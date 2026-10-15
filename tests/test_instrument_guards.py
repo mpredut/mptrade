@@ -473,21 +473,19 @@ class InstrumentGuardsTestCase(unittest.TestCase):
                 p.submitted_client_id)
             self.assertEqual(queued[0]["last_failure_reason"], "submit_ambiguous")
 
-    # ── cooldown anti-rapid-fire ────────────────────────────────────────────────
+    # ── rapid-fire order placement without trade_cooldown lock ──────────────────
     def test_cooldown_behaviors(self):
-        with self.subTest("cooldown_blocks_second_order"):
+        with self.subTest("orders_not_blocked_by_cooldown_lock"):
             self._clear_state()
             p = _FakeProvider()
             inst = self._inst(p)
             first = inst.place("BUY", 100.0, 1.0)
             self.assertIsNotNone(first)
-            second = inst.place("BUY", 101.0, 1.0)   # < cooldown_sec after the first one.
-            self.assertIsNone(second)
-            self.assertEqual(len(p.placed), 1)   # Only the first one reached the provider.
-            lines = self._log_lines()
-            self.assertTrue(any("|refused|cooldown|" in l for l in lines), lines)
+            second = inst.place("BUY", 101.0, 1.0)
+            self.assertIsNotNone(second)
+            self.assertEqual(len(p.placed), 2)
 
-        with self.subTest("cooldown_independent_per_symbol"):
+        with self.subTest("orders_independent_per_symbol"):
             self._clear_state()
             p = _FakeProvider()
             inst_a = Instrument(name="A", symbol="ZZZFAKEUSD_A", provider=p.name.lower(),
@@ -496,9 +494,9 @@ class InstrumentGuardsTestCase(unittest.TestCase):
                                 base="B", quote="USD", api=MarketApi([p]))
             self.assertIsNotNone(inst_a.place("BUY", 100.0, 1.0))
             self.assertIsNotNone(
-                inst_b.place("BUY", 100.0, 1.0))  # A different symbol is unaffected.
+                inst_b.place("BUY", 100.0, 1.0))
 
-        with self.subTest("pair_id_allows_only_the_opposite_leg_through_cooldown"):
+        with self.subTest("pair_id_orders_allowed"):
             self._clear_state()
             p = _FakeProvider()
             inst = self._inst(p)
@@ -511,27 +509,25 @@ class InstrumentGuardsTestCase(unittest.TestCase):
                 "SELL", 101.0, 1.0, smart=False, wait_for_trend=False,
                 bypass_profit_guard=True,
                 cooldown_pair_id="pair-1", caller_owns_retry=True)
-            duplicate = inst.place(
+            buy2 = inst.place(
                 "BUY", 98.0, 1.0, smart=False, wait_for_trend=False,
                 bypass_profit_guard=True,
                 cooldown_pair_id="pair-1", caller_owns_retry=True)
 
             self.assertIsNotNone(buy)
             self.assertIsNotNone(sell)
-            self.assertIsNone(duplicate)
-            self.assertEqual(len(p.placed), 2)
+            self.assertIsNotNone(buy2)
+            self.assertEqual(len(p.placed), 3)
 
     def test_facade_and_placement_flags_routing(self):
         with self.subTest("facade_place_routes_through_pipeline"):
             self._clear_state()
             p = _FakeProvider()
+            p.seed_trade("BUY", age_sec=5.0)  # Recent transaction trips daily_limit_guard anti-spam
             mkt = MarketApi([p])
-            first = mkt.place(SYMBOL, "BUY", 100.0, 1.0)
-            self.assertIsNotNone(first)
-            self.assertEqual(len(p.placed), 1)
-            second = mkt.place(SYMBOL, "BUY", 101.0, 1.0)
-            self.assertIsNone(second)
-            self.assertEqual(len(p.placed), 1)
+            order = mkt.place(SYMBOL, "BUY", 100.0, 1.0)
+            self.assertIsNone(order)
+            self.assertEqual(len(p.placed), 0)
 
         with self.subTest("smart_flag_gates_price_adjust"):
             self._clear_state()
@@ -1022,7 +1018,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         self.assertNotIn("p4", bypassed)
 
     def test_emergency_stop_loss_bypasses_cooldown(self):
-        """All SELL / exit orders must never be blocked by rapid-fire cooldown."""
+        """Instrument.place no longer blocks on trade_cooldown for BUY or SELL."""
         prov = _FakeProvider()
         inst = self._inst(prov)
 
@@ -1033,24 +1029,22 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             def __enter__(self): return self
             def __exit__(self, *a): pass
 
-        with patch("lock.trade_cooldown.trade_slot", return_value=BlockedSlot()), \
+        with patch("lock.trade_cooldown.trade_slot", return_value=BlockedSlot()) as mock_slot, \
              patch("order_guard.daily_limit_guard", return_value=(True, "ok")), \
              patch("order_guard.profit_guard", return_value=True):
-            # BUY is blocked by active cooldown
             res_buy = inst.place("BUY", 100.0, 1.0, smart=False, wait_for_trend=False)
-            self.assertIsNone(res_buy)
+            self.assertIsNotNone(res_buy)
 
-            # Normal SELL bypasses cooldown unconditionally (exits never blocked)
             res_normal = inst.place("SELL", 100.0, 1.0, smart=False, wait_for_trend=False)
             self.assertIsNotNone(res_normal)
 
-            # Emergency STOP with kind="STOP" bypasses cooldown
             res_stop = inst.place("SELL", 100.0, 1.0, smart=False, wait_for_trend=False, kind="STOP")
             self.assertIsNotNone(res_stop)
 
-            # Emergency STOP with bypass_guards={"all"} bypasses cooldown
             res_all = inst.place("SELL", 100.0, 1.0, smart=False, wait_for_trend=False, bypass_guards={"all"})
             self.assertIsNotNone(res_all)
+
+            mock_slot.assert_not_called()
 
 
 if __name__ == "__main__":

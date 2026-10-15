@@ -433,8 +433,10 @@ class MonitorOrderPreflightTest(unittest.TestCase):
         self.assertEqual(stats["attempted"], 0)
         self.assertEqual(recovery.place_calls, [])
 
-    def test_cooldown_active_preserves_live_order(self):
+    def test_recent_trade_does_not_block_replacement(self):
+        """Cooldown gate eliminated: recent trade does not block replacement preflight."""
         orders = {101: {"price": 100.0, "quantity": 2.0}}
+        permit = object()
         with (
             mock.patch.object(
                 monitororder.api, "get_open_orders", return_value=orders),
@@ -443,18 +445,24 @@ class MonitorOrderPreflightTest(unittest.TestCase):
             mock.patch.object(
                 monitororder.u, "are_close", return_value=True),
             mock.patch.object(
-                monitororder.trade_cooldown, "get_last_trade_age", return_value=5.0),
+                monitororder.trade_cooldown, "get_last_trade_age", return_value=1.0),
             mock.patch.object(
-                monitororder.api, "cancel_order") as cancel_order,
+                monitororder.mkt, "preflight_order", return_value=permit),
             mock.patch.object(
-                monitororder.mkt, "place") as place,
+                monitororder.api, "cancel_order", return_value=True) as cancel_order,
+            mock.patch.object(
+                monitororder.mkt, "order_status",
+                return_value=OrderStatus(
+                    status="canceled", filled_qty=0.0, cost=0.0, fee=0.0,
+                    venue_status="CANCELED")),
+            mock.patch.object(
+                monitororder.mkt, "place", return_value={"orderId": "new-1"}) as place,
             mock.patch("builtins.print"),
         ):
             monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
 
-        cancel_order.assert_not_called()
-        place.assert_not_called()
-        self.assertEqual(monitororder.order_retry.load_all(), [])
+        cancel_order.assert_called_once()
+        place.assert_called_once()
 
 
 if __name__ == "__main__":
