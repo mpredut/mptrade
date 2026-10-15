@@ -14,7 +14,8 @@ import utils as u
 import symbols as sym
 from instrument_registry import select_instruments, symbols_for
 from binance_api import bapi as api
-from binance_api import bapi_placeorder as po   # Retained for _log_order_outcome (Kalman gate).
+from binance_api import bapi_placeorder as po   # Retained for legacy compatibility.
+import order_outcomes_log
 from providers.market_api import api as mkt      # Single guarded proxy (Instrument.place).
 
 from binance_api import bapi_trades as apitrades
@@ -243,7 +244,7 @@ def _fire_order(symbol, action, price, reason, **kwargs):
     if blocked:
         print(f"[KALMAN-GATE] {action} {symbol} BLOCKED (kalman_trend={trend}, mode={mode}, reason={reason})")
         try:
-            logger_fn = GATE_OUTCOME_LOG or po._log_order_outcome
+            logger_fn = GATE_OUTCOME_LOG or order_outcomes_log.log_order_outcome
             logger_fn(symbol, action, price, None,
                       "refused", f"kalman_gate_{mode}(trend={trend})", reason)
         except Exception as _e:  # noqa: BLE001

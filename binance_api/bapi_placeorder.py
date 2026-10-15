@@ -1,21 +1,16 @@
 import os
 import time
-import datetime
 import math
 import sys
 import threading
+import json
+import signal
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-import signal
-import asyncio
-#import threading
-#from threading import Thread
-import json
-
-####Binance
+#### Binance
 import binance
-print(binance.__version__)
 from binance.exceptions import BinanceAPIException
 
 
@@ -442,9 +437,6 @@ def place_SELL_order(symbol, price, qty, client_order_id=None):
     return _submit_binance_order(
         "SELL", symbol, qty, price=price, client_order_id=client_order_id)
 
-
-def place_SELL_BUY_order(order_type, symbol, price, qty) :
-    return _submit_binance_order(order_type, symbol, qty, price=price)
 
 def place_BUY_order_at_market(symbol, qty, client_order_id=None):
     return _submit_binance_order(
