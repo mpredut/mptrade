@@ -717,8 +717,8 @@ class Strategy:
         if not market and str(side).lower() == "sell" and str(kind).upper() != "STOP":
             _avg = self._avg()
             if _avg is not None and price < _avg:
-                log(f"  ! [STRAT] [GUARD] {kind} sell refuzat: pret {price} < avg "
-                    f"{_avg:.6f} (profit-floor; STOP/MARKET exceptate)")
+                log(f"  ! [STRAT] [GUARD] {kind} sell rejected: price {price} < avg "
+                    f"{_avg:.6f} (profit-floor; STOP/MARKET excepted)")
                 return False
         # A previous deterministic funds rejection cannot become executable merely
         # by hammering the venue every tick. MARKET exits deliberately bypass this:
@@ -1445,7 +1445,7 @@ class Strategy:
             log(f"  [SHADOW] fixed threshold {prag_fix:.2f} vs adaptive {prag_adapt:.2f} "
                 f"(vol_1h {vol:.2f}% x k={k_re}) → {verdict}")
         except Exception as e:  # noqa: BLE001 — observational
-            log(f"  [SHADOW] eroare calcul ({e}) — ignor")
+            log(f"  [SHADOW] calculation error ({e}) — ignored")
 
     def _effective_reentry_drop_pct(self) -> tuple[float, str]:
         """Return the effective adaptive or fixed reentry threshold.
@@ -1461,8 +1461,8 @@ class Strategy:
             if vol is None and not self.replay_mode:
                 vol = resolve_cached_volatility_1h_pct(self.pair)
         except Exception as e:  # noqa: BLE001 — observational failure must not stop trading.
-            log(f"  [REINTRARE-ADAPTIV] eroare calcul ({e}) — fallback pe fix")
-            return self.p.reentry_drop_pct, "fix (fallback, eroare)"
+            log(f"  [REENTRY-ADAPTIVE] calculation error ({e}) — fallback to fixed")
+            return self.p.reentry_drop_pct, "fix (fallback, error)"
         if vol is None:
             return self.p.reentry_drop_pct, f"fix (fallback, warm-up {len(self._shadow_prices)}/20)"
         adapt_drop, _ = adaptive_thresholds(vol, k_reentry=k_re)
@@ -2187,7 +2187,7 @@ class Strategy:
             while True:
                 price = self.client.get_current_price(self.pair)
                 if price is None:
-                    log("  [STRAT] price unavailable — reincerc")
+                    log("  [STRAT] price unavailable — retrying")
                     time.sleep(self.p.check_minutes * 60)
                     continue
                 try:
@@ -2198,14 +2198,14 @@ class Strategy:
                     self.reconcile(price)
                     self.step(price)
                     self._save()
-                except Exception as e:  # noqa: BLE001 — REZILIENTA: net/API picat -> reincerc
-                    log(f"  ! [STRAT] eroare ({e.__class__.__name__}: {e}) — reincerc")
+                except Exception as e:  # noqa: BLE001 — RESILIENCE: network/API down -> retry
+                    log(f"  ! [STRAT] error ({e.__class__.__name__}: {e}) — retrying")
                     time.sleep(self.p.check_minutes * 60)
                     continue
                 avg = self._avg()
                 pos = f"qty={self.s['qty']:.8f} avg={avg:.{self.price_dec}f}" if avg else "qty=0 (waiting for an entry)"
                 log(f"  [STRAT] price={price}  {pos}  "
-                    f"NET={self.s['realized_net']:+.2f} (brut {self.s['realized_gross']:+.2f}, "
+                    f"NET={self.s['realized_net']:+.2f} (gross {self.s['realized_gross']:+.2f}, "
                     f"fee {self.s['fees_total']:.2f}) {self.ccy}  ord={len(self.s['orders'])}")
                 time.sleep(self.p.check_minutes * 60)
         except KeyboardInterrupt:

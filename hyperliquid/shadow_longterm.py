@@ -116,7 +116,7 @@ def main() -> int:
     try:
         snapshot(quiet=args.quiet)
     except Exception as exc:  # visible cron failure without live effects
-        print(f"[hl_shadow] eroare: {exc}", file=sys.stderr)
+        print(f"[hl_shadow] error: {exc}", file=sys.stderr)
         return 1
     return 0
 

@@ -452,7 +452,7 @@ class TrailingStop:
             except KeyboardInterrupt:
                 return
             except Exception as e:  # noqa: BLE001
-                self.log(f"  ! [TRAIL] eroare ciclu ({e}) — continui")
+                self.log(f"  ! [TRAIL] cycle error ({e}) — continuing")
             time.sleep(CHECK_SECONDS)
 
 

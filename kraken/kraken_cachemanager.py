@@ -135,11 +135,11 @@ def poll_loop(client):
             _fetch_rest_into(client, cache)
             _atomic_write(CACHE_FILE, cache)
             log(f"[kraken_cache][poll] {sum(len(v) for v in cache['items'].values())} fills "
-                f"pt {list(cache['items'].keys())}")
+                f"for {list(cache['items'].keys())}")
             backoff = POLL_BACKOFF_INIT   # reset after success
             time.sleep(POLL_INTERVAL)
         except Exception as e:
-            log(f"[kraken_cache][poll] eroare (backoff {backoff:.0f}s): {e}")
+            log(f"[kraken_cache][poll] error (backoff {backoff:.0f}s): {e}")
             time.sleep(backoff)
             backoff = min(backoff * 2, POLL_BACKOFF_MAX)
 
@@ -208,7 +208,7 @@ def ws_loop(client):
             ws.run_forever(ping_interval=20, ping_timeout=10)   # reconnect after disconnection
         except Exception as e:
             log(f"[kraken_cache][ws] run_forever: {e}")
-        log("[kraken_cache][ws] deconectat; reconnect in 5s")
+        log("[kraken_cache][ws] disconnected; reconnect in 5s")
         time.sleep(5)
 
 

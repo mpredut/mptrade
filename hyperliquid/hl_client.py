@@ -86,7 +86,7 @@ class HLClient:
     def __init__(self, secret_key: str | None = None, account_address: str | None = None,
                  mainnet: bool = True):
         if not _SDK_OK:
-            raise HLError(f"SDK Hyperliquid indisponibil: {_SDK_ERR} "
+            raise HLError(f"Hyperliquid SDK unavailable: {_SDK_ERR} "
                           f"(run it with the python from .venv)")
         self.base = constants.MAINNET_API_URL if mainnet else constants.TESTNET_API_URL
         # Info fetches metadata in its constructor, so the timeout must be passed
@@ -326,7 +326,7 @@ class HLClient:
             return
         try:
             self.exchange.update_leverage(leverage, coin, is_cross=True)
-            log(f"  [HL] levier {coin} setat la {leverage}x")
+            log(f"  [HL] leverage {coin} set to {leverage}x")
         except Exception as e:  # noqa: BLE001
             log(f"  ! set_leverage failed: {e}")
 

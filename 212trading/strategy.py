@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ipo_common import (
-    log as _log, now_str, are_close, float_env, required_env, required_float_env,
+    log as _log, are_close, float_env, required_env, required_float_env,
     required_bool_env,
 )
 from ipo_notify import notify
@@ -34,14 +34,12 @@ from strategies.position_exit_manager import (
     PositionSnapshot,
     ExitAction,
     ReentrySnapshot,
-    ReentryDecision,
 )
 from order_rollback import restore_cancelled_orders
 from intelligence.internal.state.volatility import (
     resolve_cached_volatility_1h,
     resolve_cached_volatility_1h_pct,
     vol_pct_to_ratio,
-    vol_ratio_to_pct,
 )
 
 FX_FEE_PCT = 0.15  # T212 currency-conversion fee per direction.
@@ -1838,7 +1836,7 @@ class Strategy:
             while not (stop is not None and stop.is_set()):
                 price = get_price_usd(self.yahoo_sym)
                 if price is None:
-                    log("  [STRAT] price unavailable — reincerc")
+                    log("  [STRAT] price unavailable — retrying")
                     _delay(self.p.check_minutes * 60)
                     continue
                 try:
@@ -1850,7 +1848,7 @@ class Strategy:
                     self.step(price)
                     self._save()
                 except Exception as e:  # noqa: BLE001 — Resilience: retry network/API failures.
-                    log(f"  ! [STRAT] eroare ({e.__class__.__name__}: {e}) — reincerc")
+                    log(f"  ! [STRAT] error ({e.__class__.__name__}: {e}) — retrying")
                     _delay(self.p.check_minutes * 60)
                     continue
 
@@ -1859,12 +1857,12 @@ class Strategy:
                 fees = self.s.get("fees_usd", 0.0)
                 if avg:
                     log(f"  [STRAT] price={price:.2f}  qty={self.s['qty']:.2f}  avg={avg:.2f}  "
-                        f"desf={self.s['spent_cash']:.0f}{self.ccy}  "
-                        f"NET={net:+.2f}USD (brut {self.s['realized_pnl_usd']:+.2f}, fee {fees:.2f})  "
+                        f"deployed={self.s['spent_cash']:.0f}{self.ccy}  "
+                        f"NET={net:+.2f}USD (gross {self.s['realized_pnl_usd']:+.2f}, fee {fees:.2f})  "
                         f"ord={len(self.s['orders'])}")
                 else:
                     log(f"  [STRAT] price={price:.2f}  qty=0  "
-                        f"NET={net:+.2f}USD (brut {self.s['realized_pnl_usd']:+.2f}, fee {fees:.2f})  "
+                        f"NET={net:+.2f}USD (gross {self.s['realized_pnl_usd']:+.2f}, fee {fees:.2f})  "
                         f"(waiting for an entry)")
                 _delay(self.p.check_minutes * 60)
         except KeyboardInterrupt:

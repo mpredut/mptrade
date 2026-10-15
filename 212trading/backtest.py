@@ -14,10 +14,8 @@ misleading 100% win rate while a losing position remains trapped.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
-import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 T212_DIR = os.path.dirname(os.path.abspath(__file__))

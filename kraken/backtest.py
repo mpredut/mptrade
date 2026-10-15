@@ -116,7 +116,7 @@ def main() -> int:
     ap.add_argument("--budget", type=float, default=1000); ap.add_argument("--fee", type=float, default=0.25)
     ap.add_argument("--sl", type=float, default=10.0, help="stop-loss %% (0=stopped)")
     ap.add_argument("--fast", action="store_true",
-                    help="deprecat; motorul LIVE faithful rp.run_replay este utilizat intotdeauna")
+                    help="deprecated; faithful live engine rp.run_replay is always used")
     args = ap.parse_args()
 
     # Load live STRAT_* configuration so the faithful engine uses production
@@ -131,7 +131,7 @@ def main() -> int:
     try:
         ohlc = fetch_candles(args.pair, args.interval)
     except Exception as e:  # noqa: BLE001
-        print(f"! eroare date: {e}"); return 1
+        print(f"! data error: {e}"); return 1
     if len(ohlc) < 20:
         print(f"! not enough data ({len(ohlc)})"); return 1
     closes = [x[3] for x in ohlc]
@@ -139,20 +139,20 @@ def main() -> int:
     base = dict(entry=args.entry, dca=args.dca, disc=args.disc, drop=args.drop,
                 tp=args.tp, maxdca=args.maxdca, budget=args.budget, fee=args.fee, sl=args.sl)
 
-    engine = "motor LIVE (faithful)"
+    engine = "live engine (faithful)"
     if args.mode == "single":
         m = rp.run_replay(
             ohlc, _bt_params(base), fee_pct=args.fee, bar_minutes=args.interval)
         tot = m["total"]/args.budget*100
         wr = 100*m["wins"]/m["cycles"] if m["cycles"] else 0
-        print(f"=== BACKTEST KRAKEN {args.pair} interval={args.interval}m ({len(ohlc)} bare) [{engine}] ===")
+        print(f"=== BACKTEST KRAKEN {args.pair} interval={args.interval}m ({len(ohlc)} bars) [{engine}] ===")
         print(f"  params: entry={args.entry} dca={args.dca} drop={args.drop}% tp={args.tp}% sl={args.sl}% fee={args.fee}%/leg")
         print(f"  REAL TOTAL: {tot:+.2f}% of the budget  ⇐ realised ${m['realized']:+.2f} + the open position ${m['final_upnl']:+.2f} - fees ${m['fees']:.2f}")
-        print(f"  (realizat singur: {m['net']/args.budget*100:+.2f}%)")
-        print(f"  cicluri: {m['cycles']}  win-rate {wr:.0f}%   max drawdown ${m['maxdd']:.2f}")
+        print(f"  (realized alone: {m['net']/args.budget*100:+.2f}%)")
+        print(f"  cycles: {m['cycles']}  win-rate {wr:.0f}%   max drawdown ${m['maxdd']:.2f}")
         for line in format_performance_summary(m, indent="  "):
             print(line)
-        print(f"  buy&hold: {bh:+.2f}%   pozitie la final: {m['open_qty']:.6f}")
+        print(f"  buy&hold: {bh:+.2f}%   final position: {m['open_qty']:.6f}")
         return 0
 
     print(f"=== SWEEP {args.pair} interval={args.interval}m  (buy&hold {bh:+.1f}%) [{engine}] ===")
@@ -165,9 +165,9 @@ def main() -> int:
                     ohlc, _bt_params(P), fee_pct=args.fee, bar_minutes=args.interval)
                 rows.append((m["total"]/args.budget*100, tp, drop, sl, m["cycles"], m["maxdd"]))
     rows.sort(reverse=True)
-    print("  top 8 (total% | tp | drop | sl | cicluri | maxDD$):")
+    print("  top 8 (total% | tp | drop | sl | cycles | maxDD$):")
     for tot, tp, drop, sl, cyc, dd in rows[:8]:
-        print(f"    {tot:+7.2f}%  tp={tp:<4} drop={drop:<4} sl={sl:<4} cic={cyc:<3} dd=${dd:.0f}")
+        print(f"    {tot:+7.2f}%  tp={tp:<4} drop={drop:<4} sl={sl:<4} cyc={cyc:<3} dd=${dd:.0f}")
     return 0
 
 

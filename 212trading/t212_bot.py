@@ -65,7 +65,7 @@ def verify_isin(client: T212Client, ticker: str, expected_isin: str) -> bool:
         return True
     if str(match.get("isin", "")) != expected_isin:
         log(f"  ! [{ticker}] ISIN {match.get('isin')} != the expected {expected_isin} — NOT trading")
-        notify(title=f"⚠ {ticker}: ISIN nepotrivit", source="T212",
+        notify(title=f"⚠ {ticker}: ISIN mismatch", source="T212",
                body=f"Found {match.get('isin')}, we expected {expected_isin}.", symbol=ticker)
         return False
     return True
@@ -96,8 +96,8 @@ def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_
                 ok = wait_for_launch(
                     yahoo, label, interval, stop=STOP,
                     on_launch=lambda m: notify(
-                        title=f"{label} disponibil — pornesc!", source="T212",
-                        body=f"{label} tranzactionabil pe {m.get('exchange')} @ {m.get('price')}",
+                        title=f"{label} available — starting!", source="T212",
+                        body=f"{label} tradable on {m.get('exchange')} @ {m.get('price')}",
                         price=m.get("price"), symbol=label))
                 if not ok:
                     return  # stop requested
@@ -108,15 +108,15 @@ def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_
             Strategy(client, ticker, StratParams.from_env(cfg), dry_run=strat_dry).run(stop=STOP)
             return
         except Exception as e:  # noqa: BLE001 — resilience: one asset cannot terminate the process
-            log(f"  ! [{label}] eroare ciclu ({e.__class__.__name__}: {e}) — reincerc in 60s")
+            log(f"  ! [{label}] cycle error ({e.__class__.__name__}: {e}) — retrying in 60s")
             STOP.wait(60)
     log(f"  ⏹ [{label}] stopped")
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Bot unificat T212: un proces, mai multe active (config.*.env).")
+    ap = argparse.ArgumentParser(description="Unified T212 bot: one process, multiple assets (config.*.env).")
     ap.add_argument("--paper", action="store_true", help="Force PAPER on all of them (a safe test)")
-    ap.add_argument("--only", metavar="NUME", help="Run only the asset with this name (config.NAME.env)")
+    ap.add_argument("--only", metavar="NAME", help="Run only the asset with this name (config.NAME.env)")
     ap.add_argument("--skip-wait", action="store_true", help="Skip waiting for the launch")
     ap.add_argument("--list", action="store_true", help="Show the assets and exit")
     ap.add_argument("--env-file", default=os.path.join(_HERE, ".env"))
@@ -130,11 +130,11 @@ def main() -> int:
     if args.only:
         assets = [(n, p) for (n, p) in assets if n == args.only]
     if not assets:
-        log(f"! no config.*.env found in {cfg_dir}" + (f" pt '{args.only}'" if args.only else ""))
+        log(f"! no config.*.env found in {cfg_dir}" + (f" for '{args.only}'" if args.only else ""))
         return 1
 
     if args.list:
-        log(f"=== {len(assets)} active ===")
+        log(f"=== {len(assets)} assets ===")
         for n, p in assets:
             c = parse_dotenv(p)
             real = c.get("STRAT_EXECUTE", "").strip().lower() == "true" and not args.paper
@@ -168,7 +168,7 @@ def main() -> int:
         while not STOP.is_set() and any(t.is_alive() for t in threads):
             time.sleep(1)
     except KeyboardInterrupt:
-        log("Oprire ceruta (Ctrl+C)...")
+        log("Shutdown requested (Ctrl+C)...")
         STOP.set()
     return 0
 

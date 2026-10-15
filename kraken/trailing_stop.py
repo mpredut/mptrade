@@ -319,7 +319,7 @@ class KrakenTrailing:
         self.log(f"  [TRAIL-K] {asset}: -{trail}% reached but the instant trend is UP — NOT selling (anti-wick)")
 
     def log_tick_error(self, e) -> None:
-        self.log(f"  ! [TRAIL-K] cycle failed ({e.__class__.__name__}: {e}) — reincerc")
+        self.log(f"  ! [TRAIL-K] cycle failed ({e.__class__.__name__}: {e}) — retrying")
 
     # -- one step / loop -------------------------------------------------------
     def check_once(self) -> None:
