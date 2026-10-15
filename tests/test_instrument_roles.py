@@ -34,7 +34,7 @@ def test_current_execution_policy_is_preserved():
         assert set(registry.symbols_for("binance", role)) == symbols
     modes = {item.symbol: item.setting("tradeall.kalman_mode") for item in
              registry.select_instruments("binance", "tradeall_fire").values()}
-    assert modes == {"BTCUSDC": "strict", "TAOUSDC": "permissive", "ARBUSDC": "permissive"}
+    assert modes == {"BTCUSDC": "strict", "TAOUSDC": "permissive", "ARBUSDC": "strict"}
     trails = {item.symbol: item.number("trailing.pct") for item in
               registry.select_instruments("binance", "trailing").values()}
     assert trails == {"BTCUSDC": 16, "TAOUSDC": 22, "ARBUSDC": 26}
