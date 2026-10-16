@@ -405,3 +405,32 @@ def test_clear_position_stats_cache_respects_mt_persistence(tmp_path, monkeypatc
     assert state_file.exists()
 
 
+def test_tradeall_backtest_window_constants_and_run(tmp_path, monkeypatch):
+    """tradeall exports WINDOW_SECONDS_SMALL/BIG and offline.backtests.tradeall.run_backtest runs end-to-end."""
+    import json
+    import tradeall as ta
+    from offline.backtests import tradeall as bt_ta
+
+    assert hasattr(ta, "WINDOW_SECONDS_SMALL")
+    assert hasattr(ta, "WINDOW_SECONDS_BIG")
+
+    c24_file = tmp_path / "cache_24price_ARBUSDC.json"
+    items = [[1750000000000 + i * 15000, 0.20 + (i % 5) * 0.0005] for i in range(40)]
+    c24_file.write_text(json.dumps({"items": {"ARBUSDC": items}}), encoding="utf-8")
+
+    monkeypatch.setattr(bt_ta, "ROOT", str(tmp_path))
+    bt_ta.run_backtest(
+        symbol="ARBUSDC",
+        start_ts=1750000000.0,
+        end_ts=None,
+        speed="fast",
+        run_id="unit_test_run",
+        source="cache24",
+        cache24_file=str(c24_file),
+        quiet=True,
+    )
+    pnl_path = tmp_path / "logger" / "backtest" / "unit_test_run" / "pnl.json"
+    assert pnl_path.exists()
+
+
+

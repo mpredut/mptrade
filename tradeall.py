@@ -15,10 +15,13 @@ import order_outcomes_log
 from providers.market_api import api as mkt      # Single guarded proxy (Instrument.place).
 
 from pricewindow import (
+    DEFAULT_SAMPLE_RATE_SEC,
     PriceTrendAnalyzer,
     PriceWindow,
-    WindowAnalyzer,
     RECENT_GRADIENT_SECONDS,
+    WINDOW_SECONDS_BIG,
+    WINDOW_SECONDS_SMALL,
+    WindowAnalyzer,
 )
 
 # July 23: load tunable parameters from the versioned, secret-free

@@ -356,7 +356,8 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     
                 slope, _pos = analyzer_small.check_price_change(thr_small)
                 gradient, _gc, _sf, _gr = window_small.get_instant_trend()
-                ta.logic_small("SMALL", True, symbol, gradient, slope, trend_state, price)
+                ta.logic_small("SMALL", True, symbol, gradient, slope, trend_state, price,
+                               price_window=window_small)
     
                 slope_big, _price_diff = analyzer_big.check_price_change(thr_big)
                 ta.logic("BIG", True, symbol, gradient, slope_big, trend_state_big, price)
