@@ -177,7 +177,12 @@ _TICK_SLICE_CACHE = {}
 
 
 def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
-    cache_key = (path, symbol, start_ts, end_ts)
+    try:
+        st = os.stat(path)
+        file_sig = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        file_sig = None
+    cache_key = (path, file_sig, symbol, start_ts, end_ts)
     cached = _TICK_SLICE_CACHE.get(cache_key)
     if cached is not None:
         yield from cached
@@ -199,8 +204,6 @@ def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
             if ts < start_ts:
                 continue
             if end_ts is not None and ts > end_ts:
-                if ts > end_ts + 60.0:
-                    break
                 continue
             ticks.append((ts, price))
     if len(_TICK_SLICE_CACHE) >= 8:

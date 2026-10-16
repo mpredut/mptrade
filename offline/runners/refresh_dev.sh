@@ -42,7 +42,7 @@ echo "[refresh_dev $(date '+%F %T')] data: rsync cachedb/ prod -> dev"
 # in real time; there is no point copying them. We tolerate the codes 23/24 (partial or
 # vanished files) — benign on a live source, NOT a real sync failure.
 rc=0
-rsync -a --info=stats1 --exclude '*.tmp' -e "$SSH" \
+rsync -a --info=stats1 --exclude '*.tmp' --exclude 'dev_regression_status.json' -e "$SSH" \
   "$REPO_ROOT/cachedb/" "$DEV_USER@$DEV_HOST:$DEV_PATH/cachedb/" 2>&1 | sed 's/^/  /' || rc=$?
 if [ "$rc" != 0 ] && [ "$rc" != 24 ] && [ "$rc" != 23 ]; then
   echo "[refresh_dev] rsync failed with code $rc"; exit "$rc"
