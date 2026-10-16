@@ -180,15 +180,23 @@ class HLClient:
         except Exception:  # noqa: BLE001
             return 0.0
 
+    def open_orders_strict(self, coin: str | None = None) -> list[dict]:
+        """Return open orders while propagating API errors."""
+        if not self.address:
+            raise HLError("HL_ACCOUNT_ADDRESS missing")
+        oo = self.info.open_orders(self.address)
+        if not isinstance(oo, list):
+            raise HLError(f"Invalid open_orders payload: {type(oo).__name__}")
+        return [o for o in oo if isinstance(o, dict) and (coin is None or o.get("coin") == coin)]
+
     def open_orders(self, coin: str | None = None) -> list[dict]:
         if not self.address:
             return []
         try:
-            oo = self.info.open_orders(self.address)
+            return self.open_orders_strict(coin)
         except Exception as e:  # noqa: BLE001
             log(f"  ! open_orders failed: {e}")
             return []
-        return [o for o in oo if coin is None or o.get("coin") == coin]
 
     # ----- SPOT + funding reads -----------------------------------------------
     def resolve_spot_pair(self, token: str) -> str | None:

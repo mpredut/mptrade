@@ -543,5 +543,72 @@ def test_hyperliquid_replay_ttl_not_premature_on_bar_zero():
     assert res["fills"] >= 1
 
 
+def test_hyperliquid_reconcile_real_protects_against_transient_errors(tmp_path):
+    Strategy = hl_replay.Strategy
+    StratParams = hl_replay.StratParams
+
+    class FakeClient:
+        def __init__(self):
+            self.pos_fail = False
+            self.orders_fail = False
+
+        def sz_decimals(self, coin):
+            return 2
+
+        def position_strict(self, coin):
+            if self.pos_fail:
+                raise RuntimeError("transient HTTP timeout")
+            return (1.5, 100.0)
+
+        def open_orders_strict(self, coin):
+            if self.orders_fail:
+                raise RuntimeError("transient open_orders failure")
+            return [{"oid": "123"}]
+
+    client = FakeClient()
+    strat = Strategy(
+        client=client,
+        coin="HYPE",
+        params=StratParams(direction="long"),
+        dry_run=False,
+        replay_mode=True,
+    )
+    strat.s["qty"] = 1.5
+    strat.s["cost"] = 150.0
+    strat.s["orders"] = [{"oid": "123", "role": "close", "side": "sell", "sz": 1.5, "px": 102.0}]
+
+    # 1. Transient position failure must return False and preserve qty/orders
+    client.pos_fail = True
+    assert strat.reconcile(99.0) is False
+    assert strat.s["qty"] == 1.5
+    assert len(strat.s["orders"]) == 1
+
+    # 2. Transient open_orders failure must preserve tracked orders instead of wiping them
+    client.pos_fail = False
+    client.orders_fail = True
+    assert strat.reconcile(99.0) is True
+    assert strat.s["qty"] == 1.5
+    assert len(strat.s["orders"]) == 1
 
 
+def test_hyperliquid_reconcile_paper_stop_fills_on_continued_crash():
+    Strategy = hl_replay.Strategy
+    StratParams = hl_replay.StratParams
+
+    strat = Strategy(
+        client=None,
+        coin="HYPE",
+        params=StratParams(direction="long", stop_loss_pct=5.0),
+        dry_run=True,
+        replay_mode=False,
+        initial_state={},
+    )
+    strat._save = lambda: None
+    strat._apply_open(1.0, 100.0, 100.0, "ENTRY")
+    # Trigger stop loss at 94.0 (places STOP sell at 94 * 0.995 = 93.53)
+    assert strat._check_stop_loss(94.0) is True
+    assert any(o.get("kind") == "STOP" for o in strat.s["orders"])
+    # On next tick, price crashes further to 90.0 (< 93.53); STOP must still fill!
+    strat.reconcile(90.0)
+    assert strat.s["qty"] == 0.0
+    assert len(strat.s["orders"]) == 0

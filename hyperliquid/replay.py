@@ -174,7 +174,7 @@ def _run_once(
         qty = strategy.s["qty"]
         if qty > 1e-12:
             rate = funding_at(fund, t_ms)
-            f = rate * qty * c
+            f = rate * qty * c * ((bar_minutes or 60.0) / 60.0)
             funding += (f if strategy.sign < 0 else -f)
 
         # 2. Check active limit orders against the bar range

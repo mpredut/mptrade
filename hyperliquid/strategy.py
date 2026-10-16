@@ -236,32 +236,46 @@ class Strategy:
             log(f"  [STRAT] cancelled close {o['oid']}")
 
     # -- reconciliation --------------------------------------------------------
-    def reconcile(self, price: float) -> None:
+    def reconcile(self, price: float) -> bool:
         if self.dry_run:
             self._reconcile_paper(price)
-        else:
-            self._reconcile_real(price)
+            return True
+        return self._reconcile_real(price)
 
     def _reconcile_paper(self, price: float) -> None:
         for role in ("open", "close"):
             for o in [x for x in self.s["orders"] if x["role"] == role]:
                 if o not in self.s["orders"]:
                     continue
-                # Paper opens fill immediately; closes fill when signed price reaches target.
-                if role == "open" or self.sign * (price - o["px"]) >= 0:
+                # Paper opens and STOP orders fill immediately; TP closes fill when signed price reaches target.
+                if role == "open" or o.get("kind") == "STOP" or self.sign * (price - o["px"]) >= 0:
                     self._remove(o)
                     if role == "open":
                         self._apply_open(o["sz"], o["px"], o.get("amount", 0.0), o.get("kind"))
                     else:
-                        self._apply_close(self._avg() or o["px"], o["px"], o["sz"])
+                        fill_px = price if o.get("kind") == "STOP" else o["px"]
+                        self._apply_close(self._avg() or fill_px, fill_px, o["sz"])
 
-    def _reconcile_real(self, price: float) -> None:
+    def _reconcile_real(self, price: float) -> bool:
+        pos_fn = getattr(self.client, "position_strict", None) or self.client.position
         try:
-            szi, entry = self.client.position(self.coin)
-        except HLError as e:
-            log(f"  [STRAT] pozitie indisponibila ({e})"); return
+            szi, entry = pos_fn(self.coin)
+        except Exception as e:
+            log(f"  [STRAT] pozitie indisponibila ({e})")
+            return False
+
+        if abs(szi) > 1e-9 and szi * self.sign < 0:
+            log(f"  ! [STRAT] opposite-direction position detected on {self.coin} (szi={szi}); skipping step")
+            return False
+
         qty_now = abs(szi)
-        active = {str(o.get("oid")) for o in self.client.open_orders(self.coin)}
+        orders_fn = getattr(self.client, "open_orders_strict", None) or self.client.open_orders
+        try:
+            active = {str(o.get("oid")) for o in orders_fn(self.coin)}
+        except Exception as e:
+            log(f"  [STRAT] open_orders unavailable ({e}); preserving tracked order state")
+            active = {str(o.get("oid")) for o in self.s["orders"]}
+
         prev = self.s["qty"]
 
         if qty_now > prev + 1e-9:        # position opened or increased
@@ -282,6 +296,7 @@ class Strategy:
             elif self._open_is_stale(o, price):
                 log(f"  [STRAT] open {o.get('oid')} unfilled, the price ran away — cancelling and re-placing")
                 self.client.cancel(self.coin, o["oid"]); self._remove(o)
+        return True
 
     def _open_is_stale(self, order: dict, price: float, elapsed_min: float | None = None) -> bool:
         """Return whether an unfilled open limit order has expired and price ran away."""
@@ -472,7 +487,9 @@ class Strategy:
                 price = get_price(self.client, self.coin)
                 if price is None:
                     log("  [STRAT] price unavailable"); time.sleep(self.p.check_minutes*60); continue
-                self.reconcile(price); self.step(price); self._save()
+                if self.reconcile(price) is False:
+                    time.sleep(self.p.check_minutes*60); continue
+                self.step(price); self._save()
                 avg = self._avg()
                 pos = f"qty={self.s['qty']:.6f} avg={avg:.4f}" if avg else "qty=0 (waiting for an entry)"
                 log(f"  [STRAT] price={price:.4f} [{self.p.direction}]  {pos}  "
