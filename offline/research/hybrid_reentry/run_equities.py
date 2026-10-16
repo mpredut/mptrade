@@ -62,6 +62,12 @@ def _import_t212():
     _COLLIDING = ("strategy", "market_data", "notify", "ipo_notify", "replay")
     for name in _COLLIDING:
         sys.modules.pop(name, None)
+    kraken_dir = os.path.join(ROOT, "kraken")
+    while kraken_dir in sys.path:
+        sys.path.remove(kraken_dir)
+    while T212_DIR in sys.path:
+        sys.path.remove(T212_DIR)
+    sys.path.insert(0, T212_DIR)
     import strategy as _strat
     import replay as rp
     return _strat, rp

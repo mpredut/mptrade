@@ -74,7 +74,7 @@ def run_adaptive(symbol, start_ts, end_ts, k_small, run_id):
     def _threshold_provider(window_small, window_big):
         if k_small is None:
             return FIXED_SMALL, FIXED_BIG
-        vol1h = shadow_signals.vol_1h_pct(list(window_big.prices), window_big.sample_rate_sec)
+        vol1h = shadow_signals.vol_1h_pct(window_big.prices, window_big.sample_rate_sec)
         if vol1h is None:
             warmup["n"] += 1
             return FIXED_SMALL, FIXED_BIG

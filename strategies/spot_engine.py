@@ -1441,9 +1441,18 @@ class Strategy:
 
     def _shadow_vol_1h(self) -> float | None:
         """Return one-hour volatility from local tick history, or None during warm-up."""
-        pts = list(self._shadow_prices)
-        if len(pts) < 20:
+        if len(self._shadow_prices) < 20:
             return None
+        if self.replay_mode:
+            cache_key = (
+                len(self._shadow_prices),
+                self._shadow_prices[0][0],
+                self._shadow_prices[-1][0],
+                self._shadow_prices[-1][1],
+            )
+            if getattr(self, "_shadow_vol_cache_key", None) == cache_key:
+                return self._shadow_vol_cache_val
+        pts = list(self._shadow_prices)
         rets = [math.log(pts[i][1] / pts[i - 1][1]) for i in range(1, len(pts))
                 if pts[i - 1][1] > 0 and pts[i][1] > 0]
         dts = [pts[i][0] - pts[i - 1][0] for i in range(1, len(pts))]
@@ -1452,11 +1461,15 @@ class Strategy:
         mean_dt = sum(dts) / len(dts)
         if mean_dt <= 0:
             return None
-        try:
-            std = statistics.stdev(rets)
-        except statistics.StatisticsError:
-            return None
-        return std * math.sqrt(3600.0 / mean_dt) * 100.0
+        n_r = len(rets)
+        mean_r = sum(rets) / n_r
+        var_r = sum((r - mean_r) ** 2 for r in rets) / (n_r - 1)
+        std = math.sqrt(var_r)
+        val = std * math.sqrt(3600.0 / mean_dt) * 100.0
+        if self.replay_mode:
+            self._shadow_vol_cache_key = cache_key
+            self._shadow_vol_cache_val = val
+        return val
 
     def _shadow_reentry_line(self, price: float, lsp: float, prag_fix: float) -> None:
         try:
@@ -1589,9 +1602,25 @@ class Strategy:
         provider bars; replay is separately validated against the same interval.
         """
         if self.replay_mode:
+            if len(self._shadow_prices) < 20:
+                return None
+            cache_key = (
+                len(self._shadow_prices),
+                self._shadow_prices[0][0],
+                self._shadow_prices[-1][0],
+                self._shadow_prices[-1][1],
+                self.p.tp_trail_vol_interval,
+            )
+            if getattr(self, "_trail_vol_cache_key", None) == cache_key:
+                return self._trail_vol_cache_val
             closes = [price for _, price in self._shadow_prices]
-        else:
-            closes = self.client.ohlc_closes(self.pair, self.p.tp_trail_vol_interval)
+            val = self._hourly_vol_from_closes(
+                closes, self.p.tp_trail_vol_interval,
+            )
+            self._trail_vol_cache_key = cache_key
+            self._trail_vol_cache_val = val
+            return val
+        closes = self.client.ohlc_closes(self.pair, self.p.tp_trail_vol_interval)
         return self._hourly_vol_from_closes(
             closes, self.p.tp_trail_vol_interval,
         )
@@ -1609,12 +1638,12 @@ class Strategy:
             for previous, current in zip(closes, closes[1:])
             if previous > 0 and current > 0
         ]
-        if len(returns) < 19:
+        n_r = len(returns)
+        if n_r < 19:
             return None
-        try:
-            std = statistics.stdev(returns)
-        except statistics.StatisticsError:
-            return None
+        mean_r = sum(returns) / n_r
+        var_r = sum((r - mean_r) ** 2 for r in returns) / (n_r - 1)
+        std = math.sqrt(var_r)
         return std * math.sqrt(60.0 / interval_minutes) * 100.0
 
     # -- Common market regime and trend overlay --------------------------------

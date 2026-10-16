@@ -73,7 +73,10 @@ def calculate_performance_metrics(
 
         mean_return = statistics.fmean(periodic_returns)
         if len(periodic_returns) > 1:
-            volatility = statistics.stdev(periodic_returns)
+            n_ret = len(periodic_returns)
+            volatility = math.sqrt(
+                sum((r - mean_return) ** 2 for r in periodic_returns) / (n_ret - 1)
+            )
             if volatility > 0:
                 sharpe = mean_return / volatility * math.sqrt(periods_per_year)
 

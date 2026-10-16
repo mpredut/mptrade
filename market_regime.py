@@ -1048,6 +1048,9 @@ class MarketRegimeService:
             raise ValueError("the regime interval must be positive")
         return max(3, int(math.ceil(window_seconds / (interval * 60))))
 
+    _EVAL_CLOSES_CACHE: dict = {}
+    _EVAL_CLOSES_CACHE_MAX = 65536
+
     def evaluate_closes_for_horizon(self, closes, *, horizon="short",
                                     interval_min=None) -> MarketRegimeDecision:
         """Classify supplied closes with the canonical window for one horizon."""
@@ -1068,20 +1071,28 @@ class MarketRegimeService:
                         window_seconds=900.0) -> MarketRegimeDecision:
         needed = max(3, int(math.ceil(float(window_seconds) / (int(interval_min) * 60))))
         try:
-            values = [float(value) for value in list(closes)[-needed:]]
+            seq = closes if isinstance(closes, (list, tuple)) else list(closes)
+            values = tuple(float(value) for value in seq[-needed:])
         except (TypeError, ValueError, OverflowError):
             return self.evaluator.unknown("invalid_ohlc")
-        if len(values) < 3:
+        n = len(values)
+        if n < 3:
             return self.evaluator.unknown("insufficient_samples")
+
+        cache_key = (int(interval_min), float(window_seconds), self.evaluator.strength_threshold, values)
+        cached = self._EVAL_CLOSES_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
         if any(not math.isfinite(value) or value <= 0 for value in values):
             return self.evaluator.unknown("non_finite_ohlc")
 
         base = values[0]
-        y = [value / base - 1.0 for value in values]
-        n = len(y)
+        inv_base = 1.0 / base
+        y = [value * inv_base - 1.0 for value in values]
         x_mean = (n - 1) / 2.0
         y_mean = sum(y) / n
-        sxx = sum((i - x_mean) ** 2 for i in range(n))
+        sxx = n * (n * n - 1) / 12.0
         slope = sum((i - x_mean) * (value - y_mean)
                     for i, value in enumerate(y)) / sxx
         intercept = y_mean - slope * x_mean
@@ -1090,9 +1101,13 @@ class MarketRegimeService:
             for i, value in enumerate(y))
         slope_error = math.sqrt(max(0.0, residual_sq) / max(1, n - 2) / sxx)
         epsilon = max(slope_error, 1e-12)
-        return self.evaluator.evaluate({
+        decision = self.evaluator.evaluate({
             "gradient_recent": slope,
             "epsilon": epsilon,
             "n_samples": n,
             "window_seconds": float(window_seconds),
         })
+        if len(self._EVAL_CLOSES_CACHE) >= self._EVAL_CLOSES_CACHE_MAX:
+            self._EVAL_CLOSES_CACHE.clear()
+        self._EVAL_CLOSES_CACHE[cache_key] = decision
+        return decision
