@@ -593,7 +593,7 @@ def process_once(mkt, now=None):
             except (TypeError, ValueError, OverflowError):
                 pass
         accepted = _accepted_order(order)
-        if not accepted:
+        if not accepted and outcome_context.get("state") != "refused":
             reconciliation_state, recovered = _reconcile_client_order(
                 mkt, symbol, client_order_id,
                 provider_name=provider_name)

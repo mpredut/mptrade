@@ -178,10 +178,14 @@ class KrakenExecutorContractTest(unittest.TestCase):
 
         with self.subTest(msg="venue_submit_error_becomes_provider_error"):
             def boom(*a, **k):
-                raise RuntimeError("Kraken: Insufficient funds")
+                raise RuntimeError("Kraken: EOrder:Insufficient funds")
             with patch.object(self.fake, "add_order", side_effect=boom):
-                with self.assertRaises(ProviderError):
+                with self.assertRaises(kraken_provider.SubmissionRefused):
                     self.p.submit_order("HYPEUSD", "buy", 1.0, price=60.0)
+            with patch.object(self.fake, "add_order", side_effect=RuntimeError("network timeout")):
+                with self.assertRaises(ProviderError) as ctx:
+                    self.p.submit_order("HYPEUSD", "buy", 1.0, price=60.0)
+                self.assertNotIsInstance(ctx.exception, kraken_provider.SubmissionRefused)
 
     def test_live_instrument_place_behaviors(self):
         with self.subTest(msg="forwards_the_deterministic_client_id"):

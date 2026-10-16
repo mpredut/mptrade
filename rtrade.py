@@ -1216,6 +1216,8 @@ class TradingBot:
                 continue
 
             failure_count = 1 # reset failure count after a successful order placement
+            with self.lock:
+                self._round_placed_order = True
             
             time.sleep(WAIT_FOR_ORDER)
             order_id = buy_order['orderId']
@@ -1372,6 +1374,8 @@ class TradingBot:
                 continue
             
             failure_count = 1 # reset failure count after a successful order placement
+            with self.lock:
+                self._round_placed_order = True
 
             time.sleep(WAIT_FOR_ORDER)
             order_id = sell_order['orderId']
@@ -1455,6 +1459,8 @@ class TradingBot:
         performs defensive reconciliation by canceling recent orders. The old version
         created two threads per round and lost their exceptions on stderr.
         """
+        with self.lock:
+            self._round_placed_order = False
         buy_future = executor.submit(
             self.repetitive_buy, current_price, self.filled_sell_price)
         sell_future = executor.submit(
@@ -1809,9 +1815,10 @@ class TradingBot:
                     buy_result, sell_result = self._run_pair(executor, current_price)
 
                     if not buy_result or not sell_result:
-                        api.cancel_open_orders("SELL", self.symbol, allowed_owners={"rtrade"})
-                        api.cancel_open_orders("BUY", self.symbol, allowed_owners={"rtrade"})
-                        time.sleep(RTRADE_PAIR_POLL_SEC)
+                        if getattr(self, "_round_placed_order", True):
+                            api.cancel_open_orders("SELL", self.symbol, allowed_owners={"rtrade"})
+                            api.cancel_open_orders("BUY", self.symbol, allowed_owners={"rtrade"})
+                        time.sleep(WAIT_FOR_ORDER)
                         continue
 
                     filled_buy_price = buy_result + RTRADE_ZERO_EPSILON  # avoid zero

@@ -276,6 +276,22 @@ class ProviderLivePathTest(unittest.TestCase):
             self.fake.submit_order = boom
             self.s._place("buy", 1.0, 60.0, kind="ENTRY", amount=650.0)
             self.assertEqual(self.s.s["orders"], [])   # A failure -> no order stored.
+            self.assertIsNone(self.s.s["pending_intent"])
+            self.assertIn("buy:ENTRY", self.s.s["placement_backoffs"])
+
+        with self.subTest(msg="reconcile_releases_stale_insufficient_funds_pending_intent"):
+            self.fake = FakeExecutor()
+            self.s = _strategy(self.fake)
+            self.s.s["pending_intent"] = {
+                "intent_id": "spot-dca:Kraken:HYPEUSD:cycle-1:ENTRY:buy:1.0:60.0",
+                "side": "buy",
+                "kind": "ENTRY",
+                "order_id": None,
+                "submit_error": "ProviderError: submit_order HYPEUSD buy: EOrder:Insufficient funds",
+            }
+            self.s.reconcile(60.0)
+            self.assertIsNone(self.s.s["pending_intent"])
+            self.assertTrue(self.s.s["ledger_reconcile_required"])
             self.assertIn("buy:ENTRY", self.s.s["placement_backoffs"])
 
         with self.subTest(msg="insufficient_funds_preflight_has_persistent_exponential_backoff"):

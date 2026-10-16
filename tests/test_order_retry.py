@@ -332,6 +332,21 @@ class OrderRetryStoreTest(unittest.TestCase):
             self.assertEqual(records[0]["qty"], 2.0)
             self.assertEqual(records[0]["requested_price"], 240.0)
 
+        with self.subTest(msg="profit_guard_stream_consolidates_when_dedup_off"):
+            self._reset_env()
+            oq.RETRY_DEDUP = False
+            first = oq.enqueue(
+                "HYPEUSD", "BUY", 2.4, {}, requested_price=81.0, now=1000.0,
+                failure_reason="profit_guard", provider_name="kraken")
+            latest = oq.enqueue(
+                "HYPEUSD", "BUY", 2.5, {}, requested_price=82.0, now=1001.0,
+                failure_reason="profit_guard", provider_name="Kraken")
+            records = oq.load_all()
+            self.assertEqual(len(records), 1)
+            self.assertNotEqual(first, latest)
+            self.assertEqual(records[0]["id"], latest)
+            self.assertEqual(records[0]["qty"], 2.5)
+
         with self.subTest(msg="preserves_independent_signal_kinds"):
             self._reset_env()
             oq.RETRY_DEDUP = False

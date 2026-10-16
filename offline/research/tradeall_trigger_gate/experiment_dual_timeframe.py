@@ -216,4 +216,4 @@ if __name__ == "__main__":
     # backtests) — 2 days show too little data to distinguish "a sound,
     # rare strategy" from "a dead strategy"; over 7 days the test is far more honest.
     btc7_start = datetime.strptime("2026-07-14", "%Y-%m-%d").timestamp()
-    run_variant("V5_dual_timeframe_acord_7d", "BTCUSDC", btc7_start, None)
+    run_variant("V5_dual_timeframe_acord_7d", "BTCUSDC", btc7_start, btc7_start + 7 * 24 * 3600)

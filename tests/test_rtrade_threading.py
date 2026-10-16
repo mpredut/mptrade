@@ -1260,6 +1260,23 @@ class RTradeThreadingTest(unittest.TestCase):
             mock_cancel.assert_any_call("SELL", "TAOUSDC", allowed_owners={"rtrade"})
             mock_cancel.assert_any_call("BUY", "TAOUSDC", allowed_owners={"rtrade"})
 
+    def test_run_skips_cancel_and_uses_wait_for_order_when_no_orders_placed(self):
+        bot = _bot()
+
+        def abort_pair(_executor, _price):
+            bot._round_placed_order = False
+            return None, None
+
+        with patch.object(rtrade.api, "get_current_price", side_effect=[100.0, SystemExit]), \
+             patch.object(rtrade, "_trend_too_strong", return_value=False), \
+             patch.object(bot, "_run_pair", side_effect=abort_pair), \
+             patch.object(rtrade.api, "cancel_open_orders") as mock_cancel, \
+             patch.object(rtrade.time, "sleep") as mock_sleep:
+            with self.assertRaises(SystemExit):
+                bot.run()
+            mock_cancel.assert_not_called()
+            mock_sleep.assert_called_once_with(rtrade.WAIT_FOR_ORDER)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

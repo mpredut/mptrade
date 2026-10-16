@@ -208,7 +208,6 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
     if not os.path.exists(path):
         raise FileNotFoundError(f"Cannot find {path} (cache24 for {symbol})")
     if str(path).endswith(".jsonl"):
-        entries = []
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -218,12 +217,19 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if rec.get("s") == symbol:
-                    entries.append(rec["i"])
-    else:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        entries = data.get("items", {}).get(symbol, [])
+                if rec.get("s") != symbol:
+                    continue
+                ts_ms, price = rec["i"]
+                ts = ts_ms / 1000.0
+                if ts < start_ts:
+                    continue
+                if end_ts is not None and ts > end_ts:
+                    return
+                yield ts, price
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    entries = data.get("items", {}).get(symbol, [])
     for ts_ms, price in entries:
         ts = ts_ms / 1000.0
         if ts < start_ts:

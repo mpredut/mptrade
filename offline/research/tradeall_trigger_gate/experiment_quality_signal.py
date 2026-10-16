@@ -46,6 +46,8 @@ import tradeall as ta
 
 STATS = {}
 
+MIN_RETRY_INTERVAL_SEC = 1800.0
+
 
 class LongTrendTracker:
     def __init__(self, tag, window_hours, reeval_sec, min_points=30):
@@ -57,6 +59,8 @@ class LongTrendTracker:
         self.sign = 0
         self.fired_up = False
         self.fired_down = False
+        self.last_attempt_up_ts = None
+        self.last_attempt_down_ts = None
         self.stats = STATS.setdefault(tag, {
             "sign_changes": 0,
             "fire_attempts_up": 0, "fire_confirmed_up": 0, "fire_blocked_up": 0,
@@ -98,30 +102,34 @@ def make_quality_logic(tag, window_hours, reeval_sec):
         stats = tr.stats
 
         if sign > 0 and not tr.fired_up:
-            stats["fire_attempts_up"] += 1
-            if enable:
-                result = ta._fire_order(symbol, "BUY", current_price, f"{tag}_long_trend_up",
-                                         safeback_seconds=14 * 24 * 3600 + 60, force=False,
-                                         cancelorders=True, hours=1)
-                if result is not None:
-                    tr.fired_up = True
-                    tr.fired_down = False
-                    stats["fire_confirmed_up"] += 1
-                else:
-                    stats["fire_blocked_up"] += 1
+            if tr.last_attempt_up_ts is None or (ts - tr.last_attempt_up_ts) >= MIN_RETRY_INTERVAL_SEC:
+                tr.last_attempt_up_ts = ts
+                stats["fire_attempts_up"] += 1
+                if enable:
+                    result = ta._fire_order(symbol, "BUY", current_price, f"{tag}_long_trend_up",
+                                             safeback_seconds=14 * 24 * 3600 + 60, force=False,
+                                             cancelorders=True, hours=1)
+                    if result is not None:
+                        tr.fired_up = True
+                        tr.fired_down = False
+                        stats["fire_confirmed_up"] += 1
+                    else:
+                        stats["fire_blocked_up"] += 1
 
         if sign < 0 and not tr.fired_down:
-            stats["fire_attempts_down"] += 1
-            if enable:
-                result = ta._fire_order(symbol, "SELL", current_price, f"{tag}_long_trend_down",
-                                         safeback_seconds=14 * 24 * 3600 + 60, force=False,
-                                         cancelorders=True, hours=1)
-                if result is not None:
-                    tr.fired_down = True
-                    tr.fired_up = False
-                    stats["fire_confirmed_down"] += 1
-                else:
-                    stats["fire_blocked_down"] += 1
+            if tr.last_attempt_down_ts is None or (ts - tr.last_attempt_down_ts) >= MIN_RETRY_INTERVAL_SEC:
+                tr.last_attempt_down_ts = ts
+                stats["fire_attempts_down"] += 1
+                if enable:
+                    result = ta._fire_order(symbol, "SELL", current_price, f"{tag}_long_trend_down",
+                                             safeback_seconds=14 * 24 * 3600 + 60, force=False,
+                                             cancelorders=True, hours=1)
+                    if result is not None:
+                        tr.fired_down = True
+                        tr.fired_up = False
+                        stats["fire_confirmed_down"] += 1
+                    else:
+                        stats["fire_blocked_down"] += 1
 
     return logic_variant
 
@@ -156,8 +164,9 @@ if __name__ == "__main__":
 
     btc_start = datetime.strptime("2026-07-14", "%Y-%m-%d").timestamp()
     tao_start = datetime.strptime("2026-07-14 19:40:00", "%Y-%m-%d %H:%M:%S").timestamp()
+    seven_days = 7 * 24 * 3600
 
-    # 7 zile complete pt ambele simboluri — un semnal de 24h are nevoie de
+    # 7 full days for both symbols — a 24h signal needs
     # enough history to show more than 1-2 regime changes.
-    run_variant("V6_trend24h_reeval30min", 24, 1800, "BTCUSDC", btc_start, None)
-    run_variant("V6_trend24h_reeval30min", 24, 1800, "TAOUSDC", tao_start, None)
+    run_variant("V6_trend24h_reeval30min", 24, 1800, "BTCUSDC", btc_start, btc_start + seven_days)
+    run_variant("V6_trend24h_reeval30min", 24, 1800, "TAOUSDC", tao_start, tao_start + seven_days)

@@ -603,6 +603,21 @@ class Strategy:
         pending = self.s.get("pending_intent")
         if not pending or self.dry_run:
             return
+        submit_error = pending.get("submit_error") or pending.get("refusal_reason")
+        if not pending.get("order_id") and self._insufficient_funds_error(submit_error):
+            self.s["ledger_reconcile_required"] = True
+            if not pending.get("market"):
+                self._record_placement_backoff(
+                    str(pending.get("side") or "buy"),
+                    str(pending.get("kind") or "ENTRY"),
+                    submit_error,
+                )
+            self._persist_pending_intent(None)
+            log(
+                f"  ! [STRAT] released stale insufficient-funds pending intent "
+                f"({pending.get('side')} {pending.get('kind')})"
+            )
+            return
         try:
             result = self._order_lifecycle.reconcile(
                 pending, persist=self._persist_pending_intent)
@@ -612,7 +627,7 @@ class Strategy:
         if result.order_known:
             self._adopt_pending_order(result.intent)
             log(
-                f"  [STRAT] intent recuperat {result.intent['side']} "
+                f"  [STRAT] recovered intent {result.intent['side']} "
                 f"txid={result.intent['order_id']}"
             )
         elif result.outcome in {"absent", "retryable"}:
@@ -687,8 +702,8 @@ class Strategy:
         }
         self._save()
         log(
-            f"  ! [STRAT] {side} {kind} fonduri insuficiente — "
-            f"cooldown operational {delay:.0f}s (refuz {attempts})"
+            f"  ! [STRAT] {side} {kind} insufficient funds — "
+            f"operational cooldown {delay:.0f}s (refusal {attempts})"
         )
 
     def _clear_placement_backoff(self, side: str, kind: str) -> None:
@@ -724,8 +739,8 @@ class Strategy:
             remaining = self._placement_backoff_remaining(side, kind)
             if remaining > 0:
                 log(
-                    f"  ! [STRAT] {side} {kind} in cooldown after a funds error "
-                    f"insuficiente ({remaining:.0f}s ramase)"
+                    f"  ! [STRAT] {side} {kind} in cooldown after insufficient funds "
+                    f"({remaining:.0f}s remaining)"
                 )
                 return False
         if self.dry_run:
@@ -802,12 +817,19 @@ class Strategy:
                         "the intent was released for safe reevaluation"
                     )
                     return False
-                if (not market
-                        and self._insufficient_funds_error(submit_error)):
-                    self._record_placement_backoff(
-                        side, kind, submit_error)
+                if self._insufficient_funds_error(submit_error):
+                    self.s["ledger_reconcile_required"] = True
+                    if not market:
+                        self._record_placement_backoff(
+                            side, kind, submit_error)
+                    self._persist_pending_intent(None)
+                    log(
+                        f"  ! [STRAT] {side} {kind} rejected due to insufficient funds; "
+                        "the intent was released for safe reevaluation"
+                    )
+                    return False
                 log(
-                    f"  ! [STRAT] {side} {kind} submit ambiguu; "
+                    f"  ! [STRAT] {side} {kind} ambiguous submit; "
                     "the intent stays persisted for reconciliation"
                 )
                 return False
@@ -1853,7 +1875,7 @@ class Strategy:
 
     def step(self, price: float, timestamp: float | None = None, high: float | None = None) -> None:
         if self.s.get("pending_intent"):
-            log("  [STRAT] intentie pre-submit in reconciliere — aman deciziile noi")
+            log("  [STRAT] pre-submit intent in reconciliation — deferring new decisions")
             return
         held = self.s["qty"]
         if (not self.dry_run and self.s.get("ledger_reconcile_required")

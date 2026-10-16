@@ -386,6 +386,24 @@ class KrakenProvider(MarketDataProvider):
     # Unlike place_order, this raw method returns an order id and raises typed
     # errors so strategy reconciliation can distinguish a disabled live gate from
     # a venue failure. The provider gate remains authoritative for every caller.
+    @staticmethod
+    def _is_definitive_refusal(error: object) -> bool:
+        text = str(error or "").lower()
+        return any(
+            token in text
+            for token in (
+                "insufficient funds",
+                "insufficient margin",
+                "order minimum not met",
+                "volume minimum not met",
+                "cost minimum not met",
+                "invalid price",
+                "invalid arguments",
+                "positions limit exceeded",
+                "tick size check failed",
+            )
+        )
+
     def submit_order(self, symbol: str, side: str, qty: float,
                      price: Optional[float] = None, *, market: bool = False,
                      kind: Optional[str] = None,
@@ -412,6 +430,8 @@ class KrakenProvider(MarketDataProvider):
         except SubmissionRefused:
             raise
         except Exception as e:  # noqa: BLE001 — Normalize venue errors.
+            if self._is_definitive_refusal(e):
+                raise SubmissionRefused(f"submit_order {symbol} {s}: {e}") from e
             raise ProviderError(f"submit_order {symbol} {s}: {e}") from e
         order_id = extract_order_id(res)
         if order_id is None:

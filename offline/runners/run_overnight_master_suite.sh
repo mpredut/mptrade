@@ -17,6 +17,7 @@ REPORT_MD="$RESULTS_DIR/OVERNIGHT_MASTER_REPORT.md"
 
 # Symlink to latest
 ln -sf "$MASTER_LOG" "$LOG_DIR/latest_overnight.log"
+ln -sf "$MASTER_LOG" "$LOG_DIR/master_suite_current.log"
 
 exec > >(tee -a "$MASTER_LOG") 2>&1
 

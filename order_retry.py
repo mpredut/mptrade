@@ -310,8 +310,16 @@ def valid_record(rec):
     )
 
 
+_CONSOLIDATED_DEFERRAL_REASONS = frozenset({
+    "trend_deferred",
+    "profit_guard",
+    "qty_zero_after_policy",
+    "qty_zero_after_weight",
+})
+
+
 def _same_deferred_stream(left, right):
-    """Return whether two pending trend deferrals represent one current intent.
+    """Return whether two pending pre-submit deferrals represent one current intent.
 
     Missing provider names in legacy records act as routed wildcards for the same
     symbol. Signal kind remains part of the identity so independent strategies never
@@ -321,8 +329,10 @@ def _same_deferred_stream(left, right):
     if any(
             str(item.get("lifecycle") or "submit_pending").lower()
             != "submit_pending"
-            or item.get("last_failure_reason") != "trend_deferred"
+            or item.get("last_failure_reason") not in _CONSOLIDATED_DEFERRAL_REASONS
             for item in (left, right)):
+        return False
+    if left.get("last_failure_reason") != right.get("last_failure_reason"):
         return False
     left_provider = str(left.get("provider_name") or "").strip().lower()
     right_provider = str(right.get("provider_name") or "").strip().lower()
@@ -559,7 +569,13 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
         rec["replaces_original_qty"] = replaces_original_qty
     _set_safe_to_discard(
         rec, lifecycle == "submit_pending"
-        and is_non_failure_deferral(rec.get("last_failure_reason")))
+        and (
+            is_non_failure_deferral(rec.get("last_failure_reason"))
+            or (
+                _producer_lease_sec is None
+                and rec.get("last_failure_reason") in _CONSOLIDATED_DEFERRAL_REASONS
+            )
+        ))
     if _producer_lease_sec is not None:
         # The producer owns this exact revision before it becomes visible. A
         # worker can recover it only after the bounded lease expires following a
@@ -590,7 +606,13 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
                     # Recovery re-observations are idempotent, including while
                     # another process owns the existing record's lease.
                     return item.get("id")
-        if lifecycle == "submit_pending" and failure_reason == "trend_deferred":
+        if (
+            lifecycle == "submit_pending"
+            and (
+                failure_reason == "trend_deferred"
+                or (not RETRY_DEDUP and failure_reason in _CONSOLIDATED_DEFERRAL_REASONS)
+            )
+        ):
             superseded = [
                 item for item in existing
                 if _safe_to_evict_for_capacity(item) and _same_deferred_stream(item, rec)
@@ -602,7 +624,7 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
                 ]
                 print(
                     f"[order_retry] consolidated {len(superseded)} older "
-                    f"trend-deferred {side_u} {symbol} record(s) into the latest intent")
+                    f"deferred ({failure_reason}) {side_u} {symbol} record(s) into the latest intent")
         if (RETRY_DEDUP and lifecycle == "submit_pending"
                 and _producer_lease_sec is None):
             for e in existing:
@@ -903,7 +925,7 @@ def consolidate_deferred_streams():
                 enumerate(existing), key=lambda pair: _created(pair[1]), reverse=True):
             is_deferred = (
                 _safe_to_evict_for_capacity(item)
-                and item.get("last_failure_reason") == "trend_deferred"
+                and item.get("last_failure_reason") in _CONSOLIDATED_DEFERRAL_REASONS
             )
             if is_deferred and any(
                     _same_deferred_stream(item, newer) for newer in kept_deferred):
