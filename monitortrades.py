@@ -212,6 +212,7 @@ _POSITION_CACHE_HEARTBEAT_SEC = 15.0  # Safety fallback: re-verify after 15s eve
 
 def clear_position_stats_cache():
     """Clear position cache and all stateful exit/re-entry tracking for isolation and clean resets."""
+    global _LAST_SAVED_MT_STATE_KEY
     _position_stats_cache.clear()
     _REENTRY_STATE.clear()
     _LAST_EXIT_KIND.clear()
@@ -221,23 +222,36 @@ def clear_position_stats_cache():
     _PENDING_STOP_EXIT.clear()
     _hard_tp_last.clear()
     _notified_trade_ids.clear()
-    if "_MT_STATE_FILE" in globals() and os.path.exists(_MT_STATE_FILE):
+    _LAST_SAVED_MT_STATE_KEY = None
+    if _MT_PERSISTENCE_ENABLED and "_MT_STATE_FILE" in globals() and os.path.exists(_MT_STATE_FILE):
         try:
             os.remove(_MT_STATE_FILE)
         except OSError:
             pass
 
 
-def _make_order_signature(orders):
+def _summarize_orders(orders):
     if not orders:
-        return (0, 0.0, 0.0, 0, 0)
-    cnt = len(orders)
-    total_qty = round(sum(float(o.get("qty", o.get("quantity", 0.0)) or 0.0) for o in orders), 8)
-    total_val = round(sum(float(o.get("price", 0.0) or 0.0) * float(o.get("qty", o.get("quantity", 0.0)) or 0.0) for o in orders), 4)
-    latest_ts = max(int(o.get("timestamp") or 0) for o in orders)
+        return 0.0, 0.0, (0, 0.0, 0.0, 0, 0)
+    total_qty = 0.0
+    total_val = 0.0
+    latest_ts = 0
+    for o in orders:
+        q = float(o.get("qty", o.get("quantity", 0.0)) or 0.0)
+        p = float(o.get("price", 0.0) or 0.0)
+        ts = int(o.get("timestamp") or 0)
+        total_qty += q
+        total_val += p * q
+        if ts > latest_ts:
+            latest_ts = ts
     first = orders[0]
     first_id = first.get("id") or first.get("orderId") or first.get("timestamp") or 0
-    return (cnt, total_qty, total_val, latest_ts, first_id)
+    sig = (len(orders), round(total_qty, 8), round(total_val, 4), latest_ts, first_id)
+    return total_qty, total_val, sig
+
+
+def _make_order_signature(orders):
+    return _summarize_orders(orders)[2]
 
 
 def _api_cache_identity(api) -> tuple[str, int]:
@@ -247,6 +261,7 @@ def _api_cache_identity(api) -> tuple[str, int]:
 
 def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_orders=None, force_refresh=False, now_ts=None):
     api = api or mkt
+    explicit_orders = buy_orders is not None and sell_orders is not None
     if buy_orders is None:
         buy_orders = api.get_orders(symbol, "BUY", maxage_trade_s)
     if sell_orders is None:
@@ -254,23 +269,16 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
 
     now_ts = float(now_ts) if now_ts is not None else time.time()
     cache_key = (_api_cache_identity(api), str(symbol).upper(), float(maxage_trade_s))
-    buy_sig = _make_order_signature(buy_orders)
-    sell_sig = _make_order_signature(sell_orders)
+    total_buy_qty, total_buy_value, buy_sig = _summarize_orders(buy_orders)
+    total_sell_qty, total_sell_value, sell_sig = _summarize_orders(sell_orders)
     entry_sig = (buy_sig, sell_sig)
 
     if not force_refresh:
         cached = _position_stats_cache.get(cache_key)
         if cached is not None:
             cached_sig, cached_time, cached_val = cached
-            # If orders signature is identical and fallback heartbeat interval hasn't expired:
-            if cached_sig == entry_sig and (now_ts - cached_time) < _POSITION_CACHE_HEARTBEAT_SEC:
+            if cached_sig == entry_sig and (explicit_orders or (now_ts - cached_time) < _POSITION_CACHE_HEARTBEAT_SEC):
                 return dict(cached_val)
-
-    total_buy_qty = sum(float(o.get('qty', o.get('quantity', 0.0)) or 0.0) for o in buy_orders)
-    total_sell_qty = sum(float(o.get('qty', o.get('quantity', 0.0)) or 0.0) for o in sell_orders)
-
-    total_buy_value = sum(float(o.get('price', 0.0) or 0.0) * float(o.get('qty', o.get('quantity', 0.0)) or 0.0) for o in buy_orders)
-    total_sell_value = sum(float(o.get('price', 0.0) or 0.0) * float(o.get('qty', o.get('quantity', 0.0)) or 0.0) for o in sell_orders)
 
     average_buy_price = (
         total_buy_value / total_buy_qty
@@ -347,16 +355,16 @@ _PENDING_STOP_EXIT: Dict[str, Dict[str, Any]] = {}
 
 _MT_STATE_FILE = cachepaths.cache_path("mt_state.json")
 _MT_PERSISTENCE_ENABLED = os.environ.get("MT_DISABLE_STATE_PERSISTENCE", "0").lower() not in ("1", "true", "yes")
+_LAST_SAVED_MT_STATE_KEY: Optional[Tuple[str, str]] = None
 
 
 def _save_mt_state(ts: float | None = None):
     """Durably persist in-flight MHDSL bounce, MDHTP ride, and pending stop exits."""
+    global _LAST_SAVED_MT_STATE_KEY
     if not _MT_PERSISTENCE_ENABLED:
         return
     try:
-        data = {
-            "version": 1,
-            "ts": float(ts) if ts is not None else time.time(),
+        payload = {
             "sl_bounce_state": _SL_BOUNCE_STATE,
             "sl_episode_state": _SL_EPISODE_STATE,
             "tp_ride_state": _TP_RIDE_STATE,
@@ -364,7 +372,17 @@ def _save_mt_state(ts: float | None = None):
             "last_exit_kind": _LAST_EXIT_KIND,
             "pending_stop_exit": _PENDING_STOP_EXIT,
         }
+        serialized = json.dumps(payload, sort_keys=True)
+        cache_key = (_MT_STATE_FILE, serialized)
+        if _LAST_SAVED_MT_STATE_KEY == cache_key and os.path.exists(_MT_STATE_FILE):
+            return
+        data = {
+            "version": 1,
+            "ts": float(ts) if ts is not None else time.time(),
+            **payload,
+        }
         atomic_write_json(_MT_STATE_FILE, data, indent=2)
+        _LAST_SAVED_MT_STATE_KEY = cache_key
     except Exception:
         pass
 
@@ -514,38 +532,69 @@ from intelligence.internal.state.volatility import resolve_cached_volatility_1h
 get_symbol_volatility_1h = resolve_cached_volatility_1h
 
 
+_CACHED_EXIT_MGR_KEY: Optional[tuple] = None
+_CACHED_EXIT_MGR: Optional[PositionExitManager] = None
+
+
+def _resolve_vol_tuple(sym: str) -> Tuple[float, str]:
+    v = get_symbol_volatility_1h(sym)
+    return (v or 0.0, "1h_cache" if v is not None else "default")
+
+
 def get_exit_manager() -> PositionExitManager:
     """Return a PositionExitManager instance dynamically configured with module parameters and state."""
-    config = PositionExitConfig(
-        lost_threshold=0.05,
-        sl_disaster_buffer_ratio=MT_SL_DISASTER_BUFFER_RATIO,
-        sl_disaster_vol_multiplier=MT_SL_DISASTER_VOL_MULTIPLIER,
-        sl_disaster_buffer_min_pct=MT_SL_DISASTER_BUFFER_MIN_PCT,
-        sl_trend_defer_max_sec=MT_SL_TREND_DEFER_MAX_SEC,
-        sl_bounce_min_recovery_pct=MT_SL_BOUNCE_MIN_RECOVERY_PCT,
-        sl_bounce_pullback_pct=MT_SL_BOUNCE_PULLBACK_PCT,
-        sl_bounce_ratchet_enabled=MT_SL_BOUNCE_RATCHET_ENABLED,
-        sl_bounce_ratchet_k=MT_SL_BOUNCE_RATCHET_K,
-        sl_bounce_min_pullback_pct=MT_SL_BOUNCE_MIN_PULLBACK_PCT,
-        sl_structural_break_enabled=MT_SL_STRUCTURAL_BREAK_ENABLED,
-        smart_sl_enabled=True,
-        gain_threshold=0.07,
-        tp_trend_ride_enabled=MT_TP_TREND_RIDE_ENABLED,
-        tp_profit_floor_ratio=MT_TP_PROFIT_FLOOR_RATIO,
-        tp_profit_floor_min_pct=MT_TP_PROFIT_FLOOR_MIN_PCT,
-        tp_pullback_pct=MT_TP_PULLBACK_PCT,
-        tp_stagnation_max_sec=MT_TP_STAGNATION_MAX_SEC,
-        hard_tp_enabled=False,  # Evaluated explicitly in block 3.0 of monitortrades.py
-        are_close_tolerance_pct=MT_ARE_CLOSE_TOLERANCE_PCT,
-        reentry_enabled=True,
-        reentry_hybrid_enabled=MT_REENTRY_HYBRID_ENABLED,
-        reentry_tolerance_pct=MT_ARE_CLOSE_TOLERANCE_PCT,
-        reentry_post_stop_cooldown_sec=MT_REENTRY_POST_STOP_COOLDOWN_SEC,
+    global _CACHED_EXIT_MGR_KEY, _CACHED_EXIT_MGR
+    cfg_key = (
+        MT_SL_DISASTER_BUFFER_RATIO,
+        MT_SL_DISASTER_VOL_MULTIPLIER,
+        MT_SL_DISASTER_BUFFER_MIN_PCT,
+        MT_SL_TREND_DEFER_MAX_SEC,
+        MT_SL_BOUNCE_MIN_RECOVERY_PCT,
+        MT_SL_BOUNCE_PULLBACK_PCT,
+        MT_SL_BOUNCE_RATCHET_ENABLED,
+        MT_SL_BOUNCE_RATCHET_K,
+        MT_SL_BOUNCE_MIN_PULLBACK_PCT,
+        MT_SL_STRUCTURAL_BREAK_ENABLED,
+        MT_TP_TREND_RIDE_ENABLED,
+        MT_TP_PROFIT_FLOOR_RATIO,
+        MT_TP_PROFIT_FLOOR_MIN_PCT,
+        MT_TP_PULLBACK_PCT,
+        MT_TP_STAGNATION_MAX_SEC,
+        MT_ARE_CLOSE_TOLERANCE_PCT,
+        MT_REENTRY_HYBRID_ENABLED,
+        MT_REENTRY_POST_STOP_COOLDOWN_SEC,
     )
-    mgr = PositionExitManager(
-        config=config,
-        vol_resolver=lambda sym: (get_symbol_volatility_1h(sym) or 0.0, "1h_cache" if get_symbol_volatility_1h(sym) is not None else "default"),
-    )
+    mgr = _CACHED_EXIT_MGR
+    if mgr is None or _CACHED_EXIT_MGR_KEY != cfg_key:
+        config = PositionExitConfig(
+            lost_threshold=0.05,
+            sl_disaster_buffer_ratio=MT_SL_DISASTER_BUFFER_RATIO,
+            sl_disaster_vol_multiplier=MT_SL_DISASTER_VOL_MULTIPLIER,
+            sl_disaster_buffer_min_pct=MT_SL_DISASTER_BUFFER_MIN_PCT,
+            sl_trend_defer_max_sec=MT_SL_TREND_DEFER_MAX_SEC,
+            sl_bounce_min_recovery_pct=MT_SL_BOUNCE_MIN_RECOVERY_PCT,
+            sl_bounce_pullback_pct=MT_SL_BOUNCE_PULLBACK_PCT,
+            sl_bounce_ratchet_enabled=MT_SL_BOUNCE_RATCHET_ENABLED,
+            sl_bounce_ratchet_k=MT_SL_BOUNCE_RATCHET_K,
+            sl_bounce_min_pullback_pct=MT_SL_BOUNCE_MIN_PULLBACK_PCT,
+            sl_structural_break_enabled=MT_SL_STRUCTURAL_BREAK_ENABLED,
+            smart_sl_enabled=True,
+            gain_threshold=0.07,
+            tp_trend_ride_enabled=MT_TP_TREND_RIDE_ENABLED,
+            tp_profit_floor_ratio=MT_TP_PROFIT_FLOOR_RATIO,
+            tp_profit_floor_min_pct=MT_TP_PROFIT_FLOOR_MIN_PCT,
+            tp_pullback_pct=MT_TP_PULLBACK_PCT,
+            tp_stagnation_max_sec=MT_TP_STAGNATION_MAX_SEC,
+            hard_tp_enabled=False,  # Evaluated explicitly in block 3.0 of monitortrades.py
+            are_close_tolerance_pct=MT_ARE_CLOSE_TOLERANCE_PCT,
+            reentry_enabled=True,
+            reentry_hybrid_enabled=MT_REENTRY_HYBRID_ENABLED,
+            reentry_tolerance_pct=MT_ARE_CLOSE_TOLERANCE_PCT,
+            reentry_post_stop_cooldown_sec=MT_REENTRY_POST_STOP_COOLDOWN_SEC,
+        )
+        mgr = PositionExitManager(config=config, vol_resolver=_resolve_vol_tuple)
+        _CACHED_EXIT_MGR_KEY = cfg_key
+        _CACHED_EXIT_MGR = mgr
     # Bind shared references so test fixtures and runtime inspection mutate identical objects
     mgr.sl_bounce_state = _SL_BOUNCE_STATE
     mgr.sl_episode_state = _SL_EPISODE_STATE
@@ -1100,6 +1149,10 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     owned_qty = max(float(position["net_qty"]), 0.0)
     sellable_qty = min(avail_qty, owned_qty) if isolation == "own_ledger" else avail_qty
 
+    exit_mgr: Optional[PositionExitManager] = None
+    vol_1h: Optional[float] = None
+    current_trend_up: Optional[bool] = None
+
     # 3. Evaluate BUY history (skip if position was already closed by a subsequent SELL and only dust/zero remains).
     position_closed_by_sell = (
         bool(trade_orders_sell)
@@ -1114,6 +1167,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
 
         exit_mgr = get_exit_manager()
         vol_1h = get_symbol_volatility_1h(symbol) or 0.0
+        current_trend_up = bool(is_trend_up(symbol))
         snapshot = PositionSnapshot(
             symbol=symbol,
             current_price=current_price,
@@ -1121,7 +1175,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             net_qty=owned_qty,
             sellable_qty=sellable_qty,
             current_time_s=current_time_s,
-            trend_up=is_trend_up(symbol),
+            trend_up=current_trend_up,
             vol_1h=vol_1h,
             vol_source="1h_cache" if vol_1h > 0 else "default",
             provider=_inst_provider(inst),
@@ -1178,8 +1232,12 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         if not sell_price:
             print(f"No sell_price !!!!!")
             return
-        exit_mgr = get_exit_manager()
-        vol_1h = get_symbol_volatility_1h(symbol) or 0.0
+        if exit_mgr is None:
+            exit_mgr = get_exit_manager()
+        if vol_1h is None:
+            vol_1h = get_symbol_volatility_1h(symbol) or 0.0
+        if current_trend_up is None:
+            current_trend_up = bool(is_trend_up(symbol))
         explicit_exit_kind = _LAST_EXIT_KIND.get(symbol) or (
             trade_orders_sell[0].get("kind") if isinstance(trade_orders_sell[0], dict) else None
         )
@@ -1199,8 +1257,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             post_sell_trough=_REENTRY_STATE.get(symbol, {}).get("trough", min(sell_price, current_price)),
             current_time_s=current_time_s,
             last_sell_time_s=sell_time,
-            trend_up=is_trend_up(symbol),
-            trend_down=not is_trend_up(symbol),
+            trend_up=current_trend_up,
+            trend_down=not current_trend_up,
             vol_1h=vol_1h,
             vol_source="1h_cache" if vol_1h > 0 else "default",
         )
@@ -1216,7 +1274,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 "started_at": current_time_s,
             }
 
-        if not is_trend_up(symbol):
+        if not current_trend_up:
             if prev_reentry_state:
                 _REENTRY_STATE[symbol] = prev_reentry_state
             print(f"No action taken, because trend is down!")

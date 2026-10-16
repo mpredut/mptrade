@@ -28,7 +28,7 @@ _mock_sym.symbols   = ["BTCUSDT"]
 _mock_sym.btcsymbol = "BTCUSDT"
 _mock_sym.validate_ordertype = MagicMock()
 _mock_market_api = MagicMock()
-_mock_market_api.api = MagicMock()
+_mock_market_api.api = _mock_bapi
 
 _IMPORT_MOCKS = dict([
     ("bapi",            _mock_bapi),

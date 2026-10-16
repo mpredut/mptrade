@@ -29,7 +29,7 @@ if [ "$LOCAL" != "$REMOTE" ]; then
     git checkout -- offline/research/*_results.json 2>/dev/null || true
     if git pull --ff-only origin "$BRANCH"; then
         echo "[dev_ci_watcher $(date '+%F %T')] Git pull successful. Launching regression..."
-        nohup "$SCRIPT_DIR/run_dev_regression.sh" >> "$REPO_ROOT/logs/dev_regression.log" 2>&1 &
+        nohup "$SCRIPT_DIR/run_dev_regression.sh" >/dev/null 2>&1 &
     else
         echo "[dev_ci_watcher $(date '+%F %T')] ERROR: git pull --ff-only failed" >&2
     fi

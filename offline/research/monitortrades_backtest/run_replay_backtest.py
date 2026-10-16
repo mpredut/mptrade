@@ -167,15 +167,14 @@ def run_symbol(
             else:
                 trail_peak = price
 
-            buys = provider.get_orders(symbol, "BUY", since_s=maxage_s)
-            sells = provider.get_orders(symbol, "SELL", since_s=maxage_s)
-            if not buys and not sells:
+            now_s = provider.now(symbol)
+            if not provider.get_orders(symbol, None, since_s=maxage_s):
                 provider.place_order(symbol, "BUY", price, SEED_NOTIONAL_USD / price)
                 trail_peak = price
                 n_seeds += 1
                 continue
             try:
-                mt.monitor_price_and_trade(inst, sbs=SBS, now_fn=lambda: provider.now(symbol))
+                mt.monitor_price_and_trade(inst, sbs=SBS, now_fn=lambda: now_s)
             except Exception as e:  # noqa: BLE001
                 sys.stderr.write(f"[{symbol}] eroare in monitor_price_and_trade: {e}\n")
 

@@ -163,6 +163,16 @@ class IncrementalTrendBuffer:
         else:
             self.pg2.append(self.pg2[-1] if i > 0 else 0.0)
 
+    def _rebase(self) -> None:
+        if not self.prices:
+            self.clear()
+            return
+        saved_px = list(self.prices)
+        saved_ts = list(self.timestamps)
+        self.clear()
+        for px, ts in zip(saved_px, saved_ts):
+            self.append(px, ts)
+
     def trim_front(self, count: int) -> None:
         if count <= 0:
             return
@@ -181,6 +191,8 @@ class IncrementalTrendBuffer:
         self.offset += idx
         if not self.prices:
             self.clear()
+        elif self.offset >= max(512, 2 * len(self.prices)):
+            self._rebase()
 
     def sync_entries(self, entries) -> None:
         """Synchronize incrementally with an ordered list of [ts_ms, price] entries."""
@@ -244,10 +256,12 @@ class IncrementalTrendBuffer:
         if n > recent_n:
             r = recent_n
             gradient_recent = float(
-                (3.0 * p[b] - p[b - 1] - p[b - r + 1] - p[b - r]) / (2.0 * r)
+                ((p[b] - p[b - 1]) + (p[b] - p[b - r + 1]) + (p[b] - p[b - r])) / (2.0 * r)
             )
         else:
             gradient_recent = float(sum_g_all / n)
+        if abs(gradient_recent) <= 1e-12:
+            gradient_recent = 0.0
 
         growth_coefficient = float((slope_full + gradient_recent) / 2.0)
         final_trend = 1 if growth_coefficient > 0 else (-1 if growth_coefficient < 0 else 0)
@@ -281,6 +295,7 @@ class PriceWindow:
         self._lock = threading.RLock()
         self.prices = deque(maxlen=self.window_size)
         self.sorted_prices = []
+        self._trend_buf = IncrementalTrendBuffer()
 
         if initial_prices:
             for price in initial_prices[-self.window_size:]:
@@ -305,6 +320,8 @@ class PriceWindow:
                 kept = list(self.prices)[-new_size:]
                 self.prices = deque(kept, maxlen=new_size)
                 self.sorted_prices = sorted(self.prices)
+                if len(self._trend_buf.prices) > new_size:
+                    self._trend_buf.trim_front(len(self._trend_buf.prices) - new_size)
 
     def on_price_update(self, symbol: str, ts_ms: int, price: float) -> None:
         """Update the window from a ``Cache24PriceManager`` callback."""
@@ -363,9 +380,12 @@ class PriceWindow:
                     del self.sorted_prices[index]
                 else:
                     print("HAHAHAHAA")
+            if len(self._trend_buf.prices) >= self.window_size:
+                self._trend_buf.trim_front(len(self._trend_buf.prices) - self.window_size + 1)
 
             self.prices.append(price)
             insort(self.sorted_prices, price)
+            self._trend_buf.append(price)
 
             if len(self.sorted_prices) != len(self.prices):
                 print("XXXXXXXXXXXXXXXXXXX")
@@ -442,12 +462,22 @@ class PriceWindow:
     def get_instant_trend(self):
         """Return ``(final_trend, growth_coefficient, slope_full, gradient_recent)``.
 
-        Delegate to the single formula in ``instant_trend_from_prices``.
+        Evaluate in O(1) via ``self._trend_buf`` when synchronized, falling back to
+        ``instant_trend_from_prices`` if ``self.prices`` was mutated directly.
         """
         with self._lock:
-            prices_snapshot = list(self.prices)
-        final_trend, growth_coefficient, slope_full, gradient_recent = instant_trend_from_prices(
-            prices_snapshot, self.sample_rate_sec)
+            n = len(self.prices)
+            if (
+                len(self._trend_buf.prices) == n
+                and (n == 0 or (self._trend_buf.prices[0] == self.prices[0] and self._trend_buf.prices[-1] == self.prices[-1]))
+            ):
+                final_trend, growth_coefficient, slope_full, gradient_recent, _ = (
+                    self._trend_buf.eval_slice(0, n - 1, sample_rate_sec=self.sample_rate_sec)
+                )
+            else:
+                prices_snapshot = list(self.prices)
+                final_trend, growth_coefficient, slope_full, gradient_recent = instant_trend_from_prices(
+                    prices_snapshot, self.sample_rate_sec)
 
         print(
             f"[{self.symbol}] slope_full={slope_full:.4f} "

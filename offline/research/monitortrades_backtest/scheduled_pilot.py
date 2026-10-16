@@ -153,13 +153,21 @@ def _num_str(x):
     return "%g" % x
 
 
+_SERIES_SPLIT_CACHE: dict[str, tuple[list, list]] = {}
+
+
 def _split_series(symbol):
     """The available history, split into 2 halves (first/second) — the 2
     INDEPENDENT windows required by the confirmation guardrail."""
+    cached = _SERIES_SPLIT_CACHE.get(symbol)
+    if cached is not None:
+        return cached
     path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
     series = load_price_series(path, symbol)
     mid = len(series) // 2
-    return series[:mid], series[mid:]
+    res = (series[:mid], series[mid:])
+    _SERIES_SPLIT_CACHE[symbol] = res
+    return res
 
 
 def _run_one(symbol, base, params, series):
@@ -343,6 +351,17 @@ def main():
         print("[scheduled_pilot] PILOT_DISABLED=true -- leaving without doing anything")
         return
 
+    lock_file = None
+    try:
+        import fcntl
+        lock_file = open("/tmp/mptrade_scheduled_pilot.lock", "w", encoding="utf-8")
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.stderr.write("[scheduled_pilot] Another instance is already running -- exiting\n")
+        return
+    except Exception:  # noqa: BLE001
+        pass
+
     # monitor_price_and_trade() is VERY chatty (a print() on every tick) —
     # the pilot runs dozens of variants over hundreds of thousands of ticks, so
     # output suppression is required (otherwise console I/O dominates execution time).
@@ -355,6 +374,10 @@ def main():
     if not keys:
         print(f"[scheduled_pilot] no key contains '{args.only}' -- leaving")
         return
+
+    # Preload price series once in parent process so forked workers share them via COW.
+    for sym in sorted({sym for sym, _base, _key in keys.values()}):
+        _split_series(sym)
 
     # Independent keys => run in PARALLEL (ProcessPoolExecutor). Fork on Linux =>
     # each key has its own rb.mt (so the is_trend_up monkeypatch from _run_one

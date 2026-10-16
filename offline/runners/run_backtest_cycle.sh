@@ -15,6 +15,13 @@ source "$REPO_ROOT/orchestratorOS/lib/env_common.sh"
 ONLY="${PILOT_ONLY:-}"            # empty = every key; e.g. "maxage,hardtp"
 cd "$REPO_ROOT"
 
+MUTEX="/tmp/mptrade_backtest_cycle.lock"
+exec 9>"$MUTEX"
+if ! flock -n 9; then
+  echo "[cycle $(date '+%F %T')] Another backtest cycle is already running — skipping"
+  exit 0
+fi
+
 # 1. Run scheduled pilot
 echo "[cycle $(date '+%F %T')] pilot --propose (only='${ONLY:-all}')"
 args=(--propose)

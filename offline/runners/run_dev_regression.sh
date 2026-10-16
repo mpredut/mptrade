@@ -58,7 +58,7 @@ DURATION=$((END_TS - START_TS))
 cat "$LOG_FILE.run" >> "$LOG_FILE"
 
 # Parse pytest results via python
-"$PYTHON_BIN" - <<EOF
+"$PYTHON_BIN" - <<EOF | tee -a "$LOG_FILE"
 import json
 import re
 import sys
@@ -131,14 +131,14 @@ EOF
 
 # Notification on failure
 if [ "$RC" -ne 0 ]; then
-    echo "[dev_regression $(date '+%F %T')] FAILED on commit $COMMIT_SHORT ($RC)" >&2
+    echo "[dev_regression $(date '+%F %T')] FAILED on commit $COMMIT_SHORT ($RC)" | tee -a "$LOG_FILE" >&2
     # If os_notify.sh exists, notify ntfy
     if [ -f "$REPO_ROOT/orchestratorOS/lib/os_notify.sh" ]; then
         source "$REPO_ROOT/orchestratorOS/lib/os_notify.sh"
         send_os_ntfy "DEV CI Regression FAILED" "Commit $COMMIT_SHORT failed: $COMMIT_MSG (exit code: $RC). Duration: ${DURATION}s." "high" "ntfy-error-1978" || true
     fi
 else
-    echo "[dev_regression $(date '+%F %T')] PASSED on commit $COMMIT_SHORT in ${DURATION}s"
+    echo "[dev_regression $(date '+%F %T')] PASSED on commit $COMMIT_SHORT in ${DURATION}s" | tee -a "$LOG_FILE"
 fi
 
 rm -f "$LOG_FILE.run"

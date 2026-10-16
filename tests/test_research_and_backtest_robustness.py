@@ -325,3 +325,83 @@ def test_tradeall_iter_jsonl_ticks_does_not_abort_on_out_of_order_end_ts(tmp_pat
     ticks = list(_iter_jsonl_ticks(str(p), "BTCUSDC", start_ts=500.0, end_ts=3000.0))
     assert ticks == [(1000.0, 100.0), (2000.0, 101.0)]
 
+
+def test_incremental_trend_buffer_flat_recent_gradient_and_rebase():
+    """IncrementalTrendBuffer matches instant_trend_from_prices on flat recent prices and after trim_front rebase."""
+    from offline.research.monitortrades_backtest.replay_trend_source import _is_trend_up_tuple
+    from pricewindow import IncrementalTrendBuffer, PriceWindow, instant_trend_from_prices
+
+    buf = IncrementalTrendBuffer()
+    prices = [111000.0 + i * 1.5 for i in range(600)] + [111702.29] * 5
+    for px in prices:
+        buf.append(px)
+
+    res_inc = buf.eval_slice(0, len(prices) - 1, sample_rate_sec=15.0)
+    res_ref = instant_trend_from_prices(prices, sample_rate_sec=15.0)
+    assert res_inc[3] == 0.0
+    assert res_ref[3] == 0.0
+    assert _is_trend_up_tuple(res_inc[:4]) == _is_trend_up_tuple(res_ref)
+
+    # Trigger rebase via trim_front (> 512 elements trimmed)
+    buf.trim_front(520)
+    trimmed = prices[520:]
+    res_inc_after = buf.eval_slice(0, len(trimmed) - 1, sample_rate_sec=15.0)
+    res_ref_after = instant_trend_from_prices(trimmed, sample_rate_sec=15.0)
+    assert res_inc_after[3] == 0.0
+    assert abs(res_inc_after[0] - res_ref_after[0]) < 1e-9
+    assert _is_trend_up_tuple(res_inc_after[:4]) == _is_trend_up_tuple(res_ref_after)
+
+    # Verify PriceWindow O(1) path matches reference
+    pw = PriceWindow("TEST_INC", window_size=20, sample_rate_sec=15.0)
+    for px in trimmed:
+        pw.process_price(px)
+    assert pw.get_instant_trend()[3] == 0.0
+    assert abs(pw.get_instant_trend()[0] - instant_trend_from_prices(pw.prices, sample_rate_sec=15.0)[0]) < 1e-9
+
+
+def test_smart_stop_loss_load_grace_state_sim_and_empty_file_caching(tmp_path, monkeypatch):
+    """_load_grace_state skips disk I/O in simulation mode and caches empty {} state files by mtime."""
+    import builtins
+    import intelligence.external.guards.smart_stop_loss_guard as ssl_mod
+
+    state_file = tmp_path / "smart_stop_loss_state.json"
+    state_file.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(ssl_mod, "_SMART_SL_STATE_FILE", str(state_file))
+    monkeypatch.setattr(ssl_mod, "_GRACE_TRACKER", {})
+    monkeypatch.setattr(ssl_mod, "_LOADED_STATE_FILE_KEY", None)
+
+    open_calls = []
+    real_open = builtins.open
+
+    def counting_open(file, *args, **kwargs):
+        if str(file) == str(state_file):
+            open_calls.append(file)
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", counting_open)
+
+    # Sim mode must never open the file
+    ssl_mod._load_grace_state(is_sim=True)
+    assert len(open_calls) == 0
+
+    # Live mode opens once, then caches even when _GRACE_TRACKER remains {}
+    ssl_mod._load_grace_state(is_sim=False)
+    assert len(open_calls) == 1
+    ssl_mod._load_grace_state(is_sim=False)
+    ssl_mod._load_grace_state(is_sim=False)
+    assert len(open_calls) == 1
+
+
+def test_clear_position_stats_cache_respects_mt_persistence(tmp_path, monkeypatch):
+    """clear_position_stats_cache does not delete _MT_STATE_FILE when persistence is disabled."""
+    import monitortrades as mt
+
+    state_file = tmp_path / "mt_state.json"
+    state_file.write_text('{"BTCUSDC": {}}', encoding="utf-8")
+    monkeypatch.setattr(mt, "_MT_STATE_FILE", str(state_file))
+    monkeypatch.setattr(mt, "_MT_PERSISTENCE_ENABLED", False)
+
+    mt.clear_position_stats_cache()
+    assert state_file.exists()
+
+

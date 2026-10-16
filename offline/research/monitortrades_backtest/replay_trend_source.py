@@ -65,6 +65,7 @@ class ReplayTrendSource:
             for s in symbols
         }
         self._prev_ts: Dict[str, Optional[float]] = {s: None for s in symbols}
+        self._cached_trend_up: Dict[str, Optional[bool]] = {s: None for s in symbols}
 
     def advance(self, symbol: str, ts: float, price: float) -> None:
         """Feed the symbol's window with ONE new replay tick. It must be
@@ -78,6 +79,7 @@ class ReplayTrendSource:
             win.set_sample_rate(ts - prev)
         self._prev_ts[symbol] = ts
         win.process_price(price)
+        self._cached_trend_up[symbol] = None
 
     def is_trend_up(self, symbol: str, window_seconds: Optional[float] = None,
                     now: Optional[float] = None) -> bool:
@@ -85,10 +87,18 @@ class ReplayTrendSource:
         slope==0 and gradient>0), reading from the REPLAY window, not the live file.
         Without enough data yet -> False (the same "neutral" fallback as today:
         monitortrades.is_trend_up() returns False when it has no snapshot yet)."""
+        if window_seconds is None:
+            cached = self._cached_trend_up.get(symbol)
+            if cached is not None:
+                return cached
         win = self._windows.get(symbol)
         if win is None or len(win.prices) < 2:
-            return False
-        return _is_trend_up_tuple(win.get_instant_trend())
+            res = False
+        else:
+            res = _is_trend_up_tuple(win.get_instant_trend())
+        if window_seconds is None:
+            self._cached_trend_up[symbol] = res
+        return res
 
 
 # ──────────────────────────────────────────────────────────────────────────────

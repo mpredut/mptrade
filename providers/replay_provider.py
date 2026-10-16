@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Tuple
 
 import utils
 from providers.base import MarketDataProvider
+from providers.strategy_executor import PairPrecision
 
 # Strip the quote suffix to obtain the base asset (BTCUSDC -> BTC). This was
 # centralized in utils on July 28 after being duplicated here and elsewhere.
@@ -67,6 +68,13 @@ class ReplayMarketDataProvider(MarketDataProvider):
         self._fee_pct = fee_pct
         self._orders: Dict[str, List[dict]] = {s: [] for s in price_series}
         self._positions: Dict[str, Tuple[float, float]] = {}   # symbol -> (quantity, total cost)
+        self._precisions: Dict[str, PairPrecision] = {
+            s: PairPrecision(
+                price_decimals=2, volume_decimals=4, order_min=0.0,
+                base_asset=_base_asset(s),
+            )
+            for s in price_series
+        }
 
     @property
     def name(self) -> str:
@@ -76,10 +84,14 @@ class ReplayMarketDataProvider(MarketDataProvider):
         return symbol in self._series
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
-        from providers.strategy_executor import PairPrecision
-        return PairPrecision(
-            price_decimals=2, volume_decimals=4, order_min=0.0,
-            base_asset=_base_asset(symbol))
+        prec = self._precisions.get(symbol)
+        if prec is None:
+            prec = PairPrecision(
+                price_decimals=2, volume_decimals=4, order_min=0.0,
+                base_asset=_base_asset(symbol),
+            )
+            self._precisions[symbol] = prec
+        return prec
 
     # ── Clock advancement: called by the backtest driver, not bot code ───────
     def advance(self, symbol: str, steps: int = 1) -> Optional[float]:
@@ -143,9 +155,16 @@ class ReplayMarketDataProvider(MarketDataProvider):
         now = self.now(symbol)
         cutoff_ms = (now - since_s) * 1000.0
         orders = self._orders.get(symbol, [])
-        out = [o for o in orders if o["timestamp"] >= cutoff_ms]
-        if side:
-            out = [o for o in out if o["side"] == side.upper()]
+        if not orders:
+            return []
+        side_u = side.upper() if side else None
+        out: List[dict] = []
+        for o in reversed(orders):
+            if o["timestamp"] < cutoff_ms:
+                break
+            if side_u is None or o["side"] == side_u:
+                out.append(o)
+        out.reverse()
         return out
 
     def position(self, symbol: str) -> Tuple[float, float]:

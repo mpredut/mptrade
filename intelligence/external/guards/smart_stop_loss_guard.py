@@ -56,35 +56,50 @@ def _format_price(p: Optional[float]) -> str:
         return ""
 
 
-def _load_grace_state() -> Dict[str, Dict[str, Any]]:
-    global _GRACE_TRACKER
-    if _GRACE_TRACKER:
+_LOADED_STATE_FILE_KEY: Optional[Tuple[str, float]] = None
+
+
+def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
+    global _GRACE_TRACKER, _LOADED_STATE_FILE_KEY
+    if _GRACE_TRACKER or is_sim:
         return _GRACE_TRACKER
-    if os.path.exists(_SMART_SL_STATE_FILE):
-        try:
-            with open(_SMART_SL_STATE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                # Sanitize: purge any ancient, unphysical, or expired entries (> 3600s old or start_ts < 1e9)
-                now_curr = time.time()
-                clean_data = {}
-                for k, v in data.items():
-                    if isinstance(v, dict):
-                        sts = float(v.get("start_ts", 0.0))
-                        if sts > 1_000_000_000 and abs(now_curr - sts) < 3600.0:
-                            clean_data[k] = v
-                _GRACE_TRACKER.clear()
-                _GRACE_TRACKER.update(clean_data)
-        except Exception:
+    try:
+        mtime = os.path.getmtime(_SMART_SL_STATE_FILE)
+    except OSError:
+        return _GRACE_TRACKER
+    file_key = (_SMART_SL_STATE_FILE, mtime)
+    if _LOADED_STATE_FILE_KEY == file_key:
+        return _GRACE_TRACKER
+    try:
+        with open(_SMART_SL_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            # Sanitize: purge any ancient, unphysical, or expired entries (> 3600s old or start_ts < 1e9)
+            now_curr = time.time()
+            clean_data = {}
+            for k, v in data.items():
+                if isinstance(v, dict):
+                    sts = float(v.get("start_ts", 0.0))
+                    if sts > 1_000_000_000 and abs(now_curr - sts) < 3600.0:
+                        clean_data[k] = v
             _GRACE_TRACKER.clear()
+            _GRACE_TRACKER.update(clean_data)
+        _LOADED_STATE_FILE_KEY = file_key
+    except Exception:
+        _GRACE_TRACKER.clear()
     return _GRACE_TRACKER
 
 
 def _save_grace_state() -> None:
+    global _LOADED_STATE_FILE_KEY
     try:
         os.makedirs(os.path.dirname(_SMART_SL_STATE_FILE) or ".", exist_ok=True)
         with open(_SMART_SL_STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(_GRACE_TRACKER, f, indent=2)
+        try:
+            _LOADED_STATE_FILE_KEY = (_SMART_SL_STATE_FILE, os.path.getmtime(_SMART_SL_STATE_FILE))
+        except OSError:
+            pass
     except Exception as e:
         logger.warning("Could not persist smart stop-loss state: %s", e)
 
@@ -243,7 +258,7 @@ class SmartStopLossGuard:
         meta["disaster_floor_pct"] = round(disaster_floor * 100.0, 3)
         if price_decrease >= disaster_floor:
             # Terminate grace immediately if active
-            tracker = _load_grace_state()
+            tracker = _load_grace_state(is_sim=is_sim)
             if sym_key in tracker:
                 tracker.pop(sym_key, None)
                 if not is_sim:
@@ -274,7 +289,7 @@ class SmartStopLossGuard:
 
         # 4. Crash / Active Cascade Detection: dumping with heavy momentum
         if taker_ratio < 0.70 and divergence_regime == "aggressive_shorting":
-            tracker = _load_grace_state()
+            tracker = _load_grace_state(is_sim=is_sim)
             if sym_key in tracker:
                 tracker.pop(sym_key, None)
                 if not is_sim:
@@ -292,7 +307,7 @@ class SmartStopLossGuard:
         )
 
         if is_whale_supported and has_absorption:
-            tracker = _load_grace_state()
+            tracker = _load_grace_state(is_sim=is_sim)
             active_grace = tracker.get(sym_key)
 
             if active_grace is None:
@@ -389,7 +404,7 @@ class SmartStopLossGuard:
                     return True, reason, meta
 
         # Microstructure not supportive of wick bounce
-        tracker = _load_grace_state()
+        tracker = _load_grace_state(is_sim=is_sim)
         if sym_key in tracker:
             tracker.pop(sym_key, None)
             if not is_sim:
@@ -410,10 +425,11 @@ class SmartStopLossGuard:
     ) -> bool:
         """Called when price decrease drops back below or equal to threshold."""
         sym_key = symbol.upper()
-        tracker = _load_grace_state()
+        is_sim_call = _is_simulated_provider(provider)
+        tracker = _load_grace_state(is_sim=is_sim_call)
         if sym_key in tracker:
             grace_info = tracker.pop(sym_key)
-            is_sim = _is_simulated_provider(provider or grace_info.get("provider"))
+            is_sim = is_sim_call or _is_simulated_provider(grace_info.get("provider"))
             if not is_sim:
                 _save_grace_state()
             now_ts = float(now) if now is not None else time.time()
@@ -522,6 +538,9 @@ def evaluate_smart_stop_loss(
     )
 
 
+_DEFAULT_RECOVERY_GUARD = SmartStopLossGuard()
+
+
 def clear_smart_stop_loss_if_recovered(
     symbol: str,
     price_decrease: float,
@@ -534,8 +553,7 @@ def clear_smart_stop_loss_if_recovered(
     batch: bool = True,
 ) -> bool:
     """Convenience recovery callback for monitortrades.py."""
-    guard = SmartStopLossGuard()
-    return guard.on_recovered(
+    return _DEFAULT_RECOVERY_GUARD.on_recovered(
         symbol=symbol,
         price_decrease=price_decrease,
         lost_threshold=lost_threshold,
@@ -550,9 +568,10 @@ def clear_smart_stop_loss_if_recovered(
 def clear_smart_stop_loss(symbol: str, *, provider: Optional[str] = None) -> None:
     """Clear any active grace state for symbol across in-memory tracker and persistent state."""
     sym_key = symbol.upper()
-    tracker = _load_grace_state()
+    is_sim_call = _is_simulated_provider(provider)
+    tracker = _load_grace_state(is_sim=is_sim_call)
     if sym_key in tracker:
         grace_info = tracker.pop(sym_key, None)
-        is_sim = _is_simulated_provider(provider or (grace_info.get("provider") if isinstance(grace_info, dict) else None))
+        is_sim = is_sim_call or _is_simulated_provider(grace_info.get("provider") if isinstance(grace_info, dict) else None)
         if not is_sim:
             _save_grace_state()

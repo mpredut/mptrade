@@ -101,6 +101,10 @@ def timeMsToHMS(timestamp_ms):
     return timeToHMS(timestamp_ms / 1000.0)
 
 
+from functools import lru_cache
+
+
+@lru_cache(maxsize=256)
 def timeToHMS(timestamp_sec):
     human_readable_time = datetime.fromtimestamp(timestamp_sec)
     return human_readable_time.strftime('%H:%M:%S')
