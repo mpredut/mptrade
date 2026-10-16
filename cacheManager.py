@@ -43,7 +43,6 @@ import providers.market_api as _market_api
 # in the real environment; it only fills missing values.
 from botcore import (
     load_dotenv as _load_dotenv,
-    required_bool_env,
     required_env,
     required_float_env,
     required_int_env,
@@ -69,7 +68,6 @@ CM_PUBLISHED_TREND_WINDOWS_SEC = [
 def _dynamic_window_key(window_seconds):
     """Key a clamped dynamic window in the published snapshot, e.g. 900.0 -> "900"."""
     return f"{float(window_seconds):g}"
-LONGTREND_NONBINANCE = required_bool_env("LONGTREND_NONBINANCE")
 CM_RETENTION_DAYS = required_float_env("CM_RETENTION_DAYS")
 CM_RETENTION_CHECK_INTERVAL_SEC = required_float_env("CM_RETENTION_CHECK_INTERVAL_SEC")
 CM_APPEND_MAX_FILE_BYTES = required_int_env("CM_APPEND_MAX_FILE_BYTES")
@@ -4342,26 +4340,18 @@ if __name__ == "__main__":
     _trend_mgr = None
 
     from instrument_registry import tracked_price_instruments
-    _trend_syms, _nb_syms, _nb_provider_names = tracked_price_instruments(
-        include_non_binance=True
+    _trend_syms, _nb_syms, _nb_provider_names = tracked_price_instruments()
+    # Register venue-bound price/trend managers from instruments.conf before the generic loop.
+    CacheFactory.get(
+        "CurrentPrice",
+        symbols=_trend_syms,
+        provider_names=_nb_provider_names or None,
     )
-    # Register non-Binance Price24 managers before the generic loop so trend computation
-    # can find a raw buffer for every symbol.
+    CacheFactory.get("Price24", symbols=_trend_syms)
+    CacheFactory.get("Price", symbols=_trend_syms)
+    CacheFactory.get("PriceLongTrend", symbols=_trend_syms)
     if _nb_syms:
-        # Create the venue-bound source before Price24 can request initialization data.
-        CacheFactory.get(
-            "CurrentPrice",
-            symbols=_trend_syms,
-            provider_names=_nb_provider_names,
-        )
-        CacheFactory.get("Price24", symbols=_trend_syms)
-        builtins.print(f"[cacheManager] instant-trend extended with non-Binance: {_nb_syms}")
-        # LONGTREND_NONBINANCE optionally starts accumulating sparse history and long-trend
-        # data.
-        if LONGTREND_NONBINANCE:
-            CacheFactory.get("Price", symbols=_trend_syms)
-            CacheFactory.get("PriceLongTrend", symbols=_trend_syms)
-            builtins.print(f"[cacheManager] non-Binance long trend enabled: {_nb_syms}")
+        builtins.print(f"[cacheManager] tracking non-Binance instruments from instruments.conf: {_nb_syms}")
 
     for name, config in CacheFactory._CONFIG.items():
         cache = get_cache_manager(name, start_sync=False)

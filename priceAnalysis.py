@@ -35,7 +35,6 @@ _load_dotenv(os.path.join(_CONFIG_ROOT, "config.env"))
 # logs clean. Enable PRICEANALYSIS_DEBUG when tuning.
 _DEBUG = required_bool_env("PRICEANALYSIS_DEBUG")
 PRICEANALYSIS_DRAW_MAX_POINTS = required_int_env("PRICEANALYSIS_DRAW_MAX_POINTS")
-LONGTREND_NONBINANCE = required_bool_env("LONGTREND_NONBINANCE")
 
 
 def _dbg(*args, **kwargs):
@@ -795,11 +794,7 @@ def get_trade_weight(T, trend_len, trend, order_type,
 UPDATE_AND_REFRESH_TREND = 60*1 # One minute.
 if __name__ == "__main__":
     from instrument_registry import tracked_price_instruments
-    symbols, _nb_syms, _nb_providers = tracked_price_instruments(
-        include_non_binance=bool(LONGTREND_NONBINANCE)
-    )
-    if _nb_syms:
-        print(f"[priceAnalysis] non-Binance LONG-term trend ACTIVATED: {symbols}")
+    symbols, _nb_syms, _nb_providers = tracked_price_instruments()
     build_price_cache_manager(symbols=symbols, provider_names=_nb_providers or None)
     try:
         while True:

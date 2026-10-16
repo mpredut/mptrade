@@ -95,7 +95,7 @@ def main():
                     help="disk flush cadence (default from config.env)")
     args = p.parse_args()
     all_archive_syms, _nb_archive_syms, nb_providers = tracked_price_instruments(
-        role="archive", include_non_binance=True
+        role="archive"
     )
     try:
         symbols = _symbols(args.symbols if args.symbols is not None

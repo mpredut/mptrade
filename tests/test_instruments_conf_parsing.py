@@ -223,11 +223,11 @@ def test_current_execution_policy_is_preserved():
     assert rebuys == {"BTCUSDC": "on", "TAOUSDC": "on", "ARBUSDC": "auto"}
     assert set(registry.select_instruments(role="mt")) == {
         "BINANCE_BTC", "BINANCE_TAO", "BINANCE_ARB", "KRAKEN_HYPE"}
-    all_syms, nb_syms, nb_providers = registry.tracked_price_instruments(include_non_binance=True)
+    all_syms, nb_syms, nb_providers = registry.tracked_price_instruments()
     assert all_syms == ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"]
     assert nb_syms == ["HYPEUSD"]
     assert nb_providers == {"HYPEUSD": "kraken"}
-    arch_syms, arch_nb, arch_prov = registry.tracked_price_instruments(role="archive", include_non_binance=True)
+    arch_syms, arch_nb, arch_prov = registry.tracked_price_instruments(role="archive")
     assert arch_syms == ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"]
     assert arch_nb == ["HYPEUSD"]
     assert arch_prov == {"HYPEUSD": "kraken"}
@@ -333,7 +333,7 @@ def test_one_new_section_reaches_real_consumers_without_source_edits(tmp_path):
 def test_old_symbol_environment_lists_are_not_loaded_anywhere():
     for filename, keys in {
         "config.env": ["TRADEALL_FIRE_SYMBOLS=", "KALMAN_PRIMARY_SYMBOLS=",
-                       "KALMAN_GATE_MODE=", "AG_SYMBOLS="],
+                       "KALMAN_GATE_MODE=", "AG_SYMBOLS=", "LONGTREND_NONBINANCE="],
     }.items():
         content = (ROOT / filename).read_text()
         assert not any(key in content for key in keys)
