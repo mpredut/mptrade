@@ -220,6 +220,18 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
         self.assertAlmostEqual(got["average_buy_price"], 320 / 3)
         self.assertEqual(got["average_sell_price"], 130.0)
 
+        with self.subTest(msg="regression_early_sell_of_pre_window_holdings_does_not_cancel_later_buys"):
+            provider_aged = FakeProvider([
+                _fill("SELL", 110, 5.0, age_s=8 * 24 * 3600),
+                _fill("BUY", 100, 2.0, age_s=3 * 24 * 3600),
+                _fill("SELL", 105, 0.5, age_s=2 * 24 * 3600),
+                _fill("BUY", 95, 1.0, age_s=1 * 24 * 3600),
+            ])
+            got_aged = mt.get_position_stats(SYMBOL, 10 * 24 * 3600, api=provider_aged)
+            self.assertEqual(got_aged["buy_qty"], 3.0)
+            self.assertEqual(got_aged["sell_qty"], 5.5)
+            self.assertAlmostEqual(got_aged["net_qty"], 2.5)
+
     def test_hard_take_profit_behaviors(self):
         mt._hard_tp_last.clear()
         with self.subTest(msg="sells_configured_fraction_and_stops_the_tick"):
@@ -343,6 +355,26 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             )
             self.run_tick(inst, trend_up=False, gain=0.10)
             self.assertLessEqual(inst.placed[0]["qty"], 1.0)
+
+        with self.subTest(msg="regression_own_ledger_stop_loss_not_blocked_by_earlier_sell_of_aged_out_buys"):
+            mt.HARD_TP_ENABLED = False
+            inst = FakeInstrument(
+                price=93,
+                free=0.06625,
+                fills=[
+                    _fill("BUY", 100, 0.02205, age_s=1 * 3600),
+                    _fill("BUY", 100, 0.04420, age_s=3 * 3600),
+                    _fill("SELL", 105, 0.02462, age_s=4 * 24 * 3600),
+                    _fill("BUY", 102, 0.02462, age_s=5 * 24 * 3600),
+                    _fill("SELL", 110, 0.09205, age_s=8 * 24 * 3600),
+                ],
+                min_qty=0.00001,
+            )
+            self.run_tick(inst, trend_up=False, loss=0.05)
+            self.assertEqual(len(inst.placed), 1)
+            self.assertEqual(inst.placed[0]["side"], "SELL")
+            self.assertAlmostEqual(inst.placed[0]["qty"], 0.06625, places=6)
+            self.assertTrue(inst.placed[0]["kwargs"]["bypass_profit_guard"])
 
     def test_buyback_behaviors(self):
         with self.subTest(msg="buyback_uses_budget_divided_by_market_price_and_adds_offset"):

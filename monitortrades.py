@@ -259,6 +259,36 @@ def _api_cache_identity(api) -> tuple[str, int]:
     return (str(name), id(api))
 
 
+def _compute_spot_owned_qty(buy_orders, sell_orders) -> float:
+    """Compute remaining spot-attributed inventory in the lookback window.
+
+    Walks BUY and SELL fills chronologically and floors running inventory at 0.0
+    after each SELL so liquidations of pre-window holdings cannot create a
+    negative debt that cancels out subsequent BUY fills inside the window.
+    """
+    if not buy_orders:
+        return 0.0
+    if not sell_orders:
+        return sum(float(o.get("qty", o.get("quantity", 0.0)) or 0.0) for o in buy_orders)
+    events = []
+    for o in buy_orders:
+        q = float(o.get("qty", o.get("quantity", 0.0)) or 0.0)
+        ts = int(o.get("timestamp") or o.get("time") or 0)
+        events.append((ts, 0, q))
+    for o in sell_orders:
+        q = float(o.get("qty", o.get("quantity", 0.0)) or 0.0)
+        ts = int(o.get("timestamp") or o.get("time") or 0)
+        events.append((ts, 1, q))
+    events.sort(key=lambda x: (x[0], x[1]))
+    owned = 0.0
+    for _, is_sell, q in events:
+        if is_sell == 0:
+            owned += q
+        else:
+            owned = max(0.0, owned - q)
+    return owned
+
+
 def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_orders=None, force_refresh=False, now_ts=None):
     api = api or mkt
     explicit_orders = buy_orders is not None and sell_orders is not None
@@ -290,7 +320,7 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
         if total_sell_qty > 0 else 0
     )
 
-    net_qty = total_buy_qty - total_sell_qty
+    net_qty = _compute_spot_owned_qty(buy_orders, sell_orders)
 
     res = {
         "buy_qty": total_buy_qty,
