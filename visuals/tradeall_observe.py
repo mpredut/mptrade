@@ -260,8 +260,6 @@ def _load_history_jsonl_tail(symbol, max_bytes=4 * 1024 * 1024):
     """
     path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
     if not os.path.exists(path):
-        path = os.path.join(ROOT, "cachedb", f"cache_price_{symbol}.jsonl")
-    if not os.path.exists(path):
         return []
     entries = []
     try:
@@ -312,10 +310,7 @@ def load_price_series_live(symbol, days_back, include_history=True):
     # identical density for 24 hours. Load it only for longer windows where it
     # contributes data; this path previously accounted for 46% sustained CPU.
     if include_history:
-        dense_archive = f"cache_365price_{symbol}.jsonl"
-        if not os.path.exists(os.path.join(ROOT, "cachedb", dense_archive)):
-            dense_archive = f"cache_24price_long_{symbol}.jsonl"
-        for entry in _load_cachedb_price_entries(dense_archive, symbol):
+        for entry in _load_cachedb_price_entries(f"cache_365price_{symbol}.jsonl", symbol):
             try:
                 points[int(entry[0] / 1000.0)] = float(entry[1])
             except (TypeError, ValueError, IndexError):

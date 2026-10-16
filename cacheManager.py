@@ -2227,62 +2227,6 @@ class CacheOrderManager(CacheManagerInterface):
 CacheOrder = CacheOrderManager
 
 
-def _migrate_renamed_price_file(filename: str, old_prefix: str, new_prefix: str) -> None:
-    """Rename legacy per-symbol price files (and .meta / .archive.gz sidecars) when upgrading prefixes."""
-    target = u.cache_path(filename)
-    base = os.path.basename(target)
-    if not base.startswith(new_prefix):
-        return
-    legacy = os.path.join(os.path.dirname(target), old_prefix + base[len(new_prefix):])
-    if os.path.exists(legacy):
-        if not os.path.exists(target):
-            for suffix in ("", ".meta"):
-                src, dst = legacy + suffix, target + suffix
-                if os.path.exists(src) and not os.path.exists(dst):
-                    try:
-                        os.replace(src, dst)
-                    except OSError:
-                        pass
-        else:
-            # If both exist (e.g. legacy received a few ticks before restart), append any newer lines:
-            try:
-                last_ts = -1
-                with open(target, "rb") as tf:
-                    tf.seek(0, os.SEEK_END)
-                    pos = max(0, tf.tell() - 4096)
-                    tf.seek(pos)
-                    for raw in reversed(tf.read().splitlines()):
-                        try:
-                            rec = json.loads(raw)
-                            last_ts = int(rec["i"][0])
-                            break
-                        except Exception:
-                            continue
-                with open(legacy, "r", encoding="utf-8") as lf, open(target, "a", encoding="utf-8") as tf:
-                    for line in lf:
-                        try:
-                            rec = json.loads(line)
-                            if int(rec["i"][0]) > last_ts:
-                                tf.write(line if line.endswith("\n") else line + "\n")
-                        except Exception:
-                            continue
-                os.remove(legacy)
-                if os.path.exists(legacy + ".meta") and not os.path.exists(target + ".meta"):
-                    os.replace(legacy + ".meta", target + ".meta")
-                elif os.path.exists(legacy + ".meta"):
-                    os.remove(legacy + ".meta")
-            except OSError:
-                pass
-    for old_arch in glob.glob(f"{legacy}.*.archive.gz"):
-        arch_suffix = old_arch[len(legacy):]
-        dst_arch = target + arch_suffix
-        if not os.path.exists(dst_arch):
-            try:
-                os.replace(old_arch, dst_arch)
-            except OSError:
-                pass
-
-
 class CacheSparsePrice(CacheManagerInterface):
     """Store sparse three-minute price samples for two years in JSONL.
 
@@ -2292,7 +2236,6 @@ class CacheSparsePrice(CacheManagerInterface):
     """
 
     def __init__(self, sync_ts, symbols, filename, api_client=api):
-        _migrate_renamed_price_file(filename, "cache_price_", "cache_price_sparse_")
         # Continuous append-only three-minute history uses JSONL append persistence.
         super().__init__(sync_ts, symbols, filename, append_mode=True,
                          api_client=api, append_persist=True)
@@ -2454,7 +2397,6 @@ class Cache365Price(Cache24Price):
     LONG_TRIM_INTERVAL_SEC = 24 * 3600
 
     def __init__(self, sync_ts, symbols, filename, api_client=api):
-        _migrate_renamed_price_file(filename, "cache_24price_long_", "cache_365price_")
         # Long archives must not rewrite the entire JSONL whenever a single oldest
         # tick expires.  Initialize the maintenance clock before callbacks can run.
         self._last_long_trim = 0.0
@@ -4399,36 +4341,10 @@ if __name__ == "__main__":
     _nb_poller = None
     _trend_mgr = None
 
-    # Add configured non-Binance instruments that need cached instant trends. Preserve
-    # venue identity because the same symbol cannot be routed safely by spelling alone.
-    _nb_syms = []
-    _nb_provider_names = {}
-    _binance_symbol_keys = {
-        str(_symbol).strip().upper() for _symbol in sym.symbols
-    }
-    from instruments_config import load_for
-    for _inst in load_for("mt").values():
-        _provider_name = str(_inst.provider_name).strip()
-        _symbol = str(_inst.symbol).strip()
-        if not _provider_name or not _symbol:
-            raise RuntimeError("configured provider and symbol must be non-empty")
-        _key = _symbol.upper()
-        if _provider_name.lower() == "binance":
-            continue
-        if _key in _binance_symbol_keys:
-            raise RuntimeError(
-                f"ambiguous current-price cache symbol {_symbol}: Binance and "
-                f"{_provider_name}"
-            )
-        _previous = _nb_provider_names.get(_key)
-        if _previous is not None and _previous.lower() != _provider_name.lower():
-            raise RuntimeError(
-                f"conflicting providers for {_symbol}: {_previous} and {_provider_name}"
-            )
-        _nb_provider_names[_key] = _provider_name
-        _nb_syms.append(_symbol)
-    _nb_syms = list(dict.fromkeys(_nb_syms))
-    _trend_syms = list(dict.fromkeys(list(sym.symbols) + _nb_syms))
+    from instrument_registry import tracked_price_instruments
+    _trend_syms, _nb_syms, _nb_provider_names = tracked_price_instruments(
+        include_non_binance=True
+    )
     # Register non-Binance Price24 managers before the generic loop so trend computation
     # can find a raw buffer for every symbol.
     if _nb_syms:
@@ -4441,7 +4357,7 @@ if __name__ == "__main__":
         CacheFactory.get("Price24", symbols=_trend_syms)
         builtins.print(f"[cacheManager] instant-trend extended with non-Binance: {_nb_syms}")
         # LONGTREND_NONBINANCE optionally starts accumulating sparse history and long-trend
-        # data. It is disabled by default until enough lookback data exists.
+        # data.
         if LONGTREND_NONBINANCE:
             CacheFactory.get("Price", symbols=_trend_syms)
             CacheFactory.get("PriceLongTrend", symbols=_trend_syms)

@@ -206,7 +206,7 @@ def test_current_execution_policy_is_preserved():
     expected = {
         "tradeall_fire": {"BTCUSDC", "TAOUSDC", "ARBUSDC"}, "kalman_primary": {"BTCUSDC"},
         "mt": {"BTCUSDC", "TAOUSDC", "ARBUSDC"}, "assetguardian": {"BTCUSDC", "TAOUSDC"},
-        "archive": {"BTCUSDC", "TAOUSDC"}, "rtrade": {"TAOUSDC"},
+        "archive": {"BTCUSDC", "TAOUSDC", "ARBUSDC"}, "rtrade": {"TAOUSDC"},
         "force_sell": {"BTCUSDC", "TAOUSDC"},
         "trailing": {"BTCUSDC", "TAOUSDC", "ARBUSDC"},
     }
@@ -223,6 +223,14 @@ def test_current_execution_policy_is_preserved():
     assert rebuys == {"BTCUSDC": "on", "TAOUSDC": "on", "ARBUSDC": "auto"}
     assert set(registry.select_instruments(role="mt")) == {
         "BINANCE_BTC", "BINANCE_TAO", "BINANCE_ARB", "KRAKEN_HYPE"}
+    all_syms, nb_syms, nb_providers = registry.tracked_price_instruments(include_non_binance=True)
+    assert all_syms == ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"]
+    assert nb_syms == ["HYPEUSD"]
+    assert nb_providers == {"HYPEUSD": "kraken"}
+    arch_syms, arch_nb, arch_prov = registry.tracked_price_instruments(role="archive", include_non_binance=True)
+    assert arch_syms == ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"]
+    assert arch_nb == ["HYPEUSD"]
+    assert arch_prov == {"HYPEUSD": "kraken"}
 
 
 def test_invalid_policy_fails_before_selection(tmp_path):

@@ -45,10 +45,16 @@ def _dbg(*args, **kwargs):
 
 price_cache_manager = None
 
-def build_price_cache_manager():
+def build_price_cache_manager(symbols=None, provider_names=None):
     global price_cache_manager
     import cacheManager as cm
-    price_cache_manager = cm.get_cache_manager("Price")  # Dictionary keyed by symbol.
+    if provider_names:
+        cm.get_current_price_manager(
+            symbols=symbols,
+            provider_names=provider_names,
+            start_sync=False,
+        )
+    price_cache_manager = cm.get_cache_manager("Price", symbols=symbols)  # Dictionary keyed by symbol.
 
 def priceLstFor(symbol: str) -> List[Tuple[int, float]]:
 
@@ -788,20 +794,13 @@ def get_trade_weight(T, trend_len, trend, order_type,
     
 UPDATE_AND_REFRESH_TREND = 60*1 # One minute.
 if __name__ == "__main__":
-    build_price_cache_manager()
-    symbols = list(sym.symbols)
-    # Gate long-term non-Binance trends behind LONGTREND_NONBINANCE. Default off
-    # keeps the BTC proxy. Once enabled and enough HYPE history accumulates,
-    # weight_limit automatically switches from proxy to the native HYPE trend.
-    if LONGTREND_NONBINANCE:
-        try:
-            from instruments_config import load_for
-            for _inst in load_for("mt").values():
-                if _inst.provider_name != "binance" and _inst.symbol not in symbols:
-                    symbols.append(_inst.symbol)
-            print(f"[priceAnalysis] non-Binance LONG-term trend ACTIVATED: {symbols}")
-        except Exception as _e:
-            print(f"[priceAnalysis] non-Binance trend unavailable: {_e}")
+    from instrument_registry import tracked_price_instruments
+    symbols, _nb_syms, _nb_providers = tracked_price_instruments(
+        include_non_binance=bool(LONGTREND_NONBINANCE)
+    )
+    if _nb_syms:
+        print(f"[priceAnalysis] non-Binance LONG-term trend ACTIVATED: {symbols}")
+    build_price_cache_manager(symbols=symbols, provider_names=_nb_providers or None)
     try:
         while True:
             process = psutil.Process(os.getpid())

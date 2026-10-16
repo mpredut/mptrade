@@ -42,7 +42,7 @@ sys.path.insert(0, ROOT)
 import cacheManager as cm
 from binance_api import bapi_ws
 from botcore import single_instance
-from instrument_registry import symbols_for
+from instrument_registry import tracked_price_instruments
 
 CACHEDB_DIR = os.path.join(ROOT, "cachedb")
 _SYMBOL_RE = re.compile(r"^[A-Z0-9]{3,24}$")
@@ -70,8 +70,10 @@ def _symbols(raw):
     return values
 
 
-def _shutdown(caches, current_price_mgr, ws_module=bapi_ws):
+def _shutdown(caches, current_price_mgr, ws_module=bapi_ws, nb_poller=None):
     """Stop producers, flush every pending tick, then close shared resources."""
+    if nb_poller is not None:
+        nb_poller.stop()
     for cache in caches:
         current_price_mgr.unsubscribe_price(cache)
     for cache in caches:
@@ -92,9 +94,12 @@ def main():
     p.add_argument("--save-every", type=float, default=cm.CM_LONG_ARCHIVE_FLUSH_SEC,
                     help="disk flush cadence (default from config.env)")
     args = p.parse_args()
+    all_archive_syms, _nb_archive_syms, nb_providers = tracked_price_instruments(
+        role="archive", include_non_binance=True
+    )
     try:
         symbols = _symbols(args.symbols if args.symbols is not None
-                           else ",".join(symbols_for("binance", "archive")))
+                           else ",".join(all_archive_syms))
         months = _positive_finite(args.months, "--months")
         sync_ts = _positive_finite(args.sync_ts, "--sync-ts", minimum=0.1)
         save_every = _positive_finite(args.save_every, "--save-every", minimum=1.0)
@@ -113,12 +118,24 @@ def main():
     signal.signal(signal.SIGINT, request_stop)
 
     os.makedirs(CACHEDB_DIR, exist_ok=True)
-    # This process consumes only the public market stream. The private account stream
-    # belongs to the dedicated cache process and would start redundant order/trade caches.
+    nb_syms_active = [s for s in symbols if s.upper() in nb_providers]
+    nb_providers_active = {s.upper(): nb_providers[s.upper()] for s in nb_syms_active}
+    # This process consumes only the public market stream (plus non-Binance HTTP poller
+    # when configured). The private account stream belongs to the dedicated cache process.
     current_price_mgr = cm.get_current_price_manager(
         ws_manager=bapi_ws.get_ws_manager(),
+        symbols=symbols,
         sync_ts=sync_ts,
+        provider_names=nb_providers_active or None,
     )
+    nb_poller = None
+    if nb_syms_active:
+        nb_poller = cm._start_nonbinance_trend_poller(
+            current_price_mgr,
+            nb_syms_active,
+            interval_sec=10,
+            provider_names=nb_providers_active,
+        )
 
     caches = []
     for symbol in symbols:
@@ -143,7 +160,7 @@ def main():
     except KeyboardInterrupt:
         stop_event.set()
     finally:
-        _shutdown(caches, current_price_mgr)
+        _shutdown(caches, current_price_mgr, nb_poller=nb_poller)
         print("\n[tradeall_price_archiver] stopped after the flush.", flush=True)
 
 

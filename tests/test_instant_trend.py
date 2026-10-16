@@ -697,29 +697,6 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertIs(cm.CacheTrade, cm.CacheTradeManager)
         self.assertIs(cm.CacheOrder, cm.CacheOrderManager)
 
-    def test_migrate_renamed_price_file(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            old_sparse = os.path.join(tmpdir, "cache_price_BTCUSDC.jsonl")
-            old_meta = old_sparse + ".meta"
-            with open(old_sparse, "w", encoding="utf-8") as f:
-                f.write('{"s":"BTCUSDC","i":[1000,50000.0]}\n')
-            with open(old_meta, "w", encoding="utf-8") as f:
-                f.write("{}")
-
-            new_sparse = os.path.join(tmpdir, "cache_price_sparse_BTCUSDC.jsonl")
-            cm._migrate_renamed_price_file(new_sparse, "cache_price_", "cache_price_sparse_")
-            self.assertTrue(os.path.exists(new_sparse))
-            self.assertTrue(os.path.exists(new_sparse + ".meta"))
-            self.assertFalse(os.path.exists(old_sparse))
-
-            old_365 = os.path.join(tmpdir, "cache_24price_long_BTCUSDC.jsonl")
-            with open(old_365, "w", encoding="utf-8") as f:
-                f.write('{"s":"BTCUSDC","i":[1000,50000.0]}\n')
-            new_365 = os.path.join(tmpdir, "cache_365price_BTCUSDC.jsonl")
-            cm._migrate_renamed_price_file(new_365, "cache_24price_long_", "cache_365price_")
-            self.assertTrue(os.path.exists(new_365))
-            self.assertFalse(os.path.exists(old_365))
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -174,14 +174,10 @@ def make_decision_logger(out_dir, clock):
 
 
 def load_ticks_history(symbol, start_ts, end_ts):
-    """Reads cache_price_sparse_{symbol}.jsonl (or legacy cache_price_{symbol}.jsonl) — a long history, SPARSE."""
+    """Reads cache_price_sparse_{symbol}.jsonl — a long history, SPARSE."""
     path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
     if not os.path.exists(path):
-        legacy_path = os.path.join(ROOT, "cachedb", f"cache_price_{symbol}.jsonl")
-        if os.path.exists(legacy_path):
-            path = legacy_path
-        else:
-            raise FileNotFoundError(f"Cannot find {path} (the price history for {symbol})")
+        raise FileNotFoundError(f"Cannot find {path} (the price history for {symbol})")
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             try:

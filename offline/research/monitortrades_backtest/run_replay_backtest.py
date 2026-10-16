@@ -101,10 +101,6 @@ def _neutral_is_trend_up(symbol, window_seconds=None, now=None):
 
 def run_symbol(symbol, params, base, quiet=True, trend_window_seconds=DEFAULT_WINDOW_SECONDS):
     path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
-    if not os.path.exists(path):
-        legacy_path = os.path.join(ROOT, "cachedb", f"cache_price_{symbol}.jsonl")
-        if os.path.exists(legacy_path):
-            path = legacy_path
     series = load_price_series(path, symbol)
     if not series:
         sys.stderr.write(f"[{symbol}] no history at {path}\n")

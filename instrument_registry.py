@@ -143,6 +143,47 @@ def single_symbol_for(provider, role, *, path=None):
     return symbols[0]
 
 
+def tracked_price_instruments(role=None, *, include_non_binance=True, path=None):
+    """Return ``(all_symbols, non_binance_symbols, non_binance_providers)`` from the registry.
+
+    Single source of truth for price accumulators and trend analyzers: Binance symbols
+    come first in registry order, followed by enabled non-Binance symbols (filtered by
+    ``role`` when given, or ``role='mt'`` when ``role is None``). Rejects symbol collisions
+    across providers so symbol-keyed caches remain unambiguous.
+    """
+    binance_specs = select_instruments("binance", role=role, path=path, only_enabled=True)
+    binance_syms = list(dict.fromkeys(spec.symbol.strip() for spec in binance_specs.values()))
+    binance_keys = {s.upper() for s in binance_syms}
+
+    nb_syms = []
+    nb_providers = {}
+    if include_non_binance:
+        nb_role = role if role is not None else "mt"
+        for spec in select_instruments(role=nb_role, path=path, only_enabled=True).values():
+            provider_name = spec.provider.strip()
+            symbol = spec.symbol.strip()
+            if not provider_name or not symbol:
+                raise RuntimeError("configured provider and symbol must be non-empty")
+            if provider_name.lower() == "binance":
+                continue
+            key = symbol.upper()
+            if key in binance_keys:
+                raise RuntimeError(
+                    f"ambiguous current-price cache symbol {symbol}: Binance and {provider_name}"
+                )
+            previous = nb_providers.get(key)
+            if previous is not None and previous.lower() != provider_name.lower():
+                raise RuntimeError(
+                    f"conflicting providers for {symbol}: {previous} and {provider_name}"
+                )
+            nb_providers[key] = provider_name
+            if symbol not in nb_syms:
+                nb_syms.append(symbol)
+
+    all_syms = list(dict.fromkeys(binance_syms + nb_syms))
+    return all_syms, nb_syms, nb_providers
+
+
 if __name__ == "__main__":
     # Offline preflight: no provider construction, secrets, writes, or network.
     for item in load_registry().values():
