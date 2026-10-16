@@ -173,7 +173,16 @@ def make_decision_logger(out_dir, clock):
     return _log_decision
 
 
+_TICK_SLICE_CACHE = {}
+
+
 def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
+    cache_key = (path, symbol, start_ts, end_ts)
+    cached = _TICK_SLICE_CACHE.get(cache_key)
+    if cached is not None:
+        yield from cached
+        return
+    ticks = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -190,8 +199,14 @@ def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
             if ts < start_ts:
                 continue
             if end_ts is not None and ts > end_ts:
+                if ts > end_ts + 60.0:
+                    break
                 continue
-            yield ts, price
+            ticks.append((ts, price))
+    if len(_TICK_SLICE_CACHE) >= 8:
+        _TICK_SLICE_CACHE.clear()
+    _TICK_SLICE_CACHE[cache_key] = ticks
+    yield from ticks
 
 
 def load_ticks_history(symbol, start_ts, end_ts):
@@ -371,7 +386,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                 try:
                     shadow_fields = shadow.update(symbol, ts, price,
                                                    epsilon=window_small.get_noise_epsilon(),
-                                                   big_prices=list(window_big.prices),
+                                                   big_prices=window_big.prices,
                                                    big_sample_rate=window_big.sample_rate_sec)
                 except Exception:
                     shadow_fields = {}

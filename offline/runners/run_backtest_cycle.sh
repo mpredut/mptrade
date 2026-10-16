@@ -40,7 +40,8 @@ SRC_FILE="$REPO_ROOT/backtest_proposals.json"
 
 [ -f "$SRC_FILE" ] || { echo "[publish] is missing $SRC_FILE — run the pilot with --propose first"; exit 1; }
 
-git -C "$REPO_ROOT" fetch -q origin || true
+export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2}"
+timeout 30 git -C "$REPO_ROOT" fetch -q origin || true
 
 if ! git -C "$REPO_ROOT" worktree list --porcelain | grep -q "worktree $WT"; then
   rm -rf "$WT"
@@ -50,7 +51,7 @@ if ! git -C "$REPO_ROOT" worktree list --porcelain | grep -q "worktree $WT"; the
     git -C "$REPO_ROOT" worktree add -q -b "$BRANCH" "$WT" origin/main
   fi
 else
-  git -C "$WT" pull -q --ff-only origin "$BRANCH" 2>/dev/null || true
+  timeout 30 git -C "$WT" pull -q --ff-only origin "$BRANCH" 2>/dev/null || true
 fi
 
 cp "$SRC_FILE" "$WT/backtest_proposals.json"
@@ -60,7 +61,7 @@ if git -C "$WT" diff --cached --quiet; then
 else
   n=$(grep -c '"full_key"' "$WT/backtest_proposals.json" || true)
   git -C "$WT" commit -q -m "backtest proposals $(date '+%F %T') [$(git -C "$REPO_ROOT" rev-parse --short HEAD)] — $n proposal(s)"
-  git -C "$WT" push -q origin "$BRANCH"
+  timeout 30 git -C "$WT" push -q origin "$BRANCH"
   echo "[publish] $n proposal(s) published on branch $BRANCH"
 fi
 

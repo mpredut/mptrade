@@ -317,11 +317,14 @@ class PriceWindow:
         with self._lock:
             if new_size != self.window_size:
                 self.window_size = new_size
-                kept = list(self.prices)[-new_size:]
-                self.prices = deque(kept, maxlen=new_size)
-                self.sorted_prices = sorted(self.prices)
-                if len(self._trend_buf.prices) > new_size:
-                    self._trend_buf.trim_front(len(self._trend_buf.prices) - new_size)
+                if len(self.prices) > new_size:
+                    kept = list(self.prices)[-new_size:]
+                    self.prices = deque(kept, maxlen=new_size)
+                    self.sorted_prices = sorted(self.prices)
+                    if len(self._trend_buf.prices) > new_size:
+                        self._trend_buf.trim_front(len(self._trend_buf.prices) - new_size)
+                else:
+                    self.prices = deque(self.prices, maxlen=new_size)
 
     def on_price_update(self, symbol: str, ts_ms: int, price: float) -> None:
         """Update the window from a ``Cache24PriceManager`` callback."""
@@ -398,16 +401,30 @@ class PriceWindow:
             if not self.sorted_prices:
                 return None
             min_price = self.sorted_prices[0]
-            close_min_values = [price for price in self.sorted_prices if u.are_close(price, min_price, 0.01)]
-            return sum(close_min_values) / len(close_min_values) if close_min_values else min_price
+            total = 0.0
+            count = 0
+            for price in self.sorted_prices:
+                if u.are_close(price, min_price, 0.01):
+                    total += price
+                    count += 1
+                else:
+                    break
+            return total / count if count else min_price
 
     def get_max(self):
         with self._lock:
             if not self.sorted_prices:
                 return None
             max_price = self.sorted_prices[-1]
-            close_max_values = [price for price in reversed(self.sorted_prices) if u.are_close(price, max_price, 0.01)]
-            return sum(close_max_values) / len(close_max_values) if close_max_values else max_price
+            total = 0.0
+            count = 0
+            for price in reversed(self.sorted_prices):
+                if u.are_close(price, max_price, 0.01):
+                    total += price
+                    count += 1
+                else:
+                    break
+            return total / count if count else max_price
 
     def get_min_and_index(self):
         with self._lock:
@@ -453,9 +470,19 @@ class PriceWindow:
         epsilon = k * stddev(np.gradient(prices)).
         It adapts by symbol and over time to distinguish real movement from noise."""
         with self._lock:
+            n = len(self.prices)
+            if n < 3:
+                return 0.0
+            if (
+                len(self._trend_buf.prices) == n
+                and self._trend_buf.prices[0] == self.prices[0]
+                and self._trend_buf.prices[-1] == self.prices[-1]
+            ):
+                _, _, _, _, epsilon = self._trend_buf.eval_slice(
+                    0, n - 1, sample_rate_sec=self.sample_rate_sec, eps_k=k
+                )
+                return epsilon
             prices = list(self.prices)
-        if len(prices) < 3:
-            return 0.0
         grad = np.gradient(np.array(prices))
         return float(k * np.std(grad))
 
@@ -569,16 +596,17 @@ class WindowAnalyzer:
         w = self.window
         if len(w.prices) < 2:
             return 0, 1
-        min_price, min_index = w.get_min_and_index()
-        max_price, max_index = w.get_max_and_index()
+        min_price = w.get_min()
+        max_price = w.get_max()
         newest_price = w.prices[-1]
-        newest_index = w.get_newest_index()
 
         price_diff_min = u.calculate_difference_percent(min_price, newest_price)
         price_diff_max = u.calculate_difference_percent(max_price, newest_price)
         price_diff_newest = max(price_diff_min, price_diff_max)
 
         if abs(price_diff_newest) >= threshold or u.are_close(price_diff_newest, threshold):
+            _, min_index = w.get_min_and_index()
+            _, max_index = w.get_max_and_index()
             print(f'price_diff_minmax_versus_newest(slope)={price_diff_newest}(threshold={threshold}) '
                   f'are_close={u.are_close(price_diff_newest, threshold)}')
             print(f'min price ={min_price}, max_price = {max_price}, newest_price={newest_price}, '

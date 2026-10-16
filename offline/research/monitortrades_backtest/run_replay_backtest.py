@@ -187,11 +187,11 @@ def run_symbol(
                 log.enable_print()
             except Exception:
                 pass
+        mt.clear_position_stats_cache()
         mt.is_trend_up = orig_is_trend_up
         mt.get_symbol_volatility_1h = orig_get_vol
         mt._MT_PERSISTENCE_ENABLED = orig_persist
         mt._apply_post_stop_ai_guard = orig_post_stop_ai
-        mt.clear_position_stats_cache()
 
     all_buys = provider.get_orders(symbol, "BUY", since_s=1e12)
     all_sells = provider.get_orders(symbol, "SELL", since_s=1e12)

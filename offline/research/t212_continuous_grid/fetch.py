@@ -34,6 +34,9 @@ if __name__ == "__main__":
             except Exception as exc:  # noqa: BLE001
                 print(f"[fetch] {sym} {itv}: {exc}")
                 continue
+            if not rows:
+                print(f"[fetch] {sym} {itv}: no bars returned", flush=True)
+                continue
             with open(os.path.join(DATA, f"{sym}_{itv}.csv"), "w", newline="") as fh:
                 w = csv.writer(fh)
                 w.writerow(["timestamp", "open", "high", "low", "close"])

@@ -105,12 +105,20 @@ run_step "2B" "T212 RGNT 1d Walk-Forward Baseline" \
         --train 90 --validation 30 --test 20 --step 20 --warmup 12 \
         --output-dir $RESULTS_DIR/t212_rgnt"
 
+run_step "2B_COMP" "T212 RGNT 1d Candidate Comparison" \
+    "$PYTHON_BIN offline/runners/walk_forward.py --mode compare \
+        \$(ls -t $RESULTS_DIR/t212_rgnt/baseline_RGNT_*.json $RESULTS_DIR/t212_rgnt/rgnt/baseline_RGNT_*.json 2>/dev/null | head -1)"
+
 run_step "2C" "T212 SPCX 5m Walk-Forward Baseline" \
     "$PYTHON_BIN offline/runners/walk_forward.py --venue t212 \
         --profile spcx --interval 5m \
         --dataset offline/research/t212_dataset/spcx/datasets/SPCX_5m_1cfe20146366.csv \
         --train 720 --validation 180 --test 90 --step 90 --warmup 12 \
         --output-dir $RESULTS_DIR/t212_spcx"
+
+run_step "2C_COMP" "T212 SPCX 5m Candidate Comparison" \
+    "$PYTHON_BIN offline/runners/walk_forward.py --mode compare \
+        \$(ls -t $RESULTS_DIR/t212_spcx/baseline_SPCX_*.json $RESULTS_DIR/t212_spcx/spcx/baseline_SPCX_*.json 2>/dev/null | head -1)"
 
 run_step "2D" "Hyperliquid HYPE 240m Walk-Forward Baseline" \
     "$PYTHON_BIN offline/runners/walk_forward.py --venue hyperliquid \
@@ -143,10 +151,16 @@ run_step "3C" "Kraken Adaptive Reentry Verification" \
     "$PYTHON_BIN offline/research/kraken_adaptive_thresholds/verify_adaptive_reentry.py"
 
 # ------------------------------------------------------------------------------
-# STEP 4: Comprehensive Multi-Factor Strategy Sweep (30 Candidates)
+# STEP 4: Comprehensive Multi-Factor & Multi-Variable Strategy Sweeps
 # ------------------------------------------------------------------------------
-run_step "4" "Comprehensive 30-Candidate Multi-Factor Strategy Sweep" \
+run_step "4A" "Comprehensive 30-Candidate Multi-Factor Strategy Sweep" \
     "$PYTHON_BIN offline/research/comprehensive_strategy_sweep.py"
+
+run_step "4B" "Deep Parabolic Surge & Bear-Bounce Multi-Variable Grid Sweep (555 Candidates)" \
+    "$PYTHON_BIN offline/research/comprehensive_surge_sweep/run_deep_surge_sweep.py"
+
+run_step "4C" "Hybrid Re-Entry Ablation Suite (11 Crypto Assets & US Equities)" \
+    "$PYTHON_BIN offline/research/hybrid_reentry/run_suite.py && $PYTHON_BIN offline/research/hybrid_reentry/run_equities.py"
 
 # ------------------------------------------------------------------------------
 # STEP 5: TradeAll Trigger Gate Experiments
@@ -185,11 +199,13 @@ run_step "8" "Scheduled Pilot Proposals Generation & Worktree Push" \
     "bash offline/runners/run_backtest_cycle.sh"
 
 # ------------------------------------------------------------------------------
-# STEP 9: Kraken continuous grid (11 assets since 2018; continuous, yearly, rolling,
-# walk-forward selection, fee stress and finite-cash views; ~2.5h)
+# STEP 9: Kraken & Trading212 Continuous Multi-Asset Grids
 # ------------------------------------------------------------------------------
-run_step "9" "Kraken Continuous Multi-Asset Grid" \
+run_step "9A" "Kraken Continuous Multi-Asset Grid (11 assets since 2018)" \
     "bash offline/research/kraken_continuous_grid/run_all.sh"
+
+run_step "9B" "Trading212 Continuous Multi-Asset Factorial Grid (16 equities/ETFs, 54 variants)" \
+    "[ -n \"\$(ls -A $RESULTS_DIR/t212_continuous_grid/data/*.csv 2>/dev/null)\" ] || $PYTHON_BIN offline/research/t212_continuous_grid/fetch.py; $PYTHON_BIN offline/research/t212_continuous_grid/grid.py && $PYTHON_BIN offline/research/t212_continuous_grid/report.py"
 
 END_SEC=$(date +%s)
 TOTAL_ELAPSED=$((END_SEC - START_SEC))
@@ -213,23 +229,30 @@ Host: $(hostname)
 Commit: $(git rev-parse --short HEAD)
 
 ## Executed Modules
+- [x] **4-Pillar Market Intelligence & Chop Weight Benchmark**: SSOT symbols & 407-day dynamic weights
 - [x] **Kraken HYPE 240m Walk-Forward (628 days, 31 folds)**: Baseline & Comparative Pareto ranking
-- [x] **Trading212 Walk-Forward**: NVDA (1d), RGNT (1d), SPCX (5m)
+- [x] **Trading212 Walk-Forward & Comparisons**: NVDA (1d), RGNT (1d), SPCX (5m)
 - [x] **Hyperliquid Walk-Forward**: HYPE (240m)
-- [x] **Binance Walk-Forward**: BTCUSDT (240m)
+- [x] **Binance Walk-Forward**: BTCUSDC (240m)
 - [x] **Kraken Adaptive Multipliers**: K_REENTRY & K_DCA sweeps
 - [x] **30-Candidate Multi-Factor Strategy Sweep**: Out-of-sample, continuous compounding, and forward live shadow
+- [x] **Deep Parabolic Surge & Bear-Bounce Sweep (555 Candidates)**: Fixed/dynamic surge & bounce re-entry grid
+- [x] **Hybrid Re-Entry Ablation Suite**: 11 Crypto assets & US equities
 - [x] **TradeAll Trigger Gate Experiments**: Trend gate, quality signal, RSI/BB, dual timeframe
 - [x] **TradeAll Adaptive Thresholds & Kalman Lag Sweeps**: Real-tick volatility and sampling latencies
 - [x] **Monitortrades 392-Day Replay**: Full Binance BTC & TAO simulation
-- [x] **Kraken Continuous Grid**: `offline/results/kraken_continuous_grid/REPORT*.md`
+- [x] **Kraken Continuous Grid**: \`offline/results/kraken_continuous_grid/REPORT*.md\`
+- [x] **Trading212 Continuous Multi-Asset Grid**: \`offline/results/t212_continuous_grid/REPORT.md\`
 - [x] **Proposal Publishing Pipeline**: Verified candidate parameters pushed to \`backtest-proposals\`
 
 ## Artifacts & Logs
 - Master Log: \`$MASTER_LOG\`
 - Latest Log Symlink: \`$LOG_DIR/latest_overnight.log\`
 - Strategy Sweep Report: \`offline/results/strategy_sweep/SWEEP_REPORT.md\`
+- Deep Surge Sweep Report: \`offline/results/surge_sweep/DEEP_SURGE_SWEEP_REPORT.md\`
+- Hybrid Re-entry Summary: \`offline/results/hybrid_reentry/ablation_summary.json\`
 - Walk-Forward Comparisons: \`offline/results/kraken_wf_240/\`
+- Trading212 Grid Report: \`offline/results/t212_continuous_grid/REPORT.md\`
 - Pilot Proposals File: \`backtest_proposals.json\` (pushed to branch \`backtest-proposals\`)
 
 EOF

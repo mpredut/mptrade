@@ -28,9 +28,11 @@ REPO_ROOT="${BINANCE_REPO_ROOT:-$(cd "$RUNNER_DIR/../.." && pwd)}"
 SSH="ssh -o BatchMode=yes -p $DEV_PORT"
 
 echo "[refresh_dev $(date '+%F %T')] code: git pull --ff-only on dev"
-PULL_OUTPUT=$($SSH "$DEV_USER@$DEV_HOST" "cd ~/$DEV_PATH && git pull --ff-only origin $DEV_CODE_BRANCH" 2>&1)
+PULL_OUTPUT=$($SSH "$DEV_USER@$DEV_HOST" "cd ~/$DEV_PATH && GIT_SSH_COMMAND='ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2' timeout 45 git pull --ff-only origin $DEV_CODE_BRANCH" 2>&1) || {
+    echo "[refresh_dev $(date '+%F %T')] WARN: git pull on dev timed out or failed: $PULL_OUTPUT" >&2
+}
 echo "$PULL_OUTPUT" | sed 's/^/  /'
-if echo "$PULL_OUTPUT" | grep -qv "Already up to date"; then
+if echo "$PULL_OUTPUT" | grep -q "Updating "; then
     echo "[refresh_dev $(date '+%F %T')] code updated on DEV -> launching background regression"
     $SSH "$DEV_USER@$DEV_HOST" "nohup bash -c 'cd ~/$DEV_PATH && ./offline/runners/run_dev_regression.sh' </dev/null >/dev/null 2>&1 &" || true
 fi

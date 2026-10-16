@@ -46,6 +46,9 @@ import tradeall as ta
 STATS = {}
 
 _OrigWindowAnalyzer = ta.WindowAnalyzer
+_OrigTrendState = ta.TrendState
+_OrigLogic = ta.logic
+_OrigLogicSmall = getattr(ta, "logic_small", None)
 
 
 class GradientBigWindowAnalyzer(_OrigWindowAnalyzer):
@@ -62,7 +65,7 @@ def make_instrumented(tag):
     stats = {"starts": 0, "confirms": 0, "expires": 0, "max_confirm_count": 0,
               "fired_instances_up": 0, "fired_instances_down": 0}
     STATS[tag] = stats
-    Base = ta.TrendState
+    Base = _OrigTrendState
 
     class InstrumentedTrendState(Base):
         def __init__(self, *a, **kw):
@@ -174,6 +177,8 @@ def run_variant(tag, symbol, start_ts, end_ts):
     ta.logic = make_logic_cooldown(lambda g, s: g > 0 and s > 0,
                                     lambda g, s: g < 0 and s < 0, tag)
     tb.ta.logic = ta.logic
+    ta.logic_small = lambda *a, **kw: None
+    tb.ta.logic_small = ta.logic_small
     ta.WindowAnalyzer = GradientBigWindowAnalyzer
     tb.ta.WindowAnalyzer = ta.WindowAnalyzer
 
@@ -183,13 +188,21 @@ def run_variant(tag, symbol, start_ts, end_ts):
     shutil.rmtree(out_dir, ignore_errors=True)
 
     t0 = time.time()
-    tb.run_backtest(symbol, start_ts, end_ts, "fast", run_id, "cache24",
-                     cache24_file=os.path.join(ROOT, "cachedb", f"cache_365price_{symbol}.jsonl"),
-                     quiet=True, kalman_primary=False)
+    try:
+        tb.run_backtest(symbol, start_ts, end_ts, "fast", run_id, "cache24",
+                         cache24_file=os.path.join(ROOT, "cachedb", f"cache_365price_{symbol}.jsonl"),
+                         quiet=True, kalman_primary=False)
+    finally:
+        ta.WindowAnalyzer = _OrigWindowAnalyzer
+        tb.ta.WindowAnalyzer = _OrigWindowAnalyzer
+        ta.TrendState = _OrigTrendState
+        tb.ta.TrendState = _OrigTrendState
+        ta.logic = _OrigLogic
+        tb.ta.logic = _OrigLogic
+        if _OrigLogicSmall is not None:
+            ta.logic_small = _OrigLogicSmall
+            tb.ta.logic_small = _OrigLogicSmall
     elapsed = time.time() - t0
-
-    ta.WindowAnalyzer = _OrigWindowAnalyzer
-    tb.ta.WindowAnalyzer = ta.WindowAnalyzer
 
     import json
     pnl_path = os.path.join(out_dir, "pnl.json")

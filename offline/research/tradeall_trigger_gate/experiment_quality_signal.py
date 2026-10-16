@@ -136,8 +136,12 @@ def make_quality_logic(tag, window_hours, reeval_sec):
 
 def run_variant(tag, window_hours, reeval_sec, symbol, start_ts, end_ts):
     _trackers.clear()
+    orig_logic = ta.logic
+    orig_logic_small = getattr(ta, "logic_small", None)
     ta.logic = make_quality_logic(tag, window_hours, reeval_sec)
     tb.ta.logic = ta.logic
+    ta.logic_small = lambda *a, **kw: None
+    tb.ta.logic_small = ta.logic_small
 
     run_id = f"experiment5_{tag}_{symbol}"
     import shutil
@@ -145,9 +149,16 @@ def run_variant(tag, window_hours, reeval_sec, symbol, start_ts, end_ts):
     shutil.rmtree(out_dir, ignore_errors=True)
 
     t0 = time.time()
-    tb.run_backtest(symbol, start_ts, end_ts, "fast", run_id, "cache24",
-                     cache24_file=os.path.join(ROOT, "cachedb", f"cache_365price_{symbol}.jsonl"),
-                     quiet=True, kalman_primary=False)
+    try:
+        tb.run_backtest(symbol, start_ts, end_ts, "fast", run_id, "cache24",
+                         cache24_file=os.path.join(ROOT, "cachedb", f"cache_365price_{symbol}.jsonl"),
+                         quiet=True, kalman_primary=False)
+    finally:
+        ta.logic = orig_logic
+        tb.ta.logic = orig_logic
+        if orig_logic_small is not None:
+            ta.logic_small = orig_logic_small
+            tb.ta.logic_small = orig_logic_small
     elapsed = time.time() - t0
 
     import json

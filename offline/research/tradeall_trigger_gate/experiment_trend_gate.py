@@ -39,13 +39,14 @@ from offline.backtests import tradeall as tb
 import tradeall as ta
 
 STATS = {}
+_OrigTrendState = ta.TrendState
 
 
 def make_instrumented(tag):
     stats = {"starts": 0, "confirms": 0, "expires": 0, "max_confirm_count": 0,
              "reached_24": 0, "reached_old_1_9h": 0}
     STATS[tag] = stats
-    Base = ta.TrendState
+    Base = _OrigTrendState
 
     class InstrumentedTrendState(Base):
         def start_trend(self, new_state):
@@ -109,13 +110,15 @@ def run_variant(tag, symbol, start_ts, end_ts, expiration_trend_time_override=No
     shutil.rmtree(out_dir, ignore_errors=True)
 
     t0 = time.time()
-    tb.run_backtest(symbol, start_ts, end_ts, "fast", run_id, "cache24",
-                     cache24_file=os.path.join(ROOT, "cachedb", f"cache_365price_{symbol}.jsonl"),
-                     quiet=True, kalman_primary=False)
+    try:
+        tb.run_backtest(symbol, start_ts, end_ts, "fast", run_id, "cache24",
+                         cache24_file=os.path.join(ROOT, "cachedb", f"cache_365price_{symbol}.jsonl"),
+                         quiet=True, kalman_primary=False)
+    finally:
+        ta.TREND_TO_BE_OLD_SECONDS = orig_trend_to_be_old
+        ta.TrendState = _OrigTrendState
+        tb.ta.TrendState = _OrigTrendState
     elapsed = time.time() - t0
-
-    ta.TREND_TO_BE_OLD_SECONDS = orig_trend_to_be_old
-    ta.TrendState.is_trend_consistent_validated = orig_consistent
 
     import json
     pnl_path = os.path.join(out_dir, "pnl.json")
