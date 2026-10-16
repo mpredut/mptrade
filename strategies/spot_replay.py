@@ -9,7 +9,6 @@ intrabar ambiguity resolution without network, notifications, or persistent stat
 from __future__ import annotations
 
 import math
-from unittest.mock import MagicMock
 
 from offline.backtests.execution import (
     ExecutionModel,
@@ -21,9 +20,29 @@ from offline.backtests.metrics import calculate_performance_metrics
 from providers.strategy_executor import PairPrecision
 from strategies import spot_engine as _strat
 
+_REPLAY_PRECISION = PairPrecision(5, 8, 0.0, "REPLAY")
+
 
 def _silent(*_args, **_kwargs):
     return None
+
+
+class _ReplayClient:
+    """Lightweight replay venue client without unittest.mock call-recording overhead."""
+
+    __slots__ = ("_default_balance", "_free_balance_fn")
+
+    def __init__(self, default_balance: float) -> None:
+        self._default_balance = default_balance
+        self._free_balance_fn = None
+
+    def pair_precision(self, _pair: str) -> PairPrecision:
+        return _REPLAY_PRECISION
+
+    def free_balance(self, asset: str) -> float:
+        if self._free_balance_fn is not None:
+            return self._free_balance_fn(asset)
+        return self._default_balance
 
 
 def _validate_replay(ohlc, params, bar_minutes: float | None) -> None:
@@ -116,13 +135,11 @@ def _run_once(
     reentry_series=None,
     intrabar_high: bool = False,
 ) -> dict:
-    client = MagicMock()
     # Replay declares its synthetic execution precision explicitly; live engines
     # must obtain this metadata from the venue.
-    client.pair_precision.return_value = PairPrecision(5, 8, 0.0, "REPLAY")
     # Legacy replay explicitly assumes funding up to the configured cycle cap.
     # A mock or unavailable live balance must never imply unlimited buying power.
-    client.free_balance.return_value = float(params.effective_max_budget())
+    client = _ReplayClient(float(params.effective_max_budget()))
     original_notify = _strat.notify
     original_log = _strat.log
     _strat.notify = _silent
@@ -158,7 +175,7 @@ def _run_once(
             return max(0.0, cash - reserved)
 
         if cash is not None:
-            client.free_balance.side_effect = free_quote
+            client._free_balance_fn = free_quote
 
         def traced_place(side, vol, price, kind, amount=0.0, market=False):
             nonlocal cash_refusals

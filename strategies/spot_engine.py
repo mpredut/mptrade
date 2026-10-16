@@ -1439,20 +1439,34 @@ class Strategy:
             closes = self.client.ohlc_closes(self.pair, self.p.dca_vol_interval)
         return self._hourly_vol_from_closes(closes, self.p.dca_vol_interval)
 
+    _SHADOW_VOL_CACHE: dict = {}
+    _TRAIL_VOL_CACHE: dict = {}
+    _REPLAY_REGIME_CACHE: dict = {}
+    _REPLAY_CACHE_MAX = 262144
+
     def _shadow_vol_1h(self) -> float | None:
         """Return one-hour volatility from local tick history, or None during warm-up."""
-        if len(self._shadow_prices) < 20:
+        sp = self._shadow_prices
+        n_sp = len(sp)
+        if n_sp < 20:
             return None
         if self.replay_mode:
             cache_key = (
-                len(self._shadow_prices),
-                self._shadow_prices[0][0],
-                self._shadow_prices[-1][0],
-                self._shadow_prices[-1][1],
+                n_sp,
+                round(sp[-1][0] - sp[0][0], 3),
+                sp[0][1],
+                sp[1][1],
+                sp[-2][1],
+                sp[-1][1],
             )
             if getattr(self, "_shadow_vol_cache_key", None) == cache_key:
                 return self._shadow_vol_cache_val
-        pts = list(self._shadow_prices)
+            if cache_key in Strategy._SHADOW_VOL_CACHE:
+                val = Strategy._SHADOW_VOL_CACHE[cache_key]
+                self._shadow_vol_cache_key = cache_key
+                self._shadow_vol_cache_val = val
+                return val
+        pts = list(sp)
         rets = [math.log(pts[i][1] / pts[i - 1][1]) for i in range(1, len(pts))
                 if pts[i - 1][1] > 0 and pts[i][1] > 0]
         dts = [pts[i][0] - pts[i - 1][0] for i in range(1, len(pts))]
@@ -1469,6 +1483,9 @@ class Strategy:
         if self.replay_mode:
             self._shadow_vol_cache_key = cache_key
             self._shadow_vol_cache_val = val
+            if len(Strategy._SHADOW_VOL_CACHE) >= Strategy._REPLAY_CACHE_MAX:
+                Strategy._SHADOW_VOL_CACHE.clear()
+            Strategy._SHADOW_VOL_CACHE[cache_key] = val
         return val
 
     def _shadow_reentry_line(self, price: float, lsp: float, prag_fix: float) -> None:
@@ -1602,23 +1619,34 @@ class Strategy:
         provider bars; replay is separately validated against the same interval.
         """
         if self.replay_mode:
-            if len(self._shadow_prices) < 20:
+            sp = self._shadow_prices
+            n_sp = len(sp)
+            if n_sp < 20:
                 return None
             cache_key = (
-                len(self._shadow_prices),
-                self._shadow_prices[0][0],
-                self._shadow_prices[-1][0],
-                self._shadow_prices[-1][1],
+                n_sp,
+                sp[0][1],
+                sp[1][1],
+                sp[-2][1],
+                sp[-1][1],
                 self.p.tp_trail_vol_interval,
             )
             if getattr(self, "_trail_vol_cache_key", None) == cache_key:
                 return self._trail_vol_cache_val
-            closes = [price for _, price in self._shadow_prices]
+            if cache_key in Strategy._TRAIL_VOL_CACHE:
+                val = Strategy._TRAIL_VOL_CACHE[cache_key]
+                self._trail_vol_cache_key = cache_key
+                self._trail_vol_cache_val = val
+                return val
+            closes = [price for _, price in sp]
             val = self._hourly_vol_from_closes(
                 closes, self.p.tp_trail_vol_interval,
             )
             self._trail_vol_cache_key = cache_key
             self._trail_vol_cache_val = val
+            if len(Strategy._TRAIL_VOL_CACHE) >= Strategy._REPLAY_CACHE_MAX:
+                Strategy._TRAIL_VOL_CACHE.clear()
+            Strategy._TRAIL_VOL_CACHE[cache_key] = val
             return val
         closes = self.client.ohlc_closes(self.pair, self.p.tp_trail_vol_interval)
         return self._hourly_vol_from_closes(
@@ -1649,7 +1677,7 @@ class Strategy:
         var_r = sum((r - mean_r) ** 2 for r in returns) / (n_r - 1)
         std = math.sqrt(var_r)
         res = std * math.sqrt(60.0 / interval_minutes) * 100.0
-        if len(Strategy._HOURLY_VOL_CACHE) >= 65536:
+        if len(Strategy._HOURLY_VOL_CACHE) >= Strategy._REPLAY_CACHE_MAX:
             Strategy._HOURLY_VOL_CACHE.clear()
         Strategy._HOURLY_VOL_CACHE[cache_key] = res
         return res
@@ -1684,6 +1712,36 @@ class Strategy:
                 _, stable, decision, closes = cached
                 if stable or now < refresh_epoch:
                     return decision, closes
+        elif (
+            len(self._shadow_prices) >= 2
+            and type(self._regime_service) is MarketRegimeService
+            and "evaluate_closes_for_horizon" not in self._regime_service.__dict__
+            and "_trend_closes" not in self.__dict__
+        ):
+            sp = self._shadow_prices
+            replay_key = (
+                len(sp),
+                sp[0][1],
+                sp[1][1],
+                sp[-2][1],
+                sp[-1][1],
+                self.p.trend_interval,
+                self._regime_service.evaluator.strength_threshold,
+            )
+            cached_ctx = Strategy._REPLAY_REGIME_CACHE.get(replay_key)
+            if cached_ctx is not None:
+                return cached_ctx
+            closes = self._trend_closes()
+            decision = self._regime_service.evaluate_closes_for_horizon(
+                closes,
+                horizon="long",
+                interval_min=self.p.trend_interval,
+            )
+            res = (decision, closes)
+            if len(Strategy._REPLAY_REGIME_CACHE) >= Strategy._REPLAY_CACHE_MAX:
+                Strategy._REPLAY_REGIME_CACHE.clear()
+            Strategy._REPLAY_REGIME_CACHE[replay_key] = res
+            return res
         closes = self._trend_closes()
         decision = self._regime_service.evaluate_closes_for_horizon(
             closes,
@@ -1767,7 +1825,7 @@ class Strategy:
                 avg_cost=avg,
                 base_tp_pct=self.p.takeprofit_pct,
                 mult=self.p.fast_profit_mult,
-                shadow_prices=list(self._shadow_prices),
+                shadow_prices=self._shadow_prices,
                 window_sec=self.p.fast_profit_window_min * 60.0,
                 drop_pct=self.p.fast_profit_drop_pct,
                 current_time=tick_time,
@@ -1838,7 +1896,7 @@ class Strategy:
                 min_days=self.p.slow_grind_days,
                 min_gain_pct=self.p.slow_grind_min_gain_pct,
                 recent_peak=slow_peak,
-                shadow_prices=list(self._shadow_prices),
+                shadow_prices=self._shadow_prices,
                 flash_window_sec=self.p.slow_grind_flash_window_min * 60.0,
                 flash_drop_pct=self.p.slow_grind_flash_drop_pct,
                 structural_drop_pct=self.p.slow_grind_hourly_drop_pct,
@@ -1891,9 +1949,11 @@ class Strategy:
             else:
                 eff_trail = self.p.trend_trail_pct
             trail_stop = peak * (1 - eff_trail / 100)
-            n = self.p.trend_sma_n
-            sma = sum(closes[-n:]) / n if len(closes) >= n else None
-            broke = self.p.trend_exit_break and sma is not None and price < sma
+            broke = False
+            if self.p.trend_exit_break:
+                n = self.p.trend_sma_n
+                sma = sum(closes[-n:]) / n if len(closes) >= n else None
+                broke = sma is not None and price < sma
             if (price <= trail_stop or broke) and self.s["qty"] > 1e-12:
                 exit_px = round(price * 0.999, self.price_dec)
                 if self._request_market_exit(price, "TP"):

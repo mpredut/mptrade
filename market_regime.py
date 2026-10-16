@@ -1049,7 +1049,7 @@ class MarketRegimeService:
         return max(3, int(math.ceil(window_seconds / (interval * 60))))
 
     _EVAL_CLOSES_CACHE: dict = {}
-    _EVAL_CLOSES_CACHE_MAX = 65536
+    _EVAL_CLOSES_CACHE_MAX = 262144
 
     def evaluate_closes_for_horizon(self, closes, *, horizon="short",
                                     interval_min=None) -> MarketRegimeDecision:
