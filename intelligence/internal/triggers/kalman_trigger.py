@@ -35,8 +35,24 @@ class KalmanTrend:
         self.gap_reset_sec = float(gap_reset_sec)
         self.x = None          # [level, velocity]
         self.P = None          # State covariance
+        self._x0 = 0.0
+        self._x1 = 0.0
+        self._p00 = 0.0
+        self._p01 = 0.0
+        self._p10 = 0.0
+        self._p11 = 0.0
         self.last_ts = None
         self.trend = 0         # Last confirmed direction: -1, 0, or +1
+
+    def _reset_state(self, price: float, R: float, ts: float) -> None:
+        self._x0 = float(price)
+        self._x1 = 0.0
+        self._p00 = R * 10.0
+        self._p01 = 0.0
+        self._p10 = 0.0
+        self._p11 = (price * 1e-3) ** 2
+        self.x = [self._x0, self._x1]
+        self.last_ts = ts
 
     def update(self, ts: float, price: float, epsilon: float | None) -> dict:
         """Run one predict/update step and return velocity and trend fields."""
@@ -46,16 +62,12 @@ class KalmanTrend:
         R = eps * eps
 
         if self.x is None:
-            self.x = np.array([price, 0.0])
-            self.P = np.diag([R * 10.0, (price * 1e-3) ** 2])
-            self.last_ts = ts
+            self._reset_state(price, R, ts)
             return self._out(price, old_trend=self.trend)
 
         raw_dt = ts - self.last_ts
         if raw_dt > self.gap_reset_sec:
-            self.x = np.array([price, 0.0])
-            self.P = np.diag([R * 10.0, (price * 1e-3) ** 2])
-            self.last_ts = ts
+            self._reset_state(price, R, ts)
             old_trend = self.trend
             out = self._out(price, old_trend=old_trend)
             self.trend = out["trend"]
@@ -64,21 +76,34 @@ class KalmanTrend:
         dt = max(raw_dt, DT_MIN)
         self.last_ts = ts
 
-        F = np.array([[1.0, dt], [0.0, 1.0]])
         # Normalize R across sampling intervals so multi-second steps (e.g. 60s)
         # do not cube dt against an already step-scaled measurement variance R.
         q = self.qr * (R / (max(dt, 1.0) ** 1.25))
-        Q = q * np.array([[dt ** 3 / 3.0, dt ** 2 / 2.0],
-                          [dt ** 2 / 2.0, dt]])
-        # Predict
-        self.x = F @ self.x
-        self.P = F @ self.P @ F.T + Q
+        dt2 = dt * dt
+        q00 = q * (dt ** 3 / 3.0)
+        q01 = q * (dt2 / 2.0)
+        q11 = q * dt
+
+        # Predict: x = F @ x, P = F @ P @ F.T + Q
+        x0 = self._x0 + dt * self._x1
+        x1 = self._x1
+        p00 = self._p00 + dt * (self._p10 + self._p01) + dt2 * self._p11 + q00
+        p01 = self._p01 + dt * self._p11 + q01
+        p10 = self._p10 + dt * self._p11 + q01
+        p11 = self._p11 + q11
+
         # Update (H = [1, 0])
-        y = price - self.x[0]
-        S = self.P[0, 0] + R
-        K = self.P[:, 0] / S
-        self.x = self.x + K * y
-        self.P = self.P - np.outer(K, self.P[0, :])
+        y = price - x0
+        S = p00 + R
+        k0 = p00 / S
+        k1 = p10 / S
+        self._x0 = x0 + k0 * y
+        self._x1 = x1 + k1 * y
+        self.x = [self._x0, self._x1]
+        self._p00 = p00 - k0 * p00
+        self._p01 = p01 - k0 * p01
+        self._p10 = p10 - k1 * p00
+        self._p11 = p11 - k1 * p01
 
         old_trend = self.trend
         out = self._out(price, old_trend=old_trend, dt=dt)
@@ -86,8 +111,8 @@ class KalmanTrend:
         return out
 
     def _out(self, price: float, old_trend: int, dt: float = 1.0) -> dict:
-        vel = float(self.x[1])
-        vel_std = math.sqrt(max(float(self.P[1, 1]), 0.0))
+        vel = self._x1
+        vel_std = math.sqrt(max(self._p11, 0.0))
         vel_pct_min = vel / price * 100.0 * 60.0
         std_pct_min = vel_std / price * 100.0 * 60.0
         min_vel = max(MIN_VEL_PCT_MIN, 0.045) if dt >= 30.0 else MIN_VEL_PCT_MIN

@@ -145,6 +145,20 @@ class ShadowSet:
             return None, 1e18
         return st.get("kalman_trend"), self._now() - st.get("ts", 0)
 
+    @staticmethod
+    def _grad_std(fed: list[float]) -> float:
+        n = len(fed)
+        if n <= 2:
+            return 0.0
+        g0 = fed[1] - fed[0]
+        gn = fed[-1] - fed[-2]
+        g = [g0]
+        g.extend((fed[i + 1] - fed[i - 1]) * 0.5 for i in range(1, n - 1))
+        g.append(gn)
+        mean = sum(g) / n
+        var = sum((x - mean) ** 2 for x in g) / n
+        return math.sqrt(var)
+
     def update(self, symbol: str, ts: float, price: float, epsilon: float | None,
                big_prices, big_sample_rate: float) -> dict:
         # Feed only at KALMAN_SAMPLE_SEC and reuse fields between feeds so the
@@ -162,15 +176,12 @@ class ShadowSet:
             if len(fed) > 60:
                 fed.pop(0)
             if len(fed) >= 5:
-                import numpy as _np
-                eps_eff = float(_np.std(_np.gradient(_np.asarray(fed))))
+                eps_eff = self._grad_std(fed)
             else:
                 step_scale = math.sqrt(KALMAN_SAMPLE_SEC / max(float(big_sample_rate or 1.0), 0.1))
                 base_eps = max(float(epsilon or 0.0) * step_scale, price * 0.0008)
                 if len(fed) >= 2:
-                    import numpy as _np
-                    grad_std = float(_np.std(_np.gradient(_np.asarray(fed))))
-                    eps_eff = max(base_eps, grad_std)
+                    eps_eff = max(base_eps, self._grad_std(fed))
                 else:
                     eps_eff = base_eps
             k = kf.update(ts, price, eps_eff)

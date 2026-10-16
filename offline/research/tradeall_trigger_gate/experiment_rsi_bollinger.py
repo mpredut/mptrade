@@ -109,18 +109,20 @@ class MeanReversionTracker:
 
     # -- combined contrarian sign --------------------------------------------
     def update_sign(self, price):
-        rsi = self._rsi(price)
-        pb = self._percent_b(price)
         oversold = overbought = None
         if self.mode == "rsi":
+            rsi = self._rsi(price)
             if rsi is None:
                 return self.sign
             oversold, overbought = rsi < self.rsi_low, rsi > self.rsi_high
         elif self.mode == "pb":
+            pb = self._percent_b(price)
             if pb is None:
                 return self.sign
             oversold, overbought = pb < self.pb_low, pb > self.pb_high
         else:                                          # "both" -> agreement required
+            rsi = self._rsi(price)
+            pb = self._percent_b(price)
             if rsi is None or pb is None:
                 return self.sign
             oversold = rsi < self.rsi_low and pb < self.pb_low

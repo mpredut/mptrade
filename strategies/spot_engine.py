@@ -1442,6 +1442,7 @@ class Strategy:
     _SHADOW_VOL_CACHE: dict = {}
     _TRAIL_VOL_CACHE: dict = {}
     _REPLAY_REGIME_CACHE: dict = {}
+    _HOURLY_VOL_CACHE: dict = {}
     _REPLAY_CACHE_MAX = 262144
 
     def _shadow_vol_1h(self) -> float | None:
@@ -1456,6 +1457,7 @@ class Strategy:
                 round(sp[-1][0] - sp[0][0], 3),
                 sp[0][1],
                 sp[1][1],
+                sp[n_sp >> 1][1],
                 sp[-2][1],
                 sp[-1][1],
             )
@@ -1627,6 +1629,7 @@ class Strategy:
                 n_sp,
                 sp[0][1],
                 sp[1][1],
+                sp[n_sp >> 1][1],
                 sp[-2][1],
                 sp[-1][1],
                 self.p.tp_trail_vol_interval,
@@ -1658,31 +1661,29 @@ class Strategy:
         closes: list[float], interval_minutes: float,
     ) -> float | None:
         """Return log-return deviation normalized to one hour for a fixed cadence."""
-        closes = closes[-90:]
-        if len(closes) < 20 or interval_minutes <= 0:
+        closes_slice = tuple(closes[-90:])
+        if len(closes_slice) < 20 or interval_minutes <= 0:
             return None
-        cache_key = (tuple(closes), float(interval_minutes))
-        cached = Strategy._HOURLY_VOL_CACHE.get(cache_key)
-        if cached is not None:
-            return cached
+        cache_key = (closes_slice, float(interval_minutes))
+        if cache_key in Strategy._HOURLY_VOL_CACHE:
+            return Strategy._HOURLY_VOL_CACHE[cache_key]
         returns = [
             math.log(current / previous)
-            for previous, current in zip(closes, closes[1:])
+            for previous, current in zip(closes_slice, closes_slice[1:])
             if previous > 0 and current > 0
         ]
         n_r = len(returns)
         if n_r < 19:
-            return None
-        mean_r = sum(returns) / n_r
-        var_r = sum((r - mean_r) ** 2 for r in returns) / (n_r - 1)
-        std = math.sqrt(var_r)
-        res = std * math.sqrt(60.0 / interval_minutes) * 100.0
+            val = None
+        else:
+            mean_r = sum(returns) / n_r
+            var_r = sum((r - mean_r) ** 2 for r in returns) / (n_r - 1)
+            std = math.sqrt(var_r)
+            val = std * math.sqrt(60.0 / interval_minutes) * 100.0
         if len(Strategy._HOURLY_VOL_CACHE) >= Strategy._REPLAY_CACHE_MAX:
             Strategy._HOURLY_VOL_CACHE.clear()
-        Strategy._HOURLY_VOL_CACHE[cache_key] = res
-        return res
-
-    _HOURLY_VOL_CACHE: dict = {}
+        Strategy._HOURLY_VOL_CACHE[cache_key] = val
+        return val
 
     # -- Common market regime and trend overlay --------------------------------
     def _trend_closes(self) -> list:
@@ -1719,17 +1720,23 @@ class Strategy:
             and "_trend_closes" not in self.__dict__
         ):
             sp = self._shadow_prices
+            n_sp = len(sp)
             replay_key = (
-                len(sp),
+                n_sp,
                 sp[0][1],
                 sp[1][1],
+                sp[n_sp >> 1][1],
                 sp[-2][1],
                 sp[-1][1],
                 self.p.trend_interval,
                 self._regime_service.evaluator.strength_threshold,
             )
+            if getattr(self, "_replay_regime_key", None) == replay_key:
+                return self._replay_regime_val
             cached_ctx = Strategy._REPLAY_REGIME_CACHE.get(replay_key)
             if cached_ctx is not None:
+                self._replay_regime_key = replay_key
+                self._replay_regime_val = cached_ctx
                 return cached_ctx
             closes = self._trend_closes()
             decision = self._regime_service.evaluate_closes_for_horizon(
@@ -1738,6 +1745,8 @@ class Strategy:
                 interval_min=self.p.trend_interval,
             )
             res = (decision, closes)
+            self._replay_regime_key = replay_key
+            self._replay_regime_val = res
             if len(Strategy._REPLAY_REGIME_CACHE) >= Strategy._REPLAY_CACHE_MAX:
                 Strategy._REPLAY_REGIME_CACHE.clear()
             Strategy._REPLAY_REGIME_CACHE[replay_key] = res

@@ -75,6 +75,15 @@ class BacktestBroker:
         self.trend_gate_max_wait_sec = float(trend_gate_max_wait_sec)
         self.pending = []          # [{side, symbol, qty_arg, motivation, deadline}]
         self.n_waited = 0          # How many orders were delayed (and then executed).
+        self._log_f = None
+
+    def write_outcome_row(self, cols):
+        line = "|".join(_sanitize(c) for c in cols) + "\n"
+        if self._log_f is not None and not self._log_f.closed:
+            self._log_f.write(line)
+        else:
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(line)
 
     def _execute(self, order_type, symbol, price, qty=None, motivation=None):
         """The real P&L accounting (no gate) — used directly or after waiting."""
@@ -102,8 +111,7 @@ class BacktestBroker:
                 self.pos_cost = 0.0
             self.n_sell += 1
         cols = [self.clock(), symbol, order_type, price, qty, "executed", "", "backtest", motivation]
-        with open(self.path, "a", encoding="utf-8") as f:
-            f.write("|".join(_sanitize(c) for c in cols) + "\n")
+        self.write_outcome_row(cols)
         return {"orderId": -1, "backtest": True}   # A truthy object, as in logic()'s "if order:".
 
     def place_order_smart(self, order_type, symbol, price, qty=None, motivation=None, **kwargs):
@@ -159,15 +167,19 @@ class BacktestBroker:
                 "n_waited": self.n_waited}
 
 
-def make_decision_logger(out_dir, clock):
+def make_decision_logger(out_dir, clock, file_handle=None):
     path = os.path.join(out_dir, "tradeall_decisions.log")
 
     def _log_decision(symbol, event, **fields):
         try:
             cols = [clock(), symbol, event, fields.get("state", ""), fields.get("old_state", ""),
                     fields.get("price", ""), fields.get("prev_confirm_count", "")]
-            with open(path, "a", encoding="utf-8") as f:
-                f.write("|".join(_sanitize(c) for c in cols) + "\n")
+            line = "|".join(_sanitize(c) for c in cols) + "\n"
+            if file_handle is not None and not file_handle.closed:
+                file_handle.write(line)
+            else:
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(line)
         except OSError as e:
             print(f"[tradeall_backtest] eroare log_decision: {e}")
     return _log_decision
@@ -328,7 +340,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                 ta.po.place_order_smart = broker.place_order_smart           # A stub — it does NOT touch the network.
             ta.mkt.place = lambda symbol_, side_, price_, qty_=None, **kw: broker.place_order_smart(
                 side_, symbol_, price_, qty_, **kw)
-        ta.log_decision = make_decision_logger(out_dir, clock)            # redirect — it does NOT write into the live logs
+        decision_path = os.path.join(out_dir, "tradeall_decisions.log")
 
         window_small = ta.PriceWindow(symbol, 300, sample_rate_sec=ta.TIME_SLEEP_GET_PRICE,
                                        window_seconds=ta.WINDOW_SECONDS_SMALL)
@@ -352,8 +364,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
         ta._shadow_ref = shadow
         def _bt_gate_log(symbol_, side, price_, qty, outcome, reason, motivation):
             cols = [clock(), symbol_, side, price_, qty, outcome, reason, "backtest", motivation]
-            with open(broker.path, "a", encoding="utf-8") as f:
-                f.write("|".join(_sanitize(c) for c in cols) + "\n")
+            broker.write_outcome_row(cols)
         ta.GATE_OUTCOME_LOG = _bt_gate_log
     
         if source == "cache24":
@@ -365,7 +376,13 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
         n = 0
         first_price = None
         prev_ktrend = 0
-        with open(price_path, "a", encoding="utf-8") as price_f:
+        state_interval = 5000 if speed == "fast" else 100
+        last_state = None
+        with open(price_path, "a", encoding="utf-8") as price_f, \
+             open(broker.path, "a", encoding="utf-8") as outcome_f, \
+             open(decision_path, "a", encoding="utf-8") as decision_f:
+            broker._log_f = outcome_f
+            ta.log_decision = make_decision_logger(out_dir, clock, file_handle=decision_f)
             for ts, price in tick_source:
                 clock.ts = ts   # The simulated clock = the time of the REPLAYED tick, not the real clock (A5).
                 if speed == "real" and prev_ts is not None:
@@ -429,14 +446,14 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                     # Simulated analysis state — read by tradeall_observe.py (chart hover),
                     # the same content as live's cache_instant_trend.json.
                     try:
-                        state = {symbol: {
+                        last_state = {symbol: {
                             "current_price": price, "final_trend": gradient,
                             "gradient_recent": _gr, "slope_small": slope, "slope_big": slope_big,
                             "epsilon": window_small.get_noise_epsilon(), "ts": ts,
                             **shadow_fields,
                         }}
                         with open(os.path.join(out_dir, "analysis_state.json"), "w", encoding="utf-8") as sf:
-                            json.dump(state, sf)
+                            json.dump(last_state, sf)
                     except Exception:
                         pass
                 if n % 5000 == 0:
@@ -444,17 +461,17 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                     # (log.disable_print()) — OUR progress messages still have to be visible.
                     sys.stderr.write(f"[tradeall_backtest] {n} ticks, the last {datetime.fromtimestamp(ts)} "
                                      f"(BUY {broker.n_buy} / SELL {broker.n_sell})\n")
-
+            broker._log_f = None
         if n > 0:
             try:
-                state = {symbol: {
+                last_state = {symbol: {
                     "current_price": price, "final_trend": gradient,
                     "gradient_recent": _gr, "slope_small": slope, "slope_big": slope_big,
                     "epsilon": window_small.get_noise_epsilon(), "ts": ts,
                     **shadow_fields,
                 }}
                 with open(os.path.join(out_dir, "analysis_state.json"), "w", encoding="utf-8") as sf:
-                    json.dump(state, sf)
+                    json.dump(last_state, sf)
             except Exception:
                 pass
     

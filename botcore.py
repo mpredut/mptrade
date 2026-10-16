@@ -267,7 +267,7 @@ def http_post_form(
 
 def diff_percent(value1: float, value2: float) -> float:
     """Return symmetric percentage difference relative to the values' absolute mean."""
-    if value1 == 0 and value2 == 0:
+    if value1 == value2:
         return 0.0
     return abs(value1 - value2) / ((abs(value1) + abs(value2)) / 2) * 100
 

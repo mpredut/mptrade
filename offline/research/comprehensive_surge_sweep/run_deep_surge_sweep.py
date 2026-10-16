@@ -312,6 +312,11 @@ def main():
     results = []
     completed = 0
 
+    warmup_cands = candidates[:2]
+    for wc in warmup_cands:
+        results.append(evaluate_single_candidate(wc, asset_data, initial_cash, args.fee_pct))
+        completed += 1
+
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=args.workers,
         initializer=_init_worker,
@@ -319,7 +324,7 @@ def main():
     ) as executor:
         future_map = {
             executor.submit(_evaluate_worker_candidate, c): c
-            for c in candidates
+            for c in candidates[len(warmup_cands):]
         }
 
         for future in concurrent.futures.as_completed(future_map):

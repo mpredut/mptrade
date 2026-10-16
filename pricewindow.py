@@ -6,6 +6,8 @@ Extracted from ``tradeall`` for reuse without trading decisions.
 Contains ``PriceTrendAnalyzer`` regression/EMA/gradient calculations, a lean sliding
 ``PriceWindow`` with volatility-informed noise epsilon, and composed trading metrics.
 """
+import builtins
+import math
 import threading
 from collections import deque
 from bisect import insort, bisect_left
@@ -145,7 +147,6 @@ class IncrementalTrendBuffer:
         self.y_ref = None
 
     def append(self, price: float, ts_ms: int = 0) -> None:
-        import math
         y = float(price)
         if self.y_ref is None:
             self.y_ref = y
@@ -205,7 +206,7 @@ class IncrementalTrendBuffer:
         self.offset += idx
         if not self.prices:
             self.clear()
-        elif self.offset >= max(512, 2 * len(self.prices)):
+        elif self.offset >= max(65536, 16 * len(self.prices)):
             self._rebase()
 
     def sync_entries(self, entries) -> None:
@@ -255,7 +256,7 @@ class IncrementalTrendBuffer:
         s1_raw = self.p1[b] - (self.p1[a - 1] if a > 0 else self.base_p1)
         s2 = self.p2[b] - (self.p2[a - 1] if a > 0 else self.base_p2)
         ss_y = s2 - (s0 * s0) / n
-        if ss_y <= 1e-18 or all(p[i] == p[a] for i in (a, (a + b) // 2, b)) and ss_y <= 1e-12:
+        if ss_y <= 1e-18 or (ss_y <= 1e-12 and p[a] == p[b] and p[(a + b) // 2] == p[a]):
             slope_full = 0.0
         else:
             cov_xy = s1_raw - (self.offset + a + 0.5 * (n - 1)) * s0
@@ -288,13 +289,12 @@ class IncrementalTrendBuffer:
             sum_g2 = g0 * g0 + (self.pg2[b - 1] - self.pg2[a]) + gn * gn
             mean_g = sum_g_all / n
             var_g = max(0.0, sum_g2 / n - mean_g * mean_g)
-            epsilon = float(eps_k * np.sqrt(var_g))
+            epsilon = float(eps_k * math.sqrt(var_g))
 
         return final_trend, growth_coefficient, slope_full, gradient_recent, epsilon
 
     def log_return_std(self, a: int, b: int) -> float | None:
         """Return O(1) population std of log returns on slice [a, b] if all prices > 0."""
-        import math
         n = b - a + 1
         if n < 20:
             return None
@@ -309,7 +309,18 @@ class IncrementalTrendBuffer:
 
 
 class _PriceDeque(deque):
-    __slots__ = ("_trend_buf",)
+    __slots__ = ("_trend_buf", "_maxlen")
+
+    def __init__(self, iterable=(), maxlen=None):
+        super().__init__(iterable)
+        self._maxlen = maxlen
+        if maxlen is not None and len(self) > maxlen:
+            for _ in range(len(self) - maxlen):
+                self.popleft()
+
+    @property
+    def maxlen(self):
+        return self._maxlen
 
 
 class PriceWindow:
@@ -329,6 +340,8 @@ class PriceWindow:
         self.prices = _PriceDeque(maxlen=self.window_size)
         self.prices._trend_buf = self._trend_buf
         self.sorted_prices = []
+        self._cached_eval_key = None
+        self._cached_eval_val = None
 
         if initial_prices:
             for price in initial_prices[-self.window_size:]:
@@ -347,9 +360,12 @@ class PriceWindow:
         if self.window_seconds is None:
             return
         new_size = max(10, int(self.window_seconds / rate))
+        if new_size == self.window_size:
+            return
         with self._lock:
             if new_size != self.window_size:
                 self.window_size = new_size
+                self.prices._maxlen = new_size
                 if len(self.prices) > new_size:
                     drop = len(self.prices) - new_size
                     if drop <= 64 and len(self.sorted_prices) == len(self.prices):
@@ -358,18 +374,13 @@ class PriceWindow:
                             idx = bisect_left(self.sorted_prices, oldest_price)
                             if idx < len(self.sorted_prices) and self.sorted_prices[idx] == oldest_price:
                                 del self.sorted_prices[idx]
-                        self.prices = _PriceDeque(self.prices, maxlen=new_size)
-                        self.prices._trend_buf = self._trend_buf
                     else:
                         kept = list(self.prices)[-new_size:]
-                        self.prices = _PriceDeque(kept, maxlen=new_size)
-                        self.prices._trend_buf = self._trend_buf
-                        self.sorted_prices = sorted(self.prices)
-                    if len(self._trend_buf.prices) > new_size:
+                        self.prices.clear()
+                        self.prices.extend(kept)
+                        self.sorted_prices = sorted(kept)
+                    if len(self._trend_buf.prices) - new_size >= max(512, new_size):
                         self._trend_buf.trim_front(len(self._trend_buf.prices) - new_size)
-                else:
-                    self.prices = _PriceDeque(self.prices, maxlen=new_size)
-                    self.prices._trend_buf = self._trend_buf
 
     def on_price_update(self, symbol: str, ts_ms: int, price: float) -> None:
         """Update the window from a ``Cache24PriceManager`` callback."""
@@ -421,19 +432,20 @@ class PriceWindow:
     def process_price(self, price):
         #print(f"{self.symbol}: {price}")
         with self._lock:
-            if len(self.prices) == self.window_size:
-                oldest_price = self.prices.popleft()
-                index = bisect_left(self.sorted_prices, oldest_price)
-                if index < len(self.sorted_prices) and self.sorted_prices[index] == oldest_price:
-                    del self.sorted_prices[index]
-                else:
-                    print("HAHAHAHAA")
-            if len(self._trend_buf.prices) >= self.window_size:
-                self._trend_buf.trim_front(len(self._trend_buf.prices) - self.window_size + 1)
+            if len(self.prices) >= self.window_size:
+                while len(self.prices) >= self.window_size:
+                    oldest_price = self.prices.popleft()
+                    index = bisect_left(self.sorted_prices, oldest_price)
+                    if index < len(self.sorted_prices) and self.sorted_prices[index] == oldest_price:
+                        del self.sorted_prices[index]
+                    else:
+                        print("HAHAHAHAA")
 
             self.prices.append(price)
             insort(self.sorted_prices, price)
             self._trend_buf.append(price)
+            if len(self._trend_buf.prices) - len(self.prices) >= max(512, self.window_size):
+                self._trend_buf.trim_front(len(self._trend_buf.prices) - len(self.prices))
 
             if len(self.sorted_prices) != len(self.prices):
                 print("XXXXXXXXXXXXXXXXXXX")
@@ -443,33 +455,71 @@ class PriceWindow:
 
     def get_min(self):
         with self._lock:
-            if not self.sorted_prices:
+            sp = self.sorted_prices
+            if not sp:
                 return None
-            min_price = self.sorted_prices[0]
-            total = 0.0
-            count = 0
-            for price in self.sorted_prices:
+            min_price = sp[0]
+            if len(sp) == 1:
+                return min_price
+            if min_price > 0.0:
+                p1 = sp[1]
+                if (p1 - min_price) / ((p1 + min_price) * 0.5) * 100.0 > 0.01:
+                    return min_price
+                total = min_price + p1
+                count = 2
+                for price in sp[2:]:
+                    if (price - min_price) / ((price + min_price) * 0.5) * 100.0 <= 0.01:
+                        total += price
+                        count += 1
+                    else:
+                        break
+                return total / count
+            if not u.are_close(sp[1], min_price, 0.01):
+                return min_price
+            total = min_price
+            count = 1
+            for price in sp[1:]:
                 if u.are_close(price, min_price, 0.01):
                     total += price
                     count += 1
                 else:
                     break
-            return total / count if count else min_price
+            return total / count
 
     def get_max(self):
         with self._lock:
-            if not self.sorted_prices:
+            sp = self.sorted_prices
+            if not sp:
                 return None
-            max_price = self.sorted_prices[-1]
-            total = 0.0
-            count = 0
-            for price in reversed(self.sorted_prices):
+            max_price = sp[-1]
+            if len(sp) == 1:
+                return max_price
+            p_prev = sp[-2]
+            if p_prev > 0.0:
+                if (max_price - p_prev) / ((max_price + p_prev) * 0.5) * 100.0 > 0.01:
+                    return max_price
+                total = max_price + p_prev
+                count = 2
+                for i in range(len(sp) - 3, -1, -1):
+                    price = sp[i]
+                    if price > 0.0 and (max_price - price) / ((max_price + price) * 0.5) * 100.0 <= 0.01:
+                        total += price
+                        count += 1
+                    else:
+                        break
+                return total / count
+            if not u.are_close(p_prev, max_price, 0.01):
+                return max_price
+            total = max_price
+            count = 1
+            for i in range(len(sp) - 2, -1, -1):
+                price = sp[i]
                 if u.are_close(price, max_price, 0.01):
                     total += price
                     count += 1
                 else:
                     break
-            return total / count if count else max_price
+            return total / count
 
     def get_min_and_index(self):
         with self._lock:
@@ -518,15 +568,21 @@ class PriceWindow:
             n = len(self.prices)
             if n < 3:
                 return 0.0
+            blen = len(self._trend_buf.prices)
             if (
-                len(self._trend_buf.prices) == n
-                and self._trend_buf.prices[0] == self.prices[0]
+                blen >= n
+                and self._trend_buf.prices[blen - n] == self.prices[0]
                 and self._trend_buf.prices[-1] == self.prices[-1]
             ):
-                _, _, _, _, epsilon = self._trend_buf.eval_slice(
-                    0, n - 1, sample_rate_sec=self.sample_rate_sec, eps_k=k
+                key = (blen, self._trend_buf.offset, n, self.sample_rate_sec)
+                if self._cached_eval_key == key and self._cached_eval_val is not None:
+                    return float(k * self._cached_eval_val[4])
+                res = self._trend_buf.eval_slice(
+                    blen - n, blen - 1, sample_rate_sec=self.sample_rate_sec, eps_k=1.0
                 )
-                return epsilon
+                self._cached_eval_key = key
+                self._cached_eval_val = res
+                return float(k * res[4])
             prices = list(self.prices)
         grad = np.gradient(np.array(prices))
         return float(k * np.std(grad))
@@ -539,22 +595,31 @@ class PriceWindow:
         """
         with self._lock:
             n = len(self.prices)
+            blen = len(self._trend_buf.prices)
             if (
-                len(self._trend_buf.prices) == n
-                and (n == 0 or (self._trend_buf.prices[0] == self.prices[0] and self._trend_buf.prices[-1] == self.prices[-1]))
+                blen >= n
+                and (n == 0 or (self._trend_buf.prices[blen - n] == self.prices[0] and self._trend_buf.prices[-1] == self.prices[-1]))
             ):
-                final_trend, growth_coefficient, slope_full, gradient_recent, _ = (
-                    self._trend_buf.eval_slice(0, n - 1, sample_rate_sec=self.sample_rate_sec)
-                )
+                key = (blen, self._trend_buf.offset, n, self.sample_rate_sec)
+                if self._cached_eval_key == key and self._cached_eval_val is not None:
+                    final_trend, growth_coefficient, slope_full, gradient_recent, _ = self._cached_eval_val
+                else:
+                    res = self._trend_buf.eval_slice(
+                        blen - n, blen - 1, sample_rate_sec=self.sample_rate_sec, eps_k=1.0
+                    )
+                    self._cached_eval_key = key
+                    self._cached_eval_val = res
+                    final_trend, growth_coefficient, slope_full, gradient_recent, _ = res
             else:
                 prices_snapshot = list(self.prices)
                 final_trend, growth_coefficient, slope_full, gradient_recent = instant_trend_from_prices(
                     prices_snapshot, self.sample_rate_sec)
 
-        print(
-            f"[{self.symbol}] slope_full={slope_full:.4f} "
-            f"gradient_recent={gradient_recent:.4f} (recent_n={self.recent_n}, rate={self.sample_rate_sec:.2f}s)"
-        )
+        if builtins.print.__name__ != "_dummy_print":
+            print(
+                f"[{self.symbol}] slope_full={slope_full:.4f} "
+                f"gradient_recent={gradient_recent:.4f} (recent_n={self.recent_n}, rate={self.sample_rate_sec:.2f}s)"
+            )
 
         return final_trend, growth_coefficient, slope_full, gradient_recent
 
@@ -650,12 +715,13 @@ class WindowAnalyzer:
         price_diff_newest = max(price_diff_min, price_diff_max)
 
         if abs(price_diff_newest) >= threshold or u.are_close(price_diff_newest, threshold):
-            _, min_index = w.get_min_and_index()
-            _, max_index = w.get_max_and_index()
-            print(f'price_diff_minmax_versus_newest(slope)={price_diff_newest}(threshold={threshold}) '
-                  f'are_close={u.are_close(price_diff_newest, threshold)}')
-            print(f'min price ={min_price}, max_price = {max_price}, newest_price={newest_price}, '
-                  f'min_index={min_index}, max_index={max_index}')
+            if builtins.print.__name__ != "_dummy_print":
+                _, min_index = w.get_min_and_index()
+                _, max_index = w.get_max_and_index()
+                print(f'price_diff_minmax_versus_newest(slope)={price_diff_newest}(threshold={threshold}) '
+                      f'are_close={u.are_close(price_diff_newest, threshold)}')
+                print(f'min price ={min_price}, max_price = {max_price}, newest_price={newest_price}, '
+                      f'min_index={min_index}, max_index={max_index}')
             return -price_diff_newest if price_diff_max > price_diff_min else price_diff_newest, 0
         return 0, 0
 
