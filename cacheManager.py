@@ -2227,8 +2227,64 @@ class CacheOrderManager(CacheManagerInterface):
 CacheOrder = CacheOrderManager
 
 
+def _migrate_renamed_price_file(filename: str, old_prefix: str, new_prefix: str) -> None:
+    """Rename legacy per-symbol price files (and .meta / .archive.gz sidecars) when upgrading prefixes."""
+    target = u.cache_path(filename)
+    base = os.path.basename(target)
+    if not base.startswith(new_prefix):
+        return
+    legacy = os.path.join(os.path.dirname(target), old_prefix + base[len(new_prefix):])
+    if os.path.exists(legacy):
+        if not os.path.exists(target):
+            for suffix in ("", ".meta"):
+                src, dst = legacy + suffix, target + suffix
+                if os.path.exists(src) and not os.path.exists(dst):
+                    try:
+                        os.replace(src, dst)
+                    except OSError:
+                        pass
+        else:
+            # If both exist (e.g. legacy received a few ticks before restart), append any newer lines:
+            try:
+                last_ts = -1
+                with open(target, "rb") as tf:
+                    tf.seek(0, os.SEEK_END)
+                    pos = max(0, tf.tell() - 4096)
+                    tf.seek(pos)
+                    for raw in reversed(tf.read().splitlines()):
+                        try:
+                            rec = json.loads(raw)
+                            last_ts = int(rec["i"][0])
+                            break
+                        except Exception:
+                            continue
+                with open(legacy, "r", encoding="utf-8") as lf, open(target, "a", encoding="utf-8") as tf:
+                    for line in lf:
+                        try:
+                            rec = json.loads(line)
+                            if int(rec["i"][0]) > last_ts:
+                                tf.write(line if line.endswith("\n") else line + "\n")
+                        except Exception:
+                            continue
+                os.remove(legacy)
+                if os.path.exists(legacy + ".meta") and not os.path.exists(target + ".meta"):
+                    os.replace(legacy + ".meta", target + ".meta")
+                elif os.path.exists(legacy + ".meta"):
+                    os.remove(legacy + ".meta")
+            except OSError:
+                pass
+    for old_arch in glob.glob(f"{legacy}.*.archive.gz"):
+        arch_suffix = old_arch[len(legacy):]
+        dst_arch = target + arch_suffix
+        if not os.path.exists(dst_arch):
+            try:
+                os.replace(old_arch, dst_arch)
+            except OSError:
+                pass
+
+
 class CacheSparsePrice(CacheManagerInterface):
-    """Store sparse seven-minute price samples for two years in JSONL.
+    """Store sparse three-minute price samples for two years in JSONL.
 
     Unlike dense WebSocket-pushed Cache24 managers, this periodically asks for the
     current price. ``Sparse`` describes the stable sampling mechanism rather than the
@@ -2236,7 +2292,8 @@ class CacheSparsePrice(CacheManagerInterface):
     """
 
     def __init__(self, sync_ts, symbols, filename, api_client=api):
-        # Continuous append-only seven-minute history uses JSONL append persistence.
+        _migrate_renamed_price_file(filename, "cache_price_", "cache_price_sparse_")
+        # Continuous append-only three-minute history uses JSONL append persistence.
         super().__init__(sync_ts, symbols, filename, append_mode=True,
                          api_client=api, append_persist=True)
 
@@ -2382,8 +2439,8 @@ class Cache24Price(CacheManagerInterface):
 Cache24PriceManager = Cache24Price
 
 
-class Cache24LongPrice(Cache24Price):
-    """Six-month archive variant using incremental JSONL persistence.
+class Cache365Price(Cache24Price):
+    """Multi-month/multi-year dense archive variant using incremental JSONL persistence.
 
     This remains separate from the live 24-hour manager and inherits its price-update
     behavior while overriding persistence only. JSONL appends new ticks at constant cost
@@ -2397,6 +2454,7 @@ class Cache24LongPrice(Cache24Price):
     LONG_TRIM_INTERVAL_SEC = 24 * 3600
 
     def __init__(self, sync_ts, symbols, filename, api_client=api):
+        _migrate_renamed_price_file(filename, "cache_24price_long_", "cache_365price_")
         # Long archives must not rewrite the entire JSONL whenever a single oldest
         # tick expires.  Initialize the maintenance clock before callbacks can run.
         self._last_long_trim = 0.0
@@ -2533,10 +2591,12 @@ class Cache24LongPrice(Cache24Price):
     # Inherit get_remote_items from Cache24PriceManager, including real observation timestamps.
 
 
-Cache24LongPriceManager = Cache24LongPrice
+Cache365PriceManager = Cache365Price
+Cache24LongPrice = Cache365Price
+Cache24LongPriceManager = Cache365Price
 
 
-class CachePriceLongTrend(CacheManagerInterface):
+class PriceLongTrend(CacheManagerInterface):
     def __init__(self, sync_ts, symbols, filename, api_client=api):
         super().__init__(sync_ts, symbols, filename, append_mode=False)
 
@@ -2598,7 +2658,8 @@ class CachePriceLongTrend(CacheManagerInterface):
         return [data[symbol]]
 
 
-CachePriceLongTrendManager = CachePriceLongTrend
+CachePriceLongTrend = PriceLongTrend
+CachePriceLongTrendManager = PriceLongTrend
 
 
 class CacheAssetValue(CacheManagerInterface):
@@ -3838,7 +3899,7 @@ def get_short_trend_manager(symbols=None, filename="cache_instant_trend.json", w
      
 ORDER_SYNC_INTERVAL_SEC = 0.4 * 60   # 24 seconds
 TRADE_SYNC_INTERVAL_SEC = 3 * 60     # 3 minutes
-PRICE_SYNC_INTERVAL_SEC = 7 * 60   # 7 minute
+PRICE_SYNC_INTERVAL_SEC = 3 * 60     # 3 minutes
 PRICE24_SYNC_INTERVAL_SEC = 30         # Fallback polling while WebSocket is inactive.
 CURRENTPRICE_SYNC_INTERVAL_SEC = 30   # Same policy for CacheCurrentPrice.
 PRICETREND_SYNC_INTERVAL_SEC = 10 * 60   # 10 minute
@@ -3876,7 +3937,7 @@ class CacheFactory:
             "sync_ts": lambda: CURRENTPRICE_SYNC_INTERVAL_SEC,
         },
         "PriceLongTrend": {
-            "class": CachePriceLongTrend,
+            "class": PriceLongTrend,
             "filename": "cache_price_long_trend.json",
             "sync_ts": lambda: PRICETREND_SYNC_INTERVAL_SEC,
         },
@@ -3937,7 +3998,7 @@ class CacheFactory:
                 sync_ts = cls._instances[name].sync_ts
             elif name in ("Price", "Price24"):
                 # Price is append-JSONL history; Price24 is a bounded full-rewrite cache.
-                prefix, ext = ("cache_price_", "jsonl") if name == "Price" else ("cache_24price_", "json")
+                prefix, ext = ("cache_price_sparse_", "jsonl") if name == "Price" else ("cache_24price_", "json")
                 cls._instances[name] = {
                     s: manager_class(
                         sync_ts=sync_ts,

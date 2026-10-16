@@ -122,8 +122,8 @@ def main():
 
     caches = []
     for symbol in symbols:
-        filename = os.path.join(CACHEDB_DIR, f"cache_24price_long_{symbol}.jsonl")
-        cache = cm.Cache24LongPriceManager(sync_ts=save_every, symbols=[symbol], filename=filename)
+        filename = os.path.join(CACHEDB_DIR, f"cache_365price_{symbol}.jsonl")
+        cache = cm.Cache365Price(sync_ts=save_every, symbols=[symbol], filename=filename)
         cache.KEEP_HOURS = keep_hours   # per-instance override explicitly supported by the class
         cache.RETENTION_DAYS = keep_hours / 24.0
         cache.enable_save_state_to_file()   # defaults to False; required for disk writes
@@ -133,7 +133,7 @@ def main():
 
     print(f"[tradeall_price_archiver] started: {symbols} | retention {months} months "
           f"({keep_hours:.0f}h) | disk flush every {save_every:.0f}s", flush=True)
-    print("[tradeall_price_archiver] writing cachedb/cache_24price_long_<symbol>.jsonl "
+    print("[tradeall_price_archiver] writing cachedb/cache_365price_<symbol>.jsonl "
           "separately from tradeall.py's live 24-hour cache")
     print("[tradeall_price_archiver] Ctrl+C stops the process.")
 

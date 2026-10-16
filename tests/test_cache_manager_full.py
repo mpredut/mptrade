@@ -1250,7 +1250,7 @@ class TestCacheFactory(unittest.TestCase):
         cur_mock = MagicMock()
         cur_mock.get_price.return_value = [int(time.time() * 1000), 50000.0]
         cases = (
-            ("Price", ["BTC", "ETH"], "cache_price_BTC.json"),
+            ("Price", ["BTC", "ETH"], "cache_price_sparse_BTC.jsonl"),
             ("Price24", ["BTC"], "cache_24price_BTC.json"),
         )
         for name, symbols, expected_filename in cases:
