@@ -163,7 +163,7 @@ def _num_str(x):
 def _split_series(symbol):
     """The available history, split into 2 halves (first/second) — the 2
     INDEPENDENT windows required by the confirmation guardrail."""
-    path = os.path.join(ROOT, "cachedb", f"cache_price_{symbol}.jsonl")
+    path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
     series = load_price_series(path, symbol)
     mid = len(series) // 2
     return series[:mid], series[mid:]

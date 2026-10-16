@@ -20,7 +20,7 @@ def main():
     days = float(sys.argv[2])
     out = sys.argv[3] if len(sys.argv) > 3 else os.path.join(
         ROOT, "cachedb", f"cache_24price_slice_{symbol}_{days:g}d.jsonl")
-    src = os.path.join(ROOT, "cachedb", f"cache_24price_long_{symbol}.jsonl")
+    src = os.path.join(ROOT, "cachedb", f"cache_365price_{symbol}.jsonl")
 
     rows = []
     with open(src, encoding="utf-8") as f:

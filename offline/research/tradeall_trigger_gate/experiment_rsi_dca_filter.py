@@ -90,7 +90,7 @@ sr.dca_price_hit = _hit_gated
 
 
 def load_ticks(symbol):
-    path = os.path.join(ROOT, "cachedb", f"cache_price_{symbol}.jsonl")
+    path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
     ticks = []
     with open(path) as f:
         for line in f:

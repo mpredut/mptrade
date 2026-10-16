@@ -112,7 +112,7 @@ def test_detect_long_term_trend_real_data() -> None:
 
     symbols = ["BTCUSDC", "TAOUSDC"]
     for sym in symbols:
-        cache_path = os.path.join(ROOT, "cachedb", f"cache_price_{sym}.jsonl")
+        cache_path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{sym}.jsonl")
         if not os.path.exists(cache_path):
             continue
         series = load_price_series(cache_path, sym)

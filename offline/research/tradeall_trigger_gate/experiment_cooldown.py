@@ -173,7 +173,7 @@ def run_variant(tag, up_cond, down_cond, threshold_divisor, symbol, start_ts, en
 
     t0 = time.time()
     tb.run_backtest(symbol, start_ts, end_ts, "fast", run_id, "cache24",
-                     cache24_file=os.path.join(ROOT, "cachedb", f"cache_24price_long_{symbol}.jsonl"),
+                     cache24_file=os.path.join(ROOT, "cachedb", f"cache_365price_{symbol}.jsonl"),
                      quiet=True, kalman_primary=False)
     elapsed = time.time() - t0
 
