@@ -252,11 +252,11 @@ class SmartStopLossGuard:
             print(f"🛑 [P2 · SMART-SL] EMERGENCY EXIT {sym_key}: {reason}")
             return True, reason, meta
 
-        # 3. Microstructure Telemetry Retrieval (0 ms cache lookup)
+        # 3. Microstructure Telemetry Retrieval (0 ms cache lookup; skipped in replay unless explicitly injected)
         from external_order_guard import get_orderbook_collector, get_whale_collector
 
-        w_snap = whale_snapshot if whale_snapshot is not None else get_whale_collector().fetch(sym_key, allow_network=False)
-        ob_snap = orderbook_snapshot if orderbook_snapshot is not None else get_orderbook_collector().fetch(sym_key, allow_network=False)
+        w_snap = whale_snapshot if whale_snapshot is not None else (None if is_sim else get_whale_collector().fetch(sym_key, allow_network=False))
+        ob_snap = orderbook_snapshot if orderbook_snapshot is not None else (None if is_sim else get_orderbook_collector().fetch(sym_key, allow_network=False))
 
         top_long_pct = getattr(w_snap, "top_traders_long_pct", 0.50) if w_snap else 0.50
         taker_ratio = getattr(w_snap, "taker_buy_sell_ratio", 1.0) if w_snap else 1.0

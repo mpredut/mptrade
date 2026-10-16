@@ -359,10 +359,9 @@ def run_intelligence_backtest(
                         d_telemetry = DerivativesTelemetry(
                             symbol=symbol,
                             funding_rate=0.00065,  # +0.065% per 8h (crowded long threshold is 0.05%)
-                            open_interest_usd=30_000_000.0,
-                            open_interest_change_24h_pct=15.0,
                             predicted_funding_rate=0.00070,
-                            next_funding_time=t + 3600.0,
+                            open_interest=30_000_000.0 / p if p > 0 else 0.0,
+                            open_interest_usd=30_000_000.0,
                             ts=t,
                         )
                         f_dec = funding_guard.check(symbol, "BUY", telemetry=d_telemetry)

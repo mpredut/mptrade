@@ -65,12 +65,13 @@ def _live_mt_params(section):
 class _LiveSymbols:
     """dict-like: SYMBOLS[symbol]["params"] reads instruments.conf ON EVERY
     ACCESS (not at import), so it cannot become a stale copy again."""
-    _SECTIONS = {
-        "BTCUSDC": ("BINANCE_BTC", "BTC"),
-        "TAOUSDC": ("BINANCE_TAO", "TAO"),
-        "ARBUSDC": ("BINANCE_ARB", "ARB"),
-        "HYPEUSD": ("KRAKEN_HYPE", "HYPE"),
-    }
+    @property
+    def _SECTIONS(self):
+        from instrument_registry import select_instruments
+        return {
+            spec.symbol: (spec.name, spec.base)
+            for spec in select_instruments(role="mt", path=os.path.join(ROOT, "instruments.conf")).values()
+        }
 
     def __getitem__(self, symbol):
         section, base = self._SECTIONS[symbol]
@@ -133,6 +134,10 @@ def run_symbol(symbol, params, base, quiet=True, trend_window_seconds=DEFAULT_WI
     mt.get_symbol_volatility_1h = lambda s: None
     orig_persist = mt._MT_PERSISTENCE_ENABLED
     mt._MT_PERSISTENCE_ENABLED = False
+    orig_post_stop_ai = mt._apply_post_stop_ai_guard
+    mt._apply_post_stop_ai_guard = (
+        lambda sym, px, spx, st, snap, bb, bq, q: (True, bb, bq, q)
+    )
     mt.clear_position_stats_cache()
     try:
         first_price = provider.advance(symbol)
@@ -191,6 +196,7 @@ def run_symbol(symbol, params, base, quiet=True, trend_window_seconds=DEFAULT_WI
         mt.is_trend_up = orig_is_trend_up
         mt.get_symbol_volatility_1h = orig_get_vol
         mt._MT_PERSISTENCE_ENABLED = orig_persist
+        mt._apply_post_stop_ai_guard = orig_post_stop_ai
         mt.clear_position_stats_cache()
 
     all_buys = provider.get_orders(symbol, "BUY", since_s=1e12)

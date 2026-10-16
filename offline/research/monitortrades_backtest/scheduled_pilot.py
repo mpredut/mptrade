@@ -71,35 +71,28 @@ MIN_EDGE_MARGIN_USD = float(os.environ.get("PILOT_MIN_EDGE_MARGIN_USD", "1.0"))
 #   #4-5  gain/lost   (DONE 23 Jul: TAO mt.lost 4.9->5.25 applied)
 #   #16   maxage_days (28 iul)
 #   #15   hardtp / hardtp_fraction (28 iul; per-instrument, monitortrades.py:447)
-PILOT_KEYS = {
-    "BINANCE_BTC.mt.gain": ("BTCUSDC", "BTC", "mt.gain"),
-    "BINANCE_BTC.mt.lost": ("BTCUSDC", "BTC", "mt.lost"),
-    "BINANCE_TAO.mt.gain": ("TAOUSDC", "TAO", "mt.gain"),
-    "BINANCE_TAO.mt.lost": ("TAOUSDC", "TAO", "mt.lost"),
-    "BINANCE_ARB.mt.gain": ("ARBUSDC", "ARB", "mt.gain"),
-    "BINANCE_ARB.mt.lost": ("ARBUSDC", "ARB", "mt.lost"),
-    "BINANCE_BTC.mt.maxage_days": ("BTCUSDC", "BTC", "mt.maxage_days"),
-    "BINANCE_TAO.mt.maxage_days": ("TAOUSDC", "TAO", "mt.maxage_days"),
-    "BINANCE_ARB.mt.maxage_days": ("ARBUSDC", "ARB", "mt.maxage_days"),
-    "BINANCE_BTC.mt.hardtp": ("BTCUSDC", "BTC", "mt.hardtp"),
-    "BINANCE_TAO.mt.hardtp": ("TAOUSDC", "TAO", "mt.hardtp"),
-    "BINANCE_ARB.mt.hardtp": ("ARBUSDC", "ARB", "mt.hardtp"),
-    "BINANCE_BTC.mt.hardtp_fraction": ("BTCUSDC", "BTC", "mt.hardtp_fraction"),
-    "BINANCE_TAO.mt.hardtp_fraction": ("TAOUSDC", "TAO", "mt.hardtp_fraction"),
-    "BINANCE_ARB.mt.hardtp_fraction": ("ARBUSDC", "ARB", "mt.hardtp_fraction"),
-    "BINANCE_BTC.mt.hardtp_cooldown_h": ("BTCUSDC", "BTC", "mt.hardtp_cooldown_h"),
-    "BINANCE_TAO.mt.hardtp_cooldown_h": ("TAOUSDC", "TAO", "mt.hardtp_cooldown_h"),
-    "BINANCE_ARB.mt.hardtp_cooldown_h": ("ARBUSDC", "ARB", "mt.hardtp_cooldown_h"),
-    "KRAKEN_HYPE.mt.gain": ("HYPEUSD", "HYPE", "mt.gain"),
-    "KRAKEN_HYPE.mt.lost": ("HYPEUSD", "HYPE", "mt.lost"),
-    "KRAKEN_HYPE.mt.maxage_days": ("HYPEUSD", "HYPE", "mt.maxage_days"),
-    "KRAKEN_HYPE.mt.hardtp": ("HYPEUSD", "HYPE", "mt.hardtp"),
-    "KRAKEN_HYPE.mt.hardtp_fraction": ("HYPEUSD", "HYPE", "mt.hardtp_fraction"),
-    "KRAKEN_HYPE.mt.hardtp_cooldown_h": ("HYPEUSD", "HYPE", "mt.hardtp_cooldown_h"),
-    "BINANCE_BTC.trailing.pct": ("BTCUSDC", "BTC", "trailing.pct"),
-    "BINANCE_TAO.trailing.pct": ("TAOUSDC", "TAO", "trailing.pct"),
-    "BINANCE_ARB.trailing.pct": ("ARBUSDC", "ARB", "trailing.pct"),
-}
+def _build_pilot_keys(conf_path=INSTRUMENTS_CONF):
+    """Derive pilot keys dynamically from instruments.conf (SSOT role.mt=yes)."""
+    from instrument_registry import select_instruments
+    keys = {}
+    mt_params = (
+        "mt.gain",
+        "mt.lost",
+        "mt.maxage_days",
+        "mt.hardtp",
+        "mt.hardtp_fraction",
+        "mt.hardtp_cooldown_h",
+    )
+    for spec in select_instruments(role="mt", path=conf_path).values():
+        for p in mt_params:
+            if p in spec.params:
+                keys[f"{spec.name}.{p}"] = (spec.symbol, spec.base, p)
+        if spec.has_role("trailing") and "trailing.pct" in spec.params:
+            keys[f"{spec.name}.trailing.pct"] = (spec.symbol, spec.base, "trailing.pct")
+    return keys
+
+
+PILOT_KEYS = _build_pilot_keys()
 
 
 def _now_iso():
@@ -187,6 +180,14 @@ def _run_one(symbol, base, params, series):
     trend_source = rb.ReplayTrendSource([symbol])
     orig_is_trend_up = rb.mt.is_trend_up
     rb.mt.is_trend_up = trend_source.is_trend_up
+    orig_get_vol = rb.mt.get_symbol_volatility_1h
+    rb.mt.get_symbol_volatility_1h = lambda s: None
+    orig_persist = rb.mt._MT_PERSISTENCE_ENABLED
+    rb.mt._MT_PERSISTENCE_ENABLED = False
+    orig_post_stop_ai = rb.mt._apply_post_stop_ai_guard
+    rb.mt._apply_post_stop_ai_guard = (
+        lambda sym, px, spx, st, snap, bb, bq, q: (True, bb, bq, q)
+    )
     rb.mt.clear_position_stats_cache()
     try:
         first_price = provider.advance(symbol)
@@ -228,6 +229,9 @@ def _run_one(symbol, base, params, series):
                 sys.stderr.write(f"[{symbol}] error in monitor_price_and_trade: {e}\n")
     finally:
         rb.mt.is_trend_up = orig_is_trend_up
+        rb.mt.get_symbol_volatility_1h = orig_get_vol
+        rb.mt._MT_PERSISTENCE_ENABLED = orig_persist
+        rb.mt._apply_post_stop_ai_guard = orig_post_stop_ai
         rb.mt.clear_position_stats_cache()
 
     all_buys = provider.get_orders(symbol, "BUY", since_s=1e12)
