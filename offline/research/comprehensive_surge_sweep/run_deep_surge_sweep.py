@@ -314,7 +314,10 @@ def main():
 
     warmup_cands = candidates[:2]
     for wc in warmup_cands:
-        results.append(evaluate_single_candidate(wc, asset_data, initial_cash, args.fee_pct))
+        try:
+            results.append(evaluate_single_candidate(wc, asset_data, initial_cash, args.fee_pct))
+        except Exception as exc:
+            print(f"Error on {wc['id']}: {exc}")
         completed += 1
 
     with concurrent.futures.ProcessPoolExecutor(
