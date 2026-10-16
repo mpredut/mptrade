@@ -2876,6 +2876,12 @@ CacheCurrentPriceManager = CacheCurrentPrice
 _current_price_instance: Optional[CacheCurrentPrice] = None
 _current_price_lock = threading.Lock()
 
+def _default_price_tracking():
+    """Return ``(symbols, nonbinance_symbols, provider_names)`` from ``instruments.conf``."""
+    from instrument_registry import tracked_price_instruments
+    return tracked_price_instruments()
+
+
 def get_current_price_manager(ws_manager=None, symbols=None, sync_ts=None,
                               start_sync=True,
                               provider_names=None) -> CacheCurrentPrice:
@@ -2907,7 +2913,12 @@ def get_current_price_manager(ws_manager=None, symbols=None, sync_ts=None,
             if start_sync:
                 _current_price_instance.periodic_sync(save_state=False)
             return _current_price_instance
-        _syms = symbols if symbols is not None else sym.symbols
+        if symbols is None:
+            _syms, _, _default_providers = _default_price_tracking()
+            if provider_names is None and _default_providers:
+                provider_names = _default_providers
+        else:
+            _syms = symbols
         _current_price_instance = CacheCurrentPrice(
             sync_ts     = sync_ts if sync_ts is not None else CURRENTPRICE_SYNC_INTERVAL_SEC,
             symbols     = _syms,
@@ -3828,7 +3839,7 @@ def get_short_trend_manager(symbols=None, filename="cache_instant_trend.json", w
             if writer:
                 _short_trend_instance.writer = True
             return _short_trend_instance
-        _syms = symbols if symbols is not None else sym.symbols
+        _syms = symbols if symbols is not None else _default_price_tracking()[0]
         _short_trend_instance = CachePriceShortTrend(_syms, filename, writer=writer)
     return _short_trend_instance
 
@@ -3845,6 +3856,9 @@ CURRENTPRICE_SYNC_INTERVAL_SEC = 30   # Same policy for CacheCurrentPrice.
 PRICETREND_SYNC_INTERVAL_SEC = 10 * 60   # 10 minute
 ASSETVALUE_SYNC_INTERVAL_SEC = 10 * 60  # 10 minutes 
 # TODO: set this to 60 * 60  # 1 hour
+
+_PRICE_TREND_CACHES = frozenset({"CurrentPrice", "Price24", "Price", "PriceLongTrend"})
+
 
 class CacheFactory:
     _instances = {}
@@ -3923,7 +3937,14 @@ class CacheFactory:
                 if key not in {"class", "filename", "sync_ts"}
             }
             if symbols is None:
-                symbols = ["TOTAL"] if name == "AssetValue" else sym.symbols
+                if name == "AssetValue":
+                    symbols = ["TOTAL"]
+                elif name in _PRICE_TREND_CACHES:
+                    symbols, _, _default_providers = _default_price_tracking()
+                    if name == "CurrentPrice" and provider_names is None and _default_providers:
+                        provider_names = _default_providers
+                else:
+                    symbols = sym.symbols
 
             if name == "CurrentPrice":
                 current_price_sync_ts = (
@@ -4339,17 +4360,7 @@ if __name__ == "__main__":
     _nb_poller = None
     _trend_mgr = None
 
-    from instrument_registry import tracked_price_instruments
-    _trend_syms, _nb_syms, _nb_provider_names = tracked_price_instruments()
-    # Register venue-bound price/trend managers from instruments.conf before the generic loop.
-    CacheFactory.get(
-        "CurrentPrice",
-        symbols=_trend_syms,
-        provider_names=_nb_provider_names or None,
-    )
-    CacheFactory.get("Price24", symbols=_trend_syms)
-    CacheFactory.get("Price", symbols=_trend_syms)
-    CacheFactory.get("PriceLongTrend", symbols=_trend_syms)
+    _trend_syms, _nb_syms, _nb_provider_names = _default_price_tracking()
     if _nb_syms:
         builtins.print(f"[cacheManager] tracking non-Binance instruments from instruments.conf: {_nb_syms}")
 
@@ -4371,12 +4382,10 @@ if __name__ == "__main__":
         from binance_api import bapi_ws
         _trend_cpm = get_current_price_manager(
             ws_manager=bapi_ws.get_ws_manager(),
-            symbols=_trend_syms,
             sync_ts=0.8,
-            provider_names=_nb_provider_names,
         )
         _trend_cache24 = CacheFactory.get("Price24")
-        _trend_mgr = get_short_trend_manager(symbols=_trend_syms, writer=True)   # Sole file writer.
+        _trend_mgr = get_short_trend_manager(writer=True)   # Sole file writer.
         _trend_mgr.start_computation(_trend_cache24, _trend_cpm, run_full_eval=True)
         print("⚙️ cacheManager: full trend computation started (cache_instant_trend.json).")
         if _nb_syms:   # WebSocket covers Binance only; push other prices manually.

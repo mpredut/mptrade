@@ -41,11 +41,29 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from cachepaths import cache_path
+from instrument_registry import symbols_for
 
 load_env_stack(os.environ.get("ENV_FILE", os.path.join(_HERE, ".env")))
 
+
+def _resolve_kraken_cache_pairs() -> list[str]:
+    """Combine enabled Kraken instruments from instruments.conf with optional KRAKEN_CACHE_PAIRS."""
+    pairs: list[str] = []
+    for sym in symbols_for("kraken"):
+        s = str(sym or "").strip().upper()
+        if s and s not in pairs:
+            pairs.append(s)
+    for item in (os.environ.get("KRAKEN_CACHE_PAIRS") or "").split(","):
+        s = item.strip().upper()
+        if s and s not in pairs:
+            pairs.append(s)
+    if not pairs:
+        raise RuntimeError("No Kraken cache pairs configured in instruments.conf or KRAKEN_CACHE_PAIRS")
+    return pairs
+
+
 # ── mandatory configuration ──────────────────────────────────────────────────
-PAIRS = [p for p in required_env("KRAKEN_CACHE_PAIRS").split(",") if p]
+PAIRS = _resolve_kraken_cache_pairs()
 POLL_INTERVAL = required_float_env("KRAKEN_CACHE_POLL_S")   # Ledgers is expensive and all Kraken processes
                                                                      # share the account counter: 5s hits rate limits;
                                                                      # 30s suffices for the guard; use WS below 5s

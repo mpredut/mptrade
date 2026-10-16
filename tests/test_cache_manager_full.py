@@ -1284,6 +1284,19 @@ class TestCacheFactory(unittest.TestCase):
             r2 = cm.CacheFactory.get("Trade", symbols=["BTC"])
         self.assertIs(r1, r2)
 
+    def test_factory_default_symbols_use_ssot_price_tracking(self):
+        tracked = (["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"], ["HYPEUSD"], {"HYPEUSD": "kraken"})
+        with patch.object(cm, "_default_price_tracking", return_value=tracked), \
+             patch.object(cm.CacheCurrentPriceManager, "load_state", return_value=None), \
+             patch.object(cm.PriceLongTrend, "load_state", return_value=None):
+            cm.CacheFactory.remove("CurrentPrice")
+            cm.CacheFactory.remove("PriceLongTrend")
+            cpm = cm.CacheFactory.get("CurrentPrice", start_sync=False)
+            plt = cm.CacheFactory.get("PriceLongTrend", start_sync=False)
+            self.assertEqual(cpm.symbols, ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"])
+            self.assertEqual(cpm._provider_names.get("HYPEUSD"), "kraken")
+            self.assertEqual(plt.symbols, ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"])
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 11. get_current_price_manager — singleton
