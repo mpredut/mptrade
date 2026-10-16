@@ -42,14 +42,7 @@ from offline.backtests.execution import (
     split_order_fill,
 )
 from offline.backtests.metrics import calculate_performance_metrics
-
-
-class _SimClock:
-    def __init__(self) -> None:
-        self.value = 0.0
-
-    def __call__(self) -> float:
-        return self.value
+from providers.replay_clock import SimClock as _SimClock
 
 
 def _ols_slope_pct(closes: list[float]) -> float | None:
@@ -134,7 +127,7 @@ def _run_once(
     execution: ExecutionModel,
 ) -> dict:
     client = MagicMock()
-    clock = _SimClock()
+    clock = _SimClock(0.0)
     trend_closes: deque[float] = deque(maxlen=12)
     trend_closes.extend(float(row[3]) for row in warmup_ohlc)
     original_log = _strat.log

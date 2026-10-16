@@ -425,9 +425,17 @@ def print_comparison_table(symbol: str, stats_list: List[ChopBacktestStats]) -> 
 
 
 if __name__ == "__main__":
+    from instrument_registry import symbols_for
+
+    default_syms = ",".join(symbols_for("binance", role="tradeall_fire"))
     parser = argparse.ArgumentParser(description="Run Chop Weight Backtest")
-    parser.add_argument("--symbols", default="TAOUSDC,BTCUSDC,ARBUSDC", help="Comma-separated symbols")
+    parser.add_argument("--symbols", default=default_syms, help="Comma-separated symbols")
     parser.add_argument("--step-sec", type=int, default=900, help="Bar resolution in seconds (default 900 = 15m)")
+    parser.add_argument(
+        "--out",
+        default=os.path.join(ROOT, "logger", "chop_weight_backtest_results.json"),
+        help="Output JSON path (defaults to logger/chop_weight_backtest_results.json)",
+    )
     args = parser.parse_args()
 
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
@@ -436,17 +444,11 @@ if __name__ == "__main__":
     for sym, stats in results.items():
         print_comparison_table(sym, stats)
 
-    # Save to JSON in tracked research directory and logger
-    out_paths = [
-        os.path.join(ROOT, "offline", "research", "chop_weight_backtest_results.json"),
-        os.path.join(ROOT, "logger", "chop_weight_backtest_results.json"),
-    ]
     json_data = {
         sym: [asdict(s) for s in stats]
         for sym, stats in results.items()
     }
-    for p in out_paths:
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w", encoding="utf-8") as f:
-            json.dump(json_data, f, indent=2)
-        logger.info("Saved chop benchmark results to %s", p)
+    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    with open(args.out, "w", encoding="utf-8") as f:
+        json.dump(json_data, f, indent=2)
+    logger.info("Saved chop benchmark results to %s", args.out)

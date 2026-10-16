@@ -26,6 +26,7 @@ REMOTE="$(git rev-parse "origin/$BRANCH")"
 
 if [ "$LOCAL" != "$REMOTE" ]; then
     echo "[dev_ci_watcher $(date '+%F %T')] Remote update detected ($LOCAL -> $REMOTE). Pulling..."
+    git checkout -- offline/research/*_results.json 2>/dev/null || true
     if git pull --ff-only origin "$BRANCH"; then
         echo "[dev_ci_watcher $(date '+%F %T')] Git pull successful. Launching regression..."
         nohup "$SCRIPT_DIR/run_dev_regression.sh" >> "$REPO_ROOT/logs/dev_regression.log" 2>&1 &

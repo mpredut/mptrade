@@ -56,10 +56,10 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 from offline.backtests import tradeall as tb
 import shadow_signals
 
-# Today's REAL FIXED values (from tradeall_config.env, not arbitrary constants) —
+# Today's REAL FIXED values (from tradeall_config.env via tradeall SSOT) —
 # used as (a) the warm-up fallback and (b) the "FIXED" baseline to compare against.
-FIXED_SMALL = 0.5180048459
-FIXED_BIG = 2.4809130428
+FIXED_SMALL = float(tb.ta.PRICE_CHANGE_THRESHOLD_EUR)
+FIXED_BIG = float(tb.ta.PRICE_CHANGE_THRESHOLD_BIG_EUR)
 RATIO = FIXED_BIG / FIXED_SMALL   # ~4.79
 
 

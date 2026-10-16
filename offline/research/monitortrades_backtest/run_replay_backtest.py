@@ -84,27 +84,22 @@ class _LiveSymbols:
 SYMBOLS = _LiveSymbols()
 
 
-def _neutral_is_trend_up(symbol, window_seconds=None, now=None):
-    """KEPT as a reference/manual fallback (it is no longer run_symbol's default,
-    see ReplayTrendSource below) — still used by scheduled_pilot.py::_run_one
-    (a separate loop of its own, UNTOUCHED in this pass — see 29 Jul). Deterministic,
-    Backtest ONLY: no trend signal (neutral). FOUND 23 Jul: is_trend_up()
-    the real one reads cacheManager.get_short_trend_manager() — for REAL symbols
-    (BTCUSDC/TAOUSDC), that is the LIVE cache, updated RIGHT NOW by
-    tradeall.py/cacheManager.py, which run on the same machine. Running the same
-    backtest twice gave DIFFERENT results, because the "live" trend being read
-    changes between runs, contaminating a historical replay with the REAL, current state
-    of the market. False = exactly what is_trend_up() would return anyway for a symbol WITHOUT
-    snapshot in the cache (already the "safe" default in the code: "no snapshot ->
-    neutral, it does not block a profitable sale")."""
-    return False
-
-
-def run_symbol(symbol, params, base, quiet=True, trend_window_seconds=DEFAULT_WINDOW_SECONDS):
-    path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
-    series = load_price_series(path, symbol)
-    if not series:
-        sys.stderr.write(f"[{symbol}] no history at {path}\n")
+def run_symbol(
+    symbol,
+    params,
+    base,
+    quiet=True,
+    trend_window_seconds=DEFAULT_WINDOW_SECONDS,
+    series=None,
+):
+    from_disk = series is None
+    if from_disk:
+        path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
+        series = load_price_series(path, symbol)
+        if not series:
+            sys.stderr.write(f"[{symbol}] no history at {path}\n")
+            return None
+    elif not series:
         return None
 
     if quiet:
@@ -184,7 +179,7 @@ def run_symbol(symbol, params, base, quiet=True, trend_window_seconds=DEFAULT_WI
             except Exception as e:  # noqa: BLE001
                 sys.stderr.write(f"[{symbol}] eroare in monitor_price_and_trade: {e}\n")
 
-            if n_ticks % 20000 == 0:
+            if from_disk and n_ticks % 20000 == 0:
                 sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
     finally:
         if quiet:
@@ -215,7 +210,8 @@ def run_symbol(symbol, params, base, quiet=True, trend_window_seconds=DEFAULT_WI
                   net=round(net, 2), buy_hold=round(buy_hold_net, 2),
                   first_price=first_price, last_price=last_price,
                   trend_window_sec=trend_window_seconds)
-    sys.stderr.write(f"[{symbol}] REZULTAT: {result}\n")
+    if from_disk:
+        sys.stderr.write(f"[{symbol}] REZULTAT: {result}\n")
     return result
 
 

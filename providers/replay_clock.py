@@ -12,10 +12,18 @@ import time
 
 
 class SimClock:
-    """Callable simulated time source whose ``ts`` value is set by its driver."""
+    """Callable simulated time source whose ``ts`` (or ``value``) is set by its driver."""
 
-    def __init__(self):
-        self.ts = time.time()
+    def __init__(self, initial_ts: float | None = None):
+        self.ts: float = time.time() if initial_ts is None else float(initial_ts)
+
+    @property
+    def value(self) -> float:
+        return self.ts
+
+    @value.setter
+    def value(self, new_val: float) -> None:
+        self.ts = float(new_val)
 
     def __call__(self) -> float:
         return self.ts

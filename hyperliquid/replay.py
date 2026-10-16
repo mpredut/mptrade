@@ -330,38 +330,11 @@ def _run_once(
     return result
 
 
-def make_hyperliquid_spot_replay_adapter(
-    params: Any,
-    fee_pct: float = 0.035,
-    bar_minutes: float | None = 60.0,
-    execution: ExecutionModel | None = None,
-    fee_model: Any | None = None,
-    include_decision_trace: bool = False,
-    initial_cash: float | None = None,
-    dca_drop_series=None,
-    reentry_series=None,
-    intrabar_high: bool = False,
-):
+def make_hyperliquid_spot_replay_adapter(params: Any, fee_pct: float = 0.035, **kwargs):
     """Return a spot ReplayFunction using strategies.spot_replay (SSOT) compatible with evaluation.py."""
-    from strategies.spot_replay import run_replay as run_spot_replay
+    from strategies.spot_replay import make_spot_replay_adapter
 
-    def _adapter(ohlc, warmup_ohlc=None, _context=None):
-        return run_spot_replay(
-            ohlc,
-            params,
-            fee_pct=fee_pct,
-            bar_minutes=bar_minutes,
-            warmup_ohlc=warmup_ohlc,
-            execution=execution,
-            fee_model=fee_model,
-            include_decision_trace=include_decision_trace,
-            initial_cash=initial_cash,
-            dca_drop_series=dca_drop_series,
-            reentry_series=reentry_series,
-            intrabar_high=intrabar_high,
-        )
-
-    return _adapter
+    return make_spot_replay_adapter(params, fee_pct=fee_pct, **kwargs)
 
 
 def make_hyperliquid_replay_adapter(

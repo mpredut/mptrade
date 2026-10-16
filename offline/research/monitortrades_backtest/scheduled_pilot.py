@@ -163,88 +163,10 @@ def _split_series(symbol):
 
 
 def _run_one(symbol, base, params, series):
-    """Runs the REAL backtest logic (structurally identical to
-    run_replay_backtest.run_symbol()) over a SERIES given directly (not the file
-    whole file from disk) — needed so that the 2 halves can be tested separately
-    without reading/splitting the file every time. It does NOT write pnl.json (the pilot
-    runs dozens of variants -> it would generate dozens of pointless folders in
-    logger/backtest/)."""
-    if not series:
-        return None
-    provider = rb.ReplayMarketDataProvider({symbol: series}, fee_pct=rb.FEE_PCT)
-    api = rb.MarketApi([provider])
-    inst = rb.Instrument(name=symbol, symbol=symbol, provider="replay",
-                         base=base, quote="USDC", params=dict(params), api=api)
-    maxage_s = int(float(params["mt.maxage_days"]) * 24 * 3600)
-
-    trend_source = rb.ReplayTrendSource([symbol])
-    orig_is_trend_up = rb.mt.is_trend_up
-    rb.mt.is_trend_up = trend_source.is_trend_up
-    orig_get_vol = rb.mt.get_symbol_volatility_1h
-    rb.mt.get_symbol_volatility_1h = lambda s: None
-    orig_persist = rb.mt._MT_PERSISTENCE_ENABLED
-    rb.mt._MT_PERSISTENCE_ENABLED = False
-    orig_post_stop_ai = rb.mt._apply_post_stop_ai_guard
-    rb.mt._apply_post_stop_ai_guard = (
-        lambda sym, px, spx, st, snap, bb, bq, q: (True, bb, bq, q)
-    )
-    rb.mt.clear_position_stats_cache()
-    try:
-        first_price = provider.advance(symbol)
-        if first_price is None:
-            return None
-        last_price = first_price
-        trend_source.advance(symbol, provider.now(symbol), first_price)
-        provider.place_order(symbol, "BUY", first_price, rb.SEED_NOTIONAL_USD / first_price)
-
-        trail_pct = float(params.get("trailing.pct") or 0.0)
-        trail_peak = first_price
-
-        while True:
-            price = provider.advance(symbol)
-            if price is None:
-                break
-            last_price = price
-            trend_source.advance(symbol, provider.now(symbol), price)
-
-            open_qty, _ = provider.position(symbol)
-            if open_qty > 0:
-                trail_peak = max(trail_peak, price)
-                if trail_pct > 0 and (trail_peak - price) / trail_peak >= trail_pct / 100.0:
-                    provider.place_order(symbol, "SELL", price, open_qty)
-                    trail_peak = price
-                    continue
-            else:
-                trail_peak = price
-
-            buys = provider.get_orders(symbol, "BUY", since_s=maxage_s)
-            sells = provider.get_orders(symbol, "SELL", since_s=maxage_s)
-            if not buys and not sells:
-                provider.place_order(symbol, "BUY", price, rb.SEED_NOTIONAL_USD / price)
-                trail_peak = price
-                continue
-            try:
-                rb.mt.monitor_price_and_trade(inst, sbs=rb.SBS, now_fn=lambda: provider.now(symbol))
-            except Exception as e:  # noqa: BLE001
-                sys.stderr.write(f"[{symbol}] error in monitor_price_and_trade: {e}\n")
-    finally:
-        rb.mt.is_trend_up = orig_is_trend_up
-        rb.mt.get_symbol_volatility_1h = orig_get_vol
-        rb.mt._MT_PERSISTENCE_ENABLED = orig_persist
-        rb.mt._apply_post_stop_ai_guard = orig_post_stop_ai
-        rb.mt.clear_position_stats_cache()
-
-    all_buys = provider.get_orders(symbol, "BUY", since_s=1e12)
-    all_sells = provider.get_orders(symbol, "SELL", since_s=1e12)
-    total_bought = sum(o["qty"] * o["price"] for o in all_buys)
-    total_sold = sum(o["qty"] * o["price"] for o in all_sells)
-    open_qty, _ = provider.position(symbol)
-    open_value = open_qty * last_price
-    fees = sum(o["qty"] * o["price"] * rb.FEE_PCT / 100 for o in all_buys + all_sells)
-    net = total_sold - total_bought + open_value - fees
-    bh_qty = rb.SEED_NOTIONAL_USD / first_price
-    buy_hold = (last_price - first_price) * bh_qty - 2 * bh_qty * first_price * rb.FEE_PCT / 100
-    return {"net": round(net, 2), "buy_hold": round(buy_hold, 2)}
+    """Run the canonical replay backtest (run_replay_backtest.run_symbol) over a
+    pre-sliced in-memory series without writing pnl.json."""
+    res = rb.run_symbol(symbol, params, base, quiet=True, series=series)
+    return {"net": res["net"], "buy_hold": res["buy_hold"]} if res else None
 
 
 def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):

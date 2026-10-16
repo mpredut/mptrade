@@ -91,7 +91,7 @@ def run_replay(
             params,
             fee_model=fees,
             bar_minutes=bar_minutes,
-            warmup_ohlc=warmup_ohlc,
+            warmup_ohlc=warmup_ohlc or (),
             execution=scenario,
             include_decision_trace=include_decision_trace,
             initial_cash=initial_cash,
@@ -360,3 +360,35 @@ def _run_once(
         result["funding"] = {"initial_cash": initial_cash, "final_cash": rounded(cash),
                              "minimum_cash": rounded(min_cash), "refused_buys": cash_refusals}
     return result
+
+
+def make_spot_replay_adapter(
+    params,
+    fee_pct: float = 0.26,
+    bar_minutes: float | None = 60.0,
+    execution: ExecutionModel | None = None,
+    fee_model: FeeModel | None = None,
+    include_decision_trace: bool = False,
+    initial_cash: float | None = None,
+    dca_drop_series=None,
+    reentry_series=None,
+    intrabar_high: bool = False,
+):
+    """Return a generic spot ReplayFunction compatible with evaluation.py walk-forward benchmarks."""
+    def _adapter(ohlc, warmup_ohlc=(), _context=None):
+        return run_replay(
+            ohlc,
+            params,
+            fee_pct=fee_pct,
+            bar_minutes=bar_minutes,
+            warmup_ohlc=warmup_ohlc or (),
+            execution=execution,
+            fee_model=fee_model,
+            include_decision_trace=include_decision_trace,
+            initial_cash=initial_cash,
+            dca_drop_series=dca_drop_series,
+            reentry_series=reentry_series,
+            intrabar_high=intrabar_high,
+        )
+
+    return _adapter

@@ -8,11 +8,14 @@ aggregation logic. The context carries the timestamps the historical FX needs.
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Callable, Sequence
 from collections import Counter
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from offline.backtests.execution import ExecutionModel
 from offline.backtests.walk_forward import summarize_test_windows, walk_forward_splits
 
 
@@ -248,3 +251,85 @@ def evaluate_walk_forward(
 def _optional_min(values: list[float | None]) -> float | None:
     present = [float(value) for value in values if value is not None]
     return min(present) if present else None
+
+
+def parse_intervals(value: str) -> list[int]:
+    """Parse comma-separated positive integer interval minutes."""
+    intervals = [int(part.strip()) for part in value.split(",") if part.strip()]
+    if not intervals or any(interval <= 0 for interval in intervals):
+        raise argparse.ArgumentTypeError("intervals must be positive minutes")
+    return intervals
+
+
+def parse_dataset_specs(specs: list[str]) -> dict[int, Path]:
+    """Parse repeatable INTERVAL=PATH CLI specifications into a resolved Path mapping."""
+    result: dict[int, Path] = {}
+    for spec in specs:
+        try:
+            interval, path = spec.split("=", 1)
+            result[int(interval)] = Path(path).expanduser().resolve()
+        except (ValueError, OSError) as exc:
+            raise ValueError(f"invalid dataset spec {spec!r}; format is INTERVAL=PATH") from exc
+    return result
+
+
+def add_walk_forward_cli_args(
+    parser: argparse.ArgumentParser,
+    *,
+    include_warmup: bool = True,
+    default_warmup: int | None = 0,
+) -> None:
+    """Register standard execution model and walk-forward window arguments on a CLI parser."""
+    parser.add_argument("--spread-bps", type=float, default=0.0)
+    parser.add_argument("--market-slippage-bps", type=float, default=0.0)
+    parser.add_argument("--partial-fill-ratio", type=float, default=1.0)
+    parser.add_argument(
+        "--intrabar-policy",
+        choices=("buy_first", "sell_first", "worst_case"),
+        default="buy_first",
+    )
+    parser.add_argument("--train", type=int, help="training bars; automatic by default")
+    parser.add_argument("--validation", type=int, help="validation bars; automatic by default")
+    parser.add_argument("--test", type=int, help="test bars; automatic by default")
+    parser.add_argument("--step", type=int, help="step size in bars; defaults to test size")
+    if include_warmup:
+        parser.add_argument(
+            "--warmup",
+            type=int,
+            default=default_warmup,
+            help="preceding signal bars; they carry no position or P&L into the segment",
+        )
+
+
+def build_execution_model_from_args(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> ExecutionModel:
+    """Validate walk-forward window CLI flags and construct ExecutionModel."""
+    explicit_windows = (args.train, args.validation, args.test)
+    if any(value is not None for value in explicit_windows) and not all(
+        value is not None for value in explicit_windows
+    ):
+        parser.error("--train, --validation and --test must be supplied together")
+    if any(value is not None and value <= 0 for value in (*explicit_windows, args.step)):
+        parser.error("the walk-forward sizes must be positive")
+    warmup = getattr(args, "warmup", None)
+    if warmup is not None and warmup < 0:
+        parser.error("--warmup cannot be negative")
+    try:
+        return ExecutionModel(
+            spread_bps=args.spread_bps,
+            market_slippage_bps=args.market_slippage_bps,
+            partial_fill_ratio=args.partial_fill_ratio,
+            intrabar_policy=args.intrabar_policy,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+
+
+def resolve_window_sizes(
+    args: argparse.Namespace, record_count: int
+) -> tuple[int, int, int, int]:
+    """Return (train, validation, test, step) sizes from CLI args or automatic sizing."""
+    if args.train is None:
+        return automatic_window_sizes(record_count)
+    return args.train, args.validation, args.test, (args.step or args.test)

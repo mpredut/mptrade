@@ -35,10 +35,15 @@ from offline.backtests.datasets import (  # noqa: E402
     validate_dataset,
 )
 from offline.backtests.evaluation import (  # noqa: E402
+    add_walk_forward_cli_args,
     automatic_window_sizes,
+    build_execution_model_from_args,
     evaluate_segment as _evaluate_segment,
     evaluate_walk_forward as _evaluate_walk_forward,
     iso_utc as _iso,
+    parse_dataset_specs as _parse_dataset_specs,
+    parse_intervals as _parse_intervals,
+    resolve_window_sizes,
 )
 from offline.backtests.execution import ExecutionModel  # noqa: E402
 
@@ -90,24 +95,6 @@ def evaluate_walk_forward(records: list[dict], params: StratParams, *, fee_pct: 
         kraken_replay._strat.log = original_log
 
 
-def _parse_intervals(value: str) -> list[int]:
-    intervals = [int(part.strip()) for part in value.split(",") if part.strip()]
-    if not intervals or any(interval <= 0 for interval in intervals):
-        raise argparse.ArgumentTypeError("intervals must be positive minutes")
-    return intervals
-
-
-def _parse_dataset_specs(specs: list[str]) -> dict[int, Path]:
-    result = {}
-    for spec in specs:
-        try:
-            interval, path = spec.split("=", 1)
-            result[int(interval)] = Path(path).expanduser().resolve()
-        except (ValueError, OSError) as exc:
-            raise ValueError(f"dataset invalid {spec!r}; formatul este INTERVAL=CALE") from exc
-    return result
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", default=str(KRAKEN_DIR / ".env"))
@@ -115,21 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pair", help="defaults to KRAKEN_PAIR from the live configuration")
     parser.add_argument("--intervals", type=_parse_intervals, default=[60, 240, 1440])
     parser.add_argument("--fee", type=float, default=0.26, help="fee per leg, procente")
-    parser.add_argument("--spread-bps", type=float, default=0.0)
-    parser.add_argument("--market-slippage-bps", type=float, default=0.0)
-    parser.add_argument("--partial-fill-ratio", type=float, default=1.0)
-    parser.add_argument(
-        "--intrabar-policy", choices=("buy_first", "sell_first", "worst_case"),
-        default="buy_first",
-    )
-    parser.add_argument("--train", type=int, help="bars; by default automatically 45%% of the history")
-    parser.add_argument("--validation", type=int, help="bare; implicit auto 10%%")
-    parser.add_argument("--test", type=int, help="bare; implicit auto 15%%")
-    parser.add_argument("--step", type=int, help="bars; by default equal to TEST")
-    parser.add_argument(
-        "--warmup", type=int, default=0,
-        help="preceding bars for the signals; they carry no position or P&L into the segment",
-    )
+    add_walk_forward_cli_args(parser, include_warmup=True, default_warmup=0)
     parser.add_argument(
         "--dataset", action="append", default=[], metavar="INTERVAL=CALE",
         help="use a frozen CSV instead of the API; repeatable for every interval",
@@ -141,24 +114,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.fee < 0:
         parser.error("--fee cannot be negative")
-    explicit_windows = (args.train, args.validation, args.test)
-    if any(value is not None for value in explicit_windows) and not all(
-            value is not None for value in explicit_windows):
-        parser.error("--train, --validation and --test are given together or not at all")
-    if any(value is not None and value <= 0
-           for value in (*explicit_windows, args.step)):
-        parser.error("the walk-forward sizes must be positive")
-    if args.warmup < 0:
-        parser.error("--warmup cannot be negative")
-    try:
-        execution = ExecutionModel(
-            spread_bps=args.spread_bps,
-            market_slippage_bps=args.market_slippage_bps,
-            partial_fill_ratio=args.partial_fill_ratio,
-            intrabar_policy=args.intrabar_policy,
-        )
-    except ValueError as exc:
-        parser.error(str(exc))
+    execution = build_execution_model_from_args(parser, args)
 
     # The same order as kraken_bot.py: .env takes priority, config.env fills in the rest.
     load_dotenv(args.env_file)
@@ -207,15 +163,9 @@ def main(argv: list[str] | None = None) -> int:
         digest = dataset_sha256(records)
         frozen_path = dataset_dir / f"{pair}_{interval}m_{digest[:12]}.csv"
         save_frozen_dataset(records, frozen_path)
-        if args.train is None:
-            train_size, validation_size, test_size, step_size = automatic_window_sizes(
-                len(records)
-            )
-        else:
-            train_size, validation_size, test_size = (
-                args.train, args.validation, args.test,
-            )
-            step_size = args.step or test_size
+        train_size, validation_size, test_size, step_size = resolve_window_sizes(
+            args, len(records)
+        )
         result = evaluate_walk_forward(
             records, params, fee_pct=args.fee, interval=interval,
             train_size=train_size, validation_size=validation_size,

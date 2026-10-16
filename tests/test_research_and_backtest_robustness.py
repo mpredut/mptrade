@@ -116,3 +116,97 @@ def test_execution_calibration_distribution_none_handling():
     assert dist["min"] == 1.0
     assert dist["max"] == 3.0
     assert dist["mean"] == 2.0
+
+
+def test_scheduled_pilot_run_one_delegates_to_run_symbol():
+    """scheduled_pilot._run_one delegates directly to run_replay_backtest.run_symbol(..., series=...)."""
+    from offline.research.monitortrades_backtest import run_replay_backtest as rb
+    from offline.research.monitortrades_backtest import scheduled_pilot as sp
+
+    cfg = rb.SYMBOLS["BTCUSDC"]
+    series = [(1_700_000_000.0 + i * 60.0, 50_000.0 + (i % 5) * 100.0) for i in range(30)]
+    full_res = rb.run_symbol("BTCUSDC", cfg["params"], cfg["base"], quiet=True, series=series)
+    pilot_res = sp._run_one("BTCUSDC", cfg["base"], cfg["params"], series)
+    assert full_res is not None
+    assert pilot_res == {"net": full_res["net"], "buy_hold": full_res["buy_hold"]}
+    assert sp._run_one("BTCUSDC", cfg["base"], cfg["params"], []) is None
+
+
+def test_spot_replay_adapters_ssot():
+    """All spot replay adapters delegate to strategies.spot_replay.make_spot_replay_adapter."""
+    import importlib.util
+    from pathlib import Path
+    from binance_api.replay import make_binance_replay_adapter
+    from kraken.replay import make_kraken_replay_adapter
+    from strategies.spot_engine import StratParams
+    from strategies.spot_replay import make_spot_replay_adapter
+
+    hl_path = Path(__file__).resolve().parents[1] / "hyperliquid" / "replay.py"
+    spec = importlib.util.spec_from_file_location("hl_replay_ssot_test", str(hl_path))
+    hl_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hl_mod)
+    make_hyperliquid_spot_replay_adapter = hl_mod.make_hyperliquid_spot_replay_adapter
+
+    params = StratParams(
+        currency="USDC",
+        entry_amount=100.0,
+        entry_discount_pct=0.5,
+        dca_amount=50.0,
+        dca_drop_pct=2.0,
+        takeprofit_pct=2.0,
+        max_budget=300.0,
+        max_dca_buys=2,
+        stop_loss_pct=0.0,
+        check_minutes=1.0,
+        enable_takeprofit=True,
+        order_ttl_min=60.0,
+    )
+    ohlc = [(100.0, 101.0, 99.0, 100.0), (100.0, 102.0, 98.0, 101.0)]
+    for factory in (
+        make_spot_replay_adapter,
+        make_kraken_replay_adapter,
+        make_binance_replay_adapter,
+        make_hyperliquid_spot_replay_adapter,
+    ):
+        adapter = factory(params, bar_minutes=60.0)
+        res = adapter(ohlc, None)
+        assert "return_pct" in res
+        assert "max_drawdown_pct" in res
+
+
+def test_sim_clock_value_and_ts_alias():
+    """SimClock supports both .ts and .value property access and optional initial_ts."""
+    from providers.replay_clock import SimClock
+
+    clock = SimClock(0.0)
+    assert clock.ts == 0.0
+    assert clock.value == 0.0
+    assert clock() == 0.0
+    clock.value = 123.5
+    assert clock.ts == 123.5
+    assert clock() == 123.5
+
+
+def test_walk_forward_cli_shared_helpers(tmp_path):
+    """Shared walk-forward CLI helpers parse intervals, dataset specs, and window sizes."""
+    import argparse
+    from offline.backtests.evaluation import (
+        add_walk_forward_cli_args,
+        build_execution_model_from_args,
+        parse_dataset_specs,
+        parse_intervals,
+        resolve_window_sizes,
+    )
+
+    assert parse_intervals("60, 240,1440") == [60, 240, 1440]
+    csv_file = tmp_path / "data.csv"
+    csv_file.write_text("timestamp,open,high,low,close\n", encoding="utf-8")
+    specs = parse_dataset_specs([f"60={csv_file}"])
+    assert specs[60] == csv_file.resolve()
+
+    parser = argparse.ArgumentParser()
+    add_walk_forward_cli_args(parser, include_warmup=True, default_warmup=0)
+    args = parser.parse_args(["--train", "50", "--validation", "10", "--test", "15", "--spread-bps", "5"])
+    model = build_execution_model_from_args(parser, args)
+    assert model.spread_bps == 5.0
+    assert resolve_window_sizes(args, 200) == (50, 10, 15, 15)

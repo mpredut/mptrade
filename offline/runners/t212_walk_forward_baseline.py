@@ -53,9 +53,12 @@ from offline.backtests.datasets import (  # noqa: E402
     validate_dataset,
 )
 from offline.backtests.evaluation import (  # noqa: E402
+    add_walk_forward_cli_args,
     assess_decision_evidence,
     automatic_window_sizes,
+    build_execution_model_from_args,
     evaluate_walk_forward,
+    resolve_window_sizes,
 )
 from offline.backtests.execution import ExecutionModel  # noqa: E402
 
@@ -92,21 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fx-dataset", type=Path, help="a frozen FX OHLC CSV")
     parser.add_argument("--fx-symbol", help="override simbol Yahoo FX, ex. EURUSD=X")
     parser.add_argument("--fx-invert", action="store_true", help="invert the FX close")
-    parser.add_argument("--spread-bps", type=float, default=0.0)
-    parser.add_argument("--market-slippage-bps", type=float, default=0.0)
-    parser.add_argument("--partial-fill-ratio", type=float, default=1.0)
-    parser.add_argument(
-        "--intrabar-policy", choices=("buy_first", "sell_first", "worst_case"),
-        default="buy_first",
-    )
-    parser.add_argument("--train", type=int)
-    parser.add_argument("--validation", type=int)
-    parser.add_argument("--test", type=int)
-    parser.add_argument("--step", type=int)
-    parser.add_argument(
-        "--warmup", type=int,
-        help="preceding signal bars; defaults to 12 when the DCA gate is active",
-    )
+    add_walk_forward_cli_args(parser, include_warmup=True, default_warmup=None)
     parser.add_argument(
         "--output-dir", type=Path, default=ROOT / "offline/results/t212_walk_forward",
     )
@@ -127,24 +116,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--dataset and --seed-dataset are alternatives")
     if args.fx_to_usd is not None and args.fx_to_usd <= 0:
         parser.error("--fx-to-usd must be positive")
-    try:
-        execution = ExecutionModel(
-            spread_bps=args.spread_bps,
-            market_slippage_bps=args.market_slippage_bps,
-            partial_fill_ratio=args.partial_fill_ratio,
-            intrabar_policy=args.intrabar_policy,
-        )
-    except ValueError as exc:
-        parser.error(str(exc))
-
-    explicit = (args.train, args.validation, args.test)
-    if any(value is not None for value in explicit) and not all(value is not None for value in explicit):
-        parser.error("--train, --validation and --test are given together")
-    if any(value is not None and value <= 0 for value in (*explicit, args.step)):
-        parser.error("the walk-forward sizes must be positive")
+    execution = build_execution_model_from_args(parser, args)
     warmup = (12 if params.dca_trend_gate_pct > 0 else 0) if args.warmup is None else args.warmup
-    if warmup < 0:
-        parser.error("--warmup cannot be negative")
 
     source = args.dataset.expanduser().resolve() if args.dataset else None
     seed_source = args.seed_dataset.expanduser().resolve() if args.seed_dataset else None
@@ -199,11 +172,7 @@ def main(argv: list[str] | None = None) -> int:
             "source": str(fx_source) if fx_source else f"Yahoo chart {args.range}/{args.interval}",
             "frozen_file": str(fx_frozen), **fx_data,
         }
-    if args.train is None:
-        train, validation, test, step = automatic_window_sizes(len(records))
-    else:
-        train, validation, test = args.train, args.validation, args.test
-        step = args.step or test
+    train, validation, test, step = resolve_window_sizes(args, len(records))
 
     metadata = dataset_metadata(records)
     frozen_path = output_dir / "datasets" / f"{symbol}_{args.interval}_{metadata['sha256'][:12]}.csv"

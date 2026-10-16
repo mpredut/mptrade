@@ -48,30 +48,17 @@ from offline.backtests.datasets import (
     validate_dataset,
 )
 from offline.backtests.evaluation import (
+    add_walk_forward_cli_args,
     assess_decision_evidence,
     automatic_window_sizes,
+    build_execution_model_from_args,
     evaluate_walk_forward as _evaluate_walk_forward,
     iso_utc as _iso,
+    parse_dataset_specs as _parse_dataset_specs,
+    parse_intervals as _parse_intervals,
+    resolve_window_sizes,
 )
 from offline.backtests.execution import ExecutionModel
-
-
-def _parse_intervals(value: str) -> list[int]:
-    intervals = [int(part.strip()) for part in value.split(",") if part.strip()]
-    if not intervals or any(interval <= 0 for interval in intervals):
-        raise argparse.ArgumentTypeError("intervals must be positive minutes")
-    return intervals
-
-
-def _parse_dataset_specs(specs: list[str]) -> dict[int, Path]:
-    result = {}
-    for spec in specs:
-        try:
-            interval, path = spec.split("=", 1)
-            result[int(interval)] = Path(path).expanduser().resolve()
-        except (ValueError, OSError) as exc:
-            raise ValueError(f"invalid dataset spec {spec!r}; format is INTERVAL=PATH") from exc
-    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -86,17 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--intervals", type=_parse_intervals, default=[60, 240, 1440])
     parser.add_argument("--fee", type=float, default=None, help="fee per leg (pct), defaults to HL_FEE_PCT")
-    parser.add_argument("--spread-bps", type=float, default=0.0)
-    parser.add_argument("--market-slippage-bps", type=float, default=0.0)
-    parser.add_argument("--partial-fill-ratio", type=float, default=1.0)
-    parser.add_argument(
-        "--intrabar-policy", choices=("buy_first", "sell_first", "worst_case"),
-        default="buy_first",
-    )
-    parser.add_argument("--train", type=int, help="training bars; automatic by default")
-    parser.add_argument("--validation", type=int, help="validation bars; automatic by default")
-    parser.add_argument("--test", type=int, help="test bars; automatic by default")
-    parser.add_argument("--step", type=int, help="step size in bars; defaults to test size")
+    add_walk_forward_cli_args(parser, include_warmup=False)
     parser.add_argument(
         "--dataset", action="append", default=[], metavar="INTERVAL=PATH",
         help="frozen dataset CSV path for an interval (e.g. 60=path/to/candles.csv)",
@@ -143,16 +120,7 @@ def main(argv: list[str] | None = None) -> int:
             fee_pct=fee_pct,
         )
 
-    try:
-        execution = ExecutionModel(
-            spread_bps=args.spread_bps,
-            market_slippage_bps=args.market_slippage_bps,
-            partial_fill_ratio=args.partial_fill_ratio,
-            intrabar_policy=args.intrabar_policy,
-        )
-    except ValueError as exc:
-        parser.error(str(exc))
-
+    execution = build_execution_model_from_args(parser, args)
     dataset_map = _parse_dataset_specs(args.dataset)
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -179,14 +147,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[!] Insufficient bars for {coin} {interval}m ({len(records)} < 20); skipping.")
             continue
 
-        explicit = (args.train, args.validation, args.test)
-        if any(v is not None for v in explicit):
-            if not all(v is not None for v in explicit):
-                parser.error("--train, --validation and --test must be supplied together")
-            train_size, val_size, test_size = args.train, args.validation, args.test
-            step_size = args.step or test_size
-        else:
-            train_size, val_size, test_size, step_size = automatic_window_sizes(len(records))
+        train_size, val_size, test_size, step_size = resolve_window_sizes(args, len(records))
 
         if args.engine == "spot":
             if getattr(strat_params, "trend_interval", None) != interval:

@@ -456,7 +456,13 @@ def run_intelligence_backtest(
 
 
 if __name__ == "__main__":
-    symbols = sys.argv[1].split(",") if len(sys.argv) > 1 else ["BTCUSDC", "TAOUSDC", "ARBUSDC"]
+    from instrument_registry import symbols_for
+
+    symbols = (
+        sys.argv[1].split(",")
+        if len(sys.argv) > 1
+        else symbols_for("binance", role="tradeall_fire")
+    )
     all_results = {}
 
     for sym in symbols:
