@@ -273,11 +273,16 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     # any residual path.)
     orig_place_smart = getattr(getattr(ta, "po", None), "place_order_smart", None)
     orig_mkt_place = getattr(ta.mkt, "place", None)
+    orig_mkt_cancel = getattr(ta.mkt, "cancel_order", None)
+    orig_api_cancel_expired = getattr(getattr(ta, "api", None), "cancel_expired_orders", None)
     orig_log_decision = getattr(ta, "log_decision", None)
     orig_shadow_ref = getattr(ta, "_shadow_ref", None)
     orig_gate_log = getattr(ta, "GATE_OUTCOME_LOG", None)
 
     try:
+        ta.mkt.cancel_order = lambda *a, **kw: True
+        if hasattr(ta, "api"):
+            ta.api.cancel_expired_orders = lambda *a, **kw: None
         if kalman_primary:
             # PRIMARY KALMAN MODE: the old model only LOGS (its orders are not
             # executes); the broker is driven exclusively by the Kalman transitions.
@@ -434,6 +439,10 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
             ta.po.place_order_smart = orig_place_smart
         if orig_mkt_place is not None:
             ta.mkt.place = orig_mkt_place
+        if orig_mkt_cancel is not None:
+            ta.mkt.cancel_order = orig_mkt_cancel
+        if orig_api_cancel_expired is not None and hasattr(ta, "api"):
+            ta.api.cancel_expired_orders = orig_api_cancel_expired
         if orig_log_decision is not None:
             ta.log_decision = orig_log_decision
         ta._shadow_ref = orig_shadow_ref
