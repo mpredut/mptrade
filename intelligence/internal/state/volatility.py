@@ -33,6 +33,19 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float) -> 
 
     p0 = float(prices[0])
     pn = float(prices[-1])
+    tbuf = getattr(prices, "_trend_buf", None)
+    if (
+        tbuf is not None
+        and len(tbuf.prices) == n
+        and tbuf.prices[0] == p0
+        and tbuf.prices[-1] == pn
+    ):
+        std = tbuf.log_return_std(0, n - 1)
+        if std is not None:
+            if std == 0.0:
+                return 0.0
+            return round(std * math.sqrt(3600.0 / sample_rate_sec) * 100.0, 4)
+
     cache_key = (n, p0, pn, round(float(sample_rate_sec), 3))
     cached = _vol_memo_cache.get(cache_key)
     if cached is not None:

@@ -123,6 +123,8 @@ class IncrementalTrendBuffer:
         self.p1 = []
         self.p2 = []
         self.pg2 = []
+        self.plr2 = []
+        self.nonpos = []
         self.offset = 0
         self.base_p0 = 0.0
         self.base_p1 = 0.0
@@ -136,11 +138,14 @@ class IncrementalTrendBuffer:
         self.p1.clear()
         self.p2.clear()
         self.pg2.clear()
+        self.plr2.clear()
+        self.nonpos.clear()
         self.offset = 0
         self.base_p0 = self.base_p1 = self.base_p2 = 0.0
         self.y_ref = None
 
     def append(self, price: float, ts_ms: int = 0) -> None:
+        import math
         y = float(price)
         if self.y_ref is None:
             self.y_ref = y
@@ -162,6 +167,13 @@ class IncrementalTrendBuffer:
             self.pg2.append(prev_pg2)
         else:
             self.pg2.append(self.pg2[-1] if i > 0 else 0.0)
+        if i >= 1 and self.prices[i - 1] > 0.0 and y > 0.0:
+            lr = math.log(y / self.prices[i - 1])
+            self.plr2.append(self.plr2[-1] + lr * lr)
+        else:
+            self.plr2.append(self.plr2[-1] if i > 0 else 0.0)
+        prev_np = self.nonpos[-1] if i > 0 else 0
+        self.nonpos.append(prev_np + (1 if y <= 0.0 else 0))
 
     def _rebase(self) -> None:
         if not self.prices:
@@ -188,6 +200,8 @@ class IncrementalTrendBuffer:
         del self.p1[:idx]
         del self.p2[:idx]
         del self.pg2[:idx]
+        del self.plr2[:idx]
+        del self.nonpos[:idx]
         self.offset += idx
         if not self.prices:
             self.clear()
@@ -278,6 +292,24 @@ class IncrementalTrendBuffer:
 
         return final_trend, growth_coefficient, slope_full, gradient_recent, epsilon
 
+    def log_return_std(self, a: int, b: int) -> float | None:
+        """Return O(1) population std of log returns on slice [a, b] if all prices > 0."""
+        import math
+        n = b - a + 1
+        if n < 20:
+            return None
+        np_before = self.nonpos[a - 1] if a > 0 else (self.nonpos[0] - (1 if self.prices[0] <= 0.0 else 0))
+        if (self.nonpos[b] - np_before) > 0:
+            return None
+        m = n - 1
+        mean_lr = math.log(self.prices[b] / self.prices[a]) / m
+        sum_lr2 = self.plr2[b] - self.plr2[a]
+        var_lr = max(0.0, sum_lr2 / m - mean_lr * mean_lr)
+        return math.sqrt(var_lr)
+
+
+class _PriceDeque(deque):
+    __slots__ = ("_trend_buf",)
 
 
 class PriceWindow:
@@ -293,9 +325,10 @@ class PriceWindow:
         # WS/Cache24 updates on a different thread from evaluation. Protect mutation
         # and iteration of both price collections.
         self._lock = threading.RLock()
-        self.prices = deque(maxlen=self.window_size)
-        self.sorted_prices = []
         self._trend_buf = IncrementalTrendBuffer()
+        self.prices = _PriceDeque(maxlen=self.window_size)
+        self.prices._trend_buf = self._trend_buf
+        self.sorted_prices = []
 
         if initial_prices:
             for price in initial_prices[-self.window_size:]:
@@ -318,13 +351,25 @@ class PriceWindow:
             if new_size != self.window_size:
                 self.window_size = new_size
                 if len(self.prices) > new_size:
-                    kept = list(self.prices)[-new_size:]
-                    self.prices = deque(kept, maxlen=new_size)
-                    self.sorted_prices = sorted(self.prices)
+                    drop = len(self.prices) - new_size
+                    if drop <= 64 and len(self.sorted_prices) == len(self.prices):
+                        for _ in range(drop):
+                            oldest_price = self.prices.popleft()
+                            idx = bisect_left(self.sorted_prices, oldest_price)
+                            if idx < len(self.sorted_prices) and self.sorted_prices[idx] == oldest_price:
+                                del self.sorted_prices[idx]
+                        self.prices = _PriceDeque(self.prices, maxlen=new_size)
+                        self.prices._trend_buf = self._trend_buf
+                    else:
+                        kept = list(self.prices)[-new_size:]
+                        self.prices = _PriceDeque(kept, maxlen=new_size)
+                        self.prices._trend_buf = self._trend_buf
+                        self.sorted_prices = sorted(self.prices)
                     if len(self._trend_buf.prices) > new_size:
                         self._trend_buf.trim_front(len(self._trend_buf.prices) - new_size)
                 else:
-                    self.prices = deque(self.prices, maxlen=new_size)
+                    self.prices = _PriceDeque(self.prices, maxlen=new_size)
+                    self.prices._trend_buf = self._trend_buf
 
     def on_price_update(self, symbol: str, ts_ms: int, price: float) -> None:
         """Update the window from a ``Cache24PriceManager`` callback."""

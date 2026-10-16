@@ -174,20 +174,36 @@ def make_decision_logger(out_dir, clock):
 
 
 _TICK_SLICE_CACHE = {}
+_FILE_TICKS_CACHE = {}
 
 
 def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
     try:
-        st = os.stat(path)
-        file_sig = (st.st_mtime_ns, st.st_size)
+        with open(path, "r", encoding="utf-8") as f:
+            head_line = f.readline()
     except OSError:
-        file_sig = None
-    cache_key = (path, file_sig, symbol, start_ts, end_ts)
+        head_line = ""
+    file_key = (path, symbol, head_line)
+    full_ticks = _FILE_TICKS_CACHE.get(file_key)
+    if full_ticks is not None:
+        for ts, price in full_ticks:
+            if ts < start_ts:
+                continue
+            if end_ts is not None and ts > end_ts:
+                if ts > end_ts + 60.0:
+                    break
+                continue
+            yield ts, price
+        return
+
+    cache_key = (path, symbol, head_line, start_ts, end_ts)
     cached = _TICK_SLICE_CACHE.get(cache_key)
     if cached is not None:
         yield from cached
         return
+
     ticks = []
+    all_ticks = [] if end_ts is None else None
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -201,11 +217,19 @@ def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
                 continue
             ts_ms, price = rec["i"]
             ts = ts_ms / 1000.0
+            if all_ticks is not None:
+                all_ticks.append((ts, price))
             if ts < start_ts:
                 continue
             if end_ts is not None and ts > end_ts:
+                if ts > end_ts + 60.0:
+                    break
                 continue
             ticks.append((ts, price))
+    if all_ticks is not None:
+        if len(_FILE_TICKS_CACHE) >= 4:
+            _FILE_TICKS_CACHE.clear()
+        _FILE_TICKS_CACHE[file_key] = all_ticks
     if len(_TICK_SLICE_CACHE) >= 8:
         _TICK_SLICE_CACHE.clear()
     _TICK_SLICE_CACHE[cache_key] = ticks

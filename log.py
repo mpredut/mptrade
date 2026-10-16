@@ -189,7 +189,8 @@ def _delete_oldest_log(folder: str) -> None:
 
 def _cleanup_loop() -> None:
     while not _cleanup_stop.is_set():
-        _cleanup_event.wait(timeout=5.0)
+        if not _cleanup_event.wait(timeout=5.0):
+            continue
         _cleanup_event.clear()
 
         if _cleanup_stop.is_set():
