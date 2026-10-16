@@ -280,7 +280,7 @@ def _bump_counter() -> bool:
 
 def _resolve_app_name() -> str:
     entry = sys.argv[0] if sys.argv and sys.argv[0] else __file__
-    name  = os.path.splitext(os.path.basename(entry))[0]
+    name  = os.path.splitext(os.path.basename(entry))[0].lstrip("-")
     return name or "app"
 
 

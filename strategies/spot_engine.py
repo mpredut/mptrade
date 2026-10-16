@@ -1242,7 +1242,7 @@ class Strategy:
             fast_profit_guard_enabled=self.p.fast_profit_guard,
             fast_profit_mult=self.p.fast_profit_mult,
             fast_profit_window_sec=self.p.fast_profit_window_min * 60.0,
-            fast_profit_drop_pct=self.p.fast_profit_drop_pct / 100.0,
+            fast_profit_drop_pct=self.p.fast_profit_drop_pct,
             reentry_enabled=True,
             reentry_sl_bounce_pct=self.p.reentry_sl_bounce_pct / 100.0,
             reentry_drop_pct=self.p.reentry_drop_pct / 100.0,
@@ -1303,6 +1303,7 @@ class Strategy:
                 if not placed:
                     log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
                 return True
+            return False
         in_sl = (
             loss_pct >= self.p.stop_loss_pct
             or are_close(loss_pct, self.p.stop_loss_pct, self.p.reentry_tolerance_pct)
@@ -1686,7 +1687,8 @@ class Strategy:
             self.exit_manager = self._init_exit_manager()
         mgr = self.exit_manager
         mgr.config.reentry_drop_pct = vol_pct_to_ratio(self.p.reentry_drop_pct)
-        mgr.config.reentry_pullback_pct = vol_pct_to_ratio(self.p.reentry_pullback_pct)
+        pullback_pct, _ = self._effective_reentry_pullback_pct()
+        mgr.config.reentry_pullback_pct = vol_pct_to_ratio(pullback_pct)
         mgr.config.reentry_bear_bounce_pct = vol_pct_to_ratio(self.p.reentry_bear_bounce_pct)
         mgr.config.reentry_sl_bounce_pct = vol_pct_to_ratio(self.p.reentry_sl_bounce_pct)
         mgr.config.reentry_ttl_hours = self.p.reentry_ttl_hours
@@ -2029,7 +2031,7 @@ class Strategy:
                 self.exit_manager.config.fast_profit_guard_enabled = self.p.fast_profit_guard
                 self.exit_manager.config.fast_profit_mult = self.p.fast_profit_mult
                 self.exit_manager.config.fast_profit_window_sec = self.p.fast_profit_window_min * 60.0
-                self.exit_manager.config.fast_profit_drop_pct = self.p.fast_profit_drop_pct / 100.0
+                self.exit_manager.config.fast_profit_drop_pct = self.p.fast_profit_drop_pct
 
                 snapshot = self._create_position_snapshot(price, avg, held, regime=regime)
 

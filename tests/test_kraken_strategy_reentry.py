@@ -1127,6 +1127,51 @@ class TestSpotDCAMultiHorizonIntegration(unittest.TestCase):
         st.step(97.2)
         self.assertTrue(st._has_open("buy"))
 
+    def test_batch2_spot_engine_regressions(self):
+        with self.subTest("non_mhdsl_stop_loss_does_not_fall_through_to_mhdsl"):
+            st = _make_strategy(
+                stop_loss_pct=10.0,
+                sl_mhdsl_enabled=False,
+                reentry_tolerance_pct=0.05,
+            )
+            st.s.update(qty=1.0, cost=100.0, entry_price=100.0)
+            # 90.02 is above hard stop 90.00 (sr.hit_stop is False),
+            # but within 0.05% tolerance of 90.00. Must return False without falling through
+            # to the MHDSL block (which would crash when exit_manager is None or call evaluate_stop_loss).
+            self.assertFalse(st._check_stop_loss(90.02))
+
+        with self.subTest("adaptive_reentry_pullback_wired_into_reentry_gate"):
+            st = _make_strategy(
+                reentry_hybrid_enabled=True,
+                reentry_pullback_pct=1.0,
+                reentry_pullback_adaptive=True,
+                reentry_pullback_k=1.0,
+                reentry_pullback_min=0.8,
+                reentry_pullback_max=3.5,
+            )
+            st.s.update(last_sell_price=100.0, post_sell_peak=130.0, last_sell_ts=1000.0)
+            st._shadow_vol_1h = lambda: 2.5  # adaptive pullback = 2.5% (fixed was 1.0%)
+            mock_regime = MagicMock(regime="bull", closes=[100.0] * 30, is_valid=True)
+            with patch.object(st, "_is_trend_up", return_value=True), \
+                 patch.object(st, "_regime_matches", return_value=False):
+                # 128.0 is a 1.54% pullback from 130.0: passes fixed 1.0%, blocked by adaptive 2.5%
+                allowed_128, _ = st._evaluate_reentry_gate(128.0, mock_regime, 1010.0)
+                self.assertFalse(allowed_128)
+                # 126.5 is a 2.69% pullback from 130.0: passes adaptive 2.5%
+                allowed_1265, _ = st._evaluate_reentry_gate(126.5, mock_regime, 1020.0)
+                self.assertTrue(allowed_1265)
+
+        with self.subTest("mdhtp_fast_profit_drop_pct_not_divided_by_100"):
+            st = _make_strategy(
+                tp_mdhtp_enabled=True,
+                takeprofit_pct=5.0,
+                fast_profit_guard=True,
+                fast_profit_mult=2.0,
+                fast_profit_window_min=5.0,
+                fast_profit_drop_pct=1.0,
+            )
+            self.assertAlmostEqual(st.exit_manager.config.fast_profit_drop_pct, 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

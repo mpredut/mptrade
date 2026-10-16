@@ -157,6 +157,9 @@ def _load_datasets(report: dict, baseline_dir: Path | None = None) -> dict[int, 
             except ValueError:
                 from binance_api.market_data import parse_interval_minutes
                 interval = parse_interval_minutes(str(interval_raw))
+        elif report.get("dataset", {}).get("median_step_seconds"):
+            step_min = int(round(float(report["dataset"]["median_step_seconds"]) / 60.0))
+            interval = 1440 if step_min >= 1440 else max(1, step_min)
         elif report.get("execution_model", {}).get("calendar_periods_per_year") == 252.0:
             interval = 1440
         else:

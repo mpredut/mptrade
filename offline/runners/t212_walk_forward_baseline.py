@@ -207,6 +207,8 @@ def main(argv: list[str] | None = None) -> int:
             "profile": args.profile,
             "ticker": config.get("T212_TICKER"),
             "yahoo_symbol": symbol,
+            "interval": args.interval,
+            "interval_minutes": interval_minutes,
             "execute_live": config.get("STRAT_EXECUTE", "false").lower() == "true",
         },
         "strategy_params": dataclasses.asdict(params),

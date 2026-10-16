@@ -1248,13 +1248,33 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 _LAST_EXIT_KIND[symbol] = "STOP"
         last_exit_kind = explicit_exit_kind or "SELL"
 
+        prev_reentry_state = dict(_REENTRY_STATE.get(symbol, {}))
+        if not prev_reentry_state:
+            prev_reentry_state = {
+                "trough": min(sell_price, current_price),
+                "peak": max(sell_price, current_price),
+                "peak_bounce": current_price,
+                "started_at": current_time_s,
+            }
+        else:
+            prev_trough = prev_reentry_state.get("trough")
+            if prev_trough is None or current_price < prev_trough:
+                prev_reentry_state["trough"] = current_price
+                prev_reentry_state["peak_bounce"] = current_price
+            else:
+                prev_reentry_state["trough"] = min(prev_trough, current_price)
+            prev_peak = prev_reentry_state.get("peak")
+            prev_reentry_state["peak"] = (
+                current_price if prev_peak is None else max(prev_peak, current_price)
+            )
+
         reentry_snap = ReentrySnapshot(
             symbol=symbol,
             current_price=current_price,
             last_sell_price=sell_price,
             last_exit_kind=last_exit_kind,
-            post_sell_peak=_REENTRY_STATE.get(symbol, {}).get("peak", max(sell_price, current_price)),
-            post_sell_trough=_REENTRY_STATE.get(symbol, {}).get("trough", min(sell_price, current_price)),
+            post_sell_peak=prev_reentry_state["peak"],
+            post_sell_trough=prev_reentry_state["trough"],
             current_time_s=current_time_s,
             last_sell_time_s=sell_time,
             trend_up=current_trend_up,
@@ -1265,18 +1285,10 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         price_decrease_versus_sell = reentry_snap.sale_drop_ratio
         print(f"(price_decrease_versus_sell: {reentry_snap.sale_drop_pct}%)")
 
-        prev_reentry_state = dict(_REENTRY_STATE.get(symbol, {}))
-        if not prev_reentry_state:
-            prev_reentry_state = {
-                "trough": reentry_snap.post_sell_trough or min(sell_price, current_price),
-                "peak": reentry_snap.post_sell_peak or max(sell_price, current_price),
-                "peak_bounce": current_price,
-                "started_at": current_time_s,
-            }
-
         if not current_trend_up:
             if prev_reentry_state:
                 _REENTRY_STATE[symbol] = prev_reentry_state
+                _save_mt_state()
             print(f"No action taken, because trend is down!")
             return
 

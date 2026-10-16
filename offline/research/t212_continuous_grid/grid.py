@@ -26,7 +26,8 @@ import strategy as strat                  # noqa: E402
 from ipo_common import parse_dotenv       # noqa: E402
 
 FLAGS = {"peak": False}
-_orig_step = strat.Strategy.step
+_target_strat = getattr(rp, "_strat", strat)
+_orig_step = _target_strat.Strategy.step
 
 
 def _step(self, price, *args, **kwargs):
@@ -37,6 +38,7 @@ def _step(self, price, *args, **kwargs):
     return _orig_step(self, price, *args, **kwargs)
 
 
+_target_strat.Strategy.step = _step
 strat.Strategy.step = _step
 
 PROFILES = {p: parse_dotenv(os.path.join(REPO, "212trading", f"config.{p}.env"))

@@ -1683,17 +1683,6 @@ class Strategy:
                         }
                         self.s["tp_pending_exit"] = pending_exit
                         log(f"  [STRAT] MDHTP EXIT TRIGGERED ({decision.reason}) — initiating cancellation & exit sequence")
-                    elif decision.action == ExitAction.HOLD:
-                        if self.ticker in self.exit_manager.tp_ride_state:
-                            ride_state = self.exit_manager.tp_ride_state.get(self.ticker, {})
-                            peak_px = ride_state.get("peak_price", price)
-                            self.s["trail_peak"] = peak_px
-                            self._cancel_open("SELL")
-                            log(f"  [STRAT] above the TP, RIDING IT ({decision.reason}) (peak {peak_px:.2f})")
-                            return
-                        else:
-                            self.s["trail_peak"] = None
-                            self._cancel_open("SELL")
 
                 if pending_exit:
                     existing_exit = next(

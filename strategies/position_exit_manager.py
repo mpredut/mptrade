@@ -1127,7 +1127,7 @@ class PositionExitManager:
 
                 if self.config.reentry_bear_bounce_pct > 0:
                     bear_bounce_ratio = snapshot.bounce_ratio(trough)
-                    if bear_bounce_ratio < self.config.reentry_bear_bounce_pct:
+                    if not snapshot.has_bounced(trough, self.config.reentry_bear_bounce_pct, self.config.reentry_tolerance_pct):
                         target_bear = trough * (1.0 + self.config.reentry_bear_bounce_pct)
                         return ReentryDecision(
                             ReentryAction.WAIT,
