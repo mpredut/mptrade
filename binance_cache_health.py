@@ -46,8 +46,10 @@ HEALTH_PATH = os.path.join(
 _PROCESS_IDENTITY_REQUIRED = sys.platform.startswith("linux")
 _SYNC_FIELDS = {
     "Order": ("order_sync_at_ms", "order_cache_version"),
+    "CacheOrder": ("order_sync_at_ms", "order_cache_version"),
     "CacheOrderManager": ("order_sync_at_ms", "order_cache_version"),
     "Trade": ("trade_sync_at_ms", "trade_cache_version"),
+    "CacheTrade": ("trade_sync_at_ms", "trade_cache_version"),
     "CacheTradeManager": ("trade_sync_at_ms", "trade_cache_version"),
 }
 

@@ -177,20 +177,16 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
 
 
 
-# Simplified upward-trend check.
-def is_trend_up(symbol):
-    """Read instant trend directly from a fresh shared cache snapshot.
-
-    Recent gradient supplies fast momentum. The shared freshness guard prevents stale
-    files from influencing the unchanged upward-trend formula.
-    """
+# Simplified upward-trend check (supports default snapshot or arbitrary dynamic window).
+def is_trend_up(symbol, window_seconds=None, now=None):
+    """Evaluate upward trend via CachePriceShortTrend (primary snapshot or dynamic window)."""
     try:
         import cacheManager as cm
-        snap = cm.get_short_trend_manager().fresh_snapshot(symbol)
-        if snap:
-            slope = float(snap.get('gradient_recent', snap.get('slope_small', 0.0)) or 0.0)
-            gradient = float(snap.get('final_trend', 0.0) or 0.0)
-            return slope > 0 or (slope == 0 and gradient > 0)
+        mgr = cm.get_short_trend_manager()
+        if hasattr(mgr, "is_trend_up"):
+            return bool(mgr.is_trend_up(symbol, window_seconds=window_seconds, now=now))
+        snap = mgr.fresh_snapshot(symbol) if now is None else mgr.fresh_snapshot(symbol, now=now)
+        return cm.CachePriceShortTrendManager._eval_upward_formula(snap)
     except Exception as e:
         print(f"is_trend_up: snapshot direct failed ({e}) — treating it as neutral")
     return False   # Missing or stale data is neutral and does not block a profitable sale.

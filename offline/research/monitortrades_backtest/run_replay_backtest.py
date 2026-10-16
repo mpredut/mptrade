@@ -83,7 +83,7 @@ class _LiveSymbols:
 SYMBOLS = _LiveSymbols()
 
 
-def _neutral_is_trend_up(symbol):
+def _neutral_is_trend_up(symbol, window_seconds=None, now=None):
     """KEPT as a reference/manual fallback (it is no longer run_symbol's default,
     see ReplayTrendSource below) — still used by scheduled_pilot.py::_run_one
     (a separate loop of its own, UNTOUCHED in this pass — see 29 Jul). Deterministic,

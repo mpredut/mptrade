@@ -319,9 +319,11 @@ class BinancePriceStream(BinanceWSBase):
             data   = envelope.get("data", envelope)
             symbol = data["s"]
             price  = float(data["c"])
+            raw_ts = data.get("E") or data.get("C")
             with self._lock:
                 self._prices[symbol] = price
-            self._notify_subscribers(symbol, [price])
+            items = [price, int(raw_ts)] if raw_ts is not None else [price]
+            self._notify_subscribers(symbol, items)
         except (KeyError, ValueError, json.JSONDecodeError) as e:
             logger.warning("process_message error: %s | raw: %s", e, raw[:120])
 

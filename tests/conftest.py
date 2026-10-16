@@ -107,8 +107,9 @@ def _shutdown_runtime_threads_after_suite():
     bapi_ws.bapi_ws_manager.stop()
 
     forbidden = {
-        "BinanceTimeResync", "CacheTradeManager", "CacheOrderManager",
-        "CacheCurrentPriceManager", "NonBinanceTrendPoller",
+        "BinanceTimeResync", "CacheTrade", "CacheTradeManager",
+        "CacheOrder", "CacheOrderManager",
+        "CacheCurrentPrice", "CacheCurrentPriceManager", "NonBinanceTrendPoller",
         "InstantTrendFullEval", "InstantTrendFlush",
     }
     leaked = sorted(thread.name for thread in threading.enumerate()

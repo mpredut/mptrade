@@ -79,7 +79,8 @@ class ReplayTrendSource:
         self._prev_ts[symbol] = ts
         win.process_price(price)
 
-    def is_trend_up(self, symbol: str) -> bool:
+    def is_trend_up(self, symbol: str, window_seconds: Optional[float] = None,
+                    now: Optional[float] = None) -> bool:
         """Replicates EXACTLY the condition in monitortrades.is_trend_up() (slope>0 or
         slope==0 and gradient>0), reading from the REPLAY window, not the live file.
         Without enough data yet -> False (the same "neutral" fallback as today:

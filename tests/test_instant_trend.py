@@ -556,5 +556,145 @@ class TestCache24RecentEntriesBisect(unittest.TestCase):
             self.assertEqual(c24.get_recent_entries("NOPE", last_seconds=60), [])
 
 
+class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
+    """Verify O(1) prefix-sum trend buffer, 24trend/ persistence, provider timestamps, and renamings."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def test_incremental_buffer_matches_exact_formula_with_trims_and_appends(self):
+        import numpy as np
+        from pricewindow import IncrementalTrendBuffer, instant_trend_from_prices
+
+        rng = np.random.default_rng(123)
+        prices = 60000.0 + np.cumsum(rng.normal(0.5, 4.0, 400))
+
+        # 1. Tick-by-tick sequential append vs direct full-range calculation in parallel
+        seq_buf = IncrementalTrendBuffer()
+        for k in range(150):
+            seq_buf.append(float(prices[k]), 1000000 + k * 1000)
+            if k >= 5:
+                ft, gc, sf, gr, eps = seq_buf.eval_slice(0, k, sample_rate_sec=1.0, eps_k=1.0)
+                full_p = np.asarray(prices[: k + 1], dtype=np.float64)
+                exp_ft, exp_gc, exp_sf, exp_gr = instant_trend_from_prices(full_p, sample_rate_sec=1.0)
+                exp_eps = float(np.std(np.gradient(full_p)))
+                self.assertEqual(ft, exp_ft)
+                self.assertAlmostEqual(sf, exp_sf, places=8)
+                self.assertAlmostEqual(gr, exp_gr, places=8)
+                self.assertAlmostEqual(gc, exp_gc, places=8)
+                self.assertAlmostEqual(eps, exp_eps, places=8)
+
+        # 2. Front trim + tail append across arbitrary sub-slices
+        entries = [[1000000 + i * 1000, float(prices[i])] for i in range(300)]
+        buf = IncrementalTrendBuffer()
+        buf.sync_entries(entries)
+        entries = entries[50:] + [[1000000 + i * 1000, float(prices[i])] for i in range(300, 400)]
+        buf.sync_entries(entries)
+
+        for a, b, rate in [(0, len(entries) - 1, 0.8), (15, 220, 1.0), (0, 60, 2.0), (100, 105, 1.0)]:
+            ft, gc, sf, gr, eps = buf.eval_slice(a, b, sample_rate_sec=rate, eps_k=1.0)
+            sub_p = np.asarray([e[1] for e in entries[a : b + 1]], dtype=np.float64)
+            exp_ft, exp_gc, exp_sf, exp_gr = instant_trend_from_prices(sub_p, sample_rate_sec=rate)
+            exp_eps = float(np.std(np.gradient(sub_p)))
+            self.assertEqual(ft, exp_ft)
+            self.assertAlmostEqual(sf, exp_sf, places=8)
+            self.assertAlmostEqual(gr, exp_gr, places=8)
+            self.assertAlmostEqual(gc, exp_gc, places=8)
+            self.assertAlmostEqual(eps, exp_eps, places=8)
+
+    def test_24trend_live_and_hist_persistence_and_reader_fallback(self):
+        entries = _entries_trending(200, 1.0, 60000.0, 5.0)
+        c24_path = os.path.join(self.tmp, "cache_24price_BTCUSDT.json")
+        c24 = cm.Cache24Price(sync_ts=9999, symbols=["BTCUSDT"], filename=c24_path, api_client=mock_api)
+        c24.cache["BTCUSDT"] = [list(e) for e in entries]
+        c24.save_state_to_file()
+
+        cpm = cm.CacheCurrentPrice(
+            sync_ts=9999,
+            symbols=["BTCUSDT"],
+            filename=os.path.join(self.tmp, "cp.json"),
+            ws_manager=None,
+            api_client=mock_api,
+            market_api=mock_api,
+        )
+        trend_file = os.path.join(self.tmp, "cache_instant_trend.json")
+        writer = cm.CachePriceShortTrend(["BTCUSDT"], trend_file, writer=True)
+        writer.start_computation({"BTCUSDT": c24}, cpm)
+
+        # Request dynamic window 60s and flush writer
+        dyn60 = writer.get_instant_trend_for_window("BTCUSDT", 60)
+        self.assertIsNotNone(dyn60)
+        writer._write_file()
+
+        live_path = os.path.join(self.tmp, "24trend", "live_BTCUSDT.json")
+        self.assertTrue(os.path.exists(live_path))
+        with open(live_path, encoding="utf-8") as fh:
+            live_payload = json.load(fh)
+        # Ensure live_<SYMBOL>.json is keyed purely by window seconds without duplicate root fields
+        self.assertIn("60", live_payload)
+        for forbidden_root_key in ("ts", "current_price", "final_trend", "gradient_recent", "windows"):
+            self.assertNotIn(forbidden_root_key, live_payload)
+
+        # Historical fixed slice [t1, t2] persisted in hist_BTCUSDT.json
+        t1_ms = entries[20][0]
+        t2_ms = entries[150][0]
+        slice_res = writer.get_trend_for_slice("BTCUSDT", t1_ms, t2_ms)
+        self.assertIsNotNone(slice_res)
+        self.assertTrue(writer.is_trend_up_for_slice("BTCUSDT", t1_ms, t2_ms))
+
+        hist_path = os.path.join(self.tmp, "24trend", "hist_BTCUSDT.json")
+        self.assertTrue(os.path.exists(hist_path))
+        with open(hist_path, encoding="utf-8") as fh:
+            hist_payload = json.load(fh)
+        self.assertIn(f"{t1_ms}_{t2_ms}", hist_payload)
+
+        # Reader process without start_computation can serve hist slice from disk and compute new window from cache_24price
+        reader = cm.CachePriceShortTrend(["BTCUSDT"], trend_file, writer=False)
+        cached_slice = reader.get_trend_for_slice("BTCUSDT", t1_ms, t2_ms)
+        self.assertIsNotNone(cached_slice)
+        self.assertEqual(cached_slice["final_trend"], slice_res["final_trend"])
+
+        dyn120 = reader.get_instant_trend_for_window("BTCUSDT", 120)
+        self.assertIsNotNone(dyn120)
+        self.assertTrue(reader.is_trend_up("BTCUSDT", window_seconds=120))
+
+    def test_provider_timestamp_propagates_to_cache24(self):
+        from binance_api.bapi_ws import BinancePriceStream
+
+        stream = BinancePriceStream(["BTCUSDT"])
+        c24 = _make_cache24("BTCUSDT", [], self.tmp)
+        cpm = cm.CacheCurrentPrice(
+            sync_ts=9999,
+            symbols=["BTCUSDT"],
+            filename=os.path.join(self.tmp, "cp_ws.json"),
+            ws_manager=stream,
+            api_client=mock_api,
+            market_api=mock_api,
+        )
+        cpm.subscribe_price(c24)
+
+        provider_ts_ms = int(time.time() * 1000) - 4321
+        stream._process_message(json.dumps({
+            "s": "BTCUSDT",
+            "c": "64321.50",
+            "E": provider_ts_ms,
+        }))
+
+        self.assertEqual(cpm.cache["BTCUSDT"][0], [provider_ts_ms, 64321.50])
+        self.assertEqual(c24.cache["BTCUSDT"][-1], [provider_ts_ms, 64321.50])
+
+    def test_class_names_and_backward_compatible_aliases(self):
+        self.assertIs(cm.Cache24Price, cm.Cache24PriceManager)
+        self.assertIs(cm.Cache24LongPrice, cm.Cache24LongPriceManager)
+        self.assertIs(cm.CacheSparsePrice, cm.CacheSparsePriceManager)
+        self.assertIs(cm.CacheCurrentPrice, cm.CacheCurrentPriceManager)
+        self.assertIs(cm.CachePriceShortTrend, cm.CachePriceShortTrendManager)
+        self.assertIs(cm.CachePriceLongTrend, cm.CachePriceLongTrendManager)
+        self.assertIs(cm.CacheAssetValue, cm.CacheAssetValueManager)
+        self.assertIs(cm.CacheTrade, cm.CacheTradeManager)
+        self.assertIs(cm.CacheOrder, cm.CacheOrderManager)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

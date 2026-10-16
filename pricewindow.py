@@ -108,6 +108,164 @@ def instant_trend_from_prices(prices, sample_rate_sec):
     return final_trend, growth_coefficient, slope_full, gradient_recent
 
 
+class IncrementalTrendBuffer:
+    """Maintain O(1) cumulative prefix statistics over [ts_ms, price] series.
+
+    Supports O(1) per-tick append, O(1) amortized front-trimming, and O(1) exact
+    evaluation of linear regression slope, recent telescoped gradient, growth
+    coefficient, and gradient noise epsilon on any sub-slice [a, b].
+    """
+
+    def __init__(self):
+        self.timestamps = []
+        self.prices = []
+        self.p0 = []
+        self.p1 = []
+        self.p2 = []
+        self.pg2 = []
+        self.offset = 0
+        self.base_p0 = 0.0
+        self.base_p1 = 0.0
+        self.base_p2 = 0.0
+        self.y_ref = None
+
+    def clear(self):
+        self.timestamps.clear()
+        self.prices.clear()
+        self.p0.clear()
+        self.p1.clear()
+        self.p2.clear()
+        self.pg2.clear()
+        self.offset = 0
+        self.base_p0 = self.base_p1 = self.base_p2 = 0.0
+        self.y_ref = None
+
+    def append(self, price: float, ts_ms: int = 0) -> None:
+        y = float(price)
+        if self.y_ref is None:
+            self.y_ref = y
+        i = len(self.prices)
+        k = self.offset + i
+        dy = y - self.y_ref
+        self.timestamps.append(int(ts_ms))
+        self.prices.append(y)
+        prev0 = self.p0[-1] if i > 0 else self.base_p0
+        prev1 = self.p1[-1] if i > 0 else self.base_p1
+        prev2 = self.p2[-1] if i > 0 else self.base_p2
+        self.p0.append(prev0 + dy)
+        self.p1.append(prev1 + k * dy)
+        self.p2.append(prev2 + dy * dy)
+        if i >= 2:
+            g_prev = 0.5 * (self.prices[i] - self.prices[i - 2])
+            prev_pg2 = self.pg2[i - 2] + g_prev * g_prev
+            self.pg2[i - 1] = prev_pg2
+            self.pg2.append(prev_pg2)
+        else:
+            self.pg2.append(self.pg2[-1] if i > 0 else 0.0)
+
+    def trim_front(self, count: int) -> None:
+        if count <= 0:
+            return
+        idx = min(int(count), len(self.prices))
+        if idx <= 0:
+            return
+        self.base_p0 = self.p0[idx - 1]
+        self.base_p1 = self.p1[idx - 1]
+        self.base_p2 = self.p2[idx - 1]
+        del self.timestamps[:idx]
+        del self.prices[:idx]
+        del self.p0[:idx]
+        del self.p1[:idx]
+        del self.p2[:idx]
+        del self.pg2[:idx]
+        self.offset += idx
+        if not self.prices:
+            self.clear()
+
+    def sync_entries(self, entries) -> None:
+        """Synchronize incrementally with an ordered list of [ts_ms, price] entries."""
+        if not entries:
+            self.clear()
+            return
+        if not self.timestamps:
+            for e in entries:
+                self.append(e[1], e[0])
+            return
+        first_ts, first_p = int(entries[0][0]), float(entries[0][1])
+        if self.timestamps[0] < first_ts:
+            trim_idx = bisect_left(self.timestamps, first_ts)
+            if trim_idx > 0:
+                self.trim_front(trim_idx)
+        if (
+            not self.timestamps
+            or self.timestamps[0] != first_ts
+            or self.prices[0] != first_p
+            or len(entries) < len(self.timestamps)
+        ):
+            self.clear()
+            for e in entries:
+                self.append(e[1], e[0])
+            return
+        cur_len = len(self.timestamps)
+        last_ts, last_p = int(entries[cur_len - 1][0]), float(entries[cur_len - 1][1])
+        if self.timestamps[-1] != last_ts or self.prices[-1] != last_p:
+            self.clear()
+            for e in entries:
+                self.append(e[1], e[0])
+            return
+        for idx in range(cur_len, len(entries)):
+            e = entries[idx]
+            self.append(e[1], e[0])
+
+    def eval_slice(self, a: int, b: int, sample_rate_sec: float = DEFAULT_SAMPLE_RATE_SEC,
+                   eps_k: float = 1.0):
+        """Evaluate (final_trend, growth_coefficient, slope_full, gradient_recent, epsilon)
+        on inclusive index range [a, b] in O(1) using cumulative prefix sums."""
+        n = b - a + 1
+        if a < 0 or b >= len(self.prices) or n < 2:
+            return 0, 0.0, 0.0, 0.0, 0.0
+        p = self.prices
+        s0 = self.p0[b] - (self.p0[a - 1] if a > 0 else self.base_p0)
+        s1_raw = self.p1[b] - (self.p1[a - 1] if a > 0 else self.base_p1)
+        s2 = self.p2[b] - (self.p2[a - 1] if a > 0 else self.base_p2)
+        ss_y = s2 - (s0 * s0) / n
+        if ss_y <= 1e-18 or all(p[i] == p[a] for i in (a, (a + b) // 2, b)) and ss_y <= 1e-12:
+            slope_full = 0.0
+        else:
+            cov_xy = s1_raw - (self.offset + a + 0.5 * (n - 1)) * s0
+            slope_full = float((12.0 * cov_xy) / (n * (n * n - 1)))
+
+        recent_n = (
+            max(2, int(RECENT_GRADIENT_SECONDS / sample_rate_sec))
+            if sample_rate_sec and sample_rate_sec > 0
+            else 2
+        )
+        sum_g_all = (p[b] - p[a]) + 0.5 * ((p[b] - p[b - 1]) + (p[a + 1] - p[a]))
+        if n > recent_n:
+            r = recent_n
+            gradient_recent = float(
+                (3.0 * p[b] - p[b - 1] - p[b - r + 1] - p[b - r]) / (2.0 * r)
+            )
+        else:
+            gradient_recent = float(sum_g_all / n)
+
+        growth_coefficient = float((slope_full + gradient_recent) / 2.0)
+        final_trend = 1 if growth_coefficient > 0 else (-1 if growth_coefficient < 0 else 0)
+
+        if n < 3:
+            epsilon = 0.0
+        else:
+            g0 = p[a + 1] - p[a]
+            gn = p[b] - p[b - 1]
+            sum_g2 = g0 * g0 + (self.pg2[b - 1] - self.pg2[a]) + gn * gn
+            mean_g = sum_g_all / n
+            var_g = max(0.0, sum_g2 / n - mean_g * mean_g)
+            epsilon = float(eps_k * np.sqrt(var_g))
+
+        return final_trend, growth_coefficient, slope_full, gradient_recent, epsilon
+
+
+
 class PriceWindow:
     def __init__(self, symbol, window_size, sample_rate_sec=None, initial_prices=None,
                  window_seconds=None):
