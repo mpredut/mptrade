@@ -4,8 +4,10 @@ import os
 import sqlite3
 
 from orchestratorOS.admin.prune_llm_threads import (
-    prune_old_cli_threads,
+    ensure_proto_synced,
     is_automated_thread,
+    prune_old_cli_threads,
+    sync_thread_title,
 )
 
 
@@ -275,4 +277,91 @@ class TestPruneCliThreads:
         assert not os.path.exists(os.path.join(cli_base, "conversations", "auto-recent-0.db-wal"))
         assert not os.path.exists(os.path.join(cli_base, "conversations", "auto-recent-0.db-shm"))
 
+    def test_multi_turn_step_count_protected_even_with_all(self, tmp_path):
+        cli_base = str(tmp_path / "cli")
+        os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
+        db_path = os.path.join(cli_base, "conversation_summaries.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE conversation_summaries (
+                conversation_id text PRIMARY KEY,
+                title text,
+                preview text,
+                last_modified_time datetime,
+                project_id text,
+                step_count integer
+            )
+        """)
+        now = datetime.now(timezone.utc)
+        ts_old = (now - timedelta(days=5)).isoformat()
+        conn.execute(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)",
+            ("multi-turn-user-1", "Implementing feature X", "Let us refactor the code", ts_old, "autonommptrade", 42),
+        )
+        conn.execute(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)",
+            ("one-shot-auto-1", "Quick check", "Single turn prompt", ts_old, "autonommptrade", 4),
+        )
+        conn.commit()
+        conn.close()
 
+        pruned, _ = prune_old_cli_threads(
+            cli_base=cli_base,
+            retention_days=1.0,
+            all_threads_in_project=True,
+            dry_run=False,
+        )
+        assert pruned == 1
+        conn = sqlite3.connect(db_path)
+        remaining = {r[0] for r in conn.execute("SELECT conversation_id FROM conversation_summaries").fetchall()}
+        conn.close()
+        assert remaining == {"multi-turn-user-1"}
+
+    def test_sync_thread_title_updates_annotations_and_proto(self, tmp_path):
+        cli_base = str(tmp_path / "cli")
+        os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
+        os.makedirs(os.path.join(cli_base, "annotations"), exist_ok=True)
+        cid = "11111111-2222-3333-4444-555555555555"
+        with open(os.path.join(cli_base, "conversations", f"{cid}.db"), "wb") as f:
+            f.write(b"sqlite")
+
+        # Build a minimal TrajectorySummary with f1="My Preview" and f2=4
+        raw_summary = b"\x0a\x0aMy Preview\x10\x04"
+        db_path = os.path.join(cli_base, "conversation_summaries.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE conversation_summaries (
+                conversation_id text PRIMARY KEY,
+                title text,
+                preview text,
+                raw_summary blob
+            )
+        """)
+        conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?)", (cid, "", "My Preview", raw_summary))
+        conn.commit()
+        conn.close()
+
+        cid_b = cid.encode("utf-8")
+        map_entry = b"\x0a" + bytes([len(cid_b)]) + cid_b + b"\x12" + bytes([len(raw_summary)]) + raw_summary
+        proto_record = b"\x0a" + bytes([len(map_entry)]) + map_entry
+        for pb_name in ("jetbox_summaries_proto.pb", "agyhub_summaries_proto.pb"):
+            with open(os.path.join(cli_base, pb_name), "wb") as f:
+                f.write(proto_record)
+
+        assert ensure_proto_synced(cli_base) == 0
+        assert sync_thread_title(cid, "Custom Thread Title", cli_base) is True
+
+        pbtxt_path = os.path.join(cli_base, "annotations", f"{cid}.pbtxt")
+        assert os.path.exists(pbtxt_path)
+        with open(pbtxt_path, "r", encoding="utf-8") as f:
+            assert 'title:"Custom Thread Title"' in f.read()
+
+        conn = sqlite3.connect(db_path)
+        title_col, raw_col = conn.execute(
+            "SELECT title, raw_summary FROM conversation_summaries WHERE conversation_id=?",
+            (cid,),
+        ).fetchone()
+        conn.close()
+        assert title_col == "Custom Thread Title"
+        assert b"My Preview" in raw_col
+        assert b"Custom Thread Title" in raw_col

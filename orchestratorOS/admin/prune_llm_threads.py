@@ -43,7 +43,6 @@ AUTONOMOUS_PROMPT_PATTERNS = [
     "analiză risc tranzacție",
     "analiza risc tranzactie",
     "evaluated by gemini",
-    "autonommptrade",
     "automated reasoning",
     "ntfy-macro",
     "ntfy-guard",
@@ -116,15 +115,95 @@ def encode_varint(val: int) -> bytes:
     return bytes(res)
 
 
+def _skip_proto_field(stream: io.BytesIO, wire_type: int) -> Optional[bytes]:
+    """Read and return raw bytes of a protobuf field value for the given wire type."""
+    if wire_type == 0:
+        v = read_varint(stream)
+        return encode_varint(v) if v is not None else None
+    if wire_type == 1:
+        b = stream.read(8)
+        return b if len(b) == 8 else None
+    if wire_type == 2:
+        ln = read_varint(stream)
+        if ln is None:
+            return None
+        b = stream.read(ln)
+        return encode_varint(ln) + b
+    if wire_type == 5:
+        b = stream.read(4)
+        return b if len(b) == 4 else None
+    return None
+
+
+def _patch_summary_annotations_title(summary_bytes: bytes, new_title: str) -> bytes:
+    """Update field 15 (annotations.title, tag 122) inside a serialized TrajectorySummary."""
+    tb = new_title.encode("utf-8")
+    title_entry = b"\x0a" + encode_varint(len(tb)) + tb
+
+    nsub = io.BytesIO(summary_bytes)
+    new_nested = bytearray()
+    found_annotations = False
+
+    while nsub.tell() < len(summary_bytes):
+        ntag = read_varint(nsub)
+        if ntag is None:
+            break
+        nwire = ntag & 0x7
+        if ntag == 122 and nwire == 2:  # field 15: annotations
+            nlen = read_varint(nsub)
+            if nlen is None:
+                break
+            nd = nsub.read(nlen)
+            asub = io.BytesIO(nd)
+            other_annot_fields = bytearray()
+            while asub.tell() < len(nd):
+                atag = read_varint(asub)
+                if atag is None:
+                    break
+                awire = atag & 0x7
+                val_bytes = _skip_proto_field(asub, awire)
+                if val_bytes is None:
+                    break
+                if atag != 10:  # preserve non-title annotation fields (e.g. last_user_view_time)
+                    other_annot_fields.extend(encode_varint(atag))
+                    other_annot_fields.extend(val_bytes)
+            annot_payload = title_entry + bytes(other_annot_fields)
+            new_nested.extend(encode_varint(122))
+            new_nested.extend(encode_varint(len(annot_payload)))
+            new_nested.extend(annot_payload)
+            found_annotations = True
+        else:
+            val_bytes = _skip_proto_field(nsub, nwire)
+            if val_bytes is None:
+                break
+            new_nested.extend(encode_varint(ntag))
+            new_nested.extend(val_bytes)
+
+    if not found_annotations:
+        new_nested.extend(encode_varint(122))
+        new_nested.extend(encode_varint(len(title_entry)))
+        new_nested.extend(title_entry)
+
+    return bytes(new_nested)
+
+
+def _encode_mtime_entry(cid: str, mtime_sec: int) -> bytes:
+    """Encode a tag=18 (file_mod_times map entry) record for agyhub_summaries_proto.pb."""
+    cid_b = cid.encode("utf-8")
+    inner = b"\x0a" + encode_varint(len(cid_b)) + cid_b + b"\x10" + encode_varint(mtime_sec)
+    return b"\x12" + encode_varint(len(inner)) + inner
+
+
 def ensure_proto_synced(cli_base: str = DEFAULT_CLI_BASE) -> int:
-    """Ensure all records from jetbox_summaries_proto.pb exist in agyhub_summaries_proto.pb."""
+    """Ensure all summary records (tag 10) from jetbox_summaries_proto.pb exist in agyhub_summaries_proto.pb."""
     jb_path = os.path.join(cli_base, "jetbox_summaries_proto.pb")
     agy_path = os.path.join(cli_base, "agyhub_summaries_proto.pb")
     if not os.path.exists(jb_path) or not os.path.exists(agy_path):
         return 0
 
-    def get_records(path: str) -> dict[str, bytes]:
+    def get_summary_records(path: str) -> Tuple[dict[str, bytes], Set[str]]:
         recs: dict[str, bytes] = {}
+        mtimes_present: Set[str] = set()
         try:
             with open(path, "rb") as f:
                 raw = f.read()
@@ -145,37 +224,95 @@ def ensure_proto_synced(cli_base: str = DEFAULT_CLI_BASE) -> int:
                     if slen is not None:
                         cid = sub.read(slen).decode("utf-8", errors="ignore")
                 if cid:
-                    recs[cid] = encode_varint(tag) + encode_varint(length) + data
+                    if tag == 10:
+                        recs[cid] = encode_varint(tag) + encode_varint(length) + data
+                    elif tag == 18:
+                        mtimes_present.add(cid)
         except Exception:
             pass
-        return recs
+        return recs, mtimes_present
 
-    jb_recs = get_records(jb_path)
-    agy_recs = get_records(agy_path)
+    jb_recs, _ = get_summary_records(jb_path)
+    agy_recs, agy_mtimes = get_summary_records(agy_path)
     added = 0
     with open(agy_path, "ab") as f:
         for cid, rec in jb_recs.items():
             if cid not in agy_recs:
                 f.write(rec)
                 added += 1
+            if cid not in agy_mtimes:
+                db_file = os.path.join(cli_base, "conversations", f"{cid}.db")
+                if os.path.exists(db_file):
+                    try:
+                        mtime_sec = int(os.stat(db_file).st_mtime)
+                        f.write(_encode_mtime_entry(cid, mtime_sec))
+                    except Exception:
+                        pass
     return added
 
 
 def sync_thread_title(cid: str, new_title: str, cli_base: str = DEFAULT_CLI_BASE) -> bool:
-    """Update title for a conversation ID across SQLite and protobuf summaries."""
+    """Update title for a conversation ID across annotations, SQLite, and protobuf summaries."""
     ensure_proto_synced(cli_base)
     updated = False
+
+    # 1. Update annotations/<cid>.pbtxt
+    try:
+        annot_dir = os.path.join(cli_base, "annotations")
+        if os.path.isdir(annot_dir):
+            pbtxt_path = os.path.join(annot_dir, f"{cid}.pbtxt")
+            preserved_lines: List[str] = []
+            if os.path.exists(pbtxt_path):
+                with open(pbtxt_path, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        if not line.lstrip().startswith("title:"):
+                            preserved_lines.append(line.rstrip("\n"))
+            escaped_title = new_title.replace("\\", "\\\\").replace('"', '\\"')
+            out_lines = [f'title:"{escaped_title}"'] + [ln for ln in preserved_lines if ln.strip()]
+            with open(pbtxt_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(out_lines) + "\n")
+            updated = True
+    except Exception as e:
+        logger.debug("Failed updating annotations pbtxt for %s: %s", cid, e)
+
+    # 2. Update conversation_summaries.db (both title column and raw_summary blob if present)
     try:
         db_path = os.path.join(cli_base, "conversation_summaries.db")
         if os.path.exists(db_path):
             conn = sqlite3.connect(db_path)
             cur = conn.cursor()
-            cur.execute("UPDATE conversation_summaries SET title=? WHERE conversation_id=?", (new_title, cid))
+            cols = {r[1] for r in cur.execute("PRAGMA table_info(conversation_summaries)").fetchall()}
+            if "raw_summary" in cols:
+                cur.execute(
+                    "SELECT raw_summary FROM conversation_summaries WHERE conversation_id=?",
+                    (cid,),
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    patched_raw = _patch_summary_annotations_title(row[0], new_title)
+                    cur.execute(
+                        "UPDATE conversation_summaries SET title=?, raw_summary=? WHERE conversation_id=?",
+                        (new_title, patched_raw, cid),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE conversation_summaries SET title=? WHERE conversation_id=?",
+                        (new_title, cid),
+                    )
+            else:
+                cur.execute(
+                    "UPDATE conversation_summaries SET title=? WHERE conversation_id=?",
+                    (new_title, cid),
+                )
             conn.commit()
             conn.close()
             updated = True
     except Exception as e:
         logger.debug("Failed updating SQLite title: %s", e)
+
+    # 3. Update agyhub_summaries_proto.pb and jetbox_summaries_proto.pb
+    db_file = os.path.join(cli_base, "conversations", f"{cid}.db")
+    mtime_sec = int(os.stat(db_file).st_mtime) if os.path.exists(db_file) else None
 
     for pb_name in ["agyhub_summaries_proto.pb", "jetbox_summaries_proto.pb"]:
         pb_path = os.path.join(cli_base, pb_name)
@@ -186,6 +323,7 @@ def sync_thread_title(cid: str, new_title: str, cli_base: str = DEFAULT_CLI_BASE
                 raw = f.read()
             stream = io.BytesIO(raw)
             out = bytearray()
+            seen_mtime = False
             while stream.tell() < len(raw):
                 tag = read_varint(stream)
                 if tag is None:
@@ -194,63 +332,62 @@ def sync_thread_title(cid: str, new_title: str, cli_base: str = DEFAULT_CLI_BASE
                 if length is None:
                     break
                 data = stream.read(length)
-                sub = io.BytesIO(data)
-                matched_cid = None
-                new_data = bytearray()
-                while sub.tell() < len(data):
+                if tag == 10:
+                    sub = io.BytesIO(data)
+                    matched_cid = None
+                    new_data = bytearray()
+                    while sub.tell() < len(data):
+                        stag = read_varint(sub)
+                        if stag is None:
+                            break
+                        swire = stag & 0x7
+                        fnum = stag >> 3
+                        if swire == 2:
+                            slen = read_varint(sub)
+                            sdata = sub.read(slen)
+                            if fnum == 1:
+                                matched_cid = sdata.decode("utf-8", errors="ignore")
+                                new_data.extend(encode_varint(stag))
+                                new_data.extend(encode_varint(slen))
+                                new_data.extend(sdata)
+                            elif fnum == 2 and matched_cid == cid:
+                                patched_nested = _patch_summary_annotations_title(sdata, new_title)
+                                new_data.extend(encode_varint(stag))
+                                new_data.extend(encode_varint(len(patched_nested)))
+                                new_data.extend(patched_nested)
+                                updated = True
+                            else:
+                                new_data.extend(encode_varint(stag))
+                                new_data.extend(encode_varint(slen))
+                                new_data.extend(sdata)
+                        elif swire == 0:
+                            val = read_varint(sub)
+                            new_data.extend(encode_varint(stag))
+                            new_data.extend(encode_varint(val))
+                    out.extend(encode_varint(tag))
+                    out.extend(encode_varint(len(new_data)))
+                    out.extend(new_data)
+                elif tag == 18 and mtime_sec is not None:
+                    sub = io.BytesIO(data)
                     stag = read_varint(sub)
-                    if stag is None:
-                        break
-                    swire = stag & 0x7
-                    fnum = stag >> 3
-                    if swire == 2:
+                    entry_cid = None
+                    if stag == 10:
                         slen = read_varint(sub)
-                        sdata = sub.read(slen)
-                        if fnum == 1:
-                            matched_cid = sdata.decode("utf-8", errors="ignore")
-                            new_data.extend(encode_varint(stag))
-                            new_data.extend(encode_varint(slen))
-                            new_data.extend(sdata)
-                        elif fnum == 2 and matched_cid == cid:
-                            nsub = io.BytesIO(sdata)
-                            new_nested = bytearray()
-                            while nsub.tell() < len(sdata):
-                                ntag = read_varint(nsub)
-                                if ntag is None:
-                                    break
-                                nwire = ntag & 0x7
-                                if ntag == 10:  # title field
-                                    nlen = read_varint(nsub)
-                                    nsub.read(nlen)
-                                    tb = new_title.encode("utf-8")
-                                    new_nested.extend(encode_varint(10))
-                                    new_nested.extend(encode_varint(len(tb)))
-                                    new_nested.extend(tb)
-                                elif nwire == 2:
-                                    nlen = read_varint(nsub)
-                                    nd = nsub.read(nlen)
-                                    new_nested.extend(encode_varint(ntag))
-                                    new_nested.extend(encode_varint(nlen))
-                                    new_nested.extend(nd)
-                                elif nwire == 0:
-                                    nv = read_varint(nsub)
-                                    new_nested.extend(encode_varint(ntag))
-                                    new_nested.extend(encode_varint(nv))
-                            new_data.extend(encode_varint(stag))
-                            new_data.extend(encode_varint(len(new_nested)))
-                            new_data.extend(new_nested)
-                            updated = True
-                        else:
-                            new_data.extend(encode_varint(stag))
-                            new_data.extend(encode_varint(slen))
-                            new_data.extend(sdata)
-                    elif swire == 0:
-                        val = read_varint(sub)
-                        new_data.extend(encode_varint(stag))
-                        new_data.extend(encode_varint(val))
-                out.extend(encode_varint(tag))
-                out.extend(encode_varint(len(new_data)))
-                out.extend(new_data)
+                        if slen is not None:
+                            entry_cid = sub.read(slen).decode("utf-8", errors="ignore")
+                    if entry_cid == cid:
+                        out.extend(_encode_mtime_entry(cid, mtime_sec))
+                        seen_mtime = True
+                    else:
+                        out.extend(encode_varint(tag))
+                        out.extend(encode_varint(length))
+                        out.extend(data)
+                else:
+                    out.extend(encode_varint(tag))
+                    out.extend(encode_varint(length))
+                    out.extend(data)
+            if pb_name == "agyhub_summaries_proto.pb" and mtime_sec is not None and not seen_mtime:
+                out.extend(_encode_mtime_entry(cid, mtime_sec))
             tmp_path = pb_path + ".tmp"
             with open(tmp_path, "wb") as f:
                 f.write(out)
@@ -377,20 +514,30 @@ def prune_old_cli_threads(
         return (0, 0)
 
     placeholders_proj = ",".join("?" for _ in target_projects)
-
-    query = (
-        "SELECT conversation_id, title, preview, last_modified_time, project_id "
-        f"FROM conversation_summaries WHERE project_id IN ({placeholders_proj})"
+    cols = {r[1] for r in cursor.execute("PRAGMA table_info(conversation_summaries)").fetchall()}
+    has_step_count = "step_count" in cols
+    select_cols = (
+        "conversation_id, title, preview, last_modified_time, project_id, step_count"
+        if has_step_count
+        else "conversation_id, title, preview, last_modified_time, project_id"
     )
+
+    query = f"SELECT {select_cols} FROM conversation_summaries WHERE project_id IN ({placeholders_proj})"
     cursor.execute(query, list(target_projects))
     rows = cursor.fetchall()
 
     candidate_cids: Set[str] = set()
     kept_automated: List[Tuple[datetime, str]] = []
-    for cid, title, preview, ts_str, proj in rows:
+    for row in rows:
+        cid, title, preview, ts_str, proj = row[:5]
+        step_count = row[5] if has_step_count and len(row) > 5 and row[5] is not None else 0
         if cid in protected or proj in protected_projects:
             continue
-        is_auto = all_threads_in_project or is_automated_thread(title, preview)
+        matched_auto_pattern = is_automated_thread(title or "", preview or "")
+        if not matched_auto_pattern and step_count > 6:
+            # Multi-turn interactive conversation: never prune even if --all is passed
+            continue
+        is_auto = all_threads_in_project or matched_auto_pattern
         if not is_auto:
             continue
         dt = parse_db_timestamp(ts_str)
@@ -530,12 +677,179 @@ def clean_orphan_summaries(cli_base: str = DEFAULT_CLI_BASE, dry_run: bool = Fal
     return len(orphans)
 
 
+def reconcile_summaries_store(cli_base: str = DEFAULT_CLI_BASE) -> int:
+    """Reconcile conversation_summaries.db, annotations/*.pbtxt, and protobuf summary caches."""
+    conv_dir = os.path.join(cli_base, "conversations")
+    annot_dir = os.path.join(cli_base, "annotations")
+    backup_dir = os.path.join(cli_base, "backup_migration_mptrade")
+    db_path = os.path.join(cli_base, "conversation_summaries.db")
+    if not os.path.exists(db_path) or not os.path.isdir(conv_dir):
+        return 0
+
+    os.makedirs(annot_dir, exist_ok=True)
+    mptrade_uuid = "3ed4aa5d-0873-407a-a8e9-c21a932a565c"
+    autonom_uuid = "f5f9d01f-01e5-4fac-80f2-97364688afab"
+
+    # Collect known titles and rows across backups
+    backup_dbs = [
+        os.path.join(cli_base, "conversation_summaries.db.pre_clean"),
+        os.path.join(backup_dir, "conversation_summaries.db"),
+        os.path.join(cli_base, "conversation_summaries.db.bak"),
+        db_path,
+    ]
+    known_titles: dict[str, str] = {}
+    row_by_cid: dict[str, list] = {}
+
+    for src in backup_dbs:
+        if not os.path.exists(src):
+            continue
+        try:
+            c = sqlite3.connect(src)
+            for r in c.execute("SELECT * FROM conversation_summaries").fetchall():
+                cid = r[0]
+                t = (r[1] or "").strip()
+                if t and cid not in known_titles:
+                    known_titles[cid] = t
+                if cid not in row_by_cid or (not row_by_cid[cid][1] and t):
+                    row_by_cid[cid] = list(r)
+            c.close()
+        except Exception:
+            pass
+
+    # Also read titles from annotations/*.pbtxt
+    for fname in os.listdir(annot_dir):
+        if fname.endswith(".pbtxt"):
+            cid = fname[:-6]
+            if cid not in known_titles:
+                try:
+                    with open(os.path.join(annot_dir, fname), "r", encoding="utf-8", errors="ignore") as f:
+                        for line in f:
+                            line_s = line.strip()
+                            if line_s.startswith('title:"') and line_s.endswith('"'):
+                                t = line_s[7:-1].replace('\\"', '"').replace("\\\\", "\\").strip()
+                                if t:
+                                    known_titles[cid] = t
+                                break
+                except Exception:
+                    pass
+
+    # Restore any missing mptrade .db files from backup_migration_mptrade/conversations
+    backup_conv_dir = os.path.join(backup_dir, "conversations")
+    if os.path.isdir(backup_conv_dir):
+        for fname in os.listdir(backup_conv_dir):
+            if fname.endswith(".db"):
+                cid = fname[:-3]
+                dst = os.path.join(conv_dir, fname)
+                if not os.path.exists(dst) and cid in row_by_cid and row_by_cid[cid][8] == mptrade_uuid:
+                    try:
+                        shutil.copy2(os.path.join(backup_conv_dir, fname), dst)
+                    except Exception:
+                        pass
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    jb_out = bytearray()
+    agy_out = bytearray()
+    reconciled = 0
+
+    for fname in sorted(os.listdir(conv_dir)):
+        if not fname.endswith(".db"):
+            continue
+        cid = fname[:-3]
+        db_f = os.path.join(conv_dir, fname)
+        row = row_by_cid.get(cid)
+        if not row:
+            continue
+
+        title = known_titles.get(cid) or (row[1] or "").strip()
+        preview = (row[2] or "").strip()
+        if not title:
+            title = preview.splitlines()[0][:70] if preview else "Conversation"
+        row[1] = title
+
+        # Determine if this .db is an automated CLI (-p) invocation (source == 17) vs user session (source == 1)
+        db_source = 1
+        try:
+            dc = sqlite3.connect(db_f)
+            srow = dc.execute("SELECT source FROM trajectory_meta LIMIT 1").fetchone()
+            if srow and srow[0] is not None:
+                db_source = int(srow[0])
+            dc.close()
+        except Exception:
+            pass
+
+        step_cnt = int(row[3] or 0)
+        is_auto = (db_source == 17) or (step_cnt <= 6 and is_automated_thread(title, preview) and row[8] == autonom_uuid)
+        proj = autonom_uuid if is_auto else mptrade_uuid
+        row[8] = proj
+
+        raw = row[19] or b""
+        if proj == mptrade_uuid:
+            raw = raw.replace(autonom_uuid.encode(), mptrade_uuid.encode())
+        else:
+            raw = raw.replace(mptrade_uuid.encode(), autonom_uuid.encode())
+        raw = _patch_summary_annotations_title(raw, title)
+        row[19] = raw
+
+        placeholders = ",".join("?" for _ in range(len(row)))
+        cur.execute(f"INSERT OR REPLACE INTO conversation_summaries VALUES ({placeholders})", row)
+
+        # Write annotations/<cid>.pbtxt
+        pbtxt_path = os.path.join(annot_dir, f"{cid}.pbtxt")
+        preserved: List[str] = []
+        if os.path.exists(pbtxt_path):
+            try:
+                with open(pbtxt_path, "r", encoding="utf-8", errors="ignore") as f:
+                    for ln in f:
+                        if not ln.lstrip().startswith("title:"):
+                            preserved.append(ln.rstrip("\n"))
+            except Exception:
+                pass
+        esc = title.replace("\\", "\\\\").replace('"', '\\"')
+        with open(pbtxt_path, "w", encoding="utf-8") as f:
+            f.write("\n".join([f'title:"{esc}"'] + [ln for ln in preserved if ln.strip()]) + "\n")
+
+        cid_b = cid.encode("utf-8")
+        entry = b"\x0a" + encode_varint(len(cid_b)) + cid_b + b"\x12" + encode_varint(len(raw)) + raw
+        rec10 = b"\x0a" + encode_varint(len(entry)) + entry
+        jb_out.extend(rec10)
+        agy_out.extend(rec10)
+        try:
+            mtime_sec = int(os.stat(db_f).st_mtime)
+            agy_out.extend(_encode_mtime_entry(cid, mtime_sec))
+        except Exception:
+            pass
+        reconciled += 1
+
+    conn.commit()
+    try:
+        cur.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception:
+        pass
+    conn.close()
+
+    for pb_name, payload in (("jetbox_summaries_proto.pb", jb_out), ("agyhub_summaries_proto.pb", agy_out)):
+        pb_path = os.path.join(cli_base, pb_name)
+        tmp_path = pb_path + ".tmp"
+        with open(tmp_path, "wb") as f:
+            f.write(payload)
+        os.replace(tmp_path, pb_path)
+
+    logger.info("Reconciled %d conversation summaries across SQLite, annotations, and protobuf stores.", reconciled)
+    return reconciled
+
+
 # Alias for canonical naming
 prune_llm_threads = prune_old_cli_threads
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Prune old automated LLM threads in Antigravity CLI.")
+    parser.add_argument(
+        "--reconcile-summaries",
+        action="store_true",
+        help="Reconcile conversation_summaries.db, annotations, and protobuf caches with conversations/*.db.",
+    )
     parser.add_argument(
         "--clean-orphans",
         action="store_true",
@@ -590,6 +904,10 @@ def main() -> None:
         format="[%(asctime)s] [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+
+    if args.reconcile_summaries:
+        reconcile_summaries_store(cli_base=args.cli_base)
+        return
 
     if args.clean_orphans:
         clean_orphan_summaries(cli_base=args.cli_base, dry_run=args.dry_run)

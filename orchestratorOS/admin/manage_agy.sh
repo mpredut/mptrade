@@ -83,7 +83,8 @@ send_alert() {  # ERROR topic (fallback NTFY_TOPIC), mirrored to email by os_not
 }
 
 do_restart() {
-    log "Cycling daemon (stop -> start --name '${INSTANCE_NAME}')..."
+    log "Cycling daemon (stop -> reconcile-summaries -> start --name '${INSTANCE_NAME}')..."
+    local prune_script="$ROOT/orchestratorOS/admin/prune_llm_threads.py"
     if grep -q "antigravity-cli-daemon.service" /proc/self/cgroup 2>/dev/null && command -v systemd-run >/dev/null 2>&1; then
         log "Executing inside daemon cgroup. Delegating restart to transient user systemd service..."
         local job_unit="agy-restart-$(date +%s)"
@@ -93,14 +94,17 @@ do_restart() {
             if [ -S \"\${XDG_RUNTIME_DIR}/bus\" ]; then
                 export DBUS_SESSION_BUS_ADDRESS=\"\${DBUS_SESSION_BUS_ADDRESS:-unix:path=\${XDG_RUNTIME_DIR}/bus}\"
             fi
+            sleep 3
             '$AGY_BIN' remote-control stop || true
             sleep 2
+            python3 '$prune_script' --reconcile-summaries || true
             '$AGY_BIN' remote-control start --name '$INSTANCE_NAME'
         "
         log "Transient restart service queued ($job_unit)."
     else
         "$AGY_BIN" remote-control stop || true
         sleep 2
+        python3 "$prune_script" --reconcile-summaries || true
         "$AGY_BIN" remote-control start --name "$INSTANCE_NAME"
         sleep 2
         "$AGY_BIN" remote-control status || true

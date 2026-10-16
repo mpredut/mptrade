@@ -100,6 +100,7 @@ class GeminiClient:
                         try:
                             from orchestratorOS.admin.prune_llm_threads import (
                                 prune_old_cli_threads,
+                                resolve_project_ids,
                                 sync_thread_title,
                             )
                             import sqlite3
@@ -107,11 +108,13 @@ class GeminiClient:
                                 target_cid = None
                                 db_path = os.path.expanduser("~/.gemini/antigravity-cli/conversation_summaries.db")
                                 if os.path.exists(db_path):
+                                    resolved_pids = list(resolve_project_ids([self.project_id]))
+                                    placeholders = ",".join("?" for _ in resolved_pids)
                                     conn = sqlite3.connect(db_path)
                                     cur = conn.cursor()
                                     cur.execute(
-                                        "SELECT conversation_id FROM conversation_summaries WHERE project_id=? ORDER BY last_modified_time DESC LIMIT 1",
-                                        (self.project_id,),
+                                        f"SELECT conversation_id FROM conversation_summaries WHERE project_id IN ({placeholders}) ORDER BY last_modified_time DESC LIMIT 1",
+                                        resolved_pids,
                                     )
                                     row = cur.fetchone()
                                     conn.close()
@@ -135,9 +138,9 @@ class GeminiClient:
                                     sync_thread_title(target_cid, thread_title)
                             if self.project_id == DEFAULT_AUTONOMOUS_PROJECT_ID:
                                 prune_old_cli_threads(
-                                    retention_days=0.25,
+                                    retention_days=1.0,
                                     project_id=self.project_id,
-                                    all_threads_in_project=True,
+                                    all_threads_in_project=False,
                                     max_threads=20,
                                 )
                         except Exception as e:
