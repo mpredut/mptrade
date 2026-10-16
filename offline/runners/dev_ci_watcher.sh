@@ -19,7 +19,7 @@ if ! flock -n 9; then
 fi
 
 # Fetch remote refs quietly with a short network timeout
-git fetch -q --timeout=15 origin "$BRANCH" 2>/dev/null || exit 0
+timeout 15 git fetch -q origin "$BRANCH" 2>/dev/null || exit 0
 
 LOCAL="$(git rev-parse HEAD)"
 REMOTE="$(git rev-parse "origin/$BRANCH")"
