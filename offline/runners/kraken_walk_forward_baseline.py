@@ -29,6 +29,7 @@ import market_data as kraken_market_data  # noqa: E402
 import replay as kraken_replay  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
+    dataset_metadata,
     dataset_sha256,
     load_dataset as load_frozen_dataset,
     save_dataset as save_frozen_dataset,
@@ -160,7 +161,8 @@ def main(argv: list[str] | None = None) -> int:
         if not records:
             raise RuntimeError(f"an empty dataset for {pair} {interval}m")
         records = validate_dataset(records, interval_minutes=interval)
-        digest = dataset_sha256(records)
+        meta = dataset_metadata(records, interval_minutes=interval)
+        digest = meta["sha256"]
         frozen_path = dataset_dir / f"{pair}_{interval}m_{digest[:12]}.csv"
         save_frozen_dataset(records, frozen_path)
         train_size, validation_size, test_size, step_size = resolve_window_sizes(
@@ -176,10 +178,7 @@ def main(argv: list[str] | None = None) -> int:
             "dataset": {
                 "source": str(source) if source else "Kraken public OHLC",
                 "frozen_file": str(frozen_path),
-                "sha256": digest,
-                "bars": len(records),
-                "start_utc": _iso(records[0]["timestamp"]),
-                "end_utc": _iso(records[-1]["timestamp"]),
+                **meta,
             },
             "window_sizes": {
                 "train": train_size, "validation": validation_size,

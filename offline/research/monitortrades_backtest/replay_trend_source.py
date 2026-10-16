@@ -88,10 +88,7 @@ class ReplayTrendSource:
         win = self._windows.get(symbol)
         if win is None or len(win.prices) < 2:
             return False
-        final_trend, _growth_coefficient, _slope_full, gradient_recent = win.get_instant_trend()
-        slope = gradient_recent
-        gradient = final_trend
-        return slope > 0 or (slope == 0 and gradient > 0)
+        return _is_trend_up_tuple(win.get_instant_trend())
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -111,6 +108,12 @@ class ReplayTrendSource:
 # ──────────────────────────────────────────────────────────────────────────────
 
 SMALL_TIMEOUT_RANGE_SEC = (14.0, 11 * 60.0)   # 14s - 11 min (user, 29 iul)
+
+
+def _is_trend_up_tuple(trend_tuple: Tuple[int, float, float, float]) -> bool:
+    """Canonical monitortrades.is_trend_up() rule on (final_trend, gc, slope_full, gradient_recent)."""
+    final_trend, _gc, _slope_full, gradient_recent = trend_tuple
+    return gradient_recent > 0 or (gradient_recent == 0 and final_trend > 0)
 
 
 def _instant_trend_from_slice(prices: Sequence[float], sample_rate_sec: float
@@ -168,8 +171,7 @@ class DynamicReplayTrendSource:
         prices, sample_rate = self._prices_and_rate(symbol, timeout_sec)
         if len(prices) < 2:
             return False
-        final_trend, _gc, _slope_full, gradient_recent = _instant_trend_from_slice(prices, sample_rate)
-        return gradient_recent > 0 or (gradient_recent == 0 and final_trend > 0)
+        return _is_trend_up_tuple(_instant_trend_from_slice(prices, sample_rate))
 
     def is_trend_up_confirmed(self, symbol: str, timeouts_sec: Sequence[float],
                                min_agree: Optional[int] = None) -> bool:

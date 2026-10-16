@@ -74,7 +74,7 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
                 for index, fold in enumerate(folds, 1):
                     segment = evaluate_segment(
                         records[fold.test], lambda bars, warm, _context: run(bars, warm),
-                        warmup_records=records[fold.test.start - 40:fold.test.start])
+                        warmup_records=records[max(0, fold.test.start - 40):fold.test.start])
                     metrics = segment["metrics"]
                     windows.append({"key": f"240m/fold-{index:02d}", "bars": segment["bars"],
                                     "start_utc": segment["start_utc"], "end_utc": segment["end_utc"],
@@ -85,7 +85,7 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
                     "assumptions": scenario.as_dict(), "windows": windows,
                     "aggregate": aggregate_financial_windows(windows, initial_capital=cash),
                     "continuous": run(to_ohlc(records[folds[0].test.start:folds[-1].test.stop]),
-                                      to_ohlc(records[folds[0].test.start - 40:folds[0].test.start])),
+                                      to_ohlc(records[max(0, folds[0].test.start - 40):folds[0].test.start])),
                 }
             reports[name] = report
     return {"baseline_config": baseline, "candidate_config": candidate,

@@ -203,29 +203,15 @@ def _load_t212_replay():
     return mod
 
 
-def _build_venue_evaluator(venue: str, source_report: dict):
+def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path | None = None):
     """Return (base_params, base_fee, evaluate_segment_fn)."""
     norm_venue = venue.lower()
     raw_params = source_report.get("strategy_params", {})
 
     if norm_venue in ("kraken", "binance"):
-        valid_fields = {f.name for f in dataclasses.fields(StratParams)}
-        filtered = {k: v for k, v in raw_params.items() if k in valid_fields}
-        base_params = StratParams(**filtered)
+        base_params = StratParams.from_dict(raw_params)
         base_fee = float(source_report.get("fee_pct_per_leg") or (0.26 if norm_venue == "kraken" else 0.10))
-
-        def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
-            adapter = lambda data, warmup=(), _context=None: run_replay(
-                data,
-                params,
-                fee_pct=fee_pct,
-                bar_minutes=interval,
-                warmup_ohlc=warmup,
-                execution=execution,
-            )
-            return _evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
-
-        return base_params, base_fee, segment_fn
+        return base_params, base_fee, _segment_result
 
     if norm_venue == "hyperliquid":
         hl_replay = _load_hl_replay()
@@ -247,10 +233,7 @@ def _build_venue_evaluator(venue: str, source_report: dict):
                 "enable_takeprofit": True,
                 "order_ttl_min": 120.0,
             }
-            merged = {**defaults, **raw_params}
-            valid_fields = {f.name for f in dataclasses.fields(StratParams)}
-            filtered = {k: v for k, v in merged.items() if k in valid_fields}
-            base_params = StratParams(**filtered)
+            base_params = StratParams.from_dict(raw_params, defaults=defaults)
 
             def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
                 if getattr(params, "trend_interval", None) != interval:
@@ -298,6 +281,21 @@ def _build_venue_evaluator(venue: str, source_report: dict):
         filtered = {k: v for k, v in raw_params.items() if k in valid_fields}
         base_params = t212_params_cls(**filtered)
         base_fee = float(source_report.get("fee_pct_per_leg") or raw_params.get("fx_fee_pct") or 0.0)
+        fx_model = source_report.get("fx_model") or {}
+        fx_fixed = float(fx_model["usd_per_unit"]) if fx_model.get("usd_per_unit") is not None else 1.0
+        fx_invert = bool(fx_model.get("invert", False))
+        fx_records = None
+        if fx_model.get("mode") == "historical_asof" and fx_model.get("frozen_file"):
+            fx_path = Path(fx_model["frozen_file"])
+            if not fx_path.exists() and baseline_dir is not None:
+                alt = baseline_dir / "datasets" / fx_path.name
+                if alt.exists():
+                    fx_path = alt
+            if fx_path.exists():
+                fx_records = load_frozen_dataset(fx_path)
+        exec_meta = source_report.get("execution_model") or {}
+        ppy = exec_meta.get("calendar_periods_per_year")
+        periods_yr = float(ppy) if ppy is not None else None
 
         def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
             if hasattr(params, "fx_fee_pct") and fee_pct != base_fee:
@@ -305,7 +303,10 @@ def _build_venue_evaluator(venue: str, source_report: dict):
             adapter = t212_replay.make_t212_replay_adapter(
                 params,
                 bar_minutes=float(interval),
-                fx_to_usd=1.0,
+                fx_to_usd=fx_fixed,
+                fx_records=fx_records,
+                fx_invert=fx_invert,
+                periods_per_year=periods_yr,
                 execution=execution,
             )
             return _evaluate_segment(records, adapter, warmup_records=warmup_records, validate_contract=True)
@@ -407,7 +408,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.candidate_set == "hype-240" and set(datasets) != {240}:
         parser.error("candidate set hype-240 requires a baseline containing only the 240 interval")
 
-    base_params, base_fee, segment_fn = _build_venue_evaluator(venue, source_report)
+    base_params, base_fee, segment_fn = _build_venue_evaluator(
+        venue, source_report, baseline_dir=baseline_path.parent
+    )
     valid_exec_fields = {f.name for f in dataclasses.fields(ExecutionModel)}
     filtered_exec = {
         k: v for k, v in source_report.get("execution_model", {}).items() if k in valid_exec_fields
@@ -451,7 +454,8 @@ def main(argv: list[str] | None = None) -> int:
         if fee < 0:
             parser.error("the fee cannot be negative")
         windows = _candidate_windows(datasets, base_params, fee, execution, segment_fn)
-        fee_stress[f"{fee:.2f}"] = {
+        fee_key = f"{fee:.3f}".rstrip("0").rstrip(".") if round(fee, 2) != round(fee, 3) else f"{fee:.2f}"
+        fee_stress[fee_key] = {
             "summary": summarize_test_windows(windows),
             "windows": windows,
         }

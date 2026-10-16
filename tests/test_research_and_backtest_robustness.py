@@ -210,3 +210,118 @@ def test_walk_forward_cli_shared_helpers(tmp_path):
     model = build_execution_model_from_args(parser, args)
     assert model.spread_bps == 5.0
     assert resolve_window_sizes(args, 200) == (50, 10, 15, 15)
+
+
+def test_strat_params_from_dict_ignores_removed_fields():
+    """StratParams.from_dict merges defaults and drops removed legacy fields."""
+    from strategies.spot_engine import StratParams
+
+    defaults = {
+        "currency": "USDC",
+        "entry_amount": 100.0,
+        "entry_discount_pct": 0.2,
+        "dca_amount": 50.0,
+        "dca_drop_pct": 2.0,
+        "check_minutes": 1.0,
+        "takeprofit_pct": 3.0,
+        "max_budget": 500.0,
+        "max_dca_buys": 5,
+        "enable_takeprofit": True,
+        "order_ttl_min": 60.0,
+    }
+    p = StratParams.from_dict(
+        {"takeprofit_pct": 4.5, "removed_legacy_field": 123},
+        defaults=defaults,
+        warn_dropped=True,
+    )
+    assert p.takeprofit_pct == 4.5
+    assert p.currency == "USDC"
+
+
+def test_t212_replay_adapter_historical_fx_alignment():
+    """make_t212_replay_adapter aligns fx_records via offline.backtests.datasets without ModuleNotFoundError."""
+    import importlib.util
+    import sys
+    from offline.backtests.evaluation import evaluate_segment
+
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        "t212_replay_fx_test", os.path.join(root_dir, "212trading", "replay.py")
+    )
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+
+    params = mod._strat.StratParams(
+        currency="RON",
+        entry_amount=100.0,
+        entry_discount_pct=0.2,
+        dca_amount=50.0,
+        dca_drop_pct=2.0,
+        check_minutes=5.0,
+        takeprofit_pct=2.0,
+        max_budget=1000.0,
+        max_dca_buys=2,
+        validity="GOOD_TILL_CANCEL",
+        enable_takeprofit=True,
+        order_ttl_min=10.0,
+        stop_loss_pct=5.0,
+        yahoo_sym="TEST",
+        reentry_drop_pct=0.0,
+        reentry_tolerance_pct=0.05,
+        tp_ladder=[],
+        fx_fee_pct=0.15,
+        loss_alert_step=1.0,
+        ladder_min_free=6.0,
+        sl_rebuy_enabled=False,
+        sl_rebuy_bounce_pct=1.2,
+    )
+    records = [
+        {"timestamp": 1700000000 + i * 86400, "open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0}
+        for i in range(5)
+    ]
+    fx_records = [{"timestamp": 1699900000, "close": 4.5}]
+    adapter = mod.make_t212_replay_adapter(
+        params, bar_minutes=1440.0, fx_records=fx_records, fx_invert=True
+    )
+    seg = evaluate_segment(records, adapter, validate_contract=True)
+    assert seg["metrics"]["account_currency"] == "RON"
+
+
+def test_hyperliquid_funding_at_seconds_to_ms_and_param_immutability():
+    """funding_at normalises Unix seconds to milliseconds and run_replay does not mutate StratParams."""
+    import importlib.util
+
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        "hl_replay_unit_test", os.path.join(root_dir, "hyperliquid", "replay.py")
+    )
+    hl_replay = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hl_replay)
+
+    fund = [(1700000000000, 0.0001), (1700003600000, 0.0005)]
+    # Passing timestamp in seconds (1700003600) must match the second funding entry (0.0005)
+    assert hl_replay.funding_at(fund, 1700003600) == 0.0005
+    assert hl_replay.funding_at(fund, 1700003600000) == 0.0005
+
+    orig_params = hl_replay.StratParams(fee_pct=0.035)
+    ohlc = [(100.0, 101.0, 99.0, 100.0), (100.0, 101.0, 99.0, 100.0)]
+    hl_replay.run_replay(ohlc, params=orig_params, fee_pct=0.08)
+    assert orig_params.fee_pct == 0.035
+
+
+def test_tradeall_iter_jsonl_ticks_does_not_abort_on_out_of_order_end_ts(tmp_path):
+    """_iter_jsonl_ticks skips out-of-order lines with ts > end_ts instead of terminating early."""
+    import json
+    from offline.backtests.tradeall import _iter_jsonl_ticks
+
+    p = tmp_path / "ticks.jsonl"
+    lines = [
+        {"s": "BTCUSDC", "i": [1000_000, 100.0]},
+        {"s": "BTCUSDC", "i": [5000_000, 999.0]},  # out-of-order future spike > end_ts
+        {"s": "BTCUSDC", "i": [2000_000, 101.0]},  # valid tick within [start_ts, end_ts]
+    ]
+    p.write_text("\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8")
+    ticks = list(_iter_jsonl_ticks(str(p), "BTCUSDC", start_ts=500.0, end_ts=3000.0))
+    assert ticks == [(1000.0, 100.0), (2000.0, 101.0)]
+

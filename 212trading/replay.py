@@ -296,7 +296,7 @@ def make_t212_replay_adapter(
         ts = list(context.timestamps) if context and getattr(context, "timestamps", None) else ()
         rate = fx_to_usd if fx_to_usd is not None else 1.0
         if fx_records is not None and ts:
-            from providers.dataset_alignment import align_previous_values
+            from offline.backtests.datasets import align_previous_values
             rate = align_previous_values(
                 ts,
                 fx_records,

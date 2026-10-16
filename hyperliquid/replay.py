@@ -31,9 +31,15 @@ from offline.backtests.metrics import calculate_performance_metrics
 
 
 def funding_at(fund: list[tuple[int, float]] | None, t_ms: int) -> float:
-    """Return the funding rate active at t_ms, using the most recent rate at or before t."""
+    """Return the funding rate active at t_ms, using the most recent rate at or before t.
+
+    Automatically normalises Unix-second timestamps (< 1e10) to milliseconds so
+    both direct replay callers (ms) and walk-forward evaluation contexts (s) match.
+    """
     if not fund:
         return 0.0
+    if 0 < t_ms < 10_000_000_000 and fund[0][0] >= 10_000_000_000:
+        t_ms = t_ms * 1000
     lo, hi = 0, len(fund)
     while lo < hi:
         mid = (lo + hi) // 2
@@ -125,9 +131,10 @@ def _run_once(
     execution: ExecutionModel | None = None,
     fee_pct: float | None = None,
 ) -> dict:
+    import dataclasses
     exec_model = execution or ExecutionModel()
     if isinstance(params, StratParams):
-        strat_params = params
+        strat_params = dataclasses.replace(params)
     elif isinstance(params, dict):
         strat_params = StratParams.from_dict(params, direction=direction)
     else:
@@ -290,9 +297,11 @@ def _run_once(
     cycles = strategy.s.get("cycles_completed", 0)
     wins = strategy.s.get("wins", 0)
     total_fees = strategy.s["fees_total"]
+    final_open_fee = 0.0
     if qty > 1e-12:
         fee_pct_eff = getattr(strategy.p, "fee_pct", HL_FEE_PCT)
-        total_fees += (fee_pct_eff / 100.0) * cost
+        final_open_fee = (fee_pct_eff / 100.0) * cost
+        total_fees += final_open_fee
 
     if periods_per_year is None and bar_minutes:
         periods_per_year = 365.0 * 24 * 60 / bar_minutes
@@ -317,7 +326,7 @@ def _run_once(
         "maxdd": rounded(performance["max_drawdown_abs"]),
         "open_qty": rounded(qty),
         "final_upnl": rounded(final_upnl),
-        "total": rounded(realized + funding + final_upnl),
+        "total": rounded(realized + funding + final_upnl - final_open_fee),
         "fills": fills,
         "ambiguous_bars": ambiguous_bars,
         "initial_capital": rounded(initial_capital),

@@ -17,7 +17,7 @@ if T212_DIR not in sys.path:
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from offline.research.hybrid_reentry.harness import load_ohlc_csv
+from offline.research.hybrid_reentry.harness import build_ablation_variants, load_ohlc_csv
 
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -67,15 +67,7 @@ def _import_t212():
     return _strat, rp
 
 
-def build_equity_variants(base_p):
-    R = dataclasses.replace
-    return {
-        "Test 0": ("Baseline (Control)", R(base_p, reentry_hybrid_enabled=False, reentry_peak_relative=False, reentry_pullback_pct=1.5, reentry_ttl_hours=0.0)),
-        "Test 1": ("Peak-Relative", R(base_p, reentry_hybrid_enabled=True, reentry_peak_relative=True, reentry_pullback_pct=1.5, reentry_ttl_hours=0.0)),
-        "Test 2": ("Trend Bypass", R(base_p, reentry_hybrid_enabled=True, reentry_peak_relative=False, reentry_pullback_pct=0.0, reentry_ttl_hours=0.0)),
-        "Test 3": ("Hybrid", R(base_p, reentry_hybrid_enabled=True, reentry_peak_relative=False, reentry_pullback_pct=1.5, reentry_ttl_hours=0.0)),
-        "Test 4": ("Hybrid + TTL", R(base_p, reentry_hybrid_enabled=True, reentry_peak_relative=False, reentry_pullback_pct=1.5, reentry_ttl_hours=336.0)),
-    }
+build_equity_variants = build_ablation_variants
 
 
 def main():
@@ -129,7 +121,14 @@ def main():
                     "exposure_pct": round(exposure_pct, 2),
                     "cycles": res.get("cycles", 0),
                     "wins": res.get("wins", 0),
-                    "win_rate": round(float(res.get("win_rate") or 0.0) * 100.0, 1),
+                    "win_rate": round(
+                        float(
+                            res["win_rate_pct"]
+                            if res.get("win_rate_pct") is not None
+                            else (res.get("wins", 0) / res["cycles"] * 100.0 if res.get("cycles") else 0.0)
+                        ),
+                        1,
+                    ),
                     "profit_factor": round(float(res.get("profit_factor") or 0.0), 2),
                     "fills": res.get("fills", 0),
                 })

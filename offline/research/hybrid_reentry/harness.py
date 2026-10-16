@@ -159,7 +159,14 @@ def evaluate_asset(
                 "exposure_pct": round(exposure_pct, 2),
                 "cycles": res.get("cycles", 0),
                 "wins": res.get("wins", 0),
-                "win_rate": round(float(res.get("win_rate") or 0.0) * 100.0, 1),
+                "win_rate": round(
+                    float(
+                        res["win_rate_pct"]
+                        if res.get("win_rate_pct") is not None
+                        else (res.get("wins", 0) / res["cycles"] * 100.0 if res.get("cycles") else 0.0)
+                    ),
+                    1,
+                ),
                 "profit_factor": round(float(res.get("profit_factor") or 0.0), 2),
                 "fills": res.get("fills", 0),
             })

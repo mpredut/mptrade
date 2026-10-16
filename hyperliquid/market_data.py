@@ -49,6 +49,26 @@ def _post_info(body: dict, timeout: int = 25) -> object:
         return json.loads(resp.read())
 
 
+def normalize_closed_candles(
+    rows: list[dict], *, now_ms: int, drop_incomplete: bool = True
+) -> list[dict]:
+    """Sort, deduplicate and drop the candle that is still open."""
+    by_open_time: dict[int, dict] = {}
+    for row in rows:
+        open_time = int(row["t"])
+        close_time = int(row["T"])
+        if drop_incomplete and close_time >= now_ms:
+            continue
+        by_open_time[open_time] = {
+            "timestamp": open_time // 1000,
+            "open": float(row["o"]),
+            "high": float(row["h"]),
+            "low": float(row["l"]),
+            "close": float(row["c"]),
+        }
+    return [by_open_time[key] for key in sorted(by_open_time)]
+
+
 def fetch_ohlc_candles(
     coin: str,
     interval: int | str = 60,
@@ -98,20 +118,7 @@ def fetch_ohlc_candles(
     if not isinstance(payload, list):
         raise RuntimeError(f"invalid candleSnapshot response: {payload!r}")
 
-    by_open: dict[int, dict] = {}
-    for row in payload:
-        open_time = int(row["t"])
-        close_time = int(row["T"])
-        if drop_incomplete and close_time >= now_ms:
-            continue
-        by_open[open_time] = {
-            "timestamp": open_time // 1000,
-            "open": float(row["o"]),
-            "high": float(row["h"]),
-            "low": float(row["l"]),
-            "close": float(row["c"]),
-        }
-    return [by_open[k] for k in sorted(by_open)]
+    return normalize_closed_candles(payload, now_ms=now_ms, drop_incomplete=drop_incomplete)
 
 
 def fetch_funding_history(coin: str, start_ms: int, timeout: int = 25) -> list[tuple[int, float]]:

@@ -173,13 +173,12 @@ def make_decision_logger(out_dir, clock):
     return _log_decision
 
 
-def load_ticks_history(symbol, start_ts, end_ts):
-    """Reads cache_price_sparse_{symbol}.jsonl — a long history, SPARSE."""
-    path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Cannot find {path} (the price history for {symbol})")
+def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
+            line = line.strip()
+            if not line:
+                continue
             try:
                 rec = json.loads(line)
             except json.JSONDecodeError:
@@ -191,40 +190,26 @@ def load_ticks_history(symbol, start_ts, end_ts):
             if ts < start_ts:
                 continue
             if end_ts is not None and ts > end_ts:
-                return
+                continue
             yield ts, price
 
 
+def load_ticks_history(symbol, start_ts, end_ts):
+    """Reads cache_price_sparse_{symbol}.jsonl — a long history, SPARSE."""
+    path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Cannot find {path} (the price history for {symbol})")
+    yield from _iter_jsonl_ticks(path, symbol, start_ts, end_ts)
+
+
 def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
-    """Read cache_24price_{symbol}.json (or a cache24 with long retention,
-    if a filename is given) — a DENSE resolution (~1s/tick, as in live), but limited
-    to what that cache retained (by default only the last ~24h).
-    .jsonl (21 iul: cache_24price_long_*.jsonl, arhivatorul — vezi
-    Cache24LongPriceManager) — a line-by-line format, read in full here
-    (backtest-ul oricum parcurge tot intervalul cerut, spre deosebire de
-    tradeall_observe.py, which reads only the tail for a chart)."""
+    """Read cache_24price_{symbol}.json (or cache_365price_{symbol}.jsonl
+    if a filename is given) — a DENSE resolution (~1s/tick, as in live)."""
     path = filename or os.path.join(ROOT, "cachedb", f"cache_24price_{symbol}.json")
     if not os.path.exists(path):
         raise FileNotFoundError(f"Cannot find {path} (cache24 for {symbol})")
     if str(path).endswith(".jsonl"):
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if rec.get("s") != symbol:
-                    continue
-                ts_ms, price = rec["i"]
-                ts = ts_ms / 1000.0
-                if ts < start_ts:
-                    continue
-                if end_ts is not None and ts > end_ts:
-                    return
-                yield ts, price
+        yield from _iter_jsonl_ticks(path, symbol, start_ts, end_ts)
         return
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -234,7 +219,7 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
         if ts < start_ts:
             continue
         if end_ts is not None and ts > end_ts:
-            return
+            continue
         yield ts, price
 
 

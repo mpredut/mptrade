@@ -287,6 +287,18 @@ class StratParams:
 
 
     @classmethod
+    def from_dict(cls, values: dict, *, defaults: dict | None = None, warn_dropped: bool = False) -> "StratParams":
+        """Build StratParams from a dict (e.g. a stored baseline report), ignoring removed fields."""
+        from dataclasses import fields as _dc_fields
+        merged = {**(defaults or {}), **(values or {})}
+        valid = {f.name for f in _dc_fields(cls)}
+        if warn_dropped:
+            dropped = sorted(set(merged) - valid)
+            if dropped:
+                print(f"[params] ignoring parameters removed from StratParams: {dropped}")
+        return cls(**{k: v for k, v in merged.items() if k in valid})
+
+    @classmethod
     def from_env(cls, env: dict | None = None) -> "StratParams":
         """Load an explicit profile; missing financial policy is a startup error."""
         mode = required_env("STRATEGY_MODE", env).lower()

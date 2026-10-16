@@ -22,10 +22,12 @@ import importlib.util
 _spec = importlib.util.spec_from_file_location("local_hl_market_data", str(HL_DIR / "market_data.py"))
 _hl_md = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_hl_md)
+API_URL = _hl_md.API_URL
 INTERVALS = _hl_md.INTERVALS
 fetch_ohlc_candles = _hl_md.fetch_ohlc_candles
+normalize_closed_candles = _hl_md.normalize_closed_candles
 
-from offline.backtests.datasets import canonical_bytes, dataset_sha256
+from offline.backtests.datasets import canonical_bytes, dataset_metadata, dataset_sha256
 
 
 _post = _hl_md._post_info
@@ -47,24 +49,6 @@ def resolve_spot_pair(token: str, quote: str, spot_meta: dict) -> str:
             if name:
                 return str(name)
     raise ValueError(f"spot pair not found: {token}/{quote}")
-
-
-def normalize_closed_candles(rows: list[dict], *, now_ms: int) -> list[dict]:
-    """Sort, deduplicate and drop the candle that is still open."""
-    by_open_time: dict[int, dict] = {}
-    for row in rows:
-        open_time = int(row["t"])
-        close_time = int(row["T"])
-        if close_time >= now_ms:
-            continue
-        by_open_time[open_time] = {
-            "timestamp": open_time // 1000,
-            "open": float(row["o"]),
-            "high": float(row["h"]),
-            "low": float(row["l"]),
-            "close": float(row["c"]),
-        }
-    return [by_open_time[key] for key in sorted(by_open_time)]
 
 
 def validate_continuity(records: list[dict], interval_minutes: int) -> None:
@@ -170,19 +154,13 @@ def main() -> int:
             raise RuntimeError(f"an empty dataset for {coin} {interval}m")
         validate_continuity(records, interval)
         raw = canonical_bytes(records)
-        digest = dataset_sha256(records)
+        meta = dataset_metadata(records, interval_minutes=interval)
+        digest = meta["sha256"]
         path = output_dir / f"{stem}_{interval}m_hlspot_{digest[:12]}.csv"
         path.write_bytes(raw)
         manifest["datasets"][str(interval)] = {
             "file": str(path),
-            "sha256": digest,
-            "bars": len(records),
-            "start_utc": dt.datetime.fromtimestamp(
-                records[0]["timestamp"], tz=dt.timezone.utc,
-            ).isoformat(),
-            "end_utc": dt.datetime.fromtimestamp(
-                records[-1]["timestamp"], tz=dt.timezone.utc,
-            ).isoformat(),
+            **meta,
         }
         print(f"{interval}m: {len(records)} bare -> {path}")
 

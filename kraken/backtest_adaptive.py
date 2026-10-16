@@ -139,7 +139,7 @@ def main() -> int:
 
     base = dict(entry=args.entry, dca=args.dca, disc=args.disc, tp=args.tp,
                 maxdca=args.maxdca, budget=args.budget, fee=args.fee, sl=args.sl,
-                drop_fallback=args.drop)
+                drop_fallback=args.drop, interval=args.interval)
 
     fixed_arr = np.full(len(ohlc), args.drop)
     shadow_arr = np.array([ss.K_DCA * v if not np.isnan(v) else np.nan for v in vol_trail])

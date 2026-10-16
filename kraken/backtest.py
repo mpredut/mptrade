@@ -137,7 +137,8 @@ def main() -> int:
     closes = [x[3] for x in ohlc]
     bh = (closes[-1] - closes[0]) / closes[0] * 100
     base = dict(entry=args.entry, dca=args.dca, disc=args.disc, drop=args.drop,
-                tp=args.tp, maxdca=args.maxdca, budget=args.budget, fee=args.fee, sl=args.sl)
+                tp=args.tp, maxdca=args.maxdca, budget=args.budget, fee=args.fee,
+                sl=args.sl, interval=args.interval)
 
     engine = "live engine (faithful)"
     if args.mode == "single":

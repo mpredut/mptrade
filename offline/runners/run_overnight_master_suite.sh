@@ -60,8 +60,8 @@ run_step() {
 # ------------------------------------------------------------------------------
 # STEP 0: Market Intelligence 4-Pillar Backtest & Chop Weight Benchmark
 # ------------------------------------------------------------------------------
-run_step "0A" "4-Pillar Market Intelligence Backtest (BTCUSDC, TAOUSDC)" \
-    "$PYTHON_BIN offline/research/intelligence_backtest.py BTCUSDC,TAOUSDC"
+run_step "0A" "4-Pillar Market Intelligence Backtest (SSOT symbols)" \
+    "$PYTHON_BIN offline/research/intelligence_backtest.py"
 
 run_step "0B" "Chop Regime & Dynamic Weight Benchmark (407 days)" \
     "$PYTHON_BIN offline/research/chop_weight_backtest.py"
@@ -70,7 +70,7 @@ run_step "0B" "Chop Regime & Dynamic Weight Benchmark (407 days)" \
 # STEP 1: Kraken & HYPE Multi-Interval Walk-Forward Baselines & Comparisons
 # ------------------------------------------------------------------------------
 run_step "1A" "HYPE 240m Walk-Forward Baseline (628 days, 31 folds)" \
-    "$PYTHON_BIN offline/runners/walk_forward.py --venue kraken \
+    "$PYTHON_BIN offline/runners/walk_forward.py --venue kraken --pair HYPEUSD \
         --intervals 240 \
         --dataset 240=offline/research/hype_dataset/HYPEUSDC_240m_hlspot.csv \
         --train 720 --validation 180 --test 90 --step 90 --warmup 40 \
@@ -121,14 +121,14 @@ run_step "2D_COMP" "Hyperliquid HYPE 240m Candidate Comparison" \
     "$PYTHON_BIN offline/runners/walk_forward.py --mode compare \
         $RESULTS_DIR/hyperliquid_wf/HYPE_240m_baseline.json"
 
-run_step "2E" "Binance BTCUSDT 240m Walk-Forward Baseline" \
+run_step "2E" "Binance BTCUSDC 240m Walk-Forward Baseline" \
     "$PYTHON_BIN offline/runners/walk_forward.py --venue binance \
-        --symbol BTCUSDT --intervals 240 \
+        --symbol BTCUSDC --intervals 240 \
         --output-dir $RESULTS_DIR/binance_wf"
 
-run_step "2E_COMP" "Binance BTCUSDT 240m Candidate Comparison" \
+run_step "2E_COMP" "Binance BTCUSDC 240m Candidate Comparison" \
     "$PYTHON_BIN offline/runners/walk_forward.py --mode compare \
-        $RESULTS_DIR/binance_wf/BTCUSDT_240m_baseline.json"
+        $RESULTS_DIR/binance_wf/BTCUSDC_240m_baseline.json"
 
 # ------------------------------------------------------------------------------
 # STEP 3: Kraken Adaptive Volatility & Reentry Multiplier Sweeps
