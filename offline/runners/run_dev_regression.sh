@@ -57,6 +57,8 @@ END_TS="$(date +%s)"
 DURATION=$((END_TS - START_TS))
 cat "$LOG_FILE.run" >> "$LOG_FILE"
 
+PREV_STATUS="$("$PYTHON_BIN" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status",""))' "$STATUS_JSON" 2>/dev/null || true)"
+
 # Parse pytest results via python
 "$PYTHON_BIN" - <<EOF | tee -a "$LOG_FILE"
 import json
@@ -129,7 +131,7 @@ os.replace(tmp_out, "$STATUS_JSON")
 print(f"[dev_regression] Status: {status} | Passed: {passed} | Failed: {failed} | Duration: {duration}s")
 EOF
 
-# Notification on failure
+# Notification on failure or recovery
 if [ "$RC" -ne 0 ]; then
     echo "[dev_regression $(date '+%F %T')] FAILED on commit $COMMIT_SHORT ($RC)" | tee -a "$LOG_FILE" >&2
     # If os_notify.sh exists, notify ntfy
@@ -139,6 +141,10 @@ if [ "$RC" -ne 0 ]; then
     fi
 else
     echo "[dev_regression $(date '+%F %T')] PASSED on commit $COMMIT_SHORT in ${DURATION}s" | tee -a "$LOG_FILE"
+    if [ "$PREV_STATUS" = "FAILED" ] && [ -f "$REPO_ROOT/orchestratorOS/lib/os_notify.sh" ]; then
+        source "$REPO_ROOT/orchestratorOS/lib/os_notify.sh"
+        send_os_ntfy "DEV CI Regression RECOVERED" "Commit $COMMIT_SHORT passed all tests: $COMMIT_MSG. Duration: ${DURATION}s." "default" "ntfy-error-1978" || true
+    fi
 fi
 
 rm -f "$LOG_FILE.run"

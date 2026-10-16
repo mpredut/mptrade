@@ -240,6 +240,28 @@ def evaluate_single_candidate(
     }
 
 
+_WORKER_STATE: dict[str, Any] = {}
+
+
+def _init_worker(
+    asset_data: dict[str, list[tuple[float, float, float, float]]],
+    initial_cash: float,
+    fee_pct: float,
+) -> None:
+    _WORKER_STATE["asset_data"] = asset_data
+    _WORKER_STATE["initial_cash"] = initial_cash
+    _WORKER_STATE["fee_pct"] = fee_pct
+
+
+def _evaluate_worker_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    return evaluate_single_candidate(
+        candidate,
+        _WORKER_STATE["asset_data"],
+        _WORKER_STATE["initial_cash"],
+        _WORKER_STATE["fee_pct"],
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workers", type=int, default=3, help="Max parallel worker processes (default: 3)")
@@ -290,9 +312,13 @@ def main():
     results = []
     completed = 0
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as executor:
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=args.workers,
+        initializer=_init_worker,
+        initargs=(asset_data, initial_cash, args.fee_pct),
+    ) as executor:
         future_map = {
-            executor.submit(evaluate_single_candidate, c, asset_data, initial_cash, args.fee_pct): c
+            executor.submit(_evaluate_worker_candidate, c): c
             for c in candidates
         }
 

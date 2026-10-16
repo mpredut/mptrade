@@ -1633,6 +1633,10 @@ class Strategy:
         closes = closes[-90:]
         if len(closes) < 20 or interval_minutes <= 0:
             return None
+        cache_key = (tuple(closes), float(interval_minutes))
+        cached = Strategy._HOURLY_VOL_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
         returns = [
             math.log(current / previous)
             for previous, current in zip(closes, closes[1:])
@@ -1644,7 +1648,13 @@ class Strategy:
         mean_r = sum(returns) / n_r
         var_r = sum((r - mean_r) ** 2 for r in returns) / (n_r - 1)
         std = math.sqrt(var_r)
-        return std * math.sqrt(60.0 / interval_minutes) * 100.0
+        res = std * math.sqrt(60.0 / interval_minutes) * 100.0
+        if len(Strategy._HOURLY_VOL_CACHE) >= 65536:
+            Strategy._HOURLY_VOL_CACHE.clear()
+        Strategy._HOURLY_VOL_CACHE[cache_key] = res
+        return res
+
+    _HOURLY_VOL_CACHE: dict = {}
 
     # -- Common market regime and trend overlay --------------------------------
     def _trend_closes(self) -> list:

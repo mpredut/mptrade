@@ -6,8 +6,13 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
-PY="$ROOT/myenv/bin/python"
-[ -x "$PY" ] || PY=python3
+if [ -x "$ROOT/myenv/bin/python" ]; then
+    PY="$ROOT/myenv/bin/python"
+elif [ -x "$ROOT/.venv/bin/python" ]; then
+    PY="$ROOT/.venv/bin/python"
+else
+    PY=python3
+fi
 OUT="${GRID_OUT:-$ROOT/offline/results/kraken_continuous_grid}"
 mkdir -p "$OUT"
 cd "$ROOT"

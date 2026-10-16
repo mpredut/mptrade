@@ -410,7 +410,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                 # 23 Jul: broker.last_price is updated UNCONDITIONALLY, on every tick — not
                 # only in kalman_primary mode. Bug found today: without it, mark_to_market()
                 # uses the price of the LAST TRADE (not the current market price) for any
-                # pozitie ramasa DESCHISA la final in modul normal (model_actual) — un BUY
+                # position left OPEN at the end in normal mode (model_actual) — a BUY
                 # at 100 followed by a rise to 150 without another trade reported mark_to_market=$0
                 # instead of $50 (verified in isolation: net_total -$0.10 versus the correct +$49.90).
                 broker.last_price = price
@@ -425,10 +425,9 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                         prev_ktrend = ktrend
     
                 n += 1
-                if n % 100 == 0:
+                if speed != "fast" and n % 100 == 0:
                     # Simulated analysis state — read by tradeall_observe.py (chart hover),
-                    # the same content as live's cache_instant_trend.json. Every 100 ticks, not
-                    # per tick (cheap I/O even in fast-forward).
+                    # the same content as live's cache_instant_trend.json.
                     try:
                         state = {symbol: {
                             "current_price": price, "final_trend": gradient,
@@ -445,6 +444,19 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                     # (log.disable_print()) — OUR progress messages still have to be visible.
                     sys.stderr.write(f"[tradeall_backtest] {n} ticks, the last {datetime.fromtimestamp(ts)} "
                                      f"(BUY {broker.n_buy} / SELL {broker.n_sell})\n")
+
+        if n > 0:
+            try:
+                state = {symbol: {
+                    "current_price": price, "final_trend": gradient,
+                    "gradient_recent": _gr, "slope_small": slope, "slope_big": slope_big,
+                    "epsilon": window_small.get_noise_epsilon(), "ts": ts,
+                    **shadow_fields,
+                }}
+                with open(os.path.join(out_dir, "analysis_state.json"), "w", encoding="utf-8") as sf:
+                    json.dump(state, sf)
+            except Exception:
+                pass
     
         pnl = broker.pnl_summary()
         if first_price and broker.last_price:
