@@ -58,13 +58,44 @@ def fetch_ohlc_candles(
     ]
 
 
+def _is_kraken_error(exc: BaseException) -> bool:
+    return isinstance(exc, KrakenError) or exc.__class__.__name__ == "KrakenError"
+
+
 def get_price(client: KrakenClient, pair: str) -> float | None:
     """Return the latest pair price, e.g. HYPEUSD, or None when unavailable."""
     try:
         return client.last_price(pair)
-    except KrakenError as e:
+    except Exception as e:
+        if not _is_kraken_error(e):
+            raise
         log(f"  ! the price of {pair} is unavailable: {e}")
         return None
+
+
+def check_pair_listing(client: KrakenClient, pair: str) -> tuple[dict | None, bool]:
+    """Return (pair_metadata, confirmed_unlisted).
+
+    confirmed_unlisted is True only when Kraken explicitly reports an unknown pair
+    or a non-tradable status, and False on transient network/empty responses.
+    """
+    try:
+        info = client.pair_info(pair)
+    except Exception as e:
+        if not _is_kraken_error(e):
+            raise
+        is_unknown = "unknown asset pair" in str(e).lower()
+        if not is_unknown:
+            log(f"  ! transient Kraken error checking {pair}: {e}")
+        return None, is_unknown
+    if not info:
+        return None, False
+    # Status 'online' means tradable; Kraken also reports cancel/post/limit/reduce-only.
+    status = info.get("status", "online")
+    if status not in ("online", "limit_only", "post_only"):
+        log(f"  [market] {pair} listed but status={status} (still not tradable)")
+        return None, True
+    return info, False
 
 
 def pair_available(client: KrakenClient, pair: str) -> dict | None:
@@ -72,17 +103,7 @@ def pair_available(client: KrakenClient, pair: str) -> dict | None:
 
     Used as a launch detector; the bot waits while the pair is absent.
     """
-    try:
-        info = client.pair_info(pair)
-    except KrakenError:
-        return None
-    if not info:
-        return None
-    # Status 'online' means tradable; Kraken also reports cancel/post/limit/reduce-only.
-    status = info.get("status", "online")
-    if status not in ("online", "limit_only", "post_only"):
-        log(f"  [market] {pair} listed but status={status} (still not tradable)")
-        return None
+    info, _ = check_pair_listing(client, pair)
     return info
 
 

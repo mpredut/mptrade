@@ -110,6 +110,31 @@ class PublicCacheTest(unittest.TestCase):
         self.assertTrue(len(km.PAIRS) > 0)
         self.assertIn("HYPEUSD", km.PAIRS)
 
+    def test_wait_for_listing_suppresses_alert_on_transient_network_recovery(self):
+        import kraken.kraken_bot as kb
+        import kraken.market_data as kmd
+
+        client = kc.KrakenClient()
+        # 1. Transient empty/network error (0, b"") followed by online pair -> NO listing notification
+        with mock.patch.object(kc, "http_get", side_effect=[(0, b""), FULL]), \
+             mock.patch.object(kb.time, "sleep"), \
+             mock.patch.object(kb, "notify") as mnotify:
+            ok = kb._wait_for_listing(client, "HYPEUSD", "Kraken", 15, False)
+            self.assertTrue(ok)
+            mnotify.assert_not_called()
+
+        kc._CACHE.clear()
+        # 2. Confirmed unlisted ("EQuery:Unknown asset pair") followed by online pair -> sends notification with pair name
+        unknown_pair = (200, b'{"error":["EQuery:Unknown asset pair"],"result":{}}')
+        ticker_ok = (200, b'{"error":[],"result":{"HYPEUSD":{"c":["42.5","1.0"]}}}')
+        with mock.patch.object(kc, "http_get", side_effect=[unknown_pair, FULL, ticker_ok]), \
+             mock.patch.object(kb.time, "sleep"), \
+             mock.patch.object(kb, "notify") as mnotify:
+            ok = kb._wait_for_listing(client, "HYPEUSD", "Kraken", 15, False)
+            self.assertTrue(ok)
+            mnotify.assert_called_once()
+            self.assertEqual(mnotify.call_args.kwargs["title"], "HYPEUSD listed on Kraken!")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

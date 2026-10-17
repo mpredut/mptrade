@@ -1277,6 +1277,44 @@ class RTradeThreadingTest(unittest.TestCase):
             mock_cancel.assert_not_called()
             mock_sleep.assert_called_once_with(rtrade.WAIT_FOR_ORDER)
 
+    def test_run_pair_aborts_surviving_worker_when_opposite_side_hits_24h_limit(self):
+        bot = _bot()
+        sell_places = []
+        buy_attempted = threading.Event()
+
+        def fake_place(symbol, side, price, qty, **kwargs):
+            ctx = kwargs.get("_outcome_context")
+            if side == "BUY":
+                if isinstance(ctx, dict):
+                    ctx["reason"] = "qty_zero_after_policy"
+                buy_attempted.set()
+                return None
+            sell_places.append((price, qty))
+            return {"orderId": 42, "price": str(price)}
+
+        def fake_sleep(_sec):
+            buy_attempted.wait(timeout=1.0)
+
+        with patch.object(rtrade.api, "get_current_price", return_value=100.0), \
+             patch.object(rtrade.mkt, "place", side_effect=fake_place), \
+             patch.object(rtrade, "_order_fully_filled", return_value=False), \
+             patch.object(rtrade.mkt, "latest_fill_price", return_value=None), \
+             patch.object(rtrade, "_preflight_routed_order", return_value=object()) as preflight, \
+             patch.object(
+                 rtrade, "_cancel_order_confirmed",
+                 return_value=OrderStatus("canceled", 0.0, 0.0, 0.0, "CANCELED"),
+             ) as cancel_confirmed, \
+             patch.object(rtrade.time, "sleep", side_effect=fake_sleep):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                buy_res, sell_res = bot._run_pair(executor, 100.0)
+
+        self.assertIsNone(buy_res)
+        self.assertIsNone(sell_res)
+        self.assertLessEqual(len(sell_places), 1, "SELL worker must not loop after BUY worker aborts")
+        if sell_places:
+            cancel_confirmed.assert_called_once_with("TAOUSDC", 42)
+            preflight.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

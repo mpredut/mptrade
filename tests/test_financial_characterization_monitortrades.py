@@ -1213,6 +1213,71 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
         self.assertEqual(inst.placed[0]["side"], "BUY")
         self.assertEqual(inst.placed[0]["kwargs"]["bypass_guards"], {"GF1", "GI3"})
 
+    def test_stop_loss_does_not_fall_through_and_resets_stale_reentry_and_min_notional_dust(self):
+        """Regression for ARBUSDC incident:
+        1. Executing STOP SELL must clear stale _REENTRY_STATE and return immediately without evaluating Step 4 on the same tick.
+        2. On subsequent ticks where sell_time > buy_time and remaining balance is below min_notional (even if >= min_qty),
+           position_closed_by_sell must treat the remainder as dust and skip ghost Stop-Loss evaluations.
+        3. Stale _REENTRY_STATE from an older sell_time is discarded and re-anchored to the new SELL.
+        """
+        mt.HARD_TP_ENABLED = False
+        mt._LAST_EXIT_KIND.clear()
+        mt._REENTRY_STATE.clear()
+        sym = SYMBOL
+
+        # Seed a stale _REENTRY_STATE from 2 days ago with an obsolete low trough
+        mt._REENTRY_STATE[sym] = {
+            "trough": 0.1719,
+            "peak": 0.1950,
+            "peak_bounce": 0.1846,
+            "started_at": NOW - 2 * 86400,
+        }
+
+        # Tick 1: Position bought 1 day ago at 0.1930, older sell 2 days ago at 0.1846.
+        # Current price drops to 0.1884 (-2.38% > 2.2% loss threshold), trend_up=True but disaster floor breached -> STOP executes.
+        inst = FakeInstrument(
+            price=0.1884,
+            free=9496.6,
+            min_qty=0.1,
+            fills=[
+                _fill("SELL", 0.1846, 5000.0, age_s=2 * 86400),
+                _fill("BUY", 0.1930, 9496.6, age_s=86400),
+            ],
+            params={"mt.buy_budget": 250, "mt.max_budget": 2500},
+        )
+        self.run_tick(inst, trend_up=True, loss=0.015, now=NOW)
+        # Only the STOP SELL must be placed on Tick 1; must NOT fall through to Step 4 BUY on the same tick!
+        self.assertEqual(len(inst.placed), 1)
+        self.assertEqual(inst.placed[0]["side"], "SELL")
+        self.assertNotIn(sym, mt._REENTRY_STATE)
+        self.assertEqual(mt._LAST_EXIT_KIND.get(sym), "STOP")
+
+        # Tick 2 (1000s later, after cooldown): The STOP SELL at 0.1884 filled, leaving 9.5 ARB (~$1.79 < $5 min_notional)
+        # which is above min_qty (0.1) but refused by provider order_filter_refusal as below_min_notional.
+        inst.placed.clear()
+        inst._free = 9.5
+        inst._price = 0.1884
+        inst._fills = [
+            _fill("SELL", 0.1884, 9487.1, age_s=-10),  # timestamp = NOW + 10
+            _fill("BUY", 0.1930, 9496.6, age_s=86400),
+        ]
+        inst._provider.fills = list(inst._fills)
+        inst._provider.order_filter_refusal = (
+            lambda _sym, _side, px, q, **kw: "below_min_notional" if (q * px) < 5.0 else None
+        )
+        # Even if stale _REENTRY_STATE were restored externally, sell_time mismatch resets it to trough=0.1884
+        mt._REENTRY_STATE[sym] = {
+            "trough": 0.1719,
+            "peak": 0.1950,
+            "peak_bounce": 0.1884,
+            "started_at": NOW - 2 * 86400,
+        }
+        self.run_tick(inst, trend_up=True, loss=0.022, now=NOW + 1000)
+        # Must NOT fire ghost Stop-Loss SELL, and must NOT fire false Post-STOP BUY (bounce from 0.1884 is 0% < 1.5%)
+        self.assertEqual(inst.placed, [])
+        self.assertEqual(mt._REENTRY_STATE[sym]["trough"], 0.1884)
+        self.assertEqual(mt._REENTRY_STATE[sym]["sell_time"], NOW + 10)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1010,12 +1010,25 @@ class PositionExitManager:
                     metadata={"elapsed_hours": elapsed_sec / 3600.0},
                 )
 
+        existing_state = self.reentry_state.get(symbol)
+        if existing_state and snapshot.last_sell_time_s:
+            st_sell_time = existing_state.get("sell_time")
+            st_started = existing_state.get("started_at")
+            if (
+                (st_sell_time is not None and float(st_sell_time) != float(snapshot.last_sell_time_s))
+                or (st_sell_time is None and st_started is not None and float(st_started) < float(snapshot.last_sell_time_s))
+            ):
+                self.reentry_state.pop(symbol, None)
+
         state = self.reentry_state.setdefault(symbol, {
             "trough": snapshot.post_sell_trough or min(last_sell, current_price),
             "peak": snapshot.post_sell_peak or max(last_sell, current_price),
             "peak_bounce": current_price,
             "started_at": now,
+            "sell_time": snapshot.last_sell_time_s,
         })
+        if snapshot.last_sell_time_s and state.get("sell_time") is None:
+            state["sell_time"] = snapshot.last_sell_time_s
 
         if current_price < state["trough"]:
             state["trough"] = current_price

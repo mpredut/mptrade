@@ -484,6 +484,7 @@ def _resolve_exit(symbol: str, inst: Any = None, kind: Optional[str] = None, cle
     """Unified cleanup of tracking and guard state when an exit executes or resolves."""
     if kind:
         _LAST_EXIT_KIND[symbol] = kind
+    _REENTRY_STATE.pop(symbol, None)
     if clear_pending:
         _PENDING_STOP_EXIT.pop(symbol, None)
     _clear_smart_sl_exit(symbol, inst)
@@ -707,13 +708,46 @@ def _place_guarded(inst, side, price, qty, min_qty, **kwargs):
     return result is not None
 
 
-def _is_pending_exit_active(symbol: str, inst, sellable_qty: float, min_qty: float, current_time_s: float) -> bool:
+def _is_terminal_dust_refusal(reason: Optional[str]) -> bool:
+    """Return True if an order refusal reason indicates un-sellable dust (lot size or notional minimum)."""
+    if not reason:
+        return False
+    try:
+        import order_retry
+        return order_retry.is_terminal_filter_refusal(str(reason))
+    except Exception:
+        r = str(reason)
+        return r == "below_min_notional" or r.startswith("filter_") or r.startswith("binance_filter_refused:")
+
+
+def _is_untradable_dust(inst, symbol: str, sellable_qty: float, current_price: float, min_qty: float) -> bool:
+    """Return True if sellable_qty is zero or below venue minimum quantity/notional."""
+    if sellable_qty <= 0 or (min_qty > 0 and sellable_qty < min_qty):
+        return True
+    prov = getattr(inst, "_provider", None)
+    filter_check = getattr(prov, "order_filter_refusal", None) if prov is not None else None
+    if callable(filter_check) and current_price and current_price > 0:
+        try:
+            refusal = filter_check(
+                symbol, "SELL", current_price, sellable_qty,
+                market=True, enforce_business_minimum=False,
+            )
+            if _is_terminal_dust_refusal(refusal):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _is_pending_exit_active(
+    symbol: str, inst, sellable_qty: float, min_qty: float, current_time_s: float, current_price: float = 0.0
+) -> bool:
     """Reconcile in-flight exit intent, returning True if submission must be deferred."""
     pending_stop = _PENDING_STOP_EXIT.get(symbol)
     if not pending_stop:
         return False
-    if sellable_qty <= 0 or (min_qty and sellable_qty < min_qty):
-        print(f"[{symbol}] Pending Stop-Loss resolved: position is closed or below min_qty.")
+    if _is_untradable_dust(inst, symbol, sellable_qty, current_price, min_qty):
+        print(f"[{symbol}] Pending Stop-Loss resolved: position is closed or below min_qty/min_notional.")
         _resolve_exit(symbol, inst)
         return False
 
@@ -907,7 +941,10 @@ def _execute_take_profit(
         )
         return True
     elif prev_tp_state:
-        _TP_RIDE_STATE[symbol] = prev_tp_state
+        if _is_terminal_dust_refusal(tp_outcome_ctx.get("reason")):
+            _TP_RIDE_STATE.pop(symbol, None)
+        else:
+            _TP_RIDE_STATE[symbol] = prev_tp_state
         _save_mt_state()
     return False
 
@@ -1004,7 +1041,10 @@ def _execute_stop_loss(
     else:
         _PENDING_STOP_EXIT.pop(symbol, None)
         if prev_sl_state:
-            _SL_BOUNCE_STATE[symbol] = prev_sl_state
+            if _is_terminal_dust_refusal(outcome_ctx.get("reason")):
+                _SL_BOUNCE_STATE.pop(symbol, None)
+            else:
+                _SL_BOUNCE_STATE[symbol] = prev_sl_state
             _save_mt_state()
         if cancelled_tp_orders:
             _restore_resting_tp_orders(inst, symbol, cancelled_tp_orders, sellable_qty, sl_state)
@@ -1249,9 +1289,16 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     position_closed_by_sell = (
         bool(trade_orders_sell)
         and sell_time > buy_time
-        and (sellable_qty <= 0 or (min_qty > 0 and sellable_qty < min_qty))
         and symbol not in _PENDING_STOP_EXIT
+        and _is_untradable_dust(inst, symbol, sellable_qty, current_price, min_qty)
     )
+    if position_closed_by_sell and (
+        symbol in _SL_BOUNCE_STATE or symbol in _SL_EPISODE_STATE or symbol in _TP_RIDE_STATE
+    ):
+        _SL_BOUNCE_STATE.pop(symbol, None)
+        _SL_EPISODE_STATE.pop(symbol, None)
+        _TP_RIDE_STATE.pop(symbol, None)
+        _save_mt_state()
     if trade_orders_buy and not position_closed_by_sell:
         if not buy_price:
             if _verbose:
@@ -1311,12 +1358,13 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 if tp_decision.action == ExitAction.HOLD:
                     _log_tp_hold_state(symbol, snapshot, tp_decision, gain_threshold)
                 else:
-                    _execute_take_profit(inst, snapshot, tp_decision, sbs, min_qty, prev_tp_state, gain_threshold)
+                    if _execute_take_profit(inst, snapshot, tp_decision, sbs, min_qty, prev_tp_state, gain_threshold):
+                        return   # Already sold this tick; do not evaluate stale sell history below.
             else:
                 _handle_position_recovery(inst, snapshot, lost_threshold)
         elif in_sl_territory:
             pending_stop = _PENDING_STOP_EXIT.get(symbol)
-            if _is_pending_exit_active(symbol, inst, sellable_qty, min_qty, current_time_s):
+            if _is_pending_exit_active(symbol, inst, sellable_qty, min_qty, current_time_s, current_price=current_price):
                 return
             _TP_RIDE_STATE.pop(symbol, None)
             prev_sl_state = dict(_SL_BOUNCE_STATE.get(symbol, {}))
@@ -1324,7 +1372,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             if sl_decision.action == ExitAction.HOLD:
                 _log_sl_hold_state(symbol, snapshot, sl_decision, lost_threshold)
             else:
-                _execute_stop_loss(inst, snapshot, sl_decision, sbs, min_qty, lost_threshold, prev_sl_state, pending_stop)
+                if _execute_stop_loss(inst, snapshot, sl_decision, sbs, min_qty, lost_threshold, prev_sl_state, pending_stop):
+                    return   # Already sold this tick; do not evaluate stale sell history below.
         else:
             _handle_position_recovery(inst, snapshot, lost_threshold)
 
@@ -1351,14 +1400,26 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         last_exit_kind = explicit_exit_kind or "SELL"
 
         prev_reentry_state = dict(_REENTRY_STATE.get(symbol, {}))
+        if prev_reentry_state and sell_time:
+            state_sell_time = prev_reentry_state.get("sell_time")
+            state_started_at = prev_reentry_state.get("started_at")
+            if (
+                (state_sell_time is not None and float(state_sell_time) != float(sell_time))
+                or (state_sell_time is None and state_started_at is not None and float(state_started_at) < float(sell_time))
+            ):
+                prev_reentry_state = {}
+                _REENTRY_STATE.pop(symbol, None)
         if not prev_reentry_state:
             prev_reentry_state = {
                 "trough": min(sell_price, current_price),
                 "peak": max(sell_price, current_price),
                 "peak_bounce": current_price,
                 "started_at": current_time_s,
+                "sell_time": sell_time,
             }
         else:
+            if sell_time and prev_reentry_state.get("sell_time") is None:
+                prev_reentry_state["sell_time"] = sell_time
             prev_trough = prev_reentry_state.get("trough")
             if prev_trough is None or current_price < prev_trough:
                 prev_reentry_state["trough"] = current_price
@@ -1398,6 +1459,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
 
         reentry_dec = exit_mgr.evaluate_reentry(reentry_snap, custom_drop_pct=gain_threshold)
         if not reentry_dec.should_enter:
+            _save_mt_state()
             print(f"[{symbol}] Re-entry deferred: {reentry_dec.reason}")
             return
 

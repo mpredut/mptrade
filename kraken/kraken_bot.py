@@ -31,7 +31,7 @@ from kraken_common import (log, required_bool_env, required_env,
                            required_int_env, load_env_stack,
                            single_instance)
 from kraken_client import KrakenClient, KrakenError
-from market_data import get_price, pair_available
+from market_data import check_pair_listing, get_price, pair_available
 from notify import notify
 from strategies.spot_engine import Strategy, StratParams
 
@@ -141,25 +141,35 @@ def main() -> int:
 
 def _wait_for_listing(client, pair, label, interval, desktop) -> bool:
     # Preflight: start immediately if the pair is already listed.
-    info = pair_available(client, pair)
+    info, confirmed_unlisted = check_pair_listing(client, pair)
     if info:
         log(f"  [verify] {pair} is LISTED and tradable — starting.")
         return True
-    log(f"    {pair} not listed on Kraken yet — waiting for it... (Ctrl+C to stop)")
+    saw_unlisted = confirmed_unlisted
+    if saw_unlisted:
+        log(f"    {pair} not listed on Kraken yet — waiting for it... (Ctrl+C to stop)")
+    else:
+        log(f"    {pair} verification deferred (transient API/network error) — retrying in {interval}s...")
     try:
         while True:
-            info = pair_available(client, pair)
+            time.sleep(interval)
+            info, confirmed_unlisted = check_pair_listing(client, pair)
+            if confirmed_unlisted:
+                saw_unlisted = True
             if info:
+                if not saw_unlisted:
+                    log(f"  [verify] {pair} is LISTED and tradable after API recovery — starting.")
+                    return True
                 p = get_price(client, pair)
-                body = f"{label} ({pair}) is available on Kraken, price {p}"
+                display_label = pair if label.strip().lower() in ("", "kraken") else f"{label} ({pair})"
+                body = f"{display_label} is available on Kraken, price {p}"
                 log("############################################")
-                log(f">>> {label} LISTED ON KRAKEN — STARTING <<<")
+                log(f">>> {display_label} LISTED ON KRAKEN — STARTING <<<")
                 log("############################################")
-                notify(title=f"{label} listed on Kraken!", body=body,
+                notify(title=f"{display_label} listed on Kraken!", body=body,
                        source="kraken", price=p, desktop=desktop)
                 return True
             log(f"ping - waiting for the listing {pair}...")
-            time.sleep(interval)
     except KeyboardInterrupt:
         log("Stopped manually.")
         return False
