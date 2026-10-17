@@ -17,9 +17,13 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
-for p in (_HERE, _ROOT):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+for p in (_ROOT, _HERE):
+    if p in sys.path:
+        sys.path.remove(p)
+    sys.path.insert(0, p)
+_strat_mod = sys.modules.get("strategy")
+if _strat_mod is not None and os.path.dirname(os.path.abspath(getattr(_strat_mod, "__file__", ""))) != _HERE:
+    sys.modules.pop("strategy", None)
 
 from strategy import Strategy, StratParams, HL_FEE_PCT
 from offline.backtests.execution import (

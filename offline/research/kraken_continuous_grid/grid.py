@@ -30,7 +30,7 @@ os.chdir(ROOT)
 from kraken import shadow_live  # noqa: E402
 shadow_live._load_runtime_config()
 from strategies import spot_dca as strat  # noqa: E402
-import replay as rp  # noqa: E402
+from kraken import replay as rp  # noqa: E402
 
 FLAGS = {"peak": False}
 _orig_step = strat.Strategy.step
@@ -51,7 +51,9 @@ LIVE = strat.StratParams.from_env()
 OLD = R(LIVE, takeprofit_pct=5.0, dca_spacing_growth_pct=0.0, tp_trail_adaptive=False,
         tp_regime_gate=False, tp_trail_profit_floor_pct=0.0, stop_loss_pct=12.5,
         reentry_hybrid_enabled=False, reentry_bear_bounce_pct=0.0,
-        tp_mdhtp_enabled=False, sl_mhdsl_enabled=False)
+        tp_mdhtp_enabled=False, sl_mhdsl_enabled=False,
+        trend_overlay=False, dca_trend_brake=False, surge_guard=False,
+        fast_profit_guard=False, tp_dynamic_flat=False)
 
 
 def ov(p, topup, trail, brk=False):
@@ -107,6 +109,7 @@ W30, W90, WSTEP, WARM = 180, 540, 180, 40
 
 _LOAD_CACHE: dict = {}
 _ASSET_CACHE: dict = {}
+_TASK_CACHE: dict = {}
 
 
 def load(path):
@@ -155,6 +158,11 @@ def task(args):
     try:
         bars, ohlc, year_slices = load_asset(asset)
         params, peak = CONFIGS[cfg]
+        cache_key = (asset, len(bars), bars[0][0] if bars else 0, bars[-1][0] if bars else 0,
+                     repr(params), bool(peak))
+        cached = _TASK_CACHE.get(cache_key)
+        if cached is not None:
+            return {**cached, "cfg": cfg, "secs": 0.0}
         t0 = time.time()
         res = {"asset": asset, "cfg": cfg, "bars": len(bars),
                "full": replay(ohlc[WARM:], ohlc[:WARM], params, peak), "year": {}, "w30": [], "w90": []}
@@ -165,6 +173,7 @@ def task(args):
                 r = replay(ohlc[s:s + size], ohlc[s - WARM:s], params, peak)
                 res[key].append([r["ret"], r["dd"], r["bh"], r["cyc"]])
         res["secs"] = round(time.time() - t0, 1)
+        _TASK_CACHE[cache_key] = res
         return res
     except Exception:
         return {"asset": asset, "cfg": cfg, "error": traceback.format_exc()}
@@ -185,11 +194,27 @@ if __name__ == "__main__":
              "peak2.2", "reentry0", "ov650_t8_sl12.5", "ov650_t8_oldlive", "sl0", "tp_classic"]
     order = first + [c for c in CONFIGS if c not in first]
     todo = [(a, c) for a in assets for c in order if (a, c) not in done]
-    print(f"[grid] {len(assets)} assets x {len(CONFIGS)} configs, {len(todo)} tasks to run", flush=True)
+    canon_groups: dict = {}
+    canon_todo = []
+    for a, c in todo:
+        p, pk = CONFIGS[c]
+        k = (a, repr(p), bool(pk))
+        if k not in canon_groups:
+            canon_groups[k] = []
+            canon_todo.append((a, c))
+        canon_groups[k].append(c)
+    print(f"[grid] {len(assets)} assets x {len(CONFIGS)} configs, {len(todo)} tasks ({len(canon_todo)} unique)", flush=True)
     t0 = time.time()
+    done_count = 0
     with Pool(int(os.environ.get("WORKERS", 3))) as pool, open(OUT, "a") as out:
-        for i, r in enumerate(pool.imap_unordered(task, todo), 1):
-            out.write(json.dumps(r) + "\n"); out.flush()
-            tag = "ERROR" if "error" in r else f"full {r['full']['ret']:+8.2f}% dd {r['full']['dd']:6.2f} ({r['secs']}s)"
-            print(f"[grid] {i}/{len(todo)} {r['asset']:<9} {r['cfg']:<20} {tag}  [{time.time()-t0:.0f}s]", flush=True)
+        for r in pool.imap_unordered(task, canon_todo):
+            p, pk = CONFIGS[r["cfg"]]
+            aliases = canon_groups.get((r["asset"], repr(p), bool(pk)), [r["cfg"]])
+            for idx, alias_cfg in enumerate(aliases):
+                done_count += 1
+                row = r if idx == 0 and alias_cfg == r["cfg"] else {**r, "cfg": alias_cfg, "secs": 0.0}
+                out.write(json.dumps(row) + "\n")
+                tag = "ERROR" if "error" in row else f"full {row['full']['ret']:+8.2f}% dd {row['full']['dd']:6.2f} ({row['secs']}s)"
+                print(f"[grid] {done_count}/{len(todo)} {row['asset']:<9} {row['cfg']:<20} {tag}  [{time.time()-t0:.0f}s]", flush=True)
+            out.flush()
     print("[grid] done", flush=True)

@@ -59,3 +59,27 @@ def test_reports_generate_empty_dir(tmp_path):
 
     l3 = report3.generate_report(str(tmp_path / "exp3"))
     assert any("Finite-cash continuous runs" in line for line in l3)
+
+
+def test_old_baseline_disables_post_0923_promotions():
+    from offline.research.kraken_continuous_grid import grid as kgrid
+    assert kgrid.OLD.trend_overlay is False
+    assert kgrid.OLD.dca_trend_brake is False
+    assert kgrid.OLD.surge_guard is False
+    assert kgrid.OLD.fast_profit_guard is False
+    assert kgrid.OLD.tp_dynamic_flat is False
+    assert kgrid.CONFIGS["old_live_pre0923"][0] != kgrid.CONFIGS["ov650_t8_oldlive"][0]
+
+
+def test_t212_grid_peak_reentry_fallback_for_zero_drop_profile():
+    from offline.research.t212_continuous_grid import grid as tgrid
+    try:
+        p_live, pk_live = tgrid.params_for("nvda", "live")
+        p_peak, pk_peak = tgrid.params_for("nvda", "reentry_peak")
+        assert pk_live == 0
+        assert pk_peak == 1
+        assert p_live.reentry_drop_pct == 0.0
+        assert p_peak.reentry_drop_pct == 2.0
+    finally:
+        tgrid.strat.Strategy.step = tgrid._orig_step
+

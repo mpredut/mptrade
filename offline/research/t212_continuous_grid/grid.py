@@ -11,23 +11,25 @@ US stocks/ETFs, to separate what is specific to one chart from what generalises.
 Harness-only variant FLAGS["peak"]: after a take-profit, ratchet last_sell_price up to the
 highest close since the sale, so re-entry waits for a pullback from the post-sale peak.
 """
-import contextlib, csv, io, json, os, sys, time, traceback
+import contextlib, csv, importlib.util, io, json, os, sys, time, traceback
 from multiprocessing import Pool
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 EXP = os.environ.get("GRID_OUT") or os.path.join(REPO, "offline", "results", "t212_continuous_grid")
 DATA = os.path.join(EXP, "data")
 OUT = os.path.join(EXP, "results.jsonl")
-sys.path.insert(0, os.path.join(REPO, "212trading"))
-sys.path.insert(0, REPO)
+if REPO not in sys.path:
+    sys.path.insert(0, REPO)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-import replay as rp                       # noqa: E402  (212trading/replay.py)
-import strategy as strat                  # noqa: E402
+_rp_spec = importlib.util.spec_from_file_location("t212_replay_grid", os.path.join(REPO, "212trading", "replay.py"))
+rp = importlib.util.module_from_spec(_rp_spec)
+sys.modules[_rp_spec.name] = rp
+_rp_spec.loader.exec_module(rp)
+strat = rp._strat
 from ipo_common import parse_dotenv       # noqa: E402
 
 FLAGS = {"peak": False}
-_target_strat = getattr(rp, "_strat", strat)
-_orig_step = _target_strat.Strategy.step
+_orig_step = strat.Strategy.step
 
 
 def _step(self, price, *args, **kwargs):
@@ -38,7 +40,6 @@ def _step(self, price, *args, **kwargs):
     return _orig_step(self, price, *args, **kwargs)
 
 
-_target_strat.Strategy.step = _step
 strat.Strategy.step = _step
 
 PROFILES = {p: parse_dotenv(os.path.join(REPO, "212trading", f"config.{p}.env"))
@@ -83,6 +84,7 @@ WARM, W90_1H, STEP_1H = 12, 90 * 7, 30 * 7   # ~7 regular-session 1h bars per da
 
 
 _LOAD_CACHE: dict = {}
+_TASK_CACHE: dict = {}
 
 
 def load(asset, itv):
@@ -105,6 +107,8 @@ def params_for(profile, variant):
     cfg = dict(PROFILES[profile])
     over, peak = VARIANTS[variant]
     cfg.update(over)
+    if peak and float(cfg.get("STRAT_REENTRY_DROP_PCT") or 0) <= 0:
+        cfg["STRAT_REENTRY_DROP_PCT"] = str(cfg.get("STRAT_REENTRY_PULLBACK_PCT") or "2.0")
     cfg["STRAT_DCA_TREND_GATE_PCT"] = "0"   # the gate needs 5m bars; neutral on 1h/1d
     return strat.StratParams.from_env(cfg), peak
 
@@ -129,18 +133,28 @@ def task(args):
     profile, variant, asset = args
     try:
         params, peak = params_for(profile, variant)
+        bars_1h = load(asset, "1h")
+        bars_1d = load(asset, "1d")
+        cache_key = (
+            asset,
+            len(bars_1h) if bars_1h else 0,
+            len(bars_1d) if bars_1d else 0,
+            repr(params),
+            bool(peak),
+        )
+        cached = _TASK_CACHE.get(cache_key)
+        if cached is not None:
+            return {**cached, "profile": profile, "variant": variant, "secs": 0.0}
         out = {"profile": profile, "variant": variant, "asset": asset}
         t0 = time.time()
-        for itv, minutes in (("1h", 60), ("1d", 1440)):
-            bars = load(asset, itv)
+        for itv, minutes, bars in (("1h", 60, bars_1h), ("1d", 1440, bars_1d)):
             if bars:
                 out[itv] = run(bars, params, peak, minutes)
-        bars = load(asset, "1h")
-        if bars:
-            ohlc = [b[1:] for b in bars]
-            ts = [b[0] for b in bars]
+        if bars_1h:
+            ohlc = [b[1:] for b in bars_1h]
+            ts = [b[0] for b in bars_1h]
             wins = []
-            for s in range(WARM, len(bars) - W90_1H + 1, STEP_1H):
+            for s in range(WARM, len(bars_1h) - W90_1H + 1, STEP_1H):
                 r = run(
                     None, params, peak, 60,
                     ohlc=ohlc[s - WARM:s + W90_1H],
@@ -149,6 +163,7 @@ def task(args):
                 wins.append([r["ret"], r["dd"], r["bh"]])
             out["w90"] = wins
         out["secs"] = round(time.time() - t0, 1)
+        _TASK_CACHE[cache_key] = out
         return out
     except Exception:
         return {"profile": profile, "variant": variant, "asset": asset, "error": traceback.format_exc()}
@@ -161,6 +176,9 @@ if __name__ == "__main__":
     if not assets:
         print(f"[t212grid] No CSV data files found in {DATA}. Run fetch.py first.", flush=True)
         sys.exit(0)
+    for a in assets:
+        load(a, "1h")
+        load(a, "1d")
     todo = []
     for profile in PROFILES:
         home = HOME[profile]
@@ -171,11 +189,29 @@ if __name__ == "__main__":
             for asset in assets:
                 if asset != HOME[profile]:
                     todo.append((profile, variant, asset))
-    print(f"[t212grid] {len(todo)} tasks", flush=True)
+    canon_groups: dict = {}
+    canon_todo = []
+    for profile, variant, asset in todo:
+        p, pk = params_for(profile, variant)
+        k = (asset, repr(p), bool(pk))
+        if k not in canon_groups:
+            canon_groups[k] = []
+            canon_todo.append((profile, variant, asset))
+        canon_groups[k].append((profile, variant))
+    print(f"[t212grid] {len(todo)} tasks ({len(canon_todo)} unique)", flush=True)
     t0 = time.time()
+    done_count = 0
     with Pool(int(os.environ.get("WORKERS", 2))) as pool, open(OUT, "w") as fh:
-        for i, r in enumerate(pool.imap(task, todo), 1):
-            fh.write(json.dumps(r) + "\n"); fh.flush()
-            tag = "ERROR " + r["error"].strip().splitlines()[-1] if "error" in r else \
-                f"1h {r.get('1h', {}).get('ret')} 1d {r.get('1d', {}).get('ret')} ({r.get('secs')}s)"
-            print(f"[t212grid] {i}/{len(todo)} {r['profile']} {r['variant']:<16} {r['asset']:<6} {tag} [{time.time()-t0:.0f}s]", flush=True)
+        for r in pool.imap(task, canon_todo):
+            p, pk = params_for(r["profile"], r["variant"])
+            aliases = canon_groups.get((r["asset"], repr(p), bool(pk)), [(r["profile"], r["variant"])])
+            for idx, (al_prof, al_var) in enumerate(aliases):
+                done_count += 1
+                row = r if idx == 0 and (al_prof, al_var) == (r["profile"], r["variant"]) else {
+                    **r, "profile": al_prof, "variant": al_var, "secs": 0.0
+                }
+                fh.write(json.dumps(row) + "\n")
+                tag = "ERROR " + row["error"].strip().splitlines()[-1] if "error" in row else \
+                    f"1h {row.get('1h', {}).get('ret')} 1d {row.get('1d', {}).get('ret')} ({row.get('secs')}s)"
+                print(f"[t212grid] {done_count}/{len(todo)} {row['profile']} {row['variant']:<16} {row['asset']:<6} {tag} [{time.time()-t0:.0f}s]", flush=True)
+            fh.flush()
