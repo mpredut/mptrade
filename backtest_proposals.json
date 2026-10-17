@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-10-17T09:04:19",
+    "ts": "2026-10-17T09:56:31",
     "full_key": "BINANCE_TAO.trailing.pct",
     "section": "BINANCE_TAO",
     "key": "trailing.pct",
@@ -8,9 +8,9 @@
     "current_on_dev": 22.0,
     "winner_value": 24.0,
     "margin_vs_current": {
-      "half1": 226.48,
-      "half2": 755.65
+      "half1": 226.55,
+      "half2": 727.27
     },
-    "dev_commit": "b68435a"
+    "dev_commit": "b95ffce"
   }
 ]
