@@ -11,6 +11,13 @@ LOG_DIR="$REPO_ROOT/logs/overnight_runs"
 RESULTS_DIR="$REPO_ROOT/offline/results"
 mkdir -p "$LOG_DIR" "$RESULTS_DIR"
 
+LOCK_FILE="/tmp/mptrade_overnight_master_suite.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    echo "[overnight_master_suite] Another instance is already running (lock: $LOCK_FILE) — exiting." >&2
+    exit 0
+fi
+
 TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
 MASTER_LOG="$LOG_DIR/master_suite_${TIMESTAMP}.log"
 REPORT_MD="$RESULTS_DIR/OVERNIGHT_MASTER_REPORT.md"
