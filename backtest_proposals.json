@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-10-17T10:41:56",
+    "ts": "2026-10-17T11:21:00",
     "full_key": "BINANCE_BTC.trailing.pct",
     "section": "BINANCE_BTC",
     "key": "trailing.pct",
@@ -9,12 +9,12 @@
     "winner_value": 12.0,
     "margin_vs_current": {
       "half1": 41.33,
-      "half2": 350.88
+      "half2": 349.61
     },
-    "dev_commit": "4372567"
+    "dev_commit": "e2ee570"
   },
   {
-    "ts": "2026-10-17T10:41:56",
+    "ts": "2026-10-17T11:21:00",
     "full_key": "BINANCE_TAO.mt.gain",
     "section": "BINANCE_TAO",
     "key": "mt.gain",
@@ -22,9 +22,51 @@
     "current_on_dev": 9.2,
     "winner_value": 12.0,
     "margin_vs_current": {
-      "half1": 396.39,
-      "half2": 185.01
+      "half1": 395.82,
+      "half2": 188.25
     },
-    "dev_commit": "4372567"
+    "dev_commit": "e2ee570"
+  },
+  {
+    "ts": "2026-10-17T11:21:00",
+    "full_key": "KRAKEN_HYPE.mt.hardtp",
+    "section": "KRAKEN_HYPE",
+    "key": "mt.hardtp",
+    "symbol": "HYPEUSD",
+    "current_on_dev": 17.0,
+    "winner_value": 24.0,
+    "margin_vs_current": {
+      "half1": 248.17,
+      "half2": 78.38
+    },
+    "dev_commit": "e2ee570"
+  },
+  {
+    "ts": "2026-10-17T11:21:00",
+    "full_key": "KRAKEN_HYPE.mt.hardtp_fraction",
+    "section": "KRAKEN_HYPE",
+    "key": "mt.hardtp_fraction",
+    "symbol": "HYPEUSD",
+    "current_on_dev": 0.5,
+    "winner_value": 0.3,
+    "margin_vs_current": {
+      "half1": 303.68,
+      "half2": 78.38
+    },
+    "dev_commit": "e2ee570"
+  },
+  {
+    "ts": "2026-10-17T11:21:00",
+    "full_key": "BINANCE_ARB.mt.lost",
+    "section": "BINANCE_ARB",
+    "key": "mt.lost",
+    "symbol": "ARBUSDC",
+    "current_on_dev": 4.375,
+    "winner_value": 6.0,
+    "margin_vs_current": {
+      "half1": 135.04,
+      "half2": 96.88
+    },
+    "dev_commit": "e2ee570"
   }
 ]
