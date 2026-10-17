@@ -102,10 +102,41 @@ CONFIGS = {
 W30, W90, WSTEP, WARM = 180, 540, 180, 40
 
 
+_BARS_CACHE: dict[str, list] = {}
+_YEAR_RANGES_CACHE: dict[str, list[tuple[int, int, int]]] = {}
+
+
 def load(path):
+    cached = _BARS_CACHE.get(path)
+    if cached is not None:
+        return cached
     with open(path) as fh:
-        return [(int(r["timestamp"]), float(r["open"]), float(r["high"]), float(r["low"]),
+        rows = [(int(r["timestamp"]), float(r["open"]), float(r["high"]), float(r["low"]),
                  float(r["close"])) for r in csv.DictReader(fh)]
+    _BARS_CACHE[path] = rows
+    return rows
+
+
+def _year_ranges(path, bars):
+    cached = _YEAR_RANGES_CACHE.get(path)
+    if cached is not None:
+        return cached
+    by_year: dict[int, list[int]] = {}
+    for i, b in enumerate(bars):
+        y = datetime.fromtimestamp(b[0], timezone.utc).year
+        if y not in by_year:
+            by_year[y] = [i, i, 1]
+        else:
+            entry = by_year[y]
+            entry[1] = i
+            entry[2] += 1
+    ranges = [
+        (y, start_i, end_i)
+        for y, (start_i, end_i, count) in sorted(by_year.items())
+        if count >= 360 and start_i >= WARM
+    ]
+    _YEAR_RANGES_CACHE[path] = ranges
+    return ranges
 
 
 def replay(bars, warm, params, peak):
@@ -122,17 +153,14 @@ def replay(bars, warm, params, peak):
 def task(args):
     asset, cfg = args
     try:
-        bars = load(os.path.join(DATA, f"{asset}_240m.csv"))
+        path = os.path.join(DATA, f"{asset}_240m.csv")
+        bars = load(path)
         params, peak = CONFIGS[cfg]
         t0 = time.time()
         res = {"asset": asset, "cfg": cfg, "bars": len(bars),
                "full": replay(bars[WARM:], bars[:WARM], params, peak), "year": {}, "w30": [], "w90": []}
-        years = sorted({datetime.fromtimestamp(b[0], timezone.utc).year for b in bars})
-        for y in years:
-            idx = [i for i, b in enumerate(bars) if datetime.fromtimestamp(b[0], timezone.utc).year == y]
-            if len(idx) < 360 or idx[0] < WARM:
-                continue
-            res["year"][str(y)] = replay(bars[idx[0]:idx[-1] + 1], bars[idx[0] - WARM:idx[0]], params, peak)
+        for y, start_i, end_i in _year_ranges(path, bars):
+            res["year"][str(y)] = replay(bars[start_i:end_i + 1], bars[start_i - WARM:start_i], params, peak)
         for key, size in (("w30", W30), ("w90", W90)):
             for s in range(WARM, len(bars) - size + 1, WSTEP):
                 r = replay(bars[s:s + size], bars[s - WARM:s], params, peak)

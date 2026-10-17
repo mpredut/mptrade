@@ -26,24 +26,31 @@ ASSETS = ("TAO", "ADA", "SOL", "BTC", "ETH", "XRP", "DOGE", "LINK", "AVAX", "BNB
 START_MS = 1514764800000   # 2018-01-01
 
 
-def fetch(symbol: str, name: str) -> None:
+def fetch(symbol: str, name: str, force: bool = False) -> None:
+    out_path = os.path.join(DATA, f"{name}_240m.csv")
+    if not force and os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
+        print(f"[fetch] {name}: using cached {out_path}", flush=True)
+        return
     candles = fetch_ohlc_candles(symbol, interval=240, start_ms=START_MS, drop_incomplete=True)
-    with open(os.path.join(DATA, f"{name}_240m.csv"), "w", newline="") as fh:
+    if not candles:
+        print(f"[fetch] {name}: no candles returned; keeping existing file if present", flush=True)
+        return
+    with open(out_path, "w", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(["timestamp", "open", "high", "low", "close"])
         for c in candles:
             writer.writerow([c["timestamp"], c["open"], c["high"], c["low"], c["close"]])
-    if candles:
-        print(f"[fetch] {name}: {len(candles)} bars "
-              f"{time.strftime('%Y-%m-%d', time.gmtime(candles[0]['timestamp']))} -> "
-              f"{time.strftime('%Y-%m-%d', time.gmtime(candles[-1]['timestamp']))}", flush=True)
+    print(f"[fetch] {name}: {len(candles)} bars "
+          f"{time.strftime('%Y-%m-%d', time.gmtime(candles[0]['timestamp']))} -> "
+          f"{time.strftime('%Y-%m-%d', time.gmtime(candles[-1]['timestamp']))}", flush=True)
 
 
 if __name__ == "__main__":
+    force_refresh = "--force" in sys.argv
     os.makedirs(DATA, exist_ok=True)
     shutil.copyfile(
         os.path.join(ROOT, "offline", "research", "hype_dataset", "HYPEUSDC_240m_hlspot.csv"),
         os.path.join(DATA, "HYPE_240m.csv"),
     )
     for asset in ASSETS:
-        fetch(f"{asset}USDT", asset)
+        fetch(f"{asset}USDT", asset, force=force_refresh)

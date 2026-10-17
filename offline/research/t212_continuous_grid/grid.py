@@ -79,14 +79,23 @@ for _tp in ("1.5", "3", "5", "8", "12", "20"):
 WARM, W90_1H, STEP_1H = 12, 90 * 7, 30 * 7   # ~7 regular-session 1h bars per day
 
 
+_BARS_CACHE: dict[tuple[str, str], list | None] = {}
+
+
 def load(asset, itv):
+    key = (asset, itv)
+    if key in _BARS_CACHE:
+        return _BARS_CACHE[key]
     path = os.path.join(DATA, f"{asset}_{itv}.csv")
     if not os.path.exists(path):
+        _BARS_CACHE[key] = None
         return None
     with open(path) as fh:
         rows = [(int(r["timestamp"]), float(r["open"]), float(r["high"]), float(r["low"]),
                  float(r["close"])) for r in csv.DictReader(fh)]
-    return rows if len(rows) > WARM + 20 else None
+    res = rows if len(rows) > WARM + 20 else None
+    _BARS_CACHE[key] = res
+    return res
 
 
 def params_for(profile, variant):
