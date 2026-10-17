@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-10-17T12:48:31",
+    "ts": "2026-10-17T13:32:05",
     "full_key": "BINANCE_BTC.mt.gain",
     "section": "BINANCE_BTC",
     "key": "mt.gain",
@@ -9,12 +9,12 @@
     "winner_value": 4.5,
     "margin_vs_current": {
       "half1": 82.92,
-      "half2": 454.9
+      "half2": 455.04
     },
-    "dev_commit": "c639fd4"
+    "dev_commit": "da467fa"
   },
   {
-    "ts": "2026-10-17T12:48:31",
+    "ts": "2026-10-17T13:32:05",
     "full_key": "BINANCE_BTC.trailing.pct",
     "section": "BINANCE_BTC",
     "key": "trailing.pct",
@@ -25,10 +25,10 @@
       "half1": 40.86,
       "half2": 118.04
     },
-    "dev_commit": "c639fd4"
+    "dev_commit": "da467fa"
   },
   {
-    "ts": "2026-10-17T12:48:31",
+    "ts": "2026-10-17T13:32:05",
     "full_key": "BINANCE_TAO.mt.hardtp_fraction",
     "section": "BINANCE_TAO",
     "key": "mt.hardtp_fraction",
@@ -39,34 +39,48 @@
       "half1": 40.01,
       "half2": 26.47
     },
-    "dev_commit": "c639fd4"
+    "dev_commit": "da467fa"
   },
   {
-    "ts": "2026-10-17T12:48:31",
-    "full_key": "KRAKEN_HYPE.mt.hardtp_fraction",
+    "ts": "2026-10-17T13:32:05",
+    "full_key": "KRAKEN_HYPE.mt.gain",
     "section": "KRAKEN_HYPE",
-    "key": "mt.hardtp_fraction",
+    "key": "mt.gain",
     "symbol": "HYPEUSD",
-    "current_on_dev": 0.5,
-    "winner_value": 0.3,
+    "current_on_dev": 9.0,
+    "winner_value": 8.0,
     "margin_vs_current": {
-      "half1": 399.36,
-      "half2": 190.51
+      "half1": 262.03,
+      "half2": 297.68
     },
-    "dev_commit": "c639fd4"
+    "dev_commit": "da467fa"
   },
   {
-    "ts": "2026-10-17T12:48:31",
-    "full_key": "KRAKEN_HYPE.mt.hardtp_cooldown_h",
+    "ts": "2026-10-17T13:32:05",
+    "full_key": "KRAKEN_HYPE.mt.lost",
     "section": "KRAKEN_HYPE",
-    "key": "mt.hardtp_cooldown_h",
+    "key": "mt.lost",
     "symbol": "HYPEUSD",
-    "current_on_dev": 6.0,
-    "winner_value": 12.0,
+    "current_on_dev": 5.0,
+    "winner_value": 3.5,
     "margin_vs_current": {
-      "half1": 239.34,
-      "half2": 171.35
+      "half1": 478.7,
+      "half2": 207.63
     },
-    "dev_commit": "c639fd4"
+    "dev_commit": "da467fa"
+  },
+  {
+    "ts": "2026-10-17T13:32:05",
+    "full_key": "BINANCE_ARB.mt.lost",
+    "section": "BINANCE_ARB",
+    "key": "mt.lost",
+    "symbol": "ARBUSDC",
+    "current_on_dev": 4.375,
+    "winner_value": 3.5,
+    "margin_vs_current": {
+      "half1": 13.71,
+      "half2": 18.38
+    },
+    "dev_commit": "da467fa"
   }
 ]
