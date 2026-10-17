@@ -79,9 +79,16 @@ def check_intelligence_order_guards(
         if computed_notional >= min_notional:
             valid_context = regime_context is not None and hasattr(regime_context, "__dict__")
             prev_notional = getattr(regime_context, "_gemini_evaluated_notional", None) if valid_context else None
-            needs_eval = (prev_notional is None) or (abs(computed_notional - prev_notional) > 1.0)
+            notional_jump = (
+                prev_notional is not None
+                and (computed_notional - prev_notional) / max(prev_notional, 1.0) > 0.20
+            )
+            needs_eval = prev_notional is None or prev_notional < min_notional or notional_jump
             if needs_eval:
-                dur_sec = getattr(regime_context, "resolved_duration_sec", None) if valid_context else None
+                dur_sec = (
+                    (getattr(regime_context, "trend_duration_seconds", None) or getattr(regime_context, "resolved_duration_sec", None))
+                    if valid_context else None
+                )
                 from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
                 timeout_sec = float(m.get("llm_timeout_sec", m.get("high_stake_timeout_sec", m.get("gemini_timeout_sec", 25.0))))
                 fallback = str(m.get("llm_fallback", m.get("high_stake_fallback", m.get("gemini_fallback", "allow")))).strip().lower()
@@ -160,6 +167,16 @@ def check_intelligence_order_guards(
                         return False, g_dec.reason, 0.0
                     effective_scale = min(effective_scale, g_dec.suggested_scale)
                     active_reason = g_dec.reason
+            else:
+                cached_g_dec = getattr(regime_context, "_gemini_decision", None) if valid_context else None
+                if cached_g_dec is not None:
+                    g_allowed, g_reason, g_scale = cached_g_dec
+                    if not g_allowed or g_scale < 1.0:
+                        if llm_mode == "enforce":
+                            if not g_allowed:
+                                return False, g_reason, 0.0
+                            effective_scale = min(effective_scale, g_scale)
+                            active_reason = g_reason
 
     # 2. Geopolitical & Energy Shock Guard (Pillar 4 / GI4)
     skip_geo = GUARD_REGISTRY["GI4"].is_bypassed(bypassed)

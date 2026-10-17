@@ -108,7 +108,8 @@ def params_for(profile, variant):
     over, peak = VARIANTS[variant]
     cfg.update(over)
     if peak and float(cfg.get("STRAT_REENTRY_DROP_PCT") or 0) <= 0:
-        cfg["STRAT_REENTRY_DROP_PCT"] = str(cfg.get("STRAT_REENTRY_PULLBACK_PCT") or "2.0")
+        pb = float(cfg.get("STRAT_REENTRY_PULLBACK_PCT") or 0)
+        cfg["STRAT_REENTRY_DROP_PCT"] = str(pb if pb > 0 else 2.0)
     cfg["STRAT_DCA_TREND_GATE_PCT"] = "0"   # the gate needs 5m bars; neutral on 1h/1d
     return strat.StratParams.from_env(cfg), peak
 

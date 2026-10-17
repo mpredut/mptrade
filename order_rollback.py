@@ -33,9 +33,9 @@ def extract_order_restore_params(order: dict) -> dict[str, Any]:
             except (TypeError, ValueError):
                 pass
 
-    # Extract quantity
+    # Extract quantity (prefer remaining unfilled quantity for partially-filled orders)
     qty = 0.0
-    for key in ("qty", "origQty", "vol", "quantity", "amount_shares", "q"):
+    for key in ("remainingQty", "qty", "origQty", "vol", "quantity", "amount_shares", "q"):
         if order.get(key) is not None:
             try:
                 qty = float(order[key])
@@ -116,13 +116,17 @@ class AtomicOrderRollbackGuard:
         self.log_fn = log_fn
         self.reason = reason
         self.committed = False
+        self.rolled_back = False
 
     def commit(self) -> None:
         """Mark the operation as committed (no rollback will be executed)."""
         self.committed = True
 
     def rollback(self) -> int:
-        """Explicitly execute rollback."""
+        """Explicitly execute rollback (idempotent)."""
+        if self.rolled_back:
+            return 0
+        self.rolled_back = True
         return restore_cancelled_orders(
             self.cancelled_orders,
             self.restore_fn,
@@ -134,6 +138,6 @@ class AtomicOrderRollbackGuard:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
-        if not self.committed or exc_type is not None:
+        if (not self.committed or exc_type is not None) and not self.rolled_back:
             self.rollback()
         return False

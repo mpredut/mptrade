@@ -158,6 +158,8 @@ class TrailingCore:
                 st["rebuy"] = rb
             else:
                 st.pop("rebuy", None)
+                st["is_flat"] = False
+                st["peak"] = avg
             if self.min_profit_pct > 0:
                 st["warmup_at"] = avg * (1 + self.min_profit_pct / 100.0)
         st.pop("pending_order", None)
@@ -225,6 +227,8 @@ class TrailingCore:
         else:
             self.a.log_dry_rebuy(key, asset, pair, qty, price, rb)
         st.pop("rebuy", None)                                 # one tranche; complete
+        st["is_flat"] = False
+        st["peak"] = price
         if self.min_profit_pct > 0:
             st["warmup_at"] = price * (1 + self.min_profit_pct / 100.0)  # restart warm-up from the re-buy price
 
@@ -242,7 +246,7 @@ class TrailingCore:
             total_pos = free
         has_pos = (total_pos * price >= self.min_notional)
 
-        if has_pos:
+        if has_pos and not st.get("pending_order"):
             if is_new or st.get("is_flat", False):
                 st["is_flat"] = False
                 ref = price
@@ -258,7 +262,7 @@ class TrailingCore:
                 st["peak"] = max(price, ref)
                 if self.min_profit_pct > 0:
                     st["warmup_at"] = ref * (1 + self.min_profit_pct / 100.0)  # activation threshold
-        elif is_new:
+        elif is_new and not has_pos:
             st["is_flat"] = True
 
         if self._reconcile_pending(state, st, price, pair):

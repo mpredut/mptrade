@@ -97,12 +97,43 @@ def _notify_order_expired(symbol, order_type, order_id, price, quantity, owner=N
         )
     except Exception as exc:
         print(f"[MONITORORDER] Expiry notification failed for order {order_id}: {exc}")
+class _OrderedIdSet:
+    """Insertion-ordered set of order IDs with deterministic FIFO eviction."""
+
+    def __init__(self):
+        self._d = OrderedDict()
+
+    def add(self, item: str) -> None:
+        self._d[item] = None
+        self._d.move_to_end(item)
+
+    def clear(self) -> None:
+        self._d.clear()
+
+    def trim(self, keep: int = 5000) -> None:
+        while len(self._d) > keep:
+            self._d.popitem(last=False)
+
+    def difference_update(self, items) -> None:
+        for item in items:
+            self._d.pop(item, None)
+
+    def __contains__(self, item) -> bool:
+        return item in self._d
+
+    def __len__(self) -> int:
+        return len(self._d)
+
+    def __iter__(self):
+        return iter(self._d)
+
+
 initial_prices = OrderedDict()
 initial_sell_prices = OrderedDict()
 initial_buy_prices = OrderedDict()
 
-_notified_placed_order_ids = set()
-_derived_replacement_order_ids = set()
+_notified_placed_order_ids = _OrderedIdSet()
+_derived_replacement_order_ids = _OrderedIdSet()
 _monitororder_initialized = False
 
 
@@ -203,9 +234,13 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     and _monitororder_initialized
                     and _should_notify_order_launched(owner)):
                 _notify_order_launched(symbol, order_type, order_id, price, order.get("quantity", 0), owner=owner)
+        else:
+            _notified_placed_order_ids.add(oid_str)
 
         # Check order age and Market TTL expiration (hard cap of 3 days or effective TTL).
         order_ts = float(order.get("timestamp") or 0.0)
+        if order_ts > 1e11:
+            order_ts /= 1000.0
         if order_ts > 0:
             now = time.time()
             age_sec = max(0.0, now - order_ts)

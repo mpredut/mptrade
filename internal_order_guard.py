@@ -68,9 +68,10 @@ def check_internal_order_guards(
     pullback_pct = float(m.get("parabolic_pullback_pct", 2.0))
     exhaust_policy = str(m.get("weibull_exhaustion_policy", "downscale")).strip().lower()
     exhaust_scale = float(m.get("weibull_exhausted_scale", 0.25))
+    exhaust_p90 = float(m.get("weibull_p90_days", 7.0))
 
     p_guard = ParabolicSurgeGuard(surge_threshold_pct=surge_pct, pullback_required_pct=pullback_pct)
-    e_guard = WeibullExhaustionGuard(policy=exhaust_policy, exhausted_scale=exhaust_scale)
+    e_guard = WeibullExhaustionGuard(default_p90_days=exhaust_p90, policy=exhaust_policy, exhausted_scale=exhaust_scale)
 
     effective_scale = 1.0
     active_reason = "ok"

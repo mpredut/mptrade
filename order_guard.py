@@ -840,7 +840,7 @@ def check_intelligence_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    from guard_hierarchy import normalize_bypassed_guards
+    from guard_hierarchy import normalize_bypassed_guards, GUARD_REGISTRY
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
     if is_stop_loss or "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
@@ -876,6 +876,7 @@ def check_intelligence_guards(
 
     # Check if expensive static analysis is already cached on regime_context
     cached_res = getattr(regime_context, "_intelligence_decision", None) if valid_context else None
+    was_cached = cached_res is not None
     if cached_res is None:
         cached_res = _evaluate_intelligence_guards_raw(
             provider,
@@ -910,9 +911,13 @@ def check_intelligence_guards(
     effective_scale = static_scale
     active_reason = static_reason
 
+    skip_internal = GUARD_REGISTRY["GI1"].is_bypassed(bypassed)
+    internal_mode = str(m.get("internal_guard_mode", mode)).strip().lower()
+    internal_active = was_cached and not skip_internal and internal_mode not in ("off", "0", "disabled")
+
     # Dynamic Re-evaluation for cached context:
     # 1. Dynamic Parabolic Surge Guard (Anti-FOMO spike check evaluated on BUY only)
-    if side == "BUY" and price > 0:
+    if internal_active and side == "BUY" and price > 0:
         from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
         from intelligence.internal.guards.guard_decision import BrakeAction
         surge_pct = float(m.get("parabolic_surge_pct", 15.0))
@@ -924,9 +929,9 @@ def check_intelligence_guards(
             p_guard = ParabolicSurgeGuard(surge_threshold_pct=surge_pct, pullback_required_pct=pullback_pct)
             p_dec = p_guard.check(symbol, side, price, price_history=history, now=now)
             if not p_dec.allowed:
-                prefix = "[INTELLIGENCE_GUARD_SHADOW]" if mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
+                prefix = "[INTELLIGENCE_GUARD_SHADOW]" if internal_mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
                 print(f"{prefix} {side} {symbol} @ {price}: {p_dec.reason} (brake={p_dec.brake_action})")
-                if mode == "enforce":
+                if internal_mode == "enforce":
                     return False, p_dec.reason, 0.0
 
     # Resolve trend duration early so both LLM guard and Weibull guard have access
@@ -935,6 +940,7 @@ def check_intelligence_guards(
         dur_sec = _resolve_trend_duration(symbol)
 
     # 2. Dynamic LLM Pre-Trade Guard if notional crossed the threshold
+    skip_llm = GUARD_REGISTRY["GI3"].is_bypassed(bypassed)
     llm_mode = str(
         m.get("llm_guard_mode",
         m.get("high_stake_guard_mode",
@@ -942,7 +948,7 @@ def check_intelligence_guards(
         m.get("macro_guard_mode",
         m.get("gemini_guard_mode", "shadow")))))
     ).strip().lower()
-    if llm_mode not in ("off", "0", "disabled"):
+    if not skip_llm and llm_mode not in ("off", "0", "disabled"):
         min_notional = float(
             m.get("llm_min_notional_eur",
             m.get("high_stake_min_notional_eur",
@@ -1010,7 +1016,7 @@ def check_intelligence_guards(
                             active_reason = g_reason
 
     # 3. Dynamic Weibull trend exhaustion check if duration provided or resolved (BUY entries only)
-    if side == "BUY" and dur_sec and dur_sec > 0:
+    if internal_active and side == "BUY" and dur_sec and dur_sec > 0:
         from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
         from intelligence.internal.guards.guard_decision import BrakeAction
         e_policy = str(m.get("weibull_exhaustion_policy", "downscale")).strip().lower()
@@ -1019,9 +1025,9 @@ def check_intelligence_guards(
         e_guard = WeibullExhaustionGuard(default_p90_days=e_p90, policy=e_policy, exhausted_scale=e_scale)
         e_dec = e_guard.check(symbol, side, trend_duration_seconds=dur_sec)
         if e_dec.brake_action != BrakeAction.NONE:
-            prefix = "[INTELLIGENCE_GUARD_SHADOW]" if mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
+            prefix = "[INTELLIGENCE_GUARD_SHADOW]" if internal_mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
             print(f"{prefix} {side} {symbol} @ {price}: {e_dec.reason} (brake={e_dec.brake_action}, suggested_scale={e_dec.suggested_scale})")
-            if mode == "enforce":
+            if internal_mode == "enforce":
                 if not e_dec.allowed:
                     return False, e_dec.reason, 0.0
                 effective_scale = min(effective_scale, e_dec.suggested_scale)

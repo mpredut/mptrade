@@ -127,6 +127,30 @@ class TestOrderRollback(unittest.TestCase):
         self.assertEqual(len(restored), 1)
         self.assertEqual(restored[0]["limit"], 100.0)
 
+    def test_extract_order_restore_params_prefers_remaining_qty(self):
+        b_ord = {
+            "orderId": "999",
+            "side": "SELL",
+            "price": "100.0",
+            "origQty": "10.0",
+            "remainingQty": "3.5",
+        }
+        params = extract_order_restore_params(b_ord)
+        self.assertEqual(params["qty"], 3.5)
+
+    def test_atomic_rollback_guard_explicit_rollback_not_duplicated_on_exit(self):
+        cancelled = [{"side": "SELL", "limit": 100.0, "qty": 1.0}]
+        restored = []
+
+        try:
+            with AtomicOrderRollbackGuard(cancelled, restore_fn=restored.append, reason="explicit") as guard:
+                guard.rollback()
+                raise RuntimeError("abort after explicit rollback")
+        except RuntimeError:
+            pass
+
+        self.assertEqual(len(restored), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

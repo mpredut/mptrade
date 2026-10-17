@@ -796,13 +796,13 @@ def _restore_resting_tp_orders(inst, symbol: str, cancelled_orders: list[dict], 
         return
     restore_cancelled_orders(
         cancelled_orders,
-        restore_fn=lambda p: inst.place(
+        restore_fn=lambda p: bool(inst.place(
             "SELL",
             float(p.get("price") or p.get("limit") or 0.0),
             float(p.get("qty") or p.get("origQty") or p.get("vol") or 0.0),
             kind="TP",
             wait_for_trend=False,
-        ),
+        )),
         log_fn=lambda msg: print(f"[{symbol}] {msg}"),
         reason=f"Stop-Loss was not placed (sellable_qty={sellable_qty}, state={sl_state})",
     )

@@ -855,11 +855,10 @@ class Strategy:
         """Best-effort rollback: restore previously resting orders after a replacement or exit fails."""
         def _restore_one(p: dict) -> bool:
             if p["side"] == "SELL":
-                return self._place_sell(p["qty"], p["limit"], level=p.get("level"), kind=p.get("kind", "TP"))
+                return bool(self._place_sell(p["qty"], p["limit"], level=p.get("level"), kind=p.get("kind", "TP")))
             elif p["side"] == "BUY":
                 amount = p.get("amount") or (p["qty"] * p["limit"])
-                self._place_buy(amount, p["limit"], kind=p.get("kind", "ENTRY"))
-                return True
+                return bool(self._place_buy(amount, p["limit"], kind=p.get("kind", "ENTRY")))
             return False
 
         restore_cancelled_orders(

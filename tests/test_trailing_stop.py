@@ -683,6 +683,34 @@ class TestMinProfit(Base):
             self.assertIn("rebuy", st, "rebuy must be armed once position is completed")
             self.assertEqual(st["rebuy"]["qty"], 5.0, "rebuy must track full 5.0 units")
 
+        with self.subTest(msg="rebuy_resets_peak_and_does_not_immediately_resell"):
+            self.tearDown(); self.setUp()
+            api = FakeApi(200.0, free=2.0)
+            ts = self.ts(api, min_profit_pct=5.0)
+            ts.rebuy_enabled_for = lambda symbol: True
+            ts.check_once()  # Peak = 200.0
+            api.price = 150.0  # Crash below 156.0 (-22% of 200) -> triggers exit SELL
+            ts.check_once()
+            self.assertEqual(len(self.po.orders), 1)
+            self.assertEqual(self.po.orders[0]["side"], "SELL")
+            ts.check_once()  # Reconcile SELL terminal -> arms rebuy at low=150.0
+
+            api.price = 140.0  # Post-sale low drops to 140.0
+            ts.check_once()
+            api.price = 142.0  # Bounces +1.43% (> 1.2%) -> submits REBUY
+            ts.check_once()
+            self.assertEqual(len(self.po.orders), 2)
+            self.assertEqual(self.po.orders[1]["side"], "BUY")
+
+            ts.check_once()  # Reconcile REBUY terminal -> resets peak to 142.0
+            import json
+            st = json.load(open(self.sf))["TAOUSDC"]
+            self.assertEqual(st["peak"], 142.0)
+
+            # Next tick at 142.0 must NOT trigger a false crash sell from the old 200.0 peak!
+            ts.check_once()
+            self.assertEqual(len(self.po.orders), 2, "must not immediately crash-sell newly rebought coins")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
