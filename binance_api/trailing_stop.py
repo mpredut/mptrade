@@ -369,21 +369,56 @@ class TrailingStop:
             metadata={"action": action, "asset": asset, **metadata},
         )
 
+    def _sync_retry_count_from_state(self, pair: str, action: str, persist) -> None:
+        st = getattr(persist, "st", None)
+        if not isinstance(st, dict):
+            return
+        rc = st.get("retry_counts")
+        if isinstance(rc, dict) and action in rc:
+            try:
+                persisted = int(rc[action] or 0)
+            except (TypeError, ValueError):
+                persisted = 0
+            retry_key = (pair, action)
+            if persisted > int(self._retry_counts.get(retry_key, 0)):
+                self._retry_counts[retry_key] = persisted
+
     def reconcile_pending(self, pending, persist):
         result = self.order_lifecycle.reconcile(pending, persist=persist)
         pair = str(pending.get("symbol") or "")
         action = str(pending.get("action") or (pending.get("metadata") or {}).get("action") or "").upper()
         retry_key = (pair, action)
+        st = getattr(persist, "st", None)
+        rc = st.get("retry_counts") if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict) else {}
+        try:
+            attempt_base = max(
+                int(self._retry_counts.get(retry_key, 0)),
+                int(rc.get(action, 0) or 0),
+                max(0, int(pending.get("attempt") or 1) - 1),
+            )
+        except (TypeError, ValueError):
+            attempt_base = int(self._retry_counts.get(retry_key, 0))
         if result.outcome in ("absent", "retryable"):
-            self._retry_counts[retry_key] = int(self._retry_counts.get(retry_key, 0)) + 1
+            new_count = attempt_base + 1
+            self._retry_counts[retry_key] = new_count
+            if isinstance(st, dict):
+                st.setdefault("retry_counts", {})[action] = new_count
+                persist(None)
         elif result.outcome == "terminal":
             filled = float(getattr(result.status, "filled_qty", 0.0) or 0.0)
             req_qty = float(pending.get("submitted_qty") or pending.get("requested_qty") or 0.0)
             st_name = str(getattr(result.status, "status", "") or "").lower()
             if filled <= 0 or (st_name != "closed" and req_qty > 0 and filled < req_qty - 1e-6):
-                self._retry_counts[retry_key] = int(self._retry_counts.get(retry_key, 0)) + 1
+                new_count = attempt_base + 1
+                self._retry_counts[retry_key] = new_count
+                if isinstance(st, dict):
+                    st.setdefault("retry_counts", {})[action] = new_count
             else:
                 self._retry_counts.pop(retry_key, None)
+                if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict):
+                    st["retry_counts"].pop(action, None)
+                    if not st["retry_counts"]:
+                        st.pop("retry_counts", None)
         return result
 
     def _submit_lifecycle_order(self, intent, persist, pair, side, price, qty, bypass_guards=None):
@@ -417,6 +452,7 @@ class TrailingStop:
         # bypass_guards={"all"} bypasses profit/history/microstructure protection because this is a
         # STOP-LOSS below the last buy; otherwise the guard would block it. Daily limits
         # and cooldown remain active as before; the bypass skips only profit and weighting.
+        self._sync_retry_count_from_state(pair, "SELL", persist)
         intent = self._order_intent(
             "SELL", key, asset, pair, qty, price, anchor=peak, trail=trail)
         result = self._submit_lifecycle_order(
@@ -436,6 +472,7 @@ class TrailingStop:
         # Re-buy runs with force=True for reliable fill on bounce, but guards against
         # falling knife cascades (liquidation cascades, taker dumps) by bypassing only
         # the historical math reference while keeping microstructure/AI guards active.
+        self._sync_retry_count_from_state(pair, "REBUY", persist)
         intent = self._order_intent(
             "REBUY", key, asset, pair, qty, price,
             anchor=float(rb.get("low") or price),

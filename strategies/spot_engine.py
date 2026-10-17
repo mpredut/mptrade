@@ -2109,6 +2109,26 @@ class Strategy:
                 self.s["qty"] = 0.0
                 self.s["cost"] = 0.0
                 self.s["spent"] = 0.0
+                self.s["dca_buys"] = 0
+                self.s["entry_price"] = None
+                self.s["last_buy_price"] = None
+                self.s["entry_ts"] = None
+                self.s["trail_peak"] = None
+                self.s["trail_stop"] = None
+                self.s["trend_mode"] = False
+                self.s["trend_peak"] = None
+                self.s["trend_confirm_count"] = 0
+                self.s["pending_exit"] = None
+                self.s["surge_active"] = False
+                self.s["surge_peak"] = None
+                self.s["slow_grind_active"] = False
+                self.s["slow_grind_peak"] = None
+                self.s["sl_bounce_state"] = {}
+                self.s["sl_episode_state"] = {}
+                self.s["tp_ride_state"] = {}
+                if self.exit_manager is not None:
+                    self.exit_manager.clear_state(self.pair)
+                    self.exit_manager.bind_state(self.s)
                 self.s["ledger_reconcile_required"] = False
                 self._save()
                 return
@@ -2237,7 +2257,9 @@ class Strategy:
         if (self.p.enable_takeprofit and avg and trend_hold_active
                 and (trail_armed or tp_ref_price >= sr.tp_price(avg, eff_tp))):
             # MDHTP (Multi-Horizon Dynamic Take-Profit) via PositionExitManager
-            if self.exit_manager is not None and self.p.tp_mdhtp_enabled:
+            if self.p.tp_mdhtp_enabled:
+                if self.exit_manager is None:
+                    self.exit_manager = self._init_exit_manager()
                 if (
                     not self.replay_mode
                     or self.pair in self.exit_manager.tp_ride_state
@@ -2265,6 +2287,7 @@ class Strategy:
                 snapshot = self._create_position_snapshot(
                     price, avg, held, regime=regime, include_vol=inc_vol, include_shadow=inc_shd
                 )
+                prev_ride_state = dict(self.exit_manager.tp_ride_state.get(self.pair, {}))
                 if high is not None and high > price:
                     high_snap = self._create_position_snapshot(
                         high, avg, held, regime=regime, include_vol=inc_vol, include_shadow=inc_shd
@@ -2275,6 +2298,7 @@ class Strategy:
                     if high_dec.action == ExitAction.SELL and high_dec.should_exit:
                         decision = high_dec
                     else:
+                        prev_ride_state = dict(self.exit_manager.tp_ride_state.get(self.pair, {}))
                         decision = self.exit_manager.evaluate_take_profit(
                             snapshot, custom_threshold=eff_tp / 100.0
                         )
@@ -2284,7 +2308,14 @@ class Strategy:
                     )
                 if decision.action == ExitAction.SELL and decision.should_exit:
                     exit_px = round(price * 0.999, self.price_dec)
-                    use_soft = (decision.reason == "mdhtp_peak_pullback")
+                    use_soft = str(decision.reason or "").startswith("mdhtp_peak_pullback")
+                    profit_floor = self._trail_profit_floor_price(avg) if use_soft else None
+                    if use_soft and profit_floor is not None and exit_px < profit_floor:
+                        if prev_ride_state:
+                            self.exit_manager.tp_ride_state[self.pair] = prev_ride_state
+                        log(f"  [STRAT] soft trailing blocked: reference {exit_px:.{self.price_dec}f} below the "
+                            f"profitable floor {profit_floor:.{self.price_dec}f}; hard stop stays MARKET")
+                        return
                     if self._request_market_exit(price, "TP", soft_floor=use_soft):
                         log(f"  [STRAT] MDHTP EXIT ({decision.reason}) -> reference {exit_px}")
                     return
@@ -2297,6 +2328,8 @@ class Strategy:
                     ride_state = self.exit_manager.tp_ride_state.get(self.pair, {})
                     peak_px = ride_state.get("peak_price", price)
                     self.s["trail_peak"] = peak_px
+                    if self._check_advanced_profit_guards(price, avg, held, regime_closes, tick_time):
+                        return
                     self._cancel_orders("sell", exclude_market=True)
                     log(f"  [STRAT] above the TP, RIDING IT ({decision.reason}) (peak {peak_px:.{self.price_dec}f})")
                     return

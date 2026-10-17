@@ -844,6 +844,80 @@ class TestMinProfit(Base):
             self.assertEqual(self.po.orders, [])
             self.assertTrue(any("instant trend is UP" in m for m in logs))
 
+        with self.subTest(msg="fractional_exit_sub_notional_remainder_completes_without_infinite_unlock_loop"):
+            self.tearDown(); self.setUp()
+            api = FakeApi(250.0, free=5.01)
+            ts = self.ts(api, min_profit_pct=0.0)
+            ts.core.sell_fraction = 0.5
+            ts.rebuy_enabled_for = lambda symbol: True
+            ts.trend = lambda _pair: 0.0
+            ts.check_once()  # peak = 250.0
+
+            # Crash to 190.0: target_exit_qty = 5.01 * 0.5 = 2.505, venue rounds fill to 2.500
+            # Remaining 2.51 in account ($476.90 >> min_notional $10, so is_flat=False),
+            # but remaining_target = 0.005 ($0.95 < min_notional $10).
+            orig_order_status = self.po.order_status
+            self.po.order_status = lambda symbol, order_id, **kw: OrderStatus("closed", 2.500, 2.500 * 190.0, 0.0)
+            api.price = 190.0
+            ts.check_once()  # submits SELL
+            api.free = 2.51
+            ts.check_once()  # reconciles SELL terminal -> must complete!
+            self.po.order_status = orig_order_status
+
+            import json
+            st = json.load(open(self.sf))["TAOUSDC"]
+            self.assertNotIn("target_exit_qty", st)
+            self.assertNotIn("exit_sold_qty", st)
+            self.assertEqual(st["peak"], 190.0)
+            self.assertIn("rebuy", st)
+
+            # Next tick at 190.0 must NOT call unlock_qty in a loop
+            unlock_calls = []
+            ts.unlock_qty = lambda pair: unlock_calls.append(pair) or False
+            ts.check_once()
+            self.assertEqual(unlock_calls, [])
+
+        with self.subTest(msg="new_peak_clears_stale_partial_exit_tracking"):
+            self.tearDown(); self.setUp()
+            api = FakeApi(250.0, free=5.0)
+            ts = self.ts(api, min_profit_pct=0.0)
+            seeded = {
+                "TAOUSDC": {
+                    "peak": 250.0,
+                    "target_exit_qty": 2.5,
+                    "exit_sold_qty": 1.0,
+                    "exit_sold_cost": 190.0,
+                }
+            }
+            ts._save(seeded)
+            api.price = 260.0  # New peak > 250.0
+            ts.check_once()
+            st = ts._load()["TAOUSDC"]
+            self.assertEqual(st["peak"], 260.0)
+            self.assertNotIn("target_exit_qty", st)
+            self.assertNotIn("exit_sold_qty", st)
+            self.assertNotIn("exit_sold_cost", st)
+
+        with self.subTest(msg="retry_counts_persisted_across_adapter_restarts"):
+            self.tearDown(); self.setUp()
+            api = FakeApi(250.0, free=2.0)
+            ts1 = self.ts(api)
+            ts1.check_once()  # peak = 250.0
+            api.price = 190.0
+            ts1.check_once()  # SELL attempt 1
+            cid1 = self.po.orders[-1]["client_order_id"]
+
+            # Reconcile canceled 0-fill order
+            self.po.status = "canceled"
+            ts1.check_once()
+
+            # Simulate --once / daemon restart with a brand new TrailingStop instance
+            self.po.status = "closed"
+            ts2 = self.ts(api)
+            ts2.check_once()
+            cid2 = self.po.orders[-1]["client_order_id"]
+            self.assertNotEqual(cid1, cid2, "restarted adapter must not reuse canceled client_order_id")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1445,7 +1445,79 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
                 if os.path.exists(temp_state_file):
                     os.remove(temp_state_file)
 
+        with self.subTest(msg="tp_unknown_outcome_defers_duplicate_submission_on_next_tick"):
+            mt._PENDING_STOP_EXIT.clear()
+            mt._TP_RIDE_STATE.clear()
+
+            class UnknownTpInstrument(FakeInstrument):
+                def place(self, side, price, qty, **kwargs):
+                    super().place(side, price, qty, **kwargs)
+                    ctx = kwargs.get("_outcome_context")
+                    if isinstance(ctx, dict):
+                        ctx.update(accepted=False, reason="timeout", state="unknown")
+                    return None
+
+            inst = UnknownTpInstrument(
+                price=110.0,
+                free=4.0,
+                fills=[_fill("BUY", 100.0, 4.0)],
+            )
+            # Tick 1: trend_up=False, +10% gain -> TP attempts SELL with unknown outcome
+            self.run_tick(inst, trend_up=False, gain=0.07, now=NOW)
+            self.assertEqual(len(inst.placed), 1)
+            self.assertIn(SYMBOL, mt._PENDING_STOP_EXIT)
+
+            # Tick 2 (5s later): even if price stays at 110 or drops to 101 (recovery zone),
+            # pending exit check at top of Step 3 must defer and preserve _PENDING_STOP_EXIT!
+            inst._price = 101.0
+            self.run_tick(inst, trend_up=False, gain=0.07, now=NOW + 5)
+            self.assertEqual(len(inst.placed), 1)
+            self.assertIn(SYMBOL, mt._PENDING_STOP_EXIT)
+
+        with self.subTest(msg="pending_exit_canceled_on_venue_clears_immediately"):
+            mt._PENDING_STOP_EXIT.clear()
+            inst = FakeInstrument(
+                price=94.0,
+                free=4.0,
+                fills=[_fill("BUY", 100.0, 4.0)],
+            )
+            inst._provider.order_by_client_id = lambda _sym, _cid: {"orderId": "999", "status": "CANCELED"}
+            mt._PENDING_STOP_EXIT[SYMBOL] = {
+                "ts": NOW - 5,
+                "client_order_id": "MTSL_CHARUSD_old",
+                "qty": 4.0,
+            }
+            self.assertFalse(mt._is_pending_exit_active(SYMBOL, inst, 4.0, 0.1, NOW))
+            self.assertNotIn(SYMBOL, mt._PENDING_STOP_EXIT)
+
+        with self.subTest(msg="trades_monitor_warmup_retries_failed_symbol_without_spam"):
+            mt.reset_trades_monitor_state_for_test()
+            call_counts = {"SYM1": 0, "SYM2": 0}
+
+            def _fake_get_trade_orders(_client, symbol, _maxage):
+                call_counts[symbol] = call_counts.get(symbol, 0) + 1
+                if symbol == "SYM2" and call_counts[symbol] == 1:
+                    raise RuntimeError("transient API timeout")
+                return [{"id": f"{symbol}_hist_1", "orderId": f"ord_{symbol}", "side": "BUY", "price": "100", "qty": "1", "quoteQty": "100", "time": 1000}]
+
+            with (
+                patch.object(mt.apitrades, "get_trade_orders", side_effect=_fake_get_trade_orders),
+                patch("alertnotifiers.notify") as mock_notify,
+            ):
+                # Run 1: SYM1 warms up, SYM2 fails
+                mt.check_and_notify_executed_trades(symbols_list=["SYM1", "SYM2"])
+                self.assertTrue(mt._trades_monitor_initialized)
+                self.assertIn("SYM2", mt._trades_monitor_warmup_failed_symbols)
+                mock_notify.assert_not_called()
+
+                # Run 2: SYM2 succeeds warmup without sending historical fill notification
+                mt.check_and_notify_executed_trades(symbols_list=["SYM1", "SYM2"])
+                self.assertNotIn("SYM2", mt._trades_monitor_warmup_failed_symbols)
+                self.assertIn("SYM2_hist_1", mt._notified_trade_ids)
+                mock_notify.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 

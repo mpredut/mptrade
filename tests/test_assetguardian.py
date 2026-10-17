@@ -927,5 +927,57 @@ class AssetGuardianTest(unittest.TestCase):
             self.assertEqual(ag._completed_tier_values(campaign), set())
             self.assertLessEqual(len(campaign["pending"]["client_order_id"]), 36)
 
+        with self.subTest(msg="test_locally_refused_sell_clears_pending_and_reuses_attempt"):
+            state = MemoryState()
+            provider = mock.Mock()
+            provider.free_balance.return_value = 10.0
+
+            def _refuse_place(*_args, **kwargs):
+                ctx = kwargs.get("_outcome_context")
+                if isinstance(ctx, dict):
+                    ctx.update(accepted=False, reason="guard_blocked", state="refused")
+                return None
+
+            with mock.patch.object(ag, "STATE", state), \
+                 mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 mock.patch.object(ag.mkt, "place", side_effect=_refuse_place):
+                tier, campaign, _ = ag._sell_campaign_tier(
+                    "TAOUSDC", 115.0, {"timestamp": 10, "price": 100.0}, 10.0,
+                    self.sell_provider)
+                self.assertFalse(ag._submit_sell_tier(
+                    "TAOUSDC", current_price=115.0, tier=tier, state=campaign))
+                campaign = ag._symbol_campaign("TAOUSDC", "sell")
+
+            self.assertNotIn("pending", campaign)
+            self.assertEqual(campaign.get("attempts_by_tier", {}).get("15", 0), 0)
+
+        with self.subTest(msg="test_locally_refused_buy_clears_pending_and_reuses_attempt"):
+            state = MemoryState()
+            campaign = {
+                "peak_price": 242.0,
+                "peak_ts": 2.0,
+                "initial_cash": 1000.0,
+                "completed_tiers": [],
+            }
+            provider = mock.Mock()
+            provider.free_balance.return_value = 1000.0
+
+            def _refuse_place(*_args, **kwargs):
+                ctx = kwargs.get("_outcome_context")
+                if isinstance(ctx, dict):
+                    ctx.update(accepted=False, reason="guard_blocked", state="refused")
+                return None
+
+            with mock.patch.object(ag, "STATE", state), \
+                 mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 mock.patch.object(ag.mkt, "place", side_effect=_refuse_place):
+                self.assertFalse(ag._submit_buy_tier(
+                    "TAOUSDC", 225.0, 348.25, (7.0, 0.35), campaign))
+                buy_state = ag._symbol_campaign("TAOUSDC", "buy")
+
+            self.assertNotIn("pending", buy_state)
+            self.assertEqual(buy_state.get("attempts_by_tier", {}).get("7", 0), 0)
+
 if __name__ == "__main__":
     unittest.main()
+

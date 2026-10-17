@@ -100,13 +100,15 @@ class _FifoTradeIdTracker:
 
 _notified_trade_ids = _FifoTradeIdTracker()
 _trades_monitor_initialized = False
+_trades_monitor_warmup_failed_symbols: set[str] = set()
 
 
 def reset_trades_monitor_state_for_test():
     """Reset the executed trades tracking state (used in testing)."""
-    global _notified_trade_ids, _trades_monitor_initialized
+    global _notified_trade_ids, _trades_monitor_initialized, _trades_monitor_warmup_failed_symbols
     _notified_trade_ids = _FifoTradeIdTracker()
     _trades_monitor_initialized = False
+    _trades_monitor_warmup_failed_symbols.clear()
 
 
 def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=None):
@@ -116,7 +118,7 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
     Subsequent cycles notify for any newly appeared trade fill across all tracked symbols.
     Fills sharing the same order ID in the same tick are aggregated into a single notification.
     """
-    global _notified_trade_ids, _trades_monitor_initialized
+    global _notified_trade_ids, _trades_monitor_initialized, _trades_monitor_warmup_failed_symbols
     import alertnotifiers as alert
 
     symbols_to_check = symbols_list or sym.symbols
@@ -126,7 +128,9 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                 orders = apitrades.get_trade_orders(None, symbol, maxage_trade_s)
                 for t in orders:
                     _notified_trade_ids.add(str(t['id']))
+                _trades_monitor_warmup_failed_symbols.discard(symbol)
             except Exception as _e:
+                _trades_monitor_warmup_failed_symbols.add(symbol)
                 print(f"[MONITORTRADES] Error during trades warmup for {symbol}: {_e}")
         _trades_monitor_initialized = True
         return
@@ -135,6 +139,11 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
     for symbol in symbols_to_check:
         try:
             orders = apitrades.get_trade_orders(None, symbol, maxage_trade_s)
+            if symbol in _trades_monitor_warmup_failed_symbols:
+                for t in orders:
+                    _notified_trade_ids.add(str(t['id']))
+                _trades_monitor_warmup_failed_symbols.discard(symbol)
+                continue
             orders.sort(key=lambda x: x.get('time', 0))
 
             new_trades = []
@@ -837,6 +846,11 @@ def _is_pending_exit_active(
                     return True
                 elif st in ("NEW", "OPEN", "PARTIALLY_FILLED"):
                     active_sell_exists = True
+                elif st in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED"):
+                    print(f"[{symbol}] Pending exit {p_cid} terminal on venue ({st}) — clearing stale intent for fresh retry.")
+                    _PENDING_STOP_EXIT.pop(symbol, None)
+                    _save_mt_state()
+                    return False
         except Exception:
             pass
 
@@ -975,6 +989,7 @@ def _execute_take_profit(
     min_qty: float,
     prev_tp_state: dict,
     gain_threshold: float,
+    pending_tp: Optional[dict] = None,
 ) -> bool:
     """Execute Take-Profit exit order with state persistence and rollback."""
     symbol = snapshot.symbol
@@ -991,15 +1006,21 @@ def _execute_take_profit(
         return False
 
     bypass_pg = current_price < snapshot.avg_buy_price or bool(tp_decision.forced)
-    tp_intent_id = f"mt_tp_{symbol}_{int(current_time_s)}"
+    tp_intent_id = (pending_tp or {}).get("intent_id") or f"mt_tp_{symbol}_{int(current_time_s)}"
+    tp_cid = (pending_tp or {}).get("client_order_id")
     tp_outcome_ctx = {}
-    placed = _place_guarded(
-        inst, "SELL", current_price, sellable_qty, min_qty,
-        safeback_seconds=sbs, force=bool(tp_decision.forced), cancelorders=True,
-        hours=MT_SELL_SAFEBACK_HOURS, bypass_profit_guard=bypass_pg,
-        intent_id=tp_intent_id,
-        _outcome_context=tp_outcome_ctx,
-    )
+    place_kw = {
+        "safeback_seconds": sbs,
+        "force": bool(tp_decision.forced),
+        "cancelorders": True,
+        "hours": MT_SELL_SAFEBACK_HOURS,
+        "bypass_profit_guard": bypass_pg,
+        "intent_id": tp_intent_id,
+        "_outcome_context": tp_outcome_ctx,
+    }
+    if tp_cid:
+        place_kw["client_order_id"] = tp_cid
+    placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty, **place_kw)
     if placed:
         _TP_RIDE_STATE.pop(symbol, None)
         _resolve_exit(symbol, inst, kind="TP")
@@ -1009,14 +1030,16 @@ def _execute_take_profit(
         print(f"[{symbol}] Take-Profit submit outcome unknown/in-flight ({tp_outcome_ctx.get('reason')}) — deferring duplicate submission")
         _record_pending_exit(
             symbol, inst, "TP", current_time_s, sellable_qty, current_price,
-            tp_outcome_ctx, default_intent_id=tp_intent_id,
+            tp_outcome_ctx, default_intent_id=tp_intent_id, client_order_id=tp_cid,
         )
         return True
-    elif prev_tp_state:
-        if _is_terminal_dust_refusal(tp_outcome_ctx.get("reason")):
-            _TP_RIDE_STATE.pop(symbol, None)
-        else:
-            _TP_RIDE_STATE[symbol] = prev_tp_state
+    else:
+        _PENDING_STOP_EXIT.pop(symbol, None)
+        if prev_tp_state:
+            if _is_terminal_dust_refusal(tp_outcome_ctx.get("reason")):
+                _TP_RIDE_STATE.pop(symbol, None)
+            else:
+                _TP_RIDE_STATE[symbol] = prev_tp_state
         _save_mt_state()
     return False
 
@@ -1453,6 +1476,10 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
 
         if _verbose:
             print(f"(increase: {snapshot.gain_pct}%, decrease: {snapshot.loss_pct}%)")
+        if symbol in _PENDING_STOP_EXIT and _is_pending_exit_active(
+            symbol, inst, sellable_qty, min_qty, current_time_s, current_price=current_price
+        ):
+            return
         # 3.0. Hard TP sells a fraction on a large gain regardless of trend.
         if HARD_TP_ENABLED and snapshot.in_tp_territory(hard_tp_pct, MT_ARE_CLOSE_TOLERANCE_PCT):
             if _evaluate_hard_take_profit(inst, snapshot, hard_tp_pct, hard_tp_frac, hard_tp_cd, min_qty, sbs):
@@ -1485,13 +1512,14 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             snapshot.vol_source = "1h_cache" if vol_1h > 0 else "default"
 
         if in_tp_territory:
+            pending_tp = _PENDING_STOP_EXIT.get(symbol)
             prev_tp_state = dict(_TP_RIDE_STATE.get(symbol, {}))
             tp_decision = exit_mgr.evaluate_take_profit(snapshot, custom_threshold=gain_threshold)
             if tp_decision.reason != "not_in_tp_territory":
                 if tp_decision.action == ExitAction.HOLD:
                     _log_tp_hold_state(symbol, snapshot, tp_decision, gain_threshold)
                 else:
-                    if _execute_take_profit(inst, snapshot, tp_decision, sbs, min_qty, prev_tp_state, gain_threshold):
+                    if _execute_take_profit(inst, snapshot, tp_decision, sbs, min_qty, prev_tp_state, gain_threshold, pending_tp):
                         return   # Already sold this tick; do not evaluate stale sell history below.
             else:
                 _handle_position_recovery(inst, snapshot, lost_threshold)
@@ -1697,10 +1725,12 @@ def main():
 
     d = MT_GUARD_WINDOW_DAYS
     while True:
-
-        print_number_of_orders(maxage_trade_s)
-        print_number_of_trades(maxage_trade_s)
-        check_and_notify_executed_trades(maxage_trade_s)
+        try:
+            print_number_of_orders(maxage_trade_s)
+            print_number_of_trades(maxage_trade_s)
+            check_and_notify_executed_trades(maxage_trade_s)
+        except Exception as _e:
+            print(f"[MONITORTRADES] Error in loop pre-checks: {_e}")
         
         # Reload the authoritative registry so deliberate configuration changes take
         # effect without restart. Validation errors propagate and stop the service

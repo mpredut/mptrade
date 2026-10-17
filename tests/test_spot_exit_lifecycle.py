@@ -796,3 +796,63 @@ def test_mdhtp_not_in_tp_territory_clears_trail_peak():
     assert engine.s["trail_peak"] is None
     assert engine.s["trail_stop"] is None
 
+
+def test_ledger_reconcile_flat_resets_trend_mode_and_allows_reentry():
+    engine, executor = positioned(trend_overlay=True)
+    engine.s.update(
+        qty=1.0, cost=100.0, spent=100.0, dca_buys=2,
+        trend_mode=True, trend_peak=115.0, trail_peak=115.0,
+        surge_active=True, surge_peak=120.0,
+        ledger_reconcile_required=True,
+    )
+    executor.free_balance = lambda _asset: 0.0
+    engine.step(100.0)
+    assert engine.s["qty"] == 0.0
+    assert engine.s["trend_mode"] is False
+    assert engine.s["trend_peak"] is None
+    assert engine.s["dca_buys"] == 0
+    assert engine.s["trail_peak"] is None
+    assert engine.s["surge_active"] is False
+
+
+def test_mdhtp_soft_floor_block_does_not_deadlock_subsequent_profit_floor_breach():
+    engine, executor = make_mdhtp_engine(
+        mdhtp_enabled=True, tp_dynamic_flat=False, takeprofit_pct=1.2,
+        tp_trail_pct=0.5, tp_trail_profit_floor_pct=1.0,
+    )
+    engine.s["trend_mode"] = True
+    now = 1000.0
+    # Tick 1 at 101.55 (+1.55% >= 1.2% TP): arms MDHTP ride at peak 101.55
+    with patch.object(strat.time, "time", return_value=now):
+        engine.step(101.55)
+    assert not submits(executor)
+
+    # Tick 2 at 101.04: pullback from 101.55 is 0.502% >= 0.5% trail, gain +1.04% >= 1.0% floor,
+    # but exit_px = round(101.04 * 0.999, 2) = 100.94 < profit_floor (101.00).
+    # Soft trailing is blocked without locking pending_exit or losing tp_ride_state.
+    with patch.object(strat.time, "time", return_value=now + 10.0):
+        engine.step(101.04)
+    assert not submits(executor)
+    assert engine.s.get("pending_exit") is None
+    assert engine.pair in engine.exit_manager.tp_ride_state
+
+    # Tick 3 at 100.50 (+0.50% < 1.0% floor): mdhtp_profit_floor_breached must execute immediately!
+    with patch.object(strat.time, "time", return_value=now + 20.0):
+        engine.step(100.50)
+    assert any(c[0] == "submit_order" and c[6] == "TP" for c in executor.calls)
+
+
+def test_mdhtp_hold_evaluates_advanced_profit_guards():
+    engine, executor = make_mdhtp_engine(
+        mdhtp_enabled=True, takeprofit_pct=5.0, tp_trail_pct=10.0,
+        surge_guard=True, surge_gain_pct=15.0, surge_move_pct=15.0,
+        surge_window_hours=72.0, surge_exit_pullback_pct=2.0, surge_dynamic=False,
+    )
+    engine.s.update(trend_mode=True, surge_peak=125.0, surge_active=True)
+    now = 1000.0
+    # At 120.0 (+20% >= 5% TP), MDHTP pullback from 120.0 is 0% (< 10% trail -> HOLD),
+    # but Surge Guard pullback from surge_peak 125.0 is 4.0% (>= 2.0% -> SELL)!
+    with patch.object(strat.time, "time", return_value=now):
+        engine.step(120.0)
+    assert any(c[0] == "submit_order" and c[6] == "TP" for c in executor.calls)
+

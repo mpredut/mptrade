@@ -7,6 +7,7 @@ import time
 from binance_api import bapi as api
 from providers.market_api import api as mkt   # Single guarded proxy (Instrument.place).
 from providers.execution_audit import ExecutionAudit
+from order_retry import propagate_submission_refusal
 from providers.quantity import resolve_assets
 
 import cacheManager as cm
@@ -296,29 +297,38 @@ def _get_symbol_window_extrema(symbol, current_price,
     return minimum, maximum
 
 
+_LAST_SUBMIT_OUTCOME: dict = {}
+
+
 def sell_asset(symbol, qty, current_price, client_order_id, tier_threshold):
     """Submit one explicit SELL tier and return the native order response."""
+    _LAST_SUBMIT_OUTCOME.clear()
     try:
         base_asset, _ = resolve_assets(symbol)
         provider = mkt.provider_by_name("binance")
         if provider is None:
             print(f"[{symbol}] Binance provider unavailable; skip SELL fail-closed.")
+            _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="provider_unavailable")
             return None
         free_qty = _finite_float(provider.free_balance(base_asset), positive=True)
         requested_qty = _finite_float(qty, positive=True)
         price = _finite_float(current_price, positive=True)
     except Exception as e:
         print(f"ERROR preparing SELL for {symbol}: {e}")
+        _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="prepare_error")
         return None
     if free_qty is None:
         print(f"[{symbol}] No valid free {base_asset} balance; skip SELL.")
+        _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="no_free_balance")
         return None
     if requested_qty is None or price is None:
         print(f"[{symbol}] Invalid SELL price/quantity; skip SELL.")
+        _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="invalid_price_or_qty")
         return None
     qty_to_sell = min(requested_qty, free_qty)
     if qty_to_sell <= 0:
         print(f"[{symbol}] SELL tier has no reconciled free quantity.")
+        _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="zero_qty")
         return None
     try:
         order = mkt.place(
@@ -327,7 +337,8 @@ def sell_asset(symbol, qty, current_price, client_order_id, tier_threshold):
             bypass_quantity_policy=True,
             wait_for_trend=False,
             client_order_id=client_order_id,
-            motivation=f"assetguardian_growth_exit_tier_{tier_threshold:g}")
+            motivation=f"assetguardian_growth_exit_tier_{tier_threshold:g}",
+            _outcome_context=_LAST_SUBMIT_OUTCOME)
         if order:
             print(
                 f" SELL tier submitted: {symbol} requested={requested_qty:.8f} "
@@ -344,11 +355,13 @@ def sell_asset(symbol, qty, current_price, client_order_id, tier_threshold):
 def buy_with_all_cash(buy_symbol, cash_ratio=BUY_USE_CASH_RATIO,
                       cash_amount=None, client_order_id=None,
                       respect_guard=False):
+    _LAST_SUBMIT_OUTCOME.clear()
     try:
         _, quote_asset = resolve_assets(buy_symbol)
         cash_ratio = _finite_float(cash_ratio, positive=True)
         if cash_ratio is None or cash_ratio > 1:
             print(f" Invalid cash ratio for buy: {cash_ratio}")
+            _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="invalid_cash_ratio")
             return False
         free_cash = _finite_float(
             mkt.provider_by_name("binance").free_balance(quote_asset),
@@ -357,6 +370,7 @@ def buy_with_all_cash(buy_symbol, cash_ratio=BUY_USE_CASH_RATIO,
         current_price = _finite_float(api.get_current_price(buy_symbol), positive=True)
     except Exception as e:
         print(f"ERROR preparing buy for {buy_symbol}: {e}")
+        _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="prepare_error")
         return False
     print(
         f"[DEBUG] buy check symbol={buy_symbol}, quote={quote_asset}, "
@@ -365,20 +379,24 @@ def buy_with_all_cash(buy_symbol, cash_ratio=BUY_USE_CASH_RATIO,
 
     if free_cash is None:
         print(f" No valid available {quote_asset} balance; skip buy fail-closed.")
+        _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="no_free_cash")
         return False
     if current_price is None:
         print(f" Invalid current price for {buy_symbol}.")
+        _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="invalid_price")
         return False
 
     requested_cash = (free_cash * cash_ratio if cash_amount is None
                       else _finite_float(cash_amount, positive=True))
     if requested_cash is None:
         print(" Invalid requested cash amount for buy.")
+        _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="invalid_requested_cash")
         return False
     cash_to_use = min(requested_cash, free_cash * BUY_USE_CASH_RATIO)
     qty = cash_to_use / current_price
     if qty <= 0:
         print(" Computed qty <= 0. Skip buy.")
+        _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="zero_qty")
         return False
 
     print(
@@ -395,7 +413,8 @@ def buy_with_all_cash(buy_symbol, cash_ratio=BUY_USE_CASH_RATIO,
             bypass_profit_reference=not respect_guard,
             wait_for_trend=False,
             client_order_id=client_order_id,
-            motivation="assetguardian_drawdown_buy")
+            motivation="assetguardian_drawdown_buy",
+            _outcome_context=_LAST_SUBMIT_OUTCOME)
         if order:
             print(f" BUY safe-order sent: {buy_symbol}, qty={qty:.8f}")
             return order
@@ -975,16 +994,28 @@ def _submit_sell_tier(symbol, current_price, tier, state):
         metadata={"threshold": threshold, "allocation": allocation},
     )
     box, persist = _campaign_pending_persistor(symbol, "sell", state)
+    _LAST_SUBMIT_OUTCOME.clear()
+
+    def _submit_sell():
+        resp = sell_asset(
+            symbol, qty=qty, current_price=current_price,
+            client_order_id=client_order_id, tier_threshold=threshold)
+        if resp is False and not _LAST_SUBMIT_OUTCOME.get("state"):
+            _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="sell_not_accepted")
+        return propagate_submission_refusal(resp, _LAST_SUBMIT_OUTCOME)
+
     try:
         result = ORDER_LIFECYCLE.submit(
             intent,
             persist=persist,
-            submit=lambda: sell_asset(
-                symbol, qty=qty, current_price=current_price,
-                client_order_id=client_order_id, tier_threshold=threshold),
+            submit=_submit_sell,
         )
     except Exception as exc:
         print(f"[{symbol}] SELL tracked submit failed before/around submit: {exc}")
+        return False
+    if result.outcome == "refused":
+        persist(None)
+        _reuse_unaccepted_attempt(symbol, "sell", box["state"], result.intent)
         return False
     # Known order ID means venue acceptance was observed.  An ambiguous response
     # remains pending and is recovered by client ID in a later evaluator cycle.
@@ -1021,19 +1052,31 @@ def _submit_buy_tier(symbol, current_price, cash_amount, tier, state):
         },
     )
     _box, persist = _campaign_pending_persistor(symbol, "buy", state)
+    _LAST_SUBMIT_OUTCOME.clear()
+
+    def _submit_buy():
+        resp = buy_with_all_cash(
+            buy_symbol=symbol,
+            cash_amount=cash_amount,
+            client_order_id=client_order_id,
+            respect_guard=respect_guard,
+        )
+        if resp is False and not _LAST_SUBMIT_OUTCOME.get("state"):
+            _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="buy_not_accepted")
+        return propagate_submission_refusal(resp, _LAST_SUBMIT_OUTCOME)
+
     try:
         result = ORDER_LIFECYCLE.submit(
             intent,
             persist=persist,
-            submit=lambda: buy_with_all_cash(
-                buy_symbol=symbol,
-                cash_amount=cash_amount,
-                client_order_id=client_order_id,
-                respect_guard=respect_guard,
-            ),
+            submit=_submit_buy,
         )
     except Exception as exc:
         print(f"[{symbol}] BUY tracked submit failed before/around submit: {exc}")
+        return False
+    if result.outcome == "refused":
+        persist(None)
+        _reuse_unaccepted_attempt(symbol, "buy", _box["state"], result.intent)
         return False
     return result.order_known
 
@@ -1172,10 +1215,11 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
             f"<= -{BUY_TIERS[0][0]:.4f}%). Checking staged BUY..."
         )
         provider = mkt.provider_by_name("binance")
-        free_cash = (_finite_float(provider.free_balance("USDC"), positive=True)
+        _, quote_asset = resolve_assets(symbol)
+        free_cash = (_finite_float(provider.free_balance(quote_asset), positive=True)
                      if provider else None)
         if free_cash is None:
-            print(f"[{symbol}] No valid USDC balance for staged BUY.")
+            print(f"[{symbol}] No valid {quote_asset} balance for staged BUY.")
             return False
         tier, campaign = _campaign_tier(
             symbol, abs(drawdown_percent), maximum_row, free_cash)

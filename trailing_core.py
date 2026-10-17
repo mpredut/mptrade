@@ -90,6 +90,7 @@ class TrailingCore:
                 st["pending_order"] = dict(pending)
             if not self.save(state):
                 raise RuntimeError("the pending trailing state could not be persisted")
+        persist.st = st
         return persist
 
     def _asset_for_pair(self, pair: str, default: str = "") -> str:
@@ -131,7 +132,13 @@ class TrailingCore:
             target_qty = float(st.get("target_exit_qty", 0.0) or 0.0)
             remaining_balance = self._remaining_qty(asset)
             is_flat = (remaining_balance * price < self.min_notional)
-            is_complete = (target_qty <= 0 or accum_qty >= target_qty - 1e-6 or is_flat)
+            remaining_target = max(0.0, target_qty - accum_qty)
+            is_complete = (
+                target_qty <= 0
+                or accum_qty >= target_qty - 1e-6
+                or remaining_target * price < self.min_notional
+                or is_flat
+            )
 
             if is_complete:
                 st["peak"] = avg
@@ -284,6 +291,9 @@ class TrailingCore:
 
         if not st.get("is_flat", False) and "warmup_at" not in st and price > st["peak"]:
             st["peak"] = price                                # new peak moves the trailing level up
+            st.pop("target_exit_qty", None)
+            st.pop("exit_sold_qty", None)
+            st.pop("exit_sold_cost", None)
         stop_at = st["peak"] * (1 - trail / 100.0)
 
         # Emergency crash circuit breaker (zona de avarie) — brute force unconditional exit.
@@ -305,7 +315,7 @@ class TrailingCore:
                 if free * price < self.min_notional:
                     return                                        # nothing to sell even after unlock attempt
 
-                if "target_exit_qty" not in st:
+                if "target_exit_qty" not in st or not st.get("exit_sold_qty"):
                     total_pos = self._remaining_qty(asset)
                     if total_pos <= 0:
                         total_pos = free
@@ -314,16 +324,21 @@ class TrailingCore:
                 target_rem = max(0.0, float(st.get("target_exit_qty", 0.0)) - float(st.get("exit_sold_qty", 0.0) or 0.0))
                 sell_qty = round(min(free, target_rem) if target_rem > 0 else (free * self.sell_fraction), 8)
                 if sell_qty * price >= self.min_notional:
-                    self.a.execute_sell(
+                    res = self.a.execute_sell(
                         key, asset, pair, sell_qty, price, st["peak"], trail,
                         self._pending_persist(state, st),
                     )
+                    if getattr(res, "outcome", None) == "refused" and not st.get("exit_sold_qty"):
+                        st.pop("target_exit_qty", None)
             else:
                 if free * price < self.min_notional:
                     return
                 sell_qty = round(free * self.sell_fraction, 8)
                 self.a.log_dry_sell(key, asset, pair, sell_qty, price, st["peak"], trail)
             return
+
+        if not st.get("exit_sold_qty"):
+            st.pop("target_exit_qty", None)
 
         total_pos = self._remaining_qty(asset)
         if total_pos <= 0:
