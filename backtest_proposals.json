@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-10-18T02:05:19",
+    "ts": "2026-10-18T02:26:56",
     "full_key": "BINANCE_BTC.trailing.pct",
     "section": "BINANCE_BTC",
     "key": "trailing.pct",
@@ -11,66 +11,24 @@
       "half1": 16.44,
       "half2": 566.43
     },
-    "dev_commit": "c6b079e"
+    "dev_commit": "a604f7a"
   },
   {
-    "ts": "2026-10-18T02:05:19",
-    "full_key": "KRAKEN_HYPE.mt.lost",
-    "section": "KRAKEN_HYPE",
-    "key": "mt.lost",
-    "symbol": "HYPEUSD",
-    "current_on_dev": 5.0,
-    "winner_value": 3.5,
-    "margin_vs_current": {
-      "half1": 831.07,
-      "half2": 392.08
-    },
-    "dev_commit": "c6b079e"
-  },
-  {
-    "ts": "2026-10-18T02:05:19",
+    "ts": "2026-10-18T02:26:56",
     "full_key": "KRAKEN_HYPE.mt.maxage_days",
     "section": "KRAKEN_HYPE",
     "key": "mt.maxage_days",
     "symbol": "HYPEUSD",
-    "current_on_dev": 17.0,
+    "current_on_dev": 15.5,
     "winner_value": 14.0,
     "margin_vs_current": {
-      "half1": 613.8,
-      "half2": 2555.79
+      "half1": 32.85,
+      "half2": 2336.05
     },
-    "dev_commit": "c6b079e"
+    "dev_commit": "a604f7a"
   },
   {
-    "ts": "2026-10-18T02:05:19",
-    "full_key": "KRAKEN_HYPE.mt.hardtp_fraction",
-    "section": "KRAKEN_HYPE",
-    "key": "mt.hardtp_fraction",
-    "symbol": "HYPEUSD",
-    "current_on_dev": 0.4,
-    "winner_value": 0.3,
-    "margin_vs_current": {
-      "half1": 290.55,
-      "half2": 81.79
-    },
-    "dev_commit": "c6b079e"
-  },
-  {
-    "ts": "2026-10-18T02:05:19",
-    "full_key": "KRAKEN_HYPE.mt.hardtp_cooldown_h",
-    "section": "KRAKEN_HYPE",
-    "key": "mt.hardtp_cooldown_h",
-    "symbol": "HYPEUSD",
-    "current_on_dev": 9.0,
-    "winner_value": 2.0,
-    "margin_vs_current": {
-      "half1": 257.95,
-      "half2": 68.15
-    },
-    "dev_commit": "c6b079e"
-  },
-  {
-    "ts": "2026-10-18T02:05:19",
+    "ts": "2026-10-18T02:26:56",
     "full_key": "BINANCE_ARB.mt.maxage_days",
     "section": "BINANCE_ARB",
     "key": "mt.maxage_days",
@@ -81,6 +39,6 @@
       "half1": 215.66,
       "half2": 59.33
     },
-    "dev_commit": "c6b079e"
+    "dev_commit": "a604f7a"
   }
 ]
