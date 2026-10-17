@@ -143,14 +143,19 @@ def load_asset(asset):
 
 def replay(bars, warm, params, peak):
     FLAGS["peak"] = bool(peak)
-    ohlc = [b[1:] for b in bars] if (bars and len(bars[0]) == 5) else bars
-    w_ohlc = [b[1:] for b in warm] if (warm and len(warm[0]) == 5) else warm
-    m = rp.run_replay(ohlc, params, fee_pct=0.26, bar_minutes=240,
-                      warmup_ohlc=w_ohlc)
-    budget = float(params.effective_max_budget())
-    return {"ret": round(m["total"] / budget * 100, 3), "dd": round(m.get("max_drawdown_pct") or 0, 3),
-            "cyc": m.get("cycles", 0), "expo": round(m.get("exposure_pct") or 0, 1),
-            "bh": round((ohlc[-1][3] / ohlc[0][3] - 1) * 100, 3)}
+    strat.Strategy.step = _step if peak else _orig_step
+    try:
+        ohlc = [b[1:] for b in bars] if (bars and len(bars[0]) == 5) else bars
+        w_ohlc = [b[1:] for b in warm] if (warm and len(warm[0]) == 5) else warm
+        m = rp.run_replay(ohlc, params, fee_pct=0.26, bar_minutes=240,
+                          warmup_ohlc=w_ohlc)
+        budget = float(params.effective_max_budget())
+        return {"ret": round(m["total"] / budget * 100, 3), "dd": round(m.get("max_drawdown_pct") or 0, 3),
+                "cyc": m.get("cycles", 0), "expo": round(m.get("exposure_pct") or 0, 1),
+                "bh": round((ohlc[-1][3] / ohlc[0][3] - 1) * 100, 3)}
+    finally:
+        FLAGS["peak"] = False
+        strat.Strategy.step = _orig_step
 
 
 def task(args):
@@ -182,7 +187,9 @@ def task(args):
 if __name__ == "__main__":
     assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
     for a in assets:
-        load_asset(a)
+        _bars, _ohlc, _ = load_asset(a)
+        if len(_ohlc) > WARM:
+            replay(_ohlc[WARM:], _ohlc[:WARM], LIVE, 0)
     done = set()
     if os.path.exists(OUT):
         for line in open(OUT):
@@ -203,10 +210,11 @@ if __name__ == "__main__":
             canon_groups[k] = []
             canon_todo.append((a, c))
         canon_groups[k].append(c)
-    print(f"[grid] {len(assets)} assets x {len(CONFIGS)} configs, {len(todo)} tasks ({len(canon_todo)} unique)", flush=True)
+    workers = int(os.environ.get("WORKERS", os.cpu_count() or 4))
+    print(f"[grid] {len(assets)} assets x {len(CONFIGS)} configs, {len(todo)} tasks ({len(canon_todo)} unique) on {workers} workers", flush=True)
     t0 = time.time()
     done_count = 0
-    with Pool(int(os.environ.get("WORKERS", 3))) as pool, open(OUT, "a") as out:
+    with Pool(workers) as pool, open(OUT, "a") as out:
         for r in pool.imap_unordered(task, canon_todo):
             p, pk = CONFIGS[r["cfg"]]
             aliases = canon_groups.get((r["asset"], repr(p), bool(pk)), [r["cfg"]])

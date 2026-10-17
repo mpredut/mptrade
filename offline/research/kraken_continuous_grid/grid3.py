@@ -28,6 +28,7 @@ def task(args):
         if cached is not None:
             return {**cached, "cfg": cfg}
         grid.FLAGS["peak"] = bool(peak)
+        grid.strat.Strategy.step = grid._step if peak else grid._orig_step
         try:
             out = {}
             for fee in (0.26, 0.40):
@@ -38,6 +39,7 @@ def task(args):
                                  "min_cash": m["funding"]["minimum_cash"]}
         finally:
             grid.FLAGS["peak"] = False
+            grid.strat.Strategy.step = grid._orig_step
         res = {"asset": asset, "cfg": cfg, **out}
         _TASK3_CACHE[cache_key] = res
         return res
@@ -49,7 +51,9 @@ def task(args):
 if __name__ == "__main__":
     assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
     for a in assets:
-        grid.load_asset(a)
+        _bars, _ohlc, _ = grid.load_asset(a)
+        if len(_ohlc) > WARM:
+            grid.replay(_ohlc[WARM:], _ohlc[:WARM], grid.LIVE, 0)
     todo = [(a, c) for a in assets for c in CFGS]
     canon_groups: dict = {}
     canon_todo = []
@@ -61,7 +65,8 @@ if __name__ == "__main__":
             canon_todo.append((a, c))
         canon_groups[k].append(c)
     done_count = 0
-    with Pool(4) as pool, open(os.path.join(EXP, "results3.jsonl"), "w") as fh:
+    workers = int(os.environ.get("WORKERS", os.cpu_count() or 4))
+    with Pool(workers) as pool, open(os.path.join(EXP, "results3.jsonl"), "w") as fh:
         for r in pool.imap_unordered(task, canon_todo):
             p, pk = grid2.ALL[r["cfg"]]
             aliases = canon_groups.get((r["asset"], repr(p), bool(pk)), [r["cfg"]])

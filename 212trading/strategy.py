@@ -1580,8 +1580,6 @@ class Strategy:
 
         mgr = self.exit_manager
         mgr.config.reentry_drop_pct = vol_pct_to_ratio(self.p.reentry_drop_pct)
-        pullback_pct, pb_src = self._effective_reentry_pullback_pct()
-        mgr.config.reentry_pullback_pct = vol_pct_to_ratio(pullback_pct)
         mgr.config.reentry_sl_bounce_pct = (
             vol_pct_to_ratio(self.p.sl_rebuy_bounce_pct)
             if self.p.sl_rebuy_enabled
@@ -1607,8 +1605,16 @@ class Strategy:
             except Exception:
                 pass
 
-        vol_1h, vol_source = self._vol_1h_ratio()
         last_exit_kind = "STOP" if self.s.get("last_exit_kind") == "STOP" else "TP"
+        if (last_exit_kind != "STOP" and self.p.reentry_hybrid_enabled and (trend_up or self.p.reentry_peak_relative)) or not self.replay_mode:
+            pullback_pct, pb_src = self._effective_reentry_pullback_pct()
+        else:
+            pullback_pct = self.p.reentry_pullback_pct
+        mgr.config.reentry_pullback_pct = vol_pct_to_ratio(pullback_pct)
+        if self.replay_mode:
+            vol_1h, vol_source = 0.0, "default"
+        else:
+            vol_1h, vol_source = self._vol_1h_ratio()
 
         reentry_snap = ReentrySnapshot(
             symbol=self.ticker,

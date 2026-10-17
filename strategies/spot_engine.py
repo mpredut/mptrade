@@ -1798,7 +1798,8 @@ class Strategy:
         self.s["post_sell_peak"] = max(cur_peak, price)
         cur_trough = self.s.get("post_sell_trough") or lsp
         self.s["post_sell_trough"] = min(cur_trough, price)
-        if self.s.get("last_exit_kind") == "STOP":
+        last_kind = self.s.get("last_exit_kind")
+        if last_kind == "STOP":
             self.s["sl_low"] = min(self.s.get("sl_low") or price, price)
 
         # Symmetrical Re-entry Evaluation via PositionExitManager
@@ -1806,26 +1807,41 @@ class Strategy:
             self.exit_manager = self._init_exit_manager()
         mgr = self.exit_manager
         mgr.config.reentry_drop_pct = vol_pct_to_ratio(self.p.reentry_drop_pct)
-        pullback_pct, _ = self._effective_reentry_pullback_pct()
-        mgr.config.reentry_pullback_pct = vol_pct_to_ratio(pullback_pct)
         mgr.config.reentry_bear_bounce_pct = vol_pct_to_ratio(self.p.reentry_bear_bounce_pct)
         mgr.config.reentry_sl_bounce_pct = vol_pct_to_ratio(self.p.reentry_sl_bounce_pct)
         mgr.config.reentry_ttl_hours = self.p.reentry_ttl_hours
         mgr.config.reentry_tolerance_pct = self.p.reentry_tolerance_pct
         mgr.config.reentry_hybrid_enabled = self.p.reentry_hybrid_enabled
         mgr.config.reentry_peak_relative = self.p.reentry_peak_relative
-        vol_1h, vol_source = self._vol_1h_ratio()
-        drop_pct, _ = self._effective_reentry_drop_pct()
+        trend_up = self._is_trend_up(regime)
+        is_bull_reentry = bool(
+            last_kind != "STOP"
+            and self.p.reentry_hybrid_enabled
+            and (trend_up or self.p.reentry_peak_relative)
+        )
+        if is_bull_reentry or not self.replay_mode:
+            pullback_pct, _ = self._effective_reentry_pullback_pct()
+        else:
+            pullback_pct = self.p.reentry_pullback_pct
+        mgr.config.reentry_pullback_pct = vol_pct_to_ratio(pullback_pct)
+        if (not is_bull_reentry and last_kind != "STOP") or not self.replay_mode:
+            drop_pct, _ = self._effective_reentry_drop_pct()
+        else:
+            drop_pct = self.p.reentry_drop_pct
+        if self.replay_mode:
+            vol_1h, vol_source = 0.0, "default"
+        else:
+            vol_1h, vol_source = self._vol_1h_ratio()
         reentry_snap = ReentrySnapshot(
             symbol=self.pair,
             current_price=price,
             last_sell_price=lsp,
-            last_exit_kind=self.s.get("last_exit_kind"),
+            last_exit_kind=last_kind,
             post_sell_peak=self.s.get("post_sell_peak"),
             post_sell_trough=self.s.get("post_sell_trough"),
             current_time_s=tick_time,
             last_sell_time_s=self.s.get("last_sell_ts"),
-            trend_up=self._is_trend_up(regime),
+            trend_up=trend_up,
             trend_down=self._regime_matches(regime, "bear", min_samples=self.p.regime_min_samples) if regime else False,
             vol_1h=vol_1h,
             vol_source=vol_source,

@@ -53,6 +53,7 @@ _VIEWS_CACHE: dict = {}
 
 def replay(bars, warm, params, peak, fee):
     grid.FLAGS["peak"] = bool(peak)
+    grid.strat.Strategy.step = grid._step if peak else grid._orig_step
     try:
         ohlc = [b[1:] for b in bars] if (bars and len(bars[0]) == 5) else bars
         w_ohlc = [b[1:] for b in warm] if (warm and len(warm[0]) == 5) else warm
@@ -64,6 +65,7 @@ def replay(bars, warm, params, peak, fee):
                 "bh": round((ohlc[-1][3] / ohlc[0][3] - 1) * 100, 3)}
     finally:
         grid.FLAGS["peak"] = False
+        grid.strat.Strategy.step = grid._orig_step
 
 
 def views(asset, cfg, fee_key):
@@ -128,10 +130,14 @@ def task(args):
 if __name__ == "__main__":
     assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
     for a in assets:
-        grid.load_asset(a)
+        _bars, _ohlc, _ = grid.load_asset(a)
+        if len(_ohlc) > WARM:
+            replay(_ohlc[WARM:], _ohlc[:WARM], LIVE, 0, 0.26)
+    assets_by_len = sorted(assets, key=lambda a: -len(grid.load_asset(a)[0]))
     todo = []
-    for a in assets:
+    for a in assets_by_len:
         todo.append(("select", a))
+    for a in assets_by_len:
         for c in FINE:
             todo.append(("views", a, c, "std"))
         for c in FEE_SET:
@@ -149,10 +155,11 @@ if __name__ == "__main__":
                 canon_groups[k] = []
                 canon_todo.append(item)
             canon_groups[k].append(c)
-    print(f"[grid2] {len(todo)} tasks ({len(canon_todo)} unique)", flush=True)
+    workers = int(os.environ.get("WORKERS", os.cpu_count() or 4))
+    print(f"[grid2] {len(todo)} tasks ({len(canon_todo)} unique) on {workers} workers", flush=True)
     t0 = time.time()
     done_count = 0
-    with Pool(int(os.environ.get("WORKERS", 3))) as pool, open(OUT, "w") as out:
+    with Pool(workers) as pool, open(OUT, "w") as out:
         for r in pool.imap_unordered(task, canon_todo):
             tag = r.get("kind")
             if tag == "views":

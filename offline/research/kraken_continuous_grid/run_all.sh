@@ -17,11 +17,12 @@ OUT="${GRID_OUT:-$ROOT/offline/results/kraken_continuous_grid}"
 mkdir -p "$OUT"
 cd "$ROOT"
 rm -f "$OUT/results.jsonl"      # grid.py resumes from an existing file; start clean
+DEFAULT_WORKERS="$(nproc 2>/dev/null || echo 4)"
 "$PY" "$HERE/fetch_data.py" > "$OUT/fetch.log" 2>&1
-WORKERS="${WORKERS:-3}" "$PY" "$HERE/grid.py" > "$OUT/grid.log" 2>&1
+WORKERS="${WORKERS:-$DEFAULT_WORKERS}" "$PY" "$HERE/grid.py" > "$OUT/grid.log" 2>&1
 "$PY" "$HERE/report.py" > "$OUT/report.log" 2>&1
-WORKERS="${WORKERS:-3}" "$PY" "$HERE/grid2.py" > "$OUT/grid2.log" 2>&1
+WORKERS="${WORKERS:-$DEFAULT_WORKERS}" "$PY" "$HERE/grid2.py" > "$OUT/grid2.log" 2>&1
 "$PY" "$HERE/report2.py" > "$OUT/report2.log" 2>&1
-"$PY" "$HERE/grid3.py" > "$OUT/grid3.log" 2>&1
+WORKERS="${WORKERS:-$DEFAULT_WORKERS}" "$PY" "$HERE/grid3.py" > "$OUT/grid3.log" 2>&1
 "$PY" "$HERE/report3.py" > "$OUT/report3.log" 2>&1
 echo "done: $OUT/REPORT.md $OUT/REPORT2.md $OUT/REPORT3.md"

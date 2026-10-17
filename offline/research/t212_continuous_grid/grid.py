@@ -116,18 +116,23 @@ def params_for(profile, variant):
 
 def run(bars, params, peak, minutes, ohlc=None, ts=None):
     FLAGS["peak"] = bool(peak)
-    if ohlc is None:
-        ohlc = [b[1:] for b in bars]
-    if ts is None:
-        ts = [b[0] for b in bars]
-    m = rp.run_replay(ohlc[WARM:], params, bar_minutes=minutes,
-                      warmup_ohlc=ohlc[:WARM],
-                      timestamps=ts[WARM:])
-    budget = float(params.max_budget)
-    return {"ret": round(m["total"] / budget * 100, 3), "dd": round(m.get("max_drawdown_pct") or 0, 3),
-            "cyc": m.get("cycles", 0), "expo": round(m.get("exposure_pct") or 0, 1),
-            "fills": m.get("fills", 0),
-            "bh": round((ohlc[-1][3] / ohlc[WARM][3] - 1) * 100, 2)}
+    strat.Strategy.step = _step if peak else _orig_step
+    try:
+        if ohlc is None:
+            ohlc = [b[1:] for b in bars]
+        if ts is None:
+            ts = [b[0] for b in bars]
+        m = rp.run_replay(ohlc[WARM:], params, bar_minutes=minutes,
+                          warmup_ohlc=ohlc[:WARM],
+                          timestamps=ts[WARM:])
+        budget = float(params.max_budget)
+        return {"ret": round(m["total"] / budget * 100, 3), "dd": round(m.get("max_drawdown_pct") or 0, 3),
+                "cyc": m.get("cycles", 0), "expo": round(m.get("exposure_pct") or 0, 1),
+                "fills": m.get("fills", 0),
+                "bh": round((ohlc[-1][3] / ohlc[WARM][3] - 1) * 100, 2)}
+    finally:
+        FLAGS["peak"] = False
+        strat.Strategy.step = _orig_step
 
 
 def task(args):
@@ -177,9 +182,14 @@ if __name__ == "__main__":
     if not assets:
         print(f"[t212grid] No CSV data files found in {DATA}. Run fetch.py first.", flush=True)
         sys.exit(0)
+    base_p, _ = params_for("nvda", "live")
     for a in assets:
-        load(a, "1h")
-        load(a, "1d")
+        b1h = load(a, "1h")
+        b1d = load(a, "1d")
+        if b1h:
+            run(b1h, base_p, 0, 60)
+        if b1d:
+            run(b1d, base_p, 0, 1440)
     todo = []
     for profile in PROFILES:
         home = HOME[profile]
@@ -199,10 +209,11 @@ if __name__ == "__main__":
             canon_groups[k] = []
             canon_todo.append((profile, variant, asset))
         canon_groups[k].append((profile, variant))
-    print(f"[t212grid] {len(todo)} tasks ({len(canon_todo)} unique)", flush=True)
+    workers = int(os.environ.get("WORKERS", os.cpu_count() or 4))
+    print(f"[t212grid] {len(todo)} tasks ({len(canon_todo)} unique) on {workers} workers", flush=True)
     t0 = time.time()
     done_count = 0
-    with Pool(int(os.environ.get("WORKERS", 2))) as pool, open(OUT, "w") as fh:
+    with Pool(workers) as pool, open(OUT, "w") as fh:
         for r in pool.imap(task, canon_todo):
             p, pk = params_for(r["profile"], r["variant"])
             aliases = canon_groups.get((r["asset"], repr(p), bool(pk)), [(r["profile"], r["variant"])])
