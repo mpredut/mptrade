@@ -19,11 +19,11 @@ from sklearn.linear_model import LinearRegression
 
 import utils as u
 
-# ── Constante window ─────────────────────────────────────────────────────────
+# ── Window constants ──────────────────────────────────────────────────────────
 DEFAULT_SAMPLE_RATE_SEC = 0.8     # Nominal fallback sampling rate.
 RECENT_GRADIENT_SECONDS = 60.0    # Recent-momentum window in seconds.
-WINDOW_SECONDS_SMALL = 3.7 * 60          # 3.7 minute
-WINDOW_SECONDS_BIG   = 2.5 * 60 * 60     # 2.5 ore
+WINDOW_SECONDS_SMALL = 3.7 * 60          # 3.7 minutes
+WINDOW_SECONDS_BIG   = 2.5 * 60 * 60     # 2.5 hours
 
 
 class PriceTrendAnalyzer:
@@ -463,12 +463,12 @@ class PriceWindow:
                 return min_price
             if min_price > 0.0:
                 p1 = sp[1]
-                if (p1 - min_price) / ((p1 + min_price) * 0.5) * 100.0 > 0.01:
+                if p1 != min_price and (p1 - min_price) / ((p1 + min_price) * 0.5) * 100.0 > 0.01:
                     return min_price
                 total = min_price + p1
                 count = 2
                 for price in sp[2:]:
-                    if (price - min_price) / ((price + min_price) * 0.5) * 100.0 <= 0.01:
+                    if price == min_price or (price - min_price) / ((price + min_price) * 0.5) * 100.0 <= 0.01:
                         total += price
                         count += 1
                     else:
@@ -496,13 +496,15 @@ class PriceWindow:
                 return max_price
             p_prev = sp[-2]
             if p_prev > 0.0:
-                if (max_price - p_prev) / ((max_price + p_prev) * 0.5) * 100.0 > 0.01:
+                if p_prev != max_price and (max_price - p_prev) / ((max_price + p_prev) * 0.5) * 100.0 > 0.01:
                     return max_price
                 total = max_price + p_prev
                 count = 2
                 for i in range(len(sp) - 3, -1, -1):
                     price = sp[i]
-                    if price > 0.0 and (max_price - price) / ((max_price + price) * 0.5) * 100.0 <= 0.01:
+                    if price == max_price or (
+                        price > 0.0 and (max_price - price) / ((max_price + price) * 0.5) * 100.0 <= 0.01
+                    ):
                         total += price
                         count += 1
                     else:
@@ -527,7 +529,15 @@ class PriceWindow:
                 print("BED1")
                 return None, None
             min_price = self.get_min()
-            min_indices = [i for i, price in enumerate(self.prices) if u.are_close(price, min_price, 0.01)]
+            if min_price is not None and min_price > 0:
+                lo = min_price * (200.0 - 0.01) / (200.0 + 0.01) - 1e-12
+                hi = min_price * (200.0 + 0.01) / (200.0 - 0.01) + 1e-12
+                min_indices = [
+                    i for i, price in enumerate(self.prices)
+                    if lo <= price <= hi and u.are_close(price, min_price, 0.01)
+                ]
+            else:
+                min_indices = [i for i, price in enumerate(self.prices) if u.are_close(price, min_price, 0.01)]
             centroid_index = sum(min_indices) / len(min_indices) if min_indices else None
             return min_price, centroid_index
 
@@ -537,7 +547,15 @@ class PriceWindow:
                 print("BED2")
                 return None, None
             max_price = self.get_max()
-            max_indices = [i for i, price in enumerate(self.prices) if u.are_close(price, max_price, 0.01)]
+            if max_price is not None and max_price > 0:
+                lo = max_price * (200.0 - 0.01) / (200.0 + 0.01) - 1e-12
+                hi = max_price * (200.0 + 0.01) / (200.0 - 0.01) + 1e-12
+                max_indices = [
+                    i for i, price in enumerate(self.prices)
+                    if lo <= price <= hi and u.are_close(price, max_price, 0.01)
+                ]
+            else:
+                max_indices = [i for i, price in enumerate(self.prices) if u.are_close(price, max_price, 0.01)]
             centroid_index = sum(max_indices) / len(max_indices) if max_indices else None
             return max_price, centroid_index
 
@@ -615,7 +633,7 @@ class PriceWindow:
                 final_trend, growth_coefficient, slope_full, gradient_recent = instant_trend_from_prices(
                     prices_snapshot, self.sample_rate_sec)
 
-        if builtins.print.__name__ != "_dummy_print":
+        if getattr(builtins.print, "__name__", "") != "_dummy_print":
             print(
                 f"[{self.symbol}] slope_full={slope_full:.4f} "
                 f"gradient_recent={gradient_recent:.4f} (recent_n={self.recent_n}, rate={self.sample_rate_sec:.2f}s)"
@@ -623,7 +641,7 @@ class PriceWindow:
 
         return final_trend, growth_coefficient, slope_full, gradient_recent
 
-    # Alias retrocompatibil (vechiul nume).
+    # Backwards-compatible alias for the legacy method name.
     def get_trend(self):
         return self.get_instant_trend()
 
@@ -636,15 +654,24 @@ class PriceWindow:
           velocity: dy/dt at the end of the window (in % / min)
           acceleration: d^2y/dt^2 = 2*a (in % / min^2)
         """
-        with self._lock:
-            prices = list(self.prices)
-        if len(prices) < 3:
-            return 0.0, 0.0
-
         rate = max(float(self.sample_rate_sec or 1.0), 0.1)
-        if window_sec is not None and window_sec > 0:
-            n_samples = max(int(round(window_sec / rate)), 3)
-            prices = prices[-n_samples:]
+        n_samples = max(int(round(window_sec / rate)), 3) if (window_sec is not None and window_sec > 0) else None
+        with self._lock:
+            n_win = len(self.prices)
+            blen = len(self._trend_buf.prices)
+            if (
+                n_samples is not None
+                and blen >= n_win
+                and n_win > 0
+                and self._trend_buf.prices[blen - n_win] == self.prices[0]
+                and self._trend_buf.prices[-1] == self.prices[-1]
+            ):
+                take = min(n_samples, n_win)
+                prices = self._trend_buf.prices[-take:]
+            else:
+                prices = list(self.prices)
+                if n_samples is not None:
+                    prices = prices[-n_samples:]
         n = len(prices)
         if n < 3:
             return 0.0, 0.0
@@ -715,7 +742,7 @@ class WindowAnalyzer:
         price_diff_newest = max(price_diff_min, price_diff_max)
 
         if abs(price_diff_newest) >= threshold or u.are_close(price_diff_newest, threshold):
-            if builtins.print.__name__ != "_dummy_print":
+            if getattr(builtins.print, "__name__", "") != "_dummy_print":
                 _, min_index = w.get_min_and_index()
                 _, max_index = w.get_max_and_index()
                 print(f'price_diff_minmax_versus_newest(slope)={price_diff_newest}(threshold={threshold}) '

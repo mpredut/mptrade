@@ -181,7 +181,7 @@ def make_decision_logger(out_dir, clock, file_handle=None):
                 with open(path, "a", encoding="utf-8") as f:
                     f.write(line)
         except OSError as e:
-            print(f"[tradeall_backtest] eroare log_decision: {e}")
+            print(f"[tradeall_backtest] log_decision error: {e}")
     return _log_decision
 
 
@@ -269,7 +269,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                  trend_gate_max_wait_sec=3600.0):
     """threshold_provider is OPTIONAL (default None = the OLD behaviour, unchanged:
     uses the fixed ta.PRICE_CHANGE_THRESHOLD_EUR/_BIG_EUR). If given, it is a callable
-    threshold_provider(window_small, window_big) -> (thr_small, thr_big), apelat la
+    threshold_provider(window_small, window_big) -> (thr_small, thr_big), called on
     EVERY tick BEFORE check_price_change() — that way an experiment can test
     DYNAMIC thresholds (e.g. adaptive on volatility) without copying the whole loop
     (23 Jul: offline/research/tradeall_adaptive_thresholds/ had done exactly that before, with
@@ -280,7 +280,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     # tradeall_price_samples.log) are written with open(..., "a") (append), so without
     # this, a SECOND run with the SAME run_id would silently mix the old history with
     # the new one. Until now, every caller had to remember to do the
-    # shutil.rmtree() singur (offline/research/tradeall_trigger_gate/experiment_quality_
+    # shutil.rmtree() itself (offline/research/tradeall_trigger_gate/experiment_quality_
     # signal_v2.py did it by hand) — moved here once, for every caller.
     import shutil as _shutil
     _shutil.rmtree(out_dir, ignore_errors=True)
@@ -415,10 +415,18 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     
                 # SHADOW: the same call as in the live TrendCoordinator.evaluate, with a simulated clock.
                 try:
-                    shadow_fields = shadow.update(symbol, ts, price,
-                                                   epsilon=window_small.get_noise_epsilon(),
-                                                   big_prices=window_big.prices,
-                                                   big_sample_rate=window_big.sample_rate_sec)
+                    need_eps = (
+                        ts - shadow._last_fed.get(symbol, -1e18) >= shadow_signals.KALMAN_SAMPLE_SEC
+                        and len(shadow._fed_prices.get(symbol, ())) < 4
+                    )
+                    shadow_fields = shadow.update(
+                        symbol,
+                        ts,
+                        price,
+                        epsilon=window_small.get_noise_epsilon() if need_eps else 0.0,
+                        big_prices=window_big.prices,
+                        big_sample_rate=window_big.sample_rate_sec,
+                    )
                 except Exception:
                     shadow_fields = {}
     
@@ -517,11 +525,11 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--symbol", required=True)
-    p.add_argument("--start", required=True, help="YYYY-MM-DD — data de start a simularii")
-    p.add_argument("--end", default=None, help="YYYY-MM-DD (implicit: pana la capatul datelor salvate)")
+    p.add_argument("--start", required=True, help="YYYY-MM-DD — simulation start date")
+    p.add_argument("--end", default=None, help="YYYY-MM-DD (default: up to the end of saved data)")
     p.add_argument("--speed", choices=["real", "fast"], default="fast",
                    help="real = honour the historical intervals; fast = no waiting (the default)")
-    p.add_argument("--run-id", default=None, help="implicit: <symbol>_<start>_<timestamp>")
+    p.add_argument("--run-id", default=None, help="default: <symbol>_<start>_<timestamp>")
     p.add_argument("--source", choices=["history", "cache24"], default="history",
                    help="history = cache_price_*.jsonl (~11 months, but SPARSE, see the caveat in the plan); "
                         "cache24 = cache_24price_*.json, a DENSE resolution (~1s) but only what was retained "
@@ -529,10 +537,10 @@ def main():
                         "tradeall_price_archiver.py is already running)")
     p.add_argument("--cache24-file", default=None,
                    help="an explicit path to a cache24 file (e.g. cache_24price_long_BTCUSDC.jsonl); "
-                        "implicit: cachedb/cache_24price_<symbol>.json")
+                        "default: cachedb/cache_24price_<symbol>.json")
     p.add_argument("--quiet", action="store_true",
-                   help="suprima print()-urile zgomotoase ale tradeall.logic() (mult mai rapid pe "
-                        "date dense/lungi); mesajele de progres proprii raman vizibile")
+                   help="suppress noisy print() calls from tradeall.logic() (much faster on "
+                        "dense/long data); own progress messages remain visible")
     p.add_argument("--kalman-primary", action="store_true",
                    help="Kalman drives (BUY on ->UP, SELL likewise on ->DOWN); the old model only "
                         "journals. For an A/B on P&L against the normal run.")
@@ -542,7 +550,7 @@ def main():
                         "trend window. Default None = OFF (the old behaviour).")
     p.add_argument("--trend-gate-max-wait-sec", type=float, default=3600.0,
                    help="how long a delayed order waits at most before being placed anyway "
-                        "(implicit 3600 = valoarea live).")
+                        "(default 3600 = the live value).")
     args = p.parse_args()
 
     start_ts = datetime.strptime(args.start, "%Y-%m-%d").timestamp()

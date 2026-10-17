@@ -9,7 +9,7 @@ regressions over windows of MINUTES TO HOURS, recomputed on EVERY TICK — so
 noisy on the same time scale, however "large" the window sounds (2.5h).
 None of them was a GENUINE long-lived trend.
 
-Testam aici un semnal calitativ DIFERIT:
+We test a qualitatively DIFFERENT signal here:
   - LongTrendTracker: a linear regression over a window of `window_hours` hours
     (24h by default), but RECOMPUTED only once every `reeval_sec` (by default
     1800s = 30 min), not on every tick. That makes it STABLE for hours.
