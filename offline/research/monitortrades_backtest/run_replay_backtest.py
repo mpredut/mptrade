@@ -220,13 +220,15 @@ def run_symbol(
         hard_tp_touched = True
         if len(a) >= 2:
             snap = a[1]
-            g_ratio = getattr(snap, "gain_ratio", None)
-            if g_ratio is not None and g_ratio < min_hard_tp_gain_ratio:
-                min_hard_tp_gain_ratio = float(g_ratio)
             last_h = mt._hard_tp_last.get(getattr(snap, "symbol", symbol), 0)
             if last_h > 0:
                 hard_tp_cooldown_dts.append(float(snap.current_time_s - last_h))
-        return orig_eval_hard_tp(*a, **kw)
+        res = orig_eval_hard_tp(*a, **kw)
+        if res and len(a) >= 2:
+            g_ratio = getattr(a[1], "gain_ratio", None)
+            if g_ratio is not None and g_ratio < min_hard_tp_gain_ratio:
+                min_hard_tp_gain_ratio = float(g_ratio)
+        return res
 
     mt._evaluate_hard_take_profit = _tracked_eval_hard_tp
     mt.clear_position_stats_cache()
