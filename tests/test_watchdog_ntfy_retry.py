@@ -82,6 +82,7 @@ def test_alerts_only_after_sustained_cpu_use():
 
 def test_short_memory_spike_does_not_alert():
     with tempfile.TemporaryDirectory() as tmp, patch.object(wd, "STATE_FILE", os.path.join(tmp, "state")), \
+            patch.object(wd, "MEMORY_THRESHOLD_MB", 500), \
             patch.object(wd, "CONSECUTIVE", 3), patch.object(wd.wc, "alert") as alert:
         wd.check_once(now=0, total_ticks=1000, processes=_proc(rss=800), cpu_count=1)
         wd.check_once(now=120, total_ticks=1100, processes=_proc(ticks=101, rss=100), cpu_count=1)
@@ -90,6 +91,7 @@ def test_short_memory_spike_does_not_alert():
 
 def test_sustained_memory_use_alerts_and_then_recovers():
     with tempfile.TemporaryDirectory() as tmp, patch.object(wd, "STATE_FILE", os.path.join(tmp, "state")), \
+            patch.object(wd, "MEMORY_THRESHOLD_MB", 500), \
             patch.object(wd, "CONSECUTIVE", 2), patch.object(wd, "RECOVERY_CHECKS", 2), \
             patch.object(wd.wc, "alert") as alert:
         wd.check_once(now=0, total_ticks=1000, processes=_proc(rss=800), cpu_count=1)
@@ -117,6 +119,25 @@ def test_unmanaged_process_is_never_restarted():
             patch.object(wd.os, "kill") as kill:
         assert wd._restart_managed(proc, {}, 1000) is None
         kill.assert_not_called()
+
+
+def test_parse_proc_stat_handles_spaces_and_parens_in_comm():
+    # Fields after comm:
+    # 0:state 1..10:ppid..majflt 11:utime(140) 12:stime(60) 13..18:cutime..itrealvalue(0)
+    # 19:starttime(987654) 20:vsize(2147483648) 21:rss(4096)
+    after_fields = [
+        "S", "1", "100", "100", "0", "-1", "4194304",
+        "10", "0", "0", "0",
+        "140", "60",
+        "0", "0", "20", "0", "1", "0",
+        "987654", "2147483648", "4096", "18446744073709551615",
+    ]
+    stat_line = f"12345 (Web Content (2)) {' '.join(after_fields)}\n"
+    comm, start_time, ticks, rss_pages = wd._parse_proc_stat(stat_line)
+    assert comm == "Web Content (2)"
+    assert start_time == 987654
+    assert ticks == 200
+    assert rss_pages == 4096
 
 
 if __name__ == "__main__":

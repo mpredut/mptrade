@@ -164,7 +164,7 @@ def _validate_config():
     if len({threshold for threshold, _ in BUY_TIERS}) != len(BUY_TIERS):
         raise ValueError("AG_BUY_TIERS contains duplicate thresholds")
     if sum(allocation for _, allocation in BUY_TIERS) > 1.0 + 1e-12:
-        raise ValueError("suma ponderilor AG_BUY_TIERS depaseste 1")
+        raise ValueError("the AG_BUY_TIERS weights sum exceeds 1")
     if not SELL_TIERS or any(
             not math.isfinite(threshold) or threshold <= 0
             or not math.isfinite(allocation) or allocation <= 0
@@ -460,7 +460,7 @@ def _symbol_campaign(symbol, kind):
 
 def _save_symbol_campaign(symbol, kind, campaign):
     if kind not in {"buy", "sell"}:
-        raise ValueError(f"campanie AssetGuardian necunoscuta: {kind}")
+        raise ValueError(f"unknown AssetGuardian campaign: {kind}")
     root = _load_state_root()
     symbols_state = dict(root["symbols"])
     row = dict(symbols_state.get(symbol, {}))

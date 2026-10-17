@@ -5,7 +5,6 @@ import signal
 import time
 from pathlib import Path
 import sys
-import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 import watchdog_common as wc
 
@@ -46,9 +45,10 @@ def _fleet_scripts():
 
 def _managed_script(proc):
     parts = proc["command"].split()
+    scripts = _fleet_scripts()
     for part in parts[1:]:
         name = os.path.basename(part)
-        if name in _fleet_scripts():
+        if name in scripts:
             try:
                 if Path(f"/proc/{proc['pid']}/cwd").resolve() == ROOT.resolve():
                     return name
@@ -83,6 +83,26 @@ def _system_ticks():
     return sum(int(value) for value in fields)
 
 
+def _parse_proc_stat(stat_text: str) -> tuple[str, int, int, int]:
+    """Parse (comm, start_time, total_ticks, rss_pages) from /proc/<pid>/stat safely.
+
+    The comm field is enclosed in parentheses and may contain spaces or nested
+    parentheses. Splitting after the last ')' keeps all numeric field indices fixed:
+    after[0] is state (field 3), after[11] is utime (field 14), after[12] is stime
+    (field 15), after[19] is starttime (field 22), and after[21] is rss (field 24).
+    """
+    lparen = stat_text.find("(")
+    rparen = stat_text.rfind(")")
+    if lparen < 0 or rparen <= lparen:
+        raise ValueError("malformed /proc/stat line")
+    comm = stat_text[lparen + 1:rparen]
+    after = stat_text[rparen + 1:].split()
+    start_time = int(after[19])
+    ticks = int(after[11]) + int(after[12])
+    rss_pages = int(after[21])
+    return comm, start_time, ticks, rss_pages
+
+
 def _processes():
     result = {}
     page_size = os.sysconf("SC_PAGE_SIZE")
@@ -90,15 +110,15 @@ def _processes():
         if not entry.name.isdigit():
             continue
         try:
-            fields = (entry / "stat").read_text().split()
-            start_time = int(fields[21])
+            comm, start_time, ticks, rss_pages = _parse_proc_stat(
+                (entry / "stat").read_text()
+            )
             key = f"{entry.name}:{start_time}"
-            ticks = int(fields[13]) + int(fields[14])
-            rss_mb = int(fields[23]) * page_size / 1024 / 1024
+            rss_mb = rss_pages * page_size / 1024 / 1024
             command = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode(
                 errors="replace").strip()
             if not command:
-                command = fields[1].strip("()")
+                command = comm
             result[key] = {
                 "pid": int(entry.name), "ticks": ticks, "rss_mb": rss_mb,
                 "command": command[:180],

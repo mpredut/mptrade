@@ -54,23 +54,23 @@ def main() -> int:
             return None
 
     cash = _retry(get_cash)
-    print("============ CONT TRADING 212 ============")
+    print("============ TRADING 212 ACCOUNT ============")
     if cash:
         free = cash.get("free", 0); inv = cash.get("invested", 0)
         blk = cash.get("blocked") or 0; tot = cash.get("total", 0)
         ppl = cash.get("ppl", 0); pie = cash.get("pieCash", 0)
-        print(f"  INVESTIT (cost)   : {inv:>10.2f}")
-        print(f"  AVAILABLE (free): {free:>10.2f}   <- this is what you can place new orders with")
-        print(f"  BLOCKED            : {blk:>10.2f}   <- locked in pending or in-flight orders")
-        print(f"  cash in pie-uri   : {pie:>10.2f}")
-        print(f"  P&L nerealizat    : {ppl:>+10.2f}")
-        print(f"  TOTAL cont        : {tot:>10.2f}")
+        print(f"  INVESTED (cost)   : {inv:>10.2f}")
+        print(f"  AVAILABLE (free)  : {free:>10.2f}   <- this is what you can place new orders with")
+        print(f"  BLOCKED           : {blk:>10.2f}   <- locked in pending or in-flight orders")
+        print(f"  pie cash          : {pie:>10.2f}")
+        print(f"  unrealized P&L    : {ppl:>+10.2f}")
+        print(f"  TOTAL account     : {tot:>10.2f}")
     else:
         print("  ! cannot read the cash (rate limit or auth?)")
 
     # --- POSITIONS ---
     pf = _retry(c.get_portfolio) or []
-    print(f"\n  --- POZITII ({len(pf)}) ---")
+    print(f"\n  --- POSITIONS ({len(pf)}) ---")
     inv_sum = 0.0
     for p in pf:
         q = float(p.get("quantity", 0)); avg = float(p.get("averagePrice", 0))
@@ -79,7 +79,7 @@ def main() -> int:
         print(f"    {p.get('ticker',''):<14} qty {q:<8.3f} avg {avg:<9.2f} price {cur:<9.2f} "
               f"value {val:>9.2f}  P&L {float(ppl):>+8.2f}")
     if pf:
-        print(f"    (suma cost pozitii: {inv_sum:.2f})")
+        print(f"    (positions cost sum: {inv_sum:.2f})")
 
     # --- PENDING ORDERS that block cash ---
     orders = _retry(c.list_active_orders) or []

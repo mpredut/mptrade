@@ -38,7 +38,8 @@ def load_env():
 
 def load_state(state_file):
     try:
-        return json.load(open(state_file))
+        with open(state_file, "r", encoding="utf-8") as fh:
+            return json.load(fh)
     except Exception:
         return {}
 

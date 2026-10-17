@@ -53,7 +53,7 @@ def wait_for_launch(yahoo_symbol: str, label: str, interval: int = 60, *,
         # 'launched' means prior real-volume trading, even if the market is closed now.
         if m and m.get("launched"):
             now_open = "trading NOW" if m.get("trading") else f"the market is {m.get('state')}"
-            log(f">>> [{label}] DISPONIBIL pe {m.get('exchange')} ({now_open}) "
+            log(f">>> [{label}] AVAILABLE on {m.get('exchange')} ({now_open}) "
                 f"price={m.get('price')} {m.get('currency') or ''} <<<")
             if on_launch:
                 try:
@@ -65,6 +65,6 @@ def wait_for_launch(yahoo_symbol: str, label: str, interval: int = 60, *,
             log(f"    [{label}] ping — waiting for the launch | price={m.get('price')} "
                 f"vol={m.get('volume')} state={m.get('state')} age={m.get('age_min')}min")
         else:
-            log(f"    [{label}] ping — simbol indisponibil pe feed")
+            log(f"    [{label}] ping — symbol unavailable on feed")
         _wait(stop, interval)
     return False

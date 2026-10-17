@@ -56,7 +56,7 @@ class BotManager:
                 parts = line.split("|")
                 if len(parts) >= 7:
                     # pat | dir | start_cmd | label | hb_log | hb_stale_s | role
-                    pat, dr, cmd, label, hblog, hbstale, role = parts[:7]
+                    pat, dr, cmd, label, hblog, hbstale, role = [p.strip() for p in parts[:7]]
 
                     venv = self.venv
                     dr = dr.replace("$ROOT", ROOT_DIR)
@@ -64,8 +64,8 @@ class BotManager:
 
                     if cmd and role in ("bot", "fleet"):
                         name = label or pat
-                        hblog_str = hblog.strip().replace("$ROOT", ROOT_DIR) if hblog else ""
-                        hb_stale_sec = float(hbstale.strip()) if hbstale and hbstale.strip().isdigit() else 0.0
+                        hblog_str = hblog.replace("$ROOT", ROOT_DIR) if hblog else ""
+                        hb_stale_sec = float(hbstale) if hbstale and hbstale.isdigit() else 0.0
 
                         clean_stem = (label or pat).replace(".py", "")
                         log_file = os.path.join(ROOT_DIR, "logs", f"{clean_stem}.log")
@@ -187,6 +187,10 @@ class BotManager:
             try:
                 os.makedirs(os.path.dirname(abs_log_path), exist_ok=True)
                 log_fh = open(abs_log_path, "a", encoding="utf-8")
+                try:
+                    os.utime(abs_log_path, None)
+                except OSError:
+                    pass
                 self.log_files[name] = log_fh
             except Exception as e:
                 logging.error(f"Failed to open log {abs_log_path} for {name}: {e}")
@@ -252,6 +256,7 @@ class BotManager:
 
     async def restart_bot(self, name: str):
         await self.stop_bot(name)
+        self.restart_backoff[name] = 0
 
     async def shutdown(self):
         logging.info("Shutting down all bots gracefully...")
@@ -286,23 +291,29 @@ class BotManager:
 
         while self.running:
             await asyncio.sleep(10)
+            changed_paths = []
             for path in list(hashes.keys()):
                 curr = self._hash_file(path)
                 if curr and curr != hashes[path]:
                     logging.warning(f"Config {path} changed! Applying reload...")
                     hashes[path] = curr
-                    if path == procs_path:
-                        old_names = {b["name"] for b in self.bots}
-                        self.bots = self.parse_procs_conf()
-                        new_names = {b["name"] for b in self.bots}
-                        # Cleanly terminate bots removed from manifest
-                        for removed in (old_names - new_names):
-                            logging.info(f"Bot {removed} was removed from manifest. Stopping...")
-                            await self.stop_bot(removed)
-                            self.processes.pop(removed, None)
+                    changed_paths.append(path)
 
-                    for name in list(self.processes.keys()):
-                        await self.restart_bot(name)
+            if not changed_paths:
+                continue
+
+            if procs_path in changed_paths:
+                old_names = {b["name"] for b in self.bots}
+                self.bots = self.parse_procs_conf()
+                new_names = {b["name"] for b in self.bots}
+                # Cleanly terminate bots removed from manifest
+                for removed in (old_names - new_names):
+                    logging.info(f"Bot {removed} was removed from manifest. Stopping...")
+                    await self.stop_bot(removed)
+                    self.processes.pop(removed, None)
+
+            for name in list(self.processes.keys()):
+                await self.restart_bot(name)
 
     async def supervise(self):
         self.bots = self.parse_procs_conf()

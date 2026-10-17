@@ -8,7 +8,7 @@ not generate false alerts while the market is closed.
 
   python3 price_alert.py RGNT --below 4
   python3 price_alert.py NVDA --above 250 --topic alt-topic
-Cron (la 15 min):
+Cron (every 15 min):
   */15 * * * * cd ~/mptrade/212trading && python3 price_alert.py RGNT --below 4 >> price_alert.log 2>&1
 """
 from __future__ import annotations
@@ -60,13 +60,14 @@ def main() -> int:
 
     price = get_price_usd(args.symbol)
     if price is None:
-        log(f"  [{args.symbol}] price unavailable — sar"); return 0
+        log(f"  [{args.symbol}] price unavailable — skipping"); return 0
 
     state_path = args.state or os.path.join(_HERE, f".alert_{args.symbol}.json")
     st = {}
     if os.path.exists(state_path):
         try:
-            st = json.load(open(state_path))
+            with open(state_path, "r", encoding="utf-8") as fh:
+                st = json.load(fh)
         except (OSError, ValueError):
             st = {}
     armed = st.get("armed", True)
@@ -77,16 +78,16 @@ def main() -> int:
 
     # Re-arm with 5% hysteresis to avoid spam from oscillations around the threshold.
     if not hit:
-        if hit_below is False and args.below is not None and price > args.below * 1.05:
-            armed = True
-        if hit_above is False and args.above is not None and price < args.above * 0.95:
+        below_clear = args.below is None or price > args.below * 1.05
+        above_clear = args.above is None or price < args.above * 0.95
+        if below_clear and above_clear:
             armed = True
 
     if hit and armed:
         cond = f"<= {args.below}" if hit_below else f">= {args.above}"
-        title = f"{args.symbol} la {price:.2f} ({cond})"
+        title = f"{args.symbol} at {price:.2f} ({cond})"
         body = f"{args.symbol} = {price:.2f} USD — threshold {cond} reached. Manual buying zone."
-        log(f"  [{args.symbol}] ALERTA: {price:.2f} {cond}")
+        log(f"  [{args.symbol}] ALERT: {price:.2f} {cond}")
         push(topic, title, body)
         armed = False
     else:
