@@ -375,7 +375,15 @@ def _run_once(
     if cash is not None:
         result["funding"] = {"initial_cash": initial_cash, "final_cash": rounded(cash),
                              "minimum_cash": rounded(min_cash), "refused_buys": cash_refusals}
+    global _LAST_REPLAY_DIAG
+    _LAST_REPLAY_DIAG = {
+        "max_active_surge_vol": strategy._max_active_surge_vol,
+        "surge_win_check_ts": tuple(strategy._surge_win_check_ts),
+    }
     return result
+
+
+_LAST_REPLAY_DIAG: dict = {}
 
 
 def make_spot_replay_adapter(

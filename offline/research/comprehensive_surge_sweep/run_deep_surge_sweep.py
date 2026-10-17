@@ -240,6 +240,196 @@ def evaluate_single_candidate(
     }
 
 
+from strategies import spot_replay as _spot_replay
+
+
+def _run_slice_replay(
+    run_ohlc: list[tuple[float, float, float, float]],
+    warmup_ohlc: list[tuple[float, float, float, float]],
+    params: strat.StratParams,
+    initial_cash: float,
+    fee_pct: float,
+) -> tuple[tuple[float, float, int], float, tuple[float, ...]]:
+    res = run_replay(
+        ohlc=run_ohlc,
+        params=params,
+        fee_pct=fee_pct,
+        bar_minutes=240.0,
+        warmup_ohlc=warmup_ohlc,
+        initial_cash=initial_cash,
+    )
+    metrics = (
+        float(res.get("total", 0.0)),
+        float(res.get("max_drawdown_pct", 0.0)),
+        int(res.get("cycles", 0)),
+    )
+    diag = _spot_replay._LAST_REPLAY_DIAG
+    return (
+        metrics,
+        float(diag.get("max_active_surge_vol", float("inf"))),
+        tuple(diag.get("surge_win_check_ts", ())),
+    )
+
+
+def _win_move_at_ts(
+    all_closes: list[float],
+    warmup_n: int,
+    ts: float,
+    w_hours: float,
+) -> float | None:
+    bar_idx = int(round(ts / (240.0 * 60.0)))
+    nb = max(1, round(w_hours / 4.0))
+    idx = warmup_n + bar_idx
+    if idx < nb or idx >= len(all_closes):
+        return None
+    past_p = all_closes[idx - nb]
+    if past_p <= 0:
+        return None
+    return (all_closes[idx] - past_p) / past_p * 100.0
+
+
+def evaluate_candidate_group(
+    group: list[dict[str, Any]],
+    asset_data: dict[str, list[tuple[float, float, float, float]]],
+    initial_cash: float,
+    fee_pct: float,
+) -> list[dict[str, Any]]:
+    """Evaluate a group of candidates sharing (surge_guard, surge_move_pct, surge_exit_pullback_pct, reentry_bear_bounce_pct)."""
+    if len(group) <= 1:
+        return [evaluate_single_candidate(c, asset_data, initial_cash, fee_pct) for c in group]
+
+    p0 = group[0]["params"]
+    if not p0.surge_guard:
+        return [evaluate_single_candidate(c, asset_data, initial_cash, fee_pct) for c in group]
+
+    g = float(p0.surge_move_pct)
+    fixed_cands = [c for c in group if not c["params"].surge_dynamic]
+    dyn_cands = [c for c in group if c["params"].surge_dynamic]
+    c_w72 = next((c for c in fixed_cands if float(c["params"].surge_window_hours) == 72.0), None)
+    if c_w72 is None:
+        return [evaluate_single_candidate(c, asset_data, initial_cash, fee_pct) for c in group]
+
+    # Per-candidate accumulators
+    acc = {
+        c["id"]: {
+            "total_profit": 0.0,
+            "worst_maxdd": 0.0,
+            "total_cycles": 0,
+            "h1_profits": 0.0,
+            "h2_profits": 0.0,
+            "asset_profits": {},
+            "asset_maxdds": {},
+        }
+        for c in group
+    }
+
+    with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink):
+        for asset, ohlc in asset_data.items():
+            if not ohlc or len(ohlc) < 60:
+                continue
+            warmup_n = min(30, len(ohlc) // 5)
+            warmup_ohlc = ohlc[:warmup_n]
+            run_ohlc = ohlc[warmup_n:]
+            half_idx = len(run_ohlc) // 2
+            ohlc_h1 = run_ohlc[:half_idx]
+            ohlc_h2 = run_ohlc[half_idx:]
+            warmup_h2 = ohlc_h1[-warmup_n:] if len(ohlc_h1) >= warmup_n else warmup_ohlc
+
+            slices = (
+                ("full", warmup_ohlc, run_ohlc),
+                ("h1", warmup_ohlc, ohlc_h1),
+                ("h2", warmup_h2, ohlc_h2),
+            )
+
+            for sname, w_ohlc, s_ohlc in slices:
+                all_closes = [bar[3] for bar in w_ohlc] + [bar[3] for bar in s_ohlc]
+                wn = len(w_ohlc)
+                res_w72, max_vol_w72, win_ts_w72 = _run_slice_replay(
+                    s_ohlc, w_ohlc, c_w72["params"], initial_cash, fee_pct
+                )
+                slice_results: dict[str, tuple[float, float, int]] = {c_w72["id"]: res_w72}
+
+                # Evaluate other fixed windows (48h, 96h) using window-move invariance on win_ts_w72
+                for fc in fixed_cands:
+                    if fc["id"] == c_w72["id"]:
+                        continue
+                    w_h = float(fc["params"].surge_window_hours)
+                    same_win = all(
+                        ((_win_move_at_ts(all_closes, wn, ts, w_h) or -1.0) >= g)
+                        == ((_win_move_at_ts(all_closes, wn, ts, 72.0) or -1.0) >= g)
+                        for ts in win_ts_w72
+                    )
+                    if same_win:
+                        slice_results[fc["id"]] = res_w72
+                    else:
+                        res_fc, _, _ = _run_slice_replay(
+                            s_ohlc, w_ohlc, fc["params"], initial_cash, fee_pct
+                        )
+                        slice_results[fc["id"]] = res_fc
+
+                # Evaluate dynamic candidates grouped by vol_multiplier
+                by_mult: dict[float, list[dict[str, Any]]] = {}
+                for dc in dyn_cands:
+                    by_mult.setdefault(float(dc["params"].surge_vol_multiplier), []).append(dc)
+
+                for mult, m_cands in by_mult.items():
+                    if max_vol_w72 * mult <= g:
+                        for dc in m_cands:
+                            slice_results[dc["id"]] = res_w72
+                        continue
+                    m_cands.sort(key=lambda x: float(x["params"].surge_max_gain_pct), reverse=True)
+                    cached_res = None
+                    cached_req = float("inf")
+                    for dc in m_cands:
+                        mx = float(dc["params"].surge_max_gain_pct)
+                        if cached_res is not None and mx >= cached_req:
+                            slice_results[dc["id"]] = cached_res
+                        else:
+                            res_dc, dyn_max_vol, _ = _run_slice_replay(
+                                s_ohlc, w_ohlc, dc["params"], initial_cash, fee_pct
+                            )
+                            slice_results[dc["id"]] = res_dc
+                            cached_res = res_dc
+                            cached_req = dyn_max_vol * mult
+
+                # Record slice outcomes for all candidates in the group
+                for c in group:
+                    pnl, dd, cyc = slice_results[c["id"]]
+                    ca = acc[c["id"]]
+                    if sname == "full":
+                        ca["total_profit"] += pnl
+                        ca["worst_maxdd"] = max(ca["worst_maxdd"], dd)
+                        ca["total_cycles"] += cyc
+                        ca["asset_profits"][asset] = round(pnl, 2)
+                        ca["asset_maxdds"][asset] = round(dd, 2)
+                    elif sname == "h1":
+                        ca["h1_profits"] += pnl
+                    else:
+                        ca["h2_profits"] += pnl
+
+    out = []
+    for c in group:
+        ca = acc[c["id"]]
+        tp = ca["total_profit"]
+        wdd = ca["worst_maxdd"]
+        pnl_per_dd = (tp / wdd) if wdd > 0 else 0.0
+        out.append({
+            "id": c["id"],
+            "category": c["category"],
+            "desc": c["desc"],
+            "strategy_params": dataclasses.asdict(c["params"]),
+            "total_profit_usd": round(tp, 2),
+            "worst_maxdd_pct": round(wdd, 2),
+            "pnl_per_drawdown_point": round(pnl_per_dd, 2),
+            "total_cycles": ca["total_cycles"],
+            "h1_profit_usd": round(ca["h1_profits"], 2),
+            "h2_profit_usd": round(ca["h2_profits"], 2),
+            "asset_profits": ca["asset_profits"],
+            "asset_maxdds": ca["asset_maxdds"],
+        })
+    return out
+
+
 _WORKER_STATE: dict[str, Any] = {}
 
 
@@ -256,6 +446,15 @@ def _init_worker(
 def _evaluate_worker_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     return evaluate_single_candidate(
         candidate,
+        _WORKER_STATE["asset_data"],
+        _WORKER_STATE["initial_cash"],
+        _WORKER_STATE["fee_pct"],
+    )
+
+
+def _evaluate_worker_group(group: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return evaluate_candidate_group(
+        group,
         _WORKER_STATE["asset_data"],
         _WORKER_STATE["initial_cash"],
         _WORKER_STATE["fee_pct"],
@@ -320,35 +519,56 @@ def main():
             print(f"Error on {wc['id']}: {exc}")
         completed += 1
 
+    groups_by_key: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for c in candidates[len(warmup_cands):]:
+        p = c["params"]
+        if not p.surge_guard or c["category"] not in ("Fixed", "Dynamic"):
+            gkey = ("single", c["id"])
+        else:
+            gkey = ("group", float(p.surge_move_pct), float(p.surge_exit_pullback_pct), float(p.reentry_bear_bounce_pct))
+        groups_by_key.setdefault(gkey, []).append(c)
+
+    all_groups = list(groups_by_key.values())
+    if all_groups:
+        dyn_grp_idx = next(
+            (i for i, grp in enumerate(all_groups) if any(c["params"].surge_dynamic for c in grp)),
+            0,
+        )
+        first_grp = all_groups.pop(dyn_grp_idx)
+        try:
+            results.extend(evaluate_candidate_group(first_grp, asset_data, initial_cash, args.fee_pct))
+        except Exception as exc:
+            print(f"Error on group {first_grp[0]['id']}: {exc}")
+        completed += len(first_grp)
+
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=args.workers,
         initializer=_init_worker,
         initargs=(asset_data, initial_cash, args.fee_pct),
     ) as executor:
         future_map = {
-            executor.submit(_evaluate_worker_candidate, c): c
-            for c in candidates[len(warmup_cands):]
+            executor.submit(_evaluate_worker_group, grp): grp
+            for grp in all_groups
         }
 
         for future in concurrent.futures.as_completed(future_map):
-            cand = future_map[future]
+            grp = future_map[future]
             try:
-                res = future.result()
-                results.append(res)
+                grp_res = future.result()
+                results.extend(grp_res)
             except Exception as exc:
-                print(f"Error on {cand['id']}: {exc}")
-            completed += 1
-            if completed % 20 == 0 or completed == total_cands:
-                elapsed = time.time() - t0
-                rate = completed / elapsed if elapsed > 0 else 0
-                eta_s = (total_cands - completed) / rate if rate > 0 else 0
-                top_pnl = max(r["total_profit_usd"] for r in results) if results else 0.0
-                print(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] Progress: {completed}/{total_cands} "
-                    f"({completed/total_cands*100:.1f}%) | {rate:.1f} cand/s | ETA: {eta_s/60:.1f}m | "
-                    f"Best PnL so far: ${top_pnl:.2f}",
-                    flush=True,
-                )
+                print(f"Error on group {grp[0]['id']}: {exc}")
+            completed += len(grp)
+            elapsed = time.time() - t0
+            rate = completed / elapsed if elapsed > 0 else 0
+            eta_s = (total_cands - completed) / rate if rate > 0 else 0
+            top_pnl = max(r["total_profit_usd"] for r in results) if results else 0.0
+            print(
+                f"[{datetime.now().strftime('%H:%M:%S')}] Progress: {completed}/{total_cands} "
+                f"({completed/total_cands*100:.1f}%) | {rate:.1f} cand/s | ETA: {eta_s/60:.1f}m | "
+                f"Best PnL so far: ${top_pnl:.2f}",
+                flush=True,
+            )
 
     total_time = time.time() - t0
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Sweep completed in {total_time/60:.1f} minutes.")

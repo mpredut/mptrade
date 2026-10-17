@@ -518,6 +518,8 @@ class Strategy:
             if replay_mode and params.surge_guard and params.surge_window_hours > 0
             and params.surge_move_pct > 0 else None
         )
+        self._max_active_surge_vol = 0.0
+        self._surge_win_check_ts: list[float] = []
         # Pair precision normalized by the provider.
         try:
             precision = client.pair_precision(pair)
@@ -1684,7 +1686,11 @@ class Strategy:
             val = None
         else:
             mean_r = sum(returns) / n_r
-            var_r = sum((r - mean_r) ** 2 for r in returns) / (n_r - 1)
+            var_r = 0.0
+            for r in returns:
+                diff = r - mean_r
+                var_r += diff * diff
+            var_r /= (n_r - 1)
             std = math.sqrt(var_r)
             val = std * math.sqrt(60.0 / interval_minutes) * 100.0
         if len(Strategy._HOURLY_VOL_CACHE) >= Strategy._REPLAY_CACHE_MAX:
@@ -1863,12 +1869,36 @@ class Strategy:
         if self.p.surge_guard:
             surge_peak = max(self.s.get("surge_peak") or price, price)
             self.s["surge_peak"] = surge_peak
-            eff_surge_gain = (
-                self._effective_surge_gain_pct()
-                if self.p.surge_dynamic else self.p.surge_gain_pct
-            )
             peak_gain = (surge_peak - avg) / avg * 100.0
             is_armed = bool(self.s.get("surge_active"))
+            min_g = (
+                min(self.p.surge_min_gain_pct, self.p.surge_max_gain_pct, self.p.surge_gain_pct)
+                if self.p.surge_dynamic else self.p.surge_gain_pct
+            )
+            in_min_surge_zone = (
+                is_armed
+                or (min_g > 0 and peak_gain >= min_g)
+                or (self.p.surge_move_pct > 0 and current_gain >= min_g * 0.8)
+            )
+            if self.replay_mode and in_min_surge_zone:
+                v = self._trail_vol_1h()
+                if v is not None and v > self._max_active_surge_vol:
+                    self._max_active_surge_vol = v
+            if (
+                self.p.surge_dynamic
+                and not in_min_surge_zone
+                and min_g > 0
+                and type(self)._effective_surge_gain_pct is Strategy._effective_surge_gain_pct
+                and "_effective_surge_gain_pct" not in self.__dict__
+                and type(self)._trail_vol_1h is Strategy._trail_vol_1h
+                and "_trail_vol_1h" not in self.__dict__
+            ):
+                eff_surge_gain = min_g
+            else:
+                eff_surge_gain = (
+                    self._effective_surge_gain_pct()
+                    if self.p.surge_dynamic else self.p.surge_gain_pct
+                )
             if (
                 is_armed
                 or (eff_surge_gain > 0 and peak_gain >= eff_surge_gain)
@@ -1876,8 +1906,10 @@ class Strategy:
             ):
                 window_move = self._surge_window_move_pct(
                     price, None if self.replay_mode else closes)
+                pos_surged = eff_surge_gain > 0 and (current_gain >= eff_surge_gain or peak_gain >= eff_surge_gain)
+                if self.replay_mode and not pos_surged and self.p.surge_move_pct > 0 and current_gain >= eff_surge_gain * 0.8:
+                    self._surge_win_check_ts.append(tick_time if tick_time is not None else self._now())
                 if not is_armed:
-                    pos_surged = eff_surge_gain > 0 and (current_gain >= eff_surge_gain or peak_gain >= eff_surge_gain)
                     win_surged = (
                         window_move is not None
                         and self.p.surge_move_pct > 0
@@ -2108,7 +2140,26 @@ class Strategy:
                 or self.p.slow_grind_guard
             )
         )
-        if needs_regime:
+        if needs_regime and not (
+            self.replay_mode
+            and "_regime_context" not in self.__dict__
+            and "_trend_closes" not in self.__dict__
+            and type(self._regime_service) is MarketRegimeService
+            and "evaluate_closes_for_horizon" not in self._regime_service.__dict__
+            and (
+                (
+                    self.p.trend_overlay
+                    and bool(self.s.get("trend_mode"))
+                    and not self.p.trend_exit_break
+                    and not self.p.slow_grind_guard
+                )
+                or (
+                    not self.p.trend_overlay
+                    and held <= 1e-12
+                    and self._has_open("buy")
+                )
+            )
+        ):
             regime, regime_closes = self._regime_context()
 
         # Combine range DCA/TP with trend hold/trailing behavior.

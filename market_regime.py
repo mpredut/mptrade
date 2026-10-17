@@ -1072,7 +1072,7 @@ class MarketRegimeService:
         needed = max(3, int(math.ceil(float(window_seconds) / (int(interval_min) * 60))))
         try:
             seq = closes if isinstance(closes, (list, tuple)) else list(closes)
-            values = tuple(float(value) for value in seq[-needed:])
+            values = tuple([float(value) for value in seq[-needed:]])
         except (TypeError, ValueError, OverflowError):
             return self.evaluator.unknown("invalid_ohlc")
         n = len(values)
@@ -1084,8 +1084,9 @@ class MarketRegimeService:
         if cached is not None:
             return cached
 
-        if any(not math.isfinite(value) or value <= 0 for value in values):
-            return self.evaluator.unknown("non_finite_ohlc")
+        for value in values:
+            if not math.isfinite(value) or value <= 0:
+                return self.evaluator.unknown("non_finite_ohlc")
 
         base = values[0]
         inv_base = 1.0 / base
@@ -1093,12 +1094,15 @@ class MarketRegimeService:
         x_mean = (n - 1) / 2.0
         y_mean = sum(y) / n
         sxx = n * (n * n - 1) / 12.0
-        slope = sum((i - x_mean) * (value - y_mean)
-                    for i, value in enumerate(y)) / sxx
+        sxy = 0.0
+        for i, value in enumerate(y):
+            sxy += (i - x_mean) * (value - y_mean)
+        slope = sxy / sxx
         intercept = y_mean - slope * x_mean
-        residual_sq = sum(
-            (value - (intercept + slope * i)) ** 2
-            for i, value in enumerate(y))
+        residual_sq = 0.0
+        for i, value in enumerate(y):
+            diff = value - (intercept + slope * i)
+            residual_sq += diff * diff
         slope_error = math.sqrt(max(0.0, residual_sq) / max(1, n - 2) / sxx)
         epsilon = max(slope_error, 1e-12)
         decision = self.evaluator.evaluate({
