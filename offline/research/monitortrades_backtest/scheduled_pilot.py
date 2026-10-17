@@ -154,6 +154,27 @@ def _num_str(x):
 
 
 _SERIES_SPLIT_CACHE: dict[str, tuple[list, list]] = {}
+_RUN_ONE_CACHE: dict[tuple, dict | None] = {}
+
+
+def _norm_params_key(params: dict) -> tuple:
+    items = []
+    for k, v in sorted(params.items()):
+        try:
+            items.append((k, float(v)))
+        except (TypeError, ValueError):
+            items.append((k, str(v)))
+    return tuple(items)
+
+
+def _run_one_cache_key(symbol: str, params: dict, series: list) -> tuple:
+    return (
+        str(symbol),
+        _norm_params_key(params),
+        len(series),
+        series[0] if series else None,
+        series[-1] if series else None,
+    )
 
 
 def _split_series(symbol):
@@ -166,6 +187,9 @@ def _split_series(symbol):
     series = load_price_series(path, symbol)
     mid = len(series) // 2
     res = (series[:mid], series[mid:])
+    if hasattr(rb, "prewarm_trend_series"):
+        rb.prewarm_trend_series(symbol, res[0])
+        rb.prewarm_trend_series(symbol, res[1])
     _SERIES_SPLIT_CACHE[symbol] = res
     return res
 
@@ -173,8 +197,26 @@ def _split_series(symbol):
 def _run_one(symbol, base, params, series):
     """Run the canonical replay backtest (run_replay_backtest.run_symbol) over a
     pre-sliced in-memory series without writing pnl.json."""
+    if not series:
+        return None
+    ck = _run_one_cache_key(symbol, params, series)
+    if ck in _RUN_ONE_CACHE:
+        cached = _RUN_ONE_CACHE[ck]
+        return dict(cached) if cached is not None else None
     res = rb.run_symbol(symbol, params, base, quiet=True, series=series)
-    return {"net": res["net"], "buy_hold": res["buy_hold"]} if res else None
+    out = {"net": res["net"], "buy_hold": res["buy_hold"]} if res else None
+    _RUN_ONE_CACHE[ck] = out
+    return dict(out) if out is not None else None
+
+
+def _eval_symbol_baseline(symbol: str, base: str):
+    half1, half2 = _split_series(symbol)
+    if len(half1) < 100 or len(half2) < 100:
+        return symbol, None, None, None
+    base_params = dict(rb.SYMBOLS[symbol]["params"])
+    r1 = _run_one(symbol, base, base_params, half1)
+    r2 = _run_one(symbol, base, base_params, half2)
+    return symbol, base_params, r1, r2
 
 
 def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
@@ -354,7 +396,12 @@ def main():
     lock_file = None
     try:
         import fcntl
-        lock_file = open("/tmp/mptrade_scheduled_pilot.lock", "w", encoding="utf-8")
+        lock_path = (
+            "/tmp/mptrade_scheduled_pilot_dryrun.lock"
+            if (args.dry_run and not args.propose)
+            else "/tmp/mptrade_scheduled_pilot.lock"
+        )
+        lock_file = open(lock_path, "w", encoding="utf-8")
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         sys.stderr.write("[scheduled_pilot] Another instance is already running -- exiting\n")
@@ -375,15 +422,29 @@ def main():
         print(f"[scheduled_pilot] no key contains '{args.only}' -- leaving")
         return
 
-    # Preload price series once in parent process so forked workers share them via COW.
-    for sym in sorted({sym for sym, _base, _key in keys.values()}):
+    # Preload price series and trend tapes once in parent process so forked workers share them via COW.
+    unique_sym_base = sorted({(sym, base) for sym, base, _key in keys.values()})
+    for sym, _base in unique_sym_base:
         _split_series(sym)
+
+    # Precompute baseline (base_params) once per symbol across workers so the 6-7 keys per symbol
+    # reuse the cached baseline instead of re-running base_params 23 redundant times.
+    max_workers = min(len(keys), os.cpu_count() or 2)
+    with _futures.ProcessPoolExecutor(max_workers=min(len(unique_sym_base), max_workers)) as pre_ex:
+        for sym, base_params, r1, r2 in pre_ex.map(
+            _eval_symbol_baseline,
+            [s for s, _ in unique_sym_base],
+            [b for _, b in unique_sym_base],
+        ):
+            if base_params is not None:
+                half1, half2 = _split_series(sym)
+                _RUN_ONE_CACHE[_run_one_cache_key(sym, base_params, half1)] = r1
+                _RUN_ONE_CACHE[_run_one_cache_key(sym, base_params, half2)] = r2
 
     # Independent keys => run in PARALLEL (ProcessPoolExecutor). Fork on Linux =>
     # each key has its own rb.mt (so the is_trend_up monkeypatch from _run_one
     # stays isolated per process). The audit and the proposals are collected in the parent (no race).
     proposals = []
-    max_workers = min(len(keys), os.cpu_count() or 2)
     # stderr (not print/stdout): disable_print() plus the ProcessPool buffering swallow
     # the parent's stdout; the per-value lines already use sys.stderr.write and show up correctly.
     sys.stderr.write(f"[scheduled_pilot] {len(keys)} keys on {max_workers} parallel workers\n")

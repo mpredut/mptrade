@@ -83,6 +83,70 @@ class _LiveSymbols:
 
 SYMBOLS = _LiveSymbols()
 
+_TREND_TAPE_CACHE: dict[tuple, tuple[bool, ...]] = {}
+
+
+def _series_cache_key(symbol: str, series: list, trend_window_seconds: float) -> tuple:
+    return (
+        str(symbol),
+        len(series),
+        series[0] if series else None,
+        series[-1] if series else None,
+        float(trend_window_seconds),
+    )
+
+
+def prewarm_trend_series(
+    symbol: str,
+    series: list,
+    trend_window_seconds: float = DEFAULT_WINDOW_SECONDS,
+) -> tuple[bool, ...]:
+    """Precompute and cache the deterministic is_trend_up boolean sequence for series."""
+    if not series:
+        return ()
+    key = _series_cache_key(symbol, series, trend_window_seconds)
+    cached = _TREND_TAPE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    import pricewindow as pw
+    buf = pw.IncrementalTrendBuffer()
+    win_sec = float(trend_window_seconds)
+    win_size = 200
+    sample_rate = pw.DEFAULT_SAMPLE_RATE_SEC
+    cur_len = 0
+    prev_ts = None
+    tape: list[bool] = []
+    for ts, px in series:
+        if prev_ts is not None and ts > prev_ts:
+            rate = ts - prev_ts
+            if rate > 0:
+                sample_rate = rate
+                new_size = max(10, int(win_sec / rate))
+                if new_size != win_size:
+                    win_size = new_size
+                    if cur_len > new_size:
+                        cur_len = new_size
+        prev_ts = ts
+        if cur_len >= win_size:
+            cur_len = win_size
+        else:
+            cur_len += 1
+        buf.append(px)
+        blen = len(buf.prices)
+        if blen - cur_len >= max(512, win_size):
+            buf.trim_front(blen - cur_len)
+            blen = len(buf.prices)
+        if cur_len < 2:
+            tape.append(False)
+        else:
+            ft, _gc, _sf, gr, _ = buf.eval_slice(
+                blen - cur_len, blen - 1, sample_rate_sec=sample_rate, eps_k=1.0
+            )
+            tape.append(gr > 0 or (gr == 0 and ft > 0))
+    res = tuple(tape)
+    _TREND_TAPE_CACHE[key] = res
+    return res
+
 
 def run_symbol(
     symbol,
@@ -121,10 +185,19 @@ def run_symbol(
     # and fixed live in cacheManager.py; tradeall.py ALWAYS runs live, so
     # the signal is always available, just as it is here). trend_window_seconds is parameterised
     # for A/B tests on another horizon (instant/medium/long), without changing the default.
-    trend_source = ReplayTrendSource([symbol], window_seconds=trend_window_seconds)
+    tape_key = _series_cache_key(symbol, series, trend_window_seconds)
+    cached_tape = _TREND_TAPE_CACHE.get(tape_key)
+    trend_source = None if cached_tape is not None else ReplayTrendSource([symbol], window_seconds=trend_window_seconds)
+    recorded_tape: list[bool] = []
+    tick_idx = 0
+
+    def _replay_is_trend_up(sym, window_seconds=None, now=None):
+        if cached_tape is not None and sym == symbol and window_seconds is None:
+            return cached_tape[tick_idx]
+        return trend_source.is_trend_up(sym, window_seconds=window_seconds, now=now)
 
     orig_is_trend_up = mt.is_trend_up
-    mt.is_trend_up = trend_source.is_trend_up
+    mt.is_trend_up = _replay_is_trend_up
     orig_get_vol = mt.get_symbol_volatility_1h
     mt.get_symbol_volatility_1h = lambda s: None
     orig_persist = mt._MT_PERSISTENCE_ENABLED
@@ -139,7 +212,9 @@ def run_symbol(
         if first_price is None:
             return None
         last_price = first_price
-        trend_source.advance(symbol, provider.now(symbol), first_price)
+        if trend_source is not None:
+            trend_source.advance(symbol, provider.now(symbol), first_price)
+            recorded_tape.append(bool(trend_source.is_trend_up(symbol)))
         provider.place_order(symbol, "BUY", first_price, SEED_NOTIONAL_USD / first_price)
         n_seeds = 1
         n_ticks = 0
@@ -153,9 +228,12 @@ def run_symbol(
                 break
             last_price = price
             n_ticks += 1
+            tick_idx = n_ticks
             # Feed the trend window BEFORE the decision — that way the signal
             # it reflects only what would have been visible up to this tick (no look-ahead).
-            trend_source.advance(symbol, provider.now(symbol), price)
+            if trend_source is not None:
+                trend_source.advance(symbol, provider.now(symbol), price)
+                recorded_tape.append(bool(trend_source.is_trend_up(symbol)))
 
             open_qty, _ = provider.position(symbol)
             if open_qty > 0:
@@ -180,6 +258,8 @@ def run_symbol(
 
             if from_disk and n_ticks % 20000 == 0:
                 sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
+        if cached_tape is None and len(recorded_tape) == len(series):
+            _TREND_TAPE_CACHE[tape_key] = tuple(recorded_tape)
     finally:
         if quiet:
             try:

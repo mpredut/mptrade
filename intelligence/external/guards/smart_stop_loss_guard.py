@@ -105,13 +105,13 @@ def _save_grace_state() -> None:
 
 
 def _is_simulated_provider(provider: Optional[str]) -> bool:
+    if provider and str(provider).strip().lower() in (
+        "replay", "backtest", "sim", "mock", "paper_sim", "test",
+    ):
+        return True
     if os.environ.get("REPLAY_MODE") in ("1", "true", "yes") or os.environ.get("BACKTEST_MODE") in ("1", "true", "yes"):
         return True
-    if not provider:
-        return False
-    return str(provider).strip().lower() in (
-        "replay", "backtest", "sim", "mock", "paper_sim", "test",
-    )
+    return False
 
 
 def _send_ntfy_alert(title: str, body: str, symbol: str) -> None:
