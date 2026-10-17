@@ -212,10 +212,13 @@ def _run_once(
 
         default_dca_drop = params.dca_drop_pct
         default_reentry_drop = params.reentry_drop_pct
+        check_ttl = bar_minutes is None or bar_minutes >= params.order_ttl_min
+        bar_step_sec = bar_minutes * 60 if bar_minutes else 1
+        side_order = execution.side_order()
 
         for bar_index, (open_, high, low, close) in enumerate(ohlc):
             current_bar = bar_index
-            replay_time = bar_index * bar_minutes * 60 if bar_minutes else bar_index
+            replay_time = bar_index * bar_step_sec
             strategy.set_simulated_time(replay_time)
             if dca_drop_series is not None and bar_index < len(dca_drop_series):
                 drop_val = dca_drop_series[bar_index]
@@ -230,78 +233,74 @@ def _run_once(
                 else:
                     strategy.p.reentry_drop_pct = default_reentry_drop
 
-            def eligible(order: dict) -> bool:
-                if order.get("market"):
-                    return True
-                return execution.limit_touched(
-                    order["side"], high=high, low=low, limit=order["price"],
-                )
+            orders = strategy.s["orders"]
+            if orders:
+                eligible_orders = [
+                    o for o in orders
+                    if o.get("market") or execution.limit_touched(
+                        o["side"], high=high, low=low, limit=o["price"],
+                    )
+                ]
+                if eligible_orders:
+                    if len(eligible_orders) > 1 and {"buy", "sell"}.issubset(
+                        {o["side"].lower() for o in eligible_orders}
+                    ):
+                        ambiguous_bars += 1
 
-            eligible_sides = {
-                order["side"].lower()
-                for order in strategy.s["orders"]
-                if eligible(order)
-            }
-            if {"buy", "sell"}.issubset(eligible_sides):
-                ambiguous_bars += 1
-
-            for side in execution.side_order():
-                for order in list(strategy.s["orders"]):
-                    if order not in strategy.s["orders"] or order["side"] != side:
-                        continue
-                    if not eligible(order):
-                        continue
-                    market = bool(order.get("market"))
-                    fill_order, volume, complete = split_order_fill(
-                        order,
-                        quantity_key="vol",
-                        amount_key="amount" if side == "buy" else None,
-                        ratio=execution.partial_fill_ratio,
-                        force_full=market,
-                    )
-                    if complete:
-                        strategy._remove(order)
-                    price = (
-                        execution.market_price(side, open_)
-                        if market else float(order["price"])
-                    )
-                    if side == "sell":
-                        volume = min(volume, strategy.s["qty"])
-                        if volume <= 1e-12:
-                            strategy._remove(order)
-                            continue
-                        fill_order["vol"] = volume
-                        gross_before = strategy.s["realized_gross"]
-                    fee = fee_model.rate_pct(market=market) / 100.0 * volume * price
-                    if cash is not None:
-                        cash += (-1 if side == "buy" else 1) * volume * price - fee
-                        min_cash = min(min_cash, cash)
-                        if cash < -1e-8:
-                            raise ValueError("cash account overdrawn by simulated execution")
-                    strategy._apply_fill(
-                        fill_order, volume, price, fee=fee, final=complete,
-                    )
-                    fill_count += 1
-                    turnover_notional += volume * price
-                    if side == "sell":
-                        if strategy.s["realized_gross"] > gross_before:
-                            wins += 1
-                        if strategy.s.get("cycle", 1) > cycle0 + len(trade_pnls):
-                            trade_pnls.append(
-                                strategy.s["realized_net"] - cycle_net_start
+                    for side in side_order:
+                        for order in eligible_orders:
+                            if order not in strategy.s["orders"] or order["side"] != side:
+                                continue
+                            market = bool(order.get("market"))
+                            fill_order, volume, complete = split_order_fill(
+                                order,
+                                quantity_key="vol",
+                                amount_key="amount" if side == "buy" else None,
+                                ratio=execution.partial_fill_ratio,
+                                force_full=market,
                             )
-                            cycle_net_start = strategy.s["realized_net"]
+                            if complete:
+                                strategy._remove(order)
+                            price = (
+                                execution.market_price(side, open_)
+                                if market else float(order["price"])
+                            )
+                            if side == "sell":
+                                volume = min(volume, strategy.s["qty"])
+                                if volume <= 1e-12:
+                                    strategy._remove(order)
+                                    continue
+                                fill_order["vol"] = volume
+                                gross_before = strategy.s["realized_gross"]
+                            fee = fee_model.rate_pct(market=market) / 100.0 * volume * price
+                            if cash is not None:
+                                cash += (-1 if side == "buy" else 1) * volume * price - fee
+                                min_cash = min(min_cash, cash)
+                                if cash < -1e-8:
+                                    raise ValueError("cash account overdrawn by simulated execution")
+                            strategy._apply_fill(
+                                fill_order, volume, price, fee=fee, final=complete,
+                            )
+                            fill_count += 1
+                            turnover_notional += volume * price
+                            if side == "sell":
+                                if strategy.s["realized_gross"] > gross_before:
+                                    wins += 1
+                                if strategy.s.get("cycle", 1) > cycle0 + len(trade_pnls):
+                                    trade_pnls.append(
+                                        strategy.s["realized_net"] - cycle_net_start
+                                    )
+                                    cycle_net_start = strategy.s["realized_net"]
 
-            # Live reconcile() cancels an unfilled limit BUY once it is older than
-            # order_ttl_min and the price has risen more than 0.3% above it; step() then
-            # re-places it at the current level. Replay never calls reconcile(), so without
-            # this an ENTRY left below a rally would wait forever for a pullback.
-            if bar_minutes is None or bar_minutes >= params.order_ttl_min:
-                for order in list(strategy.s["orders"]):
-                    if (order["side"] == "buy" and not order.get("market")
-                            and close > order["price"] * 1.003):
-                        strategy._remove(order)
-            replay_time = bar_index * bar_minutes * 60 if bar_minutes else bar_index
+                # Live reconcile() cancels an unfilled limit BUY once it is older than
+                # order_ttl_min and the price has risen more than 0.3% above it; step() then
+                # re-places it at the current level. Replay never calls reconcile(), so without
+                # this an ENTRY left below a rally would wait forever for a pullback.
+                if check_ttl and strategy.s["orders"]:
+                    for order in list(strategy.s["orders"]):
+                        if (order["side"] == "buy" and not order.get("market")
+                                and close > order["price"] * 1.003):
+                            strategy._remove(order)
             strategy.step(close, timestamp=replay_time, high=high if intrabar_high else None)
             qty = strategy.s["qty"]
             unrealized = (

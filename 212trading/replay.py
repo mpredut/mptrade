@@ -115,6 +115,10 @@ def run_replay(
     )
 
 
+class _ReplayClient:
+    __slots__ = ()
+
+
 def _run_once(
     ohlc,
     params: _strat.StratParams,
@@ -126,7 +130,7 @@ def _run_once(
     timestamps: Sequence[int],
     execution: ExecutionModel,
 ) -> dict:
-    client = MagicMock()
+    client = _ReplayClient()
     clock = _SimClock(0.0)
     trend_closes: deque[float] = deque(maxlen=12)
     trend_closes.extend(float(row[3]) for row in warmup_ohlc)
@@ -156,6 +160,7 @@ def _run_once(
         realized_net_account = 0.0
         fills = wins = ambiguous_bars = 0
         cycle0 = engine.s.get("cycle", 1)
+        side_order = execution.side_order()
 
         for bar_index, (open_, high, low, close) in enumerate(ohlc):
             rate = fx_rates[bar_index]
@@ -165,67 +170,65 @@ def _run_once(
                 else float(bar_index)
             )
 
-            def eligible(order: dict) -> bool:
-                if order.get("market"):
-                    return True
-                return execution.limit_touched(
-                    order["side"], high=high, low=low, limit=order["limit"],
-                )
-
-            eligible_sides = {
-                order["side"].lower()
-                for order in engine.s["orders"]
-                if eligible(order)
-            }
-            if {"buy", "sell"}.issubset(eligible_sides):
-                ambiguous_bars += 1
-
-            for side in execution.side_order():
-                for order in list(engine.s["orders"]):
-                    if order not in engine.s["orders"] or order["side"].lower() != side:
-                        continue
-                    if not eligible(order):
-                        continue
-                    market = bool(order.get("market"))
-                    fill_order, quantity, complete = split_order_fill(
-                        order,
-                        quantity_key="qty",
-                        amount_key="amount" if side == "buy" else None,
-                        ratio=execution.partial_fill_ratio,
-                        force_full=market,
+            orders = engine.s["orders"]
+            if orders:
+                eligible_orders = [
+                    o for o in orders
+                    if o.get("market") or execution.limit_touched(
+                        o["side"], high=high, low=low, limit=o["limit"],
                     )
-                    if complete:
-                        engine._remove_order(order)
-                    price = (
-                        execution.market_price(side, open_)
-                        if market else float(order["limit"])
-                    )
-                    if side == "sell":
-                        quantity = min(quantity, engine.s["qty"])
-                        if quantity <= 1e-12:
-                            engine._remove_order(order)
-                            continue
-                        fill_order["qty"] = quantity
-                        avg = engine._avg_cost() or price
-                        _gross, _fee, net = _strat._sell_pnl(
-                            avg, price, quantity, params.fx_fee_pct,
-                        )
-                        if complete and fill_order.get("level") is not None:
-                            engine.s.setdefault("tp_sold_levels", []).append(
-                                fill_order["level"]
+                ]
+                if eligible_orders:
+                    if len(eligible_orders) > 1 and {"buy", "sell"}.issubset(
+                        {o["side"].lower() for o in eligible_orders}
+                    ):
+                        ambiguous_bars += 1
+
+                    for side in side_order:
+                        for order in eligible_orders:
+                            if order not in engine.s["orders"] or order["side"].lower() != side:
+                                continue
+                            market = bool(order.get("market"))
+                            fill_order, quantity, complete = split_order_fill(
+                                order,
+                                quantity_key="qty",
+                                amount_key="amount" if side == "buy" else None,
+                                ratio=execution.partial_fill_ratio,
+                                force_full=market,
                             )
-                        realized_net_account += net / rate
-                        wins += int(net > 0)
-                        trade_pnls.append(net / rate)
-                    engine._apply_fill(fill_order, quantity, price)
-                    fills += 1
-                    turnover_account += quantity * price / rate
+                            if complete:
+                                engine._remove_order(order)
+                            price = (
+                                execution.market_price(side, open_)
+                                if market else float(order["limit"])
+                            )
+                            if side == "sell":
+                                quantity = min(quantity, engine.s["qty"])
+                                if quantity <= 1e-12:
+                                    engine._remove_order(order)
+                                    continue
+                                fill_order["qty"] = quantity
+                                avg = engine._avg_cost() or price
+                                _gross, _fee, net = _strat._sell_pnl(
+                                    avg, price, quantity, params.fx_fee_pct,
+                                )
+                                if complete and fill_order.get("level") is not None:
+                                    engine.s.setdefault("tp_sold_levels", []).append(
+                                        fill_order["level"]
+                                    )
+                                realized_net_account += net / rate
+                                wins += int(net > 0)
+                                trade_pnls.append(net / rate)
+                            engine._apply_fill(fill_order, quantity, price)
+                            fills += 1
+                            turnover_account += quantity * price / rate
 
-            # Live _reconcile_real() cancels a stale resting BUY and step() places it
-            # again at the current price; replay never reconciles, so apply the same rule.
-            for order in list(engine.s["orders"]):
-                if engine._buy_is_stale(order, float(close)):
-                    engine._remove_order(order)
+                # Live _reconcile_real() cancels a stale resting BUY and step() places it
+                # again at the current price; replay never reconciles, so apply the same rule.
+                if engine.s["orders"]:
+                    for order in list(engine.s["orders"]):
+                        if engine._buy_is_stale(order, float(close)):
+                            engine._remove_order(order)
             trend_closes.append(float(close))
             engine.fx_to_usd = rate
             engine.step(float(close))

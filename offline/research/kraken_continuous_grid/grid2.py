@@ -50,39 +50,40 @@ TRAIN, TEST = 2190, 540          # 365 days and 90 days of 4h bars
 
 def replay(bars, warm, params, peak, fee):
     grid.FLAGS["peak"] = bool(peak)
-    with contextlib.redirect_stdout(io.StringIO()):
-        m = grid.rp.run_replay([b[1:] for b in bars], params, fee_pct=fee, bar_minutes=240,
-                               warmup_ohlc=[b[1:] for b in warm])
+    ohlc = [b[1:] for b in bars] if (bars and len(bars[0]) == 5) else bars
+    w_ohlc = [b[1:] for b in warm] if (warm and len(warm[0]) == 5) else warm
+    m = grid.rp.run_replay(ohlc, params, fee_pct=fee, bar_minutes=240,
+                           warmup_ohlc=w_ohlc)
     budget = float(params.effective_max_budget())
     return {"ret": round(m["total"] / budget * 100, 3), "dd": round(m.get("max_drawdown_pct") or 0, 3),
             "cyc": m.get("cycles", 0), "expo": round(m.get("exposure_pct") or 0, 1),
-            "bh": round((bars[-1][4] / bars[0][4] - 1) * 100, 3)}
+            "bh": round((ohlc[-1][3] / ohlc[0][3] - 1) * 100, 3)}
 
 
 def views(asset, cfg, fee_key):
-    bars = load(os.path.join(DATA, f"{asset}_240m.csv"))
+    bars, ohlc, _ = grid.load_asset(asset)
     params, peak = ALL[cfg]
     fee = FEE[fee_key]
     res = {"kind": "views", "fee": fee_key, "asset": asset, "cfg": cfg, "bars": len(bars),
-           "full": replay(bars[WARM:], bars[:WARM], params, peak, fee), "w30": [], "w90": []}
+           "full": replay(ohlc[WARM:], ohlc[:WARM], params, peak, fee), "w30": [], "w90": []}
     for key, size in (("w30", W30), ("w90", W90)):
-        for s in range(WARM, len(bars) - size + 1, WSTEP):
-            r = replay(bars[s:s + size], bars[s - WARM:s], params, peak, fee)
+        for s in range(WARM, len(ohlc) - size + 1, WSTEP):
+            r = replay(ohlc[s:s + size], ohlc[s - WARM:s], params, peak, fee)
             res[key].append([r["ret"], r["dd"], r["bh"], r["cyc"]])
     return res
 
 
 def select(asset):
-    bars = load(os.path.join(DATA, f"{asset}_240m.csv"))
+    bars, ohlc, _ = grid.load_asset(asset)
     steps = []
     for t in range(WARM + TRAIN, len(bars) - TEST + 1, TEST):
-        train = {c: replay(bars[t - TRAIN:t], bars[t - TRAIN - WARM:t - TRAIN], *ALL[c], 0.26)
+        train = {c: replay(ohlc[t - TRAIN:t], ohlc[t - TRAIN - WARM:t - TRAIN], *ALL[c], 0.26)
                  for c in SELECT_SET}
         score = {c: r["ret"] / max(r["dd"], 5.0) for c, r in train.items()}
         best = max(score, key=score.get)
-        oos = {c: replay(bars[t:t + TEST], bars[t - WARM:t], *ALL[c], 0.26)["ret"] for c in SELECT_SET}
+        oos = {c: replay(ohlc[t:t + TEST], ohlc[t - WARM:t], *ALL[c], 0.26)["ret"] for c in SELECT_SET}
         steps.append({"t": bars[t][0], "pick": best, "pick_ret": oos[best], "oos": oos,
-                      "bh": round((bars[t + TEST - 1][4] / bars[t][4] - 1) * 100, 2)})
+                      "bh": round((ohlc[t + TEST - 1][3] / ohlc[t][3] - 1) * 100, 2)})
     return {"kind": "select", "asset": asset, "steps": steps}
 
 
@@ -97,9 +98,15 @@ def task(args):
 
 if __name__ == "__main__":
     assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
-    todo = [("select", a) for a in assets]
-    todo += [("views", a, c, "std") for c in FINE for a in assets]
-    todo += [("views", a, c, "stress") for c in FEE_SET for a in assets]
+    for a in assets:
+        grid.load_asset(a)
+    todo = []
+    for a in assets:
+        todo.append(("select", a))
+        for c in FINE:
+            todo.append(("views", a, c, "std"))
+        for c in FEE_SET:
+            todo.append(("views", a, c, "stress"))
     print(f"[grid2] {len(todo)} tasks", flush=True)
     t0 = time.time()
     with Pool(int(os.environ.get("WORKERS", 3))) as pool, open(OUT, "w") as out:

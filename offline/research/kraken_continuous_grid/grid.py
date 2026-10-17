@@ -49,7 +49,9 @@ strat.Strategy.step = _step
 R = dataclasses.replace
 LIVE = strat.StratParams.from_env()
 OLD = R(LIVE, takeprofit_pct=5.0, dca_spacing_growth_pct=0.0, tp_trail_adaptive=False,
-        tp_regime_gate=False, tp_trail_profit_floor_pct=0.0, stop_loss_pct=12.5)
+        tp_regime_gate=False, tp_trail_profit_floor_pct=0.0, stop_loss_pct=12.5,
+        reentry_hybrid_enabled=False, reentry_bear_bounce_pct=0.0,
+        tp_mdhtp_enabled=False, sl_mhdsl_enabled=False)
 
 
 def ov(p, topup, trail, brk=False):
@@ -75,20 +77,21 @@ CONFIGS = {
     "ov1000_t8_gateoff": (ov(R(LIVE, tp_regime_gate=False), 1000, 8), 0),
     "ov650_t8_brake": (R(ov(LIVE, 650, 8), dca_trend_brake=True, dca_brake_min_pct=1.5), 0),
     # D. re-entry
-    "reentry0": (R(LIVE, reentry_drop_pct=0.0), 0),
-    "reentry1": (R(LIVE, reentry_drop_pct=1.0), 0),
-    "reentry4": (R(LIVE, reentry_drop_pct=4.0), 0),
-    "reentry_adaptive": (R(LIVE, reentry_adaptive=True), 0),
-    "peak2.2": (LIVE, 1), "peak4": (R(LIVE, reentry_drop_pct=4.0), 1),
+    "reentry0": (R(LIVE, reentry_drop_pct=0.0, reentry_hybrid_enabled=False), 0),
+    "reentry1": (R(LIVE, reentry_drop_pct=1.0, reentry_hybrid_enabled=False), 0),
+    "reentry4": (R(LIVE, reentry_drop_pct=4.0, reentry_hybrid_enabled=False), 0),
+    "reentry_adaptive": (R(LIVE, reentry_adaptive=True, reentry_hybrid_enabled=False), 0),
+    "peak2.2": (R(LIVE, reentry_hybrid_enabled=False), 1),
+    "peak4": (R(LIVE, reentry_drop_pct=4.0, reentry_hybrid_enabled=False), 1),
     "peak2.2_oldlive": (OLD, 1),
-    "ov650_t8_peak4": (ov(R(LIVE, reentry_drop_pct=4.0), 650, 8), 1),
+    "ov650_t8_peak4": (ov(R(LIVE, reentry_drop_pct=4.0, reentry_hybrid_enabled=False), 650, 8), 1),
     # E. stop loss
     "sl0": (R(LIVE, stop_loss_pct=0.0), 0), "sl8": (R(LIVE, stop_loss_pct=8.0), 0),
     "sl25": (R(LIVE, stop_loss_pct=25.0), 0),
     # F. take profit
     "tp3": (R(LIVE, takeprofit_pct=3.0), 0), "tp6": (R(LIVE, takeprofit_pct=6.0), 0),
     "tp8": (R(LIVE, takeprofit_pct=8.0), 0),
-    "tp_classic": (R(LIVE, tp_trend_hold=False), 0),
+    "tp_classic": (R(LIVE, tp_trend_hold=False, tp_mdhtp_enabled=False), 0),
     # G. DCA spacing
     "dca0.75": (R(LIVE, dca_drop_pct=0.75), 0), "dca1.5": (R(LIVE, dca_drop_pct=1.5), 0),
     "dca2.5": (R(LIVE, dca_drop_pct=2.5), 0),
@@ -102,68 +105,64 @@ CONFIGS = {
 W30, W90, WSTEP, WARM = 180, 540, 180, 40
 
 
-_BARS_CACHE: dict[str, list] = {}
-_YEAR_RANGES_CACHE: dict[str, list[tuple[int, int, int]]] = {}
+_LOAD_CACHE: dict = {}
+_ASSET_CACHE: dict = {}
 
 
 def load(path):
-    cached = _BARS_CACHE.get(path)
+    cached = _LOAD_CACHE.get(path)
     if cached is not None:
         return cached
     with open(path) as fh:
         rows = [(int(r["timestamp"]), float(r["open"]), float(r["high"]), float(r["low"]),
                  float(r["close"])) for r in csv.DictReader(fh)]
-    _BARS_CACHE[path] = rows
+    _LOAD_CACHE[path] = rows
     return rows
 
 
-def _year_ranges(path, bars):
-    cached = _YEAR_RANGES_CACHE.get(path)
+def load_asset(asset):
+    cached = _ASSET_CACHE.get(asset)
     if cached is not None:
         return cached
-    by_year: dict[int, list[int]] = {}
-    for i, b in enumerate(bars):
-        y = datetime.fromtimestamp(b[0], timezone.utc).year
-        if y not in by_year:
-            by_year[y] = [i, i, 1]
-        else:
-            entry = by_year[y]
-            entry[1] = i
-            entry[2] += 1
-    ranges = [
-        (y, start_i, end_i)
-        for y, (start_i, end_i, count) in sorted(by_year.items())
-        if count >= 360 and start_i >= WARM
-    ]
-    _YEAR_RANGES_CACHE[path] = ranges
-    return ranges
+    bars = load(os.path.join(DATA, f"{asset}_240m.csv"))
+    ohlc = [b[1:] for b in bars]
+    bar_years = [datetime.fromtimestamp(b[0], timezone.utc).year for b in bars]
+    years = sorted(set(bar_years))
+    year_slices = []
+    for y in years:
+        idx = [i for i, yr in enumerate(bar_years) if yr == y]
+        if len(idx) >= 360 and idx[0] >= WARM:
+            year_slices.append((str(y), idx[0], idx[-1] + 1))
+    res = (bars, ohlc, year_slices)
+    _ASSET_CACHE[asset] = res
+    return res
 
 
 def replay(bars, warm, params, peak):
     FLAGS["peak"] = bool(peak)
-    with contextlib.redirect_stdout(io.StringIO()):
-        m = rp.run_replay([b[1:] for b in bars], params, fee_pct=0.26, bar_minutes=240,
-                          warmup_ohlc=[b[1:] for b in warm])
+    ohlc = [b[1:] for b in bars] if (bars and len(bars[0]) == 5) else bars
+    w_ohlc = [b[1:] for b in warm] if (warm and len(warm[0]) == 5) else warm
+    m = rp.run_replay(ohlc, params, fee_pct=0.26, bar_minutes=240,
+                      warmup_ohlc=w_ohlc)
     budget = float(params.effective_max_budget())
     return {"ret": round(m["total"] / budget * 100, 3), "dd": round(m.get("max_drawdown_pct") or 0, 3),
             "cyc": m.get("cycles", 0), "expo": round(m.get("exposure_pct") or 0, 1),
-            "bh": round((bars[-1][4] / bars[0][4] - 1) * 100, 3)}
+            "bh": round((ohlc[-1][3] / ohlc[0][3] - 1) * 100, 3)}
 
 
 def task(args):
     asset, cfg = args
     try:
-        path = os.path.join(DATA, f"{asset}_240m.csv")
-        bars = load(path)
+        bars, ohlc, year_slices = load_asset(asset)
         params, peak = CONFIGS[cfg]
         t0 = time.time()
         res = {"asset": asset, "cfg": cfg, "bars": len(bars),
-               "full": replay(bars[WARM:], bars[:WARM], params, peak), "year": {}, "w30": [], "w90": []}
-        for y, start_i, end_i in _year_ranges(path, bars):
-            res["year"][str(y)] = replay(bars[start_i:end_i + 1], bars[start_i - WARM:start_i], params, peak)
+               "full": replay(ohlc[WARM:], ohlc[:WARM], params, peak), "year": {}, "w30": [], "w90": []}
+        for y_str, s_idx, e_idx in year_slices:
+            res["year"][y_str] = replay(ohlc[s_idx:e_idx], ohlc[s_idx - WARM:s_idx], params, peak)
         for key, size in (("w30", W30), ("w90", W90)):
-            for s in range(WARM, len(bars) - size + 1, WSTEP):
-                r = replay(bars[s:s + size], bars[s - WARM:s], params, peak)
+            for s in range(WARM, len(ohlc) - size + 1, WSTEP):
+                r = replay(ohlc[s:s + size], ohlc[s - WARM:s], params, peak)
                 res[key].append([r["ret"], r["dd"], r["bh"], r["cyc"]])
         res["secs"] = round(time.time() - t0, 1)
         return res
@@ -173,6 +172,8 @@ def task(args):
 
 if __name__ == "__main__":
     assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
+    for a in assets:
+        load_asset(a)
     done = set()
     if os.path.exists(OUT):
         for line in open(OUT):
@@ -183,7 +184,7 @@ if __name__ == "__main__":
              "abl_tp5", "abl_spacing0", "abl_trail_fixed", "abl_gate_off", "abl_floor0", "abl_sl12.5",
              "peak2.2", "reentry0", "ov650_t8_sl12.5", "ov650_t8_oldlive", "sl0", "tp_classic"]
     order = first + [c for c in CONFIGS if c not in first]
-    todo = [(a, c) for c in order for a in assets if (a, c) not in done]
+    todo = [(a, c) for a in assets for c in order if (a, c) not in done]
     print(f"[grid] {len(assets)} assets x {len(CONFIGS)} configs, {len(todo)} tasks to run", flush=True)
     t0 = time.time()
     with Pool(int(os.environ.get("WORKERS", 3))) as pool, open(OUT, "a") as out:

@@ -89,9 +89,25 @@ def simulate(ohlc, P):
         "STRAT_SL_MHDSL_ENABLED": str(P.get("sl_mhdsl_enabled", os.environ.get("STRAT_SL_MHDSL_ENABLED", "false"))).lower(),
         "STRAT_TP_MDHTP_ENABLED": str(P.get("tp_mdhtp_enabled", os.environ.get("STRAT_TP_MDHTP_ENABLED", "false"))).lower(),
         "STRAT_REENTRY_HYBRID_ENABLED": str(P.get("reentry_hybrid_enabled", os.environ.get("STRAT_REENTRY_HYBRID_ENABLED", "false"))).lower(),
+        "STRAT_REENTRY_PEAK_RELATIVE": str(P.get("reentry_peak_relative", os.environ.get("STRAT_REENTRY_PEAK_RELATIVE", "false"))).lower(),
+        "STRAT_REENTRY_PULLBACK_PCT": str(P.get("reentry_pullback_pct", os.environ.get("STRAT_REENTRY_PULLBACK_PCT", "1.5"))),
+        "STRAT_REENTRY_PULLBACK_ADAPTIVE": str(P.get("reentry_pullback_adaptive", os.environ.get("STRAT_REENTRY_PULLBACK_ADAPTIVE", "false"))).lower(),
+        "STRAT_REENTRY_PULLBACK_K": str(P.get("reentry_pullback_k", os.environ.get("STRAT_REENTRY_PULLBACK_K", "1.0"))),
+        "STRAT_REENTRY_PULLBACK_MIN": str(P.get("reentry_pullback_min", os.environ.get("STRAT_REENTRY_PULLBACK_MIN", "0.8"))),
+        "STRAT_REENTRY_PULLBACK_MAX": str(P.get("reentry_pullback_max", os.environ.get("STRAT_REENTRY_PULLBACK_MAX", "4.0"))),
+        "STRAT_REENTRY_TTL_HOURS": str(P.get("reentry_ttl_hours", os.environ.get("STRAT_REENTRY_TTL_HOURS", "0.0"))),
+        "STRAT_TP_LADDER": str(os.environ.get("STRAT_TP_LADDER", "")),
+        "STRAT_TP_LADDER_CURVE": str(os.environ.get("STRAT_TP_LADDER_CURVE", "linear")),
     }
     for k, v in P.items():
-        if k.startswith("STRAT_") or k.startswith("sl_") or k.startswith("tp_"):
+        if k == "tp_ladder":
+            if isinstance(v, (list, tuple)):
+                env_overrides["STRAT_TP_LADDER"] = ",".join(
+                    f"{lvl}:{frac * 100.0 if frac <= 1.0 else frac}" for lvl, frac in v
+                )
+            else:
+                env_overrides["STRAT_TP_LADDER"] = str(v)
+        elif k.startswith("STRAT_") or k.startswith("sl_") or k.startswith("tp_") or k.startswith("reentry_"):
             env_key = k if k.startswith("STRAT_") else f"STRAT_{k.upper()}"
             env_overrides[env_key] = str(v)
 

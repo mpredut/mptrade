@@ -47,24 +47,24 @@ HOME = {"nvda": "NVDA", "spcx": "SPCX", "rgnt": "RGNT"}
 
 VARIANTS = {
     "live": ({}, 0),
-    "reentry0": ({"STRAT_REENTRY_DROP_PCT": "0"}, 0),
-    "reentry5": ({"STRAT_REENTRY_DROP_PCT": "5"}, 0),
-    "reentry_peak": ({}, 1),
+    "reentry0": ({"STRAT_REENTRY_DROP_PCT": "0", "STRAT_REENTRY_HYBRID_ENABLED": "false"}, 0),
+    "reentry5": ({"STRAT_REENTRY_DROP_PCT": "5", "STRAT_REENTRY_HYBRID_ENABLED": "false"}, 0),
+    "reentry_peak": ({"STRAT_REENTRY_HYBRID_ENABLED": "false"}, 1),
     "tp3": ({"STRAT_TAKEPROFIT_PCT": "3", "STRAT_TP_LADDER": ""}, 0),
     "tp5": ({"STRAT_TAKEPROFIT_PCT": "5", "STRAT_TP_LADDER": ""}, 0),
     "tp8": ({"STRAT_TAKEPROFIT_PCT": "8", "STRAT_TP_LADDER": ""}, 0),
     "tp12": ({"STRAT_TAKEPROFIT_PCT": "12", "STRAT_TP_LADDER": ""}, 0),
-    "ladder": ({"STRAT_TP_LADDER": "11:33,20:33,30:34"}, 0),
+    "ladder": ({"STRAT_TP_LADDER": "11:33,20:33,30:34", "STRAT_TP_MDHTP_ENABLED": "false"}, 0),
     "dca3": ({"STRAT_DCA_DROP_PCT": "3"}, 0),
     "dca5": ({"STRAT_DCA_DROP_PCT": "5"}, 0),
     "sl0": ({"STRAT_STOP_LOSS_PCT": "0"}, 0),
     "sl15": ({"STRAT_STOP_LOSS_PCT": "15"}, 0),
     "trail8": ({"STRAT_TRAIL_PCT": "8", "STRAT_TRAIL_MIN_PROFIT_PCT": "9"}, 0),
     "trail_off": ({"STRAT_TRAIL_PCT": "0"}, 0),
-    "tp5_peak": ({"STRAT_TAKEPROFIT_PCT": "5", "STRAT_TP_LADDER": ""}, 1),
-    "tp8_peak_sl0": ({"STRAT_TAKEPROFIT_PCT": "8", "STRAT_TP_LADDER": "", "STRAT_STOP_LOSS_PCT": "0"}, 1),
+    "tp5_peak": ({"STRAT_TAKEPROFIT_PCT": "5", "STRAT_TP_LADDER": "", "STRAT_REENTRY_HYBRID_ENABLED": "false"}, 1),
+    "tp8_peak_sl0": ({"STRAT_TAKEPROFIT_PCT": "8", "STRAT_TP_LADDER": "", "STRAT_STOP_LOSS_PCT": "0", "STRAT_REENTRY_HYBRID_ENABLED": "false"}, 1),
     "tp5_reentry0_sl0": ({"STRAT_TAKEPROFIT_PCT": "5", "STRAT_TP_LADDER": "",
-                          "STRAT_REENTRY_DROP_PCT": "0", "STRAT_STOP_LOSS_PCT": "0"}, 0),
+                          "STRAT_REENTRY_DROP_PCT": "0", "STRAT_REENTRY_HYBRID_ENABLED": "false", "STRAT_STOP_LOSS_PCT": "0"}, 0),
 }
 # Factorial: take-profit x re-entry rule x stop-loss ("live" keeps the profile's value).
 for _tp in ("1.5", "3", "5", "8", "12", "20"):
@@ -73,28 +73,31 @@ for _tp in ("1.5", "3", "5", "8", "12", "20"):
             _over = {"STRAT_TAKEPROFIT_PCT": _tp, "STRAT_TP_LADDER": ""}
             if _re == "0":
                 _over["STRAT_REENTRY_DROP_PCT"] = "0"
+                _over["STRAT_REENTRY_HYBRID_ENABLED"] = "false"
+            elif _re == "peak":
+                _over["STRAT_REENTRY_HYBRID_ENABLED"] = "false"
             if _sl == "0":
                 _over["STRAT_STOP_LOSS_PCT"] = "0"
             VARIANTS[f"f_tp{_tp}_re{_re}_sl{_sl}"] = (_over, 1 if _re == "peak" else 0)
 WARM, W90_1H, STEP_1H = 12, 90 * 7, 30 * 7   # ~7 regular-session 1h bars per day
 
 
-_BARS_CACHE: dict[tuple[str, str], list | None] = {}
+_LOAD_CACHE: dict = {}
 
 
 def load(asset, itv):
     key = (asset, itv)
-    if key in _BARS_CACHE:
-        return _BARS_CACHE[key]
+    if key in _LOAD_CACHE:
+        return _LOAD_CACHE[key]
     path = os.path.join(DATA, f"{asset}_{itv}.csv")
     if not os.path.exists(path):
-        _BARS_CACHE[key] = None
+        _LOAD_CACHE[key] = None
         return None
     with open(path) as fh:
         rows = [(int(r["timestamp"]), float(r["open"]), float(r["high"]), float(r["low"]),
                  float(r["close"])) for r in csv.DictReader(fh)]
     res = rows if len(rows) > WARM + 20 else None
-    _BARS_CACHE[key] = res
+    _LOAD_CACHE[key] = res
     return res
 
 
@@ -106,17 +109,20 @@ def params_for(profile, variant):
     return strat.StratParams.from_env(cfg), peak
 
 
-def run(bars, params, peak, minutes):
+def run(bars, params, peak, minutes, ohlc=None, ts=None):
     FLAGS["peak"] = bool(peak)
-    with contextlib.redirect_stdout(io.StringIO()):
-        m = rp.run_replay([b[1:] for b in bars[WARM:]], params, bar_minutes=minutes,
-                          warmup_ohlc=[b[1:] for b in bars[:WARM]],
-                          timestamps=[b[0] for b in bars[WARM:]])
+    if ohlc is None:
+        ohlc = [b[1:] for b in bars]
+    if ts is None:
+        ts = [b[0] for b in bars]
+    m = rp.run_replay(ohlc[WARM:], params, bar_minutes=minutes,
+                      warmup_ohlc=ohlc[:WARM],
+                      timestamps=ts[WARM:])
     budget = float(params.max_budget)
     return {"ret": round(m["total"] / budget * 100, 3), "dd": round(m.get("max_drawdown_pct") or 0, 3),
             "cyc": m.get("cycles", 0), "expo": round(m.get("exposure_pct") or 0, 1),
             "fills": m.get("fills", 0),
-            "bh": round((bars[-1][4] / bars[WARM][4] - 1) * 100, 2)}
+            "bh": round((ohlc[-1][3] / ohlc[WARM][3] - 1) * 100, 2)}
 
 
 def task(args):
@@ -131,10 +137,15 @@ def task(args):
                 out[itv] = run(bars, params, peak, minutes)
         bars = load(asset, "1h")
         if bars:
+            ohlc = [b[1:] for b in bars]
+            ts = [b[0] for b in bars]
             wins = []
             for s in range(WARM, len(bars) - W90_1H + 1, STEP_1H):
-                seg = bars[s - WARM:s + W90_1H]
-                r = run(seg, params, peak, 60)
+                r = run(
+                    None, params, peak, 60,
+                    ohlc=ohlc[s - WARM:s + W90_1H],
+                    ts=ts[s - WARM:s + W90_1H],
+                )
                 wins.append([r["ret"], r["dd"], r["bh"]])
             out["w90"] = wins
         out["secs"] = round(time.time() - t0, 1)

@@ -417,7 +417,11 @@ class Strategy:
             sl_structural_break_enabled=self.p.sl_structural_break_enabled,
             smart_sl_enabled=False,
             reentry_enabled=True,
-            reentry_sl_bounce_pct=vol_pct_to_ratio(self.p.sl_rebuy_bounce_pct) if self.p.sl_rebuy_enabled else 0.015,
+            reentry_sl_bounce_pct=(
+                vol_pct_to_ratio(self.p.sl_rebuy_bounce_pct)
+                if self.p.sl_rebuy_enabled
+                else (0.015 if self.p.sl_mhdsl_enabled else 0.0)
+            ),
             reentry_drop_pct=vol_pct_to_ratio(self.p.reentry_drop_pct),
             reentry_pullback_pct=vol_pct_to_ratio(self.p.reentry_pullback_pct),
             reentry_ttl_hours=self.p.reentry_ttl_hours,
@@ -987,11 +991,11 @@ class Strategy:
         if o in self.s["orders"]:
             self.s["orders"].remove(o)
 
-    def reconcile(self, price: float) -> None:
+    def reconcile(self, price: float) -> bool:
         if self.dry_run:
             self._reconcile_paper(price)
-        else:
-            self._reconcile_real(price)
+            return True
+        return self._reconcile_real(price)
 
     # -- Paper reconciliation --------------------------------------------------
     def _reconcile_paper(self, price: float) -> None:
@@ -1097,7 +1101,7 @@ class Strategy:
             order["applied_fill_fee"] = cumulative_fee
         return total_cost / total_qty
 
-    def _reconcile_real(self, price: float) -> None:
+    def _reconcile_real(self, price: float) -> bool:
         real = self._portfolio_position()
         if real is None:
             # Debounce: log initially and every ten minutes, not on every tick.
@@ -1106,7 +1110,7 @@ class Strategy:
             if now - last > 600:
                 log("  [STRAT] portofoliu indisponibil — sar reconcilierea (suprima repetatele 10 min)")
                 self._pf_unavail_logged = now
-            return
+            return False
         real_qty, real_avg = real
         active_orders = self.client.list_active_orders()
         pending_outcome = self._recover_pending_submit(real_qty, active_orders)
@@ -1125,7 +1129,7 @@ class Strategy:
         # --- Executed BUY: the position increased (or adopt an existing position). ---
         if real_qty > prev_qty + 1e-6 and self._now() < self.s.get("locked_zero_until", 0):
             log("  [STRAT] adoptie ignorata — portfolio stale (not-owned recent, lock activ)")
-            return
+            return False
         if real_qty > prev_qty + 1e-6:
             fq = real_qty - prev_qty
             exact_price = self._exact_execution_price("BUY", fq, status_cache)
@@ -1143,7 +1147,7 @@ class Strategy:
                 if now - getattr(self, "_dust_logged", 0) > 600:
                     log(f"  [STRAT] portfolio dust ({real_qty:.4f} shares, ~{real_qty*real_avg:.2f} USD) ignored — staying flat for new cycle")
                     self._dust_logged = now
-                return
+                return True
             is_dca = bool(
                 source_order is not None
                 and source_order.get("kind") == "DCA"
@@ -1267,6 +1271,7 @@ class Strategy:
                 self.s["sl_rebuy"] = {"low": exit_price, "sell_price": exit_price}
                 log(f"  🟢 [STRAT] pullback re-buy ARMED after the stop-loss (expecting +{self.p.sl_rebuy_bounce_pct}% from the low)")
             log(f"  [STRAT] === ciclu inchis, reincep (ciclu {nxt}) ===")
+        return True
 
     # -- decision step ---------------------------------------------------------
     def _execute_protective_exit(
@@ -1507,12 +1512,16 @@ class Strategy:
         if not rb:
             return
         rb["low"] = min(rb.get("low", price), price)          # Track the post-stop low.
-        if price < rb["low"] * (1 + self.p.sl_rebuy_bounce_pct / 100.0):
+        target = rb["low"] * (1 + self.p.sl_rebuy_bounce_pct / 100.0)
+        if price < target and not are_close(price, target, self.p.reentry_tolerance_pct):
             return                                            # Wait until the bounce is confirmed.
-        self.s.pop("sl_rebuy", None)                          # Consume the one-tranche reentry arm.
         if self.s["spent_cash"] + self.p.entry_amount > self.p.max_budget:
             log(f"  [STRAT] re-buy SL cancelled — budget cap {self.p.max_budget:.0f} {self.ccy} reached")
             return
+        self.s.pop("sl_rebuy", None)                          # Consume the one-tranche reentry arm.
+        self.s["last_exit_kind"] = "TP"
+        if self.exit_manager is not None:
+            self.exit_manager.reentry_state.pop(self.ticker, None)
         disc = 1 - self.p.entry_discount_pct / 100
         log(f"  🟢 [STRAT] RE-BUY after the SL: a +{self.p.sl_rebuy_bounce_pct}% pullback from the low {rb['low']:.2f} — re-entering ENTRY")
         notify(title=f"🟢 {self.yahoo_sym} RE-BUY after the stop-loss",
@@ -1555,6 +1564,10 @@ class Strategy:
         cur_trough = self.s.get("post_sell_trough") or lsp
         self.s["post_sell_trough"] = min(cur_trough, price)
 
+        if self.p.reentry_ttl_hours > 0 and self.s.get("last_sell_ts"):
+            if (self._now() - self.s["last_sell_ts"]) >= self.p.reentry_ttl_hours * 3600.0:
+                self.s.pop("sl_rebuy", None)
+
         # Rebuy on a bounce after a catastrophic stop loss, as on Binance/Kraken.
         # While armed, it takes priority over reentry below the previous sale.
         if self.s.get("sl_rebuy"):
@@ -1569,7 +1582,9 @@ class Strategy:
         pullback_pct, pb_src = self._effective_reentry_pullback_pct()
         mgr.config.reentry_pullback_pct = vol_pct_to_ratio(pullback_pct)
         mgr.config.reentry_sl_bounce_pct = (
-            vol_pct_to_ratio(self.p.sl_rebuy_bounce_pct) if self.p.sl_rebuy_enabled else 0.015
+            vol_pct_to_ratio(self.p.sl_rebuy_bounce_pct)
+            if self.p.sl_rebuy_enabled
+            else (0.015 if self.p.sl_mhdsl_enabled else 0.0)
         )
         mgr.config.reentry_ttl_hours = self.p.reentry_ttl_hours
         mgr.config.reentry_tolerance_pct = self.p.reentry_tolerance_pct
@@ -1829,7 +1844,12 @@ class Strategy:
                     # snapshot can be persisted again.
                     if self._state_write_failed:
                         self._save()
-                    self.reconcile(price)
+                        if self._state_write_failed:
+                            _delay(self.p.check_minutes * 60)
+                            continue
+                    if self.reconcile(price) is False:
+                        _delay(self.p.check_minutes * 60)
+                        continue
                     self.step(price)
                     self._save()
                 except Exception as e:  # noqa: BLE001 — Resilience: retry network/API failures.

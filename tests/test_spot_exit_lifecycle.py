@@ -583,6 +583,19 @@ def test_mdhtp_cycle_finalization_resets_tp_ride_state():
     assert engine.exit_manager.tp_ride_state == engine.s["tp_ride_state"]
 
 
+def test_mdhtp_intrabar_high_arms_and_exits_on_same_bar_pullback():
+    engine, executor = make_mdhtp_engine(mdhtp_enabled=True, takeprofit_pct=5.0, tp_trail_pct=3.0)
+    engine.s["trend_mode"] = True
+    now = 1000.0
+    with patch.object(strat.time, "time", return_value=now):
+        # Intrabar high=106.0 (+6% >= 5% TP) arms MDHTP at peak 106.0,
+        # and close=102.0 (-3.77% pullback from 106.0 >= 3% trail) triggers exit in the same bar.
+        engine.step(102.0, high=106.0)
+    assert any(c[0] == "submit_order" and c[6] == "TP" for c in executor.calls)
+    assert engine.pair not in engine.exit_manager.tp_ride_state
+
+
+
 # ─── MHDSL Integration in SpotEngine ────────────────────────────────────────
 
 def make_mhdsl_engine(*, mhdsl_enabled: bool = True, stop_loss_pct: float = 10.0, **params):

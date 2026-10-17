@@ -897,8 +897,11 @@ class Strategy:
 
     def _cancel_orders(self, side: str | None = None, *, exclude_market: bool = False) -> bool:
         """Request cancellation of selected orders; return False if any request fails."""
+        orders = self.s["orders"]
+        if not orders:
+            return True
         selected = [
-            o for o in list(self.s["orders"])
+            o for o in list(orders)
             if (side is None or o["side"] == side)
             and not (exclude_market and o.get("market"))
         ]
@@ -908,7 +911,10 @@ class Strategy:
         return ok
 
     def _has_pending_market_exit(self) -> bool:
-        return any(o["side"] == "sell" and o.get("market") for o in self.s["orders"])
+        for o in self.s["orders"]:
+            if o["side"] == "sell" and o.get("market"):
+                return True
+        return False
 
     def _request_market_exit(self, price: float, kind: str, *, soft_floor: bool = False,
                              min_profit_pct: float | None = None) -> bool:
@@ -1304,14 +1310,15 @@ class Strategy:
                     log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
                 return True
             return False
-        in_sl = (
+        in_sl = loss_pct > 0.0 and (
             loss_pct >= self.p.stop_loss_pct
             or are_close(loss_pct, self.p.stop_loss_pct, self.p.reentry_tolerance_pct)
         )
-        in_bounce_watch = bool(self.exit_manager is not None and self.pair in self.exit_manager.sl_bounce_state)
+        mgr = self.exit_manager
+        in_bounce_watch = bool(mgr is not None and self.pair in mgr.sl_bounce_state)
         if not in_sl and not in_bounce_watch:
-            if self.exit_manager is not None:
-                self.exit_manager.reset_sl_episode(self.pair)  # Leaving SL territory ends the episode floor lock
+            if mgr is not None and mgr.sl_episode_state:
+                mgr.reset_sl_episode(self.pair)  # Leaving SL territory ends the episode floor lock
             return False
 
         if self.exit_manager is None:
@@ -1827,8 +1834,15 @@ class Strategy:
         if not avg or held <= 1e-12:
             return False
 
+        current_gain = (price - avg) / avg * 100.0
+
         # 1. Micro-gradient 2X Fast Profit Guard (Horizon 3)
-        if self.p.fast_profit_guard:
+        if (
+            self.p.fast_profit_guard
+            and self.p.takeprofit_pct > 0
+            and self.p.fast_profit_mult > 0
+            and current_gain >= self.p.takeprofit_pct * self.p.fast_profit_mult
+        ):
             triggered, gain, drop = sr.check_fast_profit_reversal(
                 current_price=price,
                 avg_cost=avg,
@@ -1849,73 +1863,81 @@ class Strategy:
         if self.p.surge_guard:
             surge_peak = max(self.s.get("surge_peak") or price, price)
             self.s["surge_peak"] = surge_peak
-            window_move = self._surge_window_move_pct(
-                price, None if self.replay_mode else closes)
-            eff_surge_gain = self._effective_surge_gain_pct()
-            current_gain = (price - avg) / avg * 100.0
+            eff_surge_gain = (
+                self._effective_surge_gain_pct()
+                if self.p.surge_dynamic else self.p.surge_gain_pct
+            )
             peak_gain = (surge_peak - avg) / avg * 100.0
             is_armed = bool(self.s.get("surge_active"))
-            if not is_armed:
-                pos_surged = eff_surge_gain > 0 and (current_gain >= eff_surge_gain or peak_gain >= eff_surge_gain)
-                win_surged = (
-                    window_move is not None
-                    and self.p.surge_move_pct > 0
-                    and window_move >= self.p.surge_move_pct
-                    and current_gain >= eff_surge_gain * 0.8
-                )
-                if pos_surged or win_surged:
-                    is_armed = True
-                    self.s["surge_active"] = True
-                    log(f"  [STRAT] PARABOLIC SURGE ARMED (+{peak_gain:.2f}% peak gain, window move {window_move})")
-            elif current_gain < self.p.takeprofit_pct:
-                self.s["surge_active"] = False
-                is_armed = False
+            if (
+                is_armed
+                or (eff_surge_gain > 0 and peak_gain >= eff_surge_gain)
+                or (self.p.surge_move_pct > 0 and current_gain >= eff_surge_gain * 0.8)
+            ):
+                window_move = self._surge_window_move_pct(
+                    price, None if self.replay_mode else closes)
+                if not is_armed:
+                    pos_surged = eff_surge_gain > 0 and (current_gain >= eff_surge_gain or peak_gain >= eff_surge_gain)
+                    win_surged = (
+                        window_move is not None
+                        and self.p.surge_move_pct > 0
+                        and window_move >= self.p.surge_move_pct
+                        and current_gain >= eff_surge_gain * 0.8
+                    )
+                    if pos_surged or win_surged:
+                        is_armed = True
+                        self.s["surge_active"] = True
+                        log(f"  [STRAT] PARABOLIC SURGE ARMED (+{peak_gain:.2f}% peak gain, window move {window_move})")
+                elif current_gain < self.p.takeprofit_pct:
+                    self.s["surge_active"] = False
+                    is_armed = False
 
-            triggered, reason = sr.check_parabolic_surge_exhaustion(
-                current_price=price,
-                avg_cost=avg,
-                surge_peak=surge_peak,
-                surge_gain_pct=eff_surge_gain,
-                exit_pullback_pct=self.p.surge_exit_pullback_pct,
-                window_move_pct=window_move,
-                surge_move_pct=self.p.surge_move_pct,
-                surge_active=is_armed,
-            )
-            if triggered:
-                exit_px = round(price * 0.999, self.price_dec)
-                if self._request_market_exit(
-                    price, "TP", min_profit_pct=sr.parabolic_surge_profit_floor_pct(
-                        eff_surge_gain, self.p.surge_exit_pullback_pct),
-                ):
-                    log(f"  [STRAT] SURGE EXHAUSTION EXIT ({reason}) peak {surge_peak:.{self.price_dec}f} -> reference {exit_px}")
-                    return True
+                triggered, reason = sr.check_parabolic_surge_exhaustion(
+                    current_price=price,
+                    avg_cost=avg,
+                    surge_peak=surge_peak,
+                    surge_gain_pct=eff_surge_gain,
+                    exit_pullback_pct=self.p.surge_exit_pullback_pct,
+                    window_move_pct=window_move,
+                    surge_move_pct=self.p.surge_move_pct,
+                    surge_active=is_armed,
+                )
+                if triggered:
+                    exit_px = round(price * 0.999, self.price_dec)
+                    if self._request_market_exit(
+                        price, "TP", min_profit_pct=sr.parabolic_surge_profit_floor_pct(
+                            eff_surge_gain, self.p.surge_exit_pullback_pct),
+                    ):
+                        log(f"  [STRAT] SURGE EXHAUSTION EXIT ({reason}) peak {surge_peak:.{self.price_dec}f} -> reference {exit_px}")
+                        return True
 
         # 3. Slow-Grind Guard (1-3 Week Drift, Horizon 5)
         if self.p.slow_grind_guard:
             slow_peak = max(self.s.get("slow_grind_peak") or price, price)
             self.s["slow_grind_peak"] = slow_peak
             entry_ts = self.s.get("entry_ts")
-            n = self.p.trend_sma_n
-            sma = sum(closes[-n:]) / n if closes and len(closes) >= n else None
-            triggered, reason = sr.check_slow_grind_exhaustion(
-                current_price=price,
-                avg_cost=avg,
-                entry_ts=entry_ts,
-                current_ts=tick_time if tick_time is not None else self._now(),
-                min_days=self.p.slow_grind_days,
-                min_gain_pct=self.p.slow_grind_min_gain_pct,
-                recent_peak=slow_peak,
-                shadow_prices=self._shadow_prices,
-                flash_window_sec=self.p.slow_grind_flash_window_min * 60.0,
-                flash_drop_pct=self.p.slow_grind_flash_drop_pct,
-                structural_drop_pct=self.p.slow_grind_hourly_drop_pct,
-                sma_value=sma,
-            )
-            if triggered:
-                exit_px = round(price * 0.999, self.price_dec)
-                if self._request_market_exit(price, "TP"):
-                    log(f"  [STRAT] SLOW GRIND EXIT ({reason}) peak {slow_peak:.{self.price_dec}f} -> reference {exit_px}")
-                    return True
+            if entry_ts is not None and current_gain >= self.p.slow_grind_min_gain_pct:
+                n = self.p.trend_sma_n
+                sma = sum(closes[-n:]) / n if closes and len(closes) >= n else None
+                triggered, reason = sr.check_slow_grind_exhaustion(
+                    current_price=price,
+                    avg_cost=avg,
+                    entry_ts=entry_ts,
+                    current_ts=tick_time if tick_time is not None else self._now(),
+                    min_days=self.p.slow_grind_days,
+                    min_gain_pct=self.p.slow_grind_min_gain_pct,
+                    recent_peak=slow_peak,
+                    shadow_prices=self._shadow_prices,
+                    flash_window_sec=self.p.slow_grind_flash_window_min * 60.0,
+                    flash_drop_pct=self.p.slow_grind_flash_drop_pct,
+                    structural_drop_pct=self.p.slow_grind_hourly_drop_pct,
+                    sma_value=sma,
+                )
+                if triggered:
+                    exit_px = round(price * 0.999, self.price_dec)
+                    if self._request_market_exit(price, "TP"):
+                        log(f"  [STRAT] SLOW GRIND EXIT ({reason}) peak {slow_peak:.{self.price_dec}f} -> reference {exit_px}")
+                        return True
 
         return False
 
@@ -1926,16 +1948,6 @@ class Strategy:
         Confirmed uptrend uses top-up, hold, and trailing or SMA-break exit. A range
         returns False so classic DCA/TP logic runs.
         """
-        up = self._regime_matches(
-            regime,
-            "bull",
-            min_samples=self.p.regime_min_samples,
-        )
-        pending_trend_entry = next(
-            (o for o in self.s["orders"]
-             if o["side"] == "buy" and o.get("kind") == "TREND_ENTRY"),
-            None,
-        )
         if self.s.get("trend_mode"):
             avg = self._avg()
 
@@ -1971,6 +1983,16 @@ class Strategy:
             else:
                 self._cancel_orders("sell", exclude_market=True)  # Ride the trend; do not sell.
             return True
+        up = self._regime_matches(
+            regime,
+            "bull",
+            min_samples=self.p.regime_min_samples,
+        )
+        pending_trend_entry = None
+        for o in self.s["orders"]:
+            if o["side"] == "buy" and o.get("kind") == "TREND_ENTRY":
+                pending_trend_entry = o
+                break
         if pending_trend_entry:
             if up:
                 return True                         # Wait for the top-up fill.
@@ -1995,7 +2017,13 @@ class Strategy:
             return True
         return False
 
-    def step(self, price: float, timestamp: float | None = None, high: float | None = None) -> None:
+    def step(
+        self,
+        price: float,
+        timestamp: float | None = None,
+        high: float | None = None,
+        low: float | None = None,
+    ) -> None:
         if self.s.get("pending_intent"):
             log("  [STRAT] pre-submit intent in reconciliation — deferring new decisions")
             return
@@ -2142,8 +2170,21 @@ class Strategy:
                 self.exit_manager.config.fast_profit_drop_pct = self.p.fast_profit_drop_pct
 
                 snapshot = self._create_position_snapshot(price, avg, held, regime=regime)
-
-                decision = self.exit_manager.evaluate_take_profit(snapshot, custom_threshold=eff_tp / 100.0)
+                if high is not None and high > price:
+                    high_snap = self._create_position_snapshot(high, avg, held, regime=regime)
+                    high_dec = self.exit_manager.evaluate_take_profit(
+                        high_snap, custom_threshold=eff_tp / 100.0
+                    )
+                    if high_dec.action == ExitAction.SELL and high_dec.should_exit:
+                        decision = high_dec
+                    else:
+                        decision = self.exit_manager.evaluate_take_profit(
+                            snapshot, custom_threshold=eff_tp / 100.0
+                        )
+                else:
+                    decision = self.exit_manager.evaluate_take_profit(
+                        snapshot, custom_threshold=eff_tp / 100.0
+                    )
                 if decision.action == ExitAction.SELL and decision.should_exit:
                     exit_px = round(price * 0.999, self.price_dec)
                     use_soft = (decision.reason == "mdhtp_peak_pullback")

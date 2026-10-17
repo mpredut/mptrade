@@ -530,6 +530,56 @@ class T212MHDSLTest(_T212BaseTest):
         self.assertIsNotNone(strat.exit_manager)
         self.assertAlmostEqual(strat.exit_manager.config.sl_disaster_buffer_max_pct, 0.125, places=5)
 
+    def test_post_stop_does_not_require_bounce_when_sl_rebuy_and_mhdsl_disabled(self):
+        strat = self._make_strat(
+            slope=-0.2,
+            STRAT_SL_MHDSL_ENABLED="false",
+            STRAT_SL_REBUY_ENABLED="false",
+            STRAT_TP_MDHTP_ENABLED="true",
+            STRAT_REENTRY_HYBRID_ENABLED="false",
+            STRAT_REENTRY_DROP_PCT="2.0",
+        )
+        self.assertIsNotNone(strat.exit_manager)
+        self.assertEqual(strat.exit_manager.config.reentry_sl_bounce_pct, 0.0)
+        strat.s.update(
+            qty=0.0, last_sell_price=100.0, post_sell_peak=100.0,
+            post_sell_trough=95.0, last_exit_kind="STOP", last_sell_ts=1000.0,
+        )
+        # At 95.0 (trough, 0% bounce, 5% below last_sell_price=100.0), entry is allowed immediately
+        strat.step(95.0)
+        self.assertEqual(len(strat.s["orders"]), 1)
+        self.assertEqual(strat.s["orders"][0]["kind"], "ENTRY")
+
+    def test_sl_rebuy_ttl_expiry_and_tolerance_cleanup(self):
+        current_time = 1000.0
+        strat = self._make_strat(
+            clock=lambda: current_time,
+            STRAT_SL_MHDSL_ENABLED="false",
+            STRAT_SL_REBUY_ENABLED="true",
+            STRAT_SL_REBUY_BOUNCE_PCT="1.2",
+            STRAT_REENTRY_TTL_HOURS="24.0",
+            STRAT_REENTRY_DROP_PCT="5.0",
+        )
+        strat.s.update(
+            qty=0.0,
+            last_sell_price=100.0,
+            last_sell_ts=current_time,
+            last_exit_kind="STOP",
+            sl_rebuy={"sl_price": 100.0, "low_since": 90.0, "qty": 5.0, "cost_usd": 500.0, "dca_buys": 1},
+        )
+        # Advance beyond 24h TTL: sl_rebuy should expire and allow normal entry
+        current_time += 25.0 * 3600.0
+        strat.step(98.0)
+        self.assertIsNone(strat.s.get("sl_rebuy"))
+        self.assertEqual(len(strat.s["orders"]), 1)
+        self.assertEqual(strat.s["orders"][0]["kind"], "ENTRY")
+
+    def test_reconcile_real_returns_false_when_portfolio_unavailable(self):
+        self.mock_client.get_portfolio.return_value = None
+        strat = self._make_strat(dry_run=False)
+        self.assertFalse(strat.reconcile(100.0))
+
 
 if __name__ == "__main__":
     unittest.main()
+

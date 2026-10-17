@@ -17,14 +17,13 @@ CFGS = ["live", "old_live_pre0923", "sl0", "abl_gate_off", "ov650_t8", "ov650_t8
 def task(args):
     asset, cfg = args
     try:
-        bars = load(os.path.join(DATA, f"{asset}_240m.csv"))
+        _, ohlc, _ = grid.load_asset(asset)
         params, peak = grid2.ALL[cfg]
         grid.FLAGS["peak"] = bool(peak)
         out = {}
         for fee in (0.26, 0.40):
-            with contextlib.redirect_stdout(io.StringIO()):
-                m = grid.rp.run_replay([b[1:] for b in bars[WARM:]], params, fee_pct=fee, bar_minutes=240,
-                                       warmup_ohlc=[b[1:] for b in bars[:WARM]], initial_cash=3900.0)
+            m = grid.rp.run_replay(ohlc[WARM:], params, fee_pct=fee, bar_minutes=240,
+                                   warmup_ohlc=ohlc[:WARM], initial_cash=3900.0)
             out[str(fee)] = {"ret": round(m["total"] / 3900 * 100, 2), "dd": round(m.get("max_drawdown_pct") or 0, 2),
                              "cyc": m.get("cycles", 0), "refused": m["funding"]["refused_buys"],
                              "min_cash": m["funding"]["minimum_cash"]}
@@ -35,7 +34,9 @@ def task(args):
 
 if __name__ == "__main__":
     assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
-    todo = [(a, c) for c in CFGS for a in assets]
+    for a in assets:
+        grid.load_asset(a)
+    todo = [(a, c) for a in assets for c in CFGS]
     with Pool(4) as pool, open(os.path.join(EXP, "results3.jsonl"), "w") as fh:
         for i, r in enumerate(pool.imap_unordered(task, todo), 1):
             fh.write(json.dumps(r) + "\n"); fh.flush()
