@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-10-17T06:43:21",
+    "ts": "2026-10-17T07:50:58",
     "full_key": "BINANCE_BTC.mt.gain",
     "section": "BINANCE_BTC",
     "key": "mt.gain",
@@ -9,12 +9,12 @@
     "winner_value": 8.0,
     "margin_vs_current": {
       "half1": 162.4,
-      "half2": 1438.6
+      "half2": 1434.36
     },
-    "dev_commit": "488c238"
+    "dev_commit": "7ad1438"
   },
   {
-    "ts": "2026-10-17T06:43:21",
+    "ts": "2026-10-17T07:50:58",
     "full_key": "BINANCE_BTC.mt.lost",
     "section": "BINANCE_BTC",
     "key": "mt.lost",
@@ -23,22 +23,22 @@
     "winner_value": 4.3,
     "margin_vs_current": {
       "half1": 172.73,
-      "half2": 1422.8
+      "half2": 1434.96
     },
-    "dev_commit": "488c238"
+    "dev_commit": "7ad1438"
   },
   {
-    "ts": "2026-10-17T06:43:21",
-    "full_key": "BINANCE_TAO.mt.gain",
-    "section": "BINANCE_TAO",
+    "ts": "2026-10-17T07:50:58",
+    "full_key": "BINANCE_ARB.mt.gain",
+    "section": "BINANCE_ARB",
     "key": "mt.gain",
-    "symbol": "TAOUSDC",
-    "current_on_dev": 9.2,
-    "winner_value": 10.5,
+    "symbol": "ARBUSDC",
+    "current_on_dev": 9.0,
+    "winner_value": 6.0,
     "margin_vs_current": {
-      "half1": 187.97,
-      "half2": 1103.69
+      "half1": 182.75,
+      "half2": 123.51
     },
-    "dev_commit": "488c238"
+    "dev_commit": "7ad1438"
   }
 ]
