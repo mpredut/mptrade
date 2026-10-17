@@ -1281,6 +1281,7 @@ class RTradeThreadingTest(unittest.TestCase):
         bot = _bot()
         sell_places = []
         buy_attempted = threading.Event()
+        wait_tick = threading.Event()
 
         def fake_place(symbol, side, price, qty, **kwargs):
             ctx = kwargs.get("_outcome_context")
@@ -1293,7 +1294,11 @@ class RTradeThreadingTest(unittest.TestCase):
             return {"orderId": 42, "price": str(price)}
 
         def fake_sleep(_sec):
-            buy_attempted.wait(timeout=1.0)
+            buy_attempted.wait(timeout=2.0)
+            for _ in range(400):
+                if getattr(bot, "_round_aborted", False):
+                    break
+                wait_tick.wait(timeout=0.005)
 
         with patch.object(rtrade.api, "get_current_price", return_value=100.0), \
              patch.object(rtrade.mkt, "place", side_effect=fake_place), \
