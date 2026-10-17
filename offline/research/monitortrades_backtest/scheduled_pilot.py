@@ -212,11 +212,13 @@ def _run_one(symbol, base, params, series):
 def _eval_symbol_baseline(symbol: str, base: str):
     half1, half2 = _split_series(symbol)
     if len(half1) < 100 or len(half2) < 100:
-        return symbol, None, None, None
+        return symbol, None, None, None, True, True
     base_params = dict(rb.SYMBOLS[symbol]["params"])
     r1 = _run_one(symbol, base, base_params, half1)
+    htp1 = rb._LAST_HARD_TP_TOUCHED.get(rb._series_cache_key(symbol, half1, rb.DEFAULT_WINDOW_SECONDS), True)
     r2 = _run_one(symbol, base, base_params, half2)
-    return symbol, base_params, r1, r2
+    htp2 = rb._LAST_HARD_TP_TOUCHED.get(rb._series_cache_key(symbol, half2, rb.DEFAULT_WINDOW_SECONDS), True)
+    return symbol, base_params, r1, r2, htp1, htp2
 
 
 def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
@@ -240,17 +242,37 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
     if not any(abs(float(v) - current) < 1e-9 for v in test_values):
         test_values.append(_num_str(current))
 
-    results = {}
-    for v in test_values:
+    eval_order = sorted(test_values, key=float) if key == "mt.hardtp" else test_values
+    untouched_r1 = None
+    untouched_r2 = None
+    raw_results = {}
+    for v in eval_order:
         t0 = time.time()
         params = dict(base_params)
         params[key] = v
-        r1 = _run_one(symbol, base, params, half1)
-        r2 = _run_one(symbol, base, params, half2)
+        if key == "mt.hardtp" and untouched_r1 is not None:
+            r1 = dict(untouched_r1)
+            _RUN_ONE_CACHE[_run_one_cache_key(symbol, params, half1)] = r1
+        else:
+            r1 = _run_one(symbol, base, params, half1)
+            if key == "mt.hardtp" and r1 is not None:
+                tk1 = rb._series_cache_key(symbol, half1, rb.DEFAULT_WINDOW_SECONDS)
+                if not rb._LAST_HARD_TP_TOUCHED.get(tk1, True):
+                    untouched_r1 = r1
+        if key == "mt.hardtp" and untouched_r2 is not None:
+            r2 = dict(untouched_r2)
+            _RUN_ONE_CACHE[_run_one_cache_key(symbol, params, half2)] = r2
+        else:
+            r2 = _run_one(symbol, base, params, half2)
+            if key == "mt.hardtp" and r2 is not None:
+                tk2 = rb._series_cache_key(symbol, half2, rb.DEFAULT_WINDOW_SECONDS)
+                if not rb._LAST_HARD_TP_TOUCHED.get(tk2, True):
+                    untouched_r2 = r2
         sys.stderr.write(f"  [{full_key}] {key}={v}: half1={r1} half2={r2} ({time.time()-t0:.1f}s)\n")
         if r1 is None or r2 is None:
             continue
-        results[v] = {"edge_half1": _edge(r1), "edge_half2": _edge(r2), "pnl1": r1, "pnl2": r2}
+        raw_results[v] = {"edge_half1": _edge(r1), "edge_half2": _edge(r2), "pnl1": r1, "pnl2": r2}
+    results = {v: raw_results[v] for v in test_values if v in raw_results}
 
     if not results:
         return {"full_key": full_key, "action": "skipped", "reason": "backtest without results"}
@@ -430,8 +452,9 @@ def main():
     # Precompute baseline (base_params) once per symbol across workers so the 6-7 keys per symbol
     # reuse the cached baseline instead of re-running base_params 23 redundant times.
     max_workers = min(len(keys), os.cpu_count() or 2)
+    all_ranges = scan_backtest_ranges(INSTRUMENTS_CONF)
     with _futures.ProcessPoolExecutor(max_workers=min(len(unique_sym_base), max_workers)) as pre_ex:
-        for sym, base_params, r1, r2 in pre_ex.map(
+        for sym, base_params, r1, r2, htp1, htp2 in pre_ex.map(
             _eval_symbol_baseline,
             [s for s, _ in unique_sym_base],
             [b for _, b in unique_sym_base],
@@ -440,6 +463,25 @@ def main():
                 half1, half2 = _split_series(sym)
                 _RUN_ONE_CACHE[_run_one_cache_key(sym, base_params, half1)] = r1
                 _RUN_ONE_CACHE[_run_one_cache_key(sym, base_params, half2)] = r2
+                base_htp = float(base_params.get("mt.hardtp") or 0.0)
+                for fk, (k_sym, _k_base, k_name) in keys.items():
+                    if k_sym != sym:
+                        continue
+                    if k_name in ("mt.hardtp_fraction", "mt.hardtp_cooldown_h"):
+                        for gv in all_ranges.get(fk, ()):
+                            p = dict(base_params, **{k_name: gv})
+                            if not htp1:
+                                _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half1)] = r1
+                            if not htp2:
+                                _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half2)] = r2
+                    elif k_name == "mt.hardtp" and base_htp > 0:
+                        for gv in all_ranges.get(fk, ()):
+                            if float(gv) >= base_htp:
+                                p = dict(base_params, **{k_name: gv})
+                                if not htp1:
+                                    _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half1)] = r1
+                                if not htp2:
+                                    _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half2)] = r2
 
     # Independent keys => run in PARALLEL (ProcessPoolExecutor). Fork on Linux =>
     # each key has its own rb.mt (so the is_trend_up monkeypatch from _run_one

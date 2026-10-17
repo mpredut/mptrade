@@ -87,15 +87,26 @@ def run_variant(symbol, start_ts, end_ts, sample_sec, run_id):
     return pnl
 
 
+def _run_task(args):
+    symbol, hist_start, sec = args
+    run_id = f"tradeall_kalman_lag_{symbol}_s{int(sec)}"
+    pnl = run_variant(symbol, hist_start, None, sec, run_id)
+    return (symbol, sec), pnl
+
+
 if __name__ == "__main__":
+    import concurrent.futures as _futures
+
     hist_start = datetime.strptime("2025-08-27", "%Y-%m-%d").timestamp()
-    results = {}
-    t_all = time.time()
     for symbol in ("BTCUSDC", "TAOUSDC"):
-        for sec in SAMPLE_SEC_SWEEP:
-            run_id = f"tradeall_kalman_lag_{symbol}_s{int(sec)}"
-            pnl = run_variant(symbol, hist_start, None, sec, run_id)
-            results[(symbol, sec)] = pnl
+        for _ in tb.load_ticks_history(symbol, hist_start, None):
+            break
+
+    tasks = [(symbol, hist_start, sec) for symbol in ("BTCUSDC", "TAOUSDC") for sec in SAMPLE_SEC_SWEEP]
+    t_all = time.time()
+    max_workers = min(int(os.environ.get("WORKERS", 4)), os.cpu_count() or 2)
+    with _futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
+        results = dict(ex.map(_run_task, tasks))
 
     sys.stderr.write(f"\n\n===== REZUMAT (wall total {time.time()-t_all:.1f}s) =====\n")
     for symbol in ("BTCUSDC", "TAOUSDC"):

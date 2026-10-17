@@ -358,7 +358,8 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
         import shadow_signals
         shadow = shadow_signals.ShadowSet(
             journal=shadow_signals.ShadowJournal(fixed_path=os.path.join(out_dir, "tradeall_shadow.log")),
-            now_fn=clock)
+            now_fn=clock,
+            compute_vol=(speed != "fast"))
         # The KALMAN GATE is in the backtest too (parity with live), but with the block journal
         # redirected into the run's folder — NEVER into the live order_outcomes (A5).
         ta._shadow_ref = shadow
@@ -378,6 +379,8 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
         prev_ktrend = 0
         state_interval = 5000 if speed == "fast" else 100
         last_state = None
+        slope = slope_big = gradient = _gr = 0.0
+        fast_kalman_only = bool(kalman_primary and speed == "fast" and quiet)
         with open(price_path, "a", encoding="utf-8") as price_f, \
              open(broker.path, "a", encoding="utf-8") as outcome_f, \
              open(decision_path, "a", encoding="utf-8") as decision_f:
@@ -400,18 +403,19 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                     broker.process_pending(symbol, ts, price)   # Execute delayed orders that became favourable.
                 price_f.write(f"{ts}|{symbol}|{price}\n")
     
-                if threshold_provider is not None:
-                    thr_small, thr_big = threshold_provider(window_small, window_big)
-                else:
-                    thr_small, thr_big = ta.PRICE_CHANGE_THRESHOLD_EUR, ta.PRICE_CHANGE_THRESHOLD_BIG_EUR
+                if not fast_kalman_only:
+                    if threshold_provider is not None:
+                        thr_small, thr_big = threshold_provider(window_small, window_big)
+                    else:
+                        thr_small, thr_big = ta.PRICE_CHANGE_THRESHOLD_EUR, ta.PRICE_CHANGE_THRESHOLD_BIG_EUR
     
-                slope, _pos = analyzer_small.check_price_change(thr_small)
-                gradient, _gc, _sf, _gr = window_small.get_instant_trend()
-                ta.logic_small("SMALL", True, symbol, gradient, slope, trend_state, price,
-                               price_window=window_small)
+                    slope, _pos = analyzer_small.check_price_change(thr_small)
+                    gradient, _gc, _sf, _gr = window_small.get_instant_trend()
+                    ta.logic_small("SMALL", True, symbol, gradient, slope, trend_state, price,
+                                   price_window=window_small)
     
-                slope_big, _price_diff = analyzer_big.check_price_change(thr_big)
-                ta.logic("BIG", True, symbol, gradient, slope_big, trend_state_big, price)
+                    slope_big, _price_diff = analyzer_big.check_price_change(thr_big)
+                    ta.logic("BIG", True, symbol, gradient, slope_big, trend_state_big, price)
     
                 # SHADOW: the same call as in the live TrendCoordinator.evaluate, with a simulated clock.
                 try:
@@ -472,6 +476,19 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
             broker._log_f = None
         if n > 0:
             try:
+                if fast_kalman_only:
+                    slope, _ = analyzer_small.check_price_change(ta.PRICE_CHANGE_THRESHOLD_EUR)
+                    gradient, _, _, _gr = window_small.get_instant_trend()
+                    slope_big, _ = analyzer_big.check_price_change(ta.PRICE_CHANGE_THRESHOLD_BIG_EUR)
+                if not shadow.compute_vol and shadow_fields:
+                    v1h = shadow_signals.vol_1h_pct(window_big.prices, window_big.sample_rate_sec)
+                    adapt_re, adapt_dca = shadow_signals.adaptive_thresholds(v1h)
+                    shadow_fields = {
+                        **shadow_fields,
+                        "vol_1h_pct": v1h,
+                        "adapt_reentry_pct": adapt_re,
+                        "adapt_dca_pct": adapt_dca,
+                    }
                 last_state = {symbol: {
                     "current_price": price, "final_trend": gradient,
                     "gradient_recent": _gr, "slope_small": slope, "slope_big": slope_big,

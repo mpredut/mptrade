@@ -112,7 +112,7 @@ class ShadowSet:
 
     def __init__(self, journal: ShadowJournal | None = None,
                  state_path: str | None = None, state_min_interval: float = 1.0,
-                 now_fn=None):
+                 now_fn=None, compute_vol: bool = True):
         self.journal = journal or ShadowJournal()
         # current_trend() ages the signal against this clock. Live uses wall time; a
         # replay must inject its simulated clock, or every signal looks months old and
@@ -120,6 +120,7 @@ class ShadowSet:
         self._now = now_fn or time.time
         self.state_path = state_path
         self.state_min_interval = state_min_interval
+        self.compute_vol = compute_vol
         self._state: dict = {}
         self._last_state_write = 0.0
         self._kalman: dict = {}
@@ -150,13 +151,9 @@ class ShadowSet:
         n = len(fed)
         if n <= 2:
             return 0.0
-        g0 = fed[1] - fed[0]
-        gn = fed[-1] - fed[-2]
-        g = [g0]
-        g.extend((fed[i + 1] - fed[i - 1]) * 0.5 for i in range(1, n - 1))
-        g.append(gn)
+        g = [fed[1] - fed[0], *[(a - b) * 0.5 for a, b in zip(fed[2:], fed)], fed[-1] - fed[-2]]
         mean = sum(g) / n
-        var = sum((x - mean) ** 2 for x in g) / n
+        var = sum([(x - mean) * (x - mean) for x in g]) / n
         return math.sqrt(var)
 
     def update(self, symbol: str, ts: float, price: float, epsilon: float | None,
@@ -194,15 +191,18 @@ class ShadowSet:
             k = self._last_kfields.get(symbol,
                                         {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0})
 
-        # Throttle heavy volatility & log-return computation on big_prices (thousands of points)
-        last_vol_t = self._last_vol_time.get(symbol, -1e18)
-        if (ts - last_vol_t) >= 2.0 or (ts - last_fed >= KALMAN_SAMPLE_SEC):
-            v1h = vol_1h_pct(big_prices, big_sample_rate)
-            adapt_re, adapt_dca = adaptive_thresholds(v1h)
-            self._last_vol_time[symbol] = ts
-            self._last_vol_fields[symbol] = (v1h, adapt_re, adapt_dca)
+        if self.compute_vol:
+            # Throttle heavy volatility & log-return computation on big_prices (thousands of points)
+            last_vol_t = self._last_vol_time.get(symbol, -1e18)
+            if (ts - last_vol_t) >= 2.0 or (ts - last_fed >= KALMAN_SAMPLE_SEC):
+                v1h = vol_1h_pct(big_prices, big_sample_rate)
+                adapt_re, adapt_dca = adaptive_thresholds(v1h)
+                self._last_vol_time[symbol] = ts
+                self._last_vol_fields[symbol] = (v1h, adapt_re, adapt_dca)
+            else:
+                v1h, adapt_re, adapt_dca = self._last_vol_fields.get(symbol, (None, None, None))
         else:
-            v1h, adapt_re, adapt_dca = self._last_vol_fields.get(symbol, (None, None, None))
+            v1h = adapt_re = adapt_dca = None
         fields = {
             "kalman_vel": k["vel"], "kalman_vel_std": k["vel_std"],
             "kalman_trend": k["trend"],

@@ -463,12 +463,12 @@ class PriceWindow:
                 return min_price
             if min_price > 0.0:
                 p1 = sp[1]
-                if p1 != min_price and (p1 - min_price) / ((p1 + min_price) * 0.5) * 100.0 > 0.01:
+                if p1 != min_price and (p1 - min_price) > (p1 + min_price) * 0.00005:
                     return min_price
                 total = min_price + p1
                 count = 2
                 for price in sp[2:]:
-                    if price == min_price or (price - min_price) / ((price + min_price) * 0.5) * 100.0 <= 0.01:
+                    if price == min_price or (price - min_price) <= (price + min_price) * 0.00005:
                         total += price
                         count += 1
                     else:
@@ -496,14 +496,14 @@ class PriceWindow:
                 return max_price
             p_prev = sp[-2]
             if p_prev > 0.0:
-                if p_prev != max_price and (max_price - p_prev) / ((max_price + p_prev) * 0.5) * 100.0 > 0.01:
+                if p_prev != max_price and (max_price - p_prev) > (max_price + p_prev) * 0.00005:
                     return max_price
                 total = max_price + p_prev
                 count = 2
                 for i in range(len(sp) - 3, -1, -1):
                     price = sp[i]
                     if price == max_price or (
-                        price > 0.0 and (max_price - price) / ((max_price + price) * 0.5) * 100.0 <= 0.01
+                        price > 0.0 and (max_price - price) <= (max_price + price) * 0.00005
                     ):
                         total += price
                         count += 1
@@ -741,7 +741,10 @@ class WindowAnalyzer:
         price_diff_max = u.calculate_difference_percent(max_price, newest_price)
         price_diff_newest = max(price_diff_min, price_diff_max)
 
-        if abs(price_diff_newest) >= threshold or u.are_close(price_diff_newest, threshold):
+        if (
+            abs(price_diff_newest) >= threshold
+            or ((threshold <= 0 or price_diff_newest >= threshold * 0.98) and u.are_close(price_diff_newest, threshold))
+        ):
             if getattr(builtins.print, "__name__", "") != "_dummy_print":
                 _, min_index = w.get_min_and_index()
                 _, max_index = w.get_max_and_index()

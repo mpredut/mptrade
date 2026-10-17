@@ -96,6 +96,9 @@ def _series_cache_key(symbol: str, series: list, trend_window_seconds: float) ->
     )
 
 
+_LAST_HARD_TP_TOUCHED: dict[tuple, bool] = {}
+
+
 def prewarm_trend_series(
     symbol: str,
     series: list,
@@ -206,6 +209,15 @@ def run_symbol(
     mt._apply_post_stop_ai_guard = (
         lambda sym, px, spx, st, snap, bb, bq, q: (True, bb, bq, q)
     )
+    orig_eval_hard_tp = mt._evaluate_hard_take_profit
+    hard_tp_touched = False
+
+    def _tracked_eval_hard_tp(*a, **kw):
+        nonlocal hard_tp_touched
+        hard_tp_touched = True
+        return orig_eval_hard_tp(*a, **kw)
+
+    mt._evaluate_hard_take_profit = _tracked_eval_hard_tp
     mt.clear_position_stats_cache()
     try:
         first_price = provider.advance(symbol)
@@ -260,6 +272,7 @@ def run_symbol(
                 sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
         if cached_tape is None and len(recorded_tape) == len(series):
             _TREND_TAPE_CACHE[tape_key] = tuple(recorded_tape)
+        _LAST_HARD_TP_TOUCHED[tape_key] = hard_tp_touched
     finally:
         if quiet:
             try:
@@ -272,6 +285,7 @@ def run_symbol(
         mt.get_symbol_volatility_1h = orig_get_vol
         mt._MT_PERSISTENCE_ENABLED = orig_persist
         mt._apply_post_stop_ai_guard = orig_post_stop_ai
+        mt._evaluate_hard_take_profit = orig_eval_hard_tp
 
     all_buys = provider.get_orders(symbol, "BUY", since_s=1e12)
     all_sells = provider.get_orders(symbol, "SELL", since_s=1e12)

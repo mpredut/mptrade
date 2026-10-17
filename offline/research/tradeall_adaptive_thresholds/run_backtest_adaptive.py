@@ -94,31 +94,32 @@ def run_adaptive(symbol, start_ts, end_ts, k_small, run_id):
     return pnl
 
 
+def _run_task(args):
+    symbol, hist_start, k = args
+    tag = "FIX" if k is None else f"k{k}"
+    run_id = f"tradeall_adaptive_{symbol}_{tag}"
+    t0 = time.time()
+    pnl = run_adaptive(symbol, hist_start, None, k, run_id)
+    sys.stderr.write(f"  ({time.time()-t0:.1f}s)\n")
+    return (symbol, tag), pnl
+
+
 if __name__ == "__main__":
+    import concurrent.futures as _futures
+
     hist_start = datetime.strptime("2025-08-27", "%Y-%m-%d").timestamp()
-    # 23 iul, RECALIBRAT: sweep-ul initial [None,1.0,2.0,3.0] s-a dovedit
-    # miscalibrated — K=2.0/3.0 gave ZERO trades over the whole history (thresholds
-    # mult prea mari fata de vol_1h_pct reala), iar K=1.0 abia a tranzactionat
-    # (1 on BTC, 3 on TAO, against 186/1405 for FIXED) — no correct comparison
-    # of frequency. Reduced to a much lower interval, so as to find the zone where
-    # the trading frequency is comparable to FIXED (not merely "almost idle").
-    # 28 Jul: configurable through the environment (K_SWEEP="0.6,0.7,0.8,0.9") so that the
-    # TRANZITIE 0.5-1.0 — netestata: {0.1-0.5} au dat overtrading, {1.0-3.0} zero
-    # trades, but the middle (0.6-0.9) where the frequency might be comparable with
-    # FIXED was never tried. The "catastrophic" verdict skipped over a possibly useful zone.
     _k_env = os.environ.get("K_SWEEP", "0.1,0.2,0.3,0.5")
     K_SWEEP = [None] + [float(x) for x in _k_env.split(",") if x.strip()]   # None = control (FIX)
 
-    results = {}
-    t_all = time.time()
     for symbol in ("BTCUSDC", "TAOUSDC"):
-        for k in K_SWEEP:
-            tag = "FIX" if k is None else f"k{k}"
-            run_id = f"tradeall_adaptive_{symbol}_{tag}"
-            t0 = time.time()
-            pnl = run_adaptive(symbol, hist_start, None, k, run_id)
-            results[(symbol, tag)] = pnl
-            sys.stderr.write(f"  ({time.time()-t0:.1f}s)\n")
+        for _ in tb.load_ticks_history(symbol, hist_start, None):
+            break
+
+    tasks = [(symbol, hist_start, k) for symbol in ("BTCUSDC", "TAOUSDC") for k in K_SWEEP]
+    t_all = time.time()
+    max_workers = min(int(os.environ.get("WORKERS", 4)), os.cpu_count() or 2)
+    with _futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
+        results = dict(ex.map(_run_task, tasks))
 
     sys.stderr.write(f"\n\n===== REZUMAT (wall total {time.time()-t_all:.1f}s) =====\n")
     for symbol in ("BTCUSDC", "TAOUSDC"):

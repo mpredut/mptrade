@@ -248,7 +248,12 @@ def run_variant(tag, symbol, start_ts, end_ts, period_label):
             "net_total": net, "buy_hold_net": bh, "edge": edge, "fires": fires}
 
 
+def _run_task(args):
+    return run_variant(*args)
+
+
 if __name__ == "__main__":
+    import concurrent.futures as _futures
     from datetime import datetime
 
     hist_start = datetime.strptime("2025-08-27", "%Y-%m-%d").timestamp()
@@ -256,12 +261,20 @@ if __name__ == "__main__":
     mid = hist_start + (now - hist_start) / 2.0
     periods = [("full", hist_start, None), ("H1", hist_start, mid), ("H2", mid, now)]
 
-    rows = []
     for symbol in ("BTCUSDC", "TAOUSDC"):
-        sys.stderr.write(f"\n=== {symbol} ===\n")
-        for tag in VARIANTS:
-            for label, s, e in periods:
-                rows.append(run_variant(tag, symbol, s, e, label))
+        for _label, s, e in periods:
+            for _ in tb.load_ticks_history(symbol, s, e):
+                break
+
+    tasks = [
+        (tag, symbol, s, e, label)
+        for symbol in ("BTCUSDC", "TAOUSDC")
+        for tag in VARIANTS
+        for label, s, e in periods
+    ]
+    max_workers = min(int(os.environ.get("WORKERS", 4)), os.cpu_count() or 2)
+    with _futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
+        rows = list(ex.map(_run_task, tasks))
 
     # Verdict: a variant is worth pursuing only if it beats buy & hold on the FULL span
     # AND on BOTH halves for a symbol (consistency, not a single lucky regime).
