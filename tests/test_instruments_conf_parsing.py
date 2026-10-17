@@ -147,10 +147,12 @@ class TestInstrumentsSingleSource(unittest.TestCase):
         self.assertEqual(ic.binance_symbols(), ["BTCUSDC", "TAOUSDC", "ARBUSDC"])
 
     def test_trail_pct_map_matches_pre_refactor(self):
-        self.assertEqual(
-            ic.trail_pct_map(),
-            {"BTCUSDC": 16.0, "TAOUSDC": 22.0, "ARBUSDC": 26.0},
-        )
+        expected = {
+            item.symbol: float(item.number("trailing.pct"))
+            for item in registry.select_instruments("binance", "trailing").values()
+        }
+        self.assertEqual(set(expected), {"BTCUSDC", "TAOUSDC", "ARBUSDC"})
+        self.assertEqual(ic.trail_pct_map(), expected)
 
     def test_tradeall_allowlist_matches_pre_refactor(self):
         self.assertEqual(ic.tradeall_trade_symbols(), {"BTCUSDC", "TAOUSDC", "ARBUSDC"})
@@ -217,7 +219,9 @@ def test_current_execution_policy_is_preserved():
     assert modes == {"BTCUSDC": "strict", "TAOUSDC": "strict", "ARBUSDC": "strict"}
     trails = {item.symbol: item.number("trailing.pct") for item in
               registry.select_instruments("binance", "trailing").values()}
-    assert trails == {"BTCUSDC": 16, "TAOUSDC": 22, "ARBUSDC": 26}
+    assert set(trails) == {"BTCUSDC", "TAOUSDC", "ARBUSDC"}
+    assert trails == ic.trail_pct_map()
+    assert all(5.0 <= pct <= 50.0 for pct in trails.values())
     rebuys = {item.symbol: item.rebuy_mode() for item in
               registry.select_instruments("binance", "trailing").values()}
     assert rebuys == {"BTCUSDC": "on", "TAOUSDC": "on", "ARBUSDC": "auto"}

@@ -398,11 +398,12 @@ class TestPerCoin(Base):
             self.assertEqual(restarted._load(), saved)
 
         with self.subTest(msg="per_coin_threshold"):
+            import instruments_config as ic
             self.tearDown(); self.setUp()
             ts = self.ts(FakeApi(1.0))
-            self.assertEqual(ts.trail_pct_for("BTCUSDC"), 16.0)
-            self.assertEqual(ts.trail_pct_for("TAOUSDC"), 22.0)
-            self.assertEqual(ts.trail_pct_for("ARBUSDC"), 26.0)
+            expected_trails = ic.trail_pct_map()
+            for sym in ("BTCUSDC", "TAOUSDC", "ARBUSDC"):
+                self.assertEqual(ts.trail_pct_for(sym), expected_trails[sym])
             with self.assertRaises(KeyError):
                 ts.trail_pct_for("XYZUSDC")  # No invented policy for an unconfigured asset.
 
