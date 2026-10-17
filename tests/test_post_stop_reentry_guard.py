@@ -337,3 +337,68 @@ def test_decision_caching_and_notify_cooldown():
         assert mock_notify.call_count == 2
     clear_post_stop_reentry_cache()
 
+
+def test_monitortrades_skips_ai_guard_when_weight_policy_blocks_buy():
+    """Verify monitortrades does not invoke PostStopReentryGuard (or send APPROVED alerts)
+    when the provider's 24h weight policy refuses the BUY with qty_zero_after_policy."""
+    from providers.quantity import QuantityDecision
+
+    class PolicyBlockedProvider:
+        name = "binance"
+
+        def free_balance(self, asset):
+            return 20338.80
+
+        def quantity_decision(self, symbol, side, price, qty, **kwargs):
+            return QuantityDecision(
+                requested_qty=qty,
+                balance_cap=20338.80 / price,
+                policy_cap=0.0,
+                fee_cap=0.0,
+                final_qty=0.0,
+                refuse_reason="qty_zero_after_policy",
+                balance_asset="USDC",
+            )
+
+    fake_guard = MagicMock()
+    mt._LAST_EXIT_KIND["ARBUSDC"] = "STOP"
+    mt._REENTRY_STATE["ARBUSDC"] = {
+        "trough": 0.1884,
+        "peak": 0.1950,
+        "peak_bounce": 0.1896,
+        "started_at": 1000.0,
+        "sell_time": 1000.0,
+    }
+    inst = MockInstrument(
+        symbol="ARBUSDC",
+        price=0.1896,
+        buy_qty=1318.56,
+        orders_dict={
+            "SELL": [{
+                "price": 0.1884,
+                "time": 1000.0,
+                "timestamp": 1000000,
+                "qty": 1318.56,
+                "kind": "STOP",
+            }]
+        },
+    )
+    inst._provider = PolicyBlockedProvider()
+    exit_mgr = MagicMock()
+    exit_mgr.evaluate_reentry.return_value = MagicMock(
+        should_enter=True, reason="post_stop_bounce_confirmed"
+    )
+
+    with patch("intelligence.sentiment.guards.post_stop_reentry_guard.get_post_stop_reentry_guard", return_value=fake_guard), \
+         patch.object(mt, "_place_guarded", return_value=True) as mock_place, \
+         patch.object(mt, "get_position_stats", return_value={"average_buy_price": 0.0, "average_sell_price": 0.0, "net_qty": 0.0}), \
+         patch.object(mt, "get_exit_manager", return_value=exit_mgr), \
+         patch.object(mt, "is_trend_up", return_value=True), \
+         patch.object(mt, "get_symbol_volatility_1h", return_value=0.01):
+        mt.monitor_price_and_trade(inst, sbs=10, now_fn=lambda: 1500.0)
+
+    fake_guard.check.assert_not_called()
+    mock_place.assert_not_called()
+    assert "ARBUSDC" in mt._REENTRY_STATE
+
+

@@ -1132,6 +1132,50 @@ def _handle_position_recovery(
         print("Nothing interesting")
 
 
+def _can_pass_buy_quantity_policy(
+    inst, symbol: str, current_price: float, requested_qty: float
+) -> bool:
+    """Verify whether provider balance and 24h weight policy permit a positive BUY quantity
+    before invoking external AI guards (PostStopReentryGuard)."""
+    provider = getattr(inst, "provider", None)
+    if provider is None or isinstance(provider, str):
+        return True
+    if not callable(getattr(provider, "quantity_decision", None)):
+        return True
+    if not callable(getattr(provider, "free_balance", None)):
+        return True
+    try:
+        from providers.quantity import resolve_assets
+        base_asset, quote_asset = resolve_assets(
+            symbol,
+            getattr(inst, "base", None),
+            getattr(inst, "quote", None),
+        )
+        decision = provider.quantity_decision(
+            symbol,
+            "BUY",
+            current_price,
+            requested_qty,
+            base=base_asset,
+            quote=quote_asset,
+            cancelorders=False,
+            hours=float(MT_BUY_SAFEBACK_HOURS),
+            apply_policy=True,
+            market=False,
+        )
+        if decision is not None and float(getattr(decision, "final_qty", 0.0) or 0.0) <= 0.0:
+            refuse_reason = getattr(decision, "refuse_reason", None) or "qty_zero_after_policy"
+            balance_asset = getattr(decision, "balance_asset", None) or quote_asset or "quote"
+            print(
+                f"[{symbol}] Post-STOP re-entry deferred before AI guard: "
+                f"{refuse_reason} asset={balance_asset}"
+            )
+            return False
+    except Exception:
+        return True
+    return True
+
+
 def _apply_post_stop_ai_guard(
     symbol: str,
     current_price: float,
@@ -1543,6 +1587,11 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             return
 
         if last_exit_kind == "STOP":
+            if not _can_pass_buy_quantity_policy(inst, symbol, current_price, _initial_buy_qty):
+                if prev_reentry_state:
+                    _REENTRY_STATE[symbol] = prev_reentry_state
+                    _save_mt_state()
+                return
             print(f"[{symbol}] Post-STOP recovery bounce confirmed: {reentry_dec.reason}")
             allowed, buy_budget, buy_qty_cfg, qty = _apply_post_stop_ai_guard(
                 symbol, current_price, sell_price, sell_time, reentry_snap,
