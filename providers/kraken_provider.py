@@ -210,7 +210,10 @@ class KrakenProvider(MarketDataProvider):
     def free_balance(self, asset: str) -> Optional[float]:
         try:
             bal = self._client().balance() or {}
-            for key in (asset, "X" + asset, "Z" + asset, asset + ".F"):
+            candidates = [asset, "X" + asset, "Z" + asset, asset + ".F"]
+            if str(asset or "").upper() == "BTC":
+                candidates.extend(["XBT", "XXBT", "XBT.F", "XXBT.F"])
+            for key in candidates:
                 if key in bal:
                     return float(bal[key] or 0.0)
             return 0.0
@@ -310,7 +313,9 @@ class KrakenProvider(MarketDataProvider):
         items = data.get("items") or {}
         ft = data.get("fetchtime") or {}
         su = symbol.upper()
-        key = next((k for k in items if su in k.upper() or k.upper() in su), None)
+        key = next((k for k in items if _kraken_pair_matches(symbol, k)), None)
+        if key is None:
+            key = next((k for k in items if su in k.upper() or k.upper() in su), None)
         if key is None:
             return None
         if (time.time() * 1000.0 - float(ft.get(key, 0))) > _CACHE_MAX_STALE_S * 1000.0:
@@ -334,7 +339,7 @@ class KrakenProvider(MarketDataProvider):
         rows = []
         for tr in trades.values():
             p = str(tr.get("pair", "")).upper()
-            if su not in p and p not in su:
+            if not (_kraken_pair_matches(symbol, p) or su in p or (p and p in su)):
                 continue
             rows.append({
                 "side": "BUY" if str(tr.get("type", "")).lower() == "buy" else "SELL",

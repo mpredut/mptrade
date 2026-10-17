@@ -290,7 +290,10 @@ class HyperliquidProvider(MarketDataProvider):
             raise ProviderError(f"open_orders({symbol}): Hyperliquid client or pair unavailable")
         try:
             out = []
-            orders = c.open_orders(pair)
+            if "open_orders_strict" in type(c).__dict__ and "open_orders" not in getattr(c, "__dict__", {}):
+                orders = c.open_orders_strict(pair)
+            else:
+                orders = c.open_orders(pair)
             if orders is None or not isinstance(orders, list):
                 raise ProviderError(
                     f"open_orders({symbol}): open_orders returned unexpected type {type(orders).__name__ if orders is not None else 'None'}"
@@ -663,7 +666,10 @@ class HyperliquidProvider(MarketDataProvider):
                 raise ProviderError(
                     f"order_status({order_id}): invalid order sizes"
                 ) from e
-            expected_filled = max(0.0, original - remaining)
+            if venue_status in {"open", "filled"} or remaining > 0:
+                expected_filled = max(0.0, original - remaining)
+            else:
+                expected_filled = 0.0
             tolerance = max(1e-12, original * 1e-9)
             if expected_filled > filled + tolerance:
                 # Status may arrive before user_fills. Do not declare a terminal

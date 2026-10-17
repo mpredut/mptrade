@@ -42,6 +42,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from cachepaths import cache_path
 from instrument_registry import symbols_for
+from providers.kraken_provider import _kraken_pair_key, _kraken_pair_matches
 
 load_env_stack(os.environ.get("ENV_FILE", os.path.join(_HERE, ".env")))
 
@@ -73,8 +74,24 @@ MODE = required_env("KRAKEN_CACHE_MODE").lower()
 WS_URL = "wss://ws-auth.kraken.com/"      # authenticated endpoint for private ownTrades
 CACHE_FILE = cache_path("cache_trade_kraken.json")
 LEDGER_LOOKBACK_S = required_float_env("KRAKEN_CACHE_LOOKBACK_H") * 3600
-# USD-like quote assets map to symbol suffixes; all others (HYPE, BTC, etc.) are base assets.
-_QUOTE = {"ZUSD": "USD", "USD": "USD", "USDC": "USDC", "USDG": "USDG", "ZEUR": "EUR"}
+# USD-like and EUR quote assets map to symbol suffixes; all others (HYPE, BTC, etc.) are base assets.
+_QUOTE = {
+    "ZUSD": "USD", "USD": "USD", "USDC": "USDC", "USDG": "USDG",
+    "ZEUR": "EUR", "EUR": "EUR", "USDT": "USDT", "ZUSDT": "USDT",
+}
+
+
+def _match_configured_pair(symbol: str | None) -> str | None:
+    """Resolve a raw or WS Kraken pair to its configured PAIRS entry (or canonical key if '*' is enabled)."""
+    raw = str(symbol or "").strip().upper()
+    if not raw:
+        return None
+    if PAIRS and "*" not in PAIRS:
+        for configured in PAIRS:
+            if configured == raw or _kraken_pair_matches(configured, raw):
+                return configured
+        return None
+    return _kraken_pair_key(raw) or raw
 
 
 def _normalize(txid, tr):
@@ -116,8 +133,12 @@ def _ledger_to_fills(ledger):
             continue
         if ba == 0:
             continue
+        raw_base = str(base["asset"]).upper()
+        if raw_base.endswith(".F"):
+            raw_base = raw_base[:-2]
+        raw_symbol = raw_base + _QUOTE[str(quote["asset"]).upper()]
         fills.append({
-            "symbol": str(base["asset"]).upper() + _QUOTE[str(quote["asset"]).upper()],
+            "symbol": raw_symbol,
             "id": str(refid), "orderId": str(refid),
             "price": abs(qa) / abs(ba), "qty": abs(ba),
             "time": int(float(base.get("time", 0)) * 1000),
@@ -132,15 +153,19 @@ def _fetch_rest_into(client, cache):
     execution because spot TradesHistory does not include instant buys."""
     res = client._private("Ledgers", {"start": int(time.time() - LEDGER_LOOKBACK_S)}, fresh=True)
     fills = _ledger_to_fills((res or {}).get("ledger", {}) or {})
-    by_sym = {}
+    now_ms = int(time.time() * 1000)
+    by_sym = {sym: [] for sym in (PAIRS or ()) if sym and sym != "*"}
     for f in fills:
-        if PAIRS and "*" not in PAIRS and f["symbol"] not in PAIRS:
+        sym = _match_configured_pair(f.get("symbol"))
+        if sym is None:
             continue
-        by_sym.setdefault(f["symbol"], []).append(f)
+        f_copy = dict(f)
+        f_copy["symbol"] = sym
+        by_sym.setdefault(sym, []).append(f_copy)
     for sym, lst in by_sym.items():
         lst.sort(key=lambda t: t["time"])                # ascending, so the last item is newest
         cache["items"][sym] = lst
-        cache["fetchtime"][sym] = int(time.time() * 1000)
+        cache["fetchtime"][sym] = now_ms
 
 
 def poll_loop(client):
@@ -205,13 +230,15 @@ def ws_loop(client):
         for entry in data[0]:
             for txid, tr in entry.items():
                 n = _normalize(txid, tr)
-                if PAIRS and "*" not in PAIRS and n["symbol"] not in PAIRS:
+                sym = _match_configured_pair(n.get("symbol"))
+                if sym is None:
                     continue
-                bucket = cache["items"].setdefault(n["symbol"], [])
+                n["symbol"] = sym
+                bucket = cache["items"].setdefault(sym, [])
                 if not any(t["id"] == n["id"] for t in bucket):
                     bucket.append(n)
                     bucket.sort(key=lambda t: t["time"])
-                    cache["fetchtime"][n["symbol"]] = int(time.time() * 1000)
+                    cache["fetchtime"][sym] = int(time.time() * 1000)
                     changed = True
         if changed:
             _atomic_write(CACHE_FILE, cache)             # immediate fill write for zero lag

@@ -42,10 +42,10 @@ _CACHE_MAX = 1024
 _READ_TTL = {                     # seconds; unlisted methods are not cached (e.g. QueryOrders)
     # OHLC is capped at 15 minutes; _read_ttl shortens it for short intervals.
     "Ticker": 3.0, "AssetPairs": 3600.0, "OHLC": 900.0,
-    "Balance": 15.0, "TradesHistory": 20.0, "ClosedOrders": 20.0, "OpenOrders": 5.0,
+    "Balance": 15.0, "BalanceEx": 15.0, "TradesHistory": 20.0, "ClosedOrders": 20.0, "OpenOrders": 5.0,
 }
 _WRITE_METHODS = ("AddOrder", "CancelOrder", "CancelAll")
-_INVALIDATE_ON_WRITE = ("Balance", "TradesHistory", "ClosedOrders", "OpenOrders")
+_INVALIDATE_ON_WRITE = ("Balance", "BalanceEx", "TradesHistory", "ClosedOrders", "OpenOrders")
 
 
 def _params_key(params: dict) -> tuple:

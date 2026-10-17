@@ -27,6 +27,7 @@ logging, and notifications. See kraken/test_trailing_kraken.py.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 import time
@@ -46,7 +47,7 @@ from providers.execution_audit import (  # noqa: E402
     AuditedStrategyExecutor,
     intent_client_order_id,
 )
-from providers.kraken_provider import KrakenProvider  # noqa: E402
+from providers.kraken_provider import KrakenProvider, _kraken_pair_matches  # noqa: E402
 from order_retry import (  # noqa: E402
     StrategyExecutorLifecycleApi,
     TrackedOrderLifecycle,
@@ -132,13 +133,27 @@ class KrakenTrailing:
     def trail_pct_for(self, asset: str) -> float:
         return TRAIL_PCT.get(asset, DEFAULT_TRAIL_PCT)
 
+    def _balance_ex_entry(self, asset: str) -> dict | None:
+        bx_map = self.client._private("BalanceEx") or {}
+        if not isinstance(bx_map, dict):
+            return None
+        candidates = [asset, f"X{asset}", f"Z{asset}", f"{asset}.F"]
+        if str(asset or "").upper() == "BTC":
+            candidates.extend(["XBT", "XXBT", "XBT.F", "XXBT.F"])
+        for key in candidates:
+            entry = bx_map.get(key)
+            if isinstance(entry, dict):
+                return entry
+        return None
+
     def _free(self, asset: str) -> float:
         """Return FREE balance (total minus order holds), excluding the bot position."""
-        bx = self.client._private("BalanceEx").get(asset)
+        bx = self._balance_ex_entry(asset)
         if not bx:
             return 0.0
         try:
-            return float(bx.get("balance", 0)) - float(bx.get("hold_trade", 0))
+            free = float(bx.get("balance", 0)) - float(bx.get("hold_trade", 0))
+            return max(0.0, free) if math.isfinite(free) else 0.0
         except (TypeError, ValueError):
             return 0.0
 
@@ -168,7 +183,7 @@ class KrakenTrailing:
         return self._free(asset)
 
     def total_qty(self, asset: str) -> float:
-        bx = self.client._private("BalanceEx").get(asset)
+        bx = self._balance_ex_entry(asset)
         if not bx:
             return 0.0
         try:
@@ -183,8 +198,9 @@ class KrakenTrailing:
             open_ords = self.client.open_orders() or {}
             cancelled_any = False
             for txid, ord_info in open_ords.items():
-                descr = ord_info.get("descr", {})
-                if str(descr.get("type", "")).lower() == "sell" and descr.get("pair") == pair:
+                descr = ord_info.get("descr", {}) if isinstance(ord_info, dict) else {}
+                ord_pair = str(descr.get("pair") or (ord_info.get("pair") if isinstance(ord_info, dict) else "") or "")
+                if str(descr.get("type", "")).lower() == "sell" and (ord_pair == pair or _kraken_pair_matches(pair, ord_pair)):
                     self.client.cancel_order(txid)
                     cancelled_any = True
             return cancelled_any
@@ -262,7 +278,7 @@ class KrakenTrailing:
         limit = price if use_market else (price * 0.995)
         intent = self._order_intent(
             "SELL", key, asset, pair, qty, limit, anchor=peak, trail=trail,
-            metadata={"market": use_market})
+            market=use_market)
         result = self._submit_lifecycle_order(
             intent, persist, pair, "SELL", qty, limit,
             kind="TRAIL_SELL", bypass_guards={"all"}, market=use_market)

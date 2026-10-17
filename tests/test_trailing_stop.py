@@ -688,6 +688,7 @@ class TestMinProfit(Base):
             api = FakeApi(200.0, free=2.0)
             ts = self.ts(api, min_profit_pct=5.0)
             ts.rebuy_enabled_for = lambda symbol: True
+            ts.trend = lambda _pair: 0.0
             ts.check_once()  # Peak = 200.0
             api.price = 150.0  # Crash below 156.0 (-22% of 200) -> triggers exit SELL
             ts.check_once()

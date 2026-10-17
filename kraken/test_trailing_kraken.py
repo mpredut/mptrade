@@ -241,6 +241,74 @@ class TestRebuyGuardsKraken(Base):
         self.assertEqual(c.orders[0]["side"], "sell")
         self.assertEqual(c.orders[0]["volume"], 5.0)
 
+    def test_emergency_unlock_cancels_resting_sell_and_executes_stop(self):
+        """When all balance is locked in a resting SELL order and price crashes past stop,
+        total_qty + unlock_qty cancel the resting order (including slash pair aliases) and sell."""
+        class FakeUnlockK(FakeK):
+            def __init__(self):
+                super().__init__(price=60.0, total=20.0, held=0.0)
+                self.cancelled = []
+
+            def open_orders(self):
+                if self.held > 0:
+                    return {
+                        "OPEN-TP-1": {
+                            "descr": {"type": "sell", "pair": "HYPE/USD", "price": "75.0"},
+                        }
+                    }
+                return {}
+
+            def cancel_order(self, txid):
+                self.cancelled.append(txid)
+                self.held = 0.0
+                return {"count": 1}
+
+        c = FakeUnlockK()
+        ts = self.ts(c)
+        ts.check_once()  # peak=60.0 while free=20.0
+
+        # Lock all 20.0 HYPE in a resting TP order, then crash price to 48.0 (-20% > 18%)
+        c.held = 20.0
+        c.price = 48.0
+        ts.check_once()
+
+        self.assertEqual(c.cancelled, ["OPEN-TP-1"])
+        self.assertEqual(len(c.orders), 1)
+        self.assertEqual(c.orders[0]["side"], "sell")
+        self.assertAlmostEqual(c.orders[0]["volume"], 20.0)
+
+    def test_execute_sell_metadata_is_not_double_nested(self):
+        c = FakeK(60.0, total=10.0, held=0.0)
+        ts = self.ts(c)
+        res = ts.execute_sell("HYPE", "HYPE", "HYPEUSD", 10.0, 48.0, 60.0, 18.0, persist=lambda _: None)
+        self.assertTrue(res.intent.get("market"))
+        self.assertNotIn("metadata", res.intent)
+
+    def test_cachemanager_fetch_rest_into_refreshes_empty_configured_pairs_and_matches_aliases(self):
+        import kraken_cachemanager as kcm
+
+        class FakeLedgerClient:
+            def _private(self, method, data=None, fresh=False):
+                return {
+                    "ledger": {
+                        "L1": {"refid": "R1", "asset": "HYPE.F", "amount": "5.0", "type": "trade", "time": 1700000000.0},
+                        "L2": {"refid": "R1", "asset": "ZUSD", "amount": "-250.0", "type": "trade", "time": 1700000000.0},
+                    }
+                }
+
+        cache = {"items": {"TAOUSD": [{"id": "OLD"}]}, "fetchtime": {}}
+        saved_pairs = list(kcm.PAIRS)
+        try:
+            kcm.PAIRS[:] = ["HYPEUSD", "TAOUSD"]
+            kcm._fetch_rest_into(FakeLedgerClient(), cache)
+            self.assertEqual(len(cache["items"]["HYPEUSD"]), 1)
+            self.assertEqual(cache["items"]["HYPEUSD"][0]["symbol"], "HYPEUSD")
+            self.assertEqual(cache["items"]["TAOUSD"], [])
+            self.assertIn("HYPEUSD", cache["fetchtime"])
+            self.assertIn("TAOUSD", cache["fetchtime"])
+        finally:
+            kcm.PAIRS[:] = saved_pairs
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
