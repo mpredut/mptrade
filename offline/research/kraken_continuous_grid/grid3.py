@@ -51,9 +51,7 @@ def task(args):
 if __name__ == "__main__":
     assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
     for a in assets:
-        _bars, _ohlc, _ = grid.load_asset(a)
-        if len(_ohlc) > WARM:
-            grid.replay(_ohlc[WARM:], _ohlc[:WARM], grid.LIVE, 0)
+        grid.load_asset(a)
     todo = [(a, c) for a in assets for c in CFGS]
     canon_groups: dict = {}
     canon_todo = []

@@ -129,6 +129,8 @@ def load_asset(asset):
         return cached
     bars = load(os.path.join(DATA, f"{asset}_240m.csv"))
     ohlc = [b[1:] for b in bars]
+    if len(ohlc) > WARM:
+        rp.prewarm_trend_series(ohlc)
     bar_years = [datetime.fromtimestamp(b[0], timezone.utc).year for b in bars]
     years = sorted(set(bar_years))
     year_slices = []
@@ -187,9 +189,7 @@ def task(args):
 if __name__ == "__main__":
     assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
     for a in assets:
-        _bars, _ohlc, _ = load_asset(a)
-        if len(_ohlc) > WARM:
-            replay(_ohlc[WARM:], _ohlc[:WARM], LIVE, 0)
+        load_asset(a)
     done = set()
     if os.path.exists(OUT):
         for line in open(OUT):

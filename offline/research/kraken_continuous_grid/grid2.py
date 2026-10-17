@@ -130,9 +130,31 @@ def task(args):
 if __name__ == "__main__":
     assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
     for a in assets:
-        _bars, _ohlc, _ = grid.load_asset(a)
-        if len(_ohlc) > WARM:
-            replay(_ohlc[WARM:], _ohlc[:WARM], LIVE, 0, 0.26)
+        grid.load_asset(a)
+    if os.path.exists(grid.OUT):
+        with open(grid.OUT) as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                r = json.loads(line)
+                if "error" not in r and r.get("cfg") in ALL and r.get("asset") in assets:
+                    bars, _, _ = grid.load_asset(r["asset"])
+                    if len(bars) == r.get("bars"):
+                        p, pk = ALL[r["cfg"]]
+                        ck = (
+                            r["asset"], len(bars), bars[0][0] if bars else 0, bars[-1][0] if bars else 0,
+                            repr(p), bool(pk), "std",
+                        )
+                        _VIEWS_CACHE[ck] = {
+                            "kind": "views",
+                            "fee": "std",
+                            "asset": r["asset"],
+                            "cfg": r["cfg"],
+                            "bars": r["bars"],
+                            "full": r["full"],
+                            "w30": r["w30"],
+                            "w90": r["w90"],
+                        }
     assets_by_len = sorted(assets, key=lambda a: -len(grid.load_asset(a)[0]))
     todo = []
     for a in assets_by_len:

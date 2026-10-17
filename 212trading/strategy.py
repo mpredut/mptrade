@@ -1440,7 +1440,8 @@ class Strategy:
             )
             in_bounce_watch = bool(self.ticker in self.exit_manager.sl_bounce_state)
             if not in_sl and not in_bounce_watch:
-                self.exit_manager.reset_sl_episode(self.ticker)  # Leaving SL territory ends the episode floor lock
+                if self.exit_manager.sl_episode_state:
+                    self.exit_manager.reset_sl_episode(self.ticker)  # Leaving SL territory ends the episode floor lock
                 self.s["sl_alerted"] = False
                 self.s["sl_pending"] = False
                 self.s.pop("sl_fail_until", None)
@@ -1685,17 +1686,9 @@ class Strategy:
             if self.p.tp_mdhtp_enabled and self.exit_manager is not None:
                 tick_time = self._now()
                 pending_exit = self.s.get("tp_pending_exit")
+                decision = None
 
                 if pending_exit is None:
-                    self.exit_manager.config.tp_trend_ride_enabled = True
-                    self.exit_manager.config.tp_profit_floor_min_pct = (
-                        (self.p.trail_min_profit_pct or 0.0) / 100.0
-                    )
-                    self.exit_manager.config.tp_pullback_pct = (
-                        (self.p.trail_pct / 100.0) if self.p.trail_pct > 0 else 0.015
-                    )
-                    self.exit_manager.config.tp_stagnation_max_sec = self.p.tp_stagnation_max_sec
-
                     tp_thresh = self.p.takeprofit_pct / 100.0
                     in_tp_zone = (
                         not self.replay_mode
@@ -1703,29 +1696,43 @@ class Strategy:
                         or self.exit_manager.config.hard_tp_enabled
                         or (price > avg and (price - avg) / avg >= tp_thresh * 0.98)
                     )
-                    snapshot = self._create_position_snapshot(
-                        price, avg, held,
-                        include_vol=not self.replay_mode,
-                        include_trend=in_tp_zone,
-                    )
+                    if not in_tp_zone and price > 0 and avg > 0:
+                        self.s["trail_peak"] = None
+                        if self.s["orders"]:
+                            self._cancel_open("SELL")
+                    else:
+                        self.exit_manager.config.tp_trend_ride_enabled = True
+                        self.exit_manager.config.tp_profit_floor_min_pct = (
+                            (self.p.trail_min_profit_pct or 0.0) / 100.0
+                        )
+                        self.exit_manager.config.tp_pullback_pct = (
+                            (self.p.trail_pct / 100.0) if self.p.trail_pct > 0 else 0.015
+                        )
+                        self.exit_manager.config.tp_stagnation_max_sec = self.p.tp_stagnation_max_sec
 
-                    decision = self.exit_manager.evaluate_take_profit(
-                        snapshot, custom_threshold=tp_thresh
-                    )
+                        snapshot = self._create_position_snapshot(
+                            price, avg, held,
+                            include_vol=not self.replay_mode,
+                            include_trend=in_tp_zone,
+                        )
 
-                    if decision.action in (ExitAction.SELL, ExitAction.PARTIAL_SELL) and decision.should_exit:
-                        pending_exit = {
-                            "action": decision.action.value,
-                            "sell_fraction": (
-                                decision.sell_fraction
-                                if decision.action == ExitAction.PARTIAL_SELL and decision.sell_fraction
-                                else 1.0
-                            ),
-                            "reason": decision.reason,
-                            "time": tick_time,
-                        }
-                        self.s["tp_pending_exit"] = pending_exit
-                        log(f"  [STRAT] MDHTP EXIT TRIGGERED ({decision.reason}) — initiating cancellation & exit sequence")
+                        decision = self.exit_manager.evaluate_take_profit(
+                            snapshot, custom_threshold=tp_thresh
+                        )
+
+                        if decision.action in (ExitAction.SELL, ExitAction.PARTIAL_SELL) and decision.should_exit:
+                            pending_exit = {
+                                "action": decision.action.value,
+                                "sell_fraction": (
+                                    decision.sell_fraction
+                                    if decision.action == ExitAction.PARTIAL_SELL and decision.sell_fraction
+                                    else 1.0
+                                ),
+                                "reason": decision.reason,
+                                "time": tick_time,
+                            }
+                            self.s["tp_pending_exit"] = pending_exit
+                            log(f"  [STRAT] MDHTP EXIT TRIGGERED ({decision.reason}) — initiating cancellation & exit sequence")
 
                 if pending_exit:
                     existing_exit = next(
@@ -1775,10 +1782,10 @@ class Strategy:
                     else:
                         log(f"  ! [STRAT] MDHTP EXIT order refused/failed ({pending_exit.get('reason')}) — intent retained for retry")
                         return
-                elif decision.reason == "not_in_tp_territory":
+                elif decision is not None and decision.reason == "not_in_tp_territory":
                     self.s["trail_peak"] = None
                     self._cancel_open("SELL")
-                elif decision.action == ExitAction.HOLD:
+                elif decision is not None and decision.action == ExitAction.HOLD:
                     if self.ticker in self.exit_manager.tp_ride_state:
                         ride_state = self.exit_manager.tp_ride_state.get(self.ticker, {})
                         peak_px = ride_state.get("peak_price", price)

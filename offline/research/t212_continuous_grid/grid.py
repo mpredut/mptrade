@@ -84,6 +84,7 @@ WARM, W90_1H, STEP_1H = 12, 90 * 7, 30 * 7   # ~7 regular-session 1h bars per da
 
 
 _LOAD_CACHE: dict = {}
+_SPLIT_CACHE: dict = {}
 _TASK_CACHE: dict = {}
 
 
@@ -94,12 +95,17 @@ def load(asset, itv):
     path = os.path.join(DATA, f"{asset}_{itv}.csv")
     if not os.path.exists(path):
         _LOAD_CACHE[key] = None
+        _SPLIT_CACHE[key] = (None, None)
         return None
     with open(path) as fh:
         rows = [(int(r["timestamp"]), float(r["open"]), float(r["high"]), float(r["low"]),
                  float(r["close"])) for r in csv.DictReader(fh)]
     res = rows if len(rows) > WARM + 20 else None
     _LOAD_CACHE[key] = res
+    if res is not None:
+        _SPLIT_CACHE[key] = ([b[1:] for b in res], [b[0] for b in res])
+    else:
+        _SPLIT_CACHE[key] = (None, None)
     return res
 
 
@@ -155,10 +161,13 @@ def task(args):
         t0 = time.time()
         for itv, minutes, bars in (("1h", 60, bars_1h), ("1d", 1440, bars_1d)):
             if bars:
-                out[itv] = run(bars, params, peak, minutes)
+                ohlc, ts = _SPLIT_CACHE.get((asset, itv), (None, None))
+                out[itv] = run(bars, params, peak, minutes, ohlc=ohlc, ts=ts)
         if bars_1h:
-            ohlc = [b[1:] for b in bars_1h]
-            ts = [b[0] for b in bars_1h]
+            ohlc, ts = _SPLIT_CACHE.get((asset, "1h"), (None, None))
+            if ohlc is None:
+                ohlc = [b[1:] for b in bars_1h]
+                ts = [b[0] for b in bars_1h]
             wins = []
             for s in range(WARM, len(bars_1h) - W90_1H + 1, STEP_1H):
                 r = run(
@@ -182,14 +191,9 @@ if __name__ == "__main__":
     if not assets:
         print(f"[t212grid] No CSV data files found in {DATA}. Run fetch.py first.", flush=True)
         sys.exit(0)
-    base_p, _ = params_for("nvda", "live")
     for a in assets:
-        b1h = load(a, "1h")
-        b1d = load(a, "1d")
-        if b1h:
-            run(b1h, base_p, 0, 60)
-        if b1d:
-            run(b1d, base_p, 0, 1440)
+        load(a, "1h")
+        load(a, "1d")
     todo = []
     for profile in PROFILES:
         home = HOME[profile]
