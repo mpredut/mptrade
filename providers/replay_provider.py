@@ -67,14 +67,18 @@ class ReplayMarketDataProvider(MarketDataProvider):
         self._last_ts: Dict[str, float] = {}
         self._fee_pct = fee_pct
         self._orders: Dict[str, List[dict]] = {s: [] for s in price_series}
+        self._orders_version: int = 0
+        self._orders_cache: Dict[Tuple[str, Optional[str]], Tuple[int, float, float, List[dict]]] = {}
         self._positions: Dict[str, Tuple[float, float]] = {}   # symbol -> (quantity, total cost)
-        self._precisions: Dict[str, PairPrecision] = {
-            s: PairPrecision(
+        self._asset_to_symbol: Dict[str, str] = {}
+        self._precisions: Dict[str, PairPrecision] = {}
+        for s in price_series:
+            base = _base_asset(s)
+            self._asset_to_symbol[base] = s
+            self._precisions[s] = PairPrecision(
                 price_decimals=2, volume_decimals=4, order_min=0.0,
-                base_asset=_base_asset(s),
+                base_asset=base,
             )
-            for s in price_series
-        }
 
     @property
     def name(self) -> str:
@@ -86,11 +90,13 @@ class ReplayMarketDataProvider(MarketDataProvider):
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
         prec = self._precisions.get(symbol)
         if prec is None:
+            base = _base_asset(symbol)
             prec = PairPrecision(
                 price_decimals=2, volume_decimals=4, order_min=0.0,
-                base_asset=_base_asset(symbol),
+                base_asset=base,
             )
             self._precisions[symbol] = prec
+            self._asset_to_symbol.setdefault(base, symbol)
         return prec
 
     # ── Clock advancement: called by the backtest driver, not bot code ───────
@@ -145,27 +151,51 @@ class ReplayMarketDataProvider(MarketDataProvider):
     # ── Simulated offline broker account ────────────────────────────────────
     def free_balance(self, asset: str) -> Optional[float]:
         # Find the symbol whose position uses this asset as its base (BTCUSDC -> BTC).
+        sym = self._asset_to_symbol.get(asset)
+        if sym is not None:
+            return self._positions.get(sym, (0.0, 0.0))[0]
         for symbol in self._series:
             if _base_asset(symbol) == asset:
-                qty, _cost = self._positions.get(symbol, (0.0, 0.0))
-                return qty
+                self._asset_to_symbol[asset] = symbol
+                return self._positions.get(symbol, (0.0, 0.0))[0]
         return 0.0
 
+    def has_orders_since(self, symbol: str, since_s: float) -> bool:
+        """Fast O(1) check whether any order for ``symbol`` exists within ``since_s``."""
+        orders = self._orders.get(symbol)
+        if not orders:
+            return False
+        cutoff_ms = (self._last_ts.get(symbol, 0.0) - since_s) * 1000.0
+        return orders[-1]["timestamp"] >= cutoff_ms
+
     def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
-        now = self.now(symbol)
-        cutoff_ms = (now - since_s) * 1000.0
-        orders = self._orders.get(symbol, [])
+        orders = self._orders.get(symbol)
         if not orders:
             return []
+        now = self._last_ts.get(symbol, 0.0)
+        cutoff_ms = (now - since_s) * 1000.0
+        if orders[-1]["timestamp"] < cutoff_ms:
+            return []
         side_u = side.upper() if side else None
+        cache_key = (symbol, side_u)
+        cached = self._orders_cache.get(cache_key)
+        if cached is not None:
+            ver, low_ms, high_ms, res = cached
+            if ver == self._orders_version and low_ms < cutoff_ms <= high_ms:
+                return list(res)
         out: List[dict] = []
+        low_ms = -1e18
         for o in reversed(orders):
-            if o["timestamp"] < cutoff_ms:
+            ts = o["timestamp"]
+            if ts < cutoff_ms:
+                low_ms = float(ts)
                 break
             if side_u is None or o["side"] == side_u:
                 out.append(o)
         out.reverse()
-        return out
+        high_ms = float(out[0]["timestamp"]) if out else 1e18
+        self._orders_cache[cache_key] = (self._orders_version, low_ms, high_ms, out)
+        return list(out)
 
     def position(self, symbol: str) -> Tuple[float, float]:
         """Return (quantity, total_cost) for the current simulated position.
@@ -207,6 +237,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
         self._orders.setdefault(symbol, []).append(
             {"side": side, "price": fill_px, "qty": executed_qty,
              "timestamp": ts_ms})
+        self._orders_version += 1
         self._positions[symbol] = (pos_qty, pos_cost)
         return {"orderId": -1, "backtest": True}
 

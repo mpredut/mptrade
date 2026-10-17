@@ -1,3 +1,4 @@
+import builtins
 import os
 import time
 import json
@@ -194,15 +195,18 @@ def is_trend_up(symbol, window_seconds=None, now=None):
 
 def get_relevant_trade(trade_orders, trade_type, threshold_s=0, symbol=None, now_fn=None):
     """Return latest execution price and timestamp for trade_type in normalized format."""
-    now_fn = now_fn or time.time
     if not trade_orders:
-        print(f"Warning: No {trade_type} transactions for that currency!!!")
+        if builtins.print.__name__ != "_dummy_print":
+            print(f"Warning: No {trade_type} transactions for that currency!!!")
         return None, 0, True
 
-    trade_orders.sort(key=lambda x: x['timestamp'], reverse=True)
-    trade_price = float(trade_orders[0]['price'])
-    trade_time = float(trade_orders[0]['timestamp']) / 1000  # Seconds.
-    print(f"{trade_type.capitalize()} price for {symbol}: {trade_price} at {u.timeToHMS(trade_time)}")
+    if len(trade_orders) > 1:
+        trade_orders.sort(key=lambda x: x['timestamp'], reverse=True)
+    first = trade_orders[0]
+    trade_price = float(first['price'])
+    trade_time = float(first['timestamp']) / 1000.0  # Seconds.
+    if builtins.print.__name__ != "_dummy_print":
+        print(f"{trade_type.capitalize()} price for {symbol}: {trade_price} at {u.timeToHMS(trade_time)}")
     return trade_price, trade_time, True
 
 
@@ -233,12 +237,20 @@ def clear_position_stats_cache():
 def _summarize_orders(orders):
     if not orders:
         return 0.0, 0.0, (0, 0.0, 0.0, 0, 0)
+    if len(orders) == 1:
+        o = orders[0]
+        q = float(o.get("qty") or o.get("quantity") or 0.0)
+        p = float(o.get("price") or 0.0)
+        ts = int(o.get("timestamp") or 0)
+        val = p * q
+        first_id = o.get("id") or o.get("orderId") or ts
+        return q, val, (1, round(q, 8), round(val, 4), ts, first_id)
     total_qty = 0.0
     total_val = 0.0
     latest_ts = 0
     for o in orders:
-        q = float(o.get("qty", o.get("quantity", 0.0)) or 0.0)
-        p = float(o.get("price", 0.0) or 0.0)
+        q = float(o.get("qty") or o.get("quantity") or 0.0)
+        p = float(o.get("price") or 0.0)
         ts = int(o.get("timestamp") or 0)
         total_qty += q
         total_val += p * q
@@ -742,8 +754,11 @@ def _is_pending_exit_active(symbol: str, inst, sellable_qty: float, min_qty: flo
     return False
 
 
-def _is_trend_gate_deferred(symbol: str) -> bool:
+def _is_trend_gate_deferred(symbol: str, inst: Any = None) -> bool:
     """Check whether the trend gate would defer a SELL placement."""
+    prov = _inst_provider(inst)
+    if prov and str(prov).strip().lower() in ("replay", "backtest", "sim"):
+        return False
     try:
         import cacheManager as cm
         short_tm = cm.get_short_trend_manager()
@@ -933,7 +948,7 @@ def _execute_stop_loss(
     print(f"Price decreased with {snapshot.loss_pct}% by more than {lost_threshold * 100}% versus buy price! (decision={sl_reason})")
 
     # Pre-flight gate check: verify trend manager will not defer
-    if not sl_decision.forced and _is_trend_gate_deferred(symbol):
+    if not sl_decision.forced and _is_trend_gate_deferred(symbol, inst):
         print(f"[{symbol}] Stop-Loss placement would be deferred by trend gate (trend up) — keeping resting TP orders intact!")
         if prev_sl_state:
             _SL_BOUNCE_STATE[symbol] = prev_sl_state
@@ -997,12 +1012,16 @@ def _execute_stop_loss(
         return False
 
 
+_CLEAR_SMART_SL_RECOVERED_FN = None
+
+
 def _handle_position_recovery(
     inst,
     snapshot: PositionSnapshot,
     lost_threshold: float,
 ):
     """Reset tracking structures and notify Smart-SL guard when position recovers into neutral/safe territory."""
+    global _CLEAR_SMART_SL_RECOVERED_FN
     symbol = snapshot.symbol
     if symbol in _SL_BOUNCE_STATE:
         print(f"[{symbol}] 🎉 Stop-Loss bounce successfully recovered! Position saved from dip "
@@ -1012,19 +1031,23 @@ def _handle_position_recovery(
     _TP_RIDE_STATE.pop(symbol, None)
     _save_mt_state()
     try:
-        from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss_if_recovered
-        clear_smart_stop_loss_if_recovered(
+        fn = _CLEAR_SMART_SL_RECOVERED_FN
+        if fn is None:
+            from intelligence.external.guards.smart_stop_loss_guard import clear_smart_stop_loss_if_recovered as fn
+            _CLEAR_SMART_SL_RECOVERED_FN = fn
+        fn(
             symbol,
             snapshot.loss_ratio,
             lost_threshold,
             now=snapshot.current_time_s,
-            provider=_inst_provider(inst),
+            provider=snapshot.provider or _inst_provider(inst),
             current_price=snapshot.current_price,
             buy_price=snapshot.avg_buy_price,
         )
     except Exception:
         pass
-    print("Nothing interesting")
+    if builtins.print.__name__ != "_dummy_print":
+        print("Nothing interesting")
 
 
 def _apply_post_stop_ai_guard(
@@ -1106,31 +1129,64 @@ def _execute_reentry_buy(
     return False
 
 
+def _resolve_mt_inst_cfg(inst):
+    """Resolve and cache parsed ``mt.*`` instrument parameters against current module defaults."""
+    is_real_inst = type(inst) is _Instrument
+    if is_real_inst:
+        key = (HARD_TP_PCT, HARD_TP_FRACTION, HARD_TP_COOLDOWN_S, TP_REFERENCE)
+        cached = getattr(inst, "_mt_cfg_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+    _g = inst.param("mt", "gain", None, float)
+    def_gain = _g / 100.0 if _g is not None else 0.07
+    _l = inst.param("mt", "lost", None, float)
+    def_lost = _l / 100.0 if _l is not None else 0.033
+    _md = inst.param("mt", "maxage_days", None, float)
+    def_maxage_s = int(_md * 24 * 3600) if _md is not None else 4 * 24 * 3600
+    hard_tp_pct = inst.param("mt", "hardtp", HARD_TP_PCT * 100, float) / 100.0
+    hard_tp_frac = inst.param("mt", "hardtp_fraction", HARD_TP_FRACTION, float)
+    hard_tp_cd = inst.param("mt", "hardtp_cooldown_h", HARD_TP_COOLDOWN_S / 3600.0, float) * 3600
+    tp_ref = inst.param("mt", "ref", TP_REFERENCE)
+    buy_budget = inst.param("mt", "buy_budget", None, float)
+    buy_qty_cfg = inst.param("mt", "buy_qty", None, float)
+    max_budget = inst.param("mt", "max_budget", None, float)
+    min_qty = inst.min_qty() or 0.0
+    prov_label = _inst_provider(inst)
+    vals = (
+        def_gain, def_lost, def_maxage_s,
+        hard_tp_pct, hard_tp_frac, hard_tp_cd,
+        tp_ref, buy_budget, buy_qty_cfg, max_budget,
+        min_qty, prov_label,
+    )
+    if is_real_inst:
+        try:
+            inst._mt_cfg_cache = (key, vals)
+        except AttributeError:
+            pass
+    return vals
+
+
 def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None, lost_threshold=None,
                             now_fn=None):
     """Use injectable ``now_fn`` so replay time can follow its market-data provider."""
     now_fn = now_fn or time.time
     inst = _as_instrument(inst)
     symbol = inst.symbol
+    _verbose = builtins.print.__name__ != "_dummy_print"
+    (
+        _def_gain, _def_lost, _def_maxage_s,
+        hard_tp_pct, hard_tp_frac, hard_tp_cd,
+        tp_ref, buy_budget, buy_qty_cfg, max_budget,
+        min_qty, _prov_label,
+    ) = _resolve_mt_inst_cfg(inst)
     # Per-instrument parameters fall back to arguments and then code defaults.
     if gain_threshold is None:
-        _g = inst.param("mt", "gain", None, float)
-        gain_threshold = _g / 100.0 if _g is not None else 0.07
+        gain_threshold = _def_gain
     if lost_threshold is None:
-        _l = inst.param("mt", "lost", None, float)
-        lost_threshold = _l / 100.0 if _l is not None else 0.033
+        lost_threshold = _def_lost
     if maxage_trade_s is None:
-        _md = inst.param("mt", "maxage_days", None, float)
-        maxage_trade_s = int(_md * 24 * 3600) if _md is not None else 4 * 24 * 3600
-    hard_tp_pct = inst.param("mt", "hardtp", HARD_TP_PCT * 100, float) / 100.0
-    hard_tp_frac = inst.param("mt", "hardtp_fraction", HARD_TP_FRACTION, float)
-    hard_tp_cd = inst.param("mt", "hardtp_cooldown_h", HARD_TP_COOLDOWN_S / 3600.0, float) * 3600
-    tp_ref = inst.param("mt", "ref", TP_REFERENCE)
-    buy_budget = inst.param("mt", "buy_budget", None, float)   # Convert per-buy USD budget to quantity.
-    buy_qty_cfg = inst.param("mt", "buy_qty", None, float)     # Alternative fixed quantity.
-    max_budget = inst.param("mt", "max_budget", None, float)   # Total USD exposure cap.
-    #try:
-    
+        maxage_trade_s = _def_maxage_s
+
     qty = 1 #qty = calculate_position_size(...)
     current_time_s = int(now_fn())
 
@@ -1138,7 +1194,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     trade_orders_buy = inst.orders("BUY", maxage_trade_s)
     trade_orders_sell = inst.orders("SELL", maxage_trade_s)
     if not (trade_orders_buy or trade_orders_sell):
-        print(f"No trade orders found for {symbol} in the last {maxage_trade_s} seconds.")
+        if _verbose:
+            print(f"No trade orders found for {symbol} in the last {maxage_trade_s} seconds.")
         return
     buy_price, buy_time, _ = get_relevant_trade(trade_orders_buy, "BUY", symbol=symbol, now_fn=now_fn)
     sell_price, sell_time, _ = get_relevant_trade(trade_orders_sell, "SELL", symbol=symbol, now_fn=now_fn)
@@ -1154,27 +1211,32 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     # Profit reference is configurable: latest BUY by default or the lookback average.
     if tp_ref == "average" and position["average_buy_price"] > 0:
         buy_price = position["average_buy_price"]
-        print(f"POSITION (referinta=AVG {maxage_trade_s/86400:.0f}z) for {symbol} : {position}")
-    else:
+        if _verbose:
+            print(f"POSITION (referinta=AVG {maxage_trade_s/86400:.0f}z) for {symbol} : {position}")
+    elif _verbose:
         print(f"POSITION (reference=the last buy {buy_price}) for {symbol} : {position}")
     if tp_ref == "average" and position["average_sell_price"] > 0:
         sell_price = position["average_sell_price"]
-        print(f"POSITION (referinta SELL=AVG) for {symbol} : {position}")
+        if _verbose:
+            print(f"POSITION (referinta SELL=AVG) for {symbol} : {position}")
     # 2. Fetch current price through the facade for the instrument's provider.
     current_price = inst.price()
     if current_price is None or not math.isfinite(float(current_price)) or current_price <= 0:
-        print(f"No current price for {symbol} (market closed / unavailable) — skip")
+        if _verbose:
+            print(f"No current price for {symbol} (market closed / unavailable) — skip")
         return
-    print(f"Current price for {symbol}: {current_price}")
+    if _verbose:
+        print(f"Current price for {symbol}: {current_price}")
     avail_qty = inst.free()
     if avail_qty is None:
-        print(f"No available balance snapshot for {symbol} — skip")
+        if _verbose:
+            print(f"No available balance snapshot for {symbol} — skip")
         return
     avail_qty = float(avail_qty)
     if not math.isfinite(avail_qty) or avail_qty < 0:
-        print(f"Invalid available balance for {symbol}: {avail_qty} — skip")
+        if _verbose:
+            print(f"Invalid available balance for {symbol}: {avail_qty} — skip")
         return
-    min_qty = inst.min_qty() or 0.0  # Venue minimum-volume rejection guard.
     isolation = inst.isolation
     owned_qty = max(float(position["net_qty"]), 0.0)
     sellable_qty = min(avail_qty, owned_qty) if isolation == "own_ledger" else avail_qty
@@ -1192,12 +1254,10 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     )
     if trade_orders_buy and not position_closed_by_sell:
         if not buy_price:
-            print(f"No buy_price !!!!!")
+            if _verbose:
+                print(f"No buy_price !!!!!")
             return
 
-        exit_mgr = get_exit_manager()
-        vol_1h = get_symbol_volatility_1h(symbol) or 0.0
-        current_trend_up = bool(is_trend_up(symbol))
         snapshot = PositionSnapshot(
             symbol=symbol,
             current_price=current_price,
@@ -1205,16 +1265,14 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             net_qty=owned_qty,
             sellable_qty=sellable_qty,
             current_time_s=current_time_s,
-            trend_up=current_trend_up,
-            vol_1h=vol_1h,
-            vol_source="1h_cache" if vol_1h > 0 else "default",
-            provider=_inst_provider(inst),
+            trend_up=False,
+            vol_1h=0.0,
+            vol_source="default",
+            provider=_prov_label,
         )
 
-        price_increase = snapshot.gain_ratio
-        price_decrease = snapshot.loss_ratio
-
-        print(f"(increase: {snapshot.gain_pct}%, decrease: {snapshot.loss_pct}%)")
+        if _verbose:
+            print(f"(increase: {snapshot.gain_pct}%, decrease: {snapshot.loss_pct}%)")
         # 3.0. Hard TP sells a fraction on a large gain regardless of trend.
         if HARD_TP_ENABLED and snapshot.in_tp_territory(hard_tp_pct, MT_ARE_CLOSE_TOLERANCE_PCT):
             if _evaluate_hard_take_profit(inst, snapshot, hard_tp_pct, hard_tp_frac, hard_tp_cd, min_qty, sbs):
@@ -1223,6 +1281,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         # 3.1. Evaluate the existing SELL placement rules via PositionExitManager.
         sl_price_territory = snapshot.in_sl_territory(lost_threshold, MT_ARE_CLOSE_TOLERANCE_PCT)
         if not sl_price_territory and symbol in _SL_EPISODE_STATE:
+            exit_mgr = get_exit_manager()
             exit_mgr.reset_sl_episode(symbol)   # Leaving SL territory ends the SL episode floor lock
             _save_mt_state()
         if not sl_price_territory and symbol in _SL_BOUNCE_STATE:
@@ -1231,18 +1290,30 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             _save_mt_state()
 
         in_sl_territory = sl_price_territory or symbol in _SL_BOUNCE_STATE
-        prev_tp_state = dict(_TP_RIDE_STATE.get(symbol, {}))
-        tp_decision = (
-            exit_mgr.evaluate_take_profit(snapshot, custom_threshold=gain_threshold)
-            if not in_sl_territory
-            else ExitDecision(ExitAction.HOLD, False, "not_in_tp_territory")
+        in_tp_territory = (not in_sl_territory) and (
+            snapshot.in_tp_territory(gain_threshold, MT_ARE_CLOSE_TOLERANCE_PCT)
+            or (symbol in _TP_RIDE_STATE)
         )
 
-        if tp_decision.reason != "not_in_tp_territory":
-            if tp_decision.action == ExitAction.HOLD:
-                _log_tp_hold_state(symbol, snapshot, tp_decision, gain_threshold)
+        if in_tp_territory or in_sl_territory:
+            if exit_mgr is None:
+                exit_mgr = get_exit_manager()
+            vol_1h = get_symbol_volatility_1h(symbol) or 0.0
+            current_trend_up = bool(is_trend_up(symbol))
+            snapshot.trend_up = current_trend_up
+            snapshot.vol_1h = vol_1h
+            snapshot.vol_source = "1h_cache" if vol_1h > 0 else "default"
+
+        if in_tp_territory:
+            prev_tp_state = dict(_TP_RIDE_STATE.get(symbol, {}))
+            tp_decision = exit_mgr.evaluate_take_profit(snapshot, custom_threshold=gain_threshold)
+            if tp_decision.reason != "not_in_tp_territory":
+                if tp_decision.action == ExitAction.HOLD:
+                    _log_tp_hold_state(symbol, snapshot, tp_decision, gain_threshold)
+                else:
+                    _execute_take_profit(inst, snapshot, tp_decision, sbs, min_qty, prev_tp_state, gain_threshold)
             else:
-                _execute_take_profit(inst, snapshot, tp_decision, sbs, min_qty, prev_tp_state, gain_threshold)
+                _handle_position_recovery(inst, snapshot, lost_threshold)
         elif in_sl_territory:
             pending_stop = _PENDING_STOP_EXIT.get(symbol)
             if _is_pending_exit_active(symbol, inst, sellable_qty, min_qty, current_time_s):
@@ -1260,7 +1331,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     # 4. Evaluate SELL history.
     if trade_orders_sell:     
         if not sell_price:
-            print(f"No sell_price !!!!!")
+            if _verbose:
+                print(f"No sell_price !!!!!")
             return
         if exit_mgr is None:
             exit_mgr = get_exit_manager()
@@ -1313,13 +1385,15 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             vol_source="1h_cache" if vol_1h > 0 else "default",
         )
         price_decrease_versus_sell = reentry_snap.sale_drop_ratio
-        print(f"(price_decrease_versus_sell: {reentry_snap.sale_drop_pct}%)")
+        if _verbose:
+            print(f"(price_decrease_versus_sell: {reentry_snap.sale_drop_pct}%)")
 
         if not current_trend_up:
             if prev_reentry_state:
                 _REENTRY_STATE[symbol] = prev_reentry_state
                 _save_mt_state()
-            print(f"No action taken, because trend is down!")
+            if _verbose:
+                print(f"No action taken, because trend is down!")
             return
 
         reentry_dec = exit_mgr.evaluate_reentry(reentry_snap, custom_drop_pct=gain_threshold)

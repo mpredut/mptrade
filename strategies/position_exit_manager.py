@@ -65,28 +65,27 @@ class PriceGeometrySnapshot:
     @property
     def is_valid_price(self) -> bool:
         """Verify whether current market price is valid and strictly positive."""
-        return getattr(self, "current_price", 0.0) > 0
+        return self.current_price > 0
 
     def bounce_ratio(self, trough_price: float) -> float:
         """Calculate recovery bounce ratio above trough: (current - trough) / trough."""
         if trough_price <= 0:
             return 0.0
-        px = getattr(self, "current_price", 0.0)
-        return max(0.0, (px - trough_price) / trough_price)
+        diff = self.current_price - trough_price
+        return diff / trough_price if diff > 0.0 else 0.0
 
     def pullback_ratio(self, peak_price: float) -> float:
         """Normalized pullback ratio from peak: (peak - current) / peak."""
         if peak_price <= 0:
             return 0.0
-        px = getattr(self, "current_price", 0.0)
-        return max(0.0, (peak_price - px) / peak_price)
+        diff = peak_price - self.current_price
+        return diff / peak_price if diff > 0.0 else 0.0
 
     def discount_drop_ratio(self, reference_price: float) -> float:
         """Calculate price discount ratio below reference sale: (reference - current) / reference."""
         if reference_price <= 0:
             return 0.0
-        px = getattr(self, "current_price", 0.0)
-        return (reference_price - px) / reference_price
+        return (reference_price - self.current_price) / reference_price
 
     def has_bounced(self, trough_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if price has bounced above trough honoring fuzzy tolerance."""
@@ -94,8 +93,7 @@ class PriceGeometrySnapshot:
             return False
         if self.bounce_ratio(trough_price) >= threshold:
             return True
-        px = getattr(self, "current_price", 0.0)
-        return tol_pct > 0 and are_close(px, trough_price * (1.0 + threshold), tol_pct)
+        return tol_pct > 0 and are_close(self.current_price, trough_price * (1.0 + threshold), tol_pct)
 
     def has_pulled_back(self, peak_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if price has pulled back from peak honoring fuzzy tolerance."""
@@ -103,15 +101,14 @@ class PriceGeometrySnapshot:
             return False
         if self.pullback_ratio(peak_price) >= threshold:
             return True
-        px = getattr(self, "current_price", 0.0)
-        return tol_pct > 0 and are_close(px, peak_price * (1.0 - threshold), tol_pct)
+        return tol_pct > 0 and are_close(self.current_price, peak_price * (1.0 - threshold), tol_pct)
 
     def has_dropped(self, reference_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if price has dropped below reference sale honoring fuzzy tolerance."""
         if reference_price <= 0:
             return False
         target = reference_price * (1.0 - threshold)
-        px = getattr(self, "current_price", 0.0)
+        px = self.current_price
         if px <= target:
             return True
         return tol_pct > 0 and are_close(px, target, tol_pct)
@@ -144,12 +141,20 @@ class PositionSnapshot(PriceGeometrySnapshot):
     @property
     def gain_ratio(self) -> float:
         """Positive price gain ratio, or 0.0 if position is in loss."""
-        return max(0.0, self.price_change_ratio)
+        bp = self.avg_buy_price
+        if bp <= 0:
+            return 0.0
+        diff = self.current_price - bp
+        return diff / bp if diff > 0.0 else 0.0
 
     @property
     def loss_ratio(self) -> float:
         """Positive price loss ratio, or 0.0 if position is in profit."""
-        return max(0.0, -self.price_change_ratio)
+        bp = self.avg_buy_price
+        if bp <= 0:
+            return 0.0
+        diff = bp - self.current_price
+        return diff / bp if diff > 0.0 else 0.0
 
     @property
     def gain_pct(self) -> float:
@@ -171,7 +176,7 @@ class PositionSnapshot(PriceGeometrySnapshot):
         loss = self.loss_ratio
         if loss >= threshold:
             return True
-        if tol_pct > 0 and are_close(loss, threshold, tol_pct):
+        if (loss > 0.0 or tol_pct >= 200.0) and tol_pct > 0 and are_close(loss, threshold, tol_pct):
             return True
         return False
 
@@ -180,7 +185,7 @@ class PositionSnapshot(PriceGeometrySnapshot):
         gain = self.gain_ratio
         if gain >= threshold:
             return True
-        if tol_pct > 0 and are_close(gain, threshold, tol_pct):
+        if (gain > 0.0 or tol_pct >= 200.0) and tol_pct > 0 and are_close(gain, threshold, tol_pct):
             return True
         return False
 
@@ -754,9 +759,12 @@ class PositionExitManager:
         # ---------------------------------------------------------------------
         # PRIORITY 0: Hard TP Spike Exit
         # ---------------------------------------------------------------------
-        hard_hit = snapshot.in_tp_territory(self.config.hard_tp_pct, self.config.are_close_tolerance_pct)
-        hard_valid = 0 < self.config.hard_tp_frac <= 1.0 and self.config.hard_tp_pct > 0
-        if self.config.hard_tp_enabled and hard_hit and hard_valid:
+        if (
+            self.config.hard_tp_enabled
+            and 0 < self.config.hard_tp_frac <= 1.0
+            and self.config.hard_tp_pct > 0
+            and snapshot.in_tp_territory(self.config.hard_tp_pct, self.config.are_close_tolerance_pct)
+        ):
             last_hard = self.hard_tp_last.get(symbol, 0.0)
             if now - last_hard >= self.config.hard_tp_cooldown_sec:
                 reason = (

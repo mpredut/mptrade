@@ -424,6 +424,8 @@ class SmartStopLossGuard:
         batch: bool = True,
     ) -> bool:
         """Called when price decrease drops back below or equal to threshold."""
+        if not _GRACE_TRACKER and (_LOADED_STATE_FILE_KEY is not None or _is_simulated_provider(provider)):
+            return False
         sym_key = symbol.upper()
         is_sim_call = _is_simulated_provider(provider)
         tracker = _load_grace_state(is_sim=is_sim_call)

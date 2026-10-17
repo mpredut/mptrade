@@ -246,7 +246,7 @@ def run_symbol(
                 trail_peak = price
 
             now_s = provider.now(symbol)
-            if not provider.get_orders(symbol, None, since_s=maxage_s):
+            if not provider.has_orders_since(symbol, maxage_s):
                 provider.place_order(symbol, "BUY", price, SEED_NOTIONAL_USD / price)
                 trail_peak = price
                 n_seeds += 1
