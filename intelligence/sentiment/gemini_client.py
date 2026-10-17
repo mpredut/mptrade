@@ -82,6 +82,14 @@ class GeminiClient:
             logger.debug("Gemini LLM query suppressed in backtest/replay mode.")
             return None
 
+        if (
+            "PYTEST_CURRENT_TEST" in os.environ
+            and not hasattr(subprocess.run, "_mock_name")
+            and not hasattr(urllib.request.urlopen, "_mock_name")
+        ):
+            logger.debug("Gemini LLM external query suppressed under pytest.")
+            return None
+
         # 2. Local authenticated CLI runner (subscription mode)
         if self.cli_path and os.path.exists(self.cli_path):
             try:

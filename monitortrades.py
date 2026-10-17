@@ -1186,10 +1186,11 @@ def _handle_position_recovery(
 
 
 def _can_pass_buy_quantity_policy(
-    inst, symbol: str, current_price: float, requested_qty: float
+    inst, symbol: str, current_price: float, requested_qty: float, min_qty: float = 0.0
 ) -> bool:
-    """Verify whether provider balance and 24h weight policy permit a positive BUY quantity
-    before invoking external AI guards (PostStopReentryGuard)."""
+    """Verify whether provider balance, 24h weight policy, and intelligence/geopolitical
+    scaling permit a valid executable BUY quantity before invoking external AI guards
+    (PostStopReentryGuard)."""
     provider = getattr(inst, "provider", None)
     if provider is None or isinstance(provider, str):
         return True
@@ -1216,7 +1217,10 @@ def _can_pass_buy_quantity_policy(
             apply_policy=True,
             market=False,
         )
-        if decision is not None and float(getattr(decision, "final_qty", 0.0) or 0.0) <= 0.0:
+        if decision is None:
+            return True
+        final_qty = float(getattr(decision, "final_qty", 0.0) or 0.0)
+        if final_qty <= 0.0:
             refuse_reason = getattr(decision, "refuse_reason", None) or "qty_zero_after_policy"
             balance_asset = getattr(decision, "balance_asset", None) or quote_asset or "quote"
             print(
@@ -1224,6 +1228,77 @@ def _can_pass_buy_quantity_policy(
                 f"{refuse_reason} asset={balance_asset}"
             )
             return False
+        if min_qty and final_qty < float(min_qty):
+            print(
+                f"[{symbol}] Post-STOP re-entry deferred before AI guard: "
+                f"qty_below_min ({final_qty} < {min_qty})"
+            )
+            return False
+        filter_check = getattr(provider, "order_filter_refusal", None)
+        if callable(filter_check):
+            refusal = filter_check(
+                symbol,
+                "BUY",
+                current_price,
+                final_qty,
+                market=False,
+                enforce_business_minimum=True,
+            )
+            if refusal:
+                print(
+                    f"[{symbol}] Post-STOP re-entry deferred before AI guard: "
+                    f"qty {final_qty} refused by filter ({refusal})"
+                )
+                return False
+        import order_guard
+        intel_ok, intel_reason, intel_scale = order_guard.check_intelligence_guards(
+            provider,
+            symbol,
+            "BUY",
+            current_price,
+            qty=final_qty,
+            bypass_guards={"GF1", "GI3"},
+        )
+        if not intel_ok:
+            print(
+                f"[{symbol}] Post-STOP re-entry deferred before AI guard: "
+                f"intelligence_guard ({intel_reason})"
+            )
+            return False
+        if intel_scale is not None and 0.0 < float(intel_scale) < 1.0:
+            scaled_qty = final_qty * float(intel_scale)
+            round_fn = (
+                getattr(provider, "round_amount", None)
+                or getattr(provider, "round_quantity", None)
+            )
+            if callable(round_fn):
+                try:
+                    res_f = float(round_fn(symbol, scaled_qty))
+                    if math.isfinite(res_f):
+                        scaled_qty = res_f
+                except (TypeError, ValueError):
+                    pass
+            if scaled_qty <= 0.0 or (min_qty and scaled_qty < float(min_qty)):
+                print(
+                    f"[{symbol}] Post-STOP re-entry deferred before AI guard: "
+                    f"late-scaled qty {scaled_qty} below min_qty {min_qty} (scale={float(intel_scale):.2f})"
+                )
+                return False
+            if callable(filter_check):
+                scaled_refusal = filter_check(
+                    symbol,
+                    "BUY",
+                    current_price,
+                    scaled_qty,
+                    market=False,
+                    enforce_business_minimum=True,
+                )
+                if scaled_refusal:
+                    print(
+                        f"[{symbol}] Post-STOP re-entry deferred before AI guard: "
+                        f"late-scaled qty {scaled_qty} (scale={float(intel_scale):.2f}) refused by filter ({scaled_refusal})"
+                    )
+                    return False
     except Exception:
         return True
     return True
@@ -1653,7 +1728,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             return
 
         if last_exit_kind == "STOP":
-            if not _can_pass_buy_quantity_policy(inst, symbol, current_price, _initial_buy_qty):
+            if not _can_pass_buy_quantity_policy(inst, symbol, current_price, _initial_buy_qty, min_qty=min_qty):
                 if prev_reentry_state:
                     _REENTRY_STATE[symbol] = prev_reentry_state
                     _save_mt_state()
@@ -1664,7 +1739,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             else:
                 allowed, buy_budget, buy_qty_cfg, qty = _apply_post_stop_ai_guard(
                     symbol, current_price, sell_price, sell_time, reentry_snap,
-                    buy_budget, buy_qty_cfg, qty
+                    buy_budget, buy_qty_cfg, qty, inst=inst,
                 )
             if not allowed:
                 if prev_reentry_state:

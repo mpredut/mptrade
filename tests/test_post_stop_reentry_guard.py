@@ -402,3 +402,75 @@ def test_monitortrades_skips_ai_guard_when_weight_policy_blocks_buy():
     assert "ARBUSDC" in mt._REENTRY_STATE
 
 
+def test_monitortrades_skips_ai_guard_when_intelligence_downscale_triggers_below_min_notional():
+    """Verify monitortrades does not invoke PostStopReentryGuard (or send repeated APPROVED alerts)
+    when the 24h weight-capped BUY quantity would be downscaled by intelligence/geopolitical
+    guards below the business minimum notional ($50 USDC)."""
+    from providers.quantity import QuantityDecision
+
+    class DownscaleRefusedProvider:
+        name = "binance"
+
+        def free_balance(self, asset):
+            return 20338.80
+
+        def quantity_decision(self, symbol, side, price, qty, **kwargs):
+            return QuantityDecision(
+                requested_qty=qty,
+                balance_cap=20338.80 / price,
+                policy_cap=399.16,
+                fee_cap=399.16,
+                final_qty=399.16,
+                refuse_reason=None,
+                balance_asset="USDC",
+            )
+
+        def round_amount(self, symbol, qty):
+            return round(float(qty), 1)
+
+        def order_filter_refusal(self, symbol, side, price, qty, market=False, enforce_business_minimum=True):
+            if float(price) * float(qty) < 50.0:
+                return "below_min_notional"
+            return None
+
+    fake_guard = MagicMock()
+    mt._LAST_EXIT_KIND["ARBUSDC"] = "STOP"
+    mt._REENTRY_STATE["ARBUSDC"] = {
+        "trough": 0.1815,
+        "peak": 0.1856,
+        "peak_bounce": 0.1836,
+        "started_at": 1000.0,
+        "sell_time": 1000.0,
+    }
+    inst = MockInstrument(
+        symbol="ARBUSDC",
+        price=0.1836,
+        buy_qty=1360.91,
+        orders_dict={
+            "SELL": [{
+                "price": 0.1884,
+                "time": 1000.0,
+                "timestamp": 1000000,
+                "qty": 1318.56,
+                "kind": "STOP",
+            }]
+        },
+    )
+    inst._provider = DownscaleRefusedProvider()
+    exit_mgr = MagicMock()
+    exit_mgr.evaluate_reentry.return_value = MagicMock(
+        should_enter=True, reason="post_stop_bounce_confirmed"
+    )
+
+    with patch("intelligence.sentiment.guards.post_stop_reentry_guard.get_post_stop_reentry_guard", return_value=fake_guard), \
+         patch("order_guard.check_intelligence_guards", return_value=(True, "Geopolitical Risk Index elevated: 50.0/100", 0.5)), \
+         patch.object(mt, "_place_guarded", return_value=True) as mock_place, \
+         patch.object(mt, "get_position_stats", return_value={"average_buy_price": 0.0, "average_sell_price": 0.0, "net_qty": 0.0}), \
+         patch.object(mt, "get_exit_manager", return_value=exit_mgr), \
+         patch.object(mt, "is_trend_up", return_value=True), \
+         patch.object(mt, "get_symbol_volatility_1h", return_value=0.01):
+        mt.monitor_price_and_trade(inst, sbs=10, now_fn=lambda: 1500.0)
+
+    fake_guard.check.assert_not_called()
+    mock_place.assert_not_called()
+    assert "ARBUSDC" in mt._REENTRY_STATE

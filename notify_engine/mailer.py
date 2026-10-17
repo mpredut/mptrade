@@ -35,9 +35,10 @@ _SMTP_TIMEOUT_SEC = 15
 
 
 def _disabled() -> bool:
-    return os.environ.get("DISABLE_EXTERNAL_NOTIFICATIONS", "").strip().lower() in {
-        "1", "true", "yes", "on",
-    }
+    return any(
+        os.environ.get(k, "").strip().lower() in {"1", "true", "yes", "on"}
+        for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
+    )
 
 
 def load_env() -> None:

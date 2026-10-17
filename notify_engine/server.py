@@ -189,7 +189,10 @@ class NotificationServer:
     def _send_ntfy(self, title: str, message: str, priority: str, topic: str, is_retry: bool = False, skip_email: bool = False) -> bool:
         if not topic:
             return True
-        if os.environ.get("DISABLE_EXTERNAL_NOTIFICATIONS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        if any(
+            os.environ.get(k, "").strip().lower() in {"1", "true", "yes", "on"}
+            for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
+        ):
             logging.debug(f"External notifications disabled: would send to {topic}: {title}")
             return True
 
