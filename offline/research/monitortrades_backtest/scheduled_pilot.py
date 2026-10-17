@@ -209,6 +209,21 @@ def _run_one(symbol, base, params, series):
     return dict(out) if out is not None else None
 
 
+def _eval_one_half(task: tuple[str, str, dict, int]):
+    symbol, base, params, half_idx = task
+    halves = _split_series(symbol)
+    series = halves[half_idx]
+    if len(series) < 100:
+        return symbol, params, half_idx, None, {}
+    res = _run_one(symbol, base, params, series)
+    tk = rb._series_cache_key(symbol, series, rb.DEFAULT_WINDOW_SECONDS)
+    diag = dict(
+        rb._LAST_RUN_DIAGNOSTICS.get(tk)
+        or {"hard_tp_touched": rb._LAST_HARD_TP_TOUCHED.get(tk, True)}
+    )
+    return symbol, params, half_idx, res, diag
+
+
 def _eval_symbol_baseline(symbol: str, base: str):
     half1, half2 = _split_series(symbol)
     if len(half1) < 100 or len(half2) < 100:
@@ -464,89 +479,141 @@ def main():
     for sym, _base in unique_sym_base:
         _split_series(sym)
 
-    # Precompute baseline (base_params) once per symbol across workers so the 6-7 keys per symbol
-    # reuse the cached baseline instead of re-running base_params 23 redundant times.
-    max_workers = min(len(keys), os.cpu_count() or 2)
+    # Precompute baseline (base_params) once per symbol half across workers so all keys per symbol
+    # reuse the cached baseline and balanced workers evaluate both halves concurrently.
+    max_workers = os.cpu_count() or 2
     all_ranges = scan_backtest_ranges(INSTRUMENTS_CONF)
-    with _futures.ProcessPoolExecutor(max_workers=min(len(unique_sym_base), max_workers)) as pre_ex:
-        for sym, base_params, r1, r2, diag1, diag2 in pre_ex.map(
-            _eval_symbol_baseline,
-            [s for s, _ in unique_sym_base],
-            [b for _, b in unique_sym_base],
-        ):
-            if base_params is not None:
-                half1, half2 = _split_series(sym)
-                _RUN_ONE_CACHE[_run_one_cache_key(sym, base_params, half1)] = r1
-                _RUN_ONE_CACHE[_run_one_cache_key(sym, base_params, half2)] = r2
-                htp1 = diag1.get("hard_tp_touched", True)
-                htp2 = diag2.get("hard_tp_touched", True)
-                base_htp = float(base_params.get("mt.hardtp") or 0.0)
-                base_cd_s = float(base_params.get("mt.hardtp_cooldown_h") or 6.0) * 3600.0
-                base_tr = float(base_params.get("trailing.pct") or 0.0)
-                base_tr_r = base_tr / 100.0
-                for fk, (k_sym, _k_base, k_name) in keys.items():
-                    if k_sym != sym:
-                        continue
-                    if k_name == "mt.hardtp_fraction":
-                        for gv in all_ranges.get(fk, ()):
-                            p = dict(base_params, **{k_name: gv})
-                            if not htp1:
-                                _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half1)] = r1
-                            if not htp2:
-                                _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half2)] = r2
-                    elif k_name == "mt.hardtp_cooldown_h":
-                        dts1 = diag1.get("hard_tp_cooldown_dts", ())
-                        dts2 = diag2.get("hard_tp_cooldown_dts", ())
-                        for gv in all_ranges.get(fk, ()):
-                            cand_cd_s = float(gv) * 3600.0
-                            p = dict(base_params, **{k_name: gv})
-                            if not htp1 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in dts1):
-                                _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half1)] = r1
-                            if not htp2 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in dts2):
-                                _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half2)] = r2
-                    elif k_name == "mt.hardtp" and base_htp > 0:
-                        min_g1 = diag1.get("min_hard_tp_gain_ratio", 0.0)
-                        min_g2 = diag2.get("min_hard_tp_gain_ratio", 0.0)
-                        for gv in all_ranges.get(fk, ()):
-                            gv_f = float(gv)
-                            gv_r = gv_f / 100.0
-                            if gv_f >= base_htp:
-                                p = dict(base_params, **{k_name: gv})
-                                if not htp1 or min_g1 >= gv_r:
-                                    _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half1)] = r1
-                                if not htp2 or min_g2 >= gv_r:
-                                    _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half2)] = r2
-                    elif k_name == "trailing.pct" and base_tr > 0:
-                        min_tr1 = diag1.get("min_trail_trigger_ratio", 0.0)
-                        max_untr1 = diag1.get("max_untriggered_trail_ratio", 1.0)
-                        min_tr2 = diag2.get("min_trail_trigger_ratio", 0.0)
-                        max_untr2 = diag2.get("max_untriggered_trail_ratio", 1.0)
-                        for gv in all_ranges.get(fk, ()):
-                            gv_r = float(gv) / 100.0
-                            p = dict(base_params, **{k_name: gv})
-                            if (gv_r >= base_tr_r and gv_r <= min_tr1) or (gv_r <= base_tr_r and gv_r > max_untr1):
-                                _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half1)] = r1
-                            if (gv_r >= base_tr_r and gv_r <= min_tr2) or (gv_r <= base_tr_r and gv_r > max_untr2):
-                                _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half2)] = r2
+    baseline_tasks = []
+    for sym, base in unique_sym_base:
+        half1, half2 = _split_series(sym)
+        if len(half1) >= 100 and len(half2) >= 100:
+            bp = dict(rb.SYMBOLS[sym]["params"])
+            baseline_tasks.append((sym, base, bp, 0, len(half1)))
+            baseline_tasks.append((sym, base, bp, 1, len(half2)))
+    baseline_tasks.sort(key=lambda t: -t[4])
 
-    # Independent keys => run in PARALLEL (ProcessPoolExecutor). Fork on Linux =>
-    # each key has its own rb.mt (so the is_trend_up monkeypatch from _run_one
-    # stays isolated per process). The audit and the proposals are collected in the parent (no race).
+    base_results: dict[str, dict] = {}
+    if baseline_tasks:
+        with _futures.ProcessPoolExecutor(max_workers=min(len(baseline_tasks), max_workers)) as pre_ex:
+            for sym, bp, half_idx, res, diag in pre_ex.map(
+                _eval_one_half,
+                [(s, b, p, h) for s, b, p, h, _ in baseline_tasks],
+                chunksize=1,
+            ):
+                entry_b = base_results.setdefault(sym, {"base_params": bp, "r": [None, None], "diag": [{}, {}]})
+                entry_b["r"][half_idx] = res
+                entry_b["diag"][half_idx] = diag
+
+    for sym, entry_b in base_results.items():
+        base_params = entry_b["base_params"]
+        r1, r2 = entry_b["r"]
+        diag1, diag2 = entry_b["diag"]
+        if base_params is not None:
+            half1, half2 = _split_series(sym)
+            _RUN_ONE_CACHE[_run_one_cache_key(sym, base_params, half1)] = r1
+            _RUN_ONE_CACHE[_run_one_cache_key(sym, base_params, half2)] = r2
+            htp1 = diag1.get("hard_tp_touched", True)
+            htp2 = diag2.get("hard_tp_touched", True)
+            base_htp = float(base_params.get("mt.hardtp") or 0.0)
+            base_cd_s = float(base_params.get("mt.hardtp_cooldown_h") or 6.0) * 3600.0
+            base_tr = float(base_params.get("trailing.pct") or 0.0)
+            base_tr_r = base_tr / 100.0
+            for fk, (k_sym, _k_base, k_name) in keys.items():
+                if k_sym != sym:
+                    continue
+                if k_name == "mt.hardtp_fraction":
+                    for gv in all_ranges.get(fk, ()):
+                        p = dict(base_params, **{k_name: gv})
+                        if not htp1:
+                            _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half1)] = r1
+                        if not htp2:
+                            _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half2)] = r2
+                elif k_name == "mt.hardtp_cooldown_h":
+                    dts1 = diag1.get("hard_tp_cooldown_dts", ())
+                    dts2 = diag2.get("hard_tp_cooldown_dts", ())
+                    for gv in all_ranges.get(fk, ()):
+                        cand_cd_s = float(gv) * 3600.0
+                        p = dict(base_params, **{k_name: gv})
+                        if not htp1 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in dts1):
+                            _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half1)] = r1
+                        if not htp2 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in dts2):
+                            _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half2)] = r2
+                elif k_name == "mt.hardtp" and base_htp > 0:
+                    min_g1 = diag1.get("min_hard_tp_gain_ratio", 0.0)
+                    min_g2 = diag2.get("min_hard_tp_gain_ratio", 0.0)
+                    for gv in all_ranges.get(fk, ()):
+                        gv_f = float(gv)
+                        gv_r = gv_f / 100.0
+                        if gv_f >= base_htp:
+                            p = dict(base_params, **{k_name: gv})
+                            if not htp1 or min_g1 >= gv_r:
+                                _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half1)] = r1
+                            if not htp2 or min_g2 >= gv_r:
+                                _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half2)] = r2
+                elif k_name == "trailing.pct" and base_tr > 0:
+                    min_tr1 = diag1.get("min_trail_trigger_ratio", 0.0)
+                    max_untr1 = diag1.get("max_untriggered_trail_ratio", 1.0)
+                    min_tr2 = diag2.get("min_trail_trigger_ratio", 0.0)
+                    max_untr2 = diag2.get("max_untriggered_trail_ratio", 1.0)
+                    for gv in all_ranges.get(fk, ()):
+                        gv_r = float(gv) / 100.0
+                        p = dict(base_params, **{k_name: gv})
+                        if (gv_r >= base_tr_r and gv_r <= min_tr1) or (gv_r <= base_tr_r and gv_r > max_untr1):
+                            _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half1)] = r1
+                        if (gv_r >= base_tr_r and gv_r <= min_tr2) or (gv_r <= base_tr_r and gv_r > max_untr2):
+                            _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half2)] = r2
+
+    # Pre-evaluate all remaining uncached (symbol, base, params, half_idx) tasks across the worker pool,
+    # sorted by descending series length so no single worker is left with a long tail.
+    pending_tasks = []
+    seen_task_cks = set()
+    for fk, (sym, base, key) in keys.items():
+        grid_values = all_ranges.get(fk)
+        if not grid_values:
+            continue
+        half1, half2 = _split_series(sym)
+        if len(half1) < 100 or len(half2) < 100:
+            continue
+        section = fk.split(".", 1)[0]
+        current = _current_value(section, key)
+        base_params = dict(rb.SYMBOLS[sym]["params"])
+        test_values = list(grid_values)
+        if not any(abs(float(v) - current) < 1e-9 for v in test_values):
+            test_values.append(_num_str(current))
+        for v in test_values:
+            p = dict(base_params, **{key: v})
+            for half_idx, h_series in ((0, half1), (1, half2)):
+                ck = _run_one_cache_key(sym, p, h_series)
+                if ck not in _RUN_ONE_CACHE and ck not in seen_task_cks:
+                    seen_task_cks.add(ck)
+                    pending_tasks.append((sym, base, p, half_idx, len(h_series)))
+    pending_tasks.sort(key=lambda t: -t[4])
+
     proposals = []
-    # stderr (not print/stdout): disable_print() plus the ProcessPool buffering swallow
-    # the parent's stdout; the per-value lines already use sys.stderr.write and show up correctly.
-    sys.stderr.write(f"[scheduled_pilot] {len(keys)} keys on {max_workers} parallel workers\n")
-    with _futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
-        fut2key = {ex.submit(evaluate_key, fk, sym, base, key, args.dry_run, args.propose): fk
-                   for fk, (sym, base, key) in keys.items()}
-        entries = {}
-        for fut in _futures.as_completed(fut2key):
-            fk = fut2key[fut]
-            try:
-                entries[fk] = fut.result()
-            except Exception as exc:  # noqa: BLE001
-                sys.stderr.write(f"[scheduled_pilot] Error evaluating {fk}: {exc}\n")
-                entries[fk] = {"full_key": fk, "action": "error", "reason": str(exc)}
+    sys.stderr.write(
+        f"[scheduled_pilot] {len(keys)} keys ({len(pending_tasks)} uncached half-window runs) "
+        f"on {max_workers} parallel workers\n"
+    )
+    if pending_tasks:
+        with _futures.ProcessPoolExecutor(max_workers=min(len(pending_tasks), max_workers)) as ex:
+            for sym, p, half_idx, res, diag in ex.map(
+                _eval_one_half,
+                [(s, b, prm, h) for s, b, prm, h, _ in pending_tasks],
+                chunksize=1,
+            ):
+                h_series = _split_series(sym)[half_idx]
+                _RUN_ONE_CACHE[_run_one_cache_key(sym, p, h_series)] = res
+                tk = rb._series_cache_key(sym, h_series, rb.DEFAULT_WINDOW_SECONDS)
+                rb._LAST_RUN_DIAGNOSTICS[tk] = diag
+                rb._LAST_HARD_TP_TOUCHED[tk] = diag.get("hard_tp_touched", True)
+
+    entries = {}
+    for fk, (sym, base, key) in keys.items():
+        try:
+            entries[fk] = evaluate_key(fk, sym, base, key, args.dry_run, args.propose)
+        except Exception as exc:  # noqa: BLE001
+            sys.stderr.write(f"[scheduled_pilot] Error evaluating {fk}: {exc}\n")
+            entries[fk] = {"full_key": fk, "action": "error", "reason": str(exc)}
     for full_key, (symbol, base, key) in keys.items():   # Processing in a stable order.
         entry = entries[full_key]
         _append_audit(entry)

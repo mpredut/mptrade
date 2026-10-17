@@ -210,6 +210,37 @@ def run_symbol(
     mt._apply_post_stop_ai_guard = (
         lambda sym, px, spx, st, snap, bb, bq, q: (True, bb, bq, q)
     )
+    orig_get_relevant_trade = mt.get_relevant_trade
+    orig_summarize_orders = mt._summarize_orders
+
+    def _fast_get_relevant_trade(trade_orders, trade_type, threshold_s=0, symbol=None, now_fn=None):
+        if not trade_orders:
+            if quiet:
+                return None, 0, True
+            return orig_get_relevant_trade(trade_orders, trade_type, threshold_s, symbol, now_fn)
+        if len(trade_orders) > 1 and not getattr(trade_orders, "_sorted_desc", False):
+            trade_orders.sort(key=lambda x: x["timestamp"], reverse=True)
+            if hasattr(trade_orders, "_sorted_desc"):
+                trade_orders._sorted_desc = True
+                trade_orders._summary = None
+        if not quiet:
+            return orig_get_relevant_trade(trade_orders, trade_type, threshold_s, symbol, now_fn)
+        first = trade_orders[0]
+        return float(first["price"]), float(first["timestamp"]) / 1000.0, True
+
+    def _fast_summarize_orders(orders):
+        if not orders:
+            return 0.0, 0.0, (0, 0.0, 0.0, 0, 0)
+        cached_sum = getattr(orders, "_summary", None)
+        if cached_sum is not None:
+            return cached_sum
+        res = orig_summarize_orders(orders)
+        if hasattr(orders, "_summary"):
+            orders._summary = res
+        return res
+
+    mt.get_relevant_trade = _fast_get_relevant_trade
+    mt._summarize_orders = _fast_summarize_orders
     orig_eval_hard_tp = mt._evaluate_hard_take_profit
     hard_tp_touched = False
     min_hard_tp_gain_ratio = float("inf")
@@ -250,6 +281,24 @@ def run_symbol(
         min_trail_trigger_ratio = float("inf")
         max_untriggered_trail_ratio = 0.0
 
+        now_s = 0.0
+        _now_fn = lambda: now_s
+        (
+            _cfg_gain, _cfg_lost, _cfg_maxage_s,
+            _cfg_hard_tp_pct, _cfg_hard_tp_frac, _cfg_hard_tp_cd,
+            _cfg_tp_ref, _cfg_buy_budget, _cfg_buy_qty, _cfg_max_budget,
+            _cfg_min_qty, _cfg_prov_label,
+        ) = mt._resolve_mt_inst_cfg(inst)
+        _eff_up_thresh = min(_cfg_gain, _cfg_hard_tp_pct) if mt.HARD_TP_ENABLED else _cfg_gain
+        _fast_ver = -1
+        _fast_min_ts_ms = -1.0
+        _fast_low_buy_px = -1.0
+        _fast_high_buy_px = -1.0
+        _fast_has_sells = False
+        _fast_sell_time = 0.0
+        _fast_reentry_high_px = float("inf")
+        _fast_exit_is_stop = False
+
         while True:
             price = provider.advance(symbol)
             if price is None:
@@ -286,8 +335,88 @@ def run_symbol(
                 trail_peak = price
                 n_seeds += 1
                 continue
+
+            if (
+                quiet
+                and provider._orders_version == _fast_ver
+                and (int(now_s) - maxage_s) * 1000.0 <= _fast_min_ts_ms
+                and _fast_low_buy_px < price < _fast_high_buy_px
+                and symbol not in mt._SL_BOUNCE_STATE
+                and symbol not in mt._SL_EPISODE_STATE
+                and symbol not in mt._TP_RIDE_STATE
+                and symbol not in mt._PENDING_STOP_EXIT
+            ):
+                if not _fast_has_sells:
+                    if from_disk and n_ticks % 20000 == 0:
+                        sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
+                    continue
+                reentry_st = mt._REENTRY_STATE.get(symbol)
+                if reentry_st is not None and reentry_st.get("sell_time") == _fast_sell_time:
+                    t_up = (
+                        cached_tape[tick_idx]
+                        if cached_tape is not None
+                        else bool(trend_source.is_trend_up(symbol))
+                    )
+                    if not t_up:
+                        if price < reentry_st["trough"]:
+                            reentry_st["trough"] = price
+                            reentry_st["peak_bounce"] = price
+                        if price > reentry_st["peak"]:
+                            reentry_st["peak"] = price
+                        if from_disk and n_ticks % 20000 == 0:
+                            sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
+                        continue
+                    if not _fast_exit_is_stop and price > _fast_reentry_high_px:
+                        if from_disk and n_ticks % 20000 == 0:
+                            sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
+                        continue
+
             try:
-                mt.monitor_price_and_trade(inst, sbs=SBS, now_fn=lambda: now_s)
+                mt.monitor_price_and_trade(inst, sbs=SBS, now_fn=_now_fn)
+                if (
+                    quiet
+                    and symbol not in mt._SL_BOUNCE_STATE
+                    and symbol not in mt._SL_EPISODE_STATE
+                    and symbol not in mt._TP_RIDE_STATE
+                    and symbol not in mt._PENDING_STOP_EXIT
+                ):
+                    cur_ver = provider._orders_version
+                    if cur_ver != _fast_ver or (int(now_s) - maxage_s) * 1000.0 > _fast_min_ts_ms:
+                        b_ords = provider.get_orders(symbol, "BUY", maxage_s)
+                        s_ords = provider.get_orders(symbol, "SELL", maxage_s)
+                        min_ts = float("inf")
+                        for o in b_ords:
+                            if o["timestamp"] < min_ts:
+                                min_ts = float(o["timestamp"])
+                        for o in s_ords:
+                            if o["timestamp"] < min_ts:
+                                min_ts = float(o["timestamp"])
+                        _fast_min_ts_ms = min_ts
+                        pos = mt.get_position_stats(
+                            symbol, maxage_s, api=provider,
+                            buy_orders=b_ords, sell_orders=s_ords, now_ts=int(now_s),
+                        )
+                        b_px, b_t, _ = _fast_get_relevant_trade(b_ords, "BUY", symbol=symbol, now_fn=_now_fn)
+                        s_px, s_t, _ = _fast_get_relevant_trade(s_ords, "SELL", symbol=symbol, now_fn=_now_fn)
+                        if _cfg_tp_ref == "average" and pos["average_buy_price"] > 0:
+                            b_px = pos["average_buy_price"]
+                        if _cfg_tp_ref == "average" and pos["average_sell_price"] > 0:
+                            s_px = pos["average_sell_price"]
+                        avail_q = provider.free_balance(base) or 0.0
+                        owned_q = max(float(pos["net_qty"]), 0.0)
+                        sellable_q = min(avail_q, owned_q) if inst.isolation == "own_ledger" else avail_q
+                        pos_closed = bool(s_ords) and s_t > b_t and sellable_q <= 0
+                        if not b_ords or pos_closed or not b_px:
+                            _fast_low_buy_px = -1.0
+                            _fast_high_buy_px = float("inf")
+                        else:
+                            _fast_low_buy_px = b_px * (1.0 - _cfg_lost * 0.995)
+                            _fast_high_buy_px = b_px * (1.0 + _eff_up_thresh * 0.995)
+                        _fast_has_sells = bool(s_ords)
+                        _fast_sell_time = float(s_t) if s_ords else 0.0
+                        _fast_exit_is_stop = (mt._LAST_EXIT_KIND.get(symbol) == "STOP")
+                        _fast_reentry_high_px = (s_px * (1.0 - _cfg_gain * 0.995)) if (s_ords and s_px) else float("inf")
+                        _fast_ver = cur_ver
             except Exception as e:  # noqa: BLE001
                 sys.stderr.write(f"[{symbol}] eroare in monitor_price_and_trade: {e}\n")
 
@@ -315,6 +444,8 @@ def run_symbol(
         mt.get_symbol_volatility_1h = orig_get_vol
         mt._MT_PERSISTENCE_ENABLED = orig_persist
         mt._apply_post_stop_ai_guard = orig_post_stop_ai
+        mt.get_relevant_trade = orig_get_relevant_trade
+        mt._summarize_orders = orig_summarize_orders
         mt._evaluate_hard_take_profit = orig_eval_hard_tp
 
     all_buys = provider.get_orders(symbol, "BUY", since_s=1e12)

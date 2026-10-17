@@ -53,6 +53,16 @@ def load_price_series(path: str, symbol: str) -> List[Tuple[float, float]]:
     return out
 
 
+class _OrderList(list):
+    """List subclass allowing O(1) sort-order and summary caching across replay ticks."""
+    __slots__ = ("_sorted_desc", "_summary")
+
+    def __init__(self, iterable=()):
+        super().__init__(iterable)
+        self._sorted_desc = len(self) <= 1
+        self._summary = None
+
+
 class ReplayMarketDataProvider(MarketDataProvider):
     """Serve market data and a simulated account for one or more symbols.
 
@@ -182,8 +192,8 @@ class ReplayMarketDataProvider(MarketDataProvider):
         if cached is not None:
             ver, low_ms, high_ms, res = cached
             if ver == self._orders_version and low_ms < cutoff_ms <= high_ms:
-                return list(res)
-        out: List[dict] = []
+                return res
+        out = _OrderList()
         low_ms = -1e18
         for o in reversed(orders):
             ts = o["timestamp"]
@@ -193,9 +203,10 @@ class ReplayMarketDataProvider(MarketDataProvider):
             if side_u is None or o["side"] == side_u:
                 out.append(o)
         out.reverse()
+        out._sorted_desc = len(out) <= 1
         high_ms = float(out[0]["timestamp"]) if out else 1e18
         self._orders_cache[cache_key] = (self._orders_version, low_ms, high_ms, out)
-        return list(out)
+        return out
 
     def position(self, symbol: str) -> Tuple[float, float]:
         """Return (quantity, total_cost) for the current simulated position.
