@@ -410,6 +410,86 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertIs(window_for.call_args.kwargs["regime_context"], resolved_context)
         self.assertIs(profit_guard.call_args.kwargs["regime_context"], resolved_context)
 
+    def test_if_place_safe_order_preserves_subdollar_precision_and_handles_none_current_price(self):
+        with (
+            mock.patch.object(po.order_guard, "daily_limit_guard", return_value=(True, None)),
+            mock.patch.object(po.api, "get_current_price", return_value=None),
+            mock.patch("binance_api.bapi_allorders.get_trade_orders", return_value=[]),
+            mock.patch.object(po.order_guard, "window_for", return_value=3600.0),
+            mock.patch.object(po.order_guard, "margin_for", return_value=1.01),
+            mock.patch.object(po.order_guard, "profit_guard", return_value=True) as profit_guard,
+            mock.patch("providers.market_api.api.market_regime_context", return_value=self._fresh_context()),
+        ):
+            ok, reason = po.if_place_safe_order("BUY", SYMBOL, 0.4567, 0.00015, 3600)
+        self.assertTrue(ok)
+        self.assertIsNone(reason)
+        self.assertAlmostEqual(profit_guard.call_args.args[3], 0.4567)
+        self.assertAlmostEqual(profit_guard.call_args.kwargs["qty"], 0.00015)
+
+    def test_lowercase_order_type_and_aggregate_trades_and_ws_price_validation(self):
+        import threading
+        now_ms = int(time.time() * 1000)
+        order_mgr = MagicMock(cache={
+            SYMBOL: [{"orderId": 1, "price": 100.0, "quantity": 1.0, "timestamp": now_ms, "side": "BUY"}],
+        })
+        order_mgr.lock = threading.Lock()
+        with patch("cacheManager.get_cache_manager", return_value=order_mgr):
+            res_ao = ao.get_trade_orders("buy", SYMBOL, 60)
+        self.assertEqual(len(res_ao), 1)
+        self.assertEqual(res_ao[0]["side"], "BUY")
+
+        trade_mgr = MagicMock(cache={
+            SYMBOL: [{
+                "symbol": SYMBOL, "id": 10, "orderId": 1, "price": "100.0",
+                "qty": "1.0", "time": now_ms, "isBuyer": True,
+            }],
+        })
+        trade_mgr.lock = threading.Lock()
+        with patch.object(bapi_trades, "init_cache_trade_manager", return_value=trade_mgr):
+            res_bt = bapi_trades.get_trade_orders("buy", SYMBOL, 60)
+        self.assertEqual(len(res_bt), 1)
+        self.assertTrue(res_bt[0]["isBuyer"])
+
+        agg = bapi_trades.aggregate_trades([{
+            "id": 1, "orderId": 99, "symbol": SYMBOL, "price": "100.0",
+            "qty": "0.5", "quoteQty": "50.0", "commission": "0.05",
+            "commissionAsset": "USDC", "time": now_ms,
+            "isBuyer": True, "isMaker": False, "isBestMatch": True,
+        }])
+        self.assertEqual(len(agg), 1)
+        self.assertEqual(agg[0]["orderId"], 99)
+
+        stream = bapi_ws.BinancePriceStream(symbols=[SYMBOL])
+        stream._process_message('{"data": {"s": "BTCUSDC", "c": "0", "E": 1000}}')
+        self.assertIsNone(stream.get_price(SYMBOL))
+        stream._process_message('{"data": {"s": "BTCUSDC", "c": "123.45", "E": 1000}}')
+        self.assertEqual(stream.get_price(SYMBOL), 123.45)
+
+    def test_short_trend_dynamic_window_uses_now_val_and_snapshot_fresh_guards_none_ts(self):
+        import threading
+        import cacheManager as cm
+        mgr = cm.CachePriceShortTrend([SYMBOL], filename="test_instant_trend_tmp.json", writer=False)
+        hist_now = 1_700_000_000.0
+        fake_c24 = types.SimpleNamespace(
+            lock=threading.Lock(),
+            cache={
+                SYMBOL: [
+                    [int((hist_now - 120) * 1000), 100.0],
+                    [int((hist_now - 60) * 1000), 101.0],
+                    [int((hist_now - 10) * 1000), 102.0],
+                    [int(hist_now * 1000), 103.0],
+                ]
+            },
+        )
+        mgr._cache24_managers = {SYMBOL: fake_c24}
+        dyn = mgr.get_instant_trend_for_window(SYMBOL, 180.0, now=hist_now)
+        self.assertIsNotNone(dyn)
+        self.assertEqual(dyn["current_price"], 103.0)
+        self.assertEqual(dyn["ts"], hist_now)
+
+        mgr._mem[SYMBOL] = {"symbol": SYMBOL, "ts_fast": time.time(), "ts": None}
+        self.assertFalse(mgr.is_snapshot_fresh(symbol=None))
+
 
 if __name__ == "__main__":
     unittest.main()

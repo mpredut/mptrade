@@ -486,12 +486,15 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
 
     try:
         current_price = api.get_current_price(symbol)
-        if order_type == "BUY":
-            price = round(min(price, current_price), 0)
-        else:  # SELL
-            price = round(max(price, current_price), 0)
+        if current_price is not None and math.isfinite(float(current_price)) and float(current_price) > 0:
+            if order_type == "BUY":
+                price = round(min(price, float(current_price)), 8)
+            else:  # SELL
+                price = round(max(price, float(current_price)), 8)
+        else:
+            price = round(float(price), 8)
 
-        qty = round(qty, 4)
+        qty = round(float(qty), 8)
         opposite_order_type = "SELL" if order_type == "BUY" else "BUY"
 
         # Delegate daily limits and anti-spam to order_guard.daily_limit_guard
@@ -710,11 +713,19 @@ def order_candidate_price(order_type, requested_price, current_price, *, market=
     if market:
         return None
     side = str(order_type).upper()
+    if side not in {"BUY", "SELL"}:
+        raise ValueError("order_type must be BUY or SELL")
+    if current_price is None:
+        return requested_price
+    try:
+        cp = float(current_price)
+    except (TypeError, ValueError, OverflowError):
+        return requested_price
+    if not math.isfinite(cp) or cp <= 0:
+        return requested_price
     if side == "SELL":
-        return max(requested_price, current_price)
-    if side == "BUY":
-        return min(requested_price, current_price)
-    raise ValueError("order_type must be BUY or SELL")
+        return max(requested_price, cp)
+    return min(requested_price, cp)
 
 
 def place_order_mechanics(order_type, symbol, price, qty, force=False,
@@ -759,6 +770,11 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
                 qty = fee_cap
 
         current_price = api.get_current_price(symbol)
+        ref_price = (
+            current_price
+            if (current_price is not None and math.isfinite(float(current_price)) and float(current_price) > 0)
+            else price
+        )
         from providers.binance_filters import (
             BinanceFilterError,
             BinanceOrderRules,
@@ -772,7 +788,7 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
                 quantity=qty,
                 price=candidate_price,
                 market=is_market,
-                reference_price=current_price,
+                reference_price=ref_price,
                 business_min_notional=(
                     PLACE_ORDER_MIN_NOTIONAL
                     if enforce_business_minimum else 0),

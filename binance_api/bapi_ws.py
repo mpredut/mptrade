@@ -19,6 +19,7 @@ BinanceAccountStream     (private user-data execution reports)
 import asyncio
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -319,12 +320,14 @@ class BinancePriceStream(BinanceWSBase):
             data   = envelope.get("data", envelope)
             symbol = data["s"]
             price  = float(data["c"])
+            if not math.isfinite(price) or price <= 0:
+                raise ValueError(f"invalid ticker price: {price!r}")
             raw_ts = data.get("E") or data.get("C")
             with self._lock:
                 self._prices[symbol] = price
             items = [price, int(raw_ts)] if raw_ts is not None else [price]
             self._notify_subscribers(symbol, items)
-        except (KeyError, ValueError, json.JSONDecodeError) as e:
+        except (KeyError, ValueError, TypeError, json.JSONDecodeError) as e:
             logger.warning("process_message error: %s | raw: %s", e, raw[:120])
 
     # ─── Enqueue command (thread-safe) ────────────────────────────────────────
@@ -505,6 +508,8 @@ class BinanceAccountStream(BinanceWSBase):
                     if event.get("status") not in (None, 200):
                         logger.warning("[WS] Error response id=%s status=%s: %s",
                                        event.get("id"), event.get("status"), event)
+                        if event.get("id") in ("sub", "keepalive"):
+                            raise RuntimeError(f"{event.get('id')} failed: {event}")
                     continue
                 self._mark_event()
                 self.on_event(payload)

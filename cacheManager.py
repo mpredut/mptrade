@@ -3313,7 +3313,7 @@ class CachePriceShortTrend:
                 all_entries = list(c24.cache.get(symbol, []))
             if len(all_entries) < 3:
                 return None
-            cutoff_ms = int((time.time() - clamped) * 1000)
+            cutoff_ms = int((now_val - clamped) * 1000)
             a = bisect.bisect_left(all_entries, cutoff_ms, key=lambda e: e[0])
             b = len(all_entries) - 1
             n_samples = b - a + 1
@@ -3340,7 +3340,8 @@ class CachePriceShortTrend:
                 final_trend=ft, growth_coefficient=gc,
                 slope_full=sf, gradient_recent=gr,
                 epsilon=eps, n_samples=n_samples, window_seconds=clamped,
-                sample_rate_sec=sample_rate, ts=now_val,
+                sample_rate_sec=sample_rate, current_price=float(all_entries[b][1]),
+                ts=now_val,
             )
             self._persist_live_window(symbol, w_key, res, last_tick_ts_ms=newest_ts_ms)
             return res
@@ -3365,7 +3366,8 @@ class CachePriceShortTrend:
             final_trend=ft, growth_coefficient=gc,
             slope_full=sf, gradient_recent=gr,
             epsilon=eps, n_samples=len(entries), window_seconds=clamped,
-            sample_rate_sec=sample_rate, ts=now_val,
+            sample_rate_sec=sample_rate, current_price=float(entries[-1][1]),
+            ts=now_val,
         )
         self._persist_live_window(symbol, w_key, res, last_tick_ts_ms=int(entries[-1][0]))
         return res
@@ -3678,8 +3680,20 @@ class CachePriceShortTrend:
         allt = self.get_all_snapshots()
         if not allt:
             return False
-        latest = max((s.get("ts", 0) for s in allt.values()), default=0)
-        return (now - latest) <= max_age_sec
+        valid_ts = []
+        for s in allt.values():
+            if not isinstance(s, dict):
+                continue
+            try:
+                ts_val = float(s.get("ts") or 0.0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(ts_val) and ts_val > 0:
+                valid_ts.append(ts_val)
+        if not valid_ts:
+            return False
+        latest = max(valid_ts)
+        return -5.0 <= (now - latest) <= float(max_age_sec)
 
     def become_writer(self):
         """Promote a calculating reader to writer when the previous writer is stale."""

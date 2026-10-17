@@ -149,6 +149,16 @@ class TestPlaceOrderMechanics(unittest.TestCase):
             submit.assert_called_once()
             self.assertTrue(submit.call_args.kwargs["market"])
 
+        with self.subTest(msg="falls back to requested price when current_price is None"):
+            with patch.object(po.api, "get_current_price", return_value=None), \
+                 patch.object(po.api, "get_free_balance", return_value=1000.0), \
+                 patch.object(po, "_submit_binance_order", return_value={"orderId": 99}) as submit:
+                limit_order = po.place_order_mechanics("BUY", SYMBOL, 100.0, 5.0, force=False)
+                market_order = po.place_order_mechanics("SELL", SYMBOL, 100.0, 5.0, force=True)
+            self.assertEqual(limit_order, {"orderId": 99})
+            self.assertEqual(market_order, {"orderId": 99})
+            self.assertEqual(submit.call_count, 2)
+
     def test_place_order_refusals_and_skips(self):
         with self.subTest(msg="min notional rejected before submit with typed reason"):
             with patch.object(po.api, "get_current_price", return_value=100.0), \

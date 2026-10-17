@@ -1,8 +1,10 @@
 
+import os
 import time
 import math
 import json
 import threading
+from collections import defaultdict
 from state_io import atomic_write_json
 
 # Repository imports.
@@ -85,6 +87,8 @@ def aggregate_trades(trades):
     
 def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
     
+    if order_type is not None:
+        order_type = order_type.upper()
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
     
@@ -175,6 +179,8 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
 
 def get_my_trades(order_type, symbol, backdays: int = 3, limit=1000):
     
+    if order_type is not None:
+        order_type = order_type.upper()
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
     
@@ -215,6 +221,8 @@ def get_my_trades(order_type, symbol, backdays: int = 3, limit=1000):
         
 def get_my_trades_simple(order_type, symbol, backdays=3, limit=1000):
 
+    if order_type is not None:
+        order_type = order_type.upper()
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
 
@@ -246,6 +254,8 @@ def get_my_trades_simple(order_type, symbol, backdays=3, limit=1000):
 
 # Append newly fetched fills to an existing file.
 def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=2):
+    if order_type is not None:
+        order_type = order_type.upper()
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
 
@@ -342,6 +352,8 @@ def load_trades_from_file(filename):
 # Return recent BUY or SELL fills from the manager cache.
 def get_trade_orders(order_type, symbol, max_age_seconds):
    
+    if order_type is not None:
+        order_type = order_type.upper()
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
     
