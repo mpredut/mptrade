@@ -1148,7 +1148,17 @@ class TradingBot:
 
         while True:
             _touch_rtrade_heartbeat()
-            current_price = api.get_current_price(self.symbol)
+            latest_price = api.get_current_price(self.symbol)
+            if latest_price is not None and latest_price > 0:
+                current_price = latest_price
+            if current_price is None or current_price <= 0:
+                current_price = filled_sell_price
+            if current_price is None or current_price <= 0:
+                time.sleep(WAIT_FOR_ORDER)
+                failure_count += 1
+                if failure_count > max_failures:
+                    return None
+                continue
 
             if self.is_sell_filled:
                 adjustment_percent = max(MIN_adjustment_percent, adjustment_percent - adjustment_percent * RTRADE_BUY_DECAY_PCT)
@@ -1221,7 +1231,8 @@ class TradingBot:
             
             time.sleep(WAIT_FOR_ORDER)
             order_id = buy_order['orderId']
-            self.filled_buy_price = round(float(buy_order['price']), 4)
+            raw_buy_px = buy_order.get('price')
+            self.filled_buy_price = round(float(raw_buy_px if raw_buy_px is not None and float(raw_buy_px) > 0 else target_buy_price), 4)
             
             if _order_fully_filled(self.symbol, order_id):
                 print(f"[{self.symbol}] BUY order filled at {self.filled_buy_price:.2f}")
@@ -1246,7 +1257,9 @@ class TradingBot:
                     caller_owns_retry=True)
                 return self.mark_buy_filled(filled_buy_price)
 
-            current_price = api.get_current_price(self.symbol)
+            latest_price = api.get_current_price(self.symbol)
+            if latest_price is not None and latest_price > 0:
+                current_price = latest_price
             if current_price > filled_sell_price and not u.are_close(current_price, filled_sell_price, RTRADE_BAD_DAY_TOLERANCE_PCT):
                 print(f"[{self.symbol}] Bed day :-(. Trying BUY at current price - x2 {current_price:.2f}")
                 adjustment_percent = RTRADE_BAD_DAY_MULTIPLIER * self.DEFAULT_ADJUSTMENT_PERCENT
@@ -1305,7 +1318,17 @@ class TradingBot:
 
         while True:
             _touch_rtrade_heartbeat()
-            current_price = api.get_current_price(self.symbol)
+            latest_price = api.get_current_price(self.symbol)
+            if latest_price is not None and latest_price > 0:
+                current_price = latest_price
+            if current_price is None or current_price <= 0:
+                current_price = filled_buy_price
+            if current_price is None or current_price <= 0:
+                time.sleep(WAIT_FOR_ORDER)
+                failure_count += 1
+                if failure_count > max_failures:
+                    return None
+                continue
 
             if self.is_buy_filled:
                 adjustment_percent = max(MIN_adjustment_percent, adjustment_percent - adjustment_percent * RTRADE_SELL_DECAY_PCT)
@@ -1379,7 +1402,8 @@ class TradingBot:
 
             time.sleep(WAIT_FOR_ORDER)
             order_id = sell_order['orderId']
-            self.filled_sell_price = round(float(sell_order['price']), 4)
+            raw_sell_px = sell_order.get('price')
+            self.filled_sell_price = round(float(raw_sell_px if raw_sell_px is not None and float(raw_sell_px) > 0 else target_sell_price), 4)
 
             if _order_fully_filled(self.symbol, order_id):
                 print(f"[{self.symbol}] SELL order filled at {self.filled_sell_price:.2f}")
@@ -1404,7 +1428,9 @@ class TradingBot:
                     caller_owns_retry=True)
                 return self.mark_sell_filled(filled_sell_price)
 
-            current_price = api.get_current_price(self.symbol)
+            latest_price = api.get_current_price(self.symbol)
+            if latest_price is not None and latest_price > 0:
+                current_price = latest_price
             if current_price < filled_buy_price and not u.are_close(current_price, filled_buy_price, RTRADE_BAD_DAY_TOLERANCE_PCT):
                 print(f"[{self.symbol}] Bed day :-(. Trying SELL at current price + x2 {current_price:.2f}")
                 adjustment_percent = RTRADE_BAD_DAY_MULTIPLIER * self.DEFAULT_ADJUSTMENT_PERCENT
@@ -1642,6 +1668,32 @@ class TradingBot:
                     if recovery_blocked and now - last_recovery_retry >= 60.0:
                         last_recovery_retry = now
                         try:
+                            adopted_ids = {c.pair_id for c in active}
+                            retry_failed = False
+                            for record in pair_store.active(self.symbol):
+                                if record.get("pair_id") in adopted_ids:
+                                    continue
+                                state = record.get("state") or {
+                                    "pair_id": record["pair_id"], "qty": record["qty"],
+                                    "start_side": record["start_side"], "phase": "quoting",
+                                    "reason": "recovered_by_client_order_id", "shock": False,
+                                    "elapsed_sec": max(
+                                        0.0, time.time() - float(record.get("created_ts") or time.time())),
+                                    "first_fill_elapsed_sec": None, "first_fill_side": None,
+                                    "stop_order_id": None,
+                                    "limit_revisions": {"BUY": 0, "SELL": 0},
+                                    "hard_stop_revision": 0, "hard_stop_reason": None,
+                                    "tickets": [], "snapshots": {},
+                                }
+                                try:
+                                    state = venue.merge_checkpoint_intents(record, state)
+                                    pair_store.checkpoint(record["pair_id"], state, terminal=False)
+                                    coordinator = PairCoordinator.from_state(venue, policy, state)
+                                    active.append(coordinator)
+                                    adopted_ids.add(coordinator.pair_id)
+                                except Exception as adopt_exc:
+                                    print(f"[{self.symbol}] startup recovery pair adoption still blocked: {adopt_exc}")
+                                    retry_failed = True
                             known_client_ids = {
                                 intent.get("client_order_id")
                                 for rec in pair_store.active(self.symbol)
@@ -1658,8 +1710,22 @@ class TradingBot:
                                 venue.executor.cancel_order(self.symbol, order_id)
                                 print(f"[{self.symbol}] recovery: orphaned RT_ order cancelled "
                                       f"order_id={order_id} client_id={client_id}")
-                            recovery_blocked = False
-                            print(f"[{self.symbol}] startup recovery unblocked: exchange inventory verified")
+                            if orphan_orders:
+                                remaining = {
+                                    str(order.get("orderId"))
+                                    for order in venue.executor.open_orders(self.symbol)
+                                }
+                                not_canceled = [
+                                    str(order["orderId"]) for order in orphan_orders
+                                    if str(order["orderId"]) in remaining
+                                ]
+                                if not_canceled:
+                                    print(f"[{self.symbol}] RECOVERY BLOCKED: unconfirmed cancellation "
+                                          f"for the RT_ orders {not_canceled}")
+                                    retry_failed = True
+                            if not retry_failed:
+                                recovery_blocked = False
+                                print(f"[{self.symbol}] startup recovery unblocked: exchange inventory verified")
                         except Exception as exc:
                             print(f"[{self.symbol}] startup recovery retry blocked: {exc}")
                 else:

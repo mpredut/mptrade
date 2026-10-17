@@ -1296,6 +1296,19 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertIsNotNone(res_scaled)
             self.assertEqual(prov.placed[-1][3], 1.0)
 
+            # 5. Action = 'defer' on SELL without explicit regime_context resolves context lazily
+            import order_retry as oq
+            self.assertTrue(oq.is_non_failure_deferral("medium_trend_deferred"))
+            outcome = {}
+            with patch.object(inst._api, "market_regime_context", return_value=bull_ctx) as mock_ctx:
+                res_sell_defer = inst.place(
+                    "SELL", 105.0, 1.0, smart=False, wait_for_trend=False,
+                    medium_trend_action="defer", _outcome_context=outcome,
+                )
+            self.assertIsNone(res_sell_defer)
+            self.assertEqual(outcome.get("reason"), "medium_trend_deferred")
+            mock_ctx.assert_called_once_with(inst.symbol, provider_name=inst.provider_name)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

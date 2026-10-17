@@ -881,11 +881,14 @@ class PairCoordinator:
             if current <= 0:
                 self.reason = "current_price_unavailable"
                 return self.outcome()
+            self.reason = None
             if self._submit_hard_stop(exposure_side, net, entry_avg, current):
                 return self.outcome()
             if self.reason in {
+                    "hard_stop_cancel_failed",
                     "hard_stop_cancel_ambiguous",
                     "hard_stop_exposure_changed_during_cancel",
+                    "hard_stop_place_failed",
                     "hard_stop_recovery_pending"}:
                 return self.outcome()
             self._ensure_anchored_exit(exposure_side, net, entry_avg, current)

@@ -589,9 +589,28 @@ class Instrument:
                 and "gt2" not in bypassed_guards
                 and "trend" not in bypassed_guards
             )
-            if check_medium_trend and regime_context is not None:
-                resolved_regime = getattr(regime_context, "regime", None) or getattr(regime_context, "resolved_trend", None)
-                medium_trend_action = kwargs.get("medium_trend_action")
+            medium_trend_action = kwargs.get("medium_trend_action")
+            gt2_context = regime_context
+            if (
+                check_medium_trend
+                and gt2_context is None
+                and medium_trend_action in {"defer", "scale"}
+            ):
+                try:
+                    resolve_context = getattr(
+                        self._api, "market_regime_context", None)
+                    if callable(resolve_context):
+                        gt2_context = resolve_context(
+                            self.symbol,
+                            provider_name=self.provider_name,
+                        )
+                    else:
+                        gt2_context = order_guard.symbol_regime_context(
+                            self.symbol, provider=self._provider)
+                except Exception:
+                    gt2_context = None
+            if check_medium_trend and gt2_context is not None:
+                resolved_regime = getattr(gt2_context, "regime", None) or getattr(gt2_context, "resolved_trend", None)
                 if medium_trend_action == "defer":
                     if side_u == "BUY" and resolved_regime == "bear":
                         print(f"[{self.symbol}] BUY deferred by medium-term trend (4h-24h BEAR regime)")
@@ -605,10 +624,29 @@ class Instrument:
                     if side_u == "BUY" and resolved_regime == "bear":
                         scale_factor = float(kwargs.get("medium_trend_scale", 0.5))
                         qty = max(0.0, qty * scale_factor)
+                        round_fn = getattr(self._provider, "round_amount", None) or getattr(self._provider, "round_quantity", None)
+                        if callable(round_fn) and qty > 0:
+                            try:
+                                res_f = float(round_fn(self.symbol, qty))
+                                if math.isfinite(res_f):
+                                    qty = res_f
+                            except (TypeError, ValueError):
+                                pass
                         print(f"[{self.symbol}] BUY scaled by medium-term trend ({scale_factor*100:.0f}%, new qty={qty})")
                         if qty <= 0:
                             reason = "medium_trend_qty_zero"
                             return None
+                        filter_check = getattr(self._provider, "order_filter_refusal", None)
+                        if callable(filter_check):
+                            gt2_refusal = filter_check(
+                                self.symbol, side_u, quantity_price if is_market else price, qty,
+                                market=is_market, enforce_business_minimum=enforce_business_minimum,
+                            )
+                            if gt2_refusal:
+                                print(f"[{self.symbol}] {side_u} medium-trend scaled qty {qty} refused by filter: {gt2_refusal}")
+                                reason = str(gt2_refusal)
+                                return None
+                        applied_scale = min(float(applied_scale), scale_factor)
 
             # Stage 3: Post-sizing Profit & Intelligence Guards.
             # Evaluated with the non-zero finalized quantity and exact notional size.

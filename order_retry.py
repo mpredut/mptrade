@@ -94,6 +94,7 @@ _validate_retry_config()
 
 NON_FAILURE_DEFERRAL_REASONS = frozenset({
     "trend_deferred",
+    "medium_trend_deferred",
     "account_cache_not_fresh",
     "account_cache_snapshot_changed",
     "retry_price_unfavorable",
@@ -312,6 +313,8 @@ def valid_record(rec):
 
 _CONSOLIDATED_DEFERRAL_REASONS = frozenset({
     "trend_deferred",
+    "medium_trend_deferred",
+    "medium_trend_qty_zero",
     "profit_guard",
     "qty_zero_after_policy",
     "qty_zero_after_weight",
@@ -609,7 +612,7 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
         if (
             lifecycle == "submit_pending"
             and (
-                failure_reason == "trend_deferred"
+                failure_reason in {"trend_deferred", "medium_trend_deferred"}
                 or (not RETRY_DEDUP and failure_reason in _CONSOLIDATED_DEFERRAL_REASONS)
             )
         ):
@@ -681,7 +684,7 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
             ]
             deferred = [
                 pair for pair in pending
-                if pair[1].get("last_failure_reason") == "trend_deferred"
+                if pair[1].get("last_failure_reason") in {"trend_deferred", "medium_trend_deferred"}
             ]
             candidates = deferred or pending
             if not candidates:

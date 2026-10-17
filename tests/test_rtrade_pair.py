@@ -761,6 +761,27 @@ class PairCoordinatorTest(unittest.TestCase):
             self.assertEqual(finished.phase, "hard_stop")
             self.assertAlmostEqual(finished.net_qty, 0.0)
 
+        with self.subTest("failed_hard_stop_does_not_reopen_limit_and_recovers_on_bounce"):
+            venue = FakeVenue(current=95.0)
+            coordinator = _coordinator(
+                venue, quote_ttl_sec=32, fast_fill_ratio=0.25,
+                shock_hard_stop_fraction=0.04)
+            coordinator.start(mid=100.0)
+            venue.fill("L1", 1.0, 99.36)
+            venue.place_market_exit = lambda *_a, **_kw: None
+
+            failed_stop = coordinator.step(now=5.0)
+            self.assertEqual(failed_stop.phase, "exposed")
+            self.assertEqual(failed_stop.reason, "hard_stop_place_failed")
+            self.assertEqual(len(venue.orders), 2)
+
+            venue.current = 98.0
+            bounced = coordinator.step(now=6.0)
+            self.assertEqual(bounced.phase, "exposed")
+            self.assertIsNone(bounced.reason)
+            self.assertEqual(len(venue.orders), 3)
+            self.assertEqual(venue.orders[-1][0].side, "SELL")
+
     def test_hard_stop_revisions_and_recovery(self):
         with self.subTest("ambiguous_hard_stop_recovered_without_second_market_submit"):
             venue = FakeVenue(current=100.0)
