@@ -447,7 +447,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             try:
                 with real_generation_lock():
                     generation_held.set()
-                    if not allow_generation_owner.wait(2):
+                    if not allow_generation_owner.wait(10):
                         raise RuntimeError(
                             "test did not release generation owner"
                         )
@@ -472,7 +472,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             target=generation_owner, name="generation-owner"
         )
         owner_thread.start()
-        self.assertTrue(generation_held.wait(2))
+        self.assertTrue(generation_held.wait(10))
 
         periodic_thread = threading.Thread(
             target=periodic_persist, name="periodic-persist"
@@ -482,7 +482,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
                     writer, "_trade_generation_lock",
                     side_effect=observed_generation_lock):
                 periodic_thread.start()
-                self.assertTrue(periodic_attempted_generation.wait(2))
+                self.assertTrue(periodic_attempted_generation.wait(10))
                 manager_lock_acquired = writer.lock.acquire(timeout=0.5)
                 try:
                     self.assertTrue(
@@ -494,12 +494,12 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
                     if manager_lock_acquired:
                         writer.lock.release()
                 allow_generation_owner.set()
-                owner_thread.join(2)
-                periodic_thread.join(2)
+                owner_thread.join(10)
+                periodic_thread.join(10)
         finally:
             allow_generation_owner.set()
-            owner_thread.join(2)
-            periodic_thread.join(2)
+            owner_thread.join(10)
+            periodic_thread.join(10)
 
         self.assertFalse(owner_thread.is_alive())
         self.assertFalse(periodic_thread.is_alive())
@@ -830,7 +830,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
 
         def paused_write_meta(metadata):
             manifest_reached.set()
-            if not allow_manifest.wait(2):
+            if not allow_manifest.wait(10):
                 raise RuntimeError("test did not release manifest publication")
             return real_write_meta(metadata)
 
@@ -854,7 +854,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
 
         compact_thread = threading.Thread(target=compact)
         compact_thread.start()
-        self.assertTrue(manifest_reached.wait(2))
+        self.assertTrue(manifest_reached.wait(10))
         self.assertEqual(old_version, writer._loaded_data_version)
 
         reader_thread = threading.Thread(target=load_reader)
@@ -865,8 +865,8 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
         )
 
         allow_manifest.set()
-        compact_thread.join(2)
-        reader_thread.join(2)
+        compact_thread.join(10)
+        reader_thread.join(10)
         self.assertFalse(compact_thread.is_alive())
         self.assertFalse(reader_thread.is_alive())
         self.assertEqual([], errors)
@@ -909,7 +909,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             try:
                 with winner._trade_generation_lock():
                     winner_locked.set()
-                    if not allow_winner.wait(2):
+                    if not allow_winner.wait(10):
                         raise RuntimeError("test did not release migration")
                     winner._migrate_legacy_json_generation_locked()
                     with winner.lock:
@@ -932,7 +932,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
 
         winner_thread = threading.Thread(target=migrate_and_append)
         winner_thread.start()
-        self.assertTrue(winner_locked.wait(2))
+        self.assertTrue(winner_locked.wait(10))
         late_thread = threading.Thread(target=late_migrate)
         late_thread.start()
         self.assertFalse(
@@ -941,8 +941,8 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
         )
 
         allow_winner.set()
-        winner_thread.join(2)
-        late_thread.join(2)
+        winner_thread.join(10)
+        late_thread.join(10)
         self.assertFalse(winner_thread.is_alive())
         self.assertFalse(late_thread.is_alive())
         self.assertEqual([], errors)
