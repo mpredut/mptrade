@@ -141,9 +141,12 @@ def _write_marker(ticker: str, result: dict) -> None:
 # Order-status polling
 # ---------------------------------------------------------------------------
 def poll_order_until_terminal(client: T212Client, order_id, ticker: str,
-                              desktop: bool = False) -> dict | None:
+                              desktop: bool = False) -> dict | bool | None:
     """Observe one status snapshot and return immediately."""
     info = client.get_order_status(order_id)
+    if info is False:
+        log(f"  [ORDER] status {order_id} absent from active and history endpoints")
+        return False
     if not info:
         log(f"  [ORDER] status {order_id} unavailable — checking again on the next cycle")
         return None
@@ -218,6 +221,32 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
         info = poll_order_until_terminal(client, order_id, record["ticker"], desktop)
         if info is None:
             return "waiting"
+        if info is False:
+            before_qty = record.get("before_qty")
+            current_qty = _portfolio_qty(client, record["ticker"])
+            if current_qty is None:
+                return "waiting"
+            if before_qty is not None and current_qty > float(before_qty) + 1e-6:
+                record.update({
+                    "lifecycle": "filled", "portfolio_fill_observed": True,
+                    "filled_qty": current_qty - float(before_qty),
+                    "lookup_misses": 0, "last_observed_at": now,
+                })
+                _persist_marker(record, marker_path)
+                log("  [ORDER] accepted order vanished from history; fill confirmed from portfolio")
+                return "complete"
+            misses = int(record.get("lookup_misses") or 0) + 1
+            record["lookup_misses"] = misses
+            record["last_observed_at"] = now
+            if misses >= ABSENCE_CONFIRMATIONS:
+                record["lifecycle"] = "canceled"
+                record["venue_status"] = "ABSENT"
+                _persist_marker(record, marker_path)
+                log(f"  [ORDER] ✗ accepted order {order_id} definitively absent without portfolio growth")
+                return "terminal_failed"
+            _persist_marker(record, marker_path)
+            return "waiting"
+        record["lookup_misses"] = 0
         status = str(info.get("status") or "").upper()
         record["venue_status"] = status
         record["last_observed_at"] = now

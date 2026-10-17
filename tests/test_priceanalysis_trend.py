@@ -64,6 +64,19 @@ class TestTimeBasedTrend(unittest.TestCase):
             for lo, hi in r["blocks"]:
                 self.assertTrue(0 <= lo < hi <= len(ts))
 
+        with self.subTest(msg="memo_does_not_collide_on_identical_length_and_endpoint"):
+            end_ts = 1_700_000_000.0
+            ts_up, pr_up = _uniform_series(days=10, slope_per_day=1.0, base=90.0, end=end_ts)
+            ts_dn, pr_dn = _uniform_series(days=10, slope_per_day=-1.0, base=110.0, end=end_ts)
+            pr_dn = pr_dn + (pr_up[-1] - pr_dn[-1])
+            self.assertEqual(len(ts_up), len(ts_dn))
+            self.assertEqual(float(ts_up[-1]), float(ts_dn[-1]))
+            self.assertAlmostEqual(float(pr_up[-1]), float(pr_dn[-1]))
+            r_up = pa.detect_long_term_trend(ts_up, pr_up, window_hours=16, step_hours=8)
+            r_dn = pa.detect_long_term_trend(ts_dn, pr_dn, window_hours=16, step_hours=8)
+            self.assertEqual(r_up["direction"], "up")
+            self.assertEqual(r_dn["direction"], "down")
+
 
 class TestTrendPersistence(unittest.TestCase):
     def test_persistence_behaviors(self):

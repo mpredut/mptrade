@@ -69,8 +69,9 @@ class KalmanTrend:
         if raw_dt > self.gap_reset_sec:
             self._reset_state(price, R, ts)
             old_trend = self.trend
-            out = self._out(price, old_trend=old_trend)
-            self.trend = out["trend"]
+            self.trend = 0
+            out = self._out(price, old_trend=0)
+            out["old_trend"] = old_trend
             return out
 
         dt = max(raw_dt, DT_MIN)
@@ -113,8 +114,9 @@ class KalmanTrend:
     def _out(self, price: float, old_trend: int, dt: float = 1.0) -> dict:
         vel = self._x1
         vel_std = math.sqrt(max(self._p11, 0.0))
-        vel_pct_min = vel / price * 100.0 * 60.0
-        std_pct_min = vel_std / price * 100.0 * 60.0
+        denom = price if price and price > 0 else 1e-9
+        vel_pct_min = vel / denom * 100.0 * 60.0
+        std_pct_min = vel_std / denom * 100.0 * 60.0
         min_vel = max(MIN_VEL_PCT_MIN, 0.045) if dt >= 30.0 else MIN_VEL_PCT_MIN
         trend = old_trend
         if old_trend == 0:

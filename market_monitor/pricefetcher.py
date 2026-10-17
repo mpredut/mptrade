@@ -539,6 +539,9 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                     data = json.load(f)
                     if "symbol_metadata" in data:
                         self.symbol_added_time = data["symbol_metadata"].get("added_time", {})
+                        preferred = data["symbol_metadata"].get("preferred_source", {})
+                        if isinstance(preferred, dict):
+                            self.symbol_preferred_source = dict(preferred)
                         seen_bases = {get_base_symbol(symbol) for symbol in self.active_symbols}
                         active_symbols = data["symbol_metadata"].get("active_symbols", [])
                         recovered_symbols = [
@@ -742,7 +745,8 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                     },
                     "symbol_metadata": {
                         "added_time": self.symbol_added_time,
-                        "active_symbols": list(self.active_symbols)
+                        "active_symbols": list(self.active_symbols),
+                        "preferred_source": self.symbol_preferred_source,
                     }
                 }, indent=1)
                 print(f"[{self.cls_name}][info] Save cache to file {self.filename}")

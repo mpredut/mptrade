@@ -172,7 +172,7 @@ class T212ExecutorContractTest(unittest.TestCase):
 
         with self.subTest(msg="negative_ordered_quantity_for_sell_is_normalized"):
             self.fake.status_result = {
-                "ticker": "NVDA_US_EQ", "status": "FILLED",
+                "ticker": "nvda_us_eq", "status": "FILLED",
                 "filledQuantity": -2.83, "filledValue": 339.6,
                 "orderedQuantity": -2.83,
             }
@@ -225,10 +225,12 @@ class T212ClientTransportTest(unittest.TestCase):
             portfolio_ttl_sec=6.0,
         )
         client._min_gap = 0.0
+        client._pf_cache = (time.monotonic(), [{"ticker": "NVDA_US_EQ", "quantity": 1.0}])
         with mock.patch.object(
             t212_client, "http_post_json", return_value=(200, b'{"id": 55}')
         ) as post:
             status, data = client.place_market_order("NVDA_US_EQ", -0.25)
+        self.assertIsNone(client._pf_cache)
         self.assertEqual((status, data), (200, {"id": 55}))
         self.assertTrue(post.call_args.args[0].endswith("/equity/orders/market"))
         self.assertEqual(

@@ -31,23 +31,10 @@ def _f_env(name: str, default: float) -> float:
         return default
 
 
-KALMAN_QR = _f_env("SHADOW_KALMAN_QR", 0.0005)   # Sweep: 94% stable after detection, ~15s latency.
-K_REENTRY = _f_env("SHADOW_K_REENTRY", 2.0)
-K_DCA = _f_env("SHADOW_K_DCA", 1.0)
-
 # Feed Kalman at a subsampled cadence. One-second ticks track minute oscillations
 # and produced thousands of daily transitions; 60 seconds yields about four BTC
 # transitions per day, comparable with the primary model's timescale.
 KALMAN_SAMPLE_SEC = _f_env("SHADOW_KALMAN_SAMPLE_SEC", 60.0)
-
-CONF_ENTER = 1.64         # Enter direction above 1.64 standard deviations (~90%).
-CONF_EXIT = _f_env("SHADOW_KALMAN_EXIT", 0.8)   # Exit only below 0.8 std for hysteresis.
-MIN_VEL_PCT_MIN = 0.005   # Treat below 0.005%/minute as flat regardless of std.
-DT_MIN = 0.05
-# After a network or process gap, pre-gap velocity no longer describes current
-# state. Reset after 300 seconds rather than capping dt and understating filter
-# uncertainty. This matches tradeall's stale-signal gate.
-GAP_RESET_SEC = 300.0
 
 from intelligence.internal.triggers.kalman_trigger import (
     KalmanTrend,
@@ -164,7 +151,7 @@ class ShadowSet:
         if ts - last_fed >= KALMAN_SAMPLE_SEC:
             kf = self._kalman.get(symbol)
             if kf is None:
-                kf = self._kalman[symbol] = KalmanTrend()
+                kf = self._kalman[symbol] = KalmanTrend(qr=KALMAN_QR, gap_reset_sec=GAP_RESET_SEC)
             # Measure R at the Kalman step scale rather than one-second tick scale,
             # which would appear unrealistically precise and flicker. Derive it from
             # the subsampled fed prices, falling back to caller epsilon during warm-up.
@@ -196,7 +183,7 @@ class ShadowSet:
             last_vol_t = self._last_vol_time.get(symbol, -1e18)
             if (ts - last_vol_t) >= 2.0 or (ts - last_fed >= KALMAN_SAMPLE_SEC):
                 v1h = vol_1h_pct(big_prices, big_sample_rate)
-                adapt_re, adapt_dca = adaptive_thresholds(v1h)
+                adapt_re, adapt_dca = adaptive_thresholds(v1h, k_reentry=K_REENTRY, k_dca=K_DCA)
                 self._last_vol_time[symbol] = ts
                 self._last_vol_fields[symbol] = (v1h, adapt_re, adapt_dca)
             else:

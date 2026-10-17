@@ -305,8 +305,9 @@ class T212Provider(MarketDataProvider):
 
         instrument = raw.get("instrument")
         instrument_ticker = instrument.get("ticker") if isinstance(instrument, dict) else ""
-        ticker = str(raw.get("ticker") or instrument_ticker or "")
-        if ticker and ticker != symbol:
+        ticker = str(raw.get("ticker") or instrument_ticker or "").strip()
+        expected_symbol = str(symbol or "").strip()
+        if ticker and expected_symbol and ticker.upper() != expected_symbol.upper():
             raise ProviderError(
                 f"order_status({order_id}): ticker {ticker!r}, asteptat {symbol!r}")
 

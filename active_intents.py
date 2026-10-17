@@ -51,9 +51,12 @@ def _first(row: dict, *names):
 
 def _intent_row(row: dict, *, owner: str, source: str, location: str,
                 inherited: dict) -> dict | None:
-    intent_id = _first(row, "intent_id", "client_order_id", "order_id", "id", "txid")
+    place_kwargs = row.get("place_kwargs")
+    nested_kwargs = place_kwargs if isinstance(place_kwargs, dict) else {}
+    client_order_id = _first(row, "client_order_id") or nested_kwargs.get("client_order_id")
+    intent_id = _first(row, "intent_id", "client_order_id", "order_id", "id", "txid") or client_order_id
     side = _first(row, "side", "start_side")
-    quantity = _first(row, "requested_qty", "qty", "quantity")
+    quantity = _first(row, "requested_qty", "qty", "quantity", "vol")
     if not intent_id or not side or quantity is None:
         return None
     side_str = str(side).upper()
@@ -80,10 +83,10 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str,
         "kind": _first(row, "kind", "motivation"),
         "status": status,
         "order_id": _first(row, "order_id", "id", "txid"),
-        "client_order_id": row.get("client_order_id"),
+        "client_order_id": client_order_id,
         "requested_qty": quantity,
-        "executed_qty": _first(row, "filled_qty", "executed_qty", "delivered_qty"),
-        "requested_price": _first(row, "requested_price", "price", "limit"),
+        "executed_qty": _first(row, "filled_qty", "executed_qty", "delivered_qty", "exec_vol", "applied_fill_qty"),
+        "requested_price": _first(row, "requested_price", "price", "limit", "limit_price", "ref_price"),
         "source": source,
         "location": location,
     }

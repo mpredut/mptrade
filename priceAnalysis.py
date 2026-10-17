@@ -64,8 +64,13 @@ def priceLstFor(symbol: str) -> List[Tuple[int, float]]:
     if manager is None:
         return []
 
-    # Read the symbol's current cached series.
-    raw = manager.cache.get(symbol, [])
+    # Read the symbol's current cached series under the manager lock when present.
+    lock = getattr(manager, "lock", None)
+    if lock is not None:
+        with lock:
+            raw = list(manager.cache.get(symbol, []))
+    else:
+        raw = list(manager.cache.get(symbol, []))
     return [(int(ts), float(p)) for ts, p in raw]
 
 
@@ -386,6 +391,14 @@ MIN_POINTS_PER_WINDOW = 4
 
 _trend_memo_cache: dict = {}
 _TREND_MEMO_MAX_ENTRIES = 128
+_TREND_MEMO_NONE = object()
+
+
+def _store_trend_memo(cache_key: tuple, value):
+    if len(_trend_memo_cache) > _TREND_MEMO_MAX_ENTRIES:
+        _trend_memo_cache.clear()
+    _trend_memo_cache[cache_key] = _TREND_MEMO_NONE if value is None else value
+    return None if value is None else dict(value)
 
 
 def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
@@ -404,14 +417,20 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     """
     timestamps = np.asarray(timestamps, dtype=float)
     prices = np.asarray(prices, dtype=float)
-    if len(timestamps) < 2:
+    n_pts = len(timestamps)
+    if n_pts < 2 or len(prices) != n_pts:
         return None
 
     t_end, t_first = float(timestamps[-1]), float(timestamps[0])
+    p_first = float(prices[0])
+    p_mid = float(prices[n_pts // 2])
     p_last = float(prices[-1])
     cache_key = (
-        len(timestamps),
+        n_pts,
+        t_first,
         t_end,
+        p_first,
+        p_mid,
         p_last,
         window_hours,
         step_hours,
@@ -422,6 +441,8 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
         mk_alpha,
     )
     cached = _trend_memo_cache.get(cache_key)
+    if cached is _TREND_MEMO_NONE:
+        return None
     if cached is not None:
         return dict(cached) if isinstance(cached, dict) else cached
 
@@ -440,14 +461,14 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
 
     cur, cur_idx = slope_h(t_end - window_sec, t_end + 1.0)
     if cur is None:
-        return None                                  # Insufficient recent data.
+        return _store_trend_memo(cache_key, None)    # Insufficient recent data.
     if mk_alpha:
         # Mann-Kendall requires the current window's slope to be statistically
         # significant rather than noise before reporting a direction.
         from intelligence.internal.state.persistence import calculate_mann_kendall as mann_kendall
         _, _, p_mk = mann_kendall(prices[cur_idx[0]:cur_idx[1]])
         if p_mk > mk_alpha:
-            return None
+            return _store_trend_memo(cache_key, None)
     current_sign = np.sign(cur) or 1.0
 
     blocks = [cur_idx]
@@ -471,7 +492,7 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     # Require the minimum confirmed blocks in the current direction. A one-day
     # bounce against a four-day decline is not a four-day upward trend.
     if consecutive < min_consecutive_blocks:
-        return None
+        return _store_trend_memo(cache_key, None)
 
     blocks = blocks[:confirm_pos + 1]                # Exclude unconfirmed trailing noise.
     # Duration includes the confirmed interval plus detection lag because the real
@@ -481,19 +502,16 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     duration_seconds = min(duration_seconds, t_end - t_first)
     trend_start_ts = t_end - duration_seconds
     if duration_seconds <= 0:
-        return None
+        return _store_trend_memo(cache_key, None)
     res = {
         'direction': 'up' if current_sign > 0 else 'down',
         'start_timestamp': float(trend_start_ts),
         'duration_seconds': float(duration_seconds),
         'estimated_future_hours': float(duration_seconds / 3600.0 * 0.5),
         'current_slope_h': float(cur),
-        'blocks': blocks,
+        'blocks': list(blocks),
     }
-    if len(_trend_memo_cache) > _TREND_MEMO_MAX_ENTRIES:
-        _trend_memo_cache.clear()
-    _trend_memo_cache[cache_key] = res
-    return dict(res)
+    return _store_trend_memo(cache_key, res)
 
 
 def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int = 8,

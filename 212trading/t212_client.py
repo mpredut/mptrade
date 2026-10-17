@@ -176,6 +176,8 @@ class T212Client:
             with self._lock:
                 self._ord_cache = None
                 self._fetch_fail.pop("_ord_cache", None)
+                self._pf_cache = None
+                self._fetch_fail.pop("_pf_cache", None)
         return status, data
 
     def place_limit_order(
@@ -308,6 +310,8 @@ class T212Client:
             with self._lock:
                 self._ord_cache = None   # Order list changed; force a fresh read.
                 self._fetch_fail.pop("_ord_cache", None)
+                self._pf_cache = None
+                self._fetch_fail.pop("_pf_cache", None)
         return ok
 
     def _log_read_fail(self, what: str, status: int) -> None:

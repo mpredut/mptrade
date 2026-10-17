@@ -112,3 +112,45 @@ def test_filters_backup_files_and_recognizes_id_fallback(tmp_path):
     assert any(it["intent_id"] == "t212-order-99" and it["requested_price"] == 60.0 for it in result["intents"])
     assert any(exp["symbol"] == "TEST_US_EQ" and exp["qty"] == 10.0 for exp in result["exposures"])
 
+
+def test_normalizes_kraken_vol_t212_limit_price_and_nested_outbox_client_order_id(tmp_path):
+    kraken = tmp_path / "kraken/.state_BTCUSDC.json"
+    t212_one_shot = tmp_path / "212trading/.t212_order.NVDA_US_EQ.json"
+    outbox = tmp_path / "cachedb/order_retry_queue.jsonl"
+    _write(kraken, {
+        "orders": [{
+            "txid": "O-KRK-1",
+            "intent_id": "krk-intent-1",
+            "side": "buy",
+            "vol": 0.25,
+            "exec_vol": 0.10,
+            "price": 60000.0,
+        }],
+    })
+    _write(t212_one_shot, {
+        "intent_id": "t212-one-shot-NVDA_US_EQ-1",
+        "ticker": "NVDA_US_EQ",
+        "side": "BUY",
+        "qty": 2.5,
+        "limit_price": 120.0,
+        "applied_fill_qty": 0.5,
+        "lifecycle": "accepted",
+        "order_id": "777",
+    })
+    _write(outbox, [{
+        "symbol": "SOLUSDC",
+        "side": "BUY",
+        "qty": 3.0,
+        "ref_price": 150.0,
+        "place_kwargs": {"client_order_id": "CID-NESTED-1"},
+    }], lines=True)
+
+    result = build_active_intent_index(str(tmp_path))
+    by_id = {row["intent_id"]: row for row in result["intents"]}
+    assert by_id["krk-intent-1"]["requested_qty"] == 0.25
+    assert by_id["krk-intent-1"]["executed_qty"] == 0.10
+    assert by_id["t212-one-shot-NVDA_US_EQ-1"]["requested_price"] == 120.0
+    assert by_id["t212-one-shot-NVDA_US_EQ-1"]["executed_qty"] == 0.5
+    assert by_id["CID-NESTED-1"]["client_order_id"] == "CID-NESTED-1"
+    assert by_id["CID-NESTED-1"]["requested_price"] == 150.0
+

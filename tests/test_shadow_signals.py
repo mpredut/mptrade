@@ -81,6 +81,18 @@ class TestKalmanTrendGapReset(unittest.TestCase):
         # real dt = exactly GAP_RESET_SEC => not strictly greater => normal path (no reset to 0)
         self.assertNotEqual(out_after["vel"], 0.0)
 
+    def test_long_gap_resets_trend_even_when_conf_exit_is_zero(self):
+        """Even if CONF_EXIT is 0.0, a gap > GAP_RESET_SEC must reset trend to 0."""
+        from unittest.mock import patch
+        import intelligence.internal.triggers.kalman_trigger as kt
+        kf = ss.KalmanTrend()
+        ts, price, out = self._warm_up_uptrend(kf, 1_000_000.0, 100.0)
+        self.assertEqual(out["trend"], 1)
+        with patch.object(kt, "CONF_EXIT", 0.0):
+            out_after = kf.update(ts + 3600.0, price, epsilon=0.01)
+        self.assertEqual(out_after["trend"], 0)
+        self.assertEqual(out_after["old_trend"], 1)
+
 
 class TestVolAndThresholds(unittest.TestCase):
     """Sanity minim pe restul modulului — neschimbate de fix-ul de gap."""

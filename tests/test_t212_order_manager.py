@@ -235,6 +235,32 @@ class TestT212OrderManager(unittest.TestCase):
             assert _place(client) is False
             assert client.place_calls == []
 
+        with self.subTest(msg="accepted_order_absent_from_history_recovers_fill_from_portfolio"):
+            self._reset_env()
+            client = FakeClient([(201, {"id": "vanished-fill", "status": "NEW"})])
+            client.portfolio = [{"ticker": TICKER, "quantity": 1.0}]
+            assert _place(client) is True
+
+            client.statuses["vanished-fill"] = False
+            client.portfolio = [{"ticker": TICKER, "quantity": 2.25}]
+            assert _place(client) is True
+            record = json.loads(self.marker_env.read_text(encoding="utf-8"))
+            assert record["lifecycle"] == "filled"
+            assert record["filled_qty"] == pytest.approx(1.25)
+
+        with self.subTest(msg="accepted_order_definitively_absent_without_fill_becomes_terminal_failed"):
+            self._reset_env()
+            client = FakeClient([(201, {"id": "vanished-cancel", "status": "NEW"})])
+            client.portfolio = [{"ticker": TICKER, "quantity": 1.0}]
+            assert _place(client) is True
+
+            client.statuses["vanished-cancel"] = False
+            assert _place(client) is True   # first absence snapshot stays waiting
+            assert _place(client) is False  # second absence snapshot marks terminal_failed
+            record = json.loads(self.marker_env.read_text(encoding="utf-8"))
+            assert record["lifecycle"] == "canceled"
+            assert record["venue_status"] == "ABSENT"
+
     def test_preflight_and_namespace(self):
         with self.subTest(msg="preflight_refuses_existing_matching_order_without_claiming_it"):
             self._reset_env()

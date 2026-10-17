@@ -1028,8 +1028,10 @@ class Strategy:
             orders = self.client.list_active_orders()
         if orders is None:
             return None
-        return {str(o.get("id")) for o in orders
-                if str(o.get("ticker", "")).upper() == self.ticker.upper()}
+        return {
+            str(o.get("id")) for o in orders
+            if isinstance(o, dict) and self._active_order_identity(o)[0] == self.ticker.upper()
+        }
 
     def _tracked_order_status(self, order: dict, cache: dict[str, object]):
         """Return strict order status, cached for one reconciliation pass."""
