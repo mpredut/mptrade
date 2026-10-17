@@ -15,6 +15,16 @@ logger = logging.getLogger("intelligence.macro.geopolitical_analyzer")
 
 DEFAULT_STATE_FILE = "cachedb/geopolitical_threat_eval.json"
 DEFAULT_CACHE_TTL_SEC = float(os.environ.get("MACRO_LLM_INTERVAL_SEC", "16200.0"))  # 4.5 hours default
+DEFAULT_FALLBACK_RETRY_TTL_SEC = float(os.environ.get("MACRO_FALLBACK_RETRY_TTL_SEC", "120.0"))
+
+ACUTE_SHOCK_PHRASES = (
+    "declared war",
+    "nuclear strike",
+    "nuclear weapon",
+    "strait of hormuz",
+    "oil embargo",
+    "major offensive",
+)
 
 
 @dataclass(frozen=True)
@@ -27,6 +37,7 @@ class GeopoliticalThreatAssessment:
     recommended_brake: str     # "NONE", "DOWNSCALE_50", "HARD_VETO_NEW_BUYS"
     headlines_analyzed: int
     ts: float
+    is_fallback: bool = False
 
 
 class GeopoliticalThreatAnalyzer:
@@ -36,6 +47,7 @@ class GeopoliticalThreatAnalyzer:
         self,
         gemini_client: Optional[GeminiClient] = None,
         cache_ttl_sec: Optional[float] = None,
+        fallback_retry_ttl_sec: Optional[float] = None,
         state_file: str = DEFAULT_STATE_FILE,
     ) -> None:
         self.gemini_client = gemini_client or GeminiClient()
@@ -43,6 +55,12 @@ class GeopoliticalThreatAnalyzer:
             self.cache_ttl_sec = float(cache_ttl_sec)
         else:
             self.cache_ttl_sec = float(os.environ.get("MACRO_LLM_INTERVAL_SEC", str(DEFAULT_CACHE_TTL_SEC)))
+        if fallback_retry_ttl_sec is not None:
+            self.fallback_retry_ttl_sec = float(fallback_retry_ttl_sec)
+        else:
+            self.fallback_retry_ttl_sec = float(
+                os.environ.get("MACRO_FALLBACK_RETRY_TTL_SEC", str(DEFAULT_FALLBACK_RETRY_TTL_SEC))
+            )
         self.state_file = state_file
         self._cached_assessment: Optional[GeopoliticalThreatAssessment] = None
         self._last_eval_ts: float = 0.0
@@ -60,13 +78,16 @@ class GeopoliticalThreatAnalyzer:
             try:
                 with open(target_file, "r") as f:
                     data = json.load(f)
+                summary_str = str(data.get("summary", ""))
+                is_fb = bool(data.get("is_fallback", "LLM fallback" in summary_str))
                 self._cached_assessment = GeopoliticalThreatAssessment(
                     threat_level=str(data.get("threat_level", "NORMAL")),
                     risk_score=float(data.get("risk_score", 0.1)),
-                    summary=str(data.get("summary", "")),
+                    summary=summary_str,
                     recommended_brake=str(data.get("recommended_brake", "NONE")),
                     headlines_analyzed=int(data.get("headlines_analyzed", 0)),
                     ts=float(data.get("ts", 0.0)),
+                    is_fallback=is_fb,
                 )
                 self._last_eval_ts = self._cached_assessment.ts
                 self._last_headlines_digest = str(data.get("headlines_digest", ""))
@@ -95,7 +116,12 @@ class GeopoliticalThreatAnalyzer:
     ) -> GeopoliticalThreatAssessment:
         """Evaluate geopolitical threat level based on news headlines."""
         now = now_ts if now_ts is not None else time.time()
-        is_stale = (now - self._last_eval_ts) >= self.cache_ttl_sec
+        effective_ttl = (
+            self.fallback_retry_ttl_sec
+            if (self._cached_assessment is not None and self._cached_assessment.is_fallback)
+            else self.cache_ttl_sec
+        )
+        is_stale = (now - self._last_eval_ts) >= effective_ttl
         acute_shock_alert = (
             news_snapshot is not None
             and news_snapshot.has_critical_shock_keywords
@@ -134,10 +160,16 @@ class GeopoliticalThreatAnalyzer:
 
         # Stage 2: High-severity headlines present -> Check if headlines have changed
         headline_digest = " || ".join(h.title for h in high_sev[:12])
-        if not force_refresh and not acute_shock_alert and self._cached_assessment and headline_digest == self._last_headlines_digest:
+        if (
+            not force_refresh
+            and not acute_shock_alert
+            and self._cached_assessment
+            and not self._cached_assessment.is_fallback
+            and headline_digest == self._last_headlines_digest
+        ):
             return self._cached_assessment
 
-        # Throttle Stage 3 LLM calls: if not forced and within cache_ttl_sec, do not re-query LLM for minor headline changes
+        # Throttle Stage 3 LLM calls: if not forced and within effective_ttl, do not re-query LLM for minor headline changes
         if not force_refresh and not acute_shock_alert and self._cached_assessment and not is_stale:
             return self._cached_assessment
 
@@ -164,12 +196,37 @@ class GeopoliticalThreatAnalyzer:
 
         resp = self.gemini_client.query_json(
             prompt,
-            timeout_sec=15.0,
+            timeout_sec=25.0,
             thread_title=macro_thread_title,
         )
         if not resp:
-            # Fallback to local heuristic based on shock keywords
-            level = "CRITICAL_SHOCK" if news_snapshot.has_critical_shock_keywords else "ELEVATED"
+            has_acute_phrase = any(
+                phrase in h.title.lower()
+                for h in high_sev
+                for phrase in ACUTE_SHOCK_PHRASES
+            )
+            if (
+                self._cached_assessment is not None
+                and not self._cached_assessment.is_fallback
+                and not has_acute_phrase
+            ):
+                preserved = GeopoliticalThreatAssessment(
+                    threat_level=self._cached_assessment.threat_level,
+                    risk_score=self._cached_assessment.risk_score,
+                    summary=self._cached_assessment.summary,
+                    recommended_brake=self._cached_assessment.recommended_brake,
+                    headlines_analyzed=len(high_sev),
+                    ts=now,
+                    is_fallback=True,
+                )
+                self._cached_assessment = preserved
+                self._last_eval_ts = now
+                self._last_headlines_digest = headline_digest
+                self._save_to_disk(preserved)
+                return preserved
+
+            # Fallback to local heuristic based on acute shock phrases
+            level = "CRITICAL_SHOCK" if has_acute_phrase else "ELEVATED"
             brake = "HARD_VETO_NEW_BUYS" if level == "CRITICAL_SHOCK" else "DOWNSCALE_50"
             fallback_assessment = GeopoliticalThreatAssessment(
                 threat_level=level,
@@ -178,6 +235,7 @@ class GeopoliticalThreatAnalyzer:
                 recommended_brake=brake,
                 headlines_analyzed=len(high_sev),
                 ts=now,
+                is_fallback=True,
             )
             self._cached_assessment = fallback_assessment
             self._last_eval_ts = now
@@ -197,9 +255,11 @@ class GeopoliticalThreatAnalyzer:
             recommended_brake=recommended_brake,
             headlines_analyzed=len(high_sev),
             ts=now,
+            is_fallback=False,
         )
         self._cached_assessment = assessment
         self._last_eval_ts = now
         self._last_headlines_digest = headline_digest
         self._save_to_disk(assessment)
         return assessment
+

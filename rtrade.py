@@ -1138,6 +1138,53 @@ class TradingBot:
                 self.filled_sell_price = filled_sell_price
             return self.filled_sell_price
         
+    def _get_pair_cond(self):
+        cond = getattr(self, "_pair_precheck_cond", None)
+        if cond is None:
+            cond = threading.Condition(self.lock)
+            self._pair_precheck_cond = cond
+        return cond
+
+    def _abort_round(self):
+        cond = self._get_pair_cond()
+        with cond:
+            self._round_aborted = True
+            pending = getattr(self, "_pair_precheck_pending", None)
+            if isinstance(pending, set):
+                pending.clear()
+            cond.notify_all()
+
+    def _finish_side_precheck(self, side, *, aborted=False):
+        cond = self._get_pair_cond()
+        with cond:
+            if aborted:
+                self._round_aborted = True
+            pending = getattr(self, "_pair_precheck_pending", None)
+            if isinstance(pending, set):
+                pending.discard(side)
+                if aborted:
+                    pending.clear()
+            cond.notify_all()
+
+    def _pair_abort_if(self, side, opposite_filled_fn):
+        cond = self._get_pair_cond()
+        with cond:
+            if opposite_filled_fn():
+                return False
+            if getattr(self, "_round_aborted", False):
+                return True
+            pending = getattr(self, "_pair_precheck_pending", None)
+            if isinstance(pending, set):
+                pending.discard(side)
+                cond.notify_all()
+                deadline = time.monotonic() + 10.0
+                while pending and not getattr(self, "_round_aborted", False) and not opposite_filled_fn():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    cond.wait(timeout=remaining)
+            return bool(getattr(self, "_round_aborted", False) and not opposite_filled_fn())
+
     def repetitive_buy(self, current_price, filled_sell_price):
         adjustment_percent = self.DEFAULT_ADJUSTMENT_PERCENT
         failure_count = 1  # Count placement failures.
@@ -1206,6 +1253,11 @@ class TradingBot:
                             cache_permit=submit_cache_permit,
                             _outcome_context=outcome_context)
                     else:
+                        extra_place_kwargs = {}
+                        if isinstance(getattr(self, "_pair_precheck_pending", None), set):
+                            extra_place_kwargs["abort_if"] = (
+                                lambda: self._pair_abort_if("BUY", lambda: self.is_sell_filled)
+                            )
                         buy_order = mkt.place(
                             self.symbol, "BUY", target_buy_price, target_buy_qty,
                             cancelorders=True, hours=RTRADE_BUY_NORMAL_HOURS,
@@ -1213,18 +1265,42 @@ class TradingBot:
                             bypass_guards={"GF1", "GI3"} if RTRADE_BYPASS_PROFIT_GUARD else {"GI3"},
                             caller_owns_retry=True,
                             cache_permit=submit_cache_permit,
-                            _outcome_context=outcome_context)
+                            _outcome_context=outcome_context,
+                            **extra_place_kwargs)
                 except po.WeightLimitBlock as e:
+                    self._finish_side_precheck("BUY", aborted=not self.is_sell_filled)
                     print(f"[{self.symbol}] 24h limit reached — exiting without retry ({e})")
                     return None
+                except Exception:
+                    self._finish_side_precheck("BUY", aborted=not self.is_sell_filled)
+                    raise
 
                 if buy_order is None:
                     refusal_reason = outcome_context.get("reason")
+                    terminal_unfilled = refusal_reason in {
+                        "qty_zero_after_weight",
+                        "qty_zero_after_policy",
+                        "below_min_notional",
+                        "profit_guard",
+                        "trend_deferred",
+                        "medium_trend_deferred",
+                        "aborted_by_caller",
+                    }
+                    self._finish_side_precheck(
+                        "BUY",
+                        aborted=bool(terminal_unfilled and not self.is_sell_filled),
+                    )
                     if refusal_reason in {"qty_zero_after_weight", "qty_zero_after_policy", "below_min_notional"}:
                         print(f"[{self.symbol}] 24h limit reached (BUY: {refusal_reason}) — exiting without retry")
                         return None
                     if refusal_reason == "profit_guard":
                         print(f"[{self.symbol}] Blocked by profit guard (BUY: {refusal_reason}) — exiting without retry")
+                        return None
+                    if refusal_reason in {"trend_deferred", "medium_trend_deferred"} and not self.is_sell_filled:
+                        print(f"[{self.symbol}] Deferred by trend (BUY: {refusal_reason}) — exiting without retry")
+                        return None
+                    if (refusal_reason == "aborted_by_caller" or getattr(self, "_round_aborted", False)) and not self.is_sell_filled:
+                        print(f"[{self.symbol}] Aborting BUY loop because SELL worker exited without fill.")
                         return None
                     print(f"[{self.symbol}] Order BUY failed, retryed {failure_count} times. Retrying again ...")
                     _touch_rtrade_heartbeat()
@@ -1235,6 +1311,7 @@ class TradingBot:
                         return None
                     continue
 
+                self._finish_side_precheck("BUY", aborted=False)
                 failure_count = 1 # reset failure count after a successful order placement
                 with self.lock:
                     self._round_placed_order = True
@@ -1330,8 +1407,7 @@ class TradingBot:
                     pending_replacement_qty = remaining_qty
         finally:
             if not completed:
-                with self.lock:
-                    self._round_aborted = True
+                self._abort_round()
 
 
     def repetitive_sell(self, current_price, filled_buy_price):
@@ -1402,6 +1478,11 @@ class TradingBot:
                             cache_permit=submit_cache_permit,
                             _outcome_context=outcome_context)
                     else:
+                        extra_place_kwargs = {}
+                        if isinstance(getattr(self, "_pair_precheck_pending", None), set):
+                            extra_place_kwargs["abort_if"] = (
+                                lambda: self._pair_abort_if("SELL", lambda: self.is_buy_filled)
+                            )
                         sell_order = mkt.place(
                             self.symbol, "SELL", target_sell_price, target_sell_qty,
                             cancelorders=True, hours=RTRADE_SELL_NORMAL_HOURS,
@@ -1410,18 +1491,42 @@ class TradingBot:
                             allow_math_reference_sell=bool(RTRADE_BYPASS_PROFIT_GUARD),
                             caller_owns_retry=True,
                             cache_permit=submit_cache_permit,
-                            _outcome_context=outcome_context)
+                            _outcome_context=outcome_context,
+                            **extra_place_kwargs)
                 except po.WeightLimitBlock as e:
+                    self._finish_side_precheck("SELL", aborted=not self.is_buy_filled)
                     print(f"[{self.symbol}] 24h limit reached (SELL) — exiting without retry ({e})")
                     return None
+                except Exception:
+                    self._finish_side_precheck("SELL", aborted=not self.is_buy_filled)
+                    raise
 
                 if sell_order is None:
                     refusal_reason = outcome_context.get("reason")
+                    terminal_unfilled = refusal_reason in {
+                        "qty_zero_after_weight",
+                        "qty_zero_after_policy",
+                        "below_min_notional",
+                        "profit_guard",
+                        "trend_deferred",
+                        "medium_trend_deferred",
+                        "aborted_by_caller",
+                    }
+                    self._finish_side_precheck(
+                        "SELL",
+                        aborted=bool(terminal_unfilled and not self.is_buy_filled),
+                    )
                     if refusal_reason in {"qty_zero_after_weight", "qty_zero_after_policy", "below_min_notional"}:
                         print(f"[{self.symbol}] 24h limit reached (SELL: {refusal_reason}) — exiting without retry")
                         return None
                     if refusal_reason == "profit_guard" and not self.is_buy_filled:
                         print(f"[{self.symbol}] Blocked by profit guard (SELL: {refusal_reason}) — exiting without retry")
+                        return None
+                    if refusal_reason in {"trend_deferred", "medium_trend_deferred"} and not self.is_buy_filled:
+                        print(f"[{self.symbol}] Deferred by trend (SELL: {refusal_reason}) — exiting without retry")
+                        return None
+                    if (refusal_reason == "aborted_by_caller" or getattr(self, "_round_aborted", False)) and not self.is_buy_filled:
+                        print(f"[{self.symbol}] Aborting SELL loop because BUY worker exited without fill.")
                         return None
                     print(f"[{self.symbol}] Order SELL failed, retryed {failure_count} times. Retrying again ...")
                     _touch_rtrade_heartbeat()
@@ -1432,6 +1537,7 @@ class TradingBot:
                         return None
                     continue
                 
+                self._finish_side_precheck("SELL", aborted=False)
                 failure_count = 1 # reset failure count after a successful order placement
                 with self.lock:
                     self._round_placed_order = True
@@ -1527,8 +1633,7 @@ class TradingBot:
                     pending_replacement_qty = remaining_qty
         finally:
             if not completed:
-                with self.lock:
-                    self._round_aborted = True
+                self._abort_round()
 
     def _run_pair(self, executor, current_price):
         """Run both sides concurrently on the bot's persistent workers.
@@ -1537,9 +1642,11 @@ class TradingBot:
         performs defensive reconciliation by canceling recent orders. The old version
         created two threads per round and lost their exceptions on stderr.
         """
-        with self.lock:
+        cond = self._get_pair_cond()
+        with cond:
             self._round_placed_order = False
             self._round_aborted = False
+            self._pair_precheck_pending = {"BUY", "SELL"}
         buy_future = executor.submit(
             self.repetitive_buy, current_price, self.filled_sell_price)
         sell_future = executor.submit(

@@ -212,6 +212,64 @@ class TestGeopoliticalThreatAnalyzer:
         analyzer.assess(war_snap_2, now_ts=t0 + 7300.0)
         assert len(calls) == 2
 
+    def test_llm_timeout_fallback_uses_short_retry_ttl_and_avoids_false_critical_shock(self, tmp_path):
+        calls = []
+
+        def timeout_then_recover(prompt, model, timeout):
+            calls.append(timeout)
+            if len(calls) == 1:
+                return None  # Simulate CLI timeout
+            return json.dumps({
+                "threat_level": "NORMAL",
+                "risk_score": 0.20,
+                "summary": "Background conflict coverage without acute macro escalation.",
+                "recommended_brake": "NONE",
+            })
+
+        generic_war_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Google News</title>
+    <item><title>Commentary on ongoing war and sanctions debate</title></item>
+    <item><title>Analysts discuss military strike history and conflict</title></item>
+    <item><title>Parliament reviews war budget and sanctions package</title></item>
+  </channel>
+</rss>
+"""
+        snap = NewsFeedCollector.parse_rss_xml(generic_war_xml)
+        assert snap.high_severity_count == 3
+
+        client = GeminiClient(custom_runner=timeout_then_recover)
+        state_file = str(tmp_path / "geopolitical_state.json")
+        analyzer = GeopoliticalThreatAnalyzer(
+            gemini_client=client,
+            cache_ttl_sec=16200.0,
+            fallback_retry_ttl_sec=120.0,
+            state_file=state_file,
+        )
+
+        t0 = 2_000_000.0
+        res1 = analyzer.assess(snap, now_ts=t0)
+        assert len(calls) == 1
+        assert calls[0] == 25.0
+        # Generic war mentions without acute shock phrases must not trigger CRITICAL_SHOCK
+        assert res1.threat_level == "ELEVATED"
+        assert res1.recommended_brake == "DOWNSCALE_50"
+        assert res1.is_fallback is True
+
+        # Within 120s fallback retry window, cached fallback is returned
+        res_cached = analyzer.assess(snap, now_ts=t0 + 60.0)
+        assert len(calls) == 1
+        assert res_cached == res1
+
+        # After 120s (well before the 16200s normal TTL), LLM is retried even on identical headlines
+        res2 = analyzer.assess(snap, now_ts=t0 + 125.0)
+        assert len(calls) == 2
+        assert res2.threat_level == "NORMAL"
+        assert res2.recommended_brake == "NONE"
+        assert res2.is_fallback is False
+
+
 
 class TestGeopoliticalShockGuard:
     """Tests for GeopoliticalShockGuard emergency braking."""

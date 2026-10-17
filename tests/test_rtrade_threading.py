@@ -1320,6 +1320,63 @@ class RTradeThreadingTest(unittest.TestCase):
             cancel_confirmed.assert_called_once_with("TAOUSDC", 42)
             preflight.assert_not_called()
 
+    def test_run_pair_aborts_surviving_leg_before_venue_dispatch_via_abort_if(self):
+        bot = _bot()
+        venue_dispatches = []
+
+        def fake_place(symbol, side, price, qty, **kwargs):
+            ctx = kwargs.get("_outcome_context")
+            abort_if = kwargs.get("abort_if")
+            if side == "BUY":
+                if isinstance(ctx, dict):
+                    ctx["reason"] = "qty_zero_after_policy"
+                return None
+            if callable(abort_if) and abort_if():
+                if isinstance(ctx, dict):
+                    ctx["reason"] = "aborted_by_caller"
+                return None
+            venue_dispatches.append((side, price, qty))
+            return {"orderId": 42, "price": str(price)}
+
+        with patch.object(rtrade.api, "get_current_price", return_value=100.0), \
+             patch.object(rtrade.mkt, "place", side_effect=fake_place):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                buy_res, sell_res = bot._run_pair(executor, 100.0)
+
+        self.assertIsNone(buy_res)
+        self.assertIsNone(sell_res)
+        self.assertEqual(venue_dispatches, [], "Surviving leg must abort before dispatching to venue")
+        self.assertFalse(bot._round_placed_order)
+
+    def test_run_pair_exits_unfilled_trend_deferred_without_retry(self):
+        bot = _bot()
+        calls = {"BUY": 0, "SELL": 0}
+
+        def fake_place(symbol, side, price, qty, **kwargs):
+            calls[side] += 1
+            ctx = kwargs.get("_outcome_context")
+            if side == "BUY":
+                if isinstance(ctx, dict):
+                    ctx["reason"] = "qty_zero_after_policy"
+                return None
+            if isinstance(ctx, dict):
+                ctx["reason"] = "trend_deferred"
+            return None
+
+        with patch.object(rtrade.api, "get_current_price", return_value=100.0), \
+             patch.object(rtrade.mkt, "place", side_effect=fake_place), \
+             patch.object(rtrade.time, "sleep") as mock_sleep:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                buy_res, sell_res = bot._run_pair(executor, 100.0)
+
+        self.assertIsNone(buy_res)
+        self.assertIsNone(sell_res)
+        self.assertLessEqual(calls["BUY"], 1)
+        self.assertLessEqual(calls["SELL"], 1)
+        self.assertGreaterEqual(calls["BUY"] + calls["SELL"], 1)
+        mock_sleep.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

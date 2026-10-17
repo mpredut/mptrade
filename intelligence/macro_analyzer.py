@@ -248,7 +248,13 @@ class MacroAnalyzer:
         }
 
         # 1. Geopolitical Threat assessment (Pillar 4)
-        if force or (current_ts - self._last_macro_llm_ts) >= self.macro_llm_interval_sec:
+        cached_geo = getattr(self.geopolitical_analyzer, "_cached_assessment", None)
+        geo_interval = (
+            getattr(self.geopolitical_analyzer, "fallback_retry_ttl_sec", 120.0)
+            if getattr(cached_geo, "is_fallback", False)
+            else self.macro_llm_interval_sec
+        )
+        if force or (current_ts - self._last_macro_llm_ts) >= geo_interval:
             if self.assess_geopolitical_threat(force=force):
                 results["geopolitical_updated"] = True
                 self._last_macro_llm_ts = current_ts

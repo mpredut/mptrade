@@ -252,6 +252,7 @@ class Instrument:
         bypass_quantity_policy = "quantity_policy" in bypassed_guards or "weight" in bypassed_guards or bypass_profit_guard
         wait_for_trend = bool(kwargs.pop("wait_for_trend", True)) and ("short_trend" not in bypassed_guards)
         kwargs.pop("cooldown_pair_id", None)
+        abort_if = kwargs.pop("abort_if", None)
         side_u = side.upper()
         # This narrow escape hatch exists only for drawdown BUY flows or
         # explicitly authorized aged retry salvage exits (allow_math_reference_sell=True).
@@ -677,6 +678,9 @@ class Instrument:
                     reason = refusal
                     return None
 
+            if callable(abort_if) and bool(abort_if()):
+                reason = "aborted_by_caller"
+                return None
             if callable(execution_enabled) and not bool(execution_enabled()):
                 # Recheck next to the durability boundary. A disabled dry-run
                 # must never leave an intent that a later live worker can send.
@@ -834,6 +838,9 @@ class Instrument:
                                 venue=self.provider_name, symbol=self.symbol,
                                 side=side_u.lower(), qty=qty, scale=applied_scale,
                             )
+            if callable(abort_if) and bool(abort_if()):
+                reason = "aborted_by_caller"
+                return None
             if callable(execution_enabled) and not bool(execution_enabled()):
                 # The switch can change while guards and persistence run. This
                 # final check converts that race into a terminal pre-submit
