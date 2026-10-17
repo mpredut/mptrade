@@ -1110,7 +1110,7 @@ class TradingBot:
         self.buy_filled = False
         self.sell_filled = False
         self.DEFAULT_ADJUSTMENT_PERCENT = DEFAULT_ADJUSTMENT_PERCENT
-        self.lock = threading.Lock()  # Synchronization lock.
+        self.lock = threading.RLock()  # Reentrant synchronization lock.
 
     @property
     def is_buy_filled(self):
@@ -1141,7 +1141,7 @@ class TradingBot:
     def _get_pair_cond(self):
         cond = getattr(self, "_pair_precheck_cond", None)
         if cond is None:
-            cond = threading.Condition(self.lock)
+            cond = threading.Condition(threading.RLock())
             self._pair_precheck_cond = cond
         return cond
 

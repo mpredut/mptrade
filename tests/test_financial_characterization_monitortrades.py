@@ -196,7 +196,7 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
         ts = now if now is not None else NOW
         with (
             patch.object(mt, "is_trend_up", return_value=trend_up),
-            patch.object(mt, "_apply_post_stop_ai_guard", side_effect=lambda sym, px, spx, st, snap, bb, bq, q: (True, bb, bq, q)),
+            patch.object(mt, "_apply_post_stop_ai_guard", side_effect=lambda sym, px, spx, st, snap, bb, bq, q, **_kwargs: (True, bb, bq, q)),
         ):
             mt.monitor_price_and_trade(
                 inst,

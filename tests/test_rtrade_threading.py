@@ -1323,14 +1323,17 @@ class RTradeThreadingTest(unittest.TestCase):
     def test_run_pair_aborts_surviving_leg_before_venue_dispatch_via_abort_if(self):
         bot = _bot()
         venue_dispatches = []
+        sell_reached_abort_check = threading.Event()
 
         def fake_place(symbol, side, price, qty, **kwargs):
             ctx = kwargs.get("_outcome_context")
             abort_if = kwargs.get("abort_if")
             if side == "BUY":
+                sell_reached_abort_check.wait(timeout=1.0)
                 if isinstance(ctx, dict):
                     ctx["reason"] = "qty_zero_after_policy"
                 return None
+            sell_reached_abort_check.set()
             if callable(abort_if) and abort_if():
                 if isinstance(ctx, dict):
                     ctx["reason"] = "aborted_by_caller"
