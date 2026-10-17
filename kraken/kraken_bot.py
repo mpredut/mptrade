@@ -27,12 +27,20 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from kraken_common import (log, required_bool_env, required_env,
-                           required_int_env, load_env_stack,
-                           single_instance)
-from kraken_client import KrakenClient, KrakenError
-from market_data import check_pair_listing, get_price, pair_available
-from notify import notify
+try:
+    from kraken.kraken_common import (log, required_bool_env, required_env,
+                                      required_int_env, load_env_stack,
+                                      single_instance)
+    from kraken.kraken_client import KrakenClient, KrakenError
+    from kraken.market_data import check_pair_listing, get_price, pair_available
+    from kraken.notify import notify
+except ImportError:
+    from kraken_common import (log, required_bool_env, required_env,
+                               required_int_env, load_env_stack,
+                               single_instance)
+    from kraken_client import KrakenClient, KrakenError
+    from market_data import check_pair_listing, get_price, pair_available
+    from notify import notify
 from strategies.spot_engine import Strategy, StratParams
 
 # Provider-agnostic path B requires the StrategyExecutor contract. Wrap the _BOT client
