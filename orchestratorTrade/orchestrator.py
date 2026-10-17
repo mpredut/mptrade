@@ -304,14 +304,6 @@ class BotManager:
                     for name in list(self.processes.keys()):
                         await self.restart_bot(name)
 
-                    self.server._send_ntfy(
-                        "Config Reloaded",
-                        f"Detected change in {os.path.basename(path)}. All bots reloaded automatically.",
-                        "high",
-                        self.server._resolve_topic("SERVER"),
-                        skip_email=True,
-                    )
-
     async def supervise(self):
         self.bots = self.parse_procs_conf()
         if not self.bots:
