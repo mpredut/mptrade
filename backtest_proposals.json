@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-10-17T22:14:29",
+    "ts": "2026-10-17T22:45:28",
     "full_key": "BINANCE_BTC.trailing.pct",
     "section": "BINANCE_BTC",
     "key": "trailing.pct",
@@ -14,7 +14,7 @@
     "dev_commit": "8c2f9d1"
   },
   {
-    "ts": "2026-10-17T22:14:29",
+    "ts": "2026-10-17T22:45:29",
     "full_key": "KRAKEN_HYPE.mt.lost",
     "section": "KRAKEN_HYPE",
     "key": "mt.lost",
@@ -23,12 +23,12 @@
     "winner_value": 3.5,
     "margin_vs_current": {
       "half1": 831.07,
-      "half2": 85.24
+      "half2": 208.95
     },
     "dev_commit": "8c2f9d1"
   },
   {
-    "ts": "2026-10-17T22:14:29",
+    "ts": "2026-10-17T22:45:29",
     "full_key": "KRAKEN_HYPE.mt.hardtp_fraction",
     "section": "KRAKEN_HYPE",
     "key": "mt.hardtp_fraction",
@@ -37,26 +37,12 @@
     "winner_value": 0.3,
     "margin_vs_current": {
       "half1": 290.55,
-      "half2": 189.57
+      "half2": 77.02
     },
     "dev_commit": "8c2f9d1"
   },
   {
-    "ts": "2026-10-17T22:14:29",
-    "full_key": "KRAKEN_HYPE.mt.hardtp_cooldown_h",
-    "section": "KRAKEN_HYPE",
-    "key": "mt.hardtp_cooldown_h",
-    "symbol": "HYPEUSD",
-    "current_on_dev": 9.0,
-    "winner_value": 2.0,
-    "margin_vs_current": {
-      "half1": 257.95,
-      "half2": 189.57
-    },
-    "dev_commit": "8c2f9d1"
-  },
-  {
-    "ts": "2026-10-17T22:14:29",
+    "ts": "2026-10-17T22:45:29",
     "full_key": "BINANCE_ARB.mt.maxage_days",
     "section": "BINANCE_ARB",
     "key": "mt.maxage_days",
@@ -65,7 +51,7 @@
     "winner_value": 7.0,
     "margin_vs_current": {
       "half1": 215.66,
-      "half2": 120.86
+      "half2": 120.87
     },
     "dev_commit": "8c2f9d1"
   }
