@@ -385,6 +385,8 @@ class AutonomousIntentGateway:
                 side=decision,
                 qty=target_qty,
                 price=price,
+                market=True,
+                force=True,
                 is_market=True,
                 intent_id=intent_id,
                 client_order_id=intent_cid,

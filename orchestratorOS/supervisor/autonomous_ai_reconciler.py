@@ -716,8 +716,8 @@ class AutonomousAIReconciler:
         """Persists the full audit report and heartbeat to disk in cachedb/."""
         try:
             os.makedirs(self.cache_dir, exist_ok=True)
-            with open(self.state_file, "w", encoding="utf-8") as f:
-                json.dump(asdict(report), f, indent=2)
+            from state_io import atomic_write_json
+            atomic_write_json(self.state_file, asdict(report), indent=2)
 
             hb = {
                 "status": "alive",
@@ -728,8 +728,7 @@ class AutonomousAIReconciler:
                 "venue_actions_count": len(report.venue_actions),
                 "market_trading_decision": report.market_trading_decision,
             }
-            with open(self.heartbeat_file, "w", encoding="utf-8") as f:
-                json.dump(hb, f, indent=2)
+            atomic_write_json(self.heartbeat_file, hb, indent=2)
         except Exception as e:
             logger.warning("Could not persist audit artifact: %s", e)
 

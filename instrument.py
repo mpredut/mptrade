@@ -356,7 +356,11 @@ class Instrument:
         # before submission at the current executable price. This prevents a
         # force-market sell from passing at +1% then executing below the validated
         # margin, a financial time-of-check/time-of-use issue.
-        is_market = bool(kwargs.get("force", False) or kwargs.get("market", False))
+        is_market = bool(
+            kwargs.get("force", False)
+            or kwargs.get("market", False)
+            or kwargs.pop("is_market", False)
+        )
         enforce_business_minimum = not (
             bypass_profit_guard and side_u == "SELL" and is_market)
         profit_margin = None

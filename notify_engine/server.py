@@ -559,6 +559,7 @@ class NotificationServer:
                 if not lines:
                     continue
                 
+                read_count = len(lines)
                 remaining = []
                 success_count = 0
                 
@@ -569,34 +570,47 @@ class NotificationServer:
                     
                     try:
                         payload = json.loads(line)
-                    except:
+                    except Exception:
                         continue
                     
-                    if not remaining: # No failures in this batch yet
+                    if not remaining:  # No failures in this batch yet
                         intent = payload.get("__orchestrator_intent__")
                         success = False
                         if intent == "ntfy_webhook":
-                            title = payload.get("title", "")
-                            msg = payload.get("message", "")
-                            if not title.startswith("[DELAYED]"):
-                                title = "[DELAYED] " + title
-                            success = await asyncio.to_thread(
-                                self._send_ntfy,
-                                title,
-                                msg,
-                                payload.get("priority", "default"),
-                                payload.get("topic", "test-mptrade"),
-                                True
-                            )
+                            if "title" in payload:
+                                title = payload.get("title", "")
+                                msg = payload.get("message", "")
+                                if not title.startswith("[DELAYED]"):
+                                    title = "[DELAYED] " + title
+                                success = await asyncio.to_thread(
+                                    self._send_ntfy,
+                                    title,
+                                    msg,
+                                    payload.get("priority", "default"),
+                                    payload.get("topic", "test-mptrade"),
+                                    True
+                                )
+                            elif "alerts" in payload:
+                                success = await asyncio.to_thread(
+                                    self.dispatch_alerts,
+                                    payload.get("alerts", []),
+                                    payload.get("webhook_url"),
+                                    ""
+                                )
+                            else:
+                                success = True
                         elif intent == "email":
+                            subj = payload.get("subject", "")
+                            if not subj.startswith("[DELAYED]"):
+                                subj = "[DELAYED] " + subj
                             success = await asyncio.to_thread(
                                 self._send_email,
-                                "[DELAYED] " + payload.get("subject", ""),
+                                subj,
                                 payload.get("message", ""),
                                 True
                             )
                         else:
-                            success = True # Unknown intent, drop it
+                            success = True  # Unknown intent, drop it
                             
                         if success:
                             success_count += 1
@@ -606,8 +620,20 @@ class NotificationServer:
                         remaining.append(line)
                         
                 if success_count > 0 or len(remaining) != len(lines):
+                    # Preserve any notifications appended concurrently while network I/O ran
+                    newly_appended = []
+                    if os.path.exists(self.queue_file):
+                        try:
+                            with open(self.queue_file, "r", encoding="utf-8") as f_cur:
+                                cur_lines = f_cur.readlines()
+                            if len(cur_lines) > read_count:
+                                newly_appended = [
+                                    l.strip() for l in cur_lines[read_count:] if l.strip()
+                                ]
+                        except Exception:
+                            pass
                     with open(self.queue_file, "w", encoding="utf-8") as f:
-                        for r in remaining:
+                        for r in remaining + newly_appended:
                             f.write(r + "\n")
                     if success_count > 0:
                         logging.info(f"Flushed {success_count} delayed notifications from queue.")

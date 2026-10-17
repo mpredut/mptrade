@@ -215,6 +215,20 @@ class KrakenLiveReconciliationTest(unittest.TestCase):
         notify_mock.assert_not_called()
         self.assertFalse(engine._has_pending_market_exit())
 
+    def test_dry_run_reconcile_cancels_stale_limit_buy_when_price_rose(self):
+        state = strat._new_state()
+        order = _buy_order(kind="ENTRY")
+        order["ts"] = 0.0
+        state["orders"].append(order)
+        engine = strat.Strategy(
+            KrakenStatePersistenceTest._client(), "PAIR",
+            _params(order_ttl_min=10), dry_run=True, initial_state=state,
+        )
+        engine._save = MagicMock()
+        engine._now = lambda: 15 * 60.0  # 15 min > 10 min TTL
+        engine.reconcile(101.0)  # 101.0 > 100.0 * 1.003
+        self.assertFalse(engine._has_open("buy"))
+
 
 class KrakenConfigParsingTest(unittest.TestCase):
     def test_explicit_zero_disables_stop_reentry_bounce(self):

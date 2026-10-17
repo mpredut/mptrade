@@ -153,7 +153,7 @@ class CoinMarketCapSource(NewCoinsSource):
         return new_coins
 
 # ============================================
-# Sursa 2: CoinGecko
+# Source 2: CoinGecko
 # ============================================
 
 class CoinGeckoSource(NewCoinsSource):
@@ -208,7 +208,7 @@ class CoinGeckoSource(NewCoinsSource):
         return []
 
 # ============================================
-# Sursa 3: Binance
+# Source 3: Binance
 # ============================================
 
 class BinanceNewListingsSource(NewCoinsSource):
@@ -277,7 +277,7 @@ class BinanceNewListingsSource(NewCoinsSource):
         return [item for item in self._new_listings if item['added_at'] and item['added_at'] >= cutoff_date]
 
 # ============================================
-# Sursa 4: DexScreener
+# Source 4: DexScreener
 # ============================================
 
 class DexScreenerSource(NewCoinsSource):
@@ -309,8 +309,14 @@ class DexScreenerSource(NewCoinsSource):
                 data = response.json()
                 self._cache = []
                 self._supported_symbols.clear()
-                profiles = data.get('profiles', []) if isinstance(data, dict) else []
+                profiles = (
+                    data.get('profiles', [])
+                    if isinstance(data, dict)
+                    else (data if isinstance(data, list) else [])
+                )
                 for profile in profiles[:100]:
+                    if not isinstance(profile, dict):
+                        continue
                     symbol = profile.get('symbol', '').upper()
                     name = profile.get('name', symbol)
                     chain = profile.get('chainId', 'unknown')
@@ -346,17 +352,23 @@ class DexScreenerSource(NewCoinsSource):
 
 class NewCoinsFactory:
     def __init__(self, enabled_sources: Optional[List[str]] = None, cmc_api_key: str = CMC_API_KEY):
-        self._all_sources: Dict[str, NewCoinsSource] = {
-            "coinmarketcap": CoinMarketCapSource(cmc_api_key),
-            "coingecko": CoinGeckoSource(),
-            "binance": BinanceNewListingsSource(),
-            "dexscreener": DexScreenerSource(),
+        builders: Dict[str, Callable[[], NewCoinsSource]] = {
+            "coinmarketcap": lambda: CoinMarketCapSource(cmc_api_key),
+            "coingecko": CoinGeckoSource,
+            "binance": BinanceNewListingsSource,
+            "dexscreener": DexScreenerSource,
         }
-        if enabled_sources:
-            self.sources = {name: self._all_sources[name] for name in enabled_sources if name in self._all_sources}
-        else:
-            self.sources = self._all_sources
-        self.sources = {name: src for name, src in self.sources.items() if src.is_available()}
+        selected_names = (
+            [name for name in enabled_sources if name in builders]
+            if enabled_sources
+            else list(builders.keys())
+        )
+        self._all_sources: Dict[str, NewCoinsSource] = {
+            name: builders[name]() for name in selected_names
+        }
+        self.sources = {
+            name: src for name, src in self._all_sources.items() if src.is_available()
+        }
         print(f"[NewCoinsFactory] 🔧 Enabled sources: {list(self.sources.keys())}")
 
     def get_all_new_coins(self, days_back: int = NEW_COINS_AGE_DAYS) -> Dict[str, List[Dict]]:
@@ -376,7 +388,7 @@ class NewCoinsFactory:
                 for coin in source.get_new_coins(days_back):
                     if 'symbol' in coin:
                         all_symbols.add(coin['symbol'])
-            except:
+            except Exception:
                 pass
         return all_symbols
     
@@ -388,10 +400,10 @@ class NewCoinsFactory:
             try:
                 source.refresh()
             except Exception as e:
-                print(f"[NewCoinsFactory] Eroare refresh {source.get_name()}: {e}")
+                print(f"[NewCoinsFactory] Error refreshing {source.get_name()}: {e}")
 
 # ============================================
-# Monitor principal
+# Main monitor
 # ============================================
 
 class NewCoinsMonitor:

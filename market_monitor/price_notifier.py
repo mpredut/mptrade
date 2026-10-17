@@ -167,8 +167,8 @@ def print_new_coin_status(cachePriceAll, new_coins_checker):
 def periodic_cleanup(cachePriceAll, new_coins_checker):
     """Run price cleanup every six hours and coin cleanup when a monitor is supplied."""
     while True:
-        print(f"sleeping for {TIME_INTERVAL_CLEANUP} hours before next cleanup...")
-        time.sleep(TIME_INTERVAL_CLEANUP )
+        print(f"sleeping for {TIME_INTERVAL_CLEANUP / 3600:g} hours before next cleanup...")
+        time.sleep(TIME_INTERVAL_CLEANUP)
         print("[Periodic] Running cleanup for stale prices...")
 
         if hasattr(cachePriceAll, 'cleanup_old_prices'):
@@ -260,13 +260,6 @@ def main():
         cachePriceAll=cachePriceAll, alert_callback=alert_handler,
         check_interval_seconds=cfg["price_scan_seconds"], config=ac)
 
-    # The thread captures the arguments supplied here. Because ``None`` is passed before
-    # the optional coin monitor is constructed, this thread cleans price state only and
-    # never calls ``cleanup_old_new_coins`` on the later local variable.
-    cleanup_thread = threading.Thread(target=periodic_cleanup, name="periodic_cleanup",
-                                      args=(cachePriceAll, None), daemon=True)
-    cleanup_thread.start()
-
     new_coins_checker = None
     if not cfg["discover_new_coins"]:
         print("NEW COIN ALERT DISABLED in config (discover_new_coins = no) — watchlist only")
@@ -277,6 +270,10 @@ def main():
             max_new_coins=cfg["max_new_coins"], sources=cfg["sources"])
     else:
         print("NEW COIN ALERT DISABLED (ALERT_NEW_COIN != TRUE)")
+
+    cleanup_thread = threading.Thread(target=periodic_cleanup, name="periodic_cleanup",
+                                      args=(cachePriceAll, new_coins_checker), daemon=True)
+    cleanup_thread.start()
 
     try:
         while True:

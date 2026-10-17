@@ -1008,6 +1008,11 @@ class Strategy:
                           or (side == "sell" and price >= o["price"])):
                         fill_price = o["price"]
                     else:
+                        age = (self._now() - o.get("ts", 0)) / 60
+                        if (side == "buy" and not o.get("cancel_requested")
+                                and age > self.p.order_ttl_min and price > o["price"] * 1.003):
+                            log(f"  [STRAT] buy {o['txid']} unfilled, the price rose — cancelling and re-placing")
+                            self._cancel_order(o)
                         continue
                     if o in self.s["orders"]:
                         self._remove(o)
@@ -1043,7 +1048,7 @@ class Strategy:
                 applied_fee = float(o.get("applied_fee") or 0.0)
                 eps = max(1e-12, float(o["vol"]) * 1e-12)
                 if total_vol + eps < applied_vol or total_cost + eps < applied_cost:
-                    log(f"  ! [STRAT] status {o['txid']} a regresat cumulativ "
+                    log(f"  ! [STRAT] status {o['txid']} regressed cumulatively "
                         f"(vol {total_vol}<{applied_vol}) — not reapplying")
                     continue
 

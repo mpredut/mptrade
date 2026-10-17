@@ -313,8 +313,8 @@ class AutonomousOvernightMonitor:
         if persist:
             try:
                 os.makedirs(os.path.dirname(self.status_file), exist_ok=True)
-                with open(self.status_file, "w", encoding="utf-8") as f:
-                    json.dump(asdict(report), f, indent=2)
+                from state_io import atomic_write_json
+                atomic_write_json(self.status_file, asdict(report), indent=2)
             except Exception as e:
                 logger.warning("Could not persist overnight status: %s", e)
 

@@ -376,6 +376,37 @@ class TestNewCoinsDiscovery(unittest.TestCase):
         monitor.refresh(refresh_sources=True)
         factory.refresh_all.assert_called_once()
 
+    def test_dexscreener_parses_list_response(self):
+        from market_monitor.new_coins_discovery import DexScreenerSource
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = [
+            {
+                "symbol": "DEXA",
+                "name": "Dex Token A",
+                "chainId": "solana",
+                "tokenAddress": "addr123",
+                "listedAt": int(time.time() * 1000),
+            }
+        ]
+        with patch("market_monitor.new_coins_discovery.requests.get", return_value=mock_resp):
+            src = DexScreenerSource()
+        self.assertIn("DEXA", src.get_supported_symbols())
+        self.assertEqual(len(src.get_new_coins()), 1)
+
+    def test_factory_instantiates_only_enabled_sources(self):
+        with patch("market_monitor.new_coins_discovery.CoinGeckoSource") as mock_cg, \
+             patch("market_monitor.new_coins_discovery.DexScreenerSource") as mock_dex, \
+             patch("market_monitor.new_coins_discovery.BinanceNewListingsSource") as mock_bin:
+            mock_bin_inst = MagicMock()
+            mock_bin_inst.is_available.return_value = True
+            mock_bin.return_value = mock_bin_inst
+            factory = NewCoinsFactory(enabled_sources=["binance"])
+            mock_bin.assert_called_once()
+            mock_cg.assert_not_called()
+            mock_dex.assert_not_called()
+            self.assertEqual(factory.get_available_sources(), ["binance"])
+
 
 if __name__ == "__main__":
     unittest.main()

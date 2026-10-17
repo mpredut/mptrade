@@ -339,4 +339,52 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             self.server.dispatch_alerts([alert2], bot_name="rtrade")
             self.assertEqual(len(self.dispatched), 1, "Guard alert should be deduplicated despite BUY keyword")
 
+    def test_flush_queue_preserves_concurrent_appends_and_deduplicates_delayed_prefix(self):
+        """Verify flush_queue_loop preserves concurrently appended queue lines and avoids duplicate [DELAYED] prefix."""
+        import asyncio
 
+        queue_file = os.path.join(self._temp_dir.name, "queue.jsonl")
+        self.server.queue_file = queue_file
+        initial_line = json.dumps({
+            "__orchestrator_intent__": "email",
+            "subject": "[DELAYED] First Alert",
+            "message": "Body 1",
+        })
+        concurrent_line = json.dumps({
+            "__orchestrator_intent__": "ntfy_webhook",
+            "title": "Concurrent Alert",
+            "message": "Body 2",
+            "priority": "high",
+            "topic": "ntfy-trades-test",
+        })
+        with open(queue_file, "w", encoding="utf-8") as f:
+            f.write(initial_line + "\n")
+
+        sent_emails = []
+
+        def fake_send_email(subject: str, message: str, is_retry: bool = False) -> bool:
+            sent_emails.append((subject, message, is_retry))
+            # Simulate concurrent append while network I/O is in flight
+            with open(queue_file, "a", encoding="utf-8") as f_append:
+                f_append.write(concurrent_line + "\n")
+            return True
+
+        self.server._send_email = fake_send_email
+
+        calls = 0
+
+        async def fake_sleep(_sec):
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                raise asyncio.CancelledError()
+
+        with mock.patch("asyncio.sleep", side_effect=fake_sleep):
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(self.server.flush_queue_loop())
+
+        self.assertEqual(len(sent_emails), 1)
+        self.assertEqual(sent_emails[0][0], "[DELAYED] First Alert")
+        with open(queue_file, "r", encoding="utf-8") as f:
+            remaining_lines = [l.strip() for l in f.readlines() if l.strip()]
+        self.assertEqual(remaining_lines, [concurrent_line])
