@@ -1385,10 +1385,17 @@ class Strategy:
                 return cached, "cache"
         return 0.0, "none"
 
-    def _create_position_snapshot(self, price: float, avg: float, held: float) -> PositionSnapshot:
+    def _create_position_snapshot(
+        self,
+        price: float,
+        avg: float,
+        held: float,
+        include_vol: bool = True,
+        include_trend: bool = True,
+    ) -> PositionSnapshot:
         """Create a standardized PositionSnapshot using T212 state and time source."""
         trend_up = False
-        if self._trend_slope_provider:
+        if include_trend and self._trend_slope_provider:
             try:
                 slope = self._trend_slope_provider(self.yahoo_sym)
                 if slope is not None and slope >= 0.0:
@@ -1396,7 +1403,10 @@ class Strategy:
             except Exception:
                 pass
 
-        vol_1h, vol_source = self._vol_1h_ratio()
+        if include_vol:
+            vol_1h, vol_source = self._vol_1h_ratio()
+        else:
+            vol_1h, vol_source = 0.0, "default"
         sell_qty = self._sellable_qty(held, price)
         return PositionSnapshot(
             symbol=self.ticker,
@@ -1686,10 +1696,21 @@ class Strategy:
                     )
                     self.exit_manager.config.tp_stagnation_max_sec = self.p.tp_stagnation_max_sec
 
-                    snapshot = self._create_position_snapshot(price, avg, held)
+                    tp_thresh = self.p.takeprofit_pct / 100.0
+                    in_tp_zone = (
+                        not self.replay_mode
+                        or self.ticker in self.exit_manager.tp_ride_state
+                        or self.exit_manager.config.hard_tp_enabled
+                        or (price > avg and (price - avg) / avg >= tp_thresh * 0.98)
+                    )
+                    snapshot = self._create_position_snapshot(
+                        price, avg, held,
+                        include_vol=not self.replay_mode,
+                        include_trend=in_tp_zone,
+                    )
 
                     decision = self.exit_manager.evaluate_take_profit(
-                        snapshot, custom_threshold=self.p.takeprofit_pct / 100.0
+                        snapshot, custom_threshold=tp_thresh
                     )
 
                     if decision.action in (ExitAction.SELL, ExitAction.PARTIAL_SELL) and decision.should_exit:
@@ -1754,6 +1775,9 @@ class Strategy:
                     else:
                         log(f"  ! [STRAT] MDHTP EXIT order refused/failed ({pending_exit.get('reason')}) — intent retained for retry")
                         return
+                elif decision.reason == "not_in_tp_territory":
+                    self.s["trail_peak"] = None
+                    self._cancel_open("SELL")
                 elif decision.action == ExitAction.HOLD:
                     if self.ticker in self.exit_manager.tp_ride_state:
                         ride_state = self.exit_manager.tp_ride_state.get(self.ticker, {})
@@ -1765,9 +1789,6 @@ class Strategy:
                     else:
                         self.s["trail_peak"] = None
                         self._cancel_open("SELL")
-                elif decision.reason == "not_in_tp_territory":
-                    self.s["trail_peak"] = None
-                    self._cancel_open("SELL")
             elif self.p.tp_ladder:
                 self._manage_tp_ladder(held, avg)        # Scale out in ladder steps.
             else:

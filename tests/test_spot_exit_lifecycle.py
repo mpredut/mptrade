@@ -785,3 +785,14 @@ def test_replay_mode_ignores_external_cached_volatility():
         with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp_dir}):
             ratio, src = engine._vol_1h_ratio()
             assert ratio == 0.0 and src == "default"
+
+
+def test_mdhtp_not_in_tp_territory_clears_trail_peak():
+    engine, _ = make_mhdsl_engine(
+        mhdsl_enabled=True, tp_mdhtp_enabled=True, tp_trend_hold=True, takeprofit_pct=5.0,
+    )
+    engine.s.update(qty=1.0, cost=100.0, spent=100.0, trail_peak=106.0, trail_stop=104.0)
+    engine.step(101.0)
+    assert engine.s["trail_peak"] is None
+    assert engine.s["trail_stop"] is None
+

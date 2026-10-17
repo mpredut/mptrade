@@ -191,6 +191,8 @@ def run_symbol(
     # for A/B tests on another horizon (instant/medium/long), without changing the default.
     tape_key = _series_cache_key(symbol, series, trend_window_seconds)
     cached_tape = _TREND_TAPE_CACHE.get(tape_key)
+    if cached_tape is None:
+        cached_tape = prewarm_trend_series(symbol, series, trend_window_seconds)
     trend_source = None if cached_tape is not None else ReplayTrendSource([symbol], window_seconds=trend_window_seconds)
     recorded_tape: list[bool] = []
     tick_idx = 0
@@ -357,16 +359,16 @@ def run_symbol(
                         if cached_tape is not None
                         else bool(trend_source.is_trend_up(symbol))
                     )
-                    if not t_up:
+                    if not t_up or (
+                        not _fast_exit_is_stop
+                        and not mt.MT_REENTRY_HYBRID_ENABLED
+                        and price > _fast_reentry_high_px
+                    ):
                         if price < reentry_st["trough"]:
                             reentry_st["trough"] = price
                             reentry_st["peak_bounce"] = price
                         if price > reentry_st["peak"]:
                             reentry_st["peak"] = price
-                        if from_disk and n_ticks % 20000 == 0:
-                            sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
-                        continue
-                    if not _fast_exit_is_stop and price > _fast_reentry_high_px:
                         if from_disk and n_ticks % 20000 == 0:
                             sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
                         continue
@@ -398,24 +400,38 @@ def run_symbol(
                         )
                         b_px, b_t, _ = _fast_get_relevant_trade(b_ords, "BUY", symbol=symbol, now_fn=_now_fn)
                         s_px, s_t, _ = _fast_get_relevant_trade(s_ords, "SELL", symbol=symbol, now_fn=_now_fn)
-                        if _cfg_tp_ref == "average" and pos["average_buy_price"] > 0:
-                            b_px = pos["average_buy_price"]
+                        active_avg_buy = float(
+                            pos.get("active_average_buy_price")
+                            or pos.get("average_buy_price")
+                            or 0.0
+                        )
+                        if _cfg_tp_ref == "average" and active_avg_buy > 0:
+                            b_px = active_avg_buy
                         if _cfg_tp_ref == "average" and pos["average_sell_price"] > 0:
                             s_px = pos["average_sell_price"]
                         avail_q = provider.free_balance(base) or 0.0
                         owned_q = max(float(pos["net_qty"]), 0.0)
                         sellable_q = min(avail_q, owned_q) if inst.isolation == "own_ledger" else avail_q
-                        pos_closed = bool(s_ords) and s_t > b_t and sellable_q <= 0
+                        pos_closed = (
+                            bool(s_ords)
+                            and s_t > b_t
+                            and mt._is_untradable_dust(inst, symbol, sellable_q, price, _cfg_min_qty)
+                        )
+                        _tol = max(float(mt.MT_ARE_CLOSE_TOLERANCE_PCT), 0.0)
+                        _band_mult = max((200.0 - _tol) / max(200.0 + _tol, 1e-9) - 1e-9, 0.0)
+                        _re_mult = (200.0 + _tol) / max(200.0 - _tol, 1e-9) + 1e-9
                         if not b_ords or pos_closed or not b_px:
                             _fast_low_buy_px = -1.0
                             _fast_high_buy_px = float("inf")
                         else:
-                            _fast_low_buy_px = b_px * (1.0 - _cfg_lost * 0.995)
-                            _fast_high_buy_px = b_px * (1.0 + _eff_up_thresh * 0.995)
-                        _fast_has_sells = bool(s_ords)
+                            _fast_low_buy_px = b_px * (1.0 - _cfg_lost * _band_mult)
+                            _fast_high_buy_px = b_px * (1.0 + _eff_up_thresh * _band_mult)
+                        _fast_has_sells = bool(s_ords) and (not b_ords or s_t >= b_t)
                         _fast_sell_time = float(s_t) if s_ords else 0.0
                         _fast_exit_is_stop = (mt._LAST_EXIT_KIND.get(symbol) == "STOP")
-                        _fast_reentry_high_px = (s_px * (1.0 - _cfg_gain * 0.995)) if (s_ords and s_px) else float("inf")
+                        _fast_reentry_high_px = (
+                            s_px * (1.0 - _cfg_gain) * _re_mult
+                        ) if (s_ords and s_px) else float("inf")
                         _fast_ver = cur_ver
             except Exception as e:  # noqa: BLE001
                 sys.stderr.write(f"[{symbol}] eroare in monitor_price_and_trade: {e}\n")
@@ -469,8 +485,14 @@ def run_symbol(
     return result
 
 
+def _cli_run_target(task_args):
+    symbol, params, base, trend_window_sec = task_args
+    return run_symbol(symbol, params, base, trend_window_seconds=trend_window_sec)
+
+
 if __name__ == "__main__":
     import argparse
+    from multiprocessing import Pool
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--symbol", choices=list(SYMBOLS._SECTIONS), default=None,
                      help="run ONLY this symbol (default: BTCUSDC + TAOUSDC)")
@@ -482,6 +504,14 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     targets = [args.symbol] if args.symbol else list(SYMBOLS._SECTIONS)
-    for symbol in targets:
-        cfg = SYMBOLS[symbol]
-        run_symbol(symbol, cfg["params"], cfg["base"], trend_window_seconds=args.trend_window_sec)
+    cli_tasks = [
+        (sym, SYMBOLS[sym]["params"], SYMBOLS[sym]["base"], args.trend_window_sec)
+        for sym in targets
+    ]
+    n_workers = min(len(cli_tasks), os.cpu_count() or 1)
+    if n_workers > 1:
+        with Pool(processes=n_workers) as pool:
+            pool.map(_cli_run_target, cli_tasks)
+    else:
+        for t in cli_tasks:
+            _cli_run_target(t)
