@@ -381,6 +381,47 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         order = inst.place("BUY", 280.0, 1.0, caller_owns_retry=True)
         self.assertIsNone(order)
 
+    def test_active_cycle_window_ref_ignores_closed_cycles(self):
+        """Closed higher-price BUY cycles (including <=2% spot fee dust) must not poison
+        the active cycle's SELL reference price."""
+        class _CycleProvider:
+            name = "kraken"
+
+            def get_orders(self, symbol, side, since_s):
+                if side == "BUY":
+                    return [
+                        {"price": 90.0, "qty": 10.0, "timestamp": 3000.0},
+                        {"price": 120.0, "qty": 10.0, "timestamp": 1000.0},
+                    ]
+                if side == "SELL":
+                    # Sold 99.9% of the 120.0 lot (0.1% spot fee dust remaining)
+                    return [
+                        {"price": 130.0, "qty": 9.99, "timestamp": 2000.0},
+                    ]
+                return []
+
+        provider = _CycleProvider()
+        ref = order_guard.window_reference(provider, "HYPEUSD", "SELL", 14 * 86400)
+        self.assertEqual(ref, 90.0)
+        with mock.patch.object(order_guard, "_MARGINS", _margins()):
+            # Selling at 100.0 (+11.1% above active 90.0 BUY) is permitted
+            self.assertTrue(
+                order_guard.profit_guard(provider, "HYPEUSD", "SELL", 100.0, 1.15, window_ref=ref)
+            )
+
+    def test_sell_falls_back_to_last_opposite_fill_when_window_empty(self):
+        """Even on venues with window_h > 0, a SELL order with no BUY inside the window
+        must fall back to last_opposite_fill so positions held >14 days remain protected."""
+        provider = _Provider("kraken", last_fill=200.0)
+        with mock.patch.object(order_guard, "_MARGINS", _margins(kraken_window_h=336.0)):
+            # Selling at 190.0 below last_fill 200.0 must be blocked even when window_ref is None
+            self.assertFalse(
+                order_guard.profit_guard(provider, "HYPEUSD", "SELL", 190.0, 1.15, window_ref=None)
+            )
+            self.assertTrue(
+                order_guard.profit_guard(provider, "HYPEUSD", "SELL", 210.0, 1.15, window_ref=None)
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

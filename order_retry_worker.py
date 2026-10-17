@@ -62,9 +62,84 @@ _AMBIGUOUS_SUBMISSION_REASONS = frozenset({
     "submit_ambiguous",
     "response_without_order_id",
 })
+class _PersistentQuarantineSet(set):
+    """In-memory set backed by a JSON state file next to oq.QUEUE_FILE so quarantine
+    alerts are deduplicated across worker process restarts."""
+
+    def __init__(self, key: str):
+        super().__init__()
+        self._key = key
+        self._loaded_path: str | None = None
+
+    def _path(self) -> str:
+        return os.path.join(
+            os.path.dirname(os.path.abspath(oq.QUEUE_FILE)),
+            "order_retry_quarantine_alerts.json",
+        )
+
+    def sync_from_disk(self) -> None:
+        path = self._path()
+        if self._loaded_path == path:
+            return
+        self._loaded_path = path
+        if not os.path.exists(path):
+            return
+        try:
+            data = load_json_state(
+                path, default_factory=dict, fail_closed=False, label="quarantine alerts"
+            )
+            if isinstance(data, dict):
+                items = data.get(self._key, [])
+                if isinstance(items, list):
+                    for item in items:
+                        if isinstance(item, list):
+                            super().add(tuple(item))
+        except Exception:
+            pass
+
+    def persist_to_disk(self) -> None:
+        path = self._path()
+        self._loaded_path = path
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            data = {}
+            if os.path.exists(path):
+                loaded = load_json_state(
+                    path, default_factory=dict, fail_closed=False, label="quarantine alerts"
+                )
+                if isinstance(loaded, dict):
+                    data = dict(loaded)
+            data[self._key] = [
+                list(x) if isinstance(x, tuple) else [x] for x in sorted(self)
+            ]
+            atomic_write_json(path, data, separators=(",", ":"))
+        except Exception:
+            pass
+
+    def add(self, element) -> None:
+        self.sync_from_disk()
+        super().add(element)
+        self.persist_to_disk()
+
+    def clear(self) -> None:
+        super().clear()
+        path = self._path()
+        self._loaded_path = path
+        if os.path.exists(path):
+            try:
+                loaded = load_json_state(
+                    path, default_factory=dict, fail_closed=False, label="quarantine alerts"
+                )
+                if isinstance(loaded, dict) and self._key in loaded:
+                    loaded.pop(self._key, None)
+                    atomic_write_json(path, loaded, separators=(",", ":"))
+            except Exception:
+                pass
+
+
 _ALERTED_QUEUE_CORRUPTIONS = set()
-_ALERTED_PRODUCER_QUARANTINES = set()
-_ALERTED_RECONCILIATION_QUARANTINES = set()
+_ALERTED_PRODUCER_QUARANTINES = _PersistentQuarantineSet("producer")
+_ALERTED_RECONCILIATION_QUARANTINES = _PersistentQuarantineSet("reconciliation")
 
 
 def _accepted_order(order):
@@ -785,6 +860,8 @@ def _alert_producer_quarantine(rec, *, reason="lookup_unavailable"):
         str(rec.get("provider_name") or "routed"),
         str(reason),
     )
+    if hasattr(_ALERTED_PRODUCER_QUARANTINES, "sync_from_disk"):
+        _ALERTED_PRODUCER_QUARANTINES.sync_from_disk()
     if fingerprint in _ALERTED_PRODUCER_QUARANTINES:
         return False
     _ALERTED_PRODUCER_QUARANTINES.add(fingerprint)
@@ -829,6 +906,8 @@ def _alert_reconciliation_quarantine(rec, *, reason="lookup_unavailable"):
         str(rec.get("last_failure_reason") or "unknown"),
         str(reason),
     )
+    if hasattr(_ALERTED_RECONCILIATION_QUARANTINES, "sync_from_disk"):
+        _ALERTED_RECONCILIATION_QUARANTINES.sync_from_disk()
     if fingerprint in _ALERTED_RECONCILIATION_QUARANTINES:
         return False
     _ALERTED_RECONCILIATION_QUARANTINES.add(fingerprint)

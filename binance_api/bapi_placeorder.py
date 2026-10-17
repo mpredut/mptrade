@@ -531,8 +531,21 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         if not bypass_profit_guard:
             window_ref = None
             if recent_opposite_trades:
-                _prices = [float(t['price']) for t in recent_opposite_trades]
-                window_ref = min(_prices) if order_type == "BUY" else max(_prices)
+                if len(recent_opposite_trades) > 1:
+                    same_trades = apiorders.get_trade_orders(order_type, symbol, max_age_seconds=time_back_in_seconds) or []
+                    recent_same_trades = [
+                        trade for trade in same_trades
+                        if float(trade.get('timestamp') or 0) >= time_limit
+                        and float(trade.get('price', 0)) > 0
+                    ]
+                    window_ref = order_guard.active_cycle_window_ref(
+                        recent_opposite_trades,
+                        recent_same_trades,
+                        order_type,
+                    )
+                else:
+                    _prices = [float(t['price']) for t in recent_opposite_trades]
+                    window_ref = min(_prices) if order_type == "BUY" else max(_prices)
 
             pg_kwargs = dict(
                 window_ref=window_ref,

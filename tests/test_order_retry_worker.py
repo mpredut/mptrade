@@ -1376,6 +1376,32 @@ class ProcessOnceTest(unittest.TestCase):
                     "RETRY_WORKER_POLL_SEC",
                     completed.stdout + completed.stderr)
 
+    def test_quarantine_alerts_persist_across_worker_restarts(self):
+        """Quarantine alert fingerprints are persisted to disk so a worker restart
+        does not re-send duplicate alerts for the same quarantined record."""
+        rec = {
+            "id": "quarantine-test-1",
+            "revision": 2,
+            "provider_name": "binance",
+            "side": "SELL",
+            "symbol": "BTCUSDC",
+            "qty": 0.1,
+            "requested_price": 75000.0,
+            "created_ts": 1000.0,
+            "last_failure_reason": "submit_ambiguous",
+        }
+        self.assertTrue(worker._alert_producer_quarantine(rec, reason="lookup_unavailable"))
+        self.assertTrue(worker._alert_reconciliation_quarantine(rec, reason="lookup_unavailable"))
+        self.assertEqual(len(self.alerts), 2)
+
+        # Simulate process restart by replacing the in-memory sets with fresh instances
+        worker._ALERTED_PRODUCER_QUARANTINES = worker._PersistentQuarantineSet("producer")
+        worker._ALERTED_RECONCILIATION_QUARANTINES = worker._PersistentQuarantineSet("reconciliation")
+
+        self.assertFalse(worker._alert_producer_quarantine(rec, reason="lookup_unavailable"))
+        self.assertFalse(worker._alert_reconciliation_quarantine(rec, reason="lookup_unavailable"))
+        self.assertEqual(len(self.alerts), 2, "Restarted worker must not re-alert on already persisted quarantine")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

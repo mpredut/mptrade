@@ -1278,6 +1278,115 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
         self.assertEqual(mt._REENTRY_STATE[sym]["trough"], 0.1884)
         self.assertEqual(mt._REENTRY_STATE[sym]["sell_time"], NOW + 10)
 
+    def test_active_cycle_cost_basis_and_reentry_guards(self):
+        """Regression tests for:
+        1. mt.ref='average' uses active_average_buy_price (ignoring closed higher cycles and <=2% fee dust).
+        2. Profitable TP sell on a lower cycle after a closed higher cycle is NOT falsely inferred as STOP.
+        3. Step 4 does not re-buy against an older SELL after a newer BUY has already re-entered (buy_time > sell_time).
+        4. Step 4 checks max_budget (including owned_qty when coins are locked in an open order) before invoking AI guard.
+        """
+        mt.HARD_TP_ENABLED = False
+
+        with self.subTest(msg="active_average_buy_price_excludes_closed_cycle_with_fee_dust"):
+            # Cycle 1: BUY 10 @ 120 -> SELL 9.99 @ 130 (0.1% fee dust left). Cycle 2: BUY 10 @ 90.
+            fills = [
+                _fill("BUY", 90.0, 10.0, age_s=1 * 3600),
+                _fill("SELL", 130.0, 9.99, age_s=3 * 3600),
+                _fill("BUY", 120.0, 10.0, age_s=5 * 3600),
+            ]
+            stats = mt.get_position_stats(SYMBOL, 10 * 24 * 3600, api=FakeProvider(fills))
+            self.assertAlmostEqual(stats["average_buy_price"], 105.0, places=4)
+            self.assertAlmostEqual(stats["active_average_buy_price"], 90.0, places=4)
+
+            # With mt.ref='average', current price 100.0 is +11.1% above active avg 90.0 (not -4.76% below gross 105.0)
+            inst = FakeInstrument(
+                price=100.0,
+                free=10.0,
+                fills=fills,
+                params={"mt.ref": "average"},
+            )
+            self.run_tick(inst, trend_up=False, gain=0.10, loss=0.04)
+            self.assertEqual(len(inst.placed), 1)
+            self.assertEqual(inst.placed[0]["side"], "SELL")
+            self.assertFalse(inst.placed[0]["kwargs"].get("bypass_profit_guard", False))
+
+        with self.subTest(msg="profitable_tp_on_lower_cycle_not_inferred_as_stop"):
+            mt._LAST_EXIT_KIND.clear()
+            mt._REENTRY_STATE.clear()
+            # Cycle 1 closed at 120 -> 115. Cycle 2 bought at 90 and sold for profit at 98 (+8.9%).
+            fills = [
+                _fill("SELL", 98.0, 10.0, age_s=1 * 3600),
+                _fill("BUY", 90.0, 10.0, age_s=2 * 3600),
+                _fill("SELL", 115.0, 10.0, age_s=5 * 3600),
+                _fill("BUY", 120.0, 10.0, age_s=6 * 3600),
+            ]
+            inst = FakeInstrument(
+                price=96.0,
+                free=0.0,
+                min_qty=0.1,
+                fills=fills,
+                params={"mt.buy_budget": 200, "mt.max_budget": 1000},
+            )
+            self.run_tick(inst, trend_up=True, gain=0.10, loss=0.05)
+            # Must NOT infer STOP because 98.0 > 90.0 (Cycle 2 cost basis), even though gross avg is 105.0
+            self.assertNotEqual(mt._LAST_EXIT_KIND.get(SYMBOL), "STOP")
+            self.assertEqual(inst.placed, [])
+
+        with self.subTest(msg="step4_skipped_when_newer_buy_already_reentered_after_sell"):
+            mt._LAST_EXIT_KIND.clear()
+            mt._REENTRY_STATE.clear()
+            # Older SELL at 100 (4h ago), already re-entered by BUY at 90 (2h ago). Price is still 90.
+            fills = [
+                _fill("BUY", 90.0, 2.0, age_s=2 * 3600),
+                _fill("SELL", 100.0, 2.0, age_s=4 * 3600),
+            ]
+            inst = FakeInstrument(
+                price=90.0,
+                free=2.0,
+                fills=fills,
+                params={"mt.buy_budget": 200, "mt.max_budget": 1000},
+            )
+            self.run_tick(inst, trend_up=True, gain=0.08, loss=0.05)
+            self.assertEqual(inst.placed, [], "Must not place duplicate buyback against an older SELL after a newer BUY")
+
+        with self.subTest(msg="max_budget_checked_before_ai_guard_and_counts_owned_qty"):
+            mt._LAST_EXIT_KIND.clear()
+            mt._REENTRY_STATE.clear()
+            mt._LAST_EXIT_KIND[SYMBOL] = "STOP"
+            mt._REENTRY_STATE[SYMBOL] = {
+                "trough": 88.0,
+                "peak": 100.0,
+                "peak_bounce": 90.0,
+                "started_at": NOW - 600,
+                "sell_time": NOW - 3600,
+            }
+            # Partial sell left 10 owned coins, all locked in an open order (free=0.0).
+            # At price=90.0, owned exposure = 10 * 90 = $900 == max_budget ($900).
+            fills = [
+                _fill("SELL", 100.0, 2.0, age_s=3600),
+                _fill("BUY", 100.0, 12.0, age_s=7200),
+            ]
+            inst = FakeInstrument(
+                price=90.0,
+                free=0.0,
+                fills=fills,
+                params={"mt.buy_budget": 200, "mt.max_budget": 900},
+            )
+            with (
+                patch.object(mt, "is_trend_up", return_value=True),
+                patch.object(mt, "_apply_post_stop_ai_guard") as mock_ai_guard,
+            ):
+                mt.monitor_price_and_trade(
+                    inst,
+                    sbs=12 * 24 * 3600 + 60,
+                    maxage_trade_s=10 * 24 * 3600,
+                    gain_threshold=0.10,
+                    lost_threshold=0.20,
+                    now_fn=lambda: NOW,
+                )
+            mock_ai_guard.assert_not_called()
+            self.assertEqual(inst.placed, [])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

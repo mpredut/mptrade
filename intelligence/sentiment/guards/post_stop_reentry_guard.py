@@ -27,6 +27,15 @@ logger = logging.getLogger("intelligence.sentiment.guards.post_stop_reentry_guar
 
 DEFAULT_TIMEOUT_SEC = 25.0
 DEFAULT_FALLBACK = "allow"
+DEFAULT_POST_STOP_CACHE_TTL_SEC = 600.0
+_POST_STOP_DECISION_CACHE: Dict[Tuple[str, float, int], Tuple[float, GuardDecision]] = {}
+_POST_STOP_NOTIFY_CACHE: Dict[Tuple[str, str], float] = {}
+
+
+def clear_post_stop_reentry_cache() -> None:
+    """Clear in-memory post-stop re-entry decision and notification caches."""
+    _POST_STOP_DECISION_CACHE.clear()
+    _POST_STOP_NOTIFY_CACHE.clear()
 
 
 class PostStopReentryGuard:
@@ -39,12 +48,20 @@ class PostStopReentryGuard:
         fallback_action: str = DEFAULT_FALLBACK,
         mode: str = "enforce",
         notify_enabled: bool = True,
+        cache_ttl_sec: Optional[float] = None,
     ) -> None:
+        self._explicit_client = gemini_client is not None
         self.gemini_client = gemini_client or GeminiClient()
         self.timeout_sec = float(timeout_sec)
         self.fallback_action = fallback_action.strip().lower()
         self.mode = mode.strip().lower()
         self.notify_enabled = notify_enabled
+        if cache_ttl_sec is not None:
+            self.cache_ttl_sec = float(cache_ttl_sec)
+        elif not self._explicit_client and getattr(self.gemini_client, "_custom_runner", None) is None:
+            self.cache_ttl_sec = DEFAULT_POST_STOP_CACHE_TTL_SEC
+        else:
+            self.cache_ttl_sec = 0.0
 
     def check(
         self,
@@ -65,6 +82,16 @@ class PostStopReentryGuard:
             return GuardDecision.allow("PostStopReentryGuard", "post_stop_reentry_guard_disabled")
 
         now_ts = float(now) if now is not None else time.time()
+        cache_key = (
+            str(symbol or "").upper(),
+            round(float(last_sell_price or 0.0), 6),
+            int(last_sell_time_s or 0),
+        )
+        if self.cache_ttl_sec > 0:
+            cached = _POST_STOP_DECISION_CACHE.get(cache_key)
+            if cached is not None and 0.0 <= (now_ts - cached[0]) < self.cache_ttl_sec:
+                return cached[1]
+
         drop_after_sl_pct = (
             ((last_sell_price - trough) / last_sell_price * 100.0)
             if last_sell_price > 0 and trough > 0
@@ -155,7 +182,9 @@ class PostStopReentryGuard:
                     "llm_query_timeout_fallback_allowed",
                     notional_eur=notional,
                 )
-            self._maybe_notify(symbol, current_price, last_sell_price, trough, bounce_from_trough_pct, dec)
+            self._maybe_notify(symbol, current_price, last_sell_price, trough, bounce_from_trough_pct, dec, now_ts=now_ts)
+            if self.cache_ttl_sec > 0:
+                _POST_STOP_DECISION_CACHE[cache_key] = (now_ts, dec)
             return dec
 
         decision_str = str(resp.get("decision", "APPROVED")).upper().strip()
@@ -186,17 +215,22 @@ class PostStopReentryGuard:
                 gemini_reason=reason,
             )
 
-        self._maybe_notify(symbol, current_price, last_sell_price, trough, bounce_from_trough_pct, dec)
+        self._maybe_notify(symbol, current_price, last_sell_price, trough, bounce_from_trough_pct, dec, now_ts=now_ts)
 
         if self.mode == "shadow":
-            return GuardDecision.allow(
+            final_dec = GuardDecision.allow(
                 "PostStopReentryGuard",
                 f"shadow_mode (LLM suggested {decision_str}: {reason})",
                 notional_eur=notional,
                 shadow_decision=dec,
             )
+        else:
+            final_dec = dec
 
-        return dec
+        if self.cache_ttl_sec > 0:
+            _POST_STOP_DECISION_CACHE[cache_key] = (now_ts, final_dec)
+
+        return final_dec
 
     def _maybe_notify(
         self,
@@ -206,6 +240,8 @@ class PostStopReentryGuard:
         trough: float,
         bounce_pct: float,
         decision: GuardDecision,
+        *,
+        now_ts: Optional[float] = None,
     ) -> None:
         if not self.notify_enabled:
             return
@@ -218,6 +254,15 @@ class PostStopReentryGuard:
                 action_label = f"SCALE ({scale_pct}%)"
             else:
                 action_label = "APPROVED"
+
+            ts = float(now_ts) if now_ts is not None else time.time()
+            notify_key = (str(symbol or "").upper(), action_label)
+            cooldown = self.cache_ttl_sec if self.cache_ttl_sec > 0 else 0.0
+            if cooldown > 0:
+                last_notified = _POST_STOP_NOTIFY_CACHE.get(notify_key)
+                if last_notified is not None and 0.0 <= (ts - last_notified) < cooldown:
+                    return
+                _POST_STOP_NOTIFY_CACHE[notify_key] = ts
 
             title = f"🛡 [P3 · POST-STOP RE-ENTRY] {action_label} {symbol}"
             body = (
@@ -251,12 +296,14 @@ def get_post_stop_reentry_guard(
         timeout = float(m.get("post_stop_reentry_timeout_sec", DEFAULT_TIMEOUT_SEC))
         fallback = str(m.get("post_stop_reentry_fallback", DEFAULT_FALLBACK)).strip().lower()
         notify_en = str(m.get("post_stop_reentry_notify", m.get("shadow_notify", "1"))).strip() not in ("0", "false", "off")
+        cache_ttl = m.get("post_stop_reentry_cache_ttl_sec")
         return PostStopReentryGuard(
             gemini_client=gemini_client,
             timeout_sec=timeout,
             fallback_action=fallback,
             mode=mode,
             notify_enabled=notify_en,
+            cache_ttl_sec=float(cache_ttl) if cache_ttl is not None else None,
         )
 
     if _POST_STOP_GUARD_INSTANCE is None:
@@ -272,10 +319,12 @@ def get_post_stop_reentry_guard(
         timeout = float(m.get("post_stop_reentry_timeout_sec", DEFAULT_TIMEOUT_SEC))
         fallback = str(m.get("post_stop_reentry_fallback", DEFAULT_FALLBACK)).strip().lower()
         notify_en = str(m.get("post_stop_reentry_notify", m.get("shadow_notify", "1"))).strip() not in ("0", "false", "off")
+        cache_ttl = m.get("post_stop_reentry_cache_ttl_sec")
         _POST_STOP_GUARD_INSTANCE = PostStopReentryGuard(
             timeout_sec=timeout,
             fallback_action=fallback,
             mode=mode,
             notify_enabled=notify_en,
+            cache_ttl_sec=float(cache_ttl) if cache_ttl is not None else None,
         )
     return _POST_STOP_GUARD_INSTANCE

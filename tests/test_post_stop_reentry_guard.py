@@ -270,3 +270,70 @@ def test_monitortrades_integration_downscale():
     args, kwargs = mock_place.call_args
     assert args[3] == 1.0
     assert kwargs.get("bypass_guards") == {"GF1", "GI3"}
+
+
+def test_decision_caching_and_notify_cooldown():
+    """Verify repeated checks for the same post-stop exit episode reuse the cached LLM decision
+    and suppress duplicate ntfy alerts within cache_ttl_sec."""
+    from intelligence.sentiment.guards.post_stop_reentry_guard import clear_post_stop_reentry_cache
+
+    clear_post_stop_reentry_cache()
+    call_count = 0
+
+    class CountingGeminiClient(FakeGeminiClient):
+        def query_json(self, prompt: str, timeout_sec: float = 25.0, thread_title=None):
+            nonlocal call_count
+            call_count += 1
+            return super().query_json(prompt, timeout_sec=timeout_sec, thread_title=thread_title)
+
+    client = CountingGeminiClient(response_dict={
+        "decision": "APPROVED",
+        "suggested_scale": 1.0,
+        "reason": "Whale accumulation confirmed",
+    })
+    guard = PostStopReentryGuard(
+        gemini_client=client,
+        mode="enforce",
+        notify_enabled=True,
+        cache_ttl_sec=600.0,
+    )
+    with patch("alertnotifiers.notify") as mock_notify:
+        dec1 = guard.check(
+            symbol="ARBUSDC",
+            current_price=0.1930,
+            last_sell_price=0.1884,
+            trough=0.1880,
+            bounce_pct=0.026,
+            last_sell_time_s=1700000000.0,
+            now=1700000100.0,
+        )
+        # Second tick 48 seconds later (same sell episode, slightly different current_price)
+        dec2 = guard.check(
+            symbol="ARBUSDC",
+            current_price=0.1935,
+            last_sell_price=0.1884,
+            trough=0.1880,
+            bounce_pct=0.029,
+            last_sell_time_s=1700000000.0,
+            now=1700000148.0,
+        )
+        assert dec1.allowed is True
+        assert dec2.allowed is True
+        assert call_count == 1, "Gemini LLM must only be queried once within cache_ttl_sec"
+        assert mock_notify.call_count == 1, "Notification must only be sent once within cache_ttl_sec"
+
+        # After cache_ttl_sec expires (e.g. +605s), a fresh query is allowed
+        dec3 = guard.check(
+            symbol="ARBUSDC",
+            current_price=0.1940,
+            last_sell_price=0.1884,
+            trough=0.1880,
+            bounce_pct=0.032,
+            last_sell_time_s=1700000000.0,
+            now=1700000705.0,
+        )
+        assert dec3.allowed is True
+        assert call_count == 2
+        assert mock_notify.call_count == 2
+    clear_post_stop_reentry_cache()
+

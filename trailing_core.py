@@ -323,9 +323,6 @@ class TrailingCore:
             st.pop("exit_sold_cost", None)
             return                                            # nothing to protect; keep resting orders intact
 
-        if free * price < self.min_notional:
-            return                                            # nothing free to protect; keep resting orders intact
-
         if "warmup_at" in st:
             # Warm up until price exceeds the threshold set on the first tick or after re-buy.
             # Normal dips do not sell, but crash circuit breaker above still protects against collapse.
@@ -334,6 +331,9 @@ class TrailingCore:
                          f" (+{self.min_profit_pct}%)")
                 return
             st.pop("warmup_at")                              # threshold reached; trailing is now active
+
+        if free * price < self.min_notional:
+            return                                            # nothing free to protect; keep resting orders intact
 
         self.a.log_hold(key, asset, pair, price, st["peak"], stop_at, trail, free)
 

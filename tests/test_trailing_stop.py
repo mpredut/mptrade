@@ -712,6 +712,25 @@ class TestMinProfit(Base):
             ts.check_once()
             self.assertEqual(len(self.po.orders), 2, "must not immediately crash-sell newly rebought coins")
 
+        with self.subTest(msg="warmup_completes_even_when_coins_locked_in_tp_order"):
+            self.tearDown(); self.setUp()
+            api = FakeApi(200.0, free=2.0)
+            ts = self.ts(api, min_profit_pct=5.0)
+            ts.total_qty = lambda asset: 2.0
+            # Tick 1 at 200.0: sets warmup_at = 210.0 (+5%)
+            ts.check_once()
+            import json
+            st = json.load(open(self.sf))["TAOUSDC"]
+            self.assertAlmostEqual(st["warmup_at"], 210.0)
+
+            # Tick 2 at 212.0 (>= 210.0), but free=0.0 because coins are locked in a resting TP order
+            api.price = 212.0
+            api.free = 0.0
+            ts.check_once()
+            st = json.load(open(self.sf))["TAOUSDC"]
+            self.assertNotIn("warmup_at", st, "warmup_at must be cleared once price crosses threshold even if coins are locked in TP")
+            self.assertEqual(st["peak"], 212.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

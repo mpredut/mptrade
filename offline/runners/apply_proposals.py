@@ -75,6 +75,7 @@ def main():
         print(f"[apply] no proposal on branch {BRANCH} — nothing to do")
         return
 
+    applied_count = 0
     for p in proposals:
         fk, section, key = p["full_key"], p["section"], p["key"]
         symbol, winner = p["symbol"], float(p["winner_value"])
@@ -112,9 +113,24 @@ def main():
             subprocess.run(["git", "-C", ROOT, "commit", "-q", "-m",
                             f"apply backtest proposal: {fk} {current}->{new_value} "
                             f"(winner {winner}, dev {p.get('dev_commit')})"], capture_output=True, timeout=10)
+            applied_count += 1
         sp._append_audit(rec)
 
     if not args.dry_run:
+        if applied_count > 0:
+            push_res = subprocess.run(
+                ["git", "-C", ROOT, "push", "-q", "origin", "HEAD:main"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if push_res.returncode != 0:
+                subprocess.run(
+                    ["git", "-C", ROOT, "pull", "--rebase", "--autostash", "-q", "origin", "main"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                subprocess.run(
+                    ["git", "-C", ROOT, "push", "-q", "origin", "HEAD:main"],
+                    capture_output=True, text=True, timeout=30,
+                )
         print("[apply] done. The owning process restart is performed by watchdogfor_cacheandconfig "
               "(detects instruments.conf change).")
 

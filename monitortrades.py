@@ -227,6 +227,11 @@ def clear_position_stats_cache():
     _hard_tp_last.clear()
     _notified_trade_ids.clear()
     _LAST_SAVED_MT_STATE_KEY = None
+    try:
+        from intelligence.sentiment.guards.post_stop_reentry_guard import clear_post_stop_reentry_cache
+        clear_post_stop_reentry_cache()
+    except Exception:
+        pass
     if _MT_PERSISTENCE_ENABLED and "_MT_STATE_FILE" in globals() and os.path.exists(_MT_STATE_FILE):
         try:
             os.remove(_MT_STATE_FILE)
@@ -271,34 +276,69 @@ def _api_cache_identity(api) -> tuple[str, int]:
     return (str(name), id(api))
 
 
-def _compute_spot_owned_qty(buy_orders, sell_orders) -> float:
-    """Compute remaining spot-attributed inventory in the lookback window.
+def _compute_spot_position(buy_orders, sell_orders) -> tuple[float, float, float]:
+    """Compute remaining spot-attributed inventory and active cycle cost basis.
 
     Walks BUY and SELL fills chronologically and floors running inventory at 0.0
     after each SELL so liquidations of pre-window holdings cannot create a
-    negative debt that cancels out subsequent BUY fills inside the window.
+    negative debt that cancels out subsequent BUY fills inside the window, and
+    already-closed cycles do not pollute the open cycle's average buy price.
+    Returns ``(owned_qty, active_avg_buy_price, last_cycle_buy_price)``.
     """
     if not buy_orders:
-        return 0.0
+        return 0.0, 0.0, 0.0
     if not sell_orders:
-        return sum(float(o.get("qty", o.get("quantity", 0.0)) or 0.0) for o in buy_orders)
+        tot_q = 0.0
+        tot_v = 0.0
+        for o in buy_orders:
+            q = float(o.get("qty", o.get("quantity", 0.0)) or 0.0)
+            p = float(o.get("price") or 0.0)
+            tot_q += q
+            tot_v += q * p
+        avg_px = (tot_v / tot_q) if tot_q > 0 else 0.0
+        return tot_q, avg_px, avg_px
     events = []
     for o in buy_orders:
         q = float(o.get("qty", o.get("quantity", 0.0)) or 0.0)
+        p = float(o.get("price") or 0.0)
         ts = int(o.get("timestamp") or o.get("time") or 0)
-        events.append((ts, 0, q))
+        events.append((ts, 0, q, p))
     for o in sell_orders:
         q = float(o.get("qty", o.get("quantity", 0.0)) or 0.0)
+        p = float(o.get("price") or 0.0)
         ts = int(o.get("timestamp") or o.get("time") or 0)
-        events.append((ts, 1, q))
+        events.append((ts, 1, q, p))
     events.sort(key=lambda x: (x[0], x[1]))
     owned = 0.0
-    for _, is_sell, q in events:
+    cost_qty = 0.0
+    active_avg = 0.0
+    last_cycle_avg = 0.0
+    for _, is_sell, q, p in events:
+        if q <= 0:
+            continue
         if is_sell == 0:
             owned += q
+            new_cost_qty = cost_qty + q
+            active_avg = ((cost_qty * active_avg) + (q * p)) / new_cost_qty if new_cost_qty > 0 else 0.0
+            cost_qty = new_cost_qty
+            last_cycle_avg = active_avg
         else:
+            if cost_qty > 0 and active_avg > 0:
+                last_cycle_avg = active_avg
             owned = max(0.0, owned - q)
-    return owned
+            if owned <= 1e-12:
+                owned = 0.0
+            if q >= cost_qty * 0.98 or cost_qty - q <= 1e-12:
+                cost_qty = 0.0
+                active_avg = 0.0
+            else:
+                cost_qty -= q
+    return owned, active_avg, last_cycle_avg
+
+
+def _compute_spot_owned_qty(buy_orders, sell_orders) -> float:
+    """Compute remaining spot-attributed inventory in the lookback window."""
+    return _compute_spot_position(buy_orders, sell_orders)[0]
 
 
 def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_orders=None, force_refresh=False, now_ts=None):
@@ -332,13 +372,15 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
         if total_sell_qty > 0 else 0
     )
 
-    net_qty = _compute_spot_owned_qty(buy_orders, sell_orders)
+    net_qty, active_avg_buy_price, last_cycle_buy_price = _compute_spot_position(buy_orders, sell_orders)
 
     res = {
         "buy_qty": total_buy_qty,
         "sell_qty": total_sell_qty,
         "net_qty": net_qty,
         "average_buy_price": average_buy_price,
+        "active_average_buy_price": active_avg_buy_price,
+        "last_cycle_buy_price": last_cycle_buy_price,
         "average_sell_price": average_sell_price,
         "buy_count": len(buy_orders),
         "sell_count": len(sell_orders),
@@ -1248,9 +1290,15 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         sell_orders=trade_orders_sell,
         now_ts=current_time_s,
     )
-    # Profit reference is configurable: latest BUY by default or the lookback average.
-    if tp_ref == "average" and position["average_buy_price"] > 0:
-        buy_price = position["average_buy_price"]
+    # Profit reference is configurable: latest BUY by default or the lookback average
+    # of the currently active spot cycle (excluding already-closed cycles).
+    active_avg_buy = float(
+        position.get("active_average_buy_price")
+        or position.get("average_buy_price")
+        or 0.0
+    )
+    if tp_ref == "average" and active_avg_buy > 0:
+        buy_price = active_avg_buy
         if _verbose:
             print(f"POSITION (referinta=AVG {maxage_trade_s/86400:.0f}z) for {symbol} : {position}")
     elif _verbose:
@@ -1284,6 +1332,14 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     exit_mgr: Optional[PositionExitManager] = None
     vol_1h: Optional[float] = None
     current_trend_up: Optional[bool] = None
+
+    # If a newer BUY filled after the latest SELL, any post-exit re-entry tracking from
+    # that older SELL is obsolete and must be cleared.
+    if trade_orders_buy and trade_orders_sell and buy_time > sell_time:
+        if symbol in _REENTRY_STATE or symbol in _LAST_EXIT_KIND:
+            _REENTRY_STATE.pop(symbol, None)
+            _LAST_EXIT_KIND.pop(symbol, None)
+            _save_mt_state()
 
     # 3. Evaluate BUY history (skip if position was already closed by a subsequent SELL and only dust/zero remains).
     position_closed_by_sell = (
@@ -1371,14 +1427,16 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             sl_decision = exit_mgr.evaluate_stop_loss(snapshot, custom_threshold=lost_threshold)
             if sl_decision.action == ExitAction.HOLD:
                 _log_sl_hold_state(symbol, snapshot, sl_decision, lost_threshold)
+                _save_mt_state()
+                return
             else:
                 if _execute_stop_loss(inst, snapshot, sl_decision, sbs, min_qty, lost_threshold, prev_sl_state, pending_stop):
                     return   # Already sold this tick; do not evaluate stale sell history below.
         else:
             _handle_position_recovery(inst, snapshot, lost_threshold)
 
-    # 4. Evaluate SELL history.
-    if trade_orders_sell:     
+    # 4. Evaluate SELL history (only when the latest SELL is at least as recent as any BUY).
+    if trade_orders_sell and (not trade_orders_buy or sell_time >= buy_time):
         if not sell_price:
             if _verbose:
                 print(f"No sell_price !!!!!")
@@ -1393,7 +1451,13 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             trade_orders_sell[0].get("kind") if isinstance(trade_orders_sell[0], dict) else None
         )
         if not explicit_exit_kind and buy_price and sell_time >= buy_time:
-            ref_buy_px = max(float(buy_price), float(position.get("average_buy_price") or 0.0))
+            cycle_buy_px = float(
+                position.get("last_cycle_buy_price")
+                or position.get("active_average_buy_price")
+                or buy_price
+                or 0.0
+            )
+            ref_buy_px = max(float(buy_price), cycle_buy_px)
             if sell_price < ref_buy_px * (1.0 - min(lost_threshold * 0.25, 0.002)):
                 explicit_exit_kind = "STOP"
                 _LAST_EXIT_KIND[symbol] = "STOP"
@@ -1463,6 +1527,21 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             print(f"[{symbol}] Re-entry deferred: {reentry_dec.reason}")
             return
 
+        # BUY exposure includes both free balance and owned ledger holdings (which may be
+        # locked in a resting open SELL order on the exchange). Check max_budget before
+        # invoking the AI guard to avoid wasted LLM calls when already at budget cap.
+        _effective_held_qty = max(avail_qty, owned_qty) if isolation == "own_ledger" else avail_qty
+        _pos_value = _effective_held_qty * current_price
+        _initial_buy_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
+        _initial_projected_value = _pos_value + (_initial_buy_qty * current_price)
+        if max_budget and _initial_projected_value > max_budget:
+            if prev_reentry_state:
+                _REENTRY_STATE[symbol] = prev_reentry_state
+                _save_mt_state()
+            print(f"[{symbol}] budget cap depasit post-trade "
+                  f"({_initial_projected_value:.0f} > {max_budget} USD) — not buying")
+            return
+
         if last_exit_kind == "STOP":
             print(f"[{symbol}] Post-STOP recovery bounce confirmed: {reentry_dec.reason}")
             allowed, buy_budget, buy_qty_cfg, qty = _apply_post_stop_ai_guard(
@@ -1479,10 +1558,6 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
 
         # Derive quantity from budget, configured fixed quantity, or default.
         _buy_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
-        # BUY exposure uses the account's actual free base balance.  Own-ledger
-        # attribution restricts SELLs, but must not hide existing holdings from
-        # the post-trade budget cap.
-        _pos_value = avail_qty * current_price
         _projected_value = _pos_value + (_buy_qty * current_price)
         if max_budget and _projected_value > max_budget:
             if prev_reentry_state:

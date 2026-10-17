@@ -386,6 +386,84 @@ def weight_proxy_for(provider_name):
     return m.get((provider_name or "").lower() + "_weight_proxy", m.get("default_weight_proxy"))
 
 
+def _order_ts_qty_price(o):
+    if not isinstance(o, dict):
+        return 0.0, 0.0, 0.0
+    try:
+        px = float(o.get("price") or 0.0)
+    except (TypeError, ValueError):
+        px = 0.0
+    try:
+        qty = float(o.get("qty") or o.get("quantity") or o.get("origQty") or o.get("executedQty") or 0.0)
+    except (TypeError, ValueError):
+        qty = 0.0
+    raw_ts = o.get("timestamp") if o.get("timestamp") is not None else o.get("time")
+    try:
+        ts = float(raw_ts or 0.0)
+    except (TypeError, ValueError):
+        ts = 0.0
+    if ts > 1e11:
+        ts /= 1000.0
+    return ts, qty, px
+
+
+def active_cycle_window_ref(opp_orders, same_orders=None, order_type="SELL"):
+    """Compute the window reference price from opposite-side fills, excluding earlier
+    cycles that were already closed by subsequent same-side fills within the window."""
+    if not opp_orders:
+        return None
+    side = (order_type or "").upper()
+    valid_opp = []
+    for o in opp_orders:
+        ts, qty, px = _order_ts_qty_price(o)
+        if px > 0 and math.isfinite(px):
+            valid_opp.append((ts, qty, px))
+    if not valid_opp:
+        return None
+    all_prices = [px for _, _, px in valid_opp]
+    default_ref = min(all_prices) if side == "BUY" else max(all_prices)
+    if len(valid_opp) <= 1 or not same_orders:
+        return default_ref
+
+    valid_same = []
+    for o in same_orders:
+        ts, qty, px = _order_ts_qty_price(o)
+        if ts > 0 and qty > 0:
+            valid_same.append((ts, qty, px))
+    if not valid_same or not all(ts > 0 and qty > 0 for ts, qty, _ in valid_opp):
+        return default_ref
+
+    events = (
+        [(ts, 0, qty, px) for ts, qty, px in valid_opp]
+        + [(ts, 1, qty, px) for ts, qty, px in valid_same]
+    )
+    events.sort(key=lambda x: (x[0], x[1]))
+
+    lots = []  # list of [remaining_qty, initial_qty, price]
+    for _ts, is_same, qty, px in events:
+        if is_same == 0:
+            lots.append([qty, qty, px])
+        else:
+            rem_to_consume = qty
+            while lots and rem_to_consume > 1e-12:
+                rem_lot, init_lot, _lot_px = lots[0]
+                if rem_lot <= rem_to_consume + 1e-12:
+                    rem_to_consume -= rem_lot
+                    lots.pop(0)
+                else:
+                    new_rem = rem_lot - rem_to_consume
+                    rem_to_consume = 0.0
+                    if new_rem <= init_lot * 0.02 + 1e-12:
+                        lots.pop(0)
+                    else:
+                        lots[0][0] = new_rem
+
+    active_prices = [lot[2] for lot in lots if lot[0] > lot[1] * 0.02 + 1e-12 and lot[2] > 0]
+    if not active_prices:
+        return default_ref
+    return min(active_prices) if side == "BUY" else max(active_prices)
+
+
 def window_reference(provider, symbol, order_type, window_s):
     """Return a time-windowed reference from opposite-side orders/fills: minimum SELL
     for a BUY or maximum BUY for a SELL. Return None for an empty or disabled window.
@@ -393,14 +471,25 @@ def window_reference(provider, symbol, order_type, window_s):
     This is the platform-agnostic equivalent of Binance tier 1."""
     if not window_s or window_s <= 0:
         return None
-    opp = "SELL" if order_type.upper() == "BUY" else "BUY"
+    side = order_type.upper()
+    opp = "SELL" if side == "BUY" else "BUY"
     recent = provider.get_orders(symbol, opp, window_s)
     if recent is None:
         raise ProviderError(f"window_reference({symbol}): failed to read order history")
     prices = [float(o.get("price") or 0) for o in recent if float(o.get("price") or 0) > 0]
     if not prices:
         return None
-    return min(prices) if order_type.upper() == "BUY" else max(prices)
+    if len(recent) > 1 and all(
+        isinstance(o, dict) and float(o.get("timestamp") or o.get("time") or 0) > 0
+        for o in recent
+    ):
+        try:
+            same_orders = provider.get_orders(symbol, side, window_s) or []
+        except Exception:
+            same_orders = []
+        if same_orders:
+            return active_cycle_window_ref(recent, same_orders, side)
+    return min(prices) if side == "BUY" else max(prices)
 
 
 def chop_weight_for(provider_name):
@@ -1247,7 +1336,7 @@ def check_math_profit_reference(
                 return True
     has_window = window_for(provider_name, symbol, order_type, regime_context=regime_context) > 0
     raw_ref = window_ref if window_ref is not None else (
-        None if has_window else (
+        None if (order_type == "BUY" and has_window) else (
             provider.last_opposite_fill(symbol, order_type) if hasattr(provider, "last_opposite_fill") else None
         )
     )
