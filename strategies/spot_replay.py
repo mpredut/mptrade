@@ -416,3 +416,33 @@ def make_spot_replay_adapter(
         )
 
     return _adapter
+
+
+def prewarm_trend_series(
+    ohlc,
+    *,
+    warmup: int = 40,
+    params=None,
+    bar_minutes: float = 240.0,
+) -> None:
+    """Prewarm process-level replay regime and volatility caches for an OHLC series."""
+    if len(ohlc) <= warmup:
+        return
+    if params is None:
+        import dataclasses
+        itv = int(bar_minutes)
+        p = dataclasses.replace(
+            _strat.StratParams.from_env(),
+            trend_interval=itv,
+            tp_trail_vol_interval=itv,
+            dca_vol_interval=itv,
+        )
+    else:
+        p = params
+    run_replay(
+        ohlc[warmup:],
+        p,
+        fee_pct=0.26,
+        bar_minutes=bar_minutes,
+        warmup_ohlc=ohlc[:warmup],
+    )

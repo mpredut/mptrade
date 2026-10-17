@@ -3,7 +3,7 @@
 # selection/fine/fee wave + report, finite-cash wave. Results in $GRID_OUT
 # (default offline/results/kraken_continuous_grid). Start it detached, e.g.
 #   setsid nohup offline/research/kraken_continuous_grid/run_all.sh > /dev/null 2>&1 &
-set -uo pipefail
+set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
 if [ -x "$ROOT/myenv/bin/python" ]; then

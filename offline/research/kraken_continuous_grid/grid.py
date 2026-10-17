@@ -130,7 +130,7 @@ def load_asset(asset):
     bars = load(os.path.join(DATA, f"{asset}_240m.csv"))
     ohlc = [b[1:] for b in bars]
     if len(ohlc) > WARM:
-        rp.prewarm_trend_series(ohlc)
+        rp.prewarm_trend_series(ohlc, warmup=WARM, params=LIVE, bar_minutes=240.0)
     bar_years = [datetime.fromtimestamp(b[0], timezone.utc).year for b in bars]
     years = sorted(set(bar_years))
     year_slices = []

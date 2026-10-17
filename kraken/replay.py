@@ -18,6 +18,7 @@ from strategies.spot_replay import (
     _strat,
     _validate_replay,
     make_spot_replay_adapter,
+    prewarm_trend_series,
     run_replay,
 )
 
@@ -35,6 +36,7 @@ __all__ = [
     "make_kraken_replay_adapter",
     "make_spot_replay_adapter",
     "notify",
+    "prewarm_trend_series",
     "run_replay",
 ]
 

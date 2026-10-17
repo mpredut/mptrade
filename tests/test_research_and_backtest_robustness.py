@@ -504,4 +504,27 @@ def test_backtest_suppresses_real_gemini_and_notifications(monkeypatch):
     assert (allowed, bb, bq, q) == (True, 100.0, None, 1.0)
 
 
+def test_kraken_continuous_grid_load_asset_prewarms_trend_series(tmp_path, monkeypatch):
+    """kraken.replay exports prewarm_trend_series and kraken_continuous_grid.grid.load_asset succeeds over >WARM bars."""
+    import offline.research.kraken_continuous_grid.grid as kgrid
+    from kraken import replay as krp
+
+    assert hasattr(krp, "prewarm_trend_series")
+    csv_path = tmp_path / "TEST_240m.csv"
+    lines = ["timestamp,open,high,low,close"]
+    base_ts = 1_700_000_000
+    for i in range(60):
+        px = 100.0 + (i % 5) * 0.5
+        lines.append(f"{base_ts + i * 14400},{px},{px + 1.0},{px - 1.0},{px}")
+    csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(kgrid, "DATA", str(tmp_path))
+    kgrid._LOAD_CACHE.clear()
+    kgrid._ASSET_CACHE.clear()
+    bars, ohlc, year_slices = kgrid.load_asset("TEST")
+    assert len(bars) == 60
+    assert len(ohlc) == 60
+    assert isinstance(year_slices, list)
+
+
 
