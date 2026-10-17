@@ -63,7 +63,7 @@ def make_quality_logic(tag, window_hours, reeval_sec):
                 "fire_attempts_down": 0, "fire_confirmed_down": 0, "fire_blocked_down": 0,
             })
             tr = _trackers[symbol] = LongTrendTracker(stats, window_hours, reeval_sec)
-        return t
+        return tr
 
     return make_tracker_logic(tag, get_tracker, retry_interval_sec=MIN_RETRY_INTERVAL_SEC)
 

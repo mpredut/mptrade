@@ -555,6 +555,12 @@ def test_tradeall_trigger_gate_common_isolation_and_price_window_kwarg(tmp_path,
     logic_fn("SMALL", False, "ARBUSDC", 1, -1, ts, 1.0, price_window=None)
     assert stats1["starts"] == 1
 
+    from offline.research.tradeall_trigger_gate import experiment_quality_signal as eqs
+    eqs._trackers.clear()
+    q_logic = eqs.make_quality_logic("VTEST_Q", 24, 1800)
+    q_logic("BIG", False, "BTCUSDC", 1, -1, ts, 50000.0)
+    assert "BTCUSDC" in eqs._trackers
+
     # Verify execute_tradeall_variant restores all patched tradeall attributes even after run
     c24_file = tmp_path / "cachedb" / "cache_365price_ARBUSDC.jsonl"
     c24_file.parent.mkdir(parents=True, exist_ok=True)
