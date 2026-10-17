@@ -93,9 +93,8 @@ def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
 def _save_grace_state() -> None:
     global _LOADED_STATE_FILE_KEY
     try:
-        os.makedirs(os.path.dirname(_SMART_SL_STATE_FILE) or ".", exist_ok=True)
-        with open(_SMART_SL_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(_GRACE_TRACKER, f, indent=2)
+        from state_io import atomic_write_json
+        atomic_write_json(_SMART_SL_STATE_FILE, _GRACE_TRACKER, indent=2)
         try:
             _LOADED_STATE_FILE_KEY = (_SMART_SL_STATE_FILE, os.path.getmtime(_SMART_SL_STATE_FILE))
         except OSError:

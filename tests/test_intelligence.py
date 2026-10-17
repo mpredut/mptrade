@@ -637,6 +637,92 @@ def test_high_stake_guard_sell_uses_sell_label():
     assert "SELL BTCUSDC" in call_kwargs["thread_title"]
 
 
+def test_composite_evaluate_guards_does_not_skip_veto_after_downscale_and_unpacks_liquidation():
+    from intelligence.external.collectors.bybit_liquidations import LiquidationSummary
+
+    intel = CompositeMarketIntelligence(exhaustion_policy="downscale", exhaustion_scale=0.25)
+    shock = GeopoliticalThreatAssessment(
+        threat_level="CRITICAL_SHOCK",
+        risk_score=0.95,
+        summary="Acute crisis",
+        recommended_brake="HARD_VETO_NEW_BUYS",
+        headlines_analyzed=5,
+        ts=1000.0,
+    )
+    # Even when Weibull exhaustion downscales (trend_duration_seconds = 10 days > P90),
+    # a subsequent CRITICAL_SHOCK geopolitical veto must NOT be skipped!
+    dec = intel.evaluate_guards(
+        "BTCUSDC",
+        "BUY",
+        85000.0,
+        trend_duration_seconds=10.0 * 86400.0,
+        geopolitical_assessment=shock,
+        now=1000.0,
+    )
+    assert dec.allowed is False
+    assert dec.brake_action == BrakeAction.HARD_VETO
+
+    # Also verify CompositeMarketIntelligence.evaluate handles liquidation_summary without unpacking TypeError
+    liq_summary = LiquidationSummary(
+        symbol="BTCUSDC",
+        window_sec=60.0,
+        long_liq_usd=150_000.0,
+        short_liq_usd=10_000.0,
+        net_usd=-140_000.0,
+        capitulation_ratio=150_000.0 / 160_000.0,
+        squeeze_ratio=10_000.0 / 160_000.0,
+        events_count=5,
+        last_event_ts=1000.0,
+    )
+    eval_res = intel.evaluate("BTCUSDC", 85000.0, ts=1000.0, liquidation_summary=liq_summary)
+    assert eval_res.active_trigger is not None
+    assert eval_res.active_trigger.source == "LiquidationCapitulationTrigger"
+
+
+def test_survival_estimate_t_writes_cache_without_name_error(temp_cache_dir):
+    from intelligence.internal.state import survival
+
+    fake_ts = np.arange(0, 200 * 3600, 3600, dtype=float)
+    fake_px = 100.0 + np.sin(np.linspace(0, 8 * np.pi, len(fake_ts))) * 10.0
+    temp_t_cache = os.path.join(temp_cache_dir, "cache_T_trend.json")
+
+    with patch.object(survival, "T_CACHE_FILE", temp_t_cache), \
+         patch.object(survival, "fetch_klines", return_value=(fake_ts, fake_px)):
+        res = survival.estimate_T("TESTCOIN", days=10)
+        assert "T" in res
+        assert os.path.exists(temp_t_cache)
+
+
+def test_whale_collector_short_building_and_ignore_ttl_prev_regime(temp_cache_dir):
+    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+
+    reg = WhalePositioningCollector.classify_regime(
+        price_1h_change_pct=-0.5,
+        oi_change_pct=0.6,
+        taker_ratio=0.90,
+    )
+    assert reg == "short_building"
+
+    collector = WhalePositioningCollector(cache_ttl_sec=10.0, disk_ttl_sec=10.0, cache_dir=temp_cache_dir)
+    old_snap = WhalePositioningSnapshot(
+        symbol="BTCUSDC",
+        top_traders_long_ratio=1.2,
+        top_traders_long_pct=0.55,
+        taker_buy_sell_ratio=0.75,
+        taker_buy_vol_usd=100.0,
+        taker_sell_vol_usd=133.0,
+        open_interest_usd=1000.0,
+        open_interest_1h_change_pct=1.5,
+        divergence_regime="aggressive_shorting",
+        ts=100.0,
+    )
+    collector._save_to_disk(old_snap)
+    assert collector._load_from_disk("BTCUSDC", now=500.0, ignore_ttl=False) is None
+    loaded_expired = collector._load_from_disk("BTCUSDC", now=500.0, ignore_ttl=True)
+    assert loaded_expired is not None
+    assert loaded_expired.divergence_regime == "aggressive_shorting"
+
+
 if __name__ == "__main__":
     unittest.main()
 

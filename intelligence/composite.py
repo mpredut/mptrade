@@ -123,6 +123,20 @@ class CompositeMarketIntelligence:
 
         Returns the first blocking/downscaling decision or an approved allow decision.
         """
+        effective_scale = 1.0
+        downscale_dec: Optional[GuardDecision] = None
+
+        def _record_downscale(dec: GuardDecision) -> None:
+            nonlocal effective_scale, downscale_dec
+            if dec.suggested_scale < effective_scale or downscale_dec is None:
+                effective_scale = min(effective_scale, dec.suggested_scale)
+                downscale_dec = GuardDecision.downscale(
+                    dec.guard_name,
+                    scale=effective_scale,
+                    reason=dec.reason,
+                    **dec.metadata,
+                )
+
         # 1. Noise Floor Guard
         if gradient is not None and epsilon is not None:
             noise_dec = self.noise_guard.check(symbol, side, gradient, epsilon)
@@ -145,8 +159,10 @@ class CompositeMarketIntelligence:
                 p90_days=surv.get("p90_days"),
                 median_days=surv.get("median_days"),
             )
-            if not exh_dec.allowed or exh_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+            if not exh_dec.allowed:
                 return exh_dec
+            if exh_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                _record_downscale(exh_dec)
 
         # 4. External Liquidation Cascade Guard (Active Falling Knife)
         if liquidation_summary is not None:
@@ -157,14 +173,18 @@ class CompositeMarketIntelligence:
         # 5. External Funding Rate Crowding Guard
         if derivatives_telemetry is not None:
             fund_dec = self.funding_guard.check(symbol, side, telemetry=derivatives_telemetry)
-            if not fund_dec.allowed or fund_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+            if not fund_dec.allowed:
                 return fund_dec
+            if fund_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                _record_downscale(fund_dec)
 
         # 6. Sentiment Extreme Greed Guard (Anti-Euphoria / Anti-Top Buying)
         if fear_greed_snapshot is not None:
             greed_dec = self.greed_guard.check(symbol, side, fear_greed_snapshot)
-            if not greed_dec.allowed or greed_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+            if not greed_dec.allowed:
                 return greed_dec
+            if greed_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                _record_downscale(greed_dec)
 
         # 7. Sentiment Panic Washout Guard (Falling Knife / Market-Wide Panic)
         if market_breadth_snapshot is not None or fear_greed_snapshot is not None:
@@ -175,8 +195,10 @@ class CompositeMarketIntelligence:
                 fear_greed_snapshot=fear_greed_snapshot,
                 asset_24h_change_pct=asset_24h_change_pct,
             )
-            if not panic_dec.allowed or panic_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+            if not panic_dec.allowed:
                 return panic_dec
+            if panic_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                _record_downscale(panic_dec)
 
         # 8. Google Gemini High-Stake Guard (> 1000 EUR purchases)
         computed_notional = notional_eur
@@ -194,14 +216,21 @@ class CompositeMarketIntelligence:
                     "breadth_regime": market_breadth_snapshot.regime if market_breadth_snapshot else None,
                 },
             )
-            if not gemini_dec.allowed or gemini_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+            if not gemini_dec.allowed:
                 return gemini_dec
+            if gemini_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                _record_downscale(gemini_dec)
 
         # 9. Geopolitical & Energy Shock Guard (Black Swan Shield)
         if geopolitical_assessment is not None:
             geo_dec = self.geopolitical_guard.check(symbol, side, geopolitical_assessment)
-            if not geo_dec.allowed or geo_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+            if not geo_dec.allowed:
                 return geo_dec
+            if geo_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                _record_downscale(geo_dec)
+
+        if downscale_dec is not None:
+            return downscale_dec
 
         return GuardDecision.allow("CompositeGuards", "all_guards_cleared")
 
@@ -245,7 +274,8 @@ class CompositeMarketIntelligence:
 
         # 3. External Liquidation Capitulation Trigger
         if liquidation_summary is not None:
-            _, l_event = self.liquidation_trigger.evaluate(symbol, price, liquidation_summary, now=now_ts)
+            l_res = self.liquidation_trigger.evaluate(symbol, price, liquidation_summary, now=now_ts)
+            l_event = l_res[1] if isinstance(l_res, tuple) else l_res
             if l_event:
                 triggered_events.append(l_event)
 

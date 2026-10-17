@@ -76,7 +76,7 @@ class WhalePositioningCollector:
             return None
         return os.path.join(self.cache_dir, f"whale_snapshot_{symbol.upper()}.json")
 
-    def _load_from_disk(self, symbol: str, now: float) -> Optional[WhalePositioningSnapshot]:
+    def _load_from_disk(self, symbol: str, now: float, *, ignore_ttl: bool = False) -> Optional[WhalePositioningSnapshot]:
         p = self._disk_path(symbol)
         if not p or not os.path.exists(p):
             return None
@@ -87,6 +87,8 @@ class WhalePositioningCollector:
             max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
             if (now - snapshot.ts) < max_age:
                 self._cache[symbol.upper()] = (snapshot.ts, snapshot)
+                return snapshot
+            if ignore_ttl:
                 return snapshot
         except Exception as e:
             logger.debug("Failed loading whale snapshot from %s: %s", p, e)
@@ -214,7 +216,7 @@ class WhalePositioningCollector:
         elif price_1h_change_pct < -0.2:
             if oi_change_pct > 0.3:
                 # Aggressive short expansion vs mild short building
-                return "aggressive_shorting" if (taker_ratio < 0.85 or oi_change_pct > 1.0) else "aggressive_shorting"
+                return "aggressive_shorting" if (taker_ratio < 0.85 or oi_change_pct > 1.0) else "short_building"
             elif oi_change_pct < -0.3:
                 # Distinguish forced liquidation cascade from orderly voluntary position unwinding
                 is_severe_oi_drop = oi_change_pct <= -3.0
@@ -264,6 +266,8 @@ class WhalePositioningCollector:
             req_top = urllib.request.Request(url_top, headers={"User-Agent": "mptrade-whale/1.0"})
             with urllib.request.urlopen(req_top, timeout=5) as resp:
                 data_top = json.loads(resp.read().decode("utf-8"))
+            if not isinstance(data_top, list) or not data_top:
+                raise ValueError(f"Empty topLongShortPositionRatio response for {lookup_sym}")
 
             top_ratio = float(data_top[-1].get("longShortRatio") or 1.0)
             top_long_pct = float(data_top[-1].get("longAccount") or 0.5)
@@ -273,6 +277,8 @@ class WhalePositioningCollector:
             req_taker = urllib.request.Request(url_taker, headers={"User-Agent": "mptrade-whale/1.0"})
             with urllib.request.urlopen(req_taker, timeout=5) as resp:
                 data_taker = json.loads(resp.read().decode("utf-8"))
+            if not isinstance(data_taker, list) or not data_taker:
+                raise ValueError(f"Empty takerlongshortRatio response for {lookup_sym}")
 
             taker_ratio = float(data_taker[-1].get("buySellRatio") or 1.0)
             taker_buy = float(data_taker[-1].get("buyVol") or 0.0)
@@ -283,13 +289,15 @@ class WhalePositioningCollector:
             req_oi = urllib.request.Request(url_oi, headers={"User-Agent": "mptrade-whale/1.0"})
             with urllib.request.urlopen(req_oi, timeout=5) as resp:
                 data_oi = json.loads(resp.read().decode("utf-8"))
+            if not isinstance(data_oi, list) or not data_oi:
+                raise ValueError(f"Empty openInterestHist response for {lookup_sym}")
 
             latest_oi_usd = float(data_oi[-1].get("sumOpenInterestValue") or 0.0)
             prev_oi_usd = float(data_oi[-2].get("sumOpenInterestValue") or latest_oi_usd) if len(data_oi) >= 2 else latest_oi_usd
             oi_change_pct = ((latest_oi_usd - prev_oi_usd) / prev_oi_usd * 100.0) if prev_oi_usd > 0 else 0.0
 
             # 4. Classify OI-Price divergence regime
-            prev_snap = cached[1] if cached else self._load_from_disk(symbol, now)
+            prev_snap = cached[1] if cached else self._load_from_disk(symbol, now, ignore_ttl=True)
             prev_reg = prev_snap.divergence_regime if prev_snap else None
             funding_rate = self._resolve_cached_funding_rate(symbol)
 

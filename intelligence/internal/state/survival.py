@@ -25,6 +25,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from binance_api.market_data import fetch_ohlc_candles
+from state_io import atomic_write_json
 
 T_CACHE_FILE = os.path.join(_ROOT, "cachedb", "cache_T_trend.json")
 

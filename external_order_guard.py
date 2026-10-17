@@ -211,8 +211,11 @@ def check_external_order_guards(
                 prefix = "[FUNDING_GUARD_SHADOW]" if funding_mode == "shadow" else "[FUNDING_GUARD_ENFORCE]"
                 print(f"{prefix} {order_side} {symbol}: {f_dec.reason} (brake={f_dec.brake_action}, suggested_scale={f_dec.suggested_scale})")
                 if funding_mode == "shadow" and shadow_notify_enabled:
-                    scale_pct = int(f_dec.suggested_scale * 100)
-                    _send_micro_shadow_notify("funding", f"🛡 [P2 · FUNDING] SCALE {scale_pct}% {order_side} {symbol}", f_dec.reason, scale_pct=scale_pct)
+                    if not f_dec.allowed:
+                        _send_micro_shadow_notify("funding", f"🛡 [P2 · FUNDING] DEFER {order_side} {symbol}", f_dec.reason)
+                    else:
+                        scale_pct = int(f_dec.suggested_scale * 100)
+                        _send_micro_shadow_notify("funding", f"🛡 [P2 · FUNDING] SCALE {scale_pct}% {order_side} {symbol}", f_dec.reason, scale_pct=scale_pct)
                 if funding_mode == "enforce":
                     if not f_dec.allowed:
                         return False, f_dec.reason, 0.0
