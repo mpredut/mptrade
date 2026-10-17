@@ -12,9 +12,14 @@ cd "$REPO_ROOT"
 
 MUTEX="/tmp/dev_regression.lock"
 exec 8>"$MUTEX"
+WAS_QUEUED=false
 if ! flock -n 8; then
-    echo "[dev_regression $(date '+%F %T')] Another regression is already running — skipping"
-    exit 0
+    echo "[dev_regression $(date '+%F %T')] Another regression is already running — waiting for lock..."
+    WAS_QUEUED=true
+    if ! flock -w 600 8; then
+        echo "[dev_regression $(date '+%F %T')] ERROR: Timed out waiting for regression lock" >&2
+        exit 1
+    fi
 fi
 
 # Locate Python / Pytest environment
@@ -39,9 +44,21 @@ mkdir -p "$REPO_ROOT/logs" "$REPO_ROOT/cachedb"
 LOG_FILE="$REPO_ROOT/logs/dev_regression.log"
 STATUS_JSON="$REPO_ROOT/cachedb/dev_regression_status.json"
 
+# Pull latest code safely inside the mutex so mid-run pytest imports are never torn
+git pull --ff-only origin "${DEV_CODE_BRANCH:-main}" >/dev/null 2>&1 || true
+
 COMMIT_HASH="$(git rev-parse HEAD 2>/dev/null || echo "unknown")"
 COMMIT_SHORT="$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")"
 COMMIT_MSG="$(git log -1 --pretty=%s 2>/dev/null || echo "unknown")"
+
+if [ "$WAS_QUEUED" = true ] && [ -f "$STATUS_JSON" ]; then
+    LAST_COMMIT_AND_STATUS="$("$PYTHON_BIN" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(f"{d.get(\"commit\",\"\")}:{d.get(\"status\",\"\")}")' "$STATUS_JSON" 2>/dev/null || true)"
+    if [ "$LAST_COMMIT_AND_STATUS" = "${COMMIT_HASH}:PASSED" ]; then
+        echo "[dev_regression $(date '+%F %T')] Commit $COMMIT_SHORT already tested and PASSED while queued — skipping duplicate run"
+        exit 0
+    fi
+fi
+
 START_TS="$(date +%s)"
 START_ISO="$(date -Iseconds)"
 
