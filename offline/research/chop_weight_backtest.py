@@ -78,6 +78,86 @@ def detect_regime_slope(prices: np.ndarray, mk_alpha: float = 0.05) -> Tuple[str
     return "CHOP", norm_slope
 
 
+def _precompute_chop_bar_tape(
+    symbol: str,
+    sampled: List[Tuple[float, float]],
+    btc_sampled: Optional[List[Tuple[float, float]]],
+    step_seconds: int,
+) -> List[Dict[str, Any]]:
+    """Precompute policy-independent regime, volatility, and trigger signals once per symbol."""
+    if not sampled:
+        return []
+
+    kalman = KalmanTrendTrigger(gap_reset_sec=max(1800.0, step_seconds * 3.0))
+    mean_rev = MeanReversionTrigger(rsi_period=14, bb_period=20)
+    btc_dict = {int(t // step_seconds): p for t, p in btc_sampled} if btc_sampled else {}
+
+    rolling_prices: List[float] = []
+    btc_rolling: List[float] = []
+    current_trend = "CHOP"
+    trend_start_ts = sampled[0][0]
+    btc_regime = "CHOP"
+    btc_trend_start_ts = sampled[0][0]
+    last_regime_check_ts = 0.0
+    tape: List[Dict[str, Any]] = []
+
+    for t, p in sampled:
+        rolling_prices.append(p)
+        if len(rolling_prices) > 96:  # 24 hours of 15m bars
+            rolling_prices.pop(0)
+
+        btc_p = btc_dict.get(int(t // step_seconds))
+        if btc_p is not None:
+            btc_rolling.append(btc_p)
+            if len(btc_rolling) > 96:
+                btc_rolling.pop(0)
+
+        # Check regime every 4 hours (16 bars)
+        if (t - last_regime_check_ts) >= 14400.0 and len(rolling_prices) >= 24:
+            last_regime_check_ts = t
+            regime, _ = detect_regime_slope(np.array(rolling_prices), mk_alpha=0.05)
+            if regime != current_trend:
+                current_trend = regime
+                trend_start_ts = t
+
+            if len(btc_rolling) >= 24:
+                b_reg, _ = detect_regime_slope(np.array(btc_rolling), mk_alpha=0.05)
+                if b_reg != btc_regime:
+                    btc_regime = b_reg
+                    btc_trend_start_ts = t
+
+        vol1h = calculate_volatility_1h(rolling_prices, sample_rate_sec=float(step_seconds)) if len(rolling_prices) >= 12 else 0.5
+        eps = (p * (vol1h / 100.0) * 0.15) if vol1h else (p * 0.001)
+
+        _, k_event = kalman.evaluate(symbol, t, p, eps)
+        mr_event = mean_rev.update(symbol, t, p)
+
+        entry_signal = (
+            (k_event is not None and k_event.action.value == "ENTRY" and k_event.side.value == "BUY")
+            or (mr_event is not None and mr_event.action.value == "ENTRY" and mr_event.side.value == "BUY")
+        )
+        pullback_signal = False
+        if not entry_signal and current_trend == "BULL" and len(rolling_prices) >= 16:
+            recent_high = max(rolling_prices[-16:])
+            pullback = (recent_high - p) / recent_high if recent_high > 0 else 0.0
+            pullback_signal = pullback >= 0.012
+
+        exit_signal = k_event is not None and k_event.action.value == "EXIT" and k_event.side.value == "SELL"
+
+        tape.append({
+            "t": t,
+            "p": p,
+            "current_trend": current_trend,
+            "trend_start_ts": trend_start_ts,
+            "btc_regime": btc_regime,
+            "btc_trend_start_ts": btc_trend_start_ts,
+            "entry_signal": entry_signal,
+            "pullback_signal": pullback_signal,
+            "exit_signal": exit_signal,
+        })
+    return tape
+
+
 def run_single_simulation(
     symbol: str,
     sampled: List[Tuple[float, float]],
@@ -90,19 +170,13 @@ def run_single_simulation(
     tp_pct: float = 0.035,
     stop_pct: float = 0.040,
     T_days: int = 8,
+    precomputed_tape: Optional[List[Dict[str, Any]]] = None,
 ) -> ChopBacktestStats:
     """Run a single backtest simulation under a specific chop allocation policy."""
-    kalman = KalmanTrendTrigger(gap_reset_sec=max(1800.0, step_seconds * 3.0))
-    mean_rev = MeanReversionTrigger(rsi_period=14, bb_period=20)
-
-    # Build BTC lookup index for proxy policies
-    btc_dict = {}
-    if btc_sampled:
-        btc_dict = {int(t // step_seconds): p for t, p in btc_sampled}
-
     usd = initial_balance
     asset_qty = 0.0
     entry_price = 0.0
+    entry_cost = 0.0
     entry_regime = "CHOP"
     peak_equity = initial_balance
     max_dd_pct = 0.0
@@ -127,51 +201,20 @@ def run_single_simulation(
             avg_chop_pnl_usd=0.0,
         )
 
+    tape = (
+        precomputed_tape
+        if precomputed_tape is not None
+        else _precompute_chop_bar_tape(symbol, sampled, btc_sampled, step_seconds)
+    )
     trades: List[Dict[str, Any]] = []
-    rolling_prices: List[float] = []
 
-    current_trend = "CHOP"
-    trend_start_ts = sampled[0][0]
-    last_regime_check_ts = 0.0
-    regime = "CHOP"
-
-    # BTC tracking for proxy
-    btc_rolling: List[float] = []
-    btc_regime = "CHOP"
-    btc_trend_start_ts = sampled[0][0]
-
-    for idx, (t, p) in enumerate(sampled):
-        rolling_prices.append(p)
-        if len(rolling_prices) > 96:  # 24 hours of 15m bars
-            rolling_prices.pop(0)
-
-        # Track BTC for proxy if available
-        btc_p = btc_dict.get(int(t // step_seconds))
-        if btc_p is not None:
-            btc_rolling.append(btc_p)
-            if len(btc_rolling) > 96:
-                btc_rolling.pop(0)
-
-        # Check regime every 4 hours (16 bars)
-        if (t - last_regime_check_ts) >= 14400.0 and len(rolling_prices) >= 24:
-            last_regime_check_ts = t
-            regime, _ = detect_regime_slope(np.array(rolling_prices), mk_alpha=0.05)
-            if regime != current_trend:
-                current_trend = regime
-                trend_start_ts = t
-
-            if len(btc_rolling) >= 24:
-                b_reg, _ = detect_regime_slope(np.array(btc_rolling), mk_alpha=0.05)
-                if b_reg != btc_regime:
-                    btc_regime = b_reg
-                    btc_trend_start_ts = t
-
-        # Volatility & Triggers
-        vol1h = calculate_volatility_1h(rolling_prices, sample_rate_sec=float(step_seconds)) if len(rolling_prices) >= 12 else 0.5
-        eps = (p * (vol1h / 100.0) * 0.15) if vol1h else (p * 0.001)
-
-        k_out, k_event = kalman.evaluate(symbol, t, p, eps)
-        mr_event = mean_rev.update(symbol, t, p)
+    for bar in tape:
+        t = bar["t"]
+        p = bar["p"]
+        current_trend = bar["current_trend"]
+        trend_start_ts = bar["trend_start_ts"]
+        btc_regime = bar["btc_regime"]
+        btc_trend_start_ts = bar["btc_trend_start_ts"]
 
         # Track equity & drawdown
         equity = usd + (asset_qty * p)
@@ -181,36 +224,19 @@ def run_single_simulation(
         if dd > max_dd_pct:
             max_dd_pct = dd
 
-        want_buy = False
-        want_sell = False
+        want_buy = bar["entry_signal"] or (asset_qty == 0 and bar["pullback_signal"])
+        want_sell = bar["exit_signal"]
 
         # Take Profit & Stop Loss
         if asset_qty > 0 and entry_price > 0:
             pnl_pct = (p - entry_price) / entry_price
-            if pnl_pct >= tp_pct:
+            if pnl_pct >= tp_pct or pnl_pct <= -stop_pct:
                 want_sell = True
-            elif pnl_pct <= -stop_pct:
-                want_sell = True
-
-        # Signal Generation
-        if k_event and k_event.action.value == "ENTRY" and k_event.side.value == "BUY":
-            want_buy = True
-        elif mr_event and mr_event.action.value == "ENTRY" and mr_event.side.value == "BUY":
-            want_buy = True
-        elif current_trend == "BULL" and asset_qty == 0 and len(rolling_prices) >= 16:
-            recent_high = max(rolling_prices[-16:])
-            pullback = (recent_high - p) / recent_high if recent_high > 0 else 0.0
-            if pullback >= 0.012:
-                want_buy = True
-
-        if k_event and k_event.action.value == "EXIT" and k_event.side.value == "SELL":
-            want_sell = True
 
         # Execute SELL
         if want_sell and asset_qty > 0:
             proceeds = asset_qty * p * (1.0 - fee_pct)
-            cost = asset_qty * entry_price
-            pnl = proceeds - cost
+            pnl = proceeds - entry_cost
             usd += proceeds
             trades.append({
                 "entry_price": entry_price,
@@ -221,6 +247,7 @@ def run_single_simulation(
             })
             asset_qty = 0.0
             entry_price = 0.0
+            entry_cost = 0.0
 
         # Execute BUY
         elif want_buy and asset_qty == 0 and usd > 50.0:
@@ -268,6 +295,7 @@ def run_single_simulation(
                     buy_qty = trade_budget / p
                     asset_qty += buy_qty
                     entry_price = p
+                    entry_cost += cost
                     entry_regime = trade_regime
                     usd -= cost
 
@@ -275,7 +303,7 @@ def run_single_simulation(
     if asset_qty > 0 and len(sampled) > 0:
         last_p = sampled[-1][1]
         proceeds = asset_qty * last_p * (1.0 - fee_pct)
-        pnl = proceeds - (asset_qty * entry_price)
+        pnl = proceeds - entry_cost
         usd += proceeds
         trades.append({
             "entry_price": entry_price,
@@ -374,6 +402,9 @@ def run_chop_benchmark(
 
         logger.info("Symbol %s: %d ticks -> %d %ds bars (%.1f days)", sym, len(raw_series), len(sampled), step_seconds, (sampled[-1][0] - sampled[0][0]) / 86400.0)
 
+        btc_ref = sampled_btc if sym != "BTCUSDC" else None
+        tape = _precompute_chop_bar_tape(sym, sampled, btc_ref, step_seconds)
+
         sym_stats: List[ChopBacktestStats] = []
         for pol in policies:
             # Skip PROXY_BTC on BTC itself
@@ -383,9 +414,10 @@ def run_chop_benchmark(
             stat = run_single_simulation(
                 symbol=sym,
                 sampled=sampled,
-                btc_sampled=sampled_btc if sym != "BTCUSDC" else None,
+                btc_sampled=btc_ref,
                 policy=pol,
                 step_seconds=step_seconds,
+                precomputed_tape=tape,
             )
             sym_stats.append(stat)
 

@@ -527,4 +527,120 @@ def test_kraken_continuous_grid_load_asset_prewarms_trend_series(tmp_path, monke
     assert isinstance(year_slices, list)
 
 
+def test_tradeall_trigger_gate_common_isolation_and_price_window_kwarg(tmp_path, monkeypatch):
+    """tradeall_trigger_gate.common isolates TrendState subclasses across variants and accepts price_window kwarg."""
+    import tradeall as ta
+    from offline.backtests import tradeall as bt_ta
+    from offline.research.tradeall_trigger_gate import common as tg_common
 
+    stats1 = {"starts": 0, "confirms": 0, "expires": 0, "max_confirm_count": 0}
+    stats2 = {"starts": 0, "confirms": 0, "expires": 0, "max_confirm_count": 0}
+
+    cls1 = tg_common.make_instrumented_trend_state(stats1)
+    ta.TrendState = cls1
+    try:
+        cls2 = tg_common.make_instrumented_trend_state(stats2)
+        assert issubclass(cls2, tg_common.ORIG_TREND_STATE)
+        assert not issubclass(cls2, cls1)
+        ts2 = cls2(3600, 160, 220)
+        ts2.start_trend("UP")
+        assert stats1["starts"] == 0
+        assert stats2["starts"] == 1
+    finally:
+        ta.TrendState = tg_common.ORIG_TREND_STATE
+
+    # Verify logic_variant accepts price_window keyword argument passed by ta.logic_small
+    ts = tg_common.make_instrumented_trend_state(stats1)(3600, 160, 220)
+    logic_fn = tg_common.make_tradeall_logic("VTEST", cooldown_mode="fire_once")
+    logic_fn("SMALL", False, "ARBUSDC", 1, -1, ts, 1.0, price_window=None)
+    assert stats1["starts"] == 1
+
+    # Verify execute_tradeall_variant restores all patched tradeall attributes even after run
+    c24_file = tmp_path / "cachedb" / "cache_365price_ARBUSDC.jsonl"
+    c24_file.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        json.dumps({"s": "ARBUSDC", "i": [1750000000000 + i * 60000, 1.0 + i * 0.001]})
+        for i in range(15)
+    ]
+    c24_file.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    monkeypatch.setattr(tg_common, "ROOT", str(tmp_path))
+    monkeypatch.setattr(bt_ta, "ROOT", str(tmp_path))
+
+    pnl, _elapsed = tg_common.execute_tradeall_variant(
+        "unit_tg_run",
+        "ARBUSDC",
+        1750000000.0,
+        None,
+        source="cache24",
+        logic_fn=logic_fn,
+        trend_state_cls=cls1,
+        big_threshold=123.45,
+        disable_small=True,
+    )
+    assert isinstance(pnl, dict)
+    assert ta.TrendState is tg_common.ORIG_TREND_STATE
+    assert ta.logic is tg_common.ORIG_LOGIC
+    assert ta.PRICE_CHANGE_THRESHOLD_BIG_EUR == tg_common.ORIG_BIG_THRESHOLD
+
+
+def test_research_scripts_do_not_monkeypatch_at_import_time():
+    """Importing research grid/experiment scripts must not leave Strategy.step or dca_price_hit mutated."""
+    import strategies.spot_engine as spot_engine
+    import strategies.spot_rules as spot_rules
+    import offline.research.kraken_continuous_grid.grid as kgrid
+    import offline.research.tradeall_trigger_gate.experiment_rsi_dca_filter as rsi_dca
+
+    assert spot_engine.Strategy.step is kgrid._orig_step
+    assert spot_engine.Strategy.step is rsi_dca._orig_step
+    assert spot_rules.dca_price_hit is rsi_dca._orig_hit
+
+
+def test_intelligence_and_chop_backtest_fee_accounting_reconciliation(tmp_path):
+    """Per-trade PnL in intelligence_backtest and chop_weight_backtest includes buy fees and reconciles with net_profit_usd."""
+    import math
+    from offline.research.chop_weight_backtest import run_single_simulation
+    from offline.research.intelligence_backtest import run_intelligence_backtest
+
+    # Create synthetic oscillating price series that triggers trades
+    sampled = []
+    t0 = 1_750_000_000.0
+    for i in range(160):
+        wave = math.sin(i / 6.0) * 8.0
+        drift = i * 0.15
+        sampled.append((t0 + i * 900.0, 100.0 + drift + wave))
+
+    stat = run_single_simulation(
+        symbol="TAOUSDC",
+        sampled=sampled,
+        btc_sampled=sampled,
+        policy="CHOP_0.10",
+        step_seconds=900,
+        initial_balance=10_000.0,
+        fee_pct=0.005,  # 0.5% fee to make any missing buy-fee discrepancy obvious
+    )
+    assert stat.total_trades >= 1
+    assert math.isclose(
+        stat.chop_pnl_usd + stat.trend_pnl_usd,
+        stat.net_profit_usd,
+        abs_tol=0.02,
+    )
+
+    cache_file = tmp_path / "cache_price_sparse_TESTUSDC.jsonl"
+    lines = [
+        json.dumps({"s": "TESTUSDC", "i": [int(t * 1000), p]})
+        for t, p in sampled
+    ]
+    cache_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    ib_res = run_intelligence_backtest(
+        symbol="TESTUSDC",
+        cache_path=str(cache_file),
+        step_seconds=900,
+        initial_balance=10_000.0,
+        fee_pct=0.005,
+    )
+    for mode_stat in ib_res.values():
+        assert math.isclose(
+            mode_stat.final_balance - mode_stat.initial_balance,
+            mode_stat.net_profit_usd,
+            abs_tol=0.02,
+        )

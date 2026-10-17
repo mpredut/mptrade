@@ -44,8 +44,6 @@ def _step(self, price, *args, **kwargs):
     return _orig_step(self, price, *args, **kwargs)
 
 
-strat.Strategy.step = _step
-
 R = dataclasses.replace
 LIVE = strat.StratParams.from_env()
 OLD = R(LIVE, takeprofit_pct=5.0, dca_spacing_growth_pct=0.0, tp_trail_adaptive=False,
@@ -143,13 +141,13 @@ def load_asset(asset):
     return res
 
 
-def replay(bars, warm, params, peak):
+def replay(bars, warm, params, peak, fee=0.26):
     FLAGS["peak"] = bool(peak)
     strat.Strategy.step = _step if peak else _orig_step
     try:
         ohlc = [b[1:] for b in bars] if (bars and len(bars[0]) == 5) else bars
         w_ohlc = [b[1:] for b in warm] if (warm and len(warm[0]) == 5) else warm
-        m = rp.run_replay(ohlc, params, fee_pct=0.26, bar_minutes=240,
+        m = rp.run_replay(ohlc, params, fee_pct=fee, bar_minutes=240,
                           warmup_ohlc=w_ohlc)
         budget = float(params.effective_max_budget())
         return {"ret": round(m["total"] / budget * 100, 3), "dd": round(m.get("max_drawdown_pct") or 0, 3),
@@ -192,10 +190,13 @@ if __name__ == "__main__":
         load_asset(a)
     done = set()
     if os.path.exists(OUT):
-        for line in open(OUT):
-            r = json.loads(line)
-            if "error" not in r:
-                done.add((r["asset"], r["cfg"]))
+        with open(OUT, encoding="utf-8") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                r = json.loads(line)
+                if "error" not in r:
+                    done.add((r["asset"], r["cfg"]))
     first = ["live", "old_live_pre0923", "ov650_t8", "ov350_t6", "ov1000_t8", "ov2000_t8",
              "abl_tp5", "abl_spacing0", "abl_trail_fixed", "abl_gate_off", "abl_floor0", "abl_sl12.5",
              "peak2.2", "reentry0", "ov650_t8_sl12.5", "ov650_t8_oldlive", "sl0", "tp_classic"]

@@ -40,8 +40,6 @@ def _step(self, price, *args, **kwargs):
     return _orig_step(self, price, *args, **kwargs)
 
 
-strat.Strategy.step = _step
-
 PROFILES = {p: parse_dotenv(os.path.join(REPO, "212trading", f"config.{p}.env"))
             for p in ("nvda", "spcx", "rgnt")}
 HOME = {"nvda": "NVDA", "spcx": "SPCX", "rgnt": "RGNT"}

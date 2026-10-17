@@ -33,6 +33,7 @@ sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
+from providers.replay_provider import load_price_series
 import strategies.spot_engine as _strat
 import strategies.spot_rules as sr
 from kraken import replay as rp
@@ -73,35 +74,27 @@ class RsiGate:
 _gate = None   # RsiGate for a gated run, None for the baseline (wrappers become no-ops)
 
 _orig_step = _strat.Strategy.step
+
+
 def _step_feed_rsi(self, price, *args, **kwargs):
     if _gate is not None:
         _gate.update(float(price))
     return _orig_step(self, price, *args, **kwargs)
 
+
 _orig_hit = sr.dca_price_hit
+
+
 def _hit_gated(*a, **k):
     base = _orig_hit(*a, **k)
     if not base or _gate is None:
         return base
     return _gate.oversold()
 
-_strat.Strategy.step = _step_feed_rsi
-sr.dca_price_hit = _hit_gated
-
 
 def load_ticks(symbol):
     path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
-    ticks = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            rec = json.loads(line)
-            ts_ms, price = rec["i"][0], rec["i"][1]
-            ticks.append((float(ts_ms) / 1000.0, float(price)))
-    ticks.sort()
-    return ticks
+    return load_price_series(path, symbol)
 
 
 def hourly_ohlc(ticks, start_ts, end_ts):
@@ -136,11 +129,15 @@ def make_params(**over):
 def run_one(bars, gate):
     global _gate
     _gate = gate
+    _strat.Strategy.step = _step_feed_rsi if gate is not None else _orig_step
+    sr.dca_price_hit = _hit_gated if gate is not None else _orig_hit
     try:
         res = rp.run_replay(bars, make_params(), fee_pct=0.26, bar_minutes=60.0,
                             initial_cash=1050.0)
     finally:
         _gate = None
+        _strat.Strategy.step = _orig_step
+        sr.dca_price_hit = _orig_hit
     return res
 
 

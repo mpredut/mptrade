@@ -37,8 +37,12 @@ sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from offline.backtests import tradeall as tb
-import tradeall as ta
+from offline.research.tradeall_trigger_gate.common import (
+    ORIG_BIG_THRESHOLD,
+    execute_tradeall_variant,
+    make_instrumented_trend_state,
+    make_tradeall_logic,
+)
 
 STATS = {}
 
@@ -46,103 +50,11 @@ STATS = {}
 def make_instrumented(tag):
     stats = {"starts": 0, "confirms": 0, "expires": 0, "max_confirm_count": 0}
     STATS[tag] = stats
-    Base = ta.TrendState
-
-    class InstrumentedTrendState(Base):
-        def start_trend(self, new_state):
-            stats["starts"] += 1
-            return super().start_trend(new_state)
-
-        def confirm_trend(self):
-            r = super().confirm_trend()
-            stats["confirms"] += 1
-            stats["max_confirm_count"] = max(stats["max_confirm_count"], self.confirm_count)
-            return r
-
-        def check_trend_expiration(self):
-            was_expired = self.expired
-            r = super().check_trend_expiration()
-            if r and not was_expired:
-                stats["expires"] += 1
-            return r
-
-    return InstrumentedTrendState
+    return make_instrumented_trend_state(stats)
 
 
-# ── An EXACT copy of logic() from tradeall.py (lines 356-471 at the time of writing),
-#    with a single point of variation: START_COND(gradient, slope) — the rest
-#    (blocurile de FIRE, is_trend_consistent_validated/is_started_trend_older_than,
-#    the 5.1/TREND_TO_BE_OLD_SECONDS values) stay UNCHANGED, so as to isolate STRICTLY
-#    efectul conditiei de start.
 def make_logic(start_up_cond, start_down_cond, label):
-    def logic_variant(win, enable, symbol, gradient, slope, trend_state, current_price):
-        d = 14
-        h = 24
-        proposed_price = current_price
-
-        if start_up_cond(gradient, slope):
-            proposed_price = current_price
-            if trend_state.is_trend_up():
-                trend_state.confirm_trend()
-                if trend_state.is_trend_uniform_confirmed() and trend_state.is_trend_fresh():
-                    if enable:
-                        ta._fire_order(symbol, "BUY", proposed_price, f"{label}_trend_confirmed_up",
-                                        safeback_seconds=d * h * 3600 + 60, force=False, cancelorders=True, hours=1)
-            else:
-                trend_state.start_trend('UP')
-
-        if start_down_cond(gradient, slope):
-            proposed_price = current_price
-            if trend_state.is_trend_down():
-                trend_state.confirm_trend()
-                if trend_state.is_trend_uniform_confirmed() and trend_state.is_trend_fresh():
-                    if enable:
-                        ta._fire_order(symbol, "SELL", proposed_price, f"{label}_trend_confirmed_down",
-                                        safeback_seconds=d * h * 3600 + 60, force=False, cancelorders=True, hours=1)
-            else:
-                trend_state.start_trend('DOWN')
-
-        proposed_price = current_price
-        if slope <= 0 and trend_state.is_trend_up():
-            if (trend_state.is_trend_consistent_validated()
-                    or trend_state.is_started_trend_older_than(ta.TREND_TO_BE_OLD_SECONDS)):
-                if enable:
-                    ta._fire_order(symbol, "BUY", proposed_price, f"{label}_consistent_or_old_up",
-                                    safeback_seconds=d * h * 3600 + 60, force=False, cancelorders=True, hours=1)
-        if slope >= 0 and trend_state.is_trend_down():
-            if (trend_state.is_trend_consistent_validated()
-                    or trend_state.is_started_trend_older_than(ta.TREND_TO_BE_OLD_SECONDS)):
-                if enable:
-                    ta._fire_order(symbol, "SELL", proposed_price, f"{label}_consistent_or_old_down",
-                                    safeback_seconds=d * h * 3600 + 60, force=False, cancelorders=True, hours=1)
-
-        if slope <= -5.1 and trend_state.is_trend_up():
-            if (trend_state.is_trend_consistent_validated()
-                    or trend_state.is_started_trend_older_than(ta.TREND_TO_BE_OLD_SECONDS)):
-                if enable:
-                    ta._fire_order(symbol, "BUY", proposed_price, f"{label}_slope<=-5.1_up",
-                                    safeback_seconds=d * h * 3600 + 60, force=False, cancelorders=True, hours=1)
-        if slope >= 5.1 and trend_state.is_trend_down():
-            if (trend_state.is_trend_consistent_validated()
-                    or trend_state.is_started_trend_older_than(ta.TREND_TO_BE_OLD_SECONDS)):
-                if enable:
-                    ta._fire_order(symbol, "SELL", proposed_price, f"{label}_slope>=5.1_down",
-                                    safeback_seconds=d * h * 3600 + 60, force=False, cancelorders=True, hours=1)
-
-        if slope <= -5.1 and trend_state.is_trend_down():
-            if (trend_state.is_trend_consistent_validated()
-                    and trend_state.is_started_trend_older_than(ta.TREND_TO_BE_OLD_SECONDS)):
-                if enable:
-                    ta._fire_order(symbol, "BUY", proposed_price, f"{label}_slope<=-5.1_and_old_down",
-                                    safeback_seconds=d * h * 3600 + 60, force=False, cancelorders=True, hours=1)
-        if slope >= 5.1 and trend_state.is_trend_up():
-            if (trend_state.is_trend_consistent_validated()
-                    and trend_state.is_started_trend_older_than(ta.TREND_TO_BE_OLD_SECONDS)):
-                if enable:
-                    ta._fire_order(symbol, "SELL", proposed_price, f"{label}_slope>=5.1_and_old_up",
-                                    safeback_seconds=d * h * 3600 + 60, force=False, cancelorders=True, hours=1)
-
-    return logic_variant
+    return make_tradeall_logic(label, start_up_cond=start_up_cond, start_down_cond=start_down_cond, cooldown_mode=None)
 
 
 VARIANTS = {
@@ -154,31 +66,17 @@ VARIANTS = {
 
 
 def run_variant(tag, up_cond, down_cond, threshold_override_name, symbol, start_ts, end_ts):
-    ta.TrendState = make_instrumented(tag)
-    tb.ta.TrendState = ta.TrendState
-    ta.logic = make_logic(up_cond, down_cond, tag)
-    tb.ta.logic = ta.logic
-
-    orig_threshold = ta.PRICE_CHANGE_THRESHOLD_BIG_EUR
-    if threshold_override_name:
-        ta.PRICE_CHANGE_THRESHOLD_BIG_EUR = orig_threshold / 10.0
-
-    run_id = f"experiment2_{tag}_{symbol}"
-    import shutil
-    out_dir = os.path.join(ROOT, "logger", "backtest", run_id)
-    shutil.rmtree(out_dir, ignore_errors=True)
-
-    t0 = time.time()
-    tb.run_backtest(symbol, start_ts, end_ts, "fast", run_id, "cache24",
-                     cache24_file=os.path.join(ROOT, "cachedb", f"cache_365price_{symbol}.jsonl"),
-                     quiet=True, kalman_primary=False)
-    elapsed = time.time() - t0
-
-    ta.PRICE_CHANGE_THRESHOLD_BIG_EUR = orig_threshold
-
-    import json
-    pnl_path = os.path.join(out_dir, "pnl.json")
-    pnl = json.load(open(pnl_path)) if os.path.exists(pnl_path) else {}
+    big_thr = (ORIG_BIG_THRESHOLD / 10.0) if threshold_override_name else None
+    pnl, elapsed = execute_tradeall_variant(
+        f"experiment2_{tag}_{symbol}",
+        symbol,
+        start_ts,
+        end_ts,
+        source="cache24",
+        logic_fn=make_logic(up_cond, down_cond, tag),
+        trend_state_cls=make_instrumented(tag),
+        big_threshold=big_thr,
+    )
     sys.stderr.write(f"\n=== {tag} / {symbol} === (wall {elapsed:.1f}s)\n")
     sys.stderr.write(f"stats: {STATS[tag]}\n")
     sys.stderr.write(f"pnl: {pnl}\n")
@@ -203,3 +101,4 @@ if __name__ == "__main__":
 
     for tag, (up, down, thr) in VARIANTS.items():
         run_variant(tag, up, down, thr, "TAOUSDC", tao_start, tao_end)
+

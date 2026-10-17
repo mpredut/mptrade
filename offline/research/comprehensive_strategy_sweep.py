@@ -192,12 +192,34 @@ def define_candidate_grid() -> dict[str, dict]:
     }
 
 
+def _summarize_replay(m: dict, budget: float) -> dict[str, float | int]:
+    """Compute normalized percentage and risk-adjusted replay metrics safely."""
+    safe_budget = max(float(budget), 1e-9)
+    net_pct = (float(m.get("net", 0.0)) / safe_budget) * 100.0
+    total_pct = (float(m.get("total", 0.0)) / safe_budget) * 100.0
+    max_dd = float(m.get("max_drawdown_pct") or 0.0)
+    calmar = (net_pct / max_dd) if max_dd > 0 else 0.0
+    sharpe = float(m.get("sharpe_ratio") or 0.0)
+    return {
+        "net_pct": net_pct,
+        "total_pct": total_pct,
+        "max_dd": max_dd,
+        "calmar": calmar,
+        "sharpe": sharpe,
+        "cycles": int(m.get("cycles", 0)),
+        "wins": int(m.get("wins", 0)),
+        "fills": int(m.get("fills", 0)),
+    }
+
+
 def run_walk_forward_evaluation(candidates: dict[str, dict], records: list[dict]) -> dict[str, dict]:
     """Run 31 out-of-sample walk-forward folds for each candidate."""
     print(">>> Running 31 Walk-Forward Out-Of-Sample Folds (628 days)...")
     folds = walk_forward_splits(
         len(records), train_size=720, validation_size=180, test_size=90, step_size=90
     )
+    if not folds:
+        return {}
     results = {}
     fee_pct = 0.26
     interval = 240
@@ -252,7 +274,7 @@ def run_walk_forward_evaluation(candidates: dict[str, dict], records: list[dict]
     # Compute pairwise W/T/L vs Live
     for name, data in results.items():
         if name == "00_LIVE_CURRENT":
-            data["vs_live_WTL"] = "31/0/0 (Ref)"
+            data["vs_live_WTL"] = f"{len(folds)}/0/0 (Ref)"
             continue
         wins = sum(1 for cand, ref in zip(data["raw_windows"], live_candidate_windows) if cand > ref + 1e-6)
         ties = sum(1 for cand, ref in zip(data["raw_windows"], live_candidate_windows) if abs(cand - ref) <= 1e-6)
@@ -266,31 +288,30 @@ def run_continuous_628d_replay(candidates: dict[str, dict], records: list[dict])
     """Run full unbroken continuous replay over the entire 628-day dataset."""
     print(">>> Running Continuous 628-Day Replay (~3,772 bars)...")
     ohlc = [(r["open"], r["high"], r["low"], r["close"]) for r in records]
+    if len(ohlc) < 2:
+        return {}
     results = {}
     fee_pct = 0.26
     interval = 240
+    if len(ohlc) > 40:
+        kraken_replay.prewarm_trend_series(ohlc, warmup=0, params=LIVE_PARAMS, bar_minutes=interval)
 
     for name, overrides in candidates.items():
         params = dataclasses.replace(LIVE_PARAMS, **overrides)
-        budget = float(params.effective_max_budget())
         m = kraken_replay.run_replay(
             ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
             execution=ExecutionModel(),
         )
-        net_pct = (m["net"] / budget) * 100.0
-        total_pct = (m["total"] / budget) * 100.0
-        max_dd = m.get("max_drawdown_pct") or 0.0
-        calmar = (net_pct / max_dd) if max_dd > 0 else 0.0
-        sharpe = m.get("sharpe_ratio") or 0.0
+        s = _summarize_replay(m, params.effective_max_budget())
         results[name] = {
-            "cont_net_pct": net_pct,
-            "cont_total_pct": total_pct,
-            "cont_max_dd": max_dd,
-            "cont_calmar": calmar,
-            "cont_sharpe": sharpe,
-            "cont_cycles": m.get("cycles", 0),
-            "cont_wins": m.get("wins", 0),
-            "cont_fills": m.get("fills", 0),
+            "cont_net_pct": s["net_pct"],
+            "cont_total_pct": s["total_pct"],
+            "cont_max_dd": s["max_dd"],
+            "cont_calmar": s["calmar"],
+            "cont_sharpe": s["sharpe"],
+            "cont_cycles": s["cycles"],
+            "cont_wins": s["wins"],
+            "cont_fills": s["fills"],
         }
     return results
 
@@ -313,14 +334,17 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
     anchor_path = ROOT / "logs" / "shadow_live" / "HYPEUSD_240m.anchor"
     anchor_ts = 0
     if anchor_path.exists():
-        with open(anchor_path, encoding="utf-8") as f:
-            anchor_ts = int(f.read().strip())
+        try:
+            with open(anchor_path, encoding="utf-8") as f:
+                anchor_ts = int(float(f.read().strip()))
+        except ValueError:
+            anchor_ts = 0
 
     fwd_bars = [b for b in full_bars if b[0] >= anchor_ts]
     full_ohlc = [(b[1], b[2], b[3], b[4]) for b in full_bars]
     fwd_ohlc = [(b[1], b[2], b[3], b[4]) for b in fwd_bars]
 
-    if not fwd_ohlc or not full_ohlc:
+    if len(fwd_ohlc) < 2 or len(full_ohlc) < 2:
         print(f"Insufficient forward or full bars for shadow replay (fwd: {len(fwd_ohlc)}, full: {len(full_ohlc)})")
         return {}
 
@@ -330,35 +354,31 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
 
     for name, overrides in candidates.items():
         params = dataclasses.replace(LIVE_PARAMS, **overrides)
-        budget = float(params.effective_max_budget())
+        budget = params.effective_max_budget()
 
         # Forward bars
         m_fwd = kraken_replay.run_replay(
             fwd_ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
             execution=ExecutionModel(),
         )
-        fwd_net = (m_fwd["net"] / budget) * 100.0
-        fwd_total = (m_fwd["total"] / budget) * 100.0
-        fwd_dd = m_fwd.get("max_drawdown_pct") or 0.0
+        s_fwd = _summarize_replay(m_fwd, budget)
 
         # Full 720 bars
         m_full = kraken_replay.run_replay(
             full_ohlc, params, fee_pct=fee_pct, bar_minutes=interval,
             execution=ExecutionModel(),
         )
-        full_net = (m_full["net"] / budget) * 100.0
-        full_total = (m_full["total"] / budget) * 100.0
-        full_dd = m_full.get("max_drawdown_pct") or 0.0
+        s_full = _summarize_replay(m_full, budget)
 
         results[name] = {
-            "fwd_net": fwd_net,
-            "fwd_total": fwd_total,
-            "fwd_dd": fwd_dd,
-            "fwd_cycles": m_fwd.get("cycles", 0),
-            "full_net": full_net,
-            "full_total": full_total,
-            "full_dd": full_dd,
-            "full_cycles": m_full.get("cycles", 0),
+            "fwd_net": s_fwd["net_pct"],
+            "fwd_total": s_fwd["total_pct"],
+            "fwd_dd": s_fwd["max_dd"],
+            "fwd_cycles": s_fwd["cycles"],
+            "full_net": s_full["net_pct"],
+            "full_total": s_full["total_pct"],
+            "full_dd": s_full["max_dd"],
+            "full_cycles": s_full["cycles"],
         }
     return results
 

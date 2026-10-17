@@ -36,15 +36,14 @@ os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from offline.backtests import tradeall as tb
-import tradeall as ta
+from offline.research.tradeall_trigger_gate.common import (
+    execute_tradeall_variant,
+    make_tracker_logic,
+)
 
 MIN_RETRY_INTERVAL_SEC = 1800.0   # 30 min between BLOCKED attempts, as in Experiment 6
 
 STATS = {}
-
-
-def _rsi_seed_and_step():
-    """Wilder's RSI as a closure: feed prices in order, returns RSI once seeded."""
 
 
 class MeanReversionTracker:
@@ -135,6 +134,9 @@ class MeanReversionTracker:
             self.stats["sign_changes"] += 1
         return self.sign
 
+    def update(self, _ts, price):
+        return self.update_sign(price)
+
 
 def _make_stats(tag):
     return STATS.setdefault(tag, {
@@ -148,49 +150,13 @@ _trackers = {}
 
 
 def make_logic(tag):
-    def logic_variant(win, enable, symbol, gradient, slope, trend_state, current_price):
-        tr = _trackers.get((tag, symbol))
-        ts = trend_state._now()
-        sign = tr.update_sign(current_price)
-        stats = tr.stats
-
-        if sign > 0 and not tr.fired_up:              # oversold -> contrarian BUY
-            can_retry = (tr.last_attempt_up_ts is None
-                         or (ts - tr.last_attempt_up_ts) >= MIN_RETRY_INTERVAL_SEC)
-            if not can_retry:
-                stats["fire_skipped_cooldown_up"] += 1
-            else:
-                tr.last_attempt_up_ts = ts
-                stats["fire_attempts_up"] += 1
-                if enable:
-                    result = ta._fire_order(symbol, "BUY", current_price, f"{tag}_oversold",
-                                             safeback_seconds=14 * 24 * 3600 + 60, force=False,
-                                             cancelorders=True, hours=1)
-                    if result is not None:
-                        tr.fired_up, tr.fired_down = True, False
-                        stats["fire_confirmed_up"] += 1
-                    else:
-                        stats["fire_blocked_up"] += 1
-
-        if sign < 0 and not tr.fired_down:            # overbought -> contrarian SELL
-            can_retry = (tr.last_attempt_down_ts is None
-                         or (ts - tr.last_attempt_down_ts) >= MIN_RETRY_INTERVAL_SEC)
-            if not can_retry:
-                stats["fire_skipped_cooldown_down"] += 1
-            else:
-                tr.last_attempt_down_ts = ts
-                stats["fire_attempts_down"] += 1
-                if enable:
-                    result = ta._fire_order(symbol, "SELL", current_price, f"{tag}_overbought",
-                                             safeback_seconds=14 * 24 * 3600 + 60, force=False,
-                                             cancelorders=True, hours=1)
-                    if result is not None:
-                        tr.fired_down, tr.fired_up = True, False
-                        stats["fire_confirmed_down"] += 1
-                    else:
-                        stats["fire_blocked_down"] += 1
-
-    return logic_variant
+    return make_tracker_logic(
+        tag,
+        lambda symbol: _trackers[(tag, symbol)],
+        up_reason="oversold",
+        down_reason="overbought",
+        retry_interval_sec=MIN_RETRY_INTERVAL_SEC,
+    )
 
 
 VARIANTS = {
@@ -207,33 +173,15 @@ def run_variant(tag, symbol, start_ts, end_ts, period_label):
     run_tag = f"{tag}__{period_label}"
     _make_stats(run_tag)
     _trackers[(run_tag, symbol)] = MeanReversionTracker(run_tag, symbol, **VARIANTS[tag])
-    orig_logic = ta.logic
-    orig_logic_small = getattr(ta, "logic_small", None)
-    ta.logic = make_logic(run_tag)
-    tb.ta.logic = ta.logic
-    ta.logic_small = lambda *a, **kw: None
-    tb.ta.logic_small = ta.logic_small
-
-    run_id = f"experiment8_{tag}_{symbol}_{period_label}"
-    import shutil
-    out_dir = os.path.join(ROOT, "logger", "backtest", run_id)
-    shutil.rmtree(out_dir, ignore_errors=True)
-
-    t0 = time.time()
-    try:
-        tb.run_backtest(symbol, start_ts, end_ts, "fast", run_id, "history",
-                         quiet=True, kalman_primary=False)
-    finally:
-        ta.logic = orig_logic
-        tb.ta.logic = orig_logic
-        if orig_logic_small is not None:
-            ta.logic_small = orig_logic_small
-            tb.ta.logic_small = orig_logic_small
-    elapsed = time.time() - t0
-
-    import json
-    pnl_path = os.path.join(out_dir, "pnl.json")
-    pnl = json.load(open(pnl_path)) if os.path.exists(pnl_path) else {}
+    pnl, _elapsed = execute_tradeall_variant(
+        f"experiment8_{tag}_{symbol}_{period_label}",
+        symbol,
+        start_ts,
+        end_ts,
+        source="history",
+        logic_fn=make_logic(run_tag),
+        disable_small=True,
+    )
     net = pnl.get("net_total")
     bh = pnl.get("buy_hold_net")
     edge = (net - bh) if (net is not None and bh is not None) else None

@@ -25,7 +25,6 @@ if ROOT not in sys.path:
 
 from providers.replay_provider import load_price_series
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
-from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
 from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
@@ -81,6 +80,69 @@ class BacktestStats:
     sentiment_downscales: int = 0
 
 
+def _precompute_intelligence_tape(
+    symbol: str,
+    sampled: List[Tuple[float, float]],
+    step_seconds: int,
+    parabolic_surge_pct: float,
+) -> List[dict]:
+    """Precompute mode-independent indicators, triggers, and rolling window metrics once per bar."""
+    kalman = KalmanTrendTrigger(gap_reset_sec=max(900.0, step_seconds * 3.0))
+    mean_rev_trigger = MeanReversionTrigger(rsi_period=14, bb_period=20)
+    parabolic_guard = ParabolicSurgeGuard(surge_threshold_pct=parabolic_surge_pct, pullback_required_pct=1.5)
+
+    rolling_prices: List[float] = []
+    rolling_history: List[Tuple[float, float]] = []
+    current_trend = "FLAT"
+    trend_start_ts = 0.0
+    tape: List[dict] = []
+
+    for t, p in sampled:
+        rolling_prices.append(p)
+        rolling_history.append((t, p))
+        if len(rolling_prices) > 300:
+            rolling_prices.pop(0)
+            rolling_history.pop(0)
+
+        n_roll = len(rolling_prices)
+        vol1h = calculate_volatility_1h(rolling_prices, sample_rate_sec=float(step_seconds)) if n_roll >= 20 else 0.5
+        eps = (p * (vol1h / 100.0) * 0.15) if vol1h else (p * 0.001)
+
+        k_out, k_event = kalman.evaluate(symbol, t, p, eps)
+        mr_event = mean_rev_trigger.update(symbol, t, p)
+        p_dec = parabolic_guard.check(symbol, "BUY", p, price_history=rolling_history, volatility_1h_pct=vol1h, now=t)
+
+        k_trend = k_out.get("trend", 0)
+        new_trend = "BULL" if k_trend == 1 else ("BEAR" if k_trend == -1 else "FLAT")
+        if new_trend != current_trend:
+            current_trend = new_trend
+            trend_start_ts = t
+
+        p_15m = rolling_prices[-3] if n_roll >= 3 else p
+        p_30m = rolling_prices[-6] if n_roll >= 6 else p
+        p_1h = rolling_prices[-12] if n_roll >= 12 else rolling_prices[0]
+        p_4h = rolling_prices[-48] if n_roll >= 48 else rolling_prices[0]
+
+        tape.append({
+            "t": t,
+            "p": p,
+            "n_roll": n_roll,
+            "k_out": k_out,
+            "k_event": k_event,
+            "mr_event": mr_event,
+            "p_dec": p_dec,
+            "current_trend": current_trend,
+            "trend_duration_sec": max(0.0, t - trend_start_ts),
+            "recent_high_20": max(rolling_prices[-20:]) if n_roll >= 20 else 0.0,
+            "local_high_48": max(rolling_prices[-48:]) if n_roll >= 48 else 0.0,
+            "drop_15m": (p_15m - p) / p_15m * 100.0 if p_15m > 0 else 0.0,
+            "drop_30m": (p_30m - p) / p_30m * 100.0 if p_30m > 0 else 0.0,
+            "p_1h_pct": (p - p_1h) / p_1h * 100.0 if p_1h > 0 else 0.0,
+            "p_4h_pct": (p - p_4h) / p_4h * 100.0 if p_4h > 0 else 0.0,
+        })
+    return tape
+
+
 def run_intelligence_backtest(
     symbol: str = "BTCUSDC",
     cache_path: Optional[str] = None,
@@ -110,10 +172,11 @@ def run_intelligence_backtest(
     if not sampled:
         raise ValueError(f"Insufficient sampled price bars for {symbol} after resampling at {step_seconds}s")
 
-    # Pre-fetch survival metrics once per symbol to eliminate repeated file I/O in the hot simulation loop
+    # Pre-fetch survival metrics and mode-independent signal tape once per symbol
     base_survival = get_trend_survival_metrics(symbol, 0.0)
     p90_days = float(base_survival.get("p90_days") or 7.0)
     median_days = float(base_survival.get("median_days") or 3.0)
+    tape = _precompute_intelligence_tape(symbol, sampled, step_seconds, parabolic_surge_pct)
 
     # Run across Baseline, Pillar 1, Pillar 1 + Pillar 2, and Full Composite (All 4 Pillars)
     results = {}
@@ -124,10 +187,6 @@ def run_intelligence_backtest(
         use_full = (mode == "FULL_COMPOSITE")
         logger.info("Starting simulation in mode: %s ...", mode)
 
-        kalman = KalmanTrendTrigger(gap_reset_sec=max(900.0, step_seconds * 3.0))
-        gradient_trigger = LinearGradientTrigger()
-        mean_rev_trigger = MeanReversionTrigger(rsi_period=14, bb_period=20)
-        parabolic_guard = ParabolicSurgeGuard(surge_threshold_pct=parabolic_surge_pct, pullback_required_pct=1.5)
         exhaustion_guard = WeibullExhaustionGuard(policy="downscale", exhausted_scale=0.35)
         noise_guard = NoiseFloorGuard(min_strength_ratio=1.0)
 
@@ -148,9 +207,7 @@ def run_intelligence_backtest(
 
         trades: List[Dict[str, float]] = []
         entry_price = 0.0
-        entry_ts = 0.0
-        trend_start_ts = 0.0
-        current_trend = "FLAT"
+        entry_cost = 0.0
 
         last_exit_ts = 0.0
         parabolic_vetoes = 0
@@ -163,41 +220,16 @@ def run_intelligence_backtest(
         geopolitical_vetoes = 0
         sentiment_downscales = 0
 
-        rolling_prices: List[float] = []
-        rolling_history: List[Tuple[float, float]] = []
-
-        for idx, (t, p) in enumerate(sampled):
-            rolling_prices.append(p)
-            rolling_history.append((t, p))
-            if len(rolling_prices) > 300:
-                rolling_prices.pop(0)
-                rolling_history.pop(0)
-
-            # Volatility
-            vol1h = calculate_volatility_1h(rolling_prices, sample_rate_sec=float(step_seconds)) if len(rolling_prices) >= 20 else 0.5
-            eps = (p * (vol1h / 100.0) * 0.15) if vol1h else (p * 0.001)
-
-            # Triggers and Guard updates
-            k_out, k_event = kalman.evaluate(symbol, t, p, eps)
-            mr_event = mean_rev_trigger.update(symbol, t, p)
-            p_dec = parabolic_guard.check(symbol, "BUY", p, price_history=rolling_history, volatility_1h_pct=vol1h, now=t) if use_p1 else None
-
-            # Trend tracking: evaluate integer direction (1 = BULL, -1 = BEAR, 0 = FLAT)
-            k_trend = k_out.get("trend", 0)
-            if k_trend == 1:
-                if current_trend != "BULL":
-                    current_trend = "BULL"
-                    trend_start_ts = t
-            elif k_trend == -1:
-                if current_trend != "BEAR":
-                    current_trend = "BEAR"
-                    trend_start_ts = t
-            else:
-                if current_trend != "FLAT":
-                    current_trend = "FLAT"
-                    trend_start_ts = t
-
-            trend_duration_sec = max(0.0, t - trend_start_ts)
+        for bar in tape:
+            t = bar["t"]
+            p = bar["p"]
+            n_roll = bar["n_roll"]
+            k_out = bar["k_out"]
+            k_event = bar["k_event"]
+            mr_event = bar["mr_event"]
+            p_dec = bar["p_dec"] if use_p1 else None
+            current_trend = bar["current_trend"]
+            trend_duration_sec = bar["trend_duration_sec"]
 
             # Current equity
             equity = usd + (asset_qty * p)
@@ -225,15 +257,12 @@ def run_intelligence_backtest(
             elif mr_event and mr_event.action.value == "ENTRY" and mr_event.side.value == "BUY":
                 want_buy = True
                 is_mean_reversion = True
-            elif current_trend == "BULL" and asset_qty == 0 and len(rolling_prices) >= 20:
+            elif current_trend == "BULL" and asset_qty == 0 and n_roll >= 20:
                 # Re-entry / continuation during confirmed bull trend
-                recent_high = max(rolling_prices[-20:])
+                recent_high = bar["recent_high_20"]
                 if (t - last_exit_ts) >= 1800:
                     pullback = (recent_high - p) / recent_high if recent_high > 0 else 0.0
-                    if pullback >= 0.010:
-                        want_buy = True
-                    elif p >= recent_high:
-                        # Momentum breakout (FOMO buy in naive baseline)
+                    if pullback >= 0.010 or p >= recent_high:
                         want_buy = True
 
             if k_event and k_event.action.value == "EXIT" and k_event.side.value == "SELL":
@@ -243,13 +272,14 @@ def run_intelligence_backtest(
 
             # Execution logic:
             if want_sell and asset_qty > 0:
-                # Close long position
+                # Close long position (reconciling full entry_cost including buy fee)
                 sell_val = asset_qty * p * (1.0 - fee_pct)
-                pnl = sell_val - (asset_qty * entry_price)
+                pnl = sell_val - entry_cost
                 usd += sell_val
                 trades.append({"entry_price": entry_price, "exit_price": p, "pnl": pnl, "is_win": pnl > 0})
                 asset_qty = 0.0
                 entry_price = 0.0
+                entry_cost = 0.0
                 last_exit_ts = t
 
             elif want_buy and asset_qty == 0 and usd > 50.0:
@@ -286,12 +316,12 @@ def run_intelligence_backtest(
                             scale *= e_dec.suggested_scale
 
                 if use_p2:
-                    # 4. Liquidation Cascade Guard (Waterfall knife protection)
-                    p_15m = rolling_prices[-3] if len(rolling_prices) >= 3 else p
-                    p_30m = rolling_prices[-6] if len(rolling_prices) >= 6 else p
-                    drop_15m = (p_15m - p) / p_15m * 100.0 if p_15m > 0 else 0.0
-                    drop_30m = (p_30m - p) / p_30m * 100.0 if p_30m > 0 else 0.0
+                    drop_15m = bar["drop_15m"]
+                    drop_30m = bar["drop_30m"]
+                    p_1h_pct = bar["p_1h_pct"]
+                    p_4h_pct = bar["p_4h_pct"]
 
+                    # 4. Liquidation Cascade Guard (Waterfall knife protection)
                     if drop_15m >= 1.5 or drop_30m >= 2.5:
                         liq_summary = LiquidationSummary(
                             symbol=symbol,
@@ -310,11 +340,6 @@ def run_intelligence_backtest(
                             continue
 
                     # 5. Whale Flow & OI Divergence Guard (Anti-trap on short-covering fakeouts)
-                    p_1h = rolling_prices[-12] if len(rolling_prices) >= 12 else rolling_prices[0]
-                    p_4h = rolling_prices[-48] if len(rolling_prices) >= 48 else rolling_prices[0]
-                    p_1h_pct = (p - p_1h) / p_1h * 100.0 if p_1h > 0 else 0.0
-                    p_4h_pct = (p - p_4h) / p_4h * 100.0 if p_4h > 0 else 0.0
-
                     if p_1h_pct >= 0.6 and p_4h_pct <= -0.4:
                         w_snap = WhalePositioningSnapshot(
                             symbol=symbol,
@@ -334,8 +359,8 @@ def run_intelligence_backtest(
                             continue
 
                     # 6. Orderbook Wall & Depth Imbalance Guard (Ask resistance walls)
-                    if len(rolling_prices) >= 48:
-                        local_high = max(rolling_prices[-48:])
+                    if n_roll >= 48:
+                        local_high = bar["local_high_48"]
                         if local_high > 0 and p >= local_high * 0.996:
                             ob_snap = OrderbookSnapshot(
                                 symbol=symbol,
@@ -373,7 +398,7 @@ def run_intelligence_backtest(
 
                 if use_full:
                     # 8. Geopolitical Shock Guard (Black Swan flash dump veto)
-                    if drop_30m >= 3.5:
+                    if bar["drop_30m"] >= 3.5:
                         geo_assessment = GeopoliticalThreatAssessment(
                             threat_level="CRITICAL_SHOCK",
                             risk_score=92.0,
@@ -389,7 +414,7 @@ def run_intelligence_backtest(
                             continue
 
                     # 9. Extreme Greed Guard (Retail euphoria top downscale)
-                    if len(rolling_prices) >= 48 and p >= max(rolling_prices[-48:]) * 0.998 and p_1h_pct >= 1.5:
+                    if n_roll >= 48 and p >= bar["local_high_48"] * 0.998 and bar["p_1h_pct"] >= 1.5:
                         fg_snap = FearGreedSnapshot(
                             value=88,
                             classification="Extreme Greed",
@@ -409,12 +434,12 @@ def run_intelligence_backtest(
                     asset_qty += bought_qty
                     usd -= alloc_usd
                     entry_price = p
-                    entry_ts = t
+                    entry_cost += alloc_usd
 
         # Final liquidation at end
         final_price = sampled[-1][1]
         if asset_qty > 0:
-            final_pnl = (asset_qty * final_price * (1.0 - fee_pct)) - (asset_qty * entry_price)
+            final_pnl = (asset_qty * final_price * (1.0 - fee_pct)) - entry_cost
             trades.append({"entry_price": entry_price, "exit_price": final_price, "pnl": final_pnl, "is_win": final_pnl > 0})
         final_equity = usd + (asset_qty * final_price * (1.0 - fee_pct))
         net_profit = final_equity - initial_balance

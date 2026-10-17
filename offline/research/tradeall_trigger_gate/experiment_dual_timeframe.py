@@ -40,18 +40,17 @@ sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from offline.backtests import tradeall as tb
-import tradeall as ta
+from offline.research.tradeall_trigger_gate.common import (
+    ORIG_WINDOW_ANALYZER,
+    execute_tradeall_variant,
+    make_instrumented_trend_state,
+    make_tradeall_logic,
+)
 
 STATS = {}
 
-_OrigWindowAnalyzer = ta.WindowAnalyzer
-_OrigTrendState = ta.TrendState
-_OrigLogic = ta.logic
-_OrigLogicSmall = getattr(ta, "logic_small", None)
 
-
-class GradientBigWindowAnalyzer(_OrigWindowAnalyzer):
+class GradientBigWindowAnalyzer(ORIG_WINDOW_ANALYZER):
     """check_price_change() now returns gradient_big (a continuous sign, the same
     derivation as PriceWindow.get_instant_trend() used for the small window) in
     loc de slope_big (rar, prag-gated). Semnatura pastrata (val, pos) — pos
@@ -62,151 +61,36 @@ class GradientBigWindowAnalyzer(_OrigWindowAnalyzer):
 
 
 def make_instrumented(tag):
-    stats = {"starts": 0, "confirms": 0, "expires": 0, "max_confirm_count": 0,
-              "fired_instances_up": 0, "fired_instances_down": 0}
+    stats = {
+        "starts": 0, "confirms": 0, "expires": 0, "max_confirm_count": 0,
+        "fired_instances_up": 0, "fired_instances_down": 0,
+    }
     STATS[tag] = stats
-    Base = _OrigTrendState
-
-    class InstrumentedTrendState(Base):
-        def __init__(self, *a, **kw):
-            super().__init__(*a, **kw)
-            self._fired_up = False
-            self._fired_down = False
-
-        def start_trend(self, new_state):
-            stats["starts"] += 1
-            self._fired_up = False
-            self._fired_down = False
-            return super().start_trend(new_state)
-
-        def confirm_trend(self):
-            r = super().confirm_trend()
-            stats["confirms"] += 1
-            stats["max_confirm_count"] = max(stats["max_confirm_count"], self.confirm_count)
-            return r
-
-        def check_trend_expiration(self):
-            was_expired = self.expired
-            r = super().check_trend_expiration()
-            if r and not was_expired:
-                stats["expires"] += 1
-            return r
-
-        def mark_fired(self, direction):
-            if direction == "UP" and not self._fired_up:
-                self._fired_up = True
-                stats["fired_instances_up"] += 1
-            elif direction == "DOWN" and not self._fired_down:
-                self._fired_down = True
-                stats["fired_instances_down"] += 1
-
-        def already_fired(self, direction):
-            return self._fired_up if direction == "UP" else self._fired_down
-
-    return InstrumentedTrendState
+    return make_instrumented_trend_state(stats)
 
 
 def make_logic_cooldown(start_up_cond, start_down_cond, label):
-    """Identical to Experiment 3 (a copy of logic() plus the fire-once cooldown) — repeated
-    here so the script stays independent, without depending on the previous file."""
-    def logic_variant(win, enable, symbol, gradient, slope, trend_state, current_price):
-        d = 14
-        h = 24
-        proposed_price = current_price
-
-        def fire_once(direction, action, reason):
-            if trend_state.already_fired(direction):
-                return
-            if enable:
-                ta._fire_order(symbol, action, proposed_price, f"{label}_{reason}",
-                                safeback_seconds=d * h * 3600 + 60, force=False, cancelorders=True, hours=1)
-            trend_state.mark_fired(direction)
-
-        if start_up_cond(gradient, slope):
-            proposed_price = current_price
-            if trend_state.is_trend_up():
-                trend_state.confirm_trend()
-                if trend_state.is_trend_uniform_confirmed() and trend_state.is_trend_fresh():
-                    fire_once("UP", "BUY", "trend_confirmed_up")
-            else:
-                trend_state.start_trend('UP')
-
-        if start_down_cond(gradient, slope):
-            proposed_price = current_price
-            if trend_state.is_trend_down():
-                trend_state.confirm_trend()
-                if trend_state.is_trend_uniform_confirmed() and trend_state.is_trend_fresh():
-                    fire_once("DOWN", "SELL", "trend_confirmed_down")
-            else:
-                trend_state.start_trend('DOWN')
-
-        proposed_price = current_price
-        if slope <= 0 and trend_state.is_trend_up():
-            if (trend_state.is_trend_consistent_validated()
-                    or trend_state.is_started_trend_older_than(ta.TREND_TO_BE_OLD_SECONDS)):
-                fire_once("UP", "BUY", "consistent_or_old_up")
-        if slope >= 0 and trend_state.is_trend_down():
-            if (trend_state.is_trend_consistent_validated()
-                    or trend_state.is_started_trend_older_than(ta.TREND_TO_BE_OLD_SECONDS)):
-                fire_once("DOWN", "SELL", "consistent_or_old_down")
-
-        if slope <= -5.1 and trend_state.is_trend_up():
-            if (trend_state.is_trend_consistent_validated()
-                    or trend_state.is_started_trend_older_than(ta.TREND_TO_BE_OLD_SECONDS)):
-                fire_once("UP", "BUY", "slope<=-5.1_up")
-        if slope >= 5.1 and trend_state.is_trend_down():
-            if (trend_state.is_trend_consistent_validated()
-                    or trend_state.is_started_trend_older_than(ta.TREND_TO_BE_OLD_SECONDS)):
-                fire_once("DOWN", "SELL", "slope>=5.1_down")
-
-        if slope <= -5.1 and trend_state.is_trend_down():
-            if (trend_state.is_trend_consistent_validated()
-                    and trend_state.is_started_trend_older_than(ta.TREND_TO_BE_OLD_SECONDS)):
-                fire_once("UP", "BUY", "slope<=-5.1_and_old_down")
-        if slope >= 5.1 and trend_state.is_trend_up():
-            if (trend_state.is_trend_consistent_validated()
-                    and trend_state.is_started_trend_older_than(ta.TREND_TO_BE_OLD_SECONDS)):
-                fire_once("DOWN", "SELL", "slope>=5.1_and_old_up")
-
-    return logic_variant
+    """Identical to Experiment 3 (a copy of logic() plus the fire-once cooldown)."""
+    return make_tradeall_logic(
+        label,
+        start_up_cond=start_up_cond,
+        start_down_cond=start_down_cond,
+        cooldown_mode="fire_once",
+    )
 
 
 def run_variant(tag, symbol, start_ts, end_ts):
-    ta.TrendState = make_instrumented(tag)
-    tb.ta.TrendState = ta.TrendState
-    ta.logic = make_logic_cooldown(lambda g, s: g > 0 and s > 0,
-                                    lambda g, s: g < 0 and s < 0, tag)
-    tb.ta.logic = ta.logic
-    ta.logic_small = lambda *a, **kw: None
-    tb.ta.logic_small = ta.logic_small
-    ta.WindowAnalyzer = GradientBigWindowAnalyzer
-    tb.ta.WindowAnalyzer = ta.WindowAnalyzer
-
-    run_id = f"experiment4_{tag}_{symbol}"
-    import shutil
-    out_dir = os.path.join(ROOT, "logger", "backtest", run_id)
-    shutil.rmtree(out_dir, ignore_errors=True)
-
-    t0 = time.time()
-    try:
-        tb.run_backtest(symbol, start_ts, end_ts, "fast", run_id, "cache24",
-                         cache24_file=os.path.join(ROOT, "cachedb", f"cache_365price_{symbol}.jsonl"),
-                         quiet=True, kalman_primary=False)
-    finally:
-        ta.WindowAnalyzer = _OrigWindowAnalyzer
-        tb.ta.WindowAnalyzer = _OrigWindowAnalyzer
-        ta.TrendState = _OrigTrendState
-        tb.ta.TrendState = _OrigTrendState
-        ta.logic = _OrigLogic
-        tb.ta.logic = _OrigLogic
-        if _OrigLogicSmall is not None:
-            ta.logic_small = _OrigLogicSmall
-            tb.ta.logic_small = _OrigLogicSmall
-    elapsed = time.time() - t0
-
-    import json
-    pnl_path = os.path.join(out_dir, "pnl.json")
-    pnl = json.load(open(pnl_path)) if os.path.exists(pnl_path) else {}
+    pnl, elapsed = execute_tradeall_variant(
+        f"experiment4_{tag}_{symbol}",
+        symbol,
+        start_ts,
+        end_ts,
+        source="cache24",
+        logic_fn=make_logic_cooldown(lambda g, s: g > 0 and s > 0, lambda g, s: g < 0 and s < 0, tag),
+        trend_state_cls=make_instrumented(tag),
+        window_analyzer_cls=GradientBigWindowAnalyzer,
+        disable_small=True,
+    )
     sys.stderr.write(f"\n=== {tag} / {symbol} === (wall {elapsed:.1f}s)\n")
     sys.stderr.write(f"stats: {STATS[tag]}\n")
     sys.stderr.write(f"pnl: {pnl}\n")
@@ -230,3 +114,4 @@ if __name__ == "__main__":
     # rare strategy" from "a dead strategy"; over 7 days the test is far more honest.
     btc7_start = datetime.strptime("2026-07-14", "%Y-%m-%d").timestamp()
     run_variant("V5_dual_timeframe_acord_7d", "BTCUSDC", btc7_start, btc7_start + 7 * 24 * 3600)
+

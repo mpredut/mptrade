@@ -38,48 +38,16 @@ sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from offline.backtests import tradeall as tb
-import tradeall as ta
+from offline.research.tradeall_trigger_gate.common import (
+    LongTrendTracker,
+    execute_tradeall_variant,
+    make_tracker_logic,
+)
 
 STATS = {}
 
 MIN_RETRY_INTERVAL_SEC = 1800.0   # 30 min between BLOCKED attempts (not between confirmed ones)
-
-
-class LongTrendTracker:
-    def __init__(self, tag, window_hours, reeval_sec, min_points=30):
-        self.window_sec = window_hours * 3600
-        self.reeval_sec = reeval_sec
-        self.min_points = min_points
-        self.buf = deque()
-        self.last_eval_ts = None
-        self.sign = 0
-        self.fired_up = False
-        self.fired_down = False
-        self.last_attempt_up_ts = None
-        self.last_attempt_down_ts = None
-        self.stats = STATS[tag]
-
-    def update(self, ts, price):
-        self.buf.append((ts, price))
-        cutoff = ts - self.window_sec
-        while self.buf and self.buf[0][0] < cutoff:
-            self.buf.popleft()
-        if self.last_eval_ts is None or (ts - self.last_eval_ts) >= self.reeval_sec:
-            self.last_eval_ts = ts
-            if len(self.buf) >= self.min_points:
-                prices = [p for _, p in self.buf]
-                analyzer = ta.PriceTrendAnalyzer(prices)
-                _, slope, _ = analyzer.linear_regression_trend()
-                new_sign = 0
-                if slope is not None:
-                    new_sign = 1 if slope > 0 else (-1 if slope < 0 else 0)
-                if new_sign != self.sign:
-                    self.sign = new_sign
-                    self.fired_up = False
-                    self.fired_down = False
-                    self.stats["sign_changes"] += 1
-        return self.sign
+_trackers = {}
 
 
 def _make_stats(tag):
@@ -90,76 +58,26 @@ def _make_stats(tag):
     })
 
 
-_trackers = {}
-
-
 def make_quality_logic(tag):
-    def logic_variant(win, enable, symbol, gradient, slope, trend_state, current_price):
-        tr = _trackers.get((tag, symbol))
-        ts = trend_state._now()
-        sign = tr.update(ts, current_price)
-        stats = tr.stats
-
-        if sign > 0 and not tr.fired_up:
-            can_retry = (tr.last_attempt_up_ts is None
-                         or (ts - tr.last_attempt_up_ts) >= MIN_RETRY_INTERVAL_SEC)
-            if not can_retry:
-                stats["fire_skipped_cooldown_up"] += 1
-            else:
-                tr.last_attempt_up_ts = ts
-                stats["fire_attempts_up"] += 1
-                if enable:
-                    result = ta._fire_order(symbol, "BUY", current_price, f"{tag}_long_trend_up",
-                                             safeback_seconds=14 * 24 * 3600 + 60, force=False,
-                                             cancelorders=True, hours=1)
-                    if result is not None:
-                        tr.fired_up = True
-                        tr.fired_down = False
-                        stats["fire_confirmed_up"] += 1
-                    else:
-                        stats["fire_blocked_up"] += 1
-
-        if sign < 0 and not tr.fired_down:
-            can_retry = (tr.last_attempt_down_ts is None
-                         or (ts - tr.last_attempt_down_ts) >= MIN_RETRY_INTERVAL_SEC)
-            if not can_retry:
-                stats["fire_skipped_cooldown_down"] += 1
-            else:
-                tr.last_attempt_down_ts = ts
-                stats["fire_attempts_down"] += 1
-                if enable:
-                    result = ta._fire_order(symbol, "SELL", current_price, f"{tag}_long_trend_down",
-                                             safeback_seconds=14 * 24 * 3600 + 60, force=False,
-                                             cancelorders=True, hours=1)
-                    if result is not None:
-                        tr.fired_down = True
-                        tr.fired_up = False
-                        stats["fire_confirmed_down"] += 1
-                    else:
-                        stats["fire_blocked_down"] += 1
-
-    return logic_variant
+    return make_tracker_logic(
+        tag,
+        lambda symbol: _trackers[(tag, symbol)],
+        retry_interval_sec=MIN_RETRY_INTERVAL_SEC,
+    )
 
 
 def run_variant(tag, window_hours, reeval_sec, symbol, start_ts, end_ts):
-    _make_stats(tag)
-    _trackers[(tag, symbol)] = LongTrendTracker(tag, window_hours, reeval_sec)
-    ta.logic = make_quality_logic(tag)
-    tb.ta.logic = ta.logic
-
-    run_id = f"experiment6_{tag}_{symbol}"
-    import shutil
-    out_dir = os.path.join(ROOT, "logger", "backtest", run_id)
-    shutil.rmtree(out_dir, ignore_errors=True)
-
-    t0 = time.time()
-    tb.run_backtest(symbol, start_ts, end_ts, "fast", run_id, "history",
-                     quiet=True, kalman_primary=False)
-    elapsed = time.time() - t0
-
-    import json
-    pnl_path = os.path.join(out_dir, "pnl.json")
-    pnl = json.load(open(pnl_path)) if os.path.exists(pnl_path) else {}
+    stats = _make_stats(tag)
+    _trackers[(tag, symbol)] = LongTrendTracker(stats, window_hours, reeval_sec)
+    pnl, elapsed = execute_tradeall_variant(
+        f"experiment6_{tag}_{symbol}",
+        symbol,
+        start_ts,
+        end_ts,
+        source="history",
+        logic_fn=make_quality_logic(tag),
+        disable_small=True,
+    )
     sys.stderr.write(f"\n=== {tag} / {symbol} === (wall {elapsed:.1f}s)\n")
     sys.stderr.write(f"stats: {STATS[tag]}\n")
     sys.stderr.write(f"pnl: {pnl}\n")
@@ -178,3 +96,4 @@ if __name__ == "__main__":
     sys.stderr.write("\n\n===== ALL RUNS FINISHED =====\n")
     for tag, st in STATS.items():
         sys.stderr.write(f"{tag}: {st}\n")
+
