@@ -12,3 +12,7 @@ set +a
 for name in DEV_HOST DEV_PORT DEV_USER DEV_PATH DEV_CODE_BRANCH BACKTEST_PROPOSALS_BRANCH; do
   [ -n "${!name:-}" ] || { echo "Invalid DEV profile: missing $name" >&2; return 1; }
 done
+
+export BACKTEST_MODE=1
+export DISABLE_EXTERNAL_NOTIFICATIONS=1
+export DISABLE_GEMINI_LLM=1

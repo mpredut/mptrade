@@ -1387,6 +1387,65 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             mock_ai_guard.assert_not_called()
             self.assertEqual(inst.placed, [])
 
+        with self.subTest(msg="tp_ride_gap_down_into_sl_territory_forces_immediate_exit"):
+            mt._TP_RIDE_STATE.clear()
+            mt._SL_BOUNCE_STATE.clear()
+            inst = FakeInstrument(
+                price=108.0,
+                free=4.0,
+                fills=[_fill("BUY", 100.0, 4.0)],
+            )
+            # Tick 1 at 108 (+8% > 7%): initiates TP ride
+            self.run_tick(inst, trend_up=True, gain=0.07, loss=0.05, now=NOW)
+            self.assertIn(SYMBOL, mt._TP_RIDE_STATE)
+            self.assertEqual(inst.placed, [])
+
+            # Tick 2: flash crash from 108 to 94.5 (-5.5% loss, inside SL bounce corridor with trend_up=True).
+            # Must NOT defer via SL bounce watch; must exit immediately via mdhtp_profit_floor_breached!
+            inst._price = 94.5
+            self.run_tick(inst, trend_up=True, gain=0.07, loss=0.05, now=NOW + 10)
+            self.assertEqual(len(inst.placed), 1)
+            self.assertEqual(inst.placed[0]["side"], "SELL")
+            self.assertNotIn(SYMBOL, mt._TP_RIDE_STATE)
+
+        with self.subTest(msg="reentry_peak_bounce_tracked_while_trend_down_detects_rollover"):
+            mt._REENTRY_STATE.clear()
+            mt._LAST_EXIT_KIND.clear()
+            mt._LAST_EXIT_KIND[SYMBOL] = "STOP"
+            inst = FakeInstrument(
+                price=90.0,
+                free=0.0,
+                fills=[_fill("SELL", 100.0, 2.0)],
+                params={"mt.buy_budget": 200, "mt.max_budget": 1000},
+            )
+            # Tick 1 (trend_up=False) at 90.0: establishes trough=90.0, peak_bounce=90.0
+            self.run_tick(inst, trend_up=False, now=NOW)
+            # Tick 2 (trend_up=False) at 94.0: bounces +4.4% while trend is still down -> updates peak_bounce=94.0
+            inst._price = 94.0
+            self.run_tick(inst, trend_up=False, now=NOW + 10)
+            self.assertEqual(mt._REENTRY_STATE[SYMBOL]["peak_bounce"], 94.0)
+
+            # Tick 3 (trend_up=True) at 91.5: still +1.67% above trough 90.0 (>= 1.5%),
+            # but rolled over -2.66% from peak_bounce 94.0 (> 0.75% allowed rollover) -> blocked!
+            inst._price = 91.5
+            self.run_tick(inst, trend_up=True, now=NOW + 20)
+            self.assertEqual(inst.placed, [], "Rolled-over bounce must be blocked by ratchet")
+
+        with self.subTest(msg="hard_tp_last_persisted_across_restart"):
+            with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+                temp_state_file = tf.name
+            try:
+                with patch.object(mt, "_MT_STATE_FILE", temp_state_file):
+                    mt._hard_tp_last["TESTSYM"] = NOW - 120
+                    mt._save_mt_state(ts=NOW)
+                    mt._hard_tp_last.clear()
+                    mt._load_mt_state(now_curr=NOW)
+                    self.assertEqual(mt._hard_tp_last.get("TESTSYM"), NOW - 120)
+            finally:
+                if os.path.exists(temp_state_file):
+                    os.remove(temp_state_file)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

@@ -1185,9 +1185,10 @@ class PositionExitManager:
             if tp_spike.action == ExitAction.PARTIAL_SELL:
                 return tp_spike
 
-        # Check Stop-Loss
+        # Check Stop-Loss (unless an active MDHTP profit ride is in progress, in which
+        # case evaluate_take_profit must fire mdhtp_profit_floor_breached immediately)
         eff_sl = sl_threshold if sl_threshold is not None else self.config.lost_threshold
-        in_sl = (
+        in_sl = (snapshot.symbol not in self.tp_ride_state) and (
             snapshot.in_sl_territory(eff_sl, self.config.are_close_tolerance_pct)
             or (snapshot.symbol in self.sl_bounce_state)
         )

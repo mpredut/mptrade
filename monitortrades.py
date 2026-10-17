@@ -455,6 +455,7 @@ def _save_mt_state(ts: float | None = None):
             "reentry_state": _REENTRY_STATE,
             "last_exit_kind": _LAST_EXIT_KIND,
             "pending_stop_exit": _PENDING_STOP_EXIT,
+            "hard_tp_last": _hard_tp_last,
         }
         serialized = json.dumps(payload, sort_keys=True)
         cache_key = (_MT_STATE_FILE, serialized)
@@ -502,15 +503,44 @@ def _load_mt_state(now_curr: float | None = None):
                 p_ts = float(state.get("time", 0))
                 if p_ts > 0 and (now_curr - p_ts) < 300:
                     _PENDING_STOP_EXIT[str(sym).upper()] = state
+        for sym, h_ts in (data.get("hard_tp_last") or {}).items():
+            try:
+                h_ts_val = float(h_ts)
+                if h_ts_val > 0 and (now_curr - h_ts_val) < 86400:
+                    _hard_tp_last[str(sym).upper()] = h_ts_val
+            except (TypeError, ValueError):
+                pass
     except Exception:
         pass
+
+
+_SIMULATED_PROVIDERS = {"replay", "backtest", "sim", "mock", "paper_sim", "test"}
 
 
 def _inst_provider(inst: Any = None) -> Optional[str]:
     """Resolve canonical provider label from an instrument instance or string."""
     if inst is None or isinstance(inst, str):
         return inst
-    return getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None)
+    lbl = getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None)
+    if lbl:
+        return str(lbl)
+    raw = getattr(inst, "_provider", None)
+    if isinstance(raw, str):
+        return raw
+    return getattr(raw, "name", None) or getattr(raw, "provider_label", None)
+
+
+def _is_simulated_env_or_inst(inst: Any = None) -> bool:
+    """Return True when running in replay/backtest/simulation or with persistence disabled."""
+    if not _MT_PERSISTENCE_ENABLED:
+        return True
+    prov = (_inst_provider(inst) or "").strip().lower()
+    if prov in _SIMULATED_PROVIDERS:
+        return True
+    return any(
+        os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on")
+        for k in ("BACKTEST_MODE", "REPLAY_MODE", "DISABLE_GEMINI_LLM")
+    )
 
 
 def _clear_smart_sl_exit(symbol: str, provider: Any = None):
@@ -1185,8 +1215,11 @@ def _apply_post_stop_ai_guard(
     buy_budget: Optional[float],
     buy_qty_cfg: Optional[float],
     qty: float,
+    inst: Any = None,
 ) -> tuple[bool, Optional[float], Optional[float], float]:
     """Validate post-STOP re-entry via Pillar 3 AI guard, returning (allowed, budget, cfg, qty)."""
+    if _is_simulated_env_or_inst(inst):
+        return True, buy_budget, buy_qty_cfg, qty
     try:
         from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
         _ps_guard = get_post_stop_reentry_guard()
@@ -1437,9 +1470,9 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             _save_mt_state()
 
         in_sl_territory = sl_price_territory or symbol in _SL_BOUNCE_STATE
-        in_tp_territory = (not in_sl_territory) and (
-            snapshot.in_tp_territory(gain_threshold, MT_ARE_CLOSE_TOLERANCE_PCT)
-            or (symbol in _TP_RIDE_STATE)
+        in_tp_territory = (symbol in _TP_RIDE_STATE) or (
+            (not in_sl_territory)
+            and snapshot.in_tp_territory(gain_threshold, MT_ARE_CLOSE_TOLERANCE_PCT)
         )
 
         if in_tp_territory or in_sl_territory:
@@ -1534,10 +1567,15 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 prev_reentry_state["peak_bounce"] = current_price
             else:
                 prev_reentry_state["trough"] = min(prev_trough, current_price)
+                prev_reentry_state["peak_bounce"] = max(
+                    prev_reentry_state.get("peak_bounce", current_price),
+                    current_price,
+                )
             prev_peak = prev_reentry_state.get("peak")
             prev_reentry_state["peak"] = (
                 current_price if prev_peak is None else max(prev_peak, current_price)
             )
+        _REENTRY_STATE[symbol] = dict(prev_reentry_state)
 
         reentry_snap = ReentrySnapshot(
             symbol=symbol,
@@ -1593,10 +1631,13 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                     _save_mt_state()
                 return
             print(f"[{symbol}] Post-STOP recovery bounce confirmed: {reentry_dec.reason}")
-            allowed, buy_budget, buy_qty_cfg, qty = _apply_post_stop_ai_guard(
-                symbol, current_price, sell_price, sell_time, reentry_snap,
-                buy_budget, buy_qty_cfg, qty
-            )
+            if _is_simulated_env_or_inst(inst):
+                allowed = True
+            else:
+                allowed, buy_budget, buy_qty_cfg, qty = _apply_post_stop_ai_guard(
+                    symbol, current_price, sell_price, sell_time, reentry_snap,
+                    buy_budget, buy_qty_cfg, qty
+                )
             if not allowed:
                 if prev_reentry_state:
                     _REENTRY_STATE[symbol] = prev_reentry_state

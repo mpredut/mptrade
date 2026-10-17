@@ -187,6 +187,12 @@ class HighStakeGuard:
                 notional_eur=notional,
             )
 
+        if not self._explicit_client and any(
+            os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on")
+            for k in ("DISABLE_GEMINI_LLM", "BACKTEST_MODE", "REPLAY_MODE")
+        ):
+            return GuardDecision.allow("HighStakeGuard", "backtest_mode_exempt", notional_eur=notional)
+
         now = time.time()
         cache_key = (symbol.upper(), side_norm, int(notional // 100.0))
         if self.cache_ttl_sec > 0:

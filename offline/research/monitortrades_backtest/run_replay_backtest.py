@@ -210,8 +210,12 @@ def run_symbol(
     mt._MT_PERSISTENCE_ENABLED = False
     orig_post_stop_ai = mt._apply_post_stop_ai_guard
     mt._apply_post_stop_ai_guard = (
-        lambda sym, px, spx, st, snap, bb, bq, q: (True, bb, bq, q)
+        lambda sym, px, spx, st, snap, bb, bq, q, inst=None: (True, bb, bq, q)
     )
+    _bt_env_keys = ("BACKTEST_MODE", "REPLAY_MODE", "DISABLE_EXTERNAL_NOTIFICATIONS", "DISABLE_GEMINI_LLM")
+    _orig_bt_env = {k: os.environ.get(k) for k in _bt_env_keys}
+    for _k in _bt_env_keys:
+        os.environ[_k] = "1"
     orig_get_relevant_trade = mt.get_relevant_trade
     orig_summarize_orders = mt._summarize_orders
 
@@ -463,6 +467,11 @@ def run_symbol(
         mt.get_relevant_trade = orig_get_relevant_trade
         mt._summarize_orders = orig_summarize_orders
         mt._evaluate_hard_take_profit = orig_eval_hard_tp
+        for _k, _v in _orig_bt_env.items():
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
 
     all_buys = provider.get_orders(symbol, "BUY", since_s=1e12)
     all_sells = provider.get_orders(symbol, "SELL", since_s=1e12)

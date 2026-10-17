@@ -319,6 +319,10 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     orig_log_decision = getattr(ta, "log_decision", None)
     orig_shadow_ref = getattr(ta, "_shadow_ref", None)
     orig_gate_log = getattr(ta, "GATE_OUTCOME_LOG", None)
+    _bt_env_keys = ("BACKTEST_MODE", "REPLAY_MODE", "DISABLE_EXTERNAL_NOTIFICATIONS", "DISABLE_GEMINI_LLM")
+    _orig_bt_env = {k: os.environ.get(k) for k in _bt_env_keys}
+    for _k in _bt_env_keys:
+        os.environ[_k] = "1"
 
     try:
         ta.mkt.cancel_order = lambda *a, **kw: True
@@ -531,6 +535,11 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
         ta._shadow_ref = orig_shadow_ref
         if orig_gate_log is not None:
             ta.GATE_OUTCOME_LOG = orig_gate_log
+        for _k, _v in _orig_bt_env.items():
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
         if quiet:
             try:
                 import log

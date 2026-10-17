@@ -75,6 +75,13 @@ class GeminiClient:
                 logger.error("Custom runner failed: %s", e)
                 return None
 
+        if any(
+            os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on")
+            for k in ("DISABLE_GEMINI_LLM", "BACKTEST_MODE", "REPLAY_MODE")
+        ):
+            logger.debug("Gemini LLM query suppressed in backtest/replay mode.")
+            return None
+
         # 2. Local authenticated CLI runner (subscription mode)
         if self.cli_path and os.path.exists(self.cli_path):
             try:

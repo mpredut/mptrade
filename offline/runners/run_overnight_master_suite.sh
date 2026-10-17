@@ -7,6 +7,10 @@ RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$RUNNER_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
+export BACKTEST_MODE=1
+export DISABLE_EXTERNAL_NOTIFICATIONS=1
+export DISABLE_GEMINI_LLM=1
+
 LOG_DIR="$REPO_ROOT/logs/overnight_runs"
 RESULTS_DIR="$REPO_ROOT/offline/results"
 mkdir -p "$LOG_DIR" "$RESULTS_DIR"

@@ -731,6 +731,120 @@ class TestMinProfit(Base):
             self.assertNotIn("warmup_at", st, "warmup_at must be cleared once price crosses threshold even if coins are locked in TP")
             self.assertEqual(st["peak"], 212.0)
 
+        with self.subTest(msg="warmup_at_prevents_sub_threshold_peak_ratcheting"):
+            self.tearDown(); self.setUp()
+            api = FakeApi(250.0, free=2.0)
+            ts = self.ts(api, min_profit_pct=5.0)
+            ts.check_once()  # peak=250.0, warmup_at=262.5
+            api.price = 260.0  # +4.0% (< +5.0% warmup_at): trailing not active yet
+            ts.check_once()
+            import json
+            st = json.load(open(self.sf))["TAOUSDC"]
+            self.assertEqual(st["peak"], 250.0, "peak must not ratchet up before warmup_at is reached")
+            api.price = 200.0  # -20% from 250 (< 22% TAO trail), though -23.1% from 260
+            ts.check_once()
+            self.assertEqual(self.po.orders, [], "must not sell based on unactivated sub-warmup high")
+
+        with self.subTest(msg="fee_or_step_adjusted_rebuy_completes_cleanly"):
+            self.tearDown(); self.setUp()
+            api = FakeApi(200.0, free=5.0)
+            ts = self.ts(api, min_profit_pct=5.0)
+            ts.rebuy_enabled_for = lambda symbol: True
+            ts.trend = lambda _pair: 0.0
+            ts.check_once()  # peak=200
+            api.price = 150.0
+            ts.check_once()  # SELL 5.0
+            api.free = 0.0
+            ts.check_once()  # SELL terminal -> arms rebuy qty=5.0, is_flat=True
+
+            # Simulate fee-capped / lot-step rounded fill on REBUY (4.995 filled out of 5.0)
+            orig_order_status = self.po.order_status
+            self.po.order_status = lambda symbol, order_id, **kw: OrderStatus("closed", 4.995, 4.995 * 152.0, 0.0)
+            api.price = 152.0
+            ts.check_once()  # submits REBUY
+            api.free = 4.995
+            ts.check_once()  # reconciles REBUY terminal
+            self.po.order_status = orig_order_status
+
+            import json
+            st = json.load(open(self.sf))["TAOUSDC"]
+            self.assertNotIn("rebuy", st, "closed fee-adjusted rebuy must clear rebuy state")
+            self.assertFalse(st.get("is_flat", False), "is_flat must be reset to False after rebuy fill")
+            self.assertAlmostEqual(st["peak"], 152.0)
+
+        with self.subTest(msg="dry_run_does_not_mutate_rebuy_or_warmup_state"):
+            self.tearDown(); self.setUp()
+            api = FakeApi(200.0, free=2.0)
+            ts = self.ts(api, enabled=False, min_profit_pct=5.0)
+            ts.rebuy_enabled_for = lambda symbol: True
+            ts.trend = lambda _pair: 0.0
+            seeded = {
+                "TAOUSDC": {
+                    "peak": 200.0,
+                    "warmup_at": 210.0,
+                    "rebuy": {"qty": 2.0, "sell_price": 155.0, "low": 150.0},
+                }
+            }
+            ts._save(seeded)
+            api.price = 153.0  # triggers dry-run rebuy (+2% > 1.2%) and dry-run sell (-23.5% > 22%)
+            ts.check_once()
+            st = ts._load()["TAOUSDC"]
+            self.assertIn("rebuy", st, "dry-run must not pop armed rebuy state")
+            self.assertIn("warmup_at", st, "dry-run must not pop warmup_at state")
+            self.assertNotIn("target_exit_qty", st, "dry-run must not persist target_exit_qty")
+
+        with self.subTest(msg="unlock_qty_preserves_balances_on_failure_and_skips_when_unlocked"):
+            self.tearDown(); self.setUp()
+            api = FakeApi(200.0, free=2.0)
+            cancelled = []
+            api.cancel_open_orders = lambda side, pair: cancelled.append((side, pair))
+            ts = self.ts(api)
+            ts.begin_tick()
+            # Locked is 0 in FakeApi -> unlock_qty must skip cancel_open_orders
+            self.assertFalse(ts.unlock_qty("TAOUSDC"))
+            self.assertEqual(cancelled, [])
+
+            # Now simulate locked > 0, but subsequent balance refresh returns []
+            ts._balances = [{"asset": "TAO", "free": "0.0", "locked": "2.0"}]
+            api.get_account_assets_balances = lambda: []
+            self.assertFalse(ts.unlock_qty("TAOUSDC"))
+            self.assertEqual(len(cancelled), 1)
+            self.assertEqual(len(ts._balances), 1, "transient empty balance refresh must not wipe _balances")
+
+        with self.subTest(msg="retry_after_zero_fill_terminal_generates_distinct_client_order_id"):
+            self.tearDown(); self.setUp()
+            api = FakeApi(250.0, free=2.0)
+            ts = self.ts(api)
+            ts.check_once()  # peak = 250.0
+            api.price = 190.0
+            ts.check_once()  # SELL attempt 1
+            cid1 = self.po.orders[-1]["client_order_id"]
+
+            # Simulate canceled order with 0 fill
+            self.po.status = "canceled"
+            ts.check_once()  # reconciles terminal with 0 fill
+
+            # Next tick at same price/qty/anchor submits attempt 2 with distinct client_order_id
+            self.po.status = "closed"
+            ts.check_once()
+            cid2 = self.po.orders[-1]["client_order_id"]
+            self.assertNotEqual(cid1, cid2)
+
+        with self.subTest(msg="sell_skip_if_trend_up_defers_sell_when_enabled"):
+            self.tearDown(); self.setUp()
+            api = FakeApi(250.0, free=2.0)
+            logs = []
+            ts = TrailingStop(api, self.po, FakeSym(), log=logs.append,
+                              enabled=True, state_file=self.sf)
+            ts.core.sell_skip_if_trend_up = True
+            ts.trend = lambda _pair: 1.0
+            ts.check_once()  # peak = 250.0
+            api.price = 190.0
+            ts.check_once()
+            self.assertEqual(self.po.orders, [])
+            self.assertTrue(any("instant trend is UP" in m for m in logs))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

@@ -1029,7 +1029,10 @@ def check_intelligence_guards(
         dur_sec = _resolve_trend_duration(symbol)
 
     # 2. Dynamic LLM Pre-Trade Guard if notional crossed the threshold
-    skip_llm = GUARD_REGISTRY["GI3"].is_bypassed(bypassed)
+    skip_llm = GUARD_REGISTRY["GI3"].is_bypassed(bypassed) or any(
+        os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on")
+        for k in ("DISABLE_GEMINI_LLM", "BACKTEST_MODE", "REPLAY_MODE")
+    )
     llm_mode = str(
         m.get("llm_guard_mode",
         m.get("high_stake_guard_mode",

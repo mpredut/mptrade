@@ -81,6 +81,12 @@ class PostStopReentryGuard:
         if self.mode in ("off", "0", "disabled"):
             return GuardDecision.allow("PostStopReentryGuard", "post_stop_reentry_guard_disabled")
 
+        if not self._explicit_client and any(
+            os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on")
+            for k in ("DISABLE_GEMINI_LLM", "BACKTEST_MODE", "REPLAY_MODE")
+        ):
+            return GuardDecision.allow("PostStopReentryGuard", "backtest_mode_exempt")
+
         now_ts = float(now) if now is not None else time.time()
         cache_key = (
             str(symbol or "").upper(),

@@ -637,7 +637,7 @@ def main():
         with open(args.propose_out, "w", encoding="utf-8") as f:
             json.dump(proposals, f, indent=2, default=str)
         print(f"\n[scheduled_pilot] {len(proposals)} proposal(s) written to {args.propose_out}")
-        if proposals:
+        if proposals and os.environ.get("PILOT_NOTIFY_PROPOSALS", "0").strip().lower() in {"1", "true", "yes", "on"}:
             # notify user that new proposals are available to review and apply
             try:
                 from dotenv import load_dotenv

@@ -433,4 +433,75 @@ def test_tradeall_backtest_window_constants_and_run(tmp_path, monkeypatch):
     assert pnl_path.exists()
 
 
+def test_backtest_suppresses_real_gemini_and_notifications(monkeypatch):
+    """Backtest/replay modes strictly block real Gemini CLI/REST calls and external notifications."""
+    import subprocess
+    import urllib.request
+    import monitortrades as mt
+    from intelligence.sentiment.gemini_client import GeminiClient
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
+    from notify_engine import alertnotifiers
+    from strategies.position_exit_manager import ReentrySnapshot
+
+    # 1. GeminiClient must not invoke subprocess.run or urlopen when BACKTEST_MODE/REPLAY_MODE/DISABLE_GEMINI_LLM is set
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("Real CLI call attempted!"))
+    )
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("Real REST call attempted!"))
+    )
+    client = GeminiClient(api_key="fake-key", cli_path=__file__)
+    for env_key in ("BACKTEST_MODE", "REPLAY_MODE", "DISABLE_GEMINI_LLM"):
+        monkeypatch.setenv(env_key, "1")
+        assert client.query_text("test prompt") is None
+        hs_dec = HighStakeGuard().check("BTCUSDC", "BUY", 50000.0, 1.0, notional_eur=50000.0)
+        assert hs_dec.allowed is True
+        assert hs_dec.reason == "backtest_mode_exempt"
+        ps_dec = PostStopReentryGuard().check("BTCUSDC", 50000.0, 51000.0, 49000.0, 0.02)
+        assert ps_dec.allowed is True
+        assert ps_dec.reason == "backtest_mode_exempt"
+        monkeypatch.delenv(env_key, raising=False)
+
+    # 2. alertnotifiers.notify must be a no-op when BACKTEST_MODE or REPLAY_MODE is set
+    dispatched = []
+    monkeypatch.setenv("MPTRADE_ORCHESTRATED", "0")
+    import notify_engine.server as srv_mod
+    monkeypatch.setattr(
+        srv_mod.NotificationServer, "dispatch_alerts", lambda self, alerts, **kw: dispatched.extend(alerts)
+    )
+    for env_key in ("BACKTEST_MODE", "REPLAY_MODE", "DISABLE_EXTERNAL_NOTIFICATIONS"):
+        monkeypatch.setenv(env_key, "1")
+        alertnotifiers.notify("Title", "Body", "backtest", "BTCUSDC")
+        alertnotifiers.AlertNotifier.send_phone_webhook_batch([{"name": "test"}])
+        alertnotifiers.AlertNotifier.send_email_batch([{"name": "test"}])
+        assert dispatched == []
+        monkeypatch.delenv(env_key, raising=False)
+
+    # 3. monitortrades._apply_post_stop_ai_guard skips PostStopReentryGuard on simulated provider or disabled persistence
+    snap = ReentrySnapshot(
+        symbol="BTCUSDC",
+        current_price=100.0,
+        last_sell_price=105.0,
+        last_sell_time_s=1000.0,
+        current_time_s=1500.0,
+        last_exit_kind="STOP",
+        post_sell_trough=98.0,
+    )
+    import intelligence.sentiment.guards.post_stop_reentry_guard as ps_mod
+    monkeypatch.setattr(
+        ps_mod,
+        "get_post_stop_reentry_guard",
+        lambda: (_ for _ in ()).throw(AssertionError("PostStopReentryGuard should be bypassed in replay!")),
+    )
+
+    class _ReplayInst:
+        provider_name = "replay"
+
+    allowed, bb, bq, q = mt._apply_post_stop_ai_guard(
+        "BTCUSDC", 100.0, 105.0, 1000.0, snap, 100.0, None, 1.0, inst=_ReplayInst()
+    )
+    assert (allowed, bb, bq, q) == (True, 100.0, None, 1.0)
+
+
 

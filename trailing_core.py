@@ -151,11 +151,18 @@ class TrailingCore:
                 )
         elif action == "REBUY" and filled > 0:
             rb = st.get("rebuy") or {}
+            submitted_qty = float(pending.get("submitted_qty") or rb.get("qty") or 0.0)
             remaining = max(0.0, float(rb.get("qty") or 0.0) - filled)
-            if remaining > 1e-8:
-                rb["qty"] = remaining
+            order_fully_filled = (
+                str(getattr(status, "status", "") or "").lower() == "closed"
+                or (submitted_qty > 0 and filled >= submitted_qty - 1e-6)
+            )
+            if not order_fully_filled and remaining * avg >= self.min_notional:
+                rb["qty"] = round(remaining, 8)
                 rb["low"] = min(float(rb.get("low") or avg), avg)
                 st["rebuy"] = rb
+                st["is_flat"] = False
+                st["peak"] = avg
             else:
                 st.pop("rebuy", None)
                 st["is_flat"] = False
@@ -226,11 +233,7 @@ class TrailingCore:
             return                                            # terminal truth is applied on a later tick
         else:
             self.a.log_dry_rebuy(key, asset, pair, qty, price, rb)
-        st.pop("rebuy", None)                                 # one tranche; complete
-        st["is_flat"] = False
-        st["peak"] = price
-        if self.min_profit_pct > 0:
-            st["warmup_at"] = price * (1 + self.min_profit_pct / 100.0)  # restart warm-up from the re-buy price
+            return
 
     # -- one asset ------------------------------------------------------------
     def _process(self, key, asset, pair, trail, state) -> None:
@@ -276,15 +279,21 @@ class TrailingCore:
                 if st.get("pending_order"):
                     return
 
-        if not st.get("is_flat", False) and price > st["peak"]:
+        if "warmup_at" in st and price >= st["warmup_at"]:
+            st.pop("warmup_at", None)                         # threshold reached; trailing is now active
+
+        if not st.get("is_flat", False) and "warmup_at" not in st and price > st["peak"]:
             st["peak"] = price                                # new peak moves the trailing level up
         stop_at = st["peak"] * (1 - trail / 100.0)
 
         # Emergency crash circuit breaker (zona de avarie) — brute force unconditional exit.
         # Extreme crash protection is decoupled from profit warm-up.
         if should_sell(price, st["peak"], trail):
-            st.pop("warmup_at", None)
+            if self.sell_skip_if_trend_up and self.a.trend(pair) > 0:
+                self.a.log_skip_sell_trend(key, asset, pair, trail)
+                return
             if self.enabled:
+                st.pop("warmup_at", None)
                 # Emergency stop triggered: attempt to unlock coins locked in resting TP orders
                 unlock_getter = getattr(self.a, "unlock_qty", None)
                 if unlock_getter is not None and callable(unlock_getter):
@@ -293,23 +302,26 @@ class TrailingCore:
                             free = self.a.free_qty(asset)
                     except Exception:
                         pass
-            if free * price < self.min_notional:
-                return                                        # nothing to sell even after unlock attempt
+                if free * price < self.min_notional:
+                    return                                        # nothing to sell even after unlock attempt
 
-            if "target_exit_qty" not in st:
-                total_pos = self._remaining_qty(asset)
-                if total_pos <= 0:
-                    total_pos = free
-                st["target_exit_qty"] = round(total_pos * self.sell_fraction, 8)
+                if "target_exit_qty" not in st:
+                    total_pos = self._remaining_qty(asset)
+                    if total_pos <= 0:
+                        total_pos = free
+                    st["target_exit_qty"] = round(total_pos * self.sell_fraction, 8)
 
-            target_rem = max(0.0, float(st.get("target_exit_qty", 0.0)) - float(st.get("exit_sold_qty", 0.0) or 0.0))
-            sell_qty = round(min(free, target_rem) if target_rem > 0 else (free * self.sell_fraction), 8)
-            if self.enabled and sell_qty * price >= self.min_notional:
-                self.a.execute_sell(
-                    key, asset, pair, sell_qty, price, st["peak"], trail,
-                    self._pending_persist(state, st),
-                )
+                target_rem = max(0.0, float(st.get("target_exit_qty", 0.0)) - float(st.get("exit_sold_qty", 0.0) or 0.0))
+                sell_qty = round(min(free, target_rem) if target_rem > 0 else (free * self.sell_fraction), 8)
+                if sell_qty * price >= self.min_notional:
+                    self.a.execute_sell(
+                        key, asset, pair, sell_qty, price, st["peak"], trail,
+                        self._pending_persist(state, st),
+                    )
             else:
+                if free * price < self.min_notional:
+                    return
+                sell_qty = round(free * self.sell_fraction, 8)
                 self.a.log_dry_sell(key, asset, pair, sell_qty, price, st["peak"], trail)
             return
 
@@ -323,6 +335,9 @@ class TrailingCore:
             st.pop("exit_sold_cost", None)
             return                                            # nothing to protect; keep resting orders intact
 
+        if free * price < self.min_notional:
+            return                                            # nothing free to protect; keep resting orders intact
+
         if "warmup_at" in st:
             # Warm up until price exceeds the threshold set on the first tick or after re-buy.
             # Normal dips do not sell, but crash circuit breaker above still protects against collapse.
@@ -331,9 +346,6 @@ class TrailingCore:
                          f" (+{self.min_profit_pct}%)")
                 return
             st.pop("warmup_at")                              # threshold reached; trailing is now active
-
-        if free * price < self.min_notional:
-            return                                            # nothing free to protect; keep resting orders intact
 
         self.a.log_hold(key, asset, pair, price, st["peak"], stop_at, trail, free)
 

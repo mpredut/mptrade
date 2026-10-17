@@ -147,6 +147,7 @@ class TrailingStop:
             raise ValueError("TRAILING_REBUY_TRANCHES currently supports only the value 1")
         self.state_file = state_file
         self._balances = []
+        self._retry_counts = {}
         self._long_trend_cache = {}   # symbol -> (SMA, UTC day) for auto re-buy
         self.core = TrailingCore(
             self, log=log, enabled=self.enabled, state_file=state_file,
@@ -315,9 +316,27 @@ class TrailingStop:
         try:
             cancel_fn = getattr(self.api, "cancel_open_orders", None)
             if callable(cancel_fn):
+                spec = TRAILING_INSTRUMENTS.get(pair)
+                asset = spec.base if spec is not None else None
+                if asset and self._balances:
+                    locked = 0.0
+                    found = False
+                    for bal in self._balances:
+                        if bal.get("asset") == asset:
+                            found = True
+                            try:
+                                locked = float(bal.get("locked", 0.0) or 0.0)
+                            except (TypeError, ValueError, OverflowError):
+                                locked = 0.0
+                            break
+                    if found and (not math.isfinite(locked) or locked <= 0.0):
+                        return False
                 cancel_fn("SELL", pair)
-                self._balances = self.api.get_account_assets_balances() or []
-                return True
+                refreshed = self.api.get_account_assets_balances()
+                if isinstance(refreshed, list) and refreshed:
+                    self._balances = refreshed
+                    return True
+                return False
         except Exception as e:  # noqa: BLE001
             self.log(f"  ! [TRAIL] failed to cancel open orders for {pair}: {e}")
         return False
@@ -334,20 +353,38 @@ class TrailingStop:
         return self._trend_value(pair)
 
     def _order_intent(self, action, key, asset, pair, qty, price, **metadata):
+        attempt = int(self._retry_counts.get((pair, action), 0)) + 1
         intent_id = (
             f"trailing:binance:{key}:{action}:{qty:.8f}:{price:.8f}:"
             f"{metadata.get('anchor', price):.8f}"
         )
+        if attempt > 1:
+            intent_id = f"{intent_id}:a{attempt}"
         return self.order_lifecycle.new_intent(
             intent_id=intent_id,
             client_order_id=intent_client_order_id("Binance", intent_id),
             symbol=pair, side="SELL" if action == "SELL" else "BUY",
             requested_qty=qty, requested_price=price, kind=f"TRAIL_{action}",
+            attempt=attempt,
             metadata={"action": action, "asset": asset, **metadata},
         )
 
     def reconcile_pending(self, pending, persist):
-        return self.order_lifecycle.reconcile(pending, persist=persist)
+        result = self.order_lifecycle.reconcile(pending, persist=persist)
+        pair = str(pending.get("symbol") or "")
+        action = str(pending.get("action") or (pending.get("metadata") or {}).get("action") or "").upper()
+        retry_key = (pair, action)
+        if result.outcome in ("absent", "retryable"):
+            self._retry_counts[retry_key] = int(self._retry_counts.get(retry_key, 0)) + 1
+        elif result.outcome == "terminal":
+            filled = float(getattr(result.status, "filled_qty", 0.0) or 0.0)
+            req_qty = float(pending.get("submitted_qty") or pending.get("requested_qty") or 0.0)
+            st_name = str(getattr(result.status, "status", "") or "").lower()
+            if filled <= 0 or (st_name != "closed" and req_qty > 0 and filled < req_qty - 1e-6):
+                self._retry_counts[retry_key] = int(self._retry_counts.get(retry_key, 0)) + 1
+            else:
+                self._retry_counts.pop(retry_key, None)
+        return result
 
     def _submit_lifecycle_order(self, intent, persist, pair, side, price, qty, bypass_guards=None):
         """Submit through Instrument without losing its typed refusal state."""

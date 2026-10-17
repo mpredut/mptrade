@@ -433,7 +433,7 @@ class AlertNotifier:
     ) -> bool:
         if not alerts:
             return False
-        if os.environ.get("DISABLE_EXTERNAL_NOTIFICATIONS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        if _external_notifications_disabled():
             return True
         alerts = list(alerts)
         subject = subject or AlertNotifier.email_subject(alerts)
@@ -451,7 +451,7 @@ class AlertNotifier:
     def send_phone_webhook_batch(alerts, webhook_url: Optional[str] = None):
         if not alerts:
             return False
-        if os.environ.get("DISABLE_EXTERNAL_NOTIFICATIONS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        if _external_notifications_disabled():
             return True
         if os.environ.get("MPTRADE_ORCHESTRATED") == "1":
             def default_serializer(obj):
@@ -502,6 +502,14 @@ class AlertNotifier:
             AlertNotifier.send_phone_webhook_batch(alerts, webhook_url=webhook_url)
 
 
+def _external_notifications_disabled() -> bool:
+    """Return True when external notifications (ntfy, email, orchestrator intents) are suppressed."""
+    return any(
+        os.environ.get(k, "").strip().lower() in {"1", "true", "yes", "on"}
+        for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
+    )
+
+
 def notify(title: str, body: str, source: str, symbol: str,
            price: float = None, desktop: bool = False,
            email: bool = None) -> None:
@@ -510,7 +518,7 @@ def notify(title: str, body: str, source: str, symbol: str,
     ERROR-category events reach email automatically through the server's topic mirror
     (notify_engine.mailer). ``email=True`` forces a copy for any other category.
     """
-    if os.environ.get("DISABLE_EXTERNAL_NOTIFICATIONS", "").strip().lower() in {"1", "true", "yes", "on"}:
+    if _external_notifications_disabled():
         return
     if any(fake in f"{title} {body} {symbol} {source}".upper()
            for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ")):

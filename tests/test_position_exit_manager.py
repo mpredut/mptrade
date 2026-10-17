@@ -622,6 +622,33 @@ class TestPositionExitManager(unittest.TestCase):
         self.assertNotIn("BTCUSDT", self.mgr.sl_bounce_state)
         self.assertIn("BTCUSDT", self.mgr.tp_ride_state)
 
+    def test_unified_evaluate_tp_ride_gap_down_into_sl_forces_immediate_exit(self):
+        """A position actively riding TP that gaps down into SL territory must fire mdhtp_profit_floor_breached immediately."""
+        snap_tp = PositionSnapshot(
+            symbol="BTCUSDT",
+            current_price=108.0,
+            avg_buy_price=100.0,
+            current_time_s=self.now,
+            trend_up=True,
+        )
+        self.mgr.evaluate(snap_tp)
+        self.assertIn("BTCUSDT", self.mgr.tp_ride_state)
+
+        # Gap down to 94.5 (-5.5% loss, inside SL bounce corridor with trend_up=True)
+        snap_gap = PositionSnapshot(
+            symbol="BTCUSDT",
+            current_price=94.5,
+            avg_buy_price=100.0,
+            current_time_s=self.now + 10.0,
+            trend_up=True,
+        )
+        dec = self.mgr.evaluate(snap_gap)
+        self.assertEqual(dec.action, ExitAction.SELL)
+        self.assertTrue(dec.should_exit)
+        self.assertTrue(dec.forced)
+        self.assertIn("mdhtp_profit_floor_breached", dec.reason)
+        self.assertNotIn("BTCUSDT", self.mgr.tp_ride_state)
+
 
 class TestPositionReentryManager(unittest.TestCase):
     def setUp(self):
