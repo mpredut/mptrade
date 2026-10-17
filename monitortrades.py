@@ -874,8 +874,8 @@ def _is_pending_exit_active(
     return False
 
 
-def _is_trend_gate_deferred(symbol: str, inst: Any = None) -> bool:
-    """Check whether the trend gate would defer a SELL placement."""
+def _is_trend_gate_deferred(symbol: str, inst: Any = None, side: str = "SELL") -> bool:
+    """Check whether the trend gate would defer a placement."""
     prov = _inst_provider(inst)
     if prov and str(prov).strip().lower() in ("replay", "backtest", "sim"):
         return False
@@ -883,9 +883,9 @@ def _is_trend_gate_deferred(symbol: str, inst: Any = None) -> bool:
         import cacheManager as cm
         short_tm = cm.get_short_trend_manager()
         try:
-            return bool(short_tm.should_wait("SELL", symbol, use_noise_gate=False))
+            return bool(short_tm.should_wait(side, symbol, use_noise_gate=False))
         except TypeError:
-            return bool(short_tm.should_wait("SELL", symbol))
+            return bool(short_tm.should_wait(side, symbol))
     except Exception:
         return False
 
@@ -1299,6 +1299,9 @@ def _can_pass_buy_quantity_policy(
                         f"late-scaled qty {scaled_qty} (scale={float(intel_scale):.2f}) refused by filter ({scaled_refusal})"
                     )
                     return False
+        if not _is_simulated_env_or_inst(inst) and _is_trend_gate_deferred(symbol, inst, side="BUY"):
+            print(f"[{symbol}] Post-STOP re-entry deferred before AI guard: trend_deferred")
+            return False
     except Exception:
         return True
     return True
@@ -1324,6 +1327,38 @@ def _apply_post_stop_ai_guard(
         _trough_px = reentry_snap.post_sell_trough or min(sell_price, current_price)
         _bounce_ratio = reentry_snap.bounce_ratio(_trough_px)
         _est_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
+        provider = getattr(inst, "provider", None) if inst is not None else None
+        if (
+            provider is not None
+            and not isinstance(provider, str)
+            and callable(getattr(provider, "quantity_decision", None))
+            and callable(getattr(provider, "free_balance", None))
+        ):
+            try:
+                from providers.quantity import resolve_assets
+                base_asset, quote_asset = resolve_assets(
+                    symbol,
+                    getattr(inst, "base", None),
+                    getattr(inst, "quote", None),
+                )
+                q_dec = provider.quantity_decision(
+                    symbol,
+                    "BUY",
+                    current_price,
+                    _est_qty,
+                    base=base_asset,
+                    quote=quote_asset,
+                    cancelorders=False,
+                    hours=float(MT_BUY_SAFEBACK_HOURS),
+                    apply_policy=True,
+                    market=False,
+                )
+                if q_dec is not None:
+                    policy_qty = float(getattr(q_dec, "final_qty", 0.0) or 0.0)
+                    if 0.0 < policy_qty < _est_qty:
+                        _est_qty = round(policy_qty, 6)
+            except Exception:
+                pass
         _est_notional = _est_qty * current_price
         _ps_dec = _ps_guard.check(
             symbol=symbol,
@@ -1341,13 +1376,50 @@ def _apply_post_stop_ai_guard(
             return False, buy_budget, buy_qty_cfg, qty
         elif _ps_dec.suggested_scale < 1.0:
             print(f"[{symbol}] Post-STOP re-entry DOWNSCALED by Pillar 3 AI to {_ps_dec.suggested_scale * 100:.0f}%: {_ps_dec.reason}")
-            scale = _ps_dec.suggested_scale
+            scale = float(_ps_dec.suggested_scale)
+            scaled_qty = _est_qty * scale
+            if provider is not None and not isinstance(provider, str):
+                round_fn = (
+                    getattr(provider, "round_amount", None)
+                    or getattr(provider, "round_quantity", None)
+                )
+                if callable(round_fn):
+                    try:
+                        res_f = float(round_fn(symbol, scaled_qty))
+                        if math.isfinite(res_f):
+                            scaled_qty = res_f
+                    except (TypeError, ValueError):
+                        pass
+                min_qty_fn = getattr(inst, "min_qty", None)
+                min_q = float(min_qty_fn() or 0.0) if callable(min_qty_fn) else 0.0
+                if scaled_qty <= 0.0 or (min_q and scaled_qty < min_q):
+                    print(
+                        f"[{symbol}] Post-STOP re-entry deferred after AI downscale: "
+                        f"scaled qty {scaled_qty} below min_qty {min_q} (scale={scale:.2f})"
+                    )
+                    return False, buy_budget, buy_qty_cfg, qty
+                filter_check = getattr(provider, "order_filter_refusal", None)
+                if callable(filter_check):
+                    scaled_refusal = filter_check(
+                        symbol,
+                        "BUY",
+                        current_price,
+                        scaled_qty,
+                        market=False,
+                        enforce_business_minimum=True,
+                    )
+                    if scaled_refusal:
+                        print(
+                            f"[{symbol}] Post-STOP re-entry deferred after AI downscale: "
+                            f"scaled qty {scaled_qty} (scale={scale:.2f}) refused by filter ({scaled_refusal})"
+                        )
+                        return False, buy_budget, buy_qty_cfg, qty
             if buy_budget:
-                buy_budget *= scale
+                buy_budget = min(buy_budget * scale, scaled_qty * current_price)
             elif buy_qty_cfg:
-                buy_qty_cfg *= scale
+                buy_qty_cfg = min(buy_qty_cfg * scale, scaled_qty)
             else:
-                qty *= scale
+                qty = min(qty * scale, scaled_qty)
     except Exception as e:
         print(f"[{symbol}] Post-STOP AI guard error (fail-open fallback): {e}")
     return True, buy_budget, buy_qty_cfg, qty

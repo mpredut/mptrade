@@ -1516,8 +1516,73 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
                 self.assertIn("SYM2_hist_1", mt._notified_trade_ids)
                 mock_notify.assert_not_called()
 
+        with self.subTest(msg="post_stop_ai_guard_scales_policy_capped_qty_and_defers_below_min_notional"):
+            from types import SimpleNamespace
+            snap = mt.ReentrySnapshot(
+                symbol="ARBUSDC",
+                current_price=0.18,
+                last_sell_price=0.19,
+                last_exit_kind="STOP",
+                post_sell_peak=0.19,
+                post_sell_trough=0.176,
+                current_time_s=NOW,
+                last_sell_time_s=NOW - 3600,
+                trend_up=True,
+                trend_down=False,
+                vol_1h=0.01,
+                vol_source="1h_cache",
+            )
+
+            class _LivePolicyProvider:
+                name = "binance"
+
+                @staticmethod
+                def free_balance(_asset):
+                    return 1000.0
+
+                @staticmethod
+                def quantity_decision(_sym, _side, _px, _req_qty, **_kw):
+                    # 24h weight cap limits 250 USDC (~1388.88 ARB) down to 406.0 ARB (~73.08 USDC)
+                    return SimpleNamespace(final_qty=406.0, refuse_reason=None, balance_asset="USDC")
+
+                @staticmethod
+                def round_amount(_sym, q):
+                    return round(q, 1)
+
+                @staticmethod
+                def order_filter_refusal(_sym, _side, px, q, **_kw):
+                    return "below_min_notional" if (px * q) < 50.0 else None
+
+            live_inst = SimpleNamespace(
+                symbol="ARBUSDC",
+                base="ARB",
+                quote="USDC",
+                provider_name="binance",
+                provider=_LivePolicyProvider(),
+                _provider=_LivePolicyProvider(),
+                min_qty=lambda: 1.0,
+            )
+            fake_guard = SimpleNamespace(
+                check=lambda **_kw: SimpleNamespace(
+                    allowed=True, suggested_scale=0.5, reason="weak bounce half size"
+                )
+            )
+            with (
+                patch.object(mt, "_is_simulated_env_or_inst", return_value=False),
+                patch(
+                    "intelligence.sentiment.guards.post_stop_reentry_guard.get_post_stop_reentry_guard",
+                    return_value=fake_guard,
+                ),
+            ):
+                # 406.0 ARB * 0.5 = 203.0 ARB ($36.54 < $50 min_notional) -> must defer (allowed=False)
+                allowed, bb, bq, q = mt._apply_post_stop_ai_guard(
+                    "ARBUSDC", 0.18, 0.19, NOW - 3600, snap, 250.0, None, 1.0, inst=live_inst
+                )
+                self.assertFalse(allowed)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 
 
