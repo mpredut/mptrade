@@ -205,7 +205,7 @@ run_step "9A" "Kraken Continuous Multi-Asset Grid (11 assets since 2018)" \
     "bash offline/research/kraken_continuous_grid/run_all.sh"
 
 run_step "9B" "Trading212 Continuous Multi-Asset Factorial Grid (16 equities/ETFs, 54 variants)" \
-    "[ -n \"\$(ls -A $RESULTS_DIR/t212_continuous_grid/data/*.csv 2>/dev/null)\" ] || $PYTHON_BIN offline/research/t212_continuous_grid/fetch.py; $PYTHON_BIN offline/research/t212_continuous_grid/grid.py && $PYTHON_BIN offline/research/t212_continuous_grid/report.py"
+    "$PYTHON_BIN offline/research/t212_continuous_grid/fetch.py --missing-only && $PYTHON_BIN offline/research/t212_continuous_grid/grid.py && $PYTHON_BIN offline/research/t212_continuous_grid/report.py"
 
 END_SEC=$(date +%s)
 TOTAL_ELAPSED=$((END_SEC - START_SEC))

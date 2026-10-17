@@ -51,8 +51,9 @@ def fetch_yahoo_candles(
     day_range = re.fullmatch(r"([1-9][0-9]*)d", range_.lower())
     if day_range:
         end = int(time.time())
+        span_sec = max(60, int(day_range.group(1)) * 24 * 60 * 60 - 60)
         query = {
-            "period1": end - int(day_range.group(1)) * 24 * 60 * 60,
+            "period1": end - span_sec,
             "period2": end,
             "interval": interval,
         }

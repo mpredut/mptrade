@@ -26,9 +26,13 @@ def fetch(sym, rng, itv):
 
 
 if __name__ == "__main__":
+    missing_only = "--missing-only" in sys.argv[1:]
     os.makedirs(DATA, exist_ok=True)
     for sym in ASSETS:
         for rng, itv in (("730d", "1h"), ("10y", "1d")):
+            csv_path = os.path.join(DATA, f"{sym}_{itv}.csv")
+            if missing_only and os.path.exists(csv_path) and os.path.getsize(csv_path) > 64:
+                continue
             try:
                 rows = fetch(sym, rng, itv)
             except Exception as exc:  # noqa: BLE001
@@ -37,7 +41,7 @@ if __name__ == "__main__":
             if not rows:
                 print(f"[fetch] {sym} {itv}: no bars returned", flush=True)
                 continue
-            with open(os.path.join(DATA, f"{sym}_{itv}.csv"), "w", newline="") as fh:
+            with open(csv_path, "w", newline="") as fh:
                 w = csv.writer(fh)
                 w.writerow(["timestamp", "open", "high", "low", "close"])
                 w.writerows(rows)
