@@ -656,6 +656,8 @@ class ProcessOnceTest(unittest.TestCase):
     def test_producer_claim_recovery_and_quarantine(self):
         with self.subTest("expired_kraken_producer_claim_quarantined"):
             oq.rewrite([])
+            self.alerts.clear()
+            worker._ALERTED_PRODUCER_QUARANTINES.clear()
             class KrakenClient:
                 def __init__(self):
                     self.calls = []
@@ -668,7 +670,7 @@ class ProcessOnceTest(unittest.TestCase):
             provider = KrakenProvider(client=client)
             market = MarketApi([provider])
             claimed = oq.enqueue_claimed(
-                "HYPEUSD", "BUY", 1.0, {}, requested_price=100.0,
+                "HYPEUSD", "BUY", 2.5, {}, requested_price=80.0, ref_price=79.5,
                 provider_name="Kraken", now=1000.0, lease_sec=301.0)
 
             with patch.object(
@@ -682,6 +684,13 @@ class ProcessOnceTest(unittest.TestCase):
             record = oq.get(claimed["id"])
             self.assertEqual(record["submission_state"], "producer_claimed")
             self.assertEqual(record["attempts"], 0)
+            self.assertEqual(len(self.alerts), 1)
+            alert_body = self.alerts[0]["body"]
+            self.assertIn("Order: BUY 2.5 HYPE (HYPEUSD · KRAKEN) @ $80 (ref $79.5) | Value: ~$200.00 USD", alert_body)
+            self.assertIn("Time: Created:", alert_body)
+            self.assertIn("Lease expired:", alert_body)
+            self.assertIn(claimed["place_kwargs"]["client_order_id"], alert_body)
+            self.assertIn("The producer is no longer alive and this provider cannot", alert_body)
 
         with self.subTest("active_producer_lease_not_stolen"):
             oq.rewrite([])

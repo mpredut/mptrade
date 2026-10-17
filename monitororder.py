@@ -84,13 +84,19 @@ def _notify_order_expired(symbol, order_type, order_id, price, quantity, owner=N
         import alertnotifiers as alert
         qty = float(quantity or 0.0)
         px = float(price or 0.0)
+        val = px * qty
+        quote = "USDC" if str(symbol).upper().endswith("USDC") else ("USDT" if str(symbol).upper().endswith("USDT") else "USD")
         side = str(order_type).upper()
         owner_tag = f" [{owner}]" if owner and owner not in ("unspecified", "unknown") else ""
         owner_body = f" ({owner})" if owner and owner not in ("unspecified", "unknown") else ""
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"[MONITORORDER] ⏰ Order expired & canceled{owner_body}: {side} {qty:.6f} {symbol} @ {px:.2f} (orderId={order_id})")
         alert.notify(
             title=f"⏰ Order Expired & Canceled: {side} {symbol}{owner_tag}",
-            body=f"Order {order_id}{owner_body} active for {age_str} exceeded TTL of {ttl_str}. Canceled on venue.",
+            body=(
+                f"Order {order_id}{owner_body} active for {age_str} exceeded TTL of {ttl_str}. Canceled on venue. "
+                f"Qty: {qty:.4f} {symbol} @ ${px:.4g} (~${val:.2f} {quote}) | Time: {now_str}"
+            ),
             source="monitororder",
             symbol=str(symbol),
             price=px,

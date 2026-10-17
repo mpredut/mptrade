@@ -74,11 +74,20 @@ def complete_accepted_claim(
         if attempt + 1 < ACCEPTED_TRACKING_PERSIST_ATTEMPTS:
             time.sleep(ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC)
 
+    from datetime import datetime
     order_id = order_retry_module.order_id_from_response(order)
     client_order_id = dict(
         claim.get("place_kwargs") or {}).get("client_order_id")
+    qty = claim.get("qty")
+    px = claim.get("requested_price") if claim.get("requested_price") is not None else claim.get("ref_price")
+    try:
+        val_str = f"~${float(qty) * float(px):.2f}" if (qty is not None and px is not None) else "N/A"
+    except (TypeError, ValueError, OverflowError):
+        val_str = "N/A"
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     detail = (
         f"venue={provider_name} symbol={symbol} side={side} "
+        f"qty={qty} price={px} value={val_str} time={now_str} "
         f"order_id={order_id} client_order_id={client_order_id} "
         f"attempts={ACCEPTED_TRACKING_PERSIST_ATTEMPTS} error={last_error}")
     print(f"CRITICAL: accepted order tracking could not be persisted: {detail}")

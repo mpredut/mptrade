@@ -30,6 +30,7 @@ import time
 import argparse
 import json
 import math
+from datetime import datetime
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path:
@@ -40,6 +41,7 @@ import alertnotifiers as alert
 from botcore import required_float_env, single_instance
 from lock import FileLock
 from providers.execution_audit import ExecutionAudit
+from providers.quantity import resolve_assets
 from state_io import atomic_write_json, load_json_state
 
 
@@ -666,6 +668,98 @@ def process_once(mkt, now=None):
             "remaining": len(oq.load_all(now))}
 
 
+def _resolve_display_assets(symbol):
+    """Return (base_asset, quote_asset) for human-readable alert formatting."""
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return "?", "USD"
+    base, quote = resolve_assets(sym)
+    if quote is None and sym.endswith("USDT") and len(sym) > 4:
+        return sym[:-4], "USDT"
+    return (base or sym), (quote or "USD")
+
+
+def _format_ts(ts):
+    """Format a POSIX timestamp in local YYYY-MM-DD HH:MM:SS, or N/A."""
+    try:
+        val = float(ts or 0.0)
+        if not math.isfinite(val) or val <= 0:
+            return "N/A"
+        return datetime.fromtimestamp(val).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:  # noqa: BLE001
+        return "N/A"
+
+
+def _format_record_context(rec, *, include_lease=False):
+    """Build a structured summary of order time, base asset qty/price, and quote value."""
+    side = str(rec.get("side") or "?").upper()
+    symbol = str(rec.get("symbol") or "?")
+    provider = str(rec.get("provider_name") or "routed").upper()
+    base_asset, quote_asset = _resolve_display_assets(symbol)
+    try:
+        qty_val = float(rec.get("qty") or 0.0)
+    except (TypeError, ValueError, OverflowError):
+        qty_val = 0.0
+    try:
+        req_px = (
+            float(rec.get("requested_price"))
+            if rec.get("requested_price") is not None
+            else None
+        )
+        if req_px is not None and (not math.isfinite(req_px) or req_px <= 0):
+            req_px = None
+    except (TypeError, ValueError, OverflowError):
+        req_px = None
+    try:
+        ref_px = (
+            float(rec.get("ref_price"))
+            if rec.get("ref_price") is not None
+            else None
+        )
+        if ref_px is not None and (not math.isfinite(ref_px) or ref_px <= 0):
+            ref_px = None
+    except (TypeError, ValueError, OverflowError):
+        ref_px = None
+
+    effective_px = req_px if req_px is not None else ref_px
+    if req_px is not None and ref_px is not None and abs(req_px - ref_px) > 1e-9:
+        price_str = f"@ ${req_px:.6g} (ref ${ref_px:.6g})"
+    elif effective_px is not None:
+        price_str = f"@ ${effective_px:.6g}"
+    else:
+        price_str = "@ market"
+
+    if effective_px is not None and math.isfinite(qty_val) and qty_val > 0:
+        notional = qty_val * effective_px
+        value_str = f"~${notional:.2f} {quote_asset}"
+    else:
+        value_str = "N/A"
+
+    created_str = _format_ts(rec.get("created_ts"))
+    last_attempt_str = _format_ts(rec.get("last_attempt_ts"))
+    attempts = int(rec.get("attempts") or 0)
+    last_reason = str(rec.get("last_failure_reason") or "none")
+    time_parts = [f"Created: {created_str}"]
+    if last_attempt_str != "N/A":
+        time_parts.append(f"Last attempt: {last_attempt_str}")
+    if include_lease:
+        lease_str = _format_ts(rec.get("claim_until"))
+        if lease_str != "N/A":
+            time_parts.append(f"Lease expired: {lease_str}")
+    time_line = " | ".join(time_parts) + f" ({attempts} attempts, reason={last_reason})"
+    client_order_id = (
+        dict(rec.get("place_kwargs") or {}).get("client_order_id")
+        or rec.get("order_id")
+        or rec.get("id")
+        or "N/A"
+    )
+    return (
+        f"Order: {side} {qty_val:.6g} {base_asset} ({symbol} · {provider}) {price_str} | Value: {value_str}\n"
+        f"Time: {time_line}\n"
+        f"ID: {client_order_id}"
+    )
+
+
 def _alert_queue_corruption(exc):
     """Alert at most once per distinct queue corruption in this process."""
     fingerprint = str(
@@ -694,31 +788,33 @@ def _alert_producer_quarantine(rec, *, reason="lookup_unavailable"):
     if fingerprint in _ALERTED_PRODUCER_QUARANTINES:
         return False
     _ALERTED_PRODUCER_QUARANTINES.add(fingerprint)
+    detail_msg = (
+        "The producer lease expired, but its PID/start identity cannot "
+        "be verified as either dead or replaced. Automatic recovery is "
+        "blocked; inspect the producer and outbox record manually."
+        if reason == "producer_identity_unverifiable" else
+        (
+            "The producer lease expired while its exact process identity "
+            "is still alive. The venue lookup found no matching client "
+            "order, so the record remains claimed for manual review; the "
+            "worker will never resubmit it."
+            if reason == "live_owner_not_found" else
+            "The producer lease expired while its exact process identity "
+            "is still alive, but deterministic venue lookup is unavailable. "
+            "The record remains claimed for manual review; the worker will "
+            "never resubmit it."
+        )
+        if reason.startswith("live_owner_") else
+        "The producer is no longer alive and this provider cannot "
+        "reconcile the deterministic client order ID. Automatic "
+        "submission is blocked; inspect the venue and outbox manually."
+    )
     try:
+        context = _format_record_context(rec, include_lease=True)
         alert.notify(
             title=(f"🛑 order producer claim quarantined "
                    f"{rec.get('side')} {rec.get('symbol')}"),
-            body=(
-                "The producer lease expired, but its PID/start identity cannot "
-                "be verified as either dead or replaced. Automatic recovery is "
-                "blocked; inspect the producer and outbox record manually."
-                if reason == "producer_identity_unverifiable" else
-                (
-                    "The producer lease expired while its exact process identity "
-                    "is still alive. The venue lookup found no matching client "
-                    "order, so the record remains claimed for manual review; the "
-                    "worker will never resubmit it."
-                    if reason == "live_owner_not_found" else
-                    "The producer lease expired while its exact process identity "
-                    "is still alive, but deterministic venue lookup is unavailable. "
-                    "The record remains claimed for manual review; the worker will "
-                    "never resubmit it."
-                )
-                if reason.startswith("live_owner_") else
-                "The producer is no longer alive and this provider cannot "
-                "reconcile the deterministic client order ID. Automatic "
-                "submission is blocked; inspect the venue and outbox manually."
-            ),
+            body=f"{context}\n{detail_msg}",
             source="order_retry", symbol=str(rec.get("symbol")))
     except Exception as exc:  # noqa: BLE001
         print(f"[order_retry] producer-quarantine alert failed (ignored): {exc}")
@@ -737,35 +833,36 @@ def _alert_reconciliation_quarantine(rec, *, reason="lookup_unavailable"):
         return False
     _ALERTED_RECONCILIATION_QUARANTINES.add(fingerprint)
     if reason == "not_found_outside_reliable_horizon":
-        body = (
+        detail_msg = (
             "The venue reports no matching client order, but this intent is "
             "older than the bounded interval in which absence is reliable. "
             "Automatic submission and expiry are blocked; inspect the venue "
             "and outbox manually."
         )
     elif reason == "missing_reconciliation_horizon":
-        body = (
+        detail_msg = (
             "The venue reports no matching client order, but the provider does "
             "not declare a reliable reconciliation interval. Automatic submission "
             "and expiry are blocked; inspect the venue and outbox manually."
         )
     elif reason in {"invalid_reference_timestamp", "future_reference_timestamp"}:
-        body = (
+        detail_msg = (
             "The venue reports no matching client order, but intent timestamps "
             "are invalid or in the future. Automatic submission and expiry are "
             "blocked; inspect the venue and outbox manually."
         )
     else:
-        body = (
+        detail_msg = (
             "This intent may already exist at the venue, but deterministic "
             "client-ID reconciliation is unavailable. Automatic submission "
             "and expiry are blocked; inspect the venue and outbox manually."
         )
     try:
+        context = _format_record_context(rec)
         alert.notify(
             title=(f"🛑 order submission quarantined "
                    f"{rec.get('side')} {rec.get('symbol')}"),
-            body=body,
+            body=f"{context}\n{detail_msg}",
             source="order_retry", symbol=str(rec.get("symbol")))
     except Exception as exc:  # noqa: BLE001
         print(
@@ -776,9 +873,11 @@ def _alert_reconciliation_quarantine(rec, *, reason="lookup_unavailable"):
 def _alert_terminal(rec, status):
     """Alert on a canceled intent whose remainder is deliberately not replayed."""
     try:
+        context = _format_record_context(rec)
         alert.notify(
             title=f"🛑 order terminal {rec.get('side')} {rec.get('symbol')}",
-            body=(f"Order {rec.get('order_id')} became "
+            body=(f"{context}\n"
+                  f"Order {rec.get('order_id')} became "
                   f"{status.venue_status or status.status}; filled={status.filled_qty}, "
                   "the rest is NOT resent automatically after a cancel."),
             source="order_retry", symbol=str(rec.get("symbol")))
@@ -839,13 +938,47 @@ class IncidentDigest:
                 group["count"] += 1
                 group["quantity"] += quantity
                 group["attempts"] = max(group.get("attempts", 0), int(event.get("attempts", 0)))
+                raw_px = event.get("price")
+                if raw_px is not None:
+                    try:
+                        px_val = float(raw_px)
+                        if math.isfinite(px_val) and px_val > 0:
+                            group["last_price"] = px_val
+                            group["notional"] = float(group.get("notional") or 0.0) + quantity * px_val
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+                raw_created = event.get("created_ts")
+                if raw_created is not None:
+                    try:
+                        c_val = float(raw_created)
+                        if math.isfinite(c_val) and c_val > 0:
+                            prev_c = group.get("created_ts")
+                            group["created_ts"] = (
+                                min(float(prev_c), c_val)
+                                if (prev_c is not None and float(prev_c) > 0)
+                                else c_val
+                            )
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+                raw_last_attempt = event.get("last_attempt_ts")
+                if raw_last_attempt is not None:
+                    try:
+                        la_val = float(raw_last_attempt)
+                        if math.isfinite(la_val) and la_val > 0:
+                            group["last_attempt_ts"] = max(
+                                float(group.get("last_attempt_ts") or 0.0), la_val
+                            )
+                    except (TypeError, ValueError, OverflowError):
+                        pass
                 changed = True
             due = []
             for group in groups.values():
                 if group["count"] and group["next_at"] <= now:
                     due.append(dict(group))
                     group.update(next_at=now + self.interval, reported=True,
-                                 count=0, quantity=0.0, attempts=0)
+                                 count=0, quantity=0.0, attempts=0,
+                                 notional=0.0, last_price=None,
+                                 created_ts=None, last_attempt_ts=None)
                     changed = True
             if changed:
                 atomic_write_json(self.path, state, separators=(",", ":"))
@@ -879,6 +1012,13 @@ def _alert_giveups(records, now):
                 "quantity": rec["qty"],
                 "sample_id": rec.get("intent_id") or rec["id"],
                 "attempts": int(rec.get("attempts") or 0),
+                "price": (
+                    rec.get("requested_price")
+                    if rec.get("requested_price") is not None
+                    else rec.get("ref_price")
+                ),
+                "created_ts": rec.get("created_ts"),
+                "last_attempt_ts": rec.get("last_attempt_ts"),
             })
         digest = IncidentDigest(
             os.path.join(os.path.dirname(oq.QUEUE_FILE), "order_retry_giveup_alerts.json"),
@@ -894,10 +1034,36 @@ def _alert_giveups(records, now):
             prov = str(labels.get("provider") or "routed").upper()
             side = str(labels.get("side") or "").upper()
             sym = str(labels.get("symbol") or "")
+            base_asset, quote_asset = _resolve_display_assets(sym)
             reason = str(labels.get("reason") or "unspecified")
             expiry = str(labels.get("expiry") or "active_ttl")
             kind = labels.get("kind")
             kind_str = f" [{kind}]" if kind and kind != "unspecified" else ""
+
+            px_val = report.get("last_price")
+            tot_notional = float(report.get("notional") or 0.0)
+            unit_notional = (
+                (tot_notional / cnt)
+                if (cnt > 0 and tot_notional > 0)
+                else ((unit_qty * float(px_val)) if px_val else None)
+            )
+            price_part = f" @ ${float(px_val):.6g}" if px_val else ""
+            value_part = (
+                f", Value: ~${unit_notional:.2f} {quote_asset}"
+                if unit_notional is not None
+                else ""
+            )
+            created_str = _format_ts(report.get("created_ts"))
+            last_attempt_str = _format_ts(report.get("last_attempt_ts"))
+            expired_str = _format_ts(report.get("last_ts") or now)
+            time_parts = []
+            if created_str != "N/A":
+                time_parts.append(f"Created: {created_str}")
+            if last_attempt_str != "N/A":
+                time_parts.append(f"Last attempt: {last_attempt_str}")
+            if expired_str != "N/A":
+                time_parts.append(f"Expired: {expired_str}")
+            time_info = ("Time: " + " | ".join(time_parts) + ". ") if time_parts else ""
 
             ttl_h = oq.RETRY_TTL_SEC / 3600.0
             if oq.RETRY_TTL_SEC >= 86400 and (oq.RETRY_TTL_SEC % 43200 == 0):
@@ -910,7 +1076,9 @@ def _alert_giveups(records, now):
             try:
                 alert.notify(
                     title=f"🛑 order-retry GIVE UP{suffix} {side} {sym}",
-                    body=(f"{side} {sym} ({prov}){kind_str}: {cnt} intent(s) expired (size ~{unit_qty:.6g}{attempts_str}). "
+                    body=(f"{side} {sym} ({prov}){kind_str}: {cnt} intent(s) expired "
+                          f"(size ~{unit_qty:.6g} {base_asset}{price_part}{value_part}{attempts_str}). "
+                          f"{time_info}"
                           f"Blocked by {reason} (expiry={expiry_detail}). "
                           f"No order submitted to exchange."),
                     source="order_retry", symbol=sym)
