@@ -97,6 +97,7 @@ def _series_cache_key(symbol: str, series: list, trend_window_seconds: float) ->
 
 
 _LAST_HARD_TP_TOUCHED: dict[tuple, bool] = {}
+_LAST_RUN_DIAGNOSTICS: dict[tuple, dict] = {}
 
 
 def prewarm_trend_series(
@@ -211,10 +212,20 @@ def run_symbol(
     )
     orig_eval_hard_tp = mt._evaluate_hard_take_profit
     hard_tp_touched = False
+    min_hard_tp_gain_ratio = float("inf")
+    hard_tp_cooldown_dts: list[float] = []
 
     def _tracked_eval_hard_tp(*a, **kw):
-        nonlocal hard_tp_touched
+        nonlocal hard_tp_touched, min_hard_tp_gain_ratio
         hard_tp_touched = True
+        if len(a) >= 2:
+            snap = a[1]
+            g_ratio = getattr(snap, "gain_ratio", None)
+            if g_ratio is not None and g_ratio < min_hard_tp_gain_ratio:
+                min_hard_tp_gain_ratio = float(g_ratio)
+            last_h = mt._hard_tp_last.get(getattr(snap, "symbol", symbol), 0)
+            if last_h > 0:
+                hard_tp_cooldown_dts.append(float(snap.current_time_s - last_h))
         return orig_eval_hard_tp(*a, **kw)
 
     mt._evaluate_hard_take_profit = _tracked_eval_hard_tp
@@ -232,7 +243,10 @@ def run_symbol(
         n_ticks = 0
 
         trail_pct = float(params.get("trailing.pct") or 0.0)
+        trail_ratio = trail_pct / 100.0
         trail_peak = first_price
+        min_trail_trigger_ratio = float("inf")
+        max_untriggered_trail_ratio = 0.0
 
         while True:
             price = provider.advance(symbol)
@@ -249,11 +263,18 @@ def run_symbol(
 
             open_qty, _ = provider.position(symbol)
             if open_qty > 0:
-                trail_peak = max(trail_peak, price)
-                if trail_pct > 0 and (trail_peak - price) / trail_peak >= trail_pct / 100.0:
-                    provider.place_order(symbol, "SELL", price, open_qty)
+                if price >= trail_peak:
                     trail_peak = price
-                    continue
+                elif trail_ratio > 0:
+                    dd_ratio = (trail_peak - price) / trail_peak
+                    if dd_ratio >= trail_ratio:
+                        if dd_ratio < min_trail_trigger_ratio:
+                            min_trail_trigger_ratio = dd_ratio
+                        provider.place_order(symbol, "SELL", price, open_qty)
+                        trail_peak = price
+                        continue
+                    elif dd_ratio > max_untriggered_trail_ratio:
+                        max_untriggered_trail_ratio = dd_ratio
             else:
                 trail_peak = price
 
@@ -273,6 +294,13 @@ def run_symbol(
         if cached_tape is None and len(recorded_tape) == len(series):
             _TREND_TAPE_CACHE[tape_key] = tuple(recorded_tape)
         _LAST_HARD_TP_TOUCHED[tape_key] = hard_tp_touched
+        _LAST_RUN_DIAGNOSTICS[tape_key] = {
+            "hard_tp_touched": hard_tp_touched,
+            "min_hard_tp_gain_ratio": min_hard_tp_gain_ratio,
+            "hard_tp_cooldown_dts": tuple(hard_tp_cooldown_dts),
+            "min_trail_trigger_ratio": min_trail_trigger_ratio,
+            "max_untriggered_trail_ratio": max_untriggered_trail_ratio,
+        }
     finally:
         if quiet:
             try:

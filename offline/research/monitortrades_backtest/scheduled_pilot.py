@@ -212,13 +212,15 @@ def _run_one(symbol, base, params, series):
 def _eval_symbol_baseline(symbol: str, base: str):
     half1, half2 = _split_series(symbol)
     if len(half1) < 100 or len(half2) < 100:
-        return symbol, None, None, None, True, True
+        return symbol, None, None, None, {}, {}
     base_params = dict(rb.SYMBOLS[symbol]["params"])
     r1 = _run_one(symbol, base, base_params, half1)
-    htp1 = rb._LAST_HARD_TP_TOUCHED.get(rb._series_cache_key(symbol, half1, rb.DEFAULT_WINDOW_SECONDS), True)
+    k1 = rb._series_cache_key(symbol, half1, rb.DEFAULT_WINDOW_SECONDS)
+    diag1 = dict(rb._LAST_RUN_DIAGNOSTICS.get(k1) or {"hard_tp_touched": rb._LAST_HARD_TP_TOUCHED.get(k1, True)})
     r2 = _run_one(symbol, base, base_params, half2)
-    htp2 = rb._LAST_HARD_TP_TOUCHED.get(rb._series_cache_key(symbol, half2, rb.DEFAULT_WINDOW_SECONDS), True)
-    return symbol, base_params, r1, r2, htp1, htp2
+    k2 = rb._series_cache_key(symbol, half2, rb.DEFAULT_WINDOW_SECONDS)
+    diag2 = dict(rb._LAST_RUN_DIAGNOSTICS.get(k2) or {"hard_tp_touched": rb._LAST_HARD_TP_TOUCHED.get(k2, True)})
+    return symbol, base_params, r1, r2, diag1, diag2
 
 
 def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
@@ -243,31 +245,44 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
         test_values.append(_num_str(current))
 
     eval_order = sorted(test_values, key=float) if key == "mt.hardtp" else test_values
-    untouched_r1 = None
-    untouched_r2 = None
+    invariant_r1 = None
+    invariant_max_htp1 = -1.0
+    invariant_r2 = None
+    invariant_max_htp2 = -1.0
     raw_results = {}
     for v in eval_order:
         t0 = time.time()
         params = dict(base_params)
         params[key] = v
-        if key == "mt.hardtp" and untouched_r1 is not None:
-            r1 = dict(untouched_r1)
+        v_ratio = float(v) / 100.0 if key == "mt.hardtp" else 0.0
+        if key == "mt.hardtp" and invariant_r1 is not None and v_ratio <= invariant_max_htp1:
+            r1 = dict(invariant_r1)
             _RUN_ONE_CACHE[_run_one_cache_key(symbol, params, half1)] = r1
         else:
             r1 = _run_one(symbol, base, params, half1)
             if key == "mt.hardtp" and r1 is not None:
                 tk1 = rb._series_cache_key(symbol, half1, rb.DEFAULT_WINDOW_SECONDS)
+                d1 = rb._LAST_RUN_DIAGNOSTICS.get(tk1) or {}
                 if not rb._LAST_HARD_TP_TOUCHED.get(tk1, True):
-                    untouched_r1 = r1
-        if key == "mt.hardtp" and untouched_r2 is not None:
-            r2 = dict(untouched_r2)
+                    invariant_r1 = r1
+                    invariant_max_htp1 = float("inf")
+                elif d1.get("min_hard_tp_gain_ratio", 0.0) >= v_ratio:
+                    invariant_r1 = r1
+                    invariant_max_htp1 = float(d1["min_hard_tp_gain_ratio"])
+        if key == "mt.hardtp" and invariant_r2 is not None and v_ratio <= invariant_max_htp2:
+            r2 = dict(invariant_r2)
             _RUN_ONE_CACHE[_run_one_cache_key(symbol, params, half2)] = r2
         else:
             r2 = _run_one(symbol, base, params, half2)
             if key == "mt.hardtp" and r2 is not None:
                 tk2 = rb._series_cache_key(symbol, half2, rb.DEFAULT_WINDOW_SECONDS)
+                d2 = rb._LAST_RUN_DIAGNOSTICS.get(tk2) or {}
                 if not rb._LAST_HARD_TP_TOUCHED.get(tk2, True):
-                    untouched_r2 = r2
+                    invariant_r2 = r2
+                    invariant_max_htp2 = float("inf")
+                elif d2.get("min_hard_tp_gain_ratio", 0.0) >= v_ratio:
+                    invariant_r2 = r2
+                    invariant_max_htp2 = float(d2["min_hard_tp_gain_ratio"])
         sys.stderr.write(f"  [{full_key}] {key}={v}: half1={r1} half2={r2} ({time.time()-t0:.1f}s)\n")
         if r1 is None or r2 is None:
             continue
@@ -454,7 +469,7 @@ def main():
     max_workers = min(len(keys), os.cpu_count() or 2)
     all_ranges = scan_backtest_ranges(INSTRUMENTS_CONF)
     with _futures.ProcessPoolExecutor(max_workers=min(len(unique_sym_base), max_workers)) as pre_ex:
-        for sym, base_params, r1, r2, htp1, htp2 in pre_ex.map(
+        for sym, base_params, r1, r2, diag1, diag2 in pre_ex.map(
             _eval_symbol_baseline,
             [s for s, _ in unique_sym_base],
             [b for _, b in unique_sym_base],
@@ -463,25 +478,56 @@ def main():
                 half1, half2 = _split_series(sym)
                 _RUN_ONE_CACHE[_run_one_cache_key(sym, base_params, half1)] = r1
                 _RUN_ONE_CACHE[_run_one_cache_key(sym, base_params, half2)] = r2
+                htp1 = diag1.get("hard_tp_touched", True)
+                htp2 = diag2.get("hard_tp_touched", True)
                 base_htp = float(base_params.get("mt.hardtp") or 0.0)
+                base_cd_s = float(base_params.get("mt.hardtp_cooldown_h") or 6.0) * 3600.0
+                base_tr = float(base_params.get("trailing.pct") or 0.0)
+                base_tr_r = base_tr / 100.0
                 for fk, (k_sym, _k_base, k_name) in keys.items():
                     if k_sym != sym:
                         continue
-                    if k_name in ("mt.hardtp_fraction", "mt.hardtp_cooldown_h"):
+                    if k_name == "mt.hardtp_fraction":
                         for gv in all_ranges.get(fk, ()):
                             p = dict(base_params, **{k_name: gv})
                             if not htp1:
                                 _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half1)] = r1
                             if not htp2:
                                 _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half2)] = r2
-                    elif k_name == "mt.hardtp" and base_htp > 0:
+                    elif k_name == "mt.hardtp_cooldown_h":
+                        dts1 = diag1.get("hard_tp_cooldown_dts", ())
+                        dts2 = diag2.get("hard_tp_cooldown_dts", ())
                         for gv in all_ranges.get(fk, ()):
-                            if float(gv) >= base_htp:
+                            cand_cd_s = float(gv) * 3600.0
+                            p = dict(base_params, **{k_name: gv})
+                            if not htp1 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in dts1):
+                                _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half1)] = r1
+                            if not htp2 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in dts2):
+                                _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half2)] = r2
+                    elif k_name == "mt.hardtp" and base_htp > 0:
+                        min_g1 = diag1.get("min_hard_tp_gain_ratio", 0.0)
+                        min_g2 = diag2.get("min_hard_tp_gain_ratio", 0.0)
+                        for gv in all_ranges.get(fk, ()):
+                            gv_f = float(gv)
+                            gv_r = gv_f / 100.0
+                            if gv_f >= base_htp:
                                 p = dict(base_params, **{k_name: gv})
-                                if not htp1:
+                                if not htp1 or min_g1 >= gv_r:
                                     _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half1)] = r1
-                                if not htp2:
+                                if not htp2 or min_g2 >= gv_r:
                                     _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half2)] = r2
+                    elif k_name == "trailing.pct" and base_tr > 0:
+                        min_tr1 = diag1.get("min_trail_trigger_ratio", 0.0)
+                        max_untr1 = diag1.get("max_untriggered_trail_ratio", 1.0)
+                        min_tr2 = diag2.get("min_trail_trigger_ratio", 0.0)
+                        max_untr2 = diag2.get("max_untriggered_trail_ratio", 1.0)
+                        for gv in all_ranges.get(fk, ()):
+                            gv_r = float(gv) / 100.0
+                            p = dict(base_params, **{k_name: gv})
+                            if (gv_r >= base_tr_r and gv_r <= min_tr1) or (gv_r <= base_tr_r and gv_r > max_untr1):
+                                _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half1)] = r1
+                            if (gv_r >= base_tr_r and gv_r <= min_tr2) or (gv_r <= base_tr_r and gv_r > max_untr2):
+                                _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half2)] = r2
 
     # Independent keys => run in PARALLEL (ProcessPoolExecutor). Fork on Linux =>
     # each key has its own rb.mt (so the is_trend_up monkeypatch from _run_one
