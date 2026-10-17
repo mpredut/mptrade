@@ -132,11 +132,12 @@ class MacroAnalyzer:
                 with open(fg_path, "r", encoding="utf-8") as f:
                     fg_data = json.load(f)
                 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
+                raw_hist = fg_data.get("historical_values") or ()
                 fg_snap = FearGreedSnapshot(
                     value=int(fg_data.get("value", 50)),
-                    classification=str(fg_data.get("classification", "Neutral")),
+                    classification=str(fg_data.get("classification", fg_data.get("sentiment", "Neutral"))),
                     timestamp=float(fg_data.get("ts", time.time())),
-                    historical_values=(),
+                    historical_values=tuple(int(v) for v in raw_hist),
                     trend_7d_change=int(fg_data.get("trend_7d_change", 0)),
                     is_extreme_fear=bool(fg_data.get("is_extreme_fear", False)),
                     is_extreme_greed=bool(fg_data.get("is_extreme_greed", False)),
@@ -151,17 +152,19 @@ class MacroAnalyzer:
                 with open(mb_path, "r", encoding="utf-8") as f:
                     mb_data = json.load(f)
                 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
+                raw_gainers = mb_data.get("top_gainers") or ()
+                raw_losers = mb_data.get("top_losers") or ()
                 mb_snap = MarketBreadthSnapshot(
                     advance_ratio=float(mb_data.get("advance_ratio", 0.5)),
-                    advancing_count=int(mb_data.get("advancing", 0)),
-                    declining_count=int(mb_data.get("declining", 0)),
+                    advancing_count=int(mb_data.get("advancing_count", mb_data.get("advancing", 0))),
+                    declining_count=int(mb_data.get("declining_count", mb_data.get("declining", 0))),
                     total_count=int(mb_data.get("total_count", mb_data.get("total_symbols", 0))),
                     median_change_pct=float(mb_data.get("median_change_pct", 0.0)),
                     mean_change_pct=float(mb_data.get("mean_change_pct", 0.0)),
                     dispersion_std=float(mb_data.get("dispersion_std", 0.0)),
                     regime=str(mb_data.get("regime", "NEUTRAL")),
-                    top_gainers=(),
-                    top_losers=(),
+                    top_gainers=tuple((str(x[0]), float(x[1])) for x in raw_gainers if isinstance(x, (list, tuple)) and len(x) >= 2),
+                    top_losers=tuple((str(x[0]), float(x[1])) for x in raw_losers if isinstance(x, (list, tuple)) and len(x) >= 2),
                     ts=float(mb_data.get("ts", time.time())),
                 )
 

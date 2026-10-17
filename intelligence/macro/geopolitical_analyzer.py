@@ -75,16 +75,14 @@ class GeopoliticalThreatAnalyzer:
 
     def _save_to_disk(self, assessment: GeopoliticalThreatAssessment) -> None:
         try:
-            os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
+            from state_io import atomic_write_json
             data = asdict(assessment)
             data["headlines_digest"] = self._last_headlines_digest
-            with open(self.state_file, "w") as f:
-                json.dump(data, f, indent=2)
+            atomic_write_json(self.state_file, data, indent=2)
             # Write legacy file during migration
             legacy = self.state_file.replace("geopolitical_threat_eval.json", "geopolitical_threat_state.json")
             if legacy != self.state_file:
-                with open(legacy, "w") as f:
-                    json.dump(data, f, indent=2)
+                atomic_write_json(legacy, data, indent=2)
         except Exception as e:
             logger.warning("Could not persist geopolitical state to %s: %s", self.state_file, e)
 

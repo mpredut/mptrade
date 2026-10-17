@@ -242,7 +242,7 @@ class HighStakeGuard:
             "}"
         )
 
-        thread_title = f"ntfy-guard: 🛡 [HIGH-STAKE GUARD] BUY {symbol} €{notional:,.2f}"
+        thread_title = f"ntfy-guard: 🛡 [HIGH-STAKE GUARD] {side_norm} {symbol} €{notional:,.2f}"
         resp = self.gemini_client.query_json(
             prompt,
             timeout_sec=self.timeout_sec,
@@ -264,7 +264,7 @@ class HighStakeGuard:
         if decision_str == "REJECTED":
             dec = GuardDecision.veto(
                 "HighStakeGuard",
-                f"Gemini vetoed high-stake BUY: {reason}",
+                f"Gemini vetoed high-stake {side_norm}: {reason}",
                 notional_eur=notional,
                 gemini_reason=reason,
             )
@@ -273,14 +273,14 @@ class HighStakeGuard:
             dec = GuardDecision.downscale(
                 "HighStakeGuard",
                 scale=clamped_scale,
-                reason=f"Gemini downscaled high-stake BUY: {reason}",
+                reason=f"Gemini downscaled high-stake {side_norm}: {reason}",
                 notional_eur=notional,
                 gemini_reason=reason,
             )
         else:
             dec = GuardDecision.allow(
                 "HighStakeGuard",
-                f"Gemini approved high-stake BUY: {reason}",
+                f"Gemini approved high-stake {side_norm}: {reason}",
                 notional_eur=notional,
                 gemini_reason=reason,
             )

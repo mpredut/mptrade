@@ -142,6 +142,9 @@ def check_intelligence_order_guards(
                             "Gemini vetoed high-stake BUY: ", "LLM vetoed high-stake BUY: ",
                             "Gemini approved high-stake BUY: ", "LLM approved high-stake BUY: ",
                             "Gemini downscaled high-stake BUY: ", "LLM downscaled high-stake BUY: ",
+                            "Gemini vetoed high-stake SELL: ", "LLM vetoed high-stake SELL: ",
+                            "Gemini approved high-stake SELL: ", "LLM approved high-stake SELL: ",
+                            "Gemini downscaled high-stake SELL: ", "LLM downscaled high-stake SELL: ",
                         ):
                             if clean_reason.startswith(pfx):
                                 clean_reason = clean_reason[len(pfx):].strip()

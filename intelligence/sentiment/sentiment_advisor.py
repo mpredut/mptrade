@@ -77,16 +77,15 @@ class SentimentAdvisor:
 
     def _save_to_disk(self, assessment: SentimentAdvisorAssessment) -> None:
         try:
-            os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
-            with open(self.cache_file, "w") as f:
-                json.dump(asdict(assessment), f, indent=2)
+            from state_io import atomic_write_json
+            payload = asdict(assessment)
+            atomic_write_json(self.cache_file, payload, indent=2)
             # Write legacy files during migration
             for legacy_name in ("macro_advisor_eval.json", "gemini_macro_advisor.json"):
                 legacy_path = self.cache_file.replace("sentiment_advisor_eval.json", legacy_name)
                 if legacy_path != self.cache_file:
                     try:
-                        with open(legacy_path, "w") as f:
-                            json.dump(asdict(assessment), f, indent=2)
+                        atomic_write_json(legacy_path, payload, indent=2)
                     except Exception:
                         pass
         except Exception as e:

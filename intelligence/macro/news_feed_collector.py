@@ -102,7 +102,7 @@ class NewsFeedCollector:
 
     def _save_history(self) -> None:
         try:
-            os.makedirs(os.path.dirname(self.history_file) or ".", exist_ok=True)
+            from state_io import atomic_write_json
             payload = []
             for norm, (ts, h) in self._aggregated_pool.items():
                 payload.append({
@@ -114,13 +114,11 @@ class NewsFeedCollector:
                     "is_high_severity": h.is_high_severity,
                     "first_seen_ts": ts,
                 })
-            with open(self.history_file, "w") as f:
-                json.dump(payload, f, indent=2)
+            atomic_write_json(self.history_file, payload, indent=2)
             # Dual-write legacy filename if using standardized collect naming
             if "_collect.json" in self.history_file:
                 legacy = self.history_file.replace("_collect.json", "_history.json")
-                with open(legacy, "w") as f:
-                    json.dump(payload, f, indent=2)
+                atomic_write_json(legacy, payload, indent=2)
         except Exception as e:
             logger.debug("Could not save news history to %s: %s", self.history_file, e)
 

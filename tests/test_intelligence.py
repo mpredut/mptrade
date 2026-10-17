@@ -533,5 +533,110 @@ def test_inspect_symbol_intelligence(temp_cache_dir):
     assert "buy_standard" in report["guard_preview"]
 
 
+def test_parabolic_surge_guard_ignores_pre_dip_high_and_disarms_cleanly():
+    guard = ParabolicSurgeGuard(surge_threshold_pct=5.0, pullback_required_pct=2.0, window_seconds=7200.0)
+    # High (100.0) occurred BEFORE trough (94.0); recovery to 98.5 is +4.79% (< 5.0% threshold).
+    history_dip_recovery = [(1000.0, 100.0), (1500.0, 94.0), (2000.0, 98.5)]
+    dec = guard.check("ETHUSDC", "BUY", 98.5, price_history=history_dip_recovery, now=2000.0)
+    assert dec.allowed is True
+
+    # Real upward surge (80000 -> 86000 = +7.5%), followed by pullback to 84000 (-2.33%), then rebound to 85000 (+1.19%)
+    history_surge = [(1000.0, 80000.0), (1060.0, 83000.0), (1120.0, 86000.0)]
+    dec1 = guard.check("BTCUSDC", "BUY", 86000.0, price_history=history_surge, now=1120.0)
+    assert dec1.allowed is False
+
+    history_pullback = history_surge + [(1200.0, 84000.0)]
+    dec2 = guard.check("BTCUSDC", "BUY", 84000.0, price_history=history_pullback, now=1200.0)
+    assert dec2.allowed is True
+
+    # Subsequent modest bounce to 85000 should not re-trigger on the already-disarmed 1120.0 peak
+    history_rebound = history_pullback + [(1300.0, 85000.0)]
+    dec3 = guard.check("BTCUSDC", "BUY", 85000.0, price_history=history_rebound, now=1300.0)
+    assert dec3.allowed is True
+
+
+def test_global_telemetry_and_macro_analyzer_preserve_breadth_and_fg_fields(temp_cache_dir):
+    from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+    from intelligence.macro_analyzer import MacroAnalyzer
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
+
+    collector = GlobalTelemetryCollector(
+        symbols=["BTCUSDC"],
+        cache_dir=temp_cache_dir,
+        skip_news=True,
+        skip_external=True,
+    )
+    fg_in = FearGreedSnapshot(
+        value=18,
+        classification="Extreme Fear",
+        timestamp=1700000000.0,
+        historical_values=(18, 29, 35),
+        trend_7d_change=-17,
+        is_extreme_fear=True,
+        is_extreme_greed=False,
+    )
+    mb_in = MarketBreadthSnapshot(
+        advance_ratio=0.12,
+        advancing_count=12,
+        declining_count=88,
+        total_count=100,
+        median_change_pct=-5.4,
+        mean_change_pct=-6.1,
+        dispersion_std=3.8,
+        regime="CAPITULATION",
+        top_gainers=(("BTCUSDC", 1.2),),
+        top_losers=(("ALTUSDC", -14.5),),
+        ts=1700000000.0,
+    )
+    with patch.object(collector.fear_greed_collector, "fetch", return_value=fg_in), \
+         patch.object(collector.breadth_collector, "fetch", return_value=mb_in):
+        assert collector.update_fear_greed(force=True) is True
+        assert collector.update_market_breadth(force=True) is True
+
+    analyzer = MacroAnalyzer(
+        cache_dir=temp_cache_dir,
+        macro_llm_interval_sec=3600.0,
+        advisor_interval_sec=3600.0,
+        symbols=["BTCUSDC"],
+    )
+    captured = {}
+
+    def _fake_review(*, fear_greed=None, breadth=None, whale_telemetry=None, force_refresh=False):
+        captured["fg"] = fear_greed
+        captured["mb"] = breadth
+        return None
+
+    with patch.object(analyzer.gemini_advisor, "review", side_effect=_fake_review):
+        analyzer.assess_market_advisor(force=True)
+
+    assert captured["fg"].historical_values == (18, 29, 35)
+    assert captured["mb"].regime == "CAPITULATION"
+    assert captured["mb"].mean_change_pct == pytest.approx(-6.1)
+    assert captured["mb"].dispersion_std == pytest.approx(3.8)
+    assert captured["mb"].top_gainers == (("BTCUSDC", 1.2),)
+    assert captured["mb"].top_losers == (("ALTUSDC", -14.5),)
+
+
+def test_high_stake_guard_sell_uses_sell_label():
+    from intelligence.sentiment.guards import high_stake_guard as hsg_mod
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+
+    hsg_mod._HIGH_STAKE_DECISION_CACHE.clear()
+    mock_client = MagicMock()
+    mock_client.query_json.return_value = {
+        "decision": "REJECTED",
+        "suggested_scale": 0.0,
+        "reason": "dumping into whale support",
+    }
+    guard = HighStakeGuard(min_notional_eur=1000.0, gemini_client=mock_client, cache_ttl_sec=0.0)
+    dec = guard.check("BTCUSDC", "SELL", 85000.0, 0.02, notional_eur=1700.0, telemetry={"flow": 1.2})
+    assert dec.allowed is False
+    assert "Gemini vetoed high-stake SELL: dumping into whale support" in dec.reason
+    call_kwargs = mock_client.query_json.call_args.kwargs
+    assert "SELL BTCUSDC" in call_kwargs["thread_title"]
+
+
 if __name__ == "__main__":
     unittest.main()
+

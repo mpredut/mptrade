@@ -181,6 +181,7 @@ class GlobalTelemetryCollector:
                     "value": snap.value,
                     "sentiment": snap.classification,
                     "classification": snap.classification,
+                    "historical_values": list(snap.historical_values),
                     "trend_7d_change": snap.trend_7d_change,
                     "is_extreme_fear": snap.is_extreme_fear,
                     "is_extreme_greed": snap.is_extreme_greed,
@@ -204,10 +205,17 @@ class GlobalTelemetryCollector:
                 payload = {
                     "advance_ratio": breadth.advance_ratio,
                     "median_change_pct": breadth.median_change_pct,
+                    "mean_change_pct": breadth.mean_change_pct,
+                    "dispersion_std": breadth.dispersion_std,
+                    "regime": breadth.regime,
                     "total_symbols": getattr(breadth, "total_count", 0),
                     "total_count": getattr(breadth, "total_count", 0),
                     "advancing": breadth.advancing_count,
+                    "advancing_count": breadth.advancing_count,
                     "declining": breadth.declining_count,
+                    "declining_count": breadth.declining_count,
+                    "top_gainers": [list(x) for x in getattr(breadth, "top_gainers", ())],
+                    "top_losers": [list(x) for x in getattr(breadth, "top_losers", ())],
                     "ts": breadth.ts,
                 }
                 # Standardized collect file + legacy cache file

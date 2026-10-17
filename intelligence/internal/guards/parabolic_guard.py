@@ -57,29 +57,57 @@ class ParabolicSurgeGuard:
 
         st = self._states.setdefault(
             symbol,
-            {"peak": current_price, "surge_active": False, "surge_start_px": current_price, "ts": ts_now},
+            {
+                "peak": current_price,
+                "surge_active": False,
+                "surge_start_px": current_price,
+                "ts": ts_now,
+                "disarmed_peak_ts": 0.0,
+            },
         )
 
-        # Update peak
+        # Expire stale peak/surge state once a full window has elapsed without new highs
+        if ts_now > 0 and st.get("ts", 0) > 0 and (ts_now - st["ts"]) >= self.window_seconds:
+            st["surge_active"] = False
+            st["peak"] = current_price
+            st["surge_start_px"] = current_price
+            st["ts"] = ts_now
+
+        # Update peak if current price makes a new high
         if current_price > st["peak"]:
             st["peak"] = current_price
             st["ts"] = ts_now
 
-        # Check window move if history provided
+        # Check chronological upward move in rolling window if history provided
         if price_history and len(price_history) >= 2:
-            window_start_ts = ts_now - self.window_seconds
-            window_prices = [p for (t, p) in price_history if t >= window_start_ts and p > 0]
-            if window_prices:
-                low_px = min(window_prices)
-                high_px = max(window_prices)
-                if high_px > st["peak"]:
-                    st["peak"] = high_px
-                    st["ts"] = ts_now
-                if low_px > 0:
-                    window_move_pct = (st["peak"] - low_px) / low_px * 100.0
-                    if window_move_pct >= threshold:
-                        st["surge_active"] = True
-                        st["surge_start_px"] = low_px
+            window_start_ts = max(ts_now - self.window_seconds, float(st.get("disarmed_peak_ts", 0.0)))
+            window_pts = [(float(t), float(p)) for (t, p) in price_history if t >= window_start_ts and p > 0]
+            if ts_now >= window_start_ts and (not window_pts or window_pts[-1] != (float(ts_now), float(current_price))):
+                window_pts.append((float(ts_now), float(current_price)))
+            if window_pts:
+                running_low = window_pts[0][1]
+                best_move_pct = 0.0
+                surge_low_px = running_low
+                surge_peak_px = window_pts[0][1]
+                surge_peak_ts = window_pts[0][0]
+                for t, p in window_pts:
+                    if p < running_low:
+                        running_low = p
+                    if running_low > 0:
+                        move_pct = (p - running_low) / running_low * 100.0
+                        if move_pct >= best_move_pct:
+                            best_move_pct = move_pct
+                            surge_low_px = running_low
+                            surge_peak_px = p
+                            surge_peak_ts = t
+                if best_move_pct >= threshold:
+                    st["surge_active"] = True
+                    st["surge_start_px"] = surge_low_px
+                    st["peak"] = max(st["peak"], surge_peak_px)
+                    st["ts"] = surge_peak_ts
+                elif st["surge_active"] and surge_peak_px > st["peak"]:
+                    st["peak"] = surge_peak_px
+                    st["ts"] = surge_peak_ts
 
         # If surge is active, verify if price has pulled back sufficiently from peak
         # or if the spike has consolidated over the full window without making new highs
@@ -90,6 +118,7 @@ class ParabolicSurgeGuard:
             if ts_now > 0 and st.get("ts", 0) > 0 and (ts_now - st["ts"]) >= self.window_seconds:
                 # Spike has consolidated past the window without new highs; surge disarmed
                 st["surge_active"] = False
+                st["disarmed_peak_ts"] = max(float(st.get("disarmed_peak_ts", 0.0)), float(st.get("ts", 0.0)))
                 st["peak"] = current_price
                 st["ts"] = ts_now
             elif pullback_pct < self.pullback_required_pct:
@@ -104,5 +133,8 @@ class ParabolicSurgeGuard:
             else:
                 # Pullback achieved, surge disarmed
                 st["surge_active"] = False
+                st["disarmed_peak_ts"] = max(float(st.get("disarmed_peak_ts", 0.0)), float(st.get("ts", 0.0)))
+                st["peak"] = current_price
+                st["ts"] = ts_now
 
         return GuardDecision.allow("ParabolicSurgeGuard", "normal_market_structure")
