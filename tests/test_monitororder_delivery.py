@@ -434,3 +434,54 @@ class TestOrderRetryTTL:
             monitororder.monitor_open_orders_by_type("ARBUSDC", "BUY")
         assert len(placed) == 1
         assert abs(placed[0][2] - (0.1999 * 0.999)) < 1e-9
+
+    def test_subdollar_sell_replacement_avoids_plus_one_jump(self, tmp_path):
+        import order_retry as oq
+        open_orders = {
+            555003: {
+                "price": 0.20,
+                "quantity": 300.0,
+                "remainingQty": 300.0,
+            }
+        }
+        placed = []
+        def fake_place(symbol, side, price, qty, **kw):
+            placed.append((symbol, side, price, qty))
+            return {"orderId": 555004}
+
+        with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
+             patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")), \
+             patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
+             patch.object(monitororder.api, "get_current_price", return_value=0.1999), \
+             patch.object(monitororder.mkt, "order_filter_refusal", return_value=None), \
+             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
+             patch.object(monitororder.api, "cancel_order", return_value=True), \
+             patch.object(monitororder.mkt, "order_status", return_value=oq.OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="CANCELED")), \
+             patch.object(monitororder.mkt, "place", side_effect=fake_place), \
+             patch.object(monitororder.accepted_order_persistence, "complete_accepted_claim", return_value=True), \
+             patch("alertnotifiers.notify"):
+            monitororder.monitor_open_orders_by_type("ARBUSDC", "SELL")
+        assert len(placed) == 1
+        assert abs(placed[0][2] - (0.1999 * 1.001)) < 1e-9
+
+    def test_skips_redundant_replacement_when_price_unchanged(self, tmp_path):
+        import order_retry as oq
+        open_orders = {
+            555005: {
+                "price": 0.1823,
+                "quantity": 300.0,
+                "remainingQty": 300.0,
+            }
+        }
+        with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
+             patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")), \
+             patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
+             patch.object(monitororder.api, "get_current_price", return_value=0.1825), \
+             patch.object(monitororder.mkt, "round_price", return_value=0.1823), \
+             patch.object(monitororder.api, "cancel_order") as mock_cancel, \
+             patch.object(monitororder.mkt, "place") as mock_place:
+            # Patch out _mock_name check on round_price by using a real function
+            monitororder.mkt.round_price = lambda _sym, _px: 0.1823
+            monitororder.monitor_open_orders_by_type("ARBUSDC", "BUY")
+            mock_cancel.assert_not_called()
+            mock_place.assert_not_called()

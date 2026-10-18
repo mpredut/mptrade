@@ -294,11 +294,33 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             # order. Instrument.place repeats this check immediately before submit
             # to close the time-of-check/time-of-use window.
             if order_type == "SELL":
-                new_price = current_price * 1.001 + 1
+                new_price = (
+                    current_price * 1.001
+                    if current_price <= 1.0
+                    else current_price * 1.001 + 1
+                )
             else:
                 new_price = current_price * 0.999 - 1
                 if new_price <= 0:
                     new_price = current_price * 0.999
+            effective_new_price = new_price
+            round_px = getattr(mkt, "round_price", None)
+            if callable(round_px) and not hasattr(round_px, "_mock_name"):
+                try:
+                    rounded = float(round_px(symbol, new_price))
+                    if math.isfinite(rounded) and rounded > 0:
+                        effective_new_price = rounded
+                except Exception:
+                    pass
+            if (
+                abs(effective_new_price - float(price)) <= 1e-12
+                or abs(new_price - float(price)) <= 1e-12
+            ):
+                print(
+                    f"Order {order_id} is already at target replacement price "
+                    f"{price}; skipping redundant cancel/replace."
+                )
+                continue
             try:
                 original_quantity = float(order["quantity"])
                 quantity = float(
