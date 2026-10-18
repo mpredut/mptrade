@@ -490,6 +490,39 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         mgr._mem[SYMBOL] = {"symbol": SYMBOL, "ts_fast": time.time(), "ts": None}
         self.assertFalse(mgr.is_snapshot_fresh(symbol=None))
 
+    def test_if_place_safe_order_fetches_full_ref_window_and_pricewindow_edge_cases(self):
+        import pricewindow as pw
+        fetched_ages = []
+        now_ms = time.time() * 1000.0
+
+        def fake_get_trade_orders(order_type, symbol, max_age_seconds):
+            fetched_ages.append((order_type, max_age_seconds))
+            return [
+                {"price": 100.0, "timestamp": now_ms - 7200 * 1000.0},
+                {"price": 102.0, "timestamp": now_ms - 5400 * 1000.0},
+            ]
+
+        with (
+            mock.patch.object(po.order_guard, "daily_limit_guard", return_value=(True, None)),
+            mock.patch.object(po.api, "get_current_price", return_value=100.0),
+            mock.patch("binance_api.bapi_allorders.get_trade_orders", side_effect=fake_get_trade_orders),
+            mock.patch.object(po.order_guard, "window_for", return_value=86400.0),
+            mock.patch.object(po.order_guard, "margin_for", return_value=1.01),
+            mock.patch.object(po.order_guard, "profit_guard", return_value=True),
+            mock.patch("providers.market_api.api.market_regime_context", return_value=self._fresh_context()),
+        ):
+            ok, reason = po.if_place_safe_order("BUY", SYMBOL, 98.0, 1.0, 3600)
+        self.assertTrue(ok)
+        self.assertIsNone(reason)
+        self.assertEqual(fetched_ages, [("SELL", 86400.0), ("BUY", 86400.0)])
+
+        w = pw.PriceWindow.from_existing_window([100.0, 101.0, 102.0], 5, symbol="BTCUSDC")
+        self.assertEqual(w.current_window_size(), 3)
+        w.sample_rate_sec = 0
+        self.assertEqual(w.recent_n, 2)
+        trend, _, _, _ = pw.instant_trend_from_prices([100.0, 101.0, 102.0], None)
+        self.assertEqual(trend, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

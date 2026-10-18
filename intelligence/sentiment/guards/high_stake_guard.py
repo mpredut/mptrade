@@ -263,9 +263,15 @@ class HighStakeGuard:
                 return GuardDecision.downscale("HighStakeGuard", scale=0.5, reason="llm_query_timeout_downscaled", notional_eur=notional)
             return GuardDecision.allow("HighStakeGuard", "llm_query_timeout_fallback_allowed", notional_eur=notional)
 
-        decision_str = str(resp.get("decision", "APPROVED")).upper().strip()
-        reason = str(resp.get("reason", "evaluated by LLM"))
-        scale = float(resp.get("suggested_scale", 1.0))
+        decision_str = str(resp.get("decision") or "APPROVED").upper().strip()
+        reason = str(resp.get("reason") or "evaluated by LLM")
+        raw_scale = resp.get("suggested_scale")
+        try:
+            scale = float(1.0 if raw_scale is None else raw_scale)
+            if not (0.0 <= scale <= 10.0):
+                scale = 1.0
+        except (TypeError, ValueError):
+            scale = 1.0
 
         if decision_str == "REJECTED":
             dec = GuardDecision.veto(

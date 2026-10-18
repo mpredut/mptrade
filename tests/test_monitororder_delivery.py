@@ -405,3 +405,32 @@ class TestOrderRetryTTL:
             )
             ttl_map = oq.get_accepted_order_ttl_map()
             assert ttl_map.get("TA_OR_test_1") == 750.0
+
+    def test_subdollar_buy_replacement_uses_positive_price(self, tmp_path):
+        import order_retry as oq
+        open_orders = {
+            555001: {
+                "price": 0.20,
+                "quantity": 300.0,
+                "remainingQty": 300.0,
+            }
+        }
+        placed = []
+        def fake_place(symbol, side, price, qty, **kw):
+            placed.append((symbol, side, price, qty))
+            return {"orderId": 555002}
+
+        with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
+             patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")), \
+             patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
+             patch.object(monitororder.api, "get_current_price", return_value=0.1999), \
+             patch.object(monitororder.mkt, "order_filter_refusal", return_value=None), \
+             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
+             patch.object(monitororder.api, "cancel_order", return_value=True), \
+             patch.object(monitororder.mkt, "order_status", return_value=oq.OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="CANCELED")), \
+             patch.object(monitororder.mkt, "place", side_effect=fake_place), \
+             patch.object(monitororder.accepted_order_persistence, "complete_accepted_claim", return_value=True), \
+             patch("alertnotifiers.notify"):
+            monitororder.monitor_open_orders_by_type("ARBUSDC", "BUY")
+        assert len(placed) == 1
+        assert abs(placed[0][2] - (0.1999 * 0.999)) < 1e-9

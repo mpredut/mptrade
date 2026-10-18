@@ -308,6 +308,19 @@ class SmartStopLossGuard:
         if is_whale_supported and has_absorption:
             tracker = _load_grace_state(is_sim=is_sim)
             active_grace = tracker.get(sym_key)
+            if active_grace is not None and buy_price is not None:
+                saved_buy = active_grace.get("buy_price")
+                try:
+                    if (
+                        saved_buy is not None
+                        and math.isfinite(float(buy_price))
+                        and math.isfinite(float(saved_buy))
+                        and abs(float(buy_price) - float(saved_buy))
+                        > max(1e-9, abs(float(saved_buy)) * 1e-6)
+                    ):
+                        active_grace = None
+                except (TypeError, ValueError):
+                    pass
 
             if active_grace is None:
                 # Start Grace Period
@@ -352,6 +365,10 @@ class SmartStopLossGuard:
                     return True, f"shadow_defer: {reason}", meta
                 return False, reason, meta
             else:
+                if current_price is not None:
+                    active_grace["current_price"] = float(current_price)
+                if buy_price is not None and active_grace.get("buy_price") is None:
+                    active_grace["buy_price"] = float(buy_price)
                 start_ts = float(active_grace.get("start_ts", now_ts))
                 elapsed = now_ts - start_ts
                 meta["grace_elapsed_sec"] = round(elapsed, 1)

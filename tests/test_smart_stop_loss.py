@@ -379,3 +379,38 @@ def test_smart_sl_replay_provider_never_emits_notifications(tmp_path):
         assert len(ssl_guard._PENDING_RECOVERIES) == 0
 
 
+def test_smart_sl_buy_price_change_resets_stale_grace_and_updates_current_price():
+    guard = SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
+    whale = _mock_whale(top_long=0.65, taker_ratio=1.1)
+    ob = _mock_ob()
+
+    t0 = 30000.0
+    # Position 1 enters grace at t0 with buy_price=70000.0
+    should_exec1, reason1, _ = guard.evaluate(
+        "BTCUSDC", 0.0295, 0.02925, now=t0,
+        provider="replay", current_price=67935.0, buy_price=70000.0,
+        whale_snapshot=whale, orderbook_snapshot=ob,
+    )
+    assert should_exec1 is False
+    assert "suspected_wick_hunt" in reason1
+
+    # Tick 2 at t0 + 30s updates current_price in tracker
+    should_exec2, reason2, _ = guard.evaluate(
+        "BTCUSDC", 0.0300, 0.02925, now=t0 + 30.0,
+        provider="replay", current_price=67900.0, buy_price=70000.0,
+        whale_snapshot=whale, orderbook_snapshot=ob,
+    )
+    assert should_exec2 is False
+    assert _GRACE_TRACKER["BTCUSDC"]["current_price"] == 67900.0
+
+    # At t0 + 150s (> 120s), a new position (or DCA-adjusted position) has buy_price=68000.0.
+    # Stale grace from buy_price=70000.0 must be reset so the new position gets a fresh 120s grace!
+    should_exec3, reason3, _ = guard.evaluate(
+        "BTCUSDC", 0.0295, 0.02925, now=t0 + 150.0,
+        provider="replay", current_price=65994.0, buy_price=68000.0,
+        whale_snapshot=whale, orderbook_snapshot=ob,
+    )
+    assert should_exec3 is False
+    assert "suspected_wick_hunt" in reason3
+    assert _GRACE_TRACKER["BTCUSDC"]["start_ts"] == t0 + 150.0
+    assert _GRACE_TRACKER["BTCUSDC"]["buy_price"] == 68000.0

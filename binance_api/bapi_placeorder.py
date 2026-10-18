@@ -522,8 +522,9 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         if not ref_window or ref_window <= 0:
             ref_window = time_back_in_seconds
 
+        fetch_window = max(float(time_back_in_seconds or 0), float(ref_window or 0))
         time_limit = float(time.time() * 1000) - (ref_window * 1000)
-        oposite_trades = apiorders.get_trade_orders(opposite_order_type, symbol, max_age_seconds=time_back_in_seconds) or []
+        oposite_trades = apiorders.get_trade_orders(opposite_order_type, symbol, max_age_seconds=fetch_window) or []
         recent_opposite_trades = [trade for trade in oposite_trades
                                   if float(trade.get('timestamp') or 0) >= time_limit
                                   and float(trade.get('price', 0)) > 0]
@@ -532,7 +533,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
             window_ref = None
             if recent_opposite_trades:
                 if len(recent_opposite_trades) > 1:
-                    same_trades = apiorders.get_trade_orders(order_type, symbol, max_age_seconds=time_back_in_seconds) or []
+                    same_trades = apiorders.get_trade_orders(order_type, symbol, max_age_seconds=fetch_window) or []
                     recent_same_trades = [
                         trade for trade in same_trades
                         if float(trade.get('timestamp') or 0) >= time_limit

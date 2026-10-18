@@ -987,7 +987,10 @@ class Instrument:
             # is best effort and never changes the placement return value.
             elif (order is None and not caller_owns_retry
                   and (prequeued_record_id is not None
-                       or (reason != "account_cache_not_fresh"
+                       or (reason not in {
+                           "account_cache_not_fresh", "execution_disabled",
+                           "trading_disabled", "aborted_by_caller",
+                           "invalid_price"}
                            and not terminal_filter_refusal))):
                 try:
                     import order_retry
@@ -1007,7 +1010,8 @@ class Instrument:
                             claim_outcome = (
                                 "success" if (
                                     terminal_filter_refusal or reason in {
-                                        "execution_disabled", "trading_disabled"}) else
+                                        "execution_disabled", "trading_disabled",
+                                        "aborted_by_caller", "invalid_price"}) else
                                 "deferred" if order_retry.is_non_failure_deferral(reason)
                                 else "failure")
                             order_retry.complete_claim(
@@ -1040,7 +1044,8 @@ class Instrument:
                                 failure_reason=reason,
                                 provider_name=self.provider_name,
                                 intent_id=kwargs.get("intent_id"),
-                                kind=kwargs.get("kind") or kwargs.get("motivation"))
+                                kind=kwargs.get("kind") or kwargs.get("motivation"),
+                                ttl_sec=kwargs.get("ttl_sec"))
                 except Exception as _e:  # noqa: BLE001
                     print(f"[{self.symbol}] {side_u} enqueue retry failed (ignored): {_e}")
 

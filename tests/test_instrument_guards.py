@@ -1309,7 +1309,62 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertEqual(outcome.get("reason"), "medium_trend_deferred")
             mock_ctx.assert_called_once_with(inst.symbol, provider_name=inst.provider_name)
 
+    def test_aborted_by_caller_and_invalid_price_never_enqueued_and_ttl_sec_forwarded(self):
+        import order_retry as oq
+        prov = _FakeProvider()
+        inst = self._inst(prov)
+
+        with patch("order_guard.daily_limit_guard", return_value=(True, None)), \
+             patch("order_guard.profit_guard", return_value=True):
+            # 1. abort_if triggers on first check (before prequeued_claim) -> never enqueued
+            oq.rewrite([])
+            out1 = {}
+            res1 = inst.place(
+                "BUY", 100.0, 1.0, smart=False, wait_for_trend=False,
+                abort_if=lambda: True, _outcome_context=out1,
+            )
+            self.assertIsNone(res1)
+            self.assertEqual(out1.get("reason"), "aborted_by_caller")
+            self.assertEqual(oq.load_all(), [])
+
+            # 2. abort_if triggers on second check (after prequeued_claim) -> claim completed as terminal success, removed from queue
+            calls = {"n": 0}
+            def abort_on_second():
+                calls["n"] += 1
+                return calls["n"] >= 2
+
+            out2 = {}
+            res2 = inst.place(
+                "BUY", 100.0, 1.0, smart=False, wait_for_trend=False,
+                abort_if=abort_on_second, _outcome_context=out2,
+            )
+            self.assertIsNone(res2)
+            self.assertEqual(out2.get("reason"), "aborted_by_caller")
+            self.assertEqual(oq.load_all(), [])
+
+            # 3. invalid_price on BUY -> never enqueued
+            out3 = {}
+            res3 = inst.place(
+                "BUY", -5.0, 1.0, smart=False, wait_for_trend=False,
+                _outcome_context=out3,
+            )
+            self.assertIsNone(res3)
+            self.assertEqual(out3.get("reason"), "invalid_price")
+            self.assertEqual(oq.load_all(), [])
+
+        # 4. Pre-claim fallback enqueue forwards ttl_sec
+        with patch("order_guard.daily_limit_guard", return_value=(True, None)), \
+             patch("order_guard.profit_guard", return_value=False):
+            oq.rewrite([])
+            res4 = inst.place(
+                "BUY", 100.0, 1.0, smart=False, wait_for_trend=False,
+                ttl_sec=1234.0,
+            )
+            self.assertIsNone(res4)
+            queued = oq.load_all()
+            self.assertEqual(len(queued), 1)
+            self.assertEqual(queued[0].get("ttl_sec"), 1234.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-

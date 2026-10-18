@@ -100,7 +100,11 @@ def instant_trend_from_prices(prices, sample_rate_sec):
     if slope_full is None:
         slope_full = 0.0
     gradient_lst, _ = analyzer.calculate_gradient()
-    recent_n = max(2, int(RECENT_GRADIENT_SECONDS / sample_rate_sec)) if sample_rate_sec > 0 else 2
+    recent_n = (
+        max(2, int(RECENT_GRADIENT_SECONDS / sample_rate_sec))
+        if sample_rate_sec and sample_rate_sec > 0
+        else 2
+    )
     if len(gradient_lst) >= recent_n:
         gradient_recent = float(np.mean(gradient_lst[-recent_n:]))
     else:
@@ -350,6 +354,8 @@ class PriceWindow:
     @property
     def recent_n(self) -> int:
         """Return the sample count corresponding to ``RECENT_GRADIENT_SECONDS``."""
+        if not self.sample_rate_sec or self.sample_rate_sec <= 0:
+            return 2
         return max(2, int(RECENT_GRADIENT_SECONDS / self.sample_rate_sec))
 
     def set_sample_rate(self, rate):
@@ -389,8 +395,8 @@ class PriceWindow:
         self.process_price(price)
 
     @classmethod
-    def from_existing_window(cls, existing_prices, window_size):
-        return cls(window_size, initial_prices=existing_prices)
+    def from_existing_window(cls, existing_prices, window_size, symbol=""):
+        return cls(symbol, window_size, initial_prices=existing_prices)
 
     @staticmethod
     def _sample_rate_from_entries(entries) -> float:

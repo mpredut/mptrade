@@ -297,6 +297,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 new_price = current_price * 1.001 + 1
             else:
                 new_price = current_price * 0.999 - 1
+                if new_price <= 0:
+                    new_price = current_price * 0.999
             try:
                 original_quantity = float(order["quantity"])
                 quantity = float(

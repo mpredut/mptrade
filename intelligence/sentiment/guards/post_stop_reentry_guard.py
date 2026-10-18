@@ -189,13 +189,28 @@ class PostStopReentryGuard:
                     notional_eur=notional,
                 )
             self._maybe_notify(symbol, current_price, last_sell_price, trough, bounce_from_trough_pct, dec, now_ts=now_ts)
+            if self.mode == "shadow":
+                final_dec = GuardDecision.allow(
+                    "PostStopReentryGuard",
+                    f"shadow_mode ({dec.reason})",
+                    notional_eur=notional,
+                    shadow_decision=dec,
+                )
+            else:
+                final_dec = dec
             if self.cache_ttl_sec > 0:
-                _POST_STOP_DECISION_CACHE[cache_key] = (now_ts, dec)
-            return dec
+                _POST_STOP_DECISION_CACHE[cache_key] = (now_ts, final_dec)
+            return final_dec
 
-        decision_str = str(resp.get("decision", "APPROVED")).upper().strip()
-        reason = str(resp.get("reason", "evaluated by LLM"))
-        scale = float(resp.get("suggested_scale", 1.0))
+        decision_str = str(resp.get("decision") or "APPROVED").upper().strip()
+        reason = str(resp.get("reason") or "evaluated by LLM")
+        raw_scale = resp.get("suggested_scale")
+        try:
+            scale = float(1.0 if raw_scale is None else raw_scale)
+            if not (0.0 <= scale <= 10.0):
+                scale = 1.0
+        except (TypeError, ValueError):
+            scale = 1.0
 
         if decision_str == "REJECTED":
             dec = GuardDecision.veto(

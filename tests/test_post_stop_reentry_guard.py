@@ -612,3 +612,61 @@ def test_monitortrades_post_stop_ai_downscale_does_not_double_scale_in_instrumen
     assert len(provider.placed_orders) == 1
     assert abs(provider.placed_orders[0]["qty"] - 300.0) <= 0.2
 
+
+def test_post_stop_reentry_shadow_mode_on_timeout_and_null_suggested_scale():
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+    from intelligence.sentiment.guards.post_stop_reentry_guard import clear_post_stop_reentry_cache
+
+    clear_post_stop_reentry_cache()
+
+    # 1. Timeout in shadow mode with fallback_action='veto' must still allow in shadow mode
+    timeout_client = MagicMock()
+    timeout_client.query_json.return_value = None
+    shadow_guard = PostStopReentryGuard(
+        gemini_client=timeout_client,
+        fallback_action="veto",
+        mode="shadow",
+        notify_enabled=False,
+        cache_ttl_sec=600.0,
+    )
+    dec_shadow = shadow_guard.check(
+        symbol="BTCUSDC",
+        current_price=65000.0,
+        last_sell_price=66000.0,
+        trough=64000.0,
+        bounce_pct=0.0156,
+        qty=0.1,
+        last_sell_time_s=1000.0,
+        telemetry={},
+        now=2000.0,
+    )
+    assert dec_shadow.allowed is True
+    assert "shadow_mode" in dec_shadow.reason
+
+    # 2. suggested_scale=None in JSON response must not raise TypeError in PostStopReentryGuard or HighStakeGuard
+    null_scale_client = MagicMock()
+    null_scale_client.query_json.return_value = {
+        "decision": "REJECTED",
+        "suggested_scale": None,
+        "reason": "Whale taker flow is negative",
+    }
+    enforce_guard = PostStopReentryGuard(
+        gemini_client=null_scale_client,
+        mode="enforce",
+        notify_enabled=False,
+    )
+    dec_veto = enforce_guard.check(
+        symbol="ETHUSDC",
+        current_price=2000.0,
+        last_sell_price=2100.0,
+        trough=1950.0,
+        bounce_pct=0.025,
+        qty=1.0,
+        telemetry={},
+        now=3000.0,
+    )
+    assert dec_veto.allowed is False
+
+    hs_guard = HighStakeGuard(gemini_client=null_scale_client, min_notional_eur=1000.0, cache_ttl_sec=0.0)
+    hs_dec = hs_guard.check("ETHUSDC", "BUY", 2000.0, 1.0, notional_eur=2000.0, telemetry={})
+    assert hs_dec.allowed is False
