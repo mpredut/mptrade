@@ -367,10 +367,10 @@ class CacheManagerInterface(ABC):
         )
 
     @staticmethod
-    def _snapshot_data_version(items, fetchtime):
-        """Return a stable version for an exact atomic JSON snapshot."""
+    def _snapshot_data_version(items, fetchtime=None):
+        """Return a stable version for an exact atomic JSON items snapshot."""
         canonical = json.dumps(
-            {"items": items, "fetchtime": fetchtime},
+            {"items": items},
             ensure_ascii=True,
             separators=(",", ":"),
             sort_keys=True,
@@ -1147,7 +1147,10 @@ class CacheManagerInterface(ABC):
             after = self._load_versioned_account_meta(
                 required_version=required_version
             )
-            if after != metadata:
+            if (
+                after["data_version"] != metadata["data_version"]
+                or after["counts"] != metadata["counts"]
+            ):
                 raise ValueError("Order manifest changed during reload")
             with self.lock:
                 self.cache = items

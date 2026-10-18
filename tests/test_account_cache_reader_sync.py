@@ -124,6 +124,24 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             self.assertTrue(writer.save_state_to_file())
             self.assertEqual(first_version, writer._persisted_data_version)
 
+        with self.subTest(
+            msg="empty_poll_advancing_fetchtime_keeps_stable_order_version"
+        ):
+            self._reset_temp()
+            writer = self._order_manager([_order(1, 1000)], 1000)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            first_version = writer._persisted_data_version
+            with writer.lock:
+                writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
+                writer._mark_account_cache_dirty_locked()
+            self.assertTrue(writer.save_state_to_file())
+            self.assertEqual(first_version, writer._persisted_data_version)
+            reader = self._order_manager([], 0)
+            reader.ensure_persisted_version(writer._persisted_data_version)
+            self.assertEqual([_order(1, 1000)], reader.cache["BTCUSDC"])
+            self.assertEqual(2000, reader.fetchtime_time_per_symbol["BTCUSDC"])
+
         with self.subTest(msg="corruption_refuses_and_preserves_memory"):
             self._reset_temp()
             first = _order(1, 1000)
