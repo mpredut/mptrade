@@ -1580,9 +1580,31 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
                 )
                 self.assertFalse(allowed)
 
+        with self.subTest(msg="pending_exit_timeout_restores_tp_and_sl_state_for_immediate_retry"):
+            sym = SYMBOL
+            mt._PENDING_STOP_EXIT.clear()
+            mt._TP_RIDE_STATE.clear()
+            mt._SL_BOUNCE_STATE.clear()
+            saved_tp = {"started_at": NOW - 300, "peak_price": 115.0, "peak_gain": 0.15, "last_peak_time": NOW - 300, "buy_price": 100.0}
+            mt._record_pending_exit(
+                sym, None, "TP", NOW - 70, 5.0, 104.0,
+                {"reason": "timeout", "client_order_id": "cid_tp_1"},
+                default_intent_id="intent_tp_1",
+                prev_tp_state=saved_tp,
+            )
+            inst_retry = FakeInstrument(price=104.0, free=5.0, fills=[_fill("BUY", 100, 5)])
+            # At NOW (70s >= 60s timeout), _is_pending_exit_active must return False and restore _TP_RIDE_STATE
+            active = mt._is_pending_exit_active(sym, inst_retry, 5.0, 0.001, NOW, current_price=104.0)
+            self.assertFalse(active)
+            self.assertIn(sym, mt._TP_RIDE_STATE)
+            self.assertEqual(mt._TP_RIDE_STATE[sym]["peak_price"], 115.0)
+            mt._PENDING_STOP_EXIT.clear()
+            mt._TP_RIDE_STATE.clear()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 
 
 

@@ -1321,6 +1321,12 @@ def check_math_profit_reference(
                             print(f"[GUARD] BUY {symbol}: dynamic window ({dyn_hours:.1f}h, trend='{trend}') has no fills; "
                                   f"anchor {pos_window_ref} from older period bypassed")
                             return True
+                        pos_window_ref = min(recent_prices)
+                        diff = u.value_diff_to_percent(pos_window_ref, price)
+                        if diff >= profit_percentage:
+                            print(f"[GUARD] BUY {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
+                                  f"recent sell ref {pos_window_ref}, price {price}, diff {diff:.2f}% >= {profit_percentage}%. Permitted.")
+                            return True
                     elif trend == "bull" and not hasattr(provider, "get_orders"):
                         print(f"[GUARD] BUY {symbol}: dynamic mode bypassed historical sell reference "
                               f"during confirmed BULL trend; price {price} permitted")

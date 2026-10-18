@@ -2345,20 +2345,24 @@ class Strategy:
                     high_snap = self._create_position_snapshot(
                         high, avg, held, regime=regime, include_vol=inc_vol, include_shadow=inc_shd
                     )
-                    high_dec = self.exit_manager.evaluate_take_profit(
-                        high_snap, custom_threshold=eff_tp / 100.0
-                    )
-                    if high_dec.action == ExitAction.SELL and high_dec.should_exit:
-                        decision = high_dec
-                    else:
-                        prev_ride_state = dict(self.exit_manager.tp_ride_state.get(self.pair, {}))
-                        decision = self.exit_manager.evaluate_take_profit(
-                            snapshot, custom_threshold=eff_tp / 100.0
+                    existing_ride = self.exit_manager.tp_ride_state.get(self.pair)
+                    if existing_ride is not None and existing_ride.get("buy_price") is not None:
+                        if not math.isclose(float(existing_ride["buy_price"]), avg, rel_tol=1e-9, abs_tol=1e-12):
+                            self.exit_manager.tp_ride_state.pop(self.pair, None)
+                            existing_ride = None
+                    if existing_ride is not None:
+                        if high > existing_ride.get("peak_price", 0.0):
+                            existing_ride["peak_price"] = high
+                            existing_ride["peak_gain"] = high_snap.gain_ratio
+                            existing_ride["last_peak_time"] = high_snap.current_time_s
+                    elif snapshot.trend_up and self.exit_manager.config.tp_trend_ride_enabled:
+                        self.exit_manager.evaluate_take_profit(
+                            high_snap, custom_threshold=eff_tp / 100.0
                         )
-                else:
-                    decision = self.exit_manager.evaluate_take_profit(
-                        snapshot, custom_threshold=eff_tp / 100.0
-                    )
+                    prev_ride_state = dict(self.exit_manager.tp_ride_state.get(self.pair, {}))
+                decision = self.exit_manager.evaluate_take_profit(
+                    snapshot, custom_threshold=eff_tp / 100.0
+                )
                 if decision.action == ExitAction.SELL and decision.should_exit:
                     exit_px = round(price * 0.999, self.price_dec)
                     use_soft = str(decision.reason or "").startswith("mdhtp_peak_pullback")

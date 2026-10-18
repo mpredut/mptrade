@@ -929,3 +929,63 @@ def test_spot_engine_reentry_gate_resolves_bear_regime_and_restores_state_on_blo
     assert engine.pair in engine.exit_manager.reentry_state
     assert engine.exit_manager.reentry_state[engine.pair]["trough"] == 90.0
 
+
+def test_spot_rules_non_positive_drop_thresholds_do_not_false_trigger():
+    import strategies.spot_rules as sr
+    trig, _, _ = sr.check_fast_profit_reversal(
+        current_price=120.0, avg_cost=100.0, base_tp_pct=5.0, mult=2.0,
+        shadow_prices=[(990.0, 120.0)], window_sec=300.0, drop_pct=0.0, current_time=1000.0,
+    )
+    assert trig is False
+
+    s_trig, _ = sr.check_parabolic_surge_exhaustion(
+        current_price=125.0, avg_cost=100.0, surge_peak=125.0,
+        surge_gain_pct=18.0, exit_pullback_pct=0.0, surge_active=True,
+    )
+    assert s_trig is False
+
+    g_trig, _ = sr.check_slow_grind_exhaustion(
+        current_price=120.0, avg_cost=100.0, entry_ts=0.0, current_ts=10 * 86400.0,
+        min_days=7.0, min_gain_pct=15.0, recent_peak=120.0,
+        shadow_prices=[(10 * 86400.0 - 60.0, 120.0)], flash_window_sec=900.0,
+        flash_drop_pct=0.0, structural_drop_pct=0.0, sma_value=None,
+    )
+    assert g_trig is False
+
+
+def test_position_exit_manager_resets_tp_and_sl_state_when_buy_price_changes():
+    from strategies.position_exit_manager import (
+        ExitAction, PositionExitConfig, PositionExitManager, PositionSnapshot,
+    )
+    mgr = PositionExitManager(config=PositionExitConfig(gain_threshold=0.03, lost_threshold=0.05))
+    # Initiate TP trend ride at avg_buy_price=100.0, current_price=104.0
+    d1 = mgr.evaluate_take_profit(PositionSnapshot(
+        symbol="ETHUSDC", current_price=104.0, avg_buy_price=100.0,
+        net_qty=1.0, sellable_qty=1.0, current_time_s=1000.0, trend_up=True,
+    ))
+    assert d1.action == ExitAction.HOLD
+    assert "ETHUSDC" in mgr.tp_ride_state
+
+    # Now a new buy raises avg_buy_price to 105.0 while current_price is 104.0 (below new cost, above SL).
+    # Must NOT panic-sell via mdhtp_profit_floor_breached!
+    d2 = mgr.evaluate_take_profit(PositionSnapshot(
+        symbol="ETHUSDC", current_price=104.0, avg_buy_price=105.0,
+        net_qty=2.0, sellable_qty=2.0, current_time_s=1010.0, trend_up=True,
+    ))
+    assert d2.action == ExitAction.HOLD
+    assert d2.reason == "not_in_tp_territory"
+    assert "ETHUSDC" not in mgr.tp_ride_state
+
+
+def test_spot_engine_mdhtp_intrabar_high_with_trend_not_up_does_not_false_sell_below_tp():
+    engine, executor = make_mdhtp_engine(
+        mdhtp_enabled=True, tp_dynamic_flat=False, takeprofit_pct=3.0,
+        tp_trail_pct=0.5, tp_trail_profit_floor_pct=1.0,
+    )
+    engine.s["trend_mode"] = False
+    executor.trend = lambda _sym: "down"
+    # Bar wicks to high=104.0 (>= 3% TP) while trend is NOT up, but closes at price=99.5 (< avg=100.0).
+    # Must NOT sell at 99.5 on a false TP decision!
+    engine.step(99.5, high=104.0)
+    assert not submits(executor)
+

@@ -242,7 +242,7 @@ def check_fast_profit_reversal(
     1. current_gain_pct >= mult * base_tp_pct (e.g. >= 10.0%)
     2. micro_drop_pct >= drop_pct from the highest price in the last window_sec.
     """
-    if avg_cost <= 0 or current_price <= 0 or base_tp_pct <= 0 or mult <= 0:
+    if avg_cost <= 0 or current_price <= 0 or base_tp_pct <= 0 or mult <= 0 or drop_pct <= 0:
         return False, 0.0, 0.0
     current_gain_pct = (current_price - avg_cost) / avg_cost * 100.0
     required_gain = base_tp_pct * mult
@@ -294,7 +294,7 @@ def check_parabolic_surge_exhaustion(
     the minimum surge profit floor (min_floor = max(min_profit_pct, surge_gain_pct - exit_pullback_pct * 1.5)).
     If surge is active and price >= floor, triggers exit when price pulls back >= exit_pullback_pct from surge_peak.
     """
-    if avg_cost <= 0 or current_price <= 0 or surge_peak <= 0:
+    if avg_cost <= 0 or current_price <= 0 or surge_peak <= 0 or exit_pullback_pct <= 0:
         return False, ""
     current_gain_pct = (current_price - avg_cost) / avg_cost * 100.0
     peak_gain_pct = (surge_peak - avg_cost) / avg_cost * 100.0
@@ -351,14 +351,14 @@ def check_slow_grind_exhaustion(
     # Check flash drop
     cutoff = current_ts - max(0.0, flash_window_sec)
     recent = [p for t, p in shadow_prices if t >= cutoff]
-    if recent:
+    if flash_drop_pct > 0 and recent:
         local_flash_peak = max(max(recent), current_price)
         if local_flash_peak > 0:
             flash_drop = (local_flash_peak - current_price) / local_flash_peak * 100.0
             if flash_drop >= flash_drop_pct:
                 return True, f"slow_grind_flash_drop_{flash_drop:.2f}%_ge_{flash_drop_pct:.2f}%"
     # Check structural drop
-    if recent_peak > 0:
+    if structural_drop_pct > 0 and recent_peak and recent_peak > 0:
         struct_drop = (recent_peak - current_price) / recent_peak * 100.0
         if struct_drop >= structural_drop_pct:
             return True, f"slow_grind_structural_drop_{struct_drop:.2f}%_ge_{structural_drop_pct:.2f}%"

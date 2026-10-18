@@ -422,7 +422,31 @@ class BuyReferenceSwitchTest(unittest.TestCase):
                 order_guard.profit_guard(provider, "HYPEUSD", "SELL", 210.0, 1.15, window_ref=None)
             )
 
+    def test_dynamic_buy_window_recomputes_ref_from_recent_fills_ignoring_older_14d_anchor(self):
+        """When caller passes a 14d static window_ref (e.g. 216.28) that is older than dyn_window_s,
+        and a newer SELL at 300.0 exists inside dyn_window_s, dynamic mode must use min(recent_prices)=300.0."""
+        class _RecentSellProvider:
+            name = "binance"
+
+            def get_orders(self, symbol, side, since_s):
+                # Inside the 8h/24h dynamic window, only the 300.0 sell exists
+                return [{"price": 300.0, "qty": 1.0, "timestamp": 5000.0}]
+
+        provider = _RecentSellProvider()
+        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
+            with mock.patch.object(order_guard, "_symbol_trend", return_value="flat"):
+                # Caller passes 14-day min sell window_ref=216.28, but inside dynamic window min sell is 300.0.
+                # Buying at 280.0 (+6.67% below 300.0 >= 1.15%) must be PERMITTED!
+                self.assertTrue(
+                    order_guard.profit_guard(provider, "TAOUSDC", "BUY", 280.0, 1.15, window_ref=216.28)
+                )
+                # Buying at 299.0 (+0.33% below 300.0 < 1.15%) must still be BLOCKED!
+                self.assertFalse(
+                    order_guard.profit_guard(provider, "TAOUSDC", "BUY", 299.0, 1.15, window_ref=216.28)
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

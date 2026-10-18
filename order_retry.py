@@ -666,6 +666,12 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
                                          or f"outbox-{e.get('id', record_id)}")
                     e["kind"] = None if kind is None else str(kind)
                     e["lifecycle"] = "submit_pending"
+                    if custom_ttl is not None:
+                        e["ttl_sec"] = custom_ttl
+                        e["expires_at_ts"] = cts + custom_ttl
+                    else:
+                        e.pop("ttl_sec", None)
+                        e.pop("expires_at_ts", None)
                     e.pop("order_id", None)
                     _set_safe_to_discard(
                         e, is_non_failure_deferral(

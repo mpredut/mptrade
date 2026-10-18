@@ -582,9 +582,11 @@ def _record_pending_exit(
     outcome_ctx: dict,
     default_intent_id: Optional[str] = None,
     client_order_id: Optional[str] = None,
+    prev_tp_state: Optional[dict] = None,
+    prev_sl_state: Optional[dict] = None,
 ):
     """Record an in-flight exit whose outcome is unknown/in-flight and update state."""
-    _PENDING_STOP_EXIT[symbol] = {
+    pending_rec = {
         "time": current_time_s,
         "qty": sellable_qty,
         "price": current_price,
@@ -593,6 +595,11 @@ def _record_pending_exit(
         "client_order_id": outcome_ctx.get("client_order_id") or client_order_id,
         "kind": kind,
     }
+    if prev_tp_state:
+        pending_rec["prev_tp_state"] = dict(prev_tp_state)
+    if prev_sl_state:
+        pending_rec["prev_sl_state"] = dict(prev_sl_state)
+    _PENDING_STOP_EXIT[symbol] = pending_rec
     _resolve_exit(symbol, inst, kind=kind, clear_pending=False)
 
 
@@ -820,6 +827,16 @@ def _is_untradable_dust(inst, symbol: str, sellable_qty: float, current_price: f
     return False
 
 
+def _restore_pending_exit_state(symbol: str, pending_stop: dict):
+    """Restore TP trend-ride or SL bounce state saved before an ambiguous exit submission."""
+    prev_tp = pending_stop.get("prev_tp_state")
+    if prev_tp and symbol not in _TP_RIDE_STATE:
+        _TP_RIDE_STATE[symbol] = dict(prev_tp)
+    prev_sl = pending_stop.get("prev_sl_state")
+    if prev_sl and symbol not in _SL_BOUNCE_STATE:
+        _SL_BOUNCE_STATE[symbol] = dict(prev_sl)
+
+
 def _is_pending_exit_active(
     symbol: str, inst, sellable_qty: float, min_qty: float, current_time_s: float, current_price: float = 0.0
 ) -> bool:
@@ -848,6 +865,7 @@ def _is_pending_exit_active(
                     active_sell_exists = True
                 elif st in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED"):
                     print(f"[{symbol}] Pending exit {p_cid} terminal on venue ({st}) — clearing stale intent for fresh retry.")
+                    _restore_pending_exit_state(symbol, pending_stop)
                     _PENDING_STOP_EXIT.pop(symbol, None)
                     _save_mt_state()
                     return False
@@ -865,12 +883,14 @@ def _is_pending_exit_active(
             except Exception:
                 pass
 
-    elapsed = current_time_s - int(pending_stop.get("time", current_time_s))
+    pending_ts = pending_stop.get("time", pending_stop.get("ts", current_time_s))
+    elapsed = current_time_s - int(pending_ts)
     if active_sell_exists or elapsed < 60:
         print(f"[{symbol}] Pending Stop-Loss in flight (elapsed={elapsed}s, active_sell={active_sell_exists}) — deferring duplicate submission pending reconciliation.")
         return True
 
     print(f"[{symbol}] Pending Stop-Loss reconciliation timeout ({elapsed}s >= 60s) with no active sell order — allowing retry with original intent.")
+    _restore_pending_exit_state(symbol, pending_stop)
     return False
 
 
@@ -959,9 +979,18 @@ def _evaluate_hard_take_profit(
         hours=MT_SELL_SAFEBACK_HOURS,
         _outcome_context=hard_tp_outcome_ctx,
     )
-    if placed or hard_tp_outcome_ctx.get("state") == "unknown":
+    if placed:
         _hard_tp_last[symbol] = current_time_s
         _resolve_exit(symbol, inst, kind="TP")
+        return True
+    elif hard_tp_outcome_ctx.get("state") == "unknown":
+        _hard_tp_last[symbol] = current_time_s
+        prev_tp_state = _TP_RIDE_STATE.pop(symbol, None)
+        _record_pending_exit(
+            symbol, inst, "TP", current_time_s, hard_qty, snapshot.current_price,
+            hard_tp_outcome_ctx, default_intent_id=f"mt_htp_{symbol}_{int(current_time_s)}",
+            prev_tp_state=prev_tp_state,
+        )
         return True
     return False
 
@@ -1031,6 +1060,7 @@ def _execute_take_profit(
         _record_pending_exit(
             symbol, inst, "TP", current_time_s, sellable_qty, current_price,
             tp_outcome_ctx, default_intent_id=tp_intent_id, client_order_id=tp_cid,
+            prev_tp_state=prev_tp_state,
         )
         return True
     else:
@@ -1131,6 +1161,7 @@ def _execute_stop_loss(
         _record_pending_exit(
             symbol, inst, "STOP", current_time_s, sellable_qty, current_price,
             outcome_ctx, default_intent_id=stop_intent_id, client_order_id=stop_cid,
+            prev_sl_state=prev_sl_state,
         )
         return True
     else:
@@ -1672,8 +1703,6 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 _handle_position_recovery(inst, snapshot, lost_threshold)
         elif in_sl_territory:
             pending_stop = _PENDING_STOP_EXIT.get(symbol)
-            if _is_pending_exit_active(symbol, inst, sellable_qty, min_qty, current_time_s, current_price=current_price):
-                return
             _TP_RIDE_STATE.pop(symbol, None)
             prev_sl_state = dict(_SL_BOUNCE_STATE.get(symbol, {}))
             sl_decision = exit_mgr.evaluate_stop_loss(snapshot, custom_threshold=lost_threshold)

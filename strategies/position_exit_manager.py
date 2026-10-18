@@ -19,6 +19,7 @@ Mathematical symmetry:
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -525,6 +526,14 @@ class PositionExitManager:
         price_decrease = snapshot.loss_ratio
 
         # Stop-loss boundary check
+        existing_bounce = self.sl_bounce_state.get(symbol)
+        if existing_bounce is not None and existing_bounce.get("buy_price") is not None:
+            try:
+                if not math.isclose(float(existing_bounce["buy_price"]), buy_price, rel_tol=1e-9, abs_tol=1e-12):
+                    self.sl_bounce_state.pop(symbol, None)
+            except (TypeError, ValueError):
+                self.sl_bounce_state.pop(symbol, None)
+
         in_sl_territory = snapshot.in_sl_territory(lost_threshold, self.config.are_close_tolerance_pct)
 
         if not in_sl_territory:
@@ -578,6 +587,7 @@ class PositionExitManager:
                     "lowest_price": current_price,
                     "peak_bounce_price": current_price,
                     "min_loss": price_decrease,
+                    "buy_price": buy_price,
                 }
                 reason = (
                     f"mhdsl_bounce_watch_initiated (dip={price_decrease*100:.2f}%, "
@@ -799,6 +809,14 @@ class PositionExitManager:
         # ---------------------------------------------------------------------
         profit_floor = max(gain_threshold * self.config.tp_profit_floor_ratio, self.config.tp_profit_floor_min_pct)
 
+        existing_ride = self.tp_ride_state.get(symbol)
+        if existing_ride is not None and existing_ride.get("buy_price") is not None:
+            try:
+                if not math.isclose(float(existing_ride["buy_price"]), buy_price, rel_tol=1e-9, abs_tol=1e-12):
+                    self.tp_ride_state.pop(symbol, None)
+            except (TypeError, ValueError):
+                self.tp_ride_state.pop(symbol, None)
+
         # Gap down below cost while riding profit is an emergency breach of the profit floor
         if snapshot.gain_ratio <= 0:
             if symbol in self.tp_ride_state:
@@ -834,6 +852,7 @@ class PositionExitManager:
                     "peak_price": current_price,
                     "peak_gain": price_increase,
                     "last_peak_time": now,
+                    "buy_price": buy_price,
                 }
                 reason = (
                     f"mdhtp_trend_ride_initiated (gain={price_increase*100:.2f}%, "
