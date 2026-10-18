@@ -1845,13 +1845,22 @@ class Strategy:
         mgr.config.reentry_tolerance_pct = self.p.reentry_tolerance_pct
         mgr.config.reentry_hybrid_enabled = self.p.reentry_hybrid_enabled
         mgr.config.reentry_peak_relative = self.p.reentry_peak_relative
-        if regime is None:
+        needs_reentry_regime = bool(
+            self.p.trend_overlay
+            or self.p.reentry_hybrid_enabled
+            or (last_kind == "STOP" and self.p.sl_mhdsl_enabled)
+        )
+        if regime is None and needs_reentry_regime:
             try:
                 regime, _ = self._regime_context()
             except Exception:
                 regime = None
-        trend_up = self._is_trend_up(regime)
-        trend_down = self._is_trend_down(regime)
+        trend_up = (
+            self._is_trend_up(regime)
+            if (needs_reentry_regime or self.p.reentry_bear_bounce_pct > 0)
+            else False
+        )
+        trend_down = self._is_trend_down(regime) if needs_reentry_regime else False
         is_bull_reentry = bool(
             last_kind != "STOP"
             and self.p.reentry_hybrid_enabled
