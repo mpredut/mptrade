@@ -636,6 +636,34 @@ class CacheManagerInterface(ABC):
         elif mem_ts > file_ts and self.save_state:
             self.save_state_to_file_if_enabled()
 
+    def sync_account_reader_if_needed(self):
+        """Refresh a read-only account cache when durable disk state advances."""
+        if not self._is_account_cache() or self.save_state:
+            return
+        for _attempt in range(2):
+            try:
+                metadata = self._load_versioned_account_meta(optional=True)
+                if metadata is not None:
+                    version = str(metadata.get("data_version") or "")
+                    with self.lock:
+                        loaded_version = self._loaded_data_version
+                        dirty = self._account_cache_dirty
+                        mem_ts = self._mem_max_ts()
+                    file_ts = self._persisted_max_ts()
+                    if version and version != loaded_version:
+                        if not dirty or file_ts >= mem_ts:
+                            self.ensure_persisted_version(version)
+                    return
+                self.resync_mem_file()
+                return
+            except account_cache_health.AccountCacheNotReady as exc:
+                if _attempt == 0:
+                    continue
+                print(f"[{self.cls_name}][Warning] reader sync skipped: {exc}")
+            except Exception as exc:
+                print(f"[{self.cls_name}][Warning] reader sync skipped: {exc}")
+                return
+
     # ── JSONL append persistence for append-only caches ──────────────────────
     def _migrate_legacy_json_if_needed(self):
         """Create a JSONL cache from its legacy full-JSON sibling once.
@@ -2041,6 +2069,7 @@ class CacheTradeManager(CacheManagerInterface):
         REST overlap may append an older fill after a newer WebSocket event, so
         authoritative exchange time and immutable trade ID determine recency.
         """
+        self.sync_account_reader_if_needed()
         want_buyer = (order_type.upper() == "SELL")   # The opposite of SELL is BUY.
         latest_key = None
         latest_price = None

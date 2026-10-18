@@ -1329,6 +1329,52 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
         finally:
             manager.shutdown()
 
+    def test_consumer_get_trade_orders_auto_syncs_new_writer_generation(self):
+        from binance_api import bapi_allorders as allorders
+        from binance_api import bapi_trades as trades_mod
+
+        now_ms = int(cm.time.time() * 1000)
+        first_order = _order(1, now_ms - 5000)
+        second_order = {**_order(2, now_ms - 1000), "price": "125"}
+        order_writer = self._order_manager([first_order], now_ms - 5000)
+        order_writer.save_state = True
+        self.assertTrue(order_writer.save_state_to_file())
+        order_reader = cm.CacheOrderManager(
+            3600, ["BTCUSDC"], order_writer.filename, api_client=cm.api
+        )
+
+        first_trade = _trade(10, now_ms - 5000)
+        second_trade = {**_trade(11, now_ms - 1000), "price": "125"}
+        trade_writer = self._trade_manager([first_trade], now_ms - 5000)
+        trade_writer.save_state = True
+        self.assertTrue(trade_writer.save_state_to_file())
+        trade_reader = cm.CacheTradeManager(
+            3600, ["BTCUSDC"], trade_writer.filename, api_client=cm.api
+        )
+
+        with order_writer.lock:
+            order_writer.cache["BTCUSDC"].append(second_order)
+            order_writer.fetchtime_time_per_symbol["BTCUSDC"] = now_ms - 1000
+        self.assertTrue(order_writer.save_state_to_file())
+
+        with trade_writer.lock:
+            trade_writer.cache["BTCUSDC"].append(second_trade)
+            trade_writer.fetchtime_time_per_symbol["BTCUSDC"] = now_ms - 1000
+        self.assertTrue(trade_writer.save_state_to_file())
+
+        with patch.object(cm, "get_cache_manager", return_value=order_reader):
+            observed_orders = allorders.get_trade_orders("BUY", "BTCUSDC", 60)
+        self.assertEqual([1, 2], [o["orderId"] for o in observed_orders])
+
+        with patch.object(
+            trades_mod, "init_cache_trade_manager", return_value=trade_reader
+        ):
+            observed_trades = trades_mod.get_trade_orders("BUY", "BTCUSDC", 60)
+        self.assertEqual([10, 11], [int(t["id"]) for t in observed_trades])
+        self.assertEqual(
+            125.0, trade_reader.last_opposite_fill_price("BTCUSDC", "SELL")
+        )
+
 
 class AccountCacheReaderConfirmationTest(unittest.TestCase):
     def setUp(self):

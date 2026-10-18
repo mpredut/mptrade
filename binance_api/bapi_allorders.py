@@ -155,6 +155,12 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
 
+    sync_reader = getattr(
+        cache_order_manager, "sync_account_reader_if_needed", None
+    )
+    if callable(sync_reader):
+        sync_reader()
+
     # A WebSocket can update a partially filled order in place. Copy each row
     # under the manager lock so financial totals never observe a torn mutation.
     with cache_order_manager.lock:

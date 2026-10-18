@@ -358,6 +358,9 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     sym.validate_symbols(symbol)
     
     manager = init_cache_trade_manager()
+    sync_reader = getattr(manager, "sync_account_reader_if_needed", None)
+    if callable(sync_reader):
+        sync_reader()
 
     # Copy one coherent snapshot while the manager may reload a new generation.
     with manager.lock:
