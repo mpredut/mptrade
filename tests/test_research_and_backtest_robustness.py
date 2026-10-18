@@ -756,13 +756,18 @@ def test_align_spot_interval_params_and_walk_forward_compare_multi_interval():
     assert aligned_60.trend_interval == 60
     assert aligned_60.tp_trail_vol_interval == 60
     assert aligned_60.dca_vol_interval == 60
+    aligned_1440 = align_spot_interval_params(base, 1440)
+    assert aligned_1440.trend_interval == 1440
+    assert aligned_1440.regime_min_samples <= 7
     assert align_spot_interval_params(base, 240) is base
 
     records = [
         {"timestamp": 1_700_000_000 + i * 3600, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}
         for i in range(10)
     ]
-    seg = _segment_result(records, base, fee_pct=0.26, interval=60)
-    assert "metrics" in seg
-    assert seg["metrics"]["account_currency"] == "USD"
+    seg_60 = _segment_result(records, base, fee_pct=0.26, interval=60)
+    seg_1440 = _segment_result(records, base, fee_pct=0.26, interval=1440)
+    assert seg_60["metrics"]["account_currency"] == "USD"
+    assert seg_1440["metrics"]["account_currency"] == "USD"
+
 

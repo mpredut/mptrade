@@ -419,14 +419,18 @@ def make_spot_replay_adapter(
 
 
 def align_spot_interval_params(params, bar_minutes: float | int | None):
-    """Return a copy of params with trend and volatility intervals aligned to bar_minutes."""
+    """Return a copy of params with trend/volatility intervals and regime sample cap aligned to bar_minutes."""
     if bar_minutes is None:
         return params
     itv = int(bar_minutes)
+    cap = _strat.MarketRegimeService.horizon_sample_capacity("long", itv)
+    cur_min_samples = int(getattr(params, "regime_min_samples", 20))
+    clamped_min_samples = max(3, min(cur_min_samples, cap))
     if (
         getattr(params, "trend_interval", itv) == itv
         and getattr(params, "tp_trail_vol_interval", itv) == itv
         and getattr(params, "dca_vol_interval", itv) == itv
+        and cur_min_samples == clamped_min_samples
     ):
         return params
     import dataclasses
@@ -436,6 +440,7 @@ def align_spot_interval_params(params, bar_minutes: float | int | None):
         trend_interval=itv,
         tp_trail_vol_interval=itv,
         dca_vol_interval=itv,
+        regime_min_samples=clamped_min_samples,
     )
 
 
