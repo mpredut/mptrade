@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-10-18T04:34:30",
+    "ts": "2026-10-18T05:05:44",
     "full_key": "BINANCE_BTC.trailing.pct",
     "section": "BINANCE_BTC",
     "key": "trailing.pct",
@@ -14,7 +14,7 @@
     "dev_commit": "a604f7a"
   },
   {
-    "ts": "2026-10-18T04:34:30",
+    "ts": "2026-10-18T05:05:44",
     "full_key": "KRAKEN_HYPE.mt.maxage_days",
     "section": "KRAKEN_HYPE",
     "key": "mt.maxage_days",
@@ -23,21 +23,7 @@
     "winner_value": 14.0,
     "margin_vs_current": {
       "half1": 32.85,
-      "half2": 2350.27
-    },
-    "dev_commit": "a604f7a"
-  },
-  {
-    "ts": "2026-10-18T04:34:30",
-    "full_key": "BINANCE_ARB.mt.lost",
-    "section": "BINANCE_ARB",
-    "key": "mt.lost",
-    "symbol": "ARBUSDC",
-    "current_on_dev": 4.375,
-    "winner_value": 3.5,
-    "margin_vs_current": {
-      "half1": 13.71,
-      "half2": 11.65
+      "half2": 2618.52
     },
     "dev_commit": "a604f7a"
   }
