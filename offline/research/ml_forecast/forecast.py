@@ -20,7 +20,7 @@ import time
 
 import numpy as np
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # offline/research/ml_forecast/ -> repo root
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))  # offline/research/ml_forecast/ -> repo root
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 

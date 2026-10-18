@@ -418,6 +418,27 @@ def make_spot_replay_adapter(
     return _adapter
 
 
+def align_spot_interval_params(params, bar_minutes: float | int | None):
+    """Return a copy of params with trend and volatility intervals aligned to bar_minutes."""
+    if bar_minutes is None:
+        return params
+    itv = int(bar_minutes)
+    if (
+        getattr(params, "trend_interval", itv) == itv
+        and getattr(params, "tp_trail_vol_interval", itv) == itv
+        and getattr(params, "dca_vol_interval", itv) == itv
+    ):
+        return params
+    import dataclasses
+
+    return dataclasses.replace(
+        params,
+        trend_interval=itv,
+        tp_trail_vol_interval=itv,
+        dca_vol_interval=itv,
+    )
+
+
 def prewarm_trend_series(
     ohlc,
     *,
@@ -428,17 +449,10 @@ def prewarm_trend_series(
     """Prewarm process-level replay regime and volatility caches for an OHLC series."""
     if len(ohlc) <= warmup:
         return
-    if params is None:
-        import dataclasses
-        itv = int(bar_minutes)
-        p = dataclasses.replace(
-            _strat.StratParams.from_env(),
-            trend_interval=itv,
-            tp_trail_vol_interval=itv,
-            dca_vol_interval=itv,
-        )
-    else:
-        p = params
+    p = align_spot_interval_params(
+        _strat.StratParams.from_env() if params is None else params,
+        bar_minutes,
+    )
     run_replay(
         ohlc[warmup:],
         p,

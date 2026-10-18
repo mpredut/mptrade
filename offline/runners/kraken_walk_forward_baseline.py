@@ -16,7 +16,6 @@ import json
 import os
 from pathlib import Path
 import sys
-import urllib.request
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,6 +27,7 @@ from kraken_common import load_dotenv  # noqa: E402
 import market_data as kraken_market_data  # noqa: E402
 import replay as kraken_replay  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
+from strategies.spot_replay import align_spot_interval_params  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
     dataset_metadata,
     dataset_sha256,
@@ -57,43 +57,39 @@ def fetch_closed_candles(pair: str, interval: int) -> list[dict]:
 def _segment_result(records: list[dict], params: StratParams, fee_pct: float,
                     interval: int, warmup_records: list[dict] | tuple = (),
                     execution: ExecutionModel | None = None) -> dict:
-    original_log = kraken_replay._strat.log
-    kraken_replay._strat.log = lambda *_args, **_kwargs: None
-    try:
-        adapter = kraken_replay.make_kraken_replay_adapter(
-            params, fee_pct=fee_pct, bar_minutes=interval, execution=execution,
-        )
-        return _evaluate_segment(
-            records,
-            adapter,
-            warmup_records=warmup_records,
-        )
-    finally:
-        kraken_replay._strat.log = original_log
+    adapter = kraken_replay.make_kraken_replay_adapter(
+        align_spot_interval_params(params, interval),
+        fee_pct=fee_pct,
+        bar_minutes=interval,
+        execution=execution,
+    )
+    return _evaluate_segment(
+        records,
+        adapter,
+        warmup_records=warmup_records,
+    )
 
 
 def evaluate_walk_forward(records: list[dict], params: StratParams, *, fee_pct: float,
                           interval: int, train_size: int, validation_size: int,
                           test_size: int, step_size: int, warmup_bars: int = 0,
                           execution: ExecutionModel | None = None) -> dict:
-    original_log = kraken_replay._strat.log
-    kraken_replay._strat.log = lambda *_args, **_kwargs: None
-    try:
-        adapter = kraken_replay.make_kraken_replay_adapter(
-            params, fee_pct=fee_pct, bar_minutes=interval, execution=execution,
-        )
-        return _evaluate_walk_forward(
-            records,
-            adapter,
-            train_size=train_size,
-            validation_size=validation_size,
-            test_size=test_size,
-            step_size=step_size,
-            warmup_bars=warmup_bars,
-            validate_contract=True,
-        )
-    finally:
-        kraken_replay._strat.log = original_log
+    adapter = kraken_replay.make_kraken_replay_adapter(
+        align_spot_interval_params(params, interval),
+        fee_pct=fee_pct,
+        bar_minutes=interval,
+        execution=execution,
+    )
+    return _evaluate_walk_forward(
+        records,
+        adapter,
+        train_size=train_size,
+        validation_size=validation_size,
+        test_size=test_size,
+        step_size=step_size,
+        warmup_bars=warmup_bars,
+        validate_contract=True,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

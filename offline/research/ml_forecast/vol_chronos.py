@@ -15,7 +15,7 @@ import time
 import numpy as np
 import torch
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # offline/research/ml_forecast/ -> repo root
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))  # offline/research/ml_forecast/ -> repo root
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
@@ -53,8 +53,10 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
     t0 = time.time()
     for b in range(0, len(idxs), BATCH):
         chunk = idxs[b:b + BATCH]
-        contexts = [torch.tensor(rv[max(0, i + 1 - MAX_CONTEXT):i + 1], dtype=torch.float32)
-                    for i in chunk]
+        contexts = []
+        for i in chunk:
+            seg = rv[max(0, i + 1 - MAX_CONTEXT):i + 1]
+            contexts.append(torch.tensor(seg[~np.isnan(seg)], dtype=torch.float32))
         forecast = pipe.predict(contexts, prediction_length=horizon)
         for k, i in enumerate(chunk):
             path = forecast[k].numpy()

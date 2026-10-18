@@ -27,19 +27,10 @@ def task(args):
         cached = _TASK3_CACHE.get(cache_key)
         if cached is not None:
             return {**cached, "cfg": cfg}
-        grid.FLAGS["peak"] = bool(peak)
-        grid.strat.Strategy.step = grid._step if peak else grid._orig_step
-        try:
-            out = {}
-            for fee in (0.26, 0.40):
-                m = grid.rp.run_replay(ohlc[WARM:], params, fee_pct=fee, bar_minutes=240,
-                                       warmup_ohlc=ohlc[:WARM], initial_cash=3900.0)
-                out[str(fee)] = {"ret": round(m["total"] / 3900 * 100, 2), "dd": round(m.get("max_drawdown_pct") or 0, 2),
-                                 "cyc": m.get("cycles", 0), "refused": m["funding"]["refused_buys"],
-                                 "min_cash": m["funding"]["minimum_cash"]}
-        finally:
-            grid.FLAGS["peak"] = False
-            grid.strat.Strategy.step = grid._orig_step
+        out = {
+            str(fee): grid.replay(ohlc[WARM:], ohlc[:WARM], params, peak, fee=fee, initial_cash=3900.0)
+            for fee in (0.26, 0.40)
+        }
         res = {"asset": asset, "cfg": cfg, **out}
         _TASK3_CACHE[cache_key] = res
         return res

@@ -15,11 +15,8 @@ from __future__ import annotations
 
 import csv
 import dataclasses
-import json
-import math
 import os
 import sys
-import time
 from typing import Any
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -116,6 +113,40 @@ def build_ablation_variants(base_params: strat.StratParams) -> dict[str, tuple[s
     }
 
 
+def format_ablation_result(
+    asset_name: str,
+    test_id: str,
+    variant_name: str,
+    res: dict[str, Any],
+    capital: float,
+) -> dict[str, Any]:
+    """Format a replay result dict into the canonical ablation summary row."""
+    ret_pct = (res.get("total", 0.0) / capital * 100.0) if capital > 0 else 0.0
+    max_dd_pct = float(res.get("max_drawdown_pct") or 0.0)
+    exposure_pct = float(res.get("exposure_pct") or 0.0)
+    cycles = res.get("cycles", 0)
+    wins = res.get("wins", 0)
+    win_rate = (
+        res["win_rate_pct"]
+        if res.get("win_rate_pct") is not None
+        else (wins / cycles * 100.0 if cycles else 0.0)
+    )
+    return {
+        "asset": asset_name,
+        "test_id": test_id,
+        "variant": variant_name,
+        "total_return_pct": round(ret_pct, 2),
+        "net_profit_usd": round(res.get("total", 0.0), 2),
+        "max_drawdown_pct": round(max_dd_pct, 2),
+        "exposure_pct": round(exposure_pct, 2),
+        "cycles": cycles,
+        "wins": wins,
+        "win_rate": round(float(win_rate), 1),
+        "profit_factor": round(float(res.get("profit_factor") or 0.0), 2),
+        "fills": res.get("fills", 0),
+    }
+
+
 def evaluate_asset(
     asset_name: str,
     ohlc: list[tuple[float, float, float, float]],
@@ -146,30 +177,7 @@ def evaluate_asset(
                 warmup_ohlc=warmup_ohlc,
                 initial_cash=initial_cash,
             )
-            ret_pct = (res.get("total", 0.0) / initial_cash * 100.0) if initial_cash > 0 else 0.0
-            max_dd_pct = float(res.get("max_drawdown_pct") or 0.0)
-            exposure_pct = float(res.get("exposure_pct") or 0.0)
-            results.append({
-                "asset": asset_name,
-                "test_id": test_id,
-                "variant": variant_name,
-                "total_return_pct": round(ret_pct, 2),
-                "net_profit_usd": round(res.get("total", 0.0), 2),
-                "max_drawdown_pct": round(max_dd_pct, 2),
-                "exposure_pct": round(exposure_pct, 2),
-                "cycles": res.get("cycles", 0),
-                "wins": res.get("wins", 0),
-                "win_rate": round(
-                    float(
-                        res["win_rate_pct"]
-                        if res.get("win_rate_pct") is not None
-                        else (res.get("wins", 0) / res["cycles"] * 100.0 if res.get("cycles") else 0.0)
-                    ),
-                    1,
-                ),
-                "profit_factor": round(float(res.get("profit_factor") or 0.0), 2),
-                "fills": res.get("fills", 0),
-            })
+            results.append(format_ablation_result(asset_name, test_id, variant_name, res, initial_cash))
         except Exception as exc:
             results.append({
                 "asset": asset_name,

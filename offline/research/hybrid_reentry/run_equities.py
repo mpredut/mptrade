@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
 """Run Tests 0 to 4 ablation across Trading 212 US equities."""
 
-import csv
-import dataclasses
 import json
 import os
 import sys
-import time
-
-import importlib.util
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 T212_DIR = os.path.join(ROOT, "212trading")
@@ -17,7 +12,11 @@ if T212_DIR not in sys.path:
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from offline.research.hybrid_reentry.harness import build_ablation_variants, load_ohlc_csv
+from offline.research.hybrid_reentry.harness import (
+    build_ablation_variants,
+    format_ablation_result,
+    load_ohlc_csv,
+)
 
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -114,31 +113,13 @@ def main():
                     warmup_ohlc=warmup_ohlc,
                 )
                 budget = float(params.max_budget) if params.max_budget > 0 else 500.0
-                ret_pct = (res.get("total", 0.0) / budget) * 100.0
-                max_dd_pct = float(res.get("max_drawdown_pct") or 0.0)
-                exposure_pct = float(res.get("exposure_pct") or 0.0)
-                results.append({
-                    "asset": symbol,
-                    "test_id": test_id,
-                    "variant": variant_name,
-                    "total_return_pct": round(ret_pct, 2),
-                    "net_profit_usd": round(res.get("total", 0.0), 2),
-                    "max_drawdown_pct": round(max_dd_pct, 2),
-                    "exposure_pct": round(exposure_pct, 2),
-                    "cycles": res.get("cycles", 0),
-                    "wins": res.get("wins", 0),
-                    "win_rate": round(
-                        float(
-                            res["win_rate_pct"]
-                            if res.get("win_rate_pct") is not None
-                            else (res.get("wins", 0) / res["cycles"] * 100.0 if res.get("cycles") else 0.0)
-                        ),
-                        1,
-                    ),
-                    "profit_factor": round(float(res.get("profit_factor") or 0.0), 2),
-                    "fills": res.get("fills", 0),
-                })
-                print(f"  {test_id} ({variant_name:<18}): Return {ret_pct:+6.2f}% | MaxDD {max_dd_pct:5.2f}% | Exposure {exposure_pct:5.2f}% | Cycles {res.get('cycles', 0)}")
+                row = format_ablation_result(symbol, test_id, variant_name, res, budget)
+                results.append(row)
+                print(
+                    f"  {test_id} ({variant_name:<18}): Return {row['total_return_pct']:+6.2f}% "
+                    f"| MaxDD {row['max_drawdown_pct']:5.2f}% | Exposure {row['exposure_pct']:5.2f}% "
+                    f"| Cycles {row['cycles']}"
+                )
             except Exception as exc:
                 print(f"  {test_id} ({variant_name:<18}): ERROR {exc}")
                 results.append({

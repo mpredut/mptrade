@@ -45,12 +45,17 @@ import shadow_signals as ss  # noqa: E402  (reuse the exact K_DCA/vol_1h_pct for
 WIN = 24            # trailing hours for realized volatility; same window as vol_chronos.py
 
 
-def trailing_vol_series(closes: list[float]) -> np.ndarray:
+def _nanmean(arr: np.ndarray) -> float:
+    valid = arr[~np.isnan(arr)]
+    return float(np.mean(valid)) if len(valid) > 0 else float("nan")
+
+
+def trailing_vol_series(closes: list[float], sample_rate_sec: float = 3600.0) -> np.ndarray:
     """Compute causal vol_1h_pct per bar using the exact shadow-signals formula."""
     out = np.full(len(closes), np.nan)
     for i in range(WIN, len(closes)):
         window = closes[i - WIN:i + 1]
-        v = ss.vol_1h_pct(window, sample_rate_sec=3600.0)
+        v = ss.vol_1h_pct(window, sample_rate_sec=sample_rate_sec)
         out[i] = v if v is not None else np.nan
     return out
 
@@ -133,7 +138,7 @@ def main() -> int:
     bh = (closes[-1] - closes[0]) / closes[0] * 100
     print(f"=== {args.pair} interval={args.interval}m ({len(ohlc)} bare) — buy&hold {bh:+.1f}% ===")
 
-    vol_trail = trailing_vol_series(closes)
+    vol_trail = trailing_vol_series(closes, sample_rate_sec=args.interval * 60.0)
     print(f"  vol_1h_pct trailing: available from bar {WIN} (of {len(closes)})")
     chronos_vol = chronos_forecast_series(vol_trail, args.refresh, args.horizon)
 
@@ -150,7 +155,7 @@ def main() -> int:
     m_chronos = simulate_variant(ohlc, base, chronos_arr)
 
     print(f"  (K_DCA={ss.K_DCA}, prag fix={args.drop}%, medie adaptiv-shadow="
-          f"{np.nanmean(shadow_arr):.2f}%, medie adaptiv-chronos={np.nanmean(chronos_arr):.2f}%)")
+          f"{_nanmean(shadow_arr):.2f}%, medie adaptiv-chronos={_nanmean(chronos_arr):.2f}%)")
     report("FIX (live azi)", m_fixed, args.budget)
     report("adaptiv-shadow", m_shadow, args.budget)
     report("adaptiv-chronos", m_chronos, args.budget)

@@ -35,98 +35,42 @@ sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from offline.backtests import tradeall as tb
-import tradeall as ta
+from offline.research.tradeall_trigger_gate.common import (
+    ORIG_TREND_STATE as _OrigTrendState,
+    execute_tradeall_variant,
+    make_instrumented_trend_state,
+)
 
 STATS = {}
-_OrigTrendState = ta.TrendState
 
 
-def make_instrumented(tag):
+def make_instrumented(tag, *, expiration_trend_time_override=None, confirm_threshold_override=None):
     stats = {"starts": 0, "confirms": 0, "expires": 0, "max_confirm_count": 0,
              "reached_24": 0, "reached_old_1_9h": 0}
     STATS[tag] = stats
-    Base = _OrigTrendState
-
-    class InstrumentedTrendState(Base):
-        def start_trend(self, new_state):
-            stats["starts"] += 1
-            return super().start_trend(new_state)
-
-        def confirm_trend(self):
-            r = super().confirm_trend()
-            stats["confirms"] += 1
-            stats["max_confirm_count"] = max(stats["max_confirm_count"], self.confirm_count)
-            return r
-
-        def check_trend_expiration(self):
-            was_expired = self.expired
-            r = super().check_trend_expiration()
-            if r and not was_expired:
-                stats["expires"] += 1
-            return r
-
-        def is_trend_consistent_validated(self):
-            r = super().is_trend_consistent_validated()
-            if r:
-                stats["reached_24"] += 1
-            return r
-
-        def is_started_trend_older_than(self, old_trend_time):
-            r = super().is_started_trend_older_than(old_trend_time)
-            if r:
-                stats["reached_old_1_9h"] += 1
-            return r
-
-    return InstrumentedTrendState
+    return make_instrumented_trend_state(
+        stats,
+        confirm_threshold_override=confirm_threshold_override,
+        expiration_trend_time_override=expiration_trend_time_override,
+    )
 
 
 def run_variant(tag, symbol, start_ts, end_ts, expiration_trend_time_override=None,
                 trend_to_be_old_override=None, confirm_threshold_override=None):
-    ta.TrendState = make_instrumented(tag)
-    tb.ta.TrendState = ta.TrendState  # The same module, but explicit for clarity.
-
-    orig_expiration_init = ta.TrendState.__init__
-    if expiration_trend_time_override is not None:
-        def patched_init(self, max_duration_seconds, expiration_trend_time, fresh_trend_time, now_fn=time.time):
-            orig_expiration_init(self, max_duration_seconds, expiration_trend_time_override, fresh_trend_time, now_fn)
-        ta.TrendState.__init__ = patched_init
-
-    orig_trend_to_be_old = ta.TREND_TO_BE_OLD_SECONDS
-    if trend_to_be_old_override is not None:
-        ta.TREND_TO_BE_OLD_SECONDS = trend_to_be_old_override
-
-    orig_consistent = ta.TrendState.is_trend_consistent_validated
-    if confirm_threshold_override is not None:
-        def patched_consistent(self):
-            if not self.is_trend_a_minim_validated():
-                return False
-            return self.confirm_count > confirm_threshold_override and self.is_trend_uniform_confirmed()
-        ta.TrendState.is_trend_consistent_validated = patched_consistent
-
-    run_id = f"experiment_{tag}"
-    import shutil
-    out_dir = os.path.join(ROOT, "logger", "backtest", run_id)
-    shutil.rmtree(out_dir, ignore_errors=True)
-
-    t0 = time.time()
-    try:
-        tb.run_backtest(symbol, start_ts, end_ts, "fast", run_id, "cache24",
-                         cache24_file=os.path.join(ROOT, "cachedb", f"cache_365price_{symbol}.jsonl"),
-                         quiet=True, kalman_primary=False)
-    finally:
-        ta.TREND_TO_BE_OLD_SECONDS = orig_trend_to_be_old
-        ta.TrendState = _OrigTrendState
-        tb.ta.TrendState = _OrigTrendState
-    elapsed = time.time() - t0
-
-    import json
-    pnl_path = os.path.join(out_dir, "pnl.json")
-    pnl = json.load(open(pnl_path)) if os.path.exists(pnl_path) else {}
-    # quiet=True -> log.disable_print() monkeypatch-uieste builtins.print GLOBAL
-    # (not only in tradeall.py) -> the print() below would be swallowed silently. stderr
-    # stays visible (the same reason offline/backtests/tradeall.py itself uses
-    # sys.stderr.write pt propriile mesaje de progres in modul --quiet).
+    trend_cls = make_instrumented(
+        tag,
+        expiration_trend_time_override=expiration_trend_time_override,
+        confirm_threshold_override=confirm_threshold_override,
+    )
+    pnl, elapsed = execute_tradeall_variant(
+        f"experiment_{tag}",
+        symbol,
+        start_ts,
+        end_ts,
+        trend_state_cls=trend_cls,
+        trend_to_be_old_override=trend_to_be_old_override,
+    )
+    # quiet=True -> log.disable_print() monkeypatches builtins.print globally -> stderr stays visible.
     sys.stderr.write(f"\n=== {tag} === (wall {elapsed:.1f}s)\n")
     sys.stderr.write(f"stats: {STATS[tag]}\n")
     sys.stderr.write(f"pnl: {pnl}\n")

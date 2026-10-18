@@ -650,3 +650,119 @@ def test_intelligence_and_chop_backtest_fee_accounting_reconciliation(tmp_path):
             mode_stat.net_profit_usd,
             abs_tol=0.02,
         )
+
+
+def test_simulations_price_window_get_max_and_normalize_indices():
+    """offline.simulations.sim.PriceWindow.get_max returns true sliding-window maximum and sim2 reuses it."""
+    from offline.simulations import sim, sim2
+
+    assert sim2.PriceWindow is sim.PriceWindow
+    pw = sim.PriceWindow(window_size=4, max_index=5)
+    for px in (10.0, 50.0, 30.0, 20.0):
+        pw.process_price(px)
+    assert pw.get_min()[0] == 10.0
+    assert pw.get_max()[0] == 50.0
+
+    # Advance past 50.0 so the window holds (30.0, 20.0, 25.0, 15.0) and triggers normalize_indices
+    pw.process_price(25.0)
+    pw.process_price(15.0)
+    assert pw.get_min()[0] == 15.0
+    assert pw.get_max()[0] == 30.0
+
+
+def test_experiment_trend_gate_and_kalman_lag_sweep_restore_globals(tmp_path, monkeypatch):
+    """experiment_trend_gate and run_kalman_lag_sweep restore tradeall/shadow_signals globals after execution."""
+    import shadow_signals
+    import tradeall as ta
+    from offline.backtests import tradeall as bt_ta
+    from offline.research.tradeall_kalman_lag import run_kalman_lag_sweep as kal_sweep
+    from offline.research.tradeall_trigger_gate import common as tg_common
+    from offline.research.tradeall_trigger_gate import experiment_trend_gate as etg
+
+    cls = etg.make_instrumented(
+        "UNIT_ETG",
+        confirm_threshold_override=2,
+        expiration_trend_time_override=9999,
+    )
+    stats = etg.STATS["UNIT_ETG"]
+    ts = cls(3600, 160, 220)
+    assert ts.expiration_trend_time == 9999
+    ts.start_trend("UP")
+    for _ in range(5):
+        ts.confirm_trend()
+    assert stats["confirms"] == 5
+    assert stats["max_confirm_count"] == 6
+
+    c24_file = tmp_path / "cachedb" / "cache_365price_ARBUSDC.jsonl"
+    hist_file = tmp_path / "cachedb" / "cache_price_sparse_ARBUSDC.jsonl"
+    c24_file.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        json.dumps({"s": "ARBUSDC", "i": [1750000000000 + i * 60000, 1.0 + i * 0.001]})
+        for i in range(10)
+    ]
+    payload = "\n".join(rows) + "\n"
+    c24_file.write_text(payload, encoding="utf-8")
+    hist_file.write_text(payload, encoding="utf-8")
+    monkeypatch.setattr(tg_common, "ROOT", str(tmp_path))
+    monkeypatch.setattr(bt_ta, "ROOT", str(tmp_path))
+    monkeypatch.setattr(kal_sweep, "ROOT", str(tmp_path))
+
+    orig_old = ta.TREND_TO_BE_OLD_SECONDS
+    tg_common.execute_tradeall_variant(
+        "unit_old_override",
+        "ARBUSDC",
+        1750000000.0,
+        None,
+        source="cache24",
+        trend_state_cls=cls,
+        trend_to_be_old_override=1800,
+    )
+    assert ta.TREND_TO_BE_OLD_SECONDS == orig_old
+
+    orig_kalman_sec = shadow_signals.KALMAN_SAMPLE_SEC
+    res = kal_sweep.run_variant("ARBUSDC", 1750000000.0, None, 120.0, "unit_kal_run")
+    assert shadow_signals.KALMAN_SAMPLE_SEC == orig_kalman_sec
+    assert res["sample_sec"] == 120.0
+
+
+def test_align_spot_interval_params_and_walk_forward_compare_multi_interval():
+    """align_spot_interval_params aligns regime/volatility intervals so multi-interval walk-forward evaluation succeeds."""
+    from offline.runners.walk_forward_compare import _segment_result
+    from strategies.spot_engine import StratParams
+    from strategies.spot_replay import align_spot_interval_params
+
+    base = StratParams(
+        currency="USD",
+        entry_amount=100.0,
+        entry_discount_pct=0.5,
+        dca_amount=50.0,
+        dca_drop_pct=2.0,
+        check_minutes=2.0,
+        takeprofit_pct=3.0,
+        max_budget=500.0,
+        max_dca_buys=3,
+        enable_takeprofit=True,
+        order_ttl_min=10.0,
+        stop_loss_pct=15.0,
+        trend_overlay=True,
+        reentry_hybrid_enabled=True,
+        tp_trail_adaptive=True,
+        dca_vol_scale_k=1.0,
+        trend_interval=240,
+        tp_trail_vol_interval=240,
+        dca_vol_interval=240,
+    )
+    aligned_60 = align_spot_interval_params(base, 60)
+    assert aligned_60.trend_interval == 60
+    assert aligned_60.tp_trail_vol_interval == 60
+    assert aligned_60.dca_vol_interval == 60
+    assert align_spot_interval_params(base, 240) is base
+
+    records = [
+        {"timestamp": 1_700_000_000 + i * 3600, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}
+        for i in range(10)
+    ]
+    seg = _segment_result(records, base, fee_pct=0.26, interval=60)
+    assert "metrics" in seg
+    assert seg["metrics"]["account_currency"] == "USD"
+

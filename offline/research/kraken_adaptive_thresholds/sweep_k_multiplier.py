@@ -35,6 +35,30 @@ K_REENTRY_SWEEP = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
 K_DCA_SWEEP = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5]
 
 
+def _run_k_sweep(section_title, k_label, ohlc, vol_trail, params, fallback_key, k_values, current_k, sim_fn):
+    print(f"--- {section_title} (fix live = {params[fallback_key]}%) ---")
+    fixed_arr = np.full(len(ohlc), params[fallback_key])
+    m_fix = sim_fn(ohlc, params, fixed_arr)
+    tot_fix = m_fix["total"] / params["budget"] * 100
+    print(f"  FIX               TOTAL {tot_fix:+7.2f}%  realizat ${m_fix['realized']:+8.2f}  "
+          f"cicluri={m_fix['cycles']:<3} maxDD=${m_fix['maxdd']:.2f}")
+    best_k, best_tot = None, -1e18
+    pad = max(1, 13 - len(k_label))
+    for k in k_values:
+        arr = np.array([k * v if not np.isnan(v) else np.nan for v in vol_trail])
+        m = sim_fn(ohlc, params, arr)
+        tot = m["total"] / params["budget"] * 100
+        marker = f" <- curent ({current_k})" if k == current_k else ""
+        valid = arr[~np.isnan(arr)]
+        mean_thresh = float(np.mean(valid)) if len(valid) > 0 else float("nan")
+        print(f"  {k_label}={k:<{pad}} TOTAL {tot:+7.2f}%  realizat ${m['realized']:+8.2f}  "
+              f"cicluri={m['cycles']:<3} maxDD=${m['maxdd']:.2f}  medie_prag={mean_thresh:.2f}%{marker}")
+        if tot > best_tot:
+            best_k, best_tot = k, tot
+    print(f"  => the best {k_label} in the sweep: {best_k} (TOTAL {best_tot:+.2f}%)")
+    return tot_fix, best_k, best_tot
+
+
 def main():
     ohlc = fetch_candles(PAIR, INTERVAL)
     closes = [x[3] for x in ohlc]
@@ -42,41 +66,15 @@ def main():
     print(f"=== {PAIR} interval={INTERVAL}m ({len(ohlc)} bare = ~{len(ohlc)/24:.1f} zile) — buy&hold {bh:+.1f}% ===\n")
     vol_trail = trailing_vol_series(closes)
 
-    print(f"--- SWEEP REINTRARE (fix live = {REAL_REENTRY['reentry_fallback']}%) ---")
-    fixed_arr_re = np.full(len(ohlc), REAL_REENTRY["reentry_fallback"])
-    m_fix_re = simulate_with_reentry_gate(ohlc, REAL_REENTRY, fixed_arr_re)
-    tot_fix_re = m_fix_re["total"] / REAL_REENTRY["budget"] * 100
-    print(f"  FIX               TOTAL {tot_fix_re:+7.2f}%  realizat ${m_fix_re['realized']:+8.2f}  "
-          f"cicluri={m_fix_re['cycles']:<3} maxDD=${m_fix_re['maxdd']:.2f}")
-    best_k_re, best_tot_re = None, -1e18
-    for k in K_REENTRY_SWEEP:
-        arr = np.array([k * v if not np.isnan(v) else np.nan for v in vol_trail])
-        m = simulate_with_reentry_gate(ohlc, REAL_REENTRY, arr)
-        tot = m["total"] / REAL_REENTRY["budget"] * 100
-        marker = " <- curent (2.0)" if k == 2.0 else ""
-        print(f"  K_REENTRY={k:<4} TOTAL {tot:+7.2f}%  realizat ${m['realized']:+8.2f}  "
-              f"cicluri={m['cycles']:<3} maxDD=${m['maxdd']:.2f}  medie_prag={np.nanmean(arr):.2f}%{marker}")
-        if tot > best_tot_re:
-            best_k_re, best_tot_re = k, tot
-    print(f"  => the best K_REENTRY in the sweep: {best_k_re} (TOTAL {best_tot_re:+.2f}%)")
-
-    print(f"\n--- SWEEP DCA (fix live = {REAL_DCA['drop_fallback']}%) ---")
-    fixed_arr_dca = np.full(len(ohlc), REAL_DCA["drop_fallback"])
-    m_fix_dca = simulate_variant(ohlc, REAL_DCA, fixed_arr_dca)
-    tot_fix_dca = m_fix_dca["total"] / REAL_DCA["budget"] * 100
-    print(f"  FIX               TOTAL {tot_fix_dca:+7.2f}%  realizat ${m_fix_dca['realized']:+8.2f}  "
-          f"cicluri={m_fix_dca['cycles']:<3} maxDD=${m_fix_dca['maxdd']:.2f}")
-    best_k_dca, best_tot_dca = None, -1e18
-    for k in K_DCA_SWEEP:
-        arr = np.array([k * v if not np.isnan(v) else np.nan for v in vol_trail])
-        m = simulate_variant(ohlc, REAL_DCA, arr)
-        tot = m["total"] / REAL_DCA["budget"] * 100
-        marker = " <- curent (1.0)" if k == 1.0 else ""
-        print(f"  K_DCA={k:<7} TOTAL {tot:+7.2f}%  realizat ${m['realized']:+8.2f}  "
-              f"cicluri={m['cycles']:<3} maxDD=${m['maxdd']:.2f}  medie_prag={np.nanmean(arr):.2f}%{marker}")
-        if tot > best_tot_dca:
-            best_k_dca, best_tot_dca = k, tot
-    print(f"  => the best K_DCA in the sweep: {best_k_dca} (TOTAL {best_tot_dca:+.2f}%)")
+    tot_fix_re, best_k_re, best_tot_re = _run_k_sweep(
+        "SWEEP REINTRARE", "K_REENTRY", ohlc, vol_trail, REAL_REENTRY,
+        "reentry_fallback", K_REENTRY_SWEEP, 2.0, simulate_with_reentry_gate,
+    )
+    print()
+    tot_fix_dca, best_k_dca, best_tot_dca = _run_k_sweep(
+        "SWEEP DCA", "K_DCA", ohlc, vol_trail, REAL_DCA,
+        "drop_fallback", K_DCA_SWEEP, 1.0, simulate_variant,
+    )
 
     print(f"\n=== REZUMAT ===")
     print(f"Reintrare: FIX {tot_fix_re:+.2f}%  |  cel mai bun adaptiv (K={best_k_re}) {best_tot_re:+.2f}%")

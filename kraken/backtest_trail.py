@@ -86,9 +86,10 @@ def run_compare(pairs, intervals):
                 print(f"{pair:<9} {iv:<5} EROARE: {e}"); continue
             if len(ohlc) < 30:
                 print(f"{pair:<9} {iv:<5} not enough data ({len(ohlc)})"); continue
+            P_iv = {**P, "interval": iv}
             h = bh(ohlc)
-            f = simulate(ohlc, P)["total"]/P["budget"]*100
-            t = simulate_trail(ohlc, P)["total"]/P["budget"]*100
+            f = simulate(ohlc, P_iv)["total"]/P["budget"]*100
+            t = simulate_trail(ohlc, P_iv)["total"]/P["budget"]*100
             win = "trailing" if t > f else "TP-fix"
             (trailw, fixw) = (trailw+1, fixw) if t > f else (trailw, fixw+1)
             print(f"{pair:<9} {iv:<5} {len(ohlc):<5} {h:>+8.1f}% {f:>+7.2f}% {t:>+8.2f}%  {win}")
@@ -96,7 +97,7 @@ def run_compare(pairs, intervals):
 
 
 def run_wf(pair, interval, segments=4):
-    P = base_params()
+    P = {**base_params(), "interval": interval}
     try:
         ohlc = fetch_candles(pair, interval)
     except Exception as e:  # noqa: BLE001

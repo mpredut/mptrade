@@ -24,6 +24,7 @@ ORIG_LOGIC = ta.logic
 ORIG_LOGIC_SMALL = getattr(ta, "logic_small", None)
 ORIG_WINDOW_ANALYZER = ta.WindowAnalyzer
 ORIG_BIG_THRESHOLD = ta.PRICE_CHANGE_THRESHOLD_BIG_EUR
+ORIG_TREND_TO_BE_OLD = ta.TREND_TO_BE_OLD_SECONDS
 
 DEFAULT_SAFEBACK_SECONDS = 14 * 24 * 3600 + 60
 
@@ -40,12 +41,18 @@ def make_instrumented_trend_state(
     stats: dict,
     *,
     confirm_threshold_override: Optional[int] = None,
+    expiration_trend_time_override: Optional[float] = None,
     retry_interval_sec: float = 1800.0,
 ):
     """Create a fresh TrendState subclass rooted at ORIG_TREND_STATE (never chained across runs)."""
 
     class InstrumentedTrendState(ORIG_TREND_STATE):
         def __init__(self, *a, **kw):
+            if expiration_trend_time_override is not None:
+                if len(a) >= 2:
+                    a = (a[0], expiration_trend_time_override, *a[2:])
+                else:
+                    kw["expiration_trend_time"] = expiration_trend_time_override
             super().__init__(*a, **kw)
             self._fired_up = False
             self._fired_down = False
@@ -78,13 +85,23 @@ def make_instrumented_trend_state(
 
         def is_trend_consistent_validated(self):
             if confirm_threshold_override is None:
-                return super().is_trend_consistent_validated()
-            if not self.is_trend_a_minim_validated():
-                return False
-            return (
-                self.confirm_count > confirm_threshold_override
-                and self.is_trend_uniform_confirmed()
-            )
+                r = super().is_trend_consistent_validated()
+            elif not self.is_trend_a_minim_validated():
+                r = False
+            else:
+                r = (
+                    self.confirm_count > confirm_threshold_override
+                    and self.is_trend_uniform_confirmed()
+                )
+            if r and "reached_24" in stats:
+                stats["reached_24"] += 1
+            return r
+
+        def is_started_trend_older_than(self, old_trend_time):
+            r = super().is_started_trend_older_than(old_trend_time)
+            if r and "reached_old_1_9h" in stats:
+                stats["reached_old_1_9h"] += 1
+            return r
 
         def mark_fired(self, direction: str):
             if direction == "UP" and not self._fired_up:
@@ -337,6 +354,7 @@ def execute_tradeall_variant(
     trend_state_cls=None,
     window_analyzer_cls=None,
     big_threshold: Optional[float] = None,
+    trend_to_be_old_override: Optional[float] = None,
     disable_small: bool = False,
 ) -> tuple[dict, float]:
     """Run tb.run_backtest with scoped monkeypatches on tradeall and guaranteed restoration."""
@@ -361,6 +379,9 @@ def execute_tradeall_variant(
         if big_threshold is not None:
             ta.PRICE_CHANGE_THRESHOLD_BIG_EUR = big_threshold
             tb.ta.PRICE_CHANGE_THRESHOLD_BIG_EUR = big_threshold
+        if trend_to_be_old_override is not None:
+            ta.TREND_TO_BE_OLD_SECONDS = trend_to_be_old_override
+            tb.ta.TREND_TO_BE_OLD_SECONDS = trend_to_be_old_override
 
         kwargs = {"quiet": True, "kalman_primary": False}
         if source == "cache24":
@@ -378,6 +399,8 @@ def execute_tradeall_variant(
         tb.ta.WindowAnalyzer = ORIG_WINDOW_ANALYZER
         ta.PRICE_CHANGE_THRESHOLD_BIG_EUR = ORIG_BIG_THRESHOLD
         tb.ta.PRICE_CHANGE_THRESHOLD_BIG_EUR = ORIG_BIG_THRESHOLD
+        ta.TREND_TO_BE_OLD_SECONDS = ORIG_TREND_TO_BE_OLD
+        tb.ta.TREND_TO_BE_OLD_SECONDS = ORIG_TREND_TO_BE_OLD
 
     elapsed = time.time() - t0
     pnl_path = os.path.join(out_dir, "pnl.json")

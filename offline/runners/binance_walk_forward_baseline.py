@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 from botcore import parse_dotenv
 from binance_api.market_data import fetch_ohlc_candles, parse_interval_minutes
 from binance_api.replay import make_binance_replay_adapter, StratParams
+from strategies.spot_replay import align_spot_interval_params
 from offline.backtests.datasets import (
     dataset_metadata,
     load_dataset as load_frozen_dataset,
@@ -118,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         train_size, val_size, test_size, step_size = resolve_window_sizes(args, len(records))
 
         adapter = make_binance_replay_adapter(
-            params=strat_params,
+            params=align_spot_interval_params(strat_params, interval),
             fee_pct=args.fee,
             bar_minutes=float(interval),
             execution=execution,

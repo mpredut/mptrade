@@ -18,7 +18,10 @@ class PriceWindow:
 
     def normalize_indices(self):
         """Normalise the indices when max_index is reached."""
-        min_index = self.min_deque[0][0] if self.min_deque else 0
+        min_index = min(
+            (d[0][0] for d in (self.min_deque, self.max_deque) if d),
+            default=self.current_index,
+        )
         self.min_deque = deque([(index - min_index, price) for index, price in self.min_deque])
         self.max_deque = deque([(index - min_index, price) for index, price in self.max_deque])
         self.current_index -= min_index  # Ajustam indexul curent
@@ -89,7 +92,7 @@ class PriceWindow:
         """Return the current high in the window and its relative position."""
         if not self.max_deque:
             return None, None
-        max_index, max_price = self.max_deque[-1]
+        max_index, max_price = self.max_deque[0]
         relative_position = max_index - (self.current_index - len(self.prices))
         return max_price, relative_position
 
@@ -114,18 +117,22 @@ class PriceWindow:
         plt.grid(True)
         plt.pause(0.1)  # A short pause so the chart updates.
 
-# The real-time simulation with random values.
-window_size = 10
-price_window = PriceWindow(window_size)
-random.seed(42)
 
-plt.ion()  # Enable interactive mode so the charts can be watched in real time.
-# The simulation loop with an endless price stream.
-try:
-    while True:
-        price = random.uniform(1, 100)
-        price_window.process_price(price)
-        price_window.plot_window()
-        time.sleep(7.5)  # A small delay to simulate real time.
-except KeyboardInterrupt:
-    print("Simulare oprita manual.")
+def main():
+    window_size = 10
+    price_window = PriceWindow(window_size)
+    random.seed(42)
+
+    plt.ion()  # Enable interactive mode so the charts can be watched in real time.
+    try:
+        while True:
+            price = random.uniform(1, 100)
+            price_window.process_price(price)
+            price_window.plot_window()
+            time.sleep(7.5)  # A small delay to simulate real time.
+    except KeyboardInterrupt:
+        print("Simulare oprita manual.")
+
+
+if __name__ == "__main__":
+    main()

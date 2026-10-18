@@ -39,6 +39,7 @@ _replay_spec.loader.exec_module(_hl_replay)
 make_hyperliquid_replay_adapter = _hl_replay.make_hyperliquid_replay_adapter
 StratParams = _hl_replay.StratParams
 from strategies.spot_engine import StratParams as SpotStratParams
+from strategies.spot_replay import align_spot_interval_params
 
 from offline.backtests.datasets import (
     dataset_metadata,
@@ -150,17 +151,8 @@ def main(argv: list[str] | None = None) -> int:
         train_size, val_size, test_size, step_size = resolve_window_sizes(args, len(records))
 
         if args.engine == "spot":
-            if getattr(strat_params, "trend_interval", None) != interval:
-                interval_params = dataclasses.replace(
-                    strat_params,
-                    trend_interval=interval,
-                    tp_trail_vol_interval=interval,
-                    dca_vol_interval=interval,
-                )
-            else:
-                interval_params = strat_params
             adapter = make_hyperliquid_replay_adapter(
-                params=interval_params,
+                params=align_spot_interval_params(strat_params, interval),
                 bar_minutes=float(interval),
                 execution=execution,
                 fee_pct=fee_pct,

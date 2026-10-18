@@ -60,7 +60,7 @@ import shadow_signals
 # used as (a) the warm-up fallback and (b) the "FIXED" baseline to compare against.
 FIXED_SMALL = float(tb.ta.PRICE_CHANGE_THRESHOLD_EUR)
 FIXED_BIG = float(tb.ta.PRICE_CHANGE_THRESHOLD_BIG_EUR)
-RATIO = FIXED_BIG / FIXED_SMALL   # ~4.79
+RATIO = FIXED_BIG / FIXED_SMALL if FIXED_SMALL > 0 else 1.0   # ~4.79
 
 
 def run_adaptive(symbol, start_ts, end_ts, k_small, run_id):
@@ -83,8 +83,13 @@ def run_adaptive(symbol, start_ts, end_ts, k_small, run_id):
     tb.run_backtest(symbol, start_ts, end_ts, "fast", run_id, "history",
                      quiet=True, kalman_primary=False, threshold_provider=_threshold_provider)
 
-    pnl_path = os.path.join(ROOT, "logger", "backtest", run_id, "pnl.json")
-    pnl = json.load(open(pnl_path, encoding="utf-8")) if os.path.exists(pnl_path) else {}
+    out_dir = os.path.join(ROOT, "logger", "backtest", run_id)
+    os.makedirs(out_dir, exist_ok=True)
+    pnl_path = os.path.join(out_dir, "pnl.json")
+    pnl = {}
+    if os.path.exists(pnl_path):
+        with open(pnl_path, encoding="utf-8") as fh:
+            pnl = json.load(fh)
     pnl["warmup_ticks"] = warmup["n"]
     pnl["k_small"] = k_small
     pnl["k_big"] = round(k_big, 4) if k_big is not None else None

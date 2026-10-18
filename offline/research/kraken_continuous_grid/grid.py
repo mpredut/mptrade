@@ -141,14 +141,18 @@ def load_asset(asset):
     return res
 
 
-def replay(bars, warm, params, peak, fee=0.26):
+def replay(bars, warm, params, peak, fee=0.26, initial_cash=None):
     FLAGS["peak"] = bool(peak)
     strat.Strategy.step = _step if peak else _orig_step
     try:
         ohlc = [b[1:] for b in bars] if (bars and len(bars[0]) == 5) else bars
         w_ohlc = [b[1:] for b in warm] if (warm and len(warm[0]) == 5) else warm
         m = rp.run_replay(ohlc, params, fee_pct=fee, bar_minutes=240,
-                          warmup_ohlc=w_ohlc)
+                          warmup_ohlc=w_ohlc, initial_cash=initial_cash)
+        if initial_cash is not None:
+            return {"ret": round(m["total"] / initial_cash * 100, 2), "dd": round(m.get("max_drawdown_pct") or 0, 2),
+                    "cyc": m.get("cycles", 0), "refused": m["funding"]["refused_buys"],
+                    "min_cash": m["funding"]["minimum_cash"]}
         budget = float(params.effective_max_budget())
         return {"ret": round(m["total"] / budget * 100, 3), "dd": round(m.get("max_drawdown_pct") or 0, 3),
                 "cyc": m.get("cycles", 0), "expo": round(m.get("exposure_pct") or 0, 1),

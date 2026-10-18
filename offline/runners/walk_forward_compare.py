@@ -13,6 +13,7 @@ import datetime as dt
 import json
 from pathlib import Path
 import sys
+from typing import Any
 
 RUNNER_DIR = Path(__file__).resolve().parent
 ROOT = RUNNER_DIR.parents[1]
@@ -43,7 +44,7 @@ from offline.backtests.walk_forward import (
     walk_forward_splits,
 )
 from strategies.spot_engine import StratParams
-from strategies.spot_replay import run_replay
+from strategies.spot_replay import align_spot_interval_params, run_replay
 
 DEFAULT_FEE_STRESS = {
     "kraken": "0.16,0.26,0.35,0.50",
@@ -239,17 +240,8 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
             base_params = StratParams.from_dict(raw_params, defaults=defaults)
 
             def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
-                if getattr(params, "trend_interval", None) != interval:
-                    interval_params = dataclasses.replace(
-                        params,
-                        trend_interval=interval,
-                        tp_trail_vol_interval=interval,
-                        dca_vol_interval=interval,
-                    )
-                else:
-                    interval_params = params
                 adapter = hl_replay.make_hyperliquid_replay_adapter(
-                    interval_params,
+                    align_spot_interval_params(params, interval),
                     bar_minutes=float(interval),
                     execution=execution,
                     fee_pct=fee_pct,
@@ -327,9 +319,10 @@ def _segment_result(
     warmup_records: list[dict] | tuple = (),
     execution: ExecutionModel | None = None,
 ) -> dict:
+    interval_params = align_spot_interval_params(params, interval)
     adapter = lambda data, warmup=(), _context=None: run_replay(
         data,
-        params,
+        interval_params,
         fee_pct=fee_pct,
         bar_minutes=interval,
         warmup_ohlc=warmup,

@@ -2,9 +2,7 @@
 """Generate comprehensive comparative report for Hybrid Re-Entry Ablation Suite."""
 
 import json
-import math
 import os
-import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
@@ -16,18 +14,18 @@ EQUITIES_JSON = os.path.join(OUT_DIR, "equities_ablation_results.json")
 def generate_markdown_report() -> str:
     if not os.path.isfile(CRYPTO_JSON):
         return "No crypto ablation results found."
-    
-    with open(CRYPTO_JSON, "r") as f:
+
+    with open(CRYPTO_JSON, "r", encoding="utf-8") as f:
         crypto_data = json.load(f)
-    
+
     summary = {}
     if os.path.isfile(SUMMARY_JSON):
-        with open(SUMMARY_JSON, "r") as f:
+        with open(SUMMARY_JSON, "r", encoding="utf-8") as f:
             summary = json.load(f)
 
     equities_data = []
     if os.path.isfile(EQUITIES_JSON):
-        with open(EQUITIES_JSON, "r") as f:
+        with open(EQUITIES_JSON, "r", encoding="utf-8") as f:
             equities_data = json.load(f)
 
     md = []

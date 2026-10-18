@@ -60,19 +60,27 @@ SAMPLE_SEC_SWEEP = [20.0, 60.0, 90.0, 150.0]
 
 
 def run_variant(symbol, start_ts, end_ts, sample_sec, run_id):
+    orig_sample_sec = shadow_signals.KALMAN_SAMPLE_SEC
     shadow_signals.KALMAN_SAMPLE_SEC = sample_sec
     out_dir = os.path.join(ROOT, "logger", "backtest", run_id)
     shutil.rmtree(out_dir, ignore_errors=True)
 
     t0 = time.time()
-    tb.run_backtest(symbol, start_ts, end_ts, "fast", run_id, "history",
-                     quiet=True, kalman_primary=True)
+    try:
+        tb.run_backtest(symbol, start_ts, end_ts, "fast", run_id, "history",
+                         quiet=True, kalman_primary=True)
+    finally:
+        shadow_signals.KALMAN_SAMPLE_SEC = orig_sample_sec
     elapsed = time.time() - t0
 
+    os.makedirs(out_dir, exist_ok=True)
     pnl_path = os.path.join(out_dir, "pnl.json")
-    pnl = json.load(open(pnl_path)) if os.path.exists(pnl_path) else {}
+    pnl = {}
+    if os.path.exists(pnl_path):
+        with open(pnl_path, encoding="utf-8") as fh:
+            pnl = json.load(fh)
 
-    # numara tranzitiile Kalman logate (proxy direct pt zgomot/instabilitate)
+    # Count logged Kalman transitions (direct proxy for noise/instability).
     shadow_log = os.path.join(out_dir, "tradeall_shadow.log")
     n_transitions = 0
     if os.path.exists(shadow_log):

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run Tests 0 to 4 ablation across 11 crypto assets and US equities."""
 
-import csv
 import json
 import os
+import statistics
 import sys
 import time
 
@@ -12,7 +12,11 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "kraken"))
 
 from strategies import spot_dca as strat
-from offline.research.hybrid_reentry.harness import evaluate_asset, load_ohlc_csv
+from offline.research.hybrid_reentry.harness import (
+    build_ablation_variants,
+    evaluate_asset,
+    load_ohlc_csv,
+)
 
 DATA_DIR = os.path.join(ROOT, "offline", "results", "kraken_continuous_grid", "data")
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
@@ -100,20 +104,14 @@ def main():
 
     # Save raw results
     out_json = os.path.join(OUT_DIR, "ablation_results.json")
-    with open(out_json, "w") as f:
+    with open(out_json, "w", encoding="utf-8") as f:
         json.dump(all_results, f, indent=2)
     print(f"\nRaw results saved to {out_json}")
 
     # Aggregate by test variant
-    variants = ["Test 0", "Test 1", "Test 2", "Test 3", "Test 4"]
-    variant_names = {
-        "Test 0": "Baseline (Control)",
-        "Test 1": "Peak-Relative",
-        "Test 2": "Trend Bypass",
-        "Test 3": "Hybrid",
-        "Test 4": "Hybrid + TTL",
-    }
-    
+    variant_names = {k: v[0] for k, v in build_ablation_variants(BASE_PARAMS).items()}
+    variants = list(variant_names)
+
     summary = {}
     for var in variants:
         runs = [r for r in all_results if r.get("test_id") == var and "error" not in r]
@@ -124,24 +122,17 @@ def main():
         exposures = [r["exposure_pct"] for r in runs]
         cycles = [r["cycles"] for r in runs]
         wins = [r["wins"] for r in runs]
-        
-        rets_sorted = sorted(rets)
-        n = len(rets_sorted)
-        med_ret = rets_sorted[n // 2] if n % 2 != 0 else (rets_sorted[n // 2 - 1] + rets_sorted[n // 2]) / 2.0
-        
-        dds_sorted = sorted(dds)
-        med_dd = dds_sorted[n // 2] if n % 2 != 0 else (dds_sorted[n // 2 - 1] + dds_sorted[n // 2]) / 2.0
-        
+        n = len(runs)
         pos_count = sum(1 for ret in rets if ret > 0)
-        
+
         summary[var] = {
             "name": variant_names[var],
             "runs": n,
             "positive_assets": f"{pos_count}/{n}",
-            "median_return_pct": round(med_ret, 2),
+            "median_return_pct": round(statistics.median(rets), 2),
             "worst_return_pct": round(min(rets), 2),
             "best_return_pct": round(max(rets), 2),
-            "median_drawdown_pct": round(med_dd, 2),
+            "median_drawdown_pct": round(statistics.median(dds), 2),
             "max_drawdown_pct": round(max(dds), 2),
             "mean_exposure_pct": round(sum(exposures) / n, 2),
             "total_cycles": sum(cycles),
@@ -159,7 +150,7 @@ def main():
     print("=" * 105)
 
     summary_json = os.path.join(OUT_DIR, "ablation_summary.json")
-    with open(summary_json, "w") as f:
+    with open(summary_json, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
 
 
