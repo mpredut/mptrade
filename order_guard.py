@@ -963,8 +963,32 @@ def check_intelligence_guards(
         if computed_notional is None or computed_notional < sell_min_notional:
             return True, "small_sell_exempt", 1.0
 
-    # Check if expensive static analysis is already cached on regime_context
-    cached_res = getattr(regime_context, "_intelligence_decision", None) if valid_context else None
+    # Check if expensive static analysis is already cached on regime_context for this (side, bypassed) key
+    cache_key = (side, frozenset(bypassed))
+    decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None) if valid_context else None
+    if isinstance(decisions_map, dict) and cache_key in decisions_map:
+        cached_entry = decisions_map[cache_key]
+        cached_res = cached_entry.get("decision")
+        cached_price = cached_entry.get("price")
+        cached_notional = cached_entry.get("notional")
+    elif valid_context and getattr(regime_context, "_intelligence_decision_key", cache_key) == cache_key:
+        cached_res = getattr(regime_context, "_intelligence_decision", None)
+        cached_price = getattr(regime_context, "_intelligence_price", None)
+        cached_notional = getattr(regime_context, "_intelligence_notional", None)
+    else:
+        cached_res = None
+        cached_price = None
+        cached_notional = None
+
+    if (
+        cached_res is not None
+        and not cached_res[0]
+        and side == "BUY"
+        and "parabolic_surge" in str(cached_res[1])
+        and (price != cached_price or now is not None)
+    ):
+        cached_res = None
+
     was_cached = cached_res is not None
     if cached_res is None:
         cached_res = _evaluate_intelligence_guards_raw(
@@ -983,6 +1007,18 @@ def check_intelligence_guards(
         )
         if valid_context:
             try:
+                decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None)
+                if not isinstance(decisions_map, dict):
+                    decisions_map = {}
+                existing_entry = decisions_map.get(cache_key, {})
+                decisions_map[cache_key] = {
+                    **existing_entry,
+                    "decision": cached_res,
+                    "price": price,
+                    "notional": computed_notional,
+                }
+                object.__setattr__(regime_context, "_intelligence_decisions_by_key", decisions_map)
+                object.__setattr__(regime_context, "_intelligence_decision_key", cache_key)
                 object.__setattr__(regime_context, "_intelligence_decision", cached_res)
                 object.__setattr__(regime_context, "_intelligence_price", price)
                 object.__setattr__(regime_context, "_intelligence_notional", computed_notional)
@@ -1048,9 +1084,16 @@ def check_intelligence_guards(
             m.get("gemini_min_notional_eur", 1000.0))))
         )
         if computed_notional is not None and computed_notional >= min_notional:
-            cached_gemini_notional = getattr(regime_context, "_gemini_evaluated_notional", None)
+            decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None) if valid_context else None
+            entry_for_key = decisions_map.get(cache_key, {}) if isinstance(decisions_map, dict) else {}
+            if "gemini_notional" in entry_for_key:
+                cached_gemini_notional = entry_for_key.get("gemini_notional")
+            elif getattr(regime_context, "_gemini_decision_key", cache_key) == cache_key:
+                cached_gemini_notional = getattr(regime_context, "_gemini_evaluated_notional", None)
+            else:
+                cached_gemini_notional = None
             if cached_gemini_notional is None:
-                cached_gemini_notional = getattr(regime_context, "_intelligence_notional", None)
+                cached_gemini_notional = entry_for_key.get("notional", cached_notional)
             notional_jump = (
                 cached_gemini_notional is not None
                 and (computed_notional - cached_gemini_notional) / max(cached_gemini_notional, 1.0) > 0.20
@@ -1083,8 +1126,13 @@ def check_intelligence_guards(
                     )
                 if valid_context:
                     try:
+                        g_tuple = (g_dec.allowed, g_dec.reason, g_dec.suggested_scale)
+                        if isinstance(decisions_map, dict) and cache_key in decisions_map:
+                            decisions_map[cache_key]["gemini_notional"] = computed_notional
+                            decisions_map[cache_key]["gemini_decision"] = g_tuple
+                        object.__setattr__(regime_context, "_gemini_decision_key", cache_key)
                         object.__setattr__(regime_context, "_gemini_evaluated_notional", computed_notional)
-                        object.__setattr__(regime_context, "_gemini_decision", (g_dec.allowed, g_dec.reason, g_dec.suggested_scale))
+                        object.__setattr__(regime_context, "_gemini_decision", g_tuple)
                     except Exception:
                         pass
                 if not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
@@ -1097,7 +1145,12 @@ def check_intelligence_guards(
                         active_reason = g_dec.reason
             else:
                 # Re-apply cached Gemini decision for unchanged notional baseline
-                cached_g_dec = getattr(regime_context, "_gemini_decision", None) if valid_context else None
+                if "gemini_decision" in entry_for_key:
+                    cached_g_dec = entry_for_key.get("gemini_decision")
+                elif getattr(regime_context, "_gemini_decision_key", cache_key) == cache_key:
+                    cached_g_dec = getattr(regime_context, "_gemini_decision", None) if valid_context else None
+                else:
+                    cached_g_dec = None
                 if cached_g_dec is not None:
                     g_allowed, g_reason, g_scale = cached_g_dec
                     if not g_allowed or g_scale < 1.0:
@@ -1128,6 +1181,11 @@ def check_intelligence_guards(
     final_res = (True, active_reason if effective_scale < 1.0 else "ok", effective_scale)
     if valid_context:
         try:
+            decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None)
+            if isinstance(decisions_map, dict) and cache_key in decisions_map:
+                decisions_map[cache_key]["price"] = price
+                if computed_notional is not None:
+                    decisions_map[cache_key]["notional"] = computed_notional
             object.__setattr__(regime_context, "_intelligence_price", price)
             if computed_notional is not None:
                 object.__setattr__(regime_context, "_intelligence_notional", computed_notional)
@@ -1322,6 +1380,18 @@ def check_math_profit_reference(
                                   f"anchor {pos_window_ref} from older period bypassed")
                             return True
                         pos_window_ref = min(recent_prices)
+                        if len(recent) > 1 and all(
+                            isinstance(o, dict) and float(o.get("timestamp") or o.get("time") or 0) > 0
+                            for o in recent
+                        ):
+                            try:
+                                same_orders = provider.get_orders(symbol, "BUY", dyn_window_s) or []
+                            except Exception:
+                                same_orders = []
+                            if same_orders:
+                                active_ref = active_cycle_window_ref(recent, same_orders, "BUY")
+                                if active_ref is not None and active_ref > 0:
+                                    pos_window_ref = active_ref
                         diff = u.value_diff_to_percent(pos_window_ref, price)
                         if diff >= profit_percentage:
                             print(f"[GUARD] BUY {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "

@@ -53,7 +53,14 @@ def check_geopolitical_order_guards(
     if geo_mode in ("off", "0", "disabled"):
         return True, "geopolitical_guard_off", 1.0
 
-    shadow_notify = bool(int(float(m.get("shadow_notify", 1.0))))
+    raw_shadow_notify = m.get("shadow_notify", 1.0)
+    if isinstance(raw_shadow_notify, str):
+        shadow_notify = raw_shadow_notify.strip().lower() in ("1", "1.0", "true", "yes", "on")
+    else:
+        try:
+            shadow_notify = bool(float(raw_shadow_notify))
+        except (TypeError, ValueError):
+            shadow_notify = True
 
     try:
         from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer

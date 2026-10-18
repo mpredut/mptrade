@@ -1120,3 +1120,281 @@ class TestSisterArchitecturalDefects:
         assert records[0]["requested_qty_total"] == 1.0
 
 
+class TestBatch6IntelligenceAndRoutingFixes:
+    """Tests for Batch 6 bug fixes:
+    1. Cross-side and cross-bypass cache isolation on MarketRegimeContext in check_intelligence_guards & intelligence_order_guard.
+    2. Parabolic surge pullback recovery on shared MarketRegimeContext after initial spike rejection.
+    3. FundingCrowdingGuard funding_min_short_rate forwarding and DEFER_WAIT shadow notify in external_order_guard.
+    4. Geopolitical guard string boolean shadow_notify parsing without ValueError crash.
+    5. OrderbookDepthCollector non-tuple cache fallback, WhalePositioningCollector funding rate disk TTL, and USDCUSDT preservation.
+    6. check_math_profit_reference dynamic BUY window active_cycle_window_ref and MarketApi.place_order explicit provider_name routing.
+    """
+
+    def test_batch6_cross_side_regime_context_cache_isolation(self, monkeypatch):
+        """Evaluating SELL first on shared regime_context must not bypass BUY geopolitical/internal guards,
+        and a blocked BUY must not block a subsequent SELL exit."""
+        ctx = _build_test_context()
+        margins = {
+            "intelligence_guards_mode": "enforce",
+            "geopolitical_guard_mode": "enforce",
+            "sell_guard_min_notional_eur": 1000.0,
+            "gemini_guard_mode": "off",
+            "whale_guard_mode": "off",
+            "orderbook_wall_guard_mode": "off",
+            "funding_guard_mode": "off",
+            "weibull_exhaustion_policy": "off",
+            "default": 1.15,
+        }
+        monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
+
+        import intelligence_order_guard
+        monkeypatch.setattr(
+            intelligence_order_guard,
+            "check_geopolitical_order_guards",
+            lambda symbol, side, **kw: (False, "critical_geopolitical_shock", 0.0)
+            if side == "BUY"
+            else (True, "not_buy_side", 1.0),
+        )
+
+        # 1. Evaluate a large SELL (>= 1000 EUR) first on shared context -> allowed
+        sell_ok, sell_reason, sell_scale = order_guard.check_intelligence_guards(
+            "binance", "BTCUSDC", "SELL", 100.0, qty=20.0, notional_eur=2000.0, regime_context=ctx
+        )
+        assert sell_ok is True
+        assert sell_scale == 1.0
+
+        # 2. Evaluate BUY on the SAME context -> must NOT reuse SELL's (True, "ok", 1.0) and MUST be blocked by GI4!
+        buy_ok, buy_reason, buy_scale = order_guard.check_intelligence_guards(
+            "binance", "BTCUSDC", "BUY", 100.0, qty=20.0, notional_eur=2000.0, regime_context=ctx
+        )
+        assert buy_ok is False
+        assert buy_reason == "critical_geopolitical_shock"
+        assert buy_scale == 0.0
+
+        # 3. Reverse order on a fresh context: BUY blocked first, then SELL evaluated -> SELL must still be allowed!
+        ctx2 = _build_test_context()
+        buy_ok2, _, _ = order_guard.check_intelligence_guards(
+            "binance", "BTCUSDC", "BUY", 100.0, qty=20.0, notional_eur=2000.0, regime_context=ctx2
+        )
+        assert buy_ok2 is False
+
+        sell_ok2, _, sell_scale2 = order_guard.check_intelligence_guards(
+            "binance", "BTCUSDC", "SELL", 100.0, qty=20.0, notional_eur=2000.0, regime_context=ctx2
+        )
+        assert sell_ok2 is True
+        assert sell_scale2 == 1.0
+
+    def test_batch6_cross_bypass_and_parabolic_pullback_recovery_on_same_context(self, monkeypatch):
+        """A BUY rejected at a parabolic spike price (125.0) on a fresh context must re-evaluate and pass
+        when price pulls back to 100.0 or when GI1 is bypassed."""
+        ctx = _build_test_context()
+        margins = {
+            "intelligence_guards_mode": "enforce",
+            "parabolic_surge_pct": 15.0,
+            "parabolic_pullback_pct": 2.0,
+            "weibull_exhaustion_policy": "off",
+            "gemini_guard_mode": "off",
+            "geopolitical_guard_mode": "off",
+            "whale_guard_mode": "off",
+            "orderbook_wall_guard_mode": "off",
+            "funding_guard_mode": "off",
+            "default": 1.15,
+        }
+        monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
+        now = time.time()
+        history = [(now - 120.0, 100.0), (now - 60.0, 100.0)]
+        monkeypatch.setattr(order_guard, "_read_cached_price_history", lambda s, **kw: history)
+        monkeypatch.setattr(order_guard, "_resolve_trend_duration", lambda s: 3600.0)
+
+        # 1. First call on context is at spike price 125.0 -> blocked by parabolic_surge_active
+        ok_spike, reason_spike, _ = order_guard.check_intelligence_guards(
+            "binance", "BTCUSDC", "BUY", 125.0, price_history=history, regime_context=ctx
+        )
+        assert ok_spike is False
+        assert "parabolic_surge" in reason_spike
+
+        # 2. Bypassing GI1 on the same context at 125.0 must NOT reuse the un-bypassed block
+        ok_bypass, _, _ = order_guard.check_intelligence_guards(
+            "binance", "BTCUSDC", "BUY", 125.0, price_history=history, regime_context=ctx, bypass_guards={"GI1"}
+        )
+        assert ok_bypass is True
+
+        # 3. Un-bypassed call at pulled-back price 100.0 on the same context must re-evaluate and allow!
+        ok_pullback, reason_pullback, scale_pullback = order_guard.check_intelligence_guards(
+            "binance", "BTCUSDC", "BUY", 100.0, price_history=history, regime_context=ctx
+        )
+        assert ok_pullback is True
+        assert reason_pullback == "ok"
+        assert scale_pullback == 1.0
+
+    def test_batch6_external_funding_min_short_rate_and_defer_notify(self, monkeypatch):
+        """external_order_guard must pass funding_min_short_rate to FundingCrowdingGuard and notify on DEFER_WAIT."""
+        import external_order_guard
+        import notify_engine.alertnotifiers as alertnotifiers
+        from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
+
+        telem = DerivativesTelemetry(
+            symbol="BTCUSDC",
+            funding_rate=-0.0003,
+            predicted_funding_rate=-0.0003,
+            open_interest=1000.0,
+            open_interest_usd=80_000_000.0,
+            ts=time.time(),
+        )
+        mock_collector = MagicMock()
+        mock_collector.fetch.return_value = telem
+        monkeypatch.setattr(external_order_guard, "get_derivatives_collector", lambda: mock_collector)
+        external_order_guard._MICRO_SHADOW_NOTIFY_COOLDOWN.clear()
+
+        notified = []
+        monkeypatch.setattr(
+            alertnotifiers,
+            "notify",
+            lambda **kw: notified.append(kw),
+        )
+
+        # Custom funding_min_short_rate = -0.0002 (default is -0.0005), so -0.0003 triggers short crowding on SELL
+        margins_shadow = {
+            "whale_guard_mode": "off",
+            "orderbook_wall_guard_mode": "off",
+            "funding_guard_mode": "shadow",
+            "funding_min_short_rate": -0.0002,
+            "funding_crowding_policy": "defer",
+            "shadow_notify": "true",
+        }
+        ok_sh, _, _ = external_order_guard.check_external_order_guards(
+            "BTCUSDC", "SELL", 100.0, notional_eur=2000.0, margins=margins_shadow
+        )
+        assert ok_sh is True
+        assert len(notified) == 1
+        assert "FUNDING" in notified[0]["title"]
+
+        margins_enforce = dict(margins_shadow, funding_guard_mode="enforce")
+        ok_enf, reason_enf, scale_enf = external_order_guard.check_external_order_guards(
+            "BTCUSDC", "SELL", 100.0, notional_eur=2000.0, margins=margins_enforce
+        )
+        assert ok_enf is False
+        assert "short_crowding_extreme" in reason_enf
+        assert scale_enf == 0.0
+
+    def test_batch6_geopolitical_string_shadow_notify_no_crash(self, monkeypatch):
+        """geopolitical_order_guard must parse shadow_notify='true'/'false' without raising ValueError."""
+        import geopolitical_order_guard
+        from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
+
+        class DummyAnalyzer:
+            def __init__(self):
+                self._cached_assessment = GeopoliticalThreatAssessment(
+                    threat_level="ELEVATED",
+                    risk_score=0.65,
+                    summary="Elevated energy risk",
+                    recommended_brake="DOWNSCALE_50",
+                    headlines_analyzed=5,
+                    ts=time.time(),
+                )
+
+        monkeypatch.setattr(
+            "intelligence.macro.geopolitical_analyzer.GeopoliticalThreatAnalyzer",
+            DummyAnalyzer,
+        )
+        margins = {
+            "geopolitical_guard_mode": "enforce",
+            "shadow_notify": "true",
+        }
+        ok, reason, scale = geopolitical_order_guard.check_geopolitical_order_guards(
+            "BTCUSDC", "BUY", margins=margins
+        )
+        assert ok is True
+        assert scale == pytest.approx(0.5)
+        assert "elevated" in reason.lower()
+
+    def test_batch6_collectors_cache_fallback_ttl_and_usdcusdt(self, tmp_path):
+        """Verify OrderbookDepthCollector non-tuple cache fallback, WhalePositioningCollector funding disk TTL,
+        and USDCUSDT preservation."""
+        from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector, OrderbookSnapshot
+        from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+
+        ob_collector = OrderbookDepthCollector(cache_ttl_sec=0.0, cache_dir=str(tmp_path))
+        snap = OrderbookSnapshot(
+            symbol="BTCUSDC",
+            mid_price=85000.0,
+            bid_depth_usd=1000.0,
+            ask_depth_usd=1000.0,
+            imbalance_ratio=0.5,
+            largest_bid_wall_usd=100.0,
+            largest_bid_wall_price=84900.0,
+            largest_ask_wall_usd=100.0,
+            largest_ask_wall_price=85100.0,
+            ts=1.0,
+        )
+        # Store direct OrderbookSnapshot in _cache, force expired TTL and broken network
+        ob_collector._cache["BTCUSDC"] = snap
+        # With allow_network=False and expired TTL, returns None; with allow_network=True and network error, falls back to cached snap without TypeError
+        import urllib.request
+        orig_urlopen = urllib.request.urlopen
+        try:
+            def fail_urlopen(*a, **k):
+                raise OSError("network unreachable")
+            urllib.request.urlopen = fail_urlopen
+            res = ob_collector.fetch("BTCUSDC", allow_network=True)
+            assert res is snap
+        finally:
+            urllib.request.urlopen = orig_urlopen
+
+        # WhalePositioningCollector._resolve_cached_funding_rate must ignore expired disk telemetry
+        w_collector = WhalePositioningCollector(cache_ttl_sec=60.0, disk_ttl_sec=120.0, cache_dir=str(tmp_path))
+        telem_file = tmp_path / "derivatives_telemetry_BTCUSDT.json"
+        telem_file.write_text(json.dumps({"symbol": "BTCUSDT", "funding_rate": -0.0025, "ts": 1000.0}), encoding="utf-8")
+
+        # At now=1050 (age 50s < 120s), funding rate is returned
+        assert w_collector._resolve_cached_funding_rate("BTCUSDC", now=1050.0) == pytest.approx(-0.0025)
+        # At now=2000 (age 1000s >= 120s), stale funding rate is ignored
+        assert w_collector._resolve_cached_funding_rate("BTCUSDC", now=2000.0) is None
+
+    def test_batch6_dynamic_buy_window_excludes_closed_sell_cycles_and_market_api_place_order_routes_provider(self, monkeypatch):
+        """check_math_profit_reference in dynamic mode must use active_cycle_window_ref to ignore closed SELL cycles,
+        and MarketApi.place_order must honor provider_name."""
+        monkeypatch.setattr(order_guard, "buy_reference_mode", lambda p: "dynamic")
+        monkeypatch.setattr(order_guard, "_symbol_trend", lambda *a, **k: "flat")
+        monkeypatch.setattr(order_guard, "dynamic_buy_window_sec", lambda *a, **k: 14400.0)
+
+        provider = MagicMock()
+        provider.name = "binance"
+
+        # Earlier SELL at 95.0 (t=1000) was already bought back by a BUY at 93.0 (t=2000).
+        # Active open SELL is at 105.0 (t=3000).
+        # Buying at 100.0 is +4.76% below 105.0 (>= 1.15% required), even though min(recent_prices) is 95.0.
+        def fake_get_orders(symbol, side, window_s):
+            if side == "SELL":
+                return [
+                    {"price": 95.0, "qty": 1.0, "timestamp": 1000.0},
+                    {"price": 105.0, "qty": 1.0, "timestamp": 3000.0},
+                ]
+            if side == "BUY":
+                return [
+                    {"price": 93.0, "qty": 1.0, "timestamp": 2000.0},
+                ]
+            return []
+
+        provider.get_orders.side_effect = fake_get_orders
+
+        allowed = order_guard.check_math_profit_reference(
+            provider, "BTCUSDC", "BUY", 100.0, 1.15, window_ref=95.0
+        )
+        assert allowed is True
+
+        # Verify MarketApi.place_order routes via provider_name instead of falling back to default provider
+        from providers.market_api import MarketApi
+        api = MarketApi.__new__(MarketApi)
+        mock_kraken = MagicMock()
+        mock_kraken.place_order.return_value = {"orderId": "KRAKEN_1"}
+        api._provider_explicit_or_routed = MagicMock(return_value=mock_kraken)
+        api._provider_for = MagicMock(side_effect=AssertionError("_provider_for should not be called directly"))
+
+        out = api.place_order("SOLUSD", "BUY", 150.0, 2.0, provider_name="KRAKEN")
+        assert out == {"orderId": "KRAKEN_1"}
+        api._provider_explicit_or_routed.assert_called_once_with("SOLUSD", "KRAKEN")
+        mock_kraken.place_order.assert_called_once_with("SOLUSD", "BUY", 150.0, 2.0)
+
+
+

@@ -104,7 +104,7 @@ class DerivativesTelemetryCollector:
             return None
 
         # Use USDT-perp pair as proxy if USDC given
-        lookup_sym = symbol.replace("USDC", "USDT")
+        lookup_sym = symbol.replace("USDC", "USDT") if "USDC" in symbol and symbol != "USDCUSDT" else symbol
         try:
             # 1. Premium index endpoint (funding rate)
             url_fund = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={lookup_sym}"

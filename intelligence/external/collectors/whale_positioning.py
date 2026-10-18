@@ -111,9 +111,9 @@ class WhalePositioningCollector:
         try:
             sym_u = symbol.upper()
             variants = [sym_u]
-            if "USDC" in sym_u:
+            if "USDC" in sym_u and sym_u != "USDCUSDT":
                 variants.append(sym_u.replace("USDC", "USDT"))
-            elif "USDT" in sym_u:
+            elif "USDT" in sym_u and sym_u != "USDCUSDT":
                 variants.append(sym_u.replace("USDT", "USDC"))
 
             for sym_key in variants:
@@ -145,22 +145,27 @@ class WhalePositioningCollector:
             logger.debug("Failed calculating 1h price change from cache for %s: %s", symbol, e)
         return 0.0
 
-    def _resolve_cached_funding_rate(self, symbol: str) -> Optional[float]:
-        """Lookup cached funding rate from derivatives telemetry if available."""
+    def _resolve_cached_funding_rate(self, symbol: str, now: Optional[float] = None) -> Optional[float]:
+        """Lookup cached funding rate from derivatives telemetry if available and fresh."""
         if not self.cache_dir:
             return None
         try:
+            now_ts = now if now is not None else time.time()
+            max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
             sym_u = symbol.upper()
             variants = [sym_u]
-            if "USDC" in sym_u:
+            if "USDC" in sym_u and sym_u != "USDCUSDT":
                 variants.append(sym_u.replace("USDC", "USDT"))
-            elif "USDT" in sym_u:
+            elif "USDT" in sym_u and sym_u != "USDCUSDT":
                 variants.append(sym_u.replace("USDT", "USDC"))
             for s in variants:
                 p = os.path.join(self.cache_dir, f"derivatives_telemetry_{s}.json")
                 if os.path.exists(p):
                     with open(p, "r", encoding="utf-8") as f:
                         d = json.load(f)
+                    ts_val = float(d.get("ts") or 0.0)
+                    if ts_val > 0 and (now_ts - ts_val) >= max_age:
+                        continue
                     fr = d.get("funding_rate")
                     if fr is not None:
                         return float(fr)
@@ -259,7 +264,7 @@ class WhalePositioningCollector:
         if abs(price_1h_change_pct) < 1e-6:
             price_1h_change_pct = self._resolve_price_1h_change_pct(symbol)
 
-        lookup_sym = symbol.replace("USDC", "USDT")
+        lookup_sym = symbol.replace("USDC", "USDT") if "USDC" in symbol and symbol != "USDCUSDT" else symbol
         try:
             # 1. Top Trader Long/Short Position Ratio
             url_top = f"https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol={lookup_sym}&period=1h&limit=2"
@@ -299,7 +304,7 @@ class WhalePositioningCollector:
             # 4. Classify OI-Price divergence regime
             prev_snap = cached[1] if cached else self._load_from_disk(symbol, now, ignore_ttl=True)
             prev_reg = prev_snap.divergence_regime if prev_snap else None
-            funding_rate = self._resolve_cached_funding_rate(symbol)
+            funding_rate = self._resolve_cached_funding_rate(symbol, now=now)
 
             regime = self.classify_regime(
                 price_1h_change_pct=price_1h_change_pct,

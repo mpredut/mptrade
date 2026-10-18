@@ -199,15 +199,17 @@ def check_external_order_guards(
             from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
             f_snap = get_derivatives_collector().fetch(symbol, allow_network=False)
             f_max = float(m.get("funding_max_long_rate", 0.0005))
+            f_min = float(m.get("funding_min_short_rate", m.get("min_short_funding_rate", -0.0005)))
             f_policy = str(m.get("funding_crowding_policy", "downscale")).strip().lower()
             f_scale = float(m.get("funding_crowded_scale", 0.50))
             f_guard = FundingCrowdingGuard(
                 max_long_funding_rate=f_max,
+                min_short_funding_rate=f_min,
                 crowding_policy=f_policy,
                 crowded_scale=f_scale,
             )
             f_dec = f_guard.check(symbol, order_side, telemetry=f_snap)
-            if not f_dec.allowed or f_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+            if not f_dec.allowed or f_dec.brake_action in (BrakeAction.DEFER_WAIT, BrakeAction.DOWNSCALE_QTY):
                 prefix = "[FUNDING_GUARD_SHADOW]" if funding_mode == "shadow" else "[FUNDING_GUARD_ENFORCE]"
                 print(f"{prefix} {order_side} {symbol}: {f_dec.reason} (brake={f_dec.brake_action}, suggested_scale={f_dec.suggested_scale})")
                 if funding_mode == "shadow" and shadow_notify_enabled:

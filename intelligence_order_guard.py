@@ -78,7 +78,15 @@ def check_intelligence_order_guards(
         min_notional = float(m.get("llm_min_notional_eur", m.get("high_stake_min_notional_eur", m.get("gemini_min_notional_eur", 1000.0))))
         if computed_notional >= min_notional:
             valid_context = regime_context is not None and hasattr(regime_context, "__dict__")
-            prev_notional = getattr(regime_context, "_gemini_evaluated_notional", None) if valid_context else None
+            cache_key = (side, frozenset(bypassed))
+            decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None) if valid_context else None
+            entry_for_key = decisions_map.get(cache_key, {}) if isinstance(decisions_map, dict) else {}
+            if "gemini_notional" in entry_for_key:
+                prev_notional = entry_for_key.get("gemini_notional")
+            elif valid_context and getattr(regime_context, "_gemini_decision_key", cache_key) == cache_key:
+                prev_notional = getattr(regime_context, "_gemini_evaluated_notional", None)
+            else:
+                prev_notional = None
             notional_jump = (
                 prev_notional is not None
                 and (computed_notional - prev_notional) / max(prev_notional, 1.0) > 0.20
@@ -114,8 +122,17 @@ def check_intelligence_order_guards(
                     )
                 if valid_context:
                     try:
+                        g_tuple = (g_dec.allowed, g_dec.reason, g_dec.suggested_scale)
+                        if not isinstance(decisions_map, dict):
+                            decisions_map = {}
+                        entry = decisions_map.get(cache_key, {})
+                        entry["gemini_notional"] = computed_notional
+                        entry["gemini_decision"] = g_tuple
+                        decisions_map[cache_key] = entry
+                        object.__setattr__(regime_context, "_intelligence_decisions_by_key", decisions_map)
+                        object.__setattr__(regime_context, "_gemini_decision_key", cache_key)
                         object.__setattr__(regime_context, "_gemini_evaluated_notional", computed_notional)
-                        object.__setattr__(regime_context, "_gemini_decision", (g_dec.allowed, g_dec.reason, g_dec.suggested_scale))
+                        object.__setattr__(regime_context, "_gemini_decision", g_tuple)
                     except Exception:
                         pass
 
@@ -171,7 +188,12 @@ def check_intelligence_order_guards(
                     effective_scale = min(effective_scale, g_dec.suggested_scale)
                     active_reason = g_dec.reason
             else:
-                cached_g_dec = getattr(regime_context, "_gemini_decision", None) if valid_context else None
+                if "gemini_decision" in entry_for_key:
+                    cached_g_dec = entry_for_key.get("gemini_decision")
+                elif valid_context and getattr(regime_context, "_gemini_decision_key", cache_key) == cache_key:
+                    cached_g_dec = getattr(regime_context, "_gemini_decision", None)
+                else:
+                    cached_g_dec = None
                 if cached_g_dec is not None:
                     g_allowed, g_reason, g_scale = cached_g_dec
                     if not g_allowed or g_scale < 1.0:

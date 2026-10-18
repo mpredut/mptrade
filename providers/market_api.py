@@ -1090,7 +1090,8 @@ class MarketApi:
     def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
         # Mechanics-only provider dispatch without guards. Real placement must use
         # guarded .place(); this remains for internal and dry-run cases.
-        return self._provider_for(symbol).place_order(symbol, side, price, qty, **kwargs)
+        provider_name = kwargs.pop("provider_name", None)
+        return self._provider_explicit_or_routed(symbol, provider_name).place_order(symbol, side, price, qty, **kwargs)
 
     def place(self, symbol: str, side: str, price: float, qty: Optional[float] = None,
               base: Optional[str] = None, quote: Optional[str] = None, **kwargs):

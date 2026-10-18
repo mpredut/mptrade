@@ -185,7 +185,10 @@ class OrderbookDepthCollector:
         except Exception as e:
             logger.warning("Could not fetch orderbook depth for %s: %s", symbol, e)
             if cached:
-                return cached[1]
+                if isinstance(cached, tuple) and len(cached) >= 2:
+                    return cached[1]
+                if isinstance(cached, OrderbookSnapshot):
+                    return cached
             p = self._disk_path(symbol)
             if p and os.path.exists(p):
                 try:
