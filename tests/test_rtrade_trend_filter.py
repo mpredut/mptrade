@@ -293,6 +293,30 @@ class ReaderProcessTrendTest(unittest.TestCase):
         os.remove(self.reader.filename)
         self.assertTrue(rtrade._trend_too_strong("TAOUSDC"))
 
+    def test_stale_in_memory_live_window_does_not_shadow_fresh_publication(self):
+        import time
+        stale_ts = time.time() - (self.cm.CachePriceShortTrendManager.TREND_STALE_SEC + 10.0)
+        self.reader._persist_live_window(
+            "TAOUSDC", "900",
+            {
+                "final_trend": 0,
+                "growth_coefficient": 0.0,
+                "slope_full": 0.0,
+                "gradient_recent": 0.0,
+                "epsilon": 0.05,
+                "n_samples": 100,
+                "window_seconds": 900.0,
+                "sample_rate_sec": 1.0,
+                "current_price": 270.0,
+                "ts": stale_ts,
+            },
+        )
+        self._publish(step=0.0, age_sec=0.0)
+        dyn = self.reader.get_instant_trend_for_window("TAOUSDC", self.WINDOW)
+        self.assertIsNotNone(dyn)
+        self.assertFalse(rtrade._trend_too_strong("TAOUSDC"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

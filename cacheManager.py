@@ -3432,16 +3432,22 @@ class CachePriceShortTrend:
         with self._lock:
             mem_live = (self._live_windows.get(symbol) or {}).get(w_key)
         if isinstance(mem_live, dict):
-            return _check_fresh(mem_live)
+            fresh = _check_fresh(mem_live)
+            if fresh is not None:
+                return fresh
 
         # 2. Check shared snapshot file dynamic dict (authoritative if present):
         snap = self._read_file().get(symbol)
         if isinstance(snap, dict):
             published = snap.get("dynamic")
             if isinstance(published, dict) and w_key in published:
-                return _check_fresh(published.get(w_key))
+                fresh = _check_fresh(published.get(w_key))
+                if fresh is not None:
+                    return fresh
             if clamped == self.window_seconds[0] and "gradient_recent" in snap and "ts" in snap:
-                return _check_fresh(snap)
+                fresh = _check_fresh(snap)
+                if fresh is not None:
+                    return fresh
 
         # 3. Check per-symbol 24trend/live_<SYMBOL>.json:
         file_live = self._read_live_symbol_file(symbol).get(w_key)
