@@ -338,7 +338,19 @@ class PositionExitManager:
         self.sl_episode_state: Dict[str, Dict[str, Any]] = {}
         self.tp_ride_state: Dict[str, Dict[str, Any]] = {}
         self.reentry_state: Dict[str, Dict[str, Any]] = {}
+        self._last_popped_reentry_state: Dict[str, Dict[str, Any]] = {}
         self.hard_tp_last: Dict[str, float] = {}
+
+    def _pop_reentry_state(self, symbol: str) -> None:
+        popped = self.reentry_state.pop(symbol, None)
+        if popped is not None:
+            self._last_popped_reentry_state[symbol] = dict(popped)
+
+    def restore_reentry_state(self, symbol: str) -> None:
+        """Restore the most recently popped re-entry state if an approved entry was not placed."""
+        popped = self._last_popped_reentry_state.pop(symbol, None)
+        if popped is not None and symbol not in self.reentry_state:
+            self.reentry_state[symbol] = dict(popped)
 
     def bind_state(self, store: Dict[str, Any]) -> None:
         """Bind durable lifecycle dicts to an external persisted state store."""
@@ -352,12 +364,14 @@ class PositionExitManager:
             self.sl_episode_state.pop(symbol, None)
             self.tp_ride_state.pop(symbol, None)
             self.reentry_state.pop(symbol, None)
+            self._last_popped_reentry_state.pop(symbol, None)
             self.hard_tp_last.pop(symbol, None)
         else:
             self.sl_bounce_state.clear()
             self.sl_episode_state.clear()
             self.tp_ride_state.clear()
             self.reentry_state.clear()
+            self._last_popped_reentry_state.clear()
             self.hard_tp_last.clear()
 
     def get_state(self, symbol: str) -> Dict[str, Any]:
@@ -1002,7 +1016,7 @@ class PositionExitManager:
             elapsed_sec = now - snapshot.last_sell_time_s
             ttl_sec = self.config.reentry_ttl_hours * 3600.0
             if elapsed_sec >= ttl_sec:
-                self.reentry_state.pop(symbol, None)
+                self._pop_reentry_state(symbol)
                 return ReentryDecision(
                     ReentryAction.ENTER,
                     True,
@@ -1035,6 +1049,7 @@ class PositionExitManager:
             state["peak_bounce"] = current_price
         else:
             state["trough"] = min(state["trough"], current_price)
+            state["peak_bounce"] = max(state.get("peak_bounce", current_price), current_price)
         state["peak"] = max(state["peak"], current_price)
         trough = state["trough"]
         peak = state["peak"]
@@ -1071,7 +1086,7 @@ class PositionExitManager:
                     )
 
             if not snapshot.has_bounced(trough, bounce_required, self.config.reentry_tolerance_pct):
-                state["peak_bounce"] = current_price
+                state["peak_bounce"] = max(state.get("peak_bounce", current_price), current_price)
                 target_px = trough * (1.0 + bounce_required)
                 return ReentryDecision(
                     ReentryAction.WAIT,
@@ -1094,7 +1109,7 @@ class PositionExitManager:
                         metadata={"peak_bounce": peak_bounce, "pullback": pullback_from_bounce},
                     )
 
-            self.reentry_state.pop(symbol, None)
+            self._pop_reentry_state(symbol)
             return ReentryDecision(
                 ReentryAction.ENTER,
                 True,
@@ -1118,7 +1133,7 @@ class PositionExitManager:
                     f"bull_reentry_pullback_waiting (price={current_price:.4f} > {target_px:.4f}, pullback={pullback_ratio*100:.2f}% < {pullback_required*100:.2f}%)",
                     metadata={"peak": peak, "pullback_ratio": pullback_ratio, "target_price": target_px},
                 )
-            self.reentry_state.pop(symbol, None)
+            self._pop_reentry_state(symbol)
             return ReentryDecision(
                 ReentryAction.ENTER,
                 True,
@@ -1158,7 +1173,7 @@ class PositionExitManager:
                         )
 
 
-            self.reentry_state.pop(symbol, None)
+            self._pop_reentry_state(symbol)
             return ReentryDecision(
                 ReentryAction.ENTER,
                 True,

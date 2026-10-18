@@ -107,6 +107,8 @@ class KrakenTrailing:
         self.enabled = required_bool_env("KRAKEN_TRAILING_ENABLED") if enabled is None else enabled
         self.trailing_market = TRAILING_MARKET if trailing_market is None else bool(trailing_market)
         self.state_file = state_file
+        self._tick_balances: dict | None = None
+        self._retry_counts: dict[tuple[str, str], int] = {}
         self.core = TrailingCore(
             self, log=log, enabled=self.enabled, state_file=state_file,
             min_notional=MIN_NOTIONAL_USD, rebuy_enabled=REBUY_ENABLED,
@@ -133,8 +135,20 @@ class KrakenTrailing:
     def trail_pct_for(self, asset: str) -> float:
         return TRAIL_PCT.get(asset, DEFAULT_TRAIL_PCT)
 
+    def _balance_ex_map(self) -> dict | None:
+        if self._tick_balances is not None:
+            return self._tick_balances
+        try:
+            bx_map = self.client._private("BalanceEx")
+        except Exception as e:  # noqa: BLE001
+            self.log(f"  ! [TRAIL-K] BalanceEx failed ({e.__class__.__name__}: {e})")
+            return None
+        if not isinstance(bx_map, dict) or not bx_map:
+            return None
+        return bx_map
+
     def _balance_ex_entry(self, asset: str) -> dict | None:
-        bx_map = self.client._private("BalanceEx") or {}
+        bx_map = self._balance_ex_map()
         if not isinstance(bx_map, dict):
             return None
         candidates = [asset, f"X{asset}", f"Z{asset}", f"{asset}.F"]
@@ -177,12 +191,21 @@ class KrakenTrailing:
             yield (asset, asset, PAIR_FOR[asset], trail)
 
     def begin_tick(self) -> bool:
-        return True   # Kraken reads balances per asset in free_qty, not in bulk
+        self._tick_balances = None
+        bx_map = self._balance_ex_map()
+        if bx_map is None:
+            self.log("  ! [TRAIL-K] empty or invalid BalanceEx snapshot — skipping the tick")
+            return False
+        self._tick_balances = bx_map
+        return True
 
     def free_qty(self, asset: str) -> float:
         return self._free(asset)
 
-    def total_qty(self, asset: str) -> float:
+    def total_qty(self, asset: str) -> float | None:
+        bx_map = self._balance_ex_map()
+        if bx_map is None:
+            return None
         bx = self._balance_ex_entry(asset)
         if not bx:
             return 0.0
@@ -203,6 +226,11 @@ class KrakenTrailing:
                 if str(descr.get("type", "")).lower() == "sell" and (ord_pair == pair or _kraken_pair_matches(pair, ord_pair)):
                     self.client.cancel_order(txid)
                     cancelled_any = True
+            if cancelled_any:
+                self._tick_balances = None
+                refreshed = self._balance_ex_map()
+                if refreshed is not None:
+                    self._tick_balances = refreshed
             return cancelled_any
         except Exception as e:  # noqa: BLE001
             self.log(f"  ! [TRAIL-K] failed to cancel open orders for {pair}: {e}")
@@ -214,30 +242,82 @@ class KrakenTrailing:
     def trend(self, pair: str) -> float:
         return self._trend_value(pair)
 
+    def _sync_retry_count_from_state(self, pair: str, action: str, persist) -> None:
+        st = getattr(persist, "st", None)
+        if not isinstance(st, dict):
+            return
+        rc = st.get("retry_counts")
+        if isinstance(rc, dict) and action in rc:
+            try:
+                persisted = int(rc[action] or 0)
+            except (TypeError, ValueError):
+                persisted = 0
+            retry_key = (pair, action)
+            if persisted > int(self._retry_counts.get(retry_key, 0)):
+                self._retry_counts[retry_key] = persisted
+
     def _order_intent(self, action, key, asset, pair, qty, price, **metadata):
+        attempt = int(self._retry_counts.get((pair, action), 0)) + 1
         intent_id = (
             f"trailing:kraken:{key}:{action}:{qty:.8f}:{price:.8f}:"
             f"{metadata.get('anchor', price):.8f}"
         )
+        if attempt > 1:
+            intent_id = f"{intent_id}:a{attempt}"
         return self.order_lifecycle.new_intent(
             intent_id=intent_id,
             client_order_id=intent_client_order_id("Kraken", intent_id),
             symbol=pair, side="SELL" if action == "SELL" else "BUY",
             requested_qty=qty, requested_price=price,
             kind=f"TRAIL_{action}",
+            attempt=attempt,
             metadata={"action": action, "asset": asset, **metadata},
         )
 
     def reconcile_pending(self, pending, persist):
         result = self.order_lifecycle.reconcile(pending, persist=persist)
+        pair = str(pending.get("symbol") or "")
+        action = str(pending.get("action") or (pending.get("metadata") or {}).get("action") or "").upper()
+        retry_key = (pair, action)
+        st = getattr(persist, "st", None)
+        rc = st.get("retry_counts") if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict) else {}
+        try:
+            attempt_base = max(
+                int(self._retry_counts.get(retry_key, 0)),
+                int(rc.get(action, 0) or 0),
+                max(0, int(pending.get("attempt") or 1) - 1),
+            )
+        except (TypeError, ValueError):
+            attempt_base = int(self._retry_counts.get(retry_key, 0))
+        if result.outcome in ("absent", "retryable"):
+            new_count = attempt_base + 1
+            self._retry_counts[retry_key] = new_count
+            if isinstance(st, dict):
+                st.setdefault("retry_counts", {})[action] = new_count
+                persist(None)
+        elif result.outcome == "terminal":
+            filled = float(getattr(result.status, "filled_qty", 0.0) or 0.0)
+            req_qty = float(pending.get("submitted_qty") or pending.get("requested_qty") or 0.0)
+            st_name = str(getattr(result.status, "status", "") or "").lower()
+            if filled <= 0 or (st_name != "closed" and req_qty > 0 and filled < req_qty - 1e-6):
+                new_count = attempt_base + 1
+                self._retry_counts[retry_key] = new_count
+                if isinstance(st, dict):
+                    st.setdefault("retry_counts", {})[action] = new_count
+            else:
+                self._retry_counts.pop(retry_key, None)
+                if isinstance(st, dict) and isinstance(st.get("retry_counts"), dict):
+                    st["retry_counts"].pop(action, None)
+                    if not st["retry_counts"]:
+                        st.pop("retry_counts", None)
         if result.outcome == "terminal" and result.status.filled_qty > 0:
-            action = str(result.intent.get("action") or "ORDER")
+            notify_action = str(result.intent.get("action") or "ORDER")
             qty = result.status.filled_qty
             avg = (result.status.cost / qty
                    if result.status.cost > 0 else result.intent["requested_price"])
             notify(
-                title=f"{'🛑' if action == 'SELL' else '🟢'} TRAILING "
-                      f"{result.intent.get('asset')} {action} FILLED {qty:.2f}@~{avg:.2f}",
+                title=f"{'🛑' if notify_action == 'SELL' else '🟢'} TRAILING "
+                      f"{result.intent.get('asset')} {notify_action} FILLED {qty:.2f}@~{avg:.2f}",
                 body=f"status={result.status.status} fee={result.status.fee}",
                 source="kraken-trail", price=avg, desktop=False,
             )
@@ -276,6 +356,7 @@ class KrakenTrailing:
     def execute_sell(self, key, asset, pair, qty, price, peak, trail, persist):
         use_market = bool(getattr(self, "trailing_market", True))
         limit = price if use_market else (price * 0.995)
+        self._sync_retry_count_from_state(pair, "SELL", persist)
         intent = self._order_intent(
             "SELL", key, asset, pair, qty, limit, anchor=peak, trail=trail,
             market=use_market)
@@ -297,6 +378,7 @@ class KrakenTrailing:
 
     def execute_rebuy(self, key, asset, pair, qty, price, rb, persist):
         limit = price * 1.005
+        self._sync_retry_count_from_state(pair, "REBUY", persist)
         intent = self._order_intent(
             "REBUY", key, asset, pair, qty, limit,
             anchor=float(rb.get("low") or price),

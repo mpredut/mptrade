@@ -940,6 +940,40 @@ class PairCoordinatorTest(unittest.TestCase):
                              ("SELL", 1.0, "fast_fill_hard_stop"))
             self.assertEqual(venue.market_revisions, [0, 1])
 
+        with self.subTest("second_leg_exception_with_first_cancel_failure_preserves_recovery_pending"):
+            venue = FakeVenue(current=100.0)
+            orig_place = venue.place_limit
+            calls = []
+
+            def place_second_raises(side, price, qty, pair_id, *, cache_permit=None, revision=0):
+                calls.append(side)
+                if len(calls) == 2:
+                    raise RuntimeError("socket timeout during second leg submit")
+                return orig_place(side, price, qty, pair_id, cache_permit=cache_permit, revision=revision)
+
+            venue.place_limit = place_second_raises
+            venue.cancel = lambda _order_id: False
+            coordinator = _coordinator(venue)
+            outcome = coordinator.start(mid=100.0)
+            self.assertEqual(outcome.phase, "startup_recovery")
+            self.assertTrue(outcome.reason.endswith("_recovery_pending"))
+
+        with self.subTest("initial_hard_stop_exception_transitions_to_hard_stop_recovery_pending"):
+            venue = FakeVenue(current=95.0)
+            coordinator = _coordinator(
+                venue, quote_ttl_sec=32, fast_fill_ratio=0.25,
+                shock_hard_stop_fraction=0.04)
+            coordinator.start(mid=100.0)
+            venue.fill("L1", 1.0, 99.36)
+
+            def raise_on_market(*_a, **_kw):
+                raise RuntimeError("socket timeout on initial hard stop")
+
+            venue.place_market_exit = raise_on_market
+            outcome = coordinator.step(now=5.0)
+            self.assertEqual(outcome.phase, "hard_stop_recovery")
+            self.assertEqual(outcome.reason, "hard_stop_recovery_pending")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

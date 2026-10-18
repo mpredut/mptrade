@@ -279,7 +279,11 @@ class PairCoordinator:
                 # The first order may still be live or may have filled despite a
                 # lost cancel response. Keep the round nonterminal and checkpointable.
                 self.phase = "startup_recovery"
-                self.reason = placement_reason
+                self.reason = (
+                    (placement_reason if _is_recovery_pending(placement_reason)
+                     else f"{second_side.lower()}_recovery_pending")
+                    if recovery_pending else placement_reason
+                )
                 return self.outcome()
             if recovery_pending:
                 # The second order may have been accepted despite response loss.
@@ -687,14 +691,24 @@ class PairCoordinator:
                     or exit_qty > abs(net_qty) + 1e-8):
                 self.reason = "hard_stop_exposure_changed_during_cancel"
                 return False
-        market = self.venue.place_market_exit(
-            exit_side, exit_qty,
-            reason=reason,
-            pair_id=self.pair_id,
-            cache_permit=cache_permit,
-            revision=self.hard_stop_revision)
+        try:
+            market = self.venue.place_market_exit(
+                exit_side, exit_qty,
+                reason=reason,
+                pair_id=self.pair_id,
+                cache_permit=cache_permit,
+                revision=self.hard_stop_revision)
+        except Exception as exc:  # noqa: BLE001 - Keep residual exposure recoverable.
+            print(
+                f"[rtrade_pair] hard-stop submit failed for "
+                f"{self.pair_id}: {exc}")
+            market = None
+            stop_exception = True
+        else:
+            stop_exception = False
         if market is None:
-            if (bool(getattr(self.venue, "recovery_blocked", False))
+            if (stop_exception
+                    or bool(getattr(self.venue, "recovery_blocked", False))
                     or _is_recovery_pending(
                         _place_failure_reason(self.venue, exit_side))):
                 self.phase = "hard_stop_recovery"
@@ -733,12 +747,17 @@ class PairCoordinator:
             "fast_fill_hard_stop" if self.shock else "inventory_hard_stop")
         next_revision = self.hard_stop_revision + 1
         kind = f"rtrade:{reason}:{self.pair_id}:revision:{next_revision}"
+        stop_exception = False
         try:
             cache_permit = self.venue.preflight_order(
                 exit_side, exit_qty, None, market=True, kind=kind)
-            market = self.venue.place_market_exit(
-                exit_side, exit_qty, reason=reason, pair_id=self.pair_id,
-                cache_permit=cache_permit, revision=next_revision)
+            try:
+                market = self.venue.place_market_exit(
+                    exit_side, exit_qty, reason=reason, pair_id=self.pair_id,
+                    cache_permit=cache_permit, revision=next_revision)
+            except Exception:
+                stop_exception = True
+                raise
         except Exception as exc:  # noqa: BLE001 - Keep residual exposure recoverable.
             print(
                 f"[rtrade_pair] hard-stop revision {next_revision} failed for "
@@ -746,7 +765,8 @@ class PairCoordinator:
             market = None
         if market is None:
             self.phase = "hard_stop_recovery"
-            if (bool(getattr(self.venue, "recovery_blocked", False))
+            if (stop_exception
+                    or bool(getattr(self.venue, "recovery_blocked", False))
                     or _is_recovery_pending(
                         _place_failure_reason(self.venue, exit_side))):
                 self.reason = "hard_stop_recovery_pending"

@@ -1847,6 +1847,27 @@ class TradingBot:
                                 }
                                 try:
                                     state = venue.merge_checkpoint_intents(record, state)
+                                    intents = record.get("intents", {})
+                                    all_exhausted = bool(intents) and all(
+                                        isinstance(i, dict) and i.get("recovery_state") in {
+                                            "absence_confirmed_no_reuse", "horizon_exhausted"}
+                                        for i in intents.values()
+                                    )
+                                    if not state.get("tickets") and (
+                                            all_exhausted or state.get("phase") not in {
+                                                "startup_recovery", "hard_stop_recovery"}):
+                                        state["phase"] = "failed"
+                                        state["reason"] = (
+                                            "recovery_horizon_exhausted" if all_exhausted
+                                            else "recovery_intent_not_submitted"
+                                        )
+                                        pair_store.checkpoint(
+                                            record["pair_id"], state, terminal=True)
+                                        _clear_venue_blocked_pair(record["pair_id"])
+                                        print(
+                                            f"[{self.symbol}] pair={record['pair_id']} recovery retry: "
+                                            "exhausted intent or no tickets placed; closed as terminal")
+                                        continue
                                     pair_store.checkpoint(record["pair_id"], state, terminal=False)
                                     coordinator = PairCoordinator.from_state(venue, policy, state)
                                     active.append(coordinator)

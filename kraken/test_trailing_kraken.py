@@ -7,9 +7,14 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import trailing_stop as ts_mod
-from trailing_stop import KrakenTrailing, should_sell
+_KRAKEN_DIR = os.path.dirname(os.path.abspath(__file__))
+_ROOT_DIR = os.path.dirname(_KRAKEN_DIR)
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+if _KRAKEN_DIR not in sys.path:
+    sys.path.append(_KRAKEN_DIR)
+import kraken.trailing_stop as ts_mod
+from kraken.trailing_stop import KrakenTrailing, should_sell
 
 
 class FakeK:
@@ -308,6 +313,55 @@ class TestRebuyGuardsKraken(Base):
             self.assertIn("TAOUSD", cache["fetchtime"])
         finally:
             kcm.PAIRS[:] = saved_pairs
+
+    def test_empty_or_failed_balance_ex_does_not_wipe_peak_and_caches_per_tick(self):
+        import json
+
+        class CountingFakeK(FakeK):
+            def __init__(self):
+                super().__init__(price=65.0, total=25.0, held=0.0)
+                self.balance_calls = 0
+                self.fail_balance = False
+
+            def _private(self, method, data=None):
+                if method == "BalanceEx":
+                    self.balance_calls += 1
+                    if self.fail_balance:
+                        return {}
+                return super()._private(method, data)
+
+        c = CountingFakeK()
+        ts = self.ts(c)
+        ts.check_once()
+        self.assertEqual(c.balance_calls, 1)
+        self.assertEqual(json.load(open(self.sf))["HYPE"]["peak"], 65.0)
+
+        # Transient empty BalanceEx must skip the tick and NOT wipe peak
+        c.fail_balance = True
+        ts.check_once()
+        self.assertEqual(json.load(open(self.sf))["HYPE"]["peak"], 65.0)
+
+    def test_canceled_zero_fill_order_increments_retry_attempt_and_client_order_id(self):
+        class CanceledZeroFillK(FakeK):
+            def query_orders(self, txids):
+                return {str(txids): {
+                    "status": "canceled", "vol_exec": "0", "cost": "0", "fee": "0",
+                }}
+
+        c = CanceledZeroFillK(60.0, total=25.0, held=0.0)
+        ts = self.ts(c)
+        ts.check_once()  # peak=60.0
+        c.price = 48.0   # -20% > 18% -> first SELL attempt
+        ts.check_once()
+        self.assertEqual(len(c.orders), 1)
+        first_cid = c.orders[0]["cl_ord_id"]
+
+        # Next tick: reconciles as canceled with 0 fill; next tick retries with a fresh client_order_id
+        ts.check_once()
+        ts.check_once()
+        self.assertEqual(len(c.orders), 2)
+        second_cid = c.orders[1]["cl_ord_id"]
+        self.assertNotEqual(first_cid, second_cid)
 
 
 if __name__ == "__main__":

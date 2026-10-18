@@ -856,3 +856,76 @@ def test_mdhtp_hold_evaluates_advanced_profit_guards():
         engine.step(120.0)
     assert any(c[0] == "submit_order" and c[6] == "TP" for c in executor.calls)
 
+
+def test_post_stop_reentry_tracks_peak_bounce_during_cooldown_and_blocks_rollover():
+    from strategies.position_exit_manager import (
+        PositionExitConfig, PositionExitManager, ReentryAction, ReentrySnapshot,
+    )
+    mgr = PositionExitManager(
+        config=PositionExitConfig(
+            reentry_enabled=True,
+            reentry_sl_bounce_pct=0.04,
+            reentry_post_stop_cooldown_sec=600.0,
+            reentry_ratchet_enabled=True,
+        )
+    )
+    # T1 (100s after STOP at 100): price hits trough 90.0 during cooldown
+    d1 = mgr.evaluate_reentry(ReentrySnapshot(
+        symbol="SOLUSDC", current_price=90.0, last_sell_price=100.0,
+        last_exit_kind="STOP", current_time_s=1100.0, last_sell_time_s=1000.0,
+    ))
+    assert d1.action == ReentryAction.WAIT
+    assert "post_stop_stabilization_cooldown" in d1.reason
+
+    # T2 (300s after STOP, still in cooldown): price spikes to 100.0 (+11.1% from trough 90)
+    d2 = mgr.evaluate_reentry(ReentrySnapshot(
+        symbol="SOLUSDC", current_price=100.0, last_sell_price=100.0,
+        last_exit_kind="STOP", current_time_s=1300.0, last_sell_time_s=1000.0,
+    ))
+    assert d2.action == ReentryAction.WAIT
+    assert mgr.reentry_state["SOLUSDC"]["peak_bounce"] == 100.0
+
+    # T3 (700s after STOP, cooldown expired): price has rolled over from 100.0 to 94.0
+    # (+4.44% >= +4% bounce from 90.0, but -6.0% rollover > 2.0% allowed_rollover)
+    d3 = mgr.evaluate_reentry(ReentrySnapshot(
+        symbol="SOLUSDC", current_price=94.0, last_sell_price=100.0,
+        last_exit_kind="STOP", current_time_s=1700.0, last_sell_time_s=1000.0,
+    ))
+    assert d3.action == ReentryAction.WAIT
+    assert "post_stop_bounce_rollover" in d3.reason
+
+
+def test_spot_engine_reentry_gate_resolves_bear_regime_and_restores_state_on_blocked_place():
+    engine, executor = positioned(trend_overlay=False, reentry_hybrid_enabled=False)
+    engine.p.reentry_sl_bounce_pct = 2.0
+    engine.p.reentry_bear_bounce_pct = 0.0
+    engine.s.update(
+        qty=0.0, cost=0.0, spent=0.0,
+        last_sell_price=100.0, last_exit_kind="STOP",
+        post_sell_trough=90.0, post_sell_peak=100.0, sl_low=90.0,
+        last_sell_ts=1000.0,
+    )
+    bear_decision = MarketRegimeDecision(
+        "bear", -0.5, 0.02, 3.5, True, "bear",
+        n_samples=24, horizon="long",
+    )
+    engine._regime_context = lambda: (bear_decision, [100.0] * 24)
+
+    # Even with trend_overlay=False and reentry_hybrid_enabled=False, Bear Gate blocks re-entry at 93.0 (+3.3% > 2%)
+    engine.step(93.0, timestamp=2000.0)
+    assert not submits(executor)
+    assert engine.pair in engine.exit_manager.reentry_state
+
+    # Now switch regime to sideways, but exhaust budget so step() refuses to place ENTRY after gate approval
+    sideways_decision = MarketRegimeDecision(
+        "sideways", 0.0, 0.01, 0.0, True, "sideways",
+        n_samples=24, horizon="long",
+    )
+    engine._regime_context = lambda: (sideways_decision, [100.0] * 24)
+    engine.s["spent"] = engine._effective_max_budget()
+    engine.step(93.0, timestamp=2060.0)
+    assert not submits(executor)
+    # Re-entry state must be restored because no ENTRY order was placed!
+    assert engine.pair in engine.exit_manager.reentry_state
+    assert engine.exit_manager.reentry_state[engine.pair]["trough"] == 90.0
+

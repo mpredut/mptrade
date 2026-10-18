@@ -1208,6 +1208,26 @@ class Strategy:
                 pass
         return False
 
+    def _is_trend_down(self, regime: MarketRegimeDecision | None = None) -> bool:
+        """Return True if a downtrend is identified via regime or venue client."""
+        if regime is not None and self._regime_matches(regime, "bear", min_samples=self.p.regime_min_samples):
+            return True
+        try:
+            if hasattr(self.client, "trend"):
+                t = self.client.trend(self.pair)
+                if t and str(t).lower() in ("down", "bear", "downtrend"):
+                    return True
+        except Exception:
+            pass
+        if regime is None:
+            try:
+                reg, _ = self._regime_context()
+                if self._regime_matches(reg, "bear", min_samples=self.p.regime_min_samples):
+                    return True
+            except Exception:
+                pass
+        return False
+
     def _vol_1h_ratio(self) -> tuple[float, str]:
         """Return 1h volatility as a decimal ratio [e.g. 0.025 for 2.5%] and its source."""
         try:
@@ -1825,7 +1845,13 @@ class Strategy:
         mgr.config.reentry_tolerance_pct = self.p.reentry_tolerance_pct
         mgr.config.reentry_hybrid_enabled = self.p.reentry_hybrid_enabled
         mgr.config.reentry_peak_relative = self.p.reentry_peak_relative
+        if regime is None:
+            try:
+                regime, _ = self._regime_context()
+            except Exception:
+                regime = None
         trend_up = self._is_trend_up(regime)
+        trend_down = self._is_trend_down(regime)
         is_bull_reentry = bool(
             last_kind != "STOP"
             and self.p.reentry_hybrid_enabled
@@ -1854,12 +1880,16 @@ class Strategy:
             current_time_s=tick_time,
             last_sell_time_s=self.s.get("last_sell_ts"),
             trend_up=trend_up,
-            trend_down=self._regime_matches(regime, "bear", min_samples=self.p.regime_min_samples) if regime else False,
+            trend_down=trend_down,
             vol_1h=vol_1h,
             vol_source=vol_source,
         )
         reentry_dec = mgr.evaluate_reentry(reentry_snap, custom_drop_pct=vol_pct_to_ratio(drop_pct))
         return reentry_dec.should_enter, reentry_dec.reason
+
+    def _restore_reentry_state(self) -> None:
+        if self.exit_manager is not None:
+            self.exit_manager.restore_reentry_state(self.pair)
 
     def _check_advanced_profit_guards(
         self, price: float, avg: float, held: float,
@@ -2064,14 +2094,20 @@ class Strategy:
             if self.s["qty"] <= 1e-12:
                 allowed, reason = self._evaluate_reentry_gate(price, regime, tick_time)
                 if not allowed:
+                    self._reentry_blocked_tick = (tick_time, price, reason)
                     log(f"  [STRAT] trend overlay entry blocked by re-entry: {reason}")
                     return False
             self._cancel_orders("buy")              # Cancel pending range orders.
             self._cancel_orders("sell")
             if self.s["orders"]:                    # Live mode waits for terminal confirmations.
+                if self.s["qty"] <= 1e-12:
+                    self._restore_reentry_state()
                 return True
-            self._place("buy", self._qty_for(self.p.trend_topup, price), price,
-                        kind="TREND_ENTRY", amount=self.p.trend_topup)
+            if not self._place("buy", self._qty_for(self.p.trend_topup, price), price,
+                               kind="TREND_ENTRY", amount=self.p.trend_topup):
+                if self.s["qty"] <= 1e-12:
+                    self._restore_reentry_state()
+                return True
             log(f"  [STRAT] TREND ENTER pending: top-up {self.p.trend_topup} {self.ccy} @ {price} "
                 f"(common {regime.horizon} regime: {regime.regime})")
             return True
@@ -2126,6 +2162,7 @@ class Strategy:
                 self.s["sl_bounce_state"] = {}
                 self.s["sl_episode_state"] = {}
                 self.s["tp_ride_state"] = {}
+                self.s["reentry_state"] = {}
                 if self.exit_manager is not None:
                     self.exit_manager.clear_state(self.pair)
                     self.exit_manager.bind_state(self.s)
@@ -2211,6 +2248,7 @@ class Strategy:
             regime, regime_closes = self._regime_context()
 
         # Combine range DCA/TP with trend hold/trailing behavior.
+        self._reentry_blocked_tick = None
         if (self.p.trend_overlay
                 and self._overlay_step(price, regime, regime_closes, tick_time=tick_time)):
             return
@@ -2218,7 +2256,11 @@ class Strategy:
         if held <= 1e-12:
             if self._has_open("buy"):
                 return
-            allowed, reason = self._evaluate_reentry_gate(price, regime, tick_time)
+            blocked_tick = getattr(self, "_reentry_blocked_tick", None)
+            if blocked_tick is not None and blocked_tick[:2] == (tick_time, price):
+                allowed, reason = False, blocked_tick[2]
+            else:
+                allowed, reason = self._evaluate_reentry_gate(price, regime, tick_time)
             if not allowed:
                 log(f"  [STRAT] re-entry blocked: {reason}")
                 return
@@ -2228,10 +2270,12 @@ class Strategy:
             entry_amt = self._effective_entry_amount()
             budget = self._effective_max_budget()
             if self.s["spent"] + entry_amt > budget:
+                self._restore_reentry_state()
                 log(f"  [STRAT] cap {budget:.0f} {self.ccy} reached — not entering")
                 return
-            self._place("buy", self._qty_for(entry_amt, entry_px),
-                        entry_px, kind="ENTRY", amount=entry_amt)
+            if not self._place("buy", self._qty_for(entry_amt, entry_px),
+                               entry_px, kind="ENTRY", amount=entry_amt):
+                self._restore_reentry_state()
             return
 
         avg = self._avg()
