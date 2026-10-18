@@ -116,6 +116,20 @@ class Instrument:
             return method(symbol, side, safeback_sec, regime_context=regime_context)
         return method(symbol, side, safeback_sec)
 
+    @staticmethod
+    def _apply_outbox_lineage_prefix(target_kwargs: dict, call_kwargs: dict) -> None:
+        """Attach composite bot lineage prefix (<BOT>_OR) for outbox retries unless overridden."""
+        if "client_order_id" in call_kwargs:
+            target_kwargs["client_order_id"] = call_kwargs["client_order_id"]
+        elif "prefix" not in target_kwargs:
+            try:
+                from binance_api.order_id_context import get_process_name
+                pname = get_process_name()
+                if pname and pname not in {"PY", "PYTEST", "MAIN", "UNITTE"}:
+                    target_kwargs["prefix"] = f"{pname}_OR"
+            except Exception:
+                pass
+
     def _apply_late_intelligence_scale(
         self, qty: float, price: float, is_market: bool,
         enforce_business_minimum: bool, regime_context,
@@ -709,16 +723,7 @@ class Instrument:
                         prequeue_kwargs["smart"] = smart
                         if 0.0 < float(applied_scale) < 1.0:
                             prequeue_kwargs["applied_scale"] = float(applied_scale)
-                        if "client_order_id" in kwargs:
-                            prequeue_kwargs["client_order_id"] = kwargs["client_order_id"]
-                        elif "prefix" not in prequeue_kwargs:
-                            try:
-                                from binance_api.order_id_context import get_process_name
-                                pname = get_process_name()
-                                if pname and pname != "PY":
-                                    prequeue_kwargs["prefix"] = f"{pname}_OR"
-                            except Exception:
-                                pass
+                        self._apply_outbox_lineage_prefix(prequeue_kwargs, kwargs)
                         prequeued_claim = order_retry.enqueue_claimed(
                             self.symbol, side_u, qty, prequeue_kwargs,
                             requested_price=orig_price, ref_price=price,
@@ -1038,6 +1043,7 @@ class Instrument:
                                 ref_price = self._provider.get_current_price(self.symbol)
                             except Exception:  # noqa: BLE001
                                 ref_price = None
+                            self._apply_outbox_lineage_prefix(retry_kwargs, kwargs)
                             order_retry.enqueue(
                                 self.symbol, side_u, queue_qty, retry_kwargs,
                                 requested_price=orig_price, ref_price=ref_price,

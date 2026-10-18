@@ -194,3 +194,15 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
             mock_place.assert_called_once()
             self.assertEqual(mock_enqueue.call_args[0][3].get("prefix"), "MO_MN_OR")
 
+    def test_instrument_apply_outbox_lineage_prefix_preserves_bot_lineage(self):
+        from instrument import Instrument
+        target = {}
+        with patch("binance_api.order_id_context.get_process_name", return_value="TA"):
+            Instrument._apply_outbox_lineage_prefix(target, {})
+        self.assertEqual(target.get("prefix"), "TA_OR")
+
+        runner_target = {}
+        with patch("binance_api.order_id_context.get_process_name", return_value="PYTEST"):
+            Instrument._apply_outbox_lineage_prefix(runner_target, {})
+        self.assertNotIn("prefix", runner_target)
+
