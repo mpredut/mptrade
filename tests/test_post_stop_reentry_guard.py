@@ -474,3 +474,141 @@ def test_monitortrades_skips_ai_guard_when_intelligence_downscale_triggers_below
     fake_guard.check.assert_not_called()
     mock_place.assert_not_called()
     assert "ARBUSDC" in mt._REENTRY_STATE
+
+
+def test_monitortrades_post_stop_ai_downscale_does_not_double_scale_in_instrument_place():
+    """Verify that when Pillar 3 AI guard downscales a post-stop BUY by 0.5 and
+    GeopoliticalGuard in Instrument.place also recommends suggested_scale=0.5,
+    the order is scaled once (to 50%) rather than twice (to 25% below min_notional)."""
+    from instrument import Instrument
+    from providers.quantity import QuantityDecision
+    import order_guard
+
+    class LiveScaleProvider:
+        name = "binance"
+
+        def validate_symbol(self, symbol):
+            return True
+
+        def guards_internally(self):
+            return False
+
+        def requires_cache_permit(self):
+            return False
+
+        def defers_smart_cancellation(self):
+            return False
+
+        def supports_business_minimum(self):
+            return True
+
+        def execution_enabled(self):
+            return True
+
+        def preflight_order(self, *args, **kwargs):
+            return object()
+
+        def adjust_order_price(self, symbol, side, price, **kwargs):
+            return price
+
+        def round_price(self, symbol, price):
+            return round(float(price), 4)
+
+        def round_amount(self, symbol, qty):
+            return round(float(qty), 1)
+
+        def free_balance(self, asset):
+            return 20000.0
+
+        def quantity_decision(self, symbol, side, price, qty, **kwargs):
+            capped = min(float(qty), 600.0)
+            return QuantityDecision(
+                requested_qty=float(qty),
+                balance_cap=20000.0 / float(price),
+                policy_cap=600.0,
+                fee_cap=600.0,
+                final_qty=capped,
+                refuse_reason=None,
+                balance_asset="USDC",
+            )
+
+        def order_filter_refusal(self, symbol, side, price, qty, market=False, enforce_business_minimum=True):
+            if float(price) * float(qty) < 50.0:
+                return "below_min_notional"
+            return None
+
+        def profit_guard_window_ref(self, symbol, side, safeback_sec, regime_context=None):
+            return None
+
+        def __init__(self):
+            self.placed_orders = []
+
+        def place_order(self, symbol, side, price, qty, **kwargs):
+            order = {"orderId": "999001", "symbol": symbol, "side": side, "price": price, "qty": qty}
+            self.placed_orders.append(order)
+            return order
+
+    provider = LiveScaleProvider()
+    mock_api = MagicMock()
+    mock_api.provider_by_name.return_value = provider
+
+    real_inst = Instrument(
+        name="BINANCE_ARB",
+        symbol="ARBUSDC",
+        provider="binance",
+        base="ARB",
+        quote="USDC",
+        params={"mt.buy_budget": 250.0, "mt.max_budget": 3500.0, "mt.buy_price_offset": 0.0},
+        api=mock_api,
+    )
+    real_inst.orders = lambda side, since_s: (
+        [{"price": 0.1884, "time": 1000.0, "timestamp": 1000000, "qty": 600.0, "kind": "STOP"}]
+        if side == "SELL" else []
+    )
+    real_inst.price = lambda: 0.1833
+    real_inst.free = lambda: 0.0
+    real_inst.min_qty = lambda: 1.0
+
+    fake_ai_guard = MagicMock()
+    fake_ai_guard.check.return_value = MagicMock(
+        allowed=True, suggested_scale=0.5, reason="cautious 50% re-entry"
+    )
+    exit_mgr = MagicMock()
+    exit_mgr.evaluate_reentry.return_value = MagicMock(
+        should_enter=True, reason="post_stop_bounce_confirmed"
+    )
+
+    def fake_profit_guard(prov, sym, side, px, pm, window_ref=None, regime_context=None, qty=None, **kw):
+        if regime_context is not None:
+            object.__setattr__(regime_context, "suggested_scale", 0.5)
+        return True
+
+    mt._LAST_EXIT_KIND["ARBUSDC"] = "STOP"
+    mt._REENTRY_STATE["ARBUSDC"] = {
+        "trough": 0.1815,
+        "peak": 0.1884,
+        "peak_bounce": 0.1833,
+        "started_at": 1000.0,
+        "sell_time": 1000.0,
+    }
+
+    with patch.object(mt, "_is_simulated_env_or_inst", return_value=False), \
+         patch.object(mt, "_is_trend_gate_deferred", return_value=False), \
+         patch("intelligence.sentiment.guards.post_stop_reentry_guard.get_post_stop_reentry_guard", return_value=fake_ai_guard), \
+         patch("order_guard.check_intelligence_guards", return_value=(True, "Geopolitical Risk Index elevated", 0.5)), \
+         patch("order_guard.profit_guard", side_effect=fake_profit_guard), \
+         patch("order_guard.daily_limit_guard", return_value=(True, None)), \
+         patch.object(mt, "get_position_stats", return_value={"average_buy_price": 0.0, "average_sell_price": 0.1884, "net_qty": 0.0}), \
+         patch.object(mt, "get_exit_manager", return_value=exit_mgr), \
+         patch.object(mt, "is_trend_up", return_value=True), \
+         patch.object(mt, "get_symbol_volatility_1h", return_value=0.01), \
+         patch("cacheManager.get_short_trend_manager") as mock_stm, \
+         patch("order_retry.RETRY_ENABLED", False):
+        mock_stm.return_value.should_wait.return_value = False
+        mt.monitor_price_and_trade(real_inst, sbs=10, now_fn=lambda: 1500.0)
+
+    # Policy cap is 600.0 ARB (~$109.98). Scaled once by 0.5 -> 300.0 ARB (~$54.99 >= $50 min_notional).
+    # Without applied_scale propagation, Instrument.place would scale 300.0 * 0.5 -> 150.0 ARB ($27.49 < $50) and refuse!
+    assert len(provider.placed_orders) == 1
+    assert abs(provider.placed_orders[0]["qty"] - 300.0) <= 0.2
+

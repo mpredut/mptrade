@@ -1338,6 +1338,9 @@ def _can_pass_buy_quantity_policy(
     return True
 
 
+_POST_STOP_AI_APPLIED_SCALE: dict[str, float] = {}
+
+
 def _apply_post_stop_ai_guard(
     symbol: str,
     current_price: float,
@@ -1350,6 +1353,7 @@ def _apply_post_stop_ai_guard(
     inst: Any = None,
 ) -> tuple[bool, Optional[float], Optional[float], float]:
     """Validate post-STOP re-entry via Pillar 3 AI guard, returning (allowed, budget, cfg, qty)."""
+    _POST_STOP_AI_APPLIED_SCALE.pop(symbol, None)
     if _is_simulated_env_or_inst(inst):
         return True, buy_budget, buy_qty_cfg, qty
     try:
@@ -1451,6 +1455,7 @@ def _apply_post_stop_ai_guard(
                 buy_qty_cfg = min(buy_qty_cfg * scale, scaled_qty)
             else:
                 qty = min(qty * scale, scaled_qty)
+            _POST_STOP_AI_APPLIED_SCALE[symbol] = scale
     except Exception as e:
         print(f"[{symbol}] Post-STOP AI guard error (fail-open fallback): {e}")
     return True, buy_budget, buy_qty_cfg, qty
@@ -1465,18 +1470,23 @@ def _execute_reentry_buy(
     sbs: float,
     last_exit_kind: str,
     prev_reentry_state: dict,
+    applied_scale: float = 1.0,
 ) -> bool:
     """Submit guarded re-entry BUY order and clear tracking state upon submission."""
     _default_offset = min(MT_BUY_PRICE_OFFSET, current_price * 0.01)
     _buy_offset = inst.param("mt", "buy_price_offset", _default_offset, float)
     reentry_outcome_ctx = {}
     reentry_bypass = {"GF1", "GI3"} if last_exit_kind == "STOP" else ({"GF1"} if MT_REENTRY_HYBRID_ENABLED else None)
+    extra_kwargs = {}
+    if 0.0 < float(applied_scale) < 1.0 and not _is_simulated_env_or_inst(inst):
+        extra_kwargs["applied_scale"] = float(applied_scale)
     placed = _place_guarded(
         inst, "BUY", current_price + _buy_offset, buy_qty, min_qty,
         safeback_seconds=sbs, cancelorders=True,
         hours=MT_BUY_SAFEBACK_HOURS,
         bypass_guards=reentry_bypass,
         _outcome_context=reentry_outcome_ctx,
+        **extra_kwargs,
     )
     if placed or reentry_outcome_ctx.get("state") == "unknown":
         _REENTRY_STATE.pop(symbol, None)
@@ -1828,6 +1838,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                   f"({_initial_projected_value:.0f} > {max_budget} USD) — not buying")
             return
 
+        _reentry_applied_scale = 1.0
         if last_exit_kind == "STOP":
             if not _can_pass_buy_quantity_policy(inst, symbol, current_price, _initial_buy_qty, min_qty=min_qty):
                 if prev_reentry_state:
@@ -1835,6 +1846,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                     _save_mt_state()
                 return
             print(f"[{symbol}] Post-STOP recovery bounce confirmed: {reentry_dec.reason}")
+            _POST_STOP_AI_APPLIED_SCALE.pop(symbol, None)
             if _is_simulated_env_or_inst(inst):
                 allowed = True
             else:
@@ -1842,6 +1854,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                     symbol, current_price, sell_price, sell_time, reentry_snap,
                     buy_budget, buy_qty_cfg, qty, inst=inst,
                 )
+            _reentry_applied_scale = float(_POST_STOP_AI_APPLIED_SCALE.pop(symbol, 1.0) or 1.0)
             if not allowed:
                 if prev_reentry_state:
                     _REENTRY_STATE[symbol] = prev_reentry_state
@@ -1861,7 +1874,8 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         else:
             _execute_reentry_buy(
                 inst, symbol, current_price, _buy_qty, min_qty, sbs,
-                last_exit_kind, prev_reentry_state
+                last_exit_kind, prev_reentry_state,
+                applied_scale=_reentry_applied_scale,
             )
 
     _save_mt_state()

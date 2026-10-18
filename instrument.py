@@ -340,6 +340,15 @@ class Instrument:
         # explicitly pass false.
         smart = bool(kwargs.pop("smart", True))
         regime_context = kwargs.pop("regime_context", None)
+        raw_applied_scale = kwargs.pop("applied_scale", None)
+        caller_applied_scale = 1.0
+        if raw_applied_scale is not None:
+            try:
+                cas_f = float(raw_applied_scale)
+                if math.isfinite(cas_f) and 0.0 < cas_f < 1.0:
+                    caller_applied_scale = cas_f
+            except (TypeError, ValueError):
+                pass
         # Reconstruct this call exactly for retry after bypass/smart were popped;
         # all other placement metadata remains in kwargs.
         retry_kwargs = dict(kwargs)
@@ -349,6 +358,8 @@ class Instrument:
         retry_kwargs["bypass_quantity_policy"] = bypass_quantity_policy
         retry_kwargs["wait_for_trend"] = wait_for_trend
         retry_kwargs["smart"] = smart
+        if caller_applied_scale < 1.0:
+            retry_kwargs["applied_scale"] = caller_applied_scale
         if caller_profit_margin is not None:
             retry_kwargs["profit_margin"] = caller_profit_margin
         if allow_math_reference_sell:
@@ -536,11 +547,12 @@ class Instrument:
                 apply_policy=not bypass_quantity_policy,
                 market=is_market,
                 enforce_business_minimum=enforce_business_minimum,
-                regime_context=regime_context,
+                regime_context=(None if caller_applied_scale < 1.0 else regime_context),
                 known_balance=known_balance,
             )
             qty = decision.final_qty
-            applied_scale = getattr(decision, "applied_scale", 1.0) if getattr(decision, "scale_applied", False) else 1.0
+            dec_scale = getattr(decision, "applied_scale", 1.0) if getattr(decision, "scale_applied", False) else 1.0
+            applied_scale = min(float(caller_applied_scale), float(dec_scale))
             if qty <= 0:
                 print(f"[{self.symbol}] {side_u} qty refused: "
                       f"{decision.refuse_reason} asset={decision.balance_asset}")
@@ -695,6 +707,8 @@ class Instrument:
                     if order_retry.RETRY_ENABLED:
                         prequeue_kwargs = dict(retry_kwargs)
                         prequeue_kwargs["smart"] = smart
+                        if 0.0 < float(applied_scale) < 1.0:
+                            prequeue_kwargs["applied_scale"] = float(applied_scale)
                         if "client_order_id" in kwargs:
                             prequeue_kwargs["client_order_id"] = kwargs["client_order_id"]
                         elif "prefix" not in prequeue_kwargs:
@@ -1009,8 +1023,12 @@ class Instrument:
                             try:
                                 if queue_qty is None or float(queue_qty) <= 0:
                                     queue_qty = qty
+                                    if 0.0 < float(applied_scale) < 1.0:
+                                        retry_kwargs["applied_scale"] = float(applied_scale)
                             except (TypeError, ValueError, OverflowError):
                                 queue_qty = qty
+                                if 0.0 < float(applied_scale) < 1.0:
+                                    retry_kwargs["applied_scale"] = float(applied_scale)
                             ref_price = None
                             try:
                                 ref_price = self._provider.get_current_price(self.symbol)
