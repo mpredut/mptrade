@@ -227,6 +227,31 @@ class GlobalTelemetryCollector:
             logger.warning("Failed updating market breadth: %s", e)
         return False
 
+    @staticmethod
+    def _run_step_bounded(fn, *args, timeout_sec: float = 15.0, label: str = "telemetry_step") -> bool:
+        """Execute a collector step in a daemon thread so a hung DNS/socket read cannot freeze the daemon."""
+        import threading
+
+        outcome: List[bool] = [False]
+        err_holder: List[BaseException] = []
+
+        def _target():
+            try:
+                outcome[0] = bool(fn(*args))
+            except BaseException as exc:
+                err_holder.append(exc)
+
+        t = threading.Thread(target=_target, name=f"gtc-{label}", daemon=True)
+        t.start()
+        t.join(timeout=timeout_sec)
+        if t.is_alive():
+            logger.warning("Telemetry step '%s' timed out after %.1fs; skipping to preserve heartbeat.", label, timeout_sec)
+            return False
+        if err_holder:
+            logger.warning("Telemetry step '%s' raised error: %s", label, err_holder[0])
+            return False
+        return outcome[0]
+
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, updating telemetry whose scheduled interval has elapsed."""
         current_ts = now if now is not None else time.time()
@@ -241,46 +266,52 @@ class GlobalTelemetryCollector:
             "breadth_updated": False,
         }
 
+        # Refresh heartbeat at the start of the cycle so slow network fetches never starve liveness
+        self.write_heartbeat(results)
+
         # Pillar 2: External Microstructure updates per symbol
         if not self.skip_external:
             for sym in self.symbols:
                 # 1. Orderbook depth
                 last_ob = self._last_orderbook_ts.get(sym, 0.0)
                 if force or (current_ts - last_ob) >= self.orderbook_interval_sec:
-                    if self.update_orderbook(sym):
+                    if self._run_step_bounded(self.update_orderbook, sym, timeout_sec=10.0, label=f"ob_{sym}"):
                         results["orderbook_updated"] += 1
                         self._last_orderbook_ts[sym] = current_ts
 
                 # 2. Derivatives telemetry
                 last_deriv = self._last_derivatives_ts.get(sym, 0.0)
                 if force or (current_ts - last_deriv) >= self.derivatives_interval_sec:
-                    if self.update_derivatives(sym):
+                    if self._run_step_bounded(self.update_derivatives, sym, timeout_sec=12.0, label=f"deriv_{sym}"):
                         results["derivatives_updated"] += 1
                         self._last_derivatives_ts[sym] = current_ts
 
                 # 3. Whale positioning & OI
                 last_whale = self._last_whale_ts.get(sym, 0.0)
                 if force or (current_ts - last_whale) >= self.whale_interval_sec:
-                    if self.update_whale(sym):
+                    if self._run_step_bounded(self.update_whale, sym, timeout_sec=15.0, label=f"whale_{sym}"):
                         results["whale_updated"] += 1
                         self._last_whale_ts[sym] = current_ts
+
+                self.write_heartbeat(results)
 
         # Pillar 4: RSS Raw News Feed ingestion (zero LLM)
         if not self.skip_news:
             if force or (current_ts - self._last_news_ts) >= self.news_interval_sec:
-                if self.update_news(force=force):
+                if self._run_step_bounded(self.update_news, force, timeout_sec=15.0, label="news"):
                     results["news_updated"] = True
                     self._last_news_ts = current_ts
+                self.write_heartbeat(results)
 
         # Pillar 3: Fear & Greed Index ingestion
         if force or (current_ts - self._last_fear_greed_ts) >= self.fear_greed_interval_sec:
-            if self.update_fear_greed(force=force):
+            if self._run_step_bounded(self.update_fear_greed, force, timeout_sec=12.0, label="fear_greed"):
                 results["fear_greed_updated"] = True
                 self._last_fear_greed_ts = current_ts
 
         # Pillar 3: Market Breadth ingestion
         if force or (current_ts - self._last_breadth_ts) >= self.breadth_interval_sec:
-            if self.update_market_breadth(force=force):
+            if self._run_step_bounded(self.update_market_breadth, force, timeout_sec=15.0, label="breadth"):
                 results["breadth_updated"] = True
                 self._last_breadth_ts = current_ts
 
@@ -297,29 +328,38 @@ class GlobalTelemetryCollector:
         return results
 
     def write_heartbeat(self, status: Dict[str, Any]) -> None:
-        """Write heartbeat metadata atomically to cachedb."""
-        try:
-            from state_io import atomic_write_json
-            payload = {
-                "pid": os.getpid(),
-                "status": "alive",
-                "ts": status.get("ts", time.time()),
-                "symbols": self.symbols,
-                "intervals": {
-                    "orderbook": self.orderbook_interval_sec,
-                    "derivatives": self.derivatives_interval_sec,
-                    "whale": self.whale_interval_sec,
-                    "news": self.news_interval_sec,
-                    "fear_greed": self.fear_greed_interval_sec,
-                    "breadth": self.breadth_interval_sec,
-                },
-                "last_run": status,
-            }
-            atomic_write_json(self.heartbeat_path, payload, indent=2)
-            # Write legacy heartbeat for backward compatibility with orchestrator/CLI
-            atomic_write_json(self.legacy_heartbeat_path, payload, indent=2)
-        except Exception as e:
-            logger.debug("Failed writing collector heartbeat: %s", e)
+        """Write heartbeat metadata atomically to cachedb, with fallback to direct touch/write."""
+        payload = {
+            "pid": os.getpid(),
+            "status": "alive",
+            "ts": status.get("ts", time.time()),
+            "symbols": self.symbols,
+            "intervals": {
+                "orderbook": self.orderbook_interval_sec,
+                "derivatives": self.derivatives_interval_sec,
+                "whale": self.whale_interval_sec,
+                "news": self.news_interval_sec,
+                "fear_greed": self.fear_greed_interval_sec,
+                "breadth": self.breadth_interval_sec,
+            },
+            "last_run": status,
+        }
+        from state_io import atomic_write_json
+        for hb_target in (self.heartbeat_path, self.legacy_heartbeat_path):
+            try:
+                atomic_write_json(hb_target, payload, indent=2)
+            except Exception as e:
+                logger.warning("Primary atomic heartbeat write failed for %s: %s; attempting fallback", hb_target, e)
+                try:
+                    if os.path.exists(hb_target):
+                        try:
+                            os.unlink(hb_target)
+                        except OSError:
+                            os.utime(hb_target, None)
+                    with open(hb_target, "w", encoding="utf-8") as f:
+                        json.dump(payload, f)
+                except Exception as fallback_err:
+                    logger.error("Fallback heartbeat write failed for %s: %s", hb_target, fallback_err)
 
     def start(self, poll_interval_sec: float = 1.0) -> None:
         """Run the main telemetry collection loop continuously."""
@@ -328,6 +368,7 @@ class GlobalTelemetryCollector:
         def _handle_exit(signum, frame):
             logger.info("Received termination signal (%d), stopping collector...", signum)
             self.running = False
+            raise SystemExit(0)
 
         signal.signal(signal.SIGINT, _handle_exit)
         signal.signal(signal.SIGTERM, _handle_exit)
@@ -336,19 +377,25 @@ class GlobalTelemetryCollector:
             "Starting GlobalTelemetryCollector for symbols: %s (PID=%d)",
             ", ".join(self.symbols), os.getpid(),
         )
+        self.write_heartbeat({"ts": time.time(), "symbols": list(self.symbols)})
 
         # Force initial update for all components on startup
         try:
             self.run_cycle(force=True)
+        except SystemExit:
+            raise
         except Exception as e:
             logger.warning("Error during initial telemetry update cycle: %s", e)
 
         while self.running:
             try:
                 self.run_cycle(force=False)
+                time.sleep(poll_interval_sec)
+            except SystemExit:
+                break
             except Exception as e:
                 logger.error("Unexpected error in telemetry loop: %s", e)
-            time.sleep(poll_interval_sec)
+                time.sleep(poll_interval_sec)
 
         logger.info("GlobalTelemetryCollector stopped gracefully.")
 

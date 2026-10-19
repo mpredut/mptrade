@@ -36,6 +36,8 @@ _SMART_SL_STATE_FILE = os.path.join(
 # In-memory grace tracker: symbol -> {start_ts, initial_loss, lost_threshold, provider, current_price, buy_price}
 _GRACE_TRACKER: Dict[str, Dict[str, Any]] = {}
 _LAST_RECOVERY_ALERT_TS: Dict[str, float] = {}
+_LAST_DEFER_ALERT_TS: Dict[str, float] = {}
+_LAST_TIMEOUT_ALERT_TS: Dict[str, float] = {}
 _RECOVERY_COOLDOWN_SEC: float = float(os.environ.get("SMART_SL_COOLDOWN_SEC", "1800"))  # 30 minutes default
 _PENDING_RECOVERIES: list[Dict[str, Any]] = []
 
@@ -344,23 +346,26 @@ class SmartStopLossGuard:
                 print(f"🛡 {prefix} DEFER {sym_key}{prov_tag}: {reason}")
 
                 if not is_sim:
-                    c_str = _format_price(current_price)
-                    b_str = _format_price(buy_price)
-                    price_part = f" @ {c_str}" if c_str else ""
-                    if c_str and b_str:
-                        price_part = f" | {c_str} (Last Buy Price: {b_str})"
+                    last_defer_ts = _LAST_DEFER_ALERT_TS.get(sym_key, 0.0)
+                    if (now_ts - last_defer_ts) >= _RECOVERY_COOLDOWN_SEC:
+                        _LAST_DEFER_ALERT_TS[sym_key] = now_ts
+                        c_str = _format_price(current_price)
+                        b_str = _format_price(buy_price)
+                        price_part = f" @ {c_str}" if c_str else ""
+                        if c_str and b_str:
+                            price_part = f" | {c_str} (Last Buy Price: {b_str})"
 
-                    body_lines = [
-                        f"{sym_key}{prov_tag}{price_part}",
-                        f"Dip: {price_decrease*100:.2f}% (SL threshold: {threshold_pct:.2f}%).",
-                        f"Whales: {top_long_pct*100:.1f}% Long, Taker B/S: {taker_ratio:.2f}.",
-                        f"Suspected wick hunt: granting {self.grace_seconds:.0f}s grace window.",
-                    ]
-                    _send_ntfy_alert(
-                        title=f"🛡 [P2 · SMART-SL] DEFER {sym_key}{prov_tag}",
-                        body="\n".join(body_lines),
-                        symbol=sym_key,
-                    )
+                        body_lines = [
+                            f"{sym_key}{prov_tag}{price_part}",
+                            f"Dip: {price_decrease*100:.2f}% (SL threshold: {threshold_pct:.2f}%).",
+                            f"Whales: {top_long_pct*100:.1f}% Long, Taker B/S: {taker_ratio:.2f}.",
+                            f"Suspected wick hunt: granting {self.grace_seconds:.0f}s grace window.",
+                        ]
+                        _send_ntfy_alert(
+                            title=f"🛡 [P2 · SMART-SL] DEFER {sym_key}{prov_tag}",
+                            body="\n".join(body_lines),
+                            symbol=sym_key,
+                        )
                 if self.mode == "shadow":
                     return True, f"shadow_defer: {reason}", meta
                 return False, reason, meta
@@ -406,17 +411,20 @@ class SmartStopLossGuard:
                     print(f"🛑 [P2 · SMART-SL] TIMEOUT {sym_key}{saved_prov_tag}: {reason} -> executing stop-loss")
 
                     if not is_sim:
-                        body_lines = [
-                            f"{sym_key}{saved_prov_tag}{price_part}",
-                            f"Grace period of {self.grace_seconds:.0f}s expired without price recovery.",
-                            f"Dip: {price_decrease*100:.2f}% (SL: {threshold_pct:.2f}%).",
-                            "Executing stop-loss now.",
-                        ]
-                        _send_ntfy_alert(
-                            title=f"🛑 [P2 · SMART-SL] TIMEOUT {sym_key}{saved_prov_tag}",
-                            body="\n".join(body_lines),
-                            symbol=sym_key,
-                        )
+                        last_timeout_ts = _LAST_TIMEOUT_ALERT_TS.get(sym_key, 0.0)
+                        if (now_ts - last_timeout_ts) >= _RECOVERY_COOLDOWN_SEC:
+                            _LAST_TIMEOUT_ALERT_TS[sym_key] = now_ts
+                            body_lines = [
+                                f"{sym_key}{saved_prov_tag}{price_part}",
+                                f"Grace period of {self.grace_seconds:.0f}s expired without price recovery.",
+                                f"Dip: {price_decrease*100:.2f}% (SL: {threshold_pct:.2f}%).",
+                                "Executing stop-loss now.",
+                            ]
+                            _send_ntfy_alert(
+                                title=f"🛑 [P2 · SMART-SL] TIMEOUT {sym_key}{saved_prov_tag}",
+                                body="\n".join(body_lines),
+                                symbol=sym_key,
+                            )
                     return True, reason, meta
 
         # Microstructure not supportive of wick bounce

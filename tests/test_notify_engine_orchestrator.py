@@ -388,3 +388,103 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         with open(queue_file, "r", encoding="utf-8") as f:
             remaining_lines = [l.strip() for l in f.readlines() if l.strip()]
         self.assertEqual(remaining_lines, [concurrent_line])
+
+    def test_error_and_ops_alerts_deduplicate_despite_buy_sell_and_dynamic_body(self):
+        """Verify error/expired/rejected/guard alerts with BUY/SELL and varying bodies or prices are deduplicated."""
+        with mock.patch.dict(os.environ, {
+            "NOTIFICATION_ERROR_DEDUP_SECONDS": "1800",
+            "NOTIFICATION_URGENT_DEDUP_SECONDS": "1800",
+            "NOTIFICATION_GUARD_DEDUP_SECONDS": "1800",
+        }):
+            # 1. ORDER FAILED containing BUY and varying timestamp/error details in body
+            err1 = {
+                "type": "bot_event",
+                "name": "ORDER FAILED: BUY BTCUSDC",
+                "body": "2026-10-19 12:00:01 APIError(code=-2010): Account has insufficient balance",
+                "source": "rtrade",
+                "symbol": "BTCUSDC",
+            }
+            err2 = {
+                "type": "bot_event",
+                "name": "ORDER FAILED: BUY BTCUSDC",
+                "body": "2026-10-19 12:00:05 APIError(code=-2010): Account has insufficient balance (retry 2)",
+                "source": "rtrade",
+                "symbol": "BTCUSDC",
+            }
+            self.dispatched.clear()
+            self.server.dispatch_alerts([err1], bot_name="rtrade")
+            self.assertEqual(len(self.dispatched), 1)
+            self.assertEqual(self.dispatched[0]["topic"], "ntfy-error-test")
+
+            self.server.dispatch_alerts([err2], bot_name="rtrade")
+            self.assertEqual(len(self.dispatched), 1, "Repeated ORDER FAILED with BUY must be paused by dedup gate")
+
+            # 2. Order Expired & Canceled containing BUY and dynamic price in title
+            exp1 = {
+                "type": "bot_event",
+                "name": "⏰ Order Expired & Canceled: BUY TAOUSDC @ 284.50 [rtrade]",
+                "body": "Order 111 expired after 15.0m",
+                "source": "monitororder",
+                "symbol": "TAOUSDC",
+            }
+            exp2 = {
+                "type": "bot_event",
+                "name": "⏰ Order Expired & Canceled: BUY TAOUSDC @ 285.10 [rtrade]",
+                "body": "Order 112 expired after 15.1m",
+                "source": "monitororder",
+                "symbol": "TAOUSDC",
+            }
+            self.server.dispatch_alerts([exp1], bot_name="monitororder")
+            self.assertEqual(len(self.dispatched), 2)
+            self.server.dispatch_alerts([exp2], bot_name="monitororder")
+            self.assertEqual(len(self.dispatched), 2, "Repeated expired order alerts for same symbol/side must be paused")
+
+            # 3. Genuine trade execution with BUY still has 0s dedup (never blocked)
+            fill1 = {
+                "type": "bot_event",
+                "name": "🎉 [Binance] Order Executed: BUY BTCUSDC @ $65000.00",
+                "body": "Fill 1",
+                "source": "monitortrades",
+                "symbol": "BTCUSDC",
+            }
+            fill2 = {
+                "type": "bot_event",
+                "name": "🎉 [Binance] Order Executed: BUY BTCUSDC @ $65100.00",
+                "body": "Fill 2",
+                "source": "monitortrades",
+                "symbol": "BTCUSDC",
+            }
+            self.server.dispatch_alerts([fill1], bot_name="monitortrades")
+            self.server.dispatch_alerts([fill2], bot_name="monitortrades")
+            self.assertEqual(len(self.dispatched), 4, "Real trade executions must never be suppressed")
+
+    def test_process_line_rules_and_ntfy_tag_respect_pause_gate_and_ignore_transport_errors(self):
+        """Verify [NTFY] tags and regex rules use persistent _reserve_delivery and ignore internal notify errors."""
+        with mock.patch.dict(os.environ, {
+            "NOTIFICATION_ERROR_DEDUP_SECONDS": "1800",
+            "NOTIFICATION_URGENT_DEDUP_SECONDS": "1800",
+        }):
+            self.dispatched.clear()
+            # 1. Internal notification transport errors must be ignored to prevent feedback loops
+            self.server.process_line(
+                "2026-10-19 12:00:00 [ERROR] Failed to send ntfy alert (Critical Errors): 502 Bad Gateway\n",
+                "orchestrator",
+            )
+            self.server.process_line(
+                "2026-10-19 12:00:01 [ERROR] Email delivery failed: ConnectionResetError\n",
+                "orchestrator",
+            )
+            self.assertEqual(len(self.dispatched), 0)
+
+            # 2. [NTFY] shortcut is gated across repeated identical error messages
+            self.server.process_line("[NTFY] Connection lost to upstream feed\n", "rtrade")
+            self.server.process_line("[NTFY] Connection lost to upstream feed\n", "rtrade")
+            self.assertEqual(len(self.dispatched), 1)
+
+            # 3. Critical Errors regex rule is gated by persistent _reserve_delivery even if RAM cooldown is cleared
+            self.server.process_line("2026-10-19 12:01:00 [ERROR] database lock timeout 1\n", "rtrade")
+            self.assertEqual(len(self.dispatched), 2)
+            self.server.cooldowns.clear()  # Simulate orchestrator restart clearing RAM cooldowns
+            self.server.process_line("2026-10-19 12:02:00 [ERROR] database lock timeout 2\n", "rtrade")
+            self.assertEqual(len(self.dispatched), 2, "Persistent delivery state must block Critical Errors after restart")
+

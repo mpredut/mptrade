@@ -247,6 +247,9 @@ class MacroAnalyzer:
             "threads_pruned": 0,
         }
 
+        # Refresh heartbeat at the start of the cycle before potentially slow LLM synthesis calls
+        self.write_heartbeat(results)
+
         # 1. Geopolitical Threat assessment (Pillar 4)
         cached_geo = getattr(self.geopolitical_analyzer, "_cached_assessment", None)
         geo_interval = (
@@ -258,12 +261,14 @@ class MacroAnalyzer:
             if self.assess_geopolitical_threat(force=force):
                 results["geopolitical_updated"] = True
                 self._last_macro_llm_ts = current_ts
+            self.write_heartbeat(results)
 
         # 2. Market Advisor qualitative synthesis (Pillar 3)
         if force or (current_ts - self._last_advisor_ts) >= self.advisor_interval_sec:
             if self.assess_market_advisor(force=force):
                 results["advisor_updated"] = True
                 self._last_advisor_ts = current_ts
+            self.write_heartbeat(results)
 
         # 3. CLI thread pruning housekeeping
         if force or (current_ts - self._last_thread_prune_ts) >= self.thread_prune_interval_sec:
@@ -279,23 +284,33 @@ class MacroAnalyzer:
         return results
 
     def write_heartbeat(self, status: Dict[str, Any]) -> None:
-        """Write heartbeat metadata atomically to cachedb/."""
+        """Write heartbeat metadata atomically to cachedb/ with fallback."""
+        payload = {
+            "pid": os.getpid(),
+            "status": "alive",
+            "ts": status.get("ts", time.time()),
+            "intervals": {
+                "geopolitical_llm": self.macro_llm_interval_sec,
+                "market_advisor": self.advisor_interval_sec,
+                "thread_prune": self.thread_prune_interval_sec,
+            },
+            "last_run": status,
+        }
         try:
             from state_io import atomic_write_json
-            payload = {
-                "pid": os.getpid(),
-                "status": "alive",
-                "ts": status.get("ts", time.time()),
-                "intervals": {
-                    "geopolitical_llm": self.macro_llm_interval_sec,
-                    "market_advisor": self.advisor_interval_sec,
-                    "thread_prune": self.thread_prune_interval_sec,
-                },
-                "last_run": status,
-            }
             atomic_write_json(self.heartbeat_path, payload, indent=2)
         except Exception as e:
-            logger.debug("Failed writing macro analyzer heartbeat: %s", e)
+            logger.warning("Primary atomic heartbeat write failed for %s: %s; attempting fallback", self.heartbeat_path, e)
+            try:
+                if os.path.exists(self.heartbeat_path):
+                    try:
+                        os.unlink(self.heartbeat_path)
+                    except OSError:
+                        os.utime(self.heartbeat_path, None)
+                with open(self.heartbeat_path, "w", encoding="utf-8") as f:
+                    json.dump(payload, f)
+            except Exception as fallback_err:
+                logger.error("Fallback heartbeat write failed for %s: %s", self.heartbeat_path, fallback_err)
 
     def start(self, poll_interval_sec: float = 5.0) -> None:
         """Run the main analysis loop continuously."""
@@ -309,6 +324,7 @@ class MacroAnalyzer:
         signal.signal(signal.SIGTERM, _handle_exit)
 
         logger.info("Starting MacroAnalyzer (PID=%d)", os.getpid())
+        self.write_heartbeat({"ts": time.time()})
 
         # Initial assessment cycle on startup
         try:

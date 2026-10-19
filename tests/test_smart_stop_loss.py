@@ -30,14 +30,23 @@ def clean_grace_tracker(tmp_path, monkeypatch):
     """Ensure in-memory grace tracker and state file are isolated for each test."""
     test_state_file = str(tmp_path / "smart_stop_loss_state.json")
     monkeypatch.setattr("intelligence.external.guards.smart_stop_loss_guard._SMART_SL_STATE_FILE", test_state_file)
-    from intelligence.external.guards.smart_stop_loss_guard import _PENDING_RECOVERIES, _LAST_RECOVERY_ALERT_TS
+    from intelligence.external.guards.smart_stop_loss_guard import (
+        _PENDING_RECOVERIES,
+        _LAST_RECOVERY_ALERT_TS,
+        _LAST_DEFER_ALERT_TS,
+        _LAST_TIMEOUT_ALERT_TS,
+    )
     _GRACE_TRACKER.clear()
     _PENDING_RECOVERIES.clear()
     _LAST_RECOVERY_ALERT_TS.clear()
+    _LAST_DEFER_ALERT_TS.clear()
+    _LAST_TIMEOUT_ALERT_TS.clear()
     yield
     _GRACE_TRACKER.clear()
     _PENDING_RECOVERIES.clear()
     _LAST_RECOVERY_ALERT_TS.clear()
+    _LAST_DEFER_ALERT_TS.clear()
+    _LAST_TIMEOUT_ALERT_TS.clear()
 
 
 def _mock_whale(top_long=0.62, taker_ratio=1.05, regime="neutral"):

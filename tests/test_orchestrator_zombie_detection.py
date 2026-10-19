@@ -199,6 +199,35 @@ class OrchestratorZombieDetectionTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(self.manager.venv, call_env["VIRTUAL_ENV"])
                 self.assertTrue(call_env["PATH"].startswith(os.path.join(str(ROOT), self.manager.venv, "bin")))
 
+    async def test_start_bot_refreshes_stale_heartbeat_mtime_and_zombie_cooldown_gates_alerts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            hb_file = os.path.join(tmp, "globaltelemetry_collector.heartbeat")
+            with open(hb_file, "w", encoding="utf-8") as f:
+                f.write("{}")
+            ancient = time.time() - 28784.0
+            os.utime(hb_file, (ancient, ancient))
+
+            bot_entry = {
+                "name": "globaltelemetry_collector",
+                "dir": tmp,
+                "cmd": "python -c 'pass'",
+                "log_file": os.path.join(tmp, "globaltelemetry_collector.log"),
+                "hb_file": hb_file,
+                "hb_files": [hb_file],
+                "hb_stale_s": 180.0,
+            }
+            with patch("asyncio.create_subprocess_shell", new_callable=AsyncMock) as mock_shell:
+                mock_proc = MagicMock()
+                mock_proc.pid = 613438
+                mock_proc.stdout = None
+                mock_proc.returncode = 0
+                mock_proc.wait = AsyncMock(return_value=0)
+                mock_shell.return_value = mock_proc
+
+                await self.manager.start_bot(bot_entry)
+                # start_bot must refresh the 8-hour-old heartbeat file mtime on launch
+                self.assertLess(time.time() - os.path.getmtime(hb_file), 10.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -136,3 +136,24 @@ def test_collector_run_cycle_mocked(temp_cache_dir):
             fg_data = json.load(f)
         assert fg_data["value"] == 65
         assert fg_data["sentiment"] == "Greed"
+
+
+def test_collector_bounded_step_timeout_still_writes_heartbeat(temp_cache_dir):
+    collector = GlobalTelemetryCollector(
+        symbols=["BTCUSDC"],
+        cache_dir=temp_cache_dir,
+        skip_external=True,
+        skip_news=False,
+    )
+    hb_path = os.path.join(temp_cache_dir, "globaltelemetry_collector.heartbeat")
+
+    def slow_step():
+        time.sleep(0.5)
+        return True
+
+    ok = collector._run_step_bounded(slow_step, timeout_sec=0.05, label="hung_dns_test")
+    assert ok is False
+
+    collector.write_heartbeat({"ts": time.time(), "symbols": ["BTCUSDC"]})
+    assert os.path.exists(hb_path)
+

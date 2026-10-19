@@ -50,6 +50,10 @@ def _accepted_is_durable(order_retry_module, claim, order) -> bool:
     return False
 
 
+_ALERTED_PERSISTENCE_FAILURES: dict[tuple, float] = {}
+_PERSISTENCE_ALERT_COOLDOWN_SEC = 1800.0
+
+
 def complete_accepted_claim(
         order_retry_module, claim, *, order, provider_name, symbol, side) -> bool:
     """Persist venue acceptance under the exact claim, retrying transient I/O.
@@ -91,11 +95,16 @@ def complete_accepted_claim(
         f"order_id={order_id} client_order_id={client_order_id} "
         f"attempts={ACCEPTED_TRACKING_PERSIST_ATTEMPTS} error={last_error}")
     print(f"CRITICAL: accepted order tracking could not be persisted: {detail}")
-    alert.notify(
-        title="🛑 CRITICAL accepted order tracking persistence failure",
-        body=detail,
-        source="order-persistence",
-        symbol=str(symbol),
-        email=True,
-    )
+    dedup_key = (str(provider_name or ""), str(symbol or ""), str(side or ""), str(order_id or client_order_id or ""))
+    now_mono = time.monotonic()
+    last_alert_ts = _ALERTED_PERSISTENCE_FAILURES.get(dedup_key)
+    if last_alert_ts is None or (now_mono - last_alert_ts) >= _PERSISTENCE_ALERT_COOLDOWN_SEC:
+        _ALERTED_PERSISTENCE_FAILURES[dedup_key] = now_mono
+        alert.notify(
+            title="🛑 CRITICAL accepted order tracking persistence failure",
+            body=detail,
+            source="order-persistence",
+            symbol=str(symbol),
+            email=True,
+        )
     return False

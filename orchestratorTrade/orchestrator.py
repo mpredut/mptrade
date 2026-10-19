@@ -26,6 +26,7 @@ class BotManager:
         self.starting: set[str] = set()
         self.process_start_times: Dict[str, float] = {}
         self.zombie_killing: set[str] = set()
+        self.zombie_alert_cooldowns: Dict[str, float] = {}
         self.recent_lines: Dict[str, deque] = defaultdict(lambda: deque(maxlen=20))
         self.last_hb_status_log = time.time()
         self.running = True
@@ -195,6 +196,15 @@ class BotManager:
             except Exception as e:
                 logging.error(f"Failed to open log {abs_log_path} for {name}: {e}")
 
+        # Refresh mtime on existing dedicated heartbeat files on launch so a newly
+        # started process is not immediately blamed for a predecessor's stale file.
+        for hbf in (bot.get("hb_files") or ([bot["hb_file"]] if bot.get("hb_file") else [])):
+            if hbf and os.path.exists(hbf):
+                try:
+                    os.utime(hbf, None)
+                except OSError:
+                    pass
+
         if process.stdout:
             task = asyncio.create_task(self._read_stream(process.stdout, name, log_fh))
 
@@ -221,7 +231,16 @@ class BotManager:
                 self.restart_backoff[name] = 0
 
             if task:
-                await task
+                try:
+                    await asyncio.wait_for(task, timeout=2.0)
+                except (asyncio.TimeoutError, TimeoutError):
+                    task.cancel()
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                except Exception:
+                    pass
             if log_fh:
                 try:
                     log_fh.close()
@@ -240,6 +259,10 @@ class BotManager:
                     pass
                 except Exception as e:
                     logging.warning(f"Failed to signal process group for {name}: {e}")
+                    try:
+                        proc.send_signal(sig)
+                    except Exception:
+                        pass
 
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=4.0)
@@ -247,6 +270,10 @@ class BotManager:
                     logging.warning(f"Bot {name} did not exit within 4s, sending SIGKILL...")
                     try:
                         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except (ProcessLookupError, Exception):
+                        pass
+                    try:
+                        proc.kill()
                     except (ProcessLookupError, Exception):
                         pass
                     try:
@@ -392,17 +419,32 @@ class BotManager:
                                     f"Terminating zombie process..."
                                 )
                                 self.zombie_killing.add(name)
-                                alert_body = (
-                                    f"Process {name} (PID {proc.pid}) hung: heartbeat {os.path.basename(stale_file)} "
-                                    f"stale by {int(max_stale_duration)}s > {int(hb_stale_s)}s.\n"
-                                    f"Last logs:\n{last_activity}"
-                                )
-                                self.server._send_ntfy(
-                                    f"Zombie Bot Terminated: {name}",
-                                    alert_body,
-                                    "urgent",
-                                    self.server._resolve_topic("ERROR")
-                                )
+                                zombie_cd = float(os.environ.get("ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC", "1800"))
+                                if now >= self.zombie_alert_cooldowns.get(name, 0.0):
+                                    self.zombie_alert_cooldowns[name] = now + zombie_cd
+                                    alert_body = (
+                                        f"Process {name} (PID {proc.pid}) hung: heartbeat {os.path.basename(stale_file)} "
+                                        f"stale by {int(max_stale_duration)}s > {int(hb_stale_s)}s.\n"
+                                        f"Last logs:\n{last_activity}"
+                                    )
+                                    zombie_title = f"Zombie Bot Terminated: {name}"
+                                    should_send = True
+                                    try:
+                                        from notify_engine.alertnotifiers import _reserve_delivery
+                                        should_send, _reason, _ = _reserve_delivery(
+                                            "ntfy",
+                                            [{"type": "bot_event", "name": zombie_title, "source": "orchestrator"}],
+                                            urgent=True,
+                                        )
+                                    except Exception:
+                                        should_send = True
+                                    if should_send:
+                                        self.server._send_ntfy(
+                                            zombie_title,
+                                            alert_body,
+                                            "urgent",
+                                            self.server._resolve_topic("ERROR")
+                                        )
                                 asyncio.create_task(self.stop_bot(name))
             await asyncio.sleep(2)
 

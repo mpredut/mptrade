@@ -4,7 +4,7 @@
       "name": "Critical Errors",
       "match_regex": "(?i)Traceback|Exception|\\[ERROR\\]",
       "priority": "urgent",
-      "cooldown_minutes": 5,
+      "cooldown_minutes": 30,
       "topic_category": "error"
     },
     {
@@ -18,7 +18,7 @@
       "name": "Network / PIA Errors",
       "match_regex": "PIA connection lost|Network Unreachable|Name or service not known",
       "priority": "urgent",
-      "cooldown_minutes": 15,
+      "cooldown_minutes": 30,
       "topic_category": "guard"
     }
   ]

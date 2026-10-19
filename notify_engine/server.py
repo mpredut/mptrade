@@ -142,7 +142,7 @@ class NotificationServer:
         self.traceback_buffers: Dict[str, List[str]] = defaultdict(list)
         
         # Persistent Queue File
-        self.queue_file = os.path.join(ROOT_DIR, "cachedb", "notification_queue.jsonl")
+        self.queue_file = os.environ.get("NOTIFICATION_QUEUE_FILE") or os.path.join(ROOT_DIR, "cachedb", "notification_queue.jsonl")
         os.makedirs(os.path.dirname(self.queue_file), exist_ok=True)
 
     def _ensure_environment(self) -> None:
@@ -520,11 +520,37 @@ class NotificationServer:
                     title = "Price Alert"
                 else:
                     title = f"[{bot_name}] Alert" if bot_name else "Alert"
+                from notify_engine.alertnotifiers import _reserve_delivery
+                ntfy_alert = {
+                    "type": "bot_event",
+                    "name": title,
+                    "body": msg,
+                    "source": bot_name or "orchestrator",
+                    "symbol": "SYSTEM",
+                }
+                allowed, reason, _ = _reserve_delivery("ntfy", [ntfy_alert], urgent=(title != "Price Alert"))
+                if not allowed:
+                    logging.info(f"ntfy shortcut skipped by policy: {reason}")
+                    topic = self._resolve_topic("ERROR")
+                    if reason != "duplicate" and is_email_mirrored(topic):
+                        self._send_email(title, msg)
+                    return
                 self._send_ntfy(title, msg, "high", self._resolve_topic("ERROR"))
                 return
 
         # 3. Check Intelligent Rules (Regex)
         if any(fake in line.upper() for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ")):
+            return
+        if any(
+            internal in line
+            for internal in (
+                "Failed to send ntfy alert",
+                "Email delivery failed",
+                "[Notifier] File exception",
+                "Error flushing notification queue",
+                "ntfy daily limit reached",
+            )
+        ):
             return
         for rule in self.rules:
             if rule["regex_obj"].search(line):
@@ -535,7 +561,6 @@ class NotificationServer:
                 cooldown_sec = rule.get("cooldown_minutes", 0) * 60
                 
                 if now - last_time >= cooldown_sec:
-                    self.cooldowns[rule_key] = now
                     topic_cat = rule.get("topic_category", "ERROR").upper()
                     topic = self._resolve_topic(topic_cat)
                     if topic_cat == "PRICE" or bot_name.lower() in ("price_notifier", "price_notifier.py"):
@@ -545,6 +570,26 @@ class NotificationServer:
                         full_title = f"[{provider}] {rule['name']}" if provider else rule["name"]
                     else:
                         full_title = f"[{bot_name}] {rule['name']}" if bot_name else rule["name"]
+
+                    if topic_cat != "TRADES":
+                        from notify_engine.alertnotifiers import _reserve_delivery
+                        rule_alert = {
+                            "type": "bot_event",
+                            "name": full_title,
+                            "body": line.strip(),
+                            "source": bot_name or "orchestrator",
+                            "symbol": "SYSTEM",
+                        }
+                        allowed, reason, _ = _reserve_delivery(
+                            "ntfy", [rule_alert], urgent=(rule.get("priority") == "urgent")
+                        )
+                        if not allowed:
+                            logging.info(f"Rule '{rule['name']}' ntfy skipped by policy: {reason}")
+                            if reason != "duplicate" and is_email_mirrored(topic):
+                                self._send_email(full_title, line.strip())
+                            break
+
+                    self.cooldowns[rule_key] = now
                     self._send_ntfy(full_title, line.strip(), rule.get("priority", "default"), topic)
                 break
 

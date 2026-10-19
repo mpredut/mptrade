@@ -69,6 +69,7 @@ class ProcessOnceTest(unittest.TestCase):
         worker._ALERTED_QUEUE_CORRUPTIONS.clear()
         worker._ALERTED_PRODUCER_QUARANTINES.clear()
         worker._ALERTED_RECONCILIATION_QUARANTINES.clear()
+        worker._ALERTED_TERMINALS.clear()
 
     def test_retry_execution_lifecycle_and_provider_routing(self):
         with self.subTest("acceptance_stays_tracked_until_fill"):

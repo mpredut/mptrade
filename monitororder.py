@@ -139,6 +139,7 @@ initial_sell_prices = OrderedDict()
 initial_buy_prices = OrderedDict()
 
 _notified_placed_order_ids = _OrderedIdSet()
+_notified_expired_order_ids = _OrderedIdSet()
 _derived_replacement_order_ids = _OrderedIdSet()
 _monitororder_initialized = False
 
@@ -147,6 +148,7 @@ def reset_monitororder_state_for_test():
     """Reset monitororder tracking state (used in testing)."""
     global _monitororder_initialized
     _notified_placed_order_ids.clear()
+    _notified_expired_order_ids.clear()
     _derived_replacement_order_ids.clear()
     initial_sell_prices.clear()
     initial_buy_prices.clear()
@@ -266,13 +268,18 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     f"age {age_str} >= TTL {ttl_str}. Canceling on venue..."
                 )
                 try:
-                    mkt.cancel_order(symbol, str(order_id))
+                    canceled = mkt.cancel_order(symbol, str(order_id))
+                    if canceled is False:
+                        print(f"[MONITORORDER] Cancel returned False for expired order {order_id}; will retry next cycle.")
+                        continue
                     try:
                         order_retry.resolve_accepted_order(symbol, order_id)
                     except Exception:
                         pass
                     print(f"[MONITORORDER] 🛑 Successfully canceled expired order {order_id}")
-                    _notify_order_expired(symbol, order_type, order_id, price, order.get("quantity", 0), owner, age_str, ttl_str)
+                    if oid_str not in _notified_expired_order_ids:
+                        _notified_expired_order_ids.add(oid_str)
+                        _notify_order_expired(symbol, order_type, order_id, price, order.get("quantity", 0), owner, age_str, ttl_str)
                 except Exception as exc:
                     print(f"[MONITORORDER] Failed to cancel expired order {order_id}: {exc}")
                 continue

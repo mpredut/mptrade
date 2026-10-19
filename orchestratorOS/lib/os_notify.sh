@@ -50,6 +50,26 @@ send_os_ntfy() {
         [ -n "$topic" ] || topic="ntfy-error-1978"
     fi
 
+    # File-backed deduplication gate per (topic, title) to prevent OS watchdog/PIA loops from spamming ntfy
+    local dedup_sec="${OS_NOTIFY_DEDUP_SECONDS:-900}"
+    if [ "$dedup_sec" -gt 0 ] 2>/dev/null; then
+        local dedup_dir="$root/logs/.os_notify_dedup"
+        mkdir -p "$dedup_dir" 2>/dev/null || true
+        local key_hash
+        key_hash="$(printf '%s|%s' "$topic" "$title" | md5sum 2>/dev/null | awk '{print $1}')"
+        if [ -n "$key_hash" ] && [ -d "$dedup_dir" ]; then
+            local stamp_file="$dedup_dir/$key_hash"
+            local now_ts; now_ts="$(date +%s)"
+            if [ -f "$stamp_file" ]; then
+                local last_ts; last_ts="$(cat "$stamp_file" 2>/dev/null || echo 0)"
+                if [ -n "$last_ts" ] && [ $((now_ts - last_ts)) -lt "$dedup_sec" ] 2>/dev/null; then
+                    return 0
+                fi
+            fi
+            printf '%s\n' "$now_ts" > "$stamp_file" 2>/dev/null || true
+        fi
+    fi
+
     local token="${NTFY_TOKEN:-}"
     [ -n "$token" ] || token=$(_os_notify_env "$root" NTFY_TOKEN)
     local auth_hdr=()

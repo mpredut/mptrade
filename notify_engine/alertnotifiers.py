@@ -5,6 +5,7 @@ import requests
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -36,6 +37,19 @@ _GUARD_MARKERS = (
 _OPS_MARKERS = (
     "FAILED", "ERROR", "MANUAL", "GONE", "IMBALANC",
     "ESUAT", "ERORI", "DISPARUT", "DEZECHILIBR",
+)
+_ERROR_AND_OPS_TITLE_MARKERS = (
+    "FAILED", "ERROR", "EXCEPTION", "TRACEBACK", "CRITICAL", "CATASTROPH", "CRASH",
+    "LIQUID", "LICHID", "CATASTROF", "ESUAT", "ERORI", "DISPARUT", "GONE",
+    "IMBALANC", "DEZECHILIBR", "QUARANTINE", "GIVE UP", "ORDER TERMINAL",
+    "EXPIRED", "CANCELED", "CANCELLED", "REJECTED", "MISMATCH", "NEPOTRIVIT",
+    "TIMEOUT", "DEFER", "ZOMBIE", "OUTAGE", "UNREACHABLE", "SUSTAINED",
+    "RESOURCE USAGE", "SERVER DOWN", "VPN DOWN", "ISP DOWN",
+    "⚠", "✗", "⏰", "📉",
+)
+_ERROR_AND_OPS_SOURCES = (
+    "watchdog", "order_retry", "order-persistence", "smart_stop_loss",
+    "post_stop_guard", "verify", "deadman", "mailer", "orchestrator",
 )
 _TRADE_MARKERS = (
     "BUY", "SELL", "FILLED", "TREND_ENTRY", "ADOPT", "EXECUTION", "📝", "🎉",
@@ -79,11 +93,54 @@ def _is_guard_alert(alerts: list[Any]) -> bool:
         title = str(alert.get("name") or alert.get("symbol") or alert.get("title") or "").upper()
         source = str(alert.get("source") or "").lower()
         if (
-            any(marker in title for marker in ("🛡", "🛑", "GUARD", "VETO", "SHADOW", "BLOCKED"))
-            or any(src in source for src in ("order_guard", "guard", "assetguardian", "macro_shadow"))
+            any(
+                marker in title
+                for marker in (
+                    "🛡", "🛑", "GUARD", "VETO", "SHADOW", "BLOCKED",
+                    "SMART-SL", "POST-STOP", "STOP-LOSS", "STOP_LOSS",
+                    "TRAILING", "QUARANTINE", "GIVE UP",
+                )
+            )
+            or any(
+                src in source
+                for src in (
+                    "order_guard", "guard", "assetguardian", "macro_shadow",
+                    "smart_stop_loss", "post_stop_guard",
+                )
+            )
         ):
             return True
     return False
+
+
+def _is_error_or_ops_alert(alerts: list[Any]) -> bool:
+    for alert in alerts:
+        if not isinstance(alert, dict):
+            continue
+        title = str(alert.get("name") or alert.get("title") or "").upper()
+        source = str(alert.get("source") or "").lower()
+        title_no_owner = re.sub(
+            r"\[(MANUAL|TRADEALL|MONITORORDER|RTRADE|MONITORTRADES|ASSETGUARDIAN)\]"
+            r"|\((MANUAL|TRADEALL|MONITORORDER|RTRADE|MONITORTRADES|ASSETGUARDIAN)\)",
+            "",
+            title,
+            flags=re.IGNORECASE,
+        )
+        if (
+            any(marker in title_no_owner for marker in _ERROR_AND_OPS_TITLE_MARKERS)
+            or any(src in source for src in _ERROR_AND_OPS_SOURCES)
+            or alert.get("type") == "email"
+        ):
+            return True
+    return False
+
+
+def _normalize_alert_title_for_identity(name: str) -> str:
+    """Strip volatile percentages, prices, and durations from guard/error titles."""
+    norm = re.sub(r"[+-]?\d+(?:\.\d+)?%", "<PCT>", name)
+    norm = re.sub(r"@\s*~?\$?\d+(?:\.\d+)?", "@ <PX>", norm)
+    norm = re.sub(r"\(\d+(?:\.\d+)?s\)", "(<DUR>)", norm)
+    return norm
 
 
 def _alert_identity(alert: Any) -> dict:
@@ -97,17 +154,21 @@ def _alert_identity(alert: Any) -> dict:
                 "symbol": str(alert.get("symbol") or "").upper(),
                 "source": source,
             }
-        if (
-            source in ("order_guard", "guard", "assetguardian", "macro_shadow")
-            or any(m in name for m in ("🛡", "🛑", "GUARD", "VETO", "SHADOW", "BLOCKED"))
-        ):
-            # For guard alerts, dedup on identity fields excluding volatile body reasoning/risk scores
-            return {
+        if _is_guard_alert([alert]) or _is_error_or_ops_alert([alert]):
+            # For guard, error, ops, watchdog, and mailer alerts, dedup on stable
+            # identity fields excluding volatile body timestamps/reasoning/log lines.
+            norm_name = _normalize_alert_title_for_identity(name)
+            identity = {
                 "type": alert.get("type"),
                 "symbol": alert.get("symbol"),
-                "name": name,
+                "name": norm_name,
                 "source": alert.get("source"),
             }
+            if norm_name.strip().upper() in ("ALERT", "OS ALERT", "TRADE ALERT"):
+                body_str = str(alert.get("body") or "")
+                body_norm = re.sub(r"\b\d+(?:\.\d+)?\b", "<N>", body_str)[:120]
+                identity["body_norm"] = body_norm
+            return identity
         return {
             key: alert.get(key)
             for key in ("type", "symbol", "name", "source", "body", "url", "alert_type", "threshold")
@@ -149,16 +210,21 @@ def _dedup_seconds(alerts: list[Any], urgent: bool) -> int:
     )
     if _is_guard_alert(alerts):
         return _positive_int_env("NOTIFICATION_GUARD_DEDUP_SECONDS", 30 * 60)
+    if _is_error_or_ops_alert(alerts):
+        return _positive_int_env(
+            "NOTIFICATION_ERROR_DEDUP_SECONDS",
+            _positive_int_env("NOTIFICATION_URGENT_DEDUP_SECONDS", 30 * 60),
+        )
     if any(marker in titles for marker in _TRADE_MARKERS):
         return 0  # Real trades must never be suppressed by deduplication
-    if "DISPONIBIL" in titles:
+    if "DISPONIBIL" in titles or "AVAILABLE" in titles:
         return _positive_int_env("NOTIFICATION_STARTUP_DEDUP_SECONDS", 6 * 60 * 60)
     if any(m in titles for m in ("MACRO", "SENTIMENT")) or any(
         isinstance(a, dict) and "macro" in str(a.get("source", "")).lower() for a in alerts
     ):
         return _positive_int_env("NOTIFICATION_MACRO_DEDUP_SECONDS", 3600)
     if urgent:
-        return _positive_int_env("NOTIFICATION_URGENT_DEDUP_SECONDS", 5 * 60)
+        return _positive_int_env("NOTIFICATION_URGENT_DEDUP_SECONDS", 30 * 60)
     if any(
         not isinstance(alert, dict) or alert.get("type") == "new_coin_discovered"
         for alert in alerts

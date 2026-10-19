@@ -41,6 +41,9 @@ _notification_state_tmp = tempfile.TemporaryDirectory(
 os.environ["NOTIFICATION_STATE_FILE"] = os.path.join(
     _notification_state_tmp.name, "notification_delivery_state.json"
 )
+os.environ["NOTIFICATION_QUEUE_FILE"] = os.path.join(
+    _notification_state_tmp.name, "notification_queue.jsonl"
+)
 
 
 @pytest.fixture(autouse=True)

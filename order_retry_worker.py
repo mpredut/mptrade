@@ -140,6 +140,7 @@ class _PersistentQuarantineSet(set):
 _ALERTED_QUEUE_CORRUPTIONS = set()
 _ALERTED_PRODUCER_QUARANTINES = _PersistentQuarantineSet("producer")
 _ALERTED_RECONCILIATION_QUARANTINES = _PersistentQuarantineSet("reconciliation")
+_ALERTED_TERMINALS = _PersistentQuarantineSet("terminal")
 
 
 def _accepted_order(order):
@@ -956,6 +957,15 @@ def _alert_reconciliation_quarantine(rec, *, reason="lookup_unavailable"):
 
 def _alert_terminal(rec, status):
     """Alert on a canceled intent whose remainder is deliberately not replayed."""
+    terminal_key = (
+        str(rec.get("id") or ""),
+        int(rec.get("revision") or 0),
+        str(rec.get("order_id") or ""),
+        str(status.venue_status or status.status or ""),
+    )
+    if terminal_key in _ALERTED_TERMINALS:
+        return
+    _ALERTED_TERMINALS.add(terminal_key)
     try:
         context = _format_record_context(rec)
         alert.notify(
