@@ -654,7 +654,10 @@ def _record_terminal_buy(symbol, state, status):
     key = _tier_key(threshold)
     spent_by_tier = dict(state.get("spent_quote_by_tier") or {})
     prior_spent = _finite_float(spent_by_tier.get(key)) or 0.0
-    executed_quote = max(0.0, float(status.cost) + float(status.fee))
+    filled_qty = max(0.0, _finite_float(status.filled_qty) or 0.0)
+    cost_val = _finite_float(status.cost) or 0.0
+    fee_val = _finite_float(status.fee) or 0.0
+    executed_quote = max(0.0, cost_val + fee_val)
     spent_by_tier[key] = prior_spent + executed_quote
 
     state = dict(state)
@@ -662,7 +665,7 @@ def _record_terminal_buy(symbol, state, status):
     state["total_spent_quote"] = (
         (_finite_float(state.get("total_spent_quote")) or 0.0)
         + executed_quote)
-    if status.status == "closed" and status.filled_qty > 0:
+    if status.status == "closed" and filled_qty > 0:
         completed = _completed_tier_values(state)
         completed.add(threshold)
         state["completed_tiers"] = sorted(completed)
@@ -673,9 +676,9 @@ def _record_terminal_buy(symbol, state, status):
         "client_order_id": pending.get("client_order_id"),
         "threshold": threshold,
         "status": status.status,
-        "filled_qty": status.filled_qty,
-        "cost": status.cost,
-        "fee": status.fee,
+        "filled_qty": filled_qty,
+        "cost": cost_val,
+        "fee": fee_val,
         "terminal_ts": time.time(),
     })
     state["terminal_orders"] = terminal
@@ -684,8 +687,8 @@ def _record_terminal_buy(symbol, state, status):
     print(
         f"[{symbol}] BUY tier terminal: threshold={threshold:g}% "
         f"status={status.status} orderId={pending.get('order_id')} "
-        f"filled={status.filled_qty:.8f} cost={status.cost:.8f} "
-        f"fee={status.fee:.8f}")
+        f"filled={filled_qty:.8f} cost={cost_val:.8f} "
+        f"fee={fee_val:.8f}")
     return state
 
 
@@ -700,14 +703,16 @@ def _record_terminal_sell(symbol, state, status):
     key = _tier_key(threshold)
     filled_by_tier = dict(state.get("filled_qty_by_tier") or {})
     prior_filled = _finite_float(filled_by_tier.get(key)) or 0.0
-    filled_qty = _finite_float(status.filled_qty) or 0.0
-    filled_by_tier[key] = prior_filled + max(0.0, filled_qty)
+    filled_qty = max(0.0, _finite_float(status.filled_qty) or 0.0)
+    cost_val = _finite_float(status.cost) or 0.0
+    fee_val = _finite_float(status.fee) or 0.0
+    filled_by_tier[key] = prior_filled + filled_qty
 
     state = dict(state)
     state["filled_qty_by_tier"] = filled_by_tier
     state["total_filled_qty"] = (
         (_finite_float(state.get("total_filled_qty")) or 0.0)
-        + max(0.0, filled_qty))
+        + filled_qty)
     if status.status == "closed" and filled_qty > 0:
         completed = _completed_tier_values(state)
         completed.add(threshold)
@@ -720,8 +725,8 @@ def _record_terminal_sell(symbol, state, status):
         "threshold": threshold,
         "status": status.status,
         "filled_qty": filled_qty,
-        "cost": _finite_float(status.cost) or 0.0,
-        "fee": _finite_float(status.fee) or 0.0,
+        "cost": cost_val,
+        "fee": fee_val,
         "terminal_ts": time.time(),
     })
     state["terminal_orders"] = terminal
@@ -730,8 +735,8 @@ def _record_terminal_sell(symbol, state, status):
     print(
         f"[{symbol}] SELL tier terminal: threshold={threshold:g}% "
         f"status={status.status} orderId={pending.get('order_id')} "
-        f"filled={filled_qty:.8f} cost={float(status.cost):.8f} "
-        f"fee={float(status.fee):.8f}")
+        f"filled={filled_qty:.8f} cost={cost_val:.8f} "
+        f"fee={fee_val:.8f}")
     return state
 
 
@@ -1155,9 +1160,15 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         return False
 
     rolling_growth_percent = ((current_price - minimum_price) / minimum_price) * 100.0
-    drawdown_percent = ((current_price - maximum_price) / maximum_price) * 100.0
+    existing_buy_campaign = _symbol_campaign(symbol, "buy")
+    stored_buy_peak = _finite_float(existing_buy_campaign.get("peak_price"), positive=True)
+    effective_max_price = (
+        max(maximum_price, stored_buy_peak)
+        if stored_buy_peak is not None else maximum_price
+    )
+    drawdown_percent = ((current_price - effective_max_price) / effective_max_price) * 100.0
     evaluation["drawdown"] = drawdown_percent
-    if drawdown_percent > -RECOVERY_RESET_PERCENT and _symbol_campaign(symbol, "buy"):
+    if drawdown_percent > -RECOVERY_RESET_PERCENT and existing_buy_campaign:
         print(f"[{symbol}] Drawdown recovered below {RECOVERY_RESET_PERCENT:.2f}%; "
               "rearm BUY campaign.")
         _save_symbol_campaign(symbol, "buy", {})

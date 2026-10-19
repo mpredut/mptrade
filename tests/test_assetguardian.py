@@ -978,6 +978,62 @@ class AssetGuardianTest(unittest.TestCase):
             self.assertNotIn("pending", buy_state)
             self.assertEqual(buy_state.get("attempts_by_tier", {}).get("7", 0), 0)
 
+        with self.subTest(msg="test_buy_campaign_uses_frozen_peak_when_rolling_window_drops"):
+            state = MemoryState({
+                "version": 3,
+                "symbols": {"TAOUSDC": {"buy": {
+                    "peak_price": 250.0,
+                    "peak_ts": 1.0,
+                    "initial_cash": 1000.0,
+                    "completed_tiers": [7.0],
+                }}},
+            })
+            # Rolling 24h window max dropped to 232.0 after 250.0 aged out,
+            # while current price is 224.0 (-10.4% vs 250.0, -3.45% vs 232.0).
+            extrema = (
+                {"timestamp": 10.0, "price": 223.0},
+                {"timestamp": 20.0, "price": 232.0},
+            )
+            provider = mock.Mock()
+            provider.free_balance.return_value = 650.0
+            provider.open_orders.return_value = []
+            with mock.patch.object(ag, "STATE", state), \
+                 mock.patch.object(ag.api, "get_current_price", return_value=224.0), \
+                 mock.patch.object(ag, "_get_symbol_window_extrema", return_value=extrema), \
+                 mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 mock.patch.object(
+                     ag, "buy_with_all_cash",
+                     return_value={"orderId": 799, "status": "NEW"}) as buy:
+                accepted = ag.evaluate_symbol("TAOUSDC")
+
+            self.assertTrue(accepted)
+            buy.assert_called_once()
+            buy_state = state.value["symbols"]["TAOUSDC"]["buy"]
+            self.assertEqual(buy_state["peak_price"], 250.0)
+            self.assertEqual(buy_state["pending"]["threshold"], 10.0)
+
+        with self.subTest(msg="test_terminal_buy_and_sell_tolerate_none_or_nan_cost_and_fee"):
+            from types import SimpleNamespace
+            state = MemoryState()
+            raw_status = SimpleNamespace(status="canceled", filled_qty=None, cost=None, fee=float("nan"))
+            with mock.patch.object(ag, "STATE", state):
+                buy_camp = ag._record_terminal_buy(
+                    "TAOUSDC",
+                    {"pending": {"threshold": 7.0, "order_id": "b1", "client_order_id": "AGB_1"}},
+                    raw_status,
+                )
+                sell_camp = ag._record_terminal_sell(
+                    "TAOUSDC",
+                    {"pending": {"threshold": 15.0, "order_id": "s1", "client_order_id": "AGS_1"}},
+                    raw_status,
+                )
+            self.assertEqual(buy_camp["spent_quote_by_tier"]["7"], 0.0)
+            self.assertEqual(buy_camp["terminal_orders"][-1]["cost"], 0.0)
+            self.assertEqual(buy_camp["terminal_orders"][-1]["fee"], 0.0)
+            self.assertEqual(sell_camp["filled_qty_by_tier"]["15"], 0.0)
+            self.assertEqual(sell_camp["terminal_orders"][-1]["cost"], 0.0)
+            self.assertEqual(sell_camp["terminal_orders"][-1]["fee"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()
-

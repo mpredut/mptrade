@@ -923,8 +923,14 @@ def _cancel_resting_tp_orders(inst, symbol: str) -> list[dict]:
                     print(f"[{symbol}] Cancelling open resting TP sell order {oid} to unlock coins for Stop-Loss")
                     cancel_fn = getattr(inst, "cancel_order", None)
                     if callable(cancel_fn):
-                        cancel_fn(oid)
-                        cancelled.append(active_ord)
+                        res = cancel_fn(oid)
+                        if res is not False:
+                            cancelled.append(active_ord)
+                            try:
+                                import order_retry
+                                order_retry.resolve_accepted_order(symbol, oid)
+                            except Exception:
+                                pass
     except Exception as cancel_exc:
         print(f"[{symbol}] Warning: error checking/cancelling open TP orders: {cancel_exc}")
     return cancelled
@@ -934,12 +940,26 @@ def _restore_resting_tp_orders(inst, symbol: str, cancelled_orders: list[dict], 
     """Restore previously cancelled TP orders if Stop-Loss submission failed."""
     if not cancelled_orders:
         return
+
+    def _restorable_qty(p: dict) -> float:
+        rem = p.get("remainingQty")
+        if rem is not None:
+            try:
+                rem_f = float(rem)
+                if math.isfinite(rem_f) and rem_f > 0:
+                    return rem_f
+            except (TypeError, ValueError):
+                pass
+        orig = float(p.get("qty") or p.get("origQty") or p.get("vol") or 0.0)
+        exec_q = float(p.get("executedQty") or p.get("filledQty") or 0.0)
+        return max(0.0, orig - exec_q) if exec_q > 0 else orig
+
     restore_cancelled_orders(
         cancelled_orders,
         restore_fn=lambda p: bool(inst.place(
             "SELL",
             float(p.get("price") or p.get("limit") or 0.0),
-            float(p.get("qty") or p.get("origQty") or p.get("vol") or 0.0),
+            _restorable_qty(p),
             kind="TP",
             wait_for_trend=False,
         )),
@@ -1044,6 +1064,7 @@ def _execute_take_profit(
         "cancelorders": True,
         "hours": MT_SELL_SAFEBACK_HOURS,
         "bypass_profit_guard": bypass_pg,
+        "kind": "TP",
         "intent_id": tp_intent_id,
         "_outcome_context": tp_outcome_ctx,
     }
@@ -1705,7 +1726,9 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             tp_decision = exit_mgr.evaluate_take_profit(snapshot, custom_threshold=gain_threshold)
             if tp_decision.reason != "not_in_tp_territory":
                 if tp_decision.action == ExitAction.HOLD:
+                    _PENDING_STOP_EXIT.pop(symbol, None)
                     _log_tp_hold_state(symbol, snapshot, tp_decision, gain_threshold)
+                    _save_mt_state()
                 else:
                     if _execute_take_profit(inst, snapshot, tp_decision, sbs, min_qty, prev_tp_state, gain_threshold, pending_tp):
                         return   # Already sold this tick; do not evaluate stale sell history below.
@@ -1717,6 +1740,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             prev_sl_state = dict(_SL_BOUNCE_STATE.get(symbol, {}))
             sl_decision = exit_mgr.evaluate_stop_loss(snapshot, custom_threshold=lost_threshold)
             if sl_decision.action == ExitAction.HOLD:
+                _PENDING_STOP_EXIT.pop(symbol, None)
                 _log_sl_hold_state(symbol, snapshot, sl_decision, lost_threshold)
                 _save_mt_state()
                 return

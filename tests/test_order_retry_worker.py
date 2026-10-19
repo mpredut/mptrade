@@ -1334,7 +1334,7 @@ class ProcessOnceTest(unittest.TestCase):
 
             # 3. Controlled Salvage (Stage 3): 70 hours in (progress ~ 0.833 >= 0.75)
             oq.rewrite([])
-            oq.enqueue("TAOUSDC", "SELL", 1.0, {"bypass_guards": ["cooldown"]}, requested_price=500.0, now=t0)
+            oq.enqueue("TAOUSDC", "SELL", 1.0, {"bypass_guards": ["cooldown"], "profit_margin": None}, requested_price=500.0, now=t0)
             mkt3 = FakeMkt(price=500.0, succeed=True)
             t_stage3 = t0 + 70 * 3600.0
             stats3 = worker.process_once(mkt3, now=t_stage3)
@@ -1343,6 +1343,7 @@ class ProcessOnceTest(unittest.TestCase):
             kw3 = mkt3.calls[0]["kw"]
             self.assertIn("math_reference", kw3.get("bypass_guards", []))
             self.assertTrue(kw3.get("allow_math_reference_sell"))
+            self.assertEqual(kw3.get("profit_margin"), 0.15)
             # Crucial requirement: wait_for_trend MUST REMAIN TRUE!
             self.assertTrue(kw3.get("wait_for_trend"))
         finally:

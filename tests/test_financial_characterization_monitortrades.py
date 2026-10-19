@@ -1601,10 +1601,62 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             mt._PENDING_STOP_EXIT.clear()
             mt._TP_RIDE_STATE.clear()
 
+        with self.subTest(msg="cancel_and_restore_resting_tp_orders_respect_cancel_result_and_remaining_qty"):
+            sym = SYMBOL
+            cancelled_ids = []
+            resolved_ids = []
+            placed_calls = []
+
+            class _FakeTPInst:
+                @staticmethod
+                def open_orders():
+                    return [
+                        {"orderId": "tp_ok", "side": "SELL", "price": "110.0", "origQty": "10.0", "executedQty": "4.0", "remainingQty": "6.0"},
+                        {"orderId": "tp_fail", "side": "SELL", "price": "112.0", "origQty": "5.0"},
+                    ]
+
+                @staticmethod
+                def cancel_order(oid):
+                    cancelled_ids.append(oid)
+                    return False if oid == "tp_fail" else {"orderId": oid, "status": "CANCELED"}
+
+                @staticmethod
+                def place(side, px, q, **kw):
+                    placed_calls.append((side, px, q, kw))
+                    return {"orderId": "tp_restored"}
+
+            import order_retry
+            with patch.object(order_retry, "resolve_accepted_order", side_effect=lambda s, o: resolved_ids.append((s, o)) or True):
+                cancelled = mt._cancel_resting_tp_orders(_FakeTPInst(), sym)
+            self.assertEqual(len(cancelled), 1)
+            self.assertEqual(cancelled[0]["orderId"], "tp_ok")
+            self.assertEqual(resolved_ids, [(sym, "tp_ok")])
+
+            mt._restore_resting_tp_orders(_FakeTPInst(), sym, cancelled, 6.0, "refused")
+            self.assertEqual(len(placed_calls), 1)
+            self.assertEqual(placed_calls[0][:3], ("SELL", 110.0, 6.0))
+            self.assertEqual(placed_calls[0][3].get("kind"), "TP")
+
+        with self.subTest(msg="timed_out_pending_exit_cleared_when_tp_decision_is_hold"):
+            sym = SYMBOL
+            mt._PENDING_STOP_EXIT.clear()
+            mt._TP_RIDE_STATE.clear()
+            mt._record_pending_exit(
+                sym, None, "TP", NOW - 75, 5.0, 108.0,
+                {"reason": "timeout", "client_order_id": "cid_tp_hold"},
+                default_intent_id="intent_tp_hold",
+            )
+            inst_hold = FakeInstrument(
+                price=108.0,
+                free=5.0,
+                fills=[_fill("BUY", 100.0, 5.0)],
+            )
+            with patch.object(mt, "is_trend_up", return_value=True):
+                mt.monitor_price_and_trade(inst_hold, 3600, 86400, 0.05, 0.03, now_fn=lambda: NOW)
+            self.assertNotIn(sym, mt._PENDING_STOP_EXIT)
+            self.assertIn(sym, mt._TP_RIDE_STATE)
+            mt._TP_RIDE_STATE.clear()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-
-
-
-

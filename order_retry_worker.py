@@ -621,6 +621,11 @@ def process_once(mkt, now=None):
             kwargs["wait_for_trend"] = False
         else:
             kwargs["wait_for_trend"] = bool(kwargs.get("wait_for_trend", True))
+            cur_pm = kwargs.get("profit_margin")
+            try:
+                cur_pm_f = float(cur_pm) if cur_pm is not None else None
+            except (TypeError, ValueError):
+                cur_pm_f = None
             if age_progress >= 0.75:
                 retry_stage = "salvage"
                 if side_u == "SELL":
@@ -628,11 +633,11 @@ def process_once(mkt, now=None):
                     existing_bypasses.update({"GF1", "math_reference"})
                     kwargs["bypass_guards"] = sorted(list(existing_bypasses))
                     kwargs["allow_math_reference_sell"] = True
-                elif "profit_margin" not in kwargs or kwargs["profit_margin"] > 0.15:
+                if cur_pm_f is None or not math.isfinite(cur_pm_f) or cur_pm_f > 0.15:
                     kwargs["profit_margin"] = 0.15
             elif age_progress >= 0.50:
                 retry_stage = "breakeven"
-                if "profit_margin" not in kwargs or kwargs["profit_margin"] > 0.15:
+                if cur_pm_f is None or not math.isfinite(cur_pm_f) or cur_pm_f > 0.15:
                     kwargs["profit_margin"] = 0.15
 
         outcome_context = {}
