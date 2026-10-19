@@ -186,6 +186,58 @@ class NotificationServer:
         except Exception as e:
             logging.error(f"Failed to enqueue notification: {e}")
 
+    def _gate_and_send_ntfy(
+        self,
+        title: str,
+        body: str,
+        priority: str,
+        topic: str,
+        alerts: list | None = None,
+        *,
+        urgent: bool = False,
+    ) -> bool:
+        from notify_engine.alertnotifiers import pass_common_gate
+        allowed, reason, _, out_payload = pass_common_gate(
+            "ntfy",
+            title,
+            body,
+            priority,
+            topic,
+            alerts,
+            urgent=urgent,
+        )
+        if not allowed:
+            logging.info(f"ntfy delivery gated by common policy ({reason}): {title}")
+            if (
+                reason not in ("duplicate", "similar_eliminated", "buffered_for_bulk")
+                and is_email_mirrored(topic)
+            ):
+                self._send_email(title, body)
+            return False
+        out_title, out_body, out_prio, out_topic = out_payload or (title, body, priority, topic)
+        prev = getattr(self, "_in_gated_dispatch", False)
+        self._in_gated_dispatch = True
+        try:
+            return self._send_ntfy(out_title, out_body, out_prio, out_topic)
+        finally:
+            self._in_gated_dispatch = prev
+
+    def flush_pending_bulk(self, *, now: float | None = None, force: bool = False) -> bool:
+        """Flush and synthesize any buffered notifications once the 5-minute common gate opens."""
+        from notify_engine.alertnotifiers import pop_due_bulk_batch
+        batch = pop_due_bulk_batch("ntfy", now=now, force=force)
+        if not batch:
+            return False
+        bulk_title, bulk_body, bulk_prio, bulk_topic = batch
+        if not bulk_topic:
+            bulk_topic = self._resolve_topic("ERROR")
+        prev = getattr(self, "_in_gated_dispatch", False)
+        self._in_gated_dispatch = True
+        try:
+            return self._send_ntfy(bulk_title, bulk_body, bulk_prio, bulk_topic)
+        finally:
+            self._in_gated_dispatch = prev
+
     def _send_ntfy(self, title: str, message: str, priority: str, topic: str, is_retry: bool = False, skip_email: bool = False) -> bool:
         if not topic:
             return True
@@ -200,6 +252,28 @@ class NotificationServer:
         if any(fake in check_text for fake in ("ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ")):
             logging.info(f"Skipping test/fake alert in _send_ntfy: {title}")
             return True
+
+        if not is_retry and not getattr(self, "_in_gated_dispatch", False):
+            from notify_engine.alertnotifiers import pass_common_gate
+            allowed, reason, _, out_payload = pass_common_gate(
+                "ntfy",
+                title,
+                message,
+                priority,
+                topic,
+                urgent=(priority == "urgent"),
+            )
+            if not allowed:
+                logging.info(f"Direct ntfy gated by common policy ({reason}): {title}")
+                if (
+                    reason not in ("duplicate", "similar_eliminated", "buffered_for_bulk")
+                    and not skip_email
+                    and is_email_mirrored(topic)
+                ):
+                    self._send_email(title, message)
+                return False
+            if out_payload:
+                title, message, priority, topic = out_payload
 
         # ERROR / DEADMAN topics are mirrored to email (policy: notify_engine.mailer).
         # Sent before the push so an ntfy outage or quota never swallows the email.
@@ -417,17 +491,17 @@ class NotificationServer:
             logging.info(f"Skipping test/fake alert: {full_title}")
             return True
 
-        from notify_engine.alertnotifiers import _reserve_delivery, _alerts_are_urgent
+        from notify_engine.alertnotifiers import _alerts_are_urgent
         urgent = _alerts_are_urgent(alerts)
-        allowed, reason, _ = _reserve_delivery("ntfy", alerts, urgent=urgent)
-        if not allowed:
-            logging.info(f"ntfy delivery skipped by policy: {reason}")
-            if reason != "duplicate" and is_email_mirrored(topic):
-                self._send_email(full_title, body)
-            return False
-
         priority = "urgent" if urgent else "high"
-        return self._send_ntfy(full_title, body, priority, topic)
+        return self._gate_and_send_ntfy(
+            full_title,
+            body,
+            priority,
+            topic,
+            alerts=alerts,
+            urgent=urgent,
+        )
 
     def process_line(self, line: str, bot_name: str):
         clean_stripped = line.strip()
@@ -490,7 +564,13 @@ class NotificationServer:
                 if intent == "ntfy_webhook":
                     # Direct retry payload
                     if "title" in payload:
-                        self._send_ntfy(payload["title"], payload["message"], payload["priority"], payload["topic"])
+                        self._gate_and_send_ntfy(
+                            payload["title"],
+                            payload["message"],
+                            payload["priority"],
+                            payload["topic"],
+                            urgent=(payload.get("priority") == "urgent"),
+                        )
                         return
 
                     # Standard alert formatting
@@ -520,7 +600,6 @@ class NotificationServer:
                     title = "Price Alert"
                 else:
                     title = f"[{bot_name}] Alert" if bot_name else "Alert"
-                from notify_engine.alertnotifiers import _reserve_delivery
                 ntfy_alert = {
                     "type": "bot_event",
                     "name": title,
@@ -528,14 +607,14 @@ class NotificationServer:
                     "source": bot_name or "orchestrator",
                     "symbol": "SYSTEM",
                 }
-                allowed, reason, _ = _reserve_delivery("ntfy", [ntfy_alert], urgent=(title != "Price Alert"))
-                if not allowed:
-                    logging.info(f"ntfy shortcut skipped by policy: {reason}")
-                    topic = self._resolve_topic("ERROR")
-                    if reason != "duplicate" and is_email_mirrored(topic):
-                        self._send_email(title, msg)
-                    return
-                self._send_ntfy(title, msg, "high", self._resolve_topic("ERROR"))
+                self._gate_and_send_ntfy(
+                    title,
+                    msg,
+                    "high",
+                    self._resolve_topic("ERROR"),
+                    alerts=[ntfy_alert],
+                    urgent=(title != "Price Alert"),
+                )
                 return
 
         # 3. Check Intelligent Rules (Regex)
@@ -571,32 +650,33 @@ class NotificationServer:
                     else:
                         full_title = f"[{bot_name}] {rule['name']}" if bot_name else rule["name"]
 
-                    if topic_cat != "TRADES":
-                        from notify_engine.alertnotifiers import _reserve_delivery
-                        rule_alert = {
-                            "type": "bot_event",
-                            "name": full_title,
-                            "body": line.strip(),
-                            "source": bot_name or "orchestrator",
-                            "symbol": "SYSTEM",
-                        }
-                        allowed, reason, _ = _reserve_delivery(
-                            "ntfy", [rule_alert], urgent=(rule.get("priority") == "urgent")
-                        )
-                        if not allowed:
-                            logging.info(f"Rule '{rule['name']}' ntfy skipped by policy: {reason}")
-                            if reason != "duplicate" and is_email_mirrored(topic):
-                                self._send_email(full_title, line.strip())
-                            break
-
+                    rule_alert = {
+                        "type": "bot_event",
+                        "name": full_title,
+                        "body": line.strip(),
+                        "source": bot_name or "orchestrator",
+                        "symbol": "SYSTEM",
+                    }
                     self.cooldowns[rule_key] = now
-                    self._send_ntfy(full_title, line.strip(), rule.get("priority", "default"), topic)
+                    self._gate_and_send_ntfy(
+                        full_title,
+                        line.strip(),
+                        rule.get("priority", "default"),
+                        topic,
+                        alerts=[rule_alert],
+                        urgent=(rule.get("priority") == "urgent" or topic_cat == "TRADES"),
+                    )
                 break
 
     async def flush_queue_loop(self):
-        """Background task to resend delayed notifications."""
+        """Background task to flush synthesized bulk batches and resend delayed notifications."""
         while True:
             await asyncio.sleep(60)
+            try:
+                await asyncio.to_thread(self.flush_pending_bulk)
+            except Exception as e:
+                logging.error(f"Error flushing pending bulk notifications: {e}")
+
             if not os.path.exists(self.queue_file):
                 continue
             

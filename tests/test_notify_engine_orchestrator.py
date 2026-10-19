@@ -488,3 +488,115 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             self.server.process_line("2026-10-19 12:02:00 [ERROR] database lock timeout 2\n", "rtrade")
             self.assertEqual(len(self.dispatched), 2, "Persistent delivery state must block Critical Errors after restart")
 
+    def test_holistic_5min_common_gate_eliminates_similar_and_synthesizes_bulk(self):
+        """Verify the 5-minute common gate:
+        1. Sends the first notification immediately and closes the 5-minute gate.
+        2. Eliminates structurally similar notifications arriving at short intervals.
+        3. Buffers distinct notifications arriving within the 5-minute window and
+           synthesizes/concatenates them into a single bulk message once 5 minutes elapse.
+        """
+        with mock.patch.dict(os.environ, {
+            "NOTIFICATION_GATE_SECONDS": "300",
+            "NOTIFICATION_ERROR_DEDUP_SECONDS": "1800",
+            "NOTIFICATION_GUARD_DEDUP_SECONDS": "1800",
+        }):
+            self.dispatched.clear()
+            t0 = 1_700_000_000.0
+
+            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0):
+                # 1. First alert opens and immediately closes the 5-minute gate
+                hung_1 = {
+                    "type": "bot_event",
+                    "name": "Alert",
+                    "body": (
+                        "Process globaltelemetry_collector (PID 613438) hung: "
+                        "heartbeat globaltelemetry_collector.heartbeat stale by 28784s > 180s.\n"
+                        "Last logs:\n  > 2026-10-19 05:10:46 [WARNING] slow query"
+                    ),
+                    "source": "orchestrator",
+                    "symbol": "SYSTEM",
+                }
+                self.server.dispatch_alerts([hung_1], bot_name="orchestrator")
+                self.assertEqual(len(self.dispatched), 1)
+                self.assertEqual(self.dispatched[0]["title"], "[orchestrator] Alert")
+
+            # 2. 15 seconds later: structurally similar hung alert (different PID, stale seconds, and logs)
+            # Must be ELIMINATED completely (neither sent nor buffered as a new bulk item)
+            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 15):
+                hung_2 = {
+                    "type": "bot_event",
+                    "name": "Alert",
+                    "body": (
+                        "Process globaltelemetry_collector (PID 699999) hung: "
+                        "heartbeat globaltelemetry_collector.heartbeat stale by 28900s > 180s.\n"
+                        "Last logs:\n  > 2026-10-19 05:11:01 [WARNING] another line"
+                    ),
+                    "source": "orchestrator",
+                    "symbol": "SYSTEM",
+                }
+                self.server.dispatch_alerts([hung_2], bot_name="orchestrator")
+                self.assertEqual(len(self.dispatched), 1, "Similar hung message must be eliminated")
+
+            # 3. 30 seconds later: DIFFERENT alert #1 arrives while 5-min gate is closed -> buffered
+            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 30):
+                diff_1 = {
+                    "type": "bot_event",
+                    "name": "⏰ Order Expired & Canceled: BUY TAOUSDC @ 284.50 [rtrade]",
+                    "body": "Order 111 expired after 15.0m",
+                    "source": "monitororder",
+                    "symbol": "TAOUSDC",
+                }
+                self.server.dispatch_alerts([diff_1], bot_name="monitororder")
+                self.assertEqual(len(self.dispatched), 1, "Different alert within 5m gate must be buffered for bulk")
+
+            # 4. 45 seconds later: SIMILAR repeat of buffered alert #1 (different price & order ID)
+            # Must be eliminated and increment repeat count (×2) on buffered item #1
+            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 45):
+                diff_1_repeat = {
+                    "type": "bot_event",
+                    "name": "⏰ Order Expired & Canceled: BUY TAOUSDC @ 285.10 [rtrade]",
+                    "body": "Order 112 expired after 15.1m",
+                    "source": "monitororder",
+                    "symbol": "TAOUSDC",
+                }
+                self.server.dispatch_alerts([diff_1_repeat], bot_name="monitororder")
+                self.assertEqual(len(self.dispatched), 1)
+
+            # 5. 60 seconds later: DIFFERENT alert #2 arrives -> buffered
+            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 60):
+                diff_2 = {
+                    "type": "bot_event",
+                    "name": "🛡 [VETO] Would Block BUY ETHUSDC",
+                    "body": "Macro shock flagged: threat=CRITICAL_SHOCK, risk=0.95",
+                    "source": "macro_shadow",
+                    "symbol": "ETHUSDC",
+                }
+                self.server.dispatch_alerts([diff_2], bot_name="rtrade")
+                self.assertEqual(len(self.dispatched), 1)
+
+            # 6. 90 seconds later: DIFFERENT alert #3 arrives via process_line -> buffered
+            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 90):
+                self.server.process_line(
+                    "2026-10-19 12:05:00 [ERROR] Kraken websocket connection reset by peer\n",
+                    "kraken_bot",
+                )
+                self.assertEqual(len(self.dispatched), 1)
+
+            # 7. Before 5 minutes (at t0 + 200s), flush_pending_bulk does nothing because gate is still closed
+            self.assertFalse(self.server.flush_pending_bulk(now=t0 + 200))
+            self.assertEqual(len(self.dispatched), 1)
+
+            # 8. After 5 minutes (at t0 + 305s), flush_pending_bulk synthesizes all 3 distinct buffered
+            # alerts into ONE single concatenated bulk message!
+            self.assertTrue(self.server.flush_pending_bulk(now=t0 + 305))
+            self.assertEqual(len(self.dispatched), 2)
+            bulk_msg = self.dispatched[1]
+            self.assertTrue(bulk_msg["title"].startswith("📦 Bulk (3):"), bulk_msg["title"])
+            self.assertIn("1. [Binance] ⏰ Order Expired & Canceled: BUY TAOUSDC @ 284.50 [rtrade] (×2)", bulk_msg["message"])
+            self.assertIn("2. [rtrade] 🛡 [VETO] Would Block BUY ETHUSDC", bulk_msg["message"])
+            self.assertIn("3. [kraken_bot] Critical Errors", bulk_msg["message"])
+            self.assertIn("Kraken websocket connection reset by peer", bulk_msg["message"])
+            self.assertEqual(bulk_msg["priority"], "urgent")
+            self.assertEqual(bulk_msg["topic"], "ntfy-error-test")
+
+

@@ -687,6 +687,25 @@ class AutonomousAIReconciler:
 
         body = "\n".join(body_lines)
 
+        try:
+            from notify_engine.alertnotifiers import pass_common_gate
+            allowed, reason, _, out_payload = pass_common_gate(
+                "ntfy",
+                title,
+                body,
+                "default",
+                self.ntfy_topic or "ntfy-server-1978",
+                [{"type": "bot_event", "name": title, "body": body, "source": "ai_supervisor", "symbol": "SYSTEM"}],
+                urgent=False,
+            )
+            if not allowed:
+                logger.info("Supervisor ntfy gated by common policy (%s): %s", reason, title)
+                return reason == "buffered_for_bulk"
+            if out_payload:
+                title, body, _, _ = out_payload
+        except Exception as e:
+            logger.debug("Common gate fallback in reconciler: %s", e)
+
         url = self.ntfy_url or f"https://ntfy.sh/{self.ntfy_topic}"
         headers = {
             "Title": title,

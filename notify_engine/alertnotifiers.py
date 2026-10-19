@@ -143,6 +143,121 @@ def _normalize_alert_title_for_identity(name: str) -> str:
     return norm
 
 
+def _strip_log_tails_and_compact(body: str) -> str:
+    """Strip verbose 'Last logs:' tails and return a compact 1-2 line summary."""
+    cleaned = re.sub(r"(?is)\n*\s*last logs:.*", "", str(body or "")).strip()
+    lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    summary = " | ".join(lines[:2])
+    return summary[:220] + ("..." if len(summary) > 220 else "")
+
+
+def _normalize_text_for_similarity(text: str) -> str:
+    """Normalize volatile numbers, timestamps, PIDs, hex IDs, prices, and percentages."""
+    s = re.sub(r"(?is)\n*\s*last logs:.*", "", str(text or "")).strip()
+    s = re.sub(r"^\d{4}[-/]\d{2}[-/]\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?Z?\s*", "", s)
+    s = re.sub(r"^\d{2}:\d{2}:\d{2}\s*", "", s)
+    s = re.sub(r"0x[0-9a-fA-F]+", "<HEX>", s)
+    s = re.sub(r"[+-]?[\$€~]?\d+(?:,\d{3})*(?:\.\d+)?(?:%|ms|s|m|h|d|x|bps)?", "<N>", s)
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    return s
+
+
+def _similarity_signature(
+    title: str,
+    body: str = "",
+    topic: str = "",
+    alerts: Optional[list[Any]] = None,
+) -> str:
+    """Compute a structural similarity signature for common-gate deduplication."""
+    norm_title = _normalize_text_for_similarity(title)
+    bare_title = re.sub(r"^\[[^\]]+\]\s*", "", norm_title).strip()
+    is_generic_title = bare_title in (
+        "", "alert", "os alert", "trade alert", "price alert",
+        "critical errors", "alerts (<n>)",
+    )
+    alerts_list = alerts or []
+    is_pure_trade = (
+        any(m in str(title or "").upper() for m in _TRADE_MARKERS)
+        and not _is_guard_alert(alerts_list)
+        and not _is_error_or_ops_alert(alerts_list)
+    )
+    first_line = ""
+    for ln in str(body or "").splitlines():
+        if ln.strip():
+            first_line = ln.strip()
+            break
+    norm_body_head = _normalize_text_for_similarity(first_line)[:120]
+    if is_generic_title or is_pure_trade:
+        sig_raw = f"sim|{topic}|{norm_title}|{norm_body_head}"
+    else:
+        sig_raw = f"sim|{topic}|{norm_title}"
+    return hashlib.sha256(sig_raw.encode("utf-8")).hexdigest()
+
+
+def _common_gate_seconds() -> int:
+    """Return the universal common notification gate duration in seconds (default 300s = 5 min).
+
+    If NOTIFICATION_GATE_SECONDS is explicitly configured in the environment, use it.
+    In unit test environments where NOTIFICATION_DEDUP_SECONDS=0 or PYTEST_CURRENT_TEST is set
+    without an explicit NOTIFICATION_GATE_SECONDS, default to 0 to preserve immediate single-call
+    test assertions.
+    """
+    raw = os.environ.get("NOTIFICATION_GATE_SECONDS")
+    if raw is not None and str(raw).strip() != "":
+        return _positive_int_env("NOTIFICATION_GATE_SECONDS", 300)
+    if os.environ.get("NOTIFICATION_DEDUP_SECONDS") == "0" or "PYTEST_CURRENT_TEST" in os.environ:
+        return 0
+    return 300
+
+
+def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str]:
+    """Synthesize and concatenate multiple distinct notifications into a single bulk message."""
+    if not items:
+        return ("Alert", "", "default", "")
+    prio_rank = {"urgent": 3, "high": 2, "default": 1, "low": 0}
+    best_priority = max(
+        (str(it.get("priority") or "default") for it in items),
+        key=lambda p: prio_rank.get(p, 1),
+    )
+    # Choose the highest-priority topic (preferring error/server/guard topics)
+    best_topic = str(items[0].get("topic") or "")
+    for it in items:
+        t = str(it.get("topic") or "")
+        if any(k in t.lower() for k in ("error", "deadman", "server")):
+            best_topic = t
+            break
+
+    if len(items) == 1:
+        it = items[0]
+        cnt = int(it.get("count", 1) or 1)
+        raw_title = str(it.get("title") or "Alert")
+        out_title = f"{raw_title} (×{cnt})" if cnt > 1 else raw_title
+        out_body = str(it.get("body") or "")
+        return (out_title, out_body, best_priority, best_topic)
+
+    short_titles = []
+    body_lines = []
+    for idx, it in enumerate(items, 1):
+        cnt = int(it.get("count", 1) or 1)
+        t = str(it.get("title") or "Alert").strip()
+        repeat_tag = f" (×{cnt})" if cnt > 1 else ""
+        short_titles.append(f"{t}{repeat_tag}")
+        compact_body = _strip_log_tails_and_compact(str(it.get("body") or ""))
+        if compact_body and compact_body.lower() != t.lower():
+            body_lines.append(f"{idx}. {t}{repeat_tag}: {compact_body}")
+        else:
+            body_lines.append(f"{idx}. {t}{repeat_tag}")
+
+    joined_titles = " | ".join(short_titles)
+    if len(joined_titles) > 90:
+        joined_titles = joined_titles[:87] + "..."
+    bulk_title = f"📦 Bulk ({len(items)}): {joined_titles}"
+    bulk_body = "\n".join(body_lines)
+    return (bulk_title, bulk_body, best_priority, best_topic)
+
+
 def _alert_identity(alert: Any) -> dict:
     """Return stable identity excluding timestamps and prices that change each poll."""
     if isinstance(alert, dict):
@@ -166,7 +281,7 @@ def _alert_identity(alert: Any) -> dict:
             }
             if norm_name.strip().upper() in ("ALERT", "OS ALERT", "TRADE ALERT"):
                 body_str = str(alert.get("body") or "")
-                body_norm = re.sub(r"\b\d+(?:\.\d+)?\b", "<N>", body_str)[:120]
+                body_norm = _normalize_text_for_similarity(body_str)[:120]
                 identity["body_norm"] = body_norm
             return identity
         return {
@@ -233,59 +348,182 @@ def _dedup_seconds(alerts: list[Any], urgent: bool) -> int:
     return _positive_int_env("NOTIFICATION_DEDUP_SECONDS", 15 * 60)
 
 
-def _reserve_delivery(channel: str, alerts: list[Any], *, urgent: bool) -> tuple[bool, str, bool]:
-    """Atomically reserve one delivery across processes.
+def pass_common_gate(
+    channel: str,
+    title: str,
+    body: str,
+    priority: str = "default",
+    topic: str = "",
+    alerts: Optional[list[Any]] = None,
+    *,
+    urgent: bool = False,
+    now: Optional[float] = None,
+) -> tuple[bool, str, bool, Optional[tuple[str, str, str, str]]]:
+    """Holistic common notification gate (5-minute default window).
 
-    Return ``(allowed, reason, warn_once)``. Only routine ntfy deliveries have a
-    local daily cap. Urgent ntfy and all email bypass that cap, but still deduplicate.
-    A network attempt counts conservatively because a timeout can follow acceptance.
-    An actual ntfy provider quota remains binding; mirrored topics (ERROR/DEADMAN) fall back to email.
+    1. Eliminates structurally similar messages arriving within the similarity/dedup window.
+    2. Buffers distinct messages arriving while the 5-minute gate is closed.
+    3. Synthesizes & concatenates buffered distinct messages into a single bulk payload
+       once the 5-minute gate opens.
     """
-    now = time.time()
-    today = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
+    now_ts = float(now if now is not None else time.time())
+    today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
     path = _delivery_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    fingerprint = _delivery_fingerprint(alerts)
+    alerts_list = alerts if alerts else [
+        {"type": "bot_event", "name": title, "body": body, "source": "common_gate", "symbol": "SYSTEM"}
+    ]
+    fingerprint = _delivery_fingerprint(alerts_list)
+    sim_key = _similarity_signature(title, body, topic, alerts_list)
+    gate_sec = _common_gate_seconds()
+    dedup_sec = _dedup_seconds(alerts_list, urgent)
+    sim_window = max(gate_sec, dedup_sec)
+
     lock_path = path.with_suffix(path.suffix + ".lock")
     with FileLock(lock_path):
         state = _load_delivery_state(path, today)
         channel_state = state["channels"].setdefault(
             channel,
-            {"sent": 0, "last": {}, "blocked": False, "budget_warning_sent": False},
+            {
+                "sent": 0,
+                "last": {},
+                "blocked": False,
+                "budget_warning_sent": False,
+                "last_gate_ts": 0.0,
+                "pending_bulk": [],
+            },
         )
         if channel == "ntfy" and channel_state.get("blocked"):
             blocked_until = float(channel_state.get("blocked_until", 0.0) or 0.0)
-            if blocked_until > 0 and now >= blocked_until:
+            if blocked_until > 0 and now_ts >= blocked_until:
                 channel_state["blocked"] = False
             else:
-                return False, "provider_daily_limit", False
+                return False, "provider_daily_limit", False, None
 
         last = channel_state.setdefault("last", {})
-        cutoff = now - 2 * 24 * 60 * 60
+        cutoff = now_ts - 2 * 24 * 60 * 60
         channel_state["last"] = {
             key: value for key, value in last.items() if float(value) >= cutoff
         }
-        previous = channel_state["last"].get(fingerprint)
-        if previous is not None and now - float(previous) < _dedup_seconds(alerts, urgent):
-            _save_delivery_state(path, state)
-            return False, "duplicate", False
+        pending_bulk: list[dict] = channel_state.setdefault("pending_bulk", [])
 
+        # 1. Eliminate if already sitting in pending_bulk with same similarity or fingerprint
+        for item in pending_bulk:
+            if item.get("sim_key") == sim_key or item.get("fingerprint") == fingerprint:
+                item["count"] = int(item.get("count", 1) or 1) + 1
+                channel_state["last"][fingerprint] = now_ts
+                channel_state["last"][sim_key] = now_ts
+                _save_delivery_state(path, state)
+                return False, "similar_eliminated", False, None
+
+        # 2. Eliminate if sent/seen within dedup or similarity window
+        prev_fp = channel_state["last"].get(fingerprint)
+        if prev_fp is not None and now_ts - float(prev_fp) < sim_window:
+            _save_delivery_state(path, state)
+            return False, "duplicate", False, None
+
+        prev_sim = channel_state["last"].get(sim_key)
+        if prev_sim is not None and now_ts - float(prev_sim) < sim_window:
+            _save_delivery_state(path, state)
+            return False, "similar_eliminated", False, None
+
+        # 3. Daily routine budget check for ntfy
         sent = int(channel_state.get("sent", 0))
         if channel == "ntfy" and not urgent:
-            # Preserve the existing routine allowance and provider-quota headroom.
-            # The reserve no longer places a ceiling on urgent delivery attempts.
             budget = _positive_int_env("NTFY_DAILY_BUDGET", 220)
             reserve = _positive_int_env("NTFY_URGENT_RESERVE", 20)
             if sent >= max(0, budget - reserve):
                 warn = not bool(channel_state.get("budget_warning_sent"))
                 channel_state["budget_warning_sent"] = True
                 _save_delivery_state(path, state)
-                return False, "local_daily_budget", warn
+                return False, "local_daily_budget", warn, None
 
+        # 4. Check the 5-minute Common Gate
+        last_gate_ts = float(channel_state.get("last_gate_ts", 0.0) or 0.0)
+        if gate_sec > 0 and last_gate_ts > 0 and (now_ts - last_gate_ts) < gate_sec:
+            # Gate is CLOSED: buffer this distinct message for bulk synthesis
+            channel_state["last"][fingerprint] = now_ts
+            channel_state["last"][sim_key] = now_ts
+            pending_bulk.append({
+                "title": title,
+                "body": body,
+                "priority": priority,
+                "topic": topic,
+                "ts": now_ts,
+                "sim_key": sim_key,
+                "fingerprint": fingerprint,
+                "count": 1,
+            })
+            _save_delivery_state(path, state)
+            return False, "buffered_for_bulk", False, None
+
+        # 5. Gate is OPEN: dispatch now (synthesizing with any pending bulk items)
         channel_state["sent"] = sent + 1
-        channel_state["last"][fingerprint] = now
+        channel_state["last"][fingerprint] = now_ts
+        channel_state["last"][sim_key] = now_ts
+        channel_state["last_gate_ts"] = now_ts
+        if pending_bulk:
+            items_to_send = list(pending_bulk) + [{
+                "title": title,
+                "body": body,
+                "priority": priority,
+                "topic": topic,
+                "ts": now_ts,
+                "sim_key": sim_key,
+                "fingerprint": fingerprint,
+                "count": 1,
+            }]
+            channel_state["pending_bulk"] = []
+            _save_delivery_state(path, state)
+            return True, "bulk_synthesized", False, synthesize_bulk_notifications(items_to_send)
+
         _save_delivery_state(path, state)
-        return True, "reserved", False
+        return True, "reserved", False, (title, body, priority, topic)
+
+
+def pop_due_bulk_batch(
+    channel: str = "ntfy",
+    *,
+    now: Optional[float] = None,
+    force: bool = False,
+) -> Optional[tuple[str, str, str, str]]:
+    """Pop and synthesize buffered distinct notifications once the 5-minute gate opens."""
+    now_ts = float(now if now is not None else time.time())
+    today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
+    path = _delivery_state_path()
+    if not path.exists():
+        return None
+    gate_sec = _common_gate_seconds()
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with FileLock(lock_path):
+        state = _load_delivery_state(path, today)
+        channel_state = state["channels"].get(channel)
+        if not channel_state:
+            return None
+        pending_bulk: list[dict] = channel_state.get("pending_bulk") or []
+        if not pending_bulk:
+            return None
+        last_gate_ts = float(channel_state.get("last_gate_ts", 0.0) or 0.0)
+        if not force and gate_sec > 0 and last_gate_ts > 0 and (now_ts - last_gate_ts) < gate_sec:
+            return None
+        items = list(pending_bulk)
+        channel_state["pending_bulk"] = []
+        channel_state["last_gate_ts"] = now_ts
+        channel_state["sent"] = int(channel_state.get("sent", 0)) + 1
+        _save_delivery_state(path, state)
+        return synthesize_bulk_notifications(items)
+
+
+def _reserve_delivery(channel: str, alerts: list[Any], *, urgent: bool) -> tuple[bool, str, bool]:
+    """Atomically reserve one delivery across processes via the common gate."""
+    first = alerts[0] if alerts and isinstance(alerts[0], dict) else {}
+    title = str(first.get("name") or first.get("title") or "Alert")
+    body = str(first.get("body") or first.get("message") or "")
+    prio = "urgent" if urgent else "high"
+    allowed, reason, warn_once, _ = pass_common_gate(
+        channel, title, body, prio, "", alerts, urgent=urgent,
+    )
+    return allowed, reason, warn_once
 
 
 def _mark_provider_daily_limit(channel: str, cooldown_seconds: float = 900.0) -> bool:

@@ -110,12 +110,16 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
     subject = (subject or "Alert").strip() or "Alert"
     body = body or ""
     if dedup:
-        from notify_engine.alertnotifiers import _reserve_delivery
+        from notify_engine.alertnotifiers import pass_common_gate
         identity = [{"type": "email", "name": subject, "body": body, "source": "mailer"}]
-        allowed, reason, _ = _reserve_delivery("email", identity, urgent=True)
+        allowed, reason, _, out_payload = pass_common_gate(
+            "email", subject, body, "high", "email", identity, urgent=True,
+        )
         if not allowed:
-            logging.info(f"Email skipped by delivery policy ({reason}): {subject}")
-            return reason == "duplicate"
+            logging.info(f"Email gated by common delivery policy ({reason}): {subject}")
+            return reason in ("duplicate", "similar_eliminated", "buffered_for_bulk")
+        if out_payload:
+            subject, body, _, _ = out_payload
     msg = MIMEText(body, "plain", "utf-8")
     msg["From"] = cfg["username"]
     msg["To"] = cfg["to"]
