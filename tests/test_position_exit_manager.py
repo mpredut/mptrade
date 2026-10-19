@@ -873,6 +873,76 @@ class TestPositionReentryManager(unittest.TestCase):
         self.assertTrue(dec4.should_enter)
         self.assertIn("post_stop_bounce_confirmed", dec4.reason)
 
+    def test_hard_tp_triggers_on_first_hit_when_now_below_cooldown_and_within_fuzzy_tolerance(self):
+        self.mgr.config.hard_tp_enabled = True
+        self.mgr.config.hard_tp_pct = 0.20
+        self.mgr.config.hard_tp_frac = 0.50
+        self.mgr.config.hard_tp_cooldown_sec = 21600.0  # 6 hours
+        self.mgr.config.are_close_tolerance_pct = 0.10  # 0.10% fuzzy boundary
+        self.mgr.hard_tp_last.clear()
+
+        # Price is 119.99 vs 100.0 (+19.99% gain, within 0.10% tolerance of 20.0% hard_tp_pct),
+        # and current_time_s=100.0 (< 21600.0s cooldown) with no prior Hard-TP (last_hard == 0.0).
+        snap = PositionSnapshot(
+            symbol="BTCUSDT",
+            current_price=119.99,
+            avg_buy_price=100.0,
+            sellable_qty=2.0,
+            current_time_s=100.0,
+            trend_up=True,
+        )
+        dec = self.mgr.evaluate(snap)
+        self.assertTrue(dec.should_exit)
+        self.assertEqual(dec.action, ExitAction.PARTIAL_SELL)
+        self.assertEqual(dec.sell_fraction, 0.50)
+        self.assertIn("hard_tp_spike", dec.reason)
+
+    def test_tp_anomaly_pullback_ratchet_tightens_on_out_of_pattern_spike_without_selling_on_climb(self):
+        # Normal TP threshold is 7% (0.07), vol_1h is 2% (0.02).
+        # Anomaly threshold = max(0.07 * 1.5 = 10.5%, 0.07 + 0.02 * 2.5 = 12.0%) = 12.0%.
+        # Tick 1: Price climbs to 108.0 (+8.0% >= 7.0%) -> initiates trend ride (HOLD)
+        snap1 = PositionSnapshot(
+            symbol="BTCUSDT",
+            current_price=108.0,
+            avg_buy_price=100.0,
+            current_time_s=self.now,
+            trend_up=True,
+            vol_1h=0.02,
+        )
+        dec1 = self.mgr.evaluate_take_profit(snap1)
+        self.assertEqual(dec1.action, ExitAction.HOLD)
+
+        # Tick 2: Out-of-pattern spike to 140.0 (+40.0% >> 12.0% anomaly threshold).
+        # While still climbing on uptrend (0% pullback), MUST NOT sell against the trend!
+        snap2 = PositionSnapshot(
+            symbol="BTCUSDT",
+            current_price=140.0,
+            avg_buy_price=100.0,
+            current_time_s=self.now + 30.0,
+            trend_up=True,
+            vol_1h=0.02,
+        )
+        dec2 = self.mgr.evaluate_take_profit(snap2)
+        self.assertEqual(dec2.action, ExitAction.HOLD)
+        self.assertFalse(dec2.should_exit)
+
+        # Tick 3: Spike stalls and pulls back 0.35% from 140.0 to 139.51 (< normal 0.60%,
+        # but >= ratcheted 0.32% trail for a +40% anomaly spike) -> exits at peak!
+        snap3 = PositionSnapshot(
+            symbol="BTCUSDT",
+            current_price=139.51,
+            avg_buy_price=100.0,
+            current_time_s=self.now + 45.0,
+            trend_up=True,
+            vol_1h=0.02,
+        )
+        dec3 = self.mgr.evaluate_take_profit(snap3)
+        self.assertEqual(dec3.action, ExitAction.SELL)
+        self.assertTrue(dec3.should_exit)
+        self.assertIn("mdhtp_peak_pullback", dec3.reason)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+

@@ -397,12 +397,11 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
     _position_stats_cache[cache_key] = (entry_sig, now_ts, res)
     return dict(res)
 
-# Hard TP coexists with trend logic. It sells a position fraction on a large gain
-# regardless of trend, catching peaks the trend gate may miss. Cooldown prevents a cascade.
-# Defaults below may be overridden by monitortrades.conf.
-HARD_TP_ENABLED    = True
-HARD_TP_PCT        = 0.17       # Gain fraction that triggers a proportional hard TP.
-HARD_TP_FRACTION   = 0.5        # Fraction of free balance to sell.
+# Legacy Hard TP is disabled by default: profit exits never sell blindly against an active
+# uptrend, and instead use MDHTP trend-riding with dynamic volatility-anomaly pullback ratchet.
+HARD_TP_ENABLED    = False
+HARD_TP_PCT        = 0.17       # Legacy fallback gain fraction.
+HARD_TP_FRACTION   = 0.5        # Legacy fallback fraction.
 HARD_TP_COOLDOWN_S = 6 * 3600
 TP_REFERENCE       = "last"     # "last" (the last buy) | "average" (the average over maxage days)
 _hard_tp_last = {}
@@ -433,14 +432,17 @@ MT_SL_DISASTER_BUFFER_MIN_PCT = float(os.environ.get("MT_SL_DISASTER_BUFFER_MIN_
 
 # Multi-Horizon Dynamic Take-Profit (MDHTP) Mirror Configuration.
 # Mirroring MHDSL: Trend-riding with peak tracking, dynamic micro-trailing on pullback,
-# guaranteed profit floor, and peak stagnation timeout.
+# volatility-anomaly ratchet on out-of-pattern spikes, guaranteed profit floor, and stagnation timeout.
 MT_TP_TREND_RIDE_ENABLED = os.environ.get("MT_TP_TREND_RIDE_ENABLED", "true").lower() in ("yes", "true", "1")
 MT_TP_PULLBACK_PCT = float(os.environ.get("MT_TP_PULLBACK_PCT", "0.006"))
+MT_TP_RATCHET_ENABLED = os.environ.get("MT_TP_RATCHET_ENABLED", "true").lower() in ("yes", "true", "1")
+MT_TP_RATCHET_K = float(os.environ.get("MT_TP_RATCHET_K", "0.10"))
+MT_TP_RATCHET_MIN_PULLBACK_PCT = float(os.environ.get("MT_TP_RATCHET_MIN_PULLBACK_PCT", "0.0025"))
 MT_TP_PROFIT_FLOOR_RATIO = float(os.environ.get("MT_TP_PROFIT_FLOOR_RATIO", "0.50"))
 MT_TP_PROFIT_FLOOR_MIN_PCT = float(os.environ.get("MT_TP_PROFIT_FLOOR_MIN_PCT", "0.008"))
 MT_TP_STAGNATION_MAX_SEC = float(os.environ.get("MT_TP_STAGNATION_MAX_SEC", "1080.0"))
 MT_REENTRY_HYBRID_ENABLED = os.environ.get("MT_REENTRY_HYBRID_ENABLED", "0").lower() in ("yes", "true", "1")
-MT_REENTRY_POST_STOP_COOLDOWN_SEC = float(os.environ.get("MT_REENTRY_POST_STOP_COOLDOWN_SEC", "300.0"))
+MT_REENTRY_POST_STOP_COOLDOWN_SEC = float(os.environ.get("MT_REENTRY_POST_STOP_COOLDOWN_SEC", "0.0"))
 _TP_RIDE_STATE: Dict[str, Dict[str, Any]] = {}
 _REENTRY_STATE: Dict[str, Dict[str, Any]] = {}
 _LAST_EXIT_KIND: Dict[str, str] = {}
@@ -618,6 +620,7 @@ def _load_mt_conf(path=None):
     global MT_SL_STRUCTURAL_BREAK_ENABLED
     global MT_SL_DISASTER_BUFFER_RATIO, MT_SL_DISASTER_VOL_MULTIPLIER, MT_SL_DISASTER_BUFFER_MIN_PCT
     global MT_TP_TREND_RIDE_ENABLED, MT_TP_PULLBACK_PCT, MT_TP_PROFIT_FLOOR_RATIO
+    global MT_TP_RATCHET_ENABLED, MT_TP_RATCHET_K, MT_TP_RATCHET_MIN_PULLBACK_PCT
     global MT_TP_PROFIT_FLOOR_MIN_PCT, MT_TP_STAGNATION_MAX_SEC, MT_REENTRY_POST_STOP_COOLDOWN_SEC
     path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitortrades.conf")
     if not os.path.exists(path):
@@ -646,6 +649,9 @@ def _load_mt_conf(path=None):
                 elif k == "sl_disaster_buffer_min_pct": MT_SL_DISASTER_BUFFER_MIN_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
                 elif k == "tp_trend_ride_enabled":      MT_TP_TREND_RIDE_ENABLED = v.lower() in ("yes", "true", "1", "on", "da")
                 elif k == "tp_pullback_pct":            MT_TP_PULLBACK_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
+                elif k == "tp_ratchet_enabled":         MT_TP_RATCHET_ENABLED = v.lower() in ("yes", "true", "1", "on", "da")
+                elif k == "tp_ratchet_k":               MT_TP_RATCHET_K = float(v)
+                elif k == "tp_ratchet_min_pullback_pct": MT_TP_RATCHET_MIN_PULLBACK_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
                 elif k == "tp_profit_floor_ratio":      MT_TP_PROFIT_FLOOR_RATIO = float(v) if float(v) < 1.0 else float(v) / 100.0
                 elif k == "tp_profit_floor_min_pct":    MT_TP_PROFIT_FLOOR_MIN_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
                 elif k == "tp_stagnation_max_s":        MT_TP_STAGNATION_MAX_SEC = float(v)
@@ -690,6 +696,9 @@ def get_exit_manager() -> PositionExitManager:
         MT_TP_PROFIT_FLOOR_RATIO,
         MT_TP_PROFIT_FLOOR_MIN_PCT,
         MT_TP_PULLBACK_PCT,
+        MT_TP_RATCHET_ENABLED,
+        MT_TP_RATCHET_K,
+        MT_TP_RATCHET_MIN_PULLBACK_PCT,
         MT_TP_STAGNATION_MAX_SEC,
         MT_ARE_CLOSE_TOLERANCE_PCT,
         MT_REENTRY_HYBRID_ENABLED,
@@ -715,6 +724,10 @@ def get_exit_manager() -> PositionExitManager:
             tp_profit_floor_ratio=MT_TP_PROFIT_FLOOR_RATIO,
             tp_profit_floor_min_pct=MT_TP_PROFIT_FLOOR_MIN_PCT,
             tp_pullback_pct=MT_TP_PULLBACK_PCT,
+            tp_ratchet_enabled=MT_TP_RATCHET_ENABLED,
+            tp_ratchet_base_trail=MT_TP_PULLBACK_PCT,
+            tp_ratchet_min_trail=MT_TP_RATCHET_MIN_PULLBACK_PCT,
+            tp_ratchet_k=MT_TP_RATCHET_K,
             tp_stagnation_max_sec=MT_TP_STAGNATION_MAX_SEC,
             hard_tp_enabled=False,  # Evaluated explicitly in block 3.0 of monitortrades.py
             are_close_tolerance_pct=MT_ARE_CLOSE_TOLERANCE_PCT,
@@ -991,7 +1004,7 @@ def _evaluate_hard_take_profit(
         return False
     hard_qty = round(sellable_qty * hard_tp_frac, 8)
     print(f"[HARD-TP] {symbol} +{snapshot.gain_pct:.1f}% >= {hard_tp_pct*100:.0f}% "
-          f"-> vand {hard_tp_frac*100:.0f}% ({hard_qty}) INDIFERENT de trend")
+          f"-> vand {hard_tp_frac*100:.0f}% ({hard_qty})")
     hard_tp_outcome_ctx = {}
     placed = _place_guarded(
         inst, "SELL", snapshot.current_price, hard_qty, min_qty,
@@ -1068,6 +1081,8 @@ def _execute_take_profit(
         "intent_id": tp_intent_id,
         "_outcome_context": tp_outcome_ctx,
     }
+    if tp_decision.forced:
+        place_kw["wait_for_trend"] = False
     if tp_cid:
         place_kw["client_order_id"] = tp_cid
     placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty, **place_kw)
@@ -1211,9 +1226,17 @@ def _handle_position_recovery(
     global _CLEAR_SMART_SL_RECOVERED_FN
     symbol = snapshot.symbol
     if symbol in _SL_BOUNCE_STATE:
-        print(f"[{symbol}] 🎉 Stop-Loss bounce successfully recovered! Position saved from dip "
-              f"({snapshot.loss_pct:.2f}% <= {lost_threshold*100:.2f}%).")
-        _SL_BOUNCE_STATE.pop(symbol, None)
+        bounce_state = _SL_BOUNCE_STATE.pop(symbol, None) or {}
+        saved_buy = bounce_state.get("buy_price")
+        same_buy = True
+        if saved_buy is not None and snapshot.avg_buy_price is not None:
+            try:
+                same_buy = math.isclose(float(saved_buy), float(snapshot.avg_buy_price), rel_tol=1e-6, abs_tol=1e-9)
+            except (TypeError, ValueError):
+                pass
+        if same_buy:
+            print(f"[{symbol}] 🎉 Stop-Loss bounce successfully recovered! Position saved from dip "
+                  f"({snapshot.loss_pct:.2f}% <= {lost_threshold*100:.2f}%).")
     _PENDING_STOP_EXIT.pop(symbol, None)
     _TP_RIDE_STATE.pop(symbol, None)
     _save_mt_state()
@@ -1233,7 +1256,7 @@ def _handle_position_recovery(
         )
     except Exception:
         pass
-    if builtins.print.__name__ != "_dummy_print":
+    if getattr(builtins.print, "__name__", "") != "_dummy_print":
         print("Nothing interesting")
 
 

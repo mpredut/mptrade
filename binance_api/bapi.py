@@ -214,7 +214,12 @@ def cancel_open_orders(order_type, symbol, allowed_owners=None):
         open_orders = get_open_orders(order_type, symbol, allowed_owners=allowed_owners)
         for order_id, order_details in open_orders.items():
             print(f"Cancelling order {order_id} for {symbol}")
-            cancel_order(symbol, order_id)
+            if cancel_order(symbol, order_id):
+                try:
+                    import order_retry
+                    order_retry.resolve_accepted_order(symbol, order_id)
+                except Exception:
+                    pass
     except Exception as e:
         print(f"Error cancelling orders for {symbol}: {e}")
         
@@ -270,6 +275,11 @@ def cancel_recent_orders(order_type, symbol, max_age_seconds, allowed_owners=Non
         if current_time - order_time <= max_age_seconds:  # Order is recent
             cancel = cancel_order(symbol, order_id)
             if cancel:
+                try:
+                    import order_retry
+                    order_retry.resolve_accepted_order(symbol, order_id)
+                except Exception:
+                    pass
                 print(f"Cancelled {order_type} order with ID: {order_id} (recent order).")
                 count += 1
             else:

@@ -682,6 +682,11 @@ def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=N
                         "opposing_cancel_unconfirmed") from exc
                 if not canceled:
                     raise SubmissionRefused("opposing_cancel_unconfirmed")
+                try:
+                    import order_retry
+                    order_retry.resolve_accepted_order(symbol, order_id)
+                except Exception:
+                    pass
     elif order_type == "SELL":
         try:
             if allowed_owners is not None:
@@ -700,6 +705,11 @@ def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=N
                         "opposing_cancel_unconfirmed") from exc
                 if not canceled:
                     raise SubmissionRefused("opposing_cancel_unconfirmed")
+                try:
+                    import order_retry
+                    order_retry.resolve_accepted_order(symbol, order_id)
+                except Exception:
+                    pass
 
 
 def adjust_price_and_cancel_opposite(order_type, symbol, price,

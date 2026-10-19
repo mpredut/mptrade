@@ -259,10 +259,10 @@ class PositionExitConfig:
     tp_profit_floor_min_pct: float = 0.008
     tp_pullback_pct: float = 0.006
     tp_stagnation_max_sec: float = 1080.0
-    tp_ratchet_enabled: bool = False
-    tp_ratchet_base_trail: float = 0.008
-    tp_ratchet_min_trail: float = 0.003
-    tp_ratchet_k: float = 0.50
+    tp_ratchet_enabled: bool = True
+    tp_ratchet_base_trail: float = 0.006
+    tp_ratchet_min_trail: float = 0.0025
+    tp_ratchet_k: float = 0.10
 
     # --- Hard TP (Spike Exit) ---
     hard_tp_enabled: bool = False
@@ -755,6 +755,51 @@ class PositionExitManager:
             _clear_smart_sl(snapshot.symbol, snapshot.provider)
         return decision
 
+    def compute_tp_anomaly_pullback(
+        self,
+        symbol: str,
+        gain_threshold: float,
+        peak_gain: float,
+        vol_1h: Optional[float] = None,
+    ) -> Tuple[float, Dict[str, Any]]:
+        """Compute dynamic peak pullback threshold tightened on out-of-pattern spikes.
+
+        Variant A (Proportional to TP target): anomaly_a = gain_threshold * 1.5
+        Variant B (Realized 1h volatility anomaly): anomaly_b = gain_threshold + vol_1h * 2.5
+        Anomaly threshold = max(anomaly_a, anomaly_b).
+        When peak_gain exceeds the anomaly threshold, allowed pullback tightens from
+        tp_pullback_pct down toward tp_ratchet_min_trail without selling against the trend.
+        """
+        eff_vol = vol_1h if vol_1h is not None else 0.0
+        if eff_vol <= 0:
+            if self.vol_resolver is not None:
+                eff_vol, _ = self.vol_resolver(symbol)
+                if eff_vol is None:
+                    eff_vol = 0.0
+            elif getattr(self.config, "allow_external_cache", True):
+                cached = resolve_cached_volatility_1h(symbol)
+                if cached is not None and cached > 0:
+                    eff_vol = cached
+
+        anomaly_a = gain_threshold * 1.5
+        anomaly_b = (gain_threshold + eff_vol * 2.5) if eff_vol > 0 else 0.0
+        anomaly_threshold = max(anomaly_a, anomaly_b)
+
+        base_pullback = self.config.tp_pullback_pct
+        min_pullback = min(base_pullback, self.config.tp_ratchet_min_trail)
+        if peak_gain <= anomaly_threshold or self.config.tp_ratchet_k <= 0:
+            eff_pullback = base_pullback
+        else:
+            excess_gain = peak_gain - anomaly_threshold
+            eff_pullback = max(min_pullback, base_pullback - excess_gain * self.config.tp_ratchet_k)
+
+        return eff_pullback, {
+            "anomaly_threshold": anomaly_threshold,
+            "vol_1h": eff_vol,
+            "base_pullback": base_pullback,
+            "eff_pullback": eff_pullback,
+        }
+
     def _evaluate_take_profit_core(
         self,
         snapshot: PositionSnapshot,
@@ -790,7 +835,7 @@ class PositionExitManager:
             and snapshot.in_tp_territory(self.config.hard_tp_pct, self.config.are_close_tolerance_pct)
         ):
             last_hard = self.hard_tp_last.get(symbol, 0.0)
-            if now - last_hard >= self.config.hard_tp_cooldown_sec:
+            if last_hard <= 0 or (now - last_hard) >= self.config.hard_tp_cooldown_sec:
                 reason = (
                     f"hard_tp_spike (+{snapshot.gain_pct:.1f}% >= {self.config.hard_tp_pct*100:.0f}%, "
                     f"selling {self.config.hard_tp_frac*100:.0f}%)"
@@ -926,19 +971,15 @@ class PositionExitManager:
                     metadata={"priority": 2, "profit_floor": profit_floor, "peak_px": peak_px},
                 )
 
-            # Pullback threshold (with optional ratchet from spot_rules)
+            # Pullback threshold with dynamic anomaly-scaled ratchet (relative to gain_threshold & vol_1h)
             eff_pullback_pct = self.config.tp_pullback_pct
             if self.config.tp_ratchet_enabled:
-                try:
-                    from strategies.spot_rules import dynamic_trend_trail_pct
-                    eff_pullback_pct = dynamic_trend_trail_pct(
-                        peak_gain_pct=ride_state["peak_gain"] * 100.0,
-                        base_trail_pct=self.config.tp_ratchet_base_trail * 100.0,
-                        min_trail_pct=self.config.tp_ratchet_min_trail * 100.0,
-                        ratchet_k=self.config.tp_ratchet_k,
-                    ) / 100.0
-                except Exception:
-                    pass
+                eff_pullback_pct, _ = self.compute_tp_anomaly_pullback(
+                    symbol=symbol,
+                    gain_threshold=gain_threshold,
+                    peak_gain=ride_state["peak_gain"],
+                    vol_1h=snapshot.vol_1h,
+                )
 
             # Priority 3: Dynamic micro-trailing peak pullback
             if pullback_from_peak >= eff_pullback_pct:
@@ -1214,7 +1255,7 @@ class PositionExitManager:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
 
         # Check Hard TP (Spike Exit) first
-        if self.config.hard_tp_enabled and snapshot.gain_ratio >= self.config.hard_tp_pct:
+        if self.config.hard_tp_enabled and snapshot.in_tp_territory(self.config.hard_tp_pct, self.config.are_close_tolerance_pct):
             tp_spike = self.evaluate_take_profit(snapshot, custom_threshold=tp_threshold)
             if tp_spike.action == ExitAction.PARTIAL_SELL:
                 return tp_spike

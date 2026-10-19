@@ -360,4 +360,28 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
             self.assertEqual(mock_place.call_args[1].get("kind"), "TP")
             mock_resolve.assert_called_once_with("BTCUSDC", inst, kind="TP")
 
+    def test_cancel_open_recent_and_opposite_orders_resolve_accepted_retry_tracker(self):
+        import time
+        from binance_api import bapi
+        from binance_api import bapi_placeorder as bp
+        import order_retry
+
+        now_s = int(time.time())
+        open_map = {"9001": {"price": 80000.0, "timestamp": now_s - 5}}
+        with patch.object(bapi.sym, "validate_params"), \
+             patch.object(bapi, "get_open_orders", return_value=open_map), \
+             patch.object(bapi, "cancel_order", return_value=True), \
+             patch.object(order_retry, "resolve_accepted_order") as mock_resolve:
+            bapi.cancel_open_orders("BUY", "BTCUSDC")
+            mock_resolve.assert_called_once_with("BTCUSDC", "9001")
+
+            mock_resolve.reset_mock()
+            bapi.cancel_recent_orders("BUY", "BTCUSDC", max_age_seconds=60)
+            mock_resolve.assert_called_once_with("BTCUSDC", "9001")
+
+            mock_resolve.reset_mock()
+            bp.cancel_opposite_orders("BUY", "BTCUSDC", requested_price=85000.0)
+            mock_resolve.assert_called_once_with("BTCUSDC", "9001")
+
+
 

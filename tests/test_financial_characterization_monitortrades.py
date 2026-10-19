@@ -1657,6 +1657,36 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.assertIn(sym, mt._TP_RIDE_STATE)
             mt._TP_RIDE_STATE.clear()
 
+        with self.subTest(msg="forced_take_profit_disables_wait_for_trend_and_stale_sl_bounce_buy_price_not_logged"):
+            sym = SYMBOL
+            snap_tp = mt.PositionSnapshot(
+                symbol=sym,
+                current_price=108.0,
+                avg_buy_price=100.0,
+                sellable_qty=4.0,
+                current_time_s=NOW,
+                trend_up=True,
+            )
+            inst_tp = FakeInstrument(price=108.0, free=4.0, fills=[_fill("BUY", 100.0, 4.0)])
+            forced_dec = mt.ExitDecision(
+                action=mt.ExitAction.SELL,
+                should_exit=True,
+                reason="mdhtp_peak_pullback",
+                forced=True,
+            )
+            sold = mt._execute_take_profit(inst_tp, snap_tp, forced_dec, 3600, 0.001, {}, 0.05)
+            self.assertTrue(sold)
+            self.assertEqual(len(inst_tp.placed), 1)
+            self.assertFalse(inst_tp.placed[0]["kwargs"].get("wait_for_trend", True))
+
+            mt._SL_BOUNCE_STATE[sym] = {"buy_price": 120.0, "started_at": NOW - 30}
+            printed_lines = []
+            with patch("builtins.print", side_effect=lambda *a, **k: printed_lines.append(" ".join(str(x) for x in a))):
+                mt._handle_position_recovery(inst_tp, snap_tp, 0.03)
+            self.assertNotIn(sym, mt._SL_BOUNCE_STATE)
+            self.assertFalse(any("Stop-Loss bounce successfully recovered" in line for line in printed_lines))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

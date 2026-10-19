@@ -243,7 +243,8 @@ class TestModuleSpecifics(unittest.TestCase):
         self.assertFalse(hasattr(mt, "SYMBOL_PARAMS"))
 
     def test_monitortrades_global_hardtp_fallbacks_loaded(self):
-        self.assertTrue(mt.HARD_TP_ENABLED)
+        self.assertFalse(mt.HARD_TP_ENABLED)
+        self.assertEqual(mt.MT_REENTRY_POST_STOP_COOLDOWN_SEC, 0.0)
         self.assertEqual(mt.TP_REFERENCE, "last")
 
     def test_rtrade_buy_sell_asymmetry_preserved(self):

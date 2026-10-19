@@ -450,6 +450,18 @@ class SmartStopLossGuard:
             is_sim = is_sim_call or _is_simulated_provider(grace_info.get("provider"))
             if not is_sim:
                 _save_grace_state()
+            saved_buy = grace_info.get("buy_price")
+            if saved_buy is not None and buy_price is not None:
+                try:
+                    if (
+                        math.isfinite(float(buy_price))
+                        and math.isfinite(float(saved_buy))
+                        and abs(float(buy_price) - float(saved_buy))
+                        > max(1e-9, abs(float(saved_buy)) * 1e-6)
+                    ):
+                        return False
+                except (TypeError, ValueError):
+                    pass
             now_ts = float(now) if now is not None else time.time()
             start_ts = float(grace_info.get("start_ts", now_ts))
             elapsed = max(0.0, now_ts - start_ts)

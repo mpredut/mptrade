@@ -414,3 +414,36 @@ def test_smart_sl_buy_price_change_resets_stale_grace_and_updates_current_price(
     assert "suspected_wick_hunt" in reason3
     assert _GRACE_TRACKER["BTCUSDC"]["start_ts"] == t0 + 150.0
     assert _GRACE_TRACKER["BTCUSDC"]["buy_price"] == 68000.0
+
+
+def test_smart_sl_on_recovered_ignores_stale_grace_when_buy_price_changed():
+    import intelligence.external.guards.smart_stop_loss_guard as ssl_guard
+
+    guard = SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
+    whale = _mock_whale(top_long=0.65, taker_ratio=1.1)
+    ob = _mock_ob()
+
+    alerts_sent = []
+    with patch(
+        "intelligence.external.guards.smart_stop_loss_guard._send_ntfy_alert",
+        side_effect=lambda title, body, symbol: alerts_sent.append({"title": title, "body": body, "symbol": symbol}),
+    ):
+        t0 = 40000.0
+        guard.evaluate(
+            "BTCUSDC", 0.0295, 0.02925, now=t0,
+            provider="binance", current_price=67935.0, buy_price=70000.0,
+            whale_snapshot=whale, orderbook_snapshot=ob,
+        )
+        alerts_sent.clear()
+
+        # DCA or new position lowers avg buy price to 68000.0 without price bouncing
+        recovered = guard.on_recovered(
+            "BTCUSDC", price_decrease=0.001, lost_threshold=0.02925,
+            now=t0 + 25.0, provider="binance", current_price=67935.0, buy_price=68000.0,
+            batch=False,
+        )
+        assert recovered is False
+        assert "BTCUSDC" not in _GRACE_TRACKER
+        assert len(alerts_sent) == 0
+        assert "BTCUSDC" not in ssl_guard._LAST_RECOVERY_ALERT_TS
+
