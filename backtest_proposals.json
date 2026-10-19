@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-10-18T14:09:46",
+    "ts": "2026-10-19T14:03:06",
     "full_key": "BINANCE_BTC.trailing.pct",
     "section": "BINANCE_BTC",
     "key": "trailing.pct",
@@ -14,21 +14,21 @@
     "dev_commit": "86653dd"
   },
   {
-    "ts": "2026-10-18T14:09:46",
-    "full_key": "KRAKEN_HYPE.mt.maxage_days",
+    "ts": "2026-10-19T14:03:06",
+    "full_key": "KRAKEN_HYPE.mt.hardtp_fraction",
     "section": "KRAKEN_HYPE",
-    "key": "mt.maxage_days",
+    "key": "mt.hardtp_fraction",
     "symbol": "HYPEUSD",
-    "current_on_dev": 15.5,
-    "winner_value": 14.0,
+    "current_on_dev": 0.4,
+    "winner_value": 0.3,
     "margin_vs_current": {
-      "half1": 34.16,
-      "half2": 2345.62
+      "half1": 151.26,
+      "half2": 16.03
     },
     "dev_commit": "86653dd"
   },
   {
-    "ts": "2026-10-18T14:09:46",
+    "ts": "2026-10-19T14:03:06",
     "full_key": "BINANCE_ARB.mt.maxage_days",
     "section": "BINANCE_ARB",
     "key": "mt.maxage_days",
@@ -37,7 +37,7 @@
     "winner_value": 7.0,
     "margin_vs_current": {
       "half1": 215.66,
-      "half2": 146.91
+      "half2": 167.57
     },
     "dev_commit": "86653dd"
   }
