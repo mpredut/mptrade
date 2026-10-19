@@ -217,8 +217,13 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
     
     initial_prices = initial_sell_prices if order_type == "SELL" else initial_buy_prices
     custom_ttl_map = {}
+    accepted_owner_map = {}
     try:
         custom_ttl_map = order_retry.get_accepted_order_ttl_map()
+    except Exception:
+        pass
+    try:
+        accepted_owner_map = order_retry.get_accepted_order_owner_map()
     except Exception:
         pass
 
@@ -233,6 +238,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         oid_str = str(order_id)
         cid = str(order.get("clientOrderId") or "")
         owner = rc.resolve_order_owner(cid)
+        if owner == "order_retry":
+            owner = accepted_owner_map.get(oid_str) or accepted_owner_map.get(cid) or owner
 
         if oid_str not in _notified_placed_order_ids:
             _notified_placed_order_ids.add(oid_str)
@@ -260,15 +267,19 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 )
                 try:
                     mkt.cancel_order(symbol, str(order_id))
+                    try:
+                        order_retry.resolve_accepted_order(symbol, order_id)
+                    except Exception:
+                        pass
                     print(f"[MONITORORDER] 🛑 Successfully canceled expired order {order_id}")
                     _notify_order_expired(symbol, order_type, order_id, price, order.get("quantity", 0), owner, age_str, ttl_str)
                 except Exception as exc:
                     print(f"[MONITORORDER] Failed to cancel expired order {order_id}: {exc}")
                 continue
 
-        # Repricing protection: only reprice orders from tradeall or monitororder.
-        # Orders from rtrade, spot_dca, manual, etc. are strictly protected from cancellation/repricing.
-        if not rc.is_order_repriceable_by_monitororder(cid):
+        # Repricing protection: only reprice orders from tradeall, monitororder, or manual.
+        # Orders from rtrade, spot_dca, monitortrades, etc. are strictly protected from cancellation/repricing.
+        if not (rc.is_order_repriceable_by_monitororder(cid) or owner in rc.REPRICEABLE_BOTS):
             print(f"Order {order_id} (owner='{owner}', cid='{cid}') is protected from monitororder repricing; skipping.")
             continue
 

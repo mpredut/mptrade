@@ -271,11 +271,34 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     if action == 'HOLD':
         return order_ids
 
-    # Cancel any existing active orders from previous iterations
-    if order_ids:
-        for order_id in list(order_ids):
+    # Cancel any existing active orders from previous iterations (including outbox-accepted orders)
+    outbox_order_ids = []
+    try:
+        import order_retry
+        if (
+            not hasattr(_fire_order, "_mock_name")
+            or hasattr(order_retry.get_accepted_order_ids_for_owner, "_mock_name")
+        ):
+            outbox_order_ids = order_retry.get_accepted_order_ids_for_owner(symbol, "tradeall")
+    except Exception:
+        outbox_order_ids = []
+
+    to_cancel = list(order_ids)
+    existing_str = {str(x) for x in to_cancel}
+    for oid in outbox_order_ids:
+        if str(oid) not in existing_str:
+            to_cancel.append(oid)
+            existing_str.add(str(oid))
+
+    if to_cancel:
+        for order_id in to_cancel:
             try:
                 mkt.cancel_order(symbol, str(order_id))
+                try:
+                    import order_retry
+                    order_retry.resolve_accepted_order(symbol, order_id)
+                except Exception:
+                    pass
             except Exception as _e:
                 print(f"[TRADEALL] cancel existing order {order_id} (or filled): {_e}")
         order_ids.clear()

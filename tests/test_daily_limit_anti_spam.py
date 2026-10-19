@@ -219,6 +219,8 @@ class TestDailyLimitAntiSpamEnforcement(unittest.TestCase):
         self.assertEqual(reason, "daily_limit")
 
     def test_instrument_place_forwarding(self):
+        import tempfile
+        import order_retry
         from providers.market_api import MarketApi
         prov = FakeProvider(name="kraken")
         prov.seed_trade("SELL", age_sec=5.0)
@@ -226,18 +228,22 @@ class TestDailyLimitAntiSpamEnforcement(unittest.TestCase):
         inst = Instrument(name="KRAKEN_BTC", symbol="BTCUSDC", provider="kraken",
                           base="BTC", quote="USDC", api=api)
 
-        # By default, SELL is allowed with recent trade
-        with patch.object(order_guard, "profit_guard", return_value=True):
-            res = inst.place("SELL", 100.0, 1.0, bypass_profit_guard=True)
-            self.assertIsNotNone(res)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
+            lfile = os.path.join(tmpdir, "order_retry.lock")
+            with patch.object(order_retry, "QUEUE_FILE", qfile), \
+                 patch.object(order_retry, "LOCK_FILE", lfile), \
+                 patch.object(order_guard, "profit_guard", return_value=True):
+                # By default, SELL is allowed with recent trade
+                res = inst.place("SELL", 100.0, 1.0, bypass_profit_guard=True)
+                self.assertIsNotNone(res)
 
-        # With recent_transaction_side="both", SELL is blocked
-        with patch.object(order_guard, "profit_guard", return_value=True):
-            res_blocked = inst.place(
-                "SELL", 100.0, 1.0, bypass_profit_guard=True,
-                recent_transaction_side="both"
-            )
-            self.assertIsNone(res_blocked)
+                # With recent_transaction_side="both", SELL is blocked
+                res_blocked = inst.place(
+                    "SELL", 100.0, 1.0, bypass_profit_guard=True,
+                    recent_transaction_side="both"
+                )
+                self.assertIsNone(res_blocked)
 
 
 if __name__ == "__main__":

@@ -206,3 +206,158 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
             Instrument._apply_outbox_lineage_prefix(runner_target, {})
         self.assertNotIn("prefix", runner_target)
 
+    def test_order_retry_infers_owner_and_cleans_up_accepted_trackers(self):
+        import os
+        import tempfile
+        import order_retry as oq
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
+            lfile = os.path.join(tmpdir, "order_retry.lock")
+            with patch.object(oq, "QUEUE_FILE", qfile), patch.object(oq, "LOCK_FILE", lfile):
+                rid = oq.enqueue(
+                    "BTCUSDC", "BUY", 0.00066, {},
+                    requested_price=81733.6, ref_price=81815.42,
+                    kind="kalman_primary_up", provider_name="binance", now=1000.0,
+                )
+                rec = oq.get(rid)
+                self.assertEqual(rec["prefix"], "TA_OR")
+                self.assertTrue(rec["place_kwargs"]["client_order_id"].startswith("TA_OR_"))
+                self.assertEqual(oq.infer_record_owner(rec), "tradeall")
+
+                # Simulate legacy OR_ client_order_id with kalman_primary_up kind
+                oq.mark_accepted(rid, {"orderId": 10574289378, "status": "NEW"}, now=1010.0)
+                owner_map = oq.get_accepted_order_owner_map()
+                self.assertEqual(owner_map.get("10574289378"), "tradeall")
+                self.assertEqual(
+                    oq.get_accepted_order_ids_for_owner("BTCUSDC", "tradeall"),
+                    ["10574289378"],
+                )
+
+                # Replacement activation retires the replaced accepted tracker
+                rep_id = oq.enqueue(
+                    "BTCUSDC", "BUY", 0.00066, {"parent_owner": "tradeall"},
+                    requested_price=81800.0, ref_price=81800.0,
+                    provider_name="binance", now=1020.0,
+                    lifecycle="awaiting_cancel",
+                    replaces_order_id="10574289378",
+                    replaces_original_qty=0.00066,
+                )
+                claimed_rep = oq.claim([rep_id], now=1021.0)[0]
+                self.assertEqual(
+                    oq.activate_claimed_replacement(claimed_rep, 0.00066, now=1022.0),
+                    "activated",
+                )
+                self.assertEqual(
+                    oq.get_accepted_order_ids_for_owner("BTCUSDC", "tradeall"),
+                    [],
+                )
+
+                # Intentional external cancellation resolves accepted tracker
+                rid2 = oq.enqueue(
+                    "BTCUSDC", "BUY", 0.00064, {},
+                    requested_price=82125.73, ref_price=82207.94,
+                    kind="kalman_primary_up", provider_name="binance", now=1030.0,
+                )
+                oq.mark_accepted(rid2, {"orderId": 10574512957, "status": "NEW"}, now=1031.0)
+                self.assertTrue(oq.resolve_accepted_order("BTCUSDC", 10574512957))
+                self.assertEqual(oq.load_all(), [oq.get(rep_id)])
+
+    def test_same_deferred_stream_consolidates_across_deferral_reasons(self):
+        import os
+        import tempfile
+        import order_retry as oq
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
+            lfile = os.path.join(tmpdir, "order_retry.lock")
+            with patch.object(oq, "QUEUE_FILE", qfile), \
+                 patch.object(oq, "LOCK_FILE", lfile), \
+                 patch.object(oq, "RETRY_DEDUP", False):
+                first = oq.enqueue(
+                    "BTCUSDC", "BUY", 0.00066, {},
+                    requested_price=81733.6, ref_price=81815.42,
+                    failure_reason="trend_deferred",
+                    kind="kalman_primary_up", provider_name="binance", now=1000.0,
+                )
+                oq.mark_failure(
+                    first, "profit_guard", now=1010.0, submission_state="refused"
+                )
+                second = oq.enqueue(
+                    "BTCUSDC", "BUY", 0.00064, {},
+                    requested_price=82125.73, ref_price=82207.94,
+                    failure_reason="trend_deferred",
+                    kind="kalman_primary_up", provider_name="binance", now=1020.0,
+                )
+                rows = oq.load_all()
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["id"], second)
+
+    def test_monitororder_reprices_legacy_or_tradeall_order(self):
+        open_orders = {
+            701: {
+                "price": 100.0,
+                "quantity": 1.0,
+                "remainingQty": 1.0,
+                "clientOrderId": "OR_a5e8e1cb99d8450882ede051_0",
+            },
+        }
+        with patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
+             patch.object(monitororder.api, "get_current_price", return_value=100.1), \
+             patch.object(monitororder.order_retry, "get_accepted_order_owner_map", return_value={"701": "tradeall"}), \
+             patch.object(monitororder.order_retry, "enqueue", return_value="rep-701") as mock_enqueue, \
+             patch.object(monitororder.order_retry, "claim", return_value=[{"place_kwargs": {"client_order_id": "MO_TA_cid"}}]), \
+             patch.object(monitororder.order_retry, "activate_claimed_replacement", return_value="activated"), \
+             patch.object(monitororder.order_retry, "begin_claimed_submit", return_value={"place_kwargs": {"client_order_id": "MO_TA_cid"}}), \
+             patch.object(monitororder.accepted_order_persistence, "complete_accepted_claim", return_value=True), \
+             patch.object(monitororder.order_retry, "complete_claim", return_value=True), \
+             patch.object(monitororder.mkt, "order_filter_refusal", return_value=None), \
+             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
+             patch.object(monitororder.api, "cancel_order", return_value=True) as mock_cancel, \
+             patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", terminal=False)), \
+             patch.object(monitororder.mkt, "place", return_value={"orderId": 7777}) as mock_place, \
+             patch("alertnotifiers.notify"):
+            monitororder.monitor_open_orders_by_type("BTCUSDC", "BUY")
+            mock_cancel.assert_called_once_with("BTCUSDC", 701)
+            mock_place.assert_called_once()
+            self.assertEqual(mock_enqueue.call_args[0][3].get("prefix"), "MO_TA_OR")
+
+    def test_tradeall_cancels_outbox_accepted_orders_and_resolves_tracker(self):
+        import tradeall as ta
+        import order_retry as oq
+
+        ta._symbol_order_ids.clear()
+        with patch.object(ta.api, "cancel_expired_orders"), \
+             patch.object(ta.mkt, "cancel_order", return_value=True) as mock_cancel, \
+             patch.object(oq, "get_accepted_order_ids_for_owner", return_value=["10574289378"]), \
+             patch.object(oq, "resolve_accepted_order", return_value=True) as mock_resolve, \
+             patch.object(ta, "_fire_order", return_value={"orderId": 10574512957}):
+            order_ids = ta.track_and_place_order("BUY", "BTCUSDC", 1, 82125.73, 82207.94)
+            mock_cancel.assert_called_once_with("BTCUSDC", "10574289378")
+            mock_resolve.assert_called_once_with("BTCUSDC", "10574289378")
+            self.assertEqual(order_ids, [10574512957])
+
+    def test_monitortrades_hard_tp_preserves_8_decimals_and_passes_tp_kind(self):
+        import monitortrades as mt
+
+        snapshot = MagicMock()
+        snapshot.symbol = "BTCUSDC"
+        snapshot.sellable_qty = 0.00066
+        snapshot.current_time_s = 2000.0
+        snapshot.gain_pct = 18.5
+        snapshot.current_price = 95000.0
+        inst = MagicMock()
+
+        with patch.dict(mt._hard_tp_last, {}, clear=True), \
+             patch.object(mt, "_place_guarded", return_value=True) as mock_place, \
+             patch.object(mt, "_resolve_exit") as mock_resolve:
+            sold = mt._evaluate_hard_take_profit(
+                inst, snapshot, hard_tp_pct=0.17, hard_tp_frac=0.5,
+                hard_tp_cd=3600.0, min_qty=0.00001, sbs=3600.0,
+            )
+            self.assertTrue(sold)
+            self.assertEqual(mock_place.call_args[0][3], 0.00033)
+            self.assertEqual(mock_place.call_args[1].get("kind"), "TP")
+            mock_resolve.assert_called_once_with("BTCUSDC", inst, kind="TP")
+
+

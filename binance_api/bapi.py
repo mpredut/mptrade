@@ -147,12 +147,32 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
         open_orders = client.get_open_orders(symbol=symbol)
         #print(open_orders)
         filtered_orders = {}
+        accepted_owner_map = None
         for order in open_orders:
             if order['side'] != order_type.upper():
                 continue
             cid = str(order.get('clientOrderId') or '')
             if allowed_owners is not None and not rc.order_matches_owner(cid, allowed_owners):
-                continue
+                if cid.startswith("OR_"):
+                    if accepted_owner_map is None:
+                        try:
+                            import order_retry
+                            accepted_owner_map = order_retry.get_accepted_order_owner_map()
+                        except Exception:
+                            accepted_owner_map = {}
+                    inferred = (
+                        accepted_owner_map.get(str(order.get('orderId') or ''))
+                        or accepted_owner_map.get(cid)
+                    )
+                    allowed_set = (
+                        {allowed_owners.lower()}
+                        if isinstance(allowed_owners, str)
+                        else {str(o).lower() for o in allowed_owners}
+                    )
+                    if not inferred or inferred.lower() not in allowed_set:
+                        continue
+                else:
+                    continue
             original_qty = float(order['origQty'])
             executed_qty = float(order.get('executedQty') or 0.0)
             filtered_orders[order['orderId']] = {
@@ -220,6 +240,11 @@ def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
         if current_time - order_time > expire_time:
             cancel = cancel_order(symbol, order_id)
             if cancel:
+                try:
+                    import order_retry
+                    order_retry.resolve_accepted_order(symbol, order_id)
+                except Exception:
+                    pass
                 print(f"Cancelled {order_type} order with ID: {order_id} due to expiration.")
             else:
                  print(f"Needs cancel because expiration!")

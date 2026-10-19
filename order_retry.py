@@ -335,8 +335,6 @@ def _same_deferred_stream(left, right):
             or item.get("last_failure_reason") not in _CONSOLIDATED_DEFERRAL_REASONS
             for item in (left, right)):
         return False
-    if left.get("last_failure_reason") != right.get("last_failure_reason"):
-        return False
     left_provider = str(left.get("provider_name") or "").strip().lower()
     right_provider = str(right.get("provider_name") or "").strip().lower()
     provider_matches = (
@@ -514,14 +512,31 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
     prefix = placement.get("prefix") or (
         f"{placement.get('owner')}_OR" if placement.get("owner") else None
     )
-    if not prefix and kind and "monitor_order_replace" in str(kind):
-        parent_owner = placement.get("parent_owner")
-        if parent_owner == "manual":
-            prefix = "MO_MN_OR"
-        elif parent_owner == "tradeall":
-            prefix = "MO_TA_OR"
-        else:
-            prefix = "MO_OR"
+    if not prefix and kind:
+        kind_s = str(kind).strip()
+        if "monitor_order_replace" in kind_s:
+            parent_owner = placement.get("parent_owner")
+            if parent_owner == "manual":
+                prefix = "MO_MN_OR"
+            elif parent_owner == "tradeall":
+                prefix = "MO_TA_OR"
+            else:
+                prefix = "MO_OR"
+        elif kind_s in {"STOP", "TP"}:
+            prefix = "MT_OR"
+        elif (
+            kind_s == "trend_signal"
+            or kind_s.startswith((
+                "kalman_primary_",
+                "small_window_",
+                "accel_surge_",
+                "trend_confirmed_",
+                "consistent_or_old_",
+                "slope<=",
+                "slope>=",
+            ))
+        ):
+            prefix = "TA_OR"
     if not prefix:
         prefix = "OR"
     placement.setdefault("client_order_id", _client_order_id(record_id, 0, prefix=prefix))
@@ -901,6 +916,95 @@ def get_accepted_order_ttl_map() -> dict:
             except (TypeError, ValueError):
                 continue
     return res
+
+
+def infer_record_owner(rec: dict) -> str:
+    """Infer the logical bot owner of a durable outbox record."""
+    if not isinstance(rec, dict):
+        return "unspecified"
+    placement = dict(rec.get("place_kwargs") or {})
+    parent_owner = str(
+        rec.get("parent_owner") or placement.get("parent_owner") or ""
+    ).strip().lower()
+    if parent_owner and parent_owner not in {"unknown", "unspecified", "order_retry"}:
+        return parent_owner
+    owner = "unspecified"
+    cid = str(placement.get("client_order_id") or rec.get("prefix") or "")
+    if cid:
+        try:
+            from binance_api import order_id_context as rc
+            owner = rc.resolve_order_owner(cid)
+        except Exception:
+            owner = "unspecified"
+    if owner not in {"unknown", "unspecified", "order_retry"} and not str(owner).startswith("alt:"):
+        return owner
+    kind = str(rec.get("kind") or "").strip()
+    if "monitor_order_replace" in kind:
+        return "monitororder"
+    if kind in {"STOP", "TP"}:
+        return "monitortrades"
+    if (
+        kind == "trend_signal"
+        or kind.startswith((
+            "kalman_primary_",
+            "small_window_",
+            "accel_surge_",
+            "trend_confirmed_",
+            "consistent_or_old_",
+            "slope<=",
+            "slope>=",
+        ))
+    ):
+        return "tradeall"
+    return owner
+
+
+def get_accepted_order_owner_map() -> dict:
+    """Return a mapping of order_id and client_order_id to logical bot owner for active accepted orders."""
+    res = {}
+    try:
+        records = load_all()
+    except Exception:
+        return res
+    for r in records:
+        if str(r.get("lifecycle") or "").lower() != "accepted":
+            continue
+        inferred = infer_record_owner(r)
+        if not inferred or inferred in {"unknown", "unspecified", "order_retry"} or str(inferred).startswith("alt:"):
+            continue
+        oid = r.get("order_id")
+        if oid:
+            res[str(oid)] = inferred
+        cid = dict(r.get("place_kwargs") or {}).get("client_order_id")
+        if cid:
+            res[str(cid)] = inferred
+    return res
+
+
+def get_accepted_order_ids_for_owner(symbol: str, owner: str) -> list:
+    """Return active accepted order_ids for ``symbol`` belonging to logical ``owner``."""
+    target_sym = str(symbol or "").strip().upper()
+    target_owner = str(owner or "").strip().lower()
+    if not target_sym or not target_owner:
+        return []
+    out = []
+    try:
+        records = load_all()
+    except Exception:
+        return out
+    for r in records:
+        if str(r.get("lifecycle") or "").lower() != "accepted":
+            continue
+        if str(r.get("symbol") or "").strip().upper() != target_sym:
+            continue
+        oid = r.get("order_id")
+        if not oid:
+            continue
+        if infer_record_owner(r) == target_owner:
+            oid_str = str(oid)
+            if oid_str not in out:
+                out.append(oid_str)
+    return out
 
 
 def load_validated(now=None):
@@ -1316,6 +1420,8 @@ def activate_claimed_replacement(claimed, qty, now=None):
     if not math.isfinite(qty) or qty < 0:
         return None
     result = None
+    replaced_order_id = None
+    replaced_symbol = None
     _ensure_dir()
     with FileLock(LOCK_FILE):
         existing = _read_nolock()
@@ -1333,6 +1439,8 @@ def activate_claimed_replacement(claimed, qty, now=None):
             current_qty = float(rec.get("qty") or 0.0)
             if qty > current_qty + max(1e-12, current_qty * 1e-9):
                 break
+            replaced_order_id = str(rec.get("replaces_order_id") or "").strip()
+            replaced_symbol = str(rec.get("symbol") or "").strip().upper()
             if qty <= max(1e-12, current_qty * 1e-9):
                 existing.pop(index)
                 result = "resolved"
@@ -1348,8 +1456,44 @@ def activate_claimed_replacement(claimed, qty, now=None):
                 result = "activated"
             break
         if result is not None:
+            if replaced_order_id and replaced_symbol:
+                existing = [
+                    item for item in existing
+                    if not (
+                        str(item.get("lifecycle") or "").lower() == "accepted"
+                        and str(item.get("symbol") or "").strip().upper() == replaced_symbol
+                        and str(item.get("order_id") or "").strip() == replaced_order_id
+                        and not _record_has_claim(item)
+                    )
+                ]
             _write_nolock(existing)
     return result
+
+
+def resolve_accepted_order(symbol, order_id) -> bool:
+    """Remove an unclaimed ``accepted`` tracker after intentional external cancellation."""
+    target_sym = str(symbol or "").strip().upper()
+    target_oid = str(order_id or "").strip()
+    if not target_sym or not target_oid:
+        return False
+    removed = False
+    _ensure_dir()
+    with FileLock(LOCK_FILE):
+        existing = _read_nolock()
+        remaining = []
+        for rec in existing:
+            if (
+                str(rec.get("lifecycle") or "").lower() == "accepted"
+                and str(rec.get("symbol") or "").strip().upper() == target_sym
+                and str(rec.get("order_id") or "").strip() == target_oid
+                and not _record_has_claim(rec)
+            ):
+                removed = True
+            else:
+                remaining.append(rec)
+        if removed:
+            _write_nolock(remaining)
+    return removed
 
 
 @dataclass(frozen=True)

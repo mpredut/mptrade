@@ -965,18 +965,18 @@ def _evaluate_hard_take_profit(
         return False
     current_time_s = snapshot.current_time_s
     last_hard = _hard_tp_last.get(symbol, 0)
-    if current_time_s - last_hard < hard_tp_cd:
+    if last_hard > 0 and current_time_s - last_hard < hard_tp_cd:
         print(f"[HARD-TP] {symbol} +{snapshot.gain_pct:.1f}% but in cooldown (the last one "
               f"{u.secondsToHours(current_time_s - last_hard):.1f}h)")
         return False
-    hard_qty = round(sellable_qty * hard_tp_frac, 4)
+    hard_qty = round(sellable_qty * hard_tp_frac, 8)
     print(f"[HARD-TP] {symbol} +{snapshot.gain_pct:.1f}% >= {hard_tp_pct*100:.0f}% "
           f"-> vand {hard_tp_frac*100:.0f}% ({hard_qty}) INDIFERENT de trend")
     hard_tp_outcome_ctx = {}
     placed = _place_guarded(
         inst, "SELL", snapshot.current_price, hard_qty, min_qty,
         safeback_seconds=sbs, force=True, cancelorders=True,
-        hours=MT_SELL_SAFEBACK_HOURS,
+        hours=MT_SELL_SAFEBACK_HOURS, kind="TP",
         _outcome_context=hard_tp_outcome_ctx,
     )
     if placed:
