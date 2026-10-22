@@ -40,14 +40,25 @@ def _margins(**overrides):
 # =====================================================================
 
 def test_internal_guard_non_buy_order_passes():
+    # Small SELL order (< sell_guard_min_notional_eur) is exempt
     allowed, reason, scale = check_internal_order_guards(
         symbol="BTCUSDC",
         side="SELL",
         price=60000.0,
     )
     assert allowed is True
-    assert reason == "not_buy_side"
+    assert reason == "small_sell_exempt"
     assert scale == 1.0
+
+    # Unsupported side passes
+    allowed_hold, reason_hold, scale_hold = check_internal_order_guards(
+        symbol="BTCUSDC",
+        side="HOLD",
+        price=60000.0,
+    )
+    assert allowed_hold is True
+    assert reason_hold == "not_supported_side"
+    assert scale_hold == 1.0
 
 
 def test_internal_order_guards_off():

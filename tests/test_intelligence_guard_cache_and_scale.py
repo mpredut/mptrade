@@ -1413,5 +1413,270 @@ class TestBatch6IntelligenceAndRoutingFixes:
         api._provider_explicit_or_routed.assert_called_once_with("SOLUSD", "KRAKEN")
         mock_kraken.place_order.assert_called_once_with("SOLUSD", "BUY", 150.0, 2.0)
 
+    def test_batch7_high_stake_guard_symmetric_buy_sell_prompt_and_telemetry(self):
+        """HighStakeGuard prompt and telemetry must be symmetric for BUY and SELL."""
+        from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+
+        prompts = []
+        class FakeGeminiClient:
+            def query_json(self, prompt, timeout_sec=None, thread_title=None):
+                prompts.append((thread_title, prompt))
+                return {"decision": "APPROVED", "suggested_scale": 1.0, "reason": "ok"}
+
+        guard = HighStakeGuard(
+            gemini_client=FakeGeminiClient(),
+            min_notional_eur=1000.0,
+            timeout_sec=1.0,
+            fallback_action="allow",
+            cache_ttl_sec=0.0,
+        )
+        guard.check("BTCUSDC", "BUY", 85000.0, 0.05, notional_eur=4250.0, telemetry={"Orderbook Ask Wall Ahead": "$2.5M"})
+        guard.check("BTCUSDC", "SELL", 85000.0, 0.05, notional_eur=4250.0, telemetry={"Orderbook Bid Wall Ahead": "$3.1M"})
+
+        assert len(prompts) == 2
+        buy_prompt = prompts[0][1]
+        sell_prompt = prompts[1][1]
+
+        assert "HIGH-VALUE BUY order" in buy_prompt
+        assert "below 0.80 in a FLAT or BEAR market" in buy_prompt
+        assert "Orderbook Ask Wall Ahead: $2.5M" in buy_prompt
+
+        assert "HIGH-VALUE SELL order" in sell_prompt
+        assert "above 1.25 in a FLAT or BULL market" in sell_prompt
+        assert "Orderbook Bid Wall Ahead: $3.1M" in sell_prompt
+        assert "CAPITULATION & SQUEEZE PROTECTION" in sell_prompt
+
+    def test_batch7_parabolic_and_weibull_symmetric_sell_and_direction_aware(self):
+        """ParabolicSurgeGuard and WeibullExhaustionGuard must operate symmetrically on BUY and SELL."""
+        from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+        from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+        from internal_order_guard import check_internal_order_guards
+
+        p_guard = ParabolicSurgeGuard(surge_threshold_pct=10.0, pullback_required_pct=2.0)
+
+        # Vertical dump: 100 -> 80 (-20% crash) blocks SELL until +2% rebound (>= 81.6)
+        dump_history = [(100.0, 100.0), (200.0, 95.0), (300.0, 80.0)]
+        dec_sell_dump = p_guard.check("SOLUSDC", "SELL", 80.0, price_history=dump_history, now=300.0)
+        assert dec_sell_dump.allowed is False
+        assert "parabolic_dump_active" in dec_sell_dump.reason
+
+        # Partial rebound to 81.0 (+1.25% < 2.0%) still deferred
+        dec_sell_wait = p_guard.check("SOLUSDC", "SELL", 81.0, price_history=dump_history, now=350.0)
+        assert dec_sell_wait.allowed is False
+        assert "parabolic_dump_active" in dec_sell_wait.reason
+        assert "pullback=1.25% < required 2.00%" in dec_sell_wait.reason
+
+        # Full rebound to 82.0 (+2.5% >= 2.0%) clears state and allows SELL
+        dec_sell_ok = p_guard.check("SOLUSDC", "SELL", 82.0, price_history=dump_history, now=400.0)
+        assert dec_sell_ok.allowed is True
+
+        # WeibullExhaustionGuard direction-awareness:
+        # BUY in exhausted bear trend is favorable (buying the dip), while BUY in exhausted bull trend is penalized.
+        # SELL in exhausted bull trend is favorable (taking profit), while SELL in exhausted bear trend is penalized.
+        w_guard = WeibullExhaustionGuard(default_p90_days=10.0, policy="downscale", exhausted_scale=0.5)
+        dur_15d = 15.0 * 86400.0
+
+        dec_buy_bull = w_guard.check("BTCUSDC", "BUY", trend_duration_seconds=dur_15d, trend_direction="bull")
+        assert dec_buy_bull.suggested_scale == pytest.approx(0.5)
+
+        dec_buy_bear = w_guard.check("BTCUSDC", "BUY", trend_duration_seconds=dur_15d, trend_direction="bear")
+        assert dec_buy_bear.allowed is True
+        assert dec_buy_bear.suggested_scale == pytest.approx(1.0)
+        assert "trend_direction_favorable" in dec_buy_bear.reason
+
+        dec_sell_bear = w_guard.check("BTCUSDC", "SELL", trend_duration_seconds=dur_15d, trend_direction="bear")
+        assert dec_sell_bear.suggested_scale == pytest.approx(0.5)
+
+        dec_sell_bull = w_guard.check("BTCUSDC", "SELL", trend_duration_seconds=dur_15d, trend_direction="bull")
+        assert dec_sell_bull.allowed is True
+        assert dec_sell_bull.suggested_scale == pytest.approx(1.0)
+        assert "trend_direction_favorable" in dec_sell_bull.reason
+
+        # check_internal_order_guards enforces parabolic dump on large SELL (>= sell_guard_min_notional_eur)
+        margins = _margins(
+            internal_guard_mode="enforce",
+            intelligence_guards_mode="enforce",
+            parabolic_surge_pct=10.0,
+            parabolic_pullback_pct=2.0,
+            sell_guard_min_notional_eur=1000.0,
+        )
+        ok_sell, reason_sell, scale_sell = check_internal_order_guards(
+            symbol="SOLUSDC",
+            side="SELL",
+            price=80.0,
+            notional_eur=2500.0,
+            price_history=dump_history,
+            margins=margins,
+            now=300.0,
+        )
+        assert ok_sell is False
+        assert "parabolic_dump_active" in reason_sell
+        assert scale_sell == 0.0
+
+    def test_batch7_whale_divergence_symmetric_sell_checks(self):
+        """WhaleDivergenceGuard must symmetrically protect SELL orders against capitulation, squeeze, and taker buying."""
+        from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+        from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+
+        guard = WhaleDivergenceGuard(
+            min_taker_ratio=0.65,
+            taker_downscale_threshold=0.80,
+            taker_downscaled_scale=0.50,
+            block_liquidation_cascade=True,
+            severe_cascade_oi_pct=-5.0,
+        )
+
+        # 1. Selling into severe long liquidation capitulation (OI <= -5% and regime == long_liquidation) -> DEFER
+        cap_snap = WhalePositioningSnapshot(
+            symbol="BTCUSDC",
+            top_traders_long_ratio=1.0,
+            top_traders_long_pct=0.50,
+            open_interest_usd=100_000_000.0,
+            open_interest_1h_change_pct=-7.5,
+            taker_buy_sell_ratio=0.70,
+            taker_buy_vol_usd=35_000_000.0,
+            taker_sell_vol_usd=50_000_000.0,
+            divergence_regime="long_liquidation",
+            ts=time.time(),
+        )
+        dec_cap = guard.check("BTCUSDC", "SELL", snapshot=cap_snap)
+        assert dec_cap.allowed is False
+        assert "selling_into_long_liquidation_capitulation" in dec_cap.reason
+
+        # 2. Selling into short squeeze / whale accumulation -> DEFER
+        sqz_snap = WhalePositioningSnapshot(
+            symbol="BTCUSDC",
+            top_traders_long_ratio=1.6,
+            top_traders_long_pct=0.62,
+            open_interest_usd=100_000_000.0,
+            open_interest_1h_change_pct=3.5,
+            taker_buy_sell_ratio=1.15,
+            taker_buy_vol_usd=57_500_000.0,
+            taker_sell_vol_usd=50_000_000.0,
+            divergence_regime="short_squeeze",
+            ts=time.time(),
+        )
+        dec_sqz = guard.check("BTCUSDC", "SELL", snapshot=sqz_snap)
+        assert dec_sqz.allowed is False
+        assert "whale_squeeze_or_accumulation_active" in dec_sqz.reason
+
+        # 3. Severe taker buying dominance (taker_ratio > 1 / 0.65 = 1.538) -> DEFER
+        sev_buy_snap = WhalePositioningSnapshot(
+            symbol="BTCUSDC",
+            top_traders_long_ratio=1.0,
+            top_traders_long_pct=0.50,
+            open_interest_usd=100_000_000.0,
+            open_interest_1h_change_pct=0.5,
+            taker_buy_sell_ratio=1.65,
+            taker_buy_vol_usd=82_500_000.0,
+            taker_sell_vol_usd=50_000_000.0,
+            divergence_regime="neutral",
+            ts=time.time(),
+        )
+        dec_sev = guard.check("BTCUSDC", "SELL", snapshot=sev_buy_snap)
+        assert dec_sev.allowed is False
+        assert "severe_taker_buying_dominated" in dec_sev.reason
+
+        # 4. Moderate taker buying pressure (1.25 < taker_ratio <= 1.538) -> DOWNSCALE_QTY
+        mod_buy_snap = WhalePositioningSnapshot(
+            symbol="BTCUSDC",
+            top_traders_long_ratio=1.0,
+            top_traders_long_pct=0.50,
+            open_interest_usd=100_000_000.0,
+            open_interest_1h_change_pct=0.5,
+            taker_buy_sell_ratio=1.35,
+            taker_buy_vol_usd=67_500_000.0,
+            taker_sell_vol_usd=50_000_000.0,
+            divergence_regime="neutral",
+            ts=time.time(),
+        )
+        dec_mod = guard.check("BTCUSDC", "SELL", snapshot=mod_buy_snap)
+        assert dec_mod.allowed is True
+        assert dec_mod.suggested_scale == pytest.approx(0.50)
+        assert "moderate_taker_buying_pressure" in dec_mod.reason
+
+    def test_batch7_dynamic_window_canonical_extractors_and_per_side_suggested_scale(self, monkeypatch):
+        """check_math_profit_reference dynamic mode must support Kraken/Hyperliquid fill keys (px, cost/vol, T),
+        and SELL suggested_scale must not overwrite BUY suggested_scale on a shared regime_context."""
+        monkeypatch.setattr(order_guard, "get_profit_guard_mode_cfg", lambda *a, **k: "dynamic")
+        monkeypatch.setattr(order_guard, "_symbol_trend", lambda *a, **k: "flat")
+        monkeypatch.setattr(order_guard, "get_dynamic_window_sec_cfg", lambda *a, **k: 14400.0)
+
+        provider = MagicMock()
+        provider.name = "hyperliquid"
+
+        # Hyperliquid fills use 'px', 'sz', and 'T' (milliseconds), not 'price' or 'timestamp'
+        def fake_get_orders(symbol, side, window_s):
+            if side == "SELL":
+                return [
+                    {"px": "95.0", "sz": "1.0", "T": 1000000},
+                    {"px": "105.0", "sz": "1.0", "T": 3000000},
+                ]
+            if side == "BUY":
+                return [
+                    {"px": "93.0", "sz": "1.0", "T": 2000000},
+                ]
+            return []
+
+        provider.get_orders.side_effect = fake_get_orders
+        allowed = order_guard.check_math_profit_reference(
+            provider, "HYPE/USDC", "BUY", 100.0, 1.15, window_ref=95.0
+        )
+        assert allowed is True
+
+        # Verify SELL downscale does not overwrite regime_context.suggested_scale used for BUY sizing
+        dec = MarketRegimeDecision(
+            regime="bear",
+            gradient=-0.5,
+            epsilon=0.1,
+            strength=5.0,
+            fresh=True,
+            reason="signal",
+            source="mock",
+        )
+        ctx = MarketRegimeContext.from_decision(
+            dec,
+            evaluated_at=1000.0,
+            symbol="BTCUSDC",
+            provider="binance",
+            trend_duration_seconds=15.0 * 86400.0,
+        )
+        assert getattr(ctx, "suggested_scale", None) is None
+
+        # Evaluate SELL on shared context (bear trend exhausted -> SELL downscaled to 0.5)
+        ok_s, reason_s, scale_s = order_guard.check_intelligence_guards(
+            "binance",
+            "BTCUSDC",
+            "SELL",
+            85000.0,
+            regime_context=ctx,
+            notional_eur=5000.0,
+            now=1005.0,
+            bypass_guards={"p2", "p3", "p4"},
+        )
+        assert ok_s is True
+        assert scale_s == pytest.approx(0.25)
+        # BUY suggested_scale on ctx must remain unset (None), while _suggested_scale_by_side["SELL"] is 0.25
+        assert getattr(ctx, "suggested_scale", None) is None
+        assert ctx._suggested_scale_by_side["SELL"] == pytest.approx(0.25)
+
+        # Evaluate BUY on the same bear context (buying in exhausted bear trend is favorable -> scale 1.0)
+        ok_b, reason_b, scale_b = order_guard.check_intelligence_guards(
+            "binance",
+            "BTCUSDC",
+            "BUY",
+            85000.0,
+            regime_context=ctx,
+            notional_eur=5000.0,
+            now=1005.0,
+            bypass_guards={"p2", "p3", "p4"},
+        )
+        assert ok_b is True
+        assert scale_b == pytest.approx(1.0)
+        assert ctx.suggested_scale == pytest.approx(1.0)
+        assert ctx._suggested_scale_by_side["BUY"] == pytest.approx(1.0)
+        assert ctx._suggested_scale_by_side["SELL"] == pytest.approx(0.25)
+
+
 
 

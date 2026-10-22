@@ -39,11 +39,10 @@ class ParabolicSurgeGuard:
         volatility_1h_pct: Optional[float] = None,
         now: Optional[float] = None,
     ) -> GuardDecision:
-        """Evaluate whether a parabolic surge blocks or defers the proposed order side."""
+        """Evaluate whether a parabolic surge (BUY) or vertical dump (SELL) defers the proposed order side."""
         side_u = str(side or "").upper()
-        if side_u != "BUY":
-            # Parabolic spikes are favorable for exits/sells, never blocked.
-            return GuardDecision.allow("ParabolicSurgeGuard", "non_buy_order")
+        if side_u not in ("BUY", "SELL"):
+            return GuardDecision.allow("ParabolicSurgeGuard", "unsupported_side_skipped")
 
         if not math.isfinite(current_price) or current_price <= 0:
             return GuardDecision.allow("ParabolicSurgeGuard", "invalid_price_skipped")
@@ -55,8 +54,9 @@ class ParabolicSurgeGuard:
         if volatility_1h_pct is not None and volatility_1h_pct > 0:
             threshold = max(self.surge_threshold_pct, volatility_1h_pct * self.vol_multiplier)
 
+        state_key = symbol if side_u == "BUY" else f"{symbol}:SELL"
         st = self._states.setdefault(
-            symbol,
+            state_key,
             {
                 "peak": current_price,
                 "surge_active": False,
@@ -66,72 +66,82 @@ class ParabolicSurgeGuard:
             },
         )
 
-        # Expire stale peak/surge state once a full window has elapsed without new highs
+        # Expire stale peak/trough state once a full window has elapsed without new extremes
         if ts_now > 0 and st.get("ts", 0) > 0 and (ts_now - st["ts"]) >= self.window_seconds:
             st["surge_active"] = False
             st["peak"] = current_price
             st["surge_start_px"] = current_price
             st["ts"] = ts_now
 
-        # Update peak if current price makes a new high
-        if current_price > st["peak"]:
+        # Update extreme (peak for BUY, trough for SELL) if current price extends the move
+        if (side_u == "BUY" and current_price > st["peak"]) or (side_u == "SELL" and current_price < st["peak"]):
             st["peak"] = current_price
             st["ts"] = ts_now
 
-        # Check chronological upward move in rolling window if history provided
+        # Check chronological directional move in rolling window if history provided
         if price_history and len(price_history) >= 2:
             window_start_ts = max(ts_now - self.window_seconds, float(st.get("disarmed_peak_ts", 0.0)))
             window_pts = [(float(t), float(p)) for (t, p) in price_history if t >= window_start_ts and p > 0]
             if ts_now >= window_start_ts and (not window_pts or window_pts[-1] != (float(ts_now), float(current_price))):
                 window_pts.append((float(ts_now), float(current_price)))
             if window_pts:
-                running_low = window_pts[0][1]
+                running_anchor = window_pts[0][1]
                 best_move_pct = 0.0
-                surge_low_px = running_low
-                surge_peak_px = window_pts[0][1]
-                surge_peak_ts = window_pts[0][0]
+                surge_start_px = running_anchor
+                surge_extreme_px = window_pts[0][1]
+                surge_extreme_ts = window_pts[0][0]
                 for t, p in window_pts:
-                    if p < running_low:
-                        running_low = p
-                    if running_low > 0:
-                        move_pct = (p - running_low) / running_low * 100.0
-                        if move_pct >= best_move_pct:
-                            best_move_pct = move_pct
-                            surge_low_px = running_low
-                            surge_peak_px = p
-                            surge_peak_ts = t
+                    if side_u == "BUY":
+                        if p < running_anchor:
+                            running_anchor = p
+                        move_pct = (p - running_anchor) / running_anchor * 100.0 if running_anchor > 0 else 0.0
+                    else:
+                        if p > running_anchor:
+                            running_anchor = p
+                        move_pct = (running_anchor - p) / running_anchor * 100.0 if running_anchor > 0 else 0.0
+                    if move_pct >= best_move_pct:
+                        best_move_pct = move_pct
+                        surge_start_px = running_anchor
+                        surge_extreme_px = p
+                        surge_extreme_ts = t
                 if best_move_pct >= threshold:
                     st["surge_active"] = True
-                    st["surge_start_px"] = surge_low_px
-                    st["peak"] = max(st["peak"], surge_peak_px)
-                    st["ts"] = surge_peak_ts
-                elif st["surge_active"] and surge_peak_px > st["peak"]:
-                    st["peak"] = surge_peak_px
-                    st["ts"] = surge_peak_ts
+                    st["surge_start_px"] = surge_start_px
+                    st["peak"] = max(st["peak"], surge_extreme_px) if side_u == "BUY" else min(st["peak"], surge_extreme_px)
+                    st["ts"] = surge_extreme_ts
+                elif st["surge_active"]:
+                    if (side_u == "BUY" and surge_extreme_px > st["peak"]) or (side_u == "SELL" and surge_extreme_px < st["peak"]):
+                        st["peak"] = surge_extreme_px
+                        st["ts"] = surge_extreme_ts
 
-        # If surge is active, verify if price has pulled back sufficiently from peak
-        # or if the spike has consolidated over the full window without making new highs
+        # If surge/dump is active, verify if price has retraced sufficiently from extreme
+        # or if the spike has consolidated over the full window without making new extremes
         if st["surge_active"]:
-            peak = st["peak"]
-            pullback_pct = (peak - current_price) / peak * 100.0 if peak > 0 else 0.0
+            extreme = st["peak"]
+            if side_u == "BUY":
+                pullback_pct = (extreme - current_price) / extreme * 100.0 if extreme > 0 else 0.0
+            else:
+                pullback_pct = (current_price - extreme) / extreme * 100.0 if extreme > 0 else 0.0
 
             if ts_now > 0 and st.get("ts", 0) > 0 and (ts_now - st["ts"]) >= self.window_seconds:
-                # Spike has consolidated past the window without new highs; surge disarmed
+                # Spike has consolidated past the window without new extremes; disarmed
                 st["surge_active"] = False
                 st["disarmed_peak_ts"] = max(float(st.get("disarmed_peak_ts", 0.0)), float(st.get("ts", 0.0)))
                 st["peak"] = current_price
                 st["ts"] = ts_now
             elif pullback_pct < self.pullback_required_pct:
+                label = "parabolic_surge_active" if side_u == "BUY" else "parabolic_dump_active"
+                ext_label = "peak" if side_u == "BUY" else "trough"
                 return GuardDecision.defer(
                     "ParabolicSurgeGuard",
-                    f"parabolic_surge_active (peak={peak:.2f}, current={current_price:.2f}, "
+                    f"{label} ({ext_label}={extreme:.2f}, current={current_price:.2f}, "
                     f"pullback={pullback_pct:.2f}% < required {self.pullback_required_pct:.2f}%)",
-                    peak=peak,
+                    peak=extreme,
                     pullback_pct=pullback_pct,
                     required_pullback=self.pullback_required_pct,
                 )
             else:
-                # Pullback achieved, surge disarmed
+                # Retracement achieved, surge/dump disarmed
                 st["surge_active"] = False
                 st["disarmed_peak_ts"] = max(float(st.get("disarmed_peak_ts", 0.0)), float(st.get("ts", 0.0)))
                 st["peak"] = current_price

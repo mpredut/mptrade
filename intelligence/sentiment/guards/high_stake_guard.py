@@ -35,6 +35,10 @@ def collect_pretrade_telemetry(
                 telemetry["Orderbook Ask Wall Ahead"] = f"${ob_snap.largest_ask_wall_usd:,.0f} @ ${ob_snap.largest_ask_wall_price:,.2f}"
             else:
                 telemetry["Orderbook Ask Wall Ahead"] = "None detected within 2%"
+            if getattr(ob_snap, "largest_bid_wall_usd", 0.0) > 100_000.0:
+                telemetry["Orderbook Bid Wall Ahead"] = f"${ob_snap.largest_bid_wall_usd:,.0f} @ ${ob_snap.largest_bid_wall_price:,.2f}"
+            else:
+                telemetry["Orderbook Bid Wall Ahead"] = "None detected within 2%"
     except Exception:
         pass
 
@@ -223,11 +227,23 @@ class HighStakeGuard:
                 "evaluating whether this entry is sound or if there are critical red flags "
                 "(e.g., euphoric top buying, aggressive whale distribution, severe funding imbalance, or active cascade)."
             )
+            policy_rules = (
+                "CORE RISK POLICIES & PRIORITY RULES:\n"
+                "1. WHALE TAKER FLOW SUPREMACY: Dynamic Whale Taker Flow (Buyer/Seller ratio) strictly trumps static open positions (% Top Traders Long) and Orderbook Bid Depth. Static long holdings can be trapped or liquidated. If Whale Taker Flow is below 0.85 (net sell aggression), you must NEVER issue an unrestricted APPROVED. If Whale Taker Flow is below 0.80 in a FLAT or BEAR market, you must issue REJECTED (or DOWNSCALE <= 0.25 only if at verified structural support).\n"
+                "2. ORDERBOOK SUPPORT LIMITATION: Bid walls and orderbook depth are passive and can be pulled or absorbed by aggressive market selling. Do NOT use orderbook depth alone to override persistent taker selling.\n"
+                "3. MACRO & GEOPOLITICAL RISK: If Macro Sentiment recommends CAUTION or Geopolitical threat is elevated, do not fight negative taker flow.\n\n"
+            )
         else:
             action_desc = "HIGH-VALUE SELL order"
             risk_context = (
                 "evaluating whether this sale is sound or if there are critical red flags "
                 "(e.g., dumping directly into major whale support/walls, panic-selling at local bottom during whale accumulation, or excessive slippage)."
+            )
+            policy_rules = (
+                "CORE RISK POLICIES & PRIORITY RULES:\n"
+                "1. WHALE TAKER FLOW SUPREMACY: Dynamic Whale Taker Flow (Buyer/Seller ratio) strictly trumps static open positions and Orderbook Ask Depth. Static short holdings can be squeezed or liquidated. If Whale Taker Flow is above 1.18 (net buy aggression), you must NEVER issue an unrestricted APPROVED for a non-stop-loss SELL into strength. If Whale Taker Flow is above 1.25 in a FLAT or BULL market during whale accumulation or short squeeze, you must issue REJECTED (or DOWNSCALE <= 0.25 only if at verified structural resistance).\n"
+                "2. ORDERBOOK RESISTANCE LIMITATION: Ask walls and orderbook ask depth are passive and can be pulled or absorbed by aggressive market buying. Do NOT use orderbook ask depth alone to override persistent taker buying.\n"
+                "3. CAPITULATION & SQUEEZE PROTECTION: Do not approve panic-selling into extreme negative funding or active whale accumulation at local bottoms.\n\n"
             )
 
         prompt = (
@@ -236,10 +252,7 @@ class HighStakeGuard:
             f"{context_str}\n\n"
             f"Because this order exceeds €{self.min_notional_eur:,.2f} EUR, you must evaluate if executing "
             f"{risk_context}\n\n"
-            "CORE RISK POLICIES & PRIORITY RULES:\n"
-            "1. WHALE TAKER FLOW SUPREMACY: Dynamic Whale Taker Flow (Buyer/Seller ratio) strictly trumps static open positions (% Top Traders Long) and Orderbook Bid Depth. Static long holdings can be trapped or liquidated. If Whale Taker Flow is below 0.85 (net sell aggression), you must NEVER issue an unrestricted APPROVED. If Whale Taker Flow is below 0.80 in a FLAT or BEAR market, you must issue REJECTED (or DOWNSCALE <= 0.25 only if at verified structural support).\n"
-            "2. ORDERBOOK SUPPORT LIMITATION: Bid walls and orderbook depth are passive and can be pulled or absorbed by aggressive market selling. Do NOT use orderbook depth alone to override persistent taker selling.\n"
-            "3. MACRO & GEOPOLITICAL RISK: If Macro Sentiment recommends CAUTION or Geopolitical threat is elevated, do not fight negative taker flow.\n\n"
+            f"{policy_rules}"
             "Respond strictly in valid JSON format with exact keys:\n"
             "{\n"
             '  "decision": "APPROVED" | "REJECTED" | "DOWNSCALE",\n'

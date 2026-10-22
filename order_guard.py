@@ -1096,6 +1096,53 @@ def _resolve_trend_duration(symbol: str) -> float:
     return _read_cached_trend_duration(symbol)
 
 
+def _read_cached_trend_direction(symbol: str) -> Optional[str]:
+    try:
+        cachedb_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
+        p = os.path.join(cachedb_dir, "cache_price_long_trend.json")
+        if not os.path.exists(p):
+            return None
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        all_items = data.get("items", {})
+        items = all_items.get(symbol.upper())
+        if not items:
+            su_base = _normalize_base_asset(symbol)
+            for k, v in all_items.items():
+                if _normalize_base_asset(k) == su_base:
+                    items = v
+                    break
+        if items and isinstance(items, list):
+            for entry in reversed(items):
+                if isinstance(entry, dict) and entry.get("direction"):
+                    d = str(entry.get("direction")).strip().lower()
+                    if d in ("up", "down", "bull", "bear"):
+                        return d
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_trend_direction(symbol: str, regime_context=None) -> Optional[str]:
+    """Resolve long-term trend direction ('up'/'down'/'bull'/'bear') from regime_context or cache."""
+    if regime_context is not None:
+        rt = getattr(regime_context, "resolved_trend", None)
+        if isinstance(rt, str) and rt.strip().lower() in ("up", "down", "bull", "bear"):
+            return rt.strip().lower()
+    if not symbol:
+        return None
+    try:
+        import cacheManager as cm
+        trend_meta = getattr(cm, "read_long_term_trend_file", lambda s: None)(symbol)
+        if trend_meta and trend_meta.get("direction"):
+            d = str(trend_meta["direction"]).strip().lower()
+            if d in ("up", "down", "bull", "bear"):
+                return d
+    except Exception:
+        pass
+    return _read_cached_trend_direction(symbol)
+
+
 def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> Optional[List[Tuple[float, float]]]:
     """Read rolling price history from local cache for parabolic surge evaluation.
 
@@ -1255,8 +1302,8 @@ def check_intelligence_guards(
     if (
         cached_res is not None
         and not cached_res[0]
-        and side == "BUY"
-        and "parabolic_surge" in str(cached_res[1])
+        and side in ("BUY", "SELL")
+        and ("parabolic_surge" in str(cached_res[1]) or "parabolic_dump" in str(cached_res[1]))
         and (price != cached_price or now is not None)
     ):
         cached_res = None
@@ -1313,8 +1360,8 @@ def check_intelligence_guards(
     internal_active = was_cached and not skip_internal and internal_mode != "off"
 
     # Dynamic Re-evaluation for cached context:
-    # 1. Dynamic Parabolic Surge Guard (Anti-FOMO spike check evaluated on BUY only)
-    if internal_active and side == "BUY" and price > 0:
+    # 1. Dynamic Parabolic Surge / Dump Guard (Anti-FOMO on BUY, Anti-Capitulation on SELL)
+    if internal_active and price > 0:
         from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
         from intelligence.internal.guards.guard_decision import BrakeAction
         surge_pct = float(m["parabolic_surge_pct"])
@@ -1421,15 +1468,19 @@ def check_intelligence_guards(
                             effective_scale = min(effective_scale, g_scale)
                             active_reason = g_reason
 
-    # 3. Dynamic Weibull trend exhaustion check if duration provided or resolved (BUY entries only)
-    if internal_active and side == "BUY" and dur_sec and dur_sec > 0:
+    # 3. Dynamic Weibull trend exhaustion check if duration provided or resolved
+    if internal_active and dur_sec and dur_sec > 0:
         from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
         from intelligence.internal.guards.guard_decision import BrakeAction
         e_policy = str(m["weibull_exhaustion_policy"]).strip().lower()
         e_scale = float(m["weibull_exhausted_scale"])
         e_p90 = float(m["weibull_p90_days"])
         e_guard = WeibullExhaustionGuard(default_p90_days=e_p90, policy=e_policy, exhausted_scale=e_scale)
-        e_dec = e_guard.check(symbol, side, trend_duration_seconds=dur_sec)
+        if trend_duration_seconds and trend_duration_seconds > 0 and getattr(regime_context, "resolved_trend", None) is None:
+            trend_dir = None
+        else:
+            trend_dir = _resolve_trend_direction(symbol, regime_context=regime_context if valid_context else None)
+        e_dec = e_guard.check(symbol, side, trend_duration_seconds=dur_sec, trend_direction=trend_dir)
         if e_dec.brake_action != BrakeAction.NONE:
             prefix = "[INTELLIGENCE_GUARD_SHADOW]" if internal_mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
             print(f"{prefix} {side} {symbol} @ {price}: {e_dec.reason} (brake={e_dec.brake_action}, suggested_scale={e_dec.suggested_scale})")
@@ -1450,8 +1501,14 @@ def check_intelligence_guards(
             object.__setattr__(regime_context, "_intelligence_price", price)
             if computed_notional is not None:
                 object.__setattr__(regime_context, "_intelligence_notional", computed_notional)
-            object.__setattr__(regime_context, "suggested_scale", effective_scale)
-            object.__setattr__(regime_context, "intelligence_reason", active_reason)
+            scales_by_side = getattr(regime_context, "_suggested_scale_by_side", None)
+            if not isinstance(scales_by_side, dict):
+                scales_by_side = {}
+            scales_by_side[side] = effective_scale
+            object.__setattr__(regime_context, "_suggested_scale_by_side", scales_by_side)
+            if side == "BUY":
+                object.__setattr__(regime_context, "suggested_scale", effective_scale)
+                object.__setattr__(regime_context, "intelligence_reason", active_reason)
         except Exception:
             pass
     return final_res
@@ -1502,12 +1559,15 @@ def _evaluate_intelligence_guards_raw(
     active_reason = "ok"
 
     # 1. Internal Quantitative Mathematical Guards (Pillar 1 / GI1: Parabolic Surge, Weibull Exhaustion)
-    if side == "BUY" and not GUARD_REGISTRY["GI1"].is_bypassed(bypassed):
+    if not GUARD_REGISTRY["GI1"].is_bypassed(bypassed):
         from internal_order_guard import check_internal_order_guards
         int_ok, int_reason, int_scale = check_internal_order_guards(
             symbol=symbol,
             side=side,
             price=price,
+            qty=qty,
+            notional_eur=computed_notional,
+            is_stop_loss=is_stop_loss,
             price_history=price_history,
             trend_duration_seconds=trend_duration_seconds,
             regime_context=regime_context,
@@ -1637,19 +1697,18 @@ def check_math_profit_reference(
                         return False
                     recent_prices = []
                     for o in recent:
-                        try:
-                            px = float(o.get("price", 0.0) or 0.0)
-                            if px > 0:
-                                recent_prices.append(px)
-                        except (ValueError, TypeError):
+                        if not isinstance(o, dict):
                             continue
+                        px = extract_order_price(o, default=0.0)
+                        if px > 0 and math.isfinite(px):
+                            recent_prices.append(px)
                     if not recent_prices:
                         print(f"[GUARD] {side} {symbol}: dynamic window ({dyn_hours:.1f}h, trend='{trend}') has no fills; "
                               f"anchor {pos_window_ref} from older period bypassed")
                         return True
                     pos_window_ref = select_extreme_reference(recent_prices, side, strict=True)
                     if len(recent) > 1 and all(
-                        isinstance(o, dict) and float(o.get("timestamp") or o.get("time") or 0) > 0
+                        isinstance(o, dict) and (extract_timestamp_ms(o, default=0) or 0) > 0
                         for o in recent
                     ):
                         try:
@@ -1779,10 +1838,19 @@ def profit_guard(
 
     if regime_context is not None and suggested_scale < 1.0:
         try:
-            curr = getattr(regime_context, "suggested_scale", None)
-            if curr is None or suggested_scale < curr:
-                object.__setattr__(regime_context, "suggested_scale", float(suggested_scale))
-                object.__setattr__(regime_context, "intelligence_scale_reason", intel_reason)
+            side_norm = (order_type or "").upper()
+            scales_by_side = getattr(regime_context, "_suggested_scale_by_side", None)
+            if not isinstance(scales_by_side, dict):
+                scales_by_side = {}
+            curr_side = scales_by_side.get(side_norm)
+            if curr_side is None or suggested_scale < curr_side:
+                scales_by_side[side_norm] = float(suggested_scale)
+            object.__setattr__(regime_context, "_suggested_scale_by_side", scales_by_side)
+            if side_norm == "BUY":
+                curr = getattr(regime_context, "suggested_scale", None)
+                if curr is None or suggested_scale < curr:
+                    object.__setattr__(regime_context, "suggested_scale", float(suggested_scale))
+                    object.__setattr__(regime_context, "intelligence_scale_reason", intel_reason)
         except Exception:
             pass
 

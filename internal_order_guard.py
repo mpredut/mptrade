@@ -27,11 +27,23 @@ def _resolve_trend_duration(symbol: str) -> float:
         return 0.0
 
 
+def _resolve_trend_direction(symbol: str, regime_context: Any = None) -> Optional[str]:
+    """Read trend direction ('up'/'down'/'bull'/'bear'), delegating to order_guard SSOT."""
+    try:
+        from order_guard import _resolve_trend_direction as _og_resolve_dir
+        return _og_resolve_dir(symbol, regime_context=regime_context)
+    except Exception:
+        return None
+
+
 def check_internal_order_guards(
     symbol: str,
     side: str,
     price: float,
     *,
+    qty: Optional[float] = None,
+    notional_eur: Optional[float] = None,
+    is_stop_loss: bool = False,
     price_history: Optional[List[Tuple[float, float]]] = None,
     trend_duration_seconds: float = 0.0,
     regime_context: Any = None,
@@ -43,9 +55,12 @@ def check_internal_order_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
+    if is_stop_loss:
+        return True, "stop_loss_exempt", 1.0
+
     order_side = (side or "").upper()
-    if order_side != "BUY":
-        return True, "not_buy_side", 1.0
+    if order_side not in ("BUY", "SELL"):
+        return True, "not_supported_side", 1.0
 
     from order_guard import _load_margins, validate_guard_mode_cfg
     if margins is None:
@@ -56,6 +71,12 @@ def check_internal_order_guards(
     mode = validate_guard_mode_cfg(m["internal_guard_mode"], "internal_guard_mode")
     if mode == "off":
         return True, "intelligence_guards_off", 1.0
+
+    if order_side == "SELL":
+        computed_notional = float(notional_eur) if notional_eur is not None else (float(price * qty) if (price and qty) else 0.0)
+        sell_min_notional = float(m["sell_guard_min_notional_eur"])
+        if computed_notional < sell_min_notional:
+            return True, "small_sell_exempt", 1.0
 
     from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
     from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
@@ -73,7 +94,7 @@ def check_internal_order_guards(
     effective_scale = 1.0
     active_reason = "ok"
 
-    # 1. Parabolic surge check (Anti-FOMO)
+    # 1. Parabolic surge / vertical dump check (Anti-FOMO on BUY, Anti-Capitulation on SELL)
     history = price_history
     if history is None:
         try:
@@ -99,7 +120,11 @@ def check_internal_order_guards(
             dur_sec = _resolve_trend_duration(symbol)
 
     if dur_sec and dur_sec > 0:
-        e_dec = e_guard.check(symbol, order_side, trend_duration_seconds=dur_sec)
+        if trend_duration_seconds and trend_duration_seconds > 0 and getattr(regime_context, "resolved_trend", None) is None:
+            trend_dir = None
+        else:
+            trend_dir = _resolve_trend_direction(symbol, regime_context=regime_context)
+        e_dec = e_guard.check(symbol, order_side, trend_duration_seconds=dur_sec, trend_direction=trend_dir)
         if e_dec.brake_action != BrakeAction.NONE:
             prefix = "[INTELLIGENCE_GUARD_SHADOW]" if mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
             print(f"{prefix} {order_side} {symbol} @ {price}: {e_dec.reason} (brake={e_dec.brake_action}, suggested_scale={e_dec.suggested_scale})")

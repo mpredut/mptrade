@@ -33,12 +33,26 @@ class WeibullExhaustionGuard:
         trend_duration_seconds: float,
         p90_days: Optional[float] = None,
         median_days: Optional[float] = None,
+        trend_direction: Optional[str] = None,
     ) -> GuardDecision:
         """Evaluate if the trend is mature/exhausted for the requested side."""
         side_u = str(side or "").upper()
-        if side_u != "BUY":
-            # Exiting an exhausted trend is encouraged, never blocked.
-            return GuardDecision.allow("WeibullExhaustionGuard", "non_buy_order")
+        if side_u not in ("BUY", "SELL"):
+            return GuardDecision.allow("WeibullExhaustionGuard", "unsupported_side")
+
+        if trend_direction is not None:
+            raw_dir = str(trend_direction).strip().lower()
+            if raw_dir in ("up", "bull"):
+                dir_norm = "bull"
+            elif raw_dir in ("down", "bear"):
+                dir_norm = "bear"
+            else:
+                dir_norm = "flat"
+            if (side_u == "BUY" and dir_norm != "bull") or (side_u == "SELL" and dir_norm != "bear"):
+                return GuardDecision.allow(
+                    "WeibullExhaustionGuard",
+                    f"trend_direction_favorable ({dir_norm})",
+                )
 
         if not math.isfinite(trend_duration_seconds) or trend_duration_seconds <= 0:
             return GuardDecision.allow("WeibullExhaustionGuard", "no_duration_data")

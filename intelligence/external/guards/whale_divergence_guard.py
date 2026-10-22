@@ -114,21 +114,52 @@ class WhaleDivergenceGuard:
                 divergence_regime=regime,
             )
 
-        # 5. Selling into massive whale accumulation or active short squeeze
-        if (
-            side_norm == "SELL"
-            and (
+        # 5. Selling into massive whale accumulation, active short squeeze, or long-liquidation capitulation
+        if side_norm == "SELL":
+            if (
+                self.block_liquidation_cascade
+                and regime == "long_liquidation"
+                and snapshot.open_interest_1h_change_pct <= self.severe_cascade_oi_pct
+            ):
+                return GuardDecision.defer(
+                    guard_name="WhaleDivergenceGuard",
+                    reason=f"selling_into_long_liquidation_capitulation (OI_1h={snapshot.open_interest_1h_change_pct:+.1f}%, taker_ratio={snapshot.taker_buy_sell_ratio:.2f})",
+                    open_interest_change=snapshot.open_interest_1h_change_pct,
+                    divergence_regime=regime,
+                    taker_ratio=snapshot.taker_buy_sell_ratio,
+                )
+            if (
                 (regime == "accumulation" and snapshot.top_traders_long_pct >= 0.70)
                 or (regime in ("short_squeeze", "short_squeeze_primed") and snapshot.top_traders_long_pct >= 0.50)
+            ):
+                return GuardDecision.defer(
+                    guard_name="WhaleDivergenceGuard",
+                    reason=f"whale_squeeze_or_accumulation_active (regime={regime}, whales {snapshot.top_traders_long_pct*100:.1f}% long, taker_ratio={snapshot.taker_buy_sell_ratio:.2f})",
+                    open_interest_change=snapshot.open_interest_1h_change_pct,
+                    divergence_regime=regime,
+                    top_long_pct=snapshot.top_traders_long_pct,
+                )
+            max_taker_ratio = (1.0 / self.min_taker_ratio) if self.min_taker_ratio > 0 else float("inf")
+            if snapshot.taker_buy_sell_ratio > max_taker_ratio:
+                return GuardDecision.defer(
+                    guard_name="WhaleDivergenceGuard",
+                    reason=f"severe_taker_buying_dominated (taker_ratio={snapshot.taker_buy_sell_ratio:.2f} > {max_taker_ratio:.2f})",
+                    taker_ratio=snapshot.taker_buy_sell_ratio,
+                    divergence_regime=regime,
+                )
+            max_downscale_ratio = (
+                (1.0 / self.taker_downscale_threshold)
+                if self.taker_downscale_threshold > self.min_taker_ratio > 0
+                else float("inf")
             )
-        ):
-            return GuardDecision.defer(
-                guard_name="WhaleDivergenceGuard",
-                reason=f"whale_squeeze_or_accumulation_active (regime={regime}, whales {snapshot.top_traders_long_pct*100:.1f}% long, taker_ratio={snapshot.taker_buy_sell_ratio:.2f})",
-                open_interest_change=snapshot.open_interest_1h_change_pct,
-                divergence_regime=regime,
-                top_long_pct=snapshot.top_traders_long_pct,
-            )
+            if snapshot.taker_buy_sell_ratio > max_downscale_ratio:
+                return GuardDecision.downscale(
+                    guard_name="WhaleDivergenceGuard",
+                    scale=self.taker_downscaled_scale,
+                    reason=f"moderate_taker_buying_pressure (taker_ratio={snapshot.taker_buy_sell_ratio:.2f} > {max_downscale_ratio:.2f})",
+                    taker_ratio=snapshot.taker_buy_sell_ratio,
+                    divergence_regime=regime,
+                )
 
         return GuardDecision.allow(
             guard_name="WhaleDivergenceGuard",
