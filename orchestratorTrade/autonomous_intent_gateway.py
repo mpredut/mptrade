@@ -107,13 +107,20 @@ class AutonomousIntentGateway:
             self.notify_enabled = bool(int(float(conf["autonomous_trading_notify"])))
 
     def _load_conf(self) -> Dict[str, str]:
-        """Loads configuration strictly from order_guard.conf and config.env without vendor dependencies."""
+        """Loads configuration from order_guard._load_margins() SSOT, overlaying any workspace-specific overrides."""
         conf: Dict[str, str] = {}
-        search_dirs = [ROOT_DIR]
-        if os.path.abspath(self.workspace_dir) != os.path.abspath(ROOT_DIR):
-            search_dirs.append(self.workspace_dir)
+        is_default_workspace = os.path.abspath(self.workspace_dir) == os.path.abspath(ROOT_DIR)
+        if is_default_workspace:
+            try:
+                import order_guard
+                for k, v in order_guard._load_margins().items():
+                    conf[str(k).strip().lower()] = str(v)
+            except Exception:
+                pass
+        search_dirs = [ROOT_DIR] if is_default_workspace else [self.workspace_dir]
         for base_dir in search_dirs:
-            for fname in ("order_guard.conf", "config.env", ".env"):
+            fnames = ("config.env", ".env") if (is_default_workspace and conf) else ("order_guard.conf", "config.env", ".env")
+            for fname in fnames:
                 fpath = os.path.join(base_dir, fname)
                 if not os.path.exists(fpath):
                     continue
@@ -310,13 +317,22 @@ class AutonomousIntentGateway:
         # Preflight Guard Vetting
         guard_allowed = True
         guard_reason = "Preflight checks passed"
+        regime_context = None
         try:
             import order_guard
+            resolve_ctx = getattr(getattr(inst, "_api", None), "market_regime_context", None)
+            if callable(resolve_ctx):
+                try:
+                    regime_context = resolve_ctx(inst.symbol, provider_name=inst.provider_name)
+                except Exception:
+                    regime_context = None
             profit_margin = order_guard.get_margin_cfg(inst.provider_name)
-            window_ref = inst._call_profit_guard_window_ref(inst.symbol, decision, None)
+            window_ref = inst._call_profit_guard_window_ref(
+                inst.symbol, decision, None, regime_context=regime_context
+            )
             guard_allowed = order_guard.profit_guard(
                 inst._provider, inst.symbol, decision, price, profit_margin,
-                window_ref=window_ref, qty=target_qty,
+                window_ref=window_ref, regime_context=regime_context, qty=target_qty,
             )
             if not guard_allowed:
                 guard_reason = f"Profit guard vetoed {decision} {inst.symbol} @ {price}"
@@ -399,14 +415,17 @@ class AutonomousIntentGateway:
                 is_market=True,
                 intent_id=intent_id,
                 client_order_id=intent_cid,
+                regime_context=regime_context,
             )
             if order_res:
+                from providers.base import extract_order_id
                 logger.info("[LLM TRADER · ENFORCE] Successfully placed %s %s: %s",
                             decision, inst.symbol, order_res)
                 title = f"🚀 [LLM TRADER · ENFORCE] EXECUTED {decision} {inst.symbol} €{effective_eur:.0f}"
+                order_id_str = extract_order_id(order_res, default="N/A")
                 body = (
                     f"Venue: {inst.provider_name} · Qty: {target_qty:g} @ ${price:,.2f}\n"
-                    f"Order ID: {order_res.get('orderId', order_res.get('id', 'N/A'))}\n"
+                    f"Order ID: {order_id_str}\n"
                     f"Thesis: {thesis}"
                 )
                 self._dispatch_notify(title=title, body=body, symbol=inst.symbol)

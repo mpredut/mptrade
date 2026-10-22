@@ -176,14 +176,19 @@ def check_external_order_guards(
                 whale_wall_usd_limit=wall_limit,
             )
             ob_dec = ob_guard.check(symbol, order_side, snapshot=ob_snap)
-            if not ob_dec.allowed or ob_dec.brake_action == BrakeAction.DEFER_WAIT:
+            if not ob_dec.allowed or ob_dec.brake_action in (BrakeAction.DEFER_WAIT, BrakeAction.DOWNSCALE_QTY):
                 prefix = "[ORDERBOOK_GUARD_SHADOW]" if ob_mode == "shadow" else "[ORDERBOOK_GUARD_ENFORCE]"
                 print(f"{prefix} {order_side} {symbol}: {ob_dec.reason} (brake={ob_dec.brake_action})")
                 if ob_mode == "shadow" and shadow_notify_enabled:
-                    _send_micro_shadow_notify("orderbook", f"🛡 [P2 · ORDERBOOK] DEFER {order_side} {symbol}", ob_dec.reason)
+                    scale_pct = int(ob_dec.suggested_scale * 100) if ob_dec.suggested_scale < 1.0 else None
+                    action_str = f"SCALE {scale_pct}%" if (ob_dec.allowed and scale_pct is not None) else "DEFER"
+                    _send_micro_shadow_notify("orderbook", f"🛡 [P2 · ORDERBOOK] {action_str} {order_side} {symbol}", ob_dec.reason, scale_pct=scale_pct)
                 if ob_mode == "enforce":
                     if not ob_dec.allowed:
                         return False, ob_dec.reason, 0.0
+                    if ob_dec.suggested_scale < 1.0:
+                        effective_scale = min(effective_scale, ob_dec.suggested_scale)
+                        active_reason = ob_dec.reason
         except Exception:
             pass
 

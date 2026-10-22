@@ -1677,6 +1677,116 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert ctx._suggested_scale_by_side["BUY"] == pytest.approx(1.0)
         assert ctx._suggested_scale_by_side["SELL"] == pytest.approx(0.25)
 
+    def test_batch8_orderbook_wall_downscale_propagation_and_gateway_ssot(self, monkeypatch):
+        """Verify OrderbookWallGuard DOWNSCALE_QTY propagates in check_external_order_guards,
+        and AutonomousIntentGateway uses order_guard._load_margins and extract_order_id."""
+        import external_order_guard
+        from intelligence.internal.guards.guard_decision import GuardDecision
+        from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+
+        monkeypatch.setattr(
+            OrderbookWallGuard,
+            "check",
+            lambda self, sym, side, snapshot=None: GuardDecision.downscale(
+                "OrderbookWallGuard", scale=0.4, reason="orderbook_wall_downscale_test"
+            ),
+        )
+        margins = _margins(
+            whale_guard_mode="off",
+            orderbook_wall_guard_mode="enforce",
+            funding_guard_mode="off",
+        )
+        ok, reason, scale = external_order_guard.check_external_order_guards(
+            "BTCUSDC", "BUY", 85000.0, margins=margins
+        )
+        assert ok is True
+        assert scale == pytest.approx(0.4)
+        assert reason == "orderbook_wall_downscale_test"
+
+        # Verify AutonomousIntentGateway extracts Kraken txid via extract_order_id
+        from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+        gw = AutonomousIntentGateway(mode="enforce", max_notional_eur=500.0, min_confidence=0.80, notify_enabled=True)
+        notified = []
+        monkeypatch.setattr(gw, "_dispatch_notify", lambda title, body, symbol: notified.append((title, body, symbol)) or True)
+        monkeypatch.setattr(order_guard, "profit_guard", lambda *a, **k: True)
+
+        fake_inst = MagicMock()
+        fake_inst.symbol = "SOLUSD"
+        fake_inst.provider_name = "kraken"
+        fake_inst._provider.get_current_price.return_value = 100.0
+        fake_inst._call_profit_guard_window_ref.return_value = None
+        fake_inst.place.return_value = {"txid": ["OQCLML-BW3P3-BUCMWZ"]}
+
+        intent = {
+            "intent_id": "test_krk_1",
+            "decision": "BUY",
+            "symbol": "SOLUSD",
+            "venue": "kraken",
+            "confidence": 0.92,
+            "suggested_notional_eur": 200.0,
+            "status": "PENDING",
+        }
+        res = gw.process_intent(intent, instruments_map={"SOLUSD": fake_inst})
+        assert res["status"] == "EXECUTED"
+        assert len(notified) == 1
+        assert "Order ID: OQCLML-BW3P3-BUCMWZ" in notified[0][1]
+
+        # Verify Instrument.place resolves regime_context for SELL in dynamic mode and scales SELL under GT2 medium_trend_action='scale'
+        from instrument import Instrument
+        from providers.quantity import QuantityDecision
+
+        bull_ctx = MarketRegimeContext.from_decision(
+            MarketRegimeDecision(
+                regime="bull", gradient=0.8, epsilon=0.1, strength=5.0,
+                fresh=True, reason="directional_bull", source="mock",
+            ),
+            evaluated_at=time.time(),
+            symbol="SOLUSD",
+            provider="kraken",
+        )
+
+        mock_prov = MagicMock()
+        mock_prov.name = "kraken"
+        mock_prov.guards_internally.return_value = False
+        mock_prov.requires_cache_permit.return_value = False
+        mock_prov.defers_smart_cancellation.return_value = False
+        mock_prov.supports_business_minimum.return_value = False
+        mock_prov.execution_enabled.return_value = True
+        mock_prov.free_balance.return_value = 10.0
+        mock_prov.quantity_decision.side_effect = lambda sym, side, px, q, **kw: QuantityDecision(
+            requested_qty=float(q), balance_cap=10.0, policy_cap=10.0, fee_cap=10.0, final_qty=float(q)
+        )
+        mock_prov.round_amount.side_effect = lambda sym, q: float(q)
+        mock_prov.order_filter_refusal.return_value = None
+        mock_prov.profit_guard_window_ref.return_value = None
+        mock_prov.place_order.return_value = {"txid": ["KRK-SELL-1"]}
+
+        mock_api = MagicMock()
+        mock_api.provider_by_name.return_value = mock_prov
+        mock_api.market_regime_context.return_value = bull_ctx
+
+        monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
+        monkeypatch.setattr(order_guard, "profit_guard", lambda *a, **k: True)
+
+        inst_obj = Instrument("sol_krk", "SOLUSD", "kraken", base="SOL", quote="USD", api=mock_api)
+        placed_sell = inst_obj.place(
+            "SELL",
+            120.0,
+            4.0,
+            smart=False,
+            wait_for_trend=False,
+            caller_owns_retry=True,
+            profit_reference_mode="dynamic",
+            medium_trend_action="scale",
+            medium_trend_scale=0.5,
+        )
+        assert placed_sell == {"txid": ["KRK-SELL-1"]}
+        mock_api.market_regime_context.assert_called_once_with("SOLUSD", provider_name="kraken")
+        # 4.0 scaled by 0.5 in bull regime -> 2.0
+        assert mock_prov.place_order.call_args.args[3] == pytest.approx(2.0)
+
+
+
 
 
 
