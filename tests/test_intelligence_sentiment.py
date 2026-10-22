@@ -619,7 +619,7 @@ class TestOrderGuardWithGemini:
         # Provider mockup
         class _P:
             name = "binance"
-            def last_opposite_fill(self, *a, **k): return 60000.0
+            def last_opposite_fill(self, *a, **k): return 70000.0
 
         # BUY 0.05 BTC @ 65,000 = 3,250 EUR > 1000 EUR min
         allowed = order_guard.profit_guard(_P(), "BTCUSDC", "BUY", 65000.0, 1.15, qty=0.05)
