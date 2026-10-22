@@ -1379,6 +1379,41 @@ class RTradeThreadingTest(unittest.TestCase):
         self.assertGreaterEqual(calls["BUY"] + calls["SELL"], 1)
         mock_sleep.assert_not_called()
 
+    def test_partial_fill_followed_by_abort_hedges_filled_portion_and_weighted_price(self):
+        bot = _bot()
+        placed_orders = []
+
+        def fake_place(symbol, side, price, qty, **kwargs):
+            placed_orders.append((side, price, qty))
+            if len(placed_orders) == 1:
+                return {"orderId": 101, "price": "98.0"}
+            if side == "BUY":
+                ctx = kwargs.get("_outcome_context")
+                if isinstance(ctx, dict):
+                    ctx["reason"] = "qty_zero_after_weight"
+                return None
+            return {"orderId": 102, "price": str(price)}
+
+        with patch.object(rtrade.api, "get_current_price", return_value=100.0), \
+             patch.object(rtrade, "_order_fully_filled", return_value=False), \
+             patch.object(rtrade.mkt, "latest_fill_price", return_value=None), \
+             patch.object(
+                 rtrade, "_cancel_order_confirmed",
+                 return_value=OrderStatus("canceled", 40.0, 3920.0, 0.1, "CANCELED"),
+             ), \
+             patch.object(rtrade, "_preflight_routed_order", return_value=object()), \
+             patch.object(rtrade, "_followup_force", return_value=False), \
+             patch.object(rtrade.mkt, "place", side_effect=fake_place), \
+             patch.object(rtrade.time, "sleep", return_value=None):
+            res = bot.repetitive_buy(100.0, 101.0)
+
+        self.assertEqual(res, 98.0)
+        self.assertTrue(bot.is_buy_filled)
+        # 1st call: initial BUY 100, 2nd call: replacement BUY 60 (refused), 3rd call: follow-up SELL 40
+        self.assertEqual(len(placed_orders), 3)
+        self.assertEqual(placed_orders[2][0], "SELL")
+        self.assertAlmostEqual(placed_orders[2][2], 40.0, places=6)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

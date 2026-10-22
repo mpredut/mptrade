@@ -202,6 +202,20 @@ def is_trend_up(symbol, window_seconds=None, now=None):
     return False   # Missing or stale data is neutral and does not block a profitable sale.
 
 
+def _order_timestamp_ms(order: dict) -> float:
+    """Extract normalized millisecond timestamp from an order or fill record."""
+    if not isinstance(order, dict):
+        return 0.0
+    raw = order.get("timestamp")
+    if raw is None:
+        raw = order.get("time") or order.get("updateTime") or 0
+    try:
+        val = float(raw)
+        return val if math.isfinite(val) else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def get_relevant_trade(trade_orders, trade_type, threshold_s=0, symbol=None, now_fn=None):
     """Return latest execution price and timestamp for trade_type in normalized format."""
     if not trade_orders:
@@ -210,10 +224,10 @@ def get_relevant_trade(trade_orders, trade_type, threshold_s=0, symbol=None, now
         return None, 0, True
 
     if len(trade_orders) > 1:
-        trade_orders.sort(key=lambda x: x['timestamp'], reverse=True)
+        trade_orders.sort(key=_order_timestamp_ms, reverse=True)
     first = trade_orders[0]
     trade_price = float(first['price'])
-    trade_time = float(first['timestamp']) / 1000.0  # Seconds.
+    trade_time = _order_timestamp_ms(first) / 1000.0  # Seconds.
     if builtins.print.__name__ != "_dummy_print":
         print(f"{trade_type.capitalize()} price for {symbol}: {trade_price} at {u.timeToHMS(trade_time)}")
     return trade_price, trade_time, True
@@ -255,7 +269,7 @@ def _summarize_orders(orders):
         o = orders[0]
         q = float(o.get("qty") or o.get("quantity") or 0.0)
         p = float(o.get("price") or 0.0)
-        ts = int(o.get("timestamp") or 0)
+        ts = int(_order_timestamp_ms(o))
         val = p * q
         first_id = o.get("id") or o.get("orderId") or ts
         return q, val, (1, round(q, 8), round(val, 4), ts, first_id)
@@ -265,13 +279,13 @@ def _summarize_orders(orders):
     for o in orders:
         q = float(o.get("qty") or o.get("quantity") or 0.0)
         p = float(o.get("price") or 0.0)
-        ts = int(o.get("timestamp") or 0)
+        ts = int(_order_timestamp_ms(o))
         total_qty += q
         total_val += p * q
         if ts > latest_ts:
             latest_ts = ts
     first = orders[0]
-    first_id = first.get("id") or first.get("orderId") or first.get("timestamp") or 0
+    first_id = first.get("id") or first.get("orderId") or int(_order_timestamp_ms(first))
     sig = (len(orders), round(total_qty, 8), round(total_val, 4), latest_ts, first_id)
     return total_qty, total_val, sig
 
@@ -310,12 +324,12 @@ def _compute_spot_position(buy_orders, sell_orders) -> tuple[float, float, float
     for o in buy_orders:
         q = float(o.get("qty", o.get("quantity", 0.0)) or 0.0)
         p = float(o.get("price") or 0.0)
-        ts = int(o.get("timestamp") or o.get("time") or 0)
+        ts = _order_timestamp_ms(o)
         events.append((ts, 0, q, p))
     for o in sell_orders:
         q = float(o.get("qty", o.get("quantity", 0.0)) or 0.0)
         p = float(o.get("price") or 0.0)
-        ts = int(o.get("timestamp") or o.get("time") or 0)
+        ts = _order_timestamp_ms(o)
         events.append((ts, 1, q, p))
     events.sort(key=lambda x: (x[0], x[1]))
     owned = 0.0
@@ -1067,6 +1081,12 @@ def _execute_take_profit(
             _save_mt_state()
         return False
 
+    sell_frac = float(getattr(tp_decision, "sell_fraction", 1.0) or 1.0)
+    sell_qty = (
+        round(sellable_qty * sell_frac, 8)
+        if 0.0 < sell_frac < 1.0
+        else sellable_qty
+    )
     bypass_pg = current_price < snapshot.avg_buy_price or bool(tp_decision.forced)
     tp_intent_id = (pending_tp or {}).get("intent_id") or f"mt_tp_{symbol}_{int(current_time_s)}"
     tp_cid = (pending_tp or {}).get("client_order_id")
@@ -1085,7 +1105,7 @@ def _execute_take_profit(
         place_kw["wait_for_trend"] = False
     if tp_cid:
         place_kw["client_order_id"] = tp_cid
-    placed = _place_guarded(inst, "SELL", current_price, sellable_qty, min_qty, **place_kw)
+    placed = _place_guarded(inst, "SELL", current_price, sell_qty, min_qty, **place_kw)
     if placed:
         _TP_RIDE_STATE.pop(symbol, None)
         _resolve_exit(symbol, inst, kind="TP")
@@ -1094,7 +1114,7 @@ def _execute_take_profit(
         _TP_RIDE_STATE.pop(symbol, None)
         print(f"[{symbol}] Take-Profit submit outcome unknown/in-flight ({tp_outcome_ctx.get('reason')}) — deferring duplicate submission")
         _record_pending_exit(
-            symbol, inst, "TP", current_time_s, sellable_qty, current_price,
+            symbol, inst, "TP", current_time_s, sell_qty, current_price,
             tp_outcome_ctx, default_intent_id=tp_intent_id, client_order_id=tp_cid,
             prev_tp_state=prev_tp_state,
         )

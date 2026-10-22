@@ -271,6 +271,32 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     if action == 'HOLD':
         return order_ids
 
+    num_orders, price_step = (1, 0.2) if action == "BUY" else (1, 0.08)
+    quote = "USDC" if str(symbol).upper().endswith("USDC") else ("USDT" if str(symbol).upper().endswith("USDT") else "")
+
+    # Price is rising, place fewer, larger orders. Increase spacing between orders as percents.
+    # Price is falling, place more, smaller orders. Reduce spacing between orders as percents.
+    base_price = (
+        min(float(proposed_price), float(current_price) * 0.999)
+        if action == "BUY"
+        else max(float(proposed_price), float(current_price) * 1.001)
+    )
+
+    # Pre-submit gate check: if _fire_order will deterministically refuse this
+    # signal (invalid parameters, not in TRADEALL_FIRE_SYMBOLS, or blocked by
+    # the Kalman gate), delegate directly to _fire_order for logging/journaling
+    # and return [] without canceling existing live orders on the venue.
+    if not hasattr(_fire_order, "_mock_name"):
+        if (
+            action not in {"BUY", "SELL"}
+            or not math.isfinite(base_price)
+            or base_price <= 0
+            or symbol not in TRADEALL_FIRE_SYMBOLS
+            or _kalman_gate_blocks(symbol, action)[0]
+        ):
+            _fire_order(symbol, action, base_price, reason, **kwargs)
+            return []
+
     # Cancel any existing active orders from previous iterations (including outbox-accepted orders)
     outbox_order_ids = []
     try:
@@ -311,16 +337,6 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     except Exception as _e:
         print(f"[TRADEALL] cancel_expired_orders error for {symbol}: {_e}")
 
-    num_orders, price_step = (1, 0.2) if action == "BUY" else (1, 0.08)
-    quote = "USDC" if str(symbol).upper().endswith("USDC") else ("USDT" if str(symbol).upper().endswith("USDT") else "")
-
-    # Price is rising, place fewer, larger orders. Increase spacing between orders as percents.
-    # Price is falling, place more, smaller orders. Reduce spacing between orders as percents.
-    base_price = (
-        min(float(proposed_price), float(current_price) * 0.999)
-        if action == "BUY"
-        else max(float(proposed_price), float(current_price) * 1.001)
-    )
     print(f"{action} price: {base_price:.2f} {quote}".strip())
 
     direction = -1 if action == "BUY" else 1
@@ -787,14 +803,39 @@ class TrendCoordinator:
         except Exception as e:
             print(f"[TrendCoordinator] Error resolving regime context for {symbol}: {e}")
 
+        win = self.instant_mgr.get_window(symbol)
+        win_big = self.instant_mgr.get_window(symbol, self.instant_mgr.window_big_sec)
+        shadow_fields = {}
+        prev_ktrend = None
+        new_ktrend = None
+        if self._shadow is not None:
+            try:
+                st_prev = self._shadow._state.get(symbol)
+                if st_prev:
+                    prev_ktrend = st_prev.get("kalman_trend")
+                shadow_fields = self._shadow.update(
+                    symbol, time.time(), current_price,
+                    epsilon=win.get_noise_epsilon(),
+                    big_prices=list(win_big.prices),
+                    big_sample_rate=win_big.sample_rate_sec,
+                ) or {}
+                new_ktrend = shadow_fields.get("kalman_trend")
+            except Exception as _e:  # noqa: BLE001
+                print(f"[TrendCoordinator] shadow error {symbol} (continuing): {_e}")
+
+        prev_orders_snapshot = list(_symbol_order_ids.get(symbol, []))
         snapshot = handle_symbol(
             symbol, current_price,
-            self.instant_mgr.get_window(symbol),
-            self.instant_mgr.get_window(symbol, self.instant_mgr.window_big_sec),
+            win,
+            win_big,
             self.instant_mgr.get_analyzer(symbol),
             self.instant_mgr.get_analyzer(symbol, self.instant_mgr.window_big_sec),
             self.trend_states[symbol], self.trend_states_big[symbol],
             regime_ctx=regime_ctx,
+        )
+        cur_orders_snapshot = list(_symbol_order_ids.get(symbol, []))
+        handle_placed_order = bool(
+            cur_orders_snapshot and cur_orders_snapshot != prev_orders_snapshot
         )
         with self._lock:
             self._dirty[symbol] = False
@@ -802,30 +843,14 @@ class TrendCoordinator:
         # Merge the complete snapshot into the cross-process store. Remove ``symbol``
         # because it is already supplied positionally.
         fields = {k: v for k, v in snapshot.items() if k != "symbol"}
-        # shadow_signals.update() writes monitor snapshot fields. kalman_trend is no
-        # longer observational: it drives primary Kalman orders and _fire_order's
-        # real-order gate. Only the adaptive volatility/reentry/DCA fields remain
-        # observational. Guard this path so a failure cannot stop evaluation.
+        if shadow_fields:
+            fields.update(shadow_fields)
         if self._shadow is not None:
             try:
-                win = self.instant_mgr.get_window(symbol)
-                win_big = self.instant_mgr.get_window(symbol, self.instant_mgr.window_big_sec)
-                prev_ktrend = fields_prev_ktrend = None
-                st_prev = self._shadow._state.get(symbol)
-                if st_prev:
-                    prev_ktrend = st_prev.get("kalman_trend")
-                shadow_fields = self._shadow.update(
-                    symbol, snapshot["ts"], current_price,
-                    epsilon=win.get_noise_epsilon(),
-                    big_prices=list(win_big.prices),
-                    big_sample_rate=win_big.sample_rate_sec,
-                )
-                fields.update(shadow_fields)
                 # Primary Kalman starts an order on a trend transition for enabled
-                # symbols. _fire_order's guards and gate still decide whether funds move.
-                new_ktrend = shadow_fields.get("kalman_trend")
+                # symbols when handle_symbol did not already place one on this tick.
                 if (symbol in KALMAN_PRIMARY_SYMBOLS and prev_ktrend is not None
-                        and new_ktrend != prev_ktrend):
+                        and new_ktrend != prev_ktrend and not handle_placed_order):
                     if new_ktrend == 1:
                         print(f"[KALMAN-PRIMARY] {symbol} ->UP: initiating BUY")
                         track_and_place_order(

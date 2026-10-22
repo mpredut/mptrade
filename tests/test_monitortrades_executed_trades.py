@@ -135,6 +135,49 @@ class TestMonitortradesExecutedTrades(unittest.TestCase):
         for i in range(6, 11):
             self.assertIn(f"trade_{i}", tracker)
 
+    def test_order_timestamp_ms_normalizes_time_and_timestamp_keys(self):
+        orders = [
+            {"price": 100.0, "qty": 1.0, "time": 1700000001000},
+            {"price": 105.0, "qty": 2.0, "timestamp": 1700000005000},
+        ]
+        px, ts_sec, ok = mt.get_relevant_trade(list(orders), "BUY", symbol="BTCUSDC")
+        self.assertTrue(ok)
+        self.assertEqual(px, 105.0)
+        self.assertAlmostEqual(ts_sec, 1700000005.0, places=3)
+        tot_q, tot_v, sig = mt._summarize_orders(orders)
+        self.assertEqual(tot_q, 3.0)
+        self.assertEqual(tot_v, 310.0)
+        self.assertEqual(sig[3], 1700000005000)
+
+    def test_execute_take_profit_honors_partial_sell_fraction(self):
+        from strategies.position_exit_manager import ExitAction, ExitDecision, PositionSnapshot
+        snap = PositionSnapshot(
+            symbol="BTCUSDC",
+            current_price=110.0,
+            avg_buy_price=100.0,
+            sellable_qty=2.0,
+            current_time_s=1700000000.0,
+        )
+        decision = ExitDecision(
+            action=ExitAction.PARTIAL_SELL,
+            should_exit=True,
+            sell_fraction=0.4,
+            reason="partial_tp_test",
+        )
+        with patch.object(mt, "_place_guarded", return_value={"orderId": "1"}) as mock_place, \
+             patch.object(mt, "_resolve_exit"):
+            ok = mt._execute_take_profit(
+                inst=object(),
+                snapshot=snap,
+                tp_decision=decision,
+                sbs=60.0,
+                min_qty=0.01,
+                prev_tp_state={},
+                gain_threshold=0.05,
+            )
+            self.assertTrue(ok)
+            self.assertAlmostEqual(mock_place.call_args.args[3], 0.8, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

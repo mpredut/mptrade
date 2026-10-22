@@ -1144,6 +1144,21 @@ class TestTrackAndPlaceOrder(unittest.TestCase):
             mock_notify.assert_not_called()
             self.assertEqual(order_ids, [777])
 
+    def test_kalman_blocked_or_disallowed_signal_preserves_existing_venue_orders(self):
+        existing = [8888]
+        with patch.object(ta, "TRADEALL_FIRE_SYMBOLS", {"BTCUSDT"}), \
+             patch.object(ta, "_kalman_gate_blocks", return_value=(True, "strict", -1)), \
+             patch.object(ta, "GATE_OUTCOME_LOG", MagicMock()), \
+             patch.object(ta.mkt, "cancel_order") as mock_cancel, \
+             patch.object(ta.api, "cancel_expired_orders") as mock_exp, \
+             patch.object(ta.mkt, "place") as mock_place:
+            res = ta.track_and_place_order("BUY", "BTCUSDT", 1, 100.0, 100.0, order_ids=existing)
+            self.assertEqual(res, [])
+            self.assertEqual(existing, [8888])
+            mock_cancel.assert_not_called()
+            mock_exp.assert_not_called()
+            mock_place.assert_not_called()
+
 
 class TestLogicSmall(unittest.TestCase):
     def test_logic_small_fires_buy_on_positive_surge(self):
