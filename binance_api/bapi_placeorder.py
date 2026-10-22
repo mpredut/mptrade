@@ -531,7 +531,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
             regime_context = market_api.market_regime_context(
                 symbol, provider_name="binance")
 
-        ref_window = order_guard.window_for(
+        ref_window = order_guard.get_window_cfg(
             "binance",
             symbol=symbol,
             order_type=order_type,
@@ -592,7 +592,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
                 symbol,
                 order_type,
                 price,
-                order_guard.margin_for("binance"),
+                order_guard.get_margin_cfg("binance"),
                 **pg_kwargs,
             ):
                 return False, "profit_guard"

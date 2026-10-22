@@ -66,10 +66,9 @@ _REQUIRED_ORDER_GUARD_KEYS = frozenset({
     "tradeall_sell_reference",
     "rtrade_buy_reference",
     "rtrade_sell_reference",
-    "buy_window_mode",
-    "buy_window_bull_h",
-    "buy_window_flat_h",
-    "buy_window_bear_h",
+    "dynamic_window_favorable_h",
+    "dynamic_window_flat_h",
+    "dynamic_window_adverse_h",
     "regime_context_max_age_sec",
     # Pillar 1: Internal Quantitative Mathematical Guards
     "internal_guard_mode",
@@ -138,6 +137,7 @@ _REQUIRED_ORDER_GUARD_KEYS = frozenset({
 
 VALID_PROFIT_GUARD_MODES = frozenset({"strict", "average", "last", "hybrid", "dynamic", "off"})
 VALID_GUARD_MODES = frozenset({"off", "shadow", "enforce"})
+VALID_RECENT_TX_SIDES = frozenset({"buy", "sell", "both", "off"})
 
 _GUARD_MODE_KEYS = (
     "internal_guard_mode",
@@ -202,6 +202,20 @@ def validate_guard_mode_cfg(val: Any, key_name: str = "guard_mode") -> str:
     return mode
 
 
+def validate_recent_transaction_side_cfg(val: Any) -> str:
+    """Validate that anti-spam side policy is strictly one of VALID_RECENT_TX_SIDES."""
+    if not isinstance(val, str):
+        raise ValueError(
+            f"Invalid recent_transaction_side {val!r}; must be a string in {sorted(VALID_RECENT_TX_SIDES)}"
+        )
+    side_policy = val.strip().lower()
+    if side_policy not in VALID_RECENT_TX_SIDES:
+        raise ValueError(
+            f"Invalid recent_transaction_side {val!r}; must be one of {sorted(VALID_RECENT_TX_SIDES)}"
+        )
+    return side_policy
+
+
 def _validate_margins_cfg(m: Dict[str, Any], path: str) -> None:
     """Validate discrete mode and policy values in order_guard.conf at load time."""
     for key in _GUARD_MODE_KEYS:
@@ -215,6 +229,8 @@ def _validate_margins_cfg(m: Dict[str, Any], path: str) -> None:
                     validate_profit_guard_mode_cfg(val)
             else:
                 validate_profit_guard_mode_cfg(val)
+        elif key.endswith("_recent_transaction_side"):
+            validate_recent_transaction_side_cfg(val)
 
     for policy_key, valid_set in _DISCRETE_POLICY_SETS.items():
         raw_val = m[policy_key]
@@ -521,15 +537,26 @@ def _symbol_trend(
         return "unknown"
 
 
-def margin_for(provider_name):
+def get_margin_cfg(provider_name):
     """Return the venue's configured minimum profit percentage from order_guard.conf."""
     m = _load_margins()
     return m.get((provider_name or "").lower(), m["default"])
 
 
-def dynamic_buy_window_sec(
+def _is_favorable_trend(side: str, trend: str) -> bool:
+    """Return True when the market trend aligns favorably with the order side."""
+    return (side == "BUY" and trend == "bull") or (side == "SELL" and trend == "bear")
+
+
+def _is_adverse_trend(side: str, trend: str) -> bool:
+    """Return True when the market trend opposes the order side."""
+    return (side == "BUY" and trend == "bear") or (side == "SELL" and trend == "bull")
+
+
+def get_dynamic_window_sec_cfg(
     symbol=None,
     provider=None,
+    order_type: str = "BUY",
     regime_service=None,
     now=None,
     *,
@@ -538,15 +565,19 @@ def dynamic_buy_window_sec(
     snapshot_resolver=None,
     provider_resolver=None,
 ) -> float:
-    """Calculate the dynamic lookback window (in seconds) for BUY reference:
-    - BULL trend: 4h - 12h (configured via buy_window_bull_h)
-    - BEAR trend: 48h - 168h (configured via buy_window_bear_h)
-    - FLAT / UNKNOWN: 24h - 48h (configured via buy_window_flat_h)
+    """Calculate the dynamic lookback window (in seconds) symmetrically for BUY and SELL:
+    - Favorable trend (BUY in bull / SELL in bear): 4h - 12h (configured via dynamic_window_favorable_h)
+    - Adverse trend (BUY in bear / SELL in bull): 48h - 168h (configured via dynamic_window_adverse_h)
+    - Flat / unknown trend: 12h - 48h (configured via dynamic_window_flat_h)
     """
+    side = str(order_type or "BUY").strip().upper()
+    if side not in ("BUY", "SELL"):
+        raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
+
     m = _load_margins()
-    bull_h = float(m["buy_window_bull_h"])
-    flat_h = float(m["buy_window_flat_h"])
-    bear_h = float(m["buy_window_bear_h"])
+    favorable_h = float(m["dynamic_window_favorable_h"])
+    flat_h = float(m["dynamic_window_flat_h"])
+    adverse_h = float(m["dynamic_window_adverse_h"])
 
     trend = resolved_trend
     if trend is None and regime_context is not None:
@@ -570,16 +601,16 @@ def dynamic_buy_window_sec(
             if symbol
             else "unknown"
         )
-    if trend == "bull":
-        hours = max(4.0, min(12.0, bull_h))
-    elif trend == "bear":
-        hours = max(48.0, min(168.0, bear_h))
+    if _is_favorable_trend(side, trend):
+        hours = max(4.0, min(12.0, favorable_h))
+    elif _is_adverse_trend(side, trend):
+        hours = max(48.0, min(168.0, adverse_h))
     else:  # flat, sideways, chop, or unknown
         hours = max(12.0, min(48.0, flat_h))
     return hours * 3600.0
 
 
-def window_for(
+def get_window_cfg(
     provider_name,
     symbol=None,
     order_type=None,
@@ -588,12 +619,12 @@ def window_for(
     module=None,
     reference_mode=None,
 ) -> float:
-    """Return the configured reference window in seconds from order_guard.conf for the given venue and side.
+    """Return the configured reference window in seconds from order_guard.conf symmetrically
+    for the given venue and side.
 
-    For BUY orders when dynamic windowing is active (via venue buy_reference='dynamic'
-    or buy_window_mode='dynamic'), returns dynamic_buy_window_sec(symbol, provider=name)
-    scaling lookback from 4h-12h in bull to 48h-168h in bear.
-    For SELL orders or static venues, returns `<venue>_window_h` (or default_window_h) in seconds.
+    When dynamic windowing is active (mode == 'dynamic'), returns get_dynamic_window_sec_cfg(...)
+    scaling lookback from 4h-12h in favorable trend to 48h-168h in adverse trend.
+    Otherwise returns `<venue>_window_h` (or default_window_h) in seconds.
     """
     name = _provider_name(provider_name)
     m = _load_margins()
@@ -605,18 +636,11 @@ def window_for(
         )
         if mode == "off":
             return 0.0
-        if side == "BUY":
-            win_mode = str(m["buy_window_mode"]).strip().lower()
-            if mode == "dynamic" or win_mode in ("dynamic", "adaptive"):
-                return dynamic_buy_window_sec(
-                    symbol,
-                    provider=name,
-                    regime_context=regime_context,
-                )
-        elif side == "SELL" and mode == "dynamic":
-            return dynamic_buy_window_sec(
+        if mode == "dynamic":
+            return get_dynamic_window_sec_cfg(
                 symbol,
                 provider=name,
+                order_type=side,
                 regime_context=regime_context,
             )
 
@@ -625,7 +649,7 @@ def window_for(
     return hours_val * 3600.0
 
 
-def weight_proxy_for(provider_name):
+def get_weight_proxy_cfg(provider_name):
     """Return the trend/Gaussian-weight proxy symbol from order_guard.conf when the current symbol lacks
     its own long trend (e.g. HYPE -> BTC until data exists). Uses `<venue>_weight_proxy`
     or `default_weight_proxy`."""
@@ -775,7 +799,7 @@ def window_reference(
     return select_extreme_reference(prices, side, strict=True)
 
 
-def chop_weight_for(provider_name):
+def get_chop_weight_cfg(provider_name):
     """Return the venue's conservative chop fallback weight from order_guard.conf."""
     m = _load_margins()
     key = (provider_name or "").lower() + "_chop_weight"
@@ -815,7 +839,7 @@ def resolve_trade_weight(symbol, order_type, provider_name=None, *, default_weig
 
     weight = _gauss(symbol)
     if weight is None:
-        proxy = weight_proxy_for(provider_name)
+        proxy = get_weight_proxy_cfg(provider_name)
         if proxy and proxy != symbol:
             try:
                 pw = _gauss(proxy)
@@ -827,7 +851,7 @@ def resolve_trade_weight(symbol, order_type, provider_name=None, *, default_weig
 
     if weight is None:
         if default_weight is None:
-            default_weight = chop_weight_for(provider_name)
+            default_weight = get_chop_weight_cfg(provider_name)
         weight = default_weight
         print(f"[WEIGHT] {symbol}: no trend or proxy -> fallback weight={weight}")
 
@@ -876,55 +900,31 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
     return adjusted
 
 
-def max_daily_trades_for(provider_name):
-    """Return the venue's daily trade cap from order_guard.conf or the seed fallback."""
+def get_max_daily_trades_cfg(provider_name):
+    """Return the venue's daily trade cap strictly from order_guard.conf."""
     m = _load_margins()
     key = (provider_name or "").lower() + "_max_daily_trades"
     return int(m.get(key, m["default_max_daily_trades"]))
 
 
-def safeback_sec_for(provider_name):
-    """Return the per-venue trade-search window in seconds from order_guard.conf for the daily cap."""
+def get_safeback_sec_cfg(provider_name):
+    """Return the per-venue trade-search window in seconds strictly from order_guard.conf for the daily cap."""
     m = _load_margins()
     key = (provider_name or "").lower() + "_safeback_sec"
     return float(m.get(key, m["default_safeback_sec"]))
 
 
-def normalize_recent_transaction_side(side_policy: Any) -> str:
-    """Parse anti-spam side policy from order_guard.conf to 'buy', 'sell', 'both', or 'off'.
-
-    Values:
-      - 'buy', 'only_buy', 'buys' -> 'buy' (default, rejects rapid BUY on recent BUY)
-      - 'sell', 'only_sell', 'sells' -> 'sell' (rejects rapid SELL on recent SELL)
-      - 'both', 'symmetric', 'all', 'buy_sell', 'two_way' -> 'both' (rejects on both sides)
-      - 'off', 'none', 'disabled', '0', False -> 'off' (disables recent transaction check)
-    """
-    if side_policy is None:
-        return "buy"
-    raw = str(side_policy).strip().lower()
-    if raw in ("both", "symmetric", "all", "buy_sell", "buy,sell", "buy/sell", "two_way", "twoway"):
-        return "both"
-    if raw in ("sell", "only_sell", "sells"):
-        return "sell"
-    if raw in ("off", "none", "disabled", "disable", "0", "false"):
-        return "off"
-    return "buy"
-
-
-def recent_transaction_side_for(provider_name):
-    """Return the venue's anti-spam side policy from order_guard.conf ('buy', 'sell', 'both', or 'off')."""
-    env_side = os.environ.get("RECENT_TRANSACTION_SIDE")
-    if env_side:
-        return normalize_recent_transaction_side(env_side)
+def get_recent_transaction_side_cfg(provider_name) -> str:
+    """Return the venue's anti-spam side policy strictly from order_guard.conf ('buy', 'sell', 'both', or 'off')."""
     m = _load_margins()
     name = _provider_name(provider_name)
     key = name.lower() + "_recent_transaction_side"
     raw = m.get(key, m["default_recent_transaction_side"])
-    return normalize_recent_transaction_side(raw)
+    return validate_recent_transaction_side_cfg(raw)
 
 
-def recent_transaction_sec_for(provider_name, order_type=None):
-    """Return the anti-spam window from order_guard.conf that rejects a recent same-symbol, same-side order.
+def get_recent_transaction_sec_cfg(provider_name, order_type=None) -> float:
+    """Return the anti-spam window strictly from order_guard.conf that rejects a recent same-symbol, same-side order.
 
     Supports side-specific overrides (<venue>_recent_transaction_<side>_sec or
     default_recent_transaction_<side>_sec), falling back to venue or default
@@ -935,23 +935,12 @@ def recent_transaction_sec_for(provider_name, order_type=None):
     pfx = name.lower()
     side = str(order_type or "").strip().lower()
     if side:
-        env_side_key = f"RECENT_TRANSACTION_{side.upper()}_SEC"
-        if env_side_key in os.environ:
-            try:
-                return float(os.environ[env_side_key])
-            except ValueError:
-                pass
         side_key = f"{pfx}_recent_transaction_{side}_sec"
         if side_key in m:
             return float(m[side_key])
         default_side_key = f"default_recent_transaction_{side}_sec"
         if default_side_key in m:
             return float(m[default_side_key])
-    if "RECENT_TRANSACTION_SEC" in os.environ:
-        try:
-            return float(os.environ["RECENT_TRANSACTION_SEC"])
-        except ValueError:
-            pass
     key = f"{pfx}_recent_transaction_sec"
     return float(m.get(key, m["default_recent_transaction_sec"]))
 
@@ -982,13 +971,13 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
             bypass_anti_spam = True
     name = _provider_name(provider)
     order_type = order_type.upper()
-    max_daily_trades = max_daily_trades if max_daily_trades is not None else max_daily_trades_for(name)
-    safeback_sec = float(safeback_sec if safeback_sec is not None else safeback_sec_for(name))
+    max_daily_trades = max_daily_trades if max_daily_trades is not None else get_max_daily_trades_cfg(name)
+    safeback_sec = float(safeback_sec if safeback_sec is not None else get_safeback_sec_cfg(name))
     recent_transaction_sec = float(recent_transaction_sec if recent_transaction_sec is not None
-                                   else recent_transaction_sec_for(name, order_type=order_type))
-    side_policy = (normalize_recent_transaction_side(recent_transaction_side)
+                                   else get_recent_transaction_sec_cfg(name, order_type=order_type))
+    side_policy = (validate_recent_transaction_side_cfg(recent_transaction_side)
                    if recent_transaction_side is not None
-                   else recent_transaction_side_for(name))
+                   else get_recent_transaction_side_cfg(name))
     try:
         trades = provider.get_orders(symbol, order_type, safeback_sec)
     except ProviderError as exc:
@@ -1006,14 +995,11 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
               f"{safeback_sec/3600:.1f}h, a cap of {max_daily_trades}/day -> BLOCKED")
         return False, "daily_limit"
 
-    enforce_anti_spam = False
-    if not bypass_anti_spam and recent_transaction_sec > 0 and side_policy != "off":
-        if side_policy == "both":
-            enforce_anti_spam = True
-        elif side_policy == "sell":
-            enforce_anti_spam = (order_type == "SELL")
-        else:  # default "buy"
-            enforce_anti_spam = (order_type != "SELL")
+    enforce_anti_spam = (
+        not bypass_anti_spam
+        and recent_transaction_sec > 0
+        and side_policy in ("both", order_type.lower())
+    )
 
     if enforce_anti_spam:
         now_s = time.time()
@@ -1628,9 +1614,10 @@ def check_math_profit_reference(
                 trend = getattr(regime_context, "resolved_trend", None)
         if trend is None:
             trend = _symbol_trend(symbol, provider=provider)
-        dyn_window_s = dynamic_buy_window_sec(
+        dyn_window_s = get_dynamic_window_sec_cfg(
             symbol,
             provider=provider,
+            order_type=side,
             resolved_trend=trend,
             regime_context=regime_context,
         )
@@ -1678,7 +1665,7 @@ def check_math_profit_reference(
                         print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
                               f"recent {opp_side.lower()} ref {pos_window_ref}, price {price}, diff {diff:.2f}% >= {profit_percentage}%. Permitted.")
                         return True
-                elif (side == "BUY" and trend == "bull") or (side == "SELL" and trend == "bear"):
+                elif _is_favorable_trend(side, trend):
                     if not hasattr(provider, "get_orders"):
                         print(f"[GUARD] {side} {symbol}: dynamic mode bypassed historical {opp_side.lower()} reference "
                               f"during confirmed {trend.upper()} trend; price {price} permitted")
@@ -1703,24 +1690,16 @@ def check_math_profit_reference(
     ):
         try:
             window_ref = window_reference(
-                provider, symbol, side, safeback_sec_for(provider_name),
+                provider, symbol, side, get_safeback_sec_cfg(provider_name),
                 reference_mode=mode, module=module,
             )
         except Exception:
             pass
 
-    has_window = window_for(
-        provider_name,
-        symbol,
-        side,
-        regime_context=regime_context,
-        module=module,
-        reference_mode=reference_mode,
-    ) > 0
-    raw_ref = window_ref if window_ref is not None else (
-        None if (side == "BUY" and has_window and mode not in ("last", "average", "hybrid")) else (
-            provider.last_opposite_fill(symbol, side) if hasattr(provider, "last_opposite_fill") else None
-        )
+    raw_ref = (
+        window_ref
+        if window_ref is not None
+        else (provider.last_opposite_fill(symbol, side) if hasattr(provider, "last_opposite_fill") else None)
     )
 
     ref = _parse_ref(raw_ref)

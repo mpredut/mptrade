@@ -312,7 +312,7 @@ class AutonomousIntentGateway:
         guard_reason = "Preflight checks passed"
         try:
             import order_guard
-            profit_margin = order_guard.margin_for(inst.provider_name)
+            profit_margin = order_guard.get_margin_cfg(inst.provider_name)
             window_ref = inst._call_profit_guard_window_ref(inst.symbol, decision, None)
             guard_allowed = order_guard.profit_guard(
                 inst._provider, inst.symbol, decision, price, profit_margin,

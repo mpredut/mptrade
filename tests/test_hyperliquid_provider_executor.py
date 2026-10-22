@@ -371,7 +371,7 @@ class HLExecutorContractTest(unittest.TestCase):
         with (
             patch.object(order_guard, "daily_limit_guard",
                          return_value=(True, None)),
-            patch.object(order_guard, "margin_for", return_value=0.01),
+            patch.object(order_guard, "get_margin_cfg", return_value=0.01),
             patch.object(order_guard, "profit_guard", return_value=True),
             patch.object(self.p, "policy_cap_quantity",
                          side_effect=lambda _s, _o, _p, qty, _a, **_k: qty),

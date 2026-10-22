@@ -382,32 +382,32 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             mock.patch.object(po.order_guard, "daily_limit_guard", return_value=(True, None)),
             mock.patch.object(po.api, "get_current_price", return_value=100.0),
             mock.patch("binance_api.bapi_allorders.get_trade_orders", return_value=[]),
-            mock.patch.object(po.order_guard, "window_for", return_value=8 * 3600.0) as window_for,
-            mock.patch.object(po.order_guard, "margin_for", return_value=1.15),
+            mock.patch.object(po.order_guard, "get_window_cfg", return_value=8 * 3600.0) as get_window_cfg,
+            mock.patch.object(po.order_guard, "get_margin_cfg", return_value=1.15),
             mock.patch.object(po.order_guard, "profit_guard", return_value=True) as profit_guard,
             mock.patch("providers.market_api.api.market_regime_context", return_value=resolved_context) as resolve_context,
         ):
             result = po.if_place_safe_order(
                 "BUY", SYMBOL, 100.0, 1.0, 48 * 3600 + 60, **kwargs,
             )
-        return result, resolved_context, resolve_context, window_for, profit_guard
+        return result, resolved_context, resolve_context, get_window_cfg, profit_guard
 
     def test_explicit_context_is_reused_without_runtime_resolution(self):
         explicit_context = self._fresh_context()
-        result, _, resolve_context, window_for, profit_guard = self._exercise_buy(
+        result, _, resolve_context, get_window_cfg, profit_guard = self._exercise_buy(
             regime_context=explicit_context, pass_context=True,
         )
         self.assertEqual(result, (True, None))
         resolve_context.assert_not_called()
-        self.assertIs(window_for.call_args.kwargs["regime_context"], explicit_context)
+        self.assertIs(get_window_cfg.call_args.kwargs["regime_context"], explicit_context)
         self.assertIs(profit_guard.call_args.kwargs["regime_context"], explicit_context)
 
     def test_missing_context_is_resolved_once_at_market_api_boundary(self):
-        result, resolved_context, resolve_context, window_for, profit_guard = self._exercise_buy()
+        result, resolved_context, resolve_context, get_window_cfg, profit_guard = self._exercise_buy()
         self.assertEqual(result, (True, None))
         self.assertTrue(resolved_context.fresh)
         resolve_context.assert_called_once_with(SYMBOL, provider_name="binance")
-        self.assertIs(window_for.call_args.kwargs["regime_context"], resolved_context)
+        self.assertIs(get_window_cfg.call_args.kwargs["regime_context"], resolved_context)
         self.assertIs(profit_guard.call_args.kwargs["regime_context"], resolved_context)
 
     def test_if_place_safe_order_preserves_subdollar_precision_and_handles_none_current_price(self):
@@ -415,8 +415,8 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             mock.patch.object(po.order_guard, "daily_limit_guard", return_value=(True, None)),
             mock.patch.object(po.api, "get_current_price", return_value=None),
             mock.patch("binance_api.bapi_allorders.get_trade_orders", return_value=[]),
-            mock.patch.object(po.order_guard, "window_for", return_value=3600.0),
-            mock.patch.object(po.order_guard, "margin_for", return_value=1.01),
+            mock.patch.object(po.order_guard, "get_window_cfg", return_value=3600.0),
+            mock.patch.object(po.order_guard, "get_margin_cfg", return_value=1.01),
             mock.patch.object(po.order_guard, "profit_guard", return_value=True) as profit_guard,
             mock.patch("providers.market_api.api.market_regime_context", return_value=self._fresh_context()),
         ):
@@ -506,8 +506,8 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             mock.patch.object(po.order_guard, "daily_limit_guard", return_value=(True, None)),
             mock.patch.object(po.api, "get_current_price", return_value=100.0),
             mock.patch("binance_api.bapi_allorders.get_trade_orders", side_effect=fake_get_trade_orders),
-            mock.patch.object(po.order_guard, "window_for", return_value=86400.0),
-            mock.patch.object(po.order_guard, "margin_for", return_value=1.01),
+            mock.patch.object(po.order_guard, "get_window_cfg", return_value=86400.0),
+            mock.patch.object(po.order_guard, "get_margin_cfg", return_value=1.01),
             mock.patch.object(po.order_guard, "profit_guard", return_value=True),
             mock.patch("providers.market_api.api.market_regime_context", return_value=self._fresh_context()),
         ):

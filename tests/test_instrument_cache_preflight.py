@@ -246,7 +246,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
             patch.object(
                 order_guard, "daily_limit_guard", return_value=(True, None)),
             patch.object(order_guard, "profit_guard", return_value=True),
-            patch.object(order_guard, "margin_for", return_value=0.01),
+            patch.object(order_guard, "get_margin_cfg", return_value=0.01),
         ):
             result = instrument.place(
                 "BUY", 100.0, None, smart=False, wait_for_trend=False,
@@ -277,7 +277,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
             patch.object(
                 order_guard, "daily_limit_guard", side_effect=daily_guard),
             patch.object(order_guard, "profit_guard", return_value=True),
-            patch.object(order_guard, "margin_for", return_value=0.01),
+            patch.object(order_guard, "get_margin_cfg", return_value=0.01),
         ):
             result = instrument.place(
                 "BUY", 100.0, 2.0, smart=True, wait_for_trend=False,
@@ -316,7 +316,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
                         order_guard, "daily_limit_guard",
                         return_value=(True, None)),
                     patch.object(order_guard, "profit_guard", return_value=True),
-                    patch.object(order_guard, "margin_for", return_value=0.01),
+                    patch.object(order_guard, "get_margin_cfg", return_value=0.01),
                     patch.object(
                         placeorder.pa,
                         "get_weight_for_cash_permission_at_quant_time",
@@ -348,7 +348,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
                 order_guard, "daily_limit_guard",
                 return_value=(True, None)),
             patch.object(order_guard, "profit_guard", return_value=True),
-            patch.object(order_guard, "margin_for", return_value=0.01),
+            patch.object(order_guard, "get_margin_cfg", return_value=0.01),
             patch.object(
                 placeorder.pa,
                 "get_weight_for_cash_permission_at_quant_time",
@@ -414,7 +414,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
             patch.object(
                 order_guard, "daily_limit_guard", return_value=(True, None)),
             patch.object(order_guard, "profit_guard", return_value=True),
-            patch.object(order_guard, "margin_for", return_value=0.01),
+            patch.object(order_guard, "get_margin_cfg", return_value=0.01),
             patch.object(
                 placeorder.pa,
                 "get_weight_for_cash_permission_at_quant_time",
@@ -452,7 +452,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
             patch.object(
                 order_guard, "daily_limit_guard", return_value=(True, None)),
             patch.object(order_guard, "profit_guard", side_effect=profit_guard),
-            patch.object(order_guard, "margin_for", return_value=0.01),
+            patch.object(order_guard, "get_margin_cfg", return_value=0.01),
         ):
             result = instrument.place(
                 "SELL", 100.0, 2.0, force=True, smart=False,
@@ -482,7 +482,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
             patch.object(
                 order_guard, "daily_limit_guard", return_value=(True, None)),
             patch.object(order_guard, "profit_guard", return_value=True),
-            patch.object(order_guard, "margin_for", return_value=0.01),
+            patch.object(order_guard, "get_margin_cfg", return_value=0.01),
         ):
             result = instrument.place(
                 "SELL", 100.0, 2.0, force=True, smart=True,
@@ -503,7 +503,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
             patch.object(
                 order_guard, "daily_limit_guard", return_value=(True, None)),
             patch.object(order_guard, "profit_guard", return_value=True),
-            patch.object(order_guard, "margin_for", return_value=0.01),
+            patch.object(order_guard, "get_margin_cfg", return_value=0.01),
             patch.object(
                 order_retry, "begin_claimed_submit", return_value=None),
         ):
@@ -530,7 +530,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
             patch.object(
                 order_guard, "daily_limit_guard", return_value=(True, None)),
             patch.object(order_guard, "profit_guard", return_value=True),
-            patch.object(order_guard, "margin_for", return_value=0.01),
+            patch.object(order_guard, "get_margin_cfg", return_value=0.01),
             patch.object(
                 order_retry, "begin_claimed_submit",
                 side_effect=begin_and_observe),
@@ -565,7 +565,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
             patch.object(
                 order_guard, "daily_limit_guard", return_value=(True, None)),
             patch.object(order_guard, "profit_guard", return_value=True),
-            patch.object(order_guard, "margin_for", return_value=0.01),
+            patch.object(order_guard, "get_margin_cfg", return_value=0.01),
             patch.object(
                 order_retry, "complete_claim",
                 side_effect=transient_complete),
@@ -596,7 +596,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
             patch.object(
                 order_guard, "daily_limit_guard", return_value=(True, None)),
             patch.object(order_guard, "profit_guard", return_value=True),
-            patch.object(order_guard, "margin_for", return_value=0.01),
+            patch.object(order_guard, "get_margin_cfg", return_value=0.01),
             patch.object(
                 order_retry, "complete_claim", return_value=False) as complete,
             patch.object(accepted_order_persistence.time, "sleep"),
@@ -700,7 +700,7 @@ class InstrumentCachePreflightTest(unittest.TestCase):
             patch.object(
                 order_guard, "daily_limit_guard", return_value=(True, None)),
             patch.object(order_guard, "profit_guard", return_value=True),
-            patch.object(order_guard, "margin_for", return_value=0.01),
+            patch.object(order_guard, "get_margin_cfg", return_value=0.01),
             patch.object(provider, "place_order", side_effect=blocked_place),
             patch.object(
                 order_retry_worker.alert, "notify") as quarantine_alert,

@@ -15,7 +15,6 @@ import math
 import sys
 from typing import Optional, List, Callable, Any
 
-from providers.base import extract_order_id
 from providers.market_api import api as _default_api
 from providers.execution_audit import ExecutionAudit
 from providers.strategy_executor import SubmissionRefused
@@ -35,13 +34,19 @@ def _accepted_order_payload(payload):
     status = str(payload.get("status") or "").upper()
     if status in {"REJECTED", "CANCELED", "CANCELLED", "EXPIRED", "FAILED"}:
         return False
-    return extract_order_id(payload) is not None
+    native_id = payload.get("orderId", payload.get("id", payload.get("txid")))
+    if isinstance(native_id, (list, tuple)):
+        return any(str(item).strip() for item in native_id)
+    return native_id is not None and str(native_id).strip() != ""
 
 
 def _order_id_from_payload(payload):
     if not isinstance(payload, dict):
         return None
-    return extract_order_id(payload)
+    native_id = payload.get("orderId", payload.get("id", payload.get("txid")))
+    if isinstance(native_id, (list, tuple)):
+        native_id = next((item for item in native_id if str(item).strip()), None)
+    return None if native_id is None else str(native_id)
 
 
 def _is_terminal_filter_refusal(reason) -> bool:
@@ -553,7 +558,7 @@ class Instrument:
                         regime_context = None
 
                 if profit_margin is None:
-                    profit_margin = order_guard.margin_for(self._provider.name)
+                    profit_margin = order_guard.get_margin_cfg(self._provider.name)
                 # Tier-one min/max reference comes from the provider hook. Kraken
                 # and Hyperliquid use their configured venue window; Binance uses
                 # safeback_sec from the order cache. An empty window falls back to

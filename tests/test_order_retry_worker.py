@@ -180,7 +180,7 @@ class ProcessOnceTest(unittest.TestCase):
                 patch(
                     "instrument.order_guard.daily_limit_guard",
                     return_value=(True, None)),
-                patch("instrument.order_guard.margin_for", return_value=0.01),
+                patch("instrument.order_guard.get_margin_cfg", return_value=0.01),
                 patch("instrument.order_guard.profit_guard", return_value=True),
                 patch("instrument.trade_cooldown.trade_slot",
                       return_value=SlotContext()),

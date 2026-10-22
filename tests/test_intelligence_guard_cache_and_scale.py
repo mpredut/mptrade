@@ -399,7 +399,7 @@ class TestCase5HistoryFailClosed:
 
         p = FailingHistoryProvider()
         monkeypatch.setattr(order_guard, "get_profit_guard_mode_cfg", lambda *a, **k: "dynamic")
-        monkeypatch.setattr(order_guard, "dynamic_buy_window_sec", lambda *a, **k: 3600.0)
+        monkeypatch.setattr(order_guard, "get_dynamic_window_sec_cfg", lambda *a, **k: 3600.0)
 
         # In dynamic mode, price (99.0) is below reference (100.0) with diff < threshold (1.15%),
         # but history fetch fails. Must fail closed (False), NOT bypass anchor!
@@ -977,7 +977,7 @@ class TestSisterArchitecturalDefects:
 
     def test_sister4_identity_enforced_in_symbol_trend_and_dynamic_window(self):
         """Sister 4: Anonymous context without symbol/provider is rejected by _symbol_trend
-        and dynamic_buy_window_sec via require_identity=True."""
+        and get_dynamic_window_sec_cfg via require_identity=True."""
         from market_regime import MarketRegimeContext, MarketRegimeDecision
         anon_decision = MarketRegimeDecision("bull", 0.5, 0.1, 5.0, True, "test")
         anon_ctx = MarketRegimeContext.from_decision(
@@ -992,8 +992,8 @@ class TestSisterArchitecturalDefects:
         # Without identity, anon_ctx.resolved_trend is bypassed
         assert trend != "bull" or getattr(anon_ctx, "symbol", None) is None
 
-        # dynamic_buy_window_sec must not consume anonymous context
-        window = order_guard.dynamic_buy_window_sec("BTCUSDC", provider="binance", regime_context=anon_ctx)
+        # get_dynamic_window_sec_cfg must not consume anonymous context
+        window = order_guard.get_dynamic_window_sec_cfg("BTCUSDC", provider="binance", order_type="BUY", regime_context=anon_ctx)
         assert window > 0
 
     def test_sister5_profit_guard_dynamic_history_exception_fails_closed(self, monkeypatch):
@@ -1368,12 +1368,12 @@ class TestBatch6IntelligenceAndRoutingFixes:
         # At now=2000 (age 1000s >= 120s), stale funding rate is ignored
         assert w_collector._resolve_cached_funding_rate("BTCUSDC", now=2000.0) is None
 
-    def test_batch6_dynamic_buy_window_excludes_closed_sell_cycles_and_market_api_place_order_routes_provider(self, monkeypatch):
+    def test_batch6_dynamic_window_excludes_closed_sell_cycles_and_market_api_place_order_routes_provider(self, monkeypatch):
         """check_math_profit_reference in dynamic mode must use active_cycle_window_ref to ignore closed SELL cycles,
         and MarketApi.place_order must honor provider_name."""
         monkeypatch.setattr(order_guard, "get_profit_guard_mode_cfg", lambda *a, **k: "dynamic")
         monkeypatch.setattr(order_guard, "_symbol_trend", lambda *a, **k: "flat")
-        monkeypatch.setattr(order_guard, "dynamic_buy_window_sec", lambda *a, **k: 14400.0)
+        monkeypatch.setattr(order_guard, "get_dynamic_window_sec_cfg", lambda *a, **k: 14400.0)
 
         provider = MagicMock()
         provider.name = "binance"

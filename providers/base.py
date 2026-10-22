@@ -36,18 +36,18 @@ def bool_env(key: str, folder: Optional[str] = None, default: bool = False) -> b
     return v.strip().lower() == "true"
 
 
-_TIMESTAMP_KEYS = ("timestamp", "time", "updateTime", "transactTime", "opentm", "closetm", "workingTime", "T", "E")
-_ORDER_ID_KEYS = ("orderId", "order_id", "ordertxid", "txid", "oid", "i", "id")
-_PRICE_KEYS = ("price", "px", "limitPx", "fillPrice", "limit", "limitPrice", "averagePrice", "avgPrice", "rate", "L", "p")
+_TIMESTAMP_KEYS = ("timestamp", "time", "updateTime", "transactTime", "opentm", "closetm", "workingTime")
+_ORDER_ID_KEYS = ("orderId", "order_id", "id", "txid", "oid", "i")
+_PRICE_KEYS = ("price", "px", "limitPx", "fillPrice", "limit", "limitPrice", "averagePrice", "avgPrice", "rate", "p")
 _QTY_KEYS = (
     "qty", "quantity", "executedQty", "filledQuantity", "filledQty", "vol_exec",
-    "sz", "vol", "origQty", "origSz", "orig_qty", "orderedQuantity", "amount_shares", "l", "z", "q",
+    "sz", "vol", "origQty", "origSz", "orig_qty", "orderedQuantity", "amount_shares", "q",
 )
 _ORIG_QTY_KEYS = (
     "origQty", "orig_qty", "origSz", "vol", "orderedQuantity", "original_qty",
     "order_qty", "qty", "amount", "quantity", "sz", "amount_shares", "q",
 )
-_EXEC_QTY_KEYS = ("executedQty", "filledQuantity", "filledQty", "vol_exec", "filled_qty", "z")
+_EXEC_QTY_KEYS = ("executedQty", "filledQuantity", "filledQty", "vol_exec", "filled_qty")
 _FEE_KEYS = ("commission", "fee", "filled_fee", "n")
 _FEE_ASSET_KEYS = ("commissionAsset", "feeToken", "fee_asset", "feeAsset", "N")
 
@@ -148,33 +148,27 @@ def extract_order_side(order: Any) -> str:
     """Extract and normalize order side (``'BUY'`` or ``'SELL'``) from any venue shape."""
     if not isinstance(order, dict):
         return ""
-    raw_side = order.get("side") or order.get("S") or order.get("dir")
+    raw_side = order.get("side")
     if raw_side is not None and str(raw_side).strip():
         s = str(raw_side).strip().upper()
-        if s in ("B", "BUY"):
+        if s == "B":
             return "BUY"
-        if s in ("A", "S", "SELL"):
+        if s in ("A", "S"):
             return "SELL"
         return s
     raw_type = order.get("type")
-    if raw_type is None and isinstance(order.get("descr"), dict):
-        raw_type = order["descr"].get("type")
     if raw_type is not None and str(raw_type).strip().upper() in ("BUY", "SELL"):
         return str(raw_type).strip().upper()
     if "isBuyer" in order and order.get("isBuyer") is not None:
         return "BUY" if bool(order["isBuyer"]) else "SELL"
-    for sq_key in ("signed_qty", "orderedQuantity", "quantity"):
-        signed_qty = order.get(sq_key)
-        if signed_qty is not None and not isinstance(signed_qty, bool):
-            try:
-                sq = float(signed_qty)
-                if math.isfinite(sq) and sq != 0.0:
-                    if sq < 0.0:
-                        return "SELL"
-                    if sq_key in ("signed_qty", "orderedQuantity") or "ticker" in order or "limitPrice" in order:
-                        return "BUY"
-            except (TypeError, ValueError, OverflowError):
-                pass
+    signed_qty = order.get("signed_qty")
+    if signed_qty is not None and not isinstance(signed_qty, bool):
+        try:
+            sq = float(signed_qty)
+            if math.isfinite(sq) and sq != 0.0:
+                return "BUY" if sq > 0 else "SELL"
+        except (TypeError, ValueError, OverflowError):
+            pass
     return ""
 
 
@@ -190,23 +184,12 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
                     return val
             except (TypeError, ValueError, OverflowError):
                 continue
-    descr = order.get("descr")
-    if isinstance(descr, dict) and descr.get("price") is not None:
-        try:
-            val = float(descr["price"] or 0.0)
-            if math.isfinite(val) and val > 0:
-                return val
-        except (TypeError, ValueError, OverflowError):
-            pass
     for cost_key, exec_key in (
         ("cummulativeQuoteQty", "executedQty"),
         ("quoteQty", "qty"),
         ("quoteQty", "quantity"),
         ("cost", "vol_exec"),
-        ("cost", "vol"),
         ("filledValue", "filledQuantity"),
-        ("Y", "l"),
-        ("Z", "z"),
     ):
         if cost_key in order and exec_key in order:
             try:
@@ -295,20 +278,11 @@ def extract_remaining_qty(order: Any, default: float = 0.0) -> float:
     rem = order.get("remainingQty")
     if rem is not None and not isinstance(rem, bool):
         try:
-            rem_f = float(rem)
-            if math.isfinite(rem_f) and rem_f >= 0.0:
+            rem_f = abs(float(rem))
+            if math.isfinite(rem_f) and rem_f > 0:
                 return rem_f
         except (TypeError, ValueError, OverflowError):
             pass
-    if "origSz" in order and "sz" in order and not any(k in order for k in _EXEC_QTY_KEYS):
-        raw_sz = order.get("sz")
-        if raw_sz is not None and not isinstance(raw_sz, bool):
-            try:
-                sz_f = abs(float(raw_sz))
-                if math.isfinite(sz_f) and sz_f >= 0.0:
-                    return sz_f
-            except (TypeError, ValueError, OverflowError):
-                pass
     orig = 0.0
     for key in _ORIG_QTY_KEYS:
         if key in order and order[key] is not None:
@@ -609,7 +583,7 @@ class MarketDataProvider(ABC):
 
     def profit_guard_window_ref(self, symbol: str, side: str, safeback_sec, regime_context=None, reference_mode=None, module=None):
         import order_guard
-        window_s = order_guard.window_for(
+        window_s = order_guard.get_window_cfg(
             self.name,
             symbol=symbol,
             order_type=side,

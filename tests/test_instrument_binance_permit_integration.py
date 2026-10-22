@@ -186,7 +186,7 @@ class InstrumentBinancePermitIntegrationTest(unittest.TestCase):
                                    available_qty: available_qty),
             patch.object(
                 order_guard, "daily_limit_guard", return_value=(True, None)),
-            patch.object(order_guard, "margin_for", return_value=0.01),
+            patch.object(order_guard, "get_margin_cfg", return_value=0.01),
             patch.object(order_guard, "profit_guard", return_value=True),
             # Isolate the placement from the live short-trend cache: the legacy
             # place_safe_order path does not pass wait_for_trend=False, so without

@@ -306,7 +306,7 @@ class BinanceProvider(MarketDataProvider):
         if safeback_sec is not None:
             sb = safeback_sec
         else:
-            win_s = order_guard.window_for(
+            win_s = order_guard.get_window_cfg(
                 "binance",
                 symbol=symbol,
                 order_type=side,

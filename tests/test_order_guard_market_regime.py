@@ -72,10 +72,15 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         )
         self.assertEqual(trend, "bull")
 
-        window_s = order_guard.dynamic_buy_window_sec(
-            "BTCUSDT", now=self.now, snapshot_resolver=resolver,
+        window_s = order_guard.get_dynamic_window_sec_cfg(
+            "BTCUSDT", order_type="BUY", now=self.now, snapshot_resolver=resolver,
         )
         self.assertEqual(window_s, 8.0 * 3600.0)
+
+        sell_window_s = order_guard.get_dynamic_window_sec_cfg(
+            "BTCUSDT", order_type="SELL", now=self.now, snapshot_resolver=resolver,
+        )
+        self.assertEqual(sell_window_s, 72.0 * 3600.0)
 
     def test_fresh_bear_snapshot_produces_bear_regime_and_72h_window(self):
         snap = {
@@ -95,10 +100,15 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         )
         self.assertEqual(trend, "bear")
 
-        window_s = order_guard.dynamic_buy_window_sec(
-            "BTCUSDT", now=self.now, snapshot_resolver=resolver,
+        window_s = order_guard.get_dynamic_window_sec_cfg(
+            "BTCUSDT", order_type="BUY", now=self.now, snapshot_resolver=resolver,
         )
         self.assertEqual(window_s, 72.0 * 3600.0)
+
+        sell_window_s = order_guard.get_dynamic_window_sec_cfg(
+            "BTCUSDT", order_type="SELL", now=self.now, snapshot_resolver=resolver,
+        )
+        self.assertEqual(sell_window_s, 8.0 * 3600.0)
 
     def test_weak_signal_produces_sideways_regime_mapped_to_flat_and_24h_window(self):
         # abs(gradient) / epsilon = 0.15 / 0.1 = 1.5 <= strength_threshold 2.0 -> sideways
@@ -119,8 +129,8 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         )
         self.assertEqual(trend, "flat")
 
-        window_s = order_guard.dynamic_buy_window_sec(
-            "BTCUSDT", now=self.now, snapshot_resolver=resolver,
+        window_s = order_guard.get_dynamic_window_sec_cfg(
+            "BTCUSDT", order_type="BUY", now=self.now, snapshot_resolver=resolver,
         )
         self.assertEqual(window_s, 24.0 * 3600.0)
 
@@ -154,8 +164,8 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         self.assertTrue(decision.source.startswith("ohlc:"))
 
         # The window uses the verified fallback bull regime.
-        window_s = order_guard.dynamic_buy_window_sec(
-            "BTCUSDT", provider=provider, now=self.now,
+        window_s = order_guard.get_dynamic_window_sec_cfg(
+            "BTCUSDT", provider=provider, order_type="BUY", now=self.now,
             snapshot_resolver=resolver,
         )
         self.assertEqual(window_s, 8.0 * 3600.0)
@@ -180,8 +190,8 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         )
         self.assertEqual(trend, "unknown")
 
-        window_s = order_guard.dynamic_buy_window_sec(
-            "BTCUSDT", provider=None, now=self.now,
+        window_s = order_guard.get_dynamic_window_sec_cfg(
+            "BTCUSDT", provider=None, order_type="BUY", now=self.now,
             snapshot_resolver=resolver,
         )
         self.assertEqual(window_s, 24.0 * 3600.0)
@@ -243,7 +253,7 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         self.assertEqual(decision.regime, "bear")
         self.assertEqual(decision.reason, "custom_delegation")
         self.assertEqual(order_guard._symbol_trend("BTCUSDT", provider=provider), "bear")
-        self.assertEqual(order_guard.dynamic_buy_window_sec("BTCUSDT", provider=provider), 72.0 * 3600.0)
+        self.assertEqual(order_guard.get_dynamic_window_sec_cfg("BTCUSDT", provider=provider, order_type="BUY"), 72.0 * 3600.0)
 
     def test_resolution_error_does_not_bypass_freshness_validation(self):
         class _BrokenService(MarketRegimeService):
@@ -294,8 +304,8 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
                         snapshot_resolver=resolver,
                     )
                     self.assertEqual(decision.regime, "unknown")
-            window_s = order_guard.dynamic_buy_window_sec(
-                "BTCUSDT", provider=None, now=self.now,
+            window_s = order_guard.get_dynamic_window_sec_cfg(
+                "BTCUSDT", provider=None, order_type="BUY", now=self.now,
             )
 
         self.assertFalse(hasattr(order_guard, "cacheManager"))
@@ -329,7 +339,6 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             "binance": 1.15,
             "default_window_h": 0.0,
             "binance_buy_reference": "dynamic",
-            "buy_window_mode": "dynamic",
         }
 
         cases = (
@@ -368,7 +377,6 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             "default": 1.15,
             "default_buy_reference": "dynamic",
             "binance_buy_reference": "dynamic",
-            "buy_window_mode": "dynamic",
         }
         calls = 0
 
@@ -390,7 +398,7 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         )
         with mock.patch.object(order_guard, "_MARGINS", margins), \
                 mock.patch.object(order_guard, "_symbol_trend") as trend:
-            window_s = order_guard.window_for(
+            window_s = order_guard.get_window_cfg(
                 provider, "TAOUSDC", "BUY", regime_context=context,
             )
             allowed = order_guard.profit_guard(
@@ -463,7 +471,6 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             "default": 1.15,
             "default_buy_reference": "dynamic",
             "binance_buy_reference": "dynamic",
-            "buy_window_mode": "dynamic",
         }
         mock_decision = order_guard.MarketRegimeDecision(
             regime="bull", gradient=0.5, epsilon=0.1, strength=5.0,
@@ -585,7 +592,6 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
             "default": 1.15,
             "default_buy_reference": "dynamic",
             "binance_buy_reference": "dynamic",
-            "buy_window_mode": "dynamic",
             "regime_context_max_age_sec": 60.0,
         }
         dec = order_guard.MarketRegimeDecision(

@@ -136,13 +136,13 @@ class TestWeightForCashPermission(unittest.TestCase):
 
 
 class TestUnifiedWeightResolution(unittest.TestCase):
-    """Test unified order_guard resolve_trade_weight and chop_weight_for."""
+    """Test unified order_guard resolve_trade_weight and get_chop_weight_cfg."""
 
-    def test_chop_weight_for_venue(self):
+    def test_get_chop_weight_cfg_venue(self):
         import order_guard
-        self.assertEqual(order_guard.chop_weight_for("binance"), 0.03)
-        self.assertEqual(order_guard.chop_weight_for("kraken"), 0.03)
-        self.assertEqual(order_guard.chop_weight_for(None), 0.03)
+        self.assertEqual(order_guard.get_chop_weight_cfg("binance"), 0.03)
+        self.assertEqual(order_guard.get_chop_weight_cfg("kraken"), 0.03)
+        self.assertEqual(order_guard.get_chop_weight_cfg(None), 0.03)
 
     def test_compute_weight_capped_qty(self):
         import order_guard

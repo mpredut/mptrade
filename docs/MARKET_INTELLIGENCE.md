@@ -263,7 +263,7 @@ A centralized, platform-agnostic allocation and quantity-limiting layer evaluate
 Resolves sizing hierarchically across 3 tiers:
 1. **Tier 1 (Own Trend Gaussian)**: When a coin has an active long-term trend, queries `priceAnalysis.get_weight_for_cash_permission_at_quant_time` (evaluating Gaussian distribution, Lindy continuation plateau, and 3-zone momentum bounds).
 2. **Tier 2 (Cross-Venue Proxy)**: When the coin has no trend of its own (e.g. `TAOUSDC` or `HYPE` during consolidation or new listings), queries `<venue>_weight_proxy` (`BTCUSDC` in `order_guard.conf`). If the proxy has an active trend, applies the proxy's Gaussian weight for early beta accumulation.
-3. **Tier 3 (Conservative Chop Floor)**: If neither the symbol nor the proxy has an active trend, falls back to `chop_weight_for(provider_name)` (default `0.03` / 3%).
+3. **Tier 3 (Conservative Chop Floor)**: If neither the symbol nor the proxy has an active trend, falls back to `get_chop_weight_cfg(provider_name)` (default `0.03` / 3%).
 4. **Fault Isolation**: Infrastructure exceptions from `priceAnalysis` cause BUY orders to fail closed with `SubmissionRefused("weight_policy_unavailable")`, while SELL orders fail open to balance cap to preserve exit liquidity. Corrupt numeric outputs (NaN or out-of-range weights) raise `invalid_weight_policy_weight`.
 
 ### 7.2 Unified Mathematical Quantity Capping (`order_guard.compute_weight_capped_qty`)

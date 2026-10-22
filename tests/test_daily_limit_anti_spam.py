@@ -74,32 +74,20 @@ class TestRecentTransactionConfig(unittest.TestCase):
                   "RECENT_TRANSACTION_BUY_SEC", "RECENT_TRANSACTION_SELL_SEC"):
             os.environ.pop(k, None)
 
-    def test_normalize_recent_transaction_side(self):
-        norm = order_guard.normalize_recent_transaction_side
-        self.assertEqual(norm("buy"), "buy")
-        self.assertEqual(norm("BUY"), "buy")
-        self.assertEqual(norm("buys"), "buy")
-        self.assertEqual(norm("only_buy"), "buy")
+    def test_validate_recent_transaction_side_cfg(self):
+        val_fn = order_guard.validate_recent_transaction_side_cfg
+        self.assertEqual(val_fn("buy"), "buy")
+        self.assertEqual(val_fn("BUY"), "buy")
+        self.assertEqual(val_fn("sell"), "sell")
+        self.assertEqual(val_fn("SELL"), "sell")
+        self.assertEqual(val_fn("both"), "both")
+        self.assertEqual(val_fn("BOTH"), "both")
+        self.assertEqual(val_fn("off"), "off")
+        self.assertEqual(val_fn("OFF"), "off")
 
-        self.assertEqual(norm("sell"), "sell")
-        self.assertEqual(norm("SELL"), "sell")
-        self.assertEqual(norm("only_sell"), "sell")
-
-        self.assertEqual(norm("both"), "both")
-        self.assertEqual(norm("symmetric"), "both")
-        self.assertEqual(norm("all"), "both")
-        self.assertEqual(norm("buy_sell"), "both")
-        self.assertEqual(norm("buy,sell"), "both")
-        self.assertEqual(norm("two_way"), "both")
-
-        self.assertEqual(norm("off"), "off")
-        self.assertEqual(norm("none"), "off")
-        self.assertEqual(norm("disabled"), "off")
-        self.assertEqual(norm("0"), "off")
-        self.assertEqual(norm(False), "off")
-
-        self.assertEqual(norm(None), "buy")
-        self.assertEqual(norm("unknown_value"), "buy")
+        for invalid in ("buys", "only_buy", "symmetric", "all", "0", False, None, "unknown_value"):
+            with self.assertRaises(ValueError):
+                val_fn(invalid)
 
     def test_recent_transaction_sec_resolution(self):
         with patch.dict(order_guard._load_margins(), {
@@ -110,23 +98,20 @@ class TestRecentTransactionConfig(unittest.TestCase):
             "binance_recent_transaction_buy_sec": 50.0,
         }, clear=False):
             # Specific venue + side
-            self.assertEqual(order_guard.recent_transaction_sec_for("binance", "BUY"), 50.0)
+            self.assertEqual(order_guard.get_recent_transaction_sec_cfg("binance", "BUY"), 50.0)
             # Specific venue fallback for SELL
-            self.assertEqual(order_guard.recent_transaction_sec_for("binance", "SELL"), 30.0)
+            self.assertEqual(order_guard.get_recent_transaction_sec_cfg("binance", "SELL"), 30.0)
             # Other venue with default side overrides
-            self.assertEqual(order_guard.recent_transaction_sec_for("kraken", "BUY"), 45.0)
-            self.assertEqual(order_guard.recent_transaction_sec_for("kraken", "SELL"), 30.0)
+            self.assertEqual(order_guard.get_recent_transaction_sec_cfg("kraken", "BUY"), 45.0)
+            self.assertEqual(order_guard.get_recent_transaction_sec_cfg("kraken", "SELL"), 30.0)
 
-    def test_recent_transaction_sec_env_override(self):
-        os.environ["RECENT_TRANSACTION_BUY_SEC"] = "15.0"
-        self.assertEqual(order_guard.recent_transaction_sec_for("binance", "BUY"), 15.0)
-
-        os.environ["RECENT_TRANSACTION_SEC"] = "22.0"
-        self.assertEqual(order_guard.recent_transaction_sec_for("binance", "SELL"), 22.0)
-
-    def test_recent_transaction_side_env_override(self):
-        os.environ["RECENT_TRANSACTION_SIDE"] = "symmetric"
-        self.assertEqual(order_guard.recent_transaction_side_for("binance"), "both")
+    def test_recent_transaction_side_cfg_resolution(self):
+        with patch.dict(order_guard._load_margins(), {
+            "default_recent_transaction_side": "buy",
+            "binance_recent_transaction_side": "both",
+        }, clear=False):
+            self.assertEqual(order_guard.get_recent_transaction_side_cfg("binance"), "both")
+            self.assertEqual(order_guard.get_recent_transaction_side_cfg("kraken"), "buy")
 
 
 class TestDailyLimitAntiSpamEnforcement(unittest.TestCase):
@@ -160,16 +145,16 @@ class TestDailyLimitAntiSpamEnforcement(unittest.TestCase):
         self.assertIsNone(reason)
 
     def test_symmetric_policy(self):
-        # Symmetric blocks both BUY and SELL on recent trades
+        # Symmetric ('both') blocks both BUY and SELL on recent trades
         prov_buy = self._make_provider("BUY", age_s=5.0)
         ok, reason = order_guard.daily_limit_guard(
-            prov_buy, "BTCUSDC", "BUY", recent_transaction_sec=90, recent_transaction_side="symmetric")
+            prov_buy, "BTCUSDC", "BUY", recent_transaction_sec=90, recent_transaction_side="both")
         self.assertFalse(ok)
         self.assertEqual(reason, "recent_transaction")
 
         prov_sell = self._make_provider("SELL", age_s=5.0)
         ok, reason = order_guard.daily_limit_guard(
-            prov_sell, "BTCUSDC", "SELL", recent_transaction_sec=90, recent_transaction_side="symmetric")
+            prov_sell, "BTCUSDC", "SELL", recent_transaction_sec=90, recent_transaction_side="both")
         self.assertFalse(ok)
         self.assertEqual(reason, "recent_transaction")
 

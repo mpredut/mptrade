@@ -124,7 +124,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
                     mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):
                 self.assertTrue(order_guard.profit_guard(provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
                 history.assert_called_with(
-                    "TAOUSDC", "SELL", order_guard.dynamic_buy_window_sec("TAOUSDC"))
+                    "TAOUSDC", "SELL", order_guard.get_dynamic_window_sec_cfg("TAOUSDC"))
                 history.return_value = [{"price": 216.28}]
                 self.assertFalse(order_guard.profit_guard(
                     provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
@@ -202,29 +202,35 @@ class BuyReferenceSwitchTest(unittest.TestCase):
                 self.assertEqual(len(p.placed), 0)
 
     def test_dynamic_window_scaling_by_trend(self):
-        # Bull: 8h (within 4h-12h), Flat: 24h (within 12h-48h), Bear: 72h (within 48h-168h)
+        # Favorable: 8h (BUY in bull / SELL in bear), Flat: 24h, Adverse: 72h (BUY in bear / SELL in bull)
         with mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):
-            self.assertEqual(order_guard.dynamic_buy_window_sec("TAOUSDC"), 8.0 * 3600.0)
-            self.assertEqual(order_guard.window_for("binance", "TAOUSDC", "BUY"), 8.0 * 3600.0)
+            self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="BUY"), 8.0 * 3600.0)
+            self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="SELL"), 72.0 * 3600.0)
+            self.assertEqual(order_guard.get_window_cfg("binance", "TAOUSDC", "BUY"), 8.0 * 3600.0)
 
         with mock.patch.object(order_guard, "_symbol_trend", return_value="bear"):
-            self.assertEqual(order_guard.dynamic_buy_window_sec("TAOUSDC"), 72.0 * 3600.0)
-            self.assertEqual(order_guard.window_for("binance", "TAOUSDC", "BUY"), 72.0 * 3600.0)
+            self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="BUY"), 72.0 * 3600.0)
+            self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="SELL"), 8.0 * 3600.0)
+            self.assertEqual(order_guard.get_window_cfg("binance", "TAOUSDC", "BUY"), 72.0 * 3600.0)
 
         with mock.patch.object(order_guard, "_symbol_trend", return_value="flat"):
-            self.assertEqual(order_guard.dynamic_buy_window_sec("TAOUSDC"), 24.0 * 3600.0)
-            self.assertEqual(order_guard.window_for("binance", "TAOUSDC", "BUY"), 24.0 * 3600.0)
+            self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="BUY"), 24.0 * 3600.0)
+            self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="SELL"), 24.0 * 3600.0)
+            self.assertEqual(order_guard.get_window_cfg("binance", "TAOUSDC", "BUY"), 24.0 * 3600.0)
 
         with mock.patch.object(order_guard, "_symbol_trend", return_value="unknown"):
-            self.assertEqual(order_guard.dynamic_buy_window_sec("TAOUSDC"), 24.0 * 3600.0)
+            self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="BUY"), 24.0 * 3600.0)
+            self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="SELL"), 24.0 * 3600.0)
 
     def test_dynamic_window_bounds_clamping(self):
         # Configured extreme values are safely clamped into user-defined bands
-        with mock.patch.object(order_guard, "_MARGINS", _margins(buy_window_bull_h=1.0, buy_window_bear_h=500.0)):
+        with mock.patch.object(order_guard, "_MARGINS", _margins(dynamic_window_favorable_h=1.0, dynamic_window_adverse_h=500.0)):
             with mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):
-                self.assertEqual(order_guard.dynamic_buy_window_sec("TAOUSDC"), 4.0 * 3600.0)  # clamped to min 4h
+                self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="BUY"), 4.0 * 3600.0)  # clamped to min 4h
+                self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="SELL"), 168.0 * 3600.0)  # clamped to max 168h
             with mock.patch.object(order_guard, "_symbol_trend", return_value="bear"):
-                self.assertEqual(order_guard.dynamic_buy_window_sec("TAOUSDC"), 168.0 * 3600.0)  # clamped to max 168h (7d)
+                self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="BUY"), 168.0 * 3600.0)  # clamped to max 168h (7d)
+                self.assertEqual(order_guard.get_dynamic_window_sec_cfg("TAOUSDC", order_type="SELL"), 4.0 * 3600.0)  # clamped to min 4h
 
     def test_dynamic_window_protects_against_recent_top_and_permits_pullback(self):
         class _OrderProvider:
@@ -312,9 +318,9 @@ class BuyReferenceSwitchTest(unittest.TestCase):
                     provider, "TAOUSDC", "BUY", 298.0, 1.15, window_ref=216.28))
 
     def test_sell_orders_never_use_short_dynamic_window(self):
-        # On SELL, window_for never uses dynamic short window; returns full venue window (e.g. 336h kraken)
+        # On SELL with static mode ('strict'), get_window_cfg returns full venue window (e.g. 336h kraken)
         with mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):
-            kraken_sell_win = order_guard.window_for("kraken", "HYPEUSD", "SELL")
+            kraken_sell_win = order_guard.get_window_cfg("kraken", "HYPEUSD", "SELL")
             self.assertEqual(kraken_sell_win, 336.0 * 3600.0)
 
         # On SELL, profit guard NEVER allows selling below buy price + margin
@@ -425,8 +431,8 @@ class BuyReferenceSwitchTest(unittest.TestCase):
             )
 
     def test_sell_falls_back_to_last_opposite_fill_when_window_empty(self):
-        """Even on venues with window_h > 0, a SELL order with no BUY inside the window
-        must fall back to last_opposite_fill so positions held >14 days remain protected."""
+        """Even on venues with window_h > 0, both BUY and SELL orders in static modes
+        with no opposite fill inside the window fall back symmetrically to last_opposite_fill."""
         provider = _Provider("kraken", last_fill=200.0)
         with mock.patch.object(order_guard, "_MARGINS", _margins(kraken_window_h=336.0)):
             # Selling at 190.0 below last_fill 200.0 must be blocked even when window_ref is None
@@ -436,8 +442,15 @@ class BuyReferenceSwitchTest(unittest.TestCase):
             self.assertTrue(
                 order_guard.profit_guard(provider, "HYPEUSD", "SELL", 210.0, 1.15, window_ref=None)
             )
+            # Symmetrically, buying at 210.0 above last_fill 200.0 in 'strict' mode is blocked when window_ref is None
+            self.assertFalse(
+                order_guard.profit_guard(provider, "HYPEUSD", "BUY", 210.0, 1.15, window_ref=None)
+            )
+            self.assertTrue(
+                order_guard.profit_guard(provider, "HYPEUSD", "BUY", 190.0, 1.15, window_ref=None)
+            )
 
-    def test_dynamic_buy_window_recomputes_ref_from_recent_fills_ignoring_older_14d_anchor(self):
+    def test_dynamic_window_recomputes_ref_from_recent_fills_ignoring_older_14d_anchor(self):
         """When caller passes a 14d static window_ref (e.g. 216.28) that is older than dyn_window_s,
         and a newer SELL at 300.0 exists inside dyn_window_s, dynamic mode must use min(recent_prices)=300.0."""
         class _RecentSellProvider:
