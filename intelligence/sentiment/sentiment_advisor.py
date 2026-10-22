@@ -46,11 +46,21 @@ class SentimentAdvisor:
         self._last_eval_ts: float = 0.0
         self._load_from_disk()
 
+    def _effective_cache_file(self) -> str:
+        if self.cache_file == DEFAULT_CACHE_FILE:
+            try:
+                from cachepaths import cache_path
+                return cache_path("sentiment_advisor_eval.json")
+            except Exception:
+                return os.path.join(os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb"), "sentiment_advisor_eval.json")
+        return self.cache_file
+
     def _load_from_disk(self) -> None:
+        cache_file = self._effective_cache_file()
         candidates = [
-            self.cache_file,
-            self.cache_file.replace("sentiment_advisor_eval.json", "macro_advisor_eval.json"),
-            self.cache_file.replace("sentiment_advisor_eval.json", "gemini_macro_advisor.json"),
+            cache_file,
+            cache_file.replace("sentiment_advisor_eval.json", "macro_advisor_eval.json"),
+            cache_file.replace("sentiment_advisor_eval.json", "gemini_macro_advisor.json"),
         ]
         target_file = None
         for cand in candidates:
@@ -76,20 +86,21 @@ class SentimentAdvisor:
                 logger.debug("Could not load cached macro file: %s", e)
 
     def _save_to_disk(self, assessment: SentimentAdvisorAssessment) -> None:
+        cache_file = self._effective_cache_file()
         try:
             from state_io import atomic_write_json
             payload = asdict(assessment)
-            atomic_write_json(self.cache_file, payload, indent=2)
+            atomic_write_json(cache_file, payload, indent=2)
             # Write legacy files during migration
             for legacy_name in ("macro_advisor_eval.json", "gemini_macro_advisor.json"):
-                legacy_path = self.cache_file.replace("sentiment_advisor_eval.json", legacy_name)
-                if legacy_path != self.cache_file:
+                legacy_path = cache_file.replace("sentiment_advisor_eval.json", legacy_name)
+                if legacy_path != cache_file:
                     try:
                         atomic_write_json(legacy_path, payload, indent=2)
                     except Exception:
                         pass
         except Exception as e:
-            logger.warning("Could not persist LLM assessment to %s: %s", self.cache_file, e)
+            logger.warning("Could not persist LLM assessment to %s: %s", cache_file, e)
 
     def review(
         self,

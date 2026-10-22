@@ -34,9 +34,18 @@ load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 
 logger = logging.getLogger("intelligence.external.smart_stop_loss")
 
-_SMART_SL_STATE_FILE = os.path.join(
-    os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb"), "smart_stop_loss_state.json"
-)
+_DEFAULT_SMART_SL_STATE_FILE = os.path.join("cachedb", "smart_stop_loss_state.json")
+_SMART_SL_STATE_FILE = _DEFAULT_SMART_SL_STATE_FILE
+
+
+def _effective_smart_sl_state_file() -> str:
+    if _SMART_SL_STATE_FILE != _DEFAULT_SMART_SL_STATE_FILE:
+        return _SMART_SL_STATE_FILE
+    try:
+        from cachepaths import cache_path
+        return cache_path("smart_stop_loss_state.json")
+    except Exception:
+        return os.path.join(os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb"), "smart_stop_loss_state.json")
 
 # In-memory grace tracker: symbol -> {start_ts, initial_loss, lost_threshold, provider, current_price, buy_price}
 _GRACE_TRACKER: Dict[str, Dict[str, Any]] = {}
@@ -70,15 +79,16 @@ def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
     global _GRACE_TRACKER, _LOADED_STATE_FILE_KEY
     if _GRACE_TRACKER or is_sim:
         return _GRACE_TRACKER
+    state_file = _effective_smart_sl_state_file()
     try:
-        mtime = os.path.getmtime(_SMART_SL_STATE_FILE)
+        mtime = os.path.getmtime(state_file)
     except OSError:
         return _GRACE_TRACKER
-    file_key = (_SMART_SL_STATE_FILE, mtime)
+    file_key = (state_file, mtime)
     if _LOADED_STATE_FILE_KEY == file_key:
         return _GRACE_TRACKER
     try:
-        with open(_SMART_SL_STATE_FILE, "r", encoding="utf-8") as f:
+        with open(state_file, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
             # Sanitize: purge any ancient, unphysical, or expired entries (> 3600s old or start_ts < 1e9)
@@ -99,11 +109,12 @@ def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
 
 def _save_grace_state() -> None:
     global _LOADED_STATE_FILE_KEY
+    state_file = _effective_smart_sl_state_file()
     try:
         from state_io import atomic_write_json
-        atomic_write_json(_SMART_SL_STATE_FILE, _GRACE_TRACKER, indent=2)
+        atomic_write_json(state_file, _GRACE_TRACKER, indent=2)
         try:
-            _LOADED_STATE_FILE_KEY = (_SMART_SL_STATE_FILE, os.path.getmtime(_SMART_SL_STATE_FILE))
+            _LOADED_STATE_FILE_KEY = (state_file, os.path.getmtime(state_file))
         except OSError:
             pass
     except Exception as e:

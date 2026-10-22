@@ -21,6 +21,12 @@ def collect_pretrade_telemetry(
     cachedb_dir: str = "cachedb",
 ) -> Dict[str, Any]:
     """Collects multi-pillar pre-trade telemetry (0 ms local cache) to provide deep context to the LLM."""
+    if cachedb_dir == "cachedb":
+        try:
+            from cachepaths import get_cachedb_dir
+            cachedb_dir = get_cachedb_dir()
+        except Exception:
+            cachedb_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
     telemetry: Dict[str, Any] = {}
 
     # 1. Spot Microstructure: Orderbook Depth & Walls (Pillar 2)

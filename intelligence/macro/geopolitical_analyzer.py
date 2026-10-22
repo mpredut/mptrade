@@ -69,8 +69,17 @@ class GeopoliticalThreatAnalyzer:
         self._last_headlines_digest: str = ""
         self._load_from_disk()
 
+    def _effective_state_file(self) -> str:
+        if self.state_file == DEFAULT_STATE_FILE:
+            try:
+                from cachepaths import cache_path
+                return cache_path("geopolitical_threat_eval.json")
+            except Exception:
+                return os.path.join(os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb"), "geopolitical_threat_eval.json")
+        return self.state_file
+
     def _load_from_disk(self) -> None:
-        target_file = self.state_file
+        target_file = self._effective_state_file()
         if not os.path.exists(target_file):
             legacy = target_file.replace("geopolitical_threat_eval.json", "geopolitical_threat_state.json")
             if os.path.exists(legacy):
@@ -97,17 +106,18 @@ class GeopoliticalThreatAnalyzer:
                 logger.debug("Could not load cached geopolitical state: %s", e)
 
     def _save_to_disk(self, assessment: GeopoliticalThreatAssessment) -> None:
+        state_file = self._effective_state_file()
         try:
             from state_io import atomic_write_json
             data = asdict(assessment)
             data["headlines_digest"] = self._last_headlines_digest
-            atomic_write_json(self.state_file, data, indent=2)
+            atomic_write_json(state_file, data, indent=2)
             # Write legacy file during migration
-            legacy = self.state_file.replace("geopolitical_threat_eval.json", "geopolitical_threat_state.json")
-            if legacy != self.state_file:
+            legacy = state_file.replace("geopolitical_threat_eval.json", "geopolitical_threat_state.json")
+            if legacy != state_file:
                 atomic_write_json(legacy, data, indent=2)
         except Exception as e:
-            logger.warning("Could not persist geopolitical state to %s: %s", self.state_file, e)
+            logger.warning("Could not persist geopolitical state to %s: %s", state_file, e)
 
     def assess(
         self,

@@ -112,8 +112,15 @@ class OrderbookDepthCollector:
     def _disk_path(self, symbol: str) -> Optional[str]:
         if not self.cache_dir:
             return None
+        cache_dir = self.cache_dir
+        if cache_dir == "cachedb":
+            try:
+                from cachepaths import get_cachedb_dir
+                cache_dir = get_cachedb_dir()
+            except Exception:
+                cache_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
         safe_sym = symbol.upper().strip().replace("/", "").replace("-", "")
-        return os.path.join(self.cache_dir, f"orderbook_depth_{safe_sym}.json")
+        return os.path.join(cache_dir, f"orderbook_depth_{safe_sym}.json")
 
     def _load_from_disk(self, symbol: str, now: float) -> Optional[OrderbookSnapshot]:
         max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)

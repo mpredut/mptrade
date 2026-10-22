@@ -45,6 +45,17 @@ os.environ["NOTIFICATION_QUEUE_FILE"] = os.path.join(
     _notification_state_tmp.name, "notification_queue.jsonl"
 )
 
+_cachedb_tmp = tempfile.TemporaryDirectory(
+    prefix="mptrade-tests-cachedb-",
+)
+os.environ["MPTRADE_CACHEDB_DIR"] = _cachedb_tmp.name
+
+
+@pytest.fixture(autouse=True)
+def _isolate_cachedb_dir(tmp_path, monkeypatch):
+    """Keep every test isolated from live/rsynced cachedb state files."""
+    monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path / "cachedb"))
+
 
 @pytest.fixture(autouse=True)
 def _sink_smtp(monkeypatch):
@@ -123,4 +134,5 @@ def _shutdown_runtime_threads_after_suite():
     _TRACKED_MKDTEMP_DIRS.clear()
     _execution_audit_tmp.cleanup()
     _notification_state_tmp.cleanup()
+    _cachedb_tmp.cleanup()
 

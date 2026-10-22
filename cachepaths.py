@@ -23,6 +23,9 @@ def cache_path(name: str) -> str:
         return name
     if os.path.isabs(name):
         return name
+    norm = name.replace("\\", "/")
+    if norm.startswith("cachedb/"):
+        name = norm[len("cachedb/"):]
     d = get_cachedb_dir()
     try:
         os.makedirs(d, exist_ok=True)

@@ -26,6 +26,7 @@ class TestPositionExitManager(unittest.TestCase):
             sl_bounce_min_pullback_pct=0.0015,
             sl_structural_break_enabled=True,
             smart_sl_enabled=False,  # Isolated unit testing without external daemon
+            allow_external_cache=False,
             tp_trend_ride_enabled=True,
             tp_profit_floor_ratio=0.50,
             tp_profit_floor_min_pct=0.008,

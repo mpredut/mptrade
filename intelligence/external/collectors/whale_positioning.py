@@ -76,11 +76,23 @@ class WhalePositioningCollector:
         self.disk_ttl_sec = disk_ttl_sec
         self._cache: Dict[str, tuple[float, WhalePositioningSnapshot]] = {}
 
-    def _disk_path(self, symbol: str) -> Optional[str]:
+    def _effective_cache_dir(self) -> Optional[str]:
         if not self.cache_dir:
             return None
+        if self.cache_dir == "cachedb":
+            try:
+                from cachepaths import get_cachedb_dir
+                return get_cachedb_dir()
+            except Exception:
+                return os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
+        return self.cache_dir
+
+    def _disk_path(self, symbol: str) -> Optional[str]:
+        cache_dir = self._effective_cache_dir()
+        if not cache_dir:
+            return None
         safe_sym = symbol.upper().strip().replace("/", "").replace("-", "")
-        return os.path.join(self.cache_dir, f"whale_snapshot_{safe_sym}.json")
+        return os.path.join(cache_dir, f"whale_snapshot_{safe_sym}.json")
 
     def _load_from_disk(self, symbol: str, now: float, *, ignore_ttl: bool = False) -> Optional[WhalePositioningSnapshot]:
         max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
@@ -113,14 +125,15 @@ class WhalePositioningCollector:
 
     def _resolve_price_1h_change_pct(self, symbol: str) -> float:
         """Resolve 1-hour price change percentage from cached price history (0 ms local)."""
-        if not self.cache_dir:
+        cache_dir = self._effective_cache_dir()
+        if not cache_dir:
             return 0.0
         try:
             sym_u = symbol.upper()
             variants = _symbol_variants(sym_u)
 
             for sym_key in variants:
-                p = os.path.join(self.cache_dir, f"cache_24_price_{sym_key}.json")
+                p = os.path.join(cache_dir, f"cache_24_price_{sym_key}.json")
                 if not os.path.exists(p):
                     continue
                 with open(p, "r", encoding="utf-8") as f:
@@ -150,14 +163,15 @@ class WhalePositioningCollector:
 
     def _resolve_cached_funding_rate(self, symbol: str, now: Optional[float] = None) -> Optional[float]:
         """Lookup cached funding rate from derivatives telemetry if available and fresh."""
-        if not self.cache_dir:
+        cache_dir = self._effective_cache_dir()
+        if not cache_dir:
             return None
         try:
             now_ts = now if now is not None else time.time()
             max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
             variants = _symbol_variants(symbol)
             for s in variants:
-                p = os.path.join(self.cache_dir, f"derivatives_telemetry_{s}.json")
+                p = os.path.join(cache_dir, f"derivatives_telemetry_{s}.json")
                 if os.path.exists(p):
                     with open(p, "r", encoding="utf-8") as f:
                         d = json.load(f)
