@@ -485,3 +485,104 @@ class TestOrderRetryTTL:
             monitororder.monitor_open_orders_by_type("ARBUSDC", "BUY")
             mock_cancel.assert_not_called()
             mock_place.assert_not_called()
+
+    def test_custom_ttl_and_expires_at_ts_enforced_in_is_expired(self, tmp_path):
+        import order_retry as oq
+        with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
+             patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")):
+            rid = oq.enqueue(
+                "TAOUSDC", "BUY", 1.0,
+                requested_price=250.0, ref_price=250.0,
+                failure_reason="trend_deferred",
+                now=1000.0, ttl_sec=300.0,
+            )
+            rec = oq.get(rid)
+            assert oq.resolve_record_ttl(rec) == 300.0
+            assert not oq.is_expired(rec, now=1250.0)
+            assert oq.is_expired(rec, now=1301.0)
+
+    def test_intentionally_canceled_claimed_accepted_order_does_not_alert_terminal(self, tmp_path):
+        import order_retry as oq
+        with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
+             patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")):
+            rid = oq.enqueue(
+                "TAOUSDC", "BUY", 1.0,
+                requested_price=250.0, ref_price=250.0, now=1000.0,
+            )
+            assert oq.mark_accepted(rid, {"orderId": 888, "status": "NEW"}, now=1001.0)
+            claimed = oq.claim([rid], now=1400.0)[0]
+            assert oq.resolve_accepted_order("TAOUSDC", 888) is True
+            transition = oq.advance_claimed_status(
+                claimed,
+                OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="CANCELED"),
+                now=1401.0,
+            )
+            assert transition.action == "terminal"
+            assert transition.status_changed is False
+
+    def test_expired_order_cleans_initial_prices_and_replacement_propagates_remaining_ttl(self, tmp_path):
+        import order_retry as oq
+        now = time.time()
+        monitororder.initial_buy_prices["711457499"] = 277.4
+        expired_orders = {
+            "711457499": {
+                "price": 277.4,
+                "quantity": 1.8,
+                "timestamp": now - 400.0,
+                "clientOrderId": "RT_rtrade-TAOUSDC_1_abc",
+            }
+        }
+        with patch.object(monitororder.api, "get_open_orders", return_value=expired_orders), \
+             patch.object(monitororder.api, "get_current_price", return_value=278.0), \
+             patch.object(monitororder.mkt, "cancel_order", return_value=True), \
+             patch.object(monitororder, "_notify_order_expired"):
+            monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
+        assert "711457499" not in monitororder.initial_buy_prices
+
+        active_orders = {
+            "711457500": {
+                "price": 100.0,
+                "quantity": 2.0,
+                "remainingQty": 2.0,
+                "timestamp": now - 1200.0,
+                "clientOrderId": "TA_OR_abc_0",
+            }
+        }
+        with patch.object(oq, "QUEUE_FILE", str(tmp_path / "queue.jsonl")), \
+             patch.object(oq, "LOCK_FILE", str(tmp_path / "queue.lock")), \
+             patch.object(monitororder.api, "get_open_orders", return_value=active_orders), \
+             patch.object(monitororder.api, "get_current_price", return_value=100.1), \
+             patch.object(monitororder.mkt, "preflight_order", return_value=object()), \
+             patch.object(monitororder.api, "cancel_order", return_value=True), \
+             patch.object(monitororder.mkt, "order_status", return_value=OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="CANCELED")), \
+             patch.object(monitororder.mkt, "place", return_value={"orderId": "711457501"}), \
+             patch("alertnotifiers.notify"):
+            monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
+            tracked = oq.load_all()
+            assert len(tracked) == 1
+            assert 5900.0 <= tracked[0]["ttl_sec"] <= 6005.0
+
+    def test_order_guard_timestamp_and_qty_normalization(self):
+        import order_guard as og
+        now_s = time.time()
+        provider = MagicMock()
+        provider.name = "Kraken"
+        provider.get_orders.return_value = [
+            {"time": now_s - 30.0, "price": "100.0", "executedQty": "2.5"}
+        ]
+        with patch.object(og, "_load_margins", return_value={
+            "default_max_daily_trades": 50,
+            "default_safeback_sec": 86400,
+            "recent_transaction_seconds": 300,
+            "recent_transaction_side_policy": "both",
+        }):
+            ok, reason = og.daily_limit_guard(provider, "TAOUSD", "BUY")
+            assert ok is False
+            assert reason == "recent_transaction"
+
+        with patch.object(og, "resolve_trade_weight", return_value=0.5):
+            capped = og.weight_limit(
+                provider, "TAOUSD", "SELL", 100.0, 5.0, available_qty=10.0)
+            assert capped > 0
+            # traded_value = 2.5 * 100 = 250; total_ref = 1250; max_trade_value = 625; remaining = 375 -> 3.75 qty
+            assert abs(capped - 3.75) < 1e-6

@@ -517,6 +517,8 @@ def process_once(mkt, now=None):
                     f"orderId={r.get('order_id')} filled={status.filled_qty} "
                     f"remainder={transition.remaining_qty}")
                 continue
+            if not transition.status_changed:
+                continue
             terminal_failed += 1
             _audit_event(
                 r, "order_terminal", status=status.status,
@@ -608,7 +610,12 @@ def process_once(mkt, now=None):
         #           while strictly maintaining wait_for_trend=True and P2 whale/orderbook protections.
         ttl_started = float(r.get("ttl_started_ts") or r.get("created_ts") or now)
         age_sec = max(0.0, now - ttl_started)
-        total_ttl = float(oq.RETRY_TTL_SEC) if oq.RETRY_TTL_SEC > 0 else 302400.0
+        effective_ttl = (
+            oq.resolve_record_ttl(r)
+            if hasattr(oq, "resolve_record_ttl")
+            else float(oq.RETRY_TTL_SEC)
+        )
+        total_ttl = effective_ttl if effective_ttl > 0 else 302400.0
         age_progress = min(1.0, max(0.0, age_sec / total_ttl))
         side_u = str(r.get("side") or "").upper()
 

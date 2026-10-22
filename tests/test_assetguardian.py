@@ -1034,6 +1034,40 @@ class AssetGuardianTest(unittest.TestCase):
             self.assertEqual(sell_camp["terminal_orders"][-1]["cost"], 0.0)
             self.assertEqual(sell_camp["terminal_orders"][-1]["fee"], 0.0)
 
+        with self.subTest(msg="test_dust_remainder_after_99pct_partial_fill_completes_buy_and_sell_tiers"):
+            state = MemoryState()
+            with mock.patch.object(ag, "STATE", state):
+                buy_camp = ag._record_terminal_buy(
+                    "TAOUSDC",
+                    {
+                        "initial_cash": 1000.0,
+                        "completed_tiers": [],
+                        "pending": {
+                            "threshold": 7.0,
+                            "allocation": 0.35,
+                            "order_id": "b-99",
+                            "client_order_id": "AGB_99",
+                        },
+                    },
+                    OrderStatus("canceled", 1.54, 345.0, 0.5),
+                )
+                sell_camp = ag._record_terminal_sell(
+                    "TAOUSDC",
+                    {
+                        "initial_qty": 10.0,
+                        "completed_tiers": [],
+                        "pending": {
+                            "threshold": 15.0,
+                            "allocation": 0.30,
+                            "order_id": "s-99",
+                            "client_order_id": "AGS_99",
+                        },
+                    },
+                    OrderStatus("canceled", 2.97, 341.55, 0.3),
+                )
+            self.assertIn(7.0, buy_camp["completed_tiers"])
+            self.assertIn(15.0, sell_camp["completed_tiers"])
+
 
 if __name__ == "__main__":
     unittest.main()

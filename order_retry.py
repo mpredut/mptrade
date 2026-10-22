@@ -1360,6 +1360,8 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                 rec["attempts"] = 0
                 rec["last_attempt_ts"] = now
                 rec["ttl_started_ts"] = now
+                if rec.get("ttl_sec") is not None:
+                    rec["expires_at_ts"] = now + resolve_record_ttl(rec)
                 _set_safe_to_discard(rec, False)
                 rec["last_failure_reason"] = (
                     "terminal_" + str(getattr(status, "venue_status", "")
@@ -1463,7 +1465,6 @@ def activate_claimed_replacement(claimed, qty, now=None):
                         str(item.get("lifecycle") or "").lower() == "accepted"
                         and str(item.get("symbol") or "").strip().upper() == replaced_symbol
                         and str(item.get("order_id") or "").strip() == replaced_order_id
-                        and not _record_has_claim(item)
                     )
                 ]
             _write_nolock(existing)
@@ -1471,7 +1472,7 @@ def activate_claimed_replacement(claimed, qty, now=None):
 
 
 def resolve_accepted_order(symbol, order_id) -> bool:
-    """Remove an unclaimed ``accepted`` tracker after intentional external cancellation."""
+    """Remove an ``accepted`` tracker after intentional external cancellation."""
     target_sym = str(symbol or "").strip().upper()
     target_oid = str(order_id or "").strip()
     if not target_sym or not target_oid:
@@ -1486,7 +1487,6 @@ def resolve_accepted_order(symbol, order_id) -> bool:
                 str(rec.get("lifecycle") or "").lower() == "accepted"
                 and str(rec.get("symbol") or "").strip().upper() == target_sym
                 and str(rec.get("order_id") or "").strip() == target_oid
-                and not _record_has_claim(rec)
             ):
                 removed = True
             else:
@@ -1563,9 +1563,9 @@ def advance_claimed_status(claimed: dict, status: OrderStatus,
             "retry_terminal", status_changed=True,
             remaining_qty=remaining_qty)
 
-    complete_claim(claimed, "success", now, status=status)
+    changed = complete_claim(claimed, "success", now, status=status)
     return OutboxStatusTransition(
-        "terminal", status_changed=True, remaining_qty=remaining_qty)
+        "terminal", status_changed=bool(changed), remaining_qty=remaining_qty)
 
 
 def discard_expired(snapshots, now=None):
@@ -1692,11 +1692,23 @@ def rewrite(items):
         _write_nolock(items)
 
 
+def resolve_record_ttl(rec):
+    """Return the effective active retry TTL for ``rec``, honoring custom ``ttl_sec``."""
+    try:
+        custom_ttl = float(rec.get("ttl_sec") or 0)
+        if math.isfinite(custom_ttl) and custom_ttl > 0:
+            return min(custom_ttl, MAX_GLOBAL_ORDER_TTL_SEC)
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return float(RETRY_TTL_SEC)
+
+
 def is_expired(rec, now=None):
     """Return true after active retry TTL or hard attempt limit.
 
     A non-failure deferral has made no venue attempt and therefore never consumes TTL
-    or the attempt budget. Once another refusal reason appears, ``ttl_started_ts``
+    or the attempt budget unless an explicit ``expires_at_ts`` / ``ttl_sec`` deadline
+    was set by the producer. Once another refusal reason appears, ``ttl_started_ts``
     is reset and normal expiry resumes.
     """
     # An accepted order is real venue state, not a stale submit attempt. Never
@@ -1718,9 +1730,18 @@ def is_expired(rec, now=None):
         return True
     if claim_until > now:
         return False
+    raw_expires_at = rec.get("expires_at_ts")
+    if raw_expires_at is not None:
+        try:
+            expires_at = float(raw_expires_at)
+            if math.isfinite(expires_at) and expires_at > 0 and now > expires_at:
+                return True
+        except (TypeError, ValueError, OverflowError):
+            return True
     if is_non_failure_deferral(rec.get("last_failure_reason")):
         return False
-    return ((now - ttl_started) > RETRY_TTL_SEC or
+    effective_ttl = resolve_record_ttl(rec)
+    return ((now - ttl_started) > effective_ttl or
             (RETRY_MAX_ATTEMPTS > 0 and attempts >= RETRY_MAX_ATTEMPTS))
 
 

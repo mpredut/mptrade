@@ -256,10 +256,12 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         order_ts = float(order.get("timestamp") or 0.0)
         if order_ts > 1e11:
             order_ts /= 1000.0
+        age_sec = 0.0
+        effective_ttl = resolve_effective_order_ttl(
+            order_id, cid, owner=owner, custom_ttl_map=custom_ttl_map)
         if order_ts > 0:
             now = time.time()
             age_sec = max(0.0, now - order_ts)
-            effective_ttl = resolve_effective_order_ttl(order_id, cid, owner=owner, custom_ttl_map=custom_ttl_map)
             if age_sec >= MAX_GLOBAL_ORDER_TTL_SEC or age_sec >= effective_ttl:
                 age_str = f"{age_sec / 3600:.1f}h" if age_sec >= 3600 else f"{age_sec / 60:.1f}m"
                 ttl_str = f"{effective_ttl / 3600:.1f}h" if effective_ttl >= 3600 else f"{effective_ttl / 60:.1f}m"
@@ -272,6 +274,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     if canceled is False:
                         print(f"[MONITORORDER] Cancel returned False for expired order {order_id}; will retry next cycle.")
                         continue
+                    initial_prices.pop(order_id, None)
+                    initial_prices.pop(oid_str, None)
                     try:
                         order_retry.resolve_accepted_order(symbol, order_id)
                     except Exception:
@@ -366,6 +370,16 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 replace_pfx = "MO_MN_OR"
             else:
                 replace_pfx = "MO_OR"
+            has_explicit_ttl = (
+                order_ts > 0
+                or oid_str in custom_ttl_map
+                or (cid and cid in custom_ttl_map)
+            )
+            replacement_ttl = (
+                max(60.0, effective_ttl - age_sec)
+                if has_explicit_ttl
+                else None
+            )
             replacement_id = order_retry.enqueue(
                 symbol, order_type, quantity,
                 {
@@ -382,7 +396,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 failure_reason="submit_pending",
                 provider_name="Binance", kind="monitor_order_replace",
                 lifecycle="awaiting_cancel", replaces_order_id=order_id,
-                replaces_original_qty=original_quantity)
+                replaces_original_qty=original_quantity,
+                ttl_sec=replacement_ttl)
             claimed = (
                 order_retry.claim(
                     [replacement_id],

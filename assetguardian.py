@@ -665,7 +665,19 @@ def _record_terminal_buy(symbol, state, status):
     state["total_spent_quote"] = (
         (_finite_float(state.get("total_spent_quote")) or 0.0)
         + executed_quote)
-    if status.status == "closed" and filled_qty > 0:
+    allocation = _finite_float(pending.get("allocation"), positive=True)
+    initial_cash = _finite_float(state.get("initial_cash"), positive=True)
+    target_cash = (
+        initial_cash * BUY_USE_CASH_RATIO * allocation
+        if initial_cash is not None and allocation is not None
+        else None
+    )
+    dust_completed = (
+        target_cash is not None
+        and spent_by_tier[key] > 0
+        and (target_cash - spent_by_tier[key]) <= max(1e-9, target_cash * 0.02)
+    )
+    if (status.status == "closed" and filled_qty > 0) or dust_completed:
         completed = _completed_tier_values(state)
         completed.add(threshold)
         state["completed_tiers"] = sorted(completed)
@@ -713,7 +725,24 @@ def _record_terminal_sell(symbol, state, status):
     state["total_filled_qty"] = (
         (_finite_float(state.get("total_filled_qty")) or 0.0)
         + filled_qty)
-    if status.status == "closed" and filled_qty > 0:
+    allocation = _finite_float(pending.get("allocation"), positive=True)
+    if allocation is None:
+        for t_thr, t_alloc in SELL_TIERS:
+            if abs(float(t_thr) - float(threshold)) <= 1e-9:
+                allocation = float(t_alloc)
+                break
+    initial_qty = _finite_float(state.get("initial_qty"), positive=True)
+    target_qty = (
+        initial_qty * allocation
+        if initial_qty is not None and allocation is not None
+        else None
+    )
+    dust_completed = (
+        target_qty is not None
+        and filled_by_tier[key] > 0
+        and (target_qty - filled_by_tier[key]) <= max(1e-12, target_qty * 0.02)
+    )
+    if (status.status == "closed" and filled_qty > 0) or dust_completed:
         completed = _completed_tier_values(state)
         completed.add(threshold)
         state["completed_tiers"] = sorted(completed)
@@ -971,7 +1000,7 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider):
         already_filled = _finite_float(
             filled_by_tier.get(_tier_key(threshold))) or 0.0
         remaining_qty = max(0.0, target_qty - already_filled)
-        if remaining_qty <= 0:
+        if remaining_qty <= max(1e-12, target_qty * 0.02):
             _complete_campaign_tier(symbol, "sell", state, threshold)
             return None, _symbol_campaign(symbol, "sell"), growth
         return (threshold, allocation, remaining_qty), state, growth
@@ -1249,7 +1278,7 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         if cash_amount is None:
             print(f"[{symbol}] Invalid BUY tier budget; preserve fail-closed.")
             return False
-        if cash_amount <= 0:
+        if cash_amount <= max(1e-9, target_cash * 0.02):
             _complete_campaign_tier(symbol, "buy", campaign, threshold)
             print(
                 f"[{symbol}] BUY tier -{threshold:.2f}% already funded by "

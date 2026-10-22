@@ -579,7 +579,11 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
     recent = provider.get_orders(symbol, order_type, 86400)
     if recent is None:
         raise ProviderError(f"weight_limit({symbol}): order history unavailable")
-    traded_value = sum(float(o.get("price", 0)) * float(o.get("qty", o.get("quantity", 0))) for o in recent)
+    traded_value = sum(
+        qty * px
+        for o in recent
+        for _ts, qty, px in (_order_ts_qty_price(o),)
+    )
     available = float(available_qty)
     adjusted = compute_weight_capped_qty(weight, price, required_qty, available, traded_value)
     total_ref = traded_value + available * price
@@ -731,11 +735,12 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
             enforce_anti_spam = (order_type != "SELL")
 
     if enforce_anti_spam:
-        cutoff_ms = time.time() * 1000 - recent_transaction_sec * 1000
+        now_s = time.time()
+        cutoff_s = now_s - recent_transaction_sec
         for t in trades:
-            ts = t.get("timestamp")
-            if ts is not None and float(ts) >= cutoff_ms:
-                age_s = max(0.0, time.time() - float(ts) / 1000.0)
+            ts_s, _qty, _px = _order_ts_qty_price(t)
+            if ts_s > 0 and ts_s >= cutoff_s:
+                age_s = max(0.0, now_s - ts_s)
                 print(f"[DAILY-LIMIT] {order_type} {symbol}: recent trade "
                       f"(age={age_s:.1f}s < threshold={recent_transaction_sec:.0f}s, "
                       f"policy={side_policy}) -> BLOCKED")
