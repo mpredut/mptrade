@@ -15,6 +15,7 @@ import math
 import sys
 from typing import Optional, List, Callable, Any
 
+from providers.base import extract_order_id
 from providers.market_api import api as _default_api
 from providers.execution_audit import ExecutionAudit
 from providers.strategy_executor import SubmissionRefused
@@ -34,19 +35,13 @@ def _accepted_order_payload(payload):
     status = str(payload.get("status") or "").upper()
     if status in {"REJECTED", "CANCELED", "CANCELLED", "EXPIRED", "FAILED"}:
         return False
-    native_id = payload.get("orderId", payload.get("id", payload.get("txid")))
-    if isinstance(native_id, (list, tuple)):
-        return any(str(item).strip() for item in native_id)
-    return native_id is not None and str(native_id).strip() != ""
+    return extract_order_id(payload) is not None
 
 
 def _order_id_from_payload(payload):
     if not isinstance(payload, dict):
         return None
-    native_id = payload.get("orderId", payload.get("id", payload.get("txid")))
-    if isinstance(native_id, (list, tuple)):
-        native_id = next((item for item in native_id if str(item).strip()), None)
-    return None if native_id is None else str(native_id)
+    return extract_order_id(payload)
 
 
 def _is_terminal_filter_refusal(reason) -> bool:

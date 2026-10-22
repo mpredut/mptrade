@@ -24,6 +24,12 @@ from ipo_common import (
 from ipo_notify import notify
 from market_data import get_eur_usd, get_usd_ron, get_price_usd, t212_to_yahoo, trend_slope_pct
 from t212_client import T212Client
+from providers.base import (
+    extract_order_id,
+    extract_order_price,
+    extract_order_side,
+    extract_orig_qty,
+)
 from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit, new_intent_id
 from providers.strategy_executor import OrderNotFound, ProviderError
 from providers.t212_provider import T212Provider
@@ -543,20 +549,17 @@ class Strategy:
         instrument = order.get("instrument")
         nested_ticker = instrument.get("ticker") if isinstance(instrument, dict) else None
         ticker = str(order.get("ticker") or nested_ticker or "").upper()
-        side = str(order.get("side") or "").upper()
+        side = extract_order_side(order) or ""
         raw_qty = order.get("quantity", order.get("orderedQuantity", order.get("qty")))
         try:
-            signed_qty = float(raw_qty)
-            qty = abs(signed_qty)
-            if not side:
-                side = "BUY" if signed_qty > 0 else "SELL" if signed_qty < 0 else ""
+            qty = abs(float(raw_qty))
         except (TypeError, ValueError, OverflowError):
-            qty = None
+            qty = extract_orig_qty(order, default=0.0) or None
         raw_limit = order.get("limitPrice", order.get("limit"))
         try:
             limit = float(raw_limit) if raw_limit is not None else None
         except (TypeError, ValueError, OverflowError):
-            limit = None
+            limit = extract_order_price(order, default=0.0) or None
         return ticker, side, qty, limit
 
     def _active_matches_pending(self, order: dict, pending: dict) -> bool:
@@ -589,8 +592,8 @@ class Strategy:
             order for order in active_orders
             if isinstance(order, dict) and self._active_matches_pending(order, pending)
         ]
-        if len(matches) == 1 and matches[0].get("id") is not None:
-            order = self._adopt_pending_submit(str(matches[0]["id"]))
+        if len(matches) == 1 and extract_order_id(matches[0]) is not None:
+            order = self._adopt_pending_submit(extract_order_id(matches[0]))
             log(f"  [STRAT] T212 submit recovered from the active orders: {order['id']}")
             return "adopted"
         if len(matches) > 1:

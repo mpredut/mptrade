@@ -462,6 +462,140 @@ def test_trailing_core_partial_exit_Transition_to_flat_arms_rebuy(tmp_path):
     assert st.get("rebuy") == {"qty": pytest.approx(4.0), "sell_price": pytest.approx(45.0), "low": pytest.approx(45.0)}
 
 
+def test_cache_order_on_items_update_routes_through_persist_items():
+    """Verify CacheManagerInterface.on_items_update delegates to _persist_items so Order fills merge and normalize."""
+    import cacheManager as cm
+
+    order_mgr = cm.get_cache_manager("Order")
+    sym = "TEST_ON_ITEMS_USDC"
+    with order_mgr.lock:
+        order_mgr.cache[sym] = []
+        order_mgr.fetchtime_time_per_symbol[sym] = 1000
+
+    order_mgr.on_items_update(
+        sym,
+        [
+            {
+                "orderId": 999,
+                "price": "100.0",
+                "quantity": "1.5",
+                "timestamp": "1700000000000",
+                "side": "buy",
+                "_fillId": "501",
+            },
+            {
+                "orderId": 999,
+                "price": "200.0",
+                "quantity": "0.5",
+                "timestamp": "1700000001000",
+                "side": "BUY",
+                "_fillId": "502",
+            },
+        ],
+    )
+    rows = order_mgr.cache[sym]
+    assert len(rows) == 1
+    assert rows[0]["orderId"] == 999
+    assert rows[0]["price"] == pytest.approx(125.0)
+    assert rows[0]["quantity"] == pytest.approx(2.0)
+    assert rows[0]["side"] == "BUY"
+    assert rows[0]["_fillIds"] == ["501", "502"]
+
+
+def test_hyperliquid_strategy_keeps_order_when_cancel_fails(tmp_path):
+    """Verify Hyperliquid Strategy does not drop tracked open/close orders or place duplicates when cancel fails."""
+    import importlib.util
+    import os
+    import sys
+
+    saved_env = dict(os.environ)
+    saved_path = list(sys.path)
+    try:
+        hl_strat_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "hyperliquid",
+            "strategy.py",
+        )
+        spec = importlib.util.spec_from_file_location("hl_strategy_mod", hl_strat_path)
+        hl_mod = importlib.util.module_from_spec(spec)
+        sys.modules["hl_strategy_mod"] = hl_mod
+        spec.loader.exec_module(hl_mod)
+        StratParams, Strategy = hl_mod.StratParams, hl_mod.Strategy
+    finally:
+        os.environ.clear()
+        os.environ.update(saved_env)
+        sys.path[:] = saved_path
+
+    class FakeHLClient:
+        def __init__(self):
+            self.cancel_ok = False
+            self.open_orders_fail = False
+            self.placed = []
+
+        def sz_decimals(self, _coin):
+            return 2
+
+        def position_strict(self, _coin):
+            return (1.0, 100.0)
+
+        def open_orders_strict(self, _coin):
+            if self.open_orders_fail:
+                raise RuntimeError("hl open_orders timeout")
+            return [{"oid": 10}, {"oid": 20}]
+
+        def cancel(self, _coin, _oid):
+            return self.cancel_ok
+
+        def place_limit(self, _coin, is_buy, sz, px, reduce_only=False):
+            oid = 100 + len(self.placed)
+            self.placed.append((oid, is_buy, sz, px, reduce_only))
+            return True, oid, "resting"
+
+    client = FakeHLClient()
+    params = StratParams(
+        direction="long",
+        entry_amount=50.0,
+        dca_amount=30.0,
+        dca_drop_pct=2.0,
+        takeprofit_pct=5.0,
+        order_ttl_min=1.0,
+    )
+    strat = Strategy(
+        client,
+        "HYPE",
+        params,
+        dry_run=False,
+        replay_mode=False,
+        initial_state={
+            "qty": 1.0,
+            "cost": 100.0,
+            "spent": 100.0,
+            "entry_price": 100.0,
+            "last_open_price": 100.0,
+            "orders": [
+                {"oid": 10, "role": "open", "side": "buy", "sz": 0.5, "px": 90.0, "ts": 1.0},
+                {"oid": 20, "role": "close", "side": "sell", "sz": 1.0, "px": 110.0, "ts": 1.0},
+            ],
+        },
+    )
+    strat._save = lambda: None
+
+    # 1. When open_orders fails, stale open order 10 must not be cancelled or removed
+    client.open_orders_fail = True
+    assert strat.reconcile(100.0) is True
+    assert any(o["oid"] == 10 for o in strat.s["orders"])
+
+    # 2. When open_orders succeeds but cancel returns False, neither stale open 10 nor repriced close 20 is removed/replaced
+    client.open_orders_fail = False
+    client.cancel_ok = False
+    assert strat.reconcile(100.0) is True
+    assert any(o["oid"] == 10 for o in strat.s["orders"])
+    strat.step(100.0)
+    assert any(o["oid"] == 20 for o in strat.s["orders"])
+    assert client.placed == []
+
+
+
 
 
 

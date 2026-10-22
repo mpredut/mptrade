@@ -1904,6 +1904,11 @@ class TradingBot:
                                 order_id = extract_order_id(order) or ""
                                 client_id = order.get("clientOrderId")
                                 venue.executor.cancel_order(self.symbol, order_id)
+                                try:
+                                    import order_retry
+                                    order_retry.resolve_accepted_order(self.symbol, order_id)
+                                except Exception:
+                                    pass
                                 print(f"[{self.symbol}] recovery: orphaned RT_ order cancelled "
                                       f"order_id={order_id} client_id={client_id}")
                             if orphan_orders:

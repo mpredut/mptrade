@@ -21,6 +21,7 @@ from providers.base import (
     extract_order_side,
     extract_remaining_qty,
     extract_timestamp_ms,
+    extract_timestamp_s,
 )
 from providers.market_api import api as mkt
 from order_rollback import restore_cancelled_orders
@@ -167,7 +168,7 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
             # Group newly executed fills by orderId
             trades_by_order = {}
             for t in new_trades:
-                oid = str(t.get('orderId') or t['id'])
+                oid = extract_order_id(t) or str(t['id'])
                 trades_by_order.setdefault(oid, []).append(t)
 
             for oid, group in trades_by_order.items():
@@ -948,7 +949,7 @@ def _is_pending_exit_active(
             except Exception:
                 pass
 
-    pending_ts = pending_stop.get("time", pending_stop.get("ts", current_time_s))
+    pending_ts = extract_timestamp_s(pending_stop, default=current_time_s) or current_time_s
     elapsed = current_time_s - int(pending_ts)
     if active_sell_exists or elapsed < 60:
         print(f"[{symbol}] Pending Stop-Loss in flight (elapsed={elapsed}s, active_sell={active_sell_exists}) — deferring duplicate submission pending reconciliation.")

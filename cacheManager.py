@@ -1888,7 +1888,7 @@ class CacheManagerInterface(ABC):
         print(f"[{self.cls_name}][Info] {symbol}: WS Items updated to {items}")
         if not self.fetchtime_time_per_symbol:
             self.fetchtime_time_per_symbol = self.__rebuild_fetchtime_times()
-        self.update_cache_per_symbol(symbol, items)
+        self._persist_items(symbol, items)
         
     def _should_poll(self):
         """Decide whether the synchronization loop polls the API.
@@ -2234,6 +2234,10 @@ class CacheOrderManager(CacheManagerInterface):
                 existing_index = by_id.get(key)
                 if existing_index is None:
                     by_id[key] = len(candidate)
+                    incoming["price"] = float(incoming["price"])
+                    incoming["quantity"] = float(incoming["quantity"])
+                    incoming["timestamp"] = int(incoming["timestamp"])
+                    incoming["side"] = str(incoming["side"]).upper()
                     if fill_id:
                         incoming["_fillIds"] = [fill_id]
                     candidate.append(incoming)
@@ -3560,10 +3564,9 @@ class CachePriceShortTrend:
         computes in O(1) from IncrementalTrendBuffer prefix sums and persists the result.
         Accepts timestamps in either seconds or milliseconds.
         """
-        t1_f, t2_f = float(start_ts), float(end_ts)
-        t1_ms = int(round(t1_f * 1000.0)) if t1_f < 1e11 else int(round(t1_f))
-        t2_ms = int(round(t2_f * 1000.0)) if t2_f < 1e11 else int(round(t2_f))
-        if t2_ms <= t1_ms:
+        t1_ms = normalize_timestamp_ms(start_ts)
+        t2_ms = normalize_timestamp_ms(end_ts)
+        if t1_ms is None or t2_ms is None or t2_ms <= t1_ms:
             return None
         slice_key = f"{t1_ms}_{t2_ms}"
 
@@ -4248,7 +4251,8 @@ def _append_trade_from_execution_report(event):
         return
 
     trade_cache = get_cache_manager("Trade")
-    if str(event.get("S") or "").upper() not in ("BUY", "SELL"):
+    side = extract_order_side(event)
+    if side not in ("BUY", "SELL"):
         builtins.print("[cacheManager][WS] rejected Trade report with invalid side")
         return
     raw_trade_id = event.get("t")
@@ -4276,25 +4280,23 @@ def _append_trade_from_execution_report(event):
         if event.get("X") in (None, "FILLED"):
             raw_qty = event.get("q")
     try:
-        if (raw_price is None or float(raw_price) <= 0) and raw_qty is not None and float(raw_qty) > 0:
-            last_quote = float(event.get("Y") or 0)
-            if last_quote > 0:
-                raw_price = str(last_quote / float(raw_qty))
-            else:
-                cum_quote = float(event.get("Z") or 0)
-                cum_qty = float(event.get("z") or 0) or float(raw_qty)
-                if cum_quote > 0 and cum_qty > 0:
-                    raw_price = str(cum_quote / cum_qty)
+        if raw_price is None or float(raw_price) <= 0:
+            extracted_px = extract_order_price(event, default=0.0)
+            if extracted_px > 0:
+                raw_price = str(extracted_px)
     except (TypeError, ValueError):
         pass
+    ts_ms = extract_timestamp_ms(event)
+    if ts_ms is None or ts_ms <= 0:
+        ts_ms = int(time.time() * 1000)
     trade_item = {
         "symbol": symbol,
         "id": trade_id,
         "orderId": event.get("i"),
         "price": raw_price,
         "qty": raw_qty,
-        "time": int(event.get("T") or event.get("E") or int(time.time() * 1000)),
-        "isBuyer": str(event.get("S", "")).upper() == "BUY",
+        "time": int(ts_ms),
+        "isBuyer": side == "BUY",
     }
     if event.get("n") is not None:
         trade_item["commission"] = str(event.get("n"))
@@ -4309,9 +4311,9 @@ def _append_trade_from_execution_report(event):
 
 def _refresh_asset_value_from_ws_event():
     asset_cache = get_cache_manager("AssetValue", symbols=["TOTAL"])
-    items = asset_cache.get_remote_items("TOTAL", None)   # update_cache_per_symbol expects new_items.
+    items = asset_cache.get_remote_items("TOTAL", None)
     if items:
-        asset_cache.update_cache_per_symbol("TOTAL", items)
+        asset_cache._persist_items("TOTAL", items)
 
 
 def _persist_ws_updated_caches(event_type):

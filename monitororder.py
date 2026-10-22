@@ -611,6 +611,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
     # Keep tracking set sizes bounded over long continuous execution
     if len(_notified_placed_order_ids) > MAX_TRACKED_ORDER_IDS:
         _notified_placed_order_ids.difference_update(list(_notified_placed_order_ids)[:-5000])
+    if len(_notified_expired_order_ids) > MAX_TRACKED_ORDER_IDS:
+        _notified_expired_order_ids.difference_update(list(_notified_expired_order_ids)[:-5000])
     if len(_derived_replacement_order_ids) > MAX_TRACKED_ORDER_IDS:
         _derived_replacement_order_ids.difference_update(list(_derived_replacement_order_ids)[:-5000])
 

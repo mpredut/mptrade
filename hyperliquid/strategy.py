@@ -226,15 +226,19 @@ class Strategy:
         else:
             log(f"  ! [STRAT] {role} {kind} failed: {msg}")
 
-    def _cancel_close(self) -> None:
+    def _cancel_close(self) -> bool:
         o = self._close_order()
         if not o:
-            return
+            return True
         if not self.dry_run and not self.replay_mode and not str(o["oid"]).startswith("PAPER"):
-            self.client.cancel(self.coin, o["oid"])
+            if self.client.cancel(self.coin, o["oid"]) is False:
+                if not self.replay_mode:
+                    log(f"  ! [STRAT] failed to cancel close {o['oid']} — keeping tracked")
+                return False
         self._remove(o)
         if not self.replay_mode:
             log(f"  [STRAT] cancelled close {o['oid']}")
+        return True
 
     # -- reconciliation --------------------------------------------------------
     def reconcile(self, price: float) -> bool:
@@ -271,9 +275,11 @@ class Strategy:
 
         qty_now = abs(szi)
         orders_fn = getattr(self.client, "open_orders_strict", None) or self.client.open_orders
+        orders_ok = True
         try:
             active = {str(o.get("oid")) for o in orders_fn(self.coin)}
         except Exception as e:
+            orders_ok = False
             log(f"  [STRAT] open_orders unavailable ({e}); preserving tracked order state")
             active = {str(o.get("oid")) for o in self.s["orders"]}
 
@@ -294,9 +300,10 @@ class Strategy:
             if str(o.get("oid", "")).startswith("PAPER"): continue
             if str(o.get("oid")) not in active:
                 self._remove(o)
-            elif self._open_is_stale(o, price):
+            elif orders_ok and self._open_is_stale(o, price):
                 log(f"  [STRAT] open {o.get('oid')} unfilled, the price ran away — cancelling and re-placing")
-                self.client.cancel(self.coin, o["oid"]); self._remove(o)
+                if self.client.cancel(self.coin, o["oid"]) is not False:
+                    self._remove(o)
         return True
 
     def _open_is_stale(self, order: dict, price: float, elapsed_min: float | None = None) -> bool:
@@ -448,7 +455,8 @@ class Strategy:
             if o is None:
                 self._place("close", held, target, "TP")
             elif abs(o["px"]-target)/target > 0.001 or abs(o["sz"]-held) > 1e-9:
-                self._cancel_close(); self._place("close", held, target, "TP")
+                if self._cancel_close():
+                    self._place("close", held, target, "TP")
         # DCA after price moves drop% AGAINST the position. Compare PRICE with a PRICE
         # threshold, not a percentage with a percentage: are_close is relative to the
         # magnitude of compared values and is correct only between two prices, matching
