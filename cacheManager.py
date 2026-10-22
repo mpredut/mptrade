@@ -2336,7 +2336,22 @@ class CacheOrderManager(CacheManagerInterface):
         self._persist_items(symbol, new_items)
 
     def _persist_items(self, symbol, new_items):
-        """Merge each immutable fill exactly once into its order aggregate."""
+        """Merge each immutable fill exactly once into its order aggregate.
+
+        Each order row tracks the set of exchange trade IDs merged into it under
+        ``_fillIds`` so overlapping WebSocket executionReports and REST
+        ``get_my_trades`` polls are idempotently deduplicated by ``_fillId``.
+
+        Legacy migration note (``_legacyCoveredThrough``):
+        Order aggregates persisted before ``_fillIds`` was introduced do not list
+        their constituent fill IDs. When such a row is touched, its initial
+        ``timestamp`` is frozen in ``_legacyCoveredThrough`` so any historical
+        fill with ``timestamp <= _legacyCoveredThrough`` is recognized as already
+        counted. Once all pre-``_fillIds`` open orders have closed and aged past
+        ``ACCOUNT_REST_OVERLAP_MS`` (and no manual historical backfill over
+        pre-``_fillIds`` rows is needed), ``_legacyCoveredThrough`` can be removed
+        and deduplication relies solely on ``_fillIds``.
+        """
         if not new_items:
             return
         if isinstance(new_items, dict):
