@@ -42,6 +42,7 @@ from providers.base import (
     extract_order_qty,
     extract_order_side,
     extract_timestamp_ms,
+    extract_timestamp_s,
     normalize_timestamp_ms,
 )
 
@@ -2588,15 +2589,10 @@ class PriceLongTrend(CacheManagerInterface):
         last_times = defaultdict(int)
         for symbol, items in self.cache.items():
             for item in items:
-                if not isinstance(item, dict):
+                ts_sec = extract_timestamp_s(item, default=0.0) or 0.0
+                if ts_sec <= 0:
                     continue
-                try:
-                    timestamp = float(item.get("timestamp", 0))
-                except (TypeError, ValueError, OverflowError):
-                    continue
-                if not math.isfinite(timestamp) or timestamp <= 0:
-                    continue
-                ts = int(timestamp * 1000)
+                ts = int(ts_sec * 1000)
                 if ts > last_times[symbol]:
                     last_times[symbol] = ts
         for symbol in last_times:
@@ -2648,9 +2644,12 @@ class CacheAssetValue(CacheManagerInterface):
         for symbol, items in self.cache.items():
             if not items:
                 continue
-            max_ts_sec = max(int(item.get("timestamp", 0)) for item in items if isinstance(item, dict))
+            max_ts_sec = max(
+                (extract_timestamp_s(item, default=0.0) or 0.0 for item in items if isinstance(item, dict)),
+                default=0.0,
+            )
             if max_ts_sec > 0:
-                last_times[symbol] = max(0, (max_ts_sec * 1000) - 60_000)
+                last_times[symbol] = max(0, int(max_ts_sec * 1000) - 60_000)
         return last_times
 
     def get_remote_items(self, symbol, startTime):
