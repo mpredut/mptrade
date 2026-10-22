@@ -191,6 +191,11 @@ class TestModuleSpecifics(unittest.TestCase):
             "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT",
             "AG_PORTFOLIO_SELL_ALLOCATION",
             "AG_RTRADE_BLOCK_CANCEL_SEC",
+            "AG_P3B_MAX_AGE_SEC",
+            "AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT",
+            "AG_P3B_SELL_TRIM_MAX_DISCOUNT",
+            "AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT",
+            "AG_P3B_BUY_DEFENSIVE_MAX_PENALTY",
         )
         for key in required:
             with self.subTest(key=key):

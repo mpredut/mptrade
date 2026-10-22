@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
 import hashlib
+import json
 import math
 import time
 
@@ -44,6 +45,11 @@ REQUIRED_CONFIG_KEYS = (
     "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT",
     "AG_PORTFOLIO_SELL_ALLOCATION",
     "AG_RTRADE_BLOCK_CANCEL_SEC",
+    "AG_P3B_MAX_AGE_SEC",
+    "AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT",
+    "AG_P3B_SELL_TRIM_MAX_DISCOUNT",
+    "AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT",
+    "AG_P3B_BUY_DEFENSIVE_MAX_PENALTY",
 )
 
 
@@ -109,6 +115,15 @@ PORTFOLIO_SELL_ALLOCATION = _required_float_config(
     "AG_PORTFOLIO_SELL_ALLOCATION")
 RTRADE_BLOCK_CANCEL_SECONDS = _required_float_config(
     "AG_RTRADE_BLOCK_CANCEL_SEC")
+P3B_MAX_AGE_SECONDS = _required_float_config("AG_P3B_MAX_AGE_SEC")
+P3B_SELL_DEFENSIVE_MAX_DISCOUNT = _required_float_config(
+    "AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT")
+P3B_SELL_TRIM_MAX_DISCOUNT = _required_float_config(
+    "AG_P3B_SELL_TRIM_MAX_DISCOUNT")
+P3B_BUY_ACCUMULATE_MAX_DISCOUNT = _required_float_config(
+    "AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT")
+P3B_BUY_DEFENSIVE_MAX_PENALTY = _required_float_config(
+    "AG_P3B_BUY_DEFENSIVE_MAX_PENALTY")
 
 
 def _parse_tiers(raw):
@@ -212,7 +227,8 @@ def _validate_config():
             (TREND_DEFER_MAX_SECONDS, "AG_TREND_DEFER_MAX_SEC"),
             (PORTFOLIO_GROWTH_PERCENT, "AG_PORTFOLIO_GROWTH_PCT"),
             (PORTFOLIO_ASSET_MIN_GROWTH_PERCENT, "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT"),
-            (RTRADE_BLOCK_CANCEL_SECONDS, "AG_RTRADE_BLOCK_CANCEL_SEC")):
+            (RTRADE_BLOCK_CANCEL_SECONDS, "AG_RTRADE_BLOCK_CANCEL_SEC"),
+            (P3B_MAX_AGE_SECONDS, "AG_P3B_MAX_AGE_SEC")):
         if not math.isfinite(value) or value <= 0:
             raise ValueError(f"{name} must be finite and > 0")
     if not math.isfinite(PORTFOLIO_SELL_ALLOCATION) or not 0 < PORTFOLIO_SELL_ALLOCATION <= 1:
@@ -220,6 +236,28 @@ def _validate_config():
     if PORTFOLIO_ASSET_MIN_GROWTH_PERCENT <= SELL_REARM_GROWTH_PERCENT:
         raise ValueError(
             "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT must be above AG_SELL_REARM_GROWTH_PCT")
+    if (not math.isfinite(P3B_SELL_DEFENSIVE_MAX_DISCOUNT)
+            or not 0 < P3B_SELL_DEFENSIVE_MAX_DISCOUNT <= 0.50):
+        raise ValueError(
+            "AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT must be in (0, 0.50]")
+    if (not math.isfinite(P3B_SELL_TRIM_MAX_DISCOUNT)
+            or not 0 < P3B_SELL_TRIM_MAX_DISCOUNT <= P3B_SELL_DEFENSIVE_MAX_DISCOUNT):
+        raise ValueError(
+            "AG_P3B_SELL_TRIM_MAX_DISCOUNT must be in (0, AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT]")
+    if SELL_TIERS[0][0] * (1.0 - P3B_SELL_DEFENSIVE_MAX_DISCOUNT) <= SELL_REARM_GROWTH_PERCENT:
+        raise ValueError(
+            "Compressed first SELL tier must remain above AG_SELL_REARM_GROWTH_PCT")
+    if (not math.isfinite(P3B_BUY_ACCUMULATE_MAX_DISCOUNT)
+            or not 0 < P3B_BUY_ACCUMULATE_MAX_DISCOUNT <= 0.50):
+        raise ValueError(
+            "AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT must be in (0, 0.50]")
+    if BUY_TIERS[0][0] * (1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT) <= RECOVERY_RESET_PERCENT:
+        raise ValueError(
+            "Compressed first BUY tier must remain above AG_RECOVERY_RESET_PCT")
+    if (not math.isfinite(P3B_BUY_DEFENSIVE_MAX_PENALTY)
+            or not 0 < P3B_BUY_DEFENSIVE_MAX_PENALTY <= 1.0):
+        raise ValueError(
+            "AG_P3B_BUY_DEFENSIVE_MAX_PENALTY must be in (0, 1.0]")
 
 
 _validate_config()
@@ -367,6 +405,121 @@ def _get_portfolio_growth_percent(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFA
     if min_val <= 0:
         return None
     return ((latest_val - min_val) / min_val) * 100.0
+
+
+def _read_p3b_sentiment(path=None, now_ts=None):
+    """Read fresh Pillar 3B SentimentAdvisor assessment if available and within TTL."""
+    if path is None:
+        state_path = getattr(STATE, "path", None)
+        if not state_path:
+            return None
+        cache_dir = os.path.dirname(os.path.abspath(state_path))
+        for fname in (
+            "sentiment_advisor_eval.json",
+            "macro_advisor_eval.json",
+            "gemini_macro_advisor.json",
+        ):
+            candidate = os.path.join(cache_dir, fname)
+            if os.path.exists(candidate):
+                path = candidate
+                break
+        if path is None:
+            return None
+    elif not os.path.exists(path):
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    eval_ts = _finite_float(data.get("ts"), positive=True)
+    now_val = _finite_float(now_ts, positive=True) or float(time.time())
+    if eval_ts is None:
+        return None
+    age_sec = now_val - eval_ts
+    if age_sec < -60.0 or age_sec > P3B_MAX_AGE_SECONDS:
+        return None
+
+    raw_conf = _finite_float(data.get("confidence"))
+    conf = min(1.0, max(0.0, raw_conf if raw_conf is not None else 0.0))
+    return {
+        "recommended_action": str(data.get("recommended_action") or "HOLD").strip().upper(),
+        "market_bias": str(data.get("market_bias") or "NEUTRAL").strip().upper(),
+        "risk_level": str(data.get("risk_level") or "MODERATE").strip().upper(),
+        "confidence": conf,
+        "ts": eval_ts,
+    }
+
+
+def _p3b_threshold_multipliers(assessment=None):
+    """Compute (sell_mult, buy_mult, assessment) from Pillar 3B sentiment state.
+
+    Preserves canonical tier identities while scaling trigger thresholds:
+    - SELL: DEFENSIVE compresses up to AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT (down to 50%),
+      TRIM_PROFITS compresses up to AG_P3B_SELL_TRIM_MAX_DISCOUNT (down to 65%),
+      weighted by LLM confidence. BULLISH/HOLD keeps 1.0x static thresholds.
+    - BUY: ACCUMULATE (BULLISH) compresses drawdown thresholds by up to
+      AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT; DEFENSIVE expands drawdown thresholds by
+      up to AG_P3B_BUY_DEFENSIVE_MAX_PENALTY to avoid catching falling knives early.
+    """
+    if assessment is None:
+        assessment = _read_p3b_sentiment()
+    if not isinstance(assessment, dict):
+        return 1.0, 1.0, None
+
+    action = str(assessment.get("recommended_action") or "HOLD").strip().upper()
+    bias = str(assessment.get("market_bias") or "NEUTRAL").strip().upper()
+    risk = str(assessment.get("risk_level") or "MODERATE").strip().upper()
+    raw_conf = _finite_float(assessment.get("confidence"))
+    conf = min(1.0, max(0.0, raw_conf if raw_conf is not None else 0.0))
+
+    # 1. SELL threshold multiplier
+    if action == "DEFENSIVE" or (bias == "BEARISH" and risk in {"HIGH", "EXTREME"}):
+        sell_discount = P3B_SELL_DEFENSIVE_MAX_DISCOUNT * conf
+    elif action == "TRIM_PROFITS" or (bias in {"BEARISH", "CAUTION"} and risk in {"MODERATE", "HIGH", "EXTREME"}):
+        sell_discount = P3B_SELL_TRIM_MAX_DISCOUNT * conf
+    else:
+        sell_discount = 0.0
+    sell_mult = max(1.0 - P3B_SELL_DEFENSIVE_MAX_DISCOUNT, 1.0 - sell_discount)
+
+    # 2. BUY threshold multiplier
+    if action == "ACCUMULATE" and bias == "BULLISH" and risk not in {"HIGH", "EXTREME"}:
+        buy_mult = max(
+            1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT,
+            1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT * conf,
+        )
+    elif action == "DEFENSIVE" or (bias == "BEARISH" and risk in {"HIGH", "EXTREME"}):
+        buy_mult = min(
+            1.0 + P3B_BUY_DEFENSIVE_MAX_PENALTY,
+            1.0 + P3B_BUY_DEFENSIVE_MAX_PENALTY * conf,
+        )
+    elif action == "TRIM_PROFITS" or bias in {"BEARISH", "CAUTION"}:
+        buy_mult = min(
+            1.0 + P3B_BUY_DEFENSIVE_MAX_PENALTY,
+            1.0 + 0.5 * P3B_BUY_DEFENSIVE_MAX_PENALTY * conf,
+        )
+    else:
+        buy_mult = 1.0
+
+    return sell_mult, buy_mult, assessment
+
+
+def _trigger_threshold_for_sell_tier(canonical_threshold, sell_mult=1.0):
+    """Return effective growth trigger (%) for a canonical SELL tier."""
+    thr = float(canonical_threshold)
+    static_thresholds = {float(t) for t, _ in SELL_TIERS}
+    if thr not in static_thresholds and abs(thr - PORTFOLIO_ASSET_MIN_GROWTH_PERCENT) <= 1e-9:
+        return thr
+    return max(SELL_REARM_GROWTH_PERCENT + 0.5, thr * float(sell_mult))
+
+
+def _trigger_threshold_for_buy_tier(canonical_threshold, buy_mult=1.0):
+    """Return effective drawdown trigger (%) for a canonical BUY tier."""
+    return max(RECOVERY_RESET_PERCENT + 0.5, float(canonical_threshold) * float(buy_mult))
 
 
 _LAST_SUBMIT_OUTCOME: dict = {}
@@ -624,7 +777,8 @@ def _clear_inactive_trend_defer(symbol, kind, state):
     return state
 
 
-def _campaign_tier(symbol, drawdown_abs, maximum_row, free_cash):
+def _campaign_tier(symbol, drawdown_abs, maximum_row, free_cash,
+                   p3b_assessment=None):
     """Select one crossed, incomplete BUY tier for one symbol campaign."""
     state = _symbol_campaign(symbol, "buy")
     if drawdown_abs < RECOVERY_RESET_PERCENT:
@@ -673,9 +827,11 @@ def _campaign_tier(symbol, drawdown_abs, maximum_row, free_cash):
     # guard and can be refused on every cycle; walking tiers from the top made that
     # refused tier the permanent pick, so the deeper tiers designed to bypass the
     # guard were never attempted. Per-tier budgets are unchanged by the order.
+    _, buy_mult, _ = _p3b_threshold_multipliers(p3b_assessment)
     completed = _completed_tier_values(state)
     for threshold, allocation in sorted(BUY_TIERS, key=lambda tier: tier[0], reverse=True):
-        if drawdown_abs >= threshold and threshold not in completed:
+        trigger_thr = _trigger_threshold_for_buy_tier(threshold, buy_mult)
+        if drawdown_abs >= trigger_thr and threshold not in completed:
             return (threshold, allocation), state
     return None, state
 
@@ -1055,7 +1211,7 @@ def _effective_sell_tiers(portfolio_growth_pct=None):
 
 
 def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
-                        portfolio_growth_pct=None):
+                        portfolio_growth_pct=None, p3b_assessment=None):
     """Select one incomplete SELL tier against a frozen campaign trough."""
     state = _symbol_campaign(symbol, "sell")
     new_campaign = not bool(state)
@@ -1073,6 +1229,10 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
         return None, {}, None
 
     active_tiers = _effective_sell_tiers(portfolio_growth_pct)
+    sell_mult, _, _ = _p3b_threshold_multipliers(p3b_assessment)
+    min_trigger_thr = min(
+        _trigger_threshold_for_sell_tier(t, sell_mult) for t, _ in active_tiers
+    )
 
     if state:
         trough_price = _finite_float(state.get("trough_price"), positive=True)
@@ -1108,7 +1268,7 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
         if trough_price is None or trough_ts is None:
             return None, {}, None
         growth = ((current_price - trough_price) / trough_price) * 100.0
-        if growth < active_tiers[0][0]:
+        if growth < min_trigger_thr:
             _rtrade_sell_block_since.pop(symbol, None)
             return None, {}, growth
         state = {
@@ -1139,7 +1299,8 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
     initial_qty = _finite_float(state.get("initial_qty"), positive=True)
     filled_by_tier = dict(state.get("filled_qty_by_tier") or {})
     for threshold, allocation in active_tiers:
-        if growth < threshold or threshold in completed:
+        trigger_thr = _trigger_threshold_for_sell_tier(threshold, sell_mult)
+        if growth < trigger_thr or threshold in completed:
             continue
         target_qty = min(free_qty, initial_qty * allocation)
         already_filled = _finite_float(
@@ -1271,20 +1432,29 @@ def _next_check_seconds():
         return min(CHECK_INTERVAL_SECONDS, ACTIVE_TRIGGER_SECONDS)
     if any(_rtrade_sell_block_since.values()):
         return min(CHECK_INTERVAL_SECONDS, ACTIVE_TRIGGER_SECONDS)
+    sell_mult, buy_mult, _ = _p3b_threshold_multipliers()
     for symbol, evaluation in _last_evaluation.items():
         drawdown = evaluation.get("drawdown")
         row = root["symbols"].get(symbol, {})
         buy_completed = _completed_tier_values(row.get("buy", {}))
-        buy_next = next((threshold for threshold, _ in BUY_TIERS
-                         if threshold not in buy_completed), None)
+        buy_next = next(
+            (_trigger_threshold_for_buy_tier(threshold, buy_mult)
+             for threshold, _ in BUY_TIERS
+             if threshold not in buy_completed),
+            None,
+        )
         if (drawdown is not None and buy_next is not None
                 and buy_next - max(0.0, -drawdown) <= NEAR_TRIGGER_DISTANCE_PCT):
             return min(CHECK_INTERVAL_SECONDS, NEAR_TRIGGER_SECONDS)
         growth = evaluation.get("growth")
         sell_completed = _completed_tier_values(row.get("sell", {}))
         active_tiers = _effective_sell_tiers(evaluation.get("portfolio_growth"))
-        sell_next = next((threshold for threshold, _ in active_tiers
-                          if threshold not in sell_completed), None)
+        sell_next = next(
+            (_trigger_threshold_for_sell_tier(threshold, sell_mult)
+             for threshold, _ in active_tiers
+             if threshold not in sell_completed),
+            None,
+        )
         if (growth is not None and sell_next is not None
                 and sell_next - max(0.0, growth) <= NEAR_TRIGGER_DISTANCE_PCT):
             return min(CHECK_INTERVAL_SECONDS, NEAR_TRIGGER_SECONDS)
@@ -1354,9 +1524,12 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         free_base_qty = None
     portfolio_growth_pct = _get_portfolio_growth_percent(minutes_back=minutes_back)
     evaluation["portfolio_growth"] = portfolio_growth_pct
+    p3b_assessment = _read_p3b_sentiment()
+    sell_mult, buy_mult, _ = _p3b_threshold_multipliers(p3b_assessment)
     sell_tier, sell_state, effective_growth = _sell_campaign_tier(
         symbol, current_price, minimum_row, free_base_qty, provider,
-        portfolio_growth_pct=portfolio_growth_pct)
+        portfolio_growth_pct=portfolio_growth_pct,
+        p3b_assessment=p3b_assessment)
     if sell_tier is None:
         sell_state = _clear_inactive_trend_defer(
             symbol, "sell", sell_state)
@@ -1364,21 +1537,28 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         rolling_growth_percent if effective_growth is None else effective_growth)
     frozen_trough = _finite_float(sell_state.get("trough_price"), positive=True)
     pg_str = f"{portfolio_growth_pct:.4f}%" if portfolio_growth_pct is not None else "n/a"
+    p3b_str = (
+        f"{p3b_assessment.get('recommended_action')}/{p3b_assessment.get('market_bias')}"
+        f"(conf={p3b_assessment.get('confidence', 0.0):.2f},sell_x={sell_mult:.3f},buy_x={buy_mult:.3f})"
+        if isinstance(p3b_assessment, dict) else "none(1.0x)"
+    )
     print(
         f"[{symbol}] price={current_price:.8f}, window_min/max="
         f"{minimum_price:.8f}/{maximum_price:.8f}, minutes_back={minutes_back:.1f}, "
         f"rolling_growth_from_min={rolling_growth_percent:.4f}%, "
         f"sell_growth={evaluation['growth']:.4f}%, "
         f"portfolio_growth={pg_str}, "
+        f"p3b={p3b_str}, "
         f"frozen_sell_trough={frozen_trough}, "
         f"drawdown_from_max={drawdown_percent:.4f}%"
     )
 
     if sell_tier is not None:
         threshold, allocation, qty = sell_tier
+        eff_sell_thr = _trigger_threshold_for_sell_tier(threshold, sell_mult)
         print(
-            f"[{symbol}] SELL tier +{threshold:.2f}% allocation={allocation:.3f} "
-            f"target_remaining={qty:.8f} base."
+            f"[{symbol}] SELL tier +{threshold:.2f}% (trigger +{eff_sell_thr:.2f}%) "
+            f"allocation={allocation:.3f} target_remaining={qty:.8f} base."
         )
         evaluation["pending_tier"] = True
         ready, sell_state = _trend_defer_ready(
@@ -1393,13 +1573,14 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
             return True
         return False
 
-    if drawdown_percent > -BUY_TIERS[0][0]:
+    first_buy_trigger = _trigger_threshold_for_buy_tier(BUY_TIERS[0][0], buy_mult)
+    if drawdown_percent > -first_buy_trigger:
         _clear_inactive_trend_defer(
             symbol, "buy", _symbol_campaign(symbol, "buy"))
     else:
         print(
             f"[{symbol}] Drawdown threshold reached ({drawdown_percent:.4f}% "
-            f"<= -{BUY_TIERS[0][0]:.4f}%). Checking staged BUY..."
+            f"<= -{first_buy_trigger:.4f}%). Checking staged BUY..."
         )
         provider = mkt.provider_by_name("binance")
         _, quote_asset = resolve_assets(symbol)
@@ -1409,7 +1590,8 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
             print(f"[{symbol}] No valid {quote_asset} balance for staged BUY.")
             return False
         tier, campaign = _campaign_tier(
-            symbol, abs(drawdown_percent), maximum_row, free_cash)
+            symbol, abs(drawdown_percent), maximum_row, free_cash,
+            p3b_assessment=p3b_assessment)
         if tier is None:
             print(f"[{symbol}] No uncompleted BUY tier at current drawdown.")
             return False

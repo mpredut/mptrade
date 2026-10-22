@@ -72,6 +72,11 @@ class AssetGuardianTest(unittest.TestCase):
                     "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT",
                     "AG_PORTFOLIO_SELL_ALLOCATION",
                     "AG_RTRADE_BLOCK_CANCEL_SEC",
+                    "AG_P3B_MAX_AGE_SEC",
+                    "AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT",
+                    "AG_P3B_SELL_TRIM_MAX_DISCOUNT",
+                    "AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT",
+                    "AG_P3B_BUY_DEFENSIVE_MAX_PENALTY",
                 },
             )
 
@@ -1122,6 +1127,106 @@ class AssetGuardianTest(unittest.TestCase):
                 )
             self.assertIn(7.0, buy_camp["completed_tiers"])
             self.assertIn(15.0, sell_camp["completed_tiers"])
+
+    def test_p3b_sentiment_dynamic_threshold_scaling(self):
+        with self.subTest(msg="test_p3b_defensive_compresses_sell_threshold_down_to_half_preserving_canonical_tier"):
+            # TAO grew +4.65% (from 269.3 to 281.82), below static 9% tier and with 0% portfolio growth.
+            # When P3B flips to DEFENSIVE (conf=1.0), effective threshold for 9% becomes 4.5%,
+            # triggering canonical tier 9.0 (so it will not sell again when reaching 9%).
+            extrema = (
+                {"timestamp": 1, "price": 269.3},
+                {"timestamp": 2, "price": 282.0},
+            )
+            state = MemoryState()
+            provider = mock.Mock()
+            provider.free_balance.return_value = 10.0
+            provider.open_orders.return_value = []
+            defensive_p3b = {
+                "recommended_action": "DEFENSIVE",
+                "market_bias": "BEARISH",
+                "risk_level": "HIGH",
+                "confidence": 1.0,
+                "ts": 1000.0,
+            }
+            with mock.patch.object(ag.api, "get_current_price", return_value=281.82), \
+                 mock.patch.object(ag, "_get_symbol_window_extrema", return_value=extrema), \
+                 mock.patch.object(ag, "_get_portfolio_growth_percent", return_value=0.2), \
+                 mock.patch.object(ag, "_read_p3b_sentiment", return_value=defensive_p3b), \
+                 mock.patch.object(ag, "STATE", state), \
+                 mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 mock.patch.object(ag, "_submit_sell_tier", return_value=True) as submit, \
+                 mock.patch.object(ag, "buy_with_all_cash") as buy:
+                self.assertTrue(ag.evaluate_symbol("TAOUSDC"))
+            tier = submit.call_args.kwargs["tier"]
+            # Canonical tier 9.0 is returned (not 4.5), preserving SSOT tier accounting.
+            self.assertEqual(tier, (9.0, 0.20, 2.0))
+            buy.assert_not_called()
+
+            # Once canonical tier 9.0 is completed, even if P3B returns to HOLD (1.0x) and
+            # growth reaches +9.5%, tier 9.0 is not repeated; next tier is 12.0.
+            with mock.patch.object(ag, "STATE", state), \
+                 mock.patch.object(ag, "_read_p3b_sentiment", return_value=None):
+                sell_camp = ag._symbol_campaign("TAOUSDC", "sell")
+                ag._complete_campaign_tier("TAOUSDC", "sell", sell_camp, 9.0)
+                next_tier, _, _ = ag._sell_campaign_tier(
+                    "TAOUSDC", 295.0, {"timestamp": 1, "price": 269.3}, 8.0, provider,
+                    portfolio_growth_pct=0.2)
+                self.assertIsNone(next_tier)
+                tier_12, _, _ = ag._sell_campaign_tier(
+                    "TAOUSDC", 302.0, {"timestamp": 1, "price": 269.3}, 8.0, provider,
+                    portfolio_growth_pct=0.2)
+                self.assertEqual(tier_12, (12.0, 0.20, 2.0))
+
+        with self.subTest(msg="test_p3b_trim_profits_compresses_moderately_while_bullish_keeps_static"):
+            sell_mult_trim, buy_mult_trim, _ = ag._p3b_threshold_multipliers({
+                "recommended_action": "TRIM_PROFITS",
+                "market_bias": "CAUTION",
+                "risk_level": "MODERATE",
+                "confidence": 1.0,
+                "ts": 1000.0,
+            })
+            self.assertAlmostEqual(sell_mult_trim, 0.65)
+            self.assertAlmostEqual(ag._trigger_threshold_for_sell_tier(9.0, sell_mult_trim), 5.85)
+            self.assertAlmostEqual(buy_mult_trim, 1.175)
+
+            sell_mult_bull, buy_mult_bull, _ = ag._p3b_threshold_multipliers({
+                "recommended_action": "ACCUMULATE",
+                "market_bias": "BULLISH",
+                "risk_level": "LOW",
+                "confidence": 1.0,
+                "ts": 1000.0,
+            })
+            self.assertAlmostEqual(sell_mult_bull, 1.0)
+            self.assertAlmostEqual(buy_mult_bull, 0.65)
+            self.assertAlmostEqual(ag._trigger_threshold_for_buy_tier(7.0, buy_mult_bull), 4.55)
+
+        with self.subTest(msg="test_p3b_defensive_delays_buy_tiers_while_accumulate_triggers_earlier"):
+            state = MemoryState()
+            maximum = {"timestamp": 2, "price": 280.0}
+            defensive_p3b = {
+                "recommended_action": "DEFENSIVE",
+                "market_bias": "BEARISH",
+                "risk_level": "HIGH",
+                "confidence": 1.0,
+                "ts": 1000.0,
+            }
+            accumulate_p3b = {
+                "recommended_action": "ACCUMULATE",
+                "market_bias": "BULLISH",
+                "risk_level": "LOW",
+                "confidence": 1.0,
+                "ts": 1000.0,
+            }
+            with mock.patch.object(ag, "STATE", state):
+                # At -7.5% drawdown, DEFENSIVE requires 7.0 * 1.35 = 9.45% -> no BUY yet
+                tier_def, _ = ag._campaign_tier(
+                    "TAOUSDC", 7.5, maximum, 1000.0, p3b_assessment=defensive_p3b)
+                self.assertIsNone(tier_def)
+                # At -5.0% drawdown, ACCUMULATE requires 7.0 * 0.65 = 4.55% -> triggers canonical 7.0 BUY tier
+                tier_acc, _ = ag._campaign_tier(
+                    "TAOUSDC", 5.0, maximum, 1000.0, p3b_assessment=accumulate_p3b)
+                self.assertEqual(tier_acc, (7.0, 0.35))
+
 
 
 if __name__ == "__main__":
