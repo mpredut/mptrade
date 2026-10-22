@@ -150,7 +150,7 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                     _notified_trade_ids.add(str(t['id']))
                 _trades_monitor_warmup_failed_symbols.discard(symbol)
                 continue
-            orders.sort(key=lambda x: x.get('time', 0))
+            orders.sort(key=_order_timestamp_ms)
 
             new_trades = []
             for trade in orders:
@@ -264,8 +264,8 @@ def _summarize_orders(orders):
         return 0.0, 0.0, (0, 0.0, 0.0, 0, 0)
     if len(orders) == 1:
         o = orders[0]
-        q = float(o.get("qty") or o.get("quantity") or 0.0)
-        p = float(o.get("price") or 0.0)
+        q = extract_order_qty(o)
+        p = extract_order_price(o)
         ts = int(_order_timestamp_ms(o))
         val = p * q
         first_id = o.get("id") or o.get("orderId") or ts
@@ -274,8 +274,8 @@ def _summarize_orders(orders):
     total_val = 0.0
     latest_ts = 0
     for o in orders:
-        q = float(o.get("qty") or o.get("quantity") or 0.0)
-        p = float(o.get("price") or 0.0)
+        q = extract_order_qty(o)
+        p = extract_order_price(o)
         ts = int(_order_timestamp_ms(o))
         total_qty += q
         total_val += p * q
@@ -311,21 +311,21 @@ def _compute_spot_position(buy_orders, sell_orders) -> tuple[float, float, float
         tot_q = 0.0
         tot_v = 0.0
         for o in buy_orders:
-            q = float(o.get("qty", o.get("quantity", 0.0)) or 0.0)
-            p = float(o.get("price") or 0.0)
+            q = extract_order_qty(o)
+            p = extract_order_price(o)
             tot_q += q
             tot_v += q * p
         avg_px = (tot_v / tot_q) if tot_q > 0 else 0.0
         return tot_q, avg_px, avg_px
     events = []
     for o in buy_orders:
-        q = float(o.get("qty", o.get("quantity", 0.0)) or 0.0)
-        p = float(o.get("price") or 0.0)
+        q = extract_order_qty(o)
+        p = extract_order_price(o)
         ts = _order_timestamp_ms(o)
         events.append((ts, 0, q, p))
     for o in sell_orders:
-        q = float(o.get("qty", o.get("quantity", 0.0)) or 0.0)
-        p = float(o.get("price") or 0.0)
+        q = extract_order_qty(o)
+        p = extract_order_price(o)
         ts = _order_timestamp_ms(o)
         events.append((ts, 1, q, p))
     events.sort(key=lambda x: (x[0], x[1]))

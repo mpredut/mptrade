@@ -664,14 +664,15 @@ class MarketApi:
         candidates = []
         for trade in self.get_trades(
                 symbol, since_s, provider_name=provider_name) or []:
-            if str(trade.get("side") or "").upper() != side:
+            if extract_order_side(trade) != side:
                 continue
             try:
-                timestamp = float(trade.get("timestamp") or 0.0)
+                raw_ts = extract_timestamp_ms(trade, default=0) or 0
+                timestamp = float(raw_ts)
                 if 0 < timestamp < 10_000_000_000:  # Seconds to milliseconds.
                     timestamp *= 1000.0
-                price = float(trade.get("price") or 0.0)
-                qty = float(trade.get("qty", trade.get("quantity", 0.0)) or 0.0)
+                price = extract_order_price(trade, default=0.0)
+                qty = extract_order_qty(trade, default=0.0)
             except (TypeError, ValueError, OverflowError):
                 continue
             if (not all(math.isfinite(value) for value in (timestamp, price, qty)) or

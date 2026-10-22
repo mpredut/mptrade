@@ -15,6 +15,7 @@ import symbols as sym
 from binance_api import bapi as api
 from binance_api import bapi_placeorder as po
 from binance_api import order_id_context as rc
+from providers.base import extract_order_qty, extract_timestamp_s
 from providers.market_api import api as mkt  # Single guarded proxy (Instrument.place).
 from providers.strategy_executor import SubmissionRefused
 import order_retry
@@ -248,14 +249,12 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             if (oid_str not in _derived_replacement_order_ids
                     and _monitororder_initialized
                     and _should_notify_order_launched(owner)):
-                _notify_order_launched(symbol, order_type, order_id, price, order.get("quantity", 0), owner=owner)
+                _notify_order_launched(symbol, order_type, order_id, price, extract_order_qty(order), owner=owner)
         else:
             _notified_placed_order_ids.add(oid_str)
 
         # Check order age and Market TTL expiration (hard cap of 3 days or effective TTL).
-        order_ts = float(order.get("timestamp") or 0.0)
-        if order_ts > 1e11:
-            order_ts /= 1000.0
+        order_ts = extract_timestamp_s(order, default=0.0) or 0.0
         age_sec = 0.0
         effective_ttl = resolve_effective_order_ttl(
             order_id, cid, owner=owner, custom_ttl_map=custom_ttl_map)
@@ -283,7 +282,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     print(f"[MONITORORDER] 🛑 Successfully canceled expired order {order_id}")
                     if oid_str not in _notified_expired_order_ids:
                         _notified_expired_order_ids.add(oid_str)
-                        _notify_order_expired(symbol, order_type, order_id, price, order.get("quantity", 0), owner, age_str, ttl_str)
+                        _notify_order_expired(symbol, order_type, order_id, price, extract_order_qty(order), owner, age_str, ttl_str)
                 except Exception as exc:
                     print(f"[MONITORORDER] Failed to cancel expired order {order_id}: {exc}")
                 continue
