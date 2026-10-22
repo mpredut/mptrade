@@ -37,10 +37,15 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
 from lock import FileLock
+from providers.base import (
+    extract_order_id,
+    extract_order_price,
+    extract_order_qty,
+    extract_orig_qty,
+)
 from providers.strategy_executor import (
     OrderStatus, ProviderError, SubmissionOutcome, SubmissionRefused,
-    capture_submission, extract_order_id, extract_order_qty,
-    reconciliation_capabilities_of,
+    capture_submission, reconciliation_capabilities_of,
 )
 
 from botcore import (load_dotenv as _load_dotenv, required_bool_env,
@@ -268,14 +273,9 @@ def _client_order_id(record_id, revision, prefix="OR"):
     return f"{pfx}_{record_id[:hash_len]}_{rev_str}"
 
 
-def order_id_from_response(response):
-    """Extract one venue order ID from common Binance/Kraken/HL/T212 shapes."""
-    return extract_order_id(response)
-
-
-def order_qty_from_response(response):
-    """Extract one venue-accepted quantity from common response shapes."""
-    return extract_order_qty(response)
+# Standardized canonical aliases in providers.base: extract_order_id and extract_orig_qty.
+order_id_from_response = extract_order_id
+order_qty_from_response = extract_orig_qty
 
 
 def valid_record(rec):
@@ -1136,10 +1136,10 @@ def _append_order_history(rec, *, observed_at, status=None):
 
 
 def _apply_accepted(rec, order, now, provider_name=None):
-    order_id = order_id_from_response(order)
+    order_id = extract_order_id(order)
     if order_id is None:
         return False
-    venue_qty = order_qty_from_response(order)
+    venue_qty = extract_orig_qty(order)
     if venue_qty is not None and math.isfinite(venue_qty) and venue_qty > 0:
         rec["qty"] = venue_qty
         rec["requested_qty_total"] = venue_qty
@@ -1303,7 +1303,7 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                 continue
             if outcome == "accepted" and same_revision:
                 _set_safe_to_discard(rec, False)
-                venue_qty = order_qty_from_response(order)
+                venue_qty = extract_orig_qty(order)
                 if venue_qty is not None and math.isfinite(venue_qty) and venue_qty > 0:
                     rec["qty"] = venue_qty
                     rec["requested_qty_total"] = venue_qty
@@ -2036,26 +2036,25 @@ class TrackedOrderLifecycle:
             fields.update(native_fields)
             return fields
         if isinstance(response, dict):
-            order_id = order_id_from_response(response)
+            order_id = extract_order_id(response)
             fields = {}
             if order_id is not None:
                 fields["order_id"] = str(order_id)
             status = response.get("status")
             if status is not None:
                 fields["submit_status"] = str(status)
-            from providers.base import extract_order_price as _extract_px, extract_order_qty as _extract_qty
-            orig_qty = order_qty_from_response(response)
+            orig_qty = extract_orig_qty(response)
             submitted_qty = _lifecycle_finite(
-                orig_qty if orig_qty is not None else _extract_qty(response, default=0.0),
+                orig_qty if orig_qty is not None else extract_order_qty(response, default=0.0),
                 positive=True)
             if submitted_qty is not None:
                 fields["submitted_qty"] = submitted_qty
             submitted_price = _lifecycle_finite(
-                _extract_px(response, default=0.0), positive=True)
+                extract_order_price(response, default=0.0), positive=True)
             if submitted_price is not None:
                 fields["submitted_price"] = submitted_price
             return fields
-        order_id = order_id_from_response(response)
+        order_id = extract_order_id(response)
         if order_id is not None:
             return {"order_id": str(order_id)}
         return {}

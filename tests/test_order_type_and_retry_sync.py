@@ -289,24 +289,28 @@ class OrderTypeAndRetrySyncTest(unittest.TestCase):
         self.assertAlmostEqual(rescheduled["qty"], 0.6, places=6)
 
     def test_kraken_and_hyperliquid_order_by_client_id_quantity_sync(self):
-        """Verify that Kraken vol and Hyperliquid origSz are extracted and synced on reconciliation."""
-        from providers.strategy_executor import extract_order_qty
+        """Verify that extract_orig_qty and extract_order_id work across all venue shapes."""
+        from providers.base import extract_order_id, extract_orig_qty
 
-        # Kraken shape
-        kraken_order = {"orderId": "O-KRAK-1", "status": "open", "vol": 2.5}
-        self.assertEqual(extract_order_qty(kraken_order), 2.5)
+        # Kraken shape (txid list + vol)
+        kraken_order = {"txid": ["O-KRAK-1"], "status": "open", "vol": 2.5}
+        self.assertEqual(extract_order_id(kraken_order), "O-KRAK-1")
+        self.assertEqual(extract_orig_qty(kraken_order), 2.5)
 
-        # Hyperliquid shape
-        hl_order = {"orderId": "HL-1", "status": "open", "origSz": 1.75}
-        self.assertEqual(extract_order_qty(hl_order), 1.75)
+        # Hyperliquid shape (oid + origSz)
+        hl_order = {"oid": 98765, "status": "open", "origSz": 1.75}
+        self.assertEqual(extract_order_id(hl_order), "98765")
+        self.assertEqual(extract_orig_qty(hl_order), 1.75)
 
-        # Binance shape
+        # Binance shape (orderId + origQty)
         binance_order = {"orderId": 12345, "status": "NEW", "origQty": "3.14000000"}
-        self.assertEqual(extract_order_qty(binance_order), 3.14)
+        self.assertEqual(extract_order_id(binance_order), "12345")
+        self.assertEqual(extract_orig_qty(binance_order), 3.14)
 
-        # T212 shape
-        t212_order = {"orderId": "T1", "orderedQuantity": 5.0}
-        self.assertEqual(extract_order_qty(t212_order), 5.0)
+        # T212 shape (id + orderedQuantity)
+        t212_order = {"id": "T1", "orderedQuantity": 5.0}
+        self.assertEqual(extract_order_id(t212_order), "T1")
+        self.assertEqual(extract_orig_qty(t212_order), 5.0)
 
         # Partially filled or NEW order with zero executedQty before origQty
         zero_exec_order = {
@@ -314,7 +318,7 @@ class OrderTypeAndRetrySyncTest(unittest.TestCase):
             "executedQty": "0.00000000",
             "origQty": "4.25000000",
         }
-        self.assertEqual(extract_order_qty(zero_exec_order), 4.25)
+        self.assertEqual(extract_orig_qty(zero_exec_order), 4.25)
 
     def test_tracked_order_lifecycle_order_fields_partially_filled_and_kraken_txid(self):
         """Verify TrackedOrderLifecycle._order_fields unwraps Kraken txid lists and prefers origQty."""

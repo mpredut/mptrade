@@ -134,6 +134,7 @@ _ws_health_lock = threading.Lock()
 _ws_available = False
 _ws_last_event_ts = 0.0
 _ws_is_healthy = False
+_ws_needs_rest_resync = set()
 
 _CACHE_META_SCHEMA_VERSION = 2
 _TRADE_CACHE_CLASSES = {"CacheTrade", "CacheTradeManager"}
@@ -159,6 +160,11 @@ def _mark_ws_unhealthy():
     global _ws_is_healthy
     with _ws_health_lock:
         _ws_is_healthy = False
+        _ws_needs_rest_resync.update({
+            "CacheOrder", "CacheOrderManager",
+            "CacheTrade", "CacheTradeManager",
+            "CacheAssetValue", "CacheAssetValueManager",
+        })
 
 
 def _should_poll_for_manager(cls_name):
@@ -172,6 +178,8 @@ def _should_poll_for_manager(cls_name):
     if cls_name not in ws_managed_classes:
         return True
     with _ws_health_lock:
+        if cls_name in _ws_needs_rest_resync:
+            return True
         return (not _ws_available) or (not _ws_is_healthy)
 
 class CacheManagerInterface(ABC):
@@ -223,6 +231,7 @@ class CacheManagerInterface(ABC):
 
         self.cache = {}
         self.fetchtime_time_per_symbol = {}
+        self._rest_sync_cursor_per_symbol = {}
 
         self.thread = None
         self._stop_event = threading.Event()
@@ -325,6 +334,7 @@ class CacheManagerInterface(ABC):
                             print(f"[{self.cls_name}][warning] self.cache is not Dict!!!!")    
                         
                         self.fetchtime_time_per_symbol = data.get("fetchtime", {})
+                        self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
                         if not self.cache:
                             print(f"[{self.cls_name}][warning] cache is None")
                         if not self.fetchtime_time_per_symbol:
@@ -623,6 +633,7 @@ class CacheManagerInterface(ABC):
                     if isinstance(items, dict):
                         self.cache = items
                     self.fetchtime_time_per_symbol = data.get("fetchtime", {})
+                    self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
                     self._mark_account_cache_dirty_locked()
             except Exception as e:
                 print(f"[{self.cls_name}][Error] reload {self.filename}: {e}")
@@ -1331,6 +1342,7 @@ class CacheManagerInterface(ABC):
                 with self.lock:
                     self.cache = cache
                     self.fetchtime_time_per_symbol = dict(metadata["fetchtime"])
+                    self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
                     self._persisted_counts = counts
                     self._remember_loaded_trade_manifest_locked(metadata, counts)
                 return
@@ -1421,6 +1433,7 @@ class CacheManagerInterface(ABC):
             fetchtime = legacy_metadata.get("fetchtime")
             if isinstance(fetchtime, dict):
                 self.fetchtime_time_per_symbol = fetchtime
+                self._rest_sync_cursor_per_symbol = dict(fetchtime)
 
     def compact_jsonl(self):
         """Rewrite JSONL from memory after full in-memory and on-disk deduplication.
@@ -1819,11 +1832,19 @@ class CacheManagerInterface(ABC):
     def query_remote_and_update_cache(self):
         if not self.fetchtime_time_per_symbol:
             self.fetchtime_time_per_symbol = self.__rebuild_fetchtime_times()
+            self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
 
         account_cycle_high_water = None
         for symbol in list(self.symbols):
             request_high_water = int(time.time() * 1000)
-            startTime = self.fetchtime_time_per_symbol.get(symbol, self.fallback_time_default)
+            fallback_ft = self.fetchtime_time_per_symbol.get(symbol, self.fallback_time_default)
+            if self._is_account_cache():
+                startTime = min(
+                    self._rest_sync_cursor_per_symbol.get(symbol, fallback_ft),
+                    fallback_ft,
+                )
+            else:
+                startTime = fallback_ft
             if self._is_account_cache() and account_cycle_high_water is None:
                 account_cycle_high_water = request_high_water
             new_items = self.get_remote_items(symbol=symbol, startTime=startTime)
@@ -1839,14 +1860,28 @@ class CacheManagerInterface(ABC):
                 # so events arriving during the response are deliberately overlapped
                 # and eliminated by immutable fill IDs on the next synchronization.
                 with self.lock:
+                    cursor_ms = max(0, request_high_water - 1)
+                    self._rest_sync_cursor_per_symbol[symbol] = cursor_ms
                     self.fetchtime_time_per_symbol[symbol] = max(
-                        0, request_high_water - 1
+                        int(self.fetchtime_time_per_symbol.get(symbol, 0) or 0),
+                        cursor_ms,
                     )
                     self._mark_account_cache_dirty_locked()
         if self._is_account_cache():
             with self.lock:
                 self._last_complete_sync_at_ms = (
                     account_cycle_high_water or 0)
+        with _ws_health_lock:
+            if self.cls_name in _ORDER_CACHE_CLASSES:
+                _ws_needs_rest_resync.difference_update(_ORDER_CACHE_CLASSES)
+            elif self.cls_name in _TRADE_CACHE_CLASSES:
+                _ws_needs_rest_resync.difference_update(_TRADE_CACHE_CLASSES)
+            elif self.cls_name in ("CacheAssetValue", "CacheAssetValueManager"):
+                _ws_needs_rest_resync.difference_update(
+                    {"CacheAssetValue", "CacheAssetValueManager"}
+                )
+            else:
+                _ws_needs_rest_resync.discard(self.cls_name)
         return True
 
     def on_items_update(self, symbol, items):
@@ -2066,6 +2101,10 @@ class CacheTradeManager(CacheManagerInterface):
                     self._mark_account_cache_dirty_locked()
                 return
             bucket.extend(unique)
+            if len(bucket) - persisted_count > 1:
+                unpersisted_tail = bucket[persisted_count:]
+                unpersisted_tail.sort(key=lambda t: (int(t["time"]), int(t["id"])))
+                bucket[persisted_count:] = unpersisted_tail
             self.fetchtime_time_per_symbol[symbol] = int(time.time() * 1000)
             self._mark_account_cache_dirty_locked()
 
@@ -2341,6 +2380,10 @@ class Cache24Price(CacheManagerInterface):
         # per-symbol. Store and forward only this instance's symbol.
         if symbol not in self.symbols:
             return
+        with self.lock:
+            entries = self.cache.get(symbol)
+            if entries and int(ts_ms) < int(entries[-1][0]):
+                ts_ms = int(entries[-1][0])
         if not self.fetchtime_time_per_symbol:
             self.fetchtime_time_per_symbol = self._CacheManagerInterface__rebuild_fetchtime_times()
         self.update_cache_per_symbol(symbol, [[ts_ms, price]])
@@ -4136,12 +4179,19 @@ def _upsert_order_from_execution_report(event):
         fill_id = int(event.get("t"))
         if fill_id < 0:
             raise ValueError("missing Binance trade ID")
-        last_quantity = float(event.get("l") or 0) or float(event.get("q") or 0)
+        last_quantity = float(event.get("l") or 0)
+        if last_quantity <= 0 and event.get("X") == "FILLED":
+            last_quantity = float(event.get("z") or 0) or float(event.get("q") or 0)
         last_price = float(event.get("L") or 0) or float(event.get("p") or 0)
         if last_price <= 0 and last_quantity > 0:
             last_quote = float(event.get("Y") or 0)
             if last_quote > 0:
                 last_price = last_quote / last_quantity
+            else:
+                cum_quote = float(event.get("Z") or 0)
+                cum_qty = float(event.get("z") or 0) or last_quantity
+                if cum_quote > 0 and cum_qty > 0:
+                    last_price = cum_quote / cum_qty
         order_item = {
             "orderId": event.get("i"),
             # Store one immutable fill. A cumulative Z/z aggregate cannot name all
@@ -4202,15 +4252,21 @@ def _append_trade_from_execution_report(event):
         raw_price = event.get("p")
     raw_qty = event.get("l")
     try:
-        if raw_qty is None or float(raw_qty) <= 0:
-            raw_qty = event.get("q")
+        if (raw_qty is None or float(raw_qty) <= 0) and event.get("X") in (None, "FILLED"):
+            raw_qty = event.get("z") if event.get("z") is not None else event.get("q")
     except (TypeError, ValueError):
-        raw_qty = event.get("q")
+        if event.get("X") in (None, "FILLED"):
+            raw_qty = event.get("q")
     try:
         if (raw_price is None or float(raw_price) <= 0) and raw_qty is not None and float(raw_qty) > 0:
             last_quote = float(event.get("Y") or 0)
             if last_quote > 0:
                 raw_price = str(last_quote / float(raw_qty))
+            else:
+                cum_quote = float(event.get("Z") or 0)
+                cum_qty = float(event.get("z") or 0) or float(raw_qty)
+                if cum_quote > 0 and cum_qty > 0:
+                    raw_price = str(cum_quote / cum_qty)
     except (TypeError, ValueError):
         pass
     trade_item = {

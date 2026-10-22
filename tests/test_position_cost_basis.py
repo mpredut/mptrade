@@ -185,7 +185,7 @@ def test_ws_execution_report_preserves_commission_and_zero_price_fallback(monkey
     monkeypatch.setattr(cm, "get_cache_manager", lambda name: DummyTradeCache())
     cm._append_trade_from_execution_report({
         "x": "TRADE",
-        "X": "PARTIALLY_FILLED",
+        "X": "FILLED",
         "s": "ARBUSDC",
         "S": "BUY",
         "i": 1001,
@@ -203,4 +203,80 @@ def test_ws_execution_report_preserves_commission_and_zero_price_fallback(monkey
     assert persisted[0]["qty"] == "10.00000000"
     assert persisted[0]["commission"] == "0.01000000"
     assert persisted[0]["commissionAsset"] == "ARB"
+
+
+def test_ws_and_rest_reconciliation_preserves_rest_cursor_and_merges_missed_fills(tmp_path, monkeypatch):
+    import cacheManager as cm
+    from unittest.mock import MagicMock
+
+    trade_file = str(tmp_path / "cache_trade.jsonl")
+    rest_calls = []
+
+    def fake_paginate(_client, symbol, start_time_ms, limit=1000, *, strict=False):
+        rest_calls.append((symbol, start_time_ms))
+        if len(rest_calls) == 1:
+            return []
+        # On the second REST poll, return both the missed fill (t=1500) during WS outage
+        # and the fill that already arrived via WS (t=2000).
+        return [
+            {
+                "symbol": "ARBUSDC",
+                "id": 501,
+                "orderId": 9001,
+                "price": "1.10",
+                "qty": "5.0",
+                "time": 1500,
+                "isBuyer": True,
+                "commission": "0.005",
+                "commissionAsset": "USDC",
+            },
+            {
+                "symbol": "ARBUSDC",
+                "id": 502,
+                "orderId": 9002,
+                "price": "1.20",
+                "qty": "10.0",
+                "time": 2000,
+                "isBuyer": True,
+                "commission": "0.010",
+                "commissionAsset": "USDC",
+            },
+        ]
+
+    monkeypatch.setattr("binance_api.bapi_allorders.paginate_my_trades", fake_paginate)
+    mgr = cm.CacheTradeManager(9999, ["ARBUSDC"], trade_file, api_client=MagicMock())
+    mgr.fetchtime_time_per_symbol["ARBUSDC"] = 1000
+    mgr._rest_sync_cursor_per_symbol["ARBUSDC"] = 1000
+
+    # 1. WS disconnects briefly (fill 501 at t=1500 is missed on WS), then WS reconnects
+    #    and delivers fill 502 at t=2000 BEFORE REST polling runs:
+    cm._mark_ws_available(True)
+    cm._mark_ws_unhealthy()
+    cm._mark_ws_event_received()
+    mgr._persist_items("ARBUSDC", [{
+        "symbol": "ARBUSDC",
+        "id": "502",
+        "orderId": 9002,
+        "price": "1.20",
+        "qty": "10.0",
+        "time": 2000,
+        "isBuyer": True,
+    }])
+
+    # Even if WS_ONLY_MODE is True and WS is healthy again, _should_poll_for_manager
+    # must force a REST reconciliation poll after the unhealthy period:
+    monkeypatch.setattr(cm, "WS_ONLY_MODE", True)
+    assert cm._should_poll_for_manager("CacheTradeManager") is True
+
+    # 2. Now REST poll runs: it must query from startTime=1000 (NOT 2000!),
+    #    backfill missed fill 501, deduplicate fill 502 (and enrich its commission),
+    #    and sort the unpersisted fills chronologically [501, 502]:
+    mgr.query_remote_and_update_cache()
+    assert rest_calls[-1] == ("ARBUSDC", 1000)
+    bucket = mgr.cache["ARBUSDC"]
+    assert [int(r["id"]) for r in bucket] == [501, 502]
+    assert bucket[1].get("commission") == "0.010"
+    assert bucket[1].get("commissionAsset") == "USDC"
+    assert cm._should_poll_for_manager("CacheTradeManager") is False
+
 

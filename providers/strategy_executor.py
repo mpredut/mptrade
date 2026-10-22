@@ -85,59 +85,18 @@ def capture_submission(submit: Callable[[], object]) -> SubmissionOutcome:
 
 def extract_order_id(native) -> Optional[str]:
     """Extract a venue order ID from normalized and common native response shapes."""
-    if isinstance(native, SubmissionOutcome):
-        return native.order_id
-    order_id = None
-    if isinstance(native, dict):
-        order_id = native.get("orderId", native.get("order_id", native.get("id")))
-        if order_id is None:
-            order_id = native.get("txid")
-    elif not isinstance(native, bool):
-        order_id = native
-    if isinstance(order_id, (list, tuple)):
-        order_id = next((item for item in order_id if str(item).strip()), None)
-    if order_id is None or not str(order_id).strip():
-        return None
-    return str(order_id)
+    from .base import extract_order_id as _extract_order_id
+    return _extract_order_id(native, default=None)
 
 
-def extract_order_qty(native) -> Optional[float]:
+def extract_orig_qty(native) -> Optional[float]:
     """Extract the venue-accepted original order quantity from common response shapes."""
-    if native is None or isinstance(native, bool):
-        return None
-    if isinstance(native, SubmissionOutcome):
-        native = native.native
-        if native is None or isinstance(native, bool):
-            return None
-    if isinstance(native, dict):
-        for key in (
-            "origQty", "orig_qty", "origSz", "vol", "qty", "amount",
-            "original_qty", "order_qty", "orderedQuantity", "quantity", "sz",
-            "executedQty", "filledQuantity", "filledQty", "vol_exec",
-        ):
-            if key in native and native[key] is not None and not isinstance(native[key], bool):
-                try:
-                    f = abs(float(native[key]))
-                    if math.isfinite(f) and f > 0:
-                        return f
-                except (TypeError, ValueError, OverflowError):
-                    continue
-    else:
-        for attr in (
-            "orig_qty", "origQty", "origSz", "vol", "qty", "amount",
-            "original_qty", "order_qty", "orderedQuantity", "quantity", "sz",
-            "executedQty", "filledQuantity", "filledQty", "vol_exec",
-        ):
-            if hasattr(native, attr):
-                val = getattr(native, attr)
-                if val is not None and not isinstance(val, bool):
-                    try:
-                        f = abs(float(val))
-                        if math.isfinite(f) and f > 0:
-                            return f
-                    except (TypeError, ValueError, OverflowError):
-                        continue
-    return None
+    from .base import extract_orig_qty as _extract_orig_qty
+    return _extract_orig_qty(native, default=None)
+
+
+# Compatibility alias retained for existing imports.
+extract_order_qty = extract_orig_qty
 
 
 @dataclass(frozen=True)

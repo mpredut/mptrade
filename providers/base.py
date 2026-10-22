@@ -5,12 +5,6 @@ import os
 from abc import ABC, abstractmethod
 from typing import Any, List, Optional
 
-from .strategy_executor import (
-    OrderReconciliationCapabilities,
-    PairPrecision,
-    ProviderError,
-)
-
 
 def env_value(folder: str, key: str) -> Optional[str]:
     """Read one key from ``.env``/``config.env`` without mutating ``os.environ``."""
@@ -43,6 +37,7 @@ def bool_env(key: str, folder: Optional[str] = None, default: bool = False) -> b
 
 
 _TIMESTAMP_KEYS = ("timestamp", "time", "updateTime", "transactTime", "opentm", "closetm", "workingTime")
+_ORDER_ID_KEYS = ("orderId", "order_id", "id", "txid", "oid", "i")
 _PRICE_KEYS = ("price", "px", "limitPx", "fillPrice", "limit", "limitPrice", "averagePrice", "avgPrice", "rate", "p")
 _QTY_KEYS = (
     "qty", "quantity", "executedQty", "filledQuantity", "filledQty", "vol_exec",
@@ -50,7 +45,7 @@ _QTY_KEYS = (
 )
 _ORIG_QTY_KEYS = (
     "origQty", "orig_qty", "origSz", "vol", "orderedQuantity", "original_qty",
-    "order_qty", "qty", "quantity", "sz", "amount_shares", "q",
+    "order_qty", "qty", "amount", "quantity", "sz", "amount_shares", "q",
 )
 _EXEC_QTY_KEYS = ("executedQty", "filledQuantity", "filledQty", "vol_exec", "filled_qty")
 _FEE_KEYS = ("commission", "fee", "filled_fee", "n")
@@ -113,6 +108,40 @@ def extract_timestamp_s(order: Any, default: Optional[float] = None) -> Optional
                 return numeric / 1000.0
             return numeric
     return default
+
+
+def extract_order_id(order: Any, default: Optional[str] = None) -> Optional[str]:
+    """Extract and normalize a venue order ID from any response shape.
+
+    Handles ``SubmissionOutcome`` objects, venue dicts (``orderId``, ``order_id``,
+    ``id``, ``txid``, ``oid``, ``i``), Kraken ``txid`` lists/tuples, and scalar IDs.
+    """
+    if order is None or isinstance(order, bool):
+        return default
+    if hasattr(order, "order_id") and hasattr(order, "state"):
+        oid = getattr(order, "order_id", None)
+        if oid is not None and not isinstance(oid, bool) and str(oid).strip():
+            return str(oid).strip()
+        return default
+    order_id = None
+    if isinstance(order, dict):
+        for key in _ORDER_ID_KEYS:
+            if key in order and order[key] is not None and not isinstance(order[key], bool):
+                order_id = order[key]
+                break
+    else:
+        order_id = order
+    if isinstance(order_id, (list, tuple)):
+        order_id = next(
+            (
+                item for item in order_id
+                if item is not None and not isinstance(item, bool) and str(item).strip()
+            ),
+            None,
+        )
+    if order_id is None or isinstance(order_id, bool) or not str(order_id).strip():
+        return default
+    return str(order_id).strip()
 
 
 def extract_order_side(order: Any) -> str:
@@ -202,6 +231,43 @@ def extract_order_qty(order: Any, default: float = 0.0) -> float:
                     return val
             except (TypeError, ValueError, OverflowError):
                 continue
+    return default
+
+
+def extract_orig_qty(order: Any, default: Optional[float] = None) -> Optional[float]:
+    """Extract the venue-accepted original order quantity from any response shape.
+
+    Prioritizes original-quantity fields (``origQty``, ``origSz``, ``vol``,
+    ``orderedQuantity``, etc.) over executed-quantity fields so recovering a
+    ``PARTIALLY_FILLED`` order never overwrites the total order quantity with
+    the partial fill quantity.
+    """
+    if order is None or isinstance(order, bool):
+        return default
+    if hasattr(order, "native") and hasattr(order, "state"):
+        order = getattr(order, "native", None)
+        if order is None or isinstance(order, bool):
+            return default
+    if isinstance(order, dict):
+        for key in (*_ORIG_QTY_KEYS, *_EXEC_QTY_KEYS):
+            if key in order and order[key] is not None and not isinstance(order[key], bool):
+                try:
+                    val = abs(float(order[key]))
+                    if math.isfinite(val) and val > 0:
+                        return val
+                except (TypeError, ValueError, OverflowError):
+                    continue
+    else:
+        for attr in (*_ORIG_QTY_KEYS, *_EXEC_QTY_KEYS):
+            if hasattr(order, attr):
+                raw = getattr(order, attr)
+                if raw is not None and not isinstance(raw, bool):
+                    try:
+                        val = abs(float(raw))
+                        if math.isfinite(val) and val > 0:
+                            return val
+                    except (TypeError, ValueError, OverflowError):
+                        continue
     return default
 
 
@@ -330,6 +396,12 @@ def normalize_order(order: dict) -> dict:
 
 # Compatibility alias retained for existing internal and external imports.
 _normalize_order = normalize_order
+
+from .strategy_executor import (  # noqa: E402
+    OrderReconciliationCapabilities,
+    PairPrecision,
+    ProviderError,
+)
 
 
 class MarketDataProvider(ABC):
