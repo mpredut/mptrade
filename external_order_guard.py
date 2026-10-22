@@ -84,18 +84,15 @@ def check_external_order_guards(
         return True, "not_supported_side", 1.0
 
     if margins is None:
-        try:
-            from order_guard import _load_margins
-            m = _load_margins()
-        except Exception:
-            m = {}
+        from order_guard import _load_margins
+        m = _load_margins()
     else:
         m = margins
 
     # For SELL orders: small routine orders (< sell_guard_min_notional_eur) bypass with 0 ms overhead
     computed_notional = float(notional_eur) if notional_eur is not None else (float(price * qty) if (price and qty) else 0.0)
     if order_side == "SELL":
-        sell_min_notional = float(m.get("sell_guard_min_notional_eur", 1000.0))
+        sell_min_notional = float(m["sell_guard_min_notional_eur"])
         if computed_notional < sell_min_notional:
             return True, "small_sell_exempt", 1.0
 
@@ -104,10 +101,8 @@ def check_external_order_guards(
     effective_scale = 1.0
     active_reason = "ok"
 
-    global_micro_mode = str(m.get("microstructure_guard_mode", m.get("external_guard_mode", ""))).strip().lower()
-
     now_ts = float(now) if now is not None else time.time()
-    shadow_notify_enabled = str(m.get("shadow_notify", "0")).strip().lower() in ("1", "true", "yes", "on")
+    shadow_notify_enabled = str(m["shadow_notify"]).strip().lower() in ("1", "1.0", "true", "yes", "on")
 
     def _send_micro_shadow_notify(
         guard_key: str,
@@ -135,15 +130,15 @@ def check_external_order_guards(
             pass
 
     # 1. Whale Flow & Open Interest Divergence Guard
-    whale_mode = str(m.get("whale_guard_mode", global_micro_mode or "shadow")).strip().lower()
+    whale_mode = str(m["whale_guard_mode"]).strip().lower()
     if whale_mode not in ("off", "0", "disabled"):
         try:
             from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
             w_snap = get_whale_collector().fetch(symbol, allow_network=False)
-            sev_oi = float(m.get("severe_cascade_oi_pct", -5.0))
-            min_tk = float(m.get("min_taker_ratio", 0.75))
-            downscale_tk = float(m.get("taker_downscale_threshold", 0.90))
-            downscaled_scale = float(m.get("taker_downscaled_scale", 0.50))
+            sev_oi = float(m["severe_cascade_oi_pct"])
+            min_tk = float(m["min_taker_ratio"])
+            downscale_tk = float(m["taker_downscale_threshold"])
+            downscaled_scale = float(m["taker_downscaled_scale"])
             w_guard = WhaleDivergenceGuard(
                 severe_cascade_oi_pct=sev_oi,
                 min_taker_ratio=min_tk,
@@ -167,14 +162,14 @@ def check_external_order_guards(
             pass
 
     # 2. Orderbook Depth & Whale Limit Wall Guard
-    ob_mode = str(m.get("orderbook_wall_guard_mode", global_micro_mode or "shadow")).strip().lower()
+    ob_mode = str(m["orderbook_wall_guard_mode"]).strip().lower()
     if ob_mode not in ("off", "0", "disabled"):
         try:
             from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
             ob_snap = get_orderbook_collector().fetch(symbol, allow_network=False)
-            min_imb = float(m.get("min_buy_imbalance", 0.25))
-            max_imb = float(m.get("max_sell_imbalance", 0.75))
-            wall_limit = float(m.get("whale_wall_usd_limit", 1_000_000.0))
+            min_imb = float(m["min_buy_imbalance"])
+            max_imb = float(m["max_sell_imbalance"])
+            wall_limit = float(m["whale_wall_usd_limit"])
             ob_guard = OrderbookWallGuard(
                 min_buy_imbalance=min_imb,
                 max_sell_imbalance=max_imb,
@@ -193,15 +188,15 @@ def check_external_order_guards(
             pass
 
     # 3. Perpetual Derivatives Funding Rate Crowding Guard
-    funding_mode = str(m.get("funding_guard_mode", global_micro_mode or "shadow")).strip().lower()
+    funding_mode = str(m["funding_guard_mode"]).strip().lower()
     if funding_mode not in ("off", "0", "disabled"):
         try:
             from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
             f_snap = get_derivatives_collector().fetch(symbol, allow_network=False)
-            f_max = float(m.get("funding_max_long_rate", 0.0005))
-            f_min = float(m.get("funding_min_short_rate", m.get("min_short_funding_rate", -0.0005)))
-            f_policy = str(m.get("funding_crowding_policy", "downscale")).strip().lower()
-            f_scale = float(m.get("funding_crowded_scale", 0.50))
+            f_max = float(m["funding_max_long_rate"])
+            f_min = float(m["funding_min_short_rate"])
+            f_policy = str(m["funding_crowding_policy"]).strip().lower()
+            f_scale = float(m["funding_crowded_scale"])
             f_guard = FundingCrowdingGuard(
                 max_long_funding_rate=f_max,
                 min_short_funding_rate=f_min,

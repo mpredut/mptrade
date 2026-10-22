@@ -95,7 +95,7 @@ class TestKalmanTrendGapReset(unittest.TestCase):
 
 
 class TestVolAndThresholds(unittest.TestCase):
-    """Sanity minim pe restul modulului — neschimbate de fix-ul de gap."""
+    """Minimal sanity check on the rest of the module — unchanged by the gap fix."""
 
     def test_warmup_outputs_are_unavailable(self):
         self.assertIsNone(ss.vol_1h_pct([100.0] * 5, sample_rate_sec=1.0))
@@ -202,6 +202,32 @@ class TestShadowRuntime(unittest.TestCase):
             )
             self.assertEqual(mock_place.call_count, 1)
             self.assertEqual(mock_place.call_args.kwargs.get("reason"), "accel_surge_up")
+
+    def test_tradeall_logic_small_acceleration_plunge(self):
+        """logic_small triggers accel_plunge_down when short-term velocity and acceleration are strongly negative."""
+        from unittest.mock import patch
+        import tradeall as ta
+        from pricewindow import PriceWindow
+
+        pw = PriceWindow("TAOUSDC", 220, sample_rate_sec=1.0)
+        # Parabolic downward curve over 180s (~280 -> ~275)
+        px = 280.0
+        for i in range(180):
+            t_min = i / 60.0
+            px = 280.0 * (1.0 - 0.0012 * t_min - 0.0018 * (t_min ** 2))
+            pw.process_price(px)
+
+        trend_state = ta.TrendState("TAOUSDC", 3600.0, 222.0)
+        with patch.object(ta, "track_and_place_order", return_value={"orderId": "2"}) as mock_place:
+            ta.logic_small(
+                "SMALL", True, "TAOUSDC",
+                gradient=-1, slope=-(ta.PRICE_CHANGE_THRESHOLD_EUR + 0.05),
+                trend_state=trend_state, current_price=px,
+                price_window=pw,
+            )
+            self.assertEqual(mock_place.call_count, 1)
+            self.assertEqual(mock_place.call_args.args[0], "SELL")
+            self.assertEqual(mock_place.call_args.kwargs.get("reason"), "accel_plunge_down")
 
 
 if __name__ == "__main__":

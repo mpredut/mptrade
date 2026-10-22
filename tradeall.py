@@ -180,13 +180,16 @@ KALMAN_MODES = {
 }
 TRADEALL_FIRE_SYMBOLS = set(KALMAN_MODES)
 KALMAN_PRIMARY_SYMBOLS = set(symbols_for("binance", "kalman_primary"))
+KALMAN_BYPASS_SELL_REASONS = frozenset({"accel_plunge_down", "small_window_plunge_down"})
 
 
-def _kalman_gate_blocks(symbol, action):
+def _kalman_gate_blocks(symbol, action, reason=None):
     # An allowed symbol must have an explicit mode; there is no default policy.
     mode = KALMAN_MODES[symbol]
     if mode == "off" or _shadow_ref is None:
         return False, mode, None        # Gate disabled -> never blocks (not a data state).
+    if str(action or "").upper() == "SELL" and reason in KALMAN_BYPASS_SELL_REASONS:
+        return False, mode, None        # Fast kinematic plunge exits bypass Kalman lag.
     try:
         trend, age = _shadow_ref.current_trend(symbol)
     except Exception:
@@ -233,7 +236,7 @@ def _fire_order(symbol, action, price, reason, **kwargs):
               f"(trend-tracked only; exit managed elsewhere)")
         return None
 
-    blocked, mode, trend = _kalman_gate_blocks(symbol, action)
+    blocked, mode, trend = _kalman_gate_blocks(symbol, action, reason=reason)
     if blocked:
         print(f"[KALMAN-GATE] {action} {symbol} BLOCKED (kalman_trend={trend}, mode={mode}, reason={reason})")
         try:
@@ -291,7 +294,7 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
             or not math.isfinite(base_price)
             or base_price <= 0
             or symbol not in TRADEALL_FIRE_SYMBOLS
-            or _kalman_gate_blocks(symbol, action)[0]
+            or _kalman_gate_blocks(symbol, action, reason=reason)[0]
         ):
             _fire_order(symbol, action, base_price, reason, **kwargs)
             return []
@@ -565,6 +568,26 @@ def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price
                 _fire_trend_order(
                     enable, symbol, trend_state, "UP", "BUY", current_price,
                     "accel_surge_up", regime_ctx=regime_ctx,
+                )
+        except Exception as e:
+            print(f"[SMALL-WINDOW] Acceleration calculation error for {symbol}: {e}")
+
+    elif ACCEL_ENABLED and price_window is not None and gradient < 0 and slope <= -PRICE_CHANGE_THRESHOLD_EUR:
+        try:
+            vel_short, acc_short = price_window.calculate_acceleration(window_sec=ACCEL_WINDOW_SEC)
+            vel_med, _ = price_window.calculate_acceleration(window_sec=max(ACCEL_WINDOW_SEC * 2.0, 180.0))
+            if (
+                vel_short <= -ACCEL_MIN_VEL_SHORT
+                and acc_short <= -ACCEL_MIN_ACC_SHORT
+                and vel_med <= -ACCEL_MIN_VEL_MED
+            ):
+                print(
+                    f"[SMALL-WINDOW] Acceleration SELL plunge: gradient={gradient}, slope={slope:.3f}, "
+                    f"vel_90s={vel_short:.3f}%/m, acc_90s={acc_short:.3f}%/m^2, vel_180s={vel_med:.3f}%/m"
+                )
+                _fire_trend_order(
+                    enable, symbol, trend_state, "DOWN", "SELL", current_price,
+                    "accel_plunge_down", regime_ctx=regime_ctx,
                 )
         except Exception as e:
             print(f"[SMALL-WINDOW] Acceleration calculation error for {symbol}: {e}")

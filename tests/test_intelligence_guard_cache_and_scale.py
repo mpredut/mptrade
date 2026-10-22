@@ -21,6 +21,13 @@ from market_regime import MarketRegimeDecision, MarketRegimeContext
 from providers.quantity import decide_quantity
 
 
+_BASE_MARGINS = dict(order_guard._load_margins())
+
+
+def _margins(**overrides):
+    return {**_BASE_MARGINS, **overrides}
+
+
 def _build_test_context(symbol="BTCUSDC", provider="binance"):
     decision = MarketRegimeDecision(
         regime="bull", gradient=0.5, epsilon=0.1, strength=5.0,
@@ -34,18 +41,19 @@ class TestIntelligenceGuardDynamicEvaluation:
         """Verify that BUY at 100 is approved, but subsequent BUY at 125 is blocked by parabolic surge guard on the same context."""
         ctx = _build_test_context()
 
-        margins = {
-            "intelligence_guards_mode": "enforce",
-            "parabolic_surge_pct": 15.0,
-            "parabolic_pullback_pct": 2.0,
-            "weibull_exhaustion_policy": "off",
-            "gemini_guard_mode": "off",
-            "geopolitical_guard_mode": "off",
-            "whale_guard_mode": "off",
-            "orderbook_wall_guard_mode": "off",
-            "funding_guard_mode": "off",
-            "default": 1.15,
-        }
+        margins = _margins(
+            internal_guard_mode="enforce",
+            intelligence_guards_mode="enforce",
+            parabolic_surge_pct=15.0,
+            parabolic_pullback_pct=2.0,
+            weibull_exhaustion_policy="off",
+            llm_guard_mode="off",
+            geopolitical_guard_mode="off",
+            whale_guard_mode="off",
+            orderbook_wall_guard_mode="off",
+            funding_guard_mode="off",
+            default=1.15,
+        )
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
 
         now = time.time()
@@ -76,13 +84,14 @@ class TestIntelligenceGuardDynamicEvaluation:
         """Verify that jumping from small notional to high notional evaluates Gemini guard."""
         ctx = _build_test_context()
 
-        margins = {
-            "intelligence_guards_mode": "enforce",
-            "gemini_guard_mode": "enforce",
-            "gemini_min_notional_eur": 1000.0,
-            "gemini_timeout_sec": 5.0,
-            "default": 1.15,
-        }
+        margins = _margins(
+            internal_guard_mode="enforce",
+            intelligence_guards_mode="enforce",
+            llm_guard_mode="enforce",
+            llm_min_notional_eur=1000.0,
+            llm_timeout_sec=5.0,
+            default=1.15,
+        )
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
         monkeypatch.setattr(order_guard, "_resolve_trend_duration", lambda s: 3600.0)
 
@@ -488,12 +497,13 @@ class TestCase5HistoryFailClosed:
             calls.append(notional_eur)
             return GuardDecision.allow("Gemini approved")
 
-        monkeypatch.setattr("order_guard._load_margins", lambda: {
-            "intelligence_guards_mode": "enforce",
-            "gemini_guard_mode": "enforce",
-            "gemini_min_notional_eur": 1000.0,
-            "regime_context_max_age_sec": 120.0,
-        })
+        monkeypatch.setattr("order_guard._load_margins", lambda: _margins(
+            internal_guard_mode="enforce",
+            intelligence_guards_mode="enforce",
+            llm_guard_mode="enforce",
+            llm_min_notional_eur=1000.0,
+            regime_context_max_age_sec=120.0,
+        ))
         monkeypatch.setattr(
             "intelligence.sentiment.guards.high_stake_guard.HighStakeGuard.check",
             fake_gemini_check
@@ -535,12 +545,13 @@ class TestArchitectureFixes4Cases:
         # Price history with base 100.0
         history = [(now - 120, 100.0), (now - 60, 100.0)]
 
-        monkeypatch.setattr(order_guard, "_load_margins", lambda: {
-            "intelligence_guards_mode": "enforce",
-            "parabolic_surge_pct": 15.0,
-            "parabolic_pullback_pct": 2.0,
-            "regime_context_max_age_sec": 120.0,
-        })
+        monkeypatch.setattr(order_guard, "_load_margins", lambda: _margins(
+            internal_guard_mode="enforce",
+            intelligence_guards_mode="enforce",
+            parabolic_surge_pct=15.0,
+            parabolic_pullback_pct=2.0,
+            regime_context_max_age_sec=120.0,
+        ))
 
         class MockProvider:
             name = "binance"
@@ -755,12 +766,13 @@ class TestSisterArchitecturalDefects:
             from intelligence.internal.guards.guard_decision import GuardDecision
             return GuardDecision.allow("Gemini approved")
 
-        monkeypatch.setattr(order_guard, "_load_margins", lambda: {
-            "intelligence_guards_mode": "enforce",
-            "gemini_guard_mode": "enforce",
-            "gemini_min_notional_eur": 1000.0,
-            "regime_context_max_age_sec": 120.0,
-        })
+        monkeypatch.setattr(order_guard, "_load_margins", lambda: _margins(
+            internal_guard_mode="enforce",
+            intelligence_guards_mode="enforce",
+            llm_guard_mode="enforce",
+            llm_min_notional_eur=1000.0,
+            regime_context_max_age_sec=120.0,
+        ))
         monkeypatch.setattr(
             "intelligence.sentiment.guards.high_stake_guard.HighStakeGuard.check",
             fake_gemini_check
@@ -808,12 +820,13 @@ class TestSisterArchitecturalDefects:
             calls.append(notional_eur)
             return gemini_result[0]
 
-        monkeypatch.setattr(order_guard, "_load_margins", lambda: {
-            "intelligence_guards_mode": "enforce",
-            "gemini_guard_mode": "enforce",
-            "gemini_min_notional_eur": 1000.0,
-            "regime_context_max_age_sec": 120.0,
-        })
+        monkeypatch.setattr(order_guard, "_load_margins", lambda: _margins(
+            internal_guard_mode="enforce",
+            intelligence_guards_mode="enforce",
+            llm_guard_mode="enforce",
+            llm_min_notional_eur=1000.0,
+            regime_context_max_age_sec=120.0,
+        ))
         monkeypatch.setattr(
             "intelligence.sentiment.guards.high_stake_guard.HighStakeGuard.check",
             fake_gemini_check
@@ -1136,17 +1149,18 @@ class TestBatch6IntelligenceAndRoutingFixes:
         """Evaluating SELL first on shared regime_context must not bypass BUY geopolitical/internal guards,
         and a blocked BUY must not block a subsequent SELL exit."""
         ctx = _build_test_context()
-        margins = {
-            "intelligence_guards_mode": "enforce",
-            "geopolitical_guard_mode": "enforce",
-            "sell_guard_min_notional_eur": 1000.0,
-            "gemini_guard_mode": "off",
-            "whale_guard_mode": "off",
-            "orderbook_wall_guard_mode": "off",
-            "funding_guard_mode": "off",
-            "weibull_exhaustion_policy": "off",
-            "default": 1.15,
-        }
+        margins = _margins(
+            internal_guard_mode="enforce",
+            intelligence_guards_mode="enforce",
+            geopolitical_guard_mode="enforce",
+            sell_guard_min_notional_eur=1000.0,
+            llm_guard_mode="off",
+            whale_guard_mode="off",
+            orderbook_wall_guard_mode="off",
+            funding_guard_mode="off",
+            weibull_exhaustion_policy="off",
+            default=1.15,
+        )
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
 
         import intelligence_order_guard
@@ -1190,18 +1204,19 @@ class TestBatch6IntelligenceAndRoutingFixes:
         """A BUY rejected at a parabolic spike price (125.0) on a fresh context must re-evaluate and pass
         when price pulls back to 100.0 or when GI1 is bypassed."""
         ctx = _build_test_context()
-        margins = {
-            "intelligence_guards_mode": "enforce",
-            "parabolic_surge_pct": 15.0,
-            "parabolic_pullback_pct": 2.0,
-            "weibull_exhaustion_policy": "off",
-            "gemini_guard_mode": "off",
-            "geopolitical_guard_mode": "off",
-            "whale_guard_mode": "off",
-            "orderbook_wall_guard_mode": "off",
-            "funding_guard_mode": "off",
-            "default": 1.15,
-        }
+        margins = _margins(
+            internal_guard_mode="enforce",
+            intelligence_guards_mode="enforce",
+            parabolic_surge_pct=15.0,
+            parabolic_pullback_pct=2.0,
+            weibull_exhaustion_policy="off",
+            llm_guard_mode="off",
+            geopolitical_guard_mode="off",
+            whale_guard_mode="off",
+            orderbook_wall_guard_mode="off",
+            funding_guard_mode="off",
+            default=1.15,
+        )
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
         now = time.time()
         history = [(now - 120.0, 100.0), (now - 60.0, 100.0)]
@@ -1256,14 +1271,14 @@ class TestBatch6IntelligenceAndRoutingFixes:
         )
 
         # Custom funding_min_short_rate = -0.0002 (default is -0.0005), so -0.0003 triggers short crowding on SELL
-        margins_shadow = {
-            "whale_guard_mode": "off",
-            "orderbook_wall_guard_mode": "off",
-            "funding_guard_mode": "shadow",
-            "funding_min_short_rate": -0.0002,
-            "funding_crowding_policy": "defer",
-            "shadow_notify": "true",
-        }
+        margins_shadow = _margins(
+            whale_guard_mode="off",
+            orderbook_wall_guard_mode="off",
+            funding_guard_mode="shadow",
+            funding_min_short_rate=-0.0002,
+            funding_crowding_policy="defer",
+            shadow_notify="true",
+        )
         ok_sh, _, _ = external_order_guard.check_external_order_guards(
             "BTCUSDC", "SELL", 100.0, notional_eur=2000.0, margins=margins_shadow
         )
@@ -1299,10 +1314,10 @@ class TestBatch6IntelligenceAndRoutingFixes:
             "intelligence.macro.geopolitical_analyzer.GeopoliticalThreatAnalyzer",
             DummyAnalyzer,
         )
-        margins = {
-            "geopolitical_guard_mode": "enforce",
-            "shadow_notify": "true",
-        }
+        margins = _margins(
+            geopolitical_guard_mode="enforce",
+            shadow_notify="true",
+        )
         ok, reason, scale = geopolitical_order_guard.check_geopolitical_order_guards(
             "BTCUSDC", "BUY", margins=margins
         )

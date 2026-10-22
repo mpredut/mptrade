@@ -526,9 +526,10 @@ class TestOrderGuardWithGemini:
         import order_guard
 
         margins = {
+            **order_guard._load_margins(),
             "intelligence_guards_mode": "shadow",
-            "gemini_guard_mode": "shadow",
-            "gemini_min_notional_eur": 1000.0,
+            "llm_guard_mode": "shadow",
+            "llm_min_notional_eur": 1000.0,
             "default": 1.15,
         }
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
@@ -586,11 +587,13 @@ class TestOrderGuardWithGemini:
         import order_guard
 
         margins = {
+            **order_guard._load_margins(),
             "intelligence_guards_mode": "enforce",
-            "gemini_guard_mode": "enforce",
-            "gemini_min_notional_eur": 1000.0,
+            "llm_guard_mode": "enforce",
+            "llm_min_notional_eur": 1000.0,
             "default": 1.15,
             "default_buy_reference": "strict",
+            "binance_buy_reference": "strict",
         }
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
 
@@ -650,6 +653,7 @@ class TestOrderGuardWithGemini:
         from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
 
         margins = {
+            **order_guard._load_margins(),
             "intelligence_guards_mode": "shadow",
             "geopolitical_guard_mode": "shadow",
             "shadow_notify": 1.0,

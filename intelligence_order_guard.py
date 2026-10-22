@@ -50,11 +50,8 @@ def check_intelligence_order_guards(
         return True, "not_supported_side", 1.0
 
     if margins is None:
-        try:
-            from order_guard import _load_margins
-            m = _load_margins()
-        except Exception:
-            m = {}
+        from order_guard import _load_margins
+        m = _load_margins()
     else:
         m = margins
 
@@ -67,15 +64,15 @@ def check_intelligence_order_guards(
     computed_notional = float(notional_eur) if notional_eur is not None else (float(price * qty) if (price and qty) else 0.0)
 
     if side == "SELL":
-        sell_min_notional = float(m.get("sell_guard_min_notional_eur", m.get("llm_min_notional_eur", 1000.0)))
+        sell_min_notional = float(m["sell_guard_min_notional_eur"])
         if computed_notional < sell_min_notional:
             return True, "small_sell_exempt", 1.0
 
     # 1. High-Stake LLM Pre-Trade Guard (Pillar 3 / GI3)
     skip_llm = GUARD_REGISTRY["GI3"].is_bypassed(bypassed)
-    llm_mode = str(m.get("llm_guard_mode", m.get("high_stake_guard_mode", m.get("gemini_guard_mode", "shadow")))).strip().lower()
+    llm_mode = str(m["llm_guard_mode"]).strip().lower()
     if not skip_llm and llm_mode not in ("off", "0", "disabled"):
-        min_notional = float(m.get("llm_min_notional_eur", m.get("high_stake_min_notional_eur", m.get("gemini_min_notional_eur", 1000.0))))
+        min_notional = float(m["llm_min_notional_eur"])
         if computed_notional >= min_notional:
             valid_context = regime_context is not None and hasattr(regime_context, "__dict__")
             cache_key = (side, frozenset(bypassed))
@@ -98,8 +95,8 @@ def check_intelligence_order_guards(
                     if valid_context else None
                 )
                 from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
-                timeout_sec = float(m.get("llm_timeout_sec", m.get("high_stake_timeout_sec", m.get("gemini_timeout_sec", 25.0))))
-                fallback = str(m.get("llm_fallback", m.get("high_stake_fallback", m.get("gemini_fallback", "allow")))).strip().lower()
+                timeout_sec = float(m["llm_timeout_sec"])
+                fallback = str(m["llm_fallback"]).strip().lower()
                 llm_guard = HighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
                 try:
                     g_dec = llm_guard.check(

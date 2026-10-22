@@ -13,7 +13,7 @@ provider.last_opposite_fill propagate so the caller can fail closed.
 Returns True when placement is allowed and False when blocked.
 
 The profit threshold is configured per venue in versioned, non-sensitive
-`order_guard.conf`. A missing file or invalid value falls back to fail-safe 1.15%."""
+`order_guard.conf`. A missing file or required key aborts startup immediately."""
 import os
 import time
 import math
@@ -39,6 +39,8 @@ from geopolitical_order_guard import _GEO_SHADOW_NOTIFY_COOLDOWN as _SHADOW_NOTI
 _REQUIRED_ORDER_GUARD_KEYS = frozenset({
     "default",
     "default_window_h",
+    "default_weight_proxy",
+    "default_chop_weight",
     "default_max_daily_trades",
     "default_safeback_sec",
     "default_recent_transaction_sec",
@@ -50,9 +52,59 @@ _REQUIRED_ORDER_GUARD_KEYS = frozenset({
     "buy_window_flat_h",
     "buy_window_bear_h",
     "regime_context_max_age_sec",
+    # Pillar 1: Internal Quantitative Mathematical Guards
+    "internal_guard_mode",
+    "intelligence_guards_mode",
+    "parabolic_surge_pct",
+    "parabolic_pullback_pct",
+    "weibull_exhaustion_policy",
+    "weibull_exhausted_scale",
+    "weibull_p90_days",
+    # Pillar 2: External Microstructure & Derivatives Flow Guards
+    "external_guard_mode",
+    "microstructure_guard_mode",
+    "whale_guard_mode",
+    "severe_cascade_oi_pct",
     "min_taker_ratio",
     "taker_downscale_threshold",
     "taker_downscaled_scale",
+    "orderbook_wall_guard_mode",
+    "whale_wall_usd_limit",
+    "min_buy_imbalance",
+    "max_sell_imbalance",
+    "sell_guard_min_notional_eur",
+    "funding_guard_mode",
+    "funding_max_long_rate",
+    "funding_min_short_rate",
+    "funding_crowding_policy",
+    "funding_crowded_scale",
+    # Pillar 2 Sub-Module: Smart Stop-Loss
+    "smart_sl_mode",
+    "smart_sl_max_threshold_pct",
+    "smart_sl_grace_seconds",
+    "smart_sl_disaster_buffer_pct",
+    "smart_sl_min_whale_long_pct",
+    "smart_sl_min_taker_ratio",
+    # Pillar 3: AI Intelligence High-Stake Guard & Post-Stop Re-entry
+    "llm_guard_mode",
+    "llm_min_notional_eur",
+    "llm_timeout_sec",
+    "llm_fallback",
+    "post_stop_reentry_mode",
+    "post_stop_reentry_timeout_sec",
+    "post_stop_reentry_fallback",
+    "post_stop_reentry_notify",
+    "post_stop_reentry_cache_ttl_sec",
+    "sentiment_advisor_interval_h",
+    "sentiment_advisor_interval_sec",
+    "macro_advisor_interval_h",
+    "macro_advisor_interval_sec",
+    "macro_llm_interval_h",
+    "macro_llm_interval_sec",
+    # Pillar 4 & Global
+    "geopolitical_guard_mode",
+    "shadow_notify",
+    "default_bypass_guards",
 })
 
 
@@ -342,7 +394,7 @@ def _symbol_trend(
     Consumes the unified MarketRegimeDecision from MarketRegimeService.
     """
     if regime_context is not None:
-        max_age = _load_margins().get("regime_context_max_age_sec", 120.0)
+        max_age = float(_load_margins()["regime_context_max_age_sec"])
         if hasattr(regime_context, "is_valid_for"):
             if regime_context.is_valid_for(
                 symbol=symbol, provider=provider, max_age_seconds=max_age, now=now,
@@ -369,7 +421,7 @@ def _symbol_trend(
 
 
 def margin_for(provider_name):
-    """Return the venue's configured minimum profit percentage from order_guard.conf, defaulting to 1.15."""
+    """Return the venue's configured minimum profit percentage from order_guard.conf."""
     m = _load_margins()
     return m.get((provider_name or "").lower(), m["default"])
 
@@ -386,27 +438,18 @@ def dynamic_buy_window_sec(
     provider_resolver=None,
 ) -> float:
     """Calculate the dynamic lookback window (in seconds) for BUY reference:
-    - BULL trend: 4h - 12h (default 8h)
-    - BEAR trend: 48h - 168h (default 72h)
-    - FLAT / UNKNOWN: 24h - 48h (default 24h)
+    - BULL trend: 4h - 12h (configured via buy_window_bull_h)
+    - BEAR trend: 48h - 168h (configured via buy_window_bear_h)
+    - FLAT / UNKNOWN: 24h - 48h (configured via buy_window_flat_h)
     """
     m = _load_margins()
-    try:
-        bull_h = float(m.get("buy_window_bull_h", 8.0))
-    except (ValueError, TypeError):
-        bull_h = 8.0
-    try:
-        flat_h = float(m.get("buy_window_flat_h", 24.0))
-    except (ValueError, TypeError):
-        flat_h = 24.0
-    try:
-        bear_h = float(m.get("buy_window_bear_h", 72.0))
-    except (ValueError, TypeError):
-        bear_h = 72.0
+    bull_h = float(m["buy_window_bull_h"])
+    flat_h = float(m["buy_window_flat_h"])
+    bear_h = float(m["buy_window_bear_h"])
 
     trend = resolved_trend
     if trend is None and regime_context is not None:
-        max_age = _load_margins().get("regime_context_max_age_sec", 120.0)
+        max_age = float(m["regime_context_max_age_sec"])
         if not hasattr(regime_context, "is_valid_for") or regime_context.is_valid_for(
             symbol=symbol, provider=provider, max_age_seconds=max_age, now=now,
             require_identity=True,
@@ -462,7 +505,7 @@ def window_for(
         if mode == "off":
             return 0.0
         if side == "BUY":
-            win_mode = str(m.get("buy_window_mode", "dynamic")).strip().lower()
+            win_mode = str(m["buy_window_mode"]).strip().lower()
             if mode == "dynamic" or win_mode in ("dynamic", "adaptive"):
                 return dynamic_buy_window_sec(
                     symbol,
@@ -477,20 +520,16 @@ def window_for(
             )
 
     key = (name.lower() if name else "") + "_window_h"
-    hours = m.get(key, m.get("default_window_h", 0.0))
-    try:
-        hours_val = float(hours)
-    except (ValueError, TypeError):
-        hours_val = 0.0
+    hours_val = float(m.get(key, m["default_window_h"]))
     return hours_val * 3600.0
 
 
 def weight_proxy_for(provider_name):
     """Return the trend/Gaussian-weight proxy symbol from order_guard.conf when the current symbol lacks
     its own long trend (e.g. HYPE -> BTC until data exists). Uses `<venue>_weight_proxy`
-    or `default_weight_proxy`; None falls back to weight 0.03."""
+    or `default_weight_proxy`."""
     m = _load_margins()
-    return m.get((provider_name or "").lower() + "_weight_proxy", m.get("default_weight_proxy"))
+    return m.get((provider_name or "").lower() + "_weight_proxy", m["default_weight_proxy"])
 
 
 def _order_ts_qty_price(o):
@@ -636,15 +675,13 @@ def window_reference(
 
 
 def chop_weight_for(provider_name):
-    """Return the venue's conservative chop fallback weight from order_guard.conf (default 0.03)."""
+    """Return the venue's conservative chop fallback weight from order_guard.conf."""
     m = _load_margins()
     key = (provider_name or "").lower() + "_chop_weight"
-    val = m.get(key, m.get("default_chop_weight", 0.03))
-    try:
-        f = float(val)
-        return f if math.isfinite(f) and f > 0 else 0.03
-    except (TypeError, ValueError):
-        return 0.03
+    val = float(m.get(key, m["default_chop_weight"]))
+    if not math.isfinite(val) or val <= 0:
+        raise ValueError(f"Invalid chop_weight in order_guard.conf: {val!r}")
+    return val
 
 
 def resolve_trade_weight(symbol, order_type, provider_name=None, *, default_weight=None, raise_on_error=False):
@@ -781,7 +818,7 @@ def recent_transaction_side_for(provider_name):
     m = _load_margins()
     name = _provider_name(provider_name)
     key = name.lower() + "_recent_transaction_side"
-    raw = m.get(key, m.get("default_recent_transaction_side", "buy"))
+    raw = m.get(key, m["default_recent_transaction_side"])
     return normalize_recent_transaction_side(raw)
 
 
@@ -815,7 +852,7 @@ def recent_transaction_sec_for(provider_name, order_type=None):
         except ValueError:
             pass
     key = f"{pfx}_recent_transaction_sec"
-    return float(m.get(key, m.get("default_recent_transaction_sec", 90)))
+    return float(m.get(key, m["default_recent_transaction_sec"]))
 
 
 def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
@@ -1082,9 +1119,10 @@ def check_intelligence_guards(
     if is_stop_loss or "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
+    m = _load_margins()
     valid_context = False
     if regime_context is not None:
-        max_age = _load_margins().get("regime_context_max_age_sec", 120.0)
+        max_age = float(m["regime_context_max_age_sec"])
         if hasattr(regime_context, "is_valid_for"):
             valid_context = regime_context.is_valid_for(
                 symbol=symbol, provider=provider, max_age_seconds=max_age, now=now,
@@ -1093,8 +1131,7 @@ def check_intelligence_guards(
         else:
             valid_context = True
 
-    m = _load_margins()
-    mode = str(m.get("intelligence_guards_mode", "shadow")).strip().lower()
+    mode = str(m["intelligence_guards_mode"]).strip().lower()
     if mode in ("off", "0", "disabled"):
         return True, "intelligence_guards_off", 1.0
 
@@ -1107,7 +1144,7 @@ def check_intelligence_guards(
         computed_notional = price * qty
 
     if side == "SELL":
-        sell_min_notional = float(m.get("sell_guard_min_notional_eur", 1000.0))
+        sell_min_notional = float(m["sell_guard_min_notional_eur"])
         if computed_notional is None or computed_notional < sell_min_notional:
             return True, "small_sell_exempt", 1.0
 
@@ -1185,7 +1222,7 @@ def check_intelligence_guards(
     active_reason = static_reason
 
     skip_internal = GUARD_REGISTRY["GI1"].is_bypassed(bypassed)
-    internal_mode = str(m.get("internal_guard_mode", mode)).strip().lower()
+    internal_mode = str(m["internal_guard_mode"]).strip().lower()
     internal_active = was_cached and not skip_internal and internal_mode not in ("off", "0", "disabled")
 
     # Dynamic Re-evaluation for cached context:
@@ -1193,8 +1230,8 @@ def check_intelligence_guards(
     if internal_active and side == "BUY" and price > 0:
         from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
         from intelligence.internal.guards.guard_decision import BrakeAction
-        surge_pct = float(m.get("parabolic_surge_pct", 15.0))
-        pullback_pct = float(m.get("parabolic_pullback_pct", 2.0))
+        surge_pct = float(m["parabolic_surge_pct"])
+        pullback_pct = float(m["parabolic_pullback_pct"])
         history = price_history
         if history is None:
             history = _read_cached_price_history(symbol, window_seconds=7200.0)
@@ -1217,20 +1254,9 @@ def check_intelligence_guards(
         os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on")
         for k in ("DISABLE_GEMINI_LLM", "BACKTEST_MODE", "REPLAY_MODE")
     )
-    llm_mode = str(
-        m.get("llm_guard_mode",
-        m.get("high_stake_guard_mode",
-        m.get("macro_stake_guard_mode",
-        m.get("macro_guard_mode",
-        m.get("gemini_guard_mode", "shadow")))))
-    ).strip().lower()
+    llm_mode = str(m["llm_guard_mode"]).strip().lower()
     if not skip_llm and llm_mode not in ("off", "0", "disabled"):
-        min_notional = float(
-            m.get("llm_min_notional_eur",
-            m.get("high_stake_min_notional_eur",
-            m.get("macro_stake_min_notional_eur",
-            m.get("gemini_min_notional_eur", 1000.0))))
-        )
+        min_notional = float(m["llm_min_notional_eur"])
         if computed_notional is not None and computed_notional >= min_notional:
             decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None) if valid_context else None
             entry_for_key = decisions_map.get(cache_key, {}) if isinstance(decisions_map, dict) else {}
@@ -1250,8 +1276,8 @@ def check_intelligence_guards(
             if cached_gemini_notional is None or cached_gemini_notional < min_notional or notional_jump:
                 from intelligence.internal.guards.guard_decision import BrakeAction
                 from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
-                timeout_sec = float(m.get("llm_timeout_sec", m.get("high_stake_timeout_sec", m.get("gemini_timeout_sec", 25.0))))
-                fallback = str(m.get("llm_fallback", m.get("high_stake_fallback", m.get("gemini_fallback", "allow")))).strip().lower()
+                timeout_sec = float(m["llm_timeout_sec"])
+                fallback = str(m["llm_fallback"]).strip().lower()
                 llm_guard = HighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
                 try:
                     g_dec = llm_guard.check(
@@ -1312,9 +1338,9 @@ def check_intelligence_guards(
     if internal_active and side == "BUY" and dur_sec and dur_sec > 0:
         from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
         from intelligence.internal.guards.guard_decision import BrakeAction
-        e_policy = str(m.get("weibull_exhaustion_policy", "downscale")).strip().lower()
-        e_scale = float(m.get("weibull_exhausted_scale", 0.25))
-        e_p90 = float(m.get("weibull_p90_days", 7.0))
+        e_policy = str(m["weibull_exhaustion_policy"]).strip().lower()
+        e_scale = float(m["weibull_exhausted_scale"])
+        e_p90 = float(m["weibull_p90_days"])
         e_guard = WeibullExhaustionGuard(default_p90_days=e_p90, policy=e_policy, exhausted_scale=e_scale)
         e_dec = e_guard.check(symbol, side, trend_duration_seconds=dur_sec)
         if e_dec.brake_action != BrakeAction.NONE:
@@ -1365,7 +1391,7 @@ def _evaluate_intelligence_guards_raw(
         return True, "stop_loss_exempt", 1.0
 
     m = _load_margins()
-    mode = str(m.get("intelligence_guards_mode", "shadow")).strip().lower()
+    mode = str(m["intelligence_guards_mode"]).strip().lower()
     if mode in ("off", "0", "disabled"):
         return True, "intelligence_guards_off", 1.0
 
@@ -1381,7 +1407,7 @@ def _evaluate_intelligence_guards_raw(
         computed_notional = price * qty
 
     if side == "SELL":
-        sell_min_notional = float(m.get("sell_guard_min_notional_eur", 1000.0))
+        sell_min_notional = float(m["sell_guard_min_notional_eur"])
         if computed_notional is None or computed_notional < sell_min_notional:
             return True, "small_sell_exempt", 1.0
 
@@ -1493,7 +1519,7 @@ def check_math_profit_reference(
     if mode == "dynamic":
         trend = None
         if regime_context is not None:
-            max_age = _load_margins().get("regime_context_max_age_sec", 120.0)
+            max_age = float(_load_margins()["regime_context_max_age_sec"])
             if not hasattr(regime_context, "is_valid_for") or regime_context.is_valid_for(
                 symbol=symbol, provider=provider_name, max_age_seconds=max_age,
                 require_identity=True,

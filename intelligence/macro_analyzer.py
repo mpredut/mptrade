@@ -42,36 +42,20 @@ class MacroAnalyzer:
     ) -> None:
         self.cache_dir = cache_dir
 
-        conf_margins: Dict[str, Any] = {}
-        try:
-            from order_guard import _load_margins
-            conf_margins = _load_margins()
-        except Exception:
-            pass
+        from order_guard import _load_margins
+        conf_margins = _load_margins()
 
         if macro_llm_interval_sec is not None:
             self.macro_llm_interval_sec = float(macro_llm_interval_sec)
         else:
-            if "macro_llm_interval_sec" in conf_margins:
-                self.macro_llm_interval_sec = float(conf_margins["macro_llm_interval_sec"])
-            elif "macro_llm_interval_h" in conf_margins:
-                self.macro_llm_interval_sec = float(conf_margins["macro_llm_interval_h"]) * 3600.0
-            else:
-                import sys
-                sys.exit("[macro_analyzer] FATAL: 'macro_llm_interval_sec' missing in order_guard.conf. Exiting.")
+            self.macro_llm_interval_sec = float(conf_margins["macro_llm_interval_sec"])
 
         if advisor_interval_sec is not None:
             self.advisor_interval_sec = float(advisor_interval_sec)
         else:
-            if "macro_advisor_interval_sec" in conf_margins:
-                self.advisor_interval_sec = float(conf_margins["macro_advisor_interval_sec"])
-            elif "macro_advisor_interval_h" in conf_margins:
-                self.advisor_interval_sec = float(conf_margins["macro_advisor_interval_h"]) * 3600.0
-            else:
-                import sys
-                sys.exit("[macro_analyzer] FATAL: 'macro_advisor_interval_sec' missing in order_guard.conf. Exiting.")
+            self.advisor_interval_sec = float(conf_margins["macro_advisor_interval_sec"])
 
-        self.shadow_notify = bool(int(float(conf_margins.get("shadow_notify", 1.0))))
+        self.shadow_notify = bool(int(float(conf_margins["shadow_notify"])))
         self.thread_prune_interval_sec = thread_prune_interval_sec
         self.symbols = symbols or ["BTCUSDC"]
         self.running = False

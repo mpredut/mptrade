@@ -161,6 +161,11 @@ class TestTradeallOrderBoundary(unittest.TestCase):
             with (patch.object(ta, "_shadow_ref", shadow),
                   patch.dict(ta.KALMAN_MODES, {"TAOUSDC": "strict"})):
                 self.assertFalse(ta._kalman_gate_blocks("TAOUSDC", "BUY")[0])
+                # Ordinary SELL is blocked in strict mode while Kalman trend is +1 (UP)
+                self.assertTrue(ta._kalman_gate_blocks("TAOUSDC", "SELL", reason="trend_confirmed_down")[0])
+                # Kinematic plunge SELLs bypass Kalman lag even when trend is +1
+                self.assertFalse(ta._kalman_gate_blocks("TAOUSDC", "SELL", reason="accel_plunge_down")[0])
+                self.assertFalse(ta._kalman_gate_blocks("TAOUSDC", "SELL", reason="small_window_plunge_down")[0])
                 sim_now[0] += ta.GATE_STALE_SEC + 1.0
                 self.assertTrue(ta._kalman_gate_blocks("TAOUSDC", "BUY")[0])
 
@@ -1194,6 +1199,20 @@ class TestLogicSmall(unittest.TestCase):
             # Disabled
             ta.logic_small("SMALL", False, "BTCUSDT", 1, 4.0, trend_state, 60000.0)
             mock_order.assert_not_called()
+
+    def test_logic_small_fires_sell_on_acceleration_plunge(self):
+        trend_state = ta.TrendState(3600, 300, 300)
+        pw = MagicMock()
+        pw.calculate_acceleration.side_effect = [(-0.45, -0.35), (-0.30, -0.10)]
+        with patch.object(ta, "track_and_place_order", return_value=[789]) as mock_order:
+            ta.logic_small("SMALL", True, "TAOUSDC", -1, -1.79, trend_state, 275.0, price_window=pw)
+            mock_order.assert_called_once_with(
+                "SELL", "TAOUSDC", 0, 275.0, 275.0,
+                reason="accel_plunge_down",
+                safeback_seconds=ta.FIRE_SAFEBACK_SEC, force=False,
+                cancelorders=True, hours=0.3, regime_context=None
+            )
+            self.assertEqual(trend_state._confirmed_count_down, 1)
 
 
 if __name__ == "__main__":

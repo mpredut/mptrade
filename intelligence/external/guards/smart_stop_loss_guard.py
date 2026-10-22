@@ -544,18 +544,15 @@ def evaluate_smart_stop_loss(
     orderbook_snapshot=None,
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """Convenience functional interface for monitortrades.py."""
-    try:
-        from order_guard import _load_margins
-        m = _load_margins()
-    except Exception:
-        m = {}
+    from order_guard import _load_margins
+    m = _load_margins()
 
-    mode = str(m.get("smart_sl_mode", "enforce")).strip().lower()
-    max_thresh = float(m.get("smart_sl_max_threshold_pct", 6.0))
-    grace_sec = float(m.get("smart_sl_grace_seconds", 120.0))
-    default_disaster_buf = float(m.get("smart_sl_disaster_buffer_pct", 0.85))
-    min_whale = float(m.get("smart_sl_min_whale_long_pct", 0.60))
-    min_taker = float(m.get("smart_sl_min_taker_ratio", 0.85))
+    mode = str(m["smart_sl_mode"]).strip().lower()
+    max_thresh = float(m["smart_sl_max_threshold_pct"])
+    grace_sec = float(m["smart_sl_grace_seconds"])
+    default_disaster_buf = float(m["smart_sl_disaster_buffer_pct"])
+    min_whale = float(m["smart_sl_min_whale_long_pct"])
+    min_taker = float(m["smart_sl_min_taker_ratio"])
 
     effective_disaster_buf = default_disaster_buf if disaster_buffer_pct is None else float(disaster_buffer_pct)
 

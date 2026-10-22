@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
+import order_guard
 from internal_order_guard import check_internal_order_guards
 from external_order_guard import (
     check_external_order_guards,
@@ -26,6 +27,12 @@ from intelligence.macro.geopolitical_analyzer import (
 from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
 from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
 from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+
+_BASE_MARGINS = dict(order_guard._load_margins())
+
+
+def _margins(**overrides):
+    return {**_BASE_MARGINS, **overrides}
 
 
 # =====================================================================
@@ -48,7 +55,7 @@ def test_internal_order_guards_off():
         symbol="BTCUSDC",
         side="BUY",
         price=60000.0,
-        margins={"intelligence_guards_mode": "off"},
+        margins=_margins(internal_guard_mode="off", intelligence_guards_mode="off"),
     )
     assert allowed is True
     assert reason == "intelligence_guards_off"
@@ -62,11 +69,12 @@ def test_internal_parabolic_surge_guard():
         (200.0, 52000.0),
         (300.0, 65000.0),
     ]
-    margins = {
-        "intelligence_guards_mode": "enforce",
-        "parabolic_surge_pct": 10.0,
-        "parabolic_pullback_pct": 2.0,
-    }
+    margins = _margins(
+        internal_guard_mode="enforce",
+        intelligence_guards_mode="enforce",
+        parabolic_surge_pct=10.0,
+        parabolic_pullback_pct=2.0,
+    )
 
     allowed, reason, scale = check_internal_order_guards(
         symbol="BTCUSDC",
@@ -124,14 +132,14 @@ def test_external_microstructure_large_sell_whale_support_defer():
         ts=time.time(),
     )
 
-    margins = {
-        "orderbook_wall_guard_mode": "enforce",
-        "whale_guard_mode": "off",
-        "funding_guard_mode": "off",
-        "whale_wall_usd_limit": 1_000_000.0,
-        "max_sell_imbalance": 0.75,
-        "sell_guard_min_notional_eur": 1000.0,
-    }
+    margins = _margins(
+        orderbook_wall_guard_mode="enforce",
+        whale_guard_mode="off",
+        funding_guard_mode="off",
+        whale_wall_usd_limit=1_000_000.0,
+        max_sell_imbalance=0.75,
+        sell_guard_min_notional_eur=1000.0,
+    )
 
     with patch.object(get_orderbook_collector(), "fetch", return_value=wall_snap):
         allowed, reason, scale = check_external_order_guards(
@@ -160,13 +168,13 @@ def test_external_microstructure_orderbook_wall_veto():
         ts=time.time(),
     )
 
-    margins = {
-        "orderbook_wall_guard_mode": "enforce",
-        "whale_guard_mode": "off",
-        "funding_guard_mode": "off",
-        "min_buy_imbalance": 0.25,
-        "whale_wall_usd_limit": 1_000_000.0,
-    }
+    margins = _margins(
+        orderbook_wall_guard_mode="enforce",
+        whale_guard_mode="off",
+        funding_guard_mode="off",
+        min_buy_imbalance=0.25,
+        whale_wall_usd_limit=1_000_000.0,
+    )
 
     with patch.object(get_orderbook_collector(), "fetch", return_value=wall_snap):
         allowed, reason, scale = check_external_order_guards(
@@ -190,14 +198,14 @@ def test_external_microstructure_funding_crowding_downscale():
         ts=time.time(),
     )
 
-    margins = {
-        "funding_guard_mode": "enforce",
-        "whale_guard_mode": "off",
-        "orderbook_wall_guard_mode": "off",
-        "funding_max_long_rate": 0.0005,
-        "funding_crowding_policy": "downscale",
-        "funding_crowded_scale": 0.50,
-    }
+    margins = _margins(
+        funding_guard_mode="enforce",
+        whale_guard_mode="off",
+        orderbook_wall_guard_mode="off",
+        funding_max_long_rate=0.0005,
+        funding_crowding_policy="downscale",
+        funding_crowded_scale=0.50,
+    )
 
     with patch.object(get_derivatives_collector(), "fetch", return_value=crowded_snap):
         allowed, reason, scale = check_external_order_guards(
@@ -253,13 +261,13 @@ def test_intelligence_geopolitical_veto_in_enforce_mode():
         ts=time.time(),
     )
 
-    margins = {
-        "geopolitical_guard_mode": "enforce",
-        "whale_guard_mode": "off",
-        "orderbook_wall_guard_mode": "off",
-        "funding_guard_mode": "off",
-        "gemini_guard_mode": "off",
-    }
+    margins = _margins(
+        geopolitical_guard_mode="enforce",
+        whale_guard_mode="off",
+        orderbook_wall_guard_mode="off",
+        funding_guard_mode="off",
+        llm_guard_mode="off",
+    )
 
     with patch.object(GeopoliticalThreatAnalyzer, "_load_from_disk", lambda self: setattr(self, "_cached_assessment", mock_geo)):
         allowed, reason, scale = check_intelligence_order_guards(
@@ -284,13 +292,13 @@ def test_intelligence_geopolitical_downscale_in_enforce_mode():
         ts=time.time(),
     )
 
-    margins = {
-        "geopolitical_guard_mode": "enforce",
-        "whale_guard_mode": "off",
-        "orderbook_wall_guard_mode": "off",
-        "funding_guard_mode": "off",
-        "gemini_guard_mode": "off",
-    }
+    margins = _margins(
+        geopolitical_guard_mode="enforce",
+        whale_guard_mode="off",
+        orderbook_wall_guard_mode="off",
+        funding_guard_mode="off",
+        llm_guard_mode="off",
+    )
 
     with patch.object(GeopoliticalThreatAnalyzer, "_load_from_disk", lambda self: setattr(self, "_cached_assessment", mock_geo)):
         allowed, reason, scale = check_intelligence_order_guards(
@@ -329,7 +337,7 @@ def test_geopolitical_guard_off():
     allowed, reason, scale = check_geopolitical_order_guards(
         symbol="BTCUSDC",
         side="BUY",
-        margins={"geopolitical_guard_mode": "off"},
+        margins=_margins(geopolitical_guard_mode="off"),
     )
     assert allowed is True
     assert reason == "geopolitical_guard_off"
@@ -350,7 +358,7 @@ def test_geopolitical_shock_veto_enforce():
         allowed, reason, scale = check_geopolitical_order_guards(
             symbol="BTCUSDC",
             side="BUY",
-            margins={"geopolitical_guard_mode": "enforce"},
+            margins=_margins(geopolitical_guard_mode="enforce"),
         )
         assert allowed is False
         assert "veto_critical_geopolitical_shock" in reason
@@ -371,7 +379,7 @@ def test_geopolitical_shock_downscale_enforce():
         allowed, reason, scale = check_geopolitical_order_guards(
             symbol="BTCUSDC",
             side="BUY",
-            margins={"geopolitical_guard_mode": "enforce"},
+            margins=_margins(geopolitical_guard_mode="enforce"),
         )
         assert allowed is True
         assert "downscale_elevated_geopolitical_risk" in reason
@@ -526,7 +534,7 @@ def test_internal_guard_mode_off_does_not_disable_other_pillars(monkeypatch):
     monkeypatch.setattr(
         order_guard,
         "_load_margins",
-        lambda: {"internal_guard_mode": "off", "intelligence_guards_mode": "enforce"},
+        lambda: _margins(internal_guard_mode="off", intelligence_guards_mode="enforce"),
     )
     allowed, reason, scale = check_intelligence_guards(
         provider="binance",
@@ -538,5 +546,26 @@ def test_internal_guard_mode_off_does_not_disable_other_pillars(monkeypatch):
     )
     # With intelligence_guards_mode=enforce, global check does NOT short-circuit
     assert reason != "intelligence_guards_off"
+
+
+def test_pillars_fail_fast_on_missing_config_keys():
+    import pytest
+    from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
+
+    with pytest.raises(KeyError):
+        check_internal_order_guards("BTCUSDC", "BUY", 60000.0, margins={})
+
+    with pytest.raises(KeyError):
+        check_external_order_guards("BTCUSDC", "BUY", 60000.0, margins={})
+
+    with pytest.raises(KeyError):
+        check_intelligence_order_guards("binance", "BTCUSDC", "BUY", 60000.0, margins={})
+
+    with pytest.raises(KeyError):
+        check_geopolitical_order_guards("BTCUSDC", "BUY", margins={})
+
+    with pytest.raises(KeyError):
+        get_post_stop_reentry_guard(margins={}, gemini_client=object())
+
 
 

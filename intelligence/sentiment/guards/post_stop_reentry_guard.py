@@ -312,40 +312,41 @@ def get_post_stop_reentry_guard(
     """Factory retrieving or initializing the singleton PostStopReentryGuard."""
     global _POST_STOP_GUARD_INSTANCE
     if gemini_client is not None:
-        m = margins or {}
-        mode = str(m.get("post_stop_reentry_mode", "enforce")).strip().lower()
-        timeout = float(m.get("post_stop_reentry_timeout_sec", DEFAULT_TIMEOUT_SEC))
-        fallback = str(m.get("post_stop_reentry_fallback", DEFAULT_FALLBACK)).strip().lower()
-        notify_en = str(m.get("post_stop_reentry_notify", m.get("shadow_notify", "1"))).strip() not in ("0", "false", "off")
-        cache_ttl = m.get("post_stop_reentry_cache_ttl_sec")
+        if margins is None:
+            from order_guard import _load_margins
+            m = _load_margins()
+        else:
+            m = margins
+        mode = str(m["post_stop_reentry_mode"]).strip().lower()
+        timeout = float(m["post_stop_reentry_timeout_sec"])
+        fallback = str(m["post_stop_reentry_fallback"]).strip().lower()
+        notify_en = str(m["post_stop_reentry_notify"]).strip().lower() not in ("0", "0.0", "false", "off")
+        cache_ttl = float(m["post_stop_reentry_cache_ttl_sec"])
         return PostStopReentryGuard(
             gemini_client=gemini_client,
             timeout_sec=timeout,
             fallback_action=fallback,
             mode=mode,
             notify_enabled=notify_en,
-            cache_ttl_sec=float(cache_ttl) if cache_ttl is not None else None,
+            cache_ttl_sec=cache_ttl,
         )
 
     if _POST_STOP_GUARD_INSTANCE is None:
         if margins is None:
-            try:
-                from order_guard import _load_margins
-                m = _load_margins()
-            except Exception:
-                m = {}
+            from order_guard import _load_margins
+            m = _load_margins()
         else:
             m = margins
-        mode = str(m.get("post_stop_reentry_mode", "enforce")).strip().lower()
-        timeout = float(m.get("post_stop_reentry_timeout_sec", DEFAULT_TIMEOUT_SEC))
-        fallback = str(m.get("post_stop_reentry_fallback", DEFAULT_FALLBACK)).strip().lower()
-        notify_en = str(m.get("post_stop_reentry_notify", m.get("shadow_notify", "1"))).strip() not in ("0", "false", "off")
-        cache_ttl = m.get("post_stop_reentry_cache_ttl_sec")
+        mode = str(m["post_stop_reentry_mode"]).strip().lower()
+        timeout = float(m["post_stop_reentry_timeout_sec"])
+        fallback = str(m["post_stop_reentry_fallback"]).strip().lower()
+        notify_en = str(m["post_stop_reentry_notify"]).strip().lower() not in ("0", "0.0", "false", "off")
+        cache_ttl = float(m["post_stop_reentry_cache_ttl_sec"])
         _POST_STOP_GUARD_INSTANCE = PostStopReentryGuard(
             timeout_sec=timeout,
             fallback_action=fallback,
             mode=mode,
             notify_enabled=notify_en,
-            cache_ttl_sec=float(cache_ttl) if cache_ttl is not None else None,
+            cache_ttl_sec=cache_ttl,
         )
     return _POST_STOP_GUARD_INSTANCE

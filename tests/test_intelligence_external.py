@@ -327,11 +327,12 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
 
             # Test SHADOW mode: logs warning but allows trade
             order_guard._MARGINS = {
+                **orig_margins,
                 "intelligence_guards_mode": "shadow",
                 "whale_guard_mode": "shadow",
                 "orderbook_wall_guard_mode": "off",
                 "funding_guard_mode": "off",
-                "gemini_guard_mode": "off",
+                "llm_guard_mode": "off",
                 "geopolitical_guard_mode": "off",
             }
             allowed_shadow, reason_shadow, scale_shadow = order_guard.check_intelligence_guards(
@@ -342,11 +343,12 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
 
             # Test ENFORCE mode: hard veto
             order_guard._MARGINS = {
+                **orig_margins,
                 "intelligence_guards_mode": "enforce",
                 "whale_guard_mode": "enforce",
                 "orderbook_wall_guard_mode": "off",
                 "funding_guard_mode": "off",
-                "gemini_guard_mode": "off",
+                "llm_guard_mode": "off",
                 "geopolitical_guard_mode": "off",
             }
             allowed_enforce, reason_enforce, scale_enforce = order_guard.check_intelligence_guards(
@@ -386,12 +388,13 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
 
             # Test SHADOW mode
             order_guard._MARGINS = {
+                **orig_margins,
                 "intelligence_guards_mode": "shadow",
                 "whale_guard_mode": "off",
                 "orderbook_wall_guard_mode": "shadow",
                 "whale_wall_usd_limit": 1_000_000.0,
                 "funding_guard_mode": "off",
-                "gemini_guard_mode": "off",
+                "llm_guard_mode": "off",
                 "geopolitical_guard_mode": "off",
             }
             allowed_shadow, _, scale_shadow = order_guard.check_intelligence_guards(
@@ -435,13 +438,14 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
 
             # Test SHADOW mode
             order_guard._MARGINS = {
+                **orig_margins,
                 "intelligence_guards_mode": "shadow",
                 "whale_guard_mode": "off",
                 "orderbook_wall_guard_mode": "off",
                 "funding_guard_mode": "shadow",
                 "funding_max_long_rate": 0.0005,
                 "funding_crowded_scale": 0.50,
-                "gemini_guard_mode": "off",
+                "llm_guard_mode": "off",
                 "geopolitical_guard_mode": "off",
             }
             allowed_shadow, _, scale_shadow = order_guard.check_intelligence_guards(
@@ -472,6 +476,7 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
         try:
             order_guard._whale_collector = collector
             order_guard._MARGINS = {
+                **orig_margins,
                 "intelligence_guards_mode": "enforce",
                 "whale_guard_mode": "enforce",
                 "min_taker_ratio": 0.75,
@@ -479,7 +484,7 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
                 "taker_downscaled_scale": 0.50,
                 "orderbook_wall_guard_mode": "off",
                 "funding_guard_mode": "off",
-                "gemini_guard_mode": "off",
+                "llm_guard_mode": "off",
                 "geopolitical_guard_mode": "off",
             }
 

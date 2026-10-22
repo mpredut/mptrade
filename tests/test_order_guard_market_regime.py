@@ -324,6 +324,7 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         provider = _MockExecutionProvider()
 
         margins = {
+            **order_guard._load_margins(),
             "default": 1.15,
             "binance": 1.15,
             "default_window_h": 0.0,
@@ -363,8 +364,10 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
                 return []
 
         margins = {
+            **order_guard._load_margins(),
             "default": 1.15,
             "default_buy_reference": "dynamic",
+            "binance_buy_reference": "dynamic",
             "buy_window_mode": "dynamic",
         }
         calls = 0
@@ -456,8 +459,10 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
                 return []
 
         margins = {
+            **order_guard._load_margins(),
             "default": 1.15,
             "default_buy_reference": "dynamic",
+            "binance_buy_reference": "dynamic",
             "buy_window_mode": "dynamic",
         }
         mock_decision = order_guard.MarketRegimeDecision(
@@ -484,9 +489,12 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         mock_trend.assert_not_called()
 
     def test_intelligence_guards_shadow_and_enforce_modes(self):
+        base_m = dict(order_guard._load_margins())
         # 1. In shadow mode, an exhausted trend or surge still allows the order
         margins_shadow = {
+            **base_m,
             "default": 1.15,
+            "internal_guard_mode": "shadow",
             "intelligence_guards_mode": "shadow",
             "weibull_exhaustion_policy": "veto",
         }
@@ -500,7 +508,9 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
 
         # 2. In enforce mode with veto policy, exhausted trend blocks the order
         margins_enforce_veto = {
+            **base_m,
             "default": 1.15,
+            "internal_guard_mode": "enforce",
             "intelligence_guards_mode": "enforce",
             "weibull_exhaustion_policy": "veto",
         }
@@ -513,7 +523,9 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
 
         # 3. In enforce mode with downscale policy, exhausted trend suggests scale
         margins_enforce_scale = {
+            **base_m,
             "default": 1.15,
+            "internal_guard_mode": "enforce",
             "intelligence_guards_mode": "enforce",
             "weibull_exhaustion_policy": "downscale",
             "weibull_exhausted_scale": 0.25,
@@ -569,8 +581,10 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
 
         provider = _Provider()
         margins = {
+            **order_guard._load_margins(),
             "default": 1.15,
             "default_buy_reference": "dynamic",
+            "binance_buy_reference": "dynamic",
             "buy_window_mode": "dynamic",
             "regime_context_max_age_sec": 60.0,
         }
@@ -617,7 +631,16 @@ class OrderGuardMarketRegimeCharacterizationTest(unittest.TestCase):
         self.assertEqual(reason_btc, "btc_blocked")
 
         # Check for ETHUSDT: mismatched symbol MUST NOT reuse BTC's memoized decision
-        with mock.patch.object(order_guard, "_load_margins", return_value={"intelligence_guards_mode": "shadow", "geopolitical_guard_mode": "shadow"}):
+        with mock.patch.object(
+            order_guard,
+            "_load_margins",
+            return_value={
+                **order_guard._load_margins(),
+                "internal_guard_mode": "shadow",
+                "intelligence_guards_mode": "shadow",
+                "geopolitical_guard_mode": "shadow",
+            },
+        ):
             ok_eth, reason_eth, _ = order_guard.check_intelligence_guards(
                 "binance", "ETHUSDT", "BUY", 3000.0, regime_context=ctx
             )

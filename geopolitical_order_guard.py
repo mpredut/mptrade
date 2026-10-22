@@ -39,28 +39,22 @@ def check_geopolitical_order_guards(
         return True, "not_buy_side", 1.0
 
     if margins is None:
-        try:
-            from order_guard import _load_margins
-            m = _load_margins()
-        except Exception:
-            m = {}
+        from order_guard import _load_margins
+        m = _load_margins()
     else:
         m = margins
 
     from intelligence.internal.guards.guard_decision import BrakeAction
 
-    geo_mode = str(m.get("geopolitical_guard_mode", "shadow")).strip().lower()
+    geo_mode = str(m["geopolitical_guard_mode"]).strip().lower()
     if geo_mode in ("off", "0", "disabled"):
         return True, "geopolitical_guard_off", 1.0
 
-    raw_shadow_notify = m.get("shadow_notify", 1.0)
+    raw_shadow_notify = m["shadow_notify"]
     if isinstance(raw_shadow_notify, str):
         shadow_notify = raw_shadow_notify.strip().lower() in ("1", "1.0", "true", "yes", "on")
     else:
-        try:
-            shadow_notify = bool(float(raw_shadow_notify))
-        except (TypeError, ValueError):
-            shadow_notify = True
+        shadow_notify = bool(float(raw_shadow_notify))
 
     try:
         from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer

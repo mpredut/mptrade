@@ -282,12 +282,9 @@ class Instrument:
             if caller_module is None:
                 caller_module = self.params.get("module")
         if not bypass_guards_raw:
-            try:
-                m = order_guard._load_margins()
-                venue_key = f"{str(self._provider.name).lower()}_bypass_guards"
-                bypass_guards_raw = m.get(venue_key, m.get("default_bypass_guards"))
-            except Exception:
-                pass
+            m = order_guard._load_margins()
+            venue_key = f"{str(self._provider.name).lower()}_bypass_guards"
+            bypass_guards_raw = m.get(venue_key, m["default_bypass_guards"])
 
         bypassed_guards = normalize_bypassed_guards(
             bypass_guards=bypass_guards_raw,

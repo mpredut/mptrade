@@ -48,15 +48,12 @@ def check_internal_order_guards(
         return True, "not_buy_side", 1.0
 
     if margins is None:
-        try:
-            from order_guard import _load_margins
-            m = _load_margins()
-        except Exception:
-            m = {}
+        from order_guard import _load_margins
+        m = _load_margins()
     else:
         m = margins
 
-    mode = str(m.get("internal_guard_mode", m.get("intelligence_guards_mode", "shadow"))).strip().lower()
+    mode = str(m["internal_guard_mode"]).strip().lower()
     if mode in ("off", "0", "disabled"):
         return True, "intelligence_guards_off", 1.0
 
@@ -64,11 +61,11 @@ def check_internal_order_guards(
     from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
     from intelligence.internal.guards.guard_decision import BrakeAction
 
-    surge_pct = float(m.get("parabolic_surge_pct", 15.0))
-    pullback_pct = float(m.get("parabolic_pullback_pct", 2.0))
-    exhaust_policy = str(m.get("weibull_exhaustion_policy", "downscale")).strip().lower()
-    exhaust_scale = float(m.get("weibull_exhausted_scale", 0.25))
-    exhaust_p90 = float(m.get("weibull_p90_days", 7.0))
+    surge_pct = float(m["parabolic_surge_pct"])
+    pullback_pct = float(m["parabolic_pullback_pct"])
+    exhaust_policy = str(m["weibull_exhaustion_policy"]).strip().lower()
+    exhaust_scale = float(m["weibull_exhausted_scale"])
+    exhaust_p90 = float(m["weibull_p90_days"])
 
     p_guard = ParabolicSurgeGuard(surge_threshold_pct=surge_pct, pullback_required_pct=pullback_pct)
     e_guard = WeibullExhaustionGuard(default_p90_days=exhaust_p90, policy=exhaust_policy, exhausted_scale=exhaust_scale)
