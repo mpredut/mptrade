@@ -53,7 +53,7 @@ def build_price_cache_manager(symbols=None, provider_names=None):
             provider_names=provider_names,
             start_sync=False,
         )
-    price_cache_manager = cm.get_cache_manager("Price", symbols=symbols)  # Dictionary keyed by symbol.
+    price_cache_manager = cm.get_cache_manager("SparsePrice", symbols=symbols)  # Dictionary keyed by symbol.
 
 def priceLstFor(symbol: str) -> List[Tuple[int, float]]:
 
@@ -648,7 +648,7 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
             T_quanta = 14
             print(f"[{symbol}] estimarea T failed ({e}) — using the prior T=14")
 
-    all_trend_data = cm.get_cache_manager("PriceLongTrend").cache
+    all_trend_data = cm.get_cache_manager("LongTrend").cache
     items = all_trend_data.get(symbol)
     if not items:
         # Fallback to normalized base asset match (e.g. ARBUSD -> ARBUSDC)

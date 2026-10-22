@@ -457,7 +457,7 @@ def _last_opposite_fill_price(symbol, order_type):
     import cacheManager as cm
     # Retry workers only read the persisted/WS-produced trade cache. Starting another
     # API polling loop here duplicates cacheManager's work and contaminates worker logs.
-    return cm.get_cache_manager("Trade", start_sync=False).last_opposite_fill_price(symbol, order_type)
+    return cm.get_cache_manager("Trade", start_sync=False).get_last_opposite_fill_price(symbol, order_type)
 
 
 def _last_opposite_fill_price_api(symbol, order_type):

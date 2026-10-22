@@ -194,8 +194,13 @@ def resolve_cached_volatility_1h(
     if res is not None:
         return res
 
-    trend_path = os.path.join(os.path.dirname(kalman_path), "cache_instant_trend.json")
-    return _extract_vol_ratio_from_file(trend_path, symbol)
+    base_dir = os.path.dirname(kalman_path)
+    for fname in ("cache_short_trend.json", "cache_instant_trend.json"):
+        trend_path = os.path.join(base_dir, fname)
+        res = _extract_vol_ratio_from_file(trend_path, symbol)
+        if res is not None:
+            return res
+    return None
 
 
 def resolve_cached_volatility_1h_pct(

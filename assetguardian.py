@@ -308,17 +308,17 @@ def _price_row(row):
 def _read_symbol_price_rows(symbol):
     """Copy one symbol's shared 24h price history under the manager lock."""
     try:
-        managers = cm.get_cache_manager("Price24", symbols=list(TRACKED_SYMBOLS))
+        managers = cm.get_cache_manager("24Price", symbols=list(TRACKED_SYMBOLS))
         manager = managers.get(symbol) if isinstance(managers, dict) else None
         if manager is None:
-            print(f"ERROR Price24 manager missing for {symbol}")
+            print(f"ERROR 24Price manager missing for {symbol}")
             return []
         with manager.lock:
             rows = list(manager.cache.get(symbol, []))
-        print(f"[DEBUG] {symbol} Price24 rows loaded: {len(rows)}")
+        print(f"[DEBUG] {symbol} 24Price rows loaded: {len(rows)}")
         return rows
     except Exception as e:
-        print(f"ERROR reading Price24 cache for {symbol}: {e}")
+        print(f"ERROR reading 24Price cache for {symbol}: {e}")
         return []
 
 

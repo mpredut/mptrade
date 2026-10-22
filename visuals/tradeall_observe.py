@@ -2,7 +2,7 @@
 """Separate observational monitor for the tradeall trend model.
 
 This module neither imports nor starts tradeall.py or bapi_placeorder.py. It only
-reads pipe-delimited logger files and cache_instant_trend.json.
+reads pipe-delimited logger files and cache_short_trend.json.
 
 Live mode (default) runs every two seconds by default:
   1. Sample the current price into logger/tradeall_price_samples_YYYY-MM-DD.log.
@@ -47,7 +47,7 @@ except ImportError:
 LOGGER_DIR = os.path.join(ROOT, "logger")
 CACHE_TREND_PATH = os.path.join(
     os.environ.get("MPTRADE_CACHEDB_DIR", os.path.join(ROOT, "cachedb")),
-    "cache_instant_trend.json",
+    "cache_short_trend.json",
 )
 
 # Dedicated live-mode output directory (PNGs and HTML), deliberately separated
@@ -164,7 +164,7 @@ def sample_current_prices(symbols):
         with open(CACHE_TREND_PATH, "r", encoding="utf-8") as f:
             snapshot = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        print(f"[tradeall_observe] error reading cache_instant_trend.json: {e}")
+        print(f"[tradeall_observe] error reading cache_short_trend.json: {e}")
         return
 
     pending = []
@@ -258,7 +258,13 @@ def _load_history_jsonl_tail(symbol, max_bytes=4 * 1024 * 1024):
     The approximately 40 MB file covers about eleven months. Its final
     ``max_bytes`` span weeks, avoiding a full scan on every cycle.
     """
-    path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
+    path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{symbol}.jsonl")
+    if not os.path.exists(path):
+        for legacy in (f"cache_price_sparse_{symbol}.jsonl", f"cache_price_{symbol}.jsonl"):
+            candidate = os.path.join(ROOT, "cachedb", legacy)
+            if os.path.exists(candidate):
+                path = candidate
+                break
     if not os.path.exists(path):
         return []
     entries = []
@@ -310,7 +316,11 @@ def load_price_series_live(symbol, days_back, include_history=True):
     # identical density for 24 hours. Load it only for longer windows where it
     # contributes data; this path previously accounted for 46% sustained CPU.
     if include_history:
-        for entry in _load_cachedb_price_entries(f"cache_365price_{symbol}.jsonl", symbol):
+        entries_365 = (
+            _load_cachedb_price_entries(f"cache_365_price_{symbol}.jsonl", symbol)
+            or _load_cachedb_price_entries(f"cache_365price_{symbol}.jsonl", symbol)
+        )
+        for entry in entries_365:
             try:
                 points[int(entry[0] / 1000.0)] = float(entry[1])
             except (TypeError, ValueError, IndexError):
@@ -318,7 +328,11 @@ def load_price_series_live(symbol, days_back, include_history=True):
     own_ts, own_px = load_price_samples(symbol, days_back)
     for t, p in zip(own_ts, own_px):
         points[int(t)] = p
-    for entry in _load_cachedb_price_entries(f"cache_24price_{symbol}.json", symbol):
+    entries_24 = (
+        _load_cachedb_price_entries(f"cache_24_price_{symbol}.json", symbol)
+        or _load_cachedb_price_entries(f"cache_24price_{symbol}.json", symbol)
+    )
+    for entry in entries_24:
         try:
             points[int(entry[0] / 1000.0)] = float(entry[1])
         except (TypeError, ValueError, IndexError):

@@ -153,7 +153,9 @@ def run_intelligence_backtest(
 ) -> Dict[str, BacktestStats]:
     """Run comparative backtest across Baseline, Pillar 1, Pillar 1 + Pillar 2, and Full Composite."""
     if cache_path is None:
-        cache_path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
+        cache_path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{symbol}.jsonl")
+        if not os.path.exists(cache_path):
+            cache_path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
 
     logger.info("Loading price series for %s from %s ...", symbol, cache_path)
     raw_series = load_price_series(cache_path, symbol)

@@ -33,7 +33,7 @@ class TrendFilterTest(unittest.TestCase):
         m = types.ModuleType("cacheManager")
 
         class Mgr:
-            def get_instant_trend_for_window(self, sym, w):
+            def get_short_trend_for_window(self, sym, w):
                 return dyn
         m.get_short_trend_manager = lambda: Mgr()
         sys.modules["cacheManager"] = m
@@ -89,7 +89,7 @@ class FollowupForceTest(unittest.TestCase):
         m = types.ModuleType("cacheManager")
 
         class Mgr:
-            def get_instant_trend_for_window(self, sym, w):
+            def get_short_trend_for_window(self, sym, w):
                 return dyn
         m.get_short_trend_manager = lambda: Mgr()
         sys.modules["cacheManager"] = m
@@ -146,7 +146,7 @@ class MarketRegimeTest(unittest.TestCase):
     def _fake_cm(self, dyn):
         m = types.ModuleType("cacheManager")
         class Mgr:
-            def get_instant_trend_for_window(self, _sym, _window):
+            def get_short_trend_for_window(self, _sym, _window):
                 return dyn
         m.get_short_trend_manager = lambda: Mgr()
         sys.modules["cacheManager"] = m
@@ -277,7 +277,7 @@ class ReaderProcessTrendTest(unittest.TestCase):
     def test_reader_uses_the_published_window(self):
         published = self._publish(step=0.0)
         self.assertIn("900", published)
-        self.assertIsNotNone(self.reader.get_instant_trend_for_window("TAOUSDC", self.WINDOW))
+        self.assertIsNotNone(self.reader.get_short_trend_for_window("TAOUSDC", self.WINDOW))
         # A sideways market is exactly when the spread bot should run.
         self.assertFalse(rtrade._trend_too_strong("TAOUSDC"))
 
@@ -288,7 +288,7 @@ class ReaderProcessTrendTest(unittest.TestCase):
     def test_stale_or_missing_publication_fails_closed(self):
         stale = self.cm.CachePriceShortTrendManager.TREND_STALE_SEC + 5
         self._publish(step=0.0, age_sec=stale)
-        self.assertIsNone(self.reader.get_instant_trend_for_window("TAOUSDC", self.WINDOW))
+        self.assertIsNone(self.reader.get_short_trend_for_window("TAOUSDC", self.WINDOW))
         self.assertTrue(rtrade._trend_too_strong("TAOUSDC"))
         os.remove(self.reader.filename)
         self.assertTrue(rtrade._trend_too_strong("TAOUSDC"))
@@ -312,7 +312,7 @@ class ReaderProcessTrendTest(unittest.TestCase):
             },
         )
         self._publish(step=0.0, age_sec=0.0)
-        dyn = self.reader.get_instant_trend_for_window("TAOUSDC", self.WINDOW)
+        dyn = self.reader.get_short_trend_for_window("TAOUSDC", self.WINDOW)
         self.assertIsNotNone(dyn)
         self.assertFalse(rtrade._trend_too_strong("TAOUSDC"))
 

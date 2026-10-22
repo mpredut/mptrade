@@ -79,10 +79,10 @@ class TestCacheManagerInterface(unittest.TestCase):
             fname = _tmp_file(self.tmp, "missing.json")
             mgr = ConcreteTestManager(9999, ["SYM"], fname, remote_items={"SYM": []})
             mgr.cache = {}
-            mgr.fetchtime_time_per_symbol = {}
+            mgr.fetchtime_per_symbol = {}
             mgr.fallback_time_default = 123_456
             with patch.object(cm.os.path, "exists", return_value=False):
-                result = mgr._CacheManagerInterface__rebuild_fetchtime_times()
+                result = mgr._rebuild_fetchtimes()
             self.assertEqual(result, {"SYM": 123_456})
 
         with self.subTest("missing file calls remote"):
@@ -171,7 +171,7 @@ class TestCacheManagerInterface(unittest.TestCase):
             fname = _tmp_file(self.tmp, "ft.json")
             mgr = ConcreteTestManager(9999, ["SYM"], fname, append_mode=True)
             mgr.update_cache_per_symbol("SYM", [[int(time.time()*1000), 1.0]])
-            self.assertIn("SYM", mgr.fetchtime_time_per_symbol)
+            self.assertIn("SYM", mgr.fetchtime_per_symbol)
 
         with self.subTest("on_items_update stores entry"):
             fname = _tmp_file(self.tmp)
@@ -201,7 +201,7 @@ class TestCacheManagerInterface(unittest.TestCase):
             remote = {"SYM": [[ts, 99.0]]}
             mgr = ConcreteTestManager(9999, ["SYM"], fname, remote_items=remote)
             mgr.cache = {}
-            mgr.fetchtime_time_per_symbol = {}
+            mgr.fetchtime_per_symbol = {}
             mgr.query_remote_and_update_cache()
             with mgr.lock:
                 self.assertIn(99.0, [e[1] for e in mgr.cache.get("SYM", [])])
@@ -210,7 +210,7 @@ class TestCacheManagerInterface(unittest.TestCase):
             fname = _tmp_file(self.tmp)
             mgr = ConcreteTestManager(9999, ["SYM"], fname, remote_items={"SYM": []})
             mgr.cache = {}
-            mgr.fetchtime_time_per_symbol = {}
+            mgr.fetchtime_per_symbol = {}
             mgr.query_remote_and_update_cache()
             with mgr.lock:
                 self.assertEqual(mgr.cache.get("SYM", []), [])
@@ -221,7 +221,7 @@ class TestCacheManagerInterface(unittest.TestCase):
             remote = {"SYM1": [], "SYM2": [[ts, 5.0]]}
             mgr = ConcreteTestManager(9999, ["SYM1", "SYM2"], fname, remote_items=remote)
             mgr.cache = {}
-            mgr.fetchtime_time_per_symbol = {}
+            mgr.fetchtime_per_symbol = {}
             mgr.query_remote_and_update_cache()
             with mgr.lock:
                 self.assertIn(5.0, [e[1] for e in mgr.cache.get("SYM2", [])])
@@ -253,7 +253,7 @@ class TestCachePersistenceDurability(unittest.TestCase):
             remote_items={"SYM": []},
         )
         manager.cache = {"SYM": [[1000, 1.0]]}
-        manager.fetchtime_time_per_symbol = {"SYM": 1000}
+        manager.fetchtime_per_symbol = {"SYM": 1000}
         manager._persisted_counts = {}
         return manager
 
@@ -269,7 +269,7 @@ class TestCachePersistenceDurability(unittest.TestCase):
                 "AAA": [[1000, 1.0]],
                 "BBB": [[2000, 2.0]],
             }
-            manager.fetchtime_time_per_symbol = {"AAA": 1000, "BBB": 2000}
+            manager.fetchtime_per_symbol = {"AAA": 1000, "BBB": 2000}
             real_dumps = cm.json.dumps
             calls = 0
 
@@ -394,11 +394,11 @@ class TestCacheTradeManager(unittest.TestCase):
             invalid = {'symbol': 'BTC', 'id': 1}
             for label, trade, expected in (("complete", valid, True), ("missing-key", invalid, False)):
                 with self.subTest(case=label):
-                    self.assertEqual(mgr._is_valid_trade(trade), expected)
+                    self.assertEqual(mgr._is_valid_item(trade), expected)
 
         with self.subTest(msg="rebuild_fetchtime_returns_none"):
             mgr = self._make()
-            self.assertIsNone(mgr.rebuild_fetchtime_times())
+            self.assertIsNone(mgr.rebuild_fetchtimes())
 
         with self.subTest(msg="append_mode_true"):
             mgr = self._make()
@@ -428,11 +428,11 @@ class TestCacheOrderManager(unittest.TestCase):
                 ("complete", valid, True), ("missing-key", {'orderId': 1}, False)
             ):
                 with self.subTest(case=label):
-                    self.assertEqual(mgr._is_valid_trade(order), expected)
+                    self.assertEqual(mgr._is_valid_item(order), expected)
 
         with self.subTest(msg="rebuild_fetchtime_returns_none"):
             mgr = self._make()
-            self.assertIsNone(mgr.rebuild_fetchtime_times())
+            self.assertIsNone(mgr.rebuild_fetchtimes())
 
         with self.subTest(msg="get_all_symbols_from_cache"):
             mgr = self._make()
@@ -691,7 +691,7 @@ class TestCache24PriceManager(unittest.TestCase):
 
     def _make(self):
         api_mock = MagicMock()
-        fname = _tmp_file(self.tmp, "cache_24price_BTC.json")
+        fname = _tmp_file(self.tmp, "cache_24_price_BTC.json")
         cur_mgr = MagicMock()
         # get_remote_items uses get_price() for timestamp and price rather than
         # the legacy get_price_value(), which would fabricate the timestamp.
@@ -756,7 +756,7 @@ class TestCache24PriceManager(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 6. CachePriceLongTrendManager
+# 6. CacheLongTrendManager
 # ═══════════════════════════════════════════════════════════════════════════════
 class TestCachePriceLongTrendManager(unittest.TestCase):
 
@@ -765,8 +765,8 @@ class TestCachePriceLongTrendManager(unittest.TestCase):
 
     def _make(self):
         api_mock = MagicMock()
-        fname = _tmp_file(self.tmp, "cache_price_long_trend.json")
-        return cm.CachePriceLongTrendManager(9999, ["BTC"], fname, api_client=api_mock)
+        fname = _tmp_file(self.tmp, "cache_long_trend.json")
+        return cm.CacheLongTrendManager(9999, ["BTC"], fname, api_client=api_mock)
 
     def test_price_long_trend_manager_behaviors(self):
         with self.subTest("rebuild_fetchtime_from_dict_cache"):
@@ -897,7 +897,7 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
     def _make(self, price=50000.0, provider_names=None):
         api_mock = MagicMock()
         api_mock.get_current_price.return_value = price
-        fname = _tmp_file(self.tmp, "cache_currentprice.json")
+        fname = _tmp_file(self.tmp, "cache_current_price.json")
         # Inject market_api so HTTP fetching uses the testable market-data facade.
         return cm.CacheCurrentPriceManager(
             sync_ts=9999, symbols=["BTC"], filename=fname,
@@ -1032,7 +1032,7 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
             mgr.on_items_update("BTC", [55000.0])
             api_mock.get_current_price.reset_mock()
 
-            observed_at, price = mgr.cached_price_observation(
+            observed_at, price = mgr.get_cached_price_observation(
                 "BTC", max_age_sec=10.0)
 
             self.assertAlmostEqual(observed_at, time.time(), delta=1.0)
@@ -1042,7 +1042,7 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
             with mgr.lock:
                 mgr.cache["BTC"][0][0] = int((time.time() - 20.0) * 1000)
             self.assertIsNone(
-                mgr.cached_price_observation("BTC", max_age_sec=10.0))
+                mgr.get_cached_price_observation("BTC", max_age_sec=10.0))
             api_mock.get_current_price.assert_not_called()
 
     # ── subscribe_price / unsubscribe_price ───────────────────────────────────
@@ -1250,8 +1250,11 @@ class TestCacheFactory(unittest.TestCase):
         cur_mock = MagicMock()
         cur_mock.get_price.return_value = [int(time.time() * 1000), 50000.0]
         cases = (
-            ("Price", ["BTC", "ETH"], "cache_price_sparse_BTC.jsonl"),
-            ("Price24", ["BTC"], "cache_24price_BTC.json"),
+            ("SparsePrice", ["BTC", "ETH"], "cache_sparse_price_BTC.jsonl"),
+            ("Price", ["BTC", "ETH"], "cache_sparse_price_BTC.jsonl"),
+            ("24Price", ["BTC"], "cache_24_price_BTC.json"),
+            ("Price24", ["BTC"], "cache_24_price_BTC.json"),
+            ("365Price", ["BTC"], "cache_365_price_BTC.jsonl"),
         )
         for name, symbols, expected_filename in cases:
             with self.subTest(factory=name):
@@ -1288,11 +1291,11 @@ class TestCacheFactory(unittest.TestCase):
         tracked = (["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"], ["HYPEUSD"], {"HYPEUSD": "kraken"})
         with patch.object(cm, "_default_price_tracking", return_value=tracked), \
              patch.object(cm.CacheCurrentPriceManager, "load_state", return_value=None), \
-             patch.object(cm.PriceLongTrend, "load_state", return_value=None):
+             patch.object(cm.CacheLongTrendManager, "load_state", return_value=None):
             cm.CacheFactory.remove("CurrentPrice")
-            cm.CacheFactory.remove("PriceLongTrend")
+            cm.CacheFactory.remove("LongTrend")
             cpm = cm.CacheFactory.get("CurrentPrice", start_sync=False)
-            plt = cm.CacheFactory.get("PriceLongTrend", start_sync=False)
+            plt = cm.CacheFactory.get("LongTrend", start_sync=False)
             self.assertEqual(cpm.symbols, ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"])
             self.assertEqual(cpm._provider_names.get("HYPEUSD"), "kraken")
             self.assertEqual(plt.symbols, ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"])
@@ -1618,14 +1621,14 @@ class TestMemFileResync(unittest.TestCase):
             a = self._mgr(fname)
             with a.lock:
                 a.cache["SYM"] = [[1, 1.0]]
-                a.fetchtime_time_per_symbol["SYM"] = 2000   # New.
+                a.fetchtime_per_symbol["SYM"] = 2000   # New.
             a.save_state_to_file_if_enabled()
             # Writer B has stale data and must not overwrite it.
             b = ConcreteTestManager(9999, ["SYM"], fname)
             b.save_state = True
             with b.lock:
                 b.cache["SYM"] = [[9, 9.0]]
-                b.fetchtime_time_per_symbol["SYM"] = 1000   # Older.
+                b.fetchtime_per_symbol["SYM"] = 1000   # Older.
             b.save_state_to_file_if_enabled()
             # The file retains writer A's data.
             data = json.load(open(fname))
@@ -1636,13 +1639,13 @@ class TestMemFileResync(unittest.TestCase):
             a = self._mgr(fname)
             with a.lock:
                 a.cache["SYM"] = [[1, 1.0]]
-                a.fetchtime_time_per_symbol["SYM"] = 1000
+                a.fetchtime_per_symbol["SYM"] = 1000
             a.save_state_to_file_if_enabled()
             b = ConcreteTestManager(9999, ["SYM"], fname)
             b.save_state = True
             with b.lock:
                 b.cache["SYM"] = [[9, 9.0]]
-                b.fetchtime_time_per_symbol["SYM"] = 3000   # Newer, so overwrite.
+                b.fetchtime_per_symbol["SYM"] = 3000   # Newer, so overwrite.
             b.save_state_to_file_if_enabled()
             data = json.load(open(fname))
             self.assertEqual(data["items"]["SYM"], [[9, 9.0]])
@@ -1653,13 +1656,13 @@ class TestMemFileResync(unittest.TestCase):
             a = self._mgr(fname)
             with a.lock:
                 a.cache["SYM"] = [[5, 5.0]]
-                a.fetchtime_time_per_symbol["SYM"] = 5000
+                a.fetchtime_per_symbol["SYM"] = 5000
             a.save_state_to_file_if_enabled()
             # Process B has stale memory, so resync must reload it.
             b = ConcreteTestManager(9999, ["SYM"], fname)
             with b.lock:
                 b.cache["SYM"] = [[1, 1.0]]
-                b.fetchtime_time_per_symbol["SYM"] = 1000
+                b.fetchtime_per_symbol["SYM"] = 1000
             b.resync_mem_file()
             with b.lock:
                 self.assertEqual(b.cache["SYM"], [[5, 5.0]])   # Reloaded from the file.
@@ -1695,6 +1698,28 @@ class TestAtomicWrite(unittest.TestCase):
                     raise ValueError("boom")
             with open(p) as f:
                 self.assertEqual(json.load(f), {"v": "old"})   # Previous content remains intact.
+
+        with self.subTest("legacy filename migration and sidecars"):
+            mig_dir = tempfile.mkdtemp(dir=self.tmp)
+            cases = [
+                ("cache_currentprice.json", "cache_current_price.json"),
+                ("cache_instant_trend.json", "cache_short_trend.json"),
+                ("cache_price_long_trend.json", "cache_long_trend.json"),
+                ("cache_24price_BTCUSDC.json", "cache_24_price_BTCUSDC.json"),
+                ("cache_365price_BTCUSDC.jsonl", "cache_365_price_BTCUSDC.jsonl"),
+                ("cache_price_sparse_BTCUSDC.jsonl", "cache_sparse_price_BTCUSDC.jsonl"),
+            ]
+            for old_name, new_name in cases:
+                old_p = os.path.join(mig_dir, old_name)
+                new_p = os.path.join(mig_dir, new_name)
+                with open(old_p, "w", encoding="utf-8") as fh:
+                    fh.write('{"migrated": true}\n')
+                with open(old_p + ".meta", "w", encoding="utf-8") as fh:
+                    fh.write('{"meta": true}\n')
+                cm._migrate_legacy_filename_if_needed(new_p)
+                self.assertTrue(os.path.exists(new_p), f"Expected {new_name} to exist")
+                self.assertTrue(os.path.exists(new_p + ".meta"), f"Expected {new_name}.meta to exist")
+                self.assertFalse(os.path.exists(old_p), f"Expected {old_name} to be moved")
 
 
 if __name__ == "__main__":

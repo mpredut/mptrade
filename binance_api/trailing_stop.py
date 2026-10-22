@@ -93,7 +93,7 @@ CHECK_SECONDS = required_float_env("TRAILING_CHECK_SECONDS")
 REBUY_ENABLED = required_bool_env("TRAILING_REBUY_ENABLED")
 REBUY_BOUNCE_PCT = required_float_env("TRAILING_REBUY_BOUNCE_PCT")
 REBUY_TRANCHES = required_int_env("TRAILING_REBUY_TRANCHES")
-# Trend filters read cache_instant_trend through cacheManager. They act only on a
+# Trend filters read cache_short_trend through cacheManager. They act only on a
 # CLEAR opposing signal; neutral/unknown does not block, reverting to behavior
 # without a filter. Skip re-buy on a clear downtrend. Crash sells are unfiltered by
 # default so the circuit breaker remains reliable; enable the sell filter to avoid

@@ -13,7 +13,7 @@ protection. A wide ~15% threshold triggers only on a material decline.
 Re-buy after a crash sale mirrors binance_api/trailing_stop.py: after a forced
 crash sale, it buys back when price rebounds REBUY_BOUNCE_PCT% from the post-sale
 low, confirming the fall has stopped before entry. Optional trend filters use the
-HYPE cache_instant_trend data. Configuration is in kraken/trailing.conf.
+HYPE cache_short_trend data. Configuration is in kraken/trailing.conf.
 
 The trailing and re-buy state machine is in trailing_core.TrailingCore and shared
 with Binance. This module is only the Kraken ADAPTER for provider-specific API,
@@ -57,7 +57,7 @@ from credentials import kraken_credentials  # noqa: E402
 from cachepaths import cache_path  # noqa: E402
 
 STATE_FILE = os.path.join(_HERE, "trailing_state.json")
-CACHE_TREND = cache_path("cache_instant_trend.json")
+CACHE_TREND = cache_path("cache_short_trend.json")
 
 
 # Match the launch order used by every Kraken process: real environment, secrets,
@@ -84,7 +84,7 @@ for _env_k, _env_v in os.environ.items():
 # After a crash sale, re-buy when price rebounds BOUNCE% from the post-sale low.
 REBUY_ENABLED = required_bool_env("KRAKEN_TRAILING_REBUY_ENABLED")
 REBUY_BOUNCE_PCT = required_float_env("KRAKEN_TRAILING_REBUY_BOUNCE_PCT")
-# Trend filters use HYPE cache_instant_trend and act only on a CLEAR opposing signal.
+# Trend filters use HYPE cache_short_trend and act only on a CLEAR opposing signal.
 # Neutral/unknown does not block, providing safe degradation. Skip re-buy on a clear
 # downtrend. Crash sells are unfiltered by default for reliability; true enables anti-wick.
 REBUY_SKIP_IF_TREND_DOWN = required_bool_env("KRAKEN_TRAILING_REBUY_SKIP_IF_TREND_DOWN")
@@ -169,7 +169,7 @@ class KrakenTrailing:
         except (TypeError, ValueError):
             return 0.0
 
-    # -- HYPE instant trend from cache_instant_trend.json for optional filters --
+    # -- HYPE short trend from cache_short_trend.json for optional filters --
     def _trend_value(self, pair: str) -> float:
         """Return instant-trend slope (>0 up, <0 down, 0 neutral/unknown).
         Errors return 0, making trend filters a safe no-op."""

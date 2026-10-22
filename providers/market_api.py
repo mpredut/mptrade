@@ -167,7 +167,8 @@ class BinanceProvider(MarketDataProvider):
         normalized = []
         for row in rows:
             ts_ms = extract_timestamp_ms(row, default=0) or 0
-            if (not manager._is_valid_trade(row) or row["symbol"] != symbol
+            valid_fn = getattr(manager, "_is_valid_item", getattr(manager, "_is_valid_trade", None))
+            if (not valid_fn(row) or row["symbol"] != symbol
                     or ts_ms > now_ms):
                 return None
             if ts_ms < cutoff:

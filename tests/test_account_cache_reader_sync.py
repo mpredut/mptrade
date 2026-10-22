@@ -97,7 +97,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
 
             with writer.lock:
                 writer.cache["BTCUSDC"].append(second)
-                writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
+                writer.fetchtime_per_symbol["BTCUSDC"] = 2000
             self.assertTrue(writer.save_state_to_file())
             reader.ensure_persisted_version(writer._persisted_data_version)
             self.assertEqual([first, second], reader.cache["BTCUSDC"])
@@ -133,14 +133,14 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             self.assertTrue(writer.save_state_to_file())
             first_version = writer._persisted_data_version
             with writer.lock:
-                writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
+                writer.fetchtime_per_symbol["BTCUSDC"] = 2000
                 writer._mark_account_cache_dirty_locked()
             self.assertTrue(writer.save_state_to_file())
             self.assertEqual(first_version, writer._persisted_data_version)
             reader = self._order_manager([], 0)
             reader.ensure_persisted_version(writer._persisted_data_version)
             self.assertEqual([_order(1, 1000)], reader.cache["BTCUSDC"])
-            self.assertEqual(2000, reader.fetchtime_time_per_symbol["BTCUSDC"])
+            self.assertEqual(2000, reader.fetchtime_per_symbol["BTCUSDC"])
 
         with self.subTest(msg="corruption_refuses_and_preserves_memory"):
             self._reset_temp()
@@ -154,7 +154,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
 
             with writer.lock:
                 writer.cache["BTCUSDC"].append(_order(2, 2000))
-                writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
+                writer.fetchtime_per_symbol["BTCUSDC"] = 2000
             self.assertTrue(writer.save_state_to_file())
             new_version = writer._persisted_data_version
             with open(writer.filename, "w", encoding="utf-8") as handle:
@@ -189,7 +189,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
 
             with writer.lock:
                 writer.cache["BTCUSDC"].append(second)
-                writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
+                writer.fetchtime_per_symbol["BTCUSDC"] = 2000
             self.assertTrue(writer.save_state_to_file())
             new_boundary = writer._persisted_committed_bytes
             with patch.object(
@@ -226,7 +226,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
 
             with writer.lock:
                 writer.cache["BTCUSDC"].append(_trade(2, 2000))
-                writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
+                writer.fetchtime_per_symbol["BTCUSDC"] = 2000
             self.assertTrue(writer.save_state_to_file())
             new_version = writer._persisted_data_version
             with open(writer.filename, "wb") as handle:
@@ -278,7 +278,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             old_boundary = reader._loaded_committed_bytes
             with writer.lock:
                 writer.cache["BTCUSDC"].append(second)
-                writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
+                writer.fetchtime_per_symbol["BTCUSDC"] = 2000
             self.assertTrue(writer.save_state_to_file())
             with patch.object(
                     reader, "_read_trade_records_strict",
@@ -297,7 +297,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             self.assertTrue(writer.save_state_to_file())
             with writer.lock:
                 writer.cache["BTCUSDC"].append(_trade(2, 2000))
-                writer.fetchtime_time_per_symbol["BTCUSDC"] = 2000
+                writer.fetchtime_per_symbol["BTCUSDC"] = 2000
 
             with (
                 patch.object(
@@ -543,7 +543,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
         )
         with current_writer.lock:
             current_writer.cache["BTCUSDC"].append(second)
-            current_writer.fetchtime_time_per_symbol["BTCUSDC"] = 1000
+            current_writer.fetchtime_per_symbol["BTCUSDC"] = 1000
             current_writer._mark_account_cache_dirty_locked()
         self.assertTrue(current_writer.save_state_to_file())
         current_version = current_writer._persisted_data_version
@@ -555,7 +555,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
 
         with stale_writer.lock:
             stale_writer.cache["BTCUSDC"].append(stale_only)
-            stale_writer.fetchtime_time_per_symbol["BTCUSDC"] = 1000
+            stale_writer.fetchtime_per_symbol["BTCUSDC"] = 1000
             stale_writer._mark_account_cache_dirty_locked()
         self.assertFalse(stale_writer.save_state_to_file())
 
@@ -775,7 +775,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             patch.object(cm.time, "time", return_value=2.0),
         ):
             self.assertTrue(manager.query_remote_and_update_cache())
-        self.assertEqual(1999, manager.fetchtime_time_per_symbol["BTCUSDC"])
+        self.assertEqual(1999, manager.fetchtime_per_symbol["BTCUSDC"])
         self.assertTrue(manager._account_cache_dirty)
 
     def test_wrong_symbol_trade_row_is_rejected(self):
@@ -932,7 +932,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
                     winner._migrate_legacy_json_generation_locked()
                     with winner.lock:
                         winner.cache["BTCUSDC"].append(second)
-                        winner.fetchtime_time_per_symbol["BTCUSDC"] = 2000
+                        winner.fetchtime_per_symbol["BTCUSDC"] = 2000
                         winner._mark_account_cache_dirty_locked()
                     results.append(
                         winner._save_account_trade_append_generation_locked()
@@ -1168,7 +1168,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
         first_trade = {**_trade(0, 1000), "orderId": 1}
         manager = self._trade_manager([first_trade], 1000)
 
-        self.assertTrue(manager._is_valid_trade(first_trade))
+        self.assertTrue(manager._is_valid_item(first_trade))
         self.assertEqual([first_trade], manager.cache["BTCUSDC"])
 
     def test_websocket_trade_id_zero_updates_both_account_caches(self):
@@ -1215,7 +1215,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
 
         manager = self._trade_manager([_trade(1, 1000)], 1000)
         manager.symbols = ["BTCUSDC", "ETHUSDC"]
-        manager.fetchtime_time_per_symbol["ETHUSDC"] = 1000
+        manager.fetchtime_per_symbol["ETHUSDC"] = 1000
         clock = SimpleNamespace(now=2.0)
 
         def fetch(*_args, **_kwargs):
@@ -1230,8 +1230,8 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             self.assertTrue(manager.query_remote_and_update_cache())
 
         self.assertEqual(2000, manager._last_complete_sync_at_ms)
-        self.assertEqual(1999, manager.fetchtime_time_per_symbol["BTCUSDC"])
-        self.assertEqual(12999, manager.fetchtime_time_per_symbol["ETHUSDC"])
+        self.assertEqual(1999, manager.fetchtime_per_symbol["BTCUSDC"])
+        self.assertEqual(12999, manager.fetchtime_per_symbol["ETHUSDC"])
 
         marker = os.path.join(self.tmp.name, "slow-cycle-health.json")
         with patch.object(
@@ -1257,7 +1257,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
     def test_failed_multi_symbol_cycle_preserves_last_health_marker(self):
         manager = self._trade_manager([_trade(1, 1000)], 1000)
         manager.symbols = ["BTCUSDC", "ETHUSDC"]
-        manager.fetchtime_time_per_symbol["ETHUSDC"] = 1000
+        manager.fetchtime_per_symbol["ETHUSDC"] = 1000
         manager._last_complete_sync_at_ms = 2000
         marker = os.path.join(self.tmp.name, "failed-cycle-health.json")
         with patch.object(
@@ -1372,12 +1372,12 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
 
         with order_writer.lock:
             order_writer.cache["BTCUSDC"].append(second_order)
-            order_writer.fetchtime_time_per_symbol["BTCUSDC"] = now_ms - 1000
+            order_writer.fetchtime_per_symbol["BTCUSDC"] = now_ms - 1000
         self.assertTrue(order_writer.save_state_to_file())
 
         with trade_writer.lock:
             trade_writer.cache["BTCUSDC"].append(second_trade)
-            trade_writer.fetchtime_time_per_symbol["BTCUSDC"] = now_ms - 1000
+            trade_writer.fetchtime_per_symbol["BTCUSDC"] = now_ms - 1000
         self.assertTrue(trade_writer.save_state_to_file())
 
         with patch.object(cm, "get_cache_manager", return_value=order_reader):
@@ -1390,7 +1390,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             observed_trades = trades_mod.get_trade_orders("BUY", "BTCUSDC", 60)
         self.assertEqual([10, 11], [int(t["id"]) for t in observed_trades])
         self.assertEqual(
-            125.0, trade_reader.last_opposite_fill_price("BTCUSDC", "SELL")
+            125.0, trade_reader.get_last_opposite_fill_price("BTCUSDC", "SELL")
         )
 
 

@@ -96,7 +96,7 @@ def _shutdown_runtime_threads_after_suite():
     import cacheManager as cm
 
     cm.CacheManagerInterface.shutdown_all_instances()
-    cm.CachePriceShortTrendManager.shutdown_all_instances()
+    cm.CacheShortTrendManager.shutdown_all_instances()
     cm.CacheFactory.shutdown_all()
     if cm._current_price_instance is not None:
         cm._current_price_instance.shutdown()

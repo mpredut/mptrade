@@ -162,7 +162,9 @@ def run_symbol(
 ):
     from_disk = series is None
     if from_disk:
-        path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
+        path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{symbol}.jsonl")
+        if not os.path.exists(path):
+            path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
         series = load_price_series(path, symbol)
         if not series:
             sys.stderr.write(f"[{symbol}] no history at {path}\n")

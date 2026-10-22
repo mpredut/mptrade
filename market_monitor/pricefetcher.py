@@ -636,13 +636,13 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
             self.symbol_added_time[symbol] = time.time()
             if symbol not in self.cache:
                 self.cache[symbol] = []
-            if symbol not in self.fetchtime_time_per_symbol:
-                self.fetchtime_time_per_symbol[symbol] = self.fallback_time_default
+            if symbol not in self.fetchtime_per_symbol:
+                self.fetchtime_per_symbol[symbol] = self.fallback_time_default
             print(f"[Pricefetcher] ✅ Symbol added: {symbol}")
         # Fetch and store the new symbol's initial price outside this lock;
         # ``update_cache_per_symbol`` acquires its own lock.
         items = self.get_remote_items(
-            symbol, self.fetchtime_time_per_symbol.get(symbol, self.fallback_time_default))
+            symbol, self.fetchtime_per_symbol.get(symbol, self.fallback_time_default))
         if items:
             self.update_cache_per_symbol(symbol, items)
         return True
@@ -735,7 +735,7 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                 counts = {s: len(v) for s, v in self.cache.items()}
                 atomic_write_json(self.filename, {
                     "items": self.cache,
-                    "fetchtime": self.fetchtime_time_per_symbol,
+                    "fetchtime": self.fetchtime_per_symbol,
                     "metadata": {
                         "last_cleanup": time.time(),
                         "retention_days": PRICE_HISTORY_RETENTION_DAYS,
@@ -749,7 +749,7 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                     }
                 }, indent=1)
                 self._persisted_counts = counts
-                self._write_meta(counts, self.fetchtime_time_per_symbol)
+                self._write_meta(counts, self.fetchtime_per_symbol)
                 print(f"[{self.cls_name}][info] Save cache to file {self.filename}")
                 return True
         except Exception as e:

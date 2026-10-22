@@ -177,7 +177,8 @@ def test_ws_execution_report_preserves_commission_and_zero_price_fallback(monkey
     persisted = []
 
     class DummyTradeCache:
-        _is_valid_trade = staticmethod(cm.CacheTradeManager._is_valid_trade)
+        _is_valid_item = staticmethod(cm.CacheTradeManager._is_valid_item)
+        _is_valid_trade = _is_valid_item
 
         def _persist_items(self, symbol, items):
             persisted.extend(items)
@@ -245,7 +246,7 @@ def test_ws_and_rest_reconciliation_preserves_rest_cursor_and_merges_missed_fill
 
     monkeypatch.setattr("binance_api.bapi_allorders.paginate_my_trades", fake_paginate)
     mgr = cm.CacheTradeManager(9999, ["ARBUSDC"], trade_file, api_client=MagicMock())
-    mgr.fetchtime_time_per_symbol["ARBUSDC"] = 1000
+    mgr.fetchtime_per_symbol["ARBUSDC"] = 1000
     mgr._rest_sync_cursor_per_symbol["ARBUSDC"] = 1000
 
     # 1. WS disconnects briefly (fill 501 at t=1500 is missed on WS), then WS reconnects
@@ -462,15 +463,16 @@ def test_trailing_core_partial_exit_Transition_to_flat_arms_rebuy(tmp_path):
     assert st.get("rebuy") == {"qty": pytest.approx(4.0), "sell_price": pytest.approx(45.0), "low": pytest.approx(45.0)}
 
 
-def test_cache_order_on_items_update_routes_through_persist_items():
+def test_cache_order_on_items_update_routes_through_persist_items(tmp_path):
     """Verify CacheManagerInterface.on_items_update delegates to _persist_items so Order fills merge and normalize."""
+    import json
     import cacheManager as cm
 
-    order_mgr = cm.get_cache_manager("Order")
     sym = "TEST_ON_ITEMS_USDC"
-    with order_mgr.lock:
-        order_mgr.cache[sym] = []
-        order_mgr.fetchtime_time_per_symbol[sym] = 1000
+    order_file = str(tmp_path / "order_on_items.json")
+    with open(order_file, "w", encoding="utf-8") as fh:
+        json.dump({"items": {sym: []}, "fetchtime": {sym: 1000}}, fh)
+    order_mgr = cm.CacheOrderManager(3600, [sym], order_file)
 
     order_mgr.on_items_update(
         sym,
@@ -601,11 +603,11 @@ def test_cache_manager_polymorphic_update_overloading_and_readonly_safety(tmp_pa
     import cacheManager as cm
 
     # 1. CacheOrderManager.update_cache_per_symbol routes through _persist_items and accepts both dict and list
-    order_mgr = cm.get_cache_manager("Order")
     sym = "TEST_POLY_ORDER_USDC"
-    with order_mgr.lock:
-        order_mgr.cache[sym] = []
-        order_mgr.fetchtime_time_per_symbol[sym] = 1000
+    order_file = str(tmp_path / "order_poly.json")
+    with open(order_file, "w", encoding="utf-8") as fh:
+        json.dump({"items": {sym: []}, "fetchtime": {sym: 1000}}, fh)
+    order_mgr = cm.CacheOrderManager(3600, [sym], order_file)
 
     order_mgr.update_cache_per_symbol(
         sym,
@@ -639,12 +641,14 @@ def test_cache_manager_polymorphic_update_overloading_and_readonly_safety(tmp_pa
     assert rows[0]["_fillIds"] == ["801", "802"]
 
     # 2. CacheTradeManager.update_cache_per_symbol deduplicates by immutable trade ID and enriches fees
-    trade_mgr = cm.get_cache_manager("Trade")
+    from types import SimpleNamespace
     tsym = "TEST_POLY_TRADE_USDC"
-    with trade_mgr.lock:
-        trade_mgr.cache[tsym] = []
-        trade_mgr._persisted_counts[tsym] = 0
-        trade_mgr.fetchtime_time_per_symbol[tsym] = 1000
+    trade_file = str(tmp_path / "trade_poly.jsonl")
+    open(trade_file, "w", encoding="utf-8").close()
+    with open(trade_file + ".meta", "w", encoding="utf-8") as fh:
+        json.dump({"fetchtime": {tsym: 1000}}, fh)
+    fake_api = SimpleNamespace(client=SimpleNamespace(get_my_trades=lambda **kw: []))
+    trade_mgr = cm.CacheTradeManager(3600, [tsym], trade_file, api_client=fake_api)
 
     trade_mgr.update_cache_per_symbol(
         tsym,
@@ -683,6 +687,8 @@ def test_cache_manager_polymorphic_update_overloading_and_readonly_safety(tmp_pa
 
     # 3. CacheCurrentPrice._persist_items accepts both [[ts_ms, price]] and [price, ts_ms] and empty list safely
     cp_file = str(tmp_path / "cp_poly.json")
+    with open(cp_file, "w", encoding="utf-8") as fh:
+        json.dump({"items": {}, "fetchtime": {}}, fh)
     cp_mgr = cm.CacheCurrentPrice(60, ["BTCUSDC"], cp_file)
     cp_mgr._persist_items("BTCUSDC", [])
     cp_mgr._persist_items("BTCUSDC", [61234.5, 1700000005000])

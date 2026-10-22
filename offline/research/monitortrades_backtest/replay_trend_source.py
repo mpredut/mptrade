@@ -1,5 +1,5 @@
 """replay_trend_source.py — a trend signal computed from the REPLAYED history (not from
-cache_instant_trend.json, which is written LIVE), for monitortrades backtests.
+cache_short_trend.json, which is written LIVE), for monitortrades backtests.
 
 It uses EXACTLY the same PriceWindow class (pricewindow.py) and formula
 (get_instant_trend: (slope_full + gradient_recent)/2 -> semn) ca live
@@ -25,7 +25,7 @@ Parameterised on the window length (window_seconds) — 3 distinct horizons, ALL
 valid (a user decision: they are not unified into a single one, each trading model
 uses what suits it):
   - "instant"  ~3.7 min (the default, identical to WINDOW_SECONDS[0] in
-                cacheManager.CachePriceShortTrendManager — what is_trend_up() reads today)
+                cacheManager.CacheShortTrendManager — what is_trend_up() reads today)
   - "mediu"    ~1.5-6h  (orizontul "big" al lui tradeall, slope_big — azi nepublicat
                 cross-process, but computable identically here for A/B tests)
   - "long"     not defined yet (the exact window remains to be decided; supported generically
@@ -41,7 +41,7 @@ import numpy as np
 import pricewindow as pw
 
 # The default "instant" window — identical today to WINDOW_SECONDS[0] in
-# cacheManager.CachePriceShortTrendManager (the window is_trend_up() relies on).
+# cacheManager.CacheShortTrendManager (the window is_trend_up() relies on).
 DEFAULT_WINDOW_SECONDS = 3.7 * 60
 
 # The proposed ranges (user, 29 Jul) for A/B sensitivity sweeps — NOT default
@@ -54,7 +54,7 @@ MEDIUM_WINDOW_RANGE_SEC = (1.5 * 3600.0, 6 * 3600.0)  # 1.5-6 ore
 
 class ReplayTrendSource:
     """One PriceWindow per symbol, fed by hand from the replay ticks —
-    entirely isolated (it never touches cache_instant_trend.json). Instantiate it
+    entirely isolated (it never touches cache_short_trend.json). Instantiate it
     o data per (simbol-set, window_seconds); pt teste A/B pe orizonturi diferite,
     use SEPARATE instances (do not reuse one across horizons)."""
 

@@ -117,7 +117,9 @@ class WhalePositioningCollector:
                 variants.append(sym_u.replace("USDT", "USDC"))
 
             for sym_key in variants:
-                p = os.path.join(self.cache_dir, f"cache_24price_{sym_key}.json")
+                p = os.path.join(self.cache_dir, f"cache_24_price_{sym_key}.json")
+                if not os.path.exists(p):
+                    p = os.path.join(self.cache_dir, f"cache_24price_{sym_key}.json")
                 if not os.path.exists(p):
                     continue
                 with open(p, "r", encoding="utf-8") as f:

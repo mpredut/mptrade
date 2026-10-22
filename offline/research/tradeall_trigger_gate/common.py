@@ -385,7 +385,12 @@ def execute_tradeall_variant(
 
         kwargs = {"quiet": True, "kalman_primary": False}
         if source == "cache24":
-            kwargs["cache24_file"] = os.path.join(ROOT, "cachedb", f"cache_365price_{symbol}.jsonl")
+            c365 = os.path.join(ROOT, "cachedb", f"cache_365_price_{symbol}.jsonl")
+            if not os.path.exists(c365):
+                legacy = os.path.join(ROOT, "cachedb", f"cache_365price_{symbol}.jsonl")
+                if os.path.exists(legacy):
+                    c365 = legacy
+            kwargs["cache24_file"] = c365
         tb.run_backtest(symbol, start_ts, end_ts, "fast", run_id, source, **kwargs)
     finally:
         ta.TrendState = ORIG_TREND_STATE

@@ -43,13 +43,13 @@ print(f"=== cache coherence @ {time.strftime('%Y-%m-%d %H:%M:%S')} (stale>{int(S
 exp = expected_symbols()
 print(f"simboluri asteptate: {exp}")
 
-# 1. instant trend
-it = load("cache_instant_trend.json") or {}
-print(f"-- cache_instant_trend.json: {sorted(it.keys())}")
+# 1. short trend
+it = load("cache_short_trend.json") or load("cache_instant_trend.json") or {}
+print(f"-- cache_short_trend.json: {sorted(it.keys())}")
 for s in exp:
     e = it.get(s)
     if not e:
-        problems.append(f"instant_trend MISSING {s}")
+        problems.append(f"short_trend MISSING {s}")
         print(f"   {s:10} IS MISSING")
         continue
     ts = e.get("ts", 0)
@@ -57,14 +57,14 @@ for s in exp:
     px = e.get("current_price")
     ok = age < STALE_S and px
     if not ok:
-        problems.append(f"instant_trend {s} age={age:.0f}s px={px}")
+        problems.append(f"short_trend {s} age={age:.0f}s px={px}")
     print(f"   {s:10} age={age:6.0f}s gradient_recent={e.get('gradient_recent')} price={px} -> {'OK' if ok else 'STALE/INVALID'}")
 
 # 2. current price
-cp = load("cache_currentprice.json") or {}
+cp = load("cache_current_price.json") or load("cache_currentprice.json") or {}
 # format: {'fetchtime': {...}, 'items': {symbol: [[ts_ms, price]]}} (or directly per symbol)
 items = cp.get("items", cp) if isinstance(cp, dict) else {}
-print(f"-- cache_currentprice.json: {sorted(k for k in items.keys() if k != 'fetchtime')}")
+print(f"-- cache_current_price.json: {sorted(k for k in items.keys() if k != 'fetchtime')}")
 for s in exp:
     entries = items.get(s)
     if not entries or not isinstance(entries, list):

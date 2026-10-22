@@ -141,6 +141,61 @@ _TRADE_CACHE_CLASSES = {"CacheTrade", "CacheTradeManager"}
 _ORDER_CACHE_CLASSES = {"CacheOrder", "CacheOrderManager"}
 _ACCOUNT_CACHE_CLASSES = _ORDER_CACHE_CLASSES | _TRADE_CACHE_CLASSES
 
+_EXACT_LEGACY_FILENAMES = {
+    "cache_current_price.json": ("cache_currentprice.json",),
+    "cache_short_trend.json": ("cache_instant_trend.json",),
+    "cache_long_trend.json": ("cache_price_long_trend.json",),
+}
+_PREFIX_LEGACY_FILENAMES = (
+    ("cache_sparse_price_", ("cache_price_sparse_", "cache_price_")),
+    ("cache_24_price_", ("cache_24price_",)),
+    ("cache_365_price_", ("cache_365price_", "cache_24price_long_")),
+)
+
+
+def _legacy_filenames_for(filepath: str) -> tuple[str, ...]:
+    dirname, basename = os.path.split(filepath)
+    candidates = _EXACT_LEGACY_FILENAMES.get(basename)
+    if candidates is None:
+        for new_prefix, old_prefixes in _PREFIX_LEGACY_FILENAMES:
+            if basename.startswith(new_prefix):
+                suffix = basename[len(new_prefix):]
+                candidates = tuple(old_prefix + suffix for old_prefix in old_prefixes)
+                break
+    if not candidates:
+        return ()
+    return tuple(os.path.join(dirname, c) for c in candidates)
+
+
+def _migrate_legacy_filename_if_needed(filepath: str) -> None:
+    """Rename legacy pre-symmetry cache files in place when the new path is absent."""
+    if os.path.exists(filepath):
+        return
+    for legacy_path in _legacy_filenames_for(filepath):
+        if not os.path.exists(legacy_path):
+            continue
+        try:
+            os.replace(legacy_path, filepath)
+            if (
+                os.path.exists(legacy_path + ".meta")
+                and not os.path.exists(filepath + ".meta")
+            ):
+                os.replace(legacy_path + ".meta", filepath + ".meta")
+            for old_archive in glob.glob(legacy_path + ".*.archive*"):
+                suffix = old_archive[len(legacy_path):]
+                new_archive = filepath + suffix
+                if not os.path.exists(new_archive):
+                    os.replace(old_archive, new_archive)
+            builtins.print(
+                f"[cacheManager][migration] renamed {legacy_path} -> {filepath}"
+            )
+            return
+        except OSError as exc:
+            builtins.print(
+                f"[cacheManager][migration] failed renaming "
+                f"{legacy_path} -> {filepath}: {exc}"
+            )
+
 
 def _mark_ws_available(value):
     global _ws_available
@@ -230,7 +285,7 @@ class CacheManagerInterface(ABC):
         self.days_back = 30
 
         self.cache = {}
-        self.fetchtime_time_per_symbol = {}
+        self.fetchtime_per_symbol = {}
         self._rest_sync_cursor_per_symbol = {}
 
         self.thread = None
@@ -278,21 +333,35 @@ class CacheManagerInterface(ABC):
 
     #def get_all_symbols_from_cache(self):
     #    return list(set(t.get("symbol") for t in self.cache if "symbol" in t))
+    @property
+    def fetchtime_time_per_symbol(self):
+        return self.fetchtime_per_symbol
+
+    @fetchtime_time_per_symbol.setter
+    def fetchtime_time_per_symbol(self, value):
+        self.fetchtime_per_symbol = value
+
     def get_all_symbols_from_cache(self):
         with self.lock:
             return list(self.cache.keys())       
         
-    def rebuild_fetchtime_times(self):
+    def rebuild_fetchtimes(self):
         """Allow subclasses to provide custom fetch-time reconstruction.
 
-        Returning None lets ``__rebuild_fetchtime_times`` infer timestamps generically
+        Returning None lets ``_rebuild_fetchtimes`` infer timestamps generically
         from ``time``/``timestamp`` dictionaries or ``[timestamp, ...]`` lists.
         """
         return None
+
+    def rebuild_fetchtime_times(self):
+        return self.rebuild_fetchtimes()
     
     
-    def __rebuild_fetchtime_times(self):
-        last_times_per_sym = self.rebuild_fetchtime_times()
+    def _rebuild_fetchtimes(self):
+        if type(self).rebuild_fetchtime_times is not CacheManagerInterface.rebuild_fetchtime_times:
+            last_times_per_sym = self.rebuild_fetchtime_times()
+        else:
+            last_times_per_sym = self.rebuild_fetchtimes()
         if not last_times_per_sym:
             last_times_per_sym = defaultdict(int)
             for symbol, trades in self.cache.items():
@@ -311,9 +380,12 @@ class CacheManagerInterface(ABC):
             fallback_time = min(self.fallback_time_default, fallback_time_file)
             return {symbol: fallback_time for symbol in self.symbols}
         return last_times_per_sym
+
+    __rebuild_fetchtime_times = _rebuild_fetchtimes
           
         
     def load_state(self):
+        _migrate_legacy_filename_if_needed(self.filename)
         print(f"[{self.cls_name}][Info] Load state from {self.filename} ...")
         if self.append_persist:
             self._migrate_legacy_json_if_needed()
@@ -333,12 +405,12 @@ class CacheManagerInterface(ABC):
                             self.cache = {sym: item for sym, item in zip(self.symbols, self.cache)}
                             print(f"[{self.cls_name}][warning] self.cache is not Dict!!!!")    
                         
-                        self.fetchtime_time_per_symbol = data.get("fetchtime", {})
-                        self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
+                        self.fetchtime_per_symbol = data.get("fetchtime", {})
+                        self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
                         if not self.cache:
                             print(f"[{self.cls_name}][warning] cache is None")
-                        if not self.fetchtime_time_per_symbol:
-                            print(f"[{self.cls_name}][warning] fetchtime_time_per_symbol is None")    
+                        if not self.fetchtime_per_symbol:
+                            print(f"[{self.cls_name}][warning] fetchtime_per_symbol is None")
                     
             except Exception as e:
                 print(f"[{self.cls_name}][Error] While reading the cache file {self.filename} : {e}")
@@ -353,10 +425,10 @@ class CacheManagerInterface(ABC):
     # ── Memory/disk resilience: freshness, overwrite guard, and resync ────────
     def _mem_max_ts(self):
         """Return memory freshness as the latest fetch time in milliseconds."""
-        if not self.fetchtime_time_per_symbol:
+        if not self.fetchtime_per_symbol:
             return 0
         try:
-            return max(self.fetchtime_time_per_symbol.values())
+            return max(self.fetchtime_per_symbol.values())
         except Exception:
             return 0
 
@@ -514,7 +586,7 @@ class CacheManagerInterface(ABC):
             order_ids = set()
             fill_owners = {}
             for item in items:
-                if not self._is_valid_trade(item):
+                if not self._is_valid_item(item):
                     raise ValueError(f"invalid {self.cls_name} cache row")
                 if (
                     self.cls_name in _TRADE_CACHE_CLASSES
@@ -584,7 +656,7 @@ class CacheManagerInterface(ABC):
                     return False
                 if self.append_persist:
                     return self._save_jsonl_append()
-                fetchtime = dict(self.fetchtime_time_per_symbol)
+                fetchtime = dict(self.fetchtime_per_symbol)
                 counts = {symbol: len(items) for symbol, items in self.cache.items()}
                 data_version = ""
                 payload = {
@@ -640,11 +712,11 @@ class CacheManagerInterface(ABC):
                 with self.lock:
                     items = data.get("items", {})
                     if isinstance(items, dict):
-                        if isinstance(self, Cache24Price):
+                        if isinstance(self, Cache24PriceManager):
                             items = {s: v for s, v in items.items() if s in self.symbols}
                         self.cache = items
-                    self.fetchtime_time_per_symbol = data.get("fetchtime", {})
-                    self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
+                    self.fetchtime_per_symbol = data.get("fetchtime", {})
+                    self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
                     self._account_cache_dirty = False
             except Exception as e:
                 print(f"[{self.cls_name}][Error] reload {self.filename}: {e}")
@@ -718,8 +790,8 @@ class CacheManagerInterface(ABC):
                 raise ValueError("legacy cache items must be a dictionary")
             with self.lock:
                 self.cache = items
-                self.fetchtime_time_per_symbol = payload.get("fetchtime", {})
-                self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
+                self.fetchtime_per_symbol = payload.get("fetchtime", {})
+                self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
                 self._persisted_counts = {}
             migrated = (
                 self._compact_account_trade_jsonl_generation_locked()
@@ -767,7 +839,7 @@ class CacheManagerInterface(ABC):
                         candidate_counts[symbol] = len(items)
                     f.flush()
                     os.fsync(f.fileno())
-                fetchtime = dict(self.fetchtime_time_per_symbol)
+                fetchtime = dict(self.fetchtime_per_symbol)
                 self._persisted_counts = candidate_counts
                 return self._write_meta({
                     "fetchtime": fetchtime,
@@ -876,7 +948,7 @@ class CacheManagerInterface(ABC):
                         start = previous_counts.get(symbol, 0)
                         for item in items[start:]:
                             if (
-                                not self._is_valid_trade(item)
+                                not self._is_valid_item(item)
                                 or str(item["symbol"]).upper()
                                 != str(symbol).upper()
                             ):
@@ -904,7 +976,7 @@ class CacheManagerInterface(ABC):
                     revision += 1
                 revision = max(1, revision)
                 version = self._trade_data_version(stream_id, revision)
-                fetchtime = dict(self.fetchtime_time_per_symbol)
+                fetchtime = dict(self.fetchtime_per_symbol)
                 metadata = self._account_meta_snapshot(
                     data_version=version,
                     stream_id=stream_id,
@@ -1049,7 +1121,7 @@ class CacheManagerInterface(ABC):
                 if (not isinstance(record, dict)
                         or not isinstance(record.get("s"), str)
                         or not isinstance(record.get("i"), dict)
-                        or not self._is_valid_trade(record["i"])
+                        or not self._is_valid_item(record["i"])
                         or str(record["i"]["symbol"]).upper()
                         != str(record["s"]).upper()
                 ):
@@ -1157,7 +1229,7 @@ class CacheManagerInterface(ABC):
             for symbol, orders in items.items():
                 if (not isinstance(symbol, str) or not isinstance(orders, list)
                         or any(
-                            not self._is_valid_trade(order)
+                            not self._is_valid_item(order)
                             for order in orders
                         )):
                     raise ValueError("invalid Order cache items")
@@ -1178,8 +1250,8 @@ class CacheManagerInterface(ABC):
                 raise ValueError("Order manifest changed during reload")
             with self.lock:
                 self.cache = items
-                self.fetchtime_time_per_symbol = dict(fetchtime)
-                self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
+                self.fetchtime_per_symbol = dict(fetchtime)
+                self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
                 self._persisted_counts = dict(actual_counts)
                 self._persisted_data_version = required_version
                 self._loaded_data_version = required_version
@@ -1273,8 +1345,8 @@ class CacheManagerInterface(ABC):
                     if append_still_valid:
                         for symbol, item in records:
                             self.cache.setdefault(symbol, []).append(item)
-                        self.fetchtime_time_per_symbol = dict(metadata["fetchtime"])
-                        self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
+                        self.fetchtime_per_symbol = dict(metadata["fetchtime"])
+                        self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
                         self._persisted_counts = dict(candidate_counts)
                         self._remember_loaded_trade_manifest_locked(
                             metadata, candidate_counts
@@ -1291,8 +1363,8 @@ class CacheManagerInterface(ABC):
 
             with self.lock:
                 self.cache = candidate_cache
-                self.fetchtime_time_per_symbol = dict(metadata["fetchtime"])
-                self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
+                self.fetchtime_per_symbol = dict(metadata["fetchtime"])
+                self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
                 self._persisted_counts = dict(candidate_counts)
                 self._remember_loaded_trade_manifest_locked(
                     metadata, candidate_counts
@@ -1356,8 +1428,8 @@ class CacheManagerInterface(ABC):
                     self._discard_trade_generation(backup_path)
                 with self.lock:
                     self.cache = cache
-                    self.fetchtime_time_per_symbol = dict(metadata["fetchtime"])
-                    self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
+                    self.fetchtime_per_symbol = dict(metadata["fetchtime"])
+                    self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
                     self._persisted_counts = counts
                     self._remember_loaded_trade_manifest_locked(metadata, counts)
                 return
@@ -1390,7 +1462,7 @@ class CacheManagerInterface(ABC):
                                     not isinstance(rec, dict)
                                     or not isinstance(rec.get("s"), str)
                                     or not isinstance(rec.get("i"), dict)
-                                    or not self._is_valid_trade(rec["i"])
+                                    or not self._is_valid_item(rec["i"])
                                     or str(rec["i"]["symbol"]).upper()
                                     != str(rec["s"]).upper()
                                 ):
@@ -1447,7 +1519,7 @@ class CacheManagerInterface(ABC):
             self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
             fetchtime = legacy_metadata.get("fetchtime")
             if isinstance(fetchtime, dict):
-                self.fetchtime_time_per_symbol = fetchtime
+                self.fetchtime_per_symbol = fetchtime
                 self._rest_sync_cursor_per_symbol = dict(fetchtime)
 
     def compact_jsonl(self):
@@ -1472,7 +1544,7 @@ class CacheManagerInterface(ABC):
                             deduped.append(item)
                     self.cache[symbol] = deduped   # Keep memory deduplicated too.
                 candidate_counts = {s: len(v) for s, v in self.cache.items()}
-                fetchtime = dict(self.fetchtime_time_per_symbol)
+                fetchtime = dict(self.fetchtime_per_symbol)
                 with atomic_write(self.filename) as f:
                     for symbol, items in self.cache.items():
                         for item in items:
@@ -1524,7 +1596,7 @@ class CacheManagerInterface(ABC):
                         raise ValueError("invalid Trade cache bucket")
                     for item in items:
                         if (
-                            not self._is_valid_trade(item)
+                            not self._is_valid_item(item)
                             or str(item["symbol"]).upper() != symbol.upper()
                         ):
                             raise ValueError("invalid Trade cache row")
@@ -1538,7 +1610,7 @@ class CacheManagerInterface(ABC):
                     symbol: len(items)
                     for symbol, items in self.cache.items()
                 }
-                fetchtime = dict(self.fetchtime_time_per_symbol)
+                fetchtime = dict(self.fetchtime_per_symbol)
                 records = []
                 with atomic_write(self.filename) as handle:
                     for symbol, items in self.cache.items():
@@ -1827,7 +1899,7 @@ class CacheManagerInterface(ABC):
             else:  # Snapshot mode stores only the latest trend values.
                 self.cache[symbol] = new_items if isinstance(new_items, list) else [new_items]             #self.cache[symbol] = new_items[0]
               
-            self.fetchtime_time_per_symbol[symbol] = current_time
+            self.fetchtime_per_symbol[symbol] = current_time
             self._mark_account_cache_dirty_locked()
 
         print(f"[{self.cls_name}][Info] {symbol}: Added {len(new_items)} new items.")
@@ -1841,14 +1913,14 @@ class CacheManagerInterface(ABC):
         self.update_cache_per_symbol(symbol, new_items)
 
     def query_remote_and_update_cache(self):
-        if not self.fetchtime_time_per_symbol:
-            self.fetchtime_time_per_symbol = self.__rebuild_fetchtime_times()
-            self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
+        if not self.fetchtime_per_symbol:
+            self.fetchtime_per_symbol = self._rebuild_fetchtimes()
+            self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
 
         account_cycle_high_water = None
         for symbol in list(self.symbols):
             request_high_water = int(time.time() * 1000)
-            fallback_ft = self.fetchtime_time_per_symbol.get(symbol, self.fallback_time_default)
+            fallback_ft = self.fetchtime_per_symbol.get(symbol, self.fallback_time_default)
             if self._is_account_cache():
                 startTime = min(
                     self._rest_sync_cursor_per_symbol.get(symbol, fallback_ft),
@@ -1873,8 +1945,8 @@ class CacheManagerInterface(ABC):
                 with self.lock:
                     cursor_ms = max(0, request_high_water - 1)
                     self._rest_sync_cursor_per_symbol[symbol] = cursor_ms
-                    self.fetchtime_time_per_symbol[symbol] = max(
-                        int(self.fetchtime_time_per_symbol.get(symbol, 0) or 0),
+                    self.fetchtime_per_symbol[symbol] = max(
+                        int(self.fetchtime_per_symbol.get(symbol, 0) or 0),
                         cursor_ms,
                     )
                     self._mark_account_cache_dirty_locked()
@@ -1897,8 +1969,8 @@ class CacheManagerInterface(ABC):
 
     def on_items_update(self, symbol, items):
         print(f"[{self.cls_name}][Info] {symbol}: WS Items updated to {items}")
-        if not self.fetchtime_time_per_symbol:
-            self.fetchtime_time_per_symbol = self.__rebuild_fetchtime_times()
+        if not self.fetchtime_per_symbol:
+            self.fetchtime_per_symbol = self._rebuild_fetchtimes()
         self._persist_items(symbol, items)
         
     def _should_poll(self):
@@ -2021,7 +2093,7 @@ class CacheTradeManager(CacheManagerInterface):
                          api_client=api_client, append_persist=True)
 
     @staticmethod
-    def _is_valid_trade(trade):
+    def _is_valid_item(trade):
         if not isinstance(trade, dict):
             return False
         required_keys = (
@@ -2046,6 +2118,8 @@ class CacheTradeManager(CacheManagerInterface):
             and timestamp > 0 and isinstance(trade["isBuyer"], bool)
         )
 
+    _is_valid_trade = _is_valid_item
+
     def get_remote_items(self, symbol, startTime):
         # Paginate through the injected client so periods with more than 1,000 trades
         # are not truncated.
@@ -2056,7 +2130,7 @@ class CacheTradeManager(CacheManagerInterface):
         print(f"[{self.cls_name}][info] New trades: {len(new_trades)}")
         for t in new_trades:
             if (
-                not self._is_valid_trade(t)
+                not self._is_valid_item(t)
                 or str(t["symbol"]).upper() != str(symbol).upper()
             ):
                 raise RuntimeError(
@@ -2088,7 +2162,7 @@ class CacheTradeManager(CacheManagerInterface):
             existing = {}
             for idx, item in enumerate(bucket):
                 if (
-                    not self._is_valid_trade(item)
+                    not self._is_valid_item(item)
                     or str(item["symbol"]).upper() != str(symbol).upper()
                 ):
                     raise RuntimeError("invalid Trade row already in memory")
@@ -2102,7 +2176,7 @@ class CacheTradeManager(CacheManagerInterface):
             enriched_unpersisted = False
             for item in new_items:
                 if (
-                    not self._is_valid_trade(item)
+                    not self._is_valid_item(item)
                     or str(item["symbol"]).upper() != str(symbol).upper()
                 ):
                     raise RuntimeError("invalid incoming Trade row")
@@ -2132,10 +2206,10 @@ class CacheTradeManager(CacheManagerInterface):
                 unpersisted_tail = bucket[persisted_count:]
                 unpersisted_tail.sort(key=lambda t: (int(t["time"]), int(t["id"])))
                 bucket[persisted_count:] = unpersisted_tail
-            self.fetchtime_time_per_symbol[symbol] = int(time.time() * 1000)
+            self.fetchtime_per_symbol[symbol] = int(time.time() * 1000)
             self._mark_account_cache_dirty_locked()
 
-    def last_opposite_fill_price(self, symbol, order_type):
+    def get_last_opposite_fill_price(self, symbol, order_type):
         """Return the latest opposite fill price without a time limit.
 
         BUY uses the latest SELL and SELL uses the latest BUY. Read the manager's own
@@ -2150,7 +2224,7 @@ class CacheTradeManager(CacheManagerInterface):
         with self.lock:
             for trade in self.cache.get(symbol, []):
                 if (
-                    not self._is_valid_trade(trade)
+                    not self._is_valid_item(trade)
                     or str(trade["symbol"]).upper() != str(symbol).upper()
                     or trade["isBuyer"] != want_buyer
                 ):
@@ -2160,6 +2234,8 @@ class CacheTradeManager(CacheManagerInterface):
                     latest_key = key
                     latest_price = float(trade["price"])
         return latest_price
+
+    last_opposite_fill_price = get_last_opposite_fill_price
 
 
 CacheTrade = CacheTradeManager
@@ -2172,7 +2248,7 @@ class CacheOrderManager(CacheManagerInterface):
         super().__init__(sync_ts, symbols, filename, append_mode=True,
                          api_client=api_client, append_persist=False)
         
-    def _is_valid_trade(self, trade):
+    def _is_valid_item(self, trade):
         if not isinstance(trade, dict):
             return False
         required_keys = ("orderId", "price", "quantity", "timestamp", "side")
@@ -2215,6 +2291,9 @@ class CacheOrderManager(CacheManagerInterface):
             )
         )
 
+    _is_valid_trade = _is_valid_item
+    _is_valid_order = _is_valid_item
+
     def get_remote_items(self, symbol, startTime):
         from binance_api import bapi_allorders as apiorders
         fills = apiorders.paginate_my_trades(
@@ -2223,7 +2302,7 @@ class CacheOrderManager(CacheManagerInterface):
         order_fills = []
         for fill in fills:
             if (
-                not CacheTradeManager._is_valid_trade(fill)
+                not CacheTradeManager._is_valid_item(fill)
                 or str(fill["symbol"]).upper() != str(symbol).upper()
             ):
                 raise RuntimeError(
@@ -2341,14 +2420,14 @@ class CacheOrderManager(CacheManagerInterface):
 
             if candidate != bucket:
                 self.cache[symbol] = candidate
-                self.fetchtime_time_per_symbol[symbol] = now_ms
+                self.fetchtime_per_symbol[symbol] = now_ms
                 self._mark_account_cache_dirty_locked()
 
 
 CacheOrder = CacheOrderManager
 
 
-class CacheSparsePrice(CacheManagerInterface):
+class CacheSparsePriceManager(CacheManagerInterface):
     """Store sparse three-minute price samples for two years in JSONL.
 
     Unlike dense WebSocket-pushed Cache24 managers, this periodically asks for the
@@ -2367,7 +2446,7 @@ class CacheSparsePrice(CacheManagerInterface):
         # last_times = {symbol: max(entry[0] for entry in self.cache if entry) for symbol in self.symbols}
         # return last_times
 
-    def rebuild_fetchtime_times(self):
+    def rebuild_fetchtimes(self):
         if not self.cache:
             return {}
         last_times = {}
@@ -2376,6 +2455,8 @@ class CacheSparsePrice(CacheManagerInterface):
             if entries:
                 last_times[symbol] = max(entry[0] for entry in entries)
         return last_times
+
+    rebuild_fetchtime_times = rebuild_fetchtimes
 
     def get_remote_items(self, symbol, startTime):
         # Preserve the observation timestamp supplied by get_price. Using only a cached
@@ -2399,10 +2480,11 @@ class CacheSparsePrice(CacheManagerInterface):
         return self.symbols
 
 
-CacheSparsePriceManager = CacheSparsePrice
+CacheSparsePrice = CacheSparsePriceManager
+CachePriceManager = CacheSparsePriceManager
 
 
-class Cache24Price(CacheManagerInterface):
+class Cache24PriceManager(CacheManagerInterface):
     """Collect maximum-granularity prices over the latest ``KEEP_HOURS``.
 
     This manager neither polls nor subscribes directly to WebSocket. It receives every
@@ -2431,8 +2513,8 @@ class Cache24Price(CacheManagerInterface):
             entries = self.cache.get(symbol)
             if entries and int(ts_ms) < int(entries[-1][0]):
                 ts_ms = int(entries[-1][0])
-        if not self.fetchtime_time_per_symbol:
-            self.fetchtime_time_per_symbol = self._CacheManagerInterface__rebuild_fetchtime_times()
+        if not self.fetchtime_per_symbol:
+            self.fetchtime_per_symbol = self._rebuild_fetchtimes()
         self.update_cache_per_symbol(symbol, [[ts_ms, price]])
         self._trim_old_data(symbol)
         self._notify_price_subscribers(symbol, ts_ms, price)
@@ -2470,7 +2552,7 @@ class Cache24Price(CacheManagerInterface):
 
     # ── CacheManagerInterface ─────────────────────────────────────────────────
 
-    def rebuild_fetchtime_times(self):
+    def rebuild_fetchtimes(self):
         if not self.cache:
             return {}
         last_times = {}
@@ -2479,6 +2561,8 @@ class Cache24Price(CacheManagerInterface):
             if entries:
                 last_times[symbol] = max(entry[0] for entry in entries)
         return last_times
+
+    rebuild_fetchtime_times = rebuild_fetchtimes
 
     def get_remote_items(self, symbol, startTime):
         """Fetch initialization data only when the persisted file is missing.
@@ -2504,10 +2588,10 @@ class Cache24Price(CacheManagerInterface):
         return False
 
 
-Cache24PriceManager = Cache24Price
+Cache24Price = Cache24PriceManager
 
 
-class Cache365Price(Cache24Price):
+class Cache365PriceManager(Cache24PriceManager):
     """Multi-month/multi-year dense archive variant using incremental JSONL persistence.
 
     This remains separate from the live 24-hour manager and inherits its price-update
@@ -2568,8 +2652,8 @@ class Cache365Price(Cache24Price):
             if os.path.exists(metaf):
                 try:
                     with open(metaf) as handle:
-                        self.fetchtime_time_per_symbol = json.load(handle).get("fetchtime", {})
-                        self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
+                        self.fetchtime_per_symbol = json.load(handle).get("fetchtime", {})
+                        self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
                 except (OSError, ValueError, TypeError):
                     pass
 
@@ -2619,7 +2703,7 @@ class Cache365Price(Cache24Price):
                             changed = True
                 self._load_jsonl()
                 if changed:
-                    self._write_meta(self._persisted_counts, self.fetchtime_time_per_symbol)
+                    self._write_meta(self._persisted_counts, self.fetchtime_per_symbol)
             if changed:
                 builtins.print(f"[{self.cls_name}][maintain] pruned expired/corrupt disk records")
             if os.path.getsize(self.filename) > self.MAX_FILE_BYTES:
@@ -2648,7 +2732,7 @@ class Cache365Price(Cache24Price):
             with atomic_write(self.filename) as target:
                 target.write(tail.decode("utf-8", errors="ignore"))
             self._load_jsonl()
-            self._write_meta(self._persisted_counts, self.fetchtime_time_per_symbol)
+            self._write_meta(self._persisted_counts, self.fetchtime_per_symbol)
             with open(archive, "rb") as source, gzip.open(archive + ".gz.tmp", "wb") as target:
                 shutil.copyfileobj(source, target, length=1024 * 1024)
             os.replace(archive + ".gz.tmp", archive + ".gz")
@@ -2664,12 +2748,12 @@ class Cache365Price(Cache24Price):
     # Inherit get_remote_items from Cache24PriceManager, including real observation timestamps.
 
 
-Cache365PriceManager = Cache365Price
-Cache24LongPrice = Cache365Price
-Cache24LongPriceManager = Cache365Price
+Cache365Price = Cache365PriceManager
+Cache24LongPrice = Cache365PriceManager
+Cache24LongPriceManager = Cache365PriceManager
 
 
-class PriceLongTrend(CacheManagerInterface):
+class CacheLongTrendManager(CacheManagerInterface):
     def __init__(self, sync_ts, symbols, filename, api_client=api):
         super().__init__(sync_ts, symbols, filename, append_mode=False, api_client=api_client)
 
@@ -2692,7 +2776,7 @@ class PriceLongTrend(CacheManagerInterface):
 
         # return dict(last_times)
         
-    def rebuild_fetchtime_times(self):
+    def rebuild_fetchtimes(self):
         last_times = defaultdict(int)
         for symbol, items in self.cache.items():
             for item in items:
@@ -2705,6 +2789,8 @@ class PriceLongTrend(CacheManagerInterface):
         for symbol in last_times:
             last_times[symbol] = max(0, last_times[symbol] - 60_000)
         return dict(last_times)
+
+    rebuild_fetchtime_times = rebuild_fetchtimes
 
     def get_remote_items(self, symbol, startTime):
         trend_filename = os.path.join(_CONFIG_ROOT, "priceanalysis.json")
@@ -2726,11 +2812,13 @@ class PriceLongTrend(CacheManagerInterface):
         return [data[symbol]]
 
 
-CachePriceLongTrend = PriceLongTrend
-CachePriceLongTrendManager = PriceLongTrend
+CacheLongTrend = CacheLongTrendManager
+PriceLongTrend = CacheLongTrendManager
+CachePriceLongTrend = CacheLongTrendManager
+CachePriceLongTrendManager = CacheLongTrendManager
 
 
-class CacheAssetValue(CacheManagerInterface):
+class CacheAssetValueManager(CacheManagerInterface):
     def __init__(self, sync_ts, symbols, filename, api_client=api):
         super().__init__(sync_ts, symbols, filename, append_mode=True,
                          api_client=api_client, append_persist=True)
@@ -2746,7 +2834,7 @@ class CacheAssetValue(CacheManagerInterface):
         if changed:
             self.save_state_to_file()
 
-    def rebuild_fetchtime_times(self):
+    def rebuild_fetchtimes(self):
         last_times = {}
         for symbol, items in self.cache.items():
             if not items:
@@ -2758,6 +2846,8 @@ class CacheAssetValue(CacheManagerInterface):
             if max_ts_sec > 0:
                 last_times[symbol] = max(0, int(max_ts_sec * 1000) - 60_000)
         return last_times
+
+    rebuild_fetchtime_times = rebuild_fetchtimes
 
     def get_remote_items(self, symbol, startTime):
         try:
@@ -2779,21 +2869,21 @@ class CacheAssetValue(CacheManagerInterface):
         return [snapshot]
 
 
-CacheAssetValueManager = CacheAssetValue
+CacheAssetValue = CacheAssetValueManager
 
 
 # ######
-# ###### CacheCurrentPrice: per-symbol current price, WebSocket-first with HTTP fallback
+# ###### CacheCurrentPriceManager: per-symbol current price, WebSocket-first with HTTP fallback
 # ######
 
-class CacheCurrentPrice(CacheManagerInterface):
+class CacheCurrentPriceManager(CacheManagerInterface):
     """Maintain the latest timestamped price per symbol.
 
     This is a drop-in replacement for ``bapi.get_current_price``. WebSocket is primary;
     HTTP polling runs only after WebSocket has been silent beyond ``WS_TIMEOUT_SEC``.
     ``get_price`` forces HTTP when the cached entry exceeds ``STALE_THRESHOLD_MS``.
     Snapshot semantics retain one ``[[timestamp_ms, price]]`` entry per symbol in a
-    shared cache_currentprice.json file.
+    shared cache_current_price.json file.
     """
 
     WS_TIMEOUT_SEC     = 15      # Treat WebSocket as unavailable after 15 silent seconds.
@@ -2861,8 +2951,8 @@ class CacheCurrentPrice(CacheManagerInterface):
         in ``on_items_update`` updates ``_ws_last_event_ts``.
         """
         ts_ms = int(ts_ms) if ts_ms is not None else int(time.time() * 1000)
-        if not self.fetchtime_time_per_symbol:
-            self.fetchtime_time_per_symbol = self._CacheManagerInterface__rebuild_fetchtime_times()
+        if not self.fetchtime_per_symbol:
+            self.fetchtime_per_symbol = self._rebuild_fetchtimes()
         self._record_price_timestamp(symbol)
         self.update_cache_per_symbol(symbol, [[ts_ms, price]])
         self._notify_price_subscribers(symbol, ts_ms, price)
@@ -2913,13 +3003,15 @@ class CacheCurrentPrice(CacheManagerInterface):
             return
         self._push_price(symbol, price, ts_ms=ts_ms)
 
-    def rebuild_fetchtime_times(self):
+    def rebuild_fetchtimes(self):
         last_times = {}
         for symbol in self.symbols:
             entries = self.cache.get(symbol, [])
             if entries:
                 last_times[symbol] = entries[0][0]   # Snapshot contains one entry.
         return last_times
+
+    rebuild_fetchtime_times = rebuild_fetchtimes
 
     def get_all_symbols_from_cache(self):
         return self.symbols
@@ -2947,7 +3039,7 @@ class CacheCurrentPrice(CacheManagerInterface):
             return 0.0
         return len(dq) / self.FREQ_WINDOW_SEC
 
-    def cached_price_observation(self, symbol: str, max_age_sec: float):
+    def get_cached_price_observation(self, symbol: str, max_age_sec: float):
         """Return a fresh cached timestamp and price without fetching."""
         max_age = float(max_age_sec)
         if not math.isfinite(max_age) or max_age <= 0:
@@ -2973,6 +3065,8 @@ class CacheCurrentPrice(CacheManagerInterface):
         ):
             return None
         return observed_at, price
+
+    cached_price_observation = get_cached_price_observation
 
     def get_price(self, symbol: str):
         """Return ``[timestamp_ms, price]``, forcing HTTP when missing or stale."""
@@ -3007,12 +3101,12 @@ class CacheCurrentPrice(CacheManagerInterface):
         ws_manager.subscribe(self)
 
 
-CacheCurrentPriceManager = CacheCurrentPrice
+CacheCurrentPrice = CacheCurrentPriceManager
 
 
 # ── Singleton ─────────────────────────────────────────────────────────────────
 
-_current_price_instance: Optional[CacheCurrentPrice] = None
+_current_price_instance: Optional[CacheCurrentPriceManager] = None
 _current_price_lock = threading.Lock()
 
 def _default_price_tracking():
@@ -3023,8 +3117,8 @@ def _default_price_tracking():
 
 def get_current_price_manager(ws_manager=None, symbols=None, sync_ts=None,
                               start_sync=True,
-                              provider_names=None) -> CacheCurrentPrice:
-    """Return or lazily create the CacheCurrentPrice singleton.
+                              provider_names=None) -> CacheCurrentPriceManager:
+    """Return or lazily create the CacheCurrentPriceManager singleton.
 
     ``sync_ts=None`` preserves the current interval and uses the configured default on
     first creation. An explicit value updates the live interval read by the thread.
@@ -3058,10 +3152,10 @@ def get_current_price_manager(ws_manager=None, symbols=None, sync_ts=None,
                 provider_names = _default_providers
         else:
             _syms = symbols
-        _current_price_instance = CacheCurrentPrice(
-            sync_ts     = sync_ts if sync_ts is not None else CURRENTPRICE_SYNC_INTERVAL_SEC,
+        _current_price_instance = CacheCurrentPriceManager(
+            sync_ts     = sync_ts if sync_ts is not None else CURRENT_PRICE_SYNC_INTERVAL_SEC,
             symbols     = _syms,
-            filename    = "cache_currentprice.json",
+            filename    = "cache_current_price.json",
             ws_manager  = ws_manager,
             provider_names = provider_names,
             api_client  = api,
@@ -3072,11 +3166,11 @@ def get_current_price_manager(ws_manager=None, symbols=None, sync_ts=None,
 
 
 # ######
-# ###### CachePriceShortTrend: windows, calculated trend, and cross-process cache
+# ###### CacheShortTrendManager: windows, calculated trend, and cross-process cache
 # ######
 
-class CachePriceShortTrend:
-    """Calculate per-symbol instant trends and share snapshots across processes.
+class CacheShortTrendManager:
+    """Calculate per-symbol short trends and share snapshots across processes.
 
     Writers build windows, subscribe to Cache24, and publish fast gradient/epsilon values.
     Readers such as rtrade use only the gate backed by the shared file.
@@ -3093,11 +3187,13 @@ class CachePriceShortTrend:
     WINDOW_SECONDS = [3.7 * 60, 2.5 * 60 * 60]   # [3.7 min momentum, 2.5 hours trend]
     _live_instances = weakref.WeakSet()
 
-    def __init__(self, symbols, filename="cache_instant_trend.json", writer=False,
+    def __init__(self, symbols, filename="cache_short_trend.json", writer=False,
                  window_seconds=None, thresholds=None):
         self._live_instances.add(self)
+        self.cls_name = type(self).__name__
         self.symbols = list(symbols)
         self.filename = u.cache_path(filename)   # Store cache data in the cachedb subdirectory.
+        _migrate_legacy_filename_if_needed(self.filename)
         self.trend_dir = os.path.join(os.path.dirname(self.filename), "24trend")
         self.writer = writer   # Only the writer process persists the file.
         # Sort N window durations so index zero is primary.
@@ -3106,12 +3202,14 @@ class CachePriceShortTrend:
         # Thresholds may be callable, keyed by window, keyed by symbol and window, or None.
         self._threshold_fn = self._build_threshold_fn(thresholds)
         self._mem = {}
+        self.cache = self._mem
         self._live_windows = {}
         self._hist_windows = {}
         self._trend_buffers = {}
         self._active_dynamic_windows = set()
         self._disk_c24_cache = {}
         self._lock = threading.RLock()
+        self.lock = self._lock
         self._file_mtime = None
         self._file_cache = None
         # Writer state populated by start_computation: symbol/window to analyzer objects.
@@ -3186,7 +3284,7 @@ class CachePriceShortTrend:
             self.prime_from_file(symbols=self.symbols, overwrite=False)
         import pricewindow as pw
         if cache24_managers is None:
-            cache24_managers = get_cache_manager("Price24")
+            cache24_managers = get_cache_manager("24Price")
         if current_price_mgr is None:
             current_price_mgr = get_current_price_manager()
         self.current_price_mgr = current_price_mgr
@@ -3208,10 +3306,10 @@ class CachePriceShortTrend:
                 self.analyzers[s][sec] = pw.WindowAnalyzer(w)
                 parts.append(f"{sec:.0f}s: {len(w.prices)} (rate={w.sample_rate_sec:.2f}s)")
             c24.subscribe_price(self)                       # tick signal to the fast channel
-            print(f"[InstantTrend][{s}] " + " ".join(parts))
+            print(f"[ShortTrend][{s}] " + " ".join(parts))
           except Exception as _e:
             builtins.print(
-                f"[InstantTrend][{s}] setup failed ({_e}) — skipping; "
+                f"[ShortTrend][{s}] setup failed ({_e}) — skipping; "
                 "Binance is unaffected"
             )
         self._computing = True
@@ -3230,8 +3328,17 @@ class CachePriceShortTrend:
             return None
         if self.current_price_mgr is None:
             return None
-        observation = self.current_price_mgr.cached_price_observation(
-            symbol, self.TREND_STALE_SEC)
+        obs_fn = (
+            self.current_price_mgr.get_cached_price_observation
+            if isinstance(self.current_price_mgr, CacheCurrentPriceManager)
+            or "get_cached_price_observation" in getattr(self.current_price_mgr, "__dict__", {})
+            else getattr(
+                self.current_price_mgr,
+                "cached_price_observation",
+                self.current_price_mgr.get_cached_price_observation,
+            )
+        )
+        observation = obs_fn(symbol, self.TREND_STALE_SEC)
         if observation is None:
             return None
         observed_at, current_price = observation
@@ -3313,7 +3420,7 @@ class CachePriceShortTrend:
             + sorted(self._active_dynamic_windows)
         ))
         for window in target_windows:
-            dyn = self.get_instant_trend_for_window(symbol, window, now=now)
+            dyn = self.get_short_trend_for_window(symbol, window, now=now)
             if dyn is not None:
                 published[_dynamic_window_key(dyn["window_seconds"])] = dyn
         return published
@@ -3329,9 +3436,9 @@ class CachePriceShortTrend:
                     try:
                         self.evaluate_full(s)
                     except Exception as e:
-                        print(f"[CachePriceShortTrendManager] evaluate_full {s}: {e}")
+                        print(f"[{self.cls_name}] evaluate_full {s}: {e}")
                 self._stop_event.wait(self.FULL_EVAL_INTERVAL_SEC)
-        self._full_eval_thread = threading.Thread(target=run, name="InstantTrendFullEval", daemon=True)
+        self._full_eval_thread = threading.Thread(target=run, name="ShortTrendFullEval", daemon=True)
         self._full_eval_thread.start()
 
     # ── Fast Cache24 subscriber channel: gradient and epsilon on every tick ───
@@ -3357,7 +3464,7 @@ class CachePriceShortTrend:
                           trend_fast=(1 if g > 0 else -1 if g < 0 else 0),
                           current_price=price, ts_fast=float(ts_ms) / 1000.0)
         except Exception as e:
-            print(f"[CachePriceShortTrendManager] on_price_update {symbol}: {e}")
+            print(f"[{self.cls_name}] on_price_update {symbol}: {e}")
 
     # ── Calculation API ──────────────────────────────────────────────────────
     def get_window(self, symbol, seconds=None):
@@ -3370,9 +3477,11 @@ class CachePriceShortTrend:
         ans = self.analyzers.get(symbol) or {}
         return ans.get(float(seconds) if seconds is not None else self.window_seconds[0])
 
-    def get_instant_trend(self, symbol):
+    def get_short_trend(self, symbol):
         win = self.get_window(symbol)
         return win.get_instant_trend() if win else None
+
+    get_instant_trend = get_short_trend
 
     # ── Dynamic window & Historical Subslice (O(1) Prefix Sums + Persistence) ──
     def _eval_entries_with_buffer(self, symbol, entries, a: int, b: int):
@@ -3397,10 +3506,15 @@ class CachePriceShortTrend:
         return ft, gc, sf, gr, eps, sample_rate
 
     def _load_disk_cache24_entries(self, symbol):
-        """Load raw [ts_ms, price] entries from cachedb/cache_24price_<symbol>.json if present."""
-        c24_file = os.path.join(os.path.dirname(self.filename), f"cache_24price_{symbol}.json")
+        """Load raw [ts_ms, price] entries from cachedb/cache_24_price_<symbol>.json if present."""
+        base_dir = os.path.dirname(self.filename)
+        c24_file = os.path.join(base_dir, f"cache_24_price_{symbol}.json")
         if not os.path.exists(c24_file):
-            return []
+            legacy_file = os.path.join(base_dir, f"cache_24price_{symbol}.json")
+            if os.path.exists(legacy_file):
+                c24_file = legacy_file
+            else:
+                return []
         try:
             mtime = os.stat(c24_file).st_mtime_ns
             cached = self._disk_c24_cache.get(symbol)
@@ -3415,7 +3529,7 @@ class CachePriceShortTrend:
         except Exception:
             return []
 
-    def get_instant_trend_for_window(self, symbol, window_seconds, now=None):
+    def get_short_trend_for_window(self, symbol, window_seconds, now=None):
         """Calculate trend on demand for an arbitrary window in seconds.
 
         Uses O(1) incremental prefix sums over Cache24 and memoizes results in
@@ -3425,14 +3539,14 @@ class CachePriceShortTrend:
         req = float(window_seconds)
         clamped = min(max(req, CM_DYNAMIC_WINDOW_MIN_SEC), CM_DYNAMIC_WINDOW_MAX_SEC)
         if clamped != req:
-            print(f"[get_instant_trend_for_window] {symbol}: window_seconds={req:.0f} "
+            print(f"[get_short_trend_for_window] {symbol}: window_seconds={req:.0f} "
                   f"outside [{CM_DYNAMIC_WINDOW_MIN_SEC:.0f}, {CM_DYNAMIC_WINDOW_MAX_SEC:.0f}] "
                   f"-> clamped to {clamped:.0f}")
         w_key = _dynamic_window_key(clamped)
 
         if self._cache24_managers is None:
             # Reader process: check published live_<SYMBOL>.json / shared file first,
-            # then fall back to on-disk cache_24price_<SYMBOL>.json if available.
+            # then fall back to on-disk cache_24_price_<SYMBOL>.json if available.
             pub = self._published_window(symbol, clamped, now=now)
             if pub is not None:
                 return pub
@@ -3468,7 +3582,7 @@ class CachePriceShortTrend:
         now_val = now if now is not None else time.time()
         self._active_dynamic_windows.add(clamped)
 
-        # Fast path when c24 is a real Cache24Price instance with direct buffer access:
+        # Fast path when c24 is a real Cache24PriceManager instance with direct buffer access:
         if hasattr(c24, "cache") and hasattr(c24, "lock"):
             with c24.lock:
                 all_entries = list(c24.cache.get(symbol, []))
@@ -3511,7 +3625,7 @@ class CachePriceShortTrend:
         try:
             entries = c24.get_recent_entries(symbol, last_seconds=clamped)
         except Exception as e:
-            print(f"[get_instant_trend_for_window] {symbol}: get_recent_entries failed ({e})")
+            print(f"[get_short_trend_for_window] {symbol}: get_recent_entries failed ({e})")
             return None
         if len(entries) < 3:
             return None
@@ -3532,6 +3646,8 @@ class CachePriceShortTrend:
         )
         self._persist_live_window(symbol, w_key, res, last_tick_ts_ms=int(entries[-1][0]))
         return res
+
+    get_instant_trend_for_window = get_short_trend_for_window
 
     def _persist_live_window(self, symbol: str, w_key: str, data: dict,
                              last_tick_ts_ms: Optional[int] = None, flush: bool = False):
@@ -3558,7 +3674,7 @@ class CachePriceShortTrend:
             }
             atomic_write_json(self._live_trend_file(symbol), clean)
         except Exception as e:
-            print(f"[CachePriceShortTrendManager] live write failure for {symbol}: {e}")
+            print(f"[{self.cls_name}] live write failure for {symbol}: {e}")
 
     def _read_live_symbol_file(self, symbol: str) -> dict:
         path = self._live_trend_file(symbol)
@@ -3686,7 +3802,7 @@ class CachePriceShortTrend:
             try:
                 atomic_write_json(self._hist_trend_file(symbol), sym_hist)
             except Exception as e:
-                print(f"[CachePriceShortTrendManager] hist write failure for {symbol}: {e}")
+                print(f"[{self.cls_name}] hist write failure for {symbol}: {e}")
         return dict(res)
 
     def is_trend_up_for_slice(self, symbol: str, start_ts: float, end_ts: float) -> bool:
@@ -3706,19 +3822,19 @@ class CachePriceShortTrend:
     def is_trend_up(self, symbol, window_seconds=None, now=None) -> bool:
         """Evaluate upward-trend condition over a dynamic window or the default primary snapshot."""
         if window_seconds is not None and float(window_seconds) != self.window_seconds[0]:
-            dyn = self.get_instant_trend_for_window(symbol, window_seconds, now=now)
+            dyn = self.get_short_trend_for_window(symbol, window_seconds, now=now)
             return self._eval_upward_formula(dyn)
-        snap = self.fresh_snapshot(symbol, now=now)
+        snap = self.get_fresh_snapshot(symbol, now=now)
         if snap is not None:
             return self._eval_upward_formula(snap)
         if window_seconds is not None:
-            dyn = self.get_instant_trend_for_window(symbol, window_seconds, now=now)
+            dyn = self.get_short_trend_for_window(symbol, window_seconds, now=now)
             return self._eval_upward_formula(dyn)
         return False
 
     def is_trend_up_for_window(self, symbol, window_seconds, now=None):
         """Evaluate upward-trend condition over a configurable window in seconds."""
-        dyn = self.get_instant_trend_for_window(symbol, window_seconds, now=now)
+        dyn = self.get_short_trend_for_window(symbol, window_seconds, now=now)
         return self._eval_upward_formula(dyn)
 
     # ── Atomic cross-process JSON store ──────────────────────────────────────
@@ -3728,7 +3844,7 @@ class CachePriceShortTrend:
             for symbol in list(self._live_windows.keys()):
                 self._write_live_symbol_file(symbol)
         except Exception as e:
-            print(f"[CachePriceShortTrendManager] write failure for {self.filename}: {e}")
+            print(f"[{self.cls_name}] write failure for {self.filename}: {e}")
 
     def _read_file(self):
         # Always read this small, infrequently accessed file to guarantee cross-process
@@ -3765,7 +3881,7 @@ class CachePriceShortTrend:
                 with self._lock:
                     if self._mem:
                         self._write_file()
-        self._flush_thread = threading.Thread(target=run, name="InstantTrendFlush", daemon=True)
+        self._flush_thread = threading.Thread(target=run, name="ShortTrendFlush", daemon=True)
         self._flush_thread.start()
 
     def shutdown(self, timeout=5.0):
@@ -3808,6 +3924,7 @@ class CachePriceShortTrend:
                     and (overwrite or symbol not in self._mem)
                 ):
                     self._mem[symbol] = dict(snap)
+            self.cache = self._mem
         return len(self._mem)
 
     def get_snapshot(self, symbol):
@@ -3879,7 +3996,7 @@ class CachePriceShortTrend:
             return self.get_snapshot(symbol)
         # A stale file triggers autonomous local calculation and writer failover.
         builtins.print(
-            f"[CachePriceShortTrendManager][WARN] stale file -> "
+            f"[{self.cls_name}][WARN] stale file -> "
             f"local-computation failover ({symbol})"
         )
         self.prime_from_file()
@@ -3896,6 +4013,7 @@ class CachePriceShortTrend:
     def clear(self):
         with self._lock:
             self._mem.clear()
+            self.cache = self._mem
             self._live_windows.clear()
             self._hist_windows.clear()
             self._trend_buffers.clear()
@@ -3921,7 +4039,7 @@ class CachePriceShortTrend:
         price = abs(snap.get("current_price") or 0.0)
         return price * self.FAVORABLE_REL_EPS
 
-    def fresh_snapshot(self, symbol, now=None):
+    def get_fresh_snapshot(self, symbol, now=None):
         """Return a symbol snapshot only when it is within ``TREND_STALE_SEC``.
 
         This is the shared public staleness check used by both trend and wait decisions.
@@ -3931,6 +4049,8 @@ class CachePriceShortTrend:
         if not self._snapshot_is_usable(snap, now, self.TREND_STALE_SEC):
             return None
         return snap
+
+    fresh_snapshot = get_fresh_snapshot
 
     def should_wait(self, side, symbol, window_seconds=None, fast=False,
                      use_noise_gate=True, now=None):
@@ -3945,7 +4065,7 @@ class CachePriceShortTrend:
         side = side.upper()
 
         if window_seconds is not None and float(window_seconds) != self.window_seconds[0]:
-            dyn = self.get_instant_trend_for_window(symbol, window_seconds, now=now)
+            dyn = self.get_short_trend_for_window(symbol, window_seconds, now=now)
             if dyn is None:
                 return False   # Unknown because Cache24 is unavailable, insufficient, or stale.
             g = float(dyn["growth_coefficient"] or 0.0)
@@ -3957,7 +4077,7 @@ class CachePriceShortTrend:
                 return g > 0
             return False
 
-        snap = self.fresh_snapshot(symbol, now=now)
+        snap = self.get_fresh_snapshot(symbol, now=now)
         if snap is None:
             return False   # Unknown or stale data executes immediately.
         if fast:
@@ -3998,14 +4118,16 @@ class CachePriceShortTrend:
         return waited
 
 
-CachePriceShortTrendManager = CachePriceShortTrend
+CacheShortTrend = CacheShortTrendManager
+CachePriceShortTrend = CacheShortTrendManager
+CachePriceShortTrendManager = CacheShortTrendManager
 
 
 _short_trend_instance = None
 _short_trend_lock = threading.Lock()
 
-def get_short_trend_manager(symbols=None, filename="cache_instant_trend.json", writer=False):
-    """Return the CachePriceShortTrend singleton.
+def get_short_trend_manager(symbols=None, filename="cache_short_trend.json", writer=False):
+    """Return the CacheShortTrendManager singleton.
 
     ``writer=True`` lets the process persist the file; calculators and readers use False.
     """
@@ -4020,7 +4142,7 @@ def get_short_trend_manager(symbols=None, filename="cache_instant_trend.json", w
                 _short_trend_instance.become_writer()
             return _short_trend_instance
         _syms = symbols if symbols is not None else _default_price_tracking()[0]
-        _short_trend_instance = CachePriceShortTrend(_syms, filename, writer=writer)
+        _short_trend_instance = CacheShortTrendManager(_syms, filename, writer=writer)
     return _short_trend_instance
 
 
@@ -4030,69 +4152,117 @@ def get_short_trend_manager(symbols=None, filename="cache_instant_trend.json", w
      
 ORDER_SYNC_INTERVAL_SEC = 0.4 * 60   # 24 seconds
 TRADE_SYNC_INTERVAL_SEC = 3 * 60     # 3 minutes
-PRICE_SYNC_INTERVAL_SEC = 3 * 60     # 3 minutes
-PRICE24_SYNC_INTERVAL_SEC = 30         # Fallback polling while WebSocket is inactive.
-CURRENTPRICE_SYNC_INTERVAL_SEC = 30   # Same policy for CacheCurrentPrice.
-PRICETREND_SYNC_INTERVAL_SEC = 10 * 60   # 10 minute
-ASSETVALUE_SYNC_INTERVAL_SEC = 10 * 60  # 10 minutes 
+SPARSE_PRICE_SYNC_INTERVAL_SEC = 3 * 60     # 3 minutes
+PRICE_24_SYNC_INTERVAL_SEC = 30         # Fallback polling while WebSocket is inactive.
+PRICE_365_SYNC_INTERVAL_SEC = 30        # Long-archive 24h/365d price sync interval.
+CURRENT_PRICE_SYNC_INTERVAL_SEC = 30    # Same policy for CacheCurrentPriceManager.
+SHORT_TREND_EVAL_INTERVAL_SEC = CacheShortTrendManager.FULL_EVAL_INTERVAL_SEC
+LONG_TREND_SYNC_INTERVAL_SEC = 10 * 60   # 10 minutes
+ASSET_VALUE_SYNC_INTERVAL_SEC = 10 * 60  # 10 minutes
 # TODO: set this to 60 * 60  # 1 hour
 
-_PRICE_TREND_CACHES = frozenset({"CurrentPrice", "Price24", "Price", "PriceLongTrend"})
+# Backward-compatible interval aliases
+PRICE_SYNC_INTERVAL_SEC = SPARSE_PRICE_SYNC_INTERVAL_SEC
+PRICE24_SYNC_INTERVAL_SEC = PRICE_24_SYNC_INTERVAL_SEC
+CURRENTPRICE_SYNC_INTERVAL_SEC = CURRENT_PRICE_SYNC_INTERVAL_SEC
+PRICETREND_SYNC_INTERVAL_SEC = LONG_TREND_SYNC_INTERVAL_SEC
+ASSETVALUE_SYNC_INTERVAL_SEC = ASSET_VALUE_SYNC_INTERVAL_SEC
+
+_PRICE_TREND_CACHES = frozenset({
+    "CurrentPrice",
+    "24Price", "Price24",
+    "365Price",
+    "SparsePrice", "Price",
+    "LongTrend", "PriceLongTrend",
+})
 
 
 class CacheFactory:
     _instances = {}
     _sync_started = set()
 
+    _ALIASES = {
+        "Price": "SparsePrice",
+        "Price24": "24Price",
+        "PriceLongTrend": "LongTrend",
+    }
+
     _CONFIG = {
         "Trade": {
-            "class": CacheTrade,
+            "class": CacheTradeManager,
             "filename": "cache_trade.jsonl",
             "sync_ts": lambda: TRADE_SYNC_INTERVAL_SEC,
         },
         "Order": {
-            "class": CacheOrder,
+            "class": CacheOrderManager,
             "filename": "cache_order.json",
             "sync_ts": lambda: ORDER_SYNC_INTERVAL_SEC,
         },
-        "Price": {
-            "class": CacheSparsePrice,
+        "SparsePrice": {
+            "class": CacheSparsePriceManager,
             "filename": None,  # Dictionary per symbol.
-            "sync_ts": lambda: PRICE_SYNC_INTERVAL_SEC,
+            "sync_ts": lambda: SPARSE_PRICE_SYNC_INTERVAL_SEC,
         },
-        "Price24": {
-            "class": Cache24Price,
+        "24Price": {
+            "class": Cache24PriceManager,
             "filename": None,  # Dictionary per symbol.
-            "sync_ts": lambda: PRICE24_SYNC_INTERVAL_SEC,
+            "sync_ts": lambda: PRICE_24_SYNC_INTERVAL_SEC,
+        },
+        "365Price": {
+            "class": Cache365PriceManager,
+            "filename": None,  # Dictionary per symbol.
+            "sync_ts": lambda: PRICE_365_SYNC_INTERVAL_SEC,
         },
         "CurrentPrice": {
-            "class": CacheCurrentPrice,
-            "filename": "cache_currentprice.json",  # One shared file for all symbols.
-            "sync_ts": lambda: CURRENTPRICE_SYNC_INTERVAL_SEC,
+            "class": CacheCurrentPriceManager,
+            "filename": "cache_current_price.json",  # One shared file for all symbols.
+            "sync_ts": lambda: CURRENT_PRICE_SYNC_INTERVAL_SEC,
         },
-        "PriceLongTrend": {
-            "class": PriceLongTrend,
-            "filename": "cache_price_long_trend.json",
-            "sync_ts": lambda: PRICETREND_SYNC_INTERVAL_SEC,
+        "LongTrend": {
+            "class": CacheLongTrendManager,
+            "filename": "cache_long_trend.json",
+            "sync_ts": lambda: LONG_TREND_SYNC_INTERVAL_SEC,
         },
         "AssetValue": {
-            "class": CacheAssetValue,
+            "class": CacheAssetValueManager,
             "filename": "cache_asset_value.jsonl",
-            "sync_ts": lambda: ASSETVALUE_SYNC_INTERVAL_SEC,
+            "sync_ts": lambda: ASSET_VALUE_SYNC_INTERVAL_SEC,
         },
     }
 
     @classmethod
+    def _normalize_name(cls, name):
+        return cls._ALIASES.get(name, name)
+
+    @classmethod
+    def _all_keys_for(cls, canonical):
+        keys = [canonical]
+        for alias, target in cls._ALIASES.items():
+            if target == canonical:
+                keys.append(alias)
+        return keys
+
+    @classmethod
     def get(cls, name, symbols=None, *, start_sync=True, provider_names=None):
-        if name not in cls._CONFIG:
+        if name == "ShortTrend":
+            return get_short_trend_manager(symbols=symbols)
+        canonical = cls._normalize_name(name)
+        if canonical not in cls._CONFIG:
             raise ValueError(f"Unknown cache type: {name}")
-        if provider_names is not None and name != "CurrentPrice":
+        if provider_names is not None and canonical != "CurrentPrice":
             raise ValueError("provider_names is supported only for CurrentPrice")
+
+        existing_key = next(
+            (k for k in cls._all_keys_for(canonical) if k in cls._instances),
+            None,
+        )
+        if existing_key is not None and canonical not in cls._instances:
+            cls._instances[canonical] = cls._instances[existing_key]
 
         # This name-keyed singleton fixes symbols on first creation. Warn explicitly
         # when a later call requests a different set that will be ignored.
-        if name in cls._instances and symbols is not None:
-            inst = cls._instances[name]
+        if canonical in cls._instances and symbols is not None:
+            inst = cls._instances[canonical]
             existing = set(inst.keys()) if isinstance(inst, dict) else set(getattr(inst, "symbols", []))
             requested = set(symbols)
             if requested != existing:
@@ -4104,12 +4274,12 @@ class CacheFactory:
                     f"the request for {sorted(requested)} is IGNORED"
                     + (f" (missing: {sorted(missing)})" if missing else "")
                     + ". Singleton per name — the first instance is used.")
-        if name == "CurrentPrice" and name in cls._instances:
-            cls._instances[name].bind_providers(provider_names)
+        if canonical == "CurrentPrice" and canonical in cls._instances:
+            cls._instances[canonical].bind_providers(provider_names)
 
-        created = name not in cls._instances
+        created = canonical not in cls._instances
         if created:
-            config = cls._CONFIG[name]
+            config = cls._CONFIG[canonical]
             manager_class = config["class"]
             sync_ts = config["sync_ts"]()
             extra_kwargs = {
@@ -4117,30 +4287,35 @@ class CacheFactory:
                 if key not in {"class", "filename", "sync_ts"}
             }
             if symbols is None:
-                if name == "AssetValue":
+                if canonical == "AssetValue":
                     symbols = ["TOTAL"]
-                elif name in _PRICE_TREND_CACHES:
+                elif canonical in _PRICE_TREND_CACHES:
                     symbols, _, _default_providers = _default_price_tracking()
-                    if name == "CurrentPrice" and provider_names is None and _default_providers:
+                    if canonical == "CurrentPrice" and provider_names is None and _default_providers:
                         provider_names = _default_providers
                 else:
                     symbols = sym.symbols
 
-            if name == "CurrentPrice":
+            if canonical == "CurrentPrice":
                 current_price_sync_ts = (
                     None if _current_price_instance is not None else sync_ts
                 )
-                cls._instances[name] = get_current_price_manager(
+                instance = get_current_price_manager(
                     symbols=symbols,
                     sync_ts=current_price_sync_ts,
                     start_sync=False,
                     provider_names=provider_names,
                 )
-                sync_ts = cls._instances[name].sync_ts
-            elif name in ("Price", "Price24"):
-                # Price is append-JSONL history; Price24 is a bounded full-rewrite cache.
-                prefix, ext = ("cache_price_sparse_", "jsonl") if name == "Price" else ("cache_24price_", "json")
-                cls._instances[name] = {
+                sync_ts = instance.sync_ts
+            elif canonical in ("SparsePrice", "24Price", "365Price"):
+                # SparsePrice and 365Price are append-JSONL history; 24Price is a bounded full-rewrite cache.
+                if canonical == "SparsePrice":
+                    prefix, ext = ("cache_sparse_price_", "jsonl")
+                elif canonical == "365Price":
+                    prefix, ext = ("cache_365_price_", "jsonl")
+                else:
+                    prefix, ext = ("cache_24_price_", "json")
+                instance = {
                     s: manager_class(
                         sync_ts=sync_ts,
                         filename=f"{prefix}{s}.{ext}",
@@ -4151,7 +4326,7 @@ class CacheFactory:
                     for s in symbols
                 }
             else:
-                cls._instances[name] = manager_class(
+                instance = manager_class(
                     sync_ts=sync_ts,
                     filename=config["filename"],
                     symbols=symbols,
@@ -4159,23 +4334,30 @@ class CacheFactory:
                     **extra_kwargs,
                 )
 
-            managers = (cls._instances[name].values()
-                        if isinstance(cls._instances[name], dict)
-                        else (cls._instances[name],))
+            for k in cls._all_keys_for(canonical):
+                cls._instances[k] = instance
+
+            managers = (instance.values()
+                        if isinstance(instance, dict)
+                        else (instance,))
             if start_sync:
                 for manager in managers:
                     manager.periodic_sync(sync_ts, False)
-                cls._sync_started.add(name)
+                for k in cls._all_keys_for(canonical):
+                    cls._sync_started.add(k)
 
-        elif start_sync and name not in cls._sync_started:
-            value = cls._instances[name]
+        elif start_sync and canonical not in cls._sync_started:
+            value = cls._instances[canonical]
             managers = value.values() if isinstance(value, dict) else (value,)
-            sync_ts = cls._CONFIG[name]["sync_ts"]()
+            sync_ts = cls._CONFIG[canonical]["sync_ts"]()
             for manager in managers:
                 manager.periodic_sync(sync_ts, False)
-            cls._sync_started.add(name)
+            for k in cls._all_keys_for(canonical):
+                cls._sync_started.add(k)
 
-        return cls._instances[name]
+        for k in cls._all_keys_for(canonical):
+            cls._instances[k] = cls._instances[canonical]
+        return cls._instances[canonical]
 
     @classmethod
     def shutdown_all(cls, timeout=5.0):
@@ -4183,8 +4365,13 @@ class CacheFactory:
         global _current_price_instance
         current_price = cls._instances.get("CurrentPrice")
         managers = []
+        seen_ids = set()
         for value in cls._instances.values():
-            managers.extend(value.values() if isinstance(value, dict) else (value,))
+            items = value.values() if isinstance(value, dict) else (value,)
+            for manager in items:
+                if id(manager) not in seen_ids:
+                    seen_ids.add(id(manager))
+                    managers.append(manager)
         results = [manager.shutdown(timeout=timeout) for manager in managers
                    if hasattr(manager, "shutdown")]
         if (
@@ -4200,20 +4387,53 @@ class CacheFactory:
     def remove(cls, name, timeout=5.0):
         """Remove a singleton cleanly after stopping all threads it owns."""
         global _current_price_instance
-        value = cls._instances.pop(name, None)
-        cls._sync_started.discard(name)
+        canonical = cls._normalize_name(name)
+        value = None
+        for k in cls._all_keys_for(canonical):
+            popped = cls._instances.pop(k, None)
+            if popped is not None:
+                value = popped
+            cls._sync_started.discard(k)
         if value is None:
             return True
         managers = value.values() if isinstance(value, dict) else (value,)
         results = [manager.shutdown(timeout=timeout) for manager in managers
                    if hasattr(manager, "shutdown")]
         stopped = all(results) if results else True
-        if name == "CurrentPrice" and value is _current_price_instance and stopped:
+        if canonical == "CurrentPrice" and value is _current_price_instance and stopped:
             _current_price_instance = None
         return stopped
         
 def get_cache_manager(name, symbols=None, *, start_sync=True):
     return CacheFactory.get(name, symbols, start_sync=start_sync)
+
+
+def get_trade_manager(symbols=None, *, start_sync=True):
+    return CacheFactory.get("Trade", symbols, start_sync=start_sync)
+
+
+def get_order_manager(symbols=None, *, start_sync=True):
+    return CacheFactory.get("Order", symbols, start_sync=start_sync)
+
+
+def get_sparse_price_managers(symbols=None, *, start_sync=True):
+    return CacheFactory.get("SparsePrice", symbols, start_sync=start_sync)
+
+
+def get_24_price_managers(symbols=None, *, start_sync=True):
+    return CacheFactory.get("24Price", symbols, start_sync=start_sync)
+
+
+def get_365_price_managers(symbols=None, *, start_sync=True):
+    return CacheFactory.get("365Price", symbols, start_sync=start_sync)
+
+
+def get_long_trend_manager(symbols=None, *, start_sync=True):
+    return CacheFactory.get("LongTrend", symbols, start_sync=start_sync)
+
+
+def get_asset_value_manager(symbols=None, *, start_sync=True):
+    return CacheFactory.get("AssetValue", symbols, start_sync=start_sync)
 
 
 def ensure_account_cache_readers(status):
@@ -4298,7 +4518,8 @@ def _upsert_order_from_execution_report(event):
         return
 
     order_cache = get_cache_manager("Order")
-    if not order_cache._is_valid_trade(order_item):
+    validator = getattr(order_cache, "_is_valid_item", getattr(order_cache, "_is_valid_trade", None))
+    if not validator(order_item):
         builtins.print("[cacheManager][WS] rejected malformed order report")
         return
     order_cache._persist_items(symbol, [order_item])
@@ -4364,7 +4585,8 @@ def _append_trade_from_execution_report(event):
     if event.get("N") is not None:
         trade_item["commissionAsset"] = str(event.get("N"))
 
-    if not trade_cache._is_valid_trade(trade_item):
+    validator = getattr(trade_cache, "_is_valid_item", getattr(trade_cache, "_is_valid_trade", None))
+    if not validator(trade_item):
         builtins.print("[cacheManager][WS] rejected malformed Trade report")
         return
     trade_cache._persist_items(symbol, [trade_item])
@@ -4388,7 +4610,7 @@ def _persist_ws_updated_caches(event_type):
 def _refresh_symbol_in_cache(manager, symbol):
     """Refresh only one manager symbol efficiently for a WebSocket event."""
     try:
-        start_time = manager.fetchtime_time_per_symbol.get(symbol, manager.fallback_time_default)
+        start_time = manager.fetchtime_per_symbol.get(symbol, manager.fallback_time_default)
         items = manager.get_remote_items(symbol, start_time)
         if items:
             manager._persist_items(symbol, items)
@@ -4516,9 +4738,9 @@ class _NonBinanceTrendPoller:
 def _start_nonbinance_trend_poller(cpm, symbols, interval_sec=10,
                                    fetch_deadline_sec=_NB_FETCH_DEADLINE_SEC,
                                    provider_names=None):
-    """Feed instant trends for non-WebSocket, non-Binance symbols.
+    """Feed short trends for non-WebSocket, non-Binance symbols.
 
-    Poll through the facade and push into the CurrentPrice/Cache24/InstantTrend chain.
+    Poll through the facade and push into the CurrentPrice/Cache24/ShortTrend chain.
     Per-symbol failures do not affect Binance. A bounded poll wait and at least two
     workers keep one slow fetch from freezing the poller; provider timeouts remain visible.
     """
@@ -4590,18 +4812,21 @@ if __name__ == "__main__":
         builtins.print(f"[cacheManager] tracking non-Binance instruments from instruments.conf: {_nb_syms}")
 
     for name, config in CacheFactory._CONFIG.items():
+        if name == "365Price":
+            continue
         cache = get_cache_manager(name, start_sync=False)
         interval = config["sync_ts"]()  # Resolve the synchronization interval.
 
         if isinstance(cache, dict):
-            # Price and Price24 are dictionaries keyed by symbol.
+            # SparsePrice and 24Price are dictionaries keyed by symbol.
             for manager in cache.values():
                 threads.append(manager.periodic_sync(interval))
         else:
             threads.append(cache.periodic_sync(interval))
-        CacheFactory._sync_started.add(name)
+        for k in CacheFactory._all_keys_for(name):
+            CacheFactory._sync_started.add(k)
 
-    # Trend chain: market-data WebSocket to CurrentPrice, Cache24, and InstantTrend.
+    # Trend chain: market-data WebSocket to CurrentPrice, Cache24, and ShortTrend.
     # Full calculation here keeps the shared snapshot current independently of tradeall.
     try:
         from binance_api import bapi_ws
@@ -4609,10 +4834,10 @@ if __name__ == "__main__":
             ws_manager=bapi_ws.get_ws_manager(),
             sync_ts=0.8,
         )
-        _trend_cache24 = CacheFactory.get("Price24")
+        _trend_cache24 = CacheFactory.get("24Price")
         _trend_mgr = get_short_trend_manager(writer=True)   # Sole file writer.
         _trend_mgr.start_computation(_trend_cache24, _trend_cpm, run_full_eval=True)
-        print("⚙️ cacheManager: full trend computation started (cache_instant_trend.json).")
+        print("⚙️ cacheManager: full trend computation started (cache_short_trend.json).")
         if _nb_syms:   # WebSocket covers Binance only; push other prices manually.
             _nb_poller = _start_nonbinance_trend_poller(
                 _trend_cpm,

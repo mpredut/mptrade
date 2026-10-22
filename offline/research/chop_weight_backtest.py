@@ -372,7 +372,9 @@ def run_chop_benchmark(
     all_results: Dict[str, List[ChopBacktestStats]] = {}
 
     # Load BTC series for proxy reference
-    btc_path = os.path.join(ROOT, "cachedb", "cache_price_sparse_BTCUSDC.jsonl")
+    btc_path = os.path.join(ROOT, "cachedb", "cache_sparse_price_BTCUSDC.jsonl")
+    if not os.path.exists(btc_path):
+        btc_path = os.path.join(ROOT, "cachedb", "cache_price_sparse_BTCUSDC.jsonl")
     raw_btc = load_price_series(btc_path, "BTCUSDC")
     sampled_btc: List[Tuple[float, float]] = []
     last_t = 0.0
@@ -382,7 +384,9 @@ def run_chop_benchmark(
             last_t = t
 
     for sym in symbols:
-        cache_path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{sym}.jsonl")
+        cache_path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{sym}.jsonl")
+        if not os.path.exists(cache_path):
+            cache_path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{sym}.jsonl")
         logger.info("Loading price series for %s from %s ...", sym, cache_path)
         raw_series = load_price_series(cache_path, sym)
         if not raw_series:

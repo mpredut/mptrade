@@ -72,7 +72,7 @@ class TestArchiverLifecycle(unittest.TestCase):
         try:
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(json.dumps({"s": "BTCUSDC", "i": [1000, 10.0]}) + "\n")
-            manager = cm.Cache24LongPriceManager(60, ["BTCUSDC"], path)
+            manager = cm.Cache365PriceManager(60, ["BTCUSDC"], path)
             manager.KEEP_HOURS = 10**9
             manager.on_price_update("BTCUSDC", 2000, 11.0)
             manager.save_state_to_file()
@@ -95,7 +95,7 @@ class TestArchiverLifecycle(unittest.TestCase):
         try:
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(json.dumps({"s": "BTCUSDC", "i": [1, 10.0]}) + "\n")
-            manager = cm.Cache24LongPriceManager(60, ["BTCUSDC"], path)
+            manager = cm.Cache365PriceManager(60, ["BTCUSDC"], path)
             manager.KEEP_HOURS = 1
             manager.cache = {"BTCUSDC": [[1, 10.0]]}
             manager._last_long_trim = 100.0
@@ -119,7 +119,7 @@ class TestArchiverLifecycle(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as handle:
                 for index in range(total):
                     handle.write(json.dumps({"s": "BTCUSDC", "i": [index + 1, 10.0]}) + "\n")
-            manager = cm.Cache24LongPriceManager(60, ["BTCUSDC"], path)
+            manager = cm.Cache365PriceManager(60, ["BTCUSDC"], path)
             manager.KEEP_HOURS = 10**9
             self.assertEqual(len(manager.cache["BTCUSDC"]), cm.CM_LONG_ARCHIVE_MEMORY_ROWS)
             manager.on_price_update("BTCUSDC", total + 1, 11.0)

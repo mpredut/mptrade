@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """slice_dense_archive.py — extrage ultimele N zile dintr-o arhiva DENSA
-(cachedb/cache_24price_long_{symbol}.jsonl) into a small file, for FAST sweeps
+(cachedb/cache_365_price_{symbol}.jsonl) into a small file, for FAST sweeps
 on parameters with SHORT time constants (fire-retry/cooldown), where
 istoricul lung/sparse ar produce artefacte (vezi offline/research/tradeall_trigger_gate/
 README.md, Exp 6/7) AND the complete dense archive has grown too large to be
@@ -19,8 +19,10 @@ def main():
     symbol = sys.argv[1]
     days = float(sys.argv[2])
     out = sys.argv[3] if len(sys.argv) > 3 else os.path.join(
-        ROOT, "cachedb", f"cache_24price_slice_{symbol}_{days:g}d.jsonl")
-    src = os.path.join(ROOT, "cachedb", f"cache_365price_{symbol}.jsonl")
+        ROOT, "cachedb", f"cache_24_price_slice_{symbol}_{days:g}d.jsonl")
+    src = os.path.join(ROOT, "cachedb", f"cache_365_price_{symbol}.jsonl")
+    if not os.path.exists(src):
+        src = os.path.join(ROOT, "cachedb", f"cache_365price_{symbol}.jsonl")
 
     rows = []
     with open(src, encoding="utf-8") as f:

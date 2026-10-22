@@ -3,7 +3,7 @@
 trade_watch.py — quick view of the trade decision (TAO/BTC) for LIVE MONITORING.
 
 Reads UN-buffered signals (the source of truth, not the buffered log):
-  - instant trend from the cache manager (gradient_recent, in sync with cache_instant_trend.json)
+  - short trend from the cache manager (gradient_recent, in sync with cache_short_trend.json)
   - the real free balance (api.get_account_assets_balances)
   - avg buy + net position from the Binance trades
 It also shows the thresholds: HARD-TP (+18%) and the normal sell (gain>9.2% AND trend DOWN).

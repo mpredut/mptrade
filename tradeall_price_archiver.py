@@ -8,12 +8,12 @@ that are much more faithful than cache_price_{symbol}.jsonl (the existing,
 significantly sparser history; see the caveat in plan section A5).
 
 It DOES NOT touch tradeall.py and DOES NOT write to
-cache_24price_{symbol}.json (the LIVE file used by tradeall for decisions). It
-writes separately to cachedb/cache_24price_long_{symbol}.jsonl. This is a
+cache_24_price_{symbol}.json (the LIVE file used by tradeall for decisions). It
+writes separately to cachedb/cache_365_price_{symbol}.jsonl. This is a
 SEPARATE process with its own WS connection (public market stream, no API keys),
 so it is safe to run in parallel with tradeall.py.
 
-July 21: uses Cache24LongPriceManager (cacheManager.py), a class DEDICATED to
+July 21: uses Cache365PriceManager (cacheManager.py), a class DEDICATED to
 this script and separate from Cache24PriceManager (used by tradeall.py and left
 completely untouched). It persists JSONL incrementally instead of rewriting a
 complete JSON document on every save. The archive had reached ~20 MB per symbol
@@ -25,7 +25,7 @@ Run it continuously, like tradeall.py itself:
 
 After enough dense history has accumulated:
     ./offline/backtests/tradeall.py --symbol BTCUSDC --start <data> --source cache24 \\
-        --cache24-file cachedb/cache_24price_long_BTCUSDC.jsonl
+        --cache24-file cachedb/cache_365_price_BTCUSDC.jsonl
 """
 import argparse
 import math
@@ -139,8 +139,8 @@ def main():
 
     caches = []
     for symbol in symbols:
-        filename = os.path.join(CACHEDB_DIR, f"cache_365price_{symbol}.jsonl")
-        cache = cm.Cache365Price(sync_ts=save_every, symbols=[symbol], filename=filename)
+        filename = os.path.join(CACHEDB_DIR, f"cache_365_price_{symbol}.jsonl")
+        cache = cm.Cache365PriceManager(sync_ts=save_every, symbols=[symbol], filename=filename)
         cache.KEEP_HOURS = keep_hours   # per-instance override explicitly supported by the class
         cache.RETENTION_DAYS = keep_hours / 24.0
         cache.enable_save_state_to_file()   # defaults to False; required for disk writes
@@ -150,7 +150,7 @@ def main():
 
     print(f"[tradeall_price_archiver] started: {symbols} | retention {months} months "
           f"({keep_hours:.0f}h) | disk flush every {save_every:.0f}s", flush=True)
-    print("[tradeall_price_archiver] writing cachedb/cache_365price_<symbol>.jsonl "
+    print("[tradeall_price_archiver] writing cachedb/cache_365_price_<symbol>.jsonl "
           "separately from tradeall.py's live 24-hour cache")
     print("[tradeall_price_archiver] Ctrl+C stops the process.")
 

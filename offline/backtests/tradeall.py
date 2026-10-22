@@ -236,17 +236,30 @@ def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
 
 
 def load_ticks_history(symbol, start_ts, end_ts):
-    """Reads cache_price_sparse_{symbol}.jsonl — a long history, SPARSE."""
-    path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
+    """Reads cache_sparse_price_{symbol}.jsonl — a long history, SPARSE."""
+    path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{symbol}.jsonl")
+    if not os.path.exists(path):
+        for legacy in (f"cache_price_sparse_{symbol}.jsonl", f"cache_price_{symbol}.jsonl"):
+            candidate = os.path.join(ROOT, "cachedb", legacy)
+            if os.path.exists(candidate):
+                path = candidate
+                break
     if not os.path.exists(path):
         raise FileNotFoundError(f"Cannot find {path} (the price history for {symbol})")
     yield from _iter_jsonl_ticks(path, symbol, start_ts, end_ts)
 
 
 def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
-    """Read cache_24price_{symbol}.json (or cache_365price_{symbol}.jsonl
+    """Read cache_24_price_{symbol}.json (or cache_365_price_{symbol}.jsonl
     if a filename is given) — a DENSE resolution (~1s/tick, as in live)."""
-    path = filename or os.path.join(ROOT, "cachedb", f"cache_24price_{symbol}.json")
+    if filename:
+        path = filename
+    else:
+        path = os.path.join(ROOT, "cachedb", f"cache_24_price_{symbol}.json")
+        if not os.path.exists(path):
+            legacy = os.path.join(ROOT, "cachedb", f"cache_24price_{symbol}.json")
+            if os.path.exists(legacy):
+                path = legacy
     if not os.path.exists(path):
         raise FileNotFoundError(f"Cannot find {path} (cache24 for {symbol})")
     if str(path).endswith(".jsonl"):
@@ -557,13 +570,13 @@ def main():
                    help="real = honour the historical intervals; fast = no waiting (the default)")
     p.add_argument("--run-id", default=None, help="default: <symbol>_<start>_<timestamp>")
     p.add_argument("--source", choices=["history", "cache24"], default="history",
-                   help="history = cache_price_*.jsonl (~11 months, but SPARSE, see the caveat in the plan); "
-                        "cache24 = cache_24price_*.json, a DENSE resolution (~1s) but only what was retained "
+                   help="history = cache_sparse_price_*.jsonl (~11 months, but SPARSE, see the caveat in the plan); "
+                        "cache24 = cache_24_price_*.json, a DENSE resolution (~1s) but only what was retained "
                         "that cache (by default the last ~24h, or a file with long retention if "
                         "tradeall_price_archiver.py is already running)")
     p.add_argument("--cache24-file", default=None,
-                   help="an explicit path to a cache24 file (e.g. cache_24price_long_BTCUSDC.jsonl); "
-                        "default: cachedb/cache_24price_<symbol>.json")
+                   help="an explicit path to a cache24 file (e.g. cache_365_price_BTCUSDC.jsonl); "
+                        "default: cachedb/cache_24_price_<symbol>.json")
     p.add_argument("--quiet", action="store_true",
                    help="suppress noisy print() calls from tradeall.logic() (much faster on "
                         "dense/long data); own progress messages remain visible")

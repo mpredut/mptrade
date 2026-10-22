@@ -1056,7 +1056,9 @@ def _normalize_base_asset(sym: str) -> str:
 def _read_cached_trend_duration(symbol: str) -> float:
     try:
         cachedb_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
-        p = os.path.join(cachedb_dir, "cache_price_long_trend.json")
+        p = os.path.join(cachedb_dir, "cache_long_trend.json")
+        if not os.path.exists(p):
+            p = os.path.join(cachedb_dir, "cache_price_long_trend.json")
         if not os.path.exists(p):
             return 0.0
         with open(p, "r", encoding="utf-8") as f:
@@ -1099,7 +1101,9 @@ def _resolve_trend_duration(symbol: str) -> float:
 def _read_cached_trend_direction(symbol: str) -> Optional[str]:
     try:
         cachedb_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
-        p = os.path.join(cachedb_dir, "cache_price_long_trend.json")
+        p = os.path.join(cachedb_dir, "cache_long_trend.json")
+        if not os.path.exists(p):
+            p = os.path.join(cachedb_dir, "cache_price_long_trend.json")
         if not os.path.exists(p):
             return None
         with open(p, "r", encoding="utf-8") as f:
@@ -1146,7 +1150,7 @@ def _resolve_trend_direction(symbol: str, regime_context=None) -> Optional[str]:
 def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> Optional[List[Tuple[float, float]]]:
     """Read rolling price history from local cache for parabolic surge evaluation.
 
-    Prefers the authoritative 24h per-symbol cache (cachedb/cache_24price_{symbol}.json)
+    Prefers the authoritative 24h per-symbol cache (cachedb/cache_24_price_{symbol}.json)
     which captures every high-resolution tick, and falls back to cache_prices_multi.json
     with exact normalized base-symbol matching for cross-venue assets (e.g. HYPE on Kraken).
     Never uses substring matching so e.g. ETHFI does not accidentally match ETH.
@@ -1157,13 +1161,19 @@ def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> O
     cutoff_ts = now_ts - window_seconds
     history: List[Tuple[float, float]] = []
 
-    # 1. Primary: dedicated 24h cache (cache_24price_{symbol}.json)
-    p24 = os.path.join(cachedb_dir, f"cache_24price_{su}.json")
+    # 1. Primary: dedicated 24h cache (cache_24_price_{symbol}.json)
+    p24 = os.path.join(cachedb_dir, f"cache_24_price_{su}.json")
+    if not os.path.exists(p24):
+        p24_legacy = os.path.join(cachedb_dir, f"cache_24price_{su}.json")
+        if os.path.exists(p24_legacy):
+            p24 = p24_legacy
     if not os.path.exists(p24):
         su_base = _normalize_base_asset(su)
-        p24_base = os.path.join(cachedb_dir, f"cache_24price_{su_base}.json")
-        if os.path.exists(p24_base):
-            p24 = p24_base
+        for prefix in ("cache_24_price_", "cache_24price_"):
+            p24_base = os.path.join(cachedb_dir, f"{prefix}{su_base}.json")
+            if os.path.exists(p24_base):
+                p24 = p24_base
+                break
     if os.path.exists(p24):
         try:
             with open(p24, "r", encoding="utf-8") as f:
