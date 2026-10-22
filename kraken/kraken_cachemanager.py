@@ -223,6 +223,34 @@ def _ws_token(client):
     return client._private("GetWebSocketsToken", fresh=True)["token"]
 
 
+def _merge_rest_into(client, cache):
+    """Fetch Ledgers via REST and merge incrementally into an active WS cache without losing WS fills."""
+    rest_cache = {"items": {}, "fetchtime": {}}
+    _fetch_rest_into(client, rest_cache)
+    now_ms = int(time.time() * 1000)
+    for sym, rest_items in rest_cache["items"].items():
+        bucket = cache["items"].setdefault(sym, [])
+        existing_ids = {t["id"] for t in bucket if isinstance(t, dict) and "id" in t}
+        for item in rest_items:
+            if item["id"] not in existing_ids:
+                bucket.append(item)
+                existing_ids.add(item["id"])
+        bucket.sort(key=lambda t: t["time"])
+        cache["fetchtime"][sym] = rest_cache["fetchtime"].get(sym, now_ms)
+
+
+def _touch_ws_fetchtimes(cache, now_ms=None):
+    """Refresh fetchtime across all configured pairs while the WS stream is healthy."""
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+    configured = [sym for sym in (PAIRS or ()) if sym and sym != "*"]
+    for sym in configured:
+        cache["items"].setdefault(sym, [])
+        cache["fetchtime"][sym] = now_ms
+    for sym in list(cache.get("items", {}).keys()):
+        cache["fetchtime"][sym] = now_ms
+
+
 def ws_loop(client):
     """Subscribe to spot-only ownTrades and write every fill with zero lag.
     Seed from unified Ledgers, including existing instant buys, and reconnect automatically.
@@ -231,9 +259,11 @@ def ws_loop(client):
     import websocket  # lazy so poll mode works without the dependency
 
     cache = {"items": {}, "fetchtime": {}}
+    last_flush_ms = [0]
     try:
-        _fetch_rest_into(client, cache)      # initial snapshot
+        _merge_rest_into(client, cache)      # initial snapshot merged incrementally
         _atomic_write(CACHE_FILE, cache)
+        last_flush_ms[0] = int(time.time() * 1000)
     except Exception as e:
         log(f"[kraken_cache][ws] REST seed failed: {e}")
 
@@ -252,8 +282,14 @@ def ws_loop(client):
             data = json.loads(msg)
         except ValueError:
             return
+        now_ms = int(time.time() * 1000)
         # ownTrades: [ [ {txid: {...}}, ... ], "ownTrades", {"sequence": N} ]
         if not (isinstance(data, list) and len(data) >= 2 and data[1] == "ownTrades"):
+            # Refresh liveness on WS heartbeats/status frames before KrakenProvider's 30s stale cutoff
+            if isinstance(data, dict) and (now_ms - last_flush_ms[0]) >= 15_000:
+                _touch_ws_fetchtimes(cache, now_ms)
+                _atomic_write(CACHE_FILE, cache)
+                last_flush_ms[0] = now_ms
             return
         changed = False
         for entry in data[0]:
@@ -267,10 +303,12 @@ def ws_loop(client):
                 if not any(t["id"] == n["id"] for t in bucket):
                     bucket.append(n)
                     bucket.sort(key=lambda t: t["time"])
-                    cache["fetchtime"][sym] = int(time.time() * 1000)
+                    cache["fetchtime"][sym] = now_ms
                     changed = True
-        if changed:
+        if changed or (now_ms - last_flush_ms[0]) >= 15_000:
+            _touch_ws_fetchtimes(cache, now_ms)
             _atomic_write(CACHE_FILE, cache)             # immediate fill write for zero lag
+            last_flush_ms[0] = now_ms
 
     def on_error(ws, err):
         log(f"[kraken_cache][ws] error: {err}")
@@ -285,20 +323,9 @@ def ws_loop(client):
         log("[kraken_cache][ws] disconnected; reconnect in 5s")
         time.sleep(5)
         try:
-            rest_cache = {"items": {}, "fetchtime": {}}
-            _fetch_rest_into(client, rest_cache)
-            for sym, rest_items in rest_cache["items"].items():
-                bucket = cache["items"].setdefault(sym, [])
-                existing_ids = {t["id"] for t in bucket}
-                for item in rest_items:
-                    if item["id"] not in existing_ids:
-                        bucket.append(item)
-                        existing_ids.add(item["id"])
-                bucket.sort(key=lambda t: t["time"])
-                cache["fetchtime"][sym] = rest_cache["fetchtime"].get(
-                    sym, int(time.time() * 1000)
-                )
+            _merge_rest_into(client, cache)
             _atomic_write(CACHE_FILE, cache)
+            last_flush_ms[0] = int(time.time() * 1000)
         except Exception as e:
             log(f"[kraken_cache][ws] REST resync after disconnect failed: {e}")
 

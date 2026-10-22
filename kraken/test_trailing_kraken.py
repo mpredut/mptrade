@@ -311,6 +311,19 @@ class TestRebuyGuardsKraken(Base):
             self.assertEqual(cache["items"]["TAOUSD"], [])
             self.assertIn("HYPEUSD", cache["fetchtime"])
             self.assertIn("TAOUSD", cache["fetchtime"])
+
+            # WS incremental merge preserves existing WS fills while adding missing REST fills
+            ws_cache = {
+                "items": {
+                    "HYPEUSD": [{"id": "WS-1", "symbol": "HYPEUSD", "time": 1700000005000, "price": 52.0, "qty": 1.0}],
+                },
+                "fetchtime": {},
+            }
+            kcm._merge_rest_into(FakeLedgerClient(), ws_cache)
+            self.assertEqual([x["id"] for x in ws_cache["items"]["HYPEUSD"]], ["R1", "WS-1"])
+            kcm._touch_ws_fetchtimes(ws_cache, 1700000010000)
+            self.assertEqual(ws_cache["fetchtime"]["HYPEUSD"], 1700000010000)
+            self.assertEqual(ws_cache["fetchtime"]["TAOUSD"], 1700000010000)
         finally:
             kcm.PAIRS[:] = saved_pairs
 

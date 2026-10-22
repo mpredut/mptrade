@@ -4200,7 +4200,7 @@ def _upsert_order_from_execution_report(event):
         last_quantity = float(event.get("l") or 0)
         if last_quantity <= 0 and event.get("X") == "FILLED":
             last_quantity = float(event.get("z") or 0) or float(event.get("q") or 0)
-        last_price = float(event.get("L") or 0) or float(event.get("p") or 0)
+        last_price = extract_order_price(event, default=0.0)
         if last_price <= 0 and last_quantity > 0:
             last_quote = float(event.get("Y") or 0)
             if last_quote > 0:
@@ -4218,10 +4218,10 @@ def _upsert_order_from_execution_report(event):
             "price": last_price,
             "quantity": last_quantity,
             "timestamp": int(
-                event.get("T") or event.get("E")
+                extract_timestamp_ms(event, default=None)
                 or int(time.time() * 1000)
             ),
-            "side": event.get("S"),
+            "side": extract_order_side(event) or event.get("S"),
             "status": event.get("X"),
             "symbol": symbol,
             "eventType": event.get("x"),
@@ -4328,7 +4328,7 @@ def _refresh_symbol_in_cache(manager, symbol):
         start_time = manager.fetchtime_time_per_symbol.get(symbol, manager.fallback_time_default)
         items = manager.get_remote_items(symbol, start_time)
         if items:
-            manager.update_cache_per_symbol(symbol, items)
+            manager._persist_items(symbol, items)
     except Exception as e:
         print(f"[cacheManager] _refresh_symbol_in_cache {manager.cls_name}/{symbol}: {e}")
 
