@@ -222,7 +222,7 @@ class T212ClientTransportTest(unittest.TestCase):
     def test_the_market_payload_and_the_history_fallback(self):
         client = t212_client.T212Client(
             "dummy", "dummy", env="demo", min_gap_sec=0.0,
-            portfolio_ttl_sec=6.0,
+            portfolio_ttl_sec=6.0, order_min_gap_sec=0.0,
         )
         client._min_gap = 0.0
         client._pf_cache = (time.monotonic(), [{"ticker": "NVDA_US_EQ", "quantity": 1.0}])
@@ -256,7 +256,7 @@ class T212ClientTransportTest(unittest.TestCase):
     def test_rate_limit_backoff_and_stale_cache_fallback(self):
         client = t212_client.T212Client(
             "dummy", "dummy", env="demo", min_gap_sec=0.0,
-            portfolio_ttl_sec=1.0,
+            portfolio_ttl_sec=1.0, order_min_gap_sec=0.0,
         )
         client._min_gap = 0.0
 

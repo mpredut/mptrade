@@ -26,7 +26,9 @@ def _margins(**overrides):
     base = {
         "default": 1.15, "binance": 1.15, "default_window_h": 0.0,
         "default_max_daily_trades": 25, "default_safeback_sec": 14 * 24 * 3600 + 60,
-        "default_recent_transaction_sec": 90, "default_buy_reference": 1.0,
+        "default_recent_transaction_sec": 90,
+        "default_buy_reference": "strict",
+        "default_sell_reference": "strict",
     }
     base.update(overrides)
     return base
@@ -34,14 +36,14 @@ def _margins(**overrides):
 
 class BuyReferenceSwitchTest(unittest.TestCase):
     def test_buy_reference_off_lets_a_buy_above_old_sells_through(self):
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference=0.0)):
+        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="off")):
             provider = _Provider("binance")
             # TAO on 24 Sep: lowest sell of the window 216.28, price ~293.
             self.assertTrue(order_guard.profit_guard(
                 provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
 
     def test_sell_reference_stays_active_when_buy_reference_is_off(self):
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference=0.0)):
+        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="off")):
             provider = _Provider("binance")
             # Highest buy 276.0: a SELL below it (plus margin) is still refused.
             self.assertFalse(order_guard.profit_guard(
@@ -50,22 +52,23 @@ class BuyReferenceSwitchTest(unittest.TestCase):
                 provider, "TAOUSDC", "SELL", 290.0, 1.15, window_ref=276.0))
 
     def test_other_venues_keep_the_buy_reference(self):
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference=0.0)):
+        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="off")):
             self.assertFalse(order_guard.profit_guard(
                 _Provider("kraken"), "HYPEUSD", "BUY", 93.0, 1.15, window_ref=56.66))
-            self.assertTrue(order_guard.buy_reference_enabled("kraken"))
-            self.assertFalse(order_guard.buy_reference_enabled("binance"))
+            self.assertTrue(order_guard.is_profit_guard_enabled_cfg("kraken", "BUY"))
+            self.assertFalse(order_guard.is_profit_guard_enabled_cfg("binance", "BUY"))
 
-    def test_unreadable_value_keeps_the_conservative_guard(self):
+    def test_unreadable_value_raises_value_error(self):
         with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="maybe")):
-            self.assertTrue(order_guard.buy_reference_enabled("binance"))
+            with self.assertRaises(ValueError):
+                order_guard.is_profit_guard_enabled_cfg("binance", "BUY")
 
     def test_repository_config_sets_binance_buy_reference_dynamic(self):
         with mock.patch.object(order_guard, "_MARGINS", None):
-            self.assertEqual(order_guard.buy_reference_mode("binance"), "dynamic")
-            self.assertEqual(order_guard.buy_reference_mode("kraken"), "on")
-            self.assertTrue(order_guard.buy_reference_enabled("binance"))
-            self.assertTrue(order_guard.buy_reference_enabled("kraken"))
+            self.assertEqual(order_guard.get_profit_guard_mode_cfg("binance", "BUY"), "dynamic")
+            self.assertEqual(order_guard.get_profit_guard_mode_cfg("kraken", "BUY"), "strict")
+            self.assertTrue(order_guard.is_profit_guard_enabled_cfg("binance", "BUY"))
+            self.assertTrue(order_guard.is_profit_guard_enabled_cfg("kraken", "BUY"))
 
     def test_dynamic_mode_bypasses_in_bull_trend_and_enforces_in_bear_or_flat(self):
         with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="dynamic")):
@@ -84,26 +87,27 @@ class BuyReferenceSwitchTest(unittest.TestCase):
                     provider, "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
 
     def test_provider_as_string_and_case_insensitivity(self):
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference=0.0)):
+        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="off")):
             # Both string name and Provider object with various casings must work
             self.assertTrue(order_guard.profit_guard("binance", "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
             self.assertTrue(order_guard.profit_guard("Binance", "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
             self.assertTrue(order_guard.profit_guard(_Provider("Binance"), "TAOUSDC", "BUY", 293.0, 1.15, window_ref=216.28))
-            self.assertFalse(order_guard.buy_reference_enabled("Binance"))
-            self.assertFalse(order_guard.buy_reference_enabled("binance"))
-            self.assertEqual(order_guard.buy_reference_mode("Binance"), "off")
+            self.assertFalse(order_guard.is_profit_guard_enabled_cfg("Binance", "BUY"))
+            self.assertFalse(order_guard.is_profit_guard_enabled_cfg("binance", "BUY"))
+            self.assertEqual(order_guard.get_profit_guard_mode_cfg("Binance", "BUY"), "off")
 
-    def test_missing_default_buy_reference_in_margins_does_not_raise(self):
-        # Even if a test mock or custom dict omits default_buy_reference, no KeyError is thrown
+    def test_missing_default_buy_reference_in_margins_raises_key_error(self):
         with mock.patch.object(order_guard, "_MARGINS", {"binance": 1.15}):
-            self.assertTrue(order_guard.buy_reference_enabled("binance"))
-            self.assertTrue(order_guard.buy_reference_enabled("kraken"))
+            with self.assertRaises(KeyError):
+                order_guard.is_profit_guard_enabled_cfg("binance", "BUY")
+            with self.assertRaises(KeyError):
+                order_guard.is_profit_guard_enabled_cfg("kraken", "BUY")
 
     def test_real_binance_provider_integration(self):
         with mock.patch.object(order_guard, "_MARGINS", None):
             from providers.market_api import BinanceProvider
             provider = BinanceProvider()
-            self.assertEqual(order_guard.buy_reference_mode(provider.name), "dynamic")
+            self.assertEqual(order_guard.get_profit_guard_mode_cfg(provider.name, "BUY"), "dynamic")
             # Keep the real provider/config routing, but isolate its history I/O.
             with mock.patch.object(provider, "get_orders", return_value=[]) as history, \
                     mock.patch.object(order_guard, "_symbol_trend", return_value="bull"):
@@ -173,15 +177,15 @@ class BuyReferenceSwitchTest(unittest.TestCase):
         # Exercise reference routing without live trend discovery on a cold cache.
         with mock.patch("lock.trade_cooldown.trade_slot", side_effect=_mock_trade_slot), \
                 mock.patch.object(order_guard, "_symbol_trend", return_value="unknown"):
-            # With binance_buy_reference = 0: BUY at 293 (above past sell 216.28) is accepted
-            with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference=0.0)):
+            # With binance_buy_reference = off: BUY at 293 (above past sell 216.28) is accepted
+            with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="off")):
                 res = inst.place("BUY", 293.0, 1.0, motivation="test_buy", cache_permit=object(), smart=False, wait_for_trend=False, caller_owns_retry=True)
                 self.assertIsNotNone(res)
                 self.assertEqual(len(p.placed), 1)
 
-            # With binance_buy_reference = 1: BUY at 293 (above past sell 216.28) is refused by profit_guard
+            # With binance_buy_reference = strict: BUY at 293 (above past sell 216.28) is refused by profit_guard
             p.placed.clear()
-            with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference=1.0)):
+            with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="strict")):
                 res = inst.place("BUY", 293.0, 1.0, motivation="test_buy", cache_permit=object(), smart=False, wait_for_trend=False, caller_owns_retry=True)
                 self.assertIsNone(res)
                 self.assertEqual(len(p.placed), 0)
@@ -317,7 +321,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
             intel_called = True
             return True, "ok", 1.0
 
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference=1.0)):
+        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="strict")):
             with mock.patch.object(order_guard, "check_intelligence_guards", side_effect=fake_intel_check):
                 # BUY at 293 with sell anchor 216.28 -> mathematically unprofitable (diff = -35% < 1.15%)
                 allowed = order_guard.profit_guard(
@@ -336,7 +340,7 @@ class BuyReferenceSwitchTest(unittest.TestCase):
             intel_called = True
             return True, "ok", 1.0
 
-        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference=1.0)):
+        with mock.patch.object(order_guard, "_MARGINS", _margins(binance_buy_reference="strict")):
             with mock.patch.object(order_guard, "check_intelligence_guards", side_effect=fake_intel_check):
                 # Mathematically profitable: BUY 280 vs sell anchor 300 (diff 6.67% >= 1.15%)
                 intel_called = False
@@ -443,6 +447,253 @@ class BuyReferenceSwitchTest(unittest.TestCase):
                 # Buying at 299.0 (+0.33% below 300.0 < 1.15%) must still be BLOCKED!
                 self.assertFalse(
                     order_guard.profit_guard(provider, "TAOUSDC", "BUY", 299.0, 1.15, window_ref=216.28)
+                )
+
+    def test_sell_reference_difficulty_tiers_hierarchy(self):
+        """Verify all 4 SELL difficulty levels (strict, average, last, hybrid) and off."""
+        class _MultiBuyProvider:
+            name = "binance"
+
+            def __init__(self, orders):
+                self._orders = orders
+
+            def get_orders(self, symbol, side, since_s):
+                if side == "BUY":
+                    return list(self._orders)
+                return []
+
+            def last_opposite_fill(self, symbol, side):
+                return self._orders[-1]["price"] if self._orders else None
+
+        # Scenario 1: DCA down (bought 2 TAO @ 300.0 ten days ago, then 2 TAO @ 270.0 recently)
+        # - strict (max)   = 300.0 -> requires >= 303.49
+        # - average (VWAP) = 285.0 -> requires >= 288.32
+        # - last           = 270.0 -> requires >= 273.15
+        # - hybrid         = min(285.0, 270.0) = 270.0 -> requires >= 273.15
+        dca_down_orders = [
+            {"price": 300.0, "qty": 2.0, "timestamp": 1000.0},
+            {"price": 270.0, "qty": 2.0, "timestamp": 2000.0},
+        ]
+        p_down = _MultiBuyProvider(dca_down_orders)
+
+        self.assertAlmostEqual(
+            order_guard.window_reference(p_down, "TAOUSDC", "SELL", 14 * 86400, reference_mode="strict"),
+            300.0,
+        )
+        self.assertAlmostEqual(
+            order_guard.window_reference(p_down, "TAOUSDC", "SELL", 14 * 86400, reference_mode="average"),
+            285.0,
+        )
+        self.assertAlmostEqual(
+            order_guard.window_reference(p_down, "TAOUSDC", "SELL", 14 * 86400, reference_mode="last"),
+            270.0,
+        )
+        self.assertAlmostEqual(
+            order_guard.window_reference(p_down, "TAOUSDC", "SELL", 14 * 86400, reference_mode="hybrid"),
+            270.0,
+        )
+        self.assertIsNone(
+            order_guard.window_reference(p_down, "TAOUSDC", "SELL", 14 * 86400, reference_mode="off")
+        )
+
+        # Selling at 281.1 (yesterday's TAO peak):
+        # - Blocked under 'strict' (300.0) and 'average' (285.0)
+        # - Permitted under 'last' (270.0) and 'hybrid' (270.0)
+        # - Selling at 268.0 (in loss vs both average and last) is still BLOCKED even under 'hybrid'!
+        with mock.patch.object(order_guard, "_MARGINS", _margins()):
+            self.assertFalse(
+                order_guard.profit_guard(p_down, "TAOUSDC", "SELL", 281.1, 1.15, reference_mode="strict")
+            )
+            self.assertFalse(
+                order_guard.profit_guard(p_down, "TAOUSDC", "SELL", 281.1, 1.15, reference_mode="average")
+            )
+            self.assertTrue(
+                order_guard.profit_guard(p_down, "TAOUSDC", "SELL", 281.1, 1.15, reference_mode="last")
+            )
+            self.assertTrue(
+                order_guard.profit_guard(p_down, "TAOUSDC", "SELL", 281.1, 1.15, reference_mode="hybrid")
+            )
+            self.assertFalse(
+                order_guard.profit_guard(p_down, "TAOUSDC", "SELL", 268.0, 1.15, reference_mode="hybrid")
+            )
+
+        # Scenario 2: Bought main position low (3 TAO @ 260.0) and added a small top-up (1 TAO @ 280.0)
+        # - average (VWAP) = (3*260 + 1*280)/4 = 265.0
+        # - last           = 280.0
+        # - hybrid         = min(265.0, 280.0) = 265.0
+        dca_up_orders = [
+            {"price": 260.0, "qty": 3.0, "timestamp": 1000.0},
+            {"price": 280.0, "qty": 1.0, "timestamp": 2000.0},
+        ]
+        p_up = _MultiBuyProvider(dca_up_orders)
+        self.assertAlmostEqual(
+            order_guard.window_reference(p_up, "TAOUSDC", "SELL", 14 * 86400, reference_mode="average"),
+            265.0,
+        )
+        self.assertAlmostEqual(
+            order_guard.window_reference(p_up, "TAOUSDC", "SELL", 14 * 86400, reference_mode="last"),
+            280.0,
+        )
+        self.assertAlmostEqual(
+            order_guard.window_reference(p_up, "TAOUSDC", "SELL", 14 * 86400, reference_mode="hybrid"),
+            265.0,
+        )
+
+    def test_buy_reference_difficulty_tiers_symmetry(self):
+        """Verify BUY difficulty levels (strict, average, last, hybrid, off) are 100% symmetric with SELL."""
+        class _MultiSellProvider:
+            name = "binance"
+
+            def __init__(self, orders):
+                self._orders = orders
+
+            def get_orders(self, symbol, side, since_s):
+                if side == "SELL":
+                    return list(self._orders)
+                return []
+
+            def last_opposite_fill(self, symbol, side):
+                return self._orders[-1]["price"] if self._orders else None
+
+        # Scenario 1: Scaled out on the way up (sold 2 TAO @ 270.0 earlier, then 2 TAO @ 300.0 recently)
+        # - strict (min)   = 270.0 -> requires BUY <= ~266.89
+        # - average (VWAP) = 285.0 -> requires BUY <= ~281.72
+        # - last           = 300.0 -> requires BUY <= ~296.55
+        # - hybrid         = max(285.0, 300.0) = 300.0 -> requires BUY <= ~296.55
+        scale_up_sells = [
+            {"price": 270.0, "qty": 2.0, "timestamp": 1000.0},
+            {"price": 300.0, "qty": 2.0, "timestamp": 2000.0},
+        ]
+        p_up = _MultiSellProvider(scale_up_sells)
+
+        self.assertAlmostEqual(
+            order_guard.window_reference(p_up, "TAOUSDC", "BUY", 14 * 86400, reference_mode="strict"),
+            270.0,
+        )
+        self.assertAlmostEqual(
+            order_guard.window_reference(p_up, "TAOUSDC", "BUY", 14 * 86400, reference_mode="average"),
+            285.0,
+        )
+        self.assertAlmostEqual(
+            order_guard.window_reference(p_up, "TAOUSDC", "BUY", 14 * 86400, reference_mode="last"),
+            300.0,
+        )
+        self.assertAlmostEqual(
+            order_guard.window_reference(p_up, "TAOUSDC", "BUY", 14 * 86400, reference_mode="hybrid"),
+            300.0,
+        )
+        self.assertIsNone(
+            order_guard.window_reference(p_up, "TAOUSDC", "BUY", 14 * 86400, reference_mode="off")
+        )
+
+        # Rebuying at 290.0 (-3.33% below last SELL 300.0, > 1.15% profit margin):
+        # - Blocked under 'strict' (270.0) and 'average' (285.0)
+        # - Permitted under 'last' (300.0) and 'hybrid' (300.0)
+        # - Rebuying at 302.0 (in loss vs both average and last) is still BLOCKED even under 'hybrid'!
+        with mock.patch.object(order_guard, "_MARGINS", _margins()):
+            self.assertFalse(
+                order_guard.profit_guard(p_up, "TAOUSDC", "BUY", 290.0, 1.15, reference_mode="strict")
+            )
+            self.assertFalse(
+                order_guard.profit_guard(p_up, "TAOUSDC", "BUY", 290.0, 1.15, reference_mode="average")
+            )
+            self.assertTrue(
+                order_guard.profit_guard(p_up, "TAOUSDC", "BUY", 290.0, 1.15, reference_mode="last")
+            )
+            self.assertTrue(
+                order_guard.profit_guard(p_up, "TAOUSDC", "BUY", 290.0, 1.15, reference_mode="hybrid")
+            )
+            self.assertFalse(
+                order_guard.profit_guard(p_up, "TAOUSDC", "BUY", 302.0, 1.15, reference_mode="hybrid")
+            )
+
+        # Scenario 2: Sold main position high (3 TAO @ 310.0) and a small tranche lower (1 TAO @ 290.0)
+        # - average (VWAP) = (3*310 + 1*290)/4 = 305.0
+        # - last           = 290.0
+        # - hybrid         = max(305.0, 290.0) = 305.0
+        scale_down_sells = [
+            {"price": 310.0, "qty": 3.0, "timestamp": 1000.0},
+            {"price": 290.0, "qty": 1.0, "timestamp": 2000.0},
+        ]
+        p_down = _MultiSellProvider(scale_down_sells)
+        self.assertAlmostEqual(
+            order_guard.window_reference(p_down, "TAOUSDC", "BUY", 14 * 86400, reference_mode="average"),
+            305.0,
+        )
+        self.assertAlmostEqual(
+            order_guard.window_reference(p_down, "TAOUSDC", "BUY", 14 * 86400, reference_mode="last"),
+            290.0,
+        )
+        self.assertAlmostEqual(
+            order_guard.window_reference(p_down, "TAOUSDC", "BUY", 14 * 86400, reference_mode="hybrid"),
+            305.0,
+        )
+
+    def test_per_module_and_per_provider_reference_mode_resolution(self):
+        """Verify per-module (assetguardian, monitortrades, tradeall, rtrade) and per-provider strict hierarchy."""
+        custom_margins = _margins(
+            default_buy_reference="strict",
+            default_sell_reference="strict",
+            binance_buy_reference="dynamic",
+            binance_sell_reference="average",
+            kraken_buy_reference="strict",
+            kraken_sell_reference="strict",
+            assetguardian_buy_reference="venue",
+            assetguardian_sell_reference="hybrid",
+            monitortrades_sell_reference="last",
+            tradeall_buy_reference="average",
+            rtrade_sell_reference="off",
+        )
+        with mock.patch.object(order_guard, "_MARGINS", custom_margins):
+            # Provider-level resolution
+            self.assertEqual(order_guard.get_profit_guard_mode_cfg("binance", "BUY"), "dynamic")
+            self.assertEqual(order_guard.get_profit_guard_mode_cfg("binance", "SELL"), "average")
+            self.assertEqual(order_guard.get_profit_guard_mode_cfg("kraken", "BUY"), "strict")
+            self.assertEqual(order_guard.get_profit_guard_mode_cfg("kraken", "SELL"), "strict")
+
+            # Module-level override vs 'venue' inheritance
+            self.assertEqual(
+                order_guard.get_profit_guard_mode_cfg("binance", "BUY", module="assetguardian"),
+                "dynamic",  # inherits binance_buy_reference via 'venue'
+            )
+            self.assertEqual(
+                order_guard.get_profit_guard_mode_cfg("kraken", "BUY", module="assetguardian"),
+                "strict",   # inherits kraken_buy_reference via 'venue'
+            )
+            self.assertEqual(
+                order_guard.get_profit_guard_mode_cfg("binance", "SELL", module="assetguardian"),
+                "hybrid",   # overrides binance_sell_reference ('average') with 'hybrid'
+            )
+            self.assertEqual(
+                order_guard.get_profit_guard_mode_cfg("binance", "SELL", module="monitortrades"),
+                "last",
+            )
+            self.assertEqual(
+                order_guard.get_profit_guard_mode_cfg("binance", "BUY", module="tradeall"),
+                "average",
+            )
+            self.assertEqual(
+                order_guard.get_profit_guard_mode_cfg("binance", "SELL", module="rtrade"),
+                "off",
+            )
+            self.assertFalse(
+                order_guard.is_profit_guard_enabled_cfg("binance", "SELL", module="rtrade")
+            )
+
+            # Missing module key raises KeyError (fail fast)
+            with self.assertRaises(KeyError):
+                order_guard.get_profit_guard_mode_cfg("binance", "BUY", module="rtrade")
+
+            # Explicit reference_mode argument must be a valid mode
+            self.assertEqual(
+                order_guard.get_profit_guard_mode_cfg(
+                    "binance", "SELL", module="assetguardian", reference_mode="strict"
+                ),
+                "strict",
+            )
+            with self.assertRaises(ValueError):
+                order_guard.get_profit_guard_mode_cfg(
+                    "binance", "SELL", module="assetguardian", reference_mode="invalid_mode"
                 )
 
 

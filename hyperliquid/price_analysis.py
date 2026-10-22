@@ -11,9 +11,14 @@ This runs on one-hour HL candles and therefore analyzes the real perpetual price
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
-from common import float_env
+from common import load_env_stack, required_int_env
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+load_env_stack(os.path.join(_HERE, ".env"))
 
 MIN_POINTS_PER_WINDOW = 3
 
@@ -93,8 +98,8 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
 
 def analyze(client, coin: str) -> dict | None:
     """Run analysis over HL candles for the coin."""
-    window_hours = int(float_env("ANALYSIS_WINDOW_H") or 24)
-    step_hours = int(float_env("ANALYSIS_STEP_H") or 8)
+    window_hours = required_int_env("ANALYSIS_WINDOW_H")
+    step_hours = required_int_env("ANALYSIS_STEP_H")
     lookback = window_hours + step_hours * 14   # enough historical windows
     candles = client.candles(coin, "1h", lookback_hours=lookback)
     ts = [float(c["t"]) / 1000.0 for c in candles if "t" in c]

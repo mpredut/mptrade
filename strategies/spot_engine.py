@@ -63,20 +63,6 @@ def state_path_for(pair: str, state_dir: str | None = None) -> str:
     return os.path.join(directory, f".state_{safe}.json")
 
 
-def _optional_bool_env(key: str, default: bool, env: dict | None = None) -> bool:
-    src = os.environ if env is None else env
-    if key not in src or src[key] == "":
-        return default
-    return required_bool_env(key, env)
-
-
-def _optional_float_env(key: str, default: float, env: dict | None = None) -> float:
-    src = os.environ if env is None else env
-    if key not in src or src[key] == "":
-        return default
-    return required_float_env(key, env)
-
-
 @dataclass
 class StratParams:
     currency: str          # Quote currency used only for presentation.
@@ -391,20 +377,20 @@ class StratParams:
             slow_grind_flash_window_min = required_float_env("STRAT_SLOW_GRIND_FLASH_WINDOW_MIN", env),
             slow_grind_flash_drop_pct = required_float_env("STRAT_SLOW_GRIND_FLASH_DROP_PCT", env),
             slow_grind_hourly_drop_pct = required_float_env("STRAT_SLOW_GRIND_HOURLY_DROP_PCT", env),
-            sl_mhdsl_enabled   = _optional_bool_env("STRAT_SL_MHDSL_ENABLED", True, env),
-            sl_disaster_buffer_ratio = _optional_float_env("STRAT_SL_DISASTER_BUFFER_RATIO", 0.30, env),
-            sl_disaster_vol_multiplier = _optional_float_env("STRAT_SL_DISASTER_VOL_MULTIPLIER", 0.85, env),
-            sl_disaster_buffer_min_pct = _optional_float_env("STRAT_SL_DISASTER_BUFFER_MIN_PCT", 0.80, env),
-            sl_disaster_buffer_max_pct = _optional_float_env("STRAT_SL_DISASTER_BUFFER_MAX_PCT", 15.0, env),
-            sl_trend_defer_max_sec = _optional_float_env("STRAT_SL_TREND_DEFER_MAX_SEC", 220.0, env),
-            sl_bounce_min_recovery_pct = _optional_float_env("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", 0.40, env),
-            sl_bounce_pullback_pct = _optional_float_env("STRAT_SL_BOUNCE_PULLBACK_PCT", 0.30, env),
-            sl_bounce_ratchet_enabled = _optional_bool_env("STRAT_SL_BOUNCE_RATCHET_ENABLED", True, env),
-            sl_bounce_ratchet_k = _optional_float_env("STRAT_SL_BOUNCE_RATCHET_K", 0.50, env),
-            sl_bounce_min_pullback_pct = _optional_float_env("STRAT_SL_BOUNCE_MIN_PULLBACK_PCT", 0.15, env),
-            sl_structural_break_enabled = _optional_bool_env("STRAT_SL_STRUCTURAL_BREAK_ENABLED", True, env),
+            sl_mhdsl_enabled   = required_bool_env("STRAT_SL_MHDSL_ENABLED", env),
+            sl_disaster_buffer_ratio = required_float_env("STRAT_SL_DISASTER_BUFFER_RATIO", env),
+            sl_disaster_vol_multiplier = required_float_env("STRAT_SL_DISASTER_VOL_MULTIPLIER", env),
+            sl_disaster_buffer_min_pct = required_float_env("STRAT_SL_DISASTER_BUFFER_MIN_PCT", env),
+            sl_disaster_buffer_max_pct = required_float_env("STRAT_SL_DISASTER_BUFFER_MAX_PCT", env),
+            sl_trend_defer_max_sec = required_float_env("STRAT_SL_TREND_DEFER_MAX_SEC", env),
+            sl_bounce_min_recovery_pct = required_float_env("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", env),
+            sl_bounce_pullback_pct = required_float_env("STRAT_SL_BOUNCE_PULLBACK_PCT", env),
+            sl_bounce_ratchet_enabled = required_bool_env("STRAT_SL_BOUNCE_RATCHET_ENABLED", env),
+            sl_bounce_ratchet_k = required_float_env("STRAT_SL_BOUNCE_RATCHET_K", env),
+            sl_bounce_min_pullback_pct = required_float_env("STRAT_SL_BOUNCE_MIN_PULLBACK_PCT", env),
+            sl_structural_break_enabled = required_bool_env("STRAT_SL_STRUCTURAL_BREAK_ENABLED", env),
             tp_mdhtp_enabled   = required_bool_env("STRAT_TP_MDHTP_ENABLED", env),
-            tp_stagnation_max_sec = _optional_float_env("STRAT_TP_STAGNATION_MAX_SEC", 1080.0, env),
+            tp_stagnation_max_sec = required_float_env("STRAT_TP_STAGNATION_MAX_SEC", env),
         )
 
 

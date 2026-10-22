@@ -5,10 +5,16 @@ import math
 import time
 
 from binance_api import bapi as api
+from providers.base import (
+    extract_order_price,
+    extract_order_side,
+    extract_timestamp_s,
+)
 from providers.market_api import api as mkt   # Single guarded proxy (Instrument.place).
 from providers.execution_audit import ExecutionAudit
 from order_retry import propagate_submission_refusal
 from providers.quantity import resolve_assets
+from providers.strategy_executor import extract_order_id
 
 import cacheManager as cm
 import symbols as sym
@@ -34,6 +40,10 @@ REQUIRED_CONFIG_KEYS = (
     "AG_NEAR_TRIGGER_DISTANCE_PCT",
     "AG_TREND_DEFER_MAX_SEC",
     "AG_ORDER_MISSING_CONFIRMATIONS",
+    "AG_PORTFOLIO_GROWTH_PCT",
+    "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT",
+    "AG_PORTFOLIO_SELL_ALLOCATION",
+    "AG_RTRADE_BLOCK_CANCEL_SEC",
 )
 
 
@@ -92,6 +102,13 @@ ACTIVE_TRIGGER_SECONDS = _required_float_config("AG_ACTIVE_TRIGGER_SEC")
 NEAR_TRIGGER_DISTANCE_PCT = _required_float_config(
     "AG_NEAR_TRIGGER_DISTANCE_PCT")
 TREND_DEFER_MAX_SECONDS = _required_float_config("AG_TREND_DEFER_MAX_SEC")
+PORTFOLIO_GROWTH_PERCENT = _required_float_config("AG_PORTFOLIO_GROWTH_PCT")
+PORTFOLIO_ASSET_MIN_GROWTH_PERCENT = _required_float_config(
+    "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT")
+PORTFOLIO_SELL_ALLOCATION = _required_float_config(
+    "AG_PORTFOLIO_SELL_ALLOCATION")
+RTRADE_BLOCK_CANCEL_SECONDS = _required_float_config(
+    "AG_RTRADE_BLOCK_CANCEL_SEC")
 
 
 def _parse_tiers(raw):
@@ -192,9 +209,17 @@ def _validate_config():
             (NEAR_TRIGGER_SECONDS, "AG_NEAR_TRIGGER_SEC"),
             (ACTIVE_TRIGGER_SECONDS, "AG_ACTIVE_TRIGGER_SEC"),
             (NEAR_TRIGGER_DISTANCE_PCT, "AG_NEAR_TRIGGER_DISTANCE_PCT"),
-            (TREND_DEFER_MAX_SECONDS, "AG_TREND_DEFER_MAX_SEC")):
+            (TREND_DEFER_MAX_SECONDS, "AG_TREND_DEFER_MAX_SEC"),
+            (PORTFOLIO_GROWTH_PERCENT, "AG_PORTFOLIO_GROWTH_PCT"),
+            (PORTFOLIO_ASSET_MIN_GROWTH_PERCENT, "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT"),
+            (RTRADE_BLOCK_CANCEL_SECONDS, "AG_RTRADE_BLOCK_CANCEL_SEC")):
         if not math.isfinite(value) or value <= 0:
             raise ValueError(f"{name} must be finite and > 0")
+    if not math.isfinite(PORTFOLIO_SELL_ALLOCATION) or not 0 < PORTFOLIO_SELL_ALLOCATION <= 1:
+        raise ValueError("AG_PORTFOLIO_SELL_ALLOCATION must be in (0, 1]")
+    if PORTFOLIO_ASSET_MIN_GROWTH_PERCENT <= SELL_REARM_GROWTH_PERCENT:
+        raise ValueError(
+            "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT must be above AG_SELL_REARM_GROWTH_PCT")
 
 
 _validate_config()
@@ -224,8 +249,11 @@ def _finite_float(raw, *, positive=False):
 def _price_row(row):
     """Normalize a Price24 row to ``(timestamp_seconds, positive_price)``."""
     if isinstance(row, dict):
-        raw_ts = row.get("timestamp")
-        raw_price = row.get("price")
+        timestamp = _finite_float(extract_timestamp_s(row, default=None), positive=True)
+        price = _finite_float(extract_order_price(row, default=0.0), positive=True)
+        if timestamp is None or price is None:
+            return None
+        return timestamp, price
     elif isinstance(row, (list, tuple)) and len(row) >= 2:
         raw_ts, raw_price = row[0], row[1]
     else:
@@ -297,6 +325,50 @@ def _get_symbol_window_extrema(symbol, current_price,
     return minimum, maximum
 
 
+def _read_total_asset_value_rows():
+    """Copy shared TOTAL portfolio USDC history from AssetValue cache."""
+    try:
+        manager = cm.get_cache_manager("AssetValue", symbols=["TOTAL"])
+        if manager is None:
+            return []
+        with manager.lock:
+            rows = list(manager.cache.get("TOTAL", []))
+        return rows
+    except Exception as exc:
+        print(f"ERROR reading AssetValue cache via cacheManager: {exc}")
+        return []
+
+
+def _get_portfolio_growth_percent(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
+    """Compute percentage growth of TOTAL account value over the rolling window."""
+    minutes_back = _finite_float(minutes_back, positive=True)
+    if minutes_back is None:
+        return None
+    now_ts = float(time.time())
+    target_ts = now_ts - minutes_back * 60.0
+    rows = _read_total_asset_value_rows()
+    valid = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        payload = row.get("i") if isinstance(row.get("i"), dict) else row
+        ts = _finite_float(extract_timestamp_s(payload, default=None), positive=True)
+        val = _finite_float(payload.get("total_value_usdc"), positive=True)
+        if val is None:
+            val = _finite_float(payload.get("total_value_usdt"), positive=True)
+        if ts is None or val is None:
+            continue
+        if target_ts <= ts <= now_ts:
+            valid.append((ts, val))
+    if len(valid) < 2:
+        return None
+    min_val = min(v for _, v in valid)
+    latest_val = max(valid, key=lambda item: item[0])[1]
+    if min_val <= 0:
+        return None
+    return ((latest_val - min_val) / min_val) * 100.0
+
+
 _LAST_SUBMIT_OUTCOME: dict = {}
 
 
@@ -335,6 +407,7 @@ def sell_asset(symbol, qty, current_price, client_order_id, tier_threshold):
             symbol, "SELL", price, qty_to_sell,
             force=False, smart=False, caller_owns_retry=True,
             bypass_quantity_policy=True,
+            module="assetguardian",
             wait_for_trend=False,
             client_order_id=client_order_id,
             motivation=f"assetguardian_growth_exit_tier_{tier_threshold:g}",
@@ -411,6 +484,7 @@ def buy_with_all_cash(buy_symbol, cash_ratio=BUY_USE_CASH_RATIO,
             buy_symbol, "BUY", current_price, qty,
             force=False, smart=False, caller_owns_retry=True,
             bypass_profit_reference=not respect_guard,
+            module="assetguardian",
             wait_for_trend=False,
             client_order_id=client_order_id,
             motivation="assetguardian_drawdown_buy",
@@ -716,8 +790,6 @@ def _record_terminal_sell(symbol, state, status):
     filled_by_tier = dict(state.get("filled_qty_by_tier") or {})
     prior_filled = _finite_float(filled_by_tier.get(key)) or 0.0
     filled_qty = max(0.0, _finite_float(status.filled_qty) or 0.0)
-    cost_val = _finite_float(status.cost) or 0.0
-    fee_val = _finite_float(status.fee) or 0.0
     filled_by_tier[key] = prior_filled + filled_qty
 
     state = dict(state)
@@ -747,6 +819,8 @@ def _record_terminal_sell(symbol, state, status):
         completed.add(threshold)
         state["completed_tiers"] = sorted(completed)
 
+    cost_val = _finite_float(status.cost) or 0.0
+    fee_val = _finite_float(status.fee) or 0.0
     terminal = list(state.get("terminal_orders") or [])[-19:]
     terminal.append({
         "order_id": pending.get("order_id"),
@@ -910,11 +984,78 @@ def _active_sell_orders(provider, symbol):
     return [
         order for order in orders
         if isinstance(order, dict)
-        and str(order.get("side") or "").upper() == "SELL"
+        and extract_order_side(order) == "SELL"
     ]
 
 
-def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider):
+_rtrade_sell_block_since: dict = {}
+
+
+def _is_rtrade_order(order):
+    if not isinstance(order, dict):
+        return False
+    cid = str(order.get("clientOrderId") or "").strip()
+    return cid.startswith(("RT_", "MO_RT_"))
+
+
+def _resolve_blocking_sell_orders(symbol, open_sells):
+    """Allow short retry when blocked only by rtrade (RT_*), then preemptively cancel."""
+    if not open_sells:
+        _rtrade_sell_block_since.pop(symbol, None)
+        return []
+    non_rtrade = [o for o in open_sells if not _is_rtrade_order(o)]
+    if non_rtrade:
+        _rtrade_sell_block_since.pop(symbol, None)
+        return open_sells
+    now = float(time.time())
+    blocked_since = _rtrade_sell_block_since.get(symbol)
+    if blocked_since is None:
+        _rtrade_sell_block_since[symbol] = now
+        print(
+            f"[{symbol}] AssetGuardian SELL temporarily blocked by rtrade order(s) "
+            f"{[extract_order_id(o) for o in open_sells]}; retrying before preemptive cancel "
+            f"(0.0/{RTRADE_BLOCK_CANCEL_SECONDS:.1f}s)."
+        )
+        return open_sells
+    elapsed = max(0.0, now - blocked_since)
+    if elapsed < RTRADE_BLOCK_CANCEL_SECONDS:
+        print(
+            f"[{symbol}] AssetGuardian SELL still blocked by rtrade order(s) "
+            f"{[extract_order_id(o) for o in open_sells]} "
+            f"({elapsed:.1f}/{RTRADE_BLOCK_CANCEL_SECONDS:.1f}s); waiting before cancel."
+        )
+        return open_sells
+    remaining = []
+    for order in open_sells:
+        oid = extract_order_id(order)
+        try:
+            mkt.cancel_order(symbol, str(oid), provider_name="binance")
+            print(
+                f"[{symbol}] Preemptively canceled blocking rtrade SELL order {oid} "
+                f"(cid={order.get('clientOrderId')}) after {elapsed:.1f}s."
+            )
+        except Exception as exc:
+            print(f"[{symbol}] Failed to cancel blocking rtrade SELL order {oid}: {exc}")
+            remaining.append(order)
+    if not remaining:
+        _rtrade_sell_block_since.pop(symbol, None)
+    return remaining
+
+
+def _effective_sell_tiers(portfolio_growth_pct=None):
+    """Include the hybrid portfolio+price_monitor tranche when total account value is up."""
+    tiers = list(SELL_TIERS)
+    pg = _finite_float(portfolio_growth_pct)
+    if pg is not None and pg >= PORTFOLIO_GROWTH_PERCENT:
+        hybrid_thr = float(PORTFOLIO_ASSET_MIN_GROWTH_PERCENT)
+        if all(abs(t - hybrid_thr) > 1e-9 for t, _ in tiers):
+            tiers.append((hybrid_thr, float(PORTFOLIO_SELL_ALLOCATION)))
+            tiers.sort()
+    return tuple(tiers)
+
+
+def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
+                        portfolio_growth_pct=None):
     """Select one incomplete SELL tier against a frozen campaign trough."""
     state = _symbol_campaign(symbol, "sell")
     new_campaign = not bool(state)
@@ -930,6 +1071,8 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider):
         if state:
             _save_symbol_campaign(symbol, "sell", {})
         return None, {}, None
+
+    active_tiers = _effective_sell_tiers(portfolio_growth_pct)
 
     if state:
         trough_price = _finite_float(state.get("trough_price"), positive=True)
@@ -965,7 +1108,8 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider):
         if trough_price is None or trough_ts is None:
             return None, {}, None
         growth = ((current_price - trough_price) / trough_price) * 100.0
-        if growth < SELL_TIERS[0][0]:
+        if growth < active_tiers[0][0]:
+            _rtrade_sell_block_since.pop(symbol, None)
             return None, {}, growth
         state = {
             "trough_price": trough_price,
@@ -982,6 +1126,7 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider):
     if open_sells is None:
         print(f"[{symbol}] Cannot verify open SELL orders; do not submit tier.")
         return None, ({} if new_campaign else state), growth
+    open_sells = _resolve_blocking_sell_orders(symbol, open_sells)
     if open_sells:
         print(
             f"[{symbol}] Existing SELL order blocks AssetGuardian tier: "
@@ -993,10 +1138,10 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider):
     completed = _completed_tier_values(state)
     initial_qty = _finite_float(state.get("initial_qty"), positive=True)
     filled_by_tier = dict(state.get("filled_qty_by_tier") or {})
-    for threshold, allocation in SELL_TIERS:
+    for threshold, allocation in active_tiers:
         if growth < threshold or threshold in completed:
             continue
-        target_qty = initial_qty * allocation
+        target_qty = min(free_qty, initial_qty * allocation)
         already_filled = _finite_float(
             filled_by_tier.get(_tier_key(threshold))) or 0.0
         remaining_qty = max(0.0, target_qty - already_filled)
@@ -1124,6 +1269,8 @@ def _next_check_seconds():
                 for kind in ("buy", "sell"))
             for row in root["symbols"].values() if isinstance(row, dict)):
         return min(CHECK_INTERVAL_SECONDS, ACTIVE_TRIGGER_SECONDS)
+    if any(_rtrade_sell_block_since.values()):
+        return min(CHECK_INTERVAL_SECONDS, ACTIVE_TRIGGER_SECONDS)
     for symbol, evaluation in _last_evaluation.items():
         drawdown = evaluation.get("drawdown")
         row = root["symbols"].get(symbol, {})
@@ -1135,7 +1282,8 @@ def _next_check_seconds():
             return min(CHECK_INTERVAL_SECONDS, NEAR_TRIGGER_SECONDS)
         growth = evaluation.get("growth")
         sell_completed = _completed_tier_values(row.get("sell", {}))
-        sell_next = next((threshold for threshold, _ in SELL_TIERS
+        active_tiers = _effective_sell_tiers(evaluation.get("portfolio_growth"))
+        sell_next = next((threshold for threshold, _ in active_tiers
                           if threshold not in sell_completed), None)
         if (growth is not None and sell_next is not None
                 and sell_next - max(0.0, growth) <= NEAR_TRIGGER_DISTANCE_PCT):
@@ -1189,15 +1337,9 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         return False
 
     rolling_growth_percent = ((current_price - minimum_price) / minimum_price) * 100.0
-    existing_buy_campaign = _symbol_campaign(symbol, "buy")
-    stored_buy_peak = _finite_float(existing_buy_campaign.get("peak_price"), positive=True)
-    effective_max_price = (
-        max(maximum_price, stored_buy_peak)
-        if stored_buy_peak is not None else maximum_price
-    )
-    drawdown_percent = ((current_price - effective_max_price) / effective_max_price) * 100.0
+    drawdown_percent = ((current_price - maximum_price) / maximum_price) * 100.0
     evaluation["drawdown"] = drawdown_percent
-    if drawdown_percent > -RECOVERY_RESET_PERCENT and existing_buy_campaign:
+    if drawdown_percent > -RECOVERY_RESET_PERCENT and _symbol_campaign(symbol, "buy"):
         print(f"[{symbol}] Drawdown recovered below {RECOVERY_RESET_PERCENT:.2f}%; "
               "rearm BUY campaign.")
         _save_symbol_campaign(symbol, "buy", {})
@@ -1210,19 +1352,24 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     except Exception as exc:
         print(f"[{symbol}] SELL balance unavailable; skip SELL fail-closed: {exc}")
         free_base_qty = None
+    portfolio_growth_pct = _get_portfolio_growth_percent(minutes_back=minutes_back)
+    evaluation["portfolio_growth"] = portfolio_growth_pct
     sell_tier, sell_state, effective_growth = _sell_campaign_tier(
-        symbol, current_price, minimum_row, free_base_qty, provider)
+        symbol, current_price, minimum_row, free_base_qty, provider,
+        portfolio_growth_pct=portfolio_growth_pct)
     if sell_tier is None:
         sell_state = _clear_inactive_trend_defer(
             symbol, "sell", sell_state)
     evaluation["growth"] = (
         rolling_growth_percent if effective_growth is None else effective_growth)
     frozen_trough = _finite_float(sell_state.get("trough_price"), positive=True)
+    pg_str = f"{portfolio_growth_pct:.4f}%" if portfolio_growth_pct is not None else "n/a"
     print(
         f"[{symbol}] price={current_price:.8f}, window_min/max="
         f"{minimum_price:.8f}/{maximum_price:.8f}, minutes_back={minutes_back:.1f}, "
         f"rolling_growth_from_min={rolling_growth_percent:.4f}%, "
         f"sell_growth={evaluation['growth']:.4f}%, "
+        f"portfolio_growth={pg_str}, "
         f"frozen_sell_trough={frozen_trough}, "
         f"drawdown_from_max={drawdown_percent:.4f}%"
     )

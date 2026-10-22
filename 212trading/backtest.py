@@ -96,6 +96,13 @@ def simulate(ohlc, P):
         "STRAT_REENTRY_PULLBACK_MIN": str(P.get("reentry_pullback_min", os.environ.get("STRAT_REENTRY_PULLBACK_MIN", "0.8"))),
         "STRAT_REENTRY_PULLBACK_MAX": str(P.get("reentry_pullback_max", os.environ.get("STRAT_REENTRY_PULLBACK_MAX", "4.0"))),
         "STRAT_REENTRY_TTL_HOURS": str(P.get("reentry_ttl_hours", os.environ.get("STRAT_REENTRY_TTL_HOURS", "0.0"))),
+        "STRAT_SL_DISASTER_BUFFER_RATIO": str(P.get("sl_disaster_buffer_ratio", os.environ.get("STRAT_SL_DISASTER_BUFFER_RATIO", "0.30"))),
+        "STRAT_SL_DISASTER_BUFFER_MAX_PCT": str(P.get("sl_disaster_buffer_max_pct", os.environ.get("STRAT_SL_DISASTER_BUFFER_MAX_PCT", "15.0"))),
+        "STRAT_SL_TREND_DEFER_MAX_SEC": str(P.get("sl_trend_defer_max_sec", os.environ.get("STRAT_SL_TREND_DEFER_MAX_SEC", "220.0"))),
+        "STRAT_SL_BOUNCE_MIN_RECOVERY_PCT": str(P.get("sl_bounce_min_recovery_pct", os.environ.get("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", "0.40"))),
+        "STRAT_SL_BOUNCE_PULLBACK_PCT": str(P.get("sl_bounce_pullback_pct", os.environ.get("STRAT_SL_BOUNCE_PULLBACK_PCT", "0.30"))),
+        "STRAT_SL_STRUCTURAL_BREAK_ENABLED": str(P.get("sl_structural_break_enabled", os.environ.get("STRAT_SL_STRUCTURAL_BREAK_ENABLED", "true"))).lower(),
+        "STRAT_TP_STAGNATION_MAX_SEC": str(P.get("tp_stagnation_max_sec", os.environ.get("STRAT_TP_STAGNATION_MAX_SEC", "1080.0"))),
         "STRAT_TP_LADDER": str(os.environ.get("STRAT_TP_LADDER", "")),
         "STRAT_TP_LADDER_CURVE": str(os.environ.get("STRAT_TP_LADDER_CURVE", "linear")),
     }

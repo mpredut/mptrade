@@ -34,7 +34,7 @@ for _mod_name in ("common", "notify", "hl_client", "market_data", "signals"):
         sys.modules.pop(_mod_name, None)
 
 from common import (
-    log, are_close, required_env, required_float_env,
+    log, are_close, load_env_stack, required_env, required_float_env,
     required_int_env, required_bool_env,
 )
 from notify import notify
@@ -43,7 +43,8 @@ from hl_client import HLClient, HLError
 from market_data import get_price
 from signals import get_signal
 
-HL_FEE_PCT = float(os.environ.get("HL_FEE_PCT", "0.045"))
+load_env_stack(os.path.join(_HERE, ".env"))
+HL_FEE_PCT = required_float_env("HL_FEE_PCT")
 
 
 def state_path_for(coin: str, direction: str) -> str:
@@ -94,9 +95,9 @@ class StratParams:
             enable_takeprofit  = (mode != "dca_only"),
             order_ttl_min      = required_float_env("STRAT_ORDER_TTL_MIN"),
             signal_gate        = required_bool_env("HL_SIGNAL_GATE"),
-            stop_loss_pct      = float(os.environ.get("STRAT_STOP_LOSS_PCT", "0.0")),
+            stop_loss_pct      = required_float_env("STRAT_STOP_LOSS_PCT"),
             reentry_tolerance_pct = required_float_env("STRAT_REENTRY_TOLERANCE_PCT"),
-            fee_pct            = float(os.environ.get("HL_FEE_PCT", "0.045")),
+            fee_pct            = required_float_env("HL_FEE_PCT"),
         )
 
     @classmethod

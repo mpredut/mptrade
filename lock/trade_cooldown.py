@@ -30,15 +30,19 @@ LOCK_FILE = os.path.join(BASE_DIR, "trade_cooldown.lock")      # lock fcntl (git
 CONF_FILE = os.path.join(BASE_DIR, "trade_cooldown.conf")      # tracked text/INI configuration
 
 
-def _load_cooldown_sec(fallback=20):
-    """Read ``[cooldown] default_sec`` and return ``fallback`` when invalid or absent."""
-    try:
-        cp = configparser.ConfigParser()
-        if cp.read(CONF_FILE):
-            return cp.getint("cooldown", "default_sec", fallback=fallback)
-    except Exception:
-        pass
-    return fallback
+def _load_cooldown_sec() -> int:
+    """Strictly read mandatory ``[cooldown] default_sec`` from ``trade_cooldown.conf``."""
+    if not os.path.exists(CONF_FILE):
+        raise FileNotFoundError(f"Missing mandatory configuration file: {CONF_FILE}")
+    cp = configparser.ConfigParser()
+    if not cp.read(CONF_FILE):
+        raise ValueError(f"Failed to read mandatory configuration file: {CONF_FILE}")
+    if not cp.has_option("cooldown", "default_sec"):
+        raise KeyError(f"Missing required [cooldown] default_sec in {CONF_FILE}")
+    val = cp.getint("cooldown", "default_sec")
+    if val <= 0:
+        raise ValueError(f"Invalid [cooldown] default_sec={val!r} in {CONF_FILE}; must be > 0")
+    return val
 
 
 DEFAULT_COOLDOWN_SEC = _load_cooldown_sec()

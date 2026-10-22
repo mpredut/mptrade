@@ -6,6 +6,10 @@
 # Core Tenets
 - **Unification & Compaction:** Consolidate fragmented logic into single linear choke points; eliminate redundancy.
 - **Single Source of Truth (SSOT):** Canonical definition and resolution for all domain state, config, and rules.
+- **Zero Configuration Fallbacks (Fail-Fast at Module Init):**
+  - Configuration parameters (`config.env`, `order_guard.conf`, `*.conf`, `*.env`) must never have hardcoded fallback defaults, silent seed dictionaries, or synonym/alias guessing in code.
+  - Every module must validate its required configuration during initialization (or config load) and raise `ValueError` or `KeyError` immediately if a setting is missing, empty, or invalid.
+  - Fallbacks are strictly reserved for **dynamic runtime strategy/operational resilience** (e.g., WS/REST transport fallback, proxy/chop weight fallback when live market data or long trend is unavailable, fail-closed guard behavior on runtime read errors) — never for missing static configuration or duplicate function/key aliases.
 - **Separation of Concerns (SoC):** Isolate distinct responsibilities and modular boundaries; minimize cross-cutting coupling.
 - **Holistic & General Solutions Over Point Fixes:**
   - Always solve classes of problems at the architectural choke point (e.g., transport layer, order gateway, state layer) rather than scattering per-caller `if/else` patches across modules.

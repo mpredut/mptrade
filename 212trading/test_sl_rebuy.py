@@ -81,6 +81,23 @@ def main() -> int:
         "STRAT_DCA_TREND_GATE_PCT": "0",
         "STRAT_TRAIL_PCT": "0",
         "STRAT_TRAIL_MIN_PROFIT_PCT": "5",
+        "STRAT_REENTRY_HYBRID_ENABLED": "false",
+        "STRAT_REENTRY_PEAK_RELATIVE": "false",
+        "STRAT_REENTRY_PULLBACK_PCT": "1.5",
+        "STRAT_REENTRY_PULLBACK_ADAPTIVE": "false",
+        "STRAT_REENTRY_PULLBACK_K": "1.0",
+        "STRAT_REENTRY_PULLBACK_MIN": "0.8",
+        "STRAT_REENTRY_PULLBACK_MAX": "4.0",
+        "STRAT_REENTRY_TTL_HOURS": "0.0",
+        "STRAT_SL_MHDSL_ENABLED": "false",
+        "STRAT_SL_DISASTER_BUFFER_RATIO": "0.30",
+        "STRAT_SL_DISASTER_BUFFER_MAX_PCT": "15.0",
+        "STRAT_SL_TREND_DEFER_MAX_SEC": "220.0",
+        "STRAT_SL_BOUNCE_MIN_RECOVERY_PCT": "0.40",
+        "STRAT_SL_BOUNCE_PULLBACK_PCT": "0.30",
+        "STRAT_SL_STRUCTURAL_BREAK_ENABLED": "true",
+        "STRAT_TP_MDHTP_ENABLED": "false",
+        "STRAT_TP_STAGNATION_MAX_SEC": "1080.0",
     })
     client = StubClient()
     s = Strategy(client, TICK, params, dry_run=False)

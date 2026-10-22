@@ -29,13 +29,13 @@ from pricewindow import (
 # botcore.load_dotenv does not overwrite variables already set by the real
 # environment (for example, a systemd EnvironmentFile); it only fills gaps.
 from botcore import (load_dotenv as _load_dotenv,
-                     float_env, required_float_env, required_int_env)
+                     required_bool_env, required_float_env, required_int_env)
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "config.env"))
 
 
 TIME_SLEEP_GET_PRICE = 0.8       # Nominal price-collection sleep interval in seconds.
-ORDER_EXPIRY_HOURS = float_env("TRADEALL_ORDER_EXPIRY_HOURS") or 2.6
+ORDER_EXPIRY_HOURS = required_float_env("TRADEALL_ORDER_EXPIRY_HOURS")
 EXP_TIME_BUY_ORDER = ORDER_EXPIRY_HOURS * 3600  # Configurable order expiration horizon.
 EXP_TIME_SELL_ORDER = EXP_TIME_BUY_ORDER
 TIME_SLEEP_EVALUATE = TIME_SLEEP_GET_PRICE + 60  # seconds to sleep for buy/sell evaluation
@@ -63,17 +63,16 @@ TREND_UNIFORM_RATE_THRESHOLD = required_float_env("TRADEALL_TREND_UNIFORM_RATE")
 # logic(): the extreme-slope threshold used at four symmetric UP/DOWN sites. It
 # bypasses normal validation and treats the trend as old for those branches.
 SLOPE_EXTREME_THRESHOLD = required_float_env("TRADEALL_SLOPE_EXTREME_THRESHOLD")
-SMALL_SLOPE_THRESHOLD = float_env("TRADEALL_SMALL_SLOPE_THRESHOLD") or 3.5
+SMALL_SLOPE_THRESHOLD = required_float_env("TRADEALL_SMALL_SLOPE_THRESHOLD")
 
 # Proactive kinematic parameters (Velocity & Acceleration)
-_accel_raw = str(os.environ.get("TRADEALL_ACCEL_ENABLED", "true") or "").strip().lower()
-ACCEL_ENABLED = _accel_raw in {"1", "true", "yes", "on"}
-ACCEL_WINDOW_SEC = float_env("TRADEALL_ACCEL_WINDOW_SEC") or 90.0
-ACCEL_INFLECTION_THRESHOLD = float_env("TRADEALL_ACCEL_INFLECTION_THRESHOLD") or 0.5
-ACCEL_SURGE_THRESHOLD = float_env("TRADEALL_ACCEL_SURGE_THRESHOLD") or 2.5
-ACCEL_MIN_VEL_SHORT = float_env("TRADEALL_ACCEL_MIN_VEL_SHORT") or 0.28
-ACCEL_MIN_ACC_SHORT = float_env("TRADEALL_ACCEL_MIN_ACC_SHORT") or 0.20
-ACCEL_MIN_VEL_MED = float_env("TRADEALL_ACCEL_MIN_VEL_MED") or 0.15
+ACCEL_ENABLED = required_bool_env("TRADEALL_ACCEL_ENABLED")
+ACCEL_WINDOW_SEC = required_float_env("TRADEALL_ACCEL_WINDOW_SEC")
+ACCEL_INFLECTION_THRESHOLD = required_float_env("TRADEALL_ACCEL_INFLECTION_THRESHOLD")
+ACCEL_SURGE_THRESHOLD = required_float_env("TRADEALL_ACCEL_SURGE_THRESHOLD")
+ACCEL_MIN_VEL_SHORT = required_float_env("TRADEALL_ACCEL_MIN_VEL_SHORT")
+ACCEL_MIN_ACC_SHORT = required_float_env("TRADEALL_ACCEL_MIN_ACC_SHORT")
+ACCEL_MIN_VEL_MED = required_float_env("TRADEALL_ACCEL_MIN_VEL_MED")
 
 
 

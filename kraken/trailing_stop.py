@@ -77,11 +77,8 @@ for _env_k, _env_v in os.environ.items():
     if _env_k.startswith("KRAKEN_TRAILING_") and _env_k.endswith("_PAIR") and _env_k != "KRAKEN_TRAILING_HYPE_PAIR":
         _asset = _env_k[len("KRAKEN_TRAILING_"):-len("_PAIR")]
         _pct_k = f"KRAKEN_TRAILING_{_asset}_PCT"
-        try:
-            TRAIL_PCT[_asset] = float(os.environ.get(_pct_k, DEFAULT_TRAIL_PCT))
-            PAIR_FOR[_asset] = str(_env_v).strip()
-        except (ValueError, TypeError):
-            pass
+        TRAIL_PCT[_asset] = required_float_env(_pct_k)
+        PAIR_FOR[_asset] = required_env(_env_k)
 
 # After a crash sale, re-buy when price rebounds BOUNCE% from the post-sale low.
 REBUY_ENABLED = required_bool_env("KRAKEN_TRAILING_REBUY_ENABLED")
@@ -93,7 +90,7 @@ REBUY_SKIP_IF_TREND_DOWN = required_bool_env("KRAKEN_TRAILING_REBUY_SKIP_IF_TREN
 # Minimum profit before trailing activates (0 means immediate activation as before).
 # This prevents selling at a loss after a normal dip immediately following a purchase.
 MIN_PROFIT_PCT = required_float_env("KRAKEN_TRAILING_MIN_PROFIT_PCT")
-TRAILING_MARKET = os.environ.get("KRAKEN_TRAILING_MARKET", "true").strip().lower() in ("1", "true", "yes")
+TRAILING_MARKET = required_bool_env("KRAKEN_TRAILING_MARKET")
 
 
 class KrakenTrailing:

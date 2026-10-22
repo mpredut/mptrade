@@ -39,13 +39,10 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
     behavior, so the faithful engine tests the production strategy rather than
     defaults.
     """
-    env = None
-    if not os.environ.get("STRATEGY_MODE"):
-        cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env")
-        if os.path.exists(cfg_path):
-            from botcore import parse_dotenv
-            env = dict(parse_dotenv(cfg_path))
-            env.update(os.environ)
+    cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env")
+    from botcore import parse_dotenv
+    env = dict(parse_dotenv(cfg_path))
+    env.update(os.environ)
     p = StratParams.from_env(env=env)
     fields = dict(
         entry_amount=base.get("entry", p.entry_amount),
@@ -123,10 +120,7 @@ def main() -> int:
     # re-entry, tranche, and tolerance values.
     import os as _os
     from kraken_common import load_dotenv as _load_dotenv
-    try:
-        _load_dotenv(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "config.env"))
-    except Exception:  # noqa: BLE001 — from_env falls back to defaults when absent
-        pass
+    _load_dotenv(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "config.env"))
 
     try:
         ohlc = fetch_candles(args.pair, args.interval)

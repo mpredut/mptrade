@@ -36,61 +36,66 @@ _MARGINS_LAST_CHECK: float = 0.0
 from geopolitical_order_guard import _GEO_SHADOW_NOTIFY_COOLDOWN as _SHADOW_NOTIFY_COOLDOWN
 
 
+_REQUIRED_ORDER_GUARD_KEYS = frozenset({
+    "default",
+    "default_window_h",
+    "default_max_daily_trades",
+    "default_safeback_sec",
+    "default_recent_transaction_sec",
+    "default_recent_transaction_side",
+    "default_buy_reference",
+    "default_sell_reference",
+    "buy_window_mode",
+    "buy_window_bull_h",
+    "buy_window_flat_h",
+    "buy_window_bear_h",
+    "regime_context_max_age_sec",
+    "min_taker_ratio",
+    "taker_downscale_threshold",
+    "taker_downscaled_scale",
+})
+
+
 def _load_margins():
-    """Read and cache `key = value` lines from order_guard.conf.
-    The configuration file is the SINGLE source of truth. Checks file mtime
-    periodically (every 5 seconds) to hot-reload config edits without restarting.
-    The dictionary below is only a safety net for missing entries."""
+    """Read and cache `key = value` lines strictly from order_guard.conf.
+    The configuration file is the SINGLE source of truth without code fallbacks.
+    Checks file mtime periodically (every 5 seconds) to hot-reload config edits."""
     global _MARGINS, _MARGINS_FILE_MTIME, _MARGINS_LAST_CHECK
     now_ts = time.time()
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "order_guard.conf")
     if _MARGINS is not None and (now_ts - _MARGINS_LAST_CHECK) < 5.0:
         return _MARGINS
     _MARGINS_LAST_CHECK = now_ts
-    try:
-        mtime = os.path.getmtime(path) if os.path.exists(path) else 0.0
-        if _MARGINS is not None and (_MARGINS_FILE_MTIME == 0.0 or mtime == _MARGINS_FILE_MTIME):
-            _MARGINS_FILE_MTIME = mtime
-            return _MARGINS
-        _MARGINS_FILE_MTIME = mtime
-    except Exception:
+    if not os.path.exists(path):
         if _MARGINS is not None:
             return _MARGINS
-    m = {
-        "default": 1.15,                       # fallback profit threshold (%)
-        "default_window_h": 0.0,               # profit-guard window (hours); 0 uses only last_opposite_fill
-        "default_max_daily_trades": 25,        # daily trade cap
-        "default_safeback_sec": 14 * 24 * 3600 + 60,  # own-trade search window (seconds): 14 days
-        "default_recent_transaction_sec": 90,   # anti-spam window (seconds, 1.5 min)
-        "default_recent_transaction_side": "buy", # anti-spam side policy: 'buy', 'sell', 'both', or 'off'
-        "default_buy_reference": 1.0,          # 1 = BUY must beat the historical sell reference
-        "buy_window_mode": "dynamic",          # dynamic regime-aware lookback window
-        "buy_window_bull_h": 8.0,              # Bull lookback: 4h - 12h
-        "buy_window_flat_h": 24.0,             # Flat lookback: 24h - 48h
-        "buy_window_bear_h": 72.0,             # Bear lookback: 48h - 168h
-        "regime_context_max_age_sec": 120.0,   # Pre-computed regime context max age (seconds)
-        "min_taker_ratio": 0.75,               # Whale taker flow hard defer threshold (< 0.75 blocks BUY)
-        "taker_downscale_threshold": 0.90,     # Whale taker flow moderate downscale threshold (< 0.90 downscales)
-        "taker_downscaled_scale": 0.50,        # Scale factor when taker ratio is between min_taker and threshold
-    }
-    try:
-        with open(path) as f:
-            for line in f:
-                line = line.split("#", 1)[0].strip()
-                if not line or "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
-                k = k.strip().lower(); v = v.strip()
-                try:                       # thresholds/hours/weights are floats; proxies are strings
-                    m[k] = float(v)
-                except ValueError:
-                    m[k] = v
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        print(f"[order_guard] invalid configuration ({e}) — using default 1.15")
+        raise FileNotFoundError(f"Missing mandatory configuration file: {path}")
+    mtime = os.path.getmtime(path)
+    if _MARGINS is not None and (_MARGINS_FILE_MTIME == 0.0 or mtime == _MARGINS_FILE_MTIME):
+        _MARGINS_FILE_MTIME = mtime
+        return _MARGINS
+    _MARGINS_FILE_MTIME = mtime
+    m: Dict[str, Any] = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            if not line or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            k = k.strip().lower()
+            v = v.strip()
+            try:
+                m[k] = float(v)
+            except ValueError:
+                m[k] = v
+    missing = sorted(_REQUIRED_ORDER_GUARD_KEYS - set(m.keys()))
+    if missing:
+        raise KeyError(f"Missing required keys in {path}: {', '.join(missing)}")
     _MARGINS = m
     return m
+
+
+_load_margins()
 
 
 def _provider_name(provider):
@@ -99,37 +104,122 @@ def _provider_name(provider):
     return getattr(provider, "name", "") or ""
 
 
-def buy_reference_mode(provider_name) -> str:
-    """Return the buy reference mode: 'on', 'off', or 'dynamic'.
+VALID_PROFIT_GUARD_MODES = frozenset({"strict", "average", "last", "hybrid", "dynamic", "off"})
 
-    Configuration key `<venue>_buy_reference`, falling back to `default_buy_reference`.
-    '0', 0, False, 'off' -> 'off' (historical sell reference bypassed).
-    '1', 1, True, 'on' -> 'on' (strict static lookback enforced).
-    'dynamic' -> 'dynamic' (bypassed in confirmed BULL trend; enforced in BEAR/FLAT/UNKNOWN).
+_PROCESS_TO_MODULE = {
+    "AG": "assetguardian",
+    "MT": "monitortrades",
+    "TA": "tradeall",
+    "RT": "rtrade",
+}
+
+
+def opposite_side(order_type: str) -> str:
+    """Return the opposite order side ('SELL' for 'BUY', 'BUY' for 'SELL')."""
+    side = str(order_type or "").strip().upper()
+    if side not in ("BUY", "SELL"):
+        raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
+    return "SELL" if side == "BUY" else "BUY"
+
+
+def profit_diff_pct(order_type: str, price: float, ref_price: float) -> float:
+    """Compute signed favorable profit percentage of `price` relative to `ref_price` symmetrically."""
+    side = str(order_type or "").strip().upper()
+    if side == "BUY":
+        return u.value_diff_to_percent(ref_price, price)
+    if side == "SELL":
+        return u.value_diff_to_percent(price, ref_price)
+    raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
+
+
+def select_extreme_reference(prices, order_type: str, *, strict: bool = True) -> float:
+    """Select the directional extreme reference symmetrically for BUY and SELL."""
+    side = str(order_type or "").strip().upper()
+    if side not in ("BUY", "SELL"):
+        raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
+    if strict:
+        return min(prices) if side == "BUY" else max(prices)
+    return max(prices) if side == "BUY" else min(prices)
+
+
+def validate_profit_guard_mode_cfg(val: Any) -> str:
+    """Validate that a profit guard mode is strictly one of VALID_PROFIT_GUARD_MODES."""
+    if not isinstance(val, str):
+        raise ValueError(
+            f"Invalid profit guard mode {val!r}; must be a string in {sorted(VALID_PROFIT_GUARD_MODES)}"
+        )
+    mode = val.strip().lower()
+    if mode not in VALID_PROFIT_GUARD_MODES:
+        raise ValueError(
+            f"Invalid profit guard mode {val!r}; must be one of {sorted(VALID_PROFIT_GUARD_MODES)}"
+        )
+    return mode
+
+
+def get_profit_guard_mode_cfg(
+    provider_name,
+    order_type: str,
+    *,
+    module: Optional[str] = None,
+    reference_mode: Optional[str] = None,
+) -> str:
+    """Read the BUY or SELL profit guard difficulty mode strictly from order_guard.conf.
+
+    Fails fast (ValueError / KeyError) if any key or value is missing or invalid.
     """
+    if reference_mode is not None:
+        return validate_profit_guard_mode_cfg(reference_mode)
+
+    side_u = str(order_type or "").strip().upper()
+    if side_u not in ("BUY", "SELL"):
+        raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
+    side_l = side_u.lower()
+
+    venue = _provider_name(provider_name).strip().lower()
+    if not venue:
+        raise ValueError(f"Missing provider_name for get_profit_guard_mode_cfg({provider_name!r}, {order_type!r})")
+
     m = _load_margins()
-    name = _provider_name(provider_name)
-    key = name.lower() + "_buy_reference"
-    val = m.get(key, m.get("default_buy_reference", 1.0))
-    if isinstance(val, str):
-        val_str = val.strip().lower()
-        if val_str in ("dynamic", "adaptive"):
-            return "dynamic"
-        if val_str in ("0", "0.0", "false", "off", "no"):
-            return "off"
-        if val_str in ("1", "1.0", "true", "on", "yes"):
-            return "on"
-    try:
-        return "off" if float(val) == 0.0 else "on"
-    except (TypeError, ValueError):
-        return "on"
+    mod = str(module).strip().lower() if module else None
+    if not mod:
+        try:
+            from binance_api.order_id_context import get_process_name
+            mod = _PROCESS_TO_MODULE.get(get_process_name())
+        except Exception:
+            mod = None
+
+    if mod:
+        mod_key = f"{mod}_{side_l}_reference"
+        if mod_key not in m:
+            raise KeyError(f"Missing required module config key {mod_key!r} in order_guard.conf")
+        mod_val = str(m[mod_key]).strip().lower()
+        if mod_val != "venue":
+            return validate_profit_guard_mode_cfg(mod_val)
+
+    venue_key = f"{venue}_{side_l}_reference"
+    if venue_key in m:
+        return validate_profit_guard_mode_cfg(m[venue_key])
+
+    default_key = f"default_{side_l}_reference"
+    if default_key in m:
+        return validate_profit_guard_mode_cfg(m[default_key])
+
+    raise KeyError(
+        f"Missing required profit guard config key {venue_key!r} (and {default_key!r}) in order_guard.conf"
+    )
 
 
-def buy_reference_enabled(provider_name) -> bool:
-    """Return whether a BUY must sit below the venue's historical sell reference.
-
-    Compatibility wrapper around buy_reference_mode(provider_name) != 'off'."""
-    return buy_reference_mode(provider_name) != "off"
+def is_profit_guard_enabled_cfg(
+    provider_name,
+    order_type: str,
+    *,
+    module: Optional[str] = None,
+    reference_mode: Optional[str] = None,
+) -> bool:
+    """Return True if the configured profit guard mode in order_guard.conf is not 'off'."""
+    return get_profit_guard_mode_cfg(
+        provider_name, order_type, module=module, reference_mode=reference_mode
+    ) != "off"
 
 
 def symbol_regime(
@@ -279,7 +369,7 @@ def _symbol_trend(
 
 
 def margin_for(provider_name):
-    """Return the venue's configured minimum profit percentage, defaulting to 1.15."""
+    """Return the venue's configured minimum profit percentage from order_guard.conf, defaulting to 1.15."""
     m = _load_margins()
     return m.get((provider_name or "").lower(), m["default"])
 
@@ -351,8 +441,10 @@ def window_for(
     order_type=None,
     *,
     regime_context=None,
+    module=None,
+    reference_mode=None,
 ) -> float:
-    """Return the reference window in seconds for the given venue and order side.
+    """Return the configured reference window in seconds from order_guard.conf for the given venue and side.
 
     For BUY orders when dynamic windowing is active (via venue buy_reference='dynamic'
     or buy_window_mode='dynamic'), returns dynamic_buy_window_sec(symbol, provider=name)
@@ -363,12 +455,21 @@ def window_for(
     m = _load_margins()
     side = (order_type or "").upper()
 
-    if side == "BUY":
-        mode = buy_reference_mode(name)
+    if side in ("BUY", "SELL"):
+        mode = get_profit_guard_mode_cfg(
+            name, side, module=module, reference_mode=reference_mode
+        )
         if mode == "off":
             return 0.0
-        win_mode = str(m.get("buy_window_mode", "dynamic")).strip().lower()
-        if mode == "dynamic" or win_mode in ("dynamic", "adaptive"):
+        if side == "BUY":
+            win_mode = str(m.get("buy_window_mode", "dynamic")).strip().lower()
+            if mode == "dynamic" or win_mode in ("dynamic", "adaptive"):
+                return dynamic_buy_window_sec(
+                    symbol,
+                    provider=name,
+                    regime_context=regime_context,
+                )
+        elif side == "SELL" and mode == "dynamic":
             return dynamic_buy_window_sec(
                 symbol,
                 provider=name,
@@ -385,7 +486,7 @@ def window_for(
 
 
 def weight_proxy_for(provider_name):
-    """Return the trend/Gaussian-weight proxy symbol used when the current symbol lacks
+    """Return the trend/Gaussian-weight proxy symbol from order_guard.conf when the current symbol lacks
     its own long trend (e.g. HYPE -> BTC until data exists). Uses `<venue>_weight_proxy`
     or `default_weight_proxy`; None falls back to weight 0.03."""
     m = _load_margins()
@@ -401,12 +502,44 @@ def _order_ts_qty_price(o):
     return ts, qty, px
 
 
-def active_cycle_window_ref(opp_orders, same_orders=None, order_type="SELL"):
+def _aggregate_reference_prices(active_lots, valid_opp, side: str, mode: str):
+    """Aggregate active lots into a reference price symmetrically for BUY and SELL."""
+    active_prices = [px for _, px in active_lots if px > 0]
+    if not active_prices:
+        return None
+    strict_ref = select_extreme_reference(active_prices, side, strict=True)
+    if mode in ("on", "strict", "dynamic"):
+        return strict_ref
+    if mode == "off":
+        return None
+    weighted_qty = sum(q for q, px in active_lots if q > 0 and px > 0)
+    if weighted_qty > 0:
+        avg_ref = sum(q * px for q, px in active_lots if q > 0 and px > 0) / weighted_qty
+    else:
+        avg_ref = sum(active_prices) / len(active_prices)
+    if valid_opp and any(ts > 0 for ts, _, _ in valid_opp):
+        max_ts = max(ts for ts, _, _ in valid_opp)
+        last_ref = [px for ts, _, px in valid_opp if ts == max_ts][-1]
+    else:
+        last_ref = active_lots[-1][1]
+    if mode == "average":
+        return avg_ref
+    if mode == "last":
+        return last_ref
+    if mode == "hybrid":
+        return select_extreme_reference([avg_ref, last_ref], side, strict=False)
+    return strict_ref
+
+
+def active_cycle_window_ref(opp_orders, same_orders=None, order_type="SELL", *, reference_mode=None):
     """Compute the window reference price from opposite-side fills, excluding earlier
     cycles that were already closed by subsequent same-side fills within the window."""
     if not opp_orders:
         return None
     side = (order_type or "").upper()
+    mode = validate_profit_guard_mode_cfg(reference_mode or "strict")
+    if mode == "off":
+        return None
     valid_opp = []
     for o in opp_orders:
         ts, qty, px = _order_ts_qty_price(o)
@@ -414,8 +547,8 @@ def active_cycle_window_ref(opp_orders, same_orders=None, order_type="SELL"):
             valid_opp.append((ts, qty, px))
     if not valid_opp:
         return None
-    all_prices = [px for _, _, px in valid_opp]
-    default_ref = min(all_prices) if side == "BUY" else max(all_prices)
+    default_lots = [(qty, px) for _, qty, px in valid_opp]
+    default_ref = _aggregate_reference_prices(default_lots, valid_opp, side, mode)
     if len(valid_opp) <= 1 or not same_orders:
         return default_ref
 
@@ -433,14 +566,14 @@ def active_cycle_window_ref(opp_orders, same_orders=None, order_type="SELL"):
     )
     events.sort(key=lambda x: (x[0], x[1]))
 
-    lots = []  # list of [remaining_qty, initial_qty, price]
-    for _ts, is_same, qty, px in events:
+    lots = []  # list of [remaining_qty, initial_qty, price, ts]
+    for ts, is_same, qty, px in events:
         if is_same == 0:
-            lots.append([qty, qty, px])
+            lots.append([qty, qty, px, ts])
         else:
             rem_to_consume = qty
             while lots and rem_to_consume > 1e-12:
-                rem_lot, init_lot, _lot_px = lots[0]
+                rem_lot, init_lot, _lot_px, _lot_ts = lots[0]
                 if rem_lot <= rem_to_consume + 1e-12:
                     rem_to_consume -= rem_lot
                     lots.pop(0)
@@ -452,21 +585,35 @@ def active_cycle_window_ref(opp_orders, same_orders=None, order_type="SELL"):
                     else:
                         lots[0][0] = new_rem
 
-    active_prices = [lot[2] for lot in lots if lot[0] > lot[1] * 0.02 + 1e-12 and lot[2] > 0]
-    if not active_prices:
+    active_lots = [(lot[0], lot[2]) for lot in lots if lot[0] > lot[1] * 0.02 + 1e-12 and lot[2] > 0]
+    active_opp = [(lot[3], lot[0], lot[2]) for lot in lots if lot[0] > lot[1] * 0.02 + 1e-12 and lot[2] > 0]
+    if not active_lots:
         return default_ref
-    return min(active_prices) if side == "BUY" else max(active_prices)
+    return _aggregate_reference_prices(active_lots, active_opp, side, mode)
 
 
-def window_reference(provider, symbol, order_type, window_s):
-    """Return a time-windowed reference from opposite-side orders/fills: minimum SELL
-    for a BUY or maximum BUY for a SELL. Return None for an empty or disabled window.
-    Read errors propagate so the caller fails closed. Non-positive prices are ignored.
-    This is the platform-agnostic equivalent of Binance tier 1."""
+def window_reference(
+    provider,
+    symbol,
+    order_type,
+    window_s,
+    *,
+    reference_mode: Optional[str] = None,
+    module: Optional[str] = None,
+):
+    """Return a time-windowed reference from opposite-side orders/fills symmetrically
+    for BUY and SELL according to the resolved difficulty mode ('on'/'strict', 'average',
+    'last', 'hybrid', 'dynamic', or 'off').
+    Return None for an empty or disabled window. Read errors propagate so the caller fails closed."""
     if not window_s or window_s <= 0:
         return None
-    side = order_type.upper()
-    opp = "SELL" if side == "BUY" else "BUY"
+    side = (order_type or "").upper()
+    eff_mode = get_profit_guard_mode_cfg(
+        provider, side, module=module, reference_mode=reference_mode
+    )
+    if eff_mode == "off":
+        return None
+    opp = opposite_side(side)
     recent = provider.get_orders(symbol, opp, window_s)
     if recent is None:
         raise ProviderError(f"window_reference({symbol}): failed to read order history")
@@ -481,13 +628,15 @@ def window_reference(provider, symbol, order_type, window_s):
             same_orders = provider.get_orders(symbol, side, window_s) or []
         except Exception:
             same_orders = []
-        if same_orders:
-            return active_cycle_window_ref(recent, same_orders, side)
-    return min(prices) if side == "BUY" else max(prices)
+        if same_orders or eff_mode in ("average", "last", "hybrid"):
+            return active_cycle_window_ref(recent, same_orders, side, reference_mode=eff_mode)
+    if eff_mode in ("average", "last", "hybrid"):
+        return active_cycle_window_ref(recent, None, side, reference_mode=eff_mode)
+    return select_extreme_reference(prices, side, strict=True)
 
 
 def chop_weight_for(provider_name):
-    """Return the venue's conservative chop fallback weight (default 0.03)."""
+    """Return the venue's conservative chop fallback weight from order_guard.conf (default 0.03)."""
     m = _load_margins()
     key = (provider_name or "").lower() + "_chop_weight"
     val = m.get(key, m.get("default_chop_weight", 0.03))
@@ -597,14 +746,14 @@ def max_daily_trades_for(provider_name):
 
 
 def safeback_sec_for(provider_name):
-    """Return the per-venue trade-search window in seconds for the daily cap."""
+    """Return the per-venue trade-search window in seconds from order_guard.conf for the daily cap."""
     m = _load_margins()
     key = (provider_name or "").lower() + "_safeback_sec"
     return float(m.get(key, m["default_safeback_sec"]))
 
 
 def normalize_recent_transaction_side(side_policy: Any) -> str:
-    """Normalize anti-spam side policy to 'buy', 'sell', 'both', or 'off'.
+    """Parse anti-spam side policy from order_guard.conf to 'buy', 'sell', 'both', or 'off'.
 
     Values:
       - 'buy', 'only_buy', 'buys' -> 'buy' (default, rejects rapid BUY on recent BUY)
@@ -625,7 +774,7 @@ def normalize_recent_transaction_side(side_policy: Any) -> str:
 
 
 def recent_transaction_side_for(provider_name):
-    """Return the venue's anti-spam side policy ('buy', 'sell', 'both', or 'off')."""
+    """Return the venue's anti-spam side policy from order_guard.conf ('buy', 'sell', 'both', or 'off')."""
     env_side = os.environ.get("RECENT_TRANSACTION_SIDE")
     if env_side:
         return normalize_recent_transaction_side(env_side)
@@ -637,7 +786,7 @@ def recent_transaction_side_for(provider_name):
 
 
 def recent_transaction_sec_for(provider_name, order_type=None):
-    """Return the anti-spam window that rejects a recent same-symbol, same-side order.
+    """Return the anti-spam window from order_guard.conf that rejects a recent same-symbol, same-side order.
 
     Supports side-specific overrides (<venue>_recent_transaction_<side>_sec or
     default_recent_transaction_<side>_sec), falling back to venue or default
@@ -1312,109 +1461,26 @@ def check_math_profit_reference(
     window_ref=None,
     *,
     regime_context=None,
+    reference_mode: Optional[str] = None,
+    module: Optional[str] = None,
 ) -> bool:
-    """Evaluate deterministic price reference and margin percentage thresholds.
+    """Evaluate deterministic price reference and margin percentage thresholds symmetrically
+    for BUY and SELL across all difficulty tiers ('off', 'hybrid', 'last', 'average', 'dynamic', 'on').
 
     Pure mathematical calculation (0 tokens, deterministic, no AI or macro push alerts).
     """
-    order_type = order_type.upper()
+    side = (order_type or "").upper()
+    opp_side = opposite_side(side)
     provider_name = _provider_name(provider)
-    if order_type == "BUY":
-        mode = buy_reference_mode(provider_name)
-        if mode == "off":
-            print(f"[GUARD] BUY {symbol}: the historical sell reference is off for this venue "
-                  f"(order_guard.conf); price {price} is not compared with past sells")
-            return True
-        elif mode == "dynamic":
-            trend = None
-            if regime_context is not None:
-                max_age = _load_margins().get("regime_context_max_age_sec", 120.0)
-                if not hasattr(regime_context, "is_valid_for") or regime_context.is_valid_for(
-                    symbol=symbol, provider=provider_name, max_age_seconds=max_age,
-                    require_identity=True,
-                ):
-                    trend = getattr(regime_context, "resolved_trend", None)
-            if trend is None:
-                trend = _symbol_trend(symbol, provider=provider)
-            dyn_window_s = dynamic_buy_window_sec(
-                symbol,
-                provider=provider,
-                resolved_trend=trend,
-                regime_context=regime_context,
-            )
-            dyn_hours = dyn_window_s / 3600.0
-            def _valid_pos_float(val):
-                if val is None:
-                    return None
-                try:
-                    f = float(val)
-                    return f if math.isfinite(f) and f > 0 else None
-                except (TypeError, ValueError):
-                    return None
-
-            pos_window_ref = _valid_pos_float(window_ref)
-            if pos_window_ref is not None:
-                diff = u.value_diff_to_percent(pos_window_ref, price)
-                if diff < profit_percentage:
-                    # In dynamic mode, verify whether this reference actually sits within the dynamic window (dyn_window_s)
-                    if hasattr(provider, "get_orders"):
-                        try:
-                            recent = provider.get_orders(symbol, "SELL", dyn_window_s)
-                        except (ProviderError, Exception) as exc:
-                            print(f"[GUARD] BUY {symbol}: dynamic window history unavailable ({exc}) -> BLOCKED")
-                            return False
-                        if recent is None:
-                            print(f"[GUARD] BUY {symbol}: dynamic window history unavailable -> BLOCKED")
-                            return False
-                        recent_prices = [
-                            extract_order_price(o, default=0.0)
-                            for o in recent
-                            if extract_order_price(o, default=0.0) > 0
-                        ]
-                        if not recent_prices:
-                            print(f"[GUARD] BUY {symbol}: dynamic window ({dyn_hours:.1f}h, trend='{trend}') has no fills; "
-                                  f"anchor {pos_window_ref} from older period bypassed")
-                            return True
-                        pos_window_ref = min(recent_prices)
-                        if len(recent) > 1 and all(
-                            isinstance(o, dict) and (extract_timestamp_ms(o, default=0) or 0) > 0
-                            for o in recent
-                        ):
-                            try:
-                                same_orders = provider.get_orders(symbol, "BUY", dyn_window_s) or []
-                            except Exception:
-                                same_orders = []
-                            if same_orders:
-                                active_ref = active_cycle_window_ref(recent, same_orders, "BUY")
-                                if active_ref is not None and active_ref > 0:
-                                    pos_window_ref = active_ref
-                        diff = u.value_diff_to_percent(pos_window_ref, price)
-                        if diff >= profit_percentage:
-                            print(f"[GUARD] BUY {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
-                                  f"recent sell ref {pos_window_ref}, price {price}, diff {diff:.2f}% >= {profit_percentage}%. Permitted.")
-                            return True
-                    elif trend == "bull" and not hasattr(provider, "get_orders"):
-                        print(f"[GUARD] BUY {symbol}: dynamic mode bypassed historical sell reference "
-                              f"during confirmed BULL trend; price {price} permitted")
-                        return True
-                    print(f"[GUARD] BUY {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
-                          f"found recent sell ref {pos_window_ref}, price {price}, diff {diff:.2f}%, threshold {profit_percentage}%")
-                    print(f"Percentage difference ({diff:.2f}%) below threshold {profit_percentage}%. "
-                          f"The BUY order is BLOCKED.")
-                    return False
-                print(f"[GUARD] BUY {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
-                      f"recent sell ref {pos_window_ref}, price {price}, diff {diff:.2f}% >= {profit_percentage}%. Permitted.")
-                return True
-            else:
-                print(f"[GUARD] BUY {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
-                      f"has no recent sell reference; price {price} permitted")
-                return True
-    has_window = window_for(provider_name, symbol, order_type, regime_context=regime_context) > 0
-    raw_ref = window_ref if window_ref is not None else (
-        None if (order_type == "BUY" and has_window) else (
-            provider.last_opposite_fill(symbol, order_type) if hasattr(provider, "last_opposite_fill") else None
-        )
+    mode = get_profit_guard_mode_cfg(
+        provider_name, side, module=module, reference_mode=reference_mode
     )
+
+    if mode == "off":
+        print(f"[GUARD] {side} {symbol}: the historical {opp_side.lower()} reference is off "
+              f"for this venue/module (order_guard.conf); price {price} is not compared with past {opp_side.lower()}s")
+        return True
+
     def _parse_ref(val):
         if val is None:
             return None
@@ -1424,19 +1490,115 @@ def check_math_profit_reference(
         except (TypeError, ValueError):
             return None
 
+    if mode == "dynamic":
+        trend = None
+        if regime_context is not None:
+            max_age = _load_margins().get("regime_context_max_age_sec", 120.0)
+            if not hasattr(regime_context, "is_valid_for") or regime_context.is_valid_for(
+                symbol=symbol, provider=provider_name, max_age_seconds=max_age,
+                require_identity=True,
+            ):
+                trend = getattr(regime_context, "resolved_trend", None)
+        if trend is None:
+            trend = _symbol_trend(symbol, provider=provider)
+        dyn_window_s = dynamic_buy_window_sec(
+            symbol,
+            provider=provider,
+            resolved_trend=trend,
+            regime_context=regime_context,
+        )
+        dyn_hours = dyn_window_s / 3600.0
+        pos_window_ref = _parse_ref(window_ref)
+        if pos_window_ref is not None:
+            diff = profit_diff_pct(side, price, pos_window_ref)
+            if diff < profit_percentage:
+                if hasattr(provider, "get_orders"):
+                    try:
+                        recent = provider.get_orders(symbol, opp_side, dyn_window_s)
+                    except (ProviderError, Exception) as exc:
+                        print(f"[GUARD] {side} {symbol}: dynamic window history unavailable ({exc}) -> BLOCKED")
+                        return False
+                    if recent is None:
+                        print(f"[GUARD] {side} {symbol}: dynamic window history unavailable -> BLOCKED")
+                        return False
+                    recent_prices = []
+                    for o in recent:
+                        try:
+                            px = float(o.get("price", 0.0) or 0.0)
+                            if px > 0:
+                                recent_prices.append(px)
+                        except (ValueError, TypeError):
+                            continue
+                    if not recent_prices:
+                        print(f"[GUARD] {side} {symbol}: dynamic window ({dyn_hours:.1f}h, trend='{trend}') has no fills; "
+                              f"anchor {pos_window_ref} from older period bypassed")
+                        return True
+                    pos_window_ref = select_extreme_reference(recent_prices, side, strict=True)
+                    if len(recent) > 1 and all(
+                        isinstance(o, dict) and float(o.get("timestamp") or o.get("time") or 0) > 0
+                        for o in recent
+                    ):
+                        try:
+                            same_orders = provider.get_orders(symbol, side, dyn_window_s) or []
+                        except Exception:
+                            same_orders = []
+                        if same_orders:
+                            active_ref = active_cycle_window_ref(recent, same_orders, side, reference_mode="strict")
+                            if active_ref is not None and active_ref > 0:
+                                pos_window_ref = active_ref
+                    diff = profit_diff_pct(side, price, pos_window_ref)
+                    if diff >= profit_percentage:
+                        print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
+                              f"recent {opp_side.lower()} ref {pos_window_ref}, price {price}, diff {diff:.2f}% >= {profit_percentage}%. Permitted.")
+                        return True
+                elif (side == "BUY" and trend == "bull") or (side == "SELL" and trend == "bear"):
+                    if not hasattr(provider, "get_orders"):
+                        print(f"[GUARD] {side} {symbol}: dynamic mode bypassed historical {opp_side.lower()} reference "
+                              f"during confirmed {trend.upper()} trend; price {price} permitted")
+                        return True
+                print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
+                      f"found recent {opp_side.lower()} ref {pos_window_ref}, price {price}, diff {diff:.2f}%, threshold {profit_percentage}%")
+                print(f"Percentage difference ({diff:.2f}%) below threshold {profit_percentage}%. "
+                      f"The {side} order is BLOCKED.")
+                return False
+            print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
+                  f"recent {opp_side.lower()} ref {pos_window_ref}, price {price}, diff {diff:.2f}% >= {profit_percentage}%. Permitted.")
+            return True
+        else:
+            print(f"[GUARD] {side} {symbol}: dynamic mode ({dyn_hours:.1f}h window, trend='{trend}') "
+                  f"has no recent {opp_side.lower()} reference; price {price} permitted")
+            return True
+
+    if (
+        (reference_mode is not None or module is not None or mode in ("average", "last", "hybrid"))
+        and window_ref is None
+        and hasattr(provider, "get_orders")
+    ):
+        try:
+            window_ref = window_reference(
+                provider, symbol, side, safeback_sec_for(provider_name),
+                reference_mode=mode, module=module,
+            )
+        except Exception:
+            pass
+
+    has_window = window_for(provider_name, symbol, side, regime_context=regime_context) > 0
+    raw_ref = window_ref if window_ref is not None else (
+        None if (side == "BUY" and has_window and mode not in ("last", "average", "hybrid")) else (
+            provider.last_opposite_fill(symbol, side) if hasattr(provider, "last_opposite_fill") else None
+        )
+    )
+
     ref = _parse_ref(raw_ref)
     if ref is None:
         return True
-    if order_type == "BUY":
-        diff = u.value_diff_to_percent(ref, price)   # (ref_SELL - BUY_price) / ref_SELL
-    else:
-        diff = u.value_diff_to_percent(price, ref)   # (SELL_price - ref_BUY) / SELL_price
+    diff = profit_diff_pct(side, price, ref)
     src = "the window" if window_ref is not None else "the provider"
-    print(f"[GUARD] {order_type} {symbol}: ref {ref} ({src}), price {price}, "
+    print(f"[GUARD] {side} {symbol} (mode={mode}): ref {ref} ({src}), price {price}, "
           f"diff {diff:.2f}%, threshold {profit_percentage}%")
     if diff < profit_percentage:
         print(f"Percentage difference ({diff:.2f}%) below threshold {profit_percentage}%. "
-              f"The {order_type} order is BLOCKED.")
+              f"The {side} order is BLOCKED.")
         return False
     return True
 
@@ -1458,6 +1620,8 @@ def profit_guard(
     is_stop_loss: bool = False,
     evaluate_intelligence: bool = True,
     bypass_guards: Optional[set[str]] = None,
+    reference_mode: Optional[str] = None,
+    module: Optional[str] = None,
 ):
     """Return whether the order is profitable relative to its reference.
 
@@ -1476,9 +1640,14 @@ def profit_guard(
 
     # Stage 1: Deterministic Mathematical Reference Check (GF1)
     if not GUARD_REGISTRY["GF1"].is_bypassed(bypassed):
+        cm_kwargs = dict(window_ref=window_ref, regime_context=regime_context)
+        if reference_mode is not None:
+            cm_kwargs["reference_mode"] = reference_mode
+        if module is not None:
+            cm_kwargs["module"] = module
         if not check_math_profit_reference(
             provider, symbol, order_type, price, profit_percentage,
-            window_ref=window_ref, regime_context=regime_context,
+            **cm_kwargs,
         ):
             return False
 

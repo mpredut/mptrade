@@ -156,7 +156,7 @@ RTRADE_FAST_FILL_RATIO = required_float_env("RTRADE_FAST_FILL_RATIO")
 RTRADE_MIN_EDGE_PCT = required_float_env("RTRADE_MIN_EDGE_PCT")
 RTRADE_SHOCK_HARD_STOP_PCT = required_float_env("RTRADE_SHOCK_HARD_STOP_PCT")
 RTRADE_HARD_STOP_PCT = required_float_env("RTRADE_HARD_STOP_PCT")
-RTRADE_BYPASS_PROFIT_GUARD = required_bool_env("RTRADE_BYPASS_PROFIT_GUARD") if "RTRADE_BYPASS_PROFIT_GUARD" in os.environ else False
+RTRADE_BYPASS_PROFIT_GUARD = required_bool_env("RTRADE_BYPASS_PROFIT_GUARD")
 
 
 def _validate_intent_recovery_config(

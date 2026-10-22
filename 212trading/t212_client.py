@@ -16,10 +16,10 @@ import time
 
 try:
     # Package import for the generic provider or installed wheel.
-    from .ipo_common import float_env, http_get, http_post_json, log, required_env, required_float_env
+    from .ipo_common import http_get, http_post_json, log, required_env, required_float_env
 except ImportError:
     # Compatibility with direct launch from the 212trading directory.
-    from ipo_common import float_env, http_get, http_post_json, log, required_env, required_float_env
+    from ipo_common import http_get, http_post_json, log, required_env, required_float_env
 
 LIVE_BASE = "https://live.trading212.com/api/v0"
 DEMO_BASE = "https://demo.trading212.com/api/v0"
@@ -48,9 +48,8 @@ class T212Client:
         self._fetch_fail: dict[str, float] = {}
         self._min_gap = (required_float_env("T212_MIN_GAP_SEC")
                          if min_gap_sec is None else min_gap_sec)
-        configured_order_gap = float_env("T212_ORDER_MIN_GAP_SEC")
         self._order_min_gap = (
-            (2.1 if configured_order_gap is None else configured_order_gap)
+            required_float_env("T212_ORDER_MIN_GAP_SEC")
             if order_min_gap_sec is None
             else order_min_gap_sec
         )

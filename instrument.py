@@ -92,29 +92,54 @@ class Instrument:
         self._provider.validate_symbol(self.symbol)
 
     def _call_profit_guard_window_ref(
-        self, symbol: str, side: str, safeback_sec, regime_context=None
+        self, symbol: str, side: str, safeback_sec, regime_context=None,
+        reference_mode=None, module=None
     ):
         method = getattr(self._provider, "profit_guard_window_ref", None)
         if not callable(method):
             return None
         try:
-            parameters = inspect.signature(method).parameters.values()
-            accepts_context = any(
-                (
-                    parameter.name == "regime_context"
-                    and parameter.kind in {
-                        inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                        inspect.Parameter.KEYWORD_ONLY,
-                    }
-                )
-                or parameter.kind is inspect.Parameter.VAR_KEYWORD
+            parameters = list(inspect.signature(method).parameters.values())
+            accepts_var_kw = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+            accepts_context = accepts_var_kw or any(
+                parameter.name == "regime_context"
+                and parameter.kind in {
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                }
+                for parameter in parameters
+            )
+            accepts_ref_mode = accepts_var_kw or any(
+                parameter.name == "reference_mode"
+                and parameter.kind in {
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                }
+                for parameter in parameters
+            )
+            accepts_module = accepts_var_kw or any(
+                parameter.name == "module"
+                and parameter.kind in {
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                }
                 for parameter in parameters
             )
         except (TypeError, ValueError):
             accepts_context = False
+            accepts_ref_mode = False
+            accepts_module = False
+        call_kw = {}
         if accepts_context:
-            return method(symbol, side, safeback_sec, regime_context=regime_context)
-        return method(symbol, side, safeback_sec)
+            call_kw["regime_context"] = regime_context
+        if accepts_ref_mode and reference_mode is not None:
+            call_kw["reference_mode"] = reference_mode
+        if accepts_module and module is not None:
+            call_kw["module"] = module
+        return method(symbol, side, safeback_sec, **call_kw)
 
     @staticmethod
     def _apply_outbox_lineage_prefix(target_kwargs: dict, call_kwargs: dict) -> None:
@@ -242,10 +267,20 @@ class Instrument:
         legacy_bypass_profit_ref = kwargs.pop("bypass_profit_reference", None)
         legacy_bypass_qty_policy = kwargs.pop("bypass_quantity_policy", None)
         caller_profit_margin = kwargs.pop("profit_margin", None)
+        profit_reference_mode = kwargs.pop("profit_reference_mode", None)
+        caller_module = kwargs.pop("module", None)
         allow_math_reference_sell = bool(kwargs.pop("allow_math_reference_sell", False))
 
-        if not bypass_guards_raw and hasattr(self, "params") and isinstance(self.params, dict):
-            bypass_guards_raw = self.params.get("bypass_guards")
+        if hasattr(self, "params") and isinstance(self.params, dict):
+            if not bypass_guards_raw:
+                bypass_guards_raw = self.params.get("bypass_guards")
+            if profit_reference_mode is None:
+                profit_reference_mode = self.params.get(
+                    f"{side.strip().lower()}_reference_mode",
+                    self.params.get("profit_reference_mode"),
+                )
+            if caller_module is None:
+                caller_module = self.params.get("module")
         if not bypass_guards_raw:
             try:
                 m = order_guard._load_margins()
@@ -376,6 +411,10 @@ class Instrument:
             retry_kwargs["applied_scale"] = caller_applied_scale
         if caller_profit_margin is not None:
             retry_kwargs["profit_margin"] = caller_profit_margin
+        if profit_reference_mode is not None:
+            retry_kwargs["profit_reference_mode"] = profit_reference_mode
+        if caller_module is not None:
+            retry_kwargs["module"] = caller_module
         if allow_math_reference_sell:
             retry_kwargs["allow_math_reference_sell"] = allow_math_reference_sell
         # A market order ignores the requested price, so revalidate immediately
@@ -528,7 +567,11 @@ class Instrument:
                 # safeback_sec from the order cache. An empty window falls back to
                 # the last opposite fill.
                 profit_window_ref = self._call_profit_guard_window_ref(
-                    self.symbol, side_u, safeback_override, regime_context=regime_context)
+                    self.symbol, side_u, safeback_override,
+                    regime_context=regime_context,
+                    reference_mode=profit_reference_mode,
+                    module=caller_module,
+                )
 
                 # Stage 1: Deterministic Mathematical Reference Check (GF1).
                 # Must beat historical reference before sizing or intelligence evaluation.
@@ -543,9 +586,17 @@ class Instrument:
                     and getattr(order_guard.profit_guard, "__name__", "") == "profit_guard"
                 ):
                     guard_px_stage1 = quantity_price if is_market else price
+                    cm_kwargs = dict(
+                        window_ref=profit_window_ref,
+                        regime_context=regime_context,
+                    )
+                    if profit_reference_mode is not None:
+                        cm_kwargs["reference_mode"] = profit_reference_mode
+                    if caller_module is not None:
+                        cm_kwargs["module"] = caller_module
                     if not order_guard.check_math_profit_reference(
                         self._provider, self.symbol, side_u, guard_px_stage1, profit_margin,
-                        window_ref=profit_window_ref, regime_context=regime_context,
+                        **cm_kwargs,
                     ):
                         reason = "profit_guard"
                         return None
@@ -690,6 +741,10 @@ class Instrument:
                 )
                 if bypassed_guards:
                     pg_kwargs["bypass_guards"] = bypassed_guards
+                if profit_reference_mode is not None:
+                    pg_kwargs["reference_mode"] = profit_reference_mode
+                if caller_module is not None:
+                    pg_kwargs["module"] = caller_module
                 ok = order_guard.profit_guard(
                     self._provider, self.symbol, side_u, guard_price, profit_margin,
                     **pg_kwargs,
@@ -826,6 +881,10 @@ class Instrument:
                     )
                     if bypassed_guards:
                         pg_kwargs["bypass_guards"] = bypassed_guards
+                    if profit_reference_mode is not None:
+                        pg_kwargs["reference_mode"] = profit_reference_mode
+                    if caller_module is not None:
+                        pg_kwargs["module"] = caller_module
                     if not order_guard.profit_guard(
                         self._provider, self.symbol, side_u,
                         final_market_price, profit_margin,

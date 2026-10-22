@@ -590,6 +590,7 @@ class TestOrderGuardWithGemini:
             "gemini_guard_mode": "enforce",
             "gemini_min_notional_eur": 1000.0,
             "default": 1.15,
+            "default_buy_reference": "strict",
         }
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
 

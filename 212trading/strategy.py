@@ -18,8 +18,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ipo_common import (
-    log as _log, are_close, float_env, required_env, required_float_env,
-    required_bool_env,
+    log as _log, are_close, required_env, required_float_env,
+    required_int_env, required_bool_env,
 )
 from ipo_notify import notify
 from market_data import get_eur_usd, get_usd_ron, get_price_usd, t212_to_yahoo, trend_slope_pct
@@ -195,25 +195,25 @@ class StratParams:
                 try:
                     p_min, p_max, p_steps = clean_raw.split(":")
                     _ladder = generate_tp_ladder(float(p_min), float(p_max), int(p_steps), curve=ladder_curve)
-                except ValueError:
-                    _ladder = []
+                except ValueError as exc:
+                    raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}") from exc
             else:
                 for _part in raw_ladder.split(","):
                     _part = _part.strip()
-                    if ":" in _part:
-                        _lvl, _frac = _part.split(":", 1)
-                        try:
-                            _ladder.append((float(_lvl), float(_frac) / 100.0))
-                        except ValueError:
-                            pass
+                    if not _part:
+                        continue
+                    if ":" not in _part:
+                        raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}")
+                    _lvl, _frac = _part.split(":", 1)
+                    try:
+                        _ladder.append((float(_lvl), float(_frac) / 100.0))
+                    except ValueError as exc:
+                        raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}") from exc
         elif e.get("STRAT_TP_LADDER_MIN") and e.get("STRAT_TP_LADDER_MAX"):
-            try:
-                p_min = float(e["STRAT_TP_LADDER_MIN"])
-                p_max = float(e["STRAT_TP_LADDER_MAX"])
-                p_steps = int(e.get("STRAT_TP_LADDER_STEPS", 10))
-                _ladder = generate_tp_ladder(p_min, p_max, p_steps, curve=ladder_curve)
-            except (ValueError, TypeError):
-                _ladder = []
+            p_min = required_float_env("STRAT_TP_LADDER_MIN", e)
+            p_max = required_float_env("STRAT_TP_LADDER_MAX", e)
+            p_steps = required_int_env("STRAT_TP_LADDER_STEPS", e)
+            _ladder = generate_tp_ladder(p_min, p_max, p_steps, curve=ladder_curve)
         _budget = required_float_env("STRAT_MAX_BUDGET", e)
         # Percentage sizing is the single supported policy; no legacy hidden amounts.
         _entry_pct = required_float_env("STRAT_ENTRY_PCT", e)
@@ -255,68 +255,23 @@ class StratParams:
             dca_trend_gate_pct = required_float_env("STRAT_DCA_TREND_GATE_PCT", e),
             trail_pct          = required_float_env("STRAT_TRAIL_PCT", e),
             trail_min_profit_pct = required_float_env("STRAT_TRAIL_MIN_PROFIT_PCT", e),
-            reentry_hybrid_enabled = (
-                str(e.get("STRAT_REENTRY_HYBRID_ENABLED", "")).lower() in ("true", "1")
-            ),
-            reentry_peak_relative = (
-                str(e.get("STRAT_REENTRY_PEAK_RELATIVE", "")).lower() in ("true", "1")
-            ),
-            reentry_pullback_pct = (
-                float_env("STRAT_REENTRY_PULLBACK_PCT", e)
-                if float_env("STRAT_REENTRY_PULLBACK_PCT", e) is not None else 1.5
-            ),
-            reentry_pullback_adaptive = (
-                str(e.get("STRAT_REENTRY_PULLBACK_ADAPTIVE", "")).lower() in ("true", "1")
-            ),
-            reentry_pullback_k = (
-                float_env("STRAT_REENTRY_PULLBACK_K", e)
-                if float_env("STRAT_REENTRY_PULLBACK_K", e) is not None else 1.0
-            ),
-            reentry_pullback_min = (
-                float_env("STRAT_REENTRY_PULLBACK_MIN", e)
-                if float_env("STRAT_REENTRY_PULLBACK_MIN", e) is not None else 0.8
-            ),
-            reentry_pullback_max = (
-                float_env("STRAT_REENTRY_PULLBACK_MAX", e)
-                if float_env("STRAT_REENTRY_PULLBACK_MAX", e) is not None else 4.0
-            ),
-            reentry_ttl_hours = (
-                float_env("STRAT_REENTRY_TTL_HOURS", e)
-                if float_env("STRAT_REENTRY_TTL_HOURS", e) is not None else 0.0
-            ),
-            sl_mhdsl_enabled = (
-                str(e.get("STRAT_SL_MHDSL_ENABLED", "")).lower() in ("true", "1")
-            ),
-            sl_disaster_buffer_ratio = (
-                float_env("STRAT_SL_DISASTER_BUFFER_RATIO", e)
-                if float_env("STRAT_SL_DISASTER_BUFFER_RATIO", e) is not None else 0.30
-            ),
-            sl_disaster_buffer_max_pct = (
-                float_env("STRAT_SL_DISASTER_BUFFER_MAX_PCT", e)
-                if float_env("STRAT_SL_DISASTER_BUFFER_MAX_PCT", e) is not None else 15.0
-            ),
-            sl_trend_defer_max_sec = (
-                float_env("STRAT_SL_TREND_DEFER_MAX_SEC", e)
-                if float_env("STRAT_SL_TREND_DEFER_MAX_SEC", e) is not None else 220.0
-            ),
-            sl_bounce_min_recovery_pct = (
-                float_env("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", e)
-                if float_env("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", e) is not None else 0.40
-            ),
-            sl_bounce_pullback_pct = (
-                float_env("STRAT_SL_BOUNCE_PULLBACK_PCT", e)
-                if float_env("STRAT_SL_BOUNCE_PULLBACK_PCT", e) is not None else 0.30
-            ),
-            sl_structural_break_enabled = (
-                str(e.get("STRAT_SL_STRUCTURAL_BREAK_ENABLED", "true")).lower() in ("true", "1")
-            ),
-            tp_mdhtp_enabled = (
-                str(e.get("STRAT_TP_MDHTP_ENABLED", "")).lower() in ("true", "1")
-            ),
-            tp_stagnation_max_sec = (
-                float_env("STRAT_TP_STAGNATION_MAX_SEC", e)
-                if float_env("STRAT_TP_STAGNATION_MAX_SEC", e) is not None else 1080.0
-            ),
+            reentry_hybrid_enabled = required_bool_env("STRAT_REENTRY_HYBRID_ENABLED", e),
+            reentry_peak_relative = required_bool_env("STRAT_REENTRY_PEAK_RELATIVE", e),
+            reentry_pullback_pct = required_float_env("STRAT_REENTRY_PULLBACK_PCT", e),
+            reentry_pullback_adaptive = required_bool_env("STRAT_REENTRY_PULLBACK_ADAPTIVE", e),
+            reentry_pullback_k = required_float_env("STRAT_REENTRY_PULLBACK_K", e),
+            reentry_pullback_min = required_float_env("STRAT_REENTRY_PULLBACK_MIN", e),
+            reentry_pullback_max = required_float_env("STRAT_REENTRY_PULLBACK_MAX", e),
+            reentry_ttl_hours = required_float_env("STRAT_REENTRY_TTL_HOURS", e),
+            sl_mhdsl_enabled = required_bool_env("STRAT_SL_MHDSL_ENABLED", e),
+            sl_disaster_buffer_ratio = required_float_env("STRAT_SL_DISASTER_BUFFER_RATIO", e),
+            sl_disaster_buffer_max_pct = required_float_env("STRAT_SL_DISASTER_BUFFER_MAX_PCT", e),
+            sl_trend_defer_max_sec = required_float_env("STRAT_SL_TREND_DEFER_MAX_SEC", e),
+            sl_bounce_min_recovery_pct = required_float_env("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", e),
+            sl_bounce_pullback_pct = required_float_env("STRAT_SL_BOUNCE_PULLBACK_PCT", e),
+            sl_structural_break_enabled = required_bool_env("STRAT_SL_STRUCTURAL_BREAK_ENABLED", e),
+            tp_mdhtp_enabled = required_bool_env("STRAT_TP_MDHTP_ENABLED", e),
+            tp_stagnation_max_sec = required_float_env("STRAT_TP_STAGNATION_MAX_SEC", e),
         )
 
 

@@ -21,27 +21,23 @@ from providers.strategy_executor import SubmissionRefused
 import order_retry
 import accepted_order_persistence
 import lock.trade_cooldown as trade_cooldown  # Retained for namespace compatibility with test patches
+from botcore import load_dotenv as _load_dotenv, required_float_env, required_int_env
 
-def _load_float_env(name, default):
-    try:
-        val = os.getenv(name)
-        return float(val) if val is not None and str(val).strip() else default
-    except (TypeError, ValueError):
-        return default
+_load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env"))
 
-MAX_PROC = _load_float_env("MONITOR_MAX_PROC", 0.77)
+MAX_PROC = required_float_env("MONITOR_MAX_PROC")
 monitor_interval = 3.7
 MAX_TRACKED_ORDER_IDS = 10_000
 
 # Order Market TTL configurations (in seconds)
-MAX_GLOBAL_ORDER_TTL_SEC = _load_float_env("MAX_GLOBAL_ORDER_TTL_SEC", 259200.0)  # 3 days hard cap
-DEFAULT_ORDER_TTL_SEC = _load_float_env("DEFAULT_ORDER_TTL_SEC", 14400.0)        # 4 hours
+MAX_GLOBAL_ORDER_TTL_SEC = required_float_env("MAX_GLOBAL_ORDER_TTL_SEC")  # 3 days hard cap
+DEFAULT_ORDER_TTL_SEC = required_float_env("DEFAULT_ORDER_TTL_SEC")        # 4 hours
 MODULE_ORDER_TTLS = {
-    "rtrade": _load_float_env("RTRADE_DEFAULT_ORDER_TTL_SEC", 300.0),            # 5 minutes
-    "tradeall": _load_float_env("TRADEALL_DEFAULT_ORDER_TTL_SEC", 7200.0),       # 2 hours
-    "spot_dca": _load_float_env("SPOT_DCA_DEFAULT_ORDER_TTL_SEC", 86400.0),     # 24 hours
-    "manual": _load_float_env("MANUAL_DEFAULT_ORDER_TTL_SEC", 86400.0),         # 24 hours
-    "monitororder": _load_float_env("TRADEALL_DEFAULT_ORDER_TTL_SEC", 7200.0),   # 2 hours
+    "rtrade": required_float_env("RTRADE_DEFAULT_ORDER_TTL_SEC"),            # 5 minutes
+    "tradeall": required_float_env("TRADEALL_DEFAULT_ORDER_TTL_SEC"),       # 2 hours
+    "spot_dca": required_float_env("SPOT_DCA_DEFAULT_ORDER_TTL_SEC"),     # 24 hours
+    "manual": required_float_env("MANUAL_DEFAULT_ORDER_TTL_SEC"),         # 24 hours
+    "monitororder": required_float_env("TRADEALL_DEFAULT_ORDER_TTL_SEC"),   # 2 hours
 }
 
 
@@ -607,7 +603,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
 
 
 MONITOR_BETWEEN_ORDERS_INTERVAL = 2
-MONITOR_OPEN_ORDER_INTERVAL = int(os.environ.get("MONITOR_OPEN_ORDER_INTERVAL", "8"))
+MONITOR_OPEN_ORDER_INTERVAL = required_int_env("MONITOR_OPEN_ORDER_INTERVAL")
 MONITOR_CLOSE_ORDER_INTERVAL = MONITOR_OPEN_ORDER_INTERVAL
 max_age_seconds = 3 * 24 * 3600  # Maximum age for treating filled orders as recent (three days).
 

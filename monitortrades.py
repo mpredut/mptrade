@@ -408,52 +408,37 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
     _position_stats_cache[cache_key] = (entry_sig, now_ts, res)
     return dict(res)
 
-# Legacy Hard TP is disabled by default: profit exits never sell blindly against an active
-# uptrend, and instead use MDHTP trend-riding with dynamic volatility-anomaly pullback ratchet.
-HARD_TP_ENABLED    = False
-HARD_TP_PCT        = 0.17       # Legacy fallback gain fraction.
-HARD_TP_FRACTION   = 0.5        # Legacy fallback fraction.
-HARD_TP_COOLDOWN_S = 6 * 3600
-TP_REFERENCE       = "last"     # "last" (the last buy) | "average" (the average over maxage days)
+HARD_TP_ENABLED: bool
+HARD_TP_PCT: float
+HARD_TP_FRACTION: float
+HARD_TP_COOLDOWN_S: float
+TP_REFERENCE: str
 _hard_tp_last = {}
 
-# Multi-Horizon Dynamic Stop Loss (MHDSL) bounce tracking.
-# When in Stop-Loss territory with trend_up=True, execution is deferred to protect
-# from selling on temporary wicks.
-# Proposal 2: Time-bounded deferral (max duration ~3.7 min = 220s).
-# Proposal 3: Dynamic micro-trailing on bounce (rollover / failed bounce detection).
-MT_SL_TREND_DEFER_MAX_SEC = float(os.environ.get("MT_SL_TREND_DEFER_MAX_SEC", "220.0"))
-MT_SL_BOUNCE_MIN_RECOVERY_PCT = float(os.environ.get("MT_SL_BOUNCE_MIN_RECOVERY_PCT", "0.004"))
-MT_SL_BOUNCE_PULLBACK_PCT = float(os.environ.get("MT_SL_BOUNCE_PULLBACK_PCT", "0.003"))
-MT_SL_BOUNCE_RATCHET_ENABLED = os.environ.get("MT_SL_BOUNCE_RATCHET_ENABLED", "true").lower() in ("yes", "true", "1")
-MT_SL_BOUNCE_RATCHET_K = float(os.environ.get("MT_SL_BOUNCE_RATCHET_K", "0.15"))
-MT_SL_BOUNCE_MIN_PULLBACK_PCT = float(os.environ.get("MT_SL_BOUNCE_MIN_PULLBACK_PCT", "0.0015"))
-MT_SL_STRUCTURAL_BREAK_ENABLED = os.environ.get("MT_SL_STRUCTURAL_BREAK_ENABLED", "true").lower() in ("yes", "true", "1")
+MT_SL_TREND_DEFER_MAX_SEC: float
+MT_SL_BOUNCE_MIN_RECOVERY_PCT: float
+MT_SL_BOUNCE_PULLBACK_PCT: float
+MT_SL_BOUNCE_RATCHET_ENABLED: bool
+MT_SL_BOUNCE_RATCHET_K: float
+MT_SL_BOUNCE_MIN_PULLBACK_PCT: float
+MT_SL_STRUCTURAL_BREAK_ENABLED: bool
 _SL_BOUNCE_STATE = {}
 _SL_EPISODE_STATE: Dict[str, Dict[str, Any]] = {}  # SSOT: per-episode locked disaster floor
 
-# Multi-Horizon Dynamic Stop Loss (MHDSL) Disaster Floor Configuration.
-# Parallel Volatility Scaling:
-#   Variant A: Proportional to SL threshold (lost_threshold * ratio).
-#   Variant B: Realized 1-hour hourly volatility (multiplier * vol_1h_pct).
-#   Resolution: max(Variant A, Variant B, Absolute Min Floor).
-MT_SL_DISASTER_BUFFER_RATIO = float(os.environ.get("MT_SL_DISASTER_BUFFER_RATIO", "0.30"))
-MT_SL_DISASTER_VOL_MULTIPLIER = float(os.environ.get("MT_SL_DISASTER_VOL_MULTIPLIER", "1.5"))
-MT_SL_DISASTER_BUFFER_MIN_PCT = float(os.environ.get("MT_SL_DISASTER_BUFFER_MIN_PCT", "0.005"))
+MT_SL_DISASTER_BUFFER_RATIO: float
+MT_SL_DISASTER_VOL_MULTIPLIER: float
+MT_SL_DISASTER_BUFFER_MIN_PCT: float
 
-# Multi-Horizon Dynamic Take-Profit (MDHTP) Mirror Configuration.
-# Mirroring MHDSL: Trend-riding with peak tracking, dynamic micro-trailing on pullback,
-# volatility-anomaly ratchet on out-of-pattern spikes, guaranteed profit floor, and stagnation timeout.
-MT_TP_TREND_RIDE_ENABLED = os.environ.get("MT_TP_TREND_RIDE_ENABLED", "true").lower() in ("yes", "true", "1")
-MT_TP_PULLBACK_PCT = float(os.environ.get("MT_TP_PULLBACK_PCT", "0.006"))
-MT_TP_RATCHET_ENABLED = os.environ.get("MT_TP_RATCHET_ENABLED", "true").lower() in ("yes", "true", "1")
-MT_TP_RATCHET_K = float(os.environ.get("MT_TP_RATCHET_K", "0.10"))
-MT_TP_RATCHET_MIN_PULLBACK_PCT = float(os.environ.get("MT_TP_RATCHET_MIN_PULLBACK_PCT", "0.0025"))
-MT_TP_PROFIT_FLOOR_RATIO = float(os.environ.get("MT_TP_PROFIT_FLOOR_RATIO", "0.50"))
-MT_TP_PROFIT_FLOOR_MIN_PCT = float(os.environ.get("MT_TP_PROFIT_FLOOR_MIN_PCT", "0.008"))
-MT_TP_STAGNATION_MAX_SEC = float(os.environ.get("MT_TP_STAGNATION_MAX_SEC", "1080.0"))
-MT_REENTRY_HYBRID_ENABLED = os.environ.get("MT_REENTRY_HYBRID_ENABLED", "0").lower() in ("yes", "true", "1")
-MT_REENTRY_POST_STOP_COOLDOWN_SEC = float(os.environ.get("MT_REENTRY_POST_STOP_COOLDOWN_SEC", "0.0"))
+MT_TP_TREND_RIDE_ENABLED: bool
+MT_TP_PULLBACK_PCT: float
+MT_TP_RATCHET_ENABLED: bool
+MT_TP_RATCHET_K: float
+MT_TP_RATCHET_MIN_PULLBACK_PCT: float
+MT_TP_PROFIT_FLOOR_RATIO: float
+MT_TP_PROFIT_FLOOR_MIN_PCT: float
+MT_TP_STAGNATION_MAX_SEC: float
+MT_REENTRY_HYBRID_ENABLED: bool
+MT_REENTRY_POST_STOP_COOLDOWN_SEC: float
 _TP_RIDE_STATE: Dict[str, Dict[str, Any]] = {}
 _REENTRY_STATE: Dict[str, Dict[str, Any]] = {}
 _LAST_EXIT_KIND: Dict[str, str] = {}
@@ -619,12 +604,46 @@ def _record_pending_exit(
 _load_mt_state()
 
 
-def _load_mt_conf(path=None):
-    """Override global hard-TP and reference settings from optional configuration.
+_REQUIRED_MT_CONF_KEYS = frozenset({
+    "hard_tp_enabled",
+    "hard_tp_pct",
+    "hard_tp_fraction",
+    "hard_tp_cooldown_h",
+    "tp_reference",
+    "sl_trend_defer_max_s",
+    "sl_bounce_min_recovery_pct",
+    "sl_bounce_pullback_pct",
+    "sl_bounce_ratchet_enabled",
+    "sl_bounce_ratchet_k",
+    "sl_bounce_min_pullback_pct",
+    "sl_structural_break_enabled",
+    "sl_disaster_buffer_ratio",
+    "sl_disaster_vol_multiplier",
+    "sl_disaster_buffer_min_pct",
+    "tp_trend_ride_enabled",
+    "tp_pullback_pct",
+    "tp_ratchet_enabled",
+    "tp_ratchet_k",
+    "tp_ratchet_min_pullback_pct",
+    "tp_profit_floor_ratio",
+    "tp_profit_floor_min_pct",
+    "tp_stagnation_max_s",
+    "reentry_hybrid_enabled",
+    "reentry_post_stop_cooldown_s",
+})
 
-    Per-symbol gain, loss, and age settings come only from the ``mt`` namespace in
-    instruments.conf. Code defaults apply when this optional file is absent or invalid.
-    """
+
+def _parse_mt_bool(key: str, val: str) -> bool:
+    low = val.strip().lower()
+    if low in ("yes", "true"):
+        return True
+    if low in ("no", "false"):
+        return False
+    raise ValueError(f"monitortrades.conf: invalid boolean {key}={val!r}; expected yes/no or true/false")
+
+
+def _load_mt_conf(path=None):
+    """Strictly load mandatory global settings from monitortrades.conf at module init."""
     global HARD_TP_ENABLED, HARD_TP_PCT, HARD_TP_FRACTION, HARD_TP_COOLDOWN_S, TP_REFERENCE
     global MT_SL_TREND_DEFER_MAX_SEC, MT_SL_BOUNCE_MIN_RECOVERY_PCT, MT_SL_BOUNCE_PULLBACK_PCT
     global MT_SL_BOUNCE_RATCHET_ENABLED, MT_SL_BOUNCE_RATCHET_K, MT_SL_BOUNCE_MIN_PULLBACK_PCT
@@ -632,43 +651,63 @@ def _load_mt_conf(path=None):
     global MT_SL_DISASTER_BUFFER_RATIO, MT_SL_DISASTER_VOL_MULTIPLIER, MT_SL_DISASTER_BUFFER_MIN_PCT
     global MT_TP_TREND_RIDE_ENABLED, MT_TP_PULLBACK_PCT, MT_TP_PROFIT_FLOOR_RATIO
     global MT_TP_RATCHET_ENABLED, MT_TP_RATCHET_K, MT_TP_RATCHET_MIN_PULLBACK_PCT
-    global MT_TP_PROFIT_FLOOR_MIN_PCT, MT_TP_STAGNATION_MAX_SEC, MT_REENTRY_POST_STOP_COOLDOWN_SEC
+    global MT_TP_PROFIT_FLOOR_MIN_PCT, MT_TP_STAGNATION_MAX_SEC
+    global MT_REENTRY_HYBRID_ENABLED, MT_REENTRY_POST_STOP_COOLDOWN_SEC
     path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitortrades.conf")
     if not os.path.exists(path):
-        return
-    try:
-        with open(path, encoding="utf-8") as f:
-            for raw in f:
-                line = raw.split("#", 1)[0].strip()
-                if not line or "=" not in line:
-                    continue
-                k, _, v = line.partition("="); k, v = k.strip(), v.strip()
-                if k == "hard_tp_enabled":              HARD_TP_ENABLED = v.lower() in ("yes", "true", "1", "on", "da")
-                elif k == "hard_tp_pct":                HARD_TP_PCT = float(v) / 100.0
-                elif k == "hard_tp_fraction":           HARD_TP_FRACTION = float(v)
-                elif k == "hard_tp_cooldown_h":         HARD_TP_COOLDOWN_S = float(v) * 3600
-                elif k == "tp_reference":               TP_REFERENCE = v.lower()
-                elif k == "sl_trend_defer_max_s":       MT_SL_TREND_DEFER_MAX_SEC = float(v)
-                elif k == "sl_bounce_min_recovery_pct": MT_SL_BOUNCE_MIN_RECOVERY_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
-                elif k == "sl_bounce_pullback_pct":     MT_SL_BOUNCE_PULLBACK_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
-                elif k == "sl_bounce_ratchet_enabled":  MT_SL_BOUNCE_RATCHET_ENABLED = v.lower() in ("yes", "true", "1", "on", "da")
-                elif k == "sl_bounce_ratchet_k":        MT_SL_BOUNCE_RATCHET_K = float(v)
-                elif k == "sl_bounce_min_pullback_pct": MT_SL_BOUNCE_MIN_PULLBACK_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
-                elif k == "sl_structural_break_enabled": MT_SL_STRUCTURAL_BREAK_ENABLED = v.lower() in ("yes", "true", "1", "on", "da")
-                elif k == "sl_disaster_buffer_ratio":   MT_SL_DISASTER_BUFFER_RATIO = float(v) if float(v) < 1.0 else float(v) / 100.0
-                elif k == "sl_disaster_vol_multiplier": MT_SL_DISASTER_VOL_MULTIPLIER = float(v)
-                elif k == "sl_disaster_buffer_min_pct": MT_SL_DISASTER_BUFFER_MIN_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
-                elif k == "tp_trend_ride_enabled":      MT_TP_TREND_RIDE_ENABLED = v.lower() in ("yes", "true", "1", "on", "da")
-                elif k == "tp_pullback_pct":            MT_TP_PULLBACK_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
-                elif k == "tp_ratchet_enabled":         MT_TP_RATCHET_ENABLED = v.lower() in ("yes", "true", "1", "on", "da")
-                elif k == "tp_ratchet_k":               MT_TP_RATCHET_K = float(v)
-                elif k == "tp_ratchet_min_pullback_pct": MT_TP_RATCHET_MIN_PULLBACK_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
-                elif k == "tp_profit_floor_ratio":      MT_TP_PROFIT_FLOOR_RATIO = float(v) if float(v) < 1.0 else float(v) / 100.0
-                elif k == "tp_profit_floor_min_pct":    MT_TP_PROFIT_FLOOR_MIN_PCT = float(v) / 100.0 if float(v) > 0.05 else float(v)
-                elif k == "tp_stagnation_max_s":        MT_TP_STAGNATION_MAX_SEC = float(v)
-                elif k == "reentry_post_stop_cooldown_s": MT_REENTRY_POST_STOP_COOLDOWN_SEC = float(v)
-    except (OSError, ValueError) as e:
-        print(f"monitortrades.conf: {e} — using the values from the code")
+        raise FileNotFoundError(f"Missing mandatory configuration file: {path}")
+    parsed: Dict[str, str] = {}
+    with open(path, encoding="utf-8") as f:
+        for raw in f:
+            line = raw.split("#", 1)[0].strip()
+            if not line or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            k, v = k.strip(), v.strip()
+            if k:
+                parsed[k] = v
+    missing = sorted(_REQUIRED_MT_CONF_KEYS - set(parsed.keys()))
+    if missing:
+        raise KeyError(f"Missing required keys in {path}: {', '.join(missing)}")
+
+    HARD_TP_ENABLED = _parse_mt_bool("hard_tp_enabled", parsed["hard_tp_enabled"])
+    HARD_TP_PCT = float(parsed["hard_tp_pct"]) / 100.0
+    HARD_TP_FRACTION = float(parsed["hard_tp_fraction"])
+    HARD_TP_COOLDOWN_S = float(parsed["hard_tp_cooldown_h"]) * 3600.0
+    TP_REFERENCE = parsed["tp_reference"].strip().lower()
+    if TP_REFERENCE not in ("last", "average"):
+        raise ValueError(f"monitortrades.conf: invalid tp_reference={parsed['tp_reference']!r}")
+
+    MT_SL_TREND_DEFER_MAX_SEC = float(parsed["sl_trend_defer_max_s"])
+    v_rec = float(parsed["sl_bounce_min_recovery_pct"])
+    MT_SL_BOUNCE_MIN_RECOVERY_PCT = v_rec / 100.0 if v_rec > 0.05 else v_rec
+    v_pb = float(parsed["sl_bounce_pullback_pct"])
+    MT_SL_BOUNCE_PULLBACK_PCT = v_pb / 100.0 if v_pb > 0.05 else v_pb
+    MT_SL_BOUNCE_RATCHET_ENABLED = _parse_mt_bool("sl_bounce_ratchet_enabled", parsed["sl_bounce_ratchet_enabled"])
+    MT_SL_BOUNCE_RATCHET_K = float(parsed["sl_bounce_ratchet_k"])
+    v_mpb = float(parsed["sl_bounce_min_pullback_pct"])
+    MT_SL_BOUNCE_MIN_PULLBACK_PCT = v_mpb / 100.0 if v_mpb > 0.05 else v_mpb
+    MT_SL_STRUCTURAL_BREAK_ENABLED = _parse_mt_bool("sl_structural_break_enabled", parsed["sl_structural_break_enabled"])
+    v_dbr = float(parsed["sl_disaster_buffer_ratio"])
+    MT_SL_DISASTER_BUFFER_RATIO = v_dbr if v_dbr < 1.0 else v_dbr / 100.0
+    MT_SL_DISASTER_VOL_MULTIPLIER = float(parsed["sl_disaster_vol_multiplier"])
+    v_dbm = float(parsed["sl_disaster_buffer_min_pct"])
+    MT_SL_DISASTER_BUFFER_MIN_PCT = v_dbm / 100.0 if v_dbm > 0.05 else v_dbm
+
+    MT_TP_TREND_RIDE_ENABLED = _parse_mt_bool("tp_trend_ride_enabled", parsed["tp_trend_ride_enabled"])
+    v_tppb = float(parsed["tp_pullback_pct"])
+    MT_TP_PULLBACK_PCT = v_tppb / 100.0 if v_tppb > 0.05 else v_tppb
+    MT_TP_RATCHET_ENABLED = _parse_mt_bool("tp_ratchet_enabled", parsed["tp_ratchet_enabled"])
+    MT_TP_RATCHET_K = float(parsed["tp_ratchet_k"])
+    v_tprmp = float(parsed["tp_ratchet_min_pullback_pct"])
+    MT_TP_RATCHET_MIN_PULLBACK_PCT = v_tprmp / 100.0 if v_tprmp > 0.05 else v_tprmp
+    v_tpfr = float(parsed["tp_profit_floor_ratio"])
+    MT_TP_PROFIT_FLOOR_RATIO = v_tpfr if v_tpfr < 1.0 else v_tpfr / 100.0
+    v_tpfm = float(parsed["tp_profit_floor_min_pct"])
+    MT_TP_PROFIT_FLOOR_MIN_PCT = v_tpfm / 100.0 if v_tpfm > 0.05 else v_tpfm
+    MT_TP_STAGNATION_MAX_SEC = float(parsed["tp_stagnation_max_s"])
+    MT_REENTRY_HYBRID_ENABLED = _parse_mt_bool("reentry_hybrid_enabled", parsed["reentry_hybrid_enabled"])
+    MT_REENTRY_POST_STOP_COOLDOWN_SEC = float(parsed["reentry_post_stop_cooldown_s"])
 
 
 _load_mt_conf()

@@ -84,10 +84,14 @@ DEFAULTS = [
     (ag, "CHECK_INTERVAL_SECONDS", 0.9 * 60),
     (ag, "ASSET_REFERENCE_MINUTES_BACK_DEFAULT", 24 * 60),
     (ag, "BUY_USE_CASH_RATIO", 0.995),
-    (ag, "SELL_REARM_GROWTH_PERCENT", 5.0),
+    (ag, "SELL_REARM_GROWTH_PERCENT", 2.0),
     (ag, "ORDER_MAX_AGE_SECONDS", 15 * 60),
     (ag, "ORDER_MISSING_CONFIRMATIONS", 1),
     (ag, "TREND_DEFER_MAX_SECONDS", 3 * 60),
+    (ag, "PORTFOLIO_GROWTH_PERCENT", 2.2),
+    (ag, "PORTFOLIO_ASSET_MIN_GROWTH_PERCENT", 4.1),
+    (ag, "PORTFOLIO_SELL_ALLOCATION", 0.20),
+    (ag, "RTRADE_BLOCK_CANCEL_SECONDS", 120.0),
 ]
 
 # (module, env_var, value_str, attribute, expected_value_after_the_override)
@@ -163,7 +167,10 @@ class TestModuleSpecifics(unittest.TestCase):
     def test_assetguardian_has_no_redundant_drop_parameter(self):
         self.assertFalse(hasattr(ag, "TARGET_DROP_PERCENT"))
         self.assertFalse(hasattr(ag, "TARGET_GROWTH_PERCENT"))
-        self.assertEqual(ag.SELL_TIERS, ((15.0, 0.30), (25.0, 0.30), (35.0, 0.40)))
+        self.assertEqual(
+            ag.SELL_TIERS,
+            ((9.0, 0.20), (12.0, 0.20), (15.0, 0.20), (25.0, 0.20), (35.0, 0.20)),
+        )
 
     def test_assetguardian_requires_every_config_key(self):
         required = (
@@ -180,6 +187,10 @@ class TestModuleSpecifics(unittest.TestCase):
             "AG_NEAR_TRIGGER_SEC",
             "AG_ACTIVE_TRIGGER_SEC",
             "AG_NEAR_TRIGGER_DISTANCE_PCT",
+            "AG_PORTFOLIO_GROWTH_PCT",
+            "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT",
+            "AG_PORTFOLIO_SELL_ALLOCATION",
+            "AG_RTRADE_BLOCK_CANCEL_SEC",
         )
         for key in required:
             with self.subTest(key=key):

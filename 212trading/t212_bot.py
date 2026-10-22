@@ -30,7 +30,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ipo_common import (  # noqa: E402
     load_t212_environment, log, parse_dotenv, single_instance,
-    float_env, required_env, required_float_env, required_bool_env,
+    required_env, required_float_env, required_bool_env,
 )
 from ipo_notify import notify  # noqa: E402
 from listing_watcher import wait_for_launch  # noqa: E402
@@ -149,7 +149,7 @@ def main() -> int:
         env=required_env("T212_ENV"),
         min_gap_sec=required_float_env("T212_MIN_GAP_SEC"),
         portfolio_ttl_sec=required_float_env("T212_PORTFOLIO_TTL_SEC"),
-        order_min_gap_sec=(float_env("T212_ORDER_MIN_GAP_SEC") or 2.1),
+        order_min_gap_sec=required_float_env("T212_ORDER_MIN_GAP_SEC"),
     )
 
     log(f"=== t212_bot: {len(assets)} assets in ONE process ({'PAPER forced' if args.paper else 'config'}) ===")

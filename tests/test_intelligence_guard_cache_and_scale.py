@@ -158,7 +158,7 @@ class TestIntelligenceQuantityScaling:
             "check_intelligence_guards",
             lambda *args, **kw: (True, "trend_exhausted", 0.25),
         )
-        monkeypatch.setattr(order_guard, "buy_reference_mode", lambda p: "off")
+        monkeypatch.setattr(order_guard, "get_profit_guard_mode_cfg", lambda *a, **k: "off")
 
         provider = MagicMock()
         provider.name = "binance"
@@ -173,8 +173,10 @@ class TestIntelligenceQuantityScaling:
 class TestCacheSafetyAndHotReload:
     def test_order_guard_conf_mtime_hot_reload(self, monkeypatch, tmp_path):
         """Verify _load_margins reloads if file mtime updates."""
+        from pathlib import Path
+        real_conf = Path(order_guard.__file__).with_name("order_guard.conf").read_text(encoding="utf-8")
         conf_file = tmp_path / "order_guard.conf"
-        conf_file.write_text("default = 1.15\nparabolic_surge_pct = 15.0\n")
+        conf_file.write_text(real_conf + "\nparabolic_surge_pct = 15.0\n", encoding="utf-8")
 
         monkeypatch.setattr(order_guard, "_MARGINS", None)
         monkeypatch.setattr(order_guard, "_MARGINS_LAST_CHECK", 0.0)
@@ -194,7 +196,7 @@ class TestCacheSafetyAndHotReload:
 
         # Change file on disk and advance time
         time.sleep(0.01)
-        conf_file.write_text("default = 1.15\nparabolic_surge_pct = 25.0\n")
+        conf_file.write_text(real_conf + "\nparabolic_surge_pct = 25.0\n", encoding="utf-8")
         # Reset last check timer to trigger reload
         order_guard._MARGINS_LAST_CHECK = 0.0
 
@@ -387,7 +389,7 @@ class TestCase5HistoryFailClosed:
                 raise ProviderError("history fetch network error")
 
         p = FailingHistoryProvider()
-        monkeypatch.setattr(order_guard, "buy_reference_mode", lambda name: "dynamic")
+        monkeypatch.setattr(order_guard, "get_profit_guard_mode_cfg", lambda *a, **k: "dynamic")
         monkeypatch.setattr(order_guard, "dynamic_buy_window_sec", lambda *a, **k: 3600.0)
 
         # In dynamic mode, price (99.0) is below reference (100.0) with diff < threshold (1.15%),
@@ -602,7 +604,7 @@ class TestArchitectureFixes4Cases:
             return True
 
         monkeypatch.setattr(order_guard, "profit_guard", mock_profit_guard)
-        monkeypatch.setattr(order_guard, "buy_reference_mode", lambda p: "off")
+        monkeypatch.setattr(order_guard, "get_profit_guard_mode_cfg", lambda *a, **k: "off")
 
         class FakeSlot:
             allowed = True
@@ -989,7 +991,7 @@ class TestSisterArchitecturalDefects:
         provider.name = "binance"
         provider.get_orders.side_effect = RuntimeError("network socket reset")
 
-        monkeypatch.setattr(order_guard, "buy_reference_mode", lambda p: "dynamic")
+        monkeypatch.setattr(order_guard, "get_profit_guard_mode_cfg", lambda *a, **k: "dynamic")
         monkeypatch.setattr(order_guard, "_symbol_trend", lambda *a, **k: "flat")
 
         # In dynamic mode with an old reference, if history fails to load, must fail closed
@@ -1354,7 +1356,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
     def test_batch6_dynamic_buy_window_excludes_closed_sell_cycles_and_market_api_place_order_routes_provider(self, monkeypatch):
         """check_math_profit_reference in dynamic mode must use active_cycle_window_ref to ignore closed SELL cycles,
         and MarketApi.place_order must honor provider_name."""
-        monkeypatch.setattr(order_guard, "buy_reference_mode", lambda p: "dynamic")
+        monkeypatch.setattr(order_guard, "get_profit_guard_mode_cfg", lambda *a, **k: "dynamic")
         monkeypatch.setattr(order_guard, "_symbol_trend", lambda *a, **k: "flat")
         monkeypatch.setattr(order_guard, "dynamic_buy_window_sec", lambda *a, **k: 14400.0)
 
