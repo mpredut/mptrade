@@ -20,6 +20,11 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
+from botcore import load_dotenv, required_float_env
+
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
+
 logger = logging.getLogger("intelligence.telemetry_collector")
 
 
@@ -46,7 +51,7 @@ class GlobalTelemetryCollector:
         self.news_interval_sec = (
             float(news_interval_sec)
             if news_interval_sec is not None
-            else float(os.environ.get("MACRO_NEWS_INTERVAL_SEC", "120.0"))
+            else required_float_env("MACRO_NEWS_INTERVAL_SEC")
         )
         self.fear_greed_interval_sec = fear_greed_interval_sec
         self.breadth_interval_sec = breadth_interval_sec

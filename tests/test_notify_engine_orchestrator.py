@@ -148,11 +148,15 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.assertEqual(self.dispatched[0]["title"], "[Binance] 📝 SELL TAOUSDC @ 284.70 [manual]")
         self.assertEqual(self.dispatched[0]["topic"], "ntfy-trades-test")
 
-    def test_server_topic_fallback_to_deadman(self):
-        """Verify resolve_topic('SERVER') falls back to NTFY_TOPIC_DEADMAN if NTFY_TOPIC_SERVER is absent."""
-        from notify_engine.server import resolve_topic
-        with mock.patch.dict(os.environ, {"NTFY_TOPIC_SERVER": "", "NTFY_TOPIC_DEADMAN": "fallback-deadman"}):
-            self.assertEqual(resolve_topic("SERVER"), "fallback-deadman")
+    def test_server_topic_requires_canonical_key(self):
+        """Verify resolve_topic('SERVER') requires NTFY_TOPIC_SERVER and does not fall back to aliases."""
+        from notify_engine import server
+        with (
+            mock.patch.dict(os.environ, {"NTFY_TOPIC_SERVER": "", "NTFY_TOPIC_DEADMAN": "fallback-deadman"}),
+            mock.patch.object(server, "_ensure_env_loaded", lambda: None),
+        ):
+            with self.assertRaisesRegex(ValueError, "NTFY_TOPIC_SERVER"):
+                server.resolve_topic("SERVER")
 
     def test_provider_label_resolution(self):
         """Verify provider resolution strips coins and formats providers cleanly."""

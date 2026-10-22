@@ -26,6 +26,9 @@ from .base import (
     MarketDataProvider,
     _normalize_order,
     bool_env,
+    extract_order_fee,
+    extract_order_price,
+    extract_order_qty,
     extract_order_side,
     extract_timestamp_ms,
 )
@@ -48,12 +51,13 @@ _LIVE_ENV = "HL_LIVE_ORDERS"
 
 
 def _mainnet_setting() -> bool:
-    raw = str(os.environ.get("HL_MAINNET", "")).strip().lower()
-    if raw not in {"true", "false"}:
+    try:
+        from botcore import required_bool_env
+        return required_bool_env("HL_MAINNET")
+    except ValueError as exc:
         raise ProviderError(
             "HL_MAINNET is mandatory and must be exactly true or false"
-        )
-    return raw == "true"
+        ) from exc
 
 
 def _spot_symbol_alias(symbol: str, token: str = "HYPE") -> bool:
@@ -639,12 +643,13 @@ class HyperliquidProvider(MarketDataProvider):
                     continue
                 if f_oid != oid:
                     continue
-                sz = float(f.get("sz") or 0.0)
-                fill_price = float(f.get("px") or 0.0)
+                sz = extract_order_qty(f, default=0.0)
+                fill_price = extract_order_price(f, default=0.0)
                 filled += sz
                 cost += sz * fill_price
-                raw_fee = float(f.get("fee") or 0.0)
-                fee_token = str(f.get("feeToken") or "").upper()
+                fee_info = extract_order_fee(f)
+                raw_fee = fee_info["fee"] if fee_info is not None else 0.0
+                fee_token = fee_info["fee_asset"] if fee_info is not None else ""
                 # Hyperliquid usually charges BUY fees in base and SELL fees in
                 # quote. Convert base fees at the exact fill price for quote accounting.
                 if fee_token == self._token:

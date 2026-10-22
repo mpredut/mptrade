@@ -10,12 +10,16 @@ from typing import Any, Dict, List, Optional
 
 from intelligence.macro.news_feed_collector import NewsFeedSnapshot
 from intelligence.sentiment.gemini_client import GeminiClient
+from botcore import load_dotenv, required_float_env
+
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 
 logger = logging.getLogger("intelligence.macro.geopolitical_analyzer")
 
 DEFAULT_STATE_FILE = "cachedb/geopolitical_threat_eval.json"
-DEFAULT_CACHE_TTL_SEC = float(os.environ.get("MACRO_LLM_INTERVAL_SEC", "16200.0"))  # 4.5 hours default
-DEFAULT_FALLBACK_RETRY_TTL_SEC = float(os.environ.get("MACRO_FALLBACK_RETRY_TTL_SEC", "120.0"))
+DEFAULT_CACHE_TTL_SEC = required_float_env("MACRO_LLM_INTERVAL_SEC")
+DEFAULT_FALLBACK_RETRY_TTL_SEC = required_float_env("MACRO_FALLBACK_RETRY_TTL_SEC")
 
 ACUTE_SHOCK_PHRASES = (
     "declared war",
@@ -54,13 +58,11 @@ class GeopoliticalThreatAnalyzer:
         if cache_ttl_sec is not None:
             self.cache_ttl_sec = float(cache_ttl_sec)
         else:
-            self.cache_ttl_sec = float(os.environ.get("MACRO_LLM_INTERVAL_SEC", str(DEFAULT_CACHE_TTL_SEC)))
+            self.cache_ttl_sec = required_float_env("MACRO_LLM_INTERVAL_SEC")
         if fallback_retry_ttl_sec is not None:
             self.fallback_retry_ttl_sec = float(fallback_retry_ttl_sec)
         else:
-            self.fallback_retry_ttl_sec = float(
-                os.environ.get("MACRO_FALLBACK_RETRY_TTL_SEC", str(DEFAULT_FALLBACK_RETRY_TTL_SEC))
-            )
+            self.fallback_retry_ttl_sec = required_float_env("MACRO_FALLBACK_RETRY_TTL_SEC")
         self.state_file = state_file
         self._cached_assessment: Optional[GeopoliticalThreatAssessment] = None
         self._last_eval_ts: float = 0.0

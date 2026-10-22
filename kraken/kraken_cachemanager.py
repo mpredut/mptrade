@@ -42,7 +42,13 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from cachepaths import cache_path
 from instrument_registry import symbols_for
-from providers.base import extract_order_side, extract_timestamp_ms
+from providers.base import (
+    extract_order_fee,
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
+    extract_timestamp_ms,
+)
 from providers.kraken_provider import _kraken_pair_key, _kraken_pair_matches
 
 load_env_stack(os.environ.get("ENV_FILE", os.path.join(_HERE, ".env")))
@@ -101,11 +107,16 @@ def _normalize(txid, tr):
     side = extract_order_side(tr) or "SELL"
     is_buyer = side == "BUY"
     qty = tr.get("vol", tr.get("qty"))
-    return {
+    if qty is None:
+        qty = extract_order_qty(tr, default=0.0)
+    price = tr.get("price")
+    if price is None:
+        price = extract_order_price(tr, default=0.0)
+    normalized = {
         "symbol": tr.get("pair", tr.get("symbol")),
         "id": str(txid),
         "orderId": tr.get("ordertxid", tr.get("orderId")),
-        "price": tr.get("price"),
+        "price": price,
         "qty": qty,
         "quantity": qty,
         "time": ts_ms,
@@ -113,6 +124,12 @@ def _normalize(txid, tr):
         "isBuyer": is_buyer,
         "side": side,
     }
+    fee_info = extract_order_fee(tr)
+    if fee_info is not None and (fee_info["fee"] > 0 or "fee" in tr or "commission" in tr):
+        normalized["fee"] = fee_info["fee"]
+        if fee_info["fee_asset"]:
+            normalized["feeAsset"] = fee_info["fee_asset"]
+    return normalized
 
 
 def _atomic_write(path, obj):
@@ -267,6 +284,23 @@ def ws_loop(client):
             log(f"[kraken_cache][ws] run_forever: {e}")
         log("[kraken_cache][ws] disconnected; reconnect in 5s")
         time.sleep(5)
+        try:
+            rest_cache = {"items": {}, "fetchtime": {}}
+            _fetch_rest_into(client, rest_cache)
+            for sym, rest_items in rest_cache["items"].items():
+                bucket = cache["items"].setdefault(sym, [])
+                existing_ids = {t["id"] for t in bucket}
+                for item in rest_items:
+                    if item["id"] not in existing_ids:
+                        bucket.append(item)
+                        existing_ids.add(item["id"])
+                bucket.sort(key=lambda t: t["time"])
+                cache["fetchtime"][sym] = rest_cache["fetchtime"].get(
+                    sym, int(time.time() * 1000)
+                )
+            _atomic_write(CACHE_FILE, cache)
+        except Exception as e:
+            log(f"[kraken_cache][ws] REST resync after disconnect failed: {e}")
 
 
 def main():

@@ -53,6 +53,8 @@ _ORIG_QTY_KEYS = (
     "order_qty", "qty", "quantity", "sz", "amount_shares", "q",
 )
 _EXEC_QTY_KEYS = ("executedQty", "filledQuantity", "filledQty", "vol_exec", "filled_qty")
+_FEE_KEYS = ("commission", "fee", "filled_fee", "n")
+_FEE_ASSET_KEYS = ("commissionAsset", "feeToken", "fee_asset", "feeAsset", "N")
 
 
 def normalize_timestamp_ms(value: Any, default: Optional[int] = None) -> Optional[int]:
@@ -238,6 +240,82 @@ def extract_remaining_qty(order: Any, default: float = 0.0) -> float:
     if orig > 0:
         return max(0.0, orig - exec_q) if exec_q > 0 else orig
     return default
+
+
+def extract_order_fee(
+    order: Any,
+    base_asset: str = "",
+    quote_asset: str = "",
+    fill_price: Optional[float] = None,
+    require_explicit_asset: bool = False,
+) -> Optional[dict]:
+    """Extract and normalize order/fill fee metadata across any venue shape.
+
+    Returns ``None`` when no fee field is present or when fee metadata is invalid,
+    otherwise returns ``{"fee": float, "fee_asset": str, "base_fee": float,
+    "quote_fee": float, "fee_in_quote": Optional[float]}``.
+    """
+    if not isinstance(order, dict):
+        return None
+    raw_fee = None
+    has_fee_key = False
+    for key in _FEE_KEYS:
+        if key in order and order[key] is not None:
+            raw_fee = order[key]
+            has_fee_key = True
+            break
+    if not has_fee_key or isinstance(raw_fee, bool):
+        return None
+    try:
+        fee = float(raw_fee)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(fee) or fee < 0.0:
+        return None
+
+    fee_asset = ""
+    has_asset_key = False
+    for key in _FEE_ASSET_KEYS:
+        if key in order:
+            has_asset_key = True
+            val = order[key]
+            if val is not None and not isinstance(val, bool):
+                fee_asset = str(val).strip().upper()
+            break
+
+    if require_explicit_asset and (not has_asset_key or (fee > 0.0 and not fee_asset)):
+        return None
+
+    base_u = str(base_asset or "").strip().upper()
+    quote_u = str(quote_asset or "").strip().upper()
+    if not fee_asset and not require_explicit_asset and quote_u:
+        fee_asset = quote_u
+
+    px = (
+        float(fill_price)
+        if (fill_price is not None and math.isfinite(float(fill_price)) and float(fill_price) > 0.0)
+        else extract_order_price(order, default=0.0)
+    )
+    base_fee = 0.0
+    quote_fee = 0.0
+    fee_in_quote: Optional[float] = 0.0 if fee == 0.0 else None
+
+    if fee > 0.0:
+        if base_u and fee_asset == base_u:
+            base_fee = fee
+            if px > 0.0:
+                fee_in_quote = fee * px
+        elif (quote_u and fee_asset == quote_u) or (not fee_asset and not require_explicit_asset):
+            quote_fee = fee
+            fee_in_quote = fee
+
+    return {
+        "fee": fee,
+        "fee_asset": fee_asset,
+        "base_fee": base_fee,
+        "quote_fee": quote_fee,
+        "fee_in_quote": fee_in_quote,
+    }
 
 
 def normalize_order(order: dict) -> dict:

@@ -103,37 +103,41 @@ def extract_order_id(native) -> Optional[str]:
 
 def extract_order_qty(native) -> Optional[float]:
     """Extract the venue-accepted original order quantity from common response shapes."""
-    if native is None:
+    if native is None or isinstance(native, bool):
         return None
     if isinstance(native, SubmissionOutcome):
         native = native.native
-        if native is None:
+        if native is None or isinstance(native, bool):
             return None
-    val = None
     if isinstance(native, dict):
         for key in (
             "origQty", "orig_qty", "origSz", "vol", "qty", "amount",
             "original_qty", "order_qty", "orderedQuantity", "quantity", "sz",
+            "executedQty", "filledQuantity", "filledQty", "vol_exec",
         ):
-            if key in native and native[key] is not None:
-                val = native[key]
-                break
+            if key in native and native[key] is not None and not isinstance(native[key], bool):
+                try:
+                    f = abs(float(native[key]))
+                    if math.isfinite(f) and f > 0:
+                        return f
+                except (TypeError, ValueError, OverflowError):
+                    continue
     else:
         for attr in (
             "orig_qty", "origQty", "origSz", "vol", "qty", "amount",
             "original_qty", "order_qty", "orderedQuantity", "quantity", "sz",
+            "executedQty", "filledQuantity", "filledQty", "vol_exec",
         ):
             if hasattr(native, attr):
                 val = getattr(native, attr)
-                if val is not None:
-                    break
-    if val is None:
-        return None
-    try:
-        f = abs(float(val))
-        return f if math.isfinite(f) and f > 0 else None
-    except (TypeError, ValueError, OverflowError):
-        return None
+                if val is not None and not isinstance(val, bool):
+                    try:
+                        f = abs(float(val))
+                        if math.isfinite(f) and f > 0:
+                            return f
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+    return None
 
 
 @dataclass(frozen=True)

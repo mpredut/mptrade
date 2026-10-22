@@ -21,6 +21,11 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
+from botcore import load_dotenv, required_float_env
+
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
+
 logger = logging.getLogger("intelligence.macro_analyzer")
 
 
@@ -228,7 +233,7 @@ class MacroAnalyzer:
         """Periodic retention: prune automated CLI threads older than retention limit."""
         try:
             from orchestratorOS.admin.prune_llm_threads import prune_old_cli_threads
-            retention_d = float(os.environ.get("CLI_THREAD_RETENTION_DAYS", "1.0"))
+            retention_d = required_float_env("CLI_THREAD_RETENTION_DAYS")
             pruned_cnt, _ = prune_old_cli_threads(retention_days=retention_d)
             if pruned_cnt > 0:
                 logger.info("Pruned %d automated CLI threads older than %.1f days", pruned_cnt, retention_d)

@@ -2036,8 +2036,7 @@ class TrackedOrderLifecycle:
             fields.update(native_fields)
             return fields
         if isinstance(response, dict):
-            order_id = (response.get("orderId") or response.get("order_id")
-                        or response.get("id") or response.get("txid"))
+            order_id = order_id_from_response(response)
             fields = {}
             if order_id is not None:
                 fields["order_id"] = str(order_id)
@@ -2045,8 +2044,10 @@ class TrackedOrderLifecycle:
             if status is not None:
                 fields["submit_status"] = str(status)
             from providers.base import extract_order_price as _extract_px, extract_order_qty as _extract_qty
+            orig_qty = order_qty_from_response(response)
             submitted_qty = _lifecycle_finite(
-                _extract_qty(response, default=0.0), positive=True)
+                orig_qty if orig_qty is not None else _extract_qty(response, default=0.0),
+                positive=True)
             if submitted_qty is not None:
                 fields["submitted_qty"] = submitted_qty
             submitted_price = _lifecycle_finite(
@@ -2054,9 +2055,9 @@ class TrackedOrderLifecycle:
             if submitted_price is not None:
                 fields["submitted_price"] = submitted_price
             return fields
-        if (not isinstance(response, bool)
-                and isinstance(response, (str, int)) and str(response).strip()):
-            return {"order_id": str(response)}
+        order_id = order_id_from_response(response)
+        if order_id is not None:
+            return {"order_id": str(order_id)}
         return {}
 
     def submit(self, intent: dict, *, persist: PersistPending,

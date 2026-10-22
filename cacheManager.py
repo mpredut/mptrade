@@ -2022,8 +2022,9 @@ class CacheTradeManager(CacheManagerInterface):
         """Append immutable fills once and reject conflicting duplicate IDs."""
         with self.lock:
             bucket = self.cache.setdefault(symbol, [])
+            persisted_count = self._persisted_counts.get(symbol, 0)
             existing = {}
-            for item in bucket:
+            for idx, item in enumerate(bucket):
                 if (
                     not self._is_valid_trade(item)
                     or str(item["symbol"]).upper() != str(symbol).upper()
@@ -2033,9 +2034,10 @@ class CacheTradeManager(CacheManagerInterface):
                 signature = self._trade_semantic_signature(item)
                 if trade_id in existing:
                     raise RuntimeError("duplicate immutable Trade ID in memory")
-                existing[trade_id] = signature
+                existing[trade_id] = (signature, idx, item)
 
             unique = []
+            enriched_unpersisted = False
             for item in new_items:
                 if (
                     not self._is_valid_trade(item)
@@ -2045,14 +2047,23 @@ class CacheTradeManager(CacheManagerInterface):
                 trade_id = str(int(item["id"]))
                 signature = self._trade_semantic_signature(item)
                 if trade_id in existing:
-                    if existing[trade_id] != signature:
+                    prev_sig, prev_idx, prev_item = existing[trade_id]
+                    if prev_sig != signature:
                         raise RuntimeError(
                             f"conflicting Trade row for immutable ID {trade_id}"
                         )
+                    if prev_idx >= persisted_count:
+                        for fee_key in ("commission", "commissionAsset"):
+                            if fee_key not in prev_item and item.get(fee_key) is not None:
+                                prev_item[fee_key] = item[fee_key]
+                                enriched_unpersisted = True
                     continue
-                existing[trade_id] = signature
-                unique.append(dict(item))
+                item_copy = dict(item)
+                existing[trade_id] = (signature, len(bucket) + len(unique), item_copy)
+                unique.append(item_copy)
             if not unique:
+                if enriched_unpersisted:
+                    self._mark_account_cache_dirty_locked()
                 return
             bucket.extend(unique)
             self.fetchtime_time_per_symbol[symbol] = int(time.time() * 1000)
@@ -4125,8 +4136,12 @@ def _upsert_order_from_execution_report(event):
         fill_id = int(event.get("t"))
         if fill_id < 0:
             raise ValueError("missing Binance trade ID")
-        last_quantity = float(event.get("l") or 0)
-        last_price = float(event.get("L") or 0)
+        last_quantity = float(event.get("l") or 0) or float(event.get("q") or 0)
+        last_price = float(event.get("L") or 0) or float(event.get("p") or 0)
+        if last_price <= 0 and last_quantity > 0:
+            last_quote = float(event.get("Y") or 0)
+            if last_quote > 0:
+                last_price = last_quote / last_quantity
         order_item = {
             "orderId": event.get("i"),
             # Store one immutable fill. A cumulative Z/z aggregate cannot name all
@@ -4169,19 +4184,48 @@ def _append_trade_from_execution_report(event):
         builtins.print("[cacheManager][WS] rejected Trade report with invalid side")
         return
     raw_trade_id = event.get("t")
+    try:
+        if raw_trade_id is not None and int(raw_trade_id) < 0:
+            builtins.print("[cacheManager][WS] rejected Trade report with missing trade ID")
+            return
+    except (TypeError, ValueError):
+        pass
     trade_id = str(
         raw_trade_id if raw_trade_id is not None
         else f"{event.get('i')}-{event.get('T')}"
     )
+    raw_price = event.get("L")
+    try:
+        if raw_price is None or float(raw_price) <= 0:
+            raw_price = event.get("p")
+    except (TypeError, ValueError):
+        raw_price = event.get("p")
+    raw_qty = event.get("l")
+    try:
+        if raw_qty is None or float(raw_qty) <= 0:
+            raw_qty = event.get("q")
+    except (TypeError, ValueError):
+        raw_qty = event.get("q")
+    try:
+        if (raw_price is None or float(raw_price) <= 0) and raw_qty is not None and float(raw_qty) > 0:
+            last_quote = float(event.get("Y") or 0)
+            if last_quote > 0:
+                raw_price = str(last_quote / float(raw_qty))
+    except (TypeError, ValueError):
+        pass
     trade_item = {
         "symbol": symbol,
         "id": trade_id,
         "orderId": event.get("i"),
-        "price": event.get("L") or event.get("p"),
-        "qty": event.get("l") or event.get("q"),
+        "price": raw_price,
+        "qty": raw_qty,
         "time": int(event.get("T") or event.get("E") or int(time.time() * 1000)),
         "isBuyer": str(event.get("S", "")).upper() == "BUY",
     }
+    if event.get("n") is not None:
+        trade_item["commission"] = str(event.get("n"))
+    if event.get("N") is not None:
+        trade_item["commissionAsset"] = str(event.get("N"))
 
     if not trade_cache._is_valid_trade(trade_item):
         builtins.print("[cacheManager][WS] rejected malformed Trade report")

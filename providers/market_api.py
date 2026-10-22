@@ -19,6 +19,7 @@ from typing import Any, Callable, List, Optional
 from .base import (
     MarketDataProvider,
     _normalize_order,
+    extract_order_fee,
     extract_order_price,
     extract_order_qty,
     extract_order_side,
@@ -172,14 +173,21 @@ class BinanceProvider(MarketDataProvider):
             if ts_ms < cutoff:
                 continue
             # Missing commission metadata is unknown history, not an invented zero fee.
-            fee, fee_asset = float(row["commission"]), row["commissionAsset"]
-            if not math.isfinite(fee) or fee < 0 or (fee > 0 and not fee_asset):
+            px = extract_order_price(row)
+            fee_info = extract_order_fee(
+                row,
+                base_asset=spec.base,
+                quote_asset=spec.quote,
+                fill_price=px,
+                require_explicit_asset=True,
+            )
+            if fee_info is None:
                 return None
             normalized.append(dict(
-                id=row["id"], timestamp=ts_ms, qty=extract_order_qty(row), price=extract_order_price(row),
+                id=row["id"], timestamp=ts_ms, qty=extract_order_qty(row), price=px,
                 side=extract_order_side(row),
-                base_fee=fee if fee_asset == spec.base else 0.0,
-                quote_fee=fee if fee_asset == spec.quote else 0.0))
+                base_fee=fee_info["base_fee"],
+                quote_fee=fee_info["quote_fee"]))
         normalized.sort(key=lambda row: (int(row["timestamp"]), int(row["id"])))
         return remaining_average_cost(normalized, held_qty)
 
@@ -486,20 +494,19 @@ class BinanceProvider(MarketDataProvider):
         for trade in trades:
             if int(trade.get("orderId", -1)) != order_id:
                 continue
-            commission = float(trade.get("commission") or 0.0)
-            asset = str(trade.get("commissionAsset") or quote)
-            price = float(trade.get("price") or 0.0)
-            if asset == quote:
-                total += commission
-            elif asset == base:
-                total += commission * price
+            fee_info = extract_order_fee(trade, base_asset=base, quote_asset=quote)
+            if fee_info is None or fee_info["fee"] <= 0.0:
+                continue
+            if fee_info["fee_in_quote"] is not None:
+                total += fee_info["fee_in_quote"]
             else:
+                asset = fee_info["fee_asset"]
                 conversion = _get_bapi().get_current_price(f"{asset}{quote}")
                 if not conversion:
                     raise ProviderError(
                         f"order_status({order_id}): cannot convert the fee {asset}->{quote}"
                     )
-                total += commission * float(conversion)
+                total += fee_info["fee"] * float(conversion)
         return total
 
     def order_status(self, symbol: str, order_id: str):

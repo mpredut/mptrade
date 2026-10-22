@@ -95,7 +95,7 @@ class TestEffectiveReentryDropPct(unittest.TestCase):
             self.assertGreater(pct, 0)
 
         with self.subTest(msg="adaptive_respects_shadow_k_reentry_env_override"):
-            s = _make_strategy(reentry_adaptive=True, reentry_drop_pct=2.2)
+            s = _make_strategy(reentry_adaptive=True, reentry_drop_pct=2.2, shadow_k_reentry=2.0)
             import random
             random.seed(7)
             price = 100.0
@@ -103,11 +103,9 @@ class TestEffectiveReentryDropPct(unittest.TestCase):
                 price *= (1 + random.uniform(-0.01, 0.01))
                 s._shadow_prices.append((i * 120.0, price))
             pct_k2, _ = s._effective_reentry_drop_pct()
-            os.environ["SHADOW_K_REENTRY"] = "4.0"
-            try:
-                pct_k4, _ = s._effective_reentry_drop_pct()
-            finally:
-                del os.environ["SHADOW_K_REENTRY"]
+            s_k4 = _make_strategy(reentry_adaptive=True, reentry_drop_pct=2.2, shadow_k_reentry=4.0)
+            s_k4._shadow_prices.extend(s._shadow_prices)
+            pct_k4, _ = s_k4._effective_reentry_drop_pct()
             self.assertAlmostEqual(pct_k4, pct_k2 * 2.0, places=6,
                                    msg="K=4.0 must give exactly double K=2.0 (the default), same vol_1h")
 

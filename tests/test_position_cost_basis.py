@@ -109,3 +109,98 @@ def test_binance_base_fee_matches_actual_inventory(binance_history):
 def test_provider_without_inventory_cost_support_reports_unknown():
     from providers.market_api import api
     assert api.position_cost_basis("HYPEUSD", 1, 3600, provider_name="kraken") is None
+
+
+def test_binance_missing_commission_returns_none_instead_of_keyerror(binance_history):
+    api, rows, *_ = binance_history
+    row = native(1)
+    row.pop("commission")
+    row.pop("commissionAsset")
+    rows.append(row)
+    assert api.position_cost_basis("ARBUSDC", 1, 3600, provider_name="binance") is None
+
+
+def test_extract_order_fee_canonical_across_venues():
+    from providers.base import extract_order_fee
+
+    # Binance REST trade shape
+    info = extract_order_fee(
+        {"commission": "0.02", "commissionAsset": "ARB"},
+        base_asset="ARB", quote_asset="USDC", fill_price=1.5,
+    )
+    assert info is not None
+    assert info["fee"] == 0.02
+    assert info["fee_asset"] == "ARB"
+    assert info["base_fee"] == 0.02
+    assert math.isclose(info["fee_in_quote"], 0.03)
+
+    # Binance WS executionReport shape (n / N)
+    info = extract_order_fee(
+        {"n": "0.05", "N": "USDC"},
+        base_asset="ARB", quote_asset="USDC", fill_price=1.5,
+    )
+    assert info is not None
+    assert info["fee"] == 0.05
+    assert info["fee_asset"] == "USDC"
+    assert info["quote_fee"] == 0.05
+    assert math.isclose(info["fee_in_quote"], 0.05)
+
+    # Hyperliquid fill shape (fee / feeToken)
+    info = extract_order_fee(
+        {"fee": "0.01", "feeToken": "HYPE"},
+        base_asset="HYPE", quote_asset="USDC", fill_price=25.0,
+    )
+    assert info is not None
+    assert info["fee"] == 0.01
+    assert info["fee_asset"] == "HYPE"
+    assert math.isclose(info["fee_in_quote"], 0.25)
+
+    # Kraken fill shape (fee without explicit asset defaults to quote unless require_explicit_asset=True)
+    info = extract_order_fee(
+        {"fee": "0.12"},
+        base_asset="HYPE", quote_asset="USD", fill_price=25.0,
+    )
+    assert info is not None
+    assert info["fee"] == 0.12
+    assert info["fee_asset"] == "USD"
+    assert math.isclose(info["fee_in_quote"], 0.12)
+    assert extract_order_fee(
+        {"fee": "0.12"},
+        base_asset="HYPE", quote_asset="USD", fill_price=25.0,
+        require_explicit_asset=True,
+    ) is None
+
+
+def test_ws_execution_report_preserves_commission_and_zero_price_fallback(monkeypatch):
+    import cacheManager as cm
+
+    persisted = []
+
+    class DummyTradeCache:
+        _is_valid_trade = staticmethod(cm.CacheTradeManager._is_valid_trade)
+
+        def _persist_items(self, symbol, items):
+            persisted.extend(items)
+
+    monkeypatch.setattr(cm, "get_cache_manager", lambda name: DummyTradeCache())
+    cm._append_trade_from_execution_report({
+        "x": "TRADE",
+        "X": "PARTIALLY_FILLED",
+        "s": "ARBUSDC",
+        "S": "BUY",
+        "i": 1001,
+        "t": 5001,
+        "L": "0.00000000",
+        "p": "1.25000000",
+        "l": "0.00000000",
+        "q": "10.00000000",
+        "n": "0.01000000",
+        "N": "ARB",
+        "T": 1700000000000,
+    })
+    assert len(persisted) == 1
+    assert persisted[0]["price"] == "1.25000000"
+    assert persisted[0]["qty"] == "10.00000000"
+    assert persisted[0]["commission"] == "0.01000000"
+    assert persisted[0]["commissionAsset"] == "ARB"
+

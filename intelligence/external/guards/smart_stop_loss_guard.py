@@ -27,6 +27,11 @@ import os
 import time
 from typing import Any, Dict, Optional, Tuple
 
+from botcore import load_dotenv, required_float_env
+
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
+
 logger = logging.getLogger("intelligence.external.smart_stop_loss")
 
 _SMART_SL_STATE_FILE = os.path.join(
@@ -38,7 +43,7 @@ _GRACE_TRACKER: Dict[str, Dict[str, Any]] = {}
 _LAST_RECOVERY_ALERT_TS: Dict[str, float] = {}
 _LAST_DEFER_ALERT_TS: Dict[str, float] = {}
 _LAST_TIMEOUT_ALERT_TS: Dict[str, float] = {}
-_RECOVERY_COOLDOWN_SEC: float = float(os.environ.get("SMART_SL_COOLDOWN_SEC", "1800"))  # 30 minutes default
+_RECOVERY_COOLDOWN_SEC: float = required_float_env("SMART_SL_COOLDOWN_SEC")
 _PENDING_RECOVERIES: list[Dict[str, Any]] = []
 
 

@@ -308,6 +308,29 @@ class OrderTypeAndRetrySyncTest(unittest.TestCase):
         t212_order = {"orderId": "T1", "orderedQuantity": 5.0}
         self.assertEqual(extract_order_qty(t212_order), 5.0)
 
+        # Partially filled or NEW order with zero executedQty before origQty
+        zero_exec_order = {
+            "orderId": "B1",
+            "executedQty": "0.00000000",
+            "origQty": "4.25000000",
+        }
+        self.assertEqual(extract_order_qty(zero_exec_order), 4.25)
+
+    def test_tracked_order_lifecycle_order_fields_partially_filled_and_kraken_txid(self):
+        """Verify TrackedOrderLifecycle._order_fields unwraps Kraken txid lists and prefers origQty."""
+        fields = oq.TrackedOrderLifecycle._order_fields({
+            "txid": ["O-KRAK-777"],
+            "status": "PARTIALLY_FILLED",
+            "executedQty": "1.0",
+            "origQty": "3.5",
+            "price": "105.0",
+        })
+        self.assertEqual(fields["order_id"], "O-KRAK-777")
+        self.assertEqual(fields["submit_status"], "PARTIALLY_FILLED")
+        self.assertEqual(fields["submitted_qty"], 3.5)
+        self.assertEqual(fields["submitted_price"], 105.0)
+
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -73,13 +73,18 @@ def test_old_baseline_disables_post_0923_promotions():
 
 def test_t212_grid_peak_reentry_fallback_for_zero_drop_profile():
     from offline.research.t212_continuous_grid import grid as tgrid
+    orig_nvda = dict(tgrid.PROFILES["nvda"])
     try:
         p_live, pk_live = tgrid.params_for("nvda", "live")
         p_peak, pk_peak = tgrid.params_for("nvda", "reentry_peak")
         assert pk_live == 0
         assert pk_peak == 1
         assert p_live.reentry_drop_pct == 0.0
-        assert p_peak.reentry_drop_pct == 2.0
+        assert p_peak.reentry_drop_pct == 1.5
+        tgrid.PROFILES["nvda"] = {**orig_nvda, "STRAT_REENTRY_PULLBACK_PCT": "0"}
+        p_peak_zero, _ = tgrid.params_for("nvda", "reentry_peak")
+        assert p_peak_zero.reentry_drop_pct == 2.0
     finally:
+        tgrid.PROFILES["nvda"] = orig_nvda
         tgrid.strat.Strategy.step = tgrid._orig_step
 

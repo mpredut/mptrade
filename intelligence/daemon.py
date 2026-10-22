@@ -19,6 +19,11 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
+from botcore import load_dotenv, required_float_env
+
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
+
 logger = logging.getLogger("intelligence.daemon")
 
 
@@ -45,12 +50,12 @@ class IntelligenceTelemetryDaemon:
         self.macro_interval_sec = (
             float(macro_interval_sec)
             if macro_interval_sec is not None
-            else float(os.environ.get("MACRO_NEWS_INTERVAL_SEC", "120.0"))
+            else required_float_env("MACRO_NEWS_INTERVAL_SEC")
         )
         self.macro_llm_interval_sec = (
             macro_llm_interval_sec
             if macro_llm_interval_sec is not None
-            else float(os.environ.get("MACRO_LLM_INTERVAL_SEC", "16200.0"))
+            else required_float_env("MACRO_LLM_INTERVAL_SEC")
         )
         self.thread_prune_interval_sec = thread_prune_interval_sec
         self.skip_macro = skip_macro
@@ -219,7 +224,7 @@ class IntelligenceTelemetryDaemon:
         if force or (current_ts - self._last_thread_prune_ts) >= self.thread_prune_interval_sec:
             try:
                 from orchestratorOS.admin.prune_llm_threads import prune_old_cli_threads
-                retention_d = float(os.environ.get("CLI_THREAD_RETENTION_DAYS", "1.0"))
+                retention_d = required_float_env("CLI_THREAD_RETENTION_DAYS")
                 pruned_cnt, _ = prune_old_cli_threads(retention_days=retention_d)
                 if pruned_cnt > 0:
                     logger.info("Periodic CLI cleanup: pruned %d automated threads older than %.1f days", pruned_cnt, retention_d)

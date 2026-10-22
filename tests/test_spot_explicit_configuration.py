@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROFILES = {venue: parse_dotenv(str(ROOT / venue / "config.env"))
             for venue in ("kraken", "hyperliquid")}
 REQUIRED_KEYS = sorted(key for key in PROFILES["kraken"]
-                       if key.startswith("STRAT_") and key != "STRAT_EXECUTE") + ["STRATEGY_MODE"]
+                       if key.startswith("STRAT_") and key != "STRAT_EXECUTE") + ["STRATEGY_MODE", "SHADOW_K_REENTRY"]
 
 
 class _Executor:

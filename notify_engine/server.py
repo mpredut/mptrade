@@ -36,49 +36,21 @@ _SERVER_MARKERS = (
 
 def _ensure_env_loaded() -> None:
     from botcore import load_dotenv
-    for fname in ("config.env", ".env"):
+    for fname in (".env", "config.env"):
         p = os.path.join(ROOT_DIR, fname)
         if os.path.isfile(p):
             load_dotenv(p)
 
-_CANONICAL_TOPICS = {
-    "TRADES": "ntfy-trades-1978",
-    "GUARD": "ntfy-guard-1978",
-    "PRICE": "ntfy-price-1978",
-    "ERROR": "ntfy-error-1978",
-    "MACRO": "ntfy-macro-1978",
-    "SERVER": "ntfy-server-1978",
-    "SERVER_STATE": "ntfy-server-1978",
-    "SERVER_STATUS": "ntfy-server-1978",
-    "DEADMAN": "ntfy-server-1978",
-}
 
 def resolve_topic(category: str) -> str:
-    cat = (category or "").upper()
+    from botcore import required_env
+    cat = (category or "").strip().upper()
     if cat in ("SERVER", "SERVER_STATE", "SERVER_STATUS", "DEADMAN"):
-        topic = (
-            os.environ.get("NTFY_TOPIC_SERVER")
-            or os.environ.get("NTFY_TOPIC_SERVER_STATE")
-            or os.environ.get("NTFY_TOPIC_SERVER_STATUS")
-            or os.environ.get("NTFY_TOPIC_DEADMAN")
-        )
-        if not topic:
-            _ensure_env_loaded()
-            topic = (
-                os.environ.get("NTFY_TOPIC_SERVER")
-                or os.environ.get("NTFY_TOPIC_SERVER_STATE")
-                or os.environ.get("NTFY_TOPIC_SERVER_STATUS")
-                or os.environ.get("NTFY_TOPIC_DEADMAN")
-                or "ntfy-server-1978"
-            )
-        return topic
-    topic = os.environ.get(f"NTFY_TOPIC_{cat}")
-    if not topic:
+        cat = "SERVER"
+    key = f"NTFY_TOPIC_{cat}"
+    if not os.environ.get(key, "").strip():
         _ensure_env_loaded()
-        topic = os.environ.get(f"NTFY_TOPIC_{cat}")
-    if not topic:
-        topic = _CANONICAL_TOPICS.get(cat)
-    return topic or os.environ.get("PHONE_ALERT_URL", "test-mptrade")
+    return required_env(key)
 
 def _category_for_title_and_source(title: str, source: str) -> str:
     t = (title or "").upper()
@@ -147,7 +119,7 @@ class NotificationServer:
 
     def _ensure_environment(self) -> None:
         from botcore import load_dotenv
-        for fname in ("config.env", ".env"):
+        for fname in (".env", "config.env"):
             p = os.path.join(ROOT_DIR, fname)
             if os.path.isfile(p):
                 load_dotenv(p)

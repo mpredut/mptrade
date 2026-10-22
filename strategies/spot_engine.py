@@ -18,7 +18,7 @@ from typing import Callable
 
 from alertnotifiers import bind_notify
 from botcore import (
-    are_close, float_env, log, defined_env, required_env,
+    are_close, log, defined_env, required_env,
     required_float_env, required_int_env, required_bool_env,
 )
 from market_regime import MarketRegimeDecision, MarketRegimeService
@@ -82,6 +82,7 @@ class StratParams:
     reentry_drop_pct: float = 2.0  # After TP, reenter only this far below the sale price; zero is immediate.
     reentry_tolerance_pct: float = 0.05  # Treat prices within tolerance of the threshold as reached.
     reentry_adaptive: bool = False # Deprecated legacy flag (dominated by hybrid re-entry).
+    shadow_k_reentry: float = 2.0  # Volatility multiplier for adaptive re-entry and shadow logging.
     reentry_sl_bounce_pct: float = 1.5  # After stop-loss, reenter on a bounce from the post-sale low.
     tp_tranches: list = None       # Gradual ``(percentage, share)`` sales; empty means one full TP.
     # --- TP trend-aware (EXPERIMENTAL, default OFF) -------------------------------
@@ -312,6 +313,7 @@ class StratParams:
             reentry_drop_pct   = required_float_env("STRAT_REENTRY_DROP_PCT", env),
             reentry_tolerance_pct = required_float_env("STRAT_REENTRY_TOLERANCE_PCT", env),
             reentry_adaptive   = required_bool_env("STRAT_REENTRY_ADAPTIVE", env),
+            shadow_k_reentry   = required_float_env("SHADOW_K_REENTRY", env),
             reentry_sl_bounce_pct = required_float_env("STRAT_REENTRY_SL_BOUNCE_PCT", env),
             tp_tranches        = _parse_tranches(defined_env("STRAT_TP_TRANCHES", env)),
             tp_trend_hold      = required_bool_env("STRAT_TP_TREND_HOLD", env),
@@ -1519,7 +1521,7 @@ class Strategy:
 
     def _shadow_reentry_line(self, price: float, lsp: float, prag_fix: float) -> None:
         try:
-            k_re = float_env("SHADOW_K_REENTRY") or 2.0
+            k_re = self.p.shadow_k_reentry
             vol = self._shadow_vol_1h()
             if vol is None and not self.replay_mode:
                 vol = resolve_cached_volatility_1h_pct(self.pair)
@@ -1544,8 +1546,8 @@ class Strategy:
         """
         if not self.p.reentry_adaptive:
             return self.p.reentry_drop_pct, "fix"
+        k_re = self.p.shadow_k_reentry
         try:
-            k_re = float_env("SHADOW_K_REENTRY") or 2.0
             vol = self._shadow_vol_1h()
             if vol is None and not self.replay_mode:
                 vol = resolve_cached_volatility_1h_pct(self.pair)
