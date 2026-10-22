@@ -573,8 +573,8 @@ class TestOrderRetryTTL:
         with patch.object(og, "_load_margins", return_value={
             "default_max_daily_trades": 50,
             "default_safeback_sec": 86400,
-            "recent_transaction_seconds": 300,
-            "recent_transaction_side_policy": "both",
+            "default_recent_transaction_sec": 300,
+            "default_recent_transaction_side": "both",
         }):
             ok, reason = og.daily_limit_guard(provider, "TAOUSD", "BUY")
             assert ok is False

@@ -1653,7 +1653,7 @@ def profit_guard(
 
     Execution Pipeline:
     - Emergency Stop-Loss exits (is_stop_loss=True) or bypass_guards with 'all' bypass all guards.
-    - Stage 1 (Super-Matematică): Deterministic profit margin vs historical reference.
+    - Stage 1 (Mathematical Reference): Deterministic profit margin vs historical reference.
       Bypassed if bypass_guards contains 'math_reference' (or 'math_profit').
     - Stage 2 (Intelligence, Macro & Sentiment): Evaluates Parabolic, Weibull, Gemini LLM,
       and Geopolitical shock shield only on mathematically cleared orders when
