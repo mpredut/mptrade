@@ -220,17 +220,16 @@ class AutonomousIntentGateway:
             pass
 
         # Fallback to cache_current_price.json
-        for fname in ("cache_current_price.json", "cache_currentprice.json"):
-            cache_path = os.path.join(self.cache_dir, fname)
-            if os.path.exists(cache_path):
-                try:
-                    with open(cache_path, "r", encoding="utf-8") as f:
-                        cdata = json.load(f)
-                        items = cdata.get("items", {})
-                        if inst.symbol in items and items[inst.symbol]:
-                            return float(items[inst.symbol][0][1])
-                except Exception:
-                    pass
+        cache_path = os.path.join(self.cache_dir, "cache_current_price.json")
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    cdata = json.load(f)
+                    items = cdata.get("items", {})
+                    if inst.symbol in items and items[inst.symbol]:
+                        return float(items[inst.symbol][0][1])
+            except Exception:
+                pass
 
         return float("nan")
 

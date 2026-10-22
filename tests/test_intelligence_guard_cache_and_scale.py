@@ -700,7 +700,7 @@ class TestSisterArchitecturalDefects:
         now_ts = time.time()
 
         # 1. Create synthetic 24h cache for BTCUSDC
-        btc_file = tmp_path / "cache_24price_BTCUSDC.json"
+        btc_file = tmp_path / "cache_24_price_BTCUSDC.json"
         btc_items = [[(now_ts - i * 10) * 1000, 80000.0 + i] for i in range(120)]
         btc_file.write_text(json.dumps({"items": {"BTCUSDC": btc_items}}), encoding="utf-8")
 
@@ -1043,7 +1043,7 @@ class TestSisterArchitecturalDefects:
         import priceAnalysis as pa
         import cacheManager as cm
 
-        # Mock CachePriceLongTrendManager cache with ARBUSDC having an active trend
+        # Mock CacheLongTrendManager cache with ARBUSDC having an active trend
         trend_item = {
             "timestamp": 1791198244,
             "direction": "up",
@@ -1064,7 +1064,7 @@ class TestSisterArchitecturalDefects:
         """Sister 8: _read_cached_trend_duration must support MPTRADE_CACHEDB_DIR,
         match normalized base assets across venues (ARBUSD -> ARBUSDC), and skip nulls."""
         monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path))
-        trend_file = tmp_path / "cache_price_long_trend.json"
+        trend_file = tmp_path / "cache_long_trend.json"
         data = {
             "items": {
                 "BTCUSDC": [None],

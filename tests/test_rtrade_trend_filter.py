@@ -231,7 +231,7 @@ class ReaderProcessTrendTest(unittest.TestCase):
         self.cm = cm
         self.json = json
         self.tmp = tempfile.TemporaryDirectory()
-        self.reader = cm.CachePriceShortTrendManager(
+        self.reader = cm.CacheShortTrendManager(
             ["TAOUSDC"], os.path.join(self.tmp.name, "trend_reader.json"))
         self._patches = [
             mock.patch.object(rtrade, "RTRADE_TREND_FILTER_ENABLED", True),
@@ -264,7 +264,7 @@ class ReaderProcessTrendTest(unittest.TestCase):
         # One tick per second over the window; a small alternating wiggle is the noise.
         entries = [[now_ms - (899 - i) * 1000, 300.0 + step * i + (0.05 if i % 2 else -0.05)]
                    for i in range(900)]
-        writer = self.cm.CachePriceShortTrendManager(
+        writer = self.cm.CacheShortTrendManager(
             ["TAOUSDC"], os.path.join(self.tmp.name, "trend_writer.json"), writer=True)
         writer._cache24_managers = {"TAOUSDC": FakeCache24(entries)}
         published = writer._published_dynamic_windows("TAOUSDC")
@@ -286,7 +286,7 @@ class ReaderProcessTrendTest(unittest.TestCase):
         self.assertTrue(rtrade._trend_too_strong("TAOUSDC"))
 
     def test_stale_or_missing_publication_fails_closed(self):
-        stale = self.cm.CachePriceShortTrendManager.TREND_STALE_SEC + 5
+        stale = self.cm.CacheShortTrendManager.TREND_STALE_SEC + 5
         self._publish(step=0.0, age_sec=stale)
         self.assertIsNone(self.reader.get_short_trend_for_window("TAOUSDC", self.WINDOW))
         self.assertTrue(rtrade._trend_too_strong("TAOUSDC"))
@@ -295,7 +295,7 @@ class ReaderProcessTrendTest(unittest.TestCase):
 
     def test_stale_in_memory_live_window_does_not_shadow_fresh_publication(self):
         import time
-        stale_ts = time.time() - (self.cm.CachePriceShortTrendManager.TREND_STALE_SEC + 10.0)
+        stale_ts = time.time() - (self.cm.CacheShortTrendManager.TREND_STALE_SEC + 10.0)
         self.reader._persist_live_window(
             "TAOUSDC", "900",
             {

@@ -1,4 +1,4 @@
-"""Tests for cacheManager.CachePriceShortTrendManager:
+"""Tests for cacheManager.CacheShortTrendManager:
   - store cross-process (file-backed) + merge snapshot
   - opportunistic gate (should_wait / wait_for_favorable_entry) and epsilon
   - calculation API and fast on_price_update channel
@@ -33,7 +33,7 @@ def _entries_now(n=60, interval_ms=800, start=60000.0, delta=10.0):
 
 
 def _mgr(tmp, name="trend.json"):
-    return cm.CachePriceShortTrendManager(["BTCUSDT"], os.path.join(tmp, name))
+    return cm.CacheShortTrendManager(["BTCUSDT"], os.path.join(tmp, name))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -64,20 +64,20 @@ class TestStore(unittest.TestCase):
     def test_writer_behavior(self):
         with self.subTest(msg="non-writer does not write"):
             fname = os.path.join(self.tmp, "nw.json")
-            m = cm.CachePriceShortTrendManager(["BTCUSDT"], fname, writer=False)
+            m = cm.CacheShortTrendManager(["BTCUSDT"], fname, writer=False)
             m.update_snapshot("BTCUSDT", gradient_recent=0.5)
             self.assertFalse(os.path.exists(fname))     # A non-writer does not write.
             self.assertIsNotNone(m.get_snapshot("BTCUSDT"))  # It still retains memory state.
         
         with self.subTest(msg="writer writes file"):
             fname = os.path.join(self.tmp, "w.json")
-            m = cm.CachePriceShortTrendManager(["BTCUSDT"], fname, writer=True)
+            m = cm.CacheShortTrendManager(["BTCUSDT"], fname, writer=True)
             m.update_snapshot("BTCUSDT", gradient_recent=0.5)
             self.assertTrue(os.path.exists(fname))      # A writer writes.
 
     def test_is_snapshot_fresh(self):
         with self.subTest(msg="fresh"):
-            m = cm.CachePriceShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "f.json"), writer=True)
+            m = cm.CacheShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "f.json"), writer=True)
             m.update_snapshot(
                 "BTCUSDT", gradient_recent=0.1,
                 current_price=60000.0, ts=time.time())
@@ -88,21 +88,21 @@ class TestStore(unittest.TestCase):
             self.assertFalse(m.is_snapshot_fresh("BTCUSDT", max_age_sec=10))
 
         with self.subTest(msg="zero price not fresh"):
-            m = cm.CachePriceShortTrendManager(
+            m = cm.CacheShortTrendManager(
                 ["BTCUSDT"], os.path.join(self.tmp, "zero.json"), writer=True)
             m.update_snapshot(
                 "BTCUSDT", gradient_recent=0.1,
                 current_price=0.0, ts=time.time())
             self.assertFalse(m.is_snapshot_fresh("BTCUSDT", max_age_sec=10))
-            self.assertIsNone(m.fresh_snapshot("BTCUSDT"))
+            self.assertIsNone(m.get_fresh_snapshot("BTCUSDT"))
 
         with self.subTest(msg="no data not fresh"):
-            m = cm.CachePriceShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "g.json"))
+            m = cm.CacheShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "g.json"))
             self.assertFalse(m.is_snapshot_fresh("BTCUSDT", max_age_sec=10))
 
         with self.subTest(msg="become writer failover"):
             fname = os.path.join(self.tmp, "fail.json")
-            m = cm.CachePriceShortTrendManager(["BTCUSDT"], fname, writer=False)
+            m = cm.CacheShortTrendManager(["BTCUSDT"], fname, writer=False)
             m.update_snapshot("BTCUSDT", gradient_recent=0.5)
             self.assertFalse(os.path.exists(fname))   # A non-writer does not write.
             m.become_writer()                          # Take over writing.
@@ -112,20 +112,20 @@ class TestStore(unittest.TestCase):
     def test_resilient_snapshot(self):
         with self.subTest(msg="uses file when fresh"):
             fname = os.path.join(self.tmp, "res1.json")
-            writer = cm.CachePriceShortTrendManager(["BTCUSDT"], fname, writer=True)
+            writer = cm.CacheShortTrendManager(["BTCUSDT"], fname, writer=True)
             writer.update_snapshot(
                 "BTCUSDT", gradient_recent=-0.4,
                 current_price=60000.0, ts=time.time())
-            reader = cm.CachePriceShortTrendManager(["BTCUSDT"], fname)
+            reader = cm.CacheShortTrendManager(["BTCUSDT"], fname)
             snap = reader.get_snapshot_resilient("BTCUSDT", max_age_sec=10)
             self.assertEqual(snap["gradient_recent"], -0.4)
             self.assertFalse(reader._computing)   # A fresh file does not start computation.
 
         with self.subTest(msg="failover when stale"):
             fname = os.path.join(self.tmp, "res2.json")
-            writer = cm.CachePriceShortTrendManager(["BTCUSDT"], fname, writer=True)
+            writer = cm.CacheShortTrendManager(["BTCUSDT"], fname, writer=True)
             writer.update_snapshot("BTCUSDT", gradient_recent=-0.4, ts=time.time() - 100)  # Stale.
-            reader = cm.CachePriceShortTrendManager(["BTCUSDT"], fname)
+            reader = cm.CacheShortTrendManager(["BTCUSDT"], fname)
             reader.get_snapshot_resilient(
                 "BTCUSDT", max_age_sec=10,
                 cache24_managers={"BTCUSDT": self._cache24()}, current_price_mgr=self._cpm())
@@ -146,10 +146,10 @@ class TestStore(unittest.TestCase):
     def test_cross_process_behavior(self):
         with self.subTest(msg="prime from file loads initial"):
             fname = os.path.join(self.tmp, "shared2.json")
-            writer = cm.CachePriceShortTrendManager(["BTCUSDT"], fname, writer=True)
+            writer = cm.CacheShortTrendManager(["BTCUSDT"], fname, writer=True)
             writer.update_snapshot("BTCUSDT", gradient_recent=-0.3, slope_small=2.0)
             # A new reader seeds itself from the file at startup.
-            reader = cm.CachePriceShortTrendManager(["BTCUSDT"], fname)   # writer=False
+            reader = cm.CacheShortTrendManager(["BTCUSDT"], fname)   # writer=False
             n = reader.prime_from_file()
             self.assertEqual(n, 1)
             snap = reader.get_snapshot("BTCUSDT")
@@ -162,8 +162,8 @@ class TestStore(unittest.TestCase):
 
         with self.subTest(msg="reader sees writer"):
             fname = os.path.join(self.tmp, "shared.json")
-            writer = cm.CachePriceShortTrendManager(["BTCUSDT"], fname, writer=True)
-            reader = cm.CachePriceShortTrendManager(["BTCUSDT"], fname)
+            writer = cm.CacheShortTrendManager(["BTCUSDT"], fname, writer=True)
+            reader = cm.CacheShortTrendManager(["BTCUSDT"], fname)
             writer.update_snapshot("BTCUSDT", gradient_recent=-0.7, current_price=60000.0)
             snap = reader.get_snapshot("BTCUSDT")
             self.assertIsNotNone(snap)
@@ -172,8 +172,8 @@ class TestStore(unittest.TestCase):
         with self.subTest(msg="rapid updates"):
             # The reader sees both same-second updates through mtime_ns.
             fname = os.path.join(self.tmp, "rapid.json")
-            writer = cm.CachePriceShortTrendManager(["BTCUSDT"], fname, writer=True)
-            reader = cm.CachePriceShortTrendManager(["BTCUSDT"], fname)
+            writer = cm.CacheShortTrendManager(["BTCUSDT"], fname, writer=True)
+            reader = cm.CacheShortTrendManager(["BTCUSDT"], fname)
             writer.update_snapshot("BTCUSDT", gradient_recent=0.1, current_price=60000.0)
             reader.get_snapshot("BTCUSDT")
             writer.update_snapshot("BTCUSDT", gradient_recent=-0.9)
@@ -222,7 +222,7 @@ class TestGate(unittest.TestCase):
 
         with self.subTest(msg="stale"):
             self.m._mem.clear()
-            self._pub(gradient_recent=-0.5, ts=time.time() - cm.CachePriceShortTrendManager.TREND_STALE_SEC - 5)
+            self._pub(gradient_recent=-0.5, ts=time.time() - cm.CacheShortTrendManager.TREND_STALE_SEC - 5)
             self.assertFalse(self.m.should_wait("BUY", "BTCUSDT"))
 
         with self.subTest(msg="noise waits for clarity"):
@@ -278,7 +278,7 @@ class TestComputation(unittest.TestCase):
             self.assertIsNotNone(self.m.get_analyzer("BTCUSDT"))
             
         with self.subTest(msg="get instant trend"):
-            ft, gc, sf, gr = self.m.get_instant_trend("BTCUSDT")
+            ft, gc, sf, gr = self.m.get_short_trend("BTCUSDT")
             self.assertIn(ft, (-1, 0, 1))
 
         with self.subTest(msg="on price update publishes fast"):
@@ -300,7 +300,7 @@ class TestComputation(unittest.TestCase):
             self.assertIsNotNone(self.m.get_snapshot("BTCUSDT"))
 
     def test_configurable_window_durations(self):
-        m = cm.CachePriceShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "cfg.json"),
+        m = cm.CacheShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "cfg.json"),
                                         window_seconds=[120, 3600])
         self.assertEqual(m.window_small_sec, 120)   # Smallest.
         self.assertEqual(m.window_big_sec, 3600)    # Largest.
@@ -311,7 +311,7 @@ class TestComputation(unittest.TestCase):
 
     def test_n_windows_list(self):
         # Sort an N-window list ascending and choose the smallest as primary.
-        m = cm.CachePriceShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "n.json"),
+        m = cm.CacheShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "n.json"),
                                         window_seconds=[3600, 60, 600])
         self.assertEqual(m.window_seconds, [60.0, 600.0, 3600.0])
         self.assertEqual(m.window_small_sec, 60.0)
@@ -332,20 +332,20 @@ class TestComputation(unittest.TestCase):
 
     def test_threshold_configurations(self):
         with self.subTest(msg="default per window"):
-            m = cm.CachePriceShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "thd.json"),
+            m = cm.CacheShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "thd.json"),
                                             window_seconds=[60, 3600])
             self.assertEqual(m.threshold_for("BTCUSDT", 60), m.PRICE_CHANGE_THRESHOLD_SMALL)
             self.assertEqual(m.threshold_for("BTCUSDT", 3600), m.PRICE_CHANGE_THRESHOLD_BIG)
 
         with self.subTest(msg="per window dict"):
-            m = cm.CachePriceShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "thw.json"),
+            m = cm.CacheShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "thw.json"),
                                             window_seconds=[60, 3600],
                                             thresholds={60: 0.3, 3600: 1.5})
             self.assertEqual(m.threshold_for("BTCUSDT", 60), 0.3)
             self.assertEqual(m.threshold_for("BTCUSDT", 3600), 1.5)
 
         with self.subTest(msg="per symbol"):
-            m = cm.CachePriceShortTrendManager(["BTCUSDT", "TAOUSDT"], os.path.join(self.tmp, "ths.json"),
+            m = cm.CacheShortTrendManager(["BTCUSDT", "TAOUSDT"], os.path.join(self.tmp, "ths.json"),
                                             window_seconds=[60, 3600],
                                             thresholds={"BTCUSDT": {60: 0.3}, "TAOUSDT": {60: 1.2}})
             self.assertEqual(m.threshold_for("BTCUSDT", 60), 0.3)
@@ -353,7 +353,7 @@ class TestComputation(unittest.TestCase):
             self.assertEqual(m.threshold_for("TAOUSDT", 3600), m.PRICE_CHANGE_THRESHOLD_BIG)
 
         with self.subTest(msg="callable"):
-            m = cm.CachePriceShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "thc.json"),
+            m = cm.CacheShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "thc.json"),
                                             window_seconds=[60, 3600],
                                             thresholds=lambda sym, sec: 0.9 if sec < 100 else 2.0)
             self.assertEqual(m.threshold_for("BTCUSDT", 60), 0.9)
@@ -388,9 +388,9 @@ class TestComputation(unittest.TestCase):
         with open(filename, "w", encoding="utf-8") as handle:
             json.dump(stale, handle)
         cpm = MagicMock()
-        cpm.cached_price_observation.return_value = None
+        cpm.get_cached_price_observation.return_value = None
         cpm.get_price_value.return_value = None
-        manager = cm.CachePriceShortTrendManager(
+        manager = cm.CacheShortTrendManager(
             ["BTCUSDT"], filename, writer=True)
         self.addCleanup(manager.shutdown)
         manager.start_computation({"BTCUSDT": self.cache24}, cpm)
@@ -402,7 +402,7 @@ class TestComputation(unittest.TestCase):
         self.assertNotEqual(snapshot["current_price"], 0.0)
         self.assertEqual(snapshot["gradient_recent"], -0.25)
         self.assertEqual(snapshot["ts"], stale_ts)
-        cpm.cached_price_observation.assert_called_with(
+        cpm.get_cached_price_observation.assert_called_with(
             "BTCUSDT", manager.TREND_STALE_SEC)
         cpm.get_price_value.assert_not_called()
 
@@ -419,14 +419,14 @@ class TestComputation(unittest.TestCase):
         self.assertEqual(snapshot["ts"], observed_at_ms / 1000.0)
 
     def test_full_eval_loop_thread_started(self):
-        m2 = cm.CachePriceShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "t2.json"))
+        m2 = cm.CacheShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "t2.json"))
         m2.start_computation({"BTCUSDT": self.cache24}, self.cpm, run_full_eval=True)
         self.assertIsNotNone(m2._full_eval_thread)
         self.assertTrue(m2._full_eval_thread.is_alive())
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Dynamic window: get_instant_trend_for_window, is_trend_up_for_window, and
+# Dynamic window: get_short_trend_for_window, is_trend_up_for_window, and
 # should_wait(window_seconds=...) calculate on demand from raw Cache24 data
 # instead of using the two fixed precomputed windows.
 # ═══════════════════════════════════════════════════════════════════════════
@@ -463,37 +463,37 @@ class TestDynamicWindow(unittest.TestCase):
     def test_dynamic_window_edge_cases(self):
         with self.subTest(msg="unavailable without start computation"):
             m = _mgr(self.tmp)
-            self.assertIsNone(m.get_instant_trend_for_window("BTCUSDT", 60))
+            self.assertIsNone(m.get_short_trend_for_window("BTCUSDT", 60))
             self.assertFalse(m.is_trend_up_for_window("BTCUSDT", 60))
             self.assertFalse(m.should_wait("BUY", "BTCUSDT", window_seconds=60))
 
         with self.subTest(msg="unknown symbol returns none"):
             m = self._mgr_with_cache24(self._cache24_up())
-            self.assertIsNone(m.get_instant_trend_for_window("ETHUSDT", 60))
+            self.assertIsNone(m.get_short_trend_for_window("ETHUSDT", 60))
 
         with self.subTest(msg="stale returns none"):
-            stale_offset = cm.CachePriceShortTrendManager.TREND_STALE_SEC + 30
+            stale_offset = cm.CacheShortTrendManager.TREND_STALE_SEC + 30
             m = self._mgr_with_cache24(self._cache24_up(end_offset_sec=stale_offset))
-            self.assertIsNone(m.get_instant_trend_for_window("BTCUSDT", 60))
+            self.assertIsNone(m.get_short_trend_for_window("BTCUSDT", 60))
             self.assertFalse(m.should_wait("BUY", "BTCUSDT", window_seconds=60))
 
         with self.subTest(msg="too few samples returns none"):
             m = self._mgr_with_cache24(self._cache24_up(n=20, interval_sec=10.0))
-            self.assertIsNone(m.get_instant_trend_for_window("BTCUSDT", 14))
+            self.assertIsNone(m.get_short_trend_for_window("BTCUSDT", 14))
 
         with self.subTest(msg="window clamped to configured bounds"):
             m = self._mgr_with_cache24(self._cache24_up(n=300, interval_sec=1.0))
-            below = m.get_instant_trend_for_window("BTCUSDT", 1.0)
+            below = m.get_short_trend_for_window("BTCUSDT", 1.0)
             self.assertIsNotNone(below)
             self.assertEqual(below["window_seconds"], cm.CM_DYNAMIC_WINDOW_MIN_SEC)
-            above = m.get_instant_trend_for_window("BTCUSDT", 999999.0)
+            above = m.get_short_trend_for_window("BTCUSDT", 999999.0)
             self.assertIsNotNone(above)
             self.assertEqual(above["window_seconds"], cm.CM_DYNAMIC_WINDOW_MAX_SEC)
 
     def test_dynamic_window_trend_detection(self):
         with self.subTest(msg="uptrend detected"):
             m = self._mgr_with_cache24(self._cache24_up(delta=5.0))
-            dyn = m.get_instant_trend_for_window("BTCUSDT", 60)
+            dyn = m.get_short_trend_for_window("BTCUSDT", 60)
             self.assertIsNotNone(dyn)
             self.assertEqual(dyn["final_trend"], 1)
             self.assertGreater(dyn["growth_coefficient"], 0)
@@ -501,7 +501,7 @@ class TestDynamicWindow(unittest.TestCase):
 
         with self.subTest(msg="downtrend detected"):
             m = self._mgr_with_cache24(self._cache24_up(delta=-5.0))
-            dyn = m.get_instant_trend_for_window("BTCUSDT", 60)
+            dyn = m.get_short_trend_for_window("BTCUSDT", 60)
             self.assertIsNotNone(dyn)
             self.assertEqual(dyn["final_trend"], -1)
             self.assertLess(dyn["growth_coefficient"], 0)
@@ -604,7 +604,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
 
     def test_24trend_live_and_hist_persistence_and_reader_fallback(self):
         entries = _entries_trending(200, 1.0, 60000.0, 5.0)
-        c24_path = os.path.join(self.tmp, "cache_24price_BTCUSDT.json")
+        c24_path = os.path.join(self.tmp, "cache_24_price_BTCUSDT.json")
         c24 = cm.Cache24Price(sync_ts=9999, symbols=["BTCUSDT"], filename=c24_path, api_client=mock_api)
         c24.cache["BTCUSDT"] = [list(e) for e in entries]
         c24.save_state_to_file()
@@ -617,12 +617,12 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             api_client=mock_api,
             market_api=mock_api,
         )
-        trend_file = os.path.join(self.tmp, "cache_instant_trend.json")
-        writer = cm.CachePriceShortTrend(["BTCUSDT"], trend_file, writer=True)
+        trend_file = os.path.join(self.tmp, "cache_short_trend.json")
+        writer = cm.CacheShortTrend(["BTCUSDT"], trend_file, writer=True)
         writer.start_computation({"BTCUSDT": c24}, cpm)
 
         # Request dynamic window 60s and flush writer
-        dyn60 = writer.get_instant_trend_for_window("BTCUSDT", 60)
+        dyn60 = writer.get_short_trend_for_window("BTCUSDT", 60)
         self.assertIsNotNone(dyn60)
         writer._write_file()
 
@@ -648,13 +648,13 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             hist_payload = json.load(fh)
         self.assertIn(f"{t1_ms}_{t2_ms}", hist_payload)
 
-        # Reader process without start_computation can serve hist slice from disk and compute new window from cache_24price
-        reader = cm.CachePriceShortTrend(["BTCUSDT"], trend_file, writer=False)
+        # Reader process without start_computation can serve hist slice from disk and compute new window from cache_24_price
+        reader = cm.CacheShortTrend(["BTCUSDT"], trend_file, writer=False)
         cached_slice = reader.get_trend_for_slice("BTCUSDT", t1_ms, t2_ms)
         self.assertIsNotNone(cached_slice)
         self.assertEqual(cached_slice["final_trend"], slice_res["final_trend"])
 
-        dyn120 = reader.get_instant_trend_for_window("BTCUSDT", 120)
+        dyn120 = reader.get_short_trend_for_window("BTCUSDT", 120)
         self.assertIsNotNone(dyn120)
         self.assertTrue(reader.is_trend_up("BTCUSDT", window_seconds=120))
 

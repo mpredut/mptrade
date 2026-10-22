@@ -95,7 +95,7 @@ class ReplayTrendSource:
         if win is None or len(win.prices) < 2:
             res = False
         else:
-            res = _is_trend_up_tuple(win.get_instant_trend())
+            res = _is_trend_up_tuple(win.get_short_trend())
         if window_seconds is None:
             self._cached_trend_up[symbol] = res
         return res

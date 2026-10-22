@@ -82,7 +82,7 @@ def _make_current_price_manager(tmp_dir, price=50000.0):
     mock_bapi.get_current_price.return_value = price
     mgr = cm.CacheCurrentPriceManager(
         sync_ts=9999, symbols=SYMBOLS,
-        filename=os.path.join(tmp_dir, "cache_currentprice.json"),
+        filename=os.path.join(tmp_dir, "cache_current_price.json"),
         ws_manager=None, api_client=mock_bapi, market_api=mock_bapi,
     )
     mgr.enable_save_state_to_file()
@@ -97,7 +97,7 @@ def _make_cache24_manager(tmp_dir, current_price_manager):
     ):
         mgr = cm.Cache24PriceManager(
             sync_ts=9999, symbols=SYMBOLS,
-            filename=os.path.join(tmp_dir, "cache_24price_BTCUSDC.json"),
+            filename=os.path.join(tmp_dir, "cache_24_price_BTCUSDC.json"),
             api_client=mock_bapi,
         )
     mgr.enable_save_state_to_file()

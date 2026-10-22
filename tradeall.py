@@ -516,7 +516,7 @@ class TrendState:
 
 
 # ``sell_recommendation.csv`` was removed. Trend signals are published as per-symbol
-# snapshots by ``CachePriceShortTrendManager`` for cross-process consumers.
+# snapshots by ``CacheShortTrendManager`` for cross-process consumers.
 
 
 
@@ -665,7 +665,7 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
 
     slope, pos = analyzer.check_price_change(PRICE_CHANGE_THRESHOLD_EUR)
     print(f"small slope {slope}")
-    gradient, gradient_coff, slope_full, gradient_recent = price_window.get_instant_trend()
+    gradient, gradient_coff, slope_full, gradient_recent = price_window.get_short_trend()
 
     slope_max_min = analyzer.calculate_slope_max_min()
     if slope * gradient < 0:
@@ -729,7 +729,7 @@ MAX_EVAL_INTERVAL_SEC = 30.0   # Heartbeat ceiling: evaluate at least every 30 s
 class TrendCoordinator:
     """Coordinate event-driven trading evaluation with a heartbeat.
 
-    ``CachePriceShortTrendManager`` owns the windows, trend-state calculations,
+    ``CacheShortTrendManager`` owns the windows, trend-state calculations,
     and cross-process cache. This coordinator consumes them and makes
     ``handle_symbol``/``logic`` decisions.
     """

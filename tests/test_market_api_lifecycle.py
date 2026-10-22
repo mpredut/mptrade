@@ -249,11 +249,11 @@ class MarketApiLifecycleTest(unittest.TestCase):
         self.assertIs(api._regime_snapshot_resolver, _runtime_market_regime_snapshot)
         manager = Mock()
         snapshot = {"gradient_recent": 0.6, "epsilon": 0.1, "ts": 1000.0}
-        manager.fresh_snapshot.return_value = snapshot
+        manager.get_fresh_snapshot.return_value = snapshot
         with patch("cacheManager.get_short_trend_manager", return_value=manager):
             self.assertIs(_runtime_market_regime_snapshot("ABCUSD", now=1001.0),
                           snapshot)
-        manager.fresh_snapshot.assert_called_once_with("ABCUSD", now=1001.0)
+        manager.get_fresh_snapshot.assert_called_once_with("ABCUSD", now=1001.0)
 
     def test_market_regime_routes_to_provider_ohlc(self):
         decision = self.api.market_regime(

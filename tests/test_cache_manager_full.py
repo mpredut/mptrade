@@ -41,7 +41,7 @@ class ConcreteTestManager(cm.CacheManagerInterface):
         super().__init__(sync_ts, symbols, filename, append_mode=append_mode,
                          api_client=api_client or MagicMock(), append_persist=append_persist)
 
-    def rebuild_fetchtime_times(self):
+    def rebuild_fetchtimes(self):
         return {}
 
     def get_remote_items(self, symbol, startTime):
@@ -628,13 +628,13 @@ class TestCacheSparsePriceManager(unittest.TestCase):
             mgr = self._make()
             ts = int(time.time() * 1000)
             mgr.cache = {"BTC": [[ts - 1000, 100.0], [ts, 200.0]]}
-            result = mgr.rebuild_fetchtime_times()
+            result = mgr.rebuild_fetchtimes()
             self.assertEqual(result["BTC"], ts)
 
         with self.subTest("rebuild_fetchtime_empty_cache"):
             mgr = self._make()
             mgr.cache = {}
-            result = mgr.rebuild_fetchtime_times()
+            result = mgr.rebuild_fetchtimes()
             self.assertEqual(result, {})
 
         with self.subTest("get_remote_items_returns_price_entry"):
@@ -741,7 +741,7 @@ class TestCache24PriceManager(unittest.TestCase):
         with self.subTest("rebuild_fetchtime_max_timestamp"):
             mgr = self._make()
             mgr.cache = {"BTC": [[100, 1.0], [500, 2.0], [300, 3.0]]}
-            result = mgr.rebuild_fetchtime_times()
+            result = mgr.rebuild_fetchtimes()
             self.assertEqual(result["BTC"], 500)
 
         with self.subTest("no_polling_only_saves"):
@@ -758,7 +758,7 @@ class TestCache24PriceManager(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════════
 # 6. CacheLongTrendManager
 # ═══════════════════════════════════════════════════════════════════════════════
-class TestCachePriceLongTrendManager(unittest.TestCase):
+class TestCacheLongTrendManager(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -774,13 +774,13 @@ class TestCachePriceLongTrendManager(unittest.TestCase):
             mgr.cache = {
                 "BTC": [{"timestamp": 100}, {"timestamp": 500}, {"timestamp": 300}]
             }
-            result = mgr.rebuild_fetchtime_times()
+            result = mgr.rebuild_fetchtimes()
             self.assertEqual(result["BTC"], max(0, 500 * 1000 - 60_000))
 
         with self.subTest("rebuild_fetchtime_empty"):
             mgr = self._make()
             mgr.cache = {}
-            result = mgr.rebuild_fetchtime_times()
+            result = mgr.rebuild_fetchtimes()
             self.assertEqual(result, {})
 
         with self.subTest("get_remote_items_missing_file"):
@@ -807,7 +807,7 @@ class TestCachePriceLongTrendManager(unittest.TestCase):
             mgr.cache = {"BTC": [{"timestamp": 500, "direction": "up"}]}
             mgr.update_cache_per_symbol("BTC", [None])
             self.assertEqual(mgr.cache["BTC"], [None])
-            self.assertEqual(mgr.rebuild_fetchtime_times(), {})
+            self.assertEqual(mgr.rebuild_fetchtimes(), {})
 
         with self.subTest("rebuild_skips_neutral_and_malformed_trend_entries"):
             mgr = self._make()
@@ -821,7 +821,7 @@ class TestCachePriceLongTrendManager(unittest.TestCase):
                 ],
             }
             self.assertEqual(
-                mgr.rebuild_fetchtime_times(),
+                mgr.rebuild_fetchtimes(),
                 {"BTC": 440_000},
             )
 
@@ -859,7 +859,7 @@ class TestCacheAssetValueManager(unittest.TestCase):
                 "TOTAL": [{"timestamp": 200, "total_value_usdc": 1000.0},
                           {"timestamp": 500, "total_value_usdc": 1100.0}]
             }
-            result = mgr.rebuild_fetchtime_times()
+            result = mgr.rebuild_fetchtimes()
             self.assertEqual(result["TOTAL"], max(0, 500 * 1000 - 60_000))
 
         with self.subTest(msg="get_remote_items_returns_snapshot"):

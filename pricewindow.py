@@ -611,7 +611,7 @@ class PriceWindow:
         grad = np.gradient(np.array(prices))
         return float(k * np.std(grad))
 
-    def get_instant_trend(self):
+    def get_short_trend(self):
         """Return ``(final_trend, growth_coefficient, slope_full, gradient_recent)``.
 
         Evaluate in O(1) via ``self._trend_buf`` when synchronized, falling back to
@@ -647,9 +647,11 @@ class PriceWindow:
 
         return final_trend, growth_coefficient, slope_full, gradient_recent
 
+    get_instant_trend = get_short_trend
+
     # Backwards-compatible alias for the legacy method name.
     def get_trend(self):
-        return self.get_instant_trend()
+        return self.get_short_trend()
 
     def calculate_acceleration(self, window_sec: float = 90.0) -> tuple[float, float]:
         """Calculate recent price velocity (%/min) and acceleration (%/min^2).

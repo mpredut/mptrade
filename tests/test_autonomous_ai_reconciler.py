@@ -250,11 +250,11 @@ def test_full_run_cycle_and_artifacts(temp_env):
 def test_harvest_prices_and_trends(temp_env):
     workspace, cache_dir, _ = temp_env
 
-    cp_file = os.path.join(cache_dir, "cache_currentprice.json")
+    cp_file = os.path.join(cache_dir, "cache_current_price.json")
     with open(cp_file, "w", encoding="utf-8") as f:
         json.dump({"items": {"BTCUSDC": [[123456, 85000.0]]}}, f)
 
-    it_file = os.path.join(cache_dir, "cache_instant_trend.json")
+    it_file = os.path.join(cache_dir, "cache_short_trend.json")
     with open(it_file, "w", encoding="utf-8") as f:
         json.dump({
             "BTCUSDC": {

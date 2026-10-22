@@ -239,12 +239,6 @@ def load_ticks_history(symbol, start_ts, end_ts):
     """Reads cache_sparse_price_{symbol}.jsonl — a long history, SPARSE."""
     path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{symbol}.jsonl")
     if not os.path.exists(path):
-        for legacy in (f"cache_price_sparse_{symbol}.jsonl", f"cache_price_{symbol}.jsonl"):
-            candidate = os.path.join(ROOT, "cachedb", legacy)
-            if os.path.exists(candidate):
-                path = candidate
-                break
-    if not os.path.exists(path):
         raise FileNotFoundError(f"Cannot find {path} (the price history for {symbol})")
     yield from _iter_jsonl_ticks(path, symbol, start_ts, end_ts)
 
@@ -256,10 +250,6 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
         path = filename
     else:
         path = os.path.join(ROOT, "cachedb", f"cache_24_price_{symbol}.json")
-        if not os.path.exists(path):
-            legacy = os.path.join(ROOT, "cachedb", f"cache_24price_{symbol}.json")
-            if os.path.exists(legacy):
-                path = legacy
     if not os.path.exists(path):
         raise FileNotFoundError(f"Cannot find {path} (cache24 for {symbol})")
     if str(path).endswith(".jsonl"):
@@ -313,7 +303,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
 
     # 29 Jul (user's idea): a "wait for a favourable moment" gate for the
     # BUY/SELL retry intents — an isolated DynamicReplayTrendSource (it does not touch
-    # cache_instant_trend.json), fed tick by tick below, in the main loop.
+    # cache_short_trend.json), fed tick by tick below, in the main loop.
     trend_gate = DynamicReplayTrendSource([symbol]) if trend_gate_timeout_sec is not None else None
 
     clock = _SimClock()
@@ -427,7 +417,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                         thr_small, thr_big = ta.PRICE_CHANGE_THRESHOLD_EUR, ta.PRICE_CHANGE_THRESHOLD_BIG_EUR
     
                     slope, _pos = analyzer_small.check_price_change(thr_small)
-                    gradient, _gc, _sf, _gr = window_small.get_instant_trend()
+                    gradient, _gc, _sf, _gr = window_small.get_short_trend()
                     ta.logic_small("SMALL", True, symbol, gradient, slope, trend_state, price,
                                    price_window=window_small)
     
@@ -473,7 +463,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                 n += 1
                 if speed != "fast" and n % 100 == 0:
                     # Simulated analysis state — read by tradeall_observe.py (chart hover),
-                    # the same content as live's cache_instant_trend.json.
+                    # the same content as live's cache_short_trend.json.
                     try:
                         last_state = {symbol: {
                             "current_price": price, "final_trend": gradient,
@@ -495,7 +485,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
             try:
                 if fast_kalman_only:
                     slope, _ = analyzer_small.check_price_change(ta.PRICE_CHANGE_THRESHOLD_EUR)
-                    gradient, _, _, _gr = window_small.get_instant_trend()
+                    gradient, _, _, _gr = window_small.get_short_trend()
                     slope_big, _ = analyzer_big.check_price_change(ta.PRICE_CHANGE_THRESHOLD_BIG_EUR)
                 if not shadow.compute_vol and shadow_fields:
                     v1h = shadow_signals.vol_1h_pct(window_big.prices, window_big.sample_rate_sec)

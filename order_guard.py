@@ -427,7 +427,8 @@ def symbol_regime(
         try:
             import cacheManager as _cm
             mgr = _cm.get_short_trend_manager()
-            snap = mgr.fresh_snapshot(symbol, now=now)
+            snap_fn = getattr(mgr, "get_fresh_snapshot", getattr(mgr, "fresh_snapshot", None))
+            snap = snap_fn(symbol, now=now) if callable(snap_fn) else None
         except Exception:
             snap = None
 
@@ -1058,8 +1059,6 @@ def _read_cached_trend_duration(symbol: str) -> float:
         cachedb_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
         p = os.path.join(cachedb_dir, "cache_long_trend.json")
         if not os.path.exists(p):
-            p = os.path.join(cachedb_dir, "cache_price_long_trend.json")
-        if not os.path.exists(p):
             return 0.0
         with open(p, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -1102,8 +1101,6 @@ def _read_cached_trend_direction(symbol: str) -> Optional[str]:
     try:
         cachedb_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
         p = os.path.join(cachedb_dir, "cache_long_trend.json")
-        if not os.path.exists(p):
-            p = os.path.join(cachedb_dir, "cache_price_long_trend.json")
         if not os.path.exists(p):
             return None
         with open(p, "r", encoding="utf-8") as f:
@@ -1164,16 +1161,10 @@ def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> O
     # 1. Primary: dedicated 24h cache (cache_24_price_{symbol}.json)
     p24 = os.path.join(cachedb_dir, f"cache_24_price_{su}.json")
     if not os.path.exists(p24):
-        p24_legacy = os.path.join(cachedb_dir, f"cache_24price_{su}.json")
-        if os.path.exists(p24_legacy):
-            p24 = p24_legacy
-    if not os.path.exists(p24):
         su_base = _normalize_base_asset(su)
-        for prefix in ("cache_24_price_", "cache_24price_"):
-            p24_base = os.path.join(cachedb_dir, f"{prefix}{su_base}.json")
-            if os.path.exists(p24_base):
-                p24 = p24_base
-                break
+        p24_base = os.path.join(cachedb_dir, f"cache_24_price_{su_base}.json")
+        if os.path.exists(p24_base):
+            p24 = p24_base
     if os.path.exists(p24):
         try:
             with open(p24, "r", encoding="utf-8") as f:

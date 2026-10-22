@@ -260,12 +260,6 @@ def _load_history_jsonl_tail(symbol, max_bytes=4 * 1024 * 1024):
     """
     path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{symbol}.jsonl")
     if not os.path.exists(path):
-        for legacy in (f"cache_price_sparse_{symbol}.jsonl", f"cache_price_{symbol}.jsonl"):
-            candidate = os.path.join(ROOT, "cachedb", legacy)
-            if os.path.exists(candidate):
-                path = candidate
-                break
-    if not os.path.exists(path):
         return []
     entries = []
     try:
@@ -316,11 +310,7 @@ def load_price_series_live(symbol, days_back, include_history=True):
     # identical density for 24 hours. Load it only for longer windows where it
     # contributes data; this path previously accounted for 46% sustained CPU.
     if include_history:
-        entries_365 = (
-            _load_cachedb_price_entries(f"cache_365_price_{symbol}.jsonl", symbol)
-            or _load_cachedb_price_entries(f"cache_365price_{symbol}.jsonl", symbol)
-        )
-        for entry in entries_365:
+        for entry in _load_cachedb_price_entries(f"cache_365_price_{symbol}.jsonl", symbol):
             try:
                 points[int(entry[0] / 1000.0)] = float(entry[1])
             except (TypeError, ValueError, IndexError):
@@ -328,11 +318,7 @@ def load_price_series_live(symbol, days_back, include_history=True):
     own_ts, own_px = load_price_samples(symbol, days_back)
     for t, p in zip(own_ts, own_px):
         points[int(t)] = p
-    entries_24 = (
-        _load_cachedb_price_entries(f"cache_24_price_{symbol}.json", symbol)
-        or _load_cachedb_price_entries(f"cache_24price_{symbol}.json", symbol)
-    )
-    for entry in entries_24:
+    for entry in _load_cachedb_price_entries(f"cache_24_price_{symbol}.json", symbol):
         try:
             points[int(entry[0] / 1000.0)] = float(entry[1])
         except (TypeError, ValueError, IndexError):

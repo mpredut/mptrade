@@ -44,7 +44,7 @@ exp = expected_symbols()
 print(f"simboluri asteptate: {exp}")
 
 # 1. short trend
-it = load("cache_short_trend.json") or load("cache_instant_trend.json") or {}
+it = load("cache_short_trend.json") or {}
 print(f"-- cache_short_trend.json: {sorted(it.keys())}")
 for s in exp:
     e = it.get(s)
@@ -61,7 +61,7 @@ for s in exp:
     print(f"   {s:10} age={age:6.0f}s gradient_recent={e.get('gradient_recent')} price={px} -> {'OK' if ok else 'STALE/INVALID'}")
 
 # 2. current price
-cp = load("cache_current_price.json") or load("cache_currentprice.json") or {}
+cp = load("cache_current_price.json") or {}
 # format: {'fetchtime': {...}, 'items': {symbol: [[ts_ms, price]]}} (or directly per symbol)
 items = cp.get("items", cp) if isinstance(cp, dict) else {}
 print(f"-- cache_current_price.json: {sorted(k for k in items.keys() if k != 'fetchtime')}")

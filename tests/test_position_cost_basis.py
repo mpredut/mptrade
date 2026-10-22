@@ -59,7 +59,7 @@ def binance_history(monkeypatch):
 
     rows = []
     manager = SimpleNamespace(cache={"ARBUSDC": rows}, lock=RLock(),
-                              _is_valid_trade=cm.CacheTradeManager._is_valid_trade)
+                              _is_valid_item=cm.CacheTradeManager._is_valid_item)
     current = Mock(return_value=SimpleNamespace(order_cache_version="o", trade_cache_version="t"))
     ensure = Mock()
     get_cache = Mock(return_value=manager)

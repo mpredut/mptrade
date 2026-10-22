@@ -27,7 +27,7 @@ SYMBOLS = ["BTCUSDC"]
 
 def _saved_file(tmp_dir, price, ts_ms=None):
     ts_ms = ts_ms or int(time.time() * 1000)
-    fname = os.path.join(tmp_dir, "cache_currentprice.json")
+    fname = os.path.join(tmp_dir, "cache_current_price.json")
     with open(fname, "w") as f:
         json.dump({
             "items":     {"BTCUSDC": [[ts_ms, price]]},

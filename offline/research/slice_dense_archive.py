@@ -21,8 +21,6 @@ def main():
     out = sys.argv[3] if len(sys.argv) > 3 else os.path.join(
         ROOT, "cachedb", f"cache_24_price_slice_{symbol}_{days:g}d.jsonl")
     src = os.path.join(ROOT, "cachedb", f"cache_365_price_{symbol}.jsonl")
-    if not os.path.exists(src):
-        src = os.path.join(ROOT, "cachedb", f"cache_365price_{symbol}.jsonl")
 
     rows = []
     with open(src, encoding="utf-8") as f:

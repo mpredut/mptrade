@@ -184,8 +184,6 @@ def _split_series(symbol):
     if cached is not None:
         return cached
     path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{symbol}.jsonl")
-    if not os.path.exists(path):
-        path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
     series = load_price_series(path, symbol)
     mid = len(series) // 2
     res = (series[:mid], series[mid:])

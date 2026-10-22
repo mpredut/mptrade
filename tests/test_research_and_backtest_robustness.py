@@ -355,8 +355,8 @@ def test_incremental_trend_buffer_flat_recent_gradient_and_rebase():
     pw = PriceWindow("TEST_INC", window_size=20, sample_rate_sec=15.0)
     for px in trimmed:
         pw.process_price(px)
-    assert pw.get_instant_trend()[3] == 0.0
-    assert abs(pw.get_instant_trend()[0] - instant_trend_from_prices(pw.prices, sample_rate_sec=15.0)[0]) < 1e-9
+    assert pw.get_short_trend()[3] == 0.0
+    assert abs(pw.get_short_trend()[0] - instant_trend_from_prices(pw.prices, sample_rate_sec=15.0)[0]) < 1e-9
 
 
 def test_smart_stop_loss_load_grace_state_sim_and_empty_file_caching(tmp_path, monkeypatch):
@@ -414,7 +414,7 @@ def test_tradeall_backtest_window_constants_and_run(tmp_path, monkeypatch):
     assert hasattr(ta, "WINDOW_SECONDS_SMALL")
     assert hasattr(ta, "WINDOW_SECONDS_BIG")
 
-    c24_file = tmp_path / "cache_24price_ARBUSDC.json"
+    c24_file = tmp_path / "cache_24_price_ARBUSDC.json"
     items = [[1750000000000 + i * 15000, 0.20 + (i % 5) * 0.0005] for i in range(40)]
     c24_file.write_text(json.dumps({"items": {"ARBUSDC": items}}), encoding="utf-8")
 
@@ -562,7 +562,7 @@ def test_tradeall_trigger_gate_common_isolation_and_price_window_kwarg(tmp_path,
     assert "BTCUSDC" in eqs._trackers
 
     # Verify execute_tradeall_variant restores all patched tradeall attributes even after run
-    c24_file = tmp_path / "cachedb" / "cache_365price_ARBUSDC.jsonl"
+    c24_file = tmp_path / "cachedb" / "cache_365_price_ARBUSDC.jsonl"
     c24_file.parent.mkdir(parents=True, exist_ok=True)
     rows = [
         json.dumps({"s": "ARBUSDC", "i": [1750000000000 + i * 60000, 1.0 + i * 0.001]})
@@ -631,7 +631,7 @@ def test_intelligence_and_chop_backtest_fee_accounting_reconciliation(tmp_path):
         abs_tol=0.02,
     )
 
-    cache_file = tmp_path / "cache_price_sparse_TESTUSDC.jsonl"
+    cache_file = tmp_path / "cache_sparse_price_TESTUSDC.jsonl"
     lines = [
         json.dumps({"s": "TESTUSDC", "i": [int(t * 1000), p]})
         for t, p in sampled
@@ -693,8 +693,8 @@ def test_experiment_trend_gate_and_kalman_lag_sweep_restore_globals(tmp_path, mo
     assert stats["confirms"] == 5
     assert stats["max_confirm_count"] == 6
 
-    c24_file = tmp_path / "cachedb" / "cache_365price_ARBUSDC.jsonl"
-    hist_file = tmp_path / "cachedb" / "cache_price_sparse_ARBUSDC.jsonl"
+    c24_file = tmp_path / "cachedb" / "cache_365_price_ARBUSDC.jsonl"
+    hist_file = tmp_path / "cachedb" / "cache_sparse_price_ARBUSDC.jsonl"
     c24_file.parent.mkdir(parents=True, exist_ok=True)
     rows = [
         json.dumps({"s": "ARBUSDC", "i": [1750000000000 + i * 60000, 1.0 + i * 0.001]})

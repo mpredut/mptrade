@@ -52,7 +52,7 @@ def test_pipe_log_cache_detects_same_size_rewrite_and_rotation(tmp_path):
 
 
 def test_price_sampling_deduplicates_an_unchanged_snapshot(tmp_path, monkeypatch):
-    cache_path = tmp_path / "cache_instant_trend.json"
+    cache_path = tmp_path / "cache_short_trend.json"
     logger_dir = tmp_path / "logger"
     monkeypatch.setattr(observe, "CACHE_TREND_PATH", str(cache_path))
     monkeypatch.setattr(observe, "LOGGER_DIR", str(logger_dir))
@@ -78,7 +78,7 @@ def test_price_sampling_deduplicates_an_unchanged_snapshot(tmp_path, monkeypatch
 def test_history_tail_keeps_first_record_when_file_is_smaller_than_tail(tmp_path, monkeypatch):
     cachedb = tmp_path / "cachedb"
     cachedb.mkdir()
-    history = cachedb / "cache_price_sparse_BTCUSDC.jsonl"
+    history = cachedb / "cache_sparse_price_BTCUSDC.jsonl"
     history.write_text(
         '\n'.join(
             [

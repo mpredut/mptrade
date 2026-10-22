@@ -56,7 +56,7 @@ class GradientBigWindowAnalyzer(ORIG_WINDOW_ANALYZER):
     loc de slope_big (rar, prag-gated). Semnatura pastrata (val, pos) — pos
     (the second element) is not used by logic()."""
     def check_price_change(self, threshold):
-        final_trend, growth_coefficient, slope_full, gradient_recent = self.window.get_instant_trend()
+        final_trend, growth_coefficient, slope_full, gradient_recent = self.window.get_short_trend()
         return final_trend, 0
 
 

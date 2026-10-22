@@ -94,8 +94,6 @@ def _hit_gated(*a, **k):
 
 def load_ticks(symbol):
     path = os.path.join(ROOT, "cachedb", f"cache_sparse_price_{symbol}.jsonl")
-    if not os.path.exists(path):
-        path = os.path.join(ROOT, "cachedb", f"cache_price_sparse_{symbol}.jsonl")
     return load_price_series(path, symbol)
 
 

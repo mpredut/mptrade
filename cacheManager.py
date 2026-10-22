@@ -59,7 +59,7 @@ from botcore import (
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
 _load_dotenv(os.path.join(_CONFIG_ROOT, "config.env"))
 
-# Dynamic-window bounds for ``get_instant_trend_for_window``. Values below the minimum
+# Dynamic-window bounds for ``get_short_trend_for_window``. Values below the minimum
 # provide too few samples for a meaningful slope; values above the maximum add unjustified
 # cost and exceed the 24-hour history retained by Cache24PriceManager.
 CM_DYNAMIC_WINDOW_MIN_SEC = required_float_env("CM_DYNAMIC_WINDOW_MIN_SEC")
@@ -3342,17 +3342,9 @@ class CacheShortTrendManager:
             return None
         if self.current_price_mgr is None:
             return None
-        obs_fn = (
-            self.current_price_mgr.get_cached_price_observation
-            if isinstance(self.current_price_mgr, CacheCurrentPriceManager)
-            or "get_cached_price_observation" in getattr(self.current_price_mgr, "__dict__", {})
-            else getattr(
-                self.current_price_mgr,
-                "cached_price_observation",
-                self.current_price_mgr.get_cached_price_observation,
-            )
+        observation = self.current_price_mgr.get_cached_price_observation(
+            symbol, self.TREND_STALE_SEC
         )
-        observation = obs_fn(symbol, self.TREND_STALE_SEC)
         if observation is None:
             return None
         observed_at, current_price = observation
@@ -3368,7 +3360,7 @@ class CacheShortTrendManager:
 
         # Detailed metrics for primary window and published/active windows.
         pwin, pan = wins[primary], ans[primary]
-        gradient, gc, slope_full, gradient_recent = pwin.get_instant_trend()
+        gradient, gc, slope_full, gradient_recent = pwin.get_short_trend()
         eps_primary = pwin.get_noise_epsilon(self.EPSILON_K)
         published_dyn = self._published_dynamic_windows(symbol, now=observed_at)
         primary_key = _dynamic_window_key(primary)
@@ -3493,7 +3485,7 @@ class CacheShortTrendManager:
 
     def get_short_trend(self, symbol):
         win = self.get_window(symbol)
-        return win.get_instant_trend() if win else None
+        return win.get_short_trend() if win else None
 
     get_instant_trend = get_short_trend
 

@@ -637,7 +637,7 @@ class TestOrderGuardWithGemini:
             return {"gradient_recent": 0.8, "epsilon": 0.1, "ts": time.time()}
 
         class MockShortTrendManager:
-            def fresh_snapshot(self, symbol, now=None):
+            def get_fresh_snapshot(self, symbol, now=None):
                 return mock_snapshot(symbol, now)
 
         monkeypatch.setattr("cacheManager.get_short_trend_manager", lambda: MockShortTrendManager())

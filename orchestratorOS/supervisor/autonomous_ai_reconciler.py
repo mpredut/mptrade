@@ -281,14 +281,8 @@ class AutonomousAIReconciler:
                 snapshot.state_files[s_file] = {"age_hours": (time.time() - mtime) / 3600.0}
 
         # 7. Live market prices and short trend telemetry
-        prices_data = (
-            _read_json(os.path.join(self.cache_dir, "cache_current_price.json"))
-            or _read_json(os.path.join(self.cache_dir, "cache_currentprice.json"))
-        )
-        trends_data = (
-            _read_json(os.path.join(self.cache_dir, "cache_short_trend.json"))
-            or _read_json(os.path.join(self.cache_dir, "cache_instant_trend.json"))
-        )
+        prices_data = _read_json(os.path.join(self.cache_dir, "cache_current_price.json"))
+        trends_data = _read_json(os.path.join(self.cache_dir, "cache_short_trend.json"))
 
         price_map: Dict[str, float] = {}
         if prices_data and isinstance(prices_data.get("items"), dict):

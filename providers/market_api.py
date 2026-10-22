@@ -84,7 +84,9 @@ def _runtime_market_regime_snapshot(symbol: str, now=None):
     """Read the optional short-trend snapshot at the application boundary."""
     try:
         import cacheManager as cm
-        return cm.get_short_trend_manager().fresh_snapshot(symbol, now=now)
+        mgr = cm.get_short_trend_manager()
+        snap_fn = getattr(mgr, "get_fresh_snapshot", getattr(mgr, "fresh_snapshot", None))
+        return snap_fn(symbol, now=now) if callable(snap_fn) else None
     except Exception:
         return None
 

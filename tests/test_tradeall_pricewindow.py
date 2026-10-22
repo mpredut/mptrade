@@ -813,13 +813,14 @@ class TestWindowAnalyzer(unittest.TestCase):
                            "check_price_change", "evaluate_buy_sell_opportunity"):
                 with self.subTest(absent=method):
                     self.assertFalse(hasattr(pw, method))
-            for method in ("get_min", "get_max", "get_instant_trend"):
+            for method in ("get_min", "get_max", "get_short_trend", "get_instant_trend"):
                 with self.subTest(present=method):
                     self.assertTrue(hasattr(pw, method))
 
         with self.subTest("get trend alias"):
             pw = _window([100 + i for i in range(20)])
-            self.assertEqual(pw.get_trend(), pw.get_instant_trend())
+            self.assertEqual(pw.get_trend(), pw.get_short_trend())
+            self.assertEqual(pw.get_instant_trend(), pw.get_short_trend())
 
     def test_analyzer_gradients_and_noise(self):
         with self.subTest("recent gradient cases"):
@@ -933,7 +934,7 @@ class TestTrendCoordinator(unittest.TestCase):
         self.cpm.on_items_update("BTCUSDT", [[int(time.time() * 1000), 60000.0]])
 
         # The manager owns the windows + calc + cross-process cache
-        self.mgr = cm.CachePriceShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "trend.json"))
+        self.mgr = cm.CacheShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "trend.json"))
         self.mgr.start_computation({"BTCUSDT": self.cache24}, self.cpm)
 
     def _make_coord(self):
@@ -1070,7 +1071,7 @@ class TestTrendCoordinator(unittest.TestCase):
             while not stop.is_set():
                 try:
                     coord.evaluate("BTCUSDT")
-                    self.mgr.get_instant_trend("BTCUSDT")
+                    self.mgr.get_short_trend("BTCUSDT")
                     self.mgr.get_analyzer("BTCUSDT").calculate_slope_max_min()
                 except Exception as e:
                     errors.append(("reader", e))
