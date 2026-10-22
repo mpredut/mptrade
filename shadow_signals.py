@@ -109,6 +109,8 @@ class ShadowSet:
         self.state_min_interval = state_min_interval
         self.compute_vol = compute_vol
         self._state: dict = {}
+        if self.state_path:
+            self._port_and_load_initial_state()
         self._last_state_write = 0.0
         self._kalman: dict = {}
         self._last_fed: dict = {}      # Last Kalman feed timestamp per symbol.
@@ -116,6 +118,25 @@ class ShadowSet:
         self._fed_prices: dict = {}    # Fed prices for step-scale epsilon.
         self._last_vol_time: dict = {} # Throttling for 1h volatility computation.
         self._last_vol_fields: dict = {}
+
+    def _port_and_load_initial_state(self) -> None:
+        """Port legacy shadow_state.json to kalman_state.json if needed and load initial state."""
+        import json
+        try:
+            if (
+                os.path.basename(self.state_path) == "kalman_state.json"
+                and not os.path.exists(self.state_path)
+            ):
+                legacy_path = os.path.join(os.path.dirname(self.state_path), "shadow_state.json")
+                if os.path.exists(legacy_path):
+                    os.replace(legacy_path, self.state_path)
+            if os.path.exists(self.state_path):
+                with open(self.state_path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    self._state = loaded
+        except Exception as e:  # noqa: BLE001
+            print(f"[shadow_signals] error loading initial kalman state: {e}")
 
     def _write_state(self, now: float) -> None:
         if not self.state_path or (now - self._last_state_write) < self.state_min_interval:

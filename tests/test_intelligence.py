@@ -30,7 +30,7 @@ from intelligence.internal.state.survival import get_trend_survival_metrics
 from intelligence.internal.state.volatility import (
     adaptive_thresholds,
     calculate_volatility_1h,
-    get_shadow_state_path,
+    get_kalman_state_path,
     resolve_cached_volatility_1h,
     resolve_cached_volatility_1h_pct,
     vol_pct_to_ratio,
@@ -207,10 +207,10 @@ class TestIntelligenceState(unittest.TestCase):
         self.assertIsNone(resolve_cached_volatility_1h("BTCUSDC", state_path="/non/existent/path.json"))
         self.assertIsNone(resolve_cached_volatility_1h_pct("BTCUSDC", state_path="/non/existent/path.json"))
 
-    def test_get_shadow_state_path(self):
+    def test_get_kalman_state_path(self):
         with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": "/custom/cache"}):
-            path = get_shadow_state_path()
-            self.assertTrue(path.endswith("shadow_state.json"))
+            path = get_kalman_state_path()
+            self.assertTrue(path.endswith("kalman_state.json"))
             self.assertIn("/custom/cache", path.replace("\\", "/"))
 
 

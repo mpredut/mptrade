@@ -143,28 +143,28 @@ def vol_ratio_to_pct(vol_ratio: float) -> float:
     return float(vol_ratio) * 100.0
 
 
-def get_shadow_state_path() -> str:
-    """Return the canonical path to shadow_state.json honoring MPTRADE_CACHEDB_DIR."""
+def get_kalman_state_path() -> str:
+    """Return the canonical path to kalman_state.json honoring MPTRADE_CACHEDB_DIR."""
     try:
         from cachepaths import cache_path
-        return cache_path("shadow_state.json")
+        return cache_path("kalman_state.json")
     except Exception:
         return os.path.join(
-            os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb"), "shadow_state.json"
+            os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb"), "kalman_state.json"
         )
 
 
 def resolve_cached_volatility_1h(
     symbol: str, state_path: Optional[str] = None
 ) -> Optional[float]:
-    """Retrieve 1h realized volatility for symbol from shared shadow cache as a decimal ratio.
+    """Retrieve 1h realized volatility for symbol from shared Kalman state cache as a decimal ratio.
 
     Producers (e.g. shadow_signals / calculate_volatility_1h) output percentages (e.g. 2.5 for 2.5%,
     0.05 for 0.05%). This function acts as the Single Source of Truth (SSOT) to explicitly convert
     the percentage to a decimal ratio by dividing by 100.0.
     Returns None if cache is missing, symbol is not found, or value is non-positive/non-finite.
     """
-    path = state_path or get_shadow_state_path()
+    path = state_path or get_kalman_state_path()
     if not os.path.exists(path):
         return None
 

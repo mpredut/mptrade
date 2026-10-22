@@ -317,7 +317,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     orig_mkt_cancel = getattr(ta.mkt, "cancel_order", None)
     orig_api_cancel_expired = getattr(getattr(ta, "api", None), "cancel_expired_orders", None)
     orig_log_decision = getattr(ta, "log_decision", None)
-    orig_shadow_ref = getattr(ta, "_shadow_ref", None)
+    orig_kalman_ref = getattr(ta, "_kalman_ref", None)
     orig_gate_log = getattr(ta, "GATE_OUTCOME_LOG", None)
     _bt_env_keys = ("BACKTEST_MODE", "REPLAY_MODE", "DISABLE_EXTERNAL_NOTIFICATIONS", "DISABLE_GEMINI_LLM")
     _orig_bt_env = {k: os.environ.get(k) for k in _bt_env_keys}
@@ -366,7 +366,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
             compute_vol=(speed != "fast"))
         # The KALMAN GATE is in the backtest too (parity with live), but with the block journal
         # redirected into the run's folder — NEVER into the live order_outcomes (A5).
-        ta._shadow_ref = shadow
+        ta._kalman_ref = shadow
         def _bt_gate_log(symbol_, side, price_, qty, outcome, reason, motivation):
             cols = [clock(), symbol_, side, price_, qty, outcome, reason, "backtest", motivation]
             broker.write_outcome_row(cols)
@@ -532,7 +532,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
             ta.api.cancel_expired_orders = orig_api_cancel_expired
         if orig_log_decision is not None:
             ta.log_decision = orig_log_decision
-        ta._shadow_ref = orig_shadow_ref
+        ta._kalman_ref = orig_kalman_ref
         if orig_gate_log is not None:
             ta.GATE_OUTCOME_LOG = orig_gate_log
         for _k, _v in _orig_bt_env.items():

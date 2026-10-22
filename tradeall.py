@@ -12,6 +12,7 @@ from instrument_registry import select_instruments, symbols_for
 from binance_api import bapi as api
 from binance_api import bapi_trades as apitrades
 import order_outcomes_log
+from providers.base import extract_order_id
 from providers.market_api import api as mkt      # Single guarded proxy (Instrument.place).
 
 from pricewindow import (
@@ -164,9 +165,9 @@ def log_decision(symbol, event, **fields):
 # Kalman gate (approved July 19): determine whether model orders reach real funds.
 # The registry mode controls each order. ``strict`` allows BUY only on Kalman UP
 # and SELL only on DOWN; ``permissive`` blocks only countertrend orders; ``off``
-# restores the previous behavior. Fail open when the shadow signal is missing or
+# restores the previous behavior. Fail open when the Kalman signal is missing or
 # older than five minutes so a signal failure cannot stop trading.
-_shadow_ref = None                      # Set by TrendCoordinator.__init__.
+_kalman_ref = None                      # Set by TrendCoordinator.__init__.
 GATE_OUTCOME_LOG = None                 # Backtests redirect this away from the live log.
 GATE_STALE_SEC = 300
 
@@ -186,12 +187,12 @@ KALMAN_BYPASS_SELL_REASONS = frozenset({"accel_plunge_down", "small_window_plung
 def _kalman_gate_blocks(symbol, action, reason=None):
     # An allowed symbol must have an explicit mode; there is no default policy.
     mode = KALMAN_MODES[symbol]
-    if mode == "off" or _shadow_ref is None:
+    if mode == "off" or _kalman_ref is None:
         return False, mode, None        # Gate disabled -> never blocks (not a data state).
     if str(action or "").upper() == "SELL" and reason in KALMAN_BYPASS_SELL_REASONS:
         return False, mode, None        # Fast kinematic plunge exits bypass Kalman lag.
     try:
-        trend, age = _shadow_ref.current_trend(symbol)
+        trend, age = _kalman_ref.current_trend(symbol)
     except Exception:
         # No confirming signal (read failed): fail CLOSED for a BUY -- do not add
         # exposure blind -- but never for a SELL, so a risk-reducing exit is never
@@ -345,9 +346,14 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     for i in range(num_orders):
         adjusted_price = base_price * (1 + direction * i * price_step / 100)
         order = _fire_order(symbol, action, adjusted_price, reason, **kwargs)
-        if order and (order.get("orderId") or order.get("id")):
-            oid = order.get("orderId") or order.get("id")
-            order_ids.append(oid)
+        if order:
+            oid = (
+                order.get("orderId") or order.get("id")
+                if isinstance(order, dict) and (order.get("orderId") or order.get("id"))
+                else extract_order_id(order)
+            )
+            if oid:
+                order_ids.append(oid)
 
     return order_ids
 
@@ -753,15 +759,15 @@ class TrendCoordinator:
         # KALMAN_PRIMARY_SYMBOLS. Guard setup and calls so a failure cannot stop trading.
         try:
             import shadow_signals
-            from intelligence.internal.state.volatility import get_shadow_state_path
-            self._shadow = shadow_signals.ShadowSet(
-                state_path=get_shadow_state_path())
-            global _shadow_ref
-            _shadow_ref = self._shadow   # _fire_order's gate reads this signal.
+            from intelligence.internal.state.volatility import get_kalman_state_path
+            self._kalman_state = shadow_signals.ShadowSet(
+                state_path=get_kalman_state_path())
+            global _kalman_ref
+            _kalman_ref = self._kalman_state   # _fire_order's gate reads this signal.
             print(f"[KALMAN-GATE] active, modes={KALMAN_MODES}")
         except Exception as _e:  # noqa: BLE001
             print(f"[TrendCoordinator] shadow_signals unavailable (continuing without it): {_e}")
-            self._shadow = None
+            self._kalman_state = None
 
         self.trend_states = {}
         self.trend_states_big = {}
@@ -827,23 +833,23 @@ class TrendCoordinator:
 
         win = self.instant_mgr.get_window(symbol)
         win_big = self.instant_mgr.get_window(symbol, self.instant_mgr.window_big_sec)
-        shadow_fields = {}
+        kalman_fields = {}
         prev_ktrend = None
         new_ktrend = None
-        if self._shadow is not None:
+        if self._kalman_state is not None:
             try:
-                st_prev = self._shadow._state.get(symbol)
+                st_prev = self._kalman_state._state.get(symbol)
                 if st_prev:
                     prev_ktrend = st_prev.get("kalman_trend")
-                shadow_fields = self._shadow.update(
+                kalman_fields = self._kalman_state.update(
                     symbol, time.time(), current_price,
                     epsilon=win.get_noise_epsilon(),
                     big_prices=list(win_big.prices),
                     big_sample_rate=win_big.sample_rate_sec,
                 ) or {}
-                new_ktrend = shadow_fields.get("kalman_trend")
+                new_ktrend = kalman_fields.get("kalman_trend")
             except Exception as _e:  # noqa: BLE001
-                print(f"[TrendCoordinator] shadow error {symbol} (continuing): {_e}")
+                print(f"[TrendCoordinator] kalman state error {symbol} (continuing): {_e}")
 
         prev_orders_snapshot = list(_symbol_order_ids.get(symbol, []))
         snapshot = handle_symbol(
@@ -865,9 +871,9 @@ class TrendCoordinator:
         # Merge the complete snapshot into the cross-process store. Remove ``symbol``
         # because it is already supplied positionally.
         fields = {k: v for k, v in snapshot.items() if k != "symbol"}
-        if shadow_fields:
-            fields.update(shadow_fields)
-        if self._shadow is not None:
+        if kalman_fields:
+            fields.update(kalman_fields)
+        if self._kalman_state is not None:
             try:
                 # Primary Kalman starts an order on a trend transition for enabled
                 # symbols when handle_symbol did not already place one on this tick.
@@ -888,7 +894,7 @@ class TrendCoordinator:
                             safeback_seconds=FIRE_SAFEBACK_SEC, force=False,
                             cancelorders=True, hours=0.3, regime_context=regime_ctx)
             except Exception as _e:  # noqa: BLE001
-                print(f"[TrendCoordinator] shadow error {symbol} (continuing): {_e}")
+                print(f"[TrendCoordinator] kalman state error {symbol} (continuing): {_e}")
         self.instant_mgr.update_snapshot(symbol, **fields)
         return snapshot
 

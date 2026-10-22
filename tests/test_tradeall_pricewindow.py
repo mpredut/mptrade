@@ -146,7 +146,7 @@ class TestTradeallOrderBoundary(unittest.TestCase):
                 def current_trend(self, _sym):
                     return 1, ta.GATE_STALE_SEC + 1.0
             for shadow in (_AbsentShadow(), _StaleShadow()):
-                with (patch.object(ta, "_shadow_ref", shadow),
+                with (patch.object(ta, "_kalman_ref", shadow),
                       patch.dict(ta.KALMAN_MODES, {"TAOUSDC": "strict"})):
                     self.assertTrue(ta._kalman_gate_blocks("TAOUSDC", "BUY")[0])
                     self.assertFalse(ta._kalman_gate_blocks("TAOUSDC", "SELL")[0])
@@ -158,7 +158,7 @@ class TestTradeallOrderBoundary(unittest.TestCase):
                 journal=shadow_signals.ShadowJournal(fixed_path=os.devnull),
                 now_fn=lambda: sim_now[0])
             shadow._state["TAOUSDC"] = {"kalman_trend": 1, "ts": sim_now[0] - 10.0}
-            with (patch.object(ta, "_shadow_ref", shadow),
+            with (patch.object(ta, "_kalman_ref", shadow),
                   patch.dict(ta.KALMAN_MODES, {"TAOUSDC": "strict"})):
                 self.assertFalse(ta._kalman_gate_blocks("TAOUSDC", "BUY")[0])
                 # Ordinary SELL is blocked in strict mode while Kalman trend is +1 (UP)

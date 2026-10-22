@@ -41,9 +41,9 @@ import sys
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 try:
-    from intelligence.internal.state.volatility import get_shadow_state_path
+    from intelligence.internal.state.volatility import get_kalman_state_path
 except ImportError:
-    from intelligence import get_shadow_state_path
+    from intelligence import get_kalman_state_path
 LOGGER_DIR = os.path.join(ROOT, "logger")
 CACHE_TREND_PATH = os.path.join(
     os.environ.get("MPTRADE_CACHEDB_DIR", os.path.join(ROOT, "cachedb")),
@@ -714,9 +714,9 @@ def format_state_text(entry, header, pending=None, exposure=None):
 
 
 def build_analysis_state_text(symbol, active_summary=None):
-    """Combine current live tradeall analysis with its shadow state and active intents.
+    """Combine current live tradeall analysis with its Kalman state and active intents.
 
-    tradeall writes shadow_state.json directly because cacheManager owns the
+    tradeall writes kalman_state.json directly because cacheManager owns the
     trend cache file.
     """
     try:
@@ -727,7 +727,7 @@ def build_analysis_state_text(symbol, active_summary=None):
     if not entry:
         return None
     try:
-        with open(get_shadow_state_path(), "r", encoding="utf-8") as f:
+        with open(get_kalman_state_path(), "r", encoding="utf-8") as f:
             sh = json.load(f).get(symbol)
         if sh:
             entry = {**entry, **{k: v for k, v in sh.items() if k not in ("ts", "price")}}

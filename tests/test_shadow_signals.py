@@ -229,6 +229,22 @@ class TestShadowRuntime(unittest.TestCase):
             self.assertEqual(mock_place.call_args.args[0], "SELL")
             self.assertEqual(mock_place.call_args.kwargs.get("reason"), "accel_plunge_down")
 
+    def test_shadow_set_ports_legacy_shadow_state_to_kalman_state(self):
+        """ShadowSet ports legacy shadow_state.json to kalman_state.json on init and loads state."""
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            legacy_path = os.path.join(tmp_dir, "shadow_state.json")
+            new_path = os.path.join(tmp_dir, "kalman_state.json")
+            payload = {"TAOUSDC": {"kalman_trend": -1, "vol_1h_pct": 1.45, "ts": 1000.0, "price": 275.0}}
+            with open(legacy_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            journal = ss.ShadowJournal(fixed_path=os.devnull)
+            tracker = ss.ShadowSet(journal=journal, state_path=new_path, now_fn=lambda: 1010.0)
+            self.assertFalse(os.path.exists(legacy_path))
+            self.assertTrue(os.path.exists(new_path))
+            self.assertEqual(tracker.current_trend("TAOUSDC"), (-1, 10.0))
+
 
 if __name__ == "__main__":
     unittest.main()
