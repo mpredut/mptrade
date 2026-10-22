@@ -85,10 +85,10 @@ class PriceTrendAnalyzer:
 
 
 def instant_trend_from_prices(prices, sample_rate_sec):
-    """Apply the exact ``PriceWindow.get_instant_trend`` formula directly to a
+    """Apply the exact ``PriceWindow.get_short_trend`` formula directly to a
     price list and sampling rate without constructing a complete window. This avoids
     incremental deque bookkeeping for a one-shot raw slice and is the single source of
-    the formula extracted from ``PriceWindow.get_instant_trend`` and
+    the formula extracted from ``PriceWindow.get_short_trend`` and
     offline/research/monitortrades_backtest/replay_trend_source._instant_trend_from_slice)
     All ad-hoc dynamic-cache and replay windows delegate here.
 
@@ -646,12 +646,6 @@ class PriceWindow:
             )
 
         return final_trend, growth_coefficient, slope_full, gradient_recent
-
-    get_instant_trend = get_short_trend
-
-    # Backwards-compatible alias for the legacy method name.
-    def get_trend(self):
-        return self.get_short_trend()
 
     def calculate_acceleration(self, window_sec: float = 90.0) -> tuple[float, float]:
         """Calculate recent price velocity (%/min) and acceleration (%/min^2).

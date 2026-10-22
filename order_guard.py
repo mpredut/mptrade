@@ -427,7 +427,7 @@ def symbol_regime(
         try:
             import cacheManager as _cm
             mgr = _cm.get_short_trend_manager()
-            snap_fn = getattr(mgr, "get_fresh_snapshot", getattr(mgr, "fresh_snapshot", None))
+            snap_fn = getattr(mgr, "get_fresh_snapshot", None)
             snap = snap_fn(symbol, now=now) if callable(snap_fn) else None
         except Exception:
             snap = None

@@ -686,20 +686,24 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
     def test_class_names_and_backward_compatible_aliases(self):
         self.assertIs(cm.Cache24Price, cm.Cache24PriceManager)
         self.assertIs(cm.Cache365Price, cm.Cache365PriceManager)
-        self.assertIs(cm.Cache365Price, cm.Cache24LongPrice)
-        self.assertIs(cm.Cache365Price, cm.Cache24LongPriceManager)
         self.assertIs(cm.CacheSparsePrice, cm.CacheSparsePriceManager)
         self.assertIs(cm.CacheCurrentPrice, cm.CacheCurrentPriceManager)
         self.assertIs(cm.CacheShortTrend, cm.CacheShortTrendManager)
-        self.assertIs(cm.CachePriceShortTrend, cm.CacheShortTrendManager)
-        self.assertIs(cm.CachePriceShortTrendManager, cm.CacheShortTrendManager)
         self.assertIs(cm.CacheLongTrend, cm.CacheLongTrendManager)
-        self.assertIs(cm.PriceLongTrend, cm.CacheLongTrendManager)
-        self.assertIs(cm.CachePriceLongTrend, cm.CacheLongTrendManager)
-        self.assertIs(cm.CachePriceLongTrendManager, cm.CacheLongTrendManager)
         self.assertIs(cm.CacheAssetValue, cm.CacheAssetValueManager)
         self.assertIs(cm.CacheTrade, cm.CacheTradeManager)
         self.assertIs(cm.CacheOrder, cm.CacheOrderManager)
+        for legacy_alias in (
+            "Cache24LongPrice",
+            "Cache24LongPriceManager",
+            "CachePriceShortTrend",
+            "CachePriceShortTrendManager",
+            "PriceLongTrend",
+            "CachePriceLongTrend",
+            "CachePriceLongTrendManager",
+            "CachePriceManager",
+        ):
+            self.assertFalse(hasattr(cm, legacy_alias))
 
 
 if __name__ == "__main__":

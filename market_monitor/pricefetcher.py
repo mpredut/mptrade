@@ -585,8 +585,6 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
             if entries:
                 last_times[symbol] = max(entry[0] for entry in entries)
         return last_times
-
-    rebuild_fetchtime_times = rebuild_fetchtimes
     
     def get_remote_items(self, symbol, startTime):
         try:

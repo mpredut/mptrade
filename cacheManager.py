@@ -331,16 +331,6 @@ class CacheManagerInterface(ABC):
                 print(f"[{self.cls_name}] Error notifying subscriber {sub}: {e}")
     
 
-    #def get_all_symbols_from_cache(self):
-    #    return list(set(t.get("symbol") for t in self.cache if "symbol" in t))
-    @property
-    def fetchtime_time_per_symbol(self):
-        return self.fetchtime_per_symbol
-
-    @fetchtime_time_per_symbol.setter
-    def fetchtime_time_per_symbol(self, value):
-        self.fetchtime_per_symbol = value
-
     def get_all_symbols_from_cache(self):
         with self.lock:
             return list(self.cache.keys())       
@@ -352,16 +342,10 @@ class CacheManagerInterface(ABC):
         from ``time``/``timestamp`` dictionaries or ``[timestamp, ...]`` lists.
         """
         return None
-
-    def rebuild_fetchtime_times(self):
-        return self.rebuild_fetchtimes()
     
     
     def _rebuild_fetchtimes(self):
-        if type(self).rebuild_fetchtime_times is not CacheManagerInterface.rebuild_fetchtime_times:
-            last_times_per_sym = self.rebuild_fetchtime_times()
-        else:
-            last_times_per_sym = self.rebuild_fetchtimes()
+        last_times_per_sym = self.rebuild_fetchtimes()
         if not last_times_per_sym:
             last_times_per_sym = defaultdict(int)
             for symbol, trades in self.cache.items():
@@ -380,8 +364,6 @@ class CacheManagerInterface(ABC):
             fallback_time = min(self.fallback_time_default, fallback_time_file)
             return {symbol: fallback_time for symbol in self.symbols}
         return last_times_per_sym
-
-    __rebuild_fetchtime_times = _rebuild_fetchtimes
           
         
     def load_state(self):
@@ -2124,8 +2106,6 @@ class CacheTradeManager(CacheManagerInterface):
             and timestamp > 0 and isinstance(trade["isBuyer"], bool)
         )
 
-    _is_valid_trade = _is_valid_item
-
     def get_remote_items(self, symbol, startTime):
         # Paginate through the injected client so periods with more than 1,000 trades
         # are not truncated.
@@ -2241,8 +2221,6 @@ class CacheTradeManager(CacheManagerInterface):
                     latest_price = float(trade["price"])
         return latest_price
 
-    last_opposite_fill_price = get_last_opposite_fill_price
-
 
 CacheTrade = CacheTradeManager
 
@@ -2296,9 +2274,6 @@ class CacheOrderManager(CacheManagerInterface):
                 )
             )
         )
-
-    _is_valid_trade = _is_valid_item
-    _is_valid_order = _is_valid_item
 
     def get_remote_items(self, symbol, startTime):
         from binance_api import bapi_allorders as apiorders
@@ -2461,12 +2436,6 @@ class CacheSparsePriceManager(CacheManagerInterface):
         super().__init__(sync_ts, symbols, filename, append_mode=True,
                          api_client=api_client, append_persist=True)
 
-    # def rebuild_fetchtime_times(self):
-        # if not self.cache:
-            # return {}
-        # last_times = {symbol: max(entry[0] for entry in self.cache if entry) for symbol in self.symbols}
-        # return last_times
-
     def rebuild_fetchtimes(self):
         if not self.cache:
             return {}
@@ -2476,8 +2445,6 @@ class CacheSparsePriceManager(CacheManagerInterface):
             if entries:
                 last_times[symbol] = max(entry[0] for entry in entries)
         return last_times
-
-    rebuild_fetchtime_times = rebuild_fetchtimes
 
     def get_remote_items(self, symbol, startTime):
         # Preserve the observation timestamp supplied by get_price. Using only a cached
@@ -2502,7 +2469,6 @@ class CacheSparsePriceManager(CacheManagerInterface):
 
 
 CacheSparsePrice = CacheSparsePriceManager
-CachePriceManager = CacheSparsePriceManager
 
 
 class Cache24PriceManager(CacheManagerInterface):
@@ -2582,8 +2548,6 @@ class Cache24PriceManager(CacheManagerInterface):
             if entries:
                 last_times[symbol] = max(entry[0] for entry in entries)
         return last_times
-
-    rebuild_fetchtime_times = rebuild_fetchtimes
 
     def get_remote_items(self, symbol, startTime):
         """Fetch initialization data only when the persisted file is missing.
@@ -2776,8 +2740,6 @@ class Cache365PriceManager(Cache24PriceManager):
 
 
 Cache365Price = Cache365PriceManager
-Cache24LongPrice = Cache365PriceManager
-Cache24LongPriceManager = Cache365PriceManager
 
 
 class CacheLongTrendManager(CacheManagerInterface):
@@ -2786,23 +2748,6 @@ class CacheLongTrendManager(CacheManagerInterface):
 
     # Inherit get_all_symbols_from_cache from the base class.
 
-    # def rebuild_fetchtime_times(self):
-        # """
-        # Infer each symbol's latest record time from self.cache.
-        # """
-        # last_times = defaultdict(int)
-        # for price_trend in self.cache:
-            # symbol = price_trend.get("symbol")
-            # ts = price_trend.get("timestamp", 0) * 1000
-            # if ts > last_times[symbol]:
-                # last_times[symbol] = ts
-
-        # Apply a negative 60-second safety offset.
-        # for symbol in last_times:
-            # last_times[symbol] = max(0, last_times[symbol] - 60_000)
-
-        # return dict(last_times)
-        
     def rebuild_fetchtimes(self):
         last_times = defaultdict(int)
         for symbol, items in self.cache.items():
@@ -2816,8 +2761,6 @@ class CacheLongTrendManager(CacheManagerInterface):
         for symbol in last_times:
             last_times[symbol] = max(0, last_times[symbol] - 60_000)
         return dict(last_times)
-
-    rebuild_fetchtime_times = rebuild_fetchtimes
 
     def get_remote_items(self, symbol, startTime):
         trend_filename = os.path.join(_CONFIG_ROOT, "priceanalysis.json")
@@ -2840,9 +2783,6 @@ class CacheLongTrendManager(CacheManagerInterface):
 
 
 CacheLongTrend = CacheLongTrendManager
-PriceLongTrend = CacheLongTrendManager
-CachePriceLongTrend = CacheLongTrendManager
-CachePriceLongTrendManager = CacheLongTrendManager
 
 
 class CacheAssetValueManager(CacheManagerInterface):
@@ -2873,8 +2813,6 @@ class CacheAssetValueManager(CacheManagerInterface):
             if max_ts_sec > 0:
                 last_times[symbol] = max(0, int(max_ts_sec * 1000) - 60_000)
         return last_times
-
-    rebuild_fetchtime_times = rebuild_fetchtimes
 
     def get_remote_items(self, symbol, startTime):
         try:
@@ -3040,8 +2978,6 @@ class CacheCurrentPriceManager(CacheManagerInterface):
                 last_times[symbol] = entries[0][0]   # Snapshot contains one entry.
         return last_times
 
-    rebuild_fetchtime_times = rebuild_fetchtimes
-
     def get_all_symbols_from_cache(self):
         return self.symbols
 
@@ -3094,8 +3030,6 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         ):
             return None
         return observed_at, price
-
-    cached_price_observation = get_cached_price_observation
 
     def get_price(self, symbol: str):
         """Return ``[timestamp_ms, price]``, forcing HTTP when missing or stale."""
@@ -3502,8 +3436,6 @@ class CacheShortTrendManager:
         win = self.get_window(symbol)
         return win.get_short_trend() if win else None
 
-    get_instant_trend = get_short_trend
-
     # ── Dynamic window & Historical Subslice (O(1) Prefix Sums + Persistence) ──
     def _eval_entries_with_buffer(self, symbol, entries, a: int, b: int):
         """Evaluate slice [a, b] of entries using the symbol's IncrementalTrendBuffer."""
@@ -3667,8 +3599,6 @@ class CacheShortTrendManager:
         )
         self._persist_live_window(symbol, w_key, res, last_tick_ts_ms=int(entries[-1][0]))
         return res
-
-    get_instant_trend_for_window = get_short_trend_for_window
 
     def _persist_live_window(self, symbol: str, w_key: str, data: dict,
                              last_tick_ts_ms: Optional[int] = None, flush: bool = False):
@@ -4071,8 +4001,6 @@ class CacheShortTrendManager:
             return None
         return snap
 
-    fresh_snapshot = get_fresh_snapshot
-
     def should_wait(self, side, symbol, window_seconds=None, fast=False,
                      use_noise_gate=True, now=None):
         """Decide whether to delay a BUY or SELL intent; True means wait.
@@ -4140,8 +4068,6 @@ class CacheShortTrendManager:
 
 
 CacheShortTrend = CacheShortTrendManager
-CachePriceShortTrend = CacheShortTrendManager
-CachePriceShortTrendManager = CacheShortTrendManager
 
 
 _short_trend_instance = None
@@ -4182,31 +4108,18 @@ LONG_TREND_SYNC_INTERVAL_SEC = 10 * 60   # 10 minutes
 ASSET_VALUE_SYNC_INTERVAL_SEC = 10 * 60  # 10 minutes
 # TODO: set this to 60 * 60  # 1 hour
 
-# Backward-compatible interval aliases
-PRICE_SYNC_INTERVAL_SEC = SPARSE_PRICE_SYNC_INTERVAL_SEC
-PRICE24_SYNC_INTERVAL_SEC = PRICE_24_SYNC_INTERVAL_SEC
-CURRENTPRICE_SYNC_INTERVAL_SEC = CURRENT_PRICE_SYNC_INTERVAL_SEC
-PRICETREND_SYNC_INTERVAL_SEC = LONG_TREND_SYNC_INTERVAL_SEC
-ASSETVALUE_SYNC_INTERVAL_SEC = ASSET_VALUE_SYNC_INTERVAL_SEC
-
 _PRICE_TREND_CACHES = frozenset({
     "CurrentPrice",
-    "24Price", "Price24",
+    "24Price",
     "365Price",
-    "SparsePrice", "Price",
-    "LongTrend", "PriceLongTrend",
+    "SparsePrice",
+    "LongTrend",
 })
 
 
 class CacheFactory:
     _instances = {}
     _sync_started = set()
-
-    _ALIASES = {
-        "Price": "SparsePrice",
-        "Price24": "24Price",
-        "PriceLongTrend": "LongTrend",
-    }
 
     _CONFIG = {
         "Trade": {
@@ -4252,38 +4165,18 @@ class CacheFactory:
     }
 
     @classmethod
-    def _normalize_name(cls, name):
-        return cls._ALIASES.get(name, name)
-
-    @classmethod
-    def _all_keys_for(cls, canonical):
-        keys = [canonical]
-        for alias, target in cls._ALIASES.items():
-            if target == canonical:
-                keys.append(alias)
-        return keys
-
-    @classmethod
     def get(cls, name, symbols=None, *, start_sync=True, provider_names=None):
         if name == "ShortTrend":
             return get_short_trend_manager(symbols=symbols)
-        canonical = cls._normalize_name(name)
-        if canonical not in cls._CONFIG:
+        if name not in cls._CONFIG:
             raise ValueError(f"Unknown cache type: {name}")
-        if provider_names is not None and canonical != "CurrentPrice":
+        if provider_names is not None and name != "CurrentPrice":
             raise ValueError("provider_names is supported only for CurrentPrice")
-
-        existing_key = next(
-            (k for k in cls._all_keys_for(canonical) if k in cls._instances),
-            None,
-        )
-        if existing_key is not None and canonical not in cls._instances:
-            cls._instances[canonical] = cls._instances[existing_key]
 
         # This name-keyed singleton fixes symbols on first creation. Warn explicitly
         # when a later call requests a different set that will be ignored.
-        if canonical in cls._instances and symbols is not None:
-            inst = cls._instances[canonical]
+        if name in cls._instances and symbols is not None:
+            inst = cls._instances[name]
             existing = set(inst.keys()) if isinstance(inst, dict) else set(getattr(inst, "symbols", []))
             requested = set(symbols)
             if requested != existing:
@@ -4295,12 +4188,12 @@ class CacheFactory:
                     f"the request for {sorted(requested)} is IGNORED"
                     + (f" (missing: {sorted(missing)})" if missing else "")
                     + ". Singleton per name — the first instance is used.")
-        if canonical == "CurrentPrice" and canonical in cls._instances:
-            cls._instances[canonical].bind_providers(provider_names)
+        if name == "CurrentPrice" and name in cls._instances:
+            cls._instances[name].bind_providers(provider_names)
 
-        created = canonical not in cls._instances
+        created = name not in cls._instances
         if created:
-            config = cls._CONFIG[canonical]
+            config = cls._CONFIG[name]
             manager_class = config["class"]
             sync_ts = config["sync_ts"]()
             extra_kwargs = {
@@ -4308,16 +4201,16 @@ class CacheFactory:
                 if key not in {"class", "filename", "sync_ts"}
             }
             if symbols is None:
-                if canonical == "AssetValue":
+                if name == "AssetValue":
                     symbols = ["TOTAL"]
-                elif canonical in _PRICE_TREND_CACHES:
+                elif name in _PRICE_TREND_CACHES:
                     symbols, _, _default_providers = _default_price_tracking()
-                    if canonical == "CurrentPrice" and provider_names is None and _default_providers:
+                    if name == "CurrentPrice" and provider_names is None and _default_providers:
                         provider_names = _default_providers
                 else:
                     symbols = sym.symbols
 
-            if canonical == "CurrentPrice":
+            if name == "CurrentPrice":
                 current_price_sync_ts = (
                     None if _current_price_instance is not None else sync_ts
                 )
@@ -4328,11 +4221,11 @@ class CacheFactory:
                     provider_names=provider_names,
                 )
                 sync_ts = instance.sync_ts
-            elif canonical in ("SparsePrice", "24Price", "365Price"):
+            elif name in ("SparsePrice", "24Price", "365Price"):
                 # SparsePrice and 365Price are append-JSONL history; 24Price is a bounded full-rewrite cache.
-                if canonical == "SparsePrice":
+                if name == "SparsePrice":
                     prefix, ext = ("cache_sparse_price_", "jsonl")
-                elif canonical == "365Price":
+                elif name == "365Price":
                     prefix, ext = ("cache_365_price_", "jsonl")
                 else:
                     prefix, ext = ("cache_24_price_", "json")
@@ -4355,8 +4248,7 @@ class CacheFactory:
                     **extra_kwargs,
                 )
 
-            for k in cls._all_keys_for(canonical):
-                cls._instances[k] = instance
+            cls._instances[name] = instance
 
             managers = (instance.values()
                         if isinstance(instance, dict)
@@ -4364,21 +4256,17 @@ class CacheFactory:
             if start_sync:
                 for manager in managers:
                     manager.periodic_sync(sync_ts, False)
-                for k in cls._all_keys_for(canonical):
-                    cls._sync_started.add(k)
+                cls._sync_started.add(name)
 
-        elif start_sync and canonical not in cls._sync_started:
-            value = cls._instances[canonical]
+        elif start_sync and name not in cls._sync_started:
+            value = cls._instances[name]
             managers = value.values() if isinstance(value, dict) else (value,)
-            sync_ts = cls._CONFIG[canonical]["sync_ts"]()
+            sync_ts = cls._CONFIG[name]["sync_ts"]()
             for manager in managers:
                 manager.periodic_sync(sync_ts, False)
-            for k in cls._all_keys_for(canonical):
-                cls._sync_started.add(k)
+            cls._sync_started.add(name)
 
-        for k in cls._all_keys_for(canonical):
-            cls._instances[k] = cls._instances[canonical]
-        return cls._instances[canonical]
+        return cls._instances[name]
 
     @classmethod
     def shutdown_all(cls, timeout=5.0):
@@ -4408,20 +4296,15 @@ class CacheFactory:
     def remove(cls, name, timeout=5.0):
         """Remove a singleton cleanly after stopping all threads it owns."""
         global _current_price_instance
-        canonical = cls._normalize_name(name)
-        value = None
-        for k in cls._all_keys_for(canonical):
-            popped = cls._instances.pop(k, None)
-            if popped is not None:
-                value = popped
-            cls._sync_started.discard(k)
+        value = cls._instances.pop(name, None)
+        cls._sync_started.discard(name)
         if value is None:
             return True
         managers = value.values() if isinstance(value, dict) else (value,)
         results = [manager.shutdown(timeout=timeout) for manager in managers
                    if hasattr(manager, "shutdown")]
         stopped = all(results) if results else True
-        if canonical == "CurrentPrice" and value is _current_price_instance and stopped:
+        if name == "CurrentPrice" and value is _current_price_instance and stopped:
             _current_price_instance = None
         return stopped
         
@@ -4539,8 +4422,7 @@ def _upsert_order_from_execution_report(event):
         return
 
     order_cache = get_cache_manager("Order")
-    validator = getattr(order_cache, "_is_valid_item", getattr(order_cache, "_is_valid_trade", None))
-    if not validator(order_item):
+    if not order_cache._is_valid_item(order_item):
         builtins.print("[cacheManager][WS] rejected malformed order report")
         return
     order_cache._persist_items(symbol, [order_item])
@@ -4606,8 +4488,7 @@ def _append_trade_from_execution_report(event):
     if event.get("N") is not None:
         trade_item["commissionAsset"] = str(event.get("N"))
 
-    validator = getattr(trade_cache, "_is_valid_item", getattr(trade_cache, "_is_valid_trade", None))
-    if not validator(trade_item):
+    if not trade_cache._is_valid_item(trade_item):
         builtins.print("[cacheManager][WS] rejected malformed Trade report")
         return
     trade_cache._persist_items(symbol, [trade_item])
@@ -4844,8 +4725,7 @@ if __name__ == "__main__":
                 threads.append(manager.periodic_sync(interval))
         else:
             threads.append(cache.periodic_sync(interval))
-        for k in CacheFactory._all_keys_for(name):
-            CacheFactory._sync_started.add(k)
+        CacheFactory._sync_started.add(name)
 
     # Trend chain: market-data WebSocket to CurrentPrice, Cache24, and ShortTrend.
     # Full calculation here keeps the shared snapshot current independently of tradeall.

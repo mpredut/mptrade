@@ -178,7 +178,6 @@ def test_ws_execution_report_preserves_commission_and_zero_price_fallback(monkey
 
     class DummyTradeCache:
         _is_valid_item = staticmethod(cm.CacheTradeManager._is_valid_item)
-        _is_valid_trade = _is_valid_item
 
         def _persist_items(self, symbol, items):
             persisted.extend(items)

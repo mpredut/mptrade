@@ -380,14 +380,14 @@ class TestPriceWindowFromCache24(unittest.TestCase):
         with self.subTest(msg="uptrend"):
             entries = _synthetic_entries(60, delta=10.0, interval_ms=800)
             pw = self._make(entries, window_seconds=60 * 0.8)
-            final_trend, gc, sf, gr = pw.get_trend()
+            final_trend, gc, sf, gr = pw.get_short_trend()
             self.assertEqual(final_trend, 1)
             self.assertGreater(gc, 0)
             
         with self.subTest(msg="downtrend"):
             entries = _synthetic_entries(60, delta=-10.0, interval_ms=800)
             pw = self._make(entries, window_seconds=60 * 0.8)
-            final_trend, gc, sf, gr = pw.get_trend()
+            final_trend, gc, sf, gr = pw.get_short_trend()
             self.assertEqual(final_trend, -1)
             self.assertLess(gc, 0)
             
@@ -401,8 +401,8 @@ class TestPriceWindowFromCache24(unittest.TestCase):
     
             large = ta.PriceWindow.from_cache24("BTCUSDC", 119.0, manager)
             small = ta.PriceWindow.from_cache24("BTCUSDC", 15.0, manager)
-            _, _, large_slope, _ = large.get_trend()
-            _, _, small_slope, _ = small.get_trend()
+            _, _, large_slope, _ = large.get_short_trend()
+            _, _, small_slope, _ = small.get_short_trend()
     
             self.assertGreater(large_slope, 0)
             self.assertLess(small_slope, 0)
@@ -410,7 +410,7 @@ class TestPriceWindowFromCache24(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PriceWindow — get_trend()'s 4 values
+# PriceWindow — get_short_trend()'s 4 values
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestPriceWindowGetTrend(unittest.TestCase):
@@ -418,7 +418,7 @@ class TestPriceWindowGetTrend(unittest.TestCase):
     def test_price_window_trend_calculations(self):
         with self.subTest("returns four values"):
             pw = _window([100 + i for i in range(20)])
-            self.assertEqual(len(pw.get_trend()), 4)
+            self.assertEqual(len(pw.get_short_trend()), 4)
 
         with self.subTest("directional trends"):
             cases = (
@@ -427,7 +427,7 @@ class TestPriceWindowGetTrend(unittest.TestCase):
             )
             for label, prices, expected in cases:
                 with self.subTest(direction=label):
-                    final_trend, growth, slope, gradient = _window(prices).get_trend()
+                    final_trend, growth, slope, gradient = _window(prices).get_short_trend()
                     self.assertEqual(final_trend, expected)
                     self.assertGreater(growth * expected, 0)
                     self.assertGreater(slope * expected, 0)
@@ -436,13 +436,13 @@ class TestPriceWindowGetTrend(unittest.TestCase):
 
         with self.subTest("gc is average of sf and gr"):
             pw = _window([100 + i for i in range(20)])
-            _, gc, sf, gr = pw.get_trend()
+            _, gc, sf, gr = pw.get_short_trend()
             self.assertAlmostEqual(gc, (sf + gr) / 2.0, places=10)
 
         with self.subTest("neutral series return zero trend"):
             for label, prices in (("single", [100.0]), ("constant", [100.0] * 20)):
                 with self.subTest(case=label):
-                    final_trend, growth, slope, gradient = _window(prices).get_trend()
+                    final_trend, growth, slope, gradient = _window(prices).get_short_trend()
                     self.assertEqual(final_trend, 0)
                     self.assertAlmostEqual(growth, 0.0, places=6)
                     self.assertAlmostEqual(slope, 0.0, places=6)
@@ -451,13 +451,13 @@ class TestPriceWindowGetTrend(unittest.TestCase):
         with self.subTest("recent gradient captures late reversal"):
             prices = [100 + i for i in range(30)] + [129 - i * 8 for i in range(1, 6)]
             pw = _window(prices, sample_rate=0.8)
-            _, _, _, gr = pw.get_trend()
+            _, _, _, gr = pw.get_short_trend()
             self.assertLess(gr, 0)
 
         with self.subTest("slope full sees whole window"):
             prices = [100 + i for i in range(30)] + [129, 128]
             pw = _window(prices)
-            _, _, sf, _ = pw.get_trend()
+            _, _, sf, _ = pw.get_short_trend()
             self.assertGreater(sf, 0)
 
 
@@ -810,17 +810,13 @@ class TestWindowAnalyzer(unittest.TestCase):
         with self.subTest("api surface is lean"):
             pw = _window([100, 110, 105])
             for method in ("calculate_proximities", "calculate_slope_max_min",
-                           "check_price_change", "evaluate_buy_sell_opportunity"):
+                           "check_price_change", "evaluate_buy_sell_opportunity",
+                           "get_trend", "get_instant_trend"):
                 with self.subTest(absent=method):
                     self.assertFalse(hasattr(pw, method))
-            for method in ("get_min", "get_max", "get_short_trend", "get_instant_trend"):
+            for method in ("get_min", "get_max", "get_short_trend"):
                 with self.subTest(present=method):
                     self.assertTrue(hasattr(pw, method))
-
-        with self.subTest("get trend alias"):
-            pw = _window([100 + i for i in range(20)])
-            self.assertEqual(pw.get_trend(), pw.get_short_trend())
-            self.assertEqual(pw.get_instant_trend(), pw.get_short_trend())
 
     def test_analyzer_gradients_and_noise(self):
         with self.subTest("recent gradient cases"):

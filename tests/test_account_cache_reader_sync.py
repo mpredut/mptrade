@@ -584,7 +584,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             [newer, older], manager.cache["BTCUSDC"]
         )
         self.assertEqual(
-            200.0, manager.last_opposite_fill_price("BTCUSDC", "SELL")
+            200.0, manager.get_last_opposite_fill_price("BTCUSDC", "SELL")
         )
 
         manager.save_state = True
@@ -593,7 +593,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             3600, ["BTCUSDC"], manager.filename, api_client=cm.api
         )
         self.assertEqual(
-            200.0, restarted.last_opposite_fill_price("BTCUSDC", "SELL")
+            200.0, restarted.get_last_opposite_fill_price("BTCUSDC", "SELL")
         )
 
     def test_order_aggregation_and_deduplication(self):

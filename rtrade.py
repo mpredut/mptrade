@@ -913,12 +913,7 @@ def _market_regime_decision(symbol) -> MarketRegimeDecision:
     try:
         import cacheManager as cm
         mgr = cm.get_short_trend_manager()
-        trend_fn = getattr(
-            mgr,
-            "get_short_trend_for_window",
-            getattr(mgr, "get_instant_trend_for_window", None),
-        )
-        dyn = trend_fn(symbol, RTRADE_TREND_WINDOW_SEC)
+        dyn = mgr.get_short_trend_for_window(symbol, RTRADE_TREND_WINDOW_SEC)
     except Exception as exc:
         return mkt.market_regime(
             symbol, horizon="short", snapshot={}, snapshot_source="cache24_dynamic",

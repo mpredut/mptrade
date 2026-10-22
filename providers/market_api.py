@@ -85,7 +85,7 @@ def _runtime_market_regime_snapshot(symbol: str, now=None):
     try:
         import cacheManager as cm
         mgr = cm.get_short_trend_manager()
-        snap_fn = getattr(mgr, "get_fresh_snapshot", getattr(mgr, "fresh_snapshot", None))
+        snap_fn = getattr(mgr, "get_fresh_snapshot", None)
         return snap_fn(symbol, now=now) if callable(snap_fn) else None
     except Exception:
         return None
@@ -169,8 +169,7 @@ class BinanceProvider(MarketDataProvider):
         normalized = []
         for row in rows:
             ts_ms = extract_timestamp_ms(row, default=0) or 0
-            valid_fn = getattr(manager, "_is_valid_item", getattr(manager, "_is_valid_trade", None))
-            if (not valid_fn(row) or row["symbol"] != symbol
+            if (not manager._is_valid_item(row) or row["symbol"] != symbol
                     or ts_ms > now_ms):
                 return None
             if ts_ms < cutoff:

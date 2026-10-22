@@ -1229,7 +1229,7 @@ class TestCacheFactory(unittest.TestCase):
             self.assertIs(factory_manager, singleton_manager)
             self.assertEqual(
                 singleton_manager.sync_ts,
-                cm.CURRENTPRICE_SYNC_INTERVAL_SEC,
+                cm.CURRENT_PRICE_SYNC_INTERVAL_SEC,
             )
 
         with self.subTest("factory and current price getter share identity getter first"):
@@ -1252,9 +1252,7 @@ class TestCacheFactory(unittest.TestCase):
         cur_mock.get_price.return_value = [int(time.time() * 1000), 50000.0]
         cases = (
             ("SparsePrice", ["BTC", "ETH"], "cache_sparse_price_BTC.jsonl"),
-            ("Price", ["BTC", "ETH"], "cache_sparse_price_BTC.jsonl"),
             ("24Price", ["BTC"], "cache_24_price_BTC.json"),
-            ("Price24", ["BTC"], "cache_24_price_BTC.json"),
             ("365Price", ["BTC"], "cache_365_price_BTC.jsonl"),
         )
         for name, symbols, expected_filename in cases:
