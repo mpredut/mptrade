@@ -7,42 +7,19 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from providers.base import (
+    extract_order_price,
+    extract_order_side,
+    extract_remaining_qty,
+)
+
 
 def extract_order_restore_params(order: dict) -> dict[str, Any]:
     """Normalize resting order dictionaries across venues (Binance, Kraken, T212)
     for restoration after a failed replacement or exit."""
-    side = str(order.get("side") or "").upper()
-    if not side:
-        signed_qty = order.get("signed_qty")
-        if signed_qty is not None:
-            try:
-                side = "BUY" if float(signed_qty) > 0 else "SELL"
-            except (TypeError, ValueError):
-                side = "SELL"
-        else:
-            side = "SELL"
-
-    # Extract price / limit
-    price = 0.0
-    for key in ("limit", "price", "limitPrice", "rate", "p"):
-        if order.get(key) is not None:
-            try:
-                price = float(order[key])
-                if price > 0:
-                    break
-            except (TypeError, ValueError):
-                pass
-
-    # Extract quantity (prefer remaining unfilled quantity for partially-filled orders)
-    qty = 0.0
-    for key in ("remainingQty", "qty", "origQty", "vol", "quantity", "amount_shares", "q"):
-        if order.get(key) is not None:
-            try:
-                qty = float(order[key])
-                if qty > 0:
-                    break
-            except (TypeError, ValueError):
-                pass
+    side = extract_order_side(order) or "SELL"
+    price = extract_order_price(order, default=0.0)
+    qty = extract_remaining_qty(order, default=0.0)
 
     amount = order.get("amount")
     level = order.get("level")

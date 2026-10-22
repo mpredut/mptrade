@@ -14,6 +14,12 @@ from binance_api import bapi_allorders as apiorders
 # Read account state through the generic facade instead of bapi/apiorders so this module
 # is portable to HYPE. The facade still routes Binance symbols identically to bapi.
 # Placement and WebSocket paths remain Binance-specific.
+from providers.base import (
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
+    extract_timestamp_ms,
+)
 from providers.market_api import api as mkt
 from order_rollback import restore_cancelled_orders
 import cachepaths
@@ -164,11 +170,11 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
 
             for oid, group in trades_by_order.items():
                 first = group[0]
-                side = "BUY" if first.get('isBuyer') else "SELL"
+                side = extract_order_side(first) or "SELL"
                 sym_name = first.get('symbol', symbol)
-                total_qty = sum(float(t.get('qty', 0.0)) for t in group)
-                total_val = sum(float(t.get('qty', 0.0)) * float(t.get('price', 0.0)) for t in group)
-                avg_price = total_val / total_qty if total_qty > 0 else float(first.get('price', 0.0))
+                total_qty = sum(extract_order_qty(t) for t in group)
+                total_val = sum(extract_order_qty(t) * extract_order_price(t) for t in group)
+                avg_price = total_val / total_qty if total_qty > 0 else extract_order_price(first)
                 quote = "USDC" if sym_name.upper().endswith("USDC") else ("USDT" if sym_name.upper().endswith("USDT") else "USD")
 
                 fill_suffix = f" ({len(group)} fills)" if len(group) > 1 else ""
@@ -204,16 +210,7 @@ def is_trend_up(symbol, window_seconds=None, now=None):
 
 def _order_timestamp_ms(order: dict) -> float:
     """Extract normalized millisecond timestamp from an order or fill record."""
-    if not isinstance(order, dict):
-        return 0.0
-    raw = order.get("timestamp")
-    if raw is None:
-        raw = order.get("time") or order.get("updateTime") or 0
-    try:
-        val = float(raw)
-        return val if math.isfinite(val) else 0.0
-    except (TypeError, ValueError):
-        return 0.0
+    return float(extract_timestamp_ms(order, default=0) or 0)
 
 
 def get_relevant_trade(trade_orders, trade_type, threshold_s=0, symbol=None, now_fn=None):
@@ -226,7 +223,7 @@ def get_relevant_trade(trade_orders, trade_type, threshold_s=0, symbol=None, now
     if len(trade_orders) > 1:
         trade_orders.sort(key=_order_timestamp_ms, reverse=True)
     first = trade_orders[0]
-    trade_price = float(first['price'])
+    trade_price = extract_order_price(first)
     trade_time = _order_timestamp_ms(first) / 1000.0  # Seconds.
     if builtins.print.__name__ != "_dummy_print":
         print(f"{trade_type.capitalize()} price for {symbol}: {trade_price} at {u.timeToHMS(trade_time)}")
@@ -968,25 +965,12 @@ def _restore_resting_tp_orders(inst, symbol: str, cancelled_orders: list[dict], 
     if not cancelled_orders:
         return
 
-    def _restorable_qty(p: dict) -> float:
-        rem = p.get("remainingQty")
-        if rem is not None:
-            try:
-                rem_f = float(rem)
-                if math.isfinite(rem_f) and rem_f > 0:
-                    return rem_f
-            except (TypeError, ValueError):
-                pass
-        orig = float(p.get("qty") or p.get("origQty") or p.get("vol") or 0.0)
-        exec_q = float(p.get("executedQty") or p.get("filledQty") or 0.0)
-        return max(0.0, orig - exec_q) if exec_q > 0 else orig
-
     restore_cancelled_orders(
         cancelled_orders,
         restore_fn=lambda p: bool(inst.place(
             "SELL",
             float(p.get("price") or p.get("limit") or 0.0),
-            _restorable_qty(p),
+            float(p.get("qty") or 0.0),
             kind="TP",
             wait_for_trend=False,
         )),

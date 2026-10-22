@@ -42,9 +42,17 @@ def bool_env(key: str, folder: Optional[str] = None, default: bool = False) -> b
     return v.strip().lower() == "true"
 
 
-_TIMESTAMP_KEYS = ("timestamp", "time", "updateTime", "transactTime", "opentm")
-_PRICE_KEYS = ("price", "px", "limitPx", "fillPrice")
-_QTY_KEYS = ("qty", "quantity", "executedQty", "filledQuantity", "sz", "vol", "origQty")
+_TIMESTAMP_KEYS = ("timestamp", "time", "updateTime", "transactTime", "opentm", "closetm", "workingTime")
+_PRICE_KEYS = ("price", "px", "limitPx", "fillPrice", "limit", "limitPrice", "averagePrice", "avgPrice", "rate", "p")
+_QTY_KEYS = (
+    "qty", "quantity", "executedQty", "filledQuantity", "filledQty", "vol_exec",
+    "sz", "vol", "origQty", "origSz", "orig_qty", "orderedQuantity", "amount_shares", "q",
+)
+_ORIG_QTY_KEYS = (
+    "origQty", "orig_qty", "origSz", "vol", "orderedQuantity", "original_qty",
+    "order_qty", "qty", "quantity", "sz", "amount_shares", "q",
+)
+_EXEC_QTY_KEYS = ("executedQty", "filledQuantity", "filledQty", "vol_exec", "filled_qty")
 
 
 def normalize_timestamp_ms(value: Any, default: Optional[int] = None) -> Optional[int]:
@@ -84,6 +92,27 @@ def extract_timestamp_ms(order: Any, default: Optional[int] = None) -> Optional[
     return default
 
 
+def extract_timestamp_s(order: Any, default: Optional[float] = None) -> Optional[float]:
+    """Extract and normalize an order/fill timestamp in seconds from any venue shape."""
+    if not isinstance(order, dict):
+        return default
+    for key in _TIMESTAMP_KEYS:
+        if key in order and order[key] is not None:
+            raw = order[key]
+            if isinstance(raw, bool):
+                continue
+            try:
+                numeric = float(raw)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(numeric):
+                continue
+            if numeric >= 100_000_000_000.0:
+                return numeric / 1000.0
+            return numeric
+    return default
+
+
 def extract_order_side(order: Any) -> str:
     """Extract and normalize order side (``'BUY'`` or ``'SELL'``) from any venue shape."""
     if not isinstance(order, dict):
@@ -93,7 +122,7 @@ def extract_order_side(order: Any) -> str:
         s = str(raw_side).strip().upper()
         if s == "B":
             return "BUY"
-        if s == "A":
+        if s in ("A", "S"):
             return "SELL"
         return s
     raw_type = order.get("type")
@@ -101,6 +130,14 @@ def extract_order_side(order: Any) -> str:
         return str(raw_type).strip().upper()
     if "isBuyer" in order and order.get("isBuyer") is not None:
         return "BUY" if bool(order["isBuyer"]) else "SELL"
+    signed_qty = order.get("signed_qty")
+    if signed_qty is not None and not isinstance(signed_qty, bool):
+        try:
+            sq = float(signed_qty)
+            if math.isfinite(sq) and sq != 0.0:
+                return "BUY" if sq > 0 else "SELL"
+        except (TypeError, ValueError, OverflowError):
+            pass
     return ""
 
 
@@ -112,7 +149,7 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
         if key in order and order[key] is not None:
             try:
                 val = float(order[key] or 0.0)
-                if math.isfinite(val):
+                if math.isfinite(val) and val > 0:
                     return val
             except (TypeError, ValueError, OverflowError):
                 continue
@@ -127,10 +164,47 @@ def extract_order_qty(order: Any, default: float = 0.0) -> float:
         if key in order and order[key] is not None:
             try:
                 val = abs(float(order[key] or 0.0))
-                if math.isfinite(val):
+                if math.isfinite(val) and val > 0:
                     return val
             except (TypeError, ValueError, OverflowError):
                 continue
+    return default
+
+
+def extract_remaining_qty(order: Any, default: float = 0.0) -> float:
+    """Extract remaining unfilled quantity for an open/cancelled order across any venue shape."""
+    if not isinstance(order, dict):
+        return default
+    rem = order.get("remainingQty")
+    if rem is not None and not isinstance(rem, bool):
+        try:
+            rem_f = abs(float(rem))
+            if math.isfinite(rem_f) and rem_f > 0:
+                return rem_f
+        except (TypeError, ValueError, OverflowError):
+            pass
+    orig = 0.0
+    for key in _ORIG_QTY_KEYS:
+        if key in order and order[key] is not None:
+            try:
+                val = abs(float(order[key] or 0.0))
+                if math.isfinite(val) and val > 0:
+                    orig = val
+                    break
+            except (TypeError, ValueError, OverflowError):
+                continue
+    exec_q = 0.0
+    for key in _EXEC_QTY_KEYS:
+        if key in order and order[key] is not None:
+            try:
+                val = abs(float(order[key] or 0.0))
+                if math.isfinite(val) and val > 0:
+                    exec_q = val
+                    break
+            except (TypeError, ValueError, OverflowError):
+                continue
+    if orig > 0:
+        return max(0.0, orig - exec_q) if exec_q > 0 else orig
     return default
 
 

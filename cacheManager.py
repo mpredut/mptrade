@@ -37,6 +37,13 @@ from binance_api import bapi as api
 # cacheManager, so it does not close a cycle. The trend chain's current price passes
 # through this singleton while trading remains on bapi.
 import providers.market_api as _market_api
+from providers.base import (
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
+    extract_timestamp_ms,
+    normalize_timestamp_ms,
+)
 
 # Load versioned, non-secret tuning parameters using the same pattern as the other
 # component env files. ``botcore.load_dotenv`` never overwrites variables already set
@@ -1563,24 +1570,10 @@ class CacheManagerInterface(ABC):
     def _entry_timestamp_ms(item):
         """Extract an entry timestamp in milliseconds from a dictionary or list."""
         if isinstance(item, dict):
-            value = (
-                item.get("time")
-                or item.get("timestamp")
-                or item.get("updateTime")
-                or item.get("transactTime")
-                or 0
-            )
-        elif isinstance(item, (list, tuple)) and item:
-            value = item[0]
-        else:
-            return 0
-        try:
-            value = float(value)
-        except (TypeError, ValueError, OverflowError):
-            return 0
-        # AssetValue uses Unix seconds (1e9..1e11); exchange fills, price caches,
-        # and synthetic small test timestamps remain as-is.
-        return int(value * 1000) if 1_000_000_000 <= value < 100_000_000_000 else int(value)
+            return extract_timestamp_ms(item, default=0) or 0
+        if isinstance(item, (list, tuple)) and item:
+            return normalize_timestamp_ms(item[0], default=0) or 0
+        return 0
 
     def maintain_append_persist(self):
         """Perform weekly maintenance for every append-mode cache.
@@ -2160,10 +2153,10 @@ class CacheOrderManager(CacheManagerInterface):
                 )
             order_fills.append({
                 "orderId": fill["orderId"],
-                "price": float(fill["price"]),
-                "quantity": float(fill["qty"]),
-                "timestamp": int(fill["time"]),
-                "side": "BUY" if fill["isBuyer"] else "SELL",
+                "price": extract_order_price(fill),
+                "quantity": extract_order_qty(fill),
+                "timestamp": extract_timestamp_ms(fill, default=0) or 0,
+                "side": extract_order_side(fill),
                 "_fillId": str(fill["id"]),
             })
         print(f"[{self.cls_name}][info] New order fills: {len(order_fills)}")

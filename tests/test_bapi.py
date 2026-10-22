@@ -626,6 +626,48 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             bapi_mod.cancel_recent_orders("BUY", SYMBOL, 3600)
             mock_cancel.assert_called_once_with(SYMBOL, 2)
 
+        # 7. extract_timestamp_s, extract_remaining_qty, and order_rollback.extract_order_restore_params
+        from providers.base import extract_remaining_qty, extract_timestamp_s
+        from order_rollback import extract_order_restore_params
+        import monitortrades as mt_mod
+
+        self.assertEqual(extract_timestamp_s({"timestamp": 1_700_000_000_000}), 1_700_000_000.0)
+        self.assertEqual(extract_timestamp_s({"updateTime": 1_700_000_000}), 1_700_000_000.0)
+        self.assertEqual(extract_remaining_qty({"origQty": 2.5, "executedQty": 0.5, "price": 60.25}), 2.0)
+        self.assertEqual(extract_remaining_qty({"remainingQty": 1.25, "origQty": 2.5, "executedQty": 0.5}), 1.25)
+
+        restore_params = extract_order_restore_params({
+            "orderId": "OPEN-1",
+            "side": "SELL",
+            "price": 60.25,
+            "origQty": 2.5,
+            "executedQty": 0.5,
+            "status": "OPEN",
+        })
+        self.assertEqual(restore_params["qty"], 2.0)
+        self.assertEqual(restore_params["price"], 60.25)
+        self.assertEqual(restore_params["side"], "SELL")
+
+        # 8. order_guard.daily_limit_guard catches recent trades with 'time'/'updateTime' or epoch seconds
+        now_s = int(time.time())
+        fake_provider = types.SimpleNamespace(
+            name="binance",
+            get_orders=lambda sym, side, window: [{"price": 100.0, "qty": 1.0, "time": now_s - 5}],
+        )
+        ok, reason = po.order_guard.daily_limit_guard(
+            fake_provider, SYMBOL, "BUY", max_daily_trades=10, safeback_sec=3600,
+            recent_transaction_sec=60, recent_transaction_side="buy",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "recent_transaction")
+
+        # 9. monitortrades.get_relevant_trade normalizes epoch seconds and alternate price/timestamp keys
+        rel_px, rel_ts, _ = mt_mod.get_relevant_trade(
+            [{"px": "105.5", "opentm": 1_700_000_000}], "BUY"
+        )
+        self.assertEqual(rel_px, 105.5)
+        self.assertEqual(rel_ts, 1_700_000_000.0)
+
 
 if __name__ == "__main__":
     unittest.main()

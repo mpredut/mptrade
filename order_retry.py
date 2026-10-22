@@ -2044,12 +2044,13 @@ class TrackedOrderLifecycle:
             status = response.get("status")
             if status is not None:
                 fields["submit_status"] = str(status)
+            from providers.base import extract_order_price as _extract_px, extract_order_qty as _extract_qty
             submitted_qty = _lifecycle_finite(
-                response.get("origQty", response.get("qty")), positive=True)
+                _extract_qty(response, default=0.0), positive=True)
             if submitted_qty is not None:
                 fields["submitted_qty"] = submitted_qty
             submitted_price = _lifecycle_finite(
-                response.get("price"), positive=True)
+                _extract_px(response, default=0.0), positive=True)
             if submitted_price is not None:
                 fields["submitted_price"] = submitted_price
             return fields

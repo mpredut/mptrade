@@ -16,7 +16,14 @@ import math
 import time
 from typing import Any, Callable, List, Optional
 
-from .base import MarketDataProvider, _normalize_order
+from .base import (
+    MarketDataProvider,
+    _normalize_order,
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
+    extract_timestamp_ms,
+)
 from .binance_filters import (
     BinanceFilterError,
     BinanceOrderRules,
@@ -158,18 +165,19 @@ class BinanceProvider(MarketDataProvider):
         cutoff = now_ms - since_s * 1000
         normalized = []
         for row in rows:
+            ts_ms = extract_timestamp_ms(row, default=0) or 0
             if (not manager._is_valid_trade(row) or row["symbol"] != symbol
-                    or row["time"] > now_ms):
+                    or ts_ms > now_ms):
                 return None
-            if row["time"] < cutoff:
+            if ts_ms < cutoff:
                 continue
             # Missing commission metadata is unknown history, not an invented zero fee.
             fee, fee_asset = float(row["commission"]), row["commissionAsset"]
             if not math.isfinite(fee) or fee < 0 or (fee > 0 and not fee_asset):
                 return None
             normalized.append(dict(
-                id=row["id"], timestamp=row["time"], qty=row["qty"], price=row["price"],
-                side="BUY" if row["isBuyer"] else "SELL",
+                id=row["id"], timestamp=ts_ms, qty=extract_order_qty(row), price=extract_order_price(row),
+                side=extract_order_side(row),
                 base_fee=fee if fee_asset == spec.base else 0.0,
                 quote_fee=fee if fee_asset == spec.quote else 0.0))
         normalized.sort(key=lambda row: (int(row["timestamp"]), int(row["id"])))

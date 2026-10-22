@@ -21,6 +21,12 @@ import json
 from typing import Optional, Callable, Any, List, Tuple, Dict
 import utils as u
 from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegimeContext
+from providers.base import (
+    extract_order_price,
+    extract_order_qty,
+    extract_timestamp_ms,
+    extract_timestamp_s,
+)
 from providers.strategy_executor import ProviderError
 
 _DEFAULT_REGIME_SERVICE = MarketRegimeService()
@@ -389,21 +395,9 @@ def weight_proxy_for(provider_name):
 def _order_ts_qty_price(o):
     if not isinstance(o, dict):
         return 0.0, 0.0, 0.0
-    try:
-        px = float(o.get("price") or 0.0)
-    except (TypeError, ValueError):
-        px = 0.0
-    try:
-        qty = float(o.get("qty") or o.get("quantity") or o.get("origQty") or o.get("executedQty") or 0.0)
-    except (TypeError, ValueError):
-        qty = 0.0
-    raw_ts = o.get("timestamp") if o.get("timestamp") is not None else o.get("time")
-    try:
-        ts = float(raw_ts or 0.0)
-    except (TypeError, ValueError):
-        ts = 0.0
-    if ts > 1e11:
-        ts /= 1000.0
+    ts = extract_timestamp_s(o, default=0.0) or 0.0
+    qty = extract_order_qty(o, default=0.0)
+    px = extract_order_price(o, default=0.0)
     return ts, qty, px
 
 
@@ -476,11 +470,11 @@ def window_reference(provider, symbol, order_type, window_s):
     recent = provider.get_orders(symbol, opp, window_s)
     if recent is None:
         raise ProviderError(f"window_reference({symbol}): failed to read order history")
-    prices = [float(o.get("price") or 0) for o in recent if float(o.get("price") or 0) > 0]
+    prices = [extract_order_price(o, default=0.0) for o in recent if extract_order_price(o, default=0.0) > 0]
     if not prices:
         return None
     if len(recent) > 1 and all(
-        isinstance(o, dict) and float(o.get("timestamp") or o.get("time") or 0) > 0
+        isinstance(o, dict) and (extract_timestamp_ms(o, default=0) or 0) > 0
         for o in recent
     ):
         try:

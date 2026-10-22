@@ -17,6 +17,11 @@ from . import order_id_context as rc   # client_order_id and tag context moved i
 
 from . import bapi as api
 from .bapi_client import client
+from providers.base import (
+    extract_order_price,
+    extract_order_side,
+    extract_timestamp_ms,
+)
 from providers.strategy_executor import SubmissionRefused
 import binance_cache_health
 
@@ -461,10 +466,10 @@ def _last_opposite_fill_price_api(symbol, order_type):
     This covers a new symbol or an unpopulated cache. Raise on API errors so the caller
     fails closed; return ``None`` only when Binance confirms no opposite fill exists.
     """
-    want_buyer = (order_type.upper() == "SELL")   # The opposite of SELL is BUY (isBuyer=True).
+    want_side = "BUY" if order_type.upper() == "SELL" else "SELL"
     for tr in reversed(client.get_my_trades(symbol=symbol, limit=200)):
-        if tr["isBuyer"] == want_buyer:
-            return float(tr["price"])
+        if extract_order_side(tr) == want_side:
+            return extract_order_price(tr)
     return None
 
 
@@ -526,8 +531,8 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         time_limit = float(time.time() * 1000) - (ref_window * 1000)
         oposite_trades = apiorders.get_trade_orders(opposite_order_type, symbol, max_age_seconds=fetch_window) or []
         recent_opposite_trades = [trade for trade in oposite_trades
-                                  if float(trade.get('timestamp') or 0) >= time_limit
-                                  and float(trade.get('price', 0)) > 0]
+                                  if (extract_timestamp_ms(trade, default=0) or 0) >= time_limit
+                                  and extract_order_price(trade, default=0.0) > 0]
 
         if not bypass_profit_guard:
             window_ref = None
@@ -536,8 +541,8 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
                     same_trades = apiorders.get_trade_orders(order_type, symbol, max_age_seconds=fetch_window) or []
                     recent_same_trades = [
                         trade for trade in same_trades
-                        if float(trade.get('timestamp') or 0) >= time_limit
-                        and float(trade.get('price', 0)) > 0
+                        if (extract_timestamp_ms(trade, default=0) or 0) >= time_limit
+                        and extract_order_price(trade, default=0.0) > 0
                     ]
                     window_ref = order_guard.active_cycle_window_ref(
                         recent_opposite_trades,
@@ -545,7 +550,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
                         order_type,
                     )
                 else:
-                    _prices = [float(t['price']) for t in recent_opposite_trades]
+                    _prices = [extract_order_price(t) for t in recent_opposite_trades]
                     window_ref = min(_prices) if order_type == "BUY" else max(_prices)
 
             pg_kwargs = dict(

@@ -141,10 +141,8 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
             if not trades:
                 break
 
-            if order_type == "BUY":
-                filtered_trades = [trade for trade in trades if trade['isBuyer']]
-            elif order_type == "SELL":
-                filtered_trades = [trade for trade in trades if not trade['isBuyer']]
+            if order_type in ("BUY", "SELL"):
+                filtered_trades = [trade for trade in trades if extract_order_side(trade) == order_type]
             else:
                 filtered_trades = trades
 
@@ -154,7 +152,7 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
                 break
 
             # Continue one millisecond after the newest fill to avoid duplicates.
-            start_time = trades[-1]['time'] + 1
+            start_time = (extract_timestamp_ms(trades[-1], default=0) or 0) + 1
         
         
         # aggregated_trades = {}
@@ -188,15 +186,17 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
         ##########
         latest_trades = {}
         for trade in all_trades:
-            order_id = trade['orderId']
-            
-            # Retain the newest fill for each order ID.
-            if order_id not in latest_trades or trade['time'] > latest_trades[order_id]['time']:
-               latest_trades[order_id] = trade
+            fill_key = trade.get('id', trade.get('orderId'))
+            ts_ms = extract_timestamp_ms(trade, default=0) or 0
+
+            # Deduplicate by individual fill ID (falling back to orderId when id is absent).
+            if (
+                fill_key not in latest_trades
+                or ts_ms >= (extract_timestamp_ms(latest_trades[fill_key], default=0) or 0)
+            ):
+                latest_trades[fill_key] = trade
 
         return list(latest_trades.values())  # Return a list, not a mapping.
-        
-        return list(aggregated_trades.values())
         
 
     except Exception as e:
@@ -227,11 +227,8 @@ def get_my_trades(order_type, symbol, backdays: int = 3, limit=1000):
                 #continue
         
         print(f" [{len(trades)}] found ")
-        #filtered_trades = [trade for trade in trades if trade['isBuyer'] == (order_type == "BUY")]
-        if order_type == "BUY":
-            filtered_trades = [trade for trade in trades if trade['isBuyer']]
-        elif order_type == "SELL":
-            filtered_trades = [trade for trade in trades if not trade['isBuyer']]
+        if order_type in ("BUY", "SELL"):
+            filtered_trades = [trade for trade in trades if extract_order_side(trade) == order_type]
         else:
             filtered_trades = trades
             
@@ -350,7 +347,7 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
         
         # Merge retained and new fills in chronological order.
         updated_trades = filtered_existing_trades + unique_new_trades
-        updated_trades.sort(key=lambda x: x['time'])
+        updated_trades.sort(key=lambda x: extract_timestamp_ms(x, default=0) or 0)
 
         # Replace this symbol's entries in the main list.
         all_trades_list = [trade for trade in all_trades_list if trade['symbol'] != symbol]
