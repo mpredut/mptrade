@@ -280,3 +280,67 @@ def test_ws_and_rest_reconciliation_preserves_rest_cursor_and_merges_missed_fill
     assert cm._should_poll_for_manager("CacheTradeManager") is False
 
 
+def test_extract_remaining_qty_explicit_zero_and_tp_restore_normalization():
+    from providers.base import extract_remaining_qty
+    import instrument
+    import order_retry
+    import monitortrades as mt
+    from binance_api import bapi_trades
+
+    # 1. Explicit remainingQty=0 must return 0.0 instead of falling back to origQty/quantity
+    assert extract_remaining_qty({"remainingQty": 0.0, "origQty": 1.5, "quantity": 1.5}) == 0.0
+    assert extract_remaining_qty({"remainingQty": "0.00000000", "origQty": "2.0"}) == 0.0
+    assert extract_remaining_qty({"remainingQty": -1.0, "origQty": 2.0, "executedQty": 0.5}) == pytest.approx(1.5)
+
+    # 2. instrument._accepted_order_payload and _order_id_from_payload support oid/order_id and reject bool
+    assert instrument._accepted_order_payload({"oid": 778899, "status": "resting"}) is True
+    assert instrument._order_id_from_payload({"oid": 778899}) == "778899"
+    assert instrument._accepted_order_payload({"order_id": "ord-42"}) is True
+    assert instrument._accepted_order_payload({"orderId": True}) is False
+    assert instrument._order_id_from_payload({"orderId": False}) is None
+
+    # 3. order_retry.infer_record_owner recognizes accel_plunge_down as tradeall
+    assert order_retry.infer_record_owner({"kind": "accel_plunge_down"}) == "tradeall"
+
+    # 4. monitortrades._restore_resting_tp_orders restores orders with origQty/executedQty (no 'qty' key)
+    placed_calls = []
+
+    class DummyInst:
+        def place(self, side, price, qty, **kw):
+            placed_calls.append((side, price, qty, kw))
+            return {"orderId": "restored-1"}
+
+    mt._restore_resting_tp_orders(
+        DummyInst(),
+        "HYPEUSD",
+        [{"orderId": "OB1", "side": "SELL", "price": 25.5, "origQty": 4.0, "executedQty": 1.5}],
+        sellable_qty=2.5,
+        sl_state="refused",
+    )
+    assert len(placed_calls) == 1
+    assert placed_calls[0][0] == "SELL"
+    assert placed_calls[0][1] == pytest.approx(25.5)
+    assert placed_calls[0][2] == pytest.approx(2.5)
+
+    # 5. bapi_trades.aggregate_trades handles price="0.00000000" (via quoteQty/qty) and alternate fee keys
+    agg = bapi_trades.aggregate_trades([
+        {
+            "id": 11,
+            "orderId": 555,
+            "symbol": "BTCUSDC",
+            "price": "0.00000000",
+            "qty": "0.5",
+            "quoteQty": "30000.0",
+            "fee": "15.0",
+            "feeAsset": "USDC",
+            "time": 1700000000000,
+            "side": "BUY",
+        }
+    ])
+    assert len(agg) == 1
+    assert float(agg[0]["price"]) == pytest.approx(60000.0)
+    assert float(agg[0]["commission"]) == pytest.approx(15.0)
+    assert agg[0]["commissionAsset"] == "USDC"
+
+
+

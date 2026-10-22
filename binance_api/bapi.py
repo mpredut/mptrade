@@ -14,8 +14,11 @@ from .bapi_client import client
 from . import bapi_ws
 from . import order_id_context as rc
 from providers.base import (
+    extract_order_id,
     extract_order_price,
     extract_order_side,
+    extract_orig_qty,
+    extract_remaining_qty,
     extract_timestamp_ms,
 )
 
@@ -166,7 +169,7 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                         except Exception:
                             accepted_owner_map = {}
                     inferred = (
-                        accepted_owner_map.get(str(order.get('orderId') or ''))
+                        accepted_owner_map.get(str(extract_order_id(order) or ''))
                         or accepted_owner_map.get(cid)
                     )
                     allowed_set = (
@@ -178,18 +181,17 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                         continue
                 else:
                     continue
-            original_qty = float(
-                order.get('origQty', order.get('quantity', order.get('qty', 0.0))) or 0.0
-            )
-            executed_qty = float(order.get('executedQty') or 0.0)
-            remaining_qty = max(0.0, original_qty - executed_qty)
+            original_qty = float(extract_orig_qty(order, default=0.0) or 0.0)
+            executed_qty = float(order.get('executedQty', order.get('z', order.get('vol_exec', 0.0))) or 0.0)
+            remaining_qty = extract_remaining_qty(order, default=max(0.0, original_qty - executed_qty))
             ts_ms = extract_timestamp_ms(order, default=0) or 0
             if 'time' in order and order.get('time') is not None:
                 raw_time = float(order['time'])
                 ts_sec = raw_time / 1000.0 if (raw_time < 1_000_000_000.0 or raw_time >= 100_000_000_000.0) else raw_time
             else:
                 ts_sec = ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
-            filtered_orders[order['orderId']] = {
+            raw_oid = order['orderId'] if 'orderId' in order else extract_order_id(order)
+            filtered_orders[raw_oid] = {
                 'price': extract_order_price(order),
                 # Preserve the legacy field while exposing the financially correct
                 # unfilled quantity to cancel-and-replace consumers.

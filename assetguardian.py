@@ -1290,7 +1290,7 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
     if open_sells:
         print(
             f"[{symbol}] Existing SELL order blocks AssetGuardian tier: "
-            f"{[order.get('orderId') for order in open_sells]}")
+            f"{[extract_order_id(order) for order in open_sells]}")
         return None, ({} if new_campaign else state), growth
     if new_campaign:
         _save_symbol_campaign(symbol, "sell", state)

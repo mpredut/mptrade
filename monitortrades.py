@@ -15,9 +15,11 @@ from binance_api import bapi_allorders as apiorders
 # is portable to HYPE. The facade still routes Binance symbols identically to bapi.
 # Placement and WebSocket paths remain Binance-specific.
 from providers.base import (
+    extract_order_id,
     extract_order_price,
     extract_order_qty,
     extract_order_side,
+    extract_remaining_qty,
     extract_timestamp_ms,
 )
 from providers.market_api import api as mkt
@@ -918,7 +920,7 @@ def _is_pending_exit_active(
     if p_cid and prov and hasattr(prov, "order_by_client_id"):
         try:
             found = prov.order_by_client_id(symbol, p_cid)
-            if found and found.get("orderId"):
+            if found and extract_order_id(found):
                 st = str(found.get("status") or "").upper()
                 if st in ("FILLED", "RESOLVED"):
                     print(f"[{symbol}] Pending Stop-Loss {p_cid} resolved filled on venue.")
@@ -940,7 +942,7 @@ def _is_pending_exit_active(
         if callable(open_orders_fn):
             try:
                 for active_ord in (open_orders_fn() or []):
-                    if str(active_ord.get("side", "")).upper() in ("SELL", "S"):
+                    if extract_order_side(active_ord) == "SELL":
                         active_sell_exists = True
                         break
             except Exception:
@@ -980,8 +982,8 @@ def _cancel_resting_tp_orders(inst, symbol: str) -> list[dict]:
         open_orders_fn = getattr(inst, "open_orders", None)
         active_orders = open_orders_fn() if callable(open_orders_fn) else []
         for active_ord in (active_orders or []):
-            if str(active_ord.get("side", "")).upper() == "SELL":
-                oid = str(active_ord.get("orderId") or active_ord.get("id") or "")
+            if extract_order_side(active_ord) == "SELL":
+                oid = extract_order_id(active_ord) or ""
                 if oid:
                     print(f"[{symbol}] Cancelling open resting TP sell order {oid} to unlock coins for Stop-Loss")
                     cancel_fn = getattr(inst, "cancel_order", None)
@@ -1008,8 +1010,8 @@ def _restore_resting_tp_orders(inst, symbol: str, cancelled_orders: list[dict], 
         cancelled_orders,
         restore_fn=lambda p: bool(inst.place(
             "SELL",
-            float(p.get("price") or p.get("limit") or 0.0),
-            float(p.get("qty") or 0.0),
+            extract_order_price(p, default=0.0),
+            extract_remaining_qty(p, default=0.0),
             kind="TP",
             wait_for_trend=False,
         )),

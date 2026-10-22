@@ -15,7 +15,13 @@ import symbols as sym
 from binance_api import bapi as api
 from binance_api import bapi_placeorder as po
 from binance_api import order_id_context as rc
-from providers.base import extract_order_qty, extract_timestamp_s
+from providers.base import (
+    extract_order_id,
+    extract_order_price,
+    extract_order_qty,
+    extract_remaining_qty,
+    extract_timestamp_s,
+)
 from providers.market_api import api as mkt  # Single guarded proxy (Instrument.place).
 from providers.strategy_executor import SubmissionRefused
 import order_retry
@@ -228,7 +234,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
 
     for order_id in list(orders.keys()):
         order = orders[order_id]
-        price = order['price']
+        price = extract_order_price(order, default=0.0)
 
         if not price or price <= 0:          # Guard against division by zero for invalid prices.
             print(f"Invalid price ({price}) for order {order_id}, skipping.")
@@ -339,9 +345,12 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 )
                 continue
             try:
-                original_quantity = float(order["quantity"])
-                quantity = float(
-                    order.get("remainingQty", order["quantity"]))
+                raw_orig = order.get("quantity", order.get("origQty", order.get("qty")))
+                original_quantity = float(raw_orig)
+                if "remainingQty" in order:
+                    quantity = float(order["remainingQty"])
+                else:
+                    quantity = extract_remaining_qty(order, default=original_quantity)
             except (TypeError, ValueError, OverflowError):
                 print(
                     f"Order {order_id} has an invalid remaining quantity; "
@@ -544,7 +553,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     provider_name="Binance", symbol=symbol, side=order_type)
                 if not tracked:
                     print(
-                        f"CRITICAL: replacement order {new_order.get('orderId')} "
+                        f"CRITICAL: replacement order {extract_order_id(new_order)} "
                         "was accepted but its durable tracker could not be updated."
                     )
             else:
@@ -578,16 +587,21 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                         f"replacement intent was removed ({failure_reason}).")
             
             if new_order:
-                new_oid = str(new_order['orderId'])
+                raw_new_id = (
+                    new_order["orderId"]
+                    if isinstance(new_order, dict) and "orderId" in new_order
+                    else extract_order_id(new_order)
+                )
+                new_oid = str(raw_new_id)
                 _derived_replacement_order_ids.add(new_oid)
                 _notified_placed_order_ids.add(new_oid)
-                orders[new_order['orderId']] = {
+                orders[raw_new_id] = {
                     'price': new_price,
                     'quantity': quantity
                 }
                 _remember_initial_price(
-                    initial_prices, new_order['orderId'], initial_prices.pop(order_id))
-                print(f"Updated order from {price} to {new_price}. New ID: {new_order['orderId']} (derived replacement)")
+                    initial_prices, raw_new_id, initial_prices.pop(order_id))
+                print(f"Updated order from {price} to {new_price}. New ID: {raw_new_id} (derived replacement)")
             elif not terminal_pre_submit_refusal:
                 print(
                     f"The {order_type} replacement was not accepted immediately; "

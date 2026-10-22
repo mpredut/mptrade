@@ -12,6 +12,8 @@ import utils as u
 import symbols as sym
 from . import bapi as api
 from providers.base import (
+    extract_order_fee,
+    extract_order_id,
     extract_order_price,
     extract_order_qty,
     extract_order_side,
@@ -56,7 +58,7 @@ def aggregate_trades(trades):
 
     # Group fills by order ID.
     for trade in trades:
-        orderId = trade['orderId']
+        orderId = trade['orderId'] if 'orderId' in trade else extract_order_id(trade)
         qty = extract_order_qty(trade)
         px = extract_order_price(trade)
         quote_qty = float(trade.get('quoteQty', 0.0) or 0.0) or (px * qty)
@@ -70,12 +72,30 @@ def aggregate_trades(trades):
         aggregated_trades[orderId]['count'] += 1
         aggregated_trades[orderId]['orderId'] = orderId
         aggregated_trades[orderId]['symbol'] = trade.get('symbol', '')
-        aggregated_trades[orderId]['price'] = trade.get('price', px)
+        raw_px = trade.get('price')
+        try:
+            has_pos_raw_px = raw_px is not None and float(raw_px) > 0
+        except (TypeError, ValueError):
+            has_pos_raw_px = False
+        aggregated_trades[orderId]['price'] = (
+            raw_px
+            if has_pos_raw_px
+            else (
+                f"{px:.8f}".rstrip("0").rstrip(".")
+                if px > 0
+                else (raw_px if raw_px is not None else px)
+            )
+        )
         aggregated_trades[orderId]['qty'] += qty
         aggregated_trades[orderId]['quoteQty'] += quote_qty
         aggregated_trades[orderId]['weightedCost'] += px * qty
-        aggregated_trades[orderId]['commission'] += float(trade.get('commission', 0.0) or 0.0)
-        aggregated_trades[orderId]['commissionAsset'] = trade.get('commissionAsset', '')
+        fee_info = extract_order_fee(trade)
+        comm_val = float(trade.get('commission', 0.0) or 0.0)
+        if comm_val == 0.0 and fee_info is not None:
+            comm_val = fee_info['fee']
+        comm_asset = trade.get('commissionAsset') or (fee_info['fee_asset'] if fee_info is not None else '')
+        aggregated_trades[orderId]['commission'] += comm_val
+        aggregated_trades[orderId]['commissionAsset'] = comm_asset
         aggregated_trades[orderId]['time'] = max(aggregated_trades[orderId]['time'], ts_ms)
         aggregated_trades[orderId]['isBuyer'] = is_buyer
         aggregated_trades[orderId]['isMaker'] = trade.get('isMaker')

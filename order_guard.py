@@ -1550,7 +1550,7 @@ def check_math_profit_reference(
                     recent_prices = []
                     for o in recent:
                         try:
-                            px = float(o.get("price", 0.0) or 0.0)
+                            px = extract_order_price(o, default=0.0) if isinstance(o, dict) else 0.0
                             if px > 0:
                                 recent_prices.append(px)
                         except (ValueError, TypeError):
@@ -1561,7 +1561,7 @@ def check_math_profit_reference(
                         return True
                     pos_window_ref = select_extreme_reference(recent_prices, side, strict=True)
                     if len(recent) > 1 and all(
-                        isinstance(o, dict) and float(o.get("timestamp") or o.get("time") or 0) > 0
+                        isinstance(o, dict) and (extract_timestamp_s(o, default=0.0) or 0.0) > 0
                         for o in recent
                     ):
                         try:

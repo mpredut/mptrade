@@ -278,8 +278,8 @@ def extract_remaining_qty(order: Any, default: float = 0.0) -> float:
     rem = order.get("remainingQty")
     if rem is not None and not isinstance(rem, bool):
         try:
-            rem_f = abs(float(rem))
-            if math.isfinite(rem_f) and rem_f > 0:
+            rem_f = float(rem)
+            if math.isfinite(rem_f) and rem_f >= 0.0:
                 return rem_f
         except (TypeError, ValueError, OverflowError):
             pass

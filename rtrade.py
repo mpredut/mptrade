@@ -21,7 +21,7 @@ import symbols as sym
 from instrument_registry import single_symbol_for
 from binance_api import bapi as api
 from binance_api import bapi_placeorder as po   # Retained for the dead-safe WeightLimitBlock path.
-from providers.base import extract_order_price
+from providers.base import extract_order_id, extract_order_price
 from providers.market_api import api as mkt      # Single guarded Instrument.place proxy.
 from providers.execution_audit import AuditedStrategyExecutor
 from providers.quantity import decide_quantity
@@ -1348,7 +1348,7 @@ class TradingBot:
                     self._round_placed_order = True
                 
                 time.sleep(WAIT_FOR_ORDER)
-                order_id = buy_order['orderId']
+                order_id = buy_order['orderId'] if 'orderId' in buy_order else extract_order_id(buy_order)
                 extracted_buy_px = extract_order_price(buy_order, default=0.0)
                 self.filled_buy_price = round(float(extracted_buy_px if extracted_buy_px > 0 else target_buy_price), 4)
                 
@@ -1576,7 +1576,7 @@ class TradingBot:
                     self._round_placed_order = True
 
                 time.sleep(WAIT_FOR_ORDER)
-                order_id = sell_order['orderId']
+                order_id = sell_order['orderId'] if 'orderId' in sell_order else extract_order_id(sell_order)
                 extracted_sell_px = extract_order_price(sell_order, default=0.0)
                 self.filled_sell_price = round(float(extracted_sell_px if extracted_sell_px > 0 else target_sell_price), 4)
 
@@ -1777,7 +1777,7 @@ class TradingBot:
                 and order.get("clientOrderId") not in known_client_ids
             ]
             for order in orphan_orders:
-                order_id = str(order["orderId"])
+                order_id = extract_order_id(order) or ""
                 client_id = order.get("clientOrderId")
                 # An RT_ order without local intent cannot be safely associated with a
                 # round because its ID is hashed. Cancel it instead of inventing state.
@@ -1791,12 +1791,12 @@ class TradingBot:
                       f"order_id={order_id} client_id={client_id}")
             if orphan_orders:
                 remaining = {
-                    str(order.get("orderId"))
+                    extract_order_id(order)
                     for order in venue.executor.open_orders(self.symbol)
                 }
                 not_canceled = [
-                    str(order["orderId"]) for order in orphan_orders
-                    if str(order["orderId"]) in remaining
+                    extract_order_id(order) for order in orphan_orders
+                    if extract_order_id(order) in remaining
                 ]
                 if not_canceled:
                     print(f"[{self.symbol}] RECOVERY BLOCKED: unconfirmed cancellation "
@@ -1901,19 +1901,19 @@ class TradingBot:
                                 and order.get("clientOrderId") not in known_client_ids
                             ]
                             for order in orphan_orders:
-                                order_id = str(order["orderId"])
+                                order_id = extract_order_id(order) or ""
                                 client_id = order.get("clientOrderId")
                                 venue.executor.cancel_order(self.symbol, order_id)
                                 print(f"[{self.symbol}] recovery: orphaned RT_ order cancelled "
                                       f"order_id={order_id} client_id={client_id}")
                             if orphan_orders:
                                 remaining = {
-                                    str(order.get("orderId"))
+                                    extract_order_id(order)
                                     for order in venue.executor.open_orders(self.symbol)
                                 }
                                 not_canceled = [
-                                    str(order["orderId"]) for order in orphan_orders
-                                    if str(order["orderId"]) in remaining
+                                    extract_order_id(order) for order in orphan_orders
+                                    if extract_order_id(order) in remaining
                                 ]
                                 if not_canceled:
                                     print(f"[{self.symbol}] RECOVERY BLOCKED: unconfirmed cancellation "
