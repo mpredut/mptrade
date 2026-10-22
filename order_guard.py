@@ -1366,21 +1366,18 @@ def check_math_profit_reference(
                         if recent is None:
                             print(f"[GUARD] BUY {symbol}: dynamic window history unavailable -> BLOCKED")
                             return False
-                        recent_prices = []
-                        for o in recent:
-                            try:
-                                px = float(o.get("price", 0.0) or 0.0)
-                                if px > 0:
-                                    recent_prices.append(px)
-                            except (ValueError, TypeError):
-                                continue
+                        recent_prices = [
+                            extract_order_price(o, default=0.0)
+                            for o in recent
+                            if extract_order_price(o, default=0.0) > 0
+                        ]
                         if not recent_prices:
                             print(f"[GUARD] BUY {symbol}: dynamic window ({dyn_hours:.1f}h, trend='{trend}') has no fills; "
                                   f"anchor {pos_window_ref} from older period bypassed")
                             return True
                         pos_window_ref = min(recent_prices)
                         if len(recent) > 1 and all(
-                            isinstance(o, dict) and float(o.get("timestamp") or o.get("time") or 0) > 0
+                            isinstance(o, dict) and (extract_timestamp_ms(o, default=0) or 0) > 0
                             for o in recent
                         ):
                             try:
