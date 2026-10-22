@@ -668,6 +668,31 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertEqual(rel_px, 105.5)
         self.assertEqual(rel_ts, 1_700_000_000.0)
 
+        # 10. extract_order_price resolves market order VWAP from quote cost or fills
+        from providers.base import extract_order_price
+        self.assertAlmostEqual(
+            extract_order_price({"price": "0.00000000", "cummulativeQuoteQty": "650.0", "executedQty": "0.01"}),
+            65000.0,
+        )
+        self.assertAlmostEqual(
+            extract_order_price({"price": "0", "cost": "150.0", "vol_exec": "2.5"}),
+            60.0,
+        )
+        self.assertAlmostEqual(
+            extract_order_price({"filledValue": -300.0, "filledQuantity": -2.0}),
+            150.0,
+        )
+        self.assertAlmostEqual(
+            extract_order_price({
+                "price": "0.00000000",
+                "fills": [
+                    {"price": "100.0", "qty": "1.0"},
+                    {"price": "130.0", "qty": "2.0"},
+                ],
+            }),
+            120.0,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

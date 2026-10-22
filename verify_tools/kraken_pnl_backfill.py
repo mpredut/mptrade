@@ -71,16 +71,23 @@ def fetch_all_trades(cli):
 
 
 def main():
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from providers.base import (
+        extract_order_price,
+        extract_order_qty,
+        extract_order_side,
+        extract_timestamp_ms,
+    )
     cli = _client()
     trades, total = fetch_all_trades(cli)
     by_sym = {}
     for txid, t in trades.items():
-        typ = t.get('type', '')
         by_sym.setdefault(t.get('pair', '?'), []).append(dict(
-            txid=txid, side='BUY' if typ == 'buy' else 'SELL',
-            price=float(t.get('price', 0)), qty=float(t.get('vol', 0)),
+            txid=txid, side=extract_order_side(t) or 'SELL',
+            price=extract_order_price(t), qty=extract_order_qty(t),
             cost=float(t.get('cost', 0)), fee=float(t.get('fee', 0)),
-            time=int(float(t.get('time', 0)) * 1000)))
+            time=extract_timestamp_ms(t, default=0) or 0))
     out = {'items': by_sym, 'source': 'TradesHistory full (read-only)',
            'total': total, 'generated': dt.datetime.now().isoformat()}
     json.dump(out, open(OUT, 'w'), indent=1)

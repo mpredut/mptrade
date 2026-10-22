@@ -153,6 +153,38 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
                     return val
             except (TypeError, ValueError, OverflowError):
                 continue
+    for cost_key, exec_key in (
+        ("cummulativeQuoteQty", "executedQty"),
+        ("quoteQty", "qty"),
+        ("quoteQty", "quantity"),
+        ("cost", "vol_exec"),
+        ("filledValue", "filledQuantity"),
+    ):
+        if cost_key in order and exec_key in order:
+            try:
+                cost_val = abs(float(order[cost_key] or 0.0))
+                exec_val = abs(float(order[exec_key] or 0.0))
+                if math.isfinite(cost_val) and math.isfinite(exec_val) and cost_val > 0 and exec_val > 0:
+                    return cost_val / exec_val
+            except (TypeError, ValueError, OverflowError):
+                continue
+    fills = order.get("fills")
+    if isinstance(fills, list) and fills:
+        total_quote = 0.0
+        total_qty = 0.0
+        for f in fills:
+            if not isinstance(f, dict):
+                continue
+            try:
+                f_px = float(f.get("price", f.get("px", 0.0)) or 0.0)
+                f_qty = abs(float(f.get("qty", f.get("quantity", f.get("sz", 0.0))) or 0.0))
+                if math.isfinite(f_px) and math.isfinite(f_qty) and f_px > 0 and f_qty > 0:
+                    total_quote += f_px * f_qty
+                    total_qty += f_qty
+            except (TypeError, ValueError, OverflowError):
+                continue
+        if total_qty > 0:
+            return total_quote / total_qty
     return default
 
 

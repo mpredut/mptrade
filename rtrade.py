@@ -21,6 +21,7 @@ import symbols as sym
 from instrument_registry import single_symbol_for
 from binance_api import bapi as api
 from binance_api import bapi_placeorder as po   # Retained for the dead-safe WeightLimitBlock path.
+from providers.base import extract_order_price
 from providers.market_api import api as mkt      # Single guarded Instrument.place proxy.
 from providers.execution_audit import AuditedStrategyExecutor
 from providers.quantity import decide_quantity
@@ -1348,8 +1349,8 @@ class TradingBot:
                 
                 time.sleep(WAIT_FOR_ORDER)
                 order_id = buy_order['orderId']
-                raw_buy_px = buy_order.get('price')
-                self.filled_buy_price = round(float(raw_buy_px if raw_buy_px is not None and float(raw_buy_px) > 0 else target_buy_price), 4)
+                extracted_buy_px = extract_order_price(buy_order, default=0.0)
+                self.filled_buy_price = round(float(extracted_buy_px if extracted_buy_px > 0 else target_buy_price), 4)
                 
                 if _order_fully_filled(self.symbol, order_id):
                     print(f"[{self.symbol}] BUY order filled at {self.filled_buy_price:.2f}")
@@ -1576,8 +1577,8 @@ class TradingBot:
 
                 time.sleep(WAIT_FOR_ORDER)
                 order_id = sell_order['orderId']
-                raw_sell_px = sell_order.get('price')
-                self.filled_sell_price = round(float(raw_sell_px if raw_sell_px is not None and float(raw_sell_px) > 0 else target_sell_price), 4)
+                extracted_sell_px = extract_order_price(sell_order, default=0.0)
+                self.filled_sell_price = round(float(extracted_sell_px if extracted_sell_px > 0 else target_sell_price), 4)
 
                 if _order_fully_filled(self.symbol, order_id):
                     print(f"[{self.symbol}] SELL order filled at {self.filled_sell_price:.2f}")

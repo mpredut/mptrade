@@ -42,6 +42,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from cachepaths import cache_path
 from instrument_registry import symbols_for
+from providers.base import extract_order_side, extract_timestamp_ms
 from providers.kraken_provider import _kraken_pair_key, _kraken_pair_matches
 
 load_env_stack(os.environ.get("ENV_FILE", os.path.join(_HERE, ".env")))
@@ -96,10 +97,9 @@ def _match_configured_pair(symbol: str | None) -> str | None:
 
 def _normalize(txid, tr):
     """Normalize a Kraken TradesHistory/ownTrades transaction to the Binance-compatible form."""
-    raw_t = tr.get("time", tr.get("timestamp", 0)) or 0
-    raw_t_f = float(raw_t)
-    ts_ms = int(round(raw_t_f * 1000.0)) if raw_t_f < 100_000_000_000.0 else int(round(raw_t_f))
-    is_buyer = str(tr.get("type", tr.get("side", ""))).strip().lower() == "buy" or bool(tr.get("isBuyer"))
+    ts_ms = extract_timestamp_ms(tr, default=0) or 0
+    side = extract_order_side(tr) or "SELL"
+    is_buyer = side == "BUY"
     qty = tr.get("vol", tr.get("qty"))
     return {
         "symbol": tr.get("pair", tr.get("symbol")),
@@ -111,7 +111,7 @@ def _normalize(txid, tr):
         "time": ts_ms,
         "timestamp": ts_ms,
         "isBuyer": is_buyer,
-        "side": "BUY" if is_buyer else "SELL",
+        "side": side,
     }
 
 
@@ -145,7 +145,7 @@ def _ledger_to_fills(ledger):
         if raw_base.endswith(".F"):
             raw_base = raw_base[:-2]
         raw_symbol = raw_base + _QUOTE[str(quote["asset"]).upper()]
-        ts_ms = int(float(base.get("time", base.get("timestamp", 0)) or 0) * 1000)
+        ts_ms = extract_timestamp_ms(base, default=0) or 0
         is_buyer = ba > 0
         fills.append({
             "symbol": raw_symbol,

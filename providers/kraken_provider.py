@@ -352,15 +352,7 @@ class KrakenProvider(MarketDataProvider):
             p = str(tr.get("pair", "")).upper()
             if not (_kraken_pair_matches(symbol, p) or su in p or (p and p in su)):
                 continue
-            raw_t = tr.get("time", tr.get("timestamp", 0)) or 0
-            raw_t_f = float(raw_t)
-            ts_ms = int(round(raw_t_f * 1000.0)) if raw_t_f < 100_000_000_000.0 else int(round(raw_t_f))
-            rows.append(_normalize_order({
-                "side": extract_order_side(tr),
-                "price": tr.get("price"),
-                "qty": tr.get("vol", tr.get("qty")),
-                "timestamp": ts_ms,
-            }))
+            rows.append(_normalize_order(tr))
         return rows
 
     # -- Placement remains dry until KRAKEN_LIVE_ORDERS=true. ------------------

@@ -9,6 +9,12 @@ sys.path.insert(0, ROOT); os.chdir(ROOT)
 from binance_api import bapi_allorders as ao
 from binance_api import bapi
 from instrument_registry import symbols_for
+from providers.base import (
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
+    extract_timestamp_ms,
+)
 
 WINDOW_D = 120
 
@@ -16,11 +22,11 @@ WINDOW_D = 120
 def binance_symbol(symbol):
     st = int((time.time() - WINDOW_D * 24 * 3600) * 1000)
     fills = ao.get_filled_orders(None, symbol, st) or []
-    fills.sort(key=lambda t: t.get("timestamp", 0))
+    fills.sort(key=lambda t: extract_timestamp_ms(t, default=0) or 0)
     qty = cost = realized = 0.0
     buys = sells = 0
     for t in fills:
-        p = float(t["price"]); q = float(t.get("quantity", 0)); side = (t.get("side") or "").upper()
+        p = extract_order_price(t); q = extract_order_qty(t); side = extract_order_side(t)
         if side == "BUY":
             qty += q; cost += q * p; buys += 1
         elif side == "SELL":
