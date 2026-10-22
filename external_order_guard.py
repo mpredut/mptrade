@@ -83,8 +83,8 @@ def check_external_order_guards(
     if order_side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
+    from order_guard import _load_margins, validate_guard_mode_cfg
     if margins is None:
-        from order_guard import _load_margins
         m = _load_margins()
     else:
         m = margins
@@ -130,8 +130,8 @@ def check_external_order_guards(
             pass
 
     # 1. Whale Flow & Open Interest Divergence Guard
-    whale_mode = str(m["whale_guard_mode"]).strip().lower()
-    if whale_mode not in ("off", "0", "disabled"):
+    whale_mode = validate_guard_mode_cfg(m["whale_guard_mode"], "whale_guard_mode")
+    if whale_mode != "off":
         try:
             from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
             w_snap = get_whale_collector().fetch(symbol, allow_network=False)
@@ -162,8 +162,8 @@ def check_external_order_guards(
             pass
 
     # 2. Orderbook Depth & Whale Limit Wall Guard
-    ob_mode = str(m["orderbook_wall_guard_mode"]).strip().lower()
-    if ob_mode not in ("off", "0", "disabled"):
+    ob_mode = validate_guard_mode_cfg(m["orderbook_wall_guard_mode"], "orderbook_wall_guard_mode")
+    if ob_mode != "off":
         try:
             from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
             ob_snap = get_orderbook_collector().fetch(symbol, allow_network=False)
@@ -188,8 +188,8 @@ def check_external_order_guards(
             pass
 
     # 3. Perpetual Derivatives Funding Rate Crowding Guard
-    funding_mode = str(m["funding_guard_mode"]).strip().lower()
-    if funding_mode not in ("off", "0", "disabled"):
+    funding_mode = validate_guard_mode_cfg(m["funding_guard_mode"], "funding_guard_mode")
+    if funding_mode != "off":
         try:
             from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
             f_snap = get_derivatives_collector().fetch(symbol, allow_network=False)

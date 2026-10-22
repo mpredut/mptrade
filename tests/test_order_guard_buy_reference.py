@@ -707,6 +707,78 @@ class BuyReferenceSwitchTest(unittest.TestCase):
                     "binance", "SELL", module="assetguardian", reference_mode="invalid_mode"
                 )
 
+    def test_validate_guard_mode_cfg_and_margins_validation_fail_fast(self):
+        """Verify invalid Pillar 1-4 guard modes or discrete policies fail fast instead of silently passing."""
+        from internal_order_guard import check_internal_order_guards
+        from external_order_guard import check_external_order_guards
+        from intelligence_order_guard import check_intelligence_order_guards
+        from geopolitical_order_guard import check_geopolitical_order_guards
+
+        for valid_mode in ("off", "shadow", "enforce"):
+            self.assertEqual(order_guard.validate_guard_mode_cfg(valid_mode, "llm_guard_mode"), valid_mode)
+
+        for bad_mode in ("on", "strict", "true", "1", "enforec", 1, 0):
+            with self.assertRaises(ValueError):
+                order_guard.validate_guard_mode_cfg(bad_mode, "llm_guard_mode")
+
+        base_full = dict(order_guard._load_margins())
+        order_guard._validate_margins_cfg(base_full, "order_guard.conf")
+
+        bad_guard_cfg = dict(base_full, llm_guard_mode="on")
+        with self.assertRaises(ValueError):
+            order_guard._validate_margins_cfg(bad_guard_cfg, "order_guard.conf")
+
+        bad_policy_cfg = dict(base_full, weibull_exhaustion_policy="ignore")
+        with self.assertRaises(ValueError):
+            order_guard._validate_margins_cfg(bad_policy_cfg, "order_guard.conf")
+
+        bad_ref_cfg = dict(base_full, binance_sell_reference="1")
+        with self.assertRaises(ValueError):
+            order_guard._validate_margins_cfg(bad_ref_cfg, "order_guard.conf")
+
+        with self.assertRaises(ValueError):
+            check_internal_order_guards("BTCUSDC", "BUY", 80000.0, margins=dict(base_full, internal_guard_mode="on"))
+        with self.assertRaises(ValueError):
+            check_external_order_guards("BTCUSDC", "BUY", 80000.0, margins=dict(base_full, whale_guard_mode="strict"))
+        with self.assertRaises(ValueError):
+            check_intelligence_order_guards("binance", "BTCUSDC", "BUY", 80000.0, qty=1.0, margins=dict(base_full, llm_guard_mode="true"))
+        with self.assertRaises(ValueError):
+            check_geopolitical_order_guards("BTCUSDC", "BUY", margins=dict(base_full, geopolitical_guard_mode="1"))
+
+    def test_bapi_if_place_safe_order_respects_symmetric_reference_modes(self):
+        """Verify bapi_placeorder.if_place_safe_order resolves and forwards reference_mode symmetrically."""
+        import time as _time
+        from binance_api import bapi_placeorder as bpo
+        from binance_api import bapi_allorders as apiorders
+
+        now_ms = int(_time.time() * 1000)
+        # Two opposite BUY fills: older @ 100, newer @ 80 (strict max=100, average=90, last=80)
+        opp_buys = [
+            {"price": "100.0", "origQty": "1.0", "executedQty": "1.0", "time": now_ms - 7200_000, "side": "BUY"},
+            {"price": "80.0", "origQty": "1.0", "executedQty": "1.0", "time": now_ms - 3600_000, "side": "BUY"},
+        ]
+
+        def _fake_get_trade_orders(side, symbol, max_age_seconds=None):
+            return opp_buys if side == "BUY" else []
+
+        base_full = dict(order_guard._load_margins(), intelligence_guards_mode="off")
+        with mock.patch.object(order_guard, "_MARGINS", dict(base_full, binance_sell_reference="strict")), \
+             mock.patch.object(bpo.sym, "validate_params"), \
+             mock.patch.object(bpo.api, "get_current_price", return_value=85.0), \
+             mock.patch.object(order_guard, "daily_limit_guard", return_value=(True, None)), \
+             mock.patch.object(apiorders, "get_trade_orders", side_effect=_fake_get_trade_orders):
+            # In 'strict' mode, SELL @ 85 vs max BUY 100 is blocked
+            ok_strict, reason_strict = bpo.if_place_safe_order("SELL", "TAOUSDC", 85.0, 1.0, 86400)
+            self.assertFalse(ok_strict)
+            self.assertEqual(reason_strict, "profit_guard")
+
+            # In 'last' mode (via reference_mode='last'), SELL @ 85 vs last BUY 80 (+6.25% >= 1.15%) is allowed
+            ok_last, reason_last = bpo.if_place_safe_order(
+                "SELL", "TAOUSDC", 85.0, 1.0, 86400, reference_mode="last"
+            )
+            self.assertTrue(ok_last)
+            self.assertIsNone(reason_last)
+
 
 if __name__ == "__main__":
     unittest.main()

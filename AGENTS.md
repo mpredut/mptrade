@@ -10,6 +10,9 @@
   - Configuration parameters (`config.env`, `order_guard.conf`, `*.conf`, `*.env`) must never have hardcoded fallback defaults, silent seed dictionaries, or synonym/alias guessing in code.
   - Every module must validate its required configuration during initialization (or config load) and raise `ValueError` or `KeyError` immediately if a setting is missing, empty, or invalid.
   - Fallbacks are strictly reserved for **dynamic runtime strategy/operational resilience** (e.g., WS/REST transport fallback, proxy/chop weight fallback when live market data or long trend is unavailable, fail-closed guard behavior on runtime read errors) — never for missing static configuration or duplicate function/key aliases.
+- **Architectural & Directional Symmetry (BUY / SELL, Venues, Modules):**
+  - Every guard, reference window, difficulty tier, sizing rule, configuration key, and pipeline stage must be designed and maintained symmetrically across `BUY` and `SELL` (as well as across venues and modules) at every stage of coding.
+  - Directional differences must be expressed exclusively through shared symmetric primitives (e.g., `opposite_side()`, `profit_diff_pct()`, `select_extreme_reference()`, `get_profit_guard_mode_cfg()`, `window_for()`) rather than asymmetric one-sided code paths or mixed value types.
 - **Separation of Concerns (SoC):** Isolate distinct responsibilities and modular boundaries; minimize cross-cutting coupling.
 - **Holistic & General Solutions Over Point Fixes:**
   - Always solve classes of problems at the architectural choke point (e.g., transport layer, order gateway, state layer) rather than scattering per-caller `if/else` patches across modules.

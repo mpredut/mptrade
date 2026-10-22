@@ -39,9 +39,20 @@ def test_reconciler_initialization_defaults(temp_env):
         cache_dir="cachedb",
         logs_dirs=["logs"],
     )
-    assert reconciler.mode == "shadow"
+    assert reconciler.mode == "enforce"
     assert reconciler.lookback_hours == 24.0
     assert reconciler.cache_dir == cache_dir
+
+
+def test_reconciler_invalid_supervisor_mode_fails_fast(temp_env):
+    workspace, _, _ = temp_env
+    with pytest.raises(ValueError, match="Invalid supervisor_mode"):
+        AutonomousAIReconciler(
+            workspace_dir=workspace,
+            cache_dir="cachedb",
+            logs_dirs=["logs"],
+            mode="invalid_mode",
+        )
 
 
 def test_harvest_sensors_telemetry(temp_env):

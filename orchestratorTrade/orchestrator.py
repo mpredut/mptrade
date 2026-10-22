@@ -12,6 +12,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] Orch
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
+import botcore
+botcore.load_dotenv(os.path.join(ROOT_DIR, "config.env"))
 from notify_engine.server import NotificationServer
 
 
@@ -31,6 +33,12 @@ class BotManager:
         self.last_hb_status_log = time.time()
         self.running = True
         self.venv = self._resolve_venv()
+        if "ORCHESTRATOR_VERBOSE_STDOUT" not in os.environ:
+            raise KeyError("Missing required env key 'ORCHESTRATOR_VERBOSE_STDOUT' in config.env")
+        if "ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC" not in os.environ:
+            raise KeyError("Missing required env key 'ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC' in config.env")
+        self.verbose_stdout = os.environ["ORCHESTRATOR_VERBOSE_STDOUT"].strip() in ("1", "true", "True")
+        self.zombie_cooldown_sec = float(os.environ["ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC"])
 
     @staticmethod
     def _resolve_venv() -> str:
@@ -102,7 +110,7 @@ class BotManager:
         return bots
 
     async def _read_stream(self, stream, bot_name: str, log_file):
-        verbose_stdout = os.environ.get("ORCHESTRATOR_VERBOSE_STDOUT", "0") in ("1", "true", "True")
+        verbose_stdout = self.verbose_stdout
         while True:
             line = await stream.readline()
             if not line:
@@ -419,7 +427,7 @@ class BotManager:
                                     f"Terminating zombie process..."
                                 )
                                 self.zombie_killing.add(name)
-                                zombie_cd = float(os.environ.get("ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC", "1800"))
+                                zombie_cd = self.zombie_cooldown_sec
                                 if now >= self.zombie_alert_cooldowns.get(name, 0.0):
                                     self.zombie_alert_cooldowns[name] = now + zombie_cd
                                     alert_body = (

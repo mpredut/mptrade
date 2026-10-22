@@ -38,15 +38,34 @@ from geopolitical_order_guard import _GEO_SHADOW_NOTIFY_COOLDOWN as _SHADOW_NOTI
 
 _REQUIRED_ORDER_GUARD_KEYS = frozenset({
     "default",
+    "binance",
+    "kraken",
     "default_window_h",
+    "kraken_window_h",
     "default_weight_proxy",
+    "binance_weight_proxy",
+    "kraken_weight_proxy",
     "default_chop_weight",
+    "binance_chop_weight",
+    "kraken_chop_weight",
     "default_max_daily_trades",
     "default_safeback_sec",
     "default_recent_transaction_sec",
     "default_recent_transaction_side",
     "default_buy_reference",
+    "binance_buy_reference",
+    "kraken_buy_reference",
     "default_sell_reference",
+    "binance_sell_reference",
+    "kraken_sell_reference",
+    "assetguardian_buy_reference",
+    "assetguardian_sell_reference",
+    "monitortrades_buy_reference",
+    "monitortrades_sell_reference",
+    "tradeall_buy_reference",
+    "tradeall_sell_reference",
+    "rtrade_buy_reference",
+    "rtrade_sell_reference",
     "buy_window_mode",
     "buy_window_bull_h",
     "buy_window_flat_h",
@@ -104,8 +123,105 @@ _REQUIRED_ORDER_GUARD_KEYS = frozenset({
     # Pillar 4 & Global
     "geopolitical_guard_mode",
     "shadow_notify",
+    # Autonomous AI Supervisor & Trading Gateway
+    "supervisor_mode",
+    "supervisor_notify",
+    "autonomous_trading_mode",
+    "autonomous_trading_max_notional_eur",
+    "autonomous_trading_min_confidence",
+    "autonomous_trading_notify",
+    # Guard bypass configuration
     "default_bypass_guards",
+    "binance_bypass_guards",
+    "kraken_bypass_guards",
 })
+
+VALID_PROFIT_GUARD_MODES = frozenset({"strict", "average", "last", "hybrid", "dynamic", "off"})
+VALID_GUARD_MODES = frozenset({"off", "shadow", "enforce"})
+
+_GUARD_MODE_KEYS = (
+    "internal_guard_mode",
+    "intelligence_guards_mode",
+    "external_guard_mode",
+    "microstructure_guard_mode",
+    "whale_guard_mode",
+    "orderbook_wall_guard_mode",
+    "funding_guard_mode",
+    "smart_sl_mode",
+    "llm_guard_mode",
+    "post_stop_reentry_mode",
+    "geopolitical_guard_mode",
+    "supervisor_mode",
+    "autonomous_trading_mode",
+)
+
+_MODULE_REFERENCE_KEYS = frozenset({
+    "assetguardian_buy_reference",
+    "assetguardian_sell_reference",
+    "monitortrades_buy_reference",
+    "monitortrades_sell_reference",
+    "tradeall_buy_reference",
+    "tradeall_sell_reference",
+    "rtrade_buy_reference",
+    "rtrade_sell_reference",
+})
+
+_DISCRETE_POLICY_SETS: Dict[str, frozenset] = {
+    "weibull_exhaustion_policy": frozenset({"block", "downscale"}),
+    "funding_crowding_policy": frozenset({"defer", "downscale"}),
+    "llm_fallback": frozenset({"allow", "block", "downscale"}),
+    "post_stop_reentry_fallback": frozenset({"allow", "block", "downscale"}),
+}
+
+
+def validate_profit_guard_mode_cfg(val: Any) -> str:
+    """Validate that a profit guard mode is strictly one of VALID_PROFIT_GUARD_MODES."""
+    if not isinstance(val, str):
+        raise ValueError(
+            f"Invalid profit guard mode {val!r}; must be a string in {sorted(VALID_PROFIT_GUARD_MODES)}"
+        )
+    mode = val.strip().lower()
+    if mode not in VALID_PROFIT_GUARD_MODES:
+        raise ValueError(
+            f"Invalid profit guard mode {val!r}; must be one of {sorted(VALID_PROFIT_GUARD_MODES)}"
+        )
+    return mode
+
+
+def validate_guard_mode_cfg(val: Any, key_name: str = "guard_mode") -> str:
+    """Validate that a guard / supervisor / gateway mode is strictly in VALID_GUARD_MODES."""
+    if not isinstance(val, str):
+        raise ValueError(
+            f"Invalid {key_name} {val!r}; must be a string in {sorted(VALID_GUARD_MODES)}"
+        )
+    mode = val.strip().lower()
+    if mode not in VALID_GUARD_MODES:
+        raise ValueError(
+            f"Invalid {key_name} {val!r}; must be one of {sorted(VALID_GUARD_MODES)}"
+        )
+    return mode
+
+
+def _validate_margins_cfg(m: Dict[str, Any], path: str) -> None:
+    """Validate discrete mode and policy values in order_guard.conf at load time."""
+    for key in _GUARD_MODE_KEYS:
+        validate_guard_mode_cfg(m[key], key_name=key)
+
+    for key, val in m.items():
+        if key.endswith("_buy_reference") or key.endswith("_sell_reference"):
+            if key in _MODULE_REFERENCE_KEYS:
+                sval = str(val).strip().lower() if isinstance(val, str) else None
+                if sval != "venue":
+                    validate_profit_guard_mode_cfg(val)
+            else:
+                validate_profit_guard_mode_cfg(val)
+
+    for policy_key, valid_set in _DISCRETE_POLICY_SETS.items():
+        raw_val = m[policy_key]
+        if not isinstance(raw_val, str) or raw_val.strip().lower() not in valid_set:
+            raise ValueError(
+                f"Invalid {policy_key} {raw_val!r} in {path}; must be one of {sorted(valid_set)}"
+            )
 
 
 def _load_margins():
@@ -143,6 +259,7 @@ def _load_margins():
     missing = sorted(_REQUIRED_ORDER_GUARD_KEYS - set(m.keys()))
     if missing:
         raise KeyError(f"Missing required keys in {path}: {', '.join(missing)}")
+    _validate_margins_cfg(m, path)
     _MARGINS = m
     return m
 
@@ -155,8 +272,6 @@ def _provider_name(provider):
         return provider
     return getattr(provider, "name", "") or ""
 
-
-VALID_PROFIT_GUARD_MODES = frozenset({"strict", "average", "last", "hybrid", "dynamic", "off"})
 
 _PROCESS_TO_MODULE = {
     "AG": "assetguardian",
@@ -192,20 +307,6 @@ def select_extreme_reference(prices, order_type: str, *, strict: bool = True) ->
     if strict:
         return min(prices) if side == "BUY" else max(prices)
     return max(prices) if side == "BUY" else min(prices)
-
-
-def validate_profit_guard_mode_cfg(val: Any) -> str:
-    """Validate that a profit guard mode is strictly one of VALID_PROFIT_GUARD_MODES."""
-    if not isinstance(val, str):
-        raise ValueError(
-            f"Invalid profit guard mode {val!r}; must be a string in {sorted(VALID_PROFIT_GUARD_MODES)}"
-        )
-    mode = val.strip().lower()
-    if mode not in VALID_PROFIT_GUARD_MODES:
-        raise ValueError(
-            f"Invalid profit guard mode {val!r}; must be one of {sorted(VALID_PROFIT_GUARD_MODES)}"
-        )
-    return mode
 
 
 def get_profit_guard_mode_cfg(
@@ -1131,8 +1232,8 @@ def check_intelligence_guards(
         else:
             valid_context = True
 
-    mode = str(m["intelligence_guards_mode"]).strip().lower()
-    if mode in ("off", "0", "disabled"):
+    mode = validate_guard_mode_cfg(m["intelligence_guards_mode"], "intelligence_guards_mode")
+    if mode == "off":
         return True, "intelligence_guards_off", 1.0
 
     side = (order_type or "").upper()
@@ -1222,8 +1323,8 @@ def check_intelligence_guards(
     active_reason = static_reason
 
     skip_internal = GUARD_REGISTRY["GI1"].is_bypassed(bypassed)
-    internal_mode = str(m["internal_guard_mode"]).strip().lower()
-    internal_active = was_cached and not skip_internal and internal_mode not in ("off", "0", "disabled")
+    internal_mode = validate_guard_mode_cfg(m["internal_guard_mode"], "internal_guard_mode")
+    internal_active = was_cached and not skip_internal and internal_mode != "off"
 
     # Dynamic Re-evaluation for cached context:
     # 1. Dynamic Parabolic Surge Guard (Anti-FOMO spike check evaluated on BUY only)
@@ -1254,8 +1355,8 @@ def check_intelligence_guards(
         os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on")
         for k in ("DISABLE_GEMINI_LLM", "BACKTEST_MODE", "REPLAY_MODE")
     )
-    llm_mode = str(m["llm_guard_mode"]).strip().lower()
-    if not skip_llm and llm_mode not in ("off", "0", "disabled"):
+    llm_mode = validate_guard_mode_cfg(m["llm_guard_mode"], "llm_guard_mode")
+    if not skip_llm and llm_mode != "off":
         min_notional = float(m["llm_min_notional_eur"])
         if computed_notional is not None and computed_notional >= min_notional:
             decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None) if valid_context else None
@@ -1391,8 +1492,8 @@ def _evaluate_intelligence_guards_raw(
         return True, "stop_loss_exempt", 1.0
 
     m = _load_margins()
-    mode = str(m["intelligence_guards_mode"]).strip().lower()
-    if mode in ("off", "0", "disabled"):
+    mode = validate_guard_mode_cfg(m["intelligence_guards_mode"], "intelligence_guards_mode")
+    if mode == "off":
         return True, "intelligence_guards_off", 1.0
 
     side = (order_type or "").upper()
@@ -1550,7 +1651,7 @@ def check_math_profit_reference(
                     recent_prices = []
                     for o in recent:
                         try:
-                            px = extract_order_price(o, default=0.0) if isinstance(o, dict) else 0.0
+                            px = float(o.get("price", 0.0) or 0.0)
                             if px > 0:
                                 recent_prices.append(px)
                         except (ValueError, TypeError):
@@ -1561,7 +1662,7 @@ def check_math_profit_reference(
                         return True
                     pos_window_ref = select_extreme_reference(recent_prices, side, strict=True)
                     if len(recent) > 1 and all(
-                        isinstance(o, dict) and (extract_timestamp_s(o, default=0.0) or 0.0) > 0
+                        isinstance(o, dict) and float(o.get("timestamp") or o.get("time") or 0) > 0
                         for o in recent
                     ):
                         try:
@@ -1608,7 +1709,14 @@ def check_math_profit_reference(
         except Exception:
             pass
 
-    has_window = window_for(provider_name, symbol, side, regime_context=regime_context) > 0
+    has_window = window_for(
+        provider_name,
+        symbol,
+        side,
+        regime_context=regime_context,
+        module=module,
+        reference_mode=reference_mode,
+    ) > 0
     raw_ref = window_ref if window_ref is not None else (
         None if (side == "BUY" and has_window and mode not in ("last", "average", "hybrid")) else (
             provider.last_opposite_fill(symbol, side) if hasattr(provider, "last_opposite_fill") else None

@@ -47,14 +47,14 @@ def check_internal_order_guards(
     if order_side != "BUY":
         return True, "not_buy_side", 1.0
 
+    from order_guard import _load_margins, validate_guard_mode_cfg
     if margins is None:
-        from order_guard import _load_margins
         m = _load_margins()
     else:
         m = margins
 
-    mode = str(m["internal_guard_mode"]).strip().lower()
-    if mode in ("off", "0", "disabled"):
+    mode = validate_guard_mode_cfg(m["internal_guard_mode"], "internal_guard_mode")
+    if mode == "off":
         return True, "intelligence_guards_off", 1.0
 
     from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard

@@ -513,7 +513,20 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         if not ok:
             return False, reason
 
-        if regime_context is None and order_type == "BUY" and not bypass_profit_guard:
+        caller_module = kwargs.get("module")
+        profit_ref_mode = kwargs.get("reference_mode") or kwargs.get("profit_reference_mode")
+        eff_ref_mode = order_guard.get_profit_guard_mode_cfg(
+            "binance",
+            order_type,
+            module=caller_module,
+            reference_mode=profit_ref_mode,
+        )
+
+        if (
+            regime_context is None
+            and not bypass_profit_guard
+            and (order_type == "BUY" or eff_ref_mode == "dynamic")
+        ):
             from providers.market_api import api as market_api
             regime_context = market_api.market_regime_context(
                 symbol, provider_name="binance")
@@ -523,6 +536,8 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
             symbol=symbol,
             order_type=order_type,
             regime_context=regime_context,
+            module=caller_module,
+            reference_mode=eff_ref_mode,
         )
         if not ref_window or ref_window <= 0:
             ref_window = time_back_in_seconds
@@ -536,7 +551,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
 
         if not bypass_profit_guard:
             window_ref = None
-            if recent_opposite_trades:
+            if recent_opposite_trades and eff_ref_mode != "off":
                 if len(recent_opposite_trades) > 1:
                     same_trades = apiorders.get_trade_orders(order_type, symbol, max_age_seconds=fetch_window) or []
                     recent_same_trades = [
@@ -548,16 +563,27 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
                         recent_opposite_trades,
                         recent_same_trades,
                         order_type,
+                        reference_mode=eff_ref_mode,
+                    )
+                elif eff_ref_mode in ("average", "last", "hybrid"):
+                    window_ref = order_guard.active_cycle_window_ref(
+                        recent_opposite_trades,
+                        None,
+                        order_type,
+                        reference_mode=eff_ref_mode,
                     )
                 else:
                     _prices = [extract_order_price(t) for t in recent_opposite_trades]
-                    window_ref = min(_prices) if order_type == "BUY" else max(_prices)
+                    window_ref = order_guard.select_extreme_reference(_prices, order_type, strict=True)
 
             pg_kwargs = dict(
                 window_ref=window_ref,
                 regime_context=regime_context,
                 qty=qty,
+                reference_mode=eff_ref_mode,
             )
+            if caller_module is not None:
+                pg_kwargs["module"] = caller_module
             if bypass_guards is not None:
                 pg_kwargs["bypass_guards"] = bypass_guards
 

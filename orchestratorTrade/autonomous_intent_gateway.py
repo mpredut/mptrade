@@ -73,48 +73,57 @@ class AutonomousIntentGateway:
 
         conf = self._load_conf()
 
-        raw_mode = mode or conf.get("autonomous_trading_mode", "shadow")
+        if mode is not None:
+            raw_mode = mode
+        else:
+            if "autonomous_trading_mode" not in conf:
+                raise KeyError("Missing required 'autonomous_trading_mode' in order_guard.conf")
+            raw_mode = conf["autonomous_trading_mode"]
         self.mode = str(raw_mode).strip().lower()
+        if self.mode not in ("off", "shadow", "enforce"):
+            raise ValueError(
+                f"Invalid autonomous_trading_mode {raw_mode!r}; must be one of ['enforce', 'off', 'shadow']"
+            )
 
         if max_notional_eur is not None:
             self.max_notional_eur = float(max_notional_eur)
         else:
-            try:
-                self.max_notional_eur = float(conf.get("autonomous_trading_max_notional_eur", "500.0"))
-            except (ValueError, TypeError):
-                self.max_notional_eur = 500.0
+            if "autonomous_trading_max_notional_eur" not in conf:
+                raise KeyError("Missing required 'autonomous_trading_max_notional_eur' in order_guard.conf")
+            self.max_notional_eur = float(conf["autonomous_trading_max_notional_eur"])
 
         if min_confidence is not None:
             self.min_confidence = float(min_confidence)
         else:
-            try:
-                self.min_confidence = float(conf.get("autonomous_trading_min_confidence", "0.85"))
-            except (ValueError, TypeError):
-                self.min_confidence = 0.85
+            if "autonomous_trading_min_confidence" not in conf:
+                raise KeyError("Missing required 'autonomous_trading_min_confidence' in order_guard.conf")
+            self.min_confidence = float(conf["autonomous_trading_min_confidence"])
 
         if notify_enabled is not None:
             self.notify_enabled = bool(notify_enabled)
         else:
-            self.notify_enabled = bool(int(float(conf.get("autonomous_trading_notify", conf.get("shadow_notify", "1")))))
+            if "autonomous_trading_notify" not in conf:
+                raise KeyError("Missing required 'autonomous_trading_notify' in order_guard.conf")
+            self.notify_enabled = bool(int(float(conf["autonomous_trading_notify"])))
 
     def _load_conf(self) -> Dict[str, str]:
-        """Loads configuration from order_guard.conf without vendor dependencies."""
+        """Loads configuration strictly from order_guard.conf and config.env without vendor dependencies."""
         conf: Dict[str, str] = {}
-        for fname in ("order_guard.conf", "config.env", ".env"):
-            fpath = os.path.join(self.workspace_dir, fname)
-            if not os.path.exists(fpath):
-                continue
-            try:
+        search_dirs = [ROOT_DIR]
+        if os.path.abspath(self.workspace_dir) != os.path.abspath(ROOT_DIR):
+            search_dirs.append(self.workspace_dir)
+        for base_dir in search_dirs:
+            for fname in ("order_guard.conf", "config.env", ".env"):
+                fpath = os.path.join(base_dir, fname)
+                if not os.path.exists(fpath):
+                    continue
                 with open(fpath, "r", encoding="utf-8", errors="replace") as f:
                     for line in f:
-                        line = line.strip()
-                        if not line or line.startswith("#"):
+                        line = line.split("#", 1)[0].strip()
+                        if not line or "=" not in line:
                             continue
-                        if "=" in line:
-                            k, v = line.split("=", 1)
-                            conf[k.strip().lower()] = v.strip().strip('"').strip("'")
-            except Exception:
-                pass
+                        k, v = line.split("=", 1)
+                        conf[k.strip().lower()] = v.strip().strip('"').strip("'")
         return conf
 
     def load_all_intents(self) -> List[Dict[str, Any]]:

@@ -49,8 +49,8 @@ def check_intelligence_order_guards(
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
+    from order_guard import _load_margins, validate_guard_mode_cfg
     if margins is None:
-        from order_guard import _load_margins
         m = _load_margins()
     else:
         m = margins
@@ -70,8 +70,8 @@ def check_intelligence_order_guards(
 
     # 1. High-Stake LLM Pre-Trade Guard (Pillar 3 / GI3)
     skip_llm = GUARD_REGISTRY["GI3"].is_bypassed(bypassed)
-    llm_mode = str(m["llm_guard_mode"]).strip().lower()
-    if not skip_llm and llm_mode not in ("off", "0", "disabled"):
+    llm_mode = validate_guard_mode_cfg(m["llm_guard_mode"], "llm_guard_mode")
+    if not skip_llm and llm_mode != "off":
         min_notional = float(m["llm_min_notional_eur"])
         if computed_notional >= min_notional:
             valid_context = regime_context is not None and hasattr(regime_context, "__dict__")

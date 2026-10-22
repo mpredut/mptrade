@@ -162,52 +162,68 @@ class AutonomousAIReconciler:
         self.logs_dirs = [os.path.join(self.workspace_dir, d) for d in (logs_dirs or ["logs", "logger"])]
         self.gemini_auditor = gemini_auditor or StandaloneGeminiAuditor()
 
-        # Parse decoupled configuration directly from config files without importing any internal modules
+        # Parse decoupled configuration strictly from config files without fallbacks
         conf = self._load_decoupled_conf()
-        raw_mode = mode or conf.get("supervisor_mode", "shadow")
+        if mode is not None:
+            raw_mode = mode
+        else:
+            if "supervisor_mode" not in conf:
+                raise KeyError("Missing required 'supervisor_mode' in order_guard.conf")
+            raw_mode = conf["supervisor_mode"]
         self.mode = str(raw_mode).strip().lower()
+        if self.mode not in ("off", "shadow", "enforce"):
+            raise ValueError(f"Invalid supervisor_mode {raw_mode!r}; must be one of ['enforce', 'off', 'shadow']")
 
         if notify_enabled is not None:
             self.notify_enabled = bool(notify_enabled)
         else:
-            self.notify_enabled = bool(int(float(conf.get("supervisor_notify", conf.get("shadow_notify", "1")))))
+            if "supervisor_notify" not in conf:
+                raise KeyError("Missing required 'supervisor_notify' in order_guard.conf")
+            self.notify_enabled = bool(int(float(conf["supervisor_notify"])))
 
         self.ntfy_url = conf.get("phone_alert_url", "")
-        self.ntfy_topic = conf.get("ntfy_topic_guard", conf.get("ntfy_topic", "ntfy-guard-1978"))
+        if "ntfy_topic_guard" not in conf:
+            raise KeyError("Missing required 'ntfy_topic_guard' in config.env")
+        self.ntfy_topic = conf["ntfy_topic_guard"]
         self.ntfy_token = conf.get("ntfy_token", "")
 
         self.state_file = os.path.join(self.cache_dir, "supervisor_nightly_eval.json")
         self.heartbeat_file = os.path.join(self.cache_dir, "supervisor_nightly.heartbeat")
         self.intents_file = os.path.join(self.cache_dir, "autonomous_trade_intents.json")
 
-        self.autonomous_trading_mode = conf.get("autonomous_trading_mode", "shadow").strip().lower()
-        try:
-            self.min_trading_confidence = float(conf.get("autonomous_trading_min_confidence", "0.85"))
-        except (ValueError, TypeError):
-            self.min_trading_confidence = 0.85
-        try:
-            self.max_trading_notional = float(conf.get("autonomous_trading_max_notional_eur", "500.0"))
-        except (ValueError, TypeError):
-            self.max_trading_notional = 500.0
+        if "autonomous_trading_mode" not in conf:
+            raise KeyError("Missing required 'autonomous_trading_mode' in order_guard.conf")
+        self.autonomous_trading_mode = str(conf["autonomous_trading_mode"]).strip().lower()
+        if self.autonomous_trading_mode not in ("off", "shadow", "enforce"):
+            raise ValueError(
+                f"Invalid autonomous_trading_mode {conf['autonomous_trading_mode']!r}; must be one of ['enforce', 'off', 'shadow']"
+            )
+        if "autonomous_trading_min_confidence" not in conf:
+            raise KeyError("Missing required 'autonomous_trading_min_confidence' in order_guard.conf")
+        self.min_trading_confidence = float(conf["autonomous_trading_min_confidence"])
+        if "autonomous_trading_max_notional_eur" not in conf:
+            raise KeyError("Missing required 'autonomous_trading_max_notional_eur' in order_guard.conf")
+        self.max_trading_notional = float(conf["autonomous_trading_max_notional_eur"])
 
     def _load_decoupled_conf(self) -> Dict[str, str]:
         """Parses key-value pairs from order_guard.conf and .env without external imports."""
         conf: Dict[str, str] = {}
-        for fname in ("order_guard.conf", "config.env", ".env"):
-            fpath = os.path.join(self.workspace_dir, fname)
-            if not os.path.exists(fpath):
-                continue
-            try:
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        search_dirs = [repo_root]
+        if os.path.abspath(self.workspace_dir) != os.path.abspath(repo_root):
+            search_dirs.append(self.workspace_dir)
+        for base_dir in search_dirs:
+            for fname in ("order_guard.conf", "config.env", ".env"):
+                fpath = os.path.join(base_dir, fname)
+                if not os.path.exists(fpath):
+                    continue
                 with open(fpath, "r", encoding="utf-8", errors="replace") as f:
                     for line in f:
-                        line = line.strip()
-                        if not line or line.startswith("#"):
+                        line = line.split("#", 1)[0].strip()
+                        if not line or "=" not in line:
                             continue
-                        if "=" in line:
-                            k, v = line.split("=", 1)
-                            conf[k.strip().lower()] = v.strip().strip('"').strip("'")
-            except Exception:
-                pass
+                        k, v = line.split("=", 1)
+                        conf[k.strip().lower()] = v.strip().strip('"').strip("'")
         return conf
 
     def harvest_sensors_telemetry(self) -> TelemetrySensorSnapshot:

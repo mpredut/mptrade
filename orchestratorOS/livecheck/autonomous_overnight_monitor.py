@@ -217,21 +217,23 @@ class AutonomousOvernightMonitor:
         return sensors
 
     def get_autonomous_modes(self) -> Dict[str, str]:
-        """Extracts operational mode settings from order_guard.conf."""
+        """Extracts operational mode settings strictly from order_guard.conf."""
         modes: Dict[str, str] = {}
-        conf_file = os.path.join(self.workspace_dir, "order_guard.conf")
-        if os.path.exists(conf_file):
-            try:
+        search_dirs = [ROOT_DIR]
+        if os.path.abspath(self.workspace_dir) != os.path.abspath(ROOT_DIR):
+            search_dirs.append(self.workspace_dir)
+        for base_dir in search_dirs:
+            conf_file = os.path.join(base_dir, "order_guard.conf")
+            if os.path.exists(conf_file):
                 with open(conf_file, "r", encoding="utf-8", errors="replace") as f:
                     for line in f:
-                        line = line.strip()
-                        if not line or line.startswith("#"):
+                        line = line.split("#", 1)[0].strip()
+                        if not line or "=" not in line:
                             continue
-                        if "=" in line:
-                            k, v = line.split("=", 1)
-                            modes[k.strip().lower()] = v.strip().lower()
-            except Exception:
-                pass
+                        k, v = line.split("=", 1)
+                        modes[k.strip().lower()] = v.strip().lower()
+        if "supervisor_mode" not in modes:
+            raise KeyError("Missing required 'supervisor_mode' in order_guard.conf")
         return modes
 
     def check_dev_backtest_progress(self) -> Dict[str, Any]:
@@ -305,7 +307,7 @@ class AutonomousOvernightMonitor:
             stale_processes=stale_cnt,
             process_details=[asdict(p) for p in proc_health],
             sensor_status=sensors,
-            autonomous_ai_mode=modes.get("supervisor_mode", "enforce"),
+            autonomous_ai_mode=modes["supervisor_mode"],
             dev_backtest_status=dev_status,
             system_resources=resources,
         )
