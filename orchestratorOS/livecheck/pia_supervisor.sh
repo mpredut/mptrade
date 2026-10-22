@@ -286,10 +286,14 @@ UPLINK_MTU="${PIA_UPLINK_MTU:-1280}"
 ip link set dev "$UPLINK_IF" mtu "$UPLINK_MTU" 2>/dev/null \
     || echo "warning: could not set $UPLINK_IF MTU to $UPLINK_MTU (continuing)"
 
-# Prefer IPv4 system-wide.
+# Prefer IPv4 system-wide and disable IPv6 SLAAC/RA on physical uplink.
 if ! grep -qs '^precedence ::ffff:0:0/96' /etc/gai.conf; then
     echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf
 fi
+if [ -f "$ROOT/systemd/sysctl-90-disable-ipv6.conf" ] && [ ! -f /etc/sysctl.d/90-disable-ipv6.conf ]; then
+    install -m 0644 "$ROOT/systemd/sysctl-90-disable-ipv6.conf" /etc/sysctl.d/90-disable-ipv6.conf 2>/dev/null || true
+fi
+sysctl -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 "net.ipv6.conf.${UPLINK_IF}.disable_ipv6=1" net.ipv6.conf.lo.disable_ipv6=0 >/dev/null 2>&1 || true
 
 sleep 5
 

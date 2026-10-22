@@ -13,6 +13,9 @@ network:
   version: 2
   ethernets:
     ens18:
+      dhcp6: false
+      accept-ra: false
+      link-local: []
       dhcp4-overrides:
         use-routes: false
       routes:

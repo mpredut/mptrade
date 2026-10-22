@@ -83,6 +83,10 @@ install -m 0644 "$SYSTEMD_DIR/resolved-20-trading-cache.conf" \
 install -d -m 0755 /etc/ssh/sshd_config.d
 install -m 0644 "$SYSTEMD_DIR/sshd-20-trading.conf" \
   /etc/ssh/sshd_config.d/20-trading.conf
+install -d -m 0755 /etc/sysctl.d
+install -m 0644 "$SYSTEMD_DIR/sysctl-90-disable-ipv6.conf" \
+  /etc/sysctl.d/90-disable-ipv6.conf
+sysctl -p /etc/sysctl.d/90-disable-ipv6.conf >/dev/null 2>&1 || true
 # Direct-to-router uplink (see netplan-99-force-gateway.yaml and DISASTER_RECOVERY.md).
 # Installed but deliberately NOT applied here: `netplan apply` while PIA is connected wipes
 # PIA's policy routing. It takes effect on the next reboot (clean order: netplan then

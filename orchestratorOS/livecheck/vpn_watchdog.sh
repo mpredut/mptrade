@@ -49,6 +49,13 @@ REINSTALL_MARK="$STATE_DIR/last_reinstall"
 SPOOL_MAX_BYTES="${PIA_SPOOL_MAX_BYTES:-262144}"
 LOCK="/tmp/pia_selfheal.lock"
 
+if [ "$(id -u)" -eq 0 ]; then
+    if [ -f "$ROOT/systemd/sysctl-90-disable-ipv6.conf" ] && [ ! -f /etc/sysctl.d/90-disable-ipv6.conf ]; then
+        install -m 0644 "$ROOT/systemd/sysctl-90-disable-ipv6.conf" /etc/sysctl.d/90-disable-ipv6.conf 2>/dev/null || true
+    fi
+    sysctl -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 net.ipv6.conf.ens18.disable_ipv6=1 net.ipv6.conf.lo.disable_ipv6=0 >/dev/null 2>&1 || true
+fi
+
 TRADING_USER="${TRADING_USER:-$(stat -c %U "$ROOT")}"
 id "$TRADING_USER" >/dev/null 2>&1 || {
     echo "invalid repository owner/trading user: $TRADING_USER" >&2
