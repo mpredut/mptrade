@@ -622,12 +622,18 @@ class CacheManagerInterface(ABC):
         prefix = "trade" if self.cls_name in _TRADE_CACHE_CLASSES else "order"
         return f"{prefix}_cache_reader_not_current"
 
-    def _write_meta(self, snapshot):
+    def _write_meta(self, snapshot, fetchtime=None):
         """Atomically write an explicit snapshot matching durable cache data."""
         try:
-            payload = dict(snapshot)
-            fetchtime = payload.get("fetchtime", {})
-            payload["max_ts"] = max(fetchtime.values()) if fetchtime else 0
+            if fetchtime is not None:
+                payload = {
+                    "counts": dict(snapshot or {}),
+                    "fetchtime": dict(fetchtime or {}),
+                }
+            else:
+                payload = dict(snapshot)
+            fetchtime_map = payload.get("fetchtime", {})
+            payload["max_ts"] = max(fetchtime_map.values()) if fetchtime_map else 0
             payload["saved_at"] = int(time.time() * 1000)
             atomic_write_json(self.filename + ".meta", payload)
             return True
@@ -2703,7 +2709,10 @@ class Cache365PriceManager(Cache24PriceManager):
                             changed = True
                 self._load_jsonl()
                 if changed:
-                    self._write_meta(self._persisted_counts, self.fetchtime_per_symbol)
+                    self._write_meta({
+                        "counts": dict(self._persisted_counts),
+                        "fetchtime": dict(self.fetchtime_per_symbol),
+                    })
             if changed:
                 builtins.print(f"[{self.cls_name}][maintain] pruned expired/corrupt disk records")
             if os.path.getsize(self.filename) > self.MAX_FILE_BYTES:
@@ -2732,7 +2741,10 @@ class Cache365PriceManager(Cache24PriceManager):
             with atomic_write(self.filename) as target:
                 target.write(tail.decode("utf-8", errors="ignore"))
             self._load_jsonl()
-            self._write_meta(self._persisted_counts, self.fetchtime_per_symbol)
+            self._write_meta({
+                "counts": dict(self._persisted_counts),
+                "fetchtime": dict(self.fetchtime_per_symbol),
+            })
             with open(archive, "rb") as source, gzip.open(archive + ".gz.tmp", "wb") as target:
                 shutil.copyfileobj(source, target, length=1024 * 1024)
             os.replace(archive + ".gz.tmp", archive + ".gz")

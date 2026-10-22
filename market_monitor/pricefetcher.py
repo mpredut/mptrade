@@ -749,7 +749,10 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                     }
                 }, indent=1)
                 self._persisted_counts = counts
-                self._write_meta(counts, self.fetchtime_per_symbol)
+                self._write_meta({
+                    "counts": dict(counts),
+                    "fetchtime": dict(self.fetchtime_per_symbol),
+                })
                 print(f"[{self.cls_name}][info] Save cache to file {self.filename}")
                 return True
         except Exception as e:
