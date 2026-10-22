@@ -3210,6 +3210,21 @@ class CachePriceShortTrend:
                 entry.setdefault("current_price", current_price)
                 live_sym[wk] = entry
 
+        w_big = wins.get(self.window_seconds[-1])
+        v1h = None
+        adapt_re = None
+        adapt_dca = None
+        if w_big is not None:
+            try:
+                from intelligence.internal.state.volatility import (
+                    adaptive_thresholds,
+                    calculate_volatility_1h,
+                )
+                v1h = calculate_volatility_1h(list(w_big.prices), w_big.sample_rate_sec)
+                adapt_re, adapt_dca = adaptive_thresholds(v1h)
+            except Exception:
+                pass
+
         # Update memory only; the flush loop writes in the background.
         self._set_mem(
             symbol,
@@ -3220,6 +3235,9 @@ class CachePriceShortTrend:
             slopes={f"{int(s)}": v for s, v in slopes.items()},
             slope_max_min=pan.calculate_slope_max_min(),
             pos=primary_pos, epsilon=eps_primary,
+            vol_1h_pct=v1h,
+            adapt_reentry_pct=adapt_re,
+            adapt_dca_pct=adapt_dca,
             current_price=current_price,
             ts=observed_at,
             dynamic=published_dyn,

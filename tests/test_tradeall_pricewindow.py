@@ -154,8 +154,8 @@ class TestTradeallOrderBoundary(unittest.TestCase):
         with self.subTest("ages signal on replay clock"):
             import shadow_signals
             sim_now = [1_780_000_000.0]
-            shadow = shadow_signals.ShadowSet(
-                journal=shadow_signals.ShadowJournal(fixed_path=os.devnull),
+            shadow = shadow_signals.KalmanStateTracker(
+                journal=shadow_signals.KalmanJournal(fixed_path=os.devnull),
                 now_fn=lambda: sim_now[0])
             shadow._state["TAOUSDC"] = {"kalman_trend": 1, "ts": sim_now[0] - 10.0}
             with (patch.object(ta, "_kalman_ref", shadow),

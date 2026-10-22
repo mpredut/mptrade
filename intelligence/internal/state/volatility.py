@@ -154,20 +154,9 @@ def get_kalman_state_path() -> str:
         )
 
 
-def resolve_cached_volatility_1h(
-    symbol: str, state_path: Optional[str] = None
-) -> Optional[float]:
-    """Retrieve 1h realized volatility for symbol from shared Kalman state cache as a decimal ratio.
-
-    Producers (e.g. shadow_signals / calculate_volatility_1h) output percentages (e.g. 2.5 for 2.5%,
-    0.05 for 0.05%). This function acts as the Single Source of Truth (SSOT) to explicitly convert
-    the percentage to a decimal ratio by dividing by 100.0.
-    Returns None if cache is missing, symbol is not found, or value is non-positive/non-finite.
-    """
-    path = state_path or get_kalman_state_path()
-    if not os.path.exists(path):
+def _extract_vol_ratio_from_file(path: str, symbol: str) -> Optional[float]:
+    if not path or not os.path.exists(path):
         return None
-
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -185,6 +174,28 @@ def resolve_cached_volatility_1h(
     except Exception:
         pass
     return None
+
+
+def resolve_cached_volatility_1h(
+    symbol: str, state_path: Optional[str] = None
+) -> Optional[float]:
+    """Retrieve 1h realized volatility for symbol from shared Kalman or trend cache as a decimal ratio.
+
+    Producers (e.g. shadow_signals / cacheManager / calculate_volatility_1h) output percentages
+    (e.g. 2.5 for 2.5%, 0.05 for 0.05%). This function acts as the Single Source of Truth (SSOT)
+    to explicitly convert the percentage to a decimal ratio by dividing by 100.0.
+    Returns None if cache is missing, symbol is not found, or value is non-positive/non-finite.
+    """
+    if state_path is not None:
+        return _extract_vol_ratio_from_file(state_path, symbol)
+
+    kalman_path = get_kalman_state_path()
+    res = _extract_vol_ratio_from_file(kalman_path, symbol)
+    if res is not None:
+        return res
+
+    trend_path = os.path.join(os.path.dirname(kalman_path), "cache_instant_trend.json")
+    return _extract_vol_ratio_from_file(trend_path, symbol)
 
 
 def resolve_cached_volatility_1h_pct(

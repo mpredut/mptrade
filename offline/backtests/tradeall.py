@@ -360,8 +360,8 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
         # SHADOW (observational, the 17 Jul plan): the same objects as live, with the simulated
         # clock; a FLAT journal in the run's folder (the backtest monitor draws it).
         import shadow_signals
-        shadow = shadow_signals.ShadowSet(
-            journal=shadow_signals.ShadowJournal(fixed_path=os.path.join(out_dir, "tradeall_shadow.log")),
+        shadow = shadow_signals.KalmanStateTracker(
+            journal=shadow_signals.KalmanJournal(fixed_path=os.path.join(out_dir, "tradeall_shadow.log")),
             now_fn=clock,
             compute_vol=(speed != "fast"))
         # The KALMAN GATE is in the backtest too (parity with live), but with the block journal

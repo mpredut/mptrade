@@ -760,7 +760,7 @@ class TrendCoordinator:
         try:
             import shadow_signals
             from intelligence.internal.state.volatility import get_kalman_state_path
-            self._kalman_state = shadow_signals.ShadowSet(
+            self._kalman_state = shadow_signals.KalmanStateTracker(
                 state_path=get_kalman_state_path())
             global _kalman_ref
             _kalman_ref = self._kalman_state   # _fire_order's gate reads this signal.

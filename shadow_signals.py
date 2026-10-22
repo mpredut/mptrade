@@ -9,7 +9,7 @@ journaled for visual and quantitative comparison.
 
 KalmanTrend is a constant-velocity level/velocity filter that reports percentage
 velocity, uncertainty, and a {-1, 0, +1} direction. vol_1h_pct estimates one-hour
-volatility from log returns. ShadowJournal writes one condensed row per transition.
+volatility from log returns. KalmanJournal writes one condensed row per transition.
 Environment variables configure process/measurement noise and adaptive multipliers.
 """
 from __future__ import annotations
@@ -57,7 +57,7 @@ _ROOT = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_LOG_DIR = os.path.join(_ROOT, "logger")
 
 
-class ShadowJournal:
+class KalmanJournal:
     """Write sanitized pipe-delimited signal transitions without affecting host.
 
     Format is ts|symbol|signal|event|state|old_state|price|vel|vel_std. Live files
@@ -86,10 +86,10 @@ class ShadowJournal:
             with open(self._path(), "a", encoding="utf-8") as f:
                 f.write("|".join(self._sanitize(c) for c in cols) + "\n")
         except Exception as e:  # noqa: BLE001 — Logging must not stop the host.
-            print(f"[shadow_signals] error writing shadow journal: {e}")
+            print(f"[shadow_signals] error writing kalman journal: {e}")
 
 
-class ShadowSet:
+class KalmanStateTracker:
     """Maintain Kalman/adaptive signals and their journal for a symbol set.
 
     One update call returns snapshot fields. ``state_path`` stores the latest
@@ -97,10 +97,10 @@ class ShadowSet:
     the monitor combines this state file with that snapshot.
     """
 
-    def __init__(self, journal: ShadowJournal | None = None,
+    def __init__(self, journal: KalmanJournal | None = None,
                  state_path: str | None = None, state_min_interval: float = 1.0,
                  now_fn=None, compute_vol: bool = True):
-        self.journal = journal or ShadowJournal()
+        self.journal = journal or KalmanJournal()
         # current_trend() ages the signal against this clock. Live uses wall time; a
         # replay must inject its simulated clock, or every signal looks months old and
         # the order gate blocks every BUY.
