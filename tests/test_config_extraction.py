@@ -190,6 +190,7 @@ class TestModuleSpecifics(unittest.TestCase):
             "AG_PORTFOLIO_GROWTH_PCT",
             "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT",
             "AG_PORTFOLIO_SELL_ALLOCATION",
+            "AG_PORTFOLIO_SELL_MAX_DISCOUNT",
             "AG_RTRADE_BLOCK_CANCEL_SEC",
             "AG_P3B_MAX_AGE_SEC",
             "AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT",

@@ -71,6 +71,7 @@ class AssetGuardianTest(unittest.TestCase):
                     "AG_PORTFOLIO_GROWTH_PCT",
                     "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT",
                     "AG_PORTFOLIO_SELL_ALLOCATION",
+                    "AG_PORTFOLIO_SELL_MAX_DISCOUNT",
                     "AG_RTRADE_BLOCK_CANCEL_SEC",
                     "AG_P3B_MAX_AGE_SEC",
                     "AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT",
@@ -1226,6 +1227,68 @@ class AssetGuardianTest(unittest.TestCase):
                 tier_acc, _ = ag._campaign_tier(
                     "TAOUSDC", 5.0, maximum, 1000.0, p3b_assessment=accumulate_p3b)
                 self.assertEqual(tier_acc, (7.0, 0.35))
+
+        with self.subTest(msg="test_combined_p3b_and_portfolio_growth_compress_all_sell_thresholds"):
+            # 1. Neutral P3B (1.0x) + Portfolio Growth >= 2.2% compresses static tiers by 20%
+            self.assertAlmostEqual(
+                ag._trigger_threshold_for_sell_tier(4.1, 1.0, portfolio_growth_pct=2.5),
+                4.10,
+            )
+            self.assertAlmostEqual(
+                ag._trigger_threshold_for_sell_tier(9.0, 1.0, portfolio_growth_pct=2.5),
+                7.20,
+            )
+            self.assertAlmostEqual(
+                ag._trigger_threshold_for_sell_tier(12.0, 1.0, portfolio_growth_pct=2.5),
+                9.60,
+            )
+            self.assertAlmostEqual(
+                ag._trigger_threshold_for_sell_tier(15.0, 1.0, portfolio_growth_pct=2.5),
+                12.00,
+            )
+
+            # 2. TRIM_PROFITS (0.65x) lowers portfolio activation threshold from 2.2% to 1.43%
+            self.assertAlmostEqual(ag._effective_portfolio_growth_threshold(0.65), 1.43)
+            active_trim = ag._effective_sell_tiers(portfolio_growth_pct=1.50, sell_mult=0.65)
+            self.assertEqual(active_trim[0], (4.1, 0.20))
+            self.assertAlmostEqual(
+                ag._trigger_threshold_for_sell_tier(4.1, 0.65, portfolio_growth_pct=1.50),
+                3.50,
+            )
+            self.assertAlmostEqual(
+                ag._trigger_threshold_for_sell_tier(9.0, 0.65, portfolio_growth_pct=1.50),
+                4.68,
+            )
+            self.assertAlmostEqual(
+                ag._trigger_threshold_for_sell_tier(12.0, 0.65, portfolio_growth_pct=1.50),
+                6.24,
+            )
+            self.assertAlmostEqual(
+                ag._trigger_threshold_for_sell_tier(15.0, 0.65, portfolio_growth_pct=1.50),
+                7.80,
+            )
+
+            # 3. DEFENSIVE (0.50x) lowers portfolio activation threshold from 2.2% to 1.10%
+            self.assertAlmostEqual(ag._effective_portfolio_growth_threshold(0.50), 1.10)
+            active_def = ag._effective_sell_tiers(portfolio_growth_pct=1.20, sell_mult=0.50)
+            self.assertEqual(active_def[0], (4.1, 0.20))
+            self.assertAlmostEqual(
+                ag._trigger_threshold_for_sell_tier(4.1, 0.50, portfolio_growth_pct=1.20),
+                3.50,
+            )
+            self.assertAlmostEqual(
+                ag._trigger_threshold_for_sell_tier(9.0, 0.50, portfolio_growth_pct=1.20),
+                4.00,
+            )
+            self.assertAlmostEqual(
+                ag._trigger_threshold_for_sell_tier(12.0, 0.50, portfolio_growth_pct=1.20),
+                4.80,
+            )
+            self.assertAlmostEqual(
+                ag._trigger_threshold_for_sell_tier(15.0, 0.50, portfolio_growth_pct=1.20),
+                6.00,
+            )
+
 
 
 

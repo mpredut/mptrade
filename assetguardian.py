@@ -44,6 +44,7 @@ REQUIRED_CONFIG_KEYS = (
     "AG_PORTFOLIO_GROWTH_PCT",
     "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT",
     "AG_PORTFOLIO_SELL_ALLOCATION",
+    "AG_PORTFOLIO_SELL_MAX_DISCOUNT",
     "AG_RTRADE_BLOCK_CANCEL_SEC",
     "AG_P3B_MAX_AGE_SEC",
     "AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT",
@@ -113,6 +114,8 @@ PORTFOLIO_ASSET_MIN_GROWTH_PERCENT = _required_float_config(
     "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT")
 PORTFOLIO_SELL_ALLOCATION = _required_float_config(
     "AG_PORTFOLIO_SELL_ALLOCATION")
+PORTFOLIO_SELL_MAX_DISCOUNT = _required_float_config(
+    "AG_PORTFOLIO_SELL_MAX_DISCOUNT")
 RTRADE_BLOCK_CANCEL_SECONDS = _required_float_config(
     "AG_RTRADE_BLOCK_CANCEL_SEC")
 P3B_MAX_AGE_SECONDS = _required_float_config("AG_P3B_MAX_AGE_SEC")
@@ -233,6 +236,9 @@ def _validate_config():
             raise ValueError(f"{name} must be finite and > 0")
     if not math.isfinite(PORTFOLIO_SELL_ALLOCATION) or not 0 < PORTFOLIO_SELL_ALLOCATION <= 1:
         raise ValueError("AG_PORTFOLIO_SELL_ALLOCATION must be in (0, 1]")
+    if (not math.isfinite(PORTFOLIO_SELL_MAX_DISCOUNT)
+            or not 0 < PORTFOLIO_SELL_MAX_DISCOUNT <= 0.50):
+        raise ValueError("AG_PORTFOLIO_SELL_MAX_DISCOUNT must be in (0, 0.50]")
     if PORTFOLIO_ASSET_MIN_GROWTH_PERCENT <= SELL_REARM_GROWTH_PERCENT:
         raise ValueError(
             "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT must be above AG_SELL_REARM_GROWTH_PCT")
@@ -508,13 +514,39 @@ def _p3b_threshold_multipliers(assessment=None):
     return sell_mult, buy_mult, assessment
 
 
-def _trigger_threshold_for_sell_tier(canonical_threshold, sell_mult=1.0):
-    """Return effective growth trigger (%) for a canonical SELL tier."""
+def _effective_portfolio_growth_threshold(sell_mult=1.0):
+    """Return effective 24h portfolio growth threshold (%) scaled by P3B sell_mult."""
+    return PORTFOLIO_GROWTH_PERCENT * float(sell_mult)
+
+
+def _portfolio_sell_multiplier(portfolio_growth_pct=None, sell_mult=1.0):
+    """Return SELL threshold compression multiplier from 24h portfolio growth."""
+    pg = _finite_float(portfolio_growth_pct)
+    if pg is not None and pg >= _effective_portfolio_growth_threshold(sell_mult):
+        return 1.0 - PORTFOLIO_SELL_MAX_DISCOUNT
+    return 1.0
+
+
+def _trigger_threshold_for_sell_tier(
+    canonical_threshold, sell_mult=1.0, portfolio_growth_pct=None
+):
+    """Return effective growth trigger (%) for a canonical SELL tier.
+
+    - The hybrid 4.1% tier (already unlocked by portfolio growth) is compressed by
+      P3B sell_mult down to a floor of SELL_REARM_GROWTH_PERCENT + 1.5 (3.5%).
+    - Static SELL tiers (9, 12, 15, 25, 35%) are compressed by both P3B sell_mult
+      and portfolio growth multiplier down to SELL_REARM_GROWTH_PERCENT + 2.0 (4.0%),
+      preserving strict ordering above the hybrid tier.
+    """
     thr = float(canonical_threshold)
     static_thresholds = {float(t) for t, _ in SELL_TIERS}
     if thr not in static_thresholds and abs(thr - PORTFOLIO_ASSET_MIN_GROWTH_PERCENT) <= 1e-9:
-        return thr
-    return max(SELL_REARM_GROWTH_PERCENT + 0.5, thr * float(sell_mult))
+        return max(SELL_REARM_GROWTH_PERCENT + 1.5, thr * float(sell_mult))
+    pg_mult = _portfolio_sell_multiplier(portfolio_growth_pct, sell_mult)
+    return max(
+        SELL_REARM_GROWTH_PERCENT + 2.0,
+        thr * float(sell_mult) * float(pg_mult),
+    )
 
 
 def _trigger_threshold_for_buy_tier(canonical_threshold, buy_mult=1.0):
@@ -1198,11 +1230,11 @@ def _resolve_blocking_sell_orders(symbol, open_sells):
     return remaining
 
 
-def _effective_sell_tiers(portfolio_growth_pct=None):
+def _effective_sell_tiers(portfolio_growth_pct=None, sell_mult=1.0):
     """Include the hybrid portfolio+price_monitor tranche when total account value is up."""
     tiers = list(SELL_TIERS)
     pg = _finite_float(portfolio_growth_pct)
-    if pg is not None and pg >= PORTFOLIO_GROWTH_PERCENT:
+    if pg is not None and pg >= _effective_portfolio_growth_threshold(sell_mult):
         hybrid_thr = float(PORTFOLIO_ASSET_MIN_GROWTH_PERCENT)
         if all(abs(t - hybrid_thr) > 1e-9 for t, _ in tiers):
             tiers.append((hybrid_thr, float(PORTFOLIO_SELL_ALLOCATION)))
@@ -1228,10 +1260,11 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
             _save_symbol_campaign(symbol, "sell", {})
         return None, {}, None
 
-    active_tiers = _effective_sell_tiers(portfolio_growth_pct)
     sell_mult, _, _ = _p3b_threshold_multipliers(p3b_assessment)
+    active_tiers = _effective_sell_tiers(portfolio_growth_pct, sell_mult=sell_mult)
     min_trigger_thr = min(
-        _trigger_threshold_for_sell_tier(t, sell_mult) for t, _ in active_tiers
+        _trigger_threshold_for_sell_tier(t, sell_mult, portfolio_growth_pct)
+        for t, _ in active_tiers
     )
 
     if state:
@@ -1299,7 +1332,9 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
     initial_qty = _finite_float(state.get("initial_qty"), positive=True)
     filled_by_tier = dict(state.get("filled_qty_by_tier") or {})
     for threshold, allocation in active_tiers:
-        trigger_thr = _trigger_threshold_for_sell_tier(threshold, sell_mult)
+        trigger_thr = _trigger_threshold_for_sell_tier(
+            threshold, sell_mult, portfolio_growth_pct
+        )
         if growth < trigger_thr or threshold in completed:
             continue
         target_qty = min(free_qty, initial_qty * allocation)
@@ -1447,10 +1482,11 @@ def _next_check_seconds():
                 and buy_next - max(0.0, -drawdown) <= NEAR_TRIGGER_DISTANCE_PCT):
             return min(CHECK_INTERVAL_SECONDS, NEAR_TRIGGER_SECONDS)
         growth = evaluation.get("growth")
+        pg = evaluation.get("portfolio_growth")
         sell_completed = _completed_tier_values(row.get("sell", {}))
-        active_tiers = _effective_sell_tiers(evaluation.get("portfolio_growth"))
+        active_tiers = _effective_sell_tiers(pg, sell_mult=sell_mult)
         sell_next = next(
-            (_trigger_threshold_for_sell_tier(threshold, sell_mult)
+            (_trigger_threshold_for_sell_tier(threshold, sell_mult, pg)
              for threshold, _ in active_tiers
              if threshold not in sell_completed),
             None,
@@ -1555,7 +1591,9 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
 
     if sell_tier is not None:
         threshold, allocation, qty = sell_tier
-        eff_sell_thr = _trigger_threshold_for_sell_tier(threshold, sell_mult)
+        eff_sell_thr = _trigger_threshold_for_sell_tier(
+            threshold, sell_mult, portfolio_growth_pct
+        )
         print(
             f"[{symbol}] SELL tier +{threshold:.2f}% (trigger +{eff_sell_thr:.2f}%) "
             f"allocation={allocation:.3f} target_remaining={qty:.8f} base."
