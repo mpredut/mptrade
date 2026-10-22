@@ -911,7 +911,7 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
         with self.subTest("stores price and marks ws event"):
             mgr, _ = self._make()
             before = time.time()
-            mgr.on_items_update("BTC", [55000.0])
+            mgr.on_items_update("BTC", [[int(before * 1000), 55000.0]])
             with mgr.lock:
                 entries = mgr.cache.get("BTC", [])
             self.assertTrue(entries)
@@ -929,8 +929,9 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
 
         with self.subTest("snapshot mode replaces"):
             mgr, _ = self._make()
-            mgr.on_items_update("BTC", [50000.0])
-            mgr.on_items_update("BTC", [60000.0])
+            now_ms = int(time.time() * 1000)
+            mgr.on_items_update("BTC", [[now_ms, 50000.0]])
+            mgr.on_items_update("BTC", [[now_ms + 1, 60000.0]])
             with mgr.lock:
                 entries = mgr.cache["BTC"]
             self.assertEqual(len(entries), 1)
@@ -943,7 +944,7 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
     def test_get_price_and_value_cache_and_http_fallback(self):
         with self.subTest("fresh price read apis use cached value"):
             mgr, api_mock = self._make()
-            mgr.on_items_update("BTC", [55000.0])
+            mgr.on_items_update("BTC", [[int(time.time() * 1000), 55000.0]])
             api_mock.get_current_price.reset_mock()
             entry = mgr.get_price("BTC")
             self.assertIsNotNone(entry)
@@ -1029,7 +1030,7 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
 
         with self.subTest("cached price observation never fetches"):
             mgr, api_mock = self._make()
-            mgr.on_items_update("BTC", [55000.0])
+            mgr.on_items_update("BTC", [[int(time.time() * 1000), 55000.0]])
             api_mock.get_current_price.reset_mock()
 
             observed_at, price = mgr.get_cached_price_observation(
@@ -1065,7 +1066,7 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
             mgr, _ = self._make()
             sub = MagicMock()
             mgr.subscribe_price(sub)
-            mgr.on_items_update("BTC", [62000.0])
+            mgr.on_items_update("BTC", [[int(time.time() * 1000), 62000.0]])
             sub.on_price_update.assert_called_once()
             args = sub.on_price_update.call_args[0]
             self.assertEqual(args[0], "BTC")
@@ -1088,7 +1089,7 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
             good = MagicMock()
             mgr.subscribe_price(bad)
             mgr.subscribe_price(good)
-            mgr.on_items_update("BTC", [1.0])
+            mgr.on_items_update("BTC", [[int(time.time() * 1000), 1.0]])
             good.on_price_update.assert_called_once()
 
         with self.subTest("unsubscribed not notified"):
@@ -1096,7 +1097,7 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
             sub = MagicMock()
             mgr.subscribe_price(sub)
             mgr.unsubscribe_price(sub)
-            mgr.on_items_update("BTC", [1.0])
+            mgr.on_items_update("BTC", [[int(time.time() * 1000), 1.0]])
             sub.on_price_update.assert_not_called()
 
     # ── WS health ─────────────────────────────────────────────────────────────
@@ -1113,7 +1114,7 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
     def test_persistence_reload(self):
         mgr, api_mock = self._make()
         mgr.enable_save_state_to_file()
-        mgr.on_items_update("BTC", [58000.0])
+        mgr.on_items_update("BTC", [[int(time.time() * 1000), 58000.0]])
         mgr.save_state_to_file_if_enabled()
 
         mgr2 = cm.CacheCurrentPriceManager(

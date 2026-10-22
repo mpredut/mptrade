@@ -685,13 +685,15 @@ def test_cache_manager_polymorphic_update_overloading_and_readonly_safety(tmp_pa
     assert trows[0]["commission"] == "0.06"
     assert trows[0]["commissionAsset"] == "USDC"
 
-    # 3. CacheCurrentPrice._persist_items accepts both [[ts_ms, price]] and [price, ts_ms] and empty list safely
+    # 3. CacheCurrentPrice._persist_items accepts canonical [[ts_ms, price]] and [ts_ms, price] and rejects bare [price]
     cp_file = str(tmp_path / "cp_poly.json")
     with open(cp_file, "w", encoding="utf-8") as fh:
         json.dump({"items": {}, "fetchtime": {}}, fh)
     cp_mgr = cm.CacheCurrentPrice(60, ["BTCUSDC"], cp_file)
     cp_mgr._persist_items("BTCUSDC", [])
-    cp_mgr._persist_items("BTCUSDC", [61234.5, 1700000005000])
+    cp_mgr._persist_items("BTCUSDC", [61234.5])
+    assert cp_mgr.cache.get("BTCUSDC", []) == []
+    cp_mgr._persist_items("BTCUSDC", [1700000005000, 61234.5])
     assert cp_mgr.cache["BTCUSDC"] == [[1700000005000, 61234.5]]
     cp_mgr._persist_items("BTCUSDC", [[1700000006000, 61250.0]])
     assert cp_mgr.cache["BTCUSDC"] == [[1700000006000, 61250.0]]

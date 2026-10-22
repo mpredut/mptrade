@@ -120,19 +120,22 @@ class TestIntegration(unittest.TestCase):
         self.cur.subscribe_price(self.h24)
 
     def test_ws_event_updates_current_price(self):
-        self.ws._notify_subscribers("BTCUSDC", [55000.0])
+        now_ms = int(cm.time.time() * 1000)
+        self.ws._notify_subscribers("BTCUSDC", [[now_ms, 55000.0]])
         self.assertEqual(self.cur.get_price_value("BTCUSDC"), 55000.0)
 
     def test_ws_event_propagates_to_cache24(self):
-        self.ws._notify_subscribers("BTCUSDC", [56000.0])
+        now_ms = int(cm.time.time() * 1000)
+        self.ws._notify_subscribers("BTCUSDC", [[now_ms, 56000.0]])
         with self.h24.lock:
             entries = self.h24.cache.get("BTCUSDC", [])
         self.assertIn(56000.0, [e[1] for e in entries])
 
     def test_multiple_ws_events_all_recorded_in_cache24(self):
         prices = [50000.0, 50100.0, 50200.0, 50300.0]
-        for p in prices:
-            self.ws._notify_subscribers("BTCUSDC", [p])
+        base_ms = int(cm.time.time() * 1000)
+        for idx, p in enumerate(prices):
+            self.ws._notify_subscribers("BTCUSDC", [[base_ms + idx, p]])
         with self.h24.lock:
             recorded = [e[1] for e in self.h24.cache.get("BTCUSDC", [])]
         for p in prices:
@@ -140,14 +143,16 @@ class TestIntegration(unittest.TestCase):
 
     def test_current_price_snapshot_not_history(self):
         """CurrentPrice is a snapshot while Cache24 retains price history."""
-        self.ws._notify_subscribers("BTCUSDC", [57000.0])
+        now_ms = int(cm.time.time() * 1000)
+        self.ws._notify_subscribers("BTCUSDC", [[now_ms, 57000.0]])
         with self.cur.lock:
             self.assertEqual(len(self.cur.cache.get("BTCUSDC", [])), 1)
 
     def test_persistence_currentprice(self):
         """Load the cache from its file after a simulated restart."""
         self.cur.enable_save_state_to_file()
-        self.ws._notify_subscribers("BTCUSDC", [58000.0])
+        now_ms = int(cm.time.time() * 1000)
+        self.ws._notify_subscribers("BTCUSDC", [[now_ms, 58000.0]])
         self.cur.save_state_to_file_if_enabled()
         mgr2 = cm.CacheCurrentPriceManager(
             sync_ts=9999, symbols=SYMBOLS,

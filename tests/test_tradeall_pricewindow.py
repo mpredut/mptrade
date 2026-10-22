@@ -613,9 +613,9 @@ class TestCacheCurrentPriceFrequency(unittest.TestCase):
 
         with self.subTest("updates produce sample rate and frequency"):
             t0 = time.time()
-            self.mgr.on_items_update("BTCUSDT", [60000.0])
+            self.mgr.on_items_update("BTCUSDT", [[int(t0 * 1000), 60000.0]])
             time.sleep(0.15)
-            self.mgr.on_items_update("BTCUSDT", [60001.0])
+            self.mgr.on_items_update("BTCUSDT", [[int(time.time() * 1000), 60001.0]])
             elapsed = time.time() - t0
             rate = self.mgr.get_sample_rate("BTCUSDT", fallback=9.9)
             self.assertGreater(rate, 0.0)
@@ -627,14 +627,14 @@ class TestCacheCurrentPriceFrequency(unittest.TestCase):
             self.mgr._update_timestamps.clear()
             old_ts = time.time() - cm.CacheCurrentPriceManager.FREQ_WINDOW_SEC - 10
             self.mgr._update_timestamps["BTCUSDT"].append(old_ts)
-            self.mgr.on_items_update("BTCUSDT", [60000.0])
+            self.mgr.on_items_update("BTCUSDT", [[int(time.time() * 1000), 60000.0]])
             dq = self.mgr._update_timestamps["BTCUSDT"]
             cutoff = time.time() - cm.CacheCurrentPriceManager.FREQ_WINDOW_SEC - 1
             self.assertTrue(all(t > cutoff for t in dq))
 
         with self.subTest("single update returns fallback"):
             self.mgr._update_timestamps.clear()
-            self.mgr.on_items_update("BTCUSDT", [60000.0])
+            self.mgr.on_items_update("BTCUSDT", [[int(time.time() * 1000), 60000.0]])
             self.assertAlmostEqual(self.mgr.get_sample_rate("BTCUSDT", fallback=1.23), 1.23)
 
 
@@ -650,8 +650,9 @@ class _FakeWSManager:
         if sub not in self._subs:
             self._subs.append(sub)
     def push(self, symbol, price):
+        now_ms = int(time.time() * 1000)
         for s in list(self._subs):
-            s.on_items_update(symbol, [price])
+            s.on_items_update(symbol, [[now_ms, price]])
 
 
 class _RecordingSubscriber:
@@ -719,7 +720,7 @@ class TestSubscriberPatternInheritance(unittest.TestCase):
                 filename=fname, ws_manager=None, api_client=mock_bapi,
             )
             self.assertFalse(mgr._ws_is_healthy())
-            mgr.on_items_update("BTCUSDT", [50000.0])
+            mgr.on_items_update("BTCUSDT", [[int(time.time() * 1000), 50000.0]])
             self.assertTrue(mgr._ws_is_healthy())
 
 
@@ -929,7 +930,7 @@ class TestTrendCoordinator(unittest.TestCase):
             sync_ts=9999, symbols=["BTCUSDT"],
             filename=fname, ws_manager=None, api_client=mock_bapi,
         )
-        self.cpm.on_items_update("BTCUSDT", [60000.0])
+        self.cpm.on_items_update("BTCUSDT", [[int(time.time() * 1000), 60000.0]])
 
         # The manager owns the windows + calc + cross-process cache
         self.mgr = cm.CachePriceShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "trend.json"))

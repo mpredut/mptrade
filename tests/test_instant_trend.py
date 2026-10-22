@@ -140,7 +140,7 @@ class TestStore(unittest.TestCase):
         c = cm.CacheCurrentPriceManager(sync_ts=9999, symbols=["BTCUSDT"],
                                         filename=fname, ws_manager=None, api_client=mock_api,
                                         market_api=mock_api)
-        c.on_items_update("BTCUSDT", [60000.0])
+        c.on_items_update("BTCUSDT", [[int(time.time() * 1000), 60000.0]])
         return c
 
     def test_cross_process_behavior(self):

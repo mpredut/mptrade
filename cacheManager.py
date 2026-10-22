@@ -2971,15 +2971,17 @@ class CacheCurrentPriceManager(CacheManagerInterface):
 
     @staticmethod
     def _extract_price_and_ts(items):
-        """Extract ``(price, ts_ms)`` from either ``[[ts_ms, price]]`` or ``[price, ts_ms]``."""
-        if not items:
+        """Extract ``(price, ts_ms)`` from canonical ``[[ts_ms, price]]`` or ``[ts_ms, price]``."""
+        if not items or not isinstance(items, (list, tuple)):
             return None, None
         first = items[0]
-        if isinstance(first, (list, tuple)) and len(first) >= 2:
-            return first[1], (int(first[0]) if first[0] is not None else None)
-        price = first
-        ts_ms = int(items[1]) if len(items) >= 2 and items[1] is not None else None
-        return price, ts_ms
+        if isinstance(first, (list, tuple)):
+            if len(first) < 2 or first[0] is None or first[1] is None:
+                return None, None
+            return first[1], int(first[0])
+        if len(items) >= 2 and items[0] is not None and items[1] is not None:
+            return items[1], int(items[0])
+        return None, None
 
     def on_items_update(self, symbol: str, items):
         """Handle a real WebSocket event and update WebSocket health."""
