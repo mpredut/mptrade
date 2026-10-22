@@ -116,7 +116,7 @@ class TrailingCore:
         """Apply one terminal fill exactly once, then acknowledge pending state."""
         status = result.status
         pending = result.intent
-        action = str(pending.get("action") or "").upper()
+        action = str(pending.get("action") or (pending.get("metadata") or {}).get("action") or "").upper()
         filled = float(status.filled_qty or 0.0)
         avg = (float(status.cost) / filled
                if filled > 0 and float(status.cost or 0.0) > 0 else price)
@@ -344,6 +344,17 @@ class TrailingCore:
         if total_pos <= 0:
             total_pos = free
         if total_pos * price < self.min_notional:
+            sold_qty = float(st.get("exit_sold_qty", 0.0) or 0.0)
+            if sold_qty > 0:
+                sold_cost = float(st.get("exit_sold_cost", 0.0) or 0.0)
+                overall_avg = sold_cost / sold_qty if sold_cost > 0 else price
+                st["peak"] = overall_avg
+                if self._rebuy_for(pair, arm=True):
+                    st["rebuy"] = {
+                        "qty": sold_qty,
+                        "sell_price": overall_avg,
+                        "low": min(overall_avg, price),
+                    }
             st["is_flat"] = True
             st.pop("target_exit_qty", None)
             st.pop("exit_sold_qty", None)

@@ -648,8 +648,12 @@ class HyperliquidProvider(MarketDataProvider):
                 filled += sz
                 cost += sz * fill_price
                 fee_info = extract_order_fee(f)
-                raw_fee = fee_info["fee"] if fee_info is not None else 0.0
-                fee_token = fee_info["fee_asset"] if fee_info is not None else ""
+                if fee_info is not None:
+                    raw_fee = fee_info["fee"]
+                    fee_token = fee_info["fee_asset"]
+                else:
+                    raw_fee = float(f.get("fee", f.get("commission", 0.0)) or 0.0)
+                    fee_token = str(f.get("feeToken") or f.get("feeAsset") or "").strip().upper()
                 # Hyperliquid usually charges BUY fees in base and SELL fees in
                 # quote. Convert base fees at the exact fill price for quote accounting.
                 if fee_token == self._token:

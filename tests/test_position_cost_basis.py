@@ -403,5 +403,65 @@ def test_cross_venue_and_ws_extract_normalization_edges():
     assert resolve_order_owner("AGB1234abcd") == "assetguardian"
 
 
+def test_trailing_core_partial_exit_Transition_to_flat_arms_rebuy(tmp_path):
+    from trailing_core import TrailingCore
+
+    class DummyAdapter:
+        def __init__(self):
+            self.free = 0.0
+            self.px = 50.0
+
+        def assets(self):
+            return [("HYPE", "HYPE", "HYPEUSD", 18.0)]
+
+        def begin_tick(self):
+            return True
+
+        def free_qty(self, _asset):
+            return self.free
+
+        def total_qty(self, _asset):
+            return self.free
+
+        def price(self, _pair):
+            return self.px
+
+        def trend(self, _pair):
+            return 0.0
+
+        def log_hold(self, *_a):
+            pass
+
+    adapter = DummyAdapter()
+    state_file = str(tmp_path / "trailing_state.json")
+    core = TrailingCore(
+        adapter,
+        log=lambda *_a: None,
+        enabled=True,
+        state_file=state_file,
+        min_notional=10.0,
+        rebuy_enabled=True,
+        rebuy_bounce_pct=5.0,
+        rebuy_skip_if_trend_down=False,
+    )
+    # Seed state with an in-progress partial exit that sold 4.0 @ 45.0, then balance becomes 0 on next tick
+    core.save({
+        "HYPE": {
+            "peak": 60.0,
+            "target_exit_qty": 10.0,
+            "exit_sold_qty": 4.0,
+            "exit_sold_cost": 180.0,
+        }
+    })
+    adapter.free = 0.0
+    adapter.px = 50.0  # above stop (49.2), position now flat
+    core.check_once()
+    st = core.load()["HYPE"]
+    assert st.get("is_flat") is True
+    assert "exit_sold_qty" not in st
+    assert st.get("rebuy") == {"qty": pytest.approx(4.0), "sell_price": pytest.approx(45.0), "low": pytest.approx(45.0)}
+
+
+
 
 
