@@ -32,6 +32,11 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EMAIL_MIRRORED_CATEGORIES = ("ERROR", "DEADMAN", "SERVER")
 
 _SMTP_TIMEOUT_SEC = 15
+_LAST_ERROR_IS_AUTH = False
+
+
+def last_error_is_auth_failure() -> bool:
+    return _LAST_ERROR_IS_AUTH
 
 
 def _disabled() -> bool:
@@ -96,12 +101,17 @@ def is_configured() -> bool:
 def _smtp_send(msg: MIMEText, cfg: dict) -> None:
     with smtplib.SMTP(cfg["server"], cfg["port"], timeout=_SMTP_TIMEOUT_SEC) as smtp:
         smtp.starttls()
+        smtp.ehlo()
+        if "PLAIN" in smtp.esmtp_features.get("auth", ""):
+            smtp.esmtp_features["auth"] = "PLAIN"
         smtp.login(cfg["username"], cfg["password"])
         smtp.sendmail(cfg["username"], [cfg["to"]], msg.as_string())
 
 
 def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
     """Send one email. Returns True on SMTP acceptance (or a suppressed duplicate)."""
+    global _LAST_ERROR_IS_AUTH
+    _LAST_ERROR_IS_AUTH = False
     if _disabled():
         return True
     cfg = _config()
@@ -126,6 +136,10 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
     msg["Subject"] = subject
     try:
         _smtp_send(msg, cfg)
+    except smtplib.SMTPAuthenticationError as e:
+        _LAST_ERROR_IS_AUTH = True
+        logging.error(f"Email delivery failed for {subject!r} (SMTP auth rejected): {e}")
+        return False
     except Exception as e:  # noqa: BLE001 — any SMTP/network failure is a soft failure
         logging.error(f"Email delivery failed for {subject!r}: {e}")
         return False

@@ -93,6 +93,15 @@ class EmailMirrorTest(unittest.TestCase):
             payload = json.loads(fh.readline())
         self.assertEqual(payload, {"__orchestrator_intent__": "email", "subject": "S", "message": "B"})
 
+    def test_auth_rejected_email_is_not_queued_for_retry(self):
+        import smtplib
+        with mock.patch.object(
+            mailer, "_smtp_send", side_effect=smtplib.SMTPAuthenticationError(535, b"BadCredentials")
+        ):
+            self.assertFalse(self.server._send_email("S", "B"))
+        self.assertTrue(mailer.last_error_is_auth_failure())
+        self.assertFalse(os.path.exists(self.server.queue_file))
+
     def test_orchestrated_email_intent_is_delivered(self):
         line = json.dumps({"__orchestrator_intent__": "email", "subject": "Subj", "message": "Body"})
         self.server.process_line(line, "bot")

@@ -10,7 +10,14 @@ import requests
 from collections import defaultdict
 from typing import Dict, Any, List
 
-from notify_engine.mailer import is_configured as email_is_configured, is_email_mirrored, send_email
+from notify_engine.mailer import (
+    is_configured as email_is_configured,
+    is_email_mirrored,
+    last_error_is_auth_failure,
+    send_email,
+)
+
+_MAX_QUEUE_RETRIES = 5
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] Orchestrator: %(message)s")
 
@@ -296,7 +303,7 @@ class NotificationServer:
     def _send_email(self, subject: str, message: str, is_retry: bool = False) -> bool:
         # Retries bypass dedup: the first attempt already reserved this fingerprint.
         ok = send_email(subject, message, dedup=not is_retry)
-        if not ok and not is_retry and email_is_configured():
+        if not ok and not is_retry and email_is_configured() and not last_error_is_auth_failure():
             self._enqueue_payload("email", {"subject": subject, "message": message})
         return ok
 
@@ -662,6 +669,7 @@ class NotificationServer:
                 read_count = len(lines)
                 remaining = []
                 success_count = 0
+                failed_intents: set[str] = set()
                 
                 for line in lines:
                     line = line.strip()
@@ -673,8 +681,8 @@ class NotificationServer:
                     except Exception:
                         continue
                     
-                    if not remaining:  # No failures in this batch yet
-                        intent = payload.get("__orchestrator_intent__")
+                    intent = payload.get("__orchestrator_intent__")
+                    if intent not in failed_intents:
                         success = False
                         if intent == "ntfy_webhook":
                             if "title" in payload:
@@ -714,8 +722,25 @@ class NotificationServer:
                             
                         if success:
                             success_count += 1
+                        elif intent == "email" and last_error_is_auth_failure():
+                            failed_intents.add(intent)
+                            logging.warning(
+                                f"Dropping queued email due to permanent SMTP authentication failure: {payload.get('subject', '')!r}"
+                            )
                         else:
-                            remaining.append(line)
+                            failed_intents.add(intent)
+                            retries = int(payload.get("retry_count", 0)) + 1
+                            if retries >= _MAX_QUEUE_RETRIES:
+                                logging.warning(
+                                    f"Dropping queued {intent} notification after {retries} failed retries"
+                                )
+                            else:
+                                payload["retry_count"] = retries
+                                remaining.append(json.dumps(payload))
+                    elif intent == "email" and last_error_is_auth_failure():
+                        logging.warning(
+                            f"Dropping queued email due to permanent SMTP authentication failure: {payload.get('subject', '')!r}"
+                        )
                     else:
                         remaining.append(line)
                         
