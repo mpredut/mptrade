@@ -11,6 +11,12 @@ from state_io import atomic_write_json
 import utils as u
 import symbols as sym
 from . import bapi as api
+from providers.base import (
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
+    extract_timestamp_ms,
+)
 
 # 
 # Process-wide trade cache.
@@ -43,42 +49,63 @@ trade_cache = []
 
 def aggregate_trades(trades):
     aggregated_trades = defaultdict(lambda: {
-        'symbol': '', 'price': '', 'qty': 0, 'quoteQty': 0, 'commission': 0, 'commissionAsset': '', 'time': 0, 'isBuyer': None, 'isMaker': None, 'isBestMatch': None, 'id': 0
+        'symbol': '', 'price': '', 'qty': 0.0, 'quoteQty': 0.0, 'weightedCost': 0.0,
+        'count': 0, 'commission': 0.0, 'commissionAsset': '', 'time': 0,
+        'isBuyer': None, 'isMaker': None, 'isBestMatch': None, 'id': 0,
     })
-    
+
     # Group fills by order ID.
     for trade in trades:
         orderId = trade['orderId']
-        
+        qty = extract_order_qty(trade)
+        px = extract_order_price(trade)
+        quote_qty = float(trade.get('quoteQty', 0.0) or 0.0) or (px * qty)
+        ts_ms = extract_timestamp_ms(trade, default=0) or 0
+        side = extract_order_side(trade)
+        is_buyer = trade.get('isBuyer') if 'isBuyer' in trade else (side == 'BUY')
+
         # Aggregate fields belonging to the same order.
-        aggregated_trades[orderId]['id'] = trade['id']  # Retain the first fill ID as a reference.
+        if aggregated_trades[orderId]['count'] == 0:
+            aggregated_trades[orderId]['id'] = trade.get('id', 0)
+        aggregated_trades[orderId]['count'] += 1
         aggregated_trades[orderId]['orderId'] = orderId
-        aggregated_trades[orderId]['symbol'] = trade['symbol']
-        aggregated_trades[orderId]['price'] = trade['price']
-        aggregated_trades[orderId]['qty'] += float(trade['qty'])
-        aggregated_trades[orderId]['quoteQty'] += float(trade['quoteQty'])
-        aggregated_trades[orderId]['commission'] += float(trade['commission'])
-        aggregated_trades[orderId]['commissionAsset'] = trade['commissionAsset']
-        aggregated_trades[orderId]['time'] = max(aggregated_trades[orderId]['time'], trade['time'])  # Use the latest fill time.
-        aggregated_trades[orderId]['isBuyer'] = trade['isBuyer']
-        aggregated_trades[orderId]['isMaker'] = trade['isMaker']
-        aggregated_trades[orderId]['isBestMatch'] = trade['isBestMatch']
+        aggregated_trades[orderId]['symbol'] = trade.get('symbol', '')
+        aggregated_trades[orderId]['price'] = trade.get('price', px)
+        aggregated_trades[orderId]['qty'] += qty
+        aggregated_trades[orderId]['quoteQty'] += quote_qty
+        aggregated_trades[orderId]['weightedCost'] += px * qty
+        aggregated_trades[orderId]['commission'] += float(trade.get('commission', 0.0) or 0.0)
+        aggregated_trades[orderId]['commissionAsset'] = trade.get('commissionAsset', '')
+        aggregated_trades[orderId]['time'] = max(aggregated_trades[orderId]['time'], ts_ms)
+        aggregated_trades[orderId]['isBuyer'] = is_buyer
+        aggregated_trades[orderId]['isMaker'] = trade.get('isMaker')
+        aggregated_trades[orderId]['isBestMatch'] = trade.get('isBestMatch')
 
     # Build the aggregate list.
     aggregated_list = []
     for aggregated in aggregated_trades.values():
+        total_qty = aggregated['qty']
+        if aggregated['count'] > 1 and total_qty > 0:
+            vwap = aggregated['weightedCost'] / total_qty
+            price_val = f"{vwap:.8f}".rstrip("0").rstrip(".") or "0"
+        else:
+            price_val = aggregated['price']
+        side = "BUY" if aggregated['isBuyer'] else "SELL"
         aggregated_list.append({
             'id': aggregated['id'],
             'orderId': aggregated['orderId'],
             'symbol': aggregated['symbol'],
             'orderListId': -1,
-            'price': aggregated['price'],
-            'qty': f"{aggregated['qty']:.8f}",  # Preserve the eight-decimal format.
+            'price': price_val,
+            'qty': f"{total_qty:.8f}",  # Preserve the eight-decimal format.
+            'quantity': f"{total_qty:.8f}",
             'quoteQty': f"{aggregated['quoteQty']:.8f}",
             'commission': f"{aggregated['commission']:.8f}",
             'commissionAsset': aggregated['commissionAsset'],
             'time': aggregated['time'],
+            'timestamp': aggregated['time'],
             'isBuyer': aggregated['isBuyer'],
+            'side': side,
             'isMaker': aggregated['isMaker'],
             'isBestMatch': aggregated['isBestMatch']
         })
@@ -233,17 +260,20 @@ def get_my_trades_simple(order_type, symbol, backdays=3, limit=1000):
         start_time = int(time.time() * 1000) - (backdays + 1) * 24 * 60 * 60 * 1000
         all_trades = apiorders.paginate_my_trades(api.client, symbol, start_time, limit)
 
-        if order_type == "BUY":
-            all_trades = [t for t in all_trades if t['isBuyer']]
-        elif order_type == "SELL":
-            all_trades = [t for t in all_trades if not t['isBuyer']]
+        if order_type in ("BUY", "SELL"):
+            all_trades = [t for t in all_trades if extract_order_side(t) == order_type]
 
-        # Deduplicate by order ID while retaining the newest fill.
+        # Deduplicate by individual fill ID (falling back to orderId only when id is absent)
+        # so multi-fill orders do not lose earlier partial fills.
         latest_trades = {}
         for trade in all_trades:
-            order_id = trade['orderId']
-            if order_id not in latest_trades or trade['time'] > latest_trades[order_id]['time']:
-                latest_trades[order_id] = trade
+            fill_key = trade.get('id', trade.get('orderId'))
+            ts_ms = extract_timestamp_ms(trade, default=0) or 0
+            if (
+                fill_key not in latest_trades
+                or ts_ms >= (extract_timestamp_ms(latest_trades[fill_key], default=0) or 0)
+            ):
+                latest_trades[fill_key] = trade
 
         return list(latest_trades.values())
 
@@ -284,12 +314,18 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
     cutoff_time_ms = current_time_ms - (years_to_keep * 365 * 24 * 60 * 60 * 1000)
 
     # Remove fills older than the requested retention period.
-    filtered_existing_trades = [trade for trade in existing_trades if trade['time'] > cutoff_time_ms]
+    filtered_existing_trades = [
+        trade for trade in existing_trades
+        if (extract_timestamp_ms(trade, default=0) or 0) > cutoff_time_ms
+    ]
     print(f"Preserve ony {len(filtered_existing_trades)} trades for {symbol} , "
-        f"rest are too old , less than {u.secondsToDays(cutoff_time_ms)} days")
+        f"rest are too old , less than {years_to_keep * 365} days")
 
     # Find the newest retained fill for this symbol.
-    most_recent_trade_time = max((trade['time'] for trade in filtered_existing_trades), default=0)
+    most_recent_trade_time = max(
+        ((extract_timestamp_ms(trade, default=0) or 0) for trade in filtered_existing_trades),
+        default=0,
+    )
     print(f"Most recent saved trade time is {u.timestampToTime(most_recent_trade_time)} for {symbol}")
     
     # Calculate how many days must be fetched.
@@ -371,28 +407,27 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     current_time_ms = int(time.time() * 1000)
     max_age_ms = max_age_seconds * 1000  # Convert to milliseconds.
     
-    filtered_trades = [
-        {
-            'symbol': trade['symbol'],
-            'id': trade['id'],
-            'orderId': trade['orderId'],
-            'orderListId': trade['orderId'],
-            'price': float(trade['price']),
-            'qty': float(trade['qty']),
-            #'quoteQty': float(trade['quoteQty']),
-            #'commission': float(trade['commission']),
-            #'commissionAsset': trade['commissionAsset'],
-            'time': trade['time'],
-            'isBuyer': trade['isBuyer'],
-            #'isMaker': trade['isMaker'],
-            #'isBestMatch': trade['isBestMatch']
-        }
-        for trade in trades
-        #if trade['symbol'] == symbol
-        if (order_type is None or trade['isBuyer'] == (order_type == "BUY"))  # Apply side filtering only when requested.
-        and (current_time_ms - trade['time']) <= max_age_ms
-    ]
+    filtered_trades = []
+    for trade in trades:
+        side = extract_order_side(trade)
+        ts_ms = extract_timestamp_ms(trade, default=0) or 0
+        if (order_type is None or side == order_type) and (current_time_ms - ts_ms) <= max_age_ms:
+            qty = extract_order_qty(trade)
+            is_buyer = side == "BUY"
+            filtered_trades.append({
+                'symbol': trade.get('symbol', symbol),
+                'id': trade.get('id'),
+                'orderId': trade.get('orderId'),
+                'orderListId': trade.get('orderId'),
+                'price': extract_order_price(trade),
+                'qty': qty,
+                'quantity': qty,
+                'time': ts_ms,
+                'timestamp': ts_ms,
+                'isBuyer': is_buyer,
+                'side': side,
+            })
 
     #  filtered_trades.sort(key=lambda x: x['price'])
-    
+
     return filtered_trades

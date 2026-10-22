@@ -96,14 +96,22 @@ def _match_configured_pair(symbol: str | None) -> str | None:
 
 def _normalize(txid, tr):
     """Normalize a Kraken TradesHistory/ownTrades transaction to the Binance-compatible form."""
+    raw_t = tr.get("time", tr.get("timestamp", 0)) or 0
+    raw_t_f = float(raw_t)
+    ts_ms = int(round(raw_t_f * 1000.0)) if raw_t_f < 100_000_000_000.0 else int(round(raw_t_f))
+    is_buyer = str(tr.get("type", tr.get("side", ""))).strip().lower() == "buy" or bool(tr.get("isBuyer"))
+    qty = tr.get("vol", tr.get("qty"))
     return {
-        "symbol": tr.get("pair"),
+        "symbol": tr.get("pair", tr.get("symbol")),
         "id": str(txid),
-        "orderId": tr.get("ordertxid"),
+        "orderId": tr.get("ordertxid", tr.get("orderId")),
         "price": tr.get("price"),
-        "qty": tr.get("vol"),
-        "time": int(float(tr.get("time", 0)) * 1000),   # Kraken float seconds -> milliseconds
-        "isBuyer": (tr.get("type") == "buy"),
+        "qty": qty,
+        "quantity": qty,
+        "time": ts_ms,
+        "timestamp": ts_ms,
+        "isBuyer": is_buyer,
+        "side": "BUY" if is_buyer else "SELL",
     }
 
 
@@ -137,12 +145,16 @@ def _ledger_to_fills(ledger):
         if raw_base.endswith(".F"):
             raw_base = raw_base[:-2]
         raw_symbol = raw_base + _QUOTE[str(quote["asset"]).upper()]
+        ts_ms = int(float(base.get("time", base.get("timestamp", 0)) or 0) * 1000)
+        is_buyer = ba > 0
         fills.append({
             "symbol": raw_symbol,
             "id": str(refid), "orderId": str(refid),
-            "price": abs(qa) / abs(ba), "qty": abs(ba),
-            "time": int(float(base.get("time", 0)) * 1000),
-            "isBuyer": ba > 0,                            # receiving base means a purchase
+            "price": abs(qa) / abs(ba),
+            "qty": abs(ba), "quantity": abs(ba),
+            "time": ts_ms, "timestamp": ts_ms,
+            "isBuyer": is_buyer,                          # receiving base means a purchase
+            "side": "BUY" if is_buyer else "SELL",
         })
     return fills
 

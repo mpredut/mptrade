@@ -523,6 +523,109 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         trend, _, _, _ = pw.instant_trend_from_prices([100.0, 101.0, 102.0], None)
         self.assertEqual(trend, 1)
 
+    def test_canonical_order_normalization_and_bapi_trade_unification(self):
+        from providers.base import (
+            extract_order_price,
+            extract_order_qty,
+            extract_order_side,
+            extract_timestamp_ms,
+            normalize_order,
+        )
+        import binance_api.bapi as bapi_mod
+        import binance_api.bapi_allorders as bapi_all
+        import binance_api.bapi_trades as bapi_tr
+
+        # 1. Canonical timestamp normalization (seconds vs ms, multiple field names)
+        self.assertEqual(extract_timestamp_ms({"timestamp": 1_700_000_000}), 1_700_000_000_000)
+        self.assertEqual(extract_timestamp_ms({"time": 1_700_000_000_500}), 1_700_000_000_500)
+        self.assertEqual(extract_timestamp_ms({"updateTime": 1_700_000_001}), 1_700_000_001_000)
+        self.assertEqual(extract_timestamp_ms({"opentm": 1_700_000_002.25}), 1_700_000_002_250)
+
+        # 2. Canonical side, price, qty extraction and normalize_order contract
+        norm = normalize_order({"isBuyer": False, "px": "250.5", "sz": "2.0", "updateTime": 1_700_000_000})
+        self.assertEqual(norm, {
+            "side": "SELL",
+            "price": 250.5,
+            "qty": 2.0,
+            "timestamp": 1_700_000_000_000,
+        })
+        self.assertEqual(extract_order_side({"side": "B"}), "BUY")
+        self.assertEqual(extract_order_side({"side": "A"}), "SELL")
+        self.assertEqual(extract_order_price({"limitPx": "99.5"}), 99.5)
+        self.assertEqual(extract_order_qty({"vol": "3.25"}), 3.25)
+
+        # 3. bapi_trades.aggregate_trades computes VWAP on multi-fill orders and emits unified fields
+        raw_fills = [
+            {"id": 10, "orderId": 500, "symbol": SYMBOL, "isBuyer": True, "price": "100.0", "qty": "1.0", "quoteQty": "100.0", "commission": "0.1", "commissionAsset": "USDC", "time": 1_700_000_000_000},
+            {"id": 11, "orderId": 500, "symbol": SYMBOL, "isBuyer": True, "price": "130.0", "qty": "2.0", "quoteQty": "260.0", "commission": "0.2", "commissionAsset": "USDC", "time": 1_700_000_005_000},
+        ]
+        agg = bapi_tr.aggregate_trades(raw_fills)
+        self.assertEqual(len(agg), 1)
+        self.assertAlmostEqual(float(agg[0]["price"]), 120.0)
+        self.assertAlmostEqual(float(agg[0]["qty"]), 3.0)
+        self.assertAlmostEqual(float(agg[0]["quantity"]), 3.0)
+        self.assertEqual(agg[0]["side"], "BUY")
+        self.assertTrue(agg[0]["isBuyer"])
+        self.assertEqual(agg[0]["time"], 1_700_000_005_000)
+        self.assertEqual(agg[0]["timestamp"], 1_700_000_005_000)
+
+        # 4. bapi_trades.get_my_trades_simple preserves distinct partial fill ids under same orderId
+        with mock.patch.object(bapi_all, "paginate_my_trades", return_value=raw_fills):
+            deduped = bapi_tr.get_my_trades_simple("BUY", SYMBOL, backdays=1)
+        self.assertEqual(len(deduped), 2)
+
+        # 5. bapi_allorders.get_trade_orders and bapi_trades.get_trade_orders emit both timestamp/time and qty/quantity
+        now_ms = int(time.time() * 1000)
+        import threading
+        import types
+        import cacheManager as cm_mod
+        fake_order_mgr = types.SimpleNamespace(
+            lock=threading.Lock(),
+            cache={SYMBOL: [
+                {"orderId": 77, "symbol": SYMBOL, "side": "BUY", "price": "105.0", "executedQty": "1.5", "updateTime": now_ms - 5000}
+            ]},
+        )
+        with mock.patch.object(cm_mod, "get_cache_manager", return_value=fake_order_mgr):
+            all_orders_res = bapi_all.get_trade_orders("BUY", SYMBOL, 60)
+        self.assertEqual(len(all_orders_res), 1)
+        self.assertEqual(all_orders_res[0]["time"], now_ms - 5000)
+        self.assertEqual(all_orders_res[0]["timestamp"], now_ms - 5000)
+        self.assertEqual(all_orders_res[0]["qty"], 1.5)
+        self.assertEqual(all_orders_res[0]["quantity"], 1.5)
+        self.assertTrue(all_orders_res[0]["isBuyer"])
+
+        fake_trade_mgr = types.SimpleNamespace(
+            lock=threading.Lock(),
+            cache={SYMBOL: [
+                {"orderId": 88, "symbol": SYMBOL, "side": "SELL", "price": "110.0", "quantity": "2.5", "timestamp": now_ms - 5000}
+            ]},
+        )
+        with mock.patch.object(bapi_tr, "init_cache_trade_manager", return_value=fake_trade_mgr):
+            tr_orders_res = bapi_tr.get_trade_orders("SELL", SYMBOL, 60)
+        self.assertEqual(len(tr_orders_res), 1)
+        self.assertEqual(tr_orders_res[0]["time"], now_ms - 5000)
+        self.assertEqual(tr_orders_res[0]["timestamp"], now_ms - 5000)
+        self.assertEqual(tr_orders_res[0]["qty"], 2.5)
+        self.assertEqual(tr_orders_res[0]["quantity"], 2.5)
+        self.assertFalse(tr_orders_res[0]["isBuyer"])
+
+        # 6. bapi.cancel_expired_orders and cancel_recent_orders handle millisecond timestamps properly
+        expired_ms = int((time.time() - 7200) * 1000)
+        fresh_ms = int((time.time() - 60) * 1000)
+        open_orders_map = {
+            1: {"orderId": 1, "symbol": SYMBOL, "timestamp": expired_ms},
+            2: {"orderId": 2, "symbol": SYMBOL, "time": fresh_ms},
+        }
+        with (
+            mock.patch.object(bapi_mod, "get_open_orders", return_value=open_orders_map),
+            mock.patch.object(bapi_mod, "cancel_order", return_value=True) as mock_cancel,
+        ):
+            bapi_mod.cancel_expired_orders("BUY", SYMBOL, 3600)
+            mock_cancel.assert_called_once_with(SYMBOL, 1)
+            mock_cancel.reset_mock()
+            bapi_mod.cancel_recent_orders("BUY", SYMBOL, 3600)
+            mock_cancel.assert_called_once_with(SYMBOL, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

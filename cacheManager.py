@@ -280,14 +280,7 @@ class CacheManagerInterface(ABC):
             last_times_per_sym = defaultdict(int)
             for symbol, trades in self.cache.items():
                 for trade in trades:
-                    # Use ``time`` or ``timestamp`` and fall back to zero.
-                    #time_ = trade.get("time") or trade.get("timestamp") or 0
-                    if isinstance(trade, dict):
-                        time_ = trade.get("time") or trade.get("timestamp") or 0
-                    elif isinstance(trade, list) and len(trade) > 0:
-                        time_ = trade[0]  # ``[timestamp_ms, price]`` format.
-                    else:
-                        time_ = 0
+                    time_ = self._entry_timestamp_ms(trade)
                     if time_ > last_times_per_sym[symbol]:
                         last_times_per_sym[symbol] = time_
             # Apply a 60-second safety offset.
@@ -1570,7 +1563,13 @@ class CacheManagerInterface(ABC):
     def _entry_timestamp_ms(item):
         """Extract an entry timestamp in milliseconds from a dictionary or list."""
         if isinstance(item, dict):
-            value = item.get("time") or item.get("timestamp") or 0
+            value = (
+                item.get("time")
+                or item.get("timestamp")
+                or item.get("updateTime")
+                or item.get("transactTime")
+                or 0
+            )
         elif isinstance(item, (list, tuple)) and item:
             value = item[0]
         else:
@@ -1579,8 +1578,9 @@ class CacheManagerInterface(ABC):
             value = float(value)
         except (TypeError, ValueError, OverflowError):
             return 0
-        # AssetValue uses Unix seconds; exchange fills and price caches use milliseconds.
-        return int(value * 1000) if 0 < value < 100_000_000_000 else int(value)
+        # AssetValue uses Unix seconds (1e9..1e11); exchange fills, price caches,
+        # and synthetic small test timestamps remain as-is.
+        return int(value * 1000) if 1_000_000_000 <= value < 100_000_000_000 else int(value)
 
     def maintain_append_persist(self):
         """Perform weekly maintenance for every append-mode cache.

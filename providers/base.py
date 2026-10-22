@@ -42,13 +42,105 @@ def bool_env(key: str, folder: Optional[str] = None, default: bool = False) -> b
     return v.strip().lower() == "true"
 
 
+_TIMESTAMP_KEYS = ("timestamp", "time", "updateTime", "transactTime", "opentm")
+_PRICE_KEYS = ("price", "px", "limitPx", "fillPrice")
+_QTY_KEYS = ("qty", "quantity", "executedQty", "filledQuantity", "sz", "vol", "origQty")
+
+
+def normalize_timestamp_ms(value: Any, default: Optional[int] = None) -> Optional[int]:
+    """Normalize a raw timestamp (in seconds or milliseconds) to integer milliseconds.
+
+    Epoch values in ``[1_000_000_000, 100_000_000_000)`` (all Unix seconds between
+    2001 and 2286) and non-integer float seconds are converted to milliseconds.
+    Millisecond values (``>= 100_000_000_000``) and small synthetic test integers
+    (``< 1_000_000_000``) are preserved as-is.
+    """
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if not math.isfinite(numeric):
+        return default
+    if numeric == 0.0:
+        return 0
+    if 1_000_000_000.0 <= numeric < 100_000_000_000.0:
+        return int(round(numeric * 1000.0))
+    if 0.0 < numeric < 1_000_000_000.0 and isinstance(value, float) and not numeric.is_integer():
+        return int(round(numeric * 1000.0))
+    return int(round(numeric))
+
+
+def extract_timestamp_ms(order: Any, default: Optional[int] = None) -> Optional[int]:
+    """Extract and normalize an order/fill timestamp in milliseconds from any venue shape."""
+    if not isinstance(order, dict):
+        return default
+    for key in _TIMESTAMP_KEYS:
+        if key in order and order[key] is not None:
+            normalized = normalize_timestamp_ms(order[key], default=None)
+            if normalized is not None:
+                return normalized
+    return default
+
+
+def extract_order_side(order: Any) -> str:
+    """Extract and normalize order side (``'BUY'`` or ``'SELL'``) from any venue shape."""
+    if not isinstance(order, dict):
+        return ""
+    raw_side = order.get("side")
+    if raw_side is not None and str(raw_side).strip():
+        s = str(raw_side).strip().upper()
+        if s == "B":
+            return "BUY"
+        if s == "A":
+            return "SELL"
+        return s
+    raw_type = order.get("type")
+    if raw_type is not None and str(raw_type).strip().upper() in ("BUY", "SELL"):
+        return str(raw_type).strip().upper()
+    if "isBuyer" in order and order.get("isBuyer") is not None:
+        return "BUY" if bool(order["isBuyer"]) else "SELL"
+    return ""
+
+
+def extract_order_price(order: Any, default: float = 0.0) -> float:
+    """Extract order/fill price from any venue shape."""
+    if not isinstance(order, dict):
+        return default
+    for key in _PRICE_KEYS:
+        if key in order and order[key] is not None:
+            try:
+                val = float(order[key] or 0.0)
+                if math.isfinite(val):
+                    return val
+            except (TypeError, ValueError, OverflowError):
+                continue
+    return default
+
+
+def extract_order_qty(order: Any, default: float = 0.0) -> float:
+    """Extract order/fill quantity from any venue shape."""
+    if not isinstance(order, dict):
+        return default
+    for key in _QTY_KEYS:
+        if key in order and order[key] is not None:
+            try:
+                val = abs(float(order[key] or 0.0))
+                if math.isfinite(val):
+                    return val
+            except (TypeError, ValueError, OverflowError):
+                continue
+    return default
+
+
 def normalize_order(order: dict) -> dict:
-    """Normalize a native order to ``side``, ``price``, ``qty``, and ``timestamp``."""
+    """Normalize a native order/fill to canonical ``side``, ``price``, ``qty``, and ``timestamp``."""
     return {
-        "side": (order.get("side") or "").upper(),
-        "price": float(order.get("price", 0.0) or 0.0),
-        "qty": float(order.get("qty", order.get("quantity", 0.0)) or 0.0),
-        "timestamp": order.get("timestamp"),
+        "side": extract_order_side(order),
+        "price": extract_order_price(order),
+        "qty": extract_order_qty(order),
+        "timestamp": extract_timestamp_ms(order),
     }
 
 
@@ -233,17 +325,24 @@ class MarketDataProvider(ABC):
         """Cancel adverse opposing orders when the venue implements this policy."""
         return None
 
-    def profit_guard_window_ref(self, symbol: str, side: str, safeback_sec, regime_context=None):
+    def profit_guard_window_ref(self, symbol: str, side: str, safeback_sec, regime_context=None, reference_mode=None, module=None):
         import order_guard
         window_s = order_guard.window_for(
             self.name,
             symbol=symbol,
             order_type=side,
             regime_context=regime_context,
+            module=module,
+            reference_mode=reference_mode,
         )
         if window_s is None or window_s <= 0:
             window_s = float(safeback_sec) if safeback_sec else 0.0
-        return order_guard.window_reference(self, symbol, side, window_s)
+        wr_kwargs = {}
+        if reference_mode is not None:
+            wr_kwargs["reference_mode"] = reference_mode
+        if module is not None:
+            wr_kwargs["module"] = module
+        return order_guard.window_reference(self, symbol, side, window_s, **wr_kwargs)
 
     def last_opposite_fill(self, symbol: str, order_type: str,
                            since_s: float = 90 * 24 * 3600) -> Optional[float]:
@@ -253,8 +352,8 @@ class MarketDataProvider(ABC):
             raise ProviderError(f"last_opposite_fill({symbol}): failed to read order history")
         if not fills:
             return None
-        latest = max(fills, key=lambda order: order.get("timestamp") or 0)
-        price = float(latest.get("price") or 0)
+        latest = max(fills, key=lambda order: extract_timestamp_ms(order, default=0) or 0)
+        price = extract_order_price(latest)
         return price or None
 
     def ohlc_closes(self, symbol: str, interval_min: int) -> list:

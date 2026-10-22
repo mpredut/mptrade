@@ -21,7 +21,14 @@ import math
 import time
 from typing import Optional, List
 
-from .base import MarketDataProvider, _normalize_order, bool_env, env_value
+from .base import (
+    MarketDataProvider,
+    _normalize_order,
+    bool_env,
+    env_value,
+    extract_order_side,
+    extract_timestamp_ms,
+)
 from .strategy_executor import (
     OrderReconciliationCapabilities,
     OrderStatus,
@@ -237,11 +244,13 @@ class KrakenProvider(MarketDataProvider):
             want = (side or "").upper()
             out = []
             for r in rows:
-                if r["timestamp"] < cutoff_ms:
+                norm = _normalize_order(r)
+                ts_ms = norm["timestamp"] if norm["timestamp"] is not None else 0
+                if ts_ms < cutoff_ms:
                     continue
-                if want and r["side"] != want:
+                if want and norm["side"] != want:
                     continue
-                out.append(_normalize_order(r))
+                out.append(norm)
             return out
         except ProviderError:
             raise
@@ -320,11 +329,11 @@ class KrakenProvider(MarketDataProvider):
             return None
         if (time.time() * 1000.0 - float(ft.get(key, 0))) > _CACHE_MAX_STALE_S * 1000.0:
             return None                                       # Stale cachemanager data.
-        return [{
-            "side": "BUY" if t.get("isBuyer") else "SELL",
-            "price": t.get("price"), "qty": t.get("qty"),
-            "timestamp": int(t.get("time", 0)),
-        } for t in items[key]]
+        return [
+            _normalize_order(t)
+            for t in items[key]
+            if isinstance(t, dict)
+        ]
 
     def _fills_from_api(self, symbol: str):
         """Fall back to direct TradesHistory, matching pre-cachemanager behavior."""
@@ -338,14 +347,20 @@ class KrakenProvider(MarketDataProvider):
         su = symbol.upper()
         rows = []
         for tr in trades.values():
+            if not isinstance(tr, dict):
+                continue
             p = str(tr.get("pair", "")).upper()
             if not (_kraken_pair_matches(symbol, p) or su in p or (p and p in su)):
                 continue
-            rows.append({
-                "side": "BUY" if str(tr.get("type", "")).lower() == "buy" else "SELL",
-                "price": tr.get("price"), "qty": tr.get("vol"),
-                "timestamp": int(float(tr.get("time", 0)) * 1000),
-            })
+            raw_t = tr.get("time", tr.get("timestamp", 0)) or 0
+            raw_t_f = float(raw_t)
+            ts_ms = int(round(raw_t_f * 1000.0)) if raw_t_f < 100_000_000_000.0 else int(round(raw_t_f))
+            rows.append(_normalize_order({
+                "side": extract_order_side(tr),
+                "price": tr.get("price"),
+                "qty": tr.get("vol", tr.get("qty")),
+                "timestamp": ts_ms,
+            }))
         return rows
 
     # -- Placement remains dry until KRAKEN_LIVE_ORDERS=true. ------------------
@@ -493,12 +508,26 @@ class KrakenProvider(MarketDataProvider):
         info = res.get(order_id)
         if info is None:
             raise ProviderError(f"order_status: the order {order_id} was not found")
+        raw_status = str(info.get("status") or "").strip()
+        status_map = {
+            "pending": "open",
+            "open": "open",
+            "closed": "closed",
+            "canceled": "canceled",
+            "cancelled": "canceled",
+            "expired": "expired",
+        }
+        norm_status = status_map.get(raw_status.lower())
+        if norm_status is None:
+            raise ProviderError(
+                f"order_status {order_id}: unknown Kraken status {raw_status!r}"
+            )
         return OrderStatus(
-            status=str(info.get("status", "")),
+            status=norm_status,
             filled_qty=float(info.get("vol_exec") or 0.0),
             cost=float(info.get("cost") or 0.0),
             fee=float(info.get("fee") or 0.0),
-            venue_status=str(info.get("status") or ""),
+            venue_status=raw_status,
             orig_qty=float(info.get("vol") or 0.0),
         )
 

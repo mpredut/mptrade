@@ -22,7 +22,13 @@ import threading
 import time
 from typing import List, Optional
 
-from .base import MarketDataProvider, _normalize_order, bool_env
+from .base import (
+    MarketDataProvider,
+    _normalize_order,
+    bool_env,
+    extract_order_side,
+    extract_timestamp_ms,
+)
 from .strategy_executor import (
     OrderReconciliationCapabilities,
     OrderStatus,
@@ -261,19 +267,13 @@ class HyperliquidProvider(MarketDataProvider):
             for f in fills:
                 if f.get("coin") != pair:        # Spot pair only; exclude perpetual HYPE.
                     continue
-                t = f.get("time")
-                if t is None or float(t) < cutoff_ms:
+                t_ms = extract_timestamp_ms(f, default=None)
+                if t_ms is None or float(t_ms) < cutoff_ms:
                     continue
-                # HL: side 'B' = buy, 'A' = sell (ask).
-                norm_side = "BUY" if f.get("side") == "B" else "SELL"
-                if want and norm_side != want:
+                norm = _normalize_order(f)
+                if want and norm["side"] != want:
                     continue
-                out.append(_normalize_order({
-                    "side": norm_side,
-                    "price": f.get("px"),
-                    "qty": f.get("sz"),
-                    "timestamp": int(t),
-                }))
+                out.append(norm)
             return out
         except ProviderError:
             raise
@@ -309,8 +309,7 @@ class HyperliquidProvider(MarketDataProvider):
                 except (TypeError, ValueError):
                     continue
                 oid_val = o.get("oid", o.get("orderId"))
-                side_raw = str(o.get("side") or "").upper()
-                side = "BUY" if side_raw in {"B", "BUY"} else "SELL"
+                side = extract_order_side(o) or "SELL"
                 out.append({
                     "orderId": str(oid_val) if oid_val is not None else "",
                     "clientOrderId": o.get("cloid") or o.get("clientOrderId"),
@@ -320,7 +319,7 @@ class HyperliquidProvider(MarketDataProvider):
                     "origQty": orig_sz,
                     "executedQty": exec_sz,
                     "status": str(o.get("status") or "OPEN").upper(),
-                    "timestamp": o.get("timestamp"),
+                    "timestamp": extract_timestamp_ms(o),
                 })
             return out
         except ProviderError:

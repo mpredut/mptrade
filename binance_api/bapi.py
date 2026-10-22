@@ -13,6 +13,11 @@ import symbols as sym
 from .bapi_client import client
 from . import bapi_ws
 from . import order_id_context as rc
+from providers.base import (
+    extract_order_price,
+    extract_order_side,
+    extract_timestamp_ms,
+)
 
 resolve_order_owner = rc.resolve_order_owner
 is_order_repriceable_by_monitororder = rc.is_order_repriceable_by_monitororder
@@ -149,7 +154,7 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
         filtered_orders = {}
         accepted_owner_map = None
         for order in open_orders:
-            if order['side'] != order_type.upper():
+            if extract_order_side(order) != order_type.upper():
                 continue
             cid = str(order.get('clientOrderId') or '')
             if allowed_owners is not None and not rc.order_matches_owner(cid, allowed_owners):
@@ -173,16 +178,28 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                         continue
                 else:
                     continue
-            original_qty = float(order['origQty'])
+            original_qty = float(
+                order.get('origQty', order.get('quantity', order.get('qty', 0.0))) or 0.0
+            )
             executed_qty = float(order.get('executedQty') or 0.0)
+            remaining_qty = max(0.0, original_qty - executed_qty)
+            ts_ms = extract_timestamp_ms(order, default=0) or 0
+            if 'time' in order and order.get('time') is not None:
+                raw_time = float(order['time'])
+                ts_sec = raw_time / 1000.0 if (raw_time < 1_000_000_000.0 or raw_time >= 100_000_000_000.0) else raw_time
+            else:
+                ts_sec = ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
             filtered_orders[order['orderId']] = {
-                'price': float(order['price']),
+                'price': extract_order_price(order),
                 # Preserve the legacy field while exposing the financially correct
                 # unfilled quantity to cancel-and-replace consumers.
                 'quantity': original_qty,
+                'origQty': original_qty,
+                'qty': remaining_qty,
                 'executedQty': executed_qty,
-                'remainingQty': max(0.0, original_qty - executed_qty),
-                'timestamp': order['time'] / 1000,
+                'remainingQty': remaining_qty,
+                'timestamp': ts_sec,
+                'time': ts_ms,
                 'clientOrderId': cid,
             }
         
@@ -240,7 +257,7 @@ def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
       
     count = 0   
     for order_id, order_details in open_orders.items():
-        order_time = order_details.get('timestamp')
+        order_time = (extract_timestamp_ms(order_details, default=0) or 0) / 1000.0
 
         if current_time - order_time > expire_time:
             cancel = cancel_order(symbol, order_id)
@@ -271,7 +288,7 @@ def cancel_recent_orders(order_type, symbol, max_age_seconds, allowed_owners=Non
    
     count = 0
     for order_id, order_details in open_orders.items():
-        order_time = order_details.get('timestamp')  # Assuming timestamp is in seconds
+        order_time = (extract_timestamp_ms(order_details, default=0) or 0) / 1000.0
         if current_time - order_time <= max_age_seconds:  # Order is recent
             cancel = cancel_order(symbol, order_id)
             if cancel:

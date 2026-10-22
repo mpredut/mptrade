@@ -8,6 +8,12 @@ from binance.exceptions import BinanceAPIException
 # MYLIB
 from .bapi_client import client
 import symbols as sym
+from providers.base import (
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
+    extract_timestamp_ms,
+)
 
 
 def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
@@ -65,20 +71,20 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
         trades = paginate_my_trades(
             client, symbol, startTime, limit, strict=strict)
 
-        filtered = [
-            {
-                'orderId': trade.get('orderId'),
-                'price': float(trade.get('price', 0)),
-                'quantity': float(trade.get('qty', 0)),
-                'timestamp': trade.get('time'),  # ms
-                'side': 'BUY' if trade.get('isBuyer') else 'SELL'
-            }
-            for trade in trades
-            if startTime <= trade.get('time', 0) <= end_time
-            and (order_type is None or 
-                 (order_type.upper() == "BUY" and trade.get('isBuyer')) or
-                 (order_type.upper() == "SELL" and not trade.get('isBuyer')))
-        ]
+        filtered = []
+        for trade in trades:
+            ts_ms = extract_timestamp_ms(trade, default=0) or 0
+            side = extract_order_side(trade)
+            if startTime <= ts_ms <= end_time and (
+                order_type is None or side == order_type.upper()
+            ):
+                filtered.append({
+                    'orderId': trade.get('orderId'),
+                    'price': extract_order_price(trade),
+                    'quantity': extract_order_qty(trade),
+                    'timestamp': ts_ms,
+                    'side': side,
+                })
 
         #print(f"Filtered filled trades ({'ALL' if order_type is None else order_type}): {len(filtered_trades)} from {len(trades)} trades")
         for t in filtered[:5]:
@@ -101,8 +107,11 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
                 'orderId': oid,
                 'price': round(data['price_qty'] / data['quantity'], 8) if data['quantity'] else 0,
                 'quantity': round(data['quantity'], 8),
+                'qty': round(data['quantity'], 8),
                 'timestamp': data['timestamp'],
-                'side': data['side']
+                'time': data['timestamp'],
+                'side': data['side'],
+                'isBuyer': data['side'] == 'BUY',
             }
             for oid, data in grouped.items()
         ]
@@ -133,7 +142,8 @@ def get_recent_filled_orders(order_type, symbol, max_age_seconds):
     
     print(f"have {len(all_filled_orders)} orders. ignore oldest.")
     for order in all_filled_orders:
-        if current_time - order['timestamp']/1000 <= max_age_seconds:
+        ts_ms = extract_timestamp_ms(order, default=0) or 0
+        if current_time - ts_ms / 1000.0 <= max_age_seconds:
             recent_filled_orders.append(order)
 
     # Sort the recent_filled_orders by price in ascending order
@@ -175,19 +185,22 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     current_time_ms = int(time.time() * 1000)
     max_age_ms = max_age_seconds * 1000  # convert to ms
 
-    filtered_orders = [
-        {
-            'orderId': order.get('orderId'),
-            'price': float(order.get('price', 0)),
-            'quantity': float(order.get('quantity', 0)),  # This cache uses ``quantity``, not ``origQty``.
-            'qty': float(order.get('quantity', 0)),       # Fill-compatible consumer alias.
-            'timestamp': order.get('timestamp'),          # Already milliseconds in cache.
-            'side': order.get('side', '').upper()
-        }
-        for order in orders_for_symbol
-        if (order_type is None or order.get('side', '').upper() == order_type)
-        and (current_time_ms - order.get('timestamp', 0)) <= max_age_ms
-    ]
+    filtered_orders = []
+    for order in orders_for_symbol:
+        side = extract_order_side(order)
+        ts_ms = extract_timestamp_ms(order, default=0) or 0
+        if (order_type is None or side == order_type) and (current_time_ms - ts_ms) <= max_age_ms:
+            qty = extract_order_qty(order)
+            filtered_orders.append({
+                'orderId': order.get('orderId'),
+                'price': extract_order_price(order),
+                'quantity': qty,
+                'qty': qty,
+                'timestamp': ts_ms,
+                'time': ts_ms,
+                'side': side,
+                'isBuyer': side == 'BUY',
+            })
 
     #print(f" filtered_orders {filtered_orders} , current_time_ms {current_time_ms} timestamp  max_age+ms {max_age_ms}")
     return filtered_orders

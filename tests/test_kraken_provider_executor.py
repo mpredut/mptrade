@@ -290,6 +290,18 @@ class KrakenExecutorContractTest(unittest.TestCase):
             self.assertEqual(st.cost, 150.0)
             self.assertEqual(st.fee, 0.39)
 
+        with self.subTest(msg="order_status_normalizes_pending_and_cancelled"):
+            with patch.object(self.fake, "query_orders", return_value={
+                "OPEND-1": {"status": "pending", "vol_exec": "0", "cost": "0", "fee": "0"}
+            }):
+                st_pending = self.p.order_status("HYPEUSD", "OPEND-1")
+                self.assertEqual(st_pending.status, "open")
+            with patch.object(self.fake, "query_orders", return_value={
+                "OCANC-1": {"status": "cancelled", "vol_exec": "0", "cost": "0", "fee": "0"}
+            }):
+                st_canc = self.p.order_status("HYPEUSD", "OCANC-1")
+                self.assertEqual(st_canc.status, "canceled")
+
         with self.subTest(msg="missing_order_status_raises"):
             with patch.object(self.fake, "query_orders", return_value={}):
                 with self.assertRaises(ProviderError):
