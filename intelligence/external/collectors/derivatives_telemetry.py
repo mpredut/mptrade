@@ -14,6 +14,11 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
+from intelligence.external.collectors.orderbook_depth import (
+    _resolve_binance_lookup_symbol,
+    _symbol_variants,
+)
+
 logger = logging.getLogger("intelligence.external.derivatives_telemetry")
 
 
@@ -60,22 +65,24 @@ class DerivativesTelemetryCollector:
     def _disk_path(self, symbol: str) -> Optional[str]:
         if not self.cache_dir:
             return None
-        return os.path.join(self.cache_dir, f"derivatives_telemetry_{symbol.upper()}.json")
+        safe_sym = symbol.upper().strip().replace("/", "").replace("-", "")
+        return os.path.join(self.cache_dir, f"derivatives_telemetry_{safe_sym}.json")
 
     def _load_from_disk(self, symbol: str, now: float) -> Optional[DerivativesTelemetry]:
-        p = self._disk_path(symbol)
-        if not p or not os.path.exists(p):
-            return None
-        try:
-            with open(p, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            telemetry = DerivativesTelemetry.from_dict(data)
-            max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
-            if (now - telemetry.ts) < max_age:
-                self._cache[symbol.upper()] = (telemetry.ts, telemetry)
-                return telemetry
-        except Exception as e:
-            logger.debug("Failed loading derivatives telemetry from %s: %s", p, e)
+        max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
+        for cand in _symbol_variants(symbol):
+            p = self._disk_path(cand)
+            if not p or not os.path.exists(p):
+                continue
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                telemetry = DerivativesTelemetry.from_dict(data)
+                if (now - telemetry.ts) < max_age:
+                    self._cache[symbol.upper()] = (telemetry.ts, telemetry)
+                    return telemetry
+            except Exception as e:
+                logger.debug("Failed loading derivatives telemetry from %s: %s", p, e)
         return None
 
     def _save_to_disk(self, telemetry: DerivativesTelemetry) -> None:
@@ -93,8 +100,13 @@ class DerivativesTelemetryCollector:
         symbol = symbol.upper()
         now = time.time()
         cached = self._cache.get(symbol)
-        if cached and (now - cached[0]) < self.cache_ttl_sec:
-            return cached[1]
+        if cached:
+            if isinstance(cached, tuple) and len(cached) >= 2:
+                if (now - cached[0]) < self.cache_ttl_sec:
+                    return cached[1]
+            elif isinstance(cached, DerivativesTelemetry):
+                if (now - cached.ts) < self.cache_ttl_sec:
+                    return cached
 
         disk_snap = self._load_from_disk(symbol, now)
         if disk_snap is not None:
@@ -103,8 +115,8 @@ class DerivativesTelemetryCollector:
         if not allow_network:
             return None
 
-        # Use USDT-perp pair as proxy if USDC given
-        lookup_sym = symbol.replace("USDC", "USDT") if "USDC" in symbol and symbol != "USDCUSDT" else symbol
+        # Use USDT-perp pair as proxy for non-USDT quotes
+        lookup_sym = _resolve_binance_lookup_symbol(symbol)
         try:
             # 1. Premium index endpoint (funding rate)
             url_fund = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={lookup_sym}"
@@ -139,15 +151,19 @@ class DerivativesTelemetryCollector:
         except Exception as e:
             logger.warning("Could not fetch derivatives telemetry for %s: %s", symbol, e)
             if cached:
-                return cached[1]
-            p = self._disk_path(symbol)
-            if p and os.path.exists(p):
-                try:
-                    with open(p, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    return DerivativesTelemetry.from_dict(data)
-                except Exception:
-                    pass
+                if isinstance(cached, tuple) and len(cached) >= 2:
+                    return cached[1]
+                if isinstance(cached, DerivativesTelemetry):
+                    return cached
+            for cand in _symbol_variants(symbol):
+                p = self._disk_path(cand)
+                if p and os.path.exists(p):
+                    try:
+                        with open(p, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        return DerivativesTelemetry.from_dict(data)
+                    except Exception:
+                        pass
             return None
 
     def record_telemetry(self, telemetry: DerivativesTelemetry, save_to_disk: bool = False) -> None:

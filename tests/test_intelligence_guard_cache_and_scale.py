@@ -1785,6 +1785,132 @@ class TestBatch6IntelligenceAndRoutingFixes:
         # 4.0 scaled by 0.5 in bull regime -> 2.0
         assert mock_prov.place_order.call_args.args[3] == pytest.approx(2.0)
 
+    def test_cross_venue_collector_normalization_and_intelligence_context_validation(self, tmp_path, monkeypatch):
+        """Verify cross-venue symbol normalization and disk-variant lookup in Pillar 2 collectors,
+        and MarketRegimeContext.is_valid_for check in intelligence_order_guard."""
+        from intelligence.external.collectors.orderbook_depth import (
+            OrderbookDepthCollector,
+            OrderbookSnapshot,
+            _resolve_binance_lookup_symbol,
+        )
+        from intelligence.external.collectors.derivatives_telemetry import (
+            DerivativesTelemetry,
+            DerivativesTelemetryCollector,
+        )
+        from intelligence.external.collectors.whale_positioning import (
+            WhalePositioningCollector,
+            WhalePositioningSnapshot,
+        )
+        from intelligence_order_guard import check_intelligence_order_guards
+
+        assert _resolve_binance_lookup_symbol("SOLUSD") == "SOLUSDT"
+        assert _resolve_binance_lookup_symbol("HYPE/USDC") == "HYPEUSDT"
+        assert _resolve_binance_lookup_symbol("BTCEUR") == "BTCUSDT"
+        assert _resolve_binance_lookup_symbol("USDCUSDT") == "USDCUSDT"
+
+        now_ts = time.time()
+        ob_col = OrderbookDepthCollector(cache_ttl_sec=30.0, cache_dir=str(tmp_path))
+        ob_snap = OrderbookSnapshot(
+            symbol="SOLUSDC",
+            mid_price=150.0,
+            bid_depth_usd=100_000.0,
+            ask_depth_usd=100_000.0,
+            imbalance_ratio=0.5,
+            largest_bid_wall_usd=10_000.0,
+            largest_bid_wall_price=149.5,
+            largest_ask_wall_usd=10_000.0,
+            largest_ask_wall_price=150.5,
+            ts=now_ts,
+        )
+        ob_col.record_snapshot(ob_snap, save_to_disk=True)
+
+        ob_col_reader = OrderbookDepthCollector(cache_ttl_sec=30.0, cache_dir=str(tmp_path))
+        loaded_ob = ob_col_reader.fetch("SOLUSD", allow_network=False)
+        assert loaded_ob is not None
+        assert loaded_ob.mid_price == pytest.approx(150.0)
+
+        d_col = DerivativesTelemetryCollector(cache_ttl_sec=30.0, cache_dir=str(tmp_path))
+        d_snap = DerivativesTelemetry(
+            symbol="SOLUSDC",
+            funding_rate=0.0001,
+            predicted_funding_rate=0.0001,
+            open_interest=5000.0,
+            open_interest_usd=750_000.0,
+            ts=now_ts,
+        )
+        d_col.record_telemetry(d_snap, save_to_disk=True)
+        d_col_reader = DerivativesTelemetryCollector(cache_ttl_sec=30.0, cache_dir=str(tmp_path))
+        loaded_d = d_col_reader.fetch("SOLUSD", allow_network=False)
+        assert loaded_d is not None
+        assert loaded_d.funding_rate == pytest.approx(0.0001)
+
+        w_col = WhalePositioningCollector(cache_ttl_sec=30.0, cache_dir=str(tmp_path))
+        w_snap = WhalePositioningSnapshot(
+            symbol="HYPEUSDT",
+            top_traders_long_ratio=1.5,
+            top_traders_long_pct=0.6,
+            taker_buy_sell_ratio=1.2,
+            taker_buy_vol_usd=100_000.0,
+            taker_sell_vol_usd=80_000.0,
+            open_interest_usd=1_000_000.0,
+            open_interest_1h_change_pct=1.5,
+            divergence_regime="accumulation",
+            ts=now_ts,
+        )
+        w_col.record_snapshot(w_snap, save_to_disk=True)
+        w_col_reader = WhalePositioningCollector(cache_ttl_sec=30.0, cache_dir=str(tmp_path))
+        loaded_w = w_col_reader.fetch("HYPE/USDC", allow_network=False)
+        assert loaded_w is not None
+        assert loaded_w.divergence_regime == "accumulation"
+
+        # Verify intelligence_order_guard ignores cached LLM decision when regime_context belongs to another symbol
+        wrong_sym_ctx = MarketRegimeContext.from_decision(
+            MarketRegimeDecision(
+                regime="bull", gradient=0.5, epsilon=0.1, strength=3.0,
+                fresh=True, reason="bull", source="mock",
+            ),
+            evaluated_at=now_ts,
+            symbol="BTCUSDC",
+            provider="binance",
+        )
+        cache_key = ("BUY", frozenset())
+        object.__setattr__(
+            wrong_sym_ctx,
+            "_intelligence_decisions_by_key",
+            {cache_key: {"gemini_notional": 2000.0, "gemini_decision": (False, "wrong_sym_cached_veto", 0.0)}},
+        )
+        from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+        from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
+        monkeypatch.setattr(
+            HighStakeGuard,
+            "check",
+            lambda self, *a, **kw: GuardDecision(
+                guard_name="HighStakeGuard",
+                allowed=True,
+                reason="fresh_eval_ok",
+                brake_action=BrakeAction.NONE,
+                suggested_scale=1.0,
+            ),
+        )
+        margins = dict(order_guard._load_margins())
+        margins["llm_guard_mode"] = "enforce"
+        margins["llm_min_notional_eur"] = 1000.0
+        margins["geopolitical_guard_mode"] = "off"
+        allowed, reason, scale = check_intelligence_order_guards(
+            provider="binance",
+            symbol="ETHUSDC",
+            order_type="BUY",
+            price=2000.0,
+            qty=1.0,
+            notional_eur=2000.0,
+            regime_context=wrong_sym_ctx,
+            margins=margins,
+            now=now_ts,
+        )
+        assert allowed is True
+        assert scale == pytest.approx(1.0)
+
+
 
 
 

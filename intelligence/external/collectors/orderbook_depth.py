@@ -18,6 +18,45 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger("intelligence.external.orderbook_depth")
 
 
+def _extract_base_asset(symbol: str) -> str:
+    s = (symbol or "").upper().strip()
+    if "/" in s:
+        return s.split("/", 1)[0].strip()
+    if "-" in s:
+        return s.split("-", 1)[0].strip()
+    for q in ("USDC", "USDT", "EUR", "USD"):
+        if s.endswith(q) and len(s) > len(q):
+            return s[: -len(q)]
+    return s
+
+
+def _resolve_binance_lookup_symbol(symbol: str) -> str:
+    s = (symbol or "").upper().strip()
+    if s == "USDCUSDT":
+        return s
+    base = _extract_base_asset(s)
+    if base and base != s:
+        return f"{base}USDT"
+    return s.replace("USDC", "USDT") if "USDC" in s else s
+
+
+def _symbol_variants(symbol: str) -> List[str]:
+    s = (symbol or "").upper().strip()
+    safe_s = s.replace("/", "").replace("-", "")
+    variants: List[str] = []
+    for cand in (safe_s, s):
+        if cand and cand not in variants:
+            variants.append(cand)
+    if safe_s != "USDCUSDT":
+        base = _extract_base_asset(s)
+        if base and base != s:
+            for suffix in ("USDT", "USDC", "USD"):
+                cand = f"{base}{suffix}"
+                if cand not in variants:
+                    variants.append(cand)
+    return variants
+
+
 @dataclass(frozen=True)
 class OrderbookSnapshot:
     """Normalized order book liquidity snapshot."""
@@ -73,22 +112,24 @@ class OrderbookDepthCollector:
     def _disk_path(self, symbol: str) -> Optional[str]:
         if not self.cache_dir:
             return None
-        return os.path.join(self.cache_dir, f"orderbook_depth_{symbol.upper()}.json")
+        safe_sym = symbol.upper().strip().replace("/", "").replace("-", "")
+        return os.path.join(self.cache_dir, f"orderbook_depth_{safe_sym}.json")
 
     def _load_from_disk(self, symbol: str, now: float) -> Optional[OrderbookSnapshot]:
-        p = self._disk_path(symbol)
-        if not p or not os.path.exists(p):
-            return None
-        try:
-            with open(p, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            snapshot = OrderbookSnapshot.from_dict(data)
-            max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
-            if (now - snapshot.ts) < max_age:
-                self._cache[symbol.upper()] = (snapshot.ts, snapshot)
-                return snapshot
-        except Exception as e:
-            logger.debug("Failed loading orderbook snapshot from %s: %s", p, e)
+        max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
+        for cand in _symbol_variants(symbol):
+            p = self._disk_path(cand)
+            if not p or not os.path.exists(p):
+                continue
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                snapshot = OrderbookSnapshot.from_dict(data)
+                if (now - snapshot.ts) < max_age:
+                    self._cache[symbol.upper()] = (snapshot.ts, snapshot)
+                    return snapshot
+            except Exception as e:
+                logger.debug("Failed loading orderbook snapshot from %s: %s", p, e)
         return None
 
     def _save_to_disk(self, snapshot: OrderbookSnapshot) -> None:
@@ -120,7 +161,7 @@ class OrderbookDepthCollector:
         if not allow_network:
             return None
 
-        lookup_sym = symbol.replace("USDC", "USDT") if "USDC" in symbol and symbol != "USDCUSDT" else symbol
+        lookup_sym = _resolve_binance_lookup_symbol(symbol)
         try:
             url = f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=50"
             req = urllib.request.Request(url, headers={"User-Agent": "mptrade-orderbook/1.0"})
@@ -189,14 +230,15 @@ class OrderbookDepthCollector:
                     return cached[1]
                 if isinstance(cached, OrderbookSnapshot):
                     return cached
-            p = self._disk_path(symbol)
-            if p and os.path.exists(p):
-                try:
-                    with open(p, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    return OrderbookSnapshot.from_dict(data)
-                except Exception:
-                    pass
+            for cand in _symbol_variants(symbol):
+                p = self._disk_path(cand)
+                if p and os.path.exists(p):
+                    try:
+                        with open(p, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        return OrderbookSnapshot.from_dict(data)
+                    except Exception:
+                        pass
             return None
 
     def record_snapshot(self, snapshot: OrderbookSnapshot, save_to_disk: bool = False) -> None:

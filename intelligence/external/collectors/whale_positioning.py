@@ -17,6 +17,11 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
+from intelligence.external.collectors.orderbook_depth import (
+    _resolve_binance_lookup_symbol,
+    _symbol_variants,
+)
+
 logger = logging.getLogger("intelligence.external.whale_positioning")
 
 
@@ -74,24 +79,26 @@ class WhalePositioningCollector:
     def _disk_path(self, symbol: str) -> Optional[str]:
         if not self.cache_dir:
             return None
-        return os.path.join(self.cache_dir, f"whale_snapshot_{symbol.upper()}.json")
+        safe_sym = symbol.upper().strip().replace("/", "").replace("-", "")
+        return os.path.join(self.cache_dir, f"whale_snapshot_{safe_sym}.json")
 
     def _load_from_disk(self, symbol: str, now: float, *, ignore_ttl: bool = False) -> Optional[WhalePositioningSnapshot]:
-        p = self._disk_path(symbol)
-        if not p or not os.path.exists(p):
-            return None
-        try:
-            with open(p, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            snapshot = WhalePositioningSnapshot.from_dict(data)
-            max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
-            if (now - snapshot.ts) < max_age:
-                self._cache[symbol.upper()] = (snapshot.ts, snapshot)
-                return snapshot
-            if ignore_ttl:
-                return snapshot
-        except Exception as e:
-            logger.debug("Failed loading whale snapshot from %s: %s", p, e)
+        max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
+        for cand in _symbol_variants(symbol):
+            p = self._disk_path(cand)
+            if not p or not os.path.exists(p):
+                continue
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                snapshot = WhalePositioningSnapshot.from_dict(data)
+                if (now - snapshot.ts) < max_age:
+                    self._cache[symbol.upper()] = (snapshot.ts, snapshot)
+                    return snapshot
+                if ignore_ttl:
+                    return snapshot
+            except Exception as e:
+                logger.debug("Failed loading whale snapshot from %s: %s", p, e)
         return None
 
     def _save_to_disk(self, snapshot: WhalePositioningSnapshot) -> None:
@@ -110,16 +117,10 @@ class WhalePositioningCollector:
             return 0.0
         try:
             sym_u = symbol.upper()
-            variants = [sym_u]
-            if "USDC" in sym_u and sym_u != "USDCUSDT":
-                variants.append(sym_u.replace("USDC", "USDT"))
-            elif "USDT" in sym_u and sym_u != "USDCUSDT":
-                variants.append(sym_u.replace("USDT", "USDC"))
+            variants = _symbol_variants(sym_u)
 
             for sym_key in variants:
-                p = os.path.join(self.cache_dir, f"cache_24_price_{sym_key}.json")
-                if not os.path.exists(p):
-                    p = os.path.join(self.cache_dir, f"cache_24price_{sym_key}.json")
+                p = os.path.join(self.cache_dir, f"cache_24price_{sym_key}.json")
                 if not os.path.exists(p):
                     continue
                 with open(p, "r", encoding="utf-8") as f:
@@ -154,12 +155,7 @@ class WhalePositioningCollector:
         try:
             now_ts = now if now is not None else time.time()
             max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
-            sym_u = symbol.upper()
-            variants = [sym_u]
-            if "USDC" in sym_u and sym_u != "USDCUSDT":
-                variants.append(sym_u.replace("USDC", "USDT"))
-            elif "USDT" in sym_u and sym_u != "USDCUSDT":
-                variants.append(sym_u.replace("USDT", "USDC"))
+            variants = _symbol_variants(symbol)
             for s in variants:
                 p = os.path.join(self.cache_dir, f"derivatives_telemetry_{s}.json")
                 if os.path.exists(p):
@@ -252,8 +248,13 @@ class WhalePositioningCollector:
         symbol = symbol.upper()
         now = time.time()
         cached = self._cache.get(symbol)
-        if cached and (now - cached[0]) < self.cache_ttl_sec:
-            return cached[1]
+        if cached:
+            if isinstance(cached, tuple) and len(cached) >= 2:
+                if (now - cached[0]) < self.cache_ttl_sec:
+                    return cached[1]
+            elif isinstance(cached, WhalePositioningSnapshot):
+                if (now - cached.ts) < self.cache_ttl_sec:
+                    return cached
 
         # Check disk cache before network
         disk_snap = self._load_from_disk(symbol, now)
@@ -266,7 +267,7 @@ class WhalePositioningCollector:
         if abs(price_1h_change_pct) < 1e-6:
             price_1h_change_pct = self._resolve_price_1h_change_pct(symbol)
 
-        lookup_sym = symbol.replace("USDC", "USDT") if "USDC" in symbol and symbol != "USDCUSDT" else symbol
+        lookup_sym = _resolve_binance_lookup_symbol(symbol)
         try:
             # 1. Top Trader Long/Short Position Ratio
             url_top = f"https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol={lookup_sym}&period=1h&limit=2"
@@ -304,7 +305,10 @@ class WhalePositioningCollector:
             oi_change_pct = ((latest_oi_usd - prev_oi_usd) / prev_oi_usd * 100.0) if prev_oi_usd > 0 else 0.0
 
             # 4. Classify OI-Price divergence regime
-            prev_snap = cached[1] if cached else self._load_from_disk(symbol, now, ignore_ttl=True)
+            if cached:
+                prev_snap = cached[1] if (isinstance(cached, tuple) and len(cached) >= 2) else cached
+            else:
+                prev_snap = self._load_from_disk(symbol, now, ignore_ttl=True)
             prev_reg = prev_snap.divergence_regime if prev_snap else None
             funding_rate = self._resolve_cached_funding_rate(symbol, now=now)
 
@@ -336,16 +340,20 @@ class WhalePositioningCollector:
         except Exception as e:
             logger.warning("Could not fetch whale positioning for %s: %s", symbol, e)
             if cached:
-                return cached[1]
+                if isinstance(cached, tuple) and len(cached) >= 2:
+                    return cached[1]
+                if isinstance(cached, WhalePositioningSnapshot):
+                    return cached
             # Try stale disk snapshot as last resort
-            p = self._disk_path(symbol)
-            if p and os.path.exists(p):
-                try:
-                    with open(p, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    return WhalePositioningSnapshot.from_dict(data)
-                except Exception:
-                    pass
+            for cand in _symbol_variants(symbol):
+                p = self._disk_path(cand)
+                if p and os.path.exists(p):
+                    try:
+                        with open(p, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        return WhalePositioningSnapshot.from_dict(data)
+                    except Exception:
+                        pass
             return None
 
     def record_snapshot(self, snapshot: WhalePositioningSnapshot, save_to_disk: bool = False) -> None:

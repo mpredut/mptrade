@@ -74,7 +74,20 @@ def check_intelligence_order_guards(
     if not skip_llm and llm_mode != "off":
         min_notional = float(m["llm_min_notional_eur"])
         if computed_notional >= min_notional:
-            valid_context = regime_context is not None and hasattr(regime_context, "__dict__")
+            valid_context = False
+            if regime_context is not None and hasattr(regime_context, "__dict__"):
+                if hasattr(regime_context, "is_valid_for"):
+                    max_age = float(m.get("regime_context_max_age_sec", 300.0))
+                    has_id = bool(getattr(regime_context, "symbol", None) and getattr(regime_context, "provider", None))
+                    valid_context = regime_context.is_valid_for(
+                        symbol=symbol,
+                        provider=provider,
+                        max_age_seconds=max_age,
+                        now=now,
+                        require_identity=has_id,
+                    )
+                else:
+                    valid_context = True
             cache_key = (side, frozenset(bypassed))
             decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None) if valid_context else None
             entry_for_key = decisions_map.get(cache_key, {}) if isinstance(decisions_map, dict) else {}

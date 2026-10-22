@@ -457,7 +457,7 @@ def _last_opposite_fill_price(symbol, order_type):
     import cacheManager as cm
     # Retry workers only read the persisted/WS-produced trade cache. Starting another
     # API polling loop here duplicates cacheManager's work and contaminates worker logs.
-    return cm.get_cache_manager("Trade", start_sync=False).get_last_opposite_fill_price(symbol, order_type)
+    return cm.get_cache_manager("Trade", start_sync=False).last_opposite_fill_price(symbol, order_type)
 
 
 def _last_opposite_fill_price_api(symbol, order_type):
@@ -705,7 +705,7 @@ def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=N
             raise SubmissionRefused(
                 "opposing_order_discovery_unavailable") from exc
         for order_id, order_details in open_orders.items():
-            if order_details["price"] < requested_price:
+            if extract_order_price(order_details) < requested_price:
                 try:
                     canceled = api.cancel_order(symbol, order_id)
                 except Exception as exc:
@@ -728,7 +728,7 @@ def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=N
             raise SubmissionRefused(
                 "opposing_order_discovery_unavailable") from exc
         for order_id, order_details in open_orders.items():
-            if order_details["price"] > requested_price:
+            if extract_order_price(order_details) > requested_price:
                 try:
                     canceled = api.cancel_order(symbol, order_id)
                 except Exception as exc:

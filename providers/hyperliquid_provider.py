@@ -27,9 +27,11 @@ from .base import (
     _normalize_order,
     bool_env,
     extract_order_fee,
+    extract_order_id,
     extract_order_price,
     extract_order_qty,
     extract_order_side,
+    extract_orig_qty,
     extract_timestamp_ms,
 )
 from .strategy_executor import (
@@ -306,16 +308,22 @@ class HyperliquidProvider(MarketDataProvider):
                 if not isinstance(o, dict):
                     continue
                 try:
-                    price = float(o.get("limitPx", o.get("price", 0.0)) or 0.0)
+                    if "limitPx" in o and o["limitPx"] is not None:
+                        float(o["limitPx"])
+                    price = extract_order_price(o, default=0.0)
                     sz = float(o.get("sz", o.get("qty", 0.0)) or 0.0)
-                    orig_sz = float(o.get("origSz", o.get("origQty", sz)) or sz)
+                    raw_orig = o.get("origSz", o.get("origQty"))
+                    if raw_orig is not None:
+                        orig_sz = float(raw_orig or sz)
+                    else:
+                        orig_sz = float(extract_orig_qty(o, default=sz) or sz)
                     exec_sz = max(0.0, float(o.get("executedQty", orig_sz - sz)) or 0.0)
                 except (TypeError, ValueError):
                     continue
-                oid_val = o.get("oid", o.get("orderId"))
+                oid_val = extract_order_id(o, default="")
                 side = extract_order_side(o) or "SELL"
                 out.append({
-                    "orderId": str(oid_val) if oid_val is not None else "",
+                    "orderId": oid_val if oid_val is not None else "",
                     "clientOrderId": o.get("cloid") or o.get("clientOrderId"),
                     "side": side,
                     "price": price,
