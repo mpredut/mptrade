@@ -36,6 +36,24 @@ backup_local() {
             cp -a "$HOME/.gemini/config/projects/." "$OUT/.gemini_backup/config/projects/" 2>/dev/null || true
         fi
     fi
+
+    # Preserve SSH keys, client config, and authorized_keys for GitHub autodeploy & PROD->DEV orchestration
+    if [ -d "$HOME/.ssh" ]; then
+        mkdir -p "$OUT/.ssh_backup"
+        for ssh_item in id_ed25519 id_ed25519.pub id_rsa id_rsa.pub authorized_keys config known_hosts; do
+            [ -f "$HOME/.ssh/$ssh_item" ] && cp -p "$HOME/.ssh/$ssh_item" "$OUT/.ssh_backup/" 2>/dev/null || true
+        done
+    fi
+
+    # Preserve rclone config (Storj encrypted backup credentials) and PIA dedicated IP token if present
+    if [ -f "$HOME/.config/rclone/rclone.conf" ]; then
+        mkdir -p "$OUT/.rclone_backup"
+        cp -p "$HOME/.config/rclone/rclone.conf" "$OUT/.rclone_backup/rclone.conf" 2>/dev/null || true
+    fi
+    if [ -f "$HOME/piatoken.txt" ]; then
+        mkdir -p "$OUT/.host_secrets"
+        cp -p "$HOME/piatoken.txt" "$OUT/.host_secrets/piatoken.txt" 2>/dev/null || true
+    fi
     
     tar czf "$OUT.tar.gz" -C "$OUT" .
     chmod -R go-rwx "$OUT" 2>/dev/null || true
@@ -91,7 +109,12 @@ restore_backup() {
     command -v python3 >/dev/null || fail "python3 is missing"
     
     echo "--- [1/5] restoring secrets plus state from $SECRETS ---"
-    tar cf - -C "$SECRETS" --exclude='.gemini_backup' . | tar xf - -C "$ROOT"
+    tar cf - -C "$SECRETS" \
+        --exclude='.gemini_backup' \
+        --exclude='.ssh_backup' \
+        --exclude='.rclone_backup' \
+        --exclude='.host_secrets' \
+        . | tar xf - -C "$ROOT"
     
     if [ -d "$SECRETS/.gemini_backup" ]; then
         echo "    ✔ restoring Antigravity CLI (agy) OAuth credentials, projects, and config to ~/.gemini"
@@ -99,6 +122,36 @@ restore_backup() {
         [ -d "$SECRETS/.gemini_backup/antigravity-cli" ] && cp -a "$SECRETS/.gemini_backup/antigravity-cli/." "$HOME/.gemini/antigravity-cli/" 2>/dev/null || true
         [ -d "$SECRETS/.gemini_backup/config" ] && cp -a "$SECRETS/.gemini_backup/config/." "$HOME/.gemini/config/" 2>/dev/null || true
         chmod 600 "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" 2>/dev/null || true
+    fi
+
+    if [ -d "$SECRETS/.ssh_backup" ]; then
+        echo "    ✔ restoring SSH keys and config to ~/.ssh"
+        mkdir -p "$HOME/.ssh"
+        chmod 700 "$HOME/.ssh"
+        for ssh_item in id_ed25519 id_ed25519.pub id_rsa id_rsa.pub config known_hosts; do
+            [ -f "$SECRETS/.ssh_backup/$ssh_item" ] && cp -p "$SECRETS/.ssh_backup/$ssh_item" "$HOME/.ssh/$ssh_item" 2>/dev/null || true
+        done
+        if [ -f "$SECRETS/.ssh_backup/authorized_keys" ]; then
+            touch "$HOME/.ssh/authorized_keys"
+            while IFS= read -r key_line; do
+                [ -n "$key_line" ] && ! grep -Fqx "$key_line" "$HOME/.ssh/authorized_keys" 2>/dev/null && printf '%s\n' "$key_line" >> "$HOME/.ssh/authorized_keys"
+            done < "$SECRETS/.ssh_backup/authorized_keys"
+        fi
+        chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/id_rsa" "$HOME/.ssh/config" "$HOME/.ssh/authorized_keys" 2>/dev/null || true
+        chmod 644 "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub" "$HOME/.ssh/known_hosts" 2>/dev/null || true
+    fi
+
+    if [ -f "$SECRETS/.rclone_backup/rclone.conf" ]; then
+        echo "    ✔ restoring rclone configuration to ~/.config/rclone/rclone.conf"
+        mkdir -p "$HOME/.config/rclone"
+        cp -p "$SECRETS/.rclone_backup/rclone.conf" "$HOME/.config/rclone/rclone.conf" 2>/dev/null || true
+        chmod 600 "$HOME/.config/rclone/rclone.conf" 2>/dev/null || true
+    fi
+
+    if [ -f "$SECRETS/.host_secrets/piatoken.txt" ]; then
+        echo "    ✔ restoring PIA token to ~/piatoken.txt"
+        cp -p "$SECRETS/.host_secrets/piatoken.txt" "$HOME/piatoken.txt" 2>/dev/null || true
+        chmod 600 "$HOME/piatoken.txt" 2>/dev/null || true
     fi
     
     echo "--- [2/5] venv + dependencies ---"

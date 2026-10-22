@@ -83,9 +83,10 @@ class StandaloneGeminiAuditor:
     ) -> None:
         self.model = model
         self.project_id = project_id
-        self.cli_path = cli_path or os.path.expanduser("~/.local/bin/agy")
+        self.cli_path = cli_path or os.path.expanduser("~/.local/bin/agy-bot")
         if not os.path.exists(self.cli_path):
-            self.cli_path = shutil.which("agy") or ""
+            fallback_cli = os.path.expanduser("~/.local/bin/agy")
+            self.cli_path = fallback_cli if os.path.exists(fallback_cli) else (shutil.which("agy-bot") or shutil.which("agy") or "")
         self._custom_runner = custom_runner
 
     def query_json(

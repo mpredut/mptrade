@@ -61,6 +61,10 @@ render "$SYSTEMD_DIR/crontab.root.prod.txt" "$TMP_DIR/crontab.root.prod.txt"
 render "$SYSTEMD_DIR/bashrc" "$TMP_DIR/bashrc"
 render "$SYSTEMD_DIR/sudoers-trading" "$TMP_DIR/sudoers-trading"
 render "$SYSTEMD_DIR/antigravity-cli-daemon.service" "$TMP_DIR/antigravity-cli-daemon.service"
+mkdir -p "$TMP_DIR/antigravity-cli-daemon.service.d"
+render "$SYSTEMD_DIR/antigravity-cli-daemon.service.d/override.conf" "$TMP_DIR/antigravity-cli-daemon.service.d/override.conf"
+render "$SYSTEMD_DIR/antigravity-cli-daemon.service.d/store-fix.conf" "$TMP_DIR/antigravity-cli-daemon.service.d/store-fix.conf"
+render "$SYSTEMD_DIR/agy-bot" "$TMP_DIR/agy-bot"
 
 
 if [ "${1:-}" = "--render-only" ]; then
@@ -113,8 +117,16 @@ crontab -u root "$TMP_DIR/crontab.root.prod.txt"
 # Enable systemd user session lingering and install agy daemon unit
 loginctl enable-linger "$TRADING_USER" 2>/dev/null || true
 install -d -o "$TRADING_USER" -g "$TRADING_GROUP" -m 0755 "$TRADING_HOME/.config/systemd/user"
+install -d -o "$TRADING_USER" -g "$TRADING_GROUP" -m 0755 "$TRADING_HOME/.config/systemd/user/antigravity-cli-daemon.service.d"
 install -o "$TRADING_USER" -g "$TRADING_GROUP" -m 0644 "$TMP_DIR/antigravity-cli-daemon.service" \
   "$TRADING_HOME/.config/systemd/user/antigravity-cli-daemon.service"
+install -o "$TRADING_USER" -g "$TRADING_GROUP" -m 0644 "$TMP_DIR/antigravity-cli-daemon.service.d/override.conf" \
+  "$TRADING_HOME/.config/systemd/user/antigravity-cli-daemon.service.d/override.conf"
+install -o "$TRADING_USER" -g "$TRADING_GROUP" -m 0644 "$TMP_DIR/antigravity-cli-daemon.service.d/store-fix.conf" \
+  "$TRADING_HOME/.config/systemd/user/antigravity-cli-daemon.service.d/store-fix.conf"
+install -d -o "$TRADING_USER" -g "$TRADING_GROUP" -m 0755 "$TRADING_HOME/.local/bin"
+install -o "$TRADING_USER" -g "$TRADING_GROUP" -m 0755 "$TMP_DIR/agy-bot" \
+  "$TRADING_HOME/.local/bin/agy-bot"
 if [ -x "$TRADING_HOME/.local/bin/agy" ]; then
   TRADING_UID="$(id -u "$TRADING_USER")"
   sudo -u "$TRADING_USER" XDG_RUNTIME_DIR="/run/user/$TRADING_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$TRADING_UID/bus" systemctl --user daemon-reload 2>/dev/null || true

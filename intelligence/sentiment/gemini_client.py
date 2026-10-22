@@ -19,7 +19,9 @@ load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 logger = logging.getLogger("intelligence.sentiment.gemini_client")
 
 DEFAULT_MODEL = "gemini-3.8-flash-low"
-AGY_CLI_PATH = "/home/predut/.local/bin/agy"
+AGY_CLI_PATH = os.environ.get("MPTRADE_AGY_BIN", "/home/predut/.local/bin/agy-bot")
+AGY_FALLBACK_CLI_PATH = "/home/predut/.local/bin/agy"
+AGY_STORE_SYNC_ENABLED = os.environ.get("MPTRADE_AGY_STORE_SYNC", "0") == "1"
 
 
 DEFAULT_AUTONOMOUS_PROJECT_ID = "f5f9d01f-01e5-4fac-80f2-97364688afab"
@@ -42,7 +44,13 @@ class GeminiClient:
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        self.cli_path = cli_path or (AGY_CLI_PATH if os.path.exists(AGY_CLI_PATH) else shutil.which("agy"))
+        self.cli_path = cli_path or (
+            AGY_CLI_PATH if os.path.exists(AGY_CLI_PATH) else (
+                AGY_FALLBACK_CLI_PATH if os.path.exists(AGY_FALLBACK_CLI_PATH) else (
+                    shutil.which("agy-bot") or shutil.which("agy")
+                )
+            )
+        )
         raw_project = project_id or required_env("AGY_PROJECT")
         if raw_project in ("autonommptrade", DEFAULT_AUTONOMOUS_PROJECT_ID):
             self.project_id = DEFAULT_AUTONOMOUS_PROJECT_ID
@@ -116,7 +124,7 @@ class GeminiClient:
                     output = proc.stdout.strip()
                     if cache_ttl_sec > 0:
                         self._cache[prompt] = (now, output)
-                    if not hasattr(subprocess.run, "_mock_name"):
+                    if AGY_STORE_SYNC_ENABLED and not hasattr(subprocess.run, "_mock_name"):
                         try:
                             from orchestratorOS.admin.prune_llm_threads import (
                                 prune_old_cli_threads,

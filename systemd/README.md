@@ -12,8 +12,12 @@ This directory contains the systemd services, administration tools, and deployme
    - `trading-admin reinstall`: Re-render systemd units and crontabs from a clean git repo.
    - `trading-admin pin-dns`: Apply DNS cache tuning and restart systemd-resolved without restarting the fleet.
 4. **`crontab.root.prod.txt`**: Root-level cron jobs (such as `vpn_watchdog.sh` and `manage_gitautodeploy.sh`).
-5. **`crontab.prod.txt`**: Unprivileged trading user cron jobs (such as log pruning, deadman switch, backups, resource watchdog, and `manage_agy.sh` watchdog/update).
-6. **`antigravity-cli-daemon.service`**: Systemd user-session daemon template for remote AI agent control via `agy remote-control serve`.
+5. **`crontab.prod.txt`**: Unprivileged trading user cron jobs (such as log pruning, deadman switch, backups, resource watchdog, PROD $\rightarrow$ DEV sync via `refresh_dev.sh`, scheduled DEV backtests via `trigger_backtest_dev.sh`, and `manage_agy.sh` watchdog/update).
+6. **`antigravity-cli-daemon.service` & `agy-bot`**:
+   - `antigravity-cli-daemon.service`: Systemd user-session daemon template for remote AI agent control via `agy remote-control serve`.
+   - `antigravity-cli-daemon.service.d/override.conf`: Ensures the VPN tunnel (`wait_for_vpn.sh`) is up before starting the daemon.
+   - `antigravity-cli-daemon.service.d/store-fix.conf`: Runs `orchestratorOS/admin/agy_store_fix.py pre/post` around daemon start to keep the Web UI conversation summary store synchronized.
+   - `agy-bot`: Wrapper script installed to `~/.local/bin/agy-bot` that isolates headless bot/supervisor LLM invocations in `~/agy_bot_home` so automated prompts never overwrite the human Web UI summary store.
 7. **Network & System Tuning**:
    - `resolved-20-trading-cache.conf`: Systemd-resolved DNS cache drop-in.
    - `netplan-99-force-gateway.yaml`: Direct uplink routing bypass for Proxmox hairpinning.
