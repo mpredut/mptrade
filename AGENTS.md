@@ -2,6 +2,10 @@
 - **Strict English:** All code, commits, and documentation must be in English.
 - **Auto-Push:** Automatically push verified commits upstream.
 - **Targeted Local Testing & Dev CI:** Run only targeted unit tests for touched files during active tasks. Never run the full 1300-test suite inside agent turns. Full regressions run asynchronously on the DEV machine (`offline/runners/trigger_dev_regression.sh`). Check status via `./offline/runners/check_dev_regression.sh` or `cachedb/dev_regression_status.json`.
+- **Workspace & Server Topology (Fast Reference):**
+  - **Local Repository:** WSL `Ubuntu-24.04` at `/home/mariusp/mptrade` (`//wsl.localhost/Ubuntu-24.04/home/mariusp/mptrade`).
+  - **PROD Server (Live Trading Fleet):** `192.168.0.144` (SSH alias `mptrade-prod`, hostname `trading`, port `32238`, user `predut`, path `/home/predut/mptrade`).
+  - **DEV Server (Backtesting & CI Regression):** `192.168.0.138` (SSH alias `mptrade-dev`, hostname `backtest`, port `32238`, user `predut`, path `/home/predut/mptrade`).
 
 # Core Tenets
 - **Unification & Compaction:** Consolidate fragmented logic into single linear choke points; eliminate redundancy.
