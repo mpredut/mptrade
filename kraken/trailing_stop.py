@@ -47,6 +47,7 @@ from providers.execution_audit import (  # noqa: E402
     AuditedStrategyExecutor,
     intent_client_order_id,
 )
+from providers.base import extract_order_side  # noqa: E402
 from providers.kraken_provider import KrakenProvider, _kraken_pair_matches  # noqa: E402
 from order_retry import (  # noqa: E402
     StrategyExecutorLifecycleApi,
@@ -220,7 +221,7 @@ class KrakenTrailing:
             for txid, ord_info in open_ords.items():
                 descr = ord_info.get("descr", {}) if isinstance(ord_info, dict) else {}
                 ord_pair = str(descr.get("pair") or (ord_info.get("pair") if isinstance(ord_info, dict) else "") or "")
-                if str(descr.get("type", "")).lower() == "sell" and (ord_pair == pair or _kraken_pair_matches(pair, ord_pair)):
+                if extract_order_side(ord_info) == "SELL" and (ord_pair == pair or _kraken_pair_matches(pair, ord_pair)):
                     self.client.cancel_order(txid)
                     cancelled_any = True
             if cancelled_any:

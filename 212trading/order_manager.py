@@ -154,7 +154,7 @@ def poll_order_until_terminal(client: T212Client, order_id, ticker: str,
     log(f"  [ORDER] status {order_id}: {st or 'NECUNOSCUT'}")
     if st not in T212_ORDER_TERMINAL:
         return info
-    fq = info.get("filledQuantity") or info.get("quantity", 0)
+    fq = info.get("filledQuantity") or info.get("quantity") or info.get("orderedQuantity", 0)
     fp = info.get("fillPrice") or info.get("limitPrice", 0)
     if st == "FILLED":
         log(f"  [ORDER] ✓ FILLED: {fq} @ {fp} USD")
@@ -194,7 +194,7 @@ def _matching_active_orders(client: T212Client, record: dict) -> list[dict] | No
         if ticker != str(record["ticker"]).upper():
             continue
         try:
-            signed_qty = float(order.get("quantity", order.get("qty")))
+            signed_qty = float(order.get("quantity", order.get("orderedQuantity", order.get("qty"))))
             qty = abs(signed_qty)
             limit = float(order.get("limitPrice", order.get("limit")))
         except (TypeError, ValueError, OverflowError):

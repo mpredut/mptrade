@@ -343,4 +343,65 @@ def test_extract_remaining_qty_explicit_zero_and_tp_restore_normalization():
     assert agg[0]["commissionAsset"] == "USDC"
 
 
+def test_cross_venue_and_ws_extract_normalization_edges():
+    from providers.base import (
+        extract_order_id,
+        extract_order_price,
+        extract_order_qty,
+        extract_order_side,
+        extract_remaining_qty,
+        extract_timestamp_ms,
+    )
+    from binance_api.order_id_context import resolve_order_owner
+
+    # 1. Binance WS executionReport: remainingQty from q - z, price from L/Z, timestamp from T/E, side from S
+    ws_event = {
+        "e": "executionReport",
+        "E": 1700000005000,
+        "T": 1700000004000,
+        "i": 987654,
+        "S": "BUY",
+        "q": "10.00000000",
+        "z": "4.00000000",
+        "l": "2.00000000",
+        "p": "0.00000000",
+        "L": "250.50",
+        "Z": "1002.00",
+    }
+    assert extract_remaining_qty(ws_event) == pytest.approx(6.0)
+    assert extract_order_price(ws_event) == pytest.approx(250.50)
+    assert extract_order_qty(ws_event) == pytest.approx(2.0)
+    assert extract_order_side(ws_event) == "BUY"
+    assert extract_timestamp_ms(ws_event) == 1700000004000
+    assert extract_order_id(ws_event) == "987654"
+
+    # 2. Raw Hyperliquid open_orders payload: origSz is original size, sz is remaining size
+    hl_open_order = {"oid": 112233, "side": "A", "limitPx": "35.5", "origSz": "5.0", "sz": "2.0"}
+    assert extract_remaining_qty(hl_open_order) == pytest.approx(2.0)
+    assert extract_order_side(hl_open_order) == "SELL"
+
+    # 3. Order ID precedence: Kraken trade (ordertxid over trade id) and Hyperliquid fill (oid over trade id)
+    assert extract_order_id({"id": "TRADE-1", "ordertxid": "ORDER-99"}) == "ORDER-99"
+    assert extract_order_id({"id": "FILL-7", "oid": 554433}) == "554433"
+
+    # 4. Raw Kraken open order (nested descr.type and descr.price) and cost/vol price fallback
+    kraken_raw_open = {"vol": "3.0", "vol_exec": "1.0", "descr": {"type": "sell", "price": "42.75"}}
+    assert extract_order_side(kraken_raw_open) == "SELL"
+    assert extract_order_price(kraken_raw_open) == pytest.approx(42.75)
+    assert extract_order_price({"price": "0.00000", "cost": "150.0", "vol": "3.0"}) == pytest.approx(50.0)
+
+    # 5. T212 signed orderedQuantity side inference
+    assert extract_order_side({"ticker": "NVDA_US_EQ", "orderedQuantity": -2.5}) == "SELL"
+    assert extract_order_side({"ticker": "NVDA_US_EQ", "orderedQuantity": 2.5}) == "BUY"
+
+    # 6. Composite prefix resolution without trailing underscore & AssetGuardian AGS/AGB prefixes
+    assert resolve_order_owner("MO_TA") == "tradeall"
+    assert resolve_order_owner("MO_MN") == "manual"
+    assert resolve_order_owner("MO_RT") == "rtrade"
+    assert resolve_order_owner("TA_OR") == "tradeall"
+    assert resolve_order_owner("AGS1234abcd") == "assetguardian"
+    assert resolve_order_owner("AGB1234abcd") == "assetguardian"
+
+
+
 

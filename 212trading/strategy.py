@@ -544,7 +544,7 @@ class Strategy:
         nested_ticker = instrument.get("ticker") if isinstance(instrument, dict) else None
         ticker = str(order.get("ticker") or nested_ticker or "").upper()
         side = str(order.get("side") or "").upper()
-        raw_qty = order.get("quantity", order.get("qty"))
+        raw_qty = order.get("quantity", order.get("orderedQuantity", order.get("qty")))
         try:
             signed_qty = float(raw_qty)
             qty = abs(signed_qty)

@@ -44,6 +44,7 @@ from cachepaths import cache_path
 from instrument_registry import symbols_for
 from providers.base import (
     extract_order_fee,
+    extract_order_id,
     extract_order_price,
     extract_order_qty,
     extract_order_side,
@@ -106,16 +107,15 @@ def _normalize(txid, tr):
     ts_ms = extract_timestamp_ms(tr, default=0) or 0
     side = extract_order_side(tr) or "SELL"
     is_buyer = side == "BUY"
-    qty = tr.get("vol", tr.get("qty"))
-    if qty is None:
-        qty = extract_order_qty(tr, default=0.0)
-    price = tr.get("price")
-    if price is None:
-        price = extract_order_price(tr, default=0.0)
+    qty = extract_order_qty(tr, default=0.0)
+    price = extract_order_price(tr, default=0.0)
+    order_id = tr.get("ordertxid", tr.get("orderId"))
+    if order_id is None:
+        order_id = extract_order_id(tr)
     normalized = {
         "symbol": tr.get("pair", tr.get("symbol")),
         "id": str(txid),
-        "orderId": tr.get("ordertxid", tr.get("orderId")),
+        "orderId": order_id,
         "price": price,
         "qty": qty,
         "quantity": qty,
@@ -162,7 +162,7 @@ def _ledger_to_fills(ledger):
         if raw_base.endswith(".F"):
             raw_base = raw_base[:-2]
         raw_symbol = raw_base + _QUOTE[str(quote["asset"]).upper()]
-        ts_ms = extract_timestamp_ms(base, default=0) or 0
+        ts_ms = extract_timestamp_ms(base, default=None) or extract_timestamp_ms(quote, default=0) or 0
         is_buyer = ba > 0
         fills.append({
             "symbol": raw_symbol,
