@@ -595,6 +595,115 @@ def test_hyperliquid_strategy_keeps_order_when_cancel_fails(tmp_path):
     assert client.placed == []
 
 
+def test_cache_manager_polymorphic_update_overloading_and_readonly_safety(tmp_path):
+    """Verify update_cache_per_symbol overriding on Order/Trade, CurrentPrice _persist_items overloading, and read-only maintain_append_persist."""
+    import json
+    import cacheManager as cm
+
+    # 1. CacheOrderManager.update_cache_per_symbol routes through _persist_items and accepts both dict and list
+    order_mgr = cm.get_cache_manager("Order")
+    sym = "TEST_POLY_ORDER_USDC"
+    with order_mgr.lock:
+        order_mgr.cache[sym] = []
+        order_mgr.fetchtime_time_per_symbol[sym] = 1000
+
+    order_mgr.update_cache_per_symbol(
+        sym,
+        {
+            "orderId": 777,
+            "price": "50.0",
+            "quantity": "2.0",
+            "timestamp": "1700000000000",
+            "side": "buy",
+            "_fillId": "801",
+        },
+    )
+    order_mgr.update_cache_per_symbol(
+        sym,
+        [
+            {
+                "orderId": 777,
+                "price": "80.0",
+                "quantity": "1.0",
+                "timestamp": "1700000002000",
+                "side": "BUY",
+                "_fillId": "802",
+            }
+        ],
+    )
+    rows = order_mgr.cache[sym]
+    assert len(rows) == 1
+    assert rows[0]["orderId"] == 777
+    assert rows[0]["price"] == pytest.approx(60.0)
+    assert rows[0]["quantity"] == pytest.approx(3.0)
+    assert rows[0]["_fillIds"] == ["801", "802"]
+
+    # 2. CacheTradeManager.update_cache_per_symbol deduplicates by immutable trade ID and enriches fees
+    trade_mgr = cm.get_cache_manager("Trade")
+    tsym = "TEST_POLY_TRADE_USDC"
+    with trade_mgr.lock:
+        trade_mgr.cache[tsym] = []
+        trade_mgr._persisted_counts[tsym] = 0
+        trade_mgr.fetchtime_time_per_symbol[tsym] = 1000
+
+    trade_mgr.update_cache_per_symbol(
+        tsym,
+        {
+            "symbol": tsym,
+            "id": 9001,
+            "orderId": 777,
+            "price": "60.0",
+            "qty": "1.0",
+            "quoteQty": "60.0",
+            "time": 1700000002000,
+            "isBuyer": True,
+        },
+    )
+    trade_mgr.update_cache_per_symbol(
+        tsym,
+        [
+            {
+                "symbol": tsym,
+                "id": 9001,
+                "orderId": 777,
+                "price": "60.0",
+                "qty": "1.0",
+                "quoteQty": "60.0",
+                "time": 1700000002000,
+                "isBuyer": True,
+                "commission": "0.06",
+                "commissionAsset": "USDC",
+            }
+        ],
+    )
+    trows = trade_mgr.cache[tsym]
+    assert len(trows) == 1
+    assert trows[0]["commission"] == "0.06"
+    assert trows[0]["commissionAsset"] == "USDC"
+
+    # 3. CacheCurrentPrice._persist_items accepts both [[ts_ms, price]] and [price, ts_ms] and empty list safely
+    cp_file = str(tmp_path / "cp_poly.json")
+    cp_mgr = cm.CacheCurrentPrice(60, ["BTCUSDC"], cp_file)
+    cp_mgr._persist_items("BTCUSDC", [])
+    cp_mgr._persist_items("BTCUSDC", [61234.5, 1700000005000])
+    assert cp_mgr.cache["BTCUSDC"] == [[1700000005000, 61234.5]]
+    cp_mgr._persist_items("BTCUSDC", [[1700000006000, 61250.0]])
+    assert cp_mgr.cache["BTCUSDC"] == [[1700000006000, 61250.0]]
+
+    # 4. Read-only consumer (save_state=False) maintain_append_persist prunes memory without modifying disk
+    sparse_file = str(tmp_path / "sparse_ro.jsonl")
+    with open(sparse_file, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"s": "BTCUSDC", "i": [1000, 10.0]}) + "\n")
+    sparse_ro = cm.CacheSparsePrice(60, ["BTCUSDC"], sparse_file)
+    sparse_ro.save_state = False
+    sparse_ro.maintain_append_persist()
+    assert sparse_ro.cache.get("BTCUSDC") == []
+    with open(sparse_file, "r", encoding="utf-8") as fh:
+        disk_lines = [line.strip() for line in fh if line.strip()]
+    assert len(disk_lines) == 1
+
+
+
 
 
 

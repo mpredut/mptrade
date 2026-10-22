@@ -624,6 +624,15 @@ class CacheManagerInterface(ABC):
         if self.append_persist:
             self._load_jsonl()
             return
+        if self.cls_name in _ORDER_CACHE_CLASSES:
+            try:
+                metadata = self._load_versioned_account_meta(optional=True)
+                if metadata is not None:
+                    self._ensure_order_version(str(metadata["data_version"]))
+                    return
+            except Exception as e:
+                print(f"[{self.cls_name}][Error] reload {self.filename}: {e}")
+                return
         if os.path.exists(self.filename):
             try:
                 with open(self.filename) as f:
@@ -631,10 +640,12 @@ class CacheManagerInterface(ABC):
                 with self.lock:
                     items = data.get("items", {})
                     if isinstance(items, dict):
+                        if isinstance(self, Cache24Price):
+                            items = {s: v for s, v in items.items() if s in self.symbols}
                         self.cache = items
                     self.fetchtime_time_per_symbol = data.get("fetchtime", {})
                     self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
-                    self._mark_account_cache_dirty_locked()
+                    self._account_cache_dirty = False
             except Exception as e:
                 print(f"[{self.cls_name}][Error] reload {self.filename}: {e}")
 
@@ -708,6 +719,7 @@ class CacheManagerInterface(ABC):
             with self.lock:
                 self.cache = items
                 self.fetchtime_time_per_symbol = payload.get("fetchtime", {})
+                self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
                 self._persisted_counts = {}
             migrated = (
                 self._compact_account_trade_jsonl_generation_locked()
@@ -1167,6 +1179,7 @@ class CacheManagerInterface(ABC):
             with self.lock:
                 self.cache = items
                 self.fetchtime_time_per_symbol = dict(fetchtime)
+                self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
                 self._persisted_counts = dict(actual_counts)
                 self._persisted_data_version = required_version
                 self._loaded_data_version = required_version
@@ -1261,6 +1274,7 @@ class CacheManagerInterface(ABC):
                         for symbol, item in records:
                             self.cache.setdefault(symbol, []).append(item)
                         self.fetchtime_time_per_symbol = dict(metadata["fetchtime"])
+                        self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
                         self._persisted_counts = dict(candidate_counts)
                         self._remember_loaded_trade_manifest_locked(
                             metadata, candidate_counts
@@ -1278,6 +1292,7 @@ class CacheManagerInterface(ABC):
             with self.lock:
                 self.cache = candidate_cache
                 self.fetchtime_time_per_symbol = dict(metadata["fetchtime"])
+                self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
                 self._persisted_counts = dict(candidate_counts)
                 self._remember_loaded_trade_manifest_locked(
                     metadata, candidate_counts
@@ -1613,12 +1628,13 @@ class CacheManagerInterface(ABC):
                 self._mark_account_cache_dirty_locked()
         if changed:
             builtins.print(f"[{self.cls_name}][maintain] pruning >{self.RETENTION_DAYS}d from {self.filename}")
-            if self.append_persist:
-                self.compact_jsonl()
-            else:
-                self.save_state_to_file()   # A full rewrite is normal for these classes.
+            if self.save_state:
+                if self.append_persist:
+                    self.compact_jsonl()
+                else:
+                    self.save_state_to_file()   # A full rewrite is normal for these classes.
         # Rotate by size only for JSONL; see the docstring.
-        if not self.append_persist:
+        if not self.append_persist or not self.save_state:
             return
         try:
             if os.path.exists(self.filename) and os.path.getsize(self.filename) > self.MAX_FILE_BYTES:
@@ -1783,26 +1799,21 @@ class CacheManagerInterface(ABC):
         
     
     def update_cache_per_symbol(self, symbol, new_items):
-        
+        if new_items is None:
+            return
         current_time = int(time.time() * 1000)
-      
-        if symbol not in self.cache:
-            self.cache[symbol] = [] #self.cache.setdefault(symbol, []).extend(new_items)
-            
-        count_new_items = len(new_items)
-        print(f"[{self.cls_name}][Info] {symbol}:  new_items {new_items}") 
-       
-        #new_items = self.filter_new_items(self.cache[symbol], new_items)
-        # with self.lock:
-        #     cache_copy = list(self.cache.get(symbol, []))
-        # new_items = self.filter_new_items(cache_copy, new_items)
+        if self.append_mode:
+            if isinstance(new_items, dict):
+                new_items = [new_items]
+            elif not isinstance(new_items, list):
+                new_items = list(new_items) if isinstance(new_items, tuple) else [new_items]
+
+        count_new_items = len(new_items) if isinstance(new_items, (list, tuple, dict)) else 1
+        print(f"[{self.cls_name}][Info] {symbol}:  new_items {new_items}")
 
         with self.lock:  # Protected write.
+            self.cache.setdefault(symbol, [])
             if self.append_mode:    # History mode retains every PriceOrders/Price/Trade element.
-                #if isinstance(new_items, dict):
-                #    new_items = [new_items]
-                #elif not isinstance(new_items, list):
-                #    new_items = [new_items]                    
                 # Polling returns overlapping recent data, so deduplicate against only the
                 # recent window. This is O(DEDUP_WINDOW) rather than O(entire cache); the
                 # periodic compact_jsonl pass performs complete deduplication.
@@ -2053,8 +2064,24 @@ class CacheTradeManager(CacheManagerInterface):
                 )
         return new_trades
 
+    def update_cache_per_symbol(self, symbol, new_items):
+        """Route direct update_cache_per_symbol calls through full-history ID deduplication."""
+        if new_items is None:
+            return
+        if isinstance(new_items, dict):
+            new_items = [new_items]
+        elif not isinstance(new_items, list):
+            new_items = list(new_items) if isinstance(new_items, tuple) else [new_items]
+        self._persist_items(symbol, new_items)
+
     def _persist_items(self, symbol, new_items):
         """Append immutable fills once and reject conflicting duplicate IDs."""
+        if not new_items:
+            return
+        if isinstance(new_items, dict):
+            new_items = [new_items]
+        elif not isinstance(new_items, list):
+            new_items = list(new_items) if isinstance(new_items, tuple) else [new_items]
         with self.lock:
             bucket = self.cache.setdefault(symbol, [])
             persisted_count = self._persisted_counts.get(symbol, 0)
@@ -2213,8 +2240,24 @@ class CacheOrderManager(CacheManagerInterface):
         print(f"[{self.cls_name}][info] New order fills: {len(order_fills)}")
         return order_fills
 
+    def update_cache_per_symbol(self, symbol, new_items):
+        """Route direct update_cache_per_symbol calls through fill-level order aggregation."""
+        if new_items is None:
+            return
+        if isinstance(new_items, dict):
+            new_items = [new_items]
+        elif not isinstance(new_items, list):
+            new_items = list(new_items) if isinstance(new_items, tuple) else [new_items]
+        self._persist_items(symbol, new_items)
+
     def _persist_items(self, symbol, new_items):
         """Merge each immutable fill exactly once into its order aggregate."""
+        if not new_items:
+            return
+        if isinstance(new_items, dict):
+            new_items = [new_items]
+        elif not isinstance(new_items, list):
+            new_items = list(new_items) if isinstance(new_items, tuple) else [new_items]
         now_ms = int(time.time() * 1000)
         with self.lock:
             bucket = self.cache.setdefault(symbol, [])
@@ -2316,7 +2359,7 @@ class CacheSparsePrice(CacheManagerInterface):
     def __init__(self, sync_ts, symbols, filename, api_client=api):
         # Continuous append-only three-minute history uses JSONL append persistence.
         super().__init__(sync_ts, symbols, filename, append_mode=True,
-                         api_client=api, append_persist=True)
+                         api_client=api_client, append_persist=True)
 
     # def rebuild_fetchtime_times(self):
         # if not self.cache:
@@ -2526,6 +2569,7 @@ class Cache365Price(Cache24Price):
                 try:
                     with open(metaf) as handle:
                         self.fetchtime_time_per_symbol = json.load(handle).get("fetchtime", {})
+                        self._rest_sync_cursor_per_symbol = dict(self.fetchtime_time_per_symbol)
                 except (OSError, ValueError, TypeError):
                     pass
 
@@ -2538,7 +2582,7 @@ class Cache365Price(Cache24Price):
             if overflow:
                 self.cache[symbol] = entries[overflow:]
                 self._persisted_counts[symbol] = max(
-                    0, self._persisted_counts.get(symbol, len(entries)) - overflow)
+                    0, self._persisted_counts.get(symbol, 0) - overflow)
         now = time.monotonic()
         if now - self._last_long_trim < self.LONG_TRIM_INTERVAL_SEC:
             return
@@ -2548,12 +2592,14 @@ class Cache365Price(Cache24Price):
         super()._trim_old_data(symbol)   # Use the inherited trimming logic unchanged.
         with self.lock:
             after = len(self.cache.get(symbol, []))
-        if after < before:
-            removed = before - after
-            self._persisted_counts[symbol] = max(0, self._persisted_counts.get(symbol, before) - removed)
+            if after < before:
+                removed = before - after
+                self._persisted_counts[symbol] = max(0, self._persisted_counts.get(symbol, 0) - removed)
 
     def maintain_append_persist(self):
         """Prune the full disk archive with bounded memory, then reload its recent tail."""
+        if not self.save_state:
+            return
         cutoff_ms = int((time.time() - self.RETENTION_DAYS * 86400) * 1000)
         if not os.path.exists(self.filename):
             return
@@ -2572,6 +2618,8 @@ class Cache365Price(Cache24Price):
                         else:
                             changed = True
                 self._load_jsonl()
+                if changed:
+                    self._write_meta(self._persisted_counts, self.fetchtime_time_per_symbol)
             if changed:
                 builtins.print(f"[{self.cls_name}][maintain] pruned expired/corrupt disk records")
             if os.path.getsize(self.filename) > self.MAX_FILE_BYTES:
@@ -2600,6 +2648,7 @@ class Cache365Price(Cache24Price):
             with atomic_write(self.filename) as target:
                 target.write(tail.decode("utf-8", errors="ignore"))
             self._load_jsonl()
+            self._write_meta(self._persisted_counts, self.fetchtime_time_per_symbol)
             with open(archive, "rb") as source, gzip.open(archive + ".gz.tmp", "wb") as target:
                 shutil.copyfileobj(source, target, length=1024 * 1024)
             os.replace(archive + ".gz.tmp", archive + ".gz")
@@ -2622,7 +2671,7 @@ Cache24LongPriceManager = Cache365Price
 
 class PriceLongTrend(CacheManagerInterface):
     def __init__(self, sync_ts, symbols, filename, api_client=api):
-        super().__init__(sync_ts, symbols, filename, append_mode=False)
+        super().__init__(sync_ts, symbols, filename, append_mode=False, api_client=api_client)
 
     # Inherit get_all_symbols_from_cache from the base class.
 
@@ -2818,17 +2867,22 @@ class CacheCurrentPrice(CacheManagerInterface):
         self.update_cache_per_symbol(symbol, [[ts_ms, price]])
         self._notify_price_subscribers(symbol, ts_ms, price)
 
+    @staticmethod
+    def _extract_price_and_ts(items):
+        """Extract ``(price, ts_ms)`` from either ``[[ts_ms, price]]`` or ``[price, ts_ms]``."""
+        if not items:
+            return None, None
+        first = items[0]
+        if isinstance(first, (list, tuple)) and len(first) >= 2:
+            return first[1], (int(first[0]) if first[0] is not None else None)
+        price = first
+        ts_ms = int(items[1]) if len(items) >= 2 and items[1] is not None else None
+        return price, ts_ms
+
     def on_items_update(self, symbol: str, items):
         """Handle a real WebSocket event and update WebSocket health."""
         self._ws_last_event_ts = time.time()   # Real WebSocket events only.
-        if not items:
-            return
-        first = items[0]
-        if isinstance(first, (list, tuple)) and len(first) >= 2:
-            ts_ms, price = int(first[0]), first[1]
-        else:
-            price = first
-            ts_ms = int(items[1]) if len(items) >= 2 and items[1] is not None else None
+        price, ts_ms = self._extract_price_and_ts(items)
         if price is None:
             return
         self._push_price(symbol, price, ts_ms=ts_ms)
@@ -2854,7 +2908,10 @@ class CacheCurrentPrice(CacheManagerInterface):
 
     def _persist_items(self, symbol, new_items):
         """Record sample-rate timing and notify subscribers through ``_push_price``."""
-        self._push_price(symbol, new_items[0][1], ts_ms=new_items[0][0])
+        price, ts_ms = self._extract_price_and_ts(new_items)
+        if price is None:
+            return
+        self._push_price(symbol, price, ts_ms=ts_ms)
 
     def rebuild_fetchtime_times(self):
         last_times = {}
@@ -2931,7 +2988,7 @@ class CacheCurrentPrice(CacheManagerInterface):
                 # Preserve the old row for diagnostics, but never return it as a
                 # usable quote after its bounded-age refresh has failed.
                 return None
-            self._push_price(symbol, new[0][1])
+            self._persist_items(symbol, new)
             self.save_state_to_file_if_enabled()
             with self.lock:
                 entries = self.cache.get(symbol)
@@ -3281,7 +3338,11 @@ class CachePriceShortTrend:
     def on_price_update(self, symbol, ts_ms, price):
         with self._lock:
             buf = self._get_trend_buffer(symbol)
-            if not buf.timestamps or int(ts_ms) >= buf.timestamps[-1]:
+            if not buf.timestamps:
+                buf.append(price, ts_ms)
+            elif int(ts_ms) >= buf.timestamps[-1] and not (
+                int(ts_ms) == buf.timestamps[-1] and float(price) == buf.prices[-1]
+            ):
                 buf.append(price, ts_ms)
         win = self.get_window(symbol)   # Primary window.
         if win is None:
@@ -3815,7 +3876,7 @@ class CachePriceShortTrend:
         if self._computing:
             return self.get_snapshot(symbol)
         if self.is_snapshot_fresh(symbol, max_age_sec):
-            return self._read_file().get(symbol)
+            return self.get_snapshot(symbol)
         # A stale file triggers autonomous local calculation and writer failover.
         builtins.print(
             f"[CachePriceShortTrendManager][WARN] stale file -> "
@@ -3951,12 +4012,12 @@ def get_short_trend_manager(symbols=None, filename="cache_instant_trend.json", w
     global _short_trend_instance
     if _short_trend_instance is not None:
         if writer:
-            _short_trend_instance.writer = True   # Idempotent writer promotion.
+            _short_trend_instance.become_writer()   # Idempotent writer promotion.
         return _short_trend_instance
     with _short_trend_lock:
         if _short_trend_instance is not None:
             if writer:
-                _short_trend_instance.writer = True
+                _short_trend_instance.become_writer()
             return _short_trend_instance
         _syms = symbols if symbols is not None else _default_price_tracking()[0]
         _short_trend_instance = CachePriceShortTrend(_syms, filename, writer=writer)

@@ -727,13 +727,12 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
             print(f"[Cleanup] Removed {len(removed_symbols)} old symbols: {removed_symbols}")
         return removed_symbols
 
-    def save_state_to_file_if_enabled(self):
-        if not self.save_state:
-            return
+    def save_state_to_file(self):
         self.cleanup_old_prices()
         self.cleanup_old_symbols(max_age_days=PRICE_HISTORY_RETENTION_DAYS)
         try:
             with self.lock:
+                counts = {s: len(v) for s, v in self.cache.items()}
                 atomic_write_json(self.filename, {
                     "items": self.cache,
                     "fetchtime": self.fetchtime_time_per_symbol,
@@ -749,9 +748,18 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                         "preferred_source": self.symbol_preferred_source,
                     }
                 }, indent=1)
+                self._persisted_counts = counts
+                self._write_meta(counts, self.fetchtime_time_per_symbol)
                 print(f"[{self.cls_name}][info] Save cache to file {self.filename}")
+                return True
         except Exception as e:
             print(f"[{self.cls_name}][Warn] Saving cache file {self.filename}: {e}")
+            return False
+
+    def save_state_to_file_if_enabled(self):
+        if not self.save_state:
+            return False
+        return self.save_state_to_file()
 
 
 # ============================================
