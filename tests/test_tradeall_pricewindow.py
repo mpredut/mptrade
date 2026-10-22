@@ -1194,7 +1194,7 @@ class TestLogicSmall(unittest.TestCase):
         trend_state = ta.TrendState(3600, 300, 300)
         with patch.object(ta, "track_and_place_order") as mock_order:
             # Below threshold
-            ta.logic_small("SMALL", True, "BTCUSDT", 1, 2.0, trend_state, 60000.0)
+            ta.logic_small("SMALL", True, "BTCUSDT", 1, ta.SMALL_SLOPE_THRESHOLD - 0.5, trend_state, 60000.0)
             mock_order.assert_not_called()
             # Disabled
             ta.logic_small("SMALL", False, "BTCUSDT", 1, 4.0, trend_state, 60000.0)
@@ -1205,7 +1205,7 @@ class TestLogicSmall(unittest.TestCase):
         pw = MagicMock()
         pw.calculate_acceleration.side_effect = [(-0.45, -0.35), (-0.30, -0.10)]
         with patch.object(ta, "track_and_place_order", return_value=[789]) as mock_order:
-            ta.logic_small("SMALL", True, "TAOUSDC", -1, -1.79, trend_state, 275.0, price_window=pw)
+            ta.logic_small("SMALL", True, "TAOUSDC", -1, -1.25, trend_state, 275.0, price_window=pw)
             mock_order.assert_called_once_with(
                 "SELL", "TAOUSDC", 0, 275.0, 275.0,
                 reason="accel_plunge_down",
