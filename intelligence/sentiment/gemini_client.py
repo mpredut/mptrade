@@ -132,12 +132,16 @@ class GeminiClient:
                     cmd.extend(["--conversation", resume_cid])
                 cmd.extend(["-p", cli_prompt])
 
+                run_env = os.environ.copy()
+                run_env["AGY_BOT_HOME"] = os.path.dirname(os.path.dirname(bot_cli_base))
+
                 proc = subprocess.run(
                     cmd,
                     capture_output=True,
                     text=True,
                     timeout=timeout_sec,
                     check=False,
+                    env=run_env,
                 )
                 # If resuming an existing topic thread failed, fall back cleanly to a fresh thread once
                 if (proc.returncode != 0 or not proc.stdout.strip()) and resume_cid and not conversation_id:
@@ -155,6 +159,7 @@ class GeminiClient:
                         text=True,
                         timeout=timeout_sec,
                         check=False,
+                        env=run_env,
                     )
 
                 if proc.returncode == 0 and proc.stdout.strip():

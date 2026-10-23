@@ -58,6 +58,13 @@ def resolve_bot_cli_base(cli_base: Optional[str] = None) -> str:
     return expand_config_path("~/.gemini/antigravity-cli")
 
 
+def resolve_ui_cli_base(ui_cli_base: Optional[str] = None) -> str:
+    """Resolve the Web UI Antigravity CLI store directory strictly from AGY_UI_CLI_BASE."""
+    if ui_cli_base:
+        return expand_config_path(ui_cli_base)
+    return expand_config_path(required_env("AGY_UI_CLI_BASE"))
+
+
 def resolve_agy_bot_bin(cli_path: Optional[str] = None) -> str:
     """Resolve the isolated agy-bot CLI binary path strictly from configuration."""
     if cli_path:
@@ -793,6 +800,110 @@ def delete_specific_cli_threads(
     return (len(cids_to_delete), total_bytes_freed)
 
 
+def mirror_topic_thread_to_ui(
+    cid: str,
+    title: Optional[str] = None,
+    bot_cli_base: Optional[str] = None,
+    ui_cli_base: Optional[str] = None,
+) -> bool:
+    """Mirror a single active topic thread from the isolated bot store into the Web UI store."""
+    if not cid:
+        return False
+    src_base = resolve_bot_cli_base(bot_cli_base)
+    dst_base = resolve_ui_cli_base(ui_cli_base)
+    if os.path.abspath(src_base) == os.path.abspath(dst_base):
+        if title:
+            sync_thread_title(cid, title, cli_base=src_base)
+        return True
+    if not os.path.isdir(dst_base):
+        return False
+
+    src_conv_db = os.path.join(src_base, "conversations", f"{cid}.db")
+    if not os.path.exists(src_conv_db):
+        return False
+
+    try:
+        if title:
+            sync_thread_title(cid, title, cli_base=src_base)
+
+        # 1. Copy conversation .db to UI conversations/
+        dst_conv_dir = os.path.join(dst_base, "conversations")
+        os.makedirs(dst_conv_dir, exist_ok=True)
+        dst_conv_db = os.path.join(dst_conv_dir, f"{cid}.db")
+        tmp_conv_db = dst_conv_db + ".tmp"
+        shutil.copy2(src_conv_db, tmp_conv_db)
+        os.replace(tmp_conv_db, dst_conv_db)
+
+        # 2. Copy annotations/<cid>.pbtxt if present
+        src_annot = os.path.join(src_base, "annotations", f"{cid}.pbtxt")
+        if os.path.exists(src_annot):
+            dst_annot_dir = os.path.join(dst_base, "annotations")
+            os.makedirs(dst_annot_dir, exist_ok=True)
+            shutil.copy2(src_annot, os.path.join(dst_annot_dir, f"{cid}.pbtxt"))
+
+        # 3. Copy brain/<cid> artifacts/logs if present
+        src_brain = os.path.join(src_base, "brain", cid)
+        if os.path.isdir(src_brain):
+            dst_brain = os.path.join(dst_base, "brain", cid)
+            shutil.copytree(src_brain, dst_brain, dirs_exist_ok=True)
+
+        # 4. Copy SQLite summary row from bot conversation_summaries.db to UI conversation_summaries.db
+        src_sum_db = os.path.join(src_base, "conversation_summaries.db")
+        dst_sum_db = os.path.join(dst_base, "conversation_summaries.db")
+        raw_summary = b""
+        if os.path.exists(src_sum_db) and os.path.exists(dst_sum_db):
+            sconn = sqlite3.connect(src_sum_db)
+            scur = sconn.cursor()
+            s_cols = [r[1] for r in scur.execute("PRAGMA table_info(conversation_summaries)").fetchall()]
+            scur.execute("SELECT * FROM conversation_summaries WHERE conversation_id=?", (cid,))
+            srow = scur.fetchone()
+            sconn.close()
+
+            if srow:
+                row_map = dict(zip(s_cols, srow))
+                if title:
+                    row_map["title"] = title
+                    if "raw_summary" in row_map and row_map["raw_summary"]:
+                        row_map["raw_summary"] = _patch_summary_annotations_title(row_map["raw_summary"], title)
+                raw_summary = row_map.get("raw_summary") or b""
+
+                dconn = sqlite3.connect(dst_sum_db)
+                dcur = dconn.cursor()
+                d_cols = [r[1] for r in dcur.execute("PRAGMA table_info(conversation_summaries)").fetchall()]
+                common_cols = [c for c in d_cols if c in row_map]
+                if common_cols:
+                    placeholders = ",".join("?" for _ in common_cols)
+                    col_names = ",".join(common_cols)
+                    dcur.execute(
+                        f"INSERT OR REPLACE INTO conversation_summaries ({col_names}) VALUES ({placeholders})",
+                        [row_map[c] for c in common_cols],
+                    )
+                    dconn.commit()
+                dconn.close()
+
+        # 5. Update protobuf caches in UI store and sync title
+        if raw_summary:
+            cid_b = cid.encode("utf-8")
+            entry = b"\x0a" + encode_varint(len(cid_b)) + cid_b + b"\x12" + encode_varint(len(raw_summary)) + raw_summary
+            rec10 = b"\x0a" + encode_varint(len(entry)) + entry
+            mtime_sec = int(os.stat(dst_conv_db).st_mtime)
+            for pb_name in ("jetbox_summaries_proto.pb", "agyhub_summaries_proto.pb"):
+                pb_path = os.path.join(dst_base, pb_name)
+                if os.path.exists(pb_path):
+                    filter_proto_file(pb_path, {cid})
+                    with open(pb_path, "ab") as f:
+                        f.write(rec10)
+                        if pb_name == "agyhub_summaries_proto.pb":
+                            f.write(_encode_mtime_entry(cid, mtime_sec))
+
+        if title:
+            sync_thread_title(cid, title, cli_base=dst_base)
+        return True
+    except Exception as e:
+        logger.debug("Failed mirroring topic thread %s to UI store: %s", cid, e)
+        return False
+
+
 def prepare_topic_session(
     topic_key: str,
     cli_base: Optional[str] = None,
@@ -851,6 +962,12 @@ def prepare_topic_session(
                 max_steps,
             )
             delete_specific_cli_threads({cid}, cli_base=effective_base)
+            try:
+                ui_base = resolve_ui_cli_base()
+                if os.path.abspath(ui_base) != os.path.abspath(effective_base):
+                    delete_specific_cli_threads({cid}, cli_base=ui_base)
+            except Exception:
+                pass
         entry["conversation_id"] = None
         entry["turn_count"] = 0
         entry["rotated_count"] = int(entry.get("rotated_count") or 0) + 1
@@ -947,6 +1064,12 @@ def record_topic_turn(
     entry["rolling_history"] = history
     reg[topic_key] = entry
     save_topic_registry(reg, registry_path)
+    if active_cid:
+        mirror_topic_thread_to_ui(
+            active_cid,
+            title=entry.get("title") or thread_title,
+            bot_cli_base=effective_base,
+        )
 
 
 def prune_old_cli_threads(

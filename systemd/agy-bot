@@ -3,7 +3,9 @@
 # conversations and summary rows never touch the store served by antigravity-cli-daemon (the Web UI).
 # Self-provisioning: creates the bot home on first use and keeps credentials/projects in sync.
 REAL_HOME="${REAL_HOME:-@TRADING_HOME@}"
-BOT_HOME="${AGY_BOT_HOME:-$REAL_HOME/agy_bot_home}"
+RAW_BOT_HOME="${AGY_BOT_HOME:-$REAL_HOME/agy_bot_home}"
+BOT_HOME="${RAW_BOT_HOME//\$HOME/$REAL_HOME}"
+BOT_HOME="${BOT_HOME/#\~/$REAL_HOME}"
 BOT_CLI="$BOT_HOME/.gemini/antigravity-cli"
 REAL_CLI="$REAL_HOME/.gemini/antigravity-cli"
 mkdir -p "$BOT_CLI" "$BOT_HOME/.gemini/config/projects"
