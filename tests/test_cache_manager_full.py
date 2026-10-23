@@ -1564,6 +1564,28 @@ class TestAppendJsonlPersist(unittest.TestCase):
             self.assertEqual(len(rows), 100)
             self.assertEqual(rows[-1]["i"], [now + 99, 99.0])
 
+        with self.subTest("rotation failure restores active file and memory state"):
+            fname = os.path.join(tmp, "rot_fail.jsonl")
+            m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
+            m.save_state = True
+            m.MAX_FILE_BYTES = 1
+            m.ROTATE_KEEP_FRACTION = 0.10
+            now = int(time.time() * 1000)
+            with m.lock:
+                m.cache["SYM"] = [[now + i, float(i)] for i in range(50)]
+            m.save_state_to_file_if_enabled()
+            self.assertEqual(self._count_lines(fname), 50)
+            with patch.object(m, "compact_jsonl", return_value=False):
+                m.maintain_append_persist()
+            self.assertTrue(os.path.exists(fname))
+            self.assertEqual(self._count_lines(fname), 50)
+            self.assertEqual(len(m.cache["SYM"]), 50)
+            self.assertEqual(m._persisted_counts.get("SYM"), 50)
+            self.assertEqual(
+                [f for f in os.listdir(tmp) if "rot_fail.jsonl" in f and ".archive" in f],
+                [],
+            )
+
         with self.subTest("legacy full json is migrated without deleting source"):
             legacy = os.path.join(tmp, "cache_trade.json")
             target = legacy + "l"

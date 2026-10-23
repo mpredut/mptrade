@@ -169,6 +169,43 @@ class TestArchiverLifecycle(unittest.TestCase):
             except OSError:
                 pass
 
+    def test_cache365_rotation_failure_restores_active_file_and_memory(self):
+        tmp_dir = tempfile.mkdtemp()
+        target_jsonl = os.path.join(tmp_dir, "cache_365_price_BTCUSDC.jsonl")
+        try:
+            now_ms = int(cm.time.time() * 1000)
+            with open(target_jsonl, "w", encoding="utf-8") as handle:
+                for i in range(20):
+                    handle.write(
+                        json.dumps({"s": "BTCUSDC", "i": [now_ms + i, 10.0 + i]}) + "\n"
+                    )
+            manager = cm.Cache365PriceManager(60, ["BTCUSDC"], target_jsonl)
+            manager.save_state = True
+            manager.MAX_FILE_BYTES = 1
+            manager.ROTATE_KEEP_FRACTION = 0.25
+            with mock.patch.object(manager, "_write_meta", return_value=False):
+                self.assertFalse(manager.maintain_append_persist())
+            self.assertTrue(os.path.exists(target_jsonl))
+            with open(target_jsonl, encoding="utf-8") as handle:
+                rows = [json.loads(line) for line in handle if line.strip()]
+            self.assertEqual(len(rows), 20)
+            self.assertEqual(len(manager.cache["BTCUSDC"]), 20)
+            self.assertEqual(manager._persisted_counts.get("BTCUSDC"), 20)
+            self.assertEqual(
+                [f for f in os.listdir(tmp_dir) if ".archive" in f],
+                [],
+            )
+        finally:
+            for name in os.listdir(tmp_dir):
+                try:
+                    os.remove(os.path.join(tmp_dir, name))
+                except OSError:
+                    pass
+            try:
+                os.rmdir(tmp_dir)
+            except OSError:
+                pass
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1393,6 +1393,61 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             125.0, trade_reader.get_last_opposite_fill_price("BTCUSDC", "SELL")
         )
 
+    def test_order_startup_validates_meta_and_never_rebuilds_when_file_exists(self):
+        now_ms = 2_000_000_000_000
+        first_order = _order(1, now_ms)
+        second_order = _order(2, now_ms + 1000)
+
+        with self.subTest("missing order row against v2 meta fails closed on startup"):
+            self._reset_temp()
+            writer = self._order_manager([first_order, second_order], now_ms + 1000)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            with open(writer.filename, encoding="utf-8") as handle:
+                payload = json.load(handle)
+            payload["items"]["BTCUSDC"] = [first_order]
+            with open(writer.filename, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+            with patch.object(
+                cm.CacheOrderManager, "query_remote_and_update_cache"
+            ) as remote_mock:
+                with self.assertRaises(health.AccountCacheNotReady):
+                    cm.CacheOrderManager(
+                        3600, ["BTCUSDC"], writer.filename, api_client=cm.api
+                    )
+                remote_mock.assert_not_called()
+
+        with self.subTest("corrupt order json fails closed instead of 30d remote rebuild"):
+            self._reset_temp()
+            writer = self._order_manager([first_order], now_ms)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            with open(writer.filename, "w", encoding="utf-8") as handle:
+                handle.write("{corrupt-json")
+            with patch.object(
+                cm.CacheOrderManager, "query_remote_and_update_cache"
+            ) as remote_mock:
+                with self.assertRaises(health.AccountCacheNotReady):
+                    cm.CacheOrderManager(
+                        3600, ["BTCUSDC"], writer.filename, api_client=cm.api
+                    )
+                remote_mock.assert_not_called()
+
+        with self.subTest("versioned order payload missing meta fails closed on startup"):
+            self._reset_temp()
+            writer = self._order_manager([first_order], now_ms)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            os.remove(writer.filename + ".meta")
+            with patch.object(
+                cm.CacheOrderManager, "query_remote_and_update_cache"
+            ) as remote_mock:
+                with self.assertRaises(health.AccountCacheNotReady):
+                    cm.CacheOrderManager(
+                        3600, ["BTCUSDC"], writer.filename, api_client=cm.api
+                    )
+                remote_mock.assert_not_called()
+
 
 class AccountCacheReaderConfirmationTest(unittest.TestCase):
     def setUp(self):

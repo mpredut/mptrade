@@ -376,6 +376,9 @@ class CacheManagerInterface(ABC):
                 self.query_remote_and_update_cache()
                 self.save_state_to_file_if_enabled()
             return
+        if self.cls_name in _ORDER_CACHE_CLASSES:
+            self._load_order_state()
+            return
         if os.path.exists(self.filename):
             try:
                 with open(self.filename, "r") as f:
@@ -402,6 +405,70 @@ class CacheManagerInterface(ABC):
             print(f"[{self.cls_name}][Info] File is missing, may be is it first time run. Creating it ....")
             self.query_remote_and_update_cache()
             self.save_state_to_file_if_enabled()
+
+    def _load_order_state(self):
+        """Load Order cache state strictly when durable data or metadata exists."""
+        meta_path = self.filename + ".meta"
+        has_file = os.path.exists(self.filename)
+        has_meta = os.path.exists(meta_path)
+        if not has_file and not has_meta:
+            print(f"[{self.cls_name}][Info] File is missing, may be is it first time run. Creating it ....")
+            self.query_remote_and_update_cache()
+            self.save_state_to_file_if_enabled()
+            return
+
+        reason = self._account_reader_reason()
+        legacy_meta = None
+        if has_meta:
+            try:
+                with open(meta_path, "r", encoding="utf-8") as handle:
+                    raw_meta = json.load(handle)
+            except (OSError, ValueError, TypeError) as exc:
+                raise account_cache_health.AccountCacheNotReady(reason) from exc
+            if not isinstance(raw_meta, dict):
+                raise account_cache_health.AccountCacheNotReady(reason)
+            if raw_meta.get("schema_version") is not None:
+                metadata = self._load_versioned_account_meta(optional=False)
+                self._ensure_order_version(str(metadata["data_version"]))
+                return
+            legacy_meta = raw_meta
+
+        if not has_file:
+            raise account_cache_health.AccountCacheNotReady(reason)
+        try:
+            with open(self.filename, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            if not isinstance(data, dict):
+                raise ValueError("Order cache root is not an object")
+            if data.get("data_version") is not None:
+                raise ValueError("versioned Order cache is missing its versioned manifest")
+            items = data.get("items")
+            fetchtime = data.get("fetchtime", {})
+            if not isinstance(items, dict) or not isinstance(fetchtime, dict):
+                raise ValueError("invalid Order cache maps")
+            if legacy_meta is not None and "counts" in legacy_meta:
+                expected_counts = legacy_meta["counts"]
+                if not isinstance(expected_counts, dict) or any(
+                    not isinstance(s, str) or isinstance(c, bool) or not isinstance(c, int) or c < 0
+                    for s, c in expected_counts.items()
+                ):
+                    raise ValueError("invalid legacy Order manifest counts")
+                actual_counts = {
+                    s: len(v) for s, v in items.items() if isinstance(v, list)
+                }
+                if actual_counts != expected_counts:
+                    raise ValueError("Order cache counts differ from legacy manifest")
+            with self.lock:
+                self.cache = items
+                self.fetchtime_per_symbol = dict(fetchtime)
+                self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
+                self._persisted_counts = {
+                    s: len(v) for s, v in items.items() if isinstance(v, list)
+                }
+        except account_cache_health.AccountCacheNotReady:
+            raise
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise account_cache_health.AccountCacheNotReady(reason) from exc
 
 
     # ── Memory/disk resilience: freshness, overwrite guard, and resync ────────
@@ -1709,15 +1776,34 @@ class CacheManagerInterface(ABC):
         with self.lock:
             archive = f"{self.filename}.{int(time.time())}.archive"
             try:
-                os.replace(self.filename, archive)   # Move complete history into the archive.
+                atomic_snapshot_file(self.filename, archive)   # Snapshot full history before modifying the active file.
             except OSError as e:
                 builtins.print(f"[{self.cls_name}][maintain] archiving failed: {e}")
-                return
+                return False
+            original_cache = {
+                symbol: list(items) for symbol, items in self.cache.items()
+            }
+            original_persisted_counts = dict(self._persisted_counts)
             for symbol, items in self.cache.items():
                 keep_n = max(1, int(len(items) * self.ROTATE_KEEP_FRACTION))
                 self.cache[symbol] = items[-keep_n:]
             self._persisted_counts = {}
-            self.compact_jsonl()   # Rewrite the current file with retained entries only.
+            try:
+                compacted = bool(self.compact_jsonl())   # Rewrite the current file with retained entries only.
+            except Exception as e:
+                builtins.print(f"[{self.cls_name}][maintain] rotation compaction failed: {e}")
+                compacted = False
+            if not compacted:
+                self.cache = original_cache
+                self._persisted_counts = original_persisted_counts
+                try:
+                    os.replace(archive, self.filename)
+                    if os.path.exists(archive):
+                        os.remove(archive)
+                except OSError as restore_err:
+                    builtins.print(f"[{self.cls_name}][maintain] failed to restore active file from {archive}: {restore_err}")
+                builtins.print(f"[{self.cls_name}][maintain] rotation aborted; restored active file and in-memory state")
+                return False
             prefix = f"{self.filename}."
             compressed_archive = archive + ".gz"
             compressed_tmp = compressed_archive + ".tmp"
@@ -1743,6 +1829,7 @@ class CacheManagerInterface(ABC):
                     pass
         builtins.print(f"[{self.cls_name}][maintain] ROTATION: archived -> {archive}, "
                        f"kept the last {int(self.ROTATE_KEEP_FRACTION*100)}%")
+        return True
 
     def _rotate_account_trade_keep_latest(self):
         """Publish a compact Trade generation without moving canonical data first."""
@@ -2688,14 +2775,15 @@ class Cache365PriceManager(Cache24PriceManager):
                             changed = True
                 self._load_jsonl()
                 if changed:
-                    self._write_meta({
+                    if not self._write_meta({
                         "counts": dict(self._persisted_counts),
                         "fetchtime": dict(self.fetchtime_per_symbol),
-                    })
+                    }):
+                        return False
             if changed:
                 builtins.print(f"[{self.cls_name}][maintain] pruned expired/corrupt disk records")
             if os.path.getsize(self.filename) > self.MAX_FILE_BYTES:
-                self._rotate_disk_archive()
+                return self._rotate_disk_archive()
             return True
         except OSError as exc:
             builtins.print(f"[{self.cls_name}][Error] streaming maintenance {self.filename}: {exc}")
@@ -2711,31 +2799,76 @@ class Cache365PriceManager(Cache24PriceManager):
         """Archive an oversized file while retaining a complete-line tail on disk."""
         with self.lock:
             archive = f"{self.filename}.{int(time.time())}.archive"
-            os.replace(self.filename, archive)
-            keep_bytes = max(1, int(os.path.getsize(archive) * self.ROTATE_KEEP_FRACTION))
-            with open(archive, "rb") as source:
-                source.seek(max(0, os.path.getsize(archive) - keep_bytes))
-                if source.tell() > 0:
-                    source.readline()
-                tail = source.read()
-            with atomic_write(self.filename) as target:
-                target.write(tail.decode("utf-8", errors="ignore"))
-            self._load_jsonl()
-            self._write_meta({
-                "counts": dict(self._persisted_counts),
-                "fetchtime": dict(self.fetchtime_per_symbol),
-            })
-            with open(archive, "rb") as source, gzip.open(archive + ".gz.tmp", "wb") as target:
-                shutil.copyfileobj(source, target, length=1024 * 1024)
-            os.replace(archive + ".gz.tmp", archive + ".gz")
-            os.remove(archive)
+            try:
+                atomic_snapshot_file(self.filename, archive)
+            except OSError as exc:
+                builtins.print(f"[{self.cls_name}][maintain] archiving failed: {exc}")
+                return False
+            original_cache = {
+                symbol: list(items) for symbol, items in self.cache.items()
+            }
+            original_persisted_counts = dict(self._persisted_counts)
+            original_fetchtimes = dict(self.fetchtime_per_symbol)
+            original_rest_cursors = dict(self._rest_sync_cursor_per_symbol)
+            try:
+                archive_size = os.path.getsize(archive)
+                keep_bytes = max(1, int(archive_size * self.ROTATE_KEEP_FRACTION))
+                with open(archive, "rb") as source:
+                    source.seek(max(0, archive_size - keep_bytes))
+                    if source.tell() > 0:
+                        source.readline()
+                    tail = source.read()
+                    if not tail.strip() and archive_size > 0:
+                        source.seek(0)
+                        lines = [line for line in source.read().splitlines(keepends=True) if line.strip()]
+                        tail = lines[-1] if lines else b""
+                with atomic_write(self.filename) as target:
+                    target.write(tail.decode("utf-8", errors="ignore"))
+                self._load_jsonl()
+                meta_ok = self._write_meta({
+                    "counts": dict(self._persisted_counts),
+                    "fetchtime": dict(self.fetchtime_per_symbol),
+                })
+            except Exception as exc:
+                builtins.print(f"[{self.cls_name}][maintain] rotation rewrite failed: {exc}")
+                meta_ok = False
+            if not meta_ok:
+                self.cache = original_cache
+                self._persisted_counts = original_persisted_counts
+                self.fetchtime_per_symbol = original_fetchtimes
+                self._rest_sync_cursor_per_symbol = original_rest_cursors
+                try:
+                    os.replace(archive, self.filename)
+                    if os.path.exists(archive):
+                        os.remove(archive)
+                except OSError as restore_err:
+                    builtins.print(f"[{self.cls_name}][maintain] failed to restore active file from {archive}: {restore_err}")
+                builtins.print(f"[{self.cls_name}][maintain] rotation aborted; restored active file and in-memory state")
+                return False
+            compressed_tmp = archive + ".gz.tmp"
+            compressed_archive = archive + ".gz"
+            try:
+                with open(archive, "rb") as source, gzip.open(compressed_tmp, "wb") as target:
+                    shutil.copyfileobj(source, target, length=1024 * 1024)
+                os.replace(compressed_tmp, compressed_archive)
+                os.remove(archive)
+            except OSError as exc:
+                try:
+                    os.remove(compressed_tmp)
+                except OSError:
+                    pass
+                builtins.print(f"[{self.cls_name}][maintain] archive compression failed: {exc}")
             archives = sorted(
-                glob.glob(f"{self.filename}.*.archive.gz"),
+                (path for path in glob.glob(f"{self.filename}.*.archive*") if not path.endswith(".tmp")),
                 key=os.path.getmtime,
                 reverse=True,
             )
             for old_archive in archives[self.ROTATE_ARCHIVE_COUNT:]:
-                os.remove(old_archive)
+                try:
+                    os.remove(old_archive)
+                except OSError:
+                    pass
+            return True
 
     # Inherit get_remote_items from Cache24PriceManager, including real observation timestamps.
 
