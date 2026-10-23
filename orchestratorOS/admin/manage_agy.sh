@@ -186,7 +186,7 @@ do_status() {
 # when agy_store_fix reports a divergence AND no conversation activity for AGY_UI_SYNC_IDLE_SEC.
 do_ui_sync() {
     exec 200>"$LOCK_FILE"
-    flock -n 200 || exit 0
+    flock -w 10 200 || exit 0
     # shellcheck source=../lib/env_common.sh
     source "$ROOT/orchestratorOS/lib/env_common.sh"
     local idle_sec rc
