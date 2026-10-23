@@ -834,6 +834,19 @@ def test_hybrid_reentry_equities_base_config_and_backtest_invariants(tmp_path):
     assert (tmp_path / "cache_sparse_price_TESTUSDC.jsonl").exists()
     assert (tmp_path / "cache_price_TESTUSDC.json.bak").exists()
 
+    # 6. binance_walk_forward_baseline.main runs end-to-end with validate_dataset
+    from unittest.mock import patch
+    from offline.runners import binance_walk_forward_baseline as bwf
+    fake_records = [
+        {"timestamp": 1700000000 + i * 3600, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}
+        for i in range(30)
+    ]
+    with patch.object(bwf, "fetch_ohlc_candles", return_value=fake_records):
+        rc = bwf.main(["--intervals", "60", "--symbol", "BTCUSDC", "--output-dir", str(tmp_path / "bwf")])
+        assert rc == 0
+        assert (tmp_path / "bwf" / "BTCUSDC_60m_baseline.json").exists()
+
+
 
 
 

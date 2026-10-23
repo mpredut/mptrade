@@ -26,6 +26,7 @@ from offline.backtests.datasets import (
     dataset_metadata,
     load_dataset as load_frozen_dataset,
     save_dataset as save_frozen_dataset,
+    validate_dataset,
 )
 from offline.backtests.evaluation import (
     add_walk_forward_cli_args,
