@@ -236,12 +236,18 @@ class GeminiClient:
         if not raw_text:
             return None
 
-        # Clean code fence markdown block if present
+        # Clean code fence markdown block if present (prefer the last JSON object fence in hybrid Markdown+JSON replies)
         cleaned = raw_text.strip()
         if "```" in cleaned:
-            match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned)
-            if match:
-                cleaned = match.group(1).strip()
+            fences = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned)
+            for block in reversed(fences):
+                cand = block.strip()
+                if cand.startswith("{") and cand.endswith("}"):
+                    cleaned = cand
+                    break
+            else:
+                if fences:
+                    cleaned = fences[-1].strip()
 
         try:
             return json.loads(cleaned)

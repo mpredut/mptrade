@@ -509,16 +509,32 @@ def mirrored_topic_cids() -> set[str]:
 
 
 def last_store_activity() -> float:
-    """Newest mtime of interactive (non-mirrored) conversation content or brain artifacts."""
+    """Newest mtime of interactive conversation content, active WAL writes, or brain artifacts."""
     ignored = mirrored_topic_cids()
     newest = 0.0
+    if os.path.exists(DB):
+        try:
+            con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5)
+            try:
+                running = con.execute(
+                    "SELECT 1 FROM conversation_summaries WHERE status='CASCADE_RUN_STATUS_RUNNING' LIMIT 1"
+                ).fetchone()
+                if running:
+                    return time.time()
+            finally:
+                con.close()
+        except sqlite3.Error:
+            pass
     if os.path.isdir(D1):
         for name in os.listdir(D1):
-            if name.endswith((".db", ".db-wal")) and name.split(".", 1)[0] not in ignored:
-                try:
-                    newest = max(newest, os.stat(os.path.join(D1, name)).st_mtime)
-                except OSError:
-                    pass
+            p = os.path.join(D1, name)
+            try:
+                if name.endswith(".db-wal") and os.path.getsize(p) > 0:
+                    newest = max(newest, os.stat(p).st_mtime)
+                elif name.endswith((".db", ".db-wal")) and name.split(".", 1)[0] not in ignored:
+                    newest = max(newest, os.stat(p).st_mtime)
+            except OSError:
+                pass
     brain = os.path.join(CLI, "brain")
     for root, dirs, files in os.walk(brain):
         if root == brain:

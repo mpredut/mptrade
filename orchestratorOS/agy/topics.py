@@ -116,6 +116,9 @@ def prepare_topic_session(
 
     cid = str(entry.get("conversation_id") or "").strip()
     if cid:
+        from orchestratorOS.agy.ui_mirror import sync_topic_thread_from_ui
+
+        sync_topic_thread_from_ui(cid, bot_cli_base=base)
         exists, step_count, _ = get_thread_step_count(cid, base)
         if exists:
             since = step_count - int(entry.get("compacted_at_step") or 0)
@@ -142,14 +145,24 @@ _SUMMARY_KEYS = ("decision", "threat_level", "market_bias", "risk_level", "recom
 def condense_decision(response_text: str, max_len: int = 220) -> str:
     """Single-line summary of an LLM JSON decision (falls back to the whitespace-collapsed text)."""
     raw = (response_text or "").strip()
-    fence = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw)
-    if fence:
-        raw = fence.group(1).strip()
+    fences = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", raw)
+    for block in reversed(fences):
+        cand = block.strip()
+        if cand.startswith("{") and cand.endswith("}"):
+            raw = cand
+            break
+    else:
+        if fences:
+            raw = fences[-1].strip()
     condensed = " ".join(raw.split())
     try:
         parsed = json.loads(condensed)
     except ValueError:
-        parsed = None
+        start, end = condensed.find("{"), condensed.rfind("}")
+        try:
+            parsed = json.loads(condensed[start : end + 1]) if 0 <= start < end else None
+        except ValueError:
+            parsed = None
     if isinstance(parsed, dict):
         parts = [f"{k}={parsed[k]}" for k in _SUMMARY_KEYS if parsed.get(k) not in (None, "")]
         mtd = parsed.get("market_trading_decision")

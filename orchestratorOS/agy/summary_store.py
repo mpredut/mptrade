@@ -71,17 +71,8 @@ def get_thread_step_count(cid: str, cli_base: str) -> Tuple[bool, int, str]:
     if not cid:
         return (False, 0, "")
     exists = os.path.exists(conversation_db(cli_base, cid))
-    db = summaries_db(cli_base)
-    if not os.path.exists(db):
-        return (exists, 0, "")
-    conn = sqlite3.connect(db)
-    try:
-        row = conn.execute(
-            "SELECT step_count, status FROM conversation_summaries WHERE conversation_id=?", (cid,)
-        ).fetchone()
-    finally:
-        conn.close()
-    return (exists, int(row[0] or 0), str(row[1] or "")) if row else (exists, 0, "")
+    row = read_summary_row(cli_base, cid)
+    return (exists, int(row.get("step_count") or 0), str(row.get("status") or "")) if row else (exists, 0, "")
 
 
 def write_annotation_title(cli_base: str, cid: str, title: str) -> None:

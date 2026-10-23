@@ -10,13 +10,14 @@ from orchestratorOS.agy import paths
 from orchestratorOS.agy.protobuf import drop_entries, enc_fields, entry_cid, parse_fields, summary_ui_visible
 from orchestratorOS.agy.topics import (
     TOPIC_SPECS,
+    condense_decision,
     get_active_topic_cids,
     load_topic_registry,
     prepare_topic_session,
     record_topic_turn,
     topic_spec,
 )
-from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui
+from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui, sync_topic_thread_from_ui
 
 
 @pytest.fixture(autouse=True)
@@ -192,3 +193,55 @@ class TestMirrorTopicThreadToUi:
         assert stored == summary_ui_visible(raw, "Permanent Name")
         with open(os.path.join(ui_base, "annotations", f"{cid}.pbtxt")) as f:
             assert 'title:"Permanent Name"' in f.read()
+
+    def test_bidirectional_sync_preserves_user_interventions_in_ui_and_hybrid_markdown_json(self, tmp_path):
+        cid = "cid-interactive-topic"
+        bot_base = tmp_path / "bot" / ".gemini" / "antigravity-cli"
+        (bot_base / "conversations").mkdir(parents=True)
+        _make_conv_db(str(bot_base / "conversations" / f"{cid}.db"), source=17)
+        raw = enc_fields([(1, 2, b"t"), (20, 0, 17)])
+        _make_summary_db(
+            str(bot_base / "conversation_summaries.db"),
+            [(cid, "t", "CORTEX_TRAJECTORY_SOURCE_CLI", "autonommptrade", 4, raw)],
+        )
+
+        ui_base = paths.resolve_ui_cli_base()
+        _make_summary_db(os.path.join(ui_base, "conversation_summaries.db"), [])
+
+        # Initial mirror from bot (step 4) -> UI
+        assert mirror_topic_thread_to_ui(cid, "🎯 [auto_trade_executor]", bot_cli_base=str(bot_base)) is True
+
+        # Simulate user intervening in the Web UI: UI conversation advances to step 6
+        ui_db = os.path.join(ui_base, "conversations", f"{cid}.db")
+        conn = sqlite3.connect(ui_db)
+        conn.execute("UPDATE trajectory_meta SET trajectory_id = 'user_intervened'")
+        conn.commit()
+        conn.close()
+        conn = sqlite3.connect(os.path.join(ui_base, "conversation_summaries.db"))
+        conn.execute("UPDATE conversation_summaries SET step_count = 6 WHERE conversation_id = ?", (cid,))
+        conn.commit()
+        conn.close()
+
+        # If mirror_topic_thread_to_ui is called while UI is ahead, it must NOT overwrite the UI's step 6;
+        # instead it pulls the UI state back into bot_base.
+        assert mirror_topic_thread_to_ui(cid, "🎯 [auto_trade_executor]", bot_cli_base=str(bot_base)) is False
+        bot_db = str(bot_base / "conversations" / f"{cid}.db")
+        assert sqlite3.connect(bot_db).execute("SELECT trajectory_id FROM trajectory_meta").fetchone()[0] == "user_intervened"
+        bot_steps = sqlite3.connect(str(bot_base / "conversation_summaries.db")).execute(
+            "SELECT step_count FROM conversation_summaries WHERE conversation_id = ?", (cid,)
+        ).fetchone()[0]
+        assert bot_steps == 6
+
+        # Hybrid Markdown report + trailing JSON block condenses cleanly
+        hybrid_reply = (
+            "### Raport TAO & BTC\n"
+            "- **TAOUSDC:** `$260.10` (`BULL +1`)\n"
+            "```text\nsample log line\n```\n"
+            "```json\n"
+            '{"summary": "TAO si BTC in consolidare", "market_trading_decision": {"decision": "HOLD", "symbol": "TAOUSDC", "confidence": 0.88}}\n'
+            "```"
+        )
+        condensed = condense_decision(hybrid_reply)
+        assert "summary=TAO si BTC in consolidare" in condensed
+        assert "trade=HOLD:TAOUSDC@0.88" in condensed
+

@@ -606,8 +606,16 @@ class AutonomousAIReconciler:
             "Analyze the passive telemetry sensors and log anomalies collected from trading bots:\n\n"
             f"{context_str}\n\n"
             "Perform an executive diagnostic audit:\n" + "\n".join(tasks) + "\n\n"
-            "IMPORTANT: Do NOT call any tools, shell commands, or file readers; all required telemetry is provided above.\n"
-            "Respond STRICTLY in valid JSON with exact schema:\n{\n" + ",\n".join(schema) + "\n}"
+            "INTERACTIVE THREAD RULES:\n"
+            "- If the user wrote any tactical instructions, price targets, overrides, or questions earlier in this "
+            "conversation thread, honor them with highest priority and address them directly.\n"
+            "- For this automated telemetry snapshot turn, do NOT call tools, shell commands, or file readers because all "
+            "required telemetry is provided above (use tools only when the user asks a direct interactive question in chat).\n"
+            "- Format your response in TWO parts so this thread stays cleanly readable in the Web UI:\n"
+            "  1) A concise, well-structured Markdown report in **Romanian** (bullet points for: Starea Flotei & Loguri, "
+            "Piața Live & Pante TAO/BTC, Portofoliu & Poziții Active, și Decizia AI / Răspuns la intervențiile din chat).\n"
+            "  2) At the very end, a single fenced ```json ... ``` block matching this exact schema:\n"
+            "```json\n{\n" + ",\n".join(schema) + "\n}\n```"
         )
 
         resp = self.gemini_auditor.query_json(
