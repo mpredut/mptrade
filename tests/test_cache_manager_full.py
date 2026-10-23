@@ -1391,6 +1391,23 @@ class TestCacheFactory(unittest.TestCase):
                 price_remote.assert_not_called()
             _reset()
 
+    def test_failed_sync_start_retry_reuses_published_managers(self):
+        """A periodic_sync failure must not make the next call build duplicate managers."""
+        with patch.object(cm.CacheOrderManager, "load_state", return_value=None), \
+             patch.object(
+                 cm.CacheOrderManager, "periodic_sync",
+                 side_effect=[RuntimeError("can't start new thread"), None],
+             ) as periodic:
+            with self.assertRaises(RuntimeError):
+                cm.CacheFactory.get("Order", symbols=["BTC"], start_sync=True)
+            first = cm.CacheFactory._instances.get("Order")
+            self.assertIsNotNone(first)
+            self.assertNotIn("Order", cm.CacheFactory._sync_started)
+            second = cm.CacheFactory.get("Order", symbols=["BTC"], start_sync=True)
+        self.assertIs(first, second)
+        self.assertEqual(periodic.call_count, 2)
+        self.assertIn("Order", cm.CacheFactory._sync_started)
+
     def test_price_factories_return_per_symbol_managers_and_filenames(self):
         cur_mock = MagicMock()
         cur_mock.get_price.return_value = [int(time.time() * 1000), 50000.0]
@@ -1481,6 +1498,8 @@ class TestGetCurrentPriceManagerSingleton(unittest.TestCase):
                 def __exit__(self, *args):
                     return False
 
+            previous_short_trend = cm._short_trend_instance
+            cm._short_trend_instance = None
             with patch.object(cm.CacheCurrentPriceManager, "load_state", return_value=None), \
                  patch.object(cm.CacheTradeManager, "load_state", return_value=None):
                 mgr = cm.get_current_price_manager(symbols=["BTC"], start_sync=True)
@@ -1501,6 +1520,22 @@ class TestGetCurrentPriceManagerSingleton(unittest.TestCase):
                 finally:
                     mgr.shutdown()
                     cm.CacheFactory.remove("Trade")
+                    short_mgr.shutdown()
+                    cm._short_trend_instance = previous_short_trend
+
+    def test_every_factory_manager_accepts_read_only(self):
+        """CacheFactory passes read_only to every class it builds, including PriceMulti."""
+        import inspect
+        from market_monitor.pricefetcher import CacheAllPriceFetcherManager
+
+        classes = [config["class"] for config in cm.CacheFactory._CONFIG.values()]
+        classes.append(CacheAllPriceFetcherManager)
+        for manager_class in classes:
+            with self.subTest(manager=manager_class.__name__):
+                self.assertIn(
+                    "read_only",
+                    inspect.signature(manager_class.__init__).parameters,
+                )
 
 
 class TestRefreshSymbolInCache(unittest.TestCase):

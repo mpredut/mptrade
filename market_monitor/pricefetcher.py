@@ -511,7 +511,8 @@ class PricePlatformFactory:
 # ============================================
 
 class CacheAllPriceFetcherManager(CacheManagerInterface):
-    def __init__(self, sync_ts, symbols, filename, api_client=api, cmc_api_key: Optional[str] = None):
+    def __init__(self, sync_ts, symbols, filename, api_client=api, cmc_api_key: Optional[str] = None,
+                 read_only=False):
         self.price_factory = PricePlatformFactory(cmc_api_key=cmc_api_key)
         self.max_monitored_symbols = MAX_MONITORED_SYMBOLS
         initial_symbols = []
@@ -525,7 +526,8 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
             if len(initial_symbols) >= MAX_MONITORED_SYMBOLS:
                 break
         self.original_symbols = list(initial_symbols)
-        super().__init__(sync_ts, initial_symbols, filename, append_mode=True, api_client=api_client)
+        super().__init__(sync_ts, initial_symbols, filename, append_mode=True,
+                         api_client=api_client, read_only=read_only)
         self.active_symbols = set(initial_symbols)
         self.symbol_added_time: Dict[str, float] = {}
         self.symbol_preferred_source: Dict[str, str] = {}  # Required source preference state.

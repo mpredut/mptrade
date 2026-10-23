@@ -4591,6 +4591,12 @@ class CacheFactory:
                         **extra_kwargs,
                     )
 
+                # Publish before starting sync so a retry after a partial
+                # periodic_sync failure reuses these managers instead of building
+                # duplicates. The lock-free fast path still waits for sync when
+                # start_sync=True because it also requires name in _sync_started.
+                cls._instances[name] = instance
+
                 managers = (instance.values()
                             if isinstance(instance, dict)
                             else (instance,))
@@ -4598,8 +4604,6 @@ class CacheFactory:
                     for manager in managers:
                         manager.periodic_sync(sync_ts, False)
                     cls._sync_started.add(name)
-
-                cls._instances[name] = instance
 
             elif start_sync and name not in cls._sync_started:
                 value = cls._instances[name]
