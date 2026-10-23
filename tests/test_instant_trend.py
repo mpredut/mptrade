@@ -807,6 +807,46 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, msg=proc.stderr or proc.stdout)
 
+    def test_price_multi_init_and_reload_metadata(self):
+        from market_monitor import pricefetcher as pf
+        from unittest.mock import patch
+
+        pf_file = os.path.join(self.tmp, "cache_prices_multi.json")
+        now_sec = time.time()
+        payload = {
+            "items": {"BTCUSDT": [[int(now_sec * 1000), 60500.0, "Binance"]]},
+            "fetchtime": {"BTCUSDT": int(now_sec * 1000)},
+            "symbol_metadata": {
+                "added_time": {"BTCUSDT": now_sec},
+                "active_symbols": ["BTCUSDT"],
+                "preferred_source": {"BTCUSDT": "Binance"},
+                "max_symbols": 50,
+            },
+        }
+        with open(pf_file + ".previous", "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        with open(pf_file, "w", encoding="utf-8") as fh:
+            fh.write("{corrupted")
+
+        with patch.object(pf.PricePlatformFactory, "_discover_all_symbols", return_value=None), \
+             patch.object(pf.PricePlatformFactory, "check_symbol_support", return_value={"Binance": True}):
+            mgr = pf.CachePriceMulti(
+                sync_ts=9999,
+                symbols=["BTCUSDT"],
+                filename=pf_file,
+                api_client=mock_api,
+                read_only=True,
+            )
+            self.assertEqual(mgr.symbol_preferred_source.get("BTCUSDT"), "Binance")
+            self.assertFalse(os.path.exists(pf_file + ".previous"))
+
+            # Update disk metadata and verify _reload_from_disk refreshes symbol_metadata
+            payload["symbol_metadata"]["preferred_source"]["BTCUSDT"] = "CoinGecko"
+            with open(pf_file, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            mgr._reload_from_disk()
+            self.assertEqual(mgr.symbol_preferred_source.get("BTCUSDT"), "CoinGecko")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

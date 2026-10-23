@@ -7,7 +7,7 @@ import time
 import threading
 import requests
 import os
-from state_io import atomic_write_json
+from state_io import atomic_write_json, read_recovering_previous
 from datetime import datetime
 from typing import Dict, Optional, List, Set, Tuple
 from abc import ABC, abstractmethod
@@ -526,47 +526,55 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
             if len(initial_symbols) >= MAX_MONITORED_SYMBOLS:
                 break
         self.original_symbols = list(initial_symbols)
-        super().__init__(sync_ts, initial_symbols, filename, append_mode=True,
-                         api_client=api_client, read_only=read_only)
         self.active_symbols = set(initial_symbols)
         self.symbol_added_time: Dict[str, float] = {}
         self.symbol_preferred_source: Dict[str, str] = {}  # Required source preference state.
+        super().__init__(sync_ts, initial_symbols, filename, append_mode=True,
+                         api_client=api_client, read_only=read_only)
         self._load_symbol_metadata()
         self._log_symbol_support()
     
     def _load_symbol_metadata(self):
-        if os.path.exists(self.filename):
+        if os.path.exists(self.filename) or os.path.exists(self._previous_generation_path()):
             try:
-                with open(self.filename, "r") as f:
-                    data = json.load(f)
-                    if "symbol_metadata" in data:
-                        self.symbol_added_time = data["symbol_metadata"].get("added_time", {})
-                        preferred = data["symbol_metadata"].get("preferred_source", {})
-                        if isinstance(preferred, dict):
-                            self.symbol_preferred_source = dict(preferred)
-                        seen_bases = {get_base_symbol(symbol) for symbol in self.active_symbols}
-                        active_symbols = data["symbol_metadata"].get("active_symbols", [])
-                        recovered_symbols = [
-                            symbol for symbol, added_time in self.symbol_added_time.items()
-                            if symbol in data.get("items", {}) and time.time() - added_time <= PRICE_HISTORY_RETENTION_DAYS * 24 * 3600
-                        ]
-                        for symbol in list(dict.fromkeys(active_symbols + recovered_symbols)):
-                            if len(self.active_symbols) >= MAX_MONITORED_SYMBOLS:
-                                print(f"[Pricefetcher] Limit reached while loading: maximum {MAX_MONITORED_SYMBOLS} monitored coins, the rest will be ignored")
-                                break
-                            base_symbol = get_base_symbol(symbol)
-                            if (
-                                symbol not in self.active_symbols
-                                and base_symbol not in seen_bases
-                                and is_valid_symbol_for_monitoring(symbol)
-                                and any(self.price_factory.check_symbol_support(symbol).values())
-                            ):
-                                seen_bases.add(base_symbol)
-                                self.active_symbols.add(symbol)
-                                self.symbols.append(symbol)
-                                self.original_symbols.append(symbol)
+                def _read_json(path: str):
+                    with open(path, "r") as f:
+                        return json.load(f)
+
+                data = read_recovering_previous(self.filename, _read_json)
+                if isinstance(data, dict) and "symbol_metadata" in data:
+                    self.symbol_added_time = data["symbol_metadata"].get("added_time", {})
+                    preferred = data["symbol_metadata"].get("preferred_source", {})
+                    if isinstance(preferred, dict):
+                        self.symbol_preferred_source = dict(preferred)
+                    seen_bases = {get_base_symbol(symbol) for symbol in self.active_symbols}
+                    active_symbols = data["symbol_metadata"].get("active_symbols", [])
+                    recovered_symbols = [
+                        symbol for symbol, added_time in self.symbol_added_time.items()
+                        if symbol in data.get("items", {}) and time.time() - added_time <= PRICE_HISTORY_RETENTION_DAYS * 24 * 3600
+                    ]
+                    for symbol in list(dict.fromkeys(active_symbols + recovered_symbols)):
+                        if len(self.active_symbols) >= MAX_MONITORED_SYMBOLS:
+                            print(f"[Pricefetcher] Limit reached while loading: maximum {MAX_MONITORED_SYMBOLS} monitored coins, the rest will be ignored")
+                            break
+                        base_symbol = get_base_symbol(symbol)
+                        if (
+                            symbol not in self.active_symbols
+                            and base_symbol not in seen_bases
+                            and is_valid_symbol_for_monitoring(symbol)
+                            and any(self.price_factory.check_symbol_support(symbol).values())
+                        ):
+                            seen_bases.add(base_symbol)
+                            self.active_symbols.add(symbol)
+                            self.symbols.append(symbol)
+                            self.original_symbols.append(symbol)
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 print(f"[Pricefetcher] Metadata cache ignored: {exc}")
+
+    def _reload_from_disk(self):
+        super()._reload_from_disk()
+        with self.lock:
+            self._load_symbol_metadata()
     
     def _log_symbol_support(self):
         print(f"[Pricefetcher] Checking symbol support:")
@@ -772,6 +780,9 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         if not self.save_state:
             return False
         return self.save_state_to_file()
+
+
+CachePriceMulti = CacheAllPriceFetcherManager
 
 
 # ============================================
