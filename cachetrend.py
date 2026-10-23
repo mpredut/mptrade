@@ -1112,10 +1112,12 @@ class CacheShortTrendManager(CacheManagerInterface):
     def shutdown(self, timeout=5.0):
         """Stop evaluation, flush, and base sync loops, then unsubscribe Cache24 sources."""
         base_stopped = super().shutdown(timeout=timeout)
-        for cache24 in (self._cache24_managers or {}).values():
+        for sym_key, cache24 in (self._cache24_managers or {}).items():
             unsubscribe = getattr(cache24, "unsubscribe_price", None)
             if unsubscribe is not None:
                 unsubscribe(self)
+                for win in (self.windows.get(sym_key) or {}).values():
+                    unsubscribe(win)
         for thread in (self._full_eval_thread, self._flush_thread):
             if thread is not None and thread is not threading.current_thread():
                 thread.join(timeout=timeout)

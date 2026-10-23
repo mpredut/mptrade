@@ -8,17 +8,24 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from state_io import previous_generation_path, read_recovering_previous  # noqa: E402
+
 CACHEDB = os.path.join(ROOT, "cachedb")
 STALE_S = 600.0  # More than 10 minutes without an update is STALE (instant trend refreshes every few seconds / 20s).
 
 
 def load(name):
     p = os.path.join(CACHEDB, name)
-    if not os.path.exists(p):
+    if not os.path.exists(p) and not os.path.exists(previous_generation_path(p)):
         return None
     try:
-        with open(p) as f:
-            return json.load(f)
+        def _read_json(candidate):
+            with open(candidate, "r", encoding="utf-8") as f:
+                return json.load(f)
+
+        return read_recovering_previous(p, _read_json)
     except Exception as e:  # noqa: BLE001
         print(f"  [ERR] {name}: {e}")
         return None

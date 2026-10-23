@@ -893,6 +893,38 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertIn(f"{t1_b}_{t2_b}", merged_hist)
         self.assertNotIn("corrupt_key", merged_hist)
 
+    def test_shutdown_unsubscribes_price_windows_from_cache24(self):
+        c24 = cm.Cache24PriceManager(
+            sync_ts=9999,
+            symbols=["BTCUSDT"],
+            filename=os.path.join(self.tmp, "c24_unsub.json"),
+            api_client=mock_api,
+            read_only=True,
+        )
+        cpm = cm.CacheCurrentPriceManager(
+            sync_ts=9999,
+            symbols=["BTCUSDT"],
+            filename=os.path.join(self.tmp, "cpm_unsub.json"),
+            ws_manager=None,
+            api_client=mock_api,
+            market_api=mock_api,
+            read_only=True,
+        )
+        mgr = cm.CacheShortTrendManager(
+            ["BTCUSDT"], os.path.join(self.tmp, "trend_unsub.json"), writer=False
+        )
+        mgr.start_computation({"BTCUSDT": c24}, cpm, run_full_eval=False)
+        with c24.lock:
+            self.assertIn(mgr, c24._price_subscribers)
+            for win in mgr.windows["BTCUSDT"].values():
+                self.assertIn(win, c24._price_subscribers)
+
+        self.assertTrue(mgr.shutdown())
+        with c24.lock:
+            self.assertNotIn(mgr, c24._price_subscribers)
+            for win in mgr.windows["BTCUSDT"].values():
+                self.assertNotIn(win, c24._price_subscribers)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
