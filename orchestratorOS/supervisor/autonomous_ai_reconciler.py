@@ -28,22 +28,21 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
+from botcore import load_dotenv, required_env
+from intelligence.sentiment.gemini_client import GeminiClient
 from orchestratorOS.admin.prune_llm_threads import (
-    find_latest_project_cid,
-    prepare_topic_session,
-    record_topic_turn,
     resolve_agy_bot_bin,
-    resolve_bot_cli_base,
     resolve_project_uuid,
-    sync_thread_title,
 )
+
+load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 
 logger = logging.getLogger("orchestratorOS.supervisor")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 DEFAULT_STATE_FILE = "cachedb/supervisor_nightly_eval.json"
 DEFAULT_HEARTBEAT_FILE = "cachedb/supervisor_nightly.heartbeat"
-DEFAULT_AUTONOMOUS_PROJECT_ID = resolve_project_uuid("autonommptrade")
+DEFAULT_AUTONOMOUS_PROJECT_ID = resolve_project_uuid(required_env("AGY_PROJECT"))
 
 
 @dataclass
@@ -85,21 +84,24 @@ class SupervisorAuditReport:
     notification_sent: bool = False
 
 
-class StandaloneGeminiAuditor:
-    """Direct, decoupled client querying Google Gemini via the agy CLI."""
+class StandaloneGeminiAuditor(GeminiClient):
+    """Supervisor auditor client delegating directly to the canonical GeminiClient choke point."""
 
     def __init__(
         self,
-        model: str = "gemini-3.8-flash-low",
+        model: Optional[str] = None,
         project_id: Optional[str] = None,
         cli_path: Optional[str] = None,
         custom_runner: Optional[Callable[[str, str, float], str]] = None,
     ) -> None:
-        self.model = model
-        raw_project = project_id or os.environ.get("AGY_PROJECT", DEFAULT_AUTONOMOUS_PROJECT_ID)
-        self.project_id = resolve_project_uuid(raw_project, fallback_uuid=DEFAULT_AUTONOMOUS_PROJECT_ID)
-        self.cli_path = resolve_agy_bot_bin(cli_path)
-        self._custom_runner = custom_runner
+        effective_model = model or required_env("LLM_DEFAULT_MODEL")
+        raw_project = project_id or required_env("AGY_PROJECT")
+        super().__init__(
+            model=effective_model,
+            cli_path=cli_path,
+            custom_runner=custom_runner,
+            project_id=raw_project,
+        )
 
     def query_json(
         self,
@@ -108,106 +110,20 @@ class StandaloneGeminiAuditor:
         thread_title: Optional[str] = None,
         topic_key: Optional[str] = "supervisor_nightly",
         conversation_id: Optional[str] = None,
+        *,
+        model: Optional[str] = None,
+        cache_ttl_sec: float = 0.0,
     ) -> Optional[Dict[str, Any]]:
-        """Invokes Gemini CLI and parses structured JSON output."""
-        if self._custom_runner is not None:
-            try:
-                raw = self._custom_runner(prompt, self.model, timeout_sec)
-                return json.loads(raw) if raw else None
-            except Exception as e:
-                logger.error("Custom runner error: %s", e)
-                return None
-
-        if not self.cli_path or not os.path.exists(self.cli_path):
-            logger.warning("agy binary not found at %s. Gemini query bypassed.", self.cli_path)
-            return None
-
-        try:
-            bot_cli_base = resolve_bot_cli_base()
-            resume_cid: Optional[str] = conversation_id
-            history_prefix = ""
-            if topic_key and not resume_cid and not hasattr(subprocess.run, "_mock_name"):
-                try:
-                    resume_cid, history_prefix = prepare_topic_session(
-                        topic_key,
-                        cli_base=bot_cli_base,
-                    )
-                except Exception as e:
-                    logger.debug("Failed preparing topic session for %s: %s", topic_key, e)
-
-            effective_prompt = f"{history_prefix}{prompt}" if history_prefix else prompt
-            full_prompt = f"{thread_title}\n\n{effective_prompt}" if thread_title else effective_prompt
-            cmd = [
-                self.cli_path,
-                "--project", self.project_id,
-                "--model", self.model,
-            ]
-            if resume_cid:
-                cmd.extend(["--conversation", resume_cid])
-            cmd.extend(["-p", full_prompt])
-
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout_sec,
-                check=False,
-            )
-            if (proc.returncode != 0 or not proc.stdout.strip()) and resume_cid and not conversation_id:
-                logger.info("Resuming supervisor topic '%s' conversation %s failed; rotating to new thread.", topic_key, resume_cid)
-                resume_cid = None
-                fresh_cmd = [
-                    self.cli_path,
-                    "--project", self.project_id,
-                    "--model", self.model,
-                    "-p", full_prompt,
-                ]
-                proc = subprocess.run(
-                    fresh_cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_sec,
-                    check=False,
-                )
-
-            if proc.returncode != 0 or not proc.stdout.strip():
-                logger.warning("agy CLI exited with code %d. stderr: %s", proc.returncode, proc.stderr.strip()[:200])
-                return None
-
-            output = proc.stdout.strip()
-            if not hasattr(subprocess.run, "_mock_name"):
-                try:
-                    target_cid = resume_cid or find_latest_project_cid(
-                        self.project_id,
-                        cli_base=bot_cli_base,
-                    )
-                    if topic_key:
-                        record_topic_turn(
-                            topic_key=topic_key,
-                            conversation_id=target_cid,
-                            response_text=output,
-                            thread_title=thread_title,
-                            cli_base=bot_cli_base,
-                        )
-                    if thread_title and target_cid:
-                        sync_thread_title(target_cid, thread_title, cli_base=bot_cli_base)
-                except Exception as e:
-                    logger.debug("Failed recording supervisor topic turn: %s", e)
-
-            # Extract JSON block
-            match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", output)
-            clean = match.group(1).strip() if match else output
-            try:
-                return json.loads(clean)
-            except Exception:
-                start = clean.find("{")
-                end = clean.rfind("}")
-                if start != -1 and end != -1:
-                    return json.loads(clean[start : end + 1])
-                return None
-        except Exception as e:
-            logger.error("Failed querying Gemini via CLI: %s", e)
-            return None
+        """Invokes canonical GeminiClient.query_json with supervisor defaults."""
+        return super().query_json(
+            prompt,
+            model=model,
+            timeout_sec=timeout_sec,
+            cache_ttl_sec=cache_ttl_sec,
+            thread_title=thread_title,
+            topic_key=topic_key,
+            conversation_id=conversation_id,
+        )
 
 
 class AutonomousAIReconciler:
@@ -271,6 +187,12 @@ class AutonomousAIReconciler:
         if "autonomous_trading_max_notional_eur" not in conf:
             raise KeyError("Missing required 'autonomous_trading_max_notional_eur' in order_guard.conf")
         self.max_trading_notional = float(conf["autonomous_trading_max_notional_eur"])
+        if "autonomous_trading_min_notional_eur" not in conf:
+            raise KeyError("Missing required 'autonomous_trading_min_notional_eur' in order_guard.conf")
+        self.min_trading_notional = float(conf["autonomous_trading_min_notional_eur"])
+        if "autonomous_trading_dedup_window_sec" not in conf:
+            raise KeyError("Missing required 'autonomous_trading_dedup_window_sec' in order_guard.conf")
+        self.trading_dedup_window_sec = float(conf["autonomous_trading_dedup_window_sec"])
 
     def _load_decoupled_conf(self) -> Dict[str, str]:
         """Parses key-value pairs from order_guard.conf and .env without external imports."""
@@ -662,13 +584,19 @@ class AutonomousAIReconciler:
                         decision, conf, self.min_trading_confidence)
             return None
 
-        symbol = str(decision_data.get("symbol", "BTCUSDC")).strip().upper()
-        venue = str(decision_data.get("venue", "binance")).strip().lower()
+        symbol = str(decision_data.get("symbol", "")).strip().upper()
+        if not symbol:
+            logger.warning("Autonomous AI %s decision missing symbol (no intent generated).", decision)
+            return None
+        venue = str(decision_data.get("venue", "")).strip().lower()
+        if not venue:
+            logger.warning("Autonomous AI %s %s decision missing venue (no intent generated).", decision, symbol)
+            return None
         try:
-            notional = float(decision_data.get("suggested_notional_eur", 250.0))
+            notional = float(decision_data.get("suggested_notional_eur", self.max_trading_notional))
         except (ValueError, TypeError):
-            notional = 250.0
-        notional = max(10.0, min(notional, self.max_trading_notional))
+            notional = self.max_trading_notional
+        notional = max(self.min_trading_notional, min(notional, self.max_trading_notional))
         urgency = str(decision_data.get("urgency", "NORMAL")).strip().upper()
         thesis = str(decision_data.get("thesis", "Autonomous LLM strategy thesis")).strip()
 
@@ -701,13 +629,13 @@ class AutonomousAIReconciler:
                 except Exception:
                     intents_list = []
 
-            # Deduplication check: avoid queuing duplicate pending intent for same symbol within 6 hours
+            # Deduplication check: avoid queuing duplicate pending intent for same symbol within configured window
             for existing in intents_list:
                 if (
                     existing.get("status") == "PENDING"
                     and existing.get("symbol") == symbol
                     and existing.get("decision") == decision
-                    and (now - float(existing.get("timestamp", 0.0))) < 21600.0
+                    and (now - float(existing.get("timestamp", 0.0))) < self.trading_dedup_window_sec
                 ):
                     logger.info("Pending intent already active for %s %s (%s). Skipping duplicate.",
                                 decision, symbol, existing.get("intent_id"))

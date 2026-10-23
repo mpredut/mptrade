@@ -11,7 +11,7 @@ import time
 from typing import Any, Callable, Dict, Optional
 import urllib.request
 
-from botcore import load_dotenv, required_env
+from botcore import load_dotenv, required_env, required_float_env, required_int_env
 from orchestratorOS.admin.prune_llm_threads import (
     find_latest_project_cid,
     prepare_topic_session,
@@ -28,12 +28,12 @@ load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 
 logger = logging.getLogger("intelligence.sentiment.gemini_client")
 
-DEFAULT_MODEL = "gemini-3.8-flash-low"
+DEFAULT_MODEL = required_env("LLM_DEFAULT_MODEL")
 AGY_CLI_PATH = resolve_agy_bot_bin()
 AGY_STORE_SYNC_ENABLED = os.environ.get("MPTRADE_AGY_STORE_SYNC", "0") == "1"
 
 
-DEFAULT_AUTONOMOUS_PROJECT_ID = resolve_project_uuid("autonommptrade")
+DEFAULT_AUTONOMOUS_PROJECT_ID = resolve_project_uuid(required_env("AGY_PROJECT"))
 
 
 class GeminiClient:
@@ -181,10 +181,10 @@ class GeminiClient:
                                 if self.project_id == DEFAULT_AUTONOMOUS_PROJECT_ID:
                                     prune_old_cli_threads(
                                         cli_base=bot_cli_base,
-                                        retention_days=1.0,
+                                        retention_days=required_float_env("CLI_THREAD_RETENTION_DAYS"),
                                         project_id=self.project_id,
                                         all_threads_in_project=False,
-                                        max_threads=20,
+                                        max_threads=required_int_env("LLM_MAX_AUTONOMOUS_THREADS"),
                                     )
                         except Exception as e:
                             logger.debug("Failed syncing/pruning CLI thread: %s", e)
@@ -259,8 +259,15 @@ class GeminiClient:
 
         try:
             return json.loads(cleaned)
-        except json.JSONDecodeError as err:
-            logger.warning("Failed to decode JSON from Gemini output: %s (raw text: %s)", err, raw_text[:200])
+        except json.JSONDecodeError:
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                try:
+                    return json.loads(cleaned[start : end + 1])
+                except json.JSONDecodeError:
+                    pass
+            logger.warning("Failed to decode JSON from Gemini output (raw text: %s)", raw_text[:200])
             return None
 
 

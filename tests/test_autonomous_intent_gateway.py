@@ -20,7 +20,9 @@ def temp_workspace(tmp_path):
     with open(conf_path, "w", encoding="utf-8") as f:
         f.write("autonomous_trading_mode = shadow\n")
         f.write("autonomous_trading_max_notional_eur = 300.0\n")
+        f.write("autonomous_trading_min_notional_eur = 10.0\n")
         f.write("autonomous_trading_min_confidence = 0.85\n")
+        f.write("autonomous_trading_dedup_window_sec = 21600.0\n")
         f.write("autonomous_trading_notify = 1\n")
 
     return str(ws), str(cache)

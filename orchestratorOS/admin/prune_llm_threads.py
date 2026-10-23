@@ -19,7 +19,7 @@ if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
 try:
-    from botcore import load_dotenv
+    from botcore import load_dotenv, required_env, required_float_env, required_int_env
     load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 except Exception:
     pass
@@ -39,8 +39,8 @@ def expand_config_path(raw_path: str) -> str:
 
 
 def resolve_bot_home_dir() -> str:
-    """Resolve the isolated bot HOME directory from AGY_BOT_HOME or ~/agy_bot_home."""
-    raw = os.environ.get("AGY_BOT_HOME", "~/agy_bot_home")
+    """Resolve the isolated bot HOME directory strictly from AGY_BOT_HOME."""
+    raw = required_env("AGY_BOT_HOME")
     return expand_config_path(raw)
 
 
@@ -59,7 +59,7 @@ def resolve_bot_cli_base(cli_base: Optional[str] = None) -> str:
 
 
 def resolve_agy_bot_bin(cli_path: Optional[str] = None) -> str:
-    """Resolve the isolated agy-bot CLI binary path without hardcoded user directories."""
+    """Resolve the isolated agy-bot CLI binary path strictly from configuration."""
     if cli_path:
         expanded = expand_config_path(cli_path)
         if os.path.exists(expanded):
@@ -72,21 +72,19 @@ def resolve_agy_bot_bin(cli_path: Optional[str] = None) -> str:
             if os.path.exists(cand):
                 return cand
     for candidate in (
-        expand_config_path("~/.local/bin/agy-bot"),
         shutil.which("agy-bot") or "",
-        expand_config_path("~/.local/bin/agy"),
         shutil.which("agy") or "",
     ):
         if candidate and os.path.exists(candidate):
             return candidate
-    return expand_config_path(os.environ.get("AGY_BOT_BIN", "~/.local/bin/agy-bot"))
+    return expand_config_path(required_env("AGY_BOT_BIN"))
 
 
 DEFAULT_CLI_BASE = resolve_bot_cli_base()
-DEFAULT_PROJECTS = ["autonommptrade", "default-cli-project", "f5f9d01f-01e5-4fac-80f2-97364688afab"]
+DEFAULT_PROJECTS = [required_env("AGY_PROJECT"), "default-cli-project", "f5f9d01f-01e5-4fac-80f2-97364688afab"]
 PROTECTED_PROJECT_NAMES = ["mptrade"]
-DEFAULT_RETENTION_DAYS = 1.0  # 1 day default
-DEFAULT_MAX_AUTONOMOUS_THREADS = 30  # Keep well below agy's 500-thread global eviction cap
+DEFAULT_RETENTION_DAYS = required_float_env("CLI_THREAD_RETENTION_DAYS")
+DEFAULT_MAX_AUTONOMOUS_THREADS = required_int_env("LLM_MAX_AUTONOMOUS_THREADS")
 
 AUTONOMOUS_PROMPT_PATTERNS = [
     "ntfy macro veto alert",
@@ -896,7 +894,13 @@ def record_topic_turn(
         entry["title"] = thread_title
 
     # Extract a single-line compact decision summary from response_text (<= 220 chars)
-    condensed = " ".join((response_text or "").strip().split())
+    raw_stripped = (response_text or "").strip()
+    if "```" in raw_stripped:
+        import re as _re
+        m_fence = _re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw_stripped)
+        if m_fence:
+            raw_stripped = m_fence.group(1).strip()
+    condensed = " ".join(raw_stripped.split())
     try:
         parsed = json.loads(condensed)
         if isinstance(parsed, dict):

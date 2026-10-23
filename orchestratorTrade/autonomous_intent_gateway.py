@@ -92,6 +92,10 @@ class AutonomousIntentGateway:
                 raise KeyError("Missing required 'autonomous_trading_max_notional_eur' in order_guard.conf")
             self.max_notional_eur = float(conf["autonomous_trading_max_notional_eur"])
 
+        if "autonomous_trading_min_notional_eur" not in conf:
+            raise KeyError("Missing required 'autonomous_trading_min_notional_eur' in order_guard.conf")
+        self.min_notional_eur = float(conf["autonomous_trading_min_notional_eur"])
+
         if min_confidence is not None:
             self.min_confidence = float(min_confidence)
         else:
@@ -110,17 +114,11 @@ class AutonomousIntentGateway:
         """Loads configuration from order_guard._load_margins() SSOT, overlaying any workspace-specific overrides."""
         conf: Dict[str, str] = {}
         is_default_workspace = os.path.abspath(self.workspace_dir) == os.path.abspath(ROOT_DIR)
-        if is_default_workspace:
-            try:
-                import order_guard
-                for k, v in order_guard._load_margins().items():
-                    conf[str(k).strip().lower()] = str(v)
-            except Exception:
-                pass
-        search_dirs = [ROOT_DIR] if is_default_workspace else [self.workspace_dir]
+        search_dirs = [ROOT_DIR]
+        if not is_default_workspace:
+            search_dirs.append(self.workspace_dir)
         for base_dir in search_dirs:
-            fnames = ("config.env", ".env") if (is_default_workspace and conf) else ("order_guard.conf", "config.env", ".env")
-            for fname in fnames:
+            for fname in ("order_guard.conf", "config.env", ".env"):
                 fpath = os.path.join(base_dir, fname)
                 if not os.path.exists(fpath):
                     continue
@@ -296,12 +294,12 @@ class AutonomousIntentGateway:
             return intent
 
         try:
-            suggested_eur = float(intent.get("suggested_notional_eur", 250.0))
+            suggested_eur = float(intent.get("suggested_notional_eur", self.max_notional_eur))
         except (ValueError, TypeError):
-            suggested_eur = 250.0
+            suggested_eur = self.max_notional_eur
 
         effective_eur = min(suggested_eur, self.max_notional_eur)
-        effective_eur = max(10.0, effective_eur)
+        effective_eur = max(self.min_notional_eur, effective_eur)
 
         price = self._get_live_price(inst)
         if not math.isfinite(price) or price <= 0:
