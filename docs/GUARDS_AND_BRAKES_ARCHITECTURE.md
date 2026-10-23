@@ -193,10 +193,12 @@ All bot and guard alerts flow through `notify_engine.alertnotifiers.notify` into
 * **Dual Workspace Isolation:**
   - `mptrade` (`3ed4aa5d-...`): Protected interactive user engineering workspace.
   - `autonommptrade` (`f5f9d01f-...`): Sandboxed background bot workspace for automated LLM queries.
-* **Protobuf Hub Synchronization:**
-  - `ensure_proto_synced` in [`orchestratorOS/admin/prune_llm_threads.py`](file:///home/predut/mptrade/orchestratorOS/admin/prune_llm_threads.py) continuously mirrors entries from headless `jetbox_summaries_proto.pb` into GUI `agyhub_summaries_proto.pb`, ensuring all autonomous guard threads appear instantly in the Antigravity IDE sidebar.
+* **Permanent topic threads (`orchestratorOS/agy/`):**
+  - Autonomous LLM calls run through the isolated `agy-bot` store (`AGY_BOT_HOME`). Each topic in `orchestratorOS/agy/topics.py` (`TOPIC_SPECS`) owns one permanent conversation (fixed id and name), compacted in place with `/compact` every `LLM_TOPIC_COMPACT_STEPS` steps.
+  - `TopicSpec` capabilities: only `auto_trade_executor` may trade, by submitting decisions to `AutonomousIntentGateway.submit()`, the single choke point for config, clamping, dedup and the effective shadow/enforce mode. Only `auto_technical_repair` may apply verified self-heal patches.
+  - `orchestratorOS/agy/ui_mirror.py` mirrors topic threads into the Web UI store; `manage_agy.sh ui-sync` (cron */5) surfaces them through an idle-gated daemon restart (`agy_store_fix.py ui-sync-check`).
 * **Automated Retention Management:**
-  - Automated autonomous threads older than 24 hours are pruned daily via cron, while manual engineering discussions in `mptrade` are strictly preserved.
+  - Automated autonomous threads older than `CLI_THREAD_RETENTION_DAYS` are pruned via cron by `orchestratorOS/admin/prune_llm_threads.py`; topic threads and manual engineering discussions in `mptrade` are always preserved.
 
 ---
 

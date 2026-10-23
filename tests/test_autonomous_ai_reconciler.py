@@ -12,10 +12,10 @@ from orchestratorOS.livecheck.autonomous_overnight_monitor import (
     AutonomousOvernightMonitor,
     OvernightMonitorReport,
 )
+from intelligence.sentiment.gemini_client import GeminiClient
 from orchestratorOS.supervisor.autonomous_ai_reconciler import (
     AutonomousAIReconciler,
     LogEventSummary,
-    StandaloneGeminiAuditor,
     SupervisorAuditReport,
     TelemetrySensorSnapshot,
 )
@@ -117,17 +117,35 @@ def test_recent_log_lines_handles_clock_only_stamps_and_midnight_wrap():
     assert picked == lines[1:]
 
 
-def test_shadow_supervisor_forces_gateway_shadow(temp_env):
+def test_only_trade_executor_topic_reaches_gateway_bounded_by_supervisor_mode(temp_env):
     workspace, _, _ = temp_env
-    gw_dir = os.path.join(workspace, "orchestratorTrade")
-    os.makedirs(gw_dir)
-    open(os.path.join(gw_dir, "autonomous_intent_gateway.py"), "w").close()
-    for mode, expect_shadow in (("shadow", True), ("enforce", False)):
-        reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"], mode=mode)
-        with patch("subprocess.run") as run:
-            reconciler.trigger_intent_gateway()
-        cmd = run.call_args[0][0]
-        assert ("--mode" in cmd and cmd[cmd.index("--mode") + 1] == "shadow") is expect_shadow
+    plan = {"summary": "s", "venue_actions": [],
+            "code_remediation": {"has_fix": True, "target_file": "x.py", "search_block": "a", "replace_block": "b"},
+            "market_trading_decision": {"decision": "BUY", "symbol": "TAOUSDC", "venue": "binance", "confidence": 0.95}}
+    auditor = GeminiClient(custom_runner=lambda prompt, model, timeout: json.dumps(plan))
+    gateway = MagicMock()
+    gateway.min_confidence, gateway.max_notional_eur = 0.85, 500.0
+    gateway.submit.return_value = {"status": "OBSERVED_SHADOW"}
+    reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"],
+                                        gemini_auditor=auditor, mode="shadow", notify_enabled=False,
+                                        intent_gateway=gateway)
+    with patch.object(reconciler, "_apply_code_patch_safely") as patcher:
+        repair = reconciler.run_cycle(topic_key="auto_technical_repair")
+        gateway.submit.assert_not_called()
+        assert repair.market_trading_decision == {} and repair.intent_emitted is None
+
+        trade = reconciler.run_cycle(topic_key="auto_trade_executor", focus_symbols=["TAOUSDC"])
+        patcher.assert_not_called()   # shadow never patches; the trade topic has no self-heal capability anyway
+    gateway.submit.assert_called_once()
+    assert gateway.submit.call_args.kwargs == {"source": "auto_trade_executor", "max_mode": "shadow"}
+    assert trade.intent_emitted == {"status": "OBSERVED_SHADOW"} and trade.code_remediation == {}
+
+
+def test_unknown_topic_fails_fast(temp_env):
+    workspace, _, _ = temp_env
+    reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"])
+    with pytest.raises(KeyError):
+        reconciler.run_cycle(topic_key="supervisor_nightly")
 
 
 def test_code_remediation_can_be_disabled_in_enforce(temp_env):
@@ -168,7 +186,7 @@ def test_synthesize_and_diagnose_mocked(temp_env):
         },
     }
 
-    auditor = StandaloneGeminiAuditor(custom_runner=lambda prompt, model, timeout: json.dumps(mock_resp))
+    auditor = GeminiClient(custom_runner=lambda prompt, model, timeout: json.dumps(mock_resp))
     reconciler = AutonomousAIReconciler(
         workspace_dir=workspace,
         cache_dir="cachedb",
@@ -186,7 +204,7 @@ def test_synthesize_and_diagnose_mocked(temp_env):
         guard_interventions=[],
     )
 
-    diagnosis = reconciler.synthesize_and_diagnose(sensors, logs)
+    diagnosis = reconciler.synthesize_and_diagnose(sensors, logs, topic_key="auto_technical_repair")
     assert diagnosis["summary"] == mock_resp["summary"]
     assert len(diagnosis["diagnosed_issues"]) == 1
     assert len(diagnosis["venue_actions"]) == 1
@@ -262,7 +280,7 @@ def test_full_run_cycle_and_artifacts(temp_env):
         "code_remediation": {"has_fix": False},
     }
 
-    auditor = StandaloneGeminiAuditor(custom_runner=lambda prompt, model, timeout: json.dumps(mock_resp))
+    auditor = GeminiClient(custom_runner=lambda prompt, model, timeout: json.dumps(mock_resp))
     reconciler = AutonomousAIReconciler(
         workspace_dir=workspace,
         cache_dir="cachedb",
@@ -272,14 +290,14 @@ def test_full_run_cycle_and_artifacts(temp_env):
         notify_enabled=False,
     )
 
-    report = reconciler.run_cycle(force=True)
+    report = reconciler.run_cycle(topic_key="auto_technical_repair")
 
     assert report.mode == "shadow"
     assert report.actions_executed is False
     assert report.sensor_health is not None
 
-    state_file = os.path.join(cache_dir, "supervisor_nightly_eval.json")
-    heartbeat_file = os.path.join(cache_dir, "supervisor_nightly.heartbeat")
+    state_file = os.path.join(cache_dir, "auto_technical_repair_eval.json")
+    heartbeat_file = os.path.join(cache_dir, "auto_technical_repair.heartbeat")
 
     assert os.path.exists(state_file)
     assert os.path.exists(heartbeat_file)
@@ -289,11 +307,12 @@ def test_full_run_cycle_and_artifacts(temp_env):
     assert hb["status"] == "alive"
     assert hb["mode"] == "shadow"
 
-    # A tactical topic writes its own artifacts and leaves the nightly report untouched.
+    # The trade topic writes its own artifacts and leaves the repair report untouched.
     nightly_mtime = os.path.getmtime(state_file)
-    reconciler.run_cycle(force=True, topic_key="prod_tactical_monitor")
-    assert os.path.exists(os.path.join(cache_dir, "prod_tactical_monitor_eval.json"))
-    assert os.path.exists(os.path.join(cache_dir, "prod_tactical_monitor.heartbeat"))
+    reconciler._intent_gateway = MagicMock(min_confidence=0.85, max_notional_eur=500.0)
+    reconciler.run_cycle(topic_key="auto_trade_executor")
+    assert os.path.exists(os.path.join(cache_dir, "auto_trade_executor_eval.json"))
+    assert os.path.exists(os.path.join(cache_dir, "auto_trade_executor.heartbeat"))
     assert os.path.getmtime(state_file) == nightly_mtime
 
 
@@ -324,47 +343,6 @@ def test_harvest_prices_and_trends(temp_env):
     assert snapshot.prices_and_trends["BTCUSDC"]["growth_coefficient"] == 0.05
 
 
-def test_emit_trading_intent_lifecycle(temp_env):
-    workspace, cache_dir, _ = temp_env
-    reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"])
-
-    assert reconciler.emit_trading_intent({"decision": "HOLD", "confidence": 0.95}) is None
-    assert reconciler.emit_trading_intent({"decision": "BUY", "confidence": 0.60}) is None
-
-    intent = reconciler.emit_trading_intent({
-        "decision": "BUY",
-        "symbol": "BTCUSDC",
-        "venue": "binance",
-        "confidence": 0.92,
-        "suggested_notional_eur": 250.0,
-        "urgency": "NORMAL",
-        "thesis": "High breadth advance ratio",
-    })
-    assert intent is not None
-    assert intent["status"] == "PENDING"
-    assert intent["symbol"] == "BTCUSDC"
-    assert intent["suggested_notional_eur"] == 250.0
-
-    intents_file = os.path.join(cache_dir, "autonomous_trade_intents.json")
-    assert os.path.exists(intents_file)
-    with open(intents_file, "r", encoding="utf-8") as f:
-        saved = json.load(f)
-    assert len(saved) == 1
-    assert saved[0]["intent_id"] == intent["intent_id"]
-
-    dup = reconciler.emit_trading_intent({
-        "decision": "BUY",
-        "symbol": "BTCUSDC",
-        "venue": "binance",
-        "confidence": 0.95,
-        "suggested_notional_eur": 300.0,
-    })
-    assert dup["intent_id"] == intent["intent_id"]
-    with open(intents_file, "r", encoding="utf-8") as f:
-        saved_after = json.load(f)
-    assert len(saved_after) == 1
-
-
 @pytest.fixture
 def mock_workspace(tmp_path):
     procs_file = tmp_path / "procs.conf"
@@ -388,7 +366,7 @@ def mock_workspace(tmp_path):
         "ts": time.time(),
     }))
 
-    (cachedb / "supervisor_nightly_eval.json").write_text(json.dumps({
+    (cachedb / "auto_trade_executor_eval.json").write_text(json.dumps({
         "mode": "enforce",
         "summary": "Core execution nominal",
         "market_trading_decision": {"decision": "HOLD", "confidence": 0.52},

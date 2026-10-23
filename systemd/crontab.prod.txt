@@ -18,6 +18,7 @@ SHELL=/bin/bash
 
 15 4 1,15 * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh cron-update >> logs/manage_agy.log 2>&1
 
-35 3 * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py >> logs/supervisor_reconciler.log 2>&1
-# 30-min TAO/BTC tactical monitor on the isolated agy-bot topic thread (mode: order_guard.conf supervisor_mode/autonomous_trading_mode)
-*/30 * * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.tactical_monitor.lock /usr/bin/timeout 600 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key prod_tactical_monitor --focus-symbols TAOUSDC,BTCUSDC --lookback-hours 0.6 --no-code-remediation >> logs/tactical_monitor.log 2>&1
+# Nightly technical audit + verified self-heal on the permanent auto_technical_repair thread (never trades)
+35 3 * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_technical_repair >> logs/auto_technical_repair.log 2>&1
+# 30-min TAO/BTC trade executor on the permanent auto_trade_executor thread (the only LLM topic allowed to trade)
+*/30 * * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_trade_executor.lock /usr/bin/timeout 600 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_trade_executor --focus-symbols TAOUSDC,BTCUSDC --lookback-hours 0.6 >> logs/auto_trade_executor.log 2>&1

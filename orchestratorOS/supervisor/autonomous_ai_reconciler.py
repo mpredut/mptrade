@@ -1,12 +1,11 @@
-"""Autonomous AI Nightly Reconciliation & Self-Healing Supervisor Daemon.
+"""Autonomous AI supervisor running the cron-driven LLM topic threads.
 
-Completely decoupled, independent, and out-of-band operational auditor:
-- Zero internal project imports (100% Python Standard Library).
-- Ingests passive telemetry, sensors, and state files published by bots in cachedb/ and logs/.
-- Interacts with Google Gemini directly via the local authenticated agy CLI.
-- Dispatches compact notifications via HTTP to ntfy using urllib.
-- In 'shadow' mode: Strictly read-only observation with simulated actions.
-- In 'enforce' mode: Verifies self-healing code patches against pytest before commit.
+- Ingests passive telemetry, sensors and state files published by the bots in cachedb/ and logs/.
+- Reasons on the topic's permanent Antigravity thread (orchestratorOS.agy.topics) via GeminiClient/agy-bot.
+- Each topic's TopicSpec bounds its side effects:
+  * auto_technical_repair: diagnostics + verified self-healing code patches (never trades);
+  * auto_trade_executor: diagnostics + trade decisions submitted to AutonomousIntentGateway (never patches code).
+- supervisor_mode ('shadow' / 'enforce') bounds every side effect, including the gateway execution mode.
 """
 
 from __future__ import annotations
@@ -17,32 +16,25 @@ import json
 import logging
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import urllib.request
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
-from botcore import load_dotenv, required_env
+from botcore import load_dotenv
 from intelligence.sentiment.gemini_client import GeminiClient
-from orchestratorOS.admin.prune_llm_threads import (
-    resolve_agy_bot_bin,
-    resolve_project_uuid,
-)
+from orchestratorOS.agy.topics import TOPIC_SPECS, topic_spec
 
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 
 logger = logging.getLogger("orchestratorOS.supervisor")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-DEFAULT_STATE_FILE = "cachedb/supervisor_nightly_eval.json"
-DEFAULT_HEARTBEAT_FILE = "cachedb/supervisor_nightly.heartbeat"
-DEFAULT_AUTONOMOUS_PROJECT_ID = resolve_project_uuid(required_env("AGY_PROJECT"))
 
 _FULL_TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2}):(\d{2})")
 _GLOG_TS_RE = re.compile(r"^[IWEF](\d{2})(\d{2}) (\d{2}):(\d{2}):(\d{2})")
@@ -128,48 +120,6 @@ class SupervisorAuditReport:
     notification_sent: bool = False
 
 
-class StandaloneGeminiAuditor(GeminiClient):
-    """Supervisor auditor client delegating directly to the canonical GeminiClient choke point."""
-
-    def __init__(
-        self,
-        model: Optional[str] = None,
-        project_id: Optional[str] = None,
-        cli_path: Optional[str] = None,
-        custom_runner: Optional[Callable[[str, str, float], str]] = None,
-    ) -> None:
-        effective_model = model or required_env("LLM_DEFAULT_MODEL")
-        raw_project = project_id or required_env("AGY_PROJECT")
-        super().__init__(
-            model=effective_model,
-            cli_path=cli_path,
-            custom_runner=custom_runner,
-            project_id=raw_project,
-        )
-
-    def query_json(
-        self,
-        prompt: str,
-        timeout_sec: float = 45.0,
-        thread_title: Optional[str] = None,
-        topic_key: Optional[str] = "supervisor_nightly",
-        conversation_id: Optional[str] = None,
-        *,
-        model: Optional[str] = None,
-        cache_ttl_sec: float = 0.0,
-    ) -> Optional[Dict[str, Any]]:
-        """Invokes canonical GeminiClient.query_json with supervisor defaults."""
-        return super().query_json(
-            prompt,
-            model=model,
-            timeout_sec=timeout_sec,
-            cache_ttl_sec=cache_ttl_sec,
-            thread_title=thread_title,
-            topic_key=topic_key,
-            conversation_id=conversation_id,
-        )
-
-
 class AutonomousAIReconciler:
     """Autonomous supervisor orchestrating decoupled sensor harvesting, log auditing, and self-healing."""
 
@@ -179,15 +129,17 @@ class AutonomousAIReconciler:
         workspace_dir: Optional[str] = None,
         cache_dir: str = "cachedb",
         logs_dirs: Optional[List[str]] = None,
-        gemini_auditor: Optional[StandaloneGeminiAuditor] = None,
+        gemini_auditor: Optional[GeminiClient] = None,
         notify_enabled: Optional[bool] = None,
         lookback_hours: float = 24.0,
+        intent_gateway: Optional[Any] = None,
     ) -> None:
         self.workspace_dir = workspace_dir or os.getcwd()
         self.cache_dir = os.path.join(self.workspace_dir, cache_dir)
         self.lookback_hours = float(lookback_hours)
         self.logs_dirs = [os.path.join(self.workspace_dir, d) for d in (logs_dirs or ["logs", "logger"])]
-        self.gemini_auditor = gemini_auditor or StandaloneGeminiAuditor()
+        self.gemini_auditor = gemini_auditor or GeminiClient()
+        self._intent_gateway = intent_gateway
 
         # Parse decoupled configuration strictly from config files without fallbacks
         conf = self._load_decoupled_conf()
@@ -214,29 +166,17 @@ class AutonomousAIReconciler:
         self.ntfy_topic = conf["ntfy_topic_guard"]
         self.ntfy_token = conf.get("ntfy_token", "")
 
-        self.state_file = os.path.join(self.cache_dir, "supervisor_nightly_eval.json")
-        self.heartbeat_file = os.path.join(self.cache_dir, "supervisor_nightly.heartbeat")
-        self.intents_file = os.path.join(self.cache_dir, "autonomous_trade_intents.json")
+        # Per-topic artifact paths are set by run_cycle(topic_key=...).
+        self.state_file = ""
+        self.heartbeat_file = ""
 
-        if "autonomous_trading_mode" not in conf:
-            raise KeyError("Missing required 'autonomous_trading_mode' in order_guard.conf")
-        self.autonomous_trading_mode = str(conf["autonomous_trading_mode"]).strip().lower()
-        if self.autonomous_trading_mode not in ("off", "shadow", "enforce"):
-            raise ValueError(
-                f"Invalid autonomous_trading_mode {conf['autonomous_trading_mode']!r}; must be one of ['enforce', 'off', 'shadow']"
-            )
-        if "autonomous_trading_min_confidence" not in conf:
-            raise KeyError("Missing required 'autonomous_trading_min_confidence' in order_guard.conf")
-        self.min_trading_confidence = float(conf["autonomous_trading_min_confidence"])
-        if "autonomous_trading_max_notional_eur" not in conf:
-            raise KeyError("Missing required 'autonomous_trading_max_notional_eur' in order_guard.conf")
-        self.max_trading_notional = float(conf["autonomous_trading_max_notional_eur"])
-        if "autonomous_trading_min_notional_eur" not in conf:
-            raise KeyError("Missing required 'autonomous_trading_min_notional_eur' in order_guard.conf")
-        self.min_trading_notional = float(conf["autonomous_trading_min_notional_eur"])
-        if "autonomous_trading_dedup_window_sec" not in conf:
-            raise KeyError("Missing required 'autonomous_trading_dedup_window_sec' in order_guard.conf")
-        self.trading_dedup_window_sec = float(conf["autonomous_trading_dedup_window_sec"])
+    @property
+    def intent_gateway(self) -> Any:
+        """The single trade-intent choke point (owns autonomous_trading_* config, clamping, dedup, mode)."""
+        if self._intent_gateway is None:
+            from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+            self._intent_gateway = AutonomousIntentGateway()
+        return self._intent_gateway
 
     def _load_decoupled_conf(self) -> Dict[str, str]:
         """Parses key-value pairs from order_guard.conf and .env without external imports."""
@@ -405,10 +345,9 @@ class AutonomousAIReconciler:
         logs: LogEventSummary,
         *,
         focus_symbols: Optional[List[str]] = None,
-        topic_key: str = "supervisor_nightly",
-        thread_title: Optional[str] = None,
+        topic_key: str,
     ) -> Dict[str, Any]:
-        """Feeds sensor telemetry and log anomalies to Gemini to diagnose root causes."""
+        """Feeds sensor telemetry and log anomalies to Gemini; the topic spec bounds what it may propose."""
         context_items = [
             "### 1. ACTIVE SENSOR TELEMETRY:",
             f"- Fear & Greed: {sensors.fear_greed.get('value', 'N/A') if sensors.fear_greed else 'None'}",
@@ -446,61 +385,50 @@ class AutonomousAIReconciler:
                 )
 
         context_str = "\n".join(context_items)
+        spec = topic_spec(topic_key)
+
+        tasks = [
+            "1. Explain the technical root cause of any bot exceptions, fail-closed blocks, or guard vetoes.",
+            "2. Determine whether open orders or venue positions require reconciliation.",
+        ]
+        schema = [
+            '  "summary": "1-2 sentence executive assessment of system health"',
+            '  "diagnosed_issues": [{"severity": "HIGH" | "MEDIUM" | "LOW" | "INFO", '
+            '"category": "ORPHAN_ORDER" | "BOT_EXCEPTION" | "GUARD_VETO" | "HEALTHY", '
+            '"description": "Short explanation", "root_cause": "Detailed technical root cause"}]',
+            '  "venue_actions": [{"action": "CANCEL_ORDER" | "SYNC_POSITION" | "NONE", '
+            '"venue": "binance" | "kraken" | "hyperliquid" | "t212", "symbol": "BTCUSDC", '
+            '"order_id": "optional order id", "reason": "Why this action is needed"}]',
+        ]
+        if spec.can_self_heal:
+            tasks.append("3. If a reproducible code bug exists, formulate an exact search_block and replace_block.")
+            schema.append('  "code_remediation": {"has_fix": false, "target_file": "", "rationale": "", '
+                          '"search_block": "", "replace_block": ""}')
+        if spec.can_trade:
+            gw = self.intent_gateway
+            tasks.append(
+                f"{len(tasks) + 1}. Formulate an autonomous market trading decision ('BUY', 'SELL', or 'HOLD') based on "
+                "prevailing macro sentiment, geopolitical threat level, market breadth, and real-time trend coefficients. "
+                f"Only with high conviction (confidence >= {gw.min_confidence:g}) specify symbol (e.g. BTCUSDC, TAOBTC, "
+                "TAOUSDC), venue ('binance'/'kraken'/'hyperliquid'/'t212'), confidence, suggested_notional_eur "
+                f"(up to {gw.max_notional_eur:g} EUR) and thesis; otherwise 'HOLD'."
+            )
+            schema.append('  "market_trading_decision": {"decision": "BUY" | "SELL" | "HOLD", "symbol": "BTCUSDC", '
+                          '"venue": "binance" | "kraken" | "hyperliquid" | "t212", "confidence": 0.88, '
+                          '"suggested_notional_eur": 250.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}')
 
         prompt = (
             "You are the Lead SRE and Quantitative Trading Systems Architect for MPTrade.\n"
             "Analyze the passive telemetry sensors and log anomalies collected from trading bots:\n\n"
             f"{context_str}\n\n"
-            "Perform an executive diagnostic audit:\n"
-            "1. Explain the technical root cause of any bot exceptions, fail-closed blocks, or guard vetoes.\n"
-            "2. Determine whether open orders or venue positions require reconciliation.\n"
-            "3. If a reproducible code bug exists, formulate an exact search_block and replace_block.\n"
-            "4. Formulate an autonomous market trading decision ('BUY', 'SELL', or 'HOLD') based on prevailing macro sentiment, geopolitical threat level, market breadth, and real-time trend coefficients.\n"
-            "   If high-conviction (confidence >= 0.85) opportunities exist, specify symbol (e.g. BTCUSDC, TAOBTC, TAOUSDC), venue ('binance'/'kraken'/'hyperliquid'/'t212'), confidence, suggested_notional_eur (up to 500 EUR), and thesis. Otherwise default to 'HOLD'.\n\n"
-            "Respond STRICTLY in valid JSON with exact schema:\n"
-            "{\n"
-            '  "summary": "1-2 sentence executive assessment of system health",\n'
-            '  "diagnosed_issues": [\n'
-            '    {\n'
-            '      "severity": "HIGH" | "MEDIUM" | "LOW" | "INFO",\n'
-            '      "category": "ORPHAN_ORDER" | "BOT_EXCEPTION" | "GUARD_VETO" | "HEALTHY",\n'
-            '      "description": "Short explanation",\n'
-            '      "root_cause": "Detailed technical root cause"\n'
-            "    }\n"
-            "  ],\n"
-            '  "venue_actions": [\n'
-            '    {\n'
-            '      "action": "CANCEL_ORDER" | "SYNC_POSITION" | "NONE",\n'
-            '      "venue": "binance" | "kraken" | "hyperliquid" | "t212",\n'
-            '      "symbol": "BTCUSDC",\n'
-            '      "order_id": "optional order id",\n'
-            '      "reason": "Why this action is needed"\n'
-            "    }\n"
-            "  ],\n"
-            '  "code_remediation": {\n'
-            '    "has_fix": false,\n'
-            '    "target_file": "",\n'
-            '    "rationale": "",\n'
-            '    "search_block": "",\n'
-            '    "replace_block": ""\n'
-            "  },\n"
-            '  "market_trading_decision": {\n'
-            '    "decision": "BUY" | "SELL" | "HOLD",\n'
-            '    "symbol": "BTCUSDC",\n'
-            '    "venue": "binance" | "kraken" | "hyperliquid" | "t212",\n'
-            '    "confidence": 0.88,\n'
-            '    "suggested_notional_eur": 250.0,\n'
-            '    "urgency": "NORMAL" | "HIGH",\n'
-            '    "thesis": "High market breadth advance ratio and positive sentiment align with bull trend."\n'
-            "  }\n"
-            "}"
+            "Perform an executive diagnostic audit:\n" + "\n".join(tasks) + "\n\n"
+            "Respond STRICTLY in valid JSON with exact schema:\n{\n" + ",\n".join(schema) + "\n}"
         )
 
-        effective_title = thread_title or f"ntfy-guard: 🛡 [AI-SUPERVISOR] Morning Reconciliation ({self.mode.upper()})"
         resp = self.gemini_auditor.query_json(
             prompt,
             timeout_sec=45.0,
-            thread_title=effective_title,
+            thread_title=f"{spec.title} — {self.mode.upper()}",
             topic_key=topic_key,
         )
 
@@ -517,16 +445,6 @@ class AutonomousAIReconciler:
                     }
                 ],
                 "venue_actions": [],
-                "code_remediation": {"has_fix": False},
-                "market_trading_decision": {
-                    "decision": "HOLD",
-                    "symbol": "BTCUSDC",
-                    "venue": "binance",
-                    "confidence": 0.5,
-                    "suggested_notional_eur": 0.0,
-                    "urgency": "NORMAL",
-                    "thesis": "Baseline fallback: no autonomous trade triggered.",
-                },
             }
 
         return resp
@@ -610,123 +528,6 @@ class AutonomousAIReconciler:
             logger.error("Error during safe code patching: %s. Performing rollback.", e)
             subprocess.run(["git", "checkout", "--", target_file], check=False)
             return False
-
-    def emit_trading_intent(self, decision_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Persists a high-confidence BUY/SELL decision into the durable intents queue."""
-        if not isinstance(decision_data, dict):
-            return None
-        decision = str(decision_data.get("decision", "HOLD")).strip().upper()
-        if decision not in ("BUY", "SELL"):
-            logger.info("Autonomous AI market decision is %s (no trade intent generated).", decision)
-            return None
-
-        try:
-            conf = float(decision_data.get("confidence", 0.0))
-        except (ValueError, TypeError):
-            conf = 0.0
-
-        if conf < self.min_trading_confidence:
-            logger.info("Autonomous AI %s confidence %.2f below threshold %.2f (no intent generated).",
-                        decision, conf, self.min_trading_confidence)
-            return None
-
-        symbol = str(decision_data.get("symbol", "")).strip().upper()
-        if not symbol:
-            logger.warning("Autonomous AI %s decision missing symbol (no intent generated).", decision)
-            return None
-        venue = str(decision_data.get("venue", "")).strip().lower()
-        if not venue:
-            logger.warning("Autonomous AI %s %s decision missing venue (no intent generated).", decision, symbol)
-            return None
-        try:
-            notional = float(decision_data.get("suggested_notional_eur", self.max_trading_notional))
-        except (ValueError, TypeError):
-            notional = self.max_trading_notional
-        notional = max(self.min_trading_notional, min(notional, self.max_trading_notional))
-        urgency = str(decision_data.get("urgency", "NORMAL")).strip().upper()
-        thesis = str(decision_data.get("thesis", "Autonomous LLM strategy thesis")).strip()
-
-        now = time.time()
-        intent_id = f"intent_{int(now)}_{decision.lower()}_{symbol.lower()}"
-        intent = {
-            "intent_id": intent_id,
-            "timestamp": now,
-            "decision": decision,
-            "symbol": symbol,
-            "venue": venue,
-            "confidence": conf,
-            "suggested_notional_eur": notional,
-            "urgency": urgency,
-            "thesis": thesis,
-            "status": "PENDING",
-            "created_by": "autonomous_ai_reconciler",
-            "history": [],
-        }
-
-        try:
-            os.makedirs(self.cache_dir, exist_ok=True)
-            intents_list: List[Dict[str, Any]] = []
-            if os.path.exists(self.intents_file):
-                try:
-                    with open(self.intents_file, "r", encoding="utf-8") as f:
-                        intents_list = json.load(f)
-                        if not isinstance(intents_list, list):
-                            intents_list = []
-                except Exception:
-                    intents_list = []
-
-            # Deduplication check: avoid queuing duplicate pending intent for same symbol within configured window
-            for existing in intents_list:
-                if (
-                    existing.get("status") == "PENDING"
-                    and existing.get("symbol") == symbol
-                    and existing.get("decision") == decision
-                    and (now - float(existing.get("timestamp", 0.0))) < self.trading_dedup_window_sec
-                ):
-                    logger.info("Pending intent already active for %s %s (%s). Skipping duplicate.",
-                                decision, symbol, existing.get("intent_id"))
-                    return existing
-
-            intents_list.append(intent)
-            try:
-                from state_io import atomic_text_writer
-                with atomic_text_writer(self.intents_file) as f:
-                    json.dump(intents_list, f, indent=2)
-            except Exception:
-                with open(self.intents_file, "w", encoding="utf-8") as f:
-                    json.dump(intents_list, f, indent=2)
-            logger.info("Emitted autonomous trade intent %s: %s %s €%.2f (confidence=%.2f)",
-                        intent_id, decision, symbol, notional, conf)
-            return intent
-        except Exception as e:
-            logger.error("Failed persisting autonomous trade intent: %s", e)
-            return None
-
-    def trigger_intent_gateway(self) -> None:
-        """Invokes the intent gateway out-of-band via subprocess to preserve complete decoupling."""
-        gateway_path = os.path.join(self.workspace_dir, "orchestratorTrade", "autonomous_intent_gateway.py")
-        if not os.path.exists(gateway_path):
-            return
-        py_exec = sys.executable
-        if not py_exec or not os.path.exists(py_exec):
-            py_exec = "python3"
-        try:
-            # The supervisor mode bounds every side effect it triggers: a shadow audit must never let an
-            # enforce-configured gateway place live orders.
-            cmd = [py_exec, gateway_path, "--process-pending"]
-            if self.mode != "enforce":
-                cmd += ["--mode", "shadow"]
-            logger.info("Invoking Autonomous Intent Gateway out-of-band: %s", " ".join(cmd[1:]))
-            subprocess.run(
-                cmd,
-                cwd=self.workspace_dir,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-        except Exception as e:
-            logger.debug("Failed triggering autonomous intent gateway subprocess: %s", e)
 
     def dispatch_notification(self, report: SupervisorAuditReport) -> bool:
         """Sends a clean, compact push alert via standard HTTP POST to ntfy."""
@@ -828,51 +629,35 @@ class AutonomousAIReconciler:
 
     def run_cycle(
         self,
-        force: bool = False,
         *,
+        topic_key: str,
         focus_symbols: Optional[List[str]] = None,
-        topic_key: str = "supervisor_nightly",
-        thread_title: Optional[str] = None,
-        allow_code_remediation: bool = True,
     ) -> SupervisorAuditReport:
-        """Executes the complete decoupled audit cycle."""
-        logger.info("Starting Autonomous AI Supervisor audit cycle (mode=%s, topic=%s)...", self.mode, topic_key)
+        """Run one audit turn on the topic's permanent thread; its TopicSpec bounds the allowed side effects."""
+        spec = topic_spec(topic_key)
+        logger.info("Starting Autonomous AI Supervisor cycle (mode=%s, topic=%s)...", self.mode, topic_key)
         now = time.time()
-        # Per-topic artifacts so a tactical run never overwrites the nightly report (and vice versa).
+        # Per-topic artifacts so one topic never overwrites another topic's report.
         self.state_file = os.path.join(self.cache_dir, f"{topic_key}_eval.json")
         self.heartbeat_file = os.path.join(self.cache_dir, f"{topic_key}.heartbeat")
 
-        # Step 1: Ingest passive sensors telemetry from cachedb/
         sensors = self.harvest_sensors_telemetry()
-
-        # Step 2: Harvest log anomalies from logs/
         logs = self.harvest_log_anomalies()
+        plan = self.synthesize_and_diagnose(sensors, logs, focus_symbols=focus_symbols, topic_key=topic_key)
+        executed, tests_passed = self.apply_reconciliation(plan, allow_code_remediation=spec.can_self_heal)
 
-        # Step 3: Synthesize diagnostic plan via Gemini
-        plan = self.synthesize_and_diagnose(
-            sensors,
-            logs,
-            focus_symbols=focus_symbols,
-            topic_key=topic_key,
-            thread_title=thread_title,
-        )
-
-        # Step 4: Apply or simulate reconciliation
-        executed, tests_passed = self.apply_reconciliation(plan, allow_code_remediation=allow_code_remediation)
-
-        # Step 5: Emit autonomous trading intent if high-conviction BUY/SELL
-        market_decision = plan.get("market_trading_decision", {})
-        intent = self.emit_trading_intent(market_decision)
-        if intent:
-            self.trigger_intent_gateway()
+        market_decision = plan.get("market_trading_decision", {}) if spec.can_trade else {}
+        intent = None
+        if market_decision:
+            intent = self.intent_gateway.submit(market_decision, source=topic_key, max_mode=self.mode)
 
         report = SupervisorAuditReport(
             ts=now,
             mode=self.mode,
-            summary=plan.get("summary", "Nightly audit complete."),
+            summary=plan.get("summary", "Audit complete."),
             diagnosed_issues=plan.get("diagnosed_issues", []),
             venue_actions=plan.get("venue_actions", []),
-            code_remediation=plan.get("code_remediation", {}),
+            code_remediation=plan.get("code_remediation", {}) if spec.can_self_heal else {},
             market_trading_decision=market_decision,
             intent_emitted=intent,
             sensor_health={
@@ -886,58 +671,29 @@ class AutonomousAIReconciler:
             actions_executed=executed,
             tests_passed=tests_passed,
         )
-
-        # Step 6: Notify and persist state
         report.notification_sent = self.dispatch_notification(report)
         self.write_audit_artifact(report)
-
-        logger.info("Autonomous AI Supervisor audit cycle complete: %s", report.summary)
+        logger.info("Autonomous AI Supervisor cycle complete: %s", report.summary)
         return report
 
 
 def main() -> None:
-    """CLI entry-point for cron or tactical periodic execution."""
-    parser = argparse.ArgumentParser(description="Autonomous AI Reconciliation & Tactical Supervisor")
-    parser.add_argument("--mode", choices=["shadow", "enforce"], default=None, help="Execution mode override")
-    parser.add_argument("--force", action="store_true", help="Force cycle execution")
-    parser.add_argument(
-        "--topic-key",
-        default="supervisor_nightly",
-        help="Dedicated LLM topic thread key (e.g., supervisor_nightly or prod_tactical_monitor)",
-    )
-    parser.add_argument(
-        "--focus-symbols",
-        default="",
-        help="Comma-separated tactical focus symbols (e.g., TAOUSDC,BTCUSDC)",
-    )
-    parser.add_argument(
-        "--lookback-hours",
-        type=float,
-        default=24.0,
-        help="Log anomaly lookback window in hours (default: 24.0; use 0.6 for 30m tactical checks)",
-    )
-    parser.add_argument(
-        "--title",
-        default=None,
-        help="Custom thread title override",
-    )
-    parser.add_argument(
-        "--no-code-remediation",
-        action="store_true",
-        help="Never apply self-healing code patches in this run (frequent tactical checks)",
-    )
+    """CLI entry point for the cron-driven supervisor topics."""
+    parser = argparse.ArgumentParser(description="Autonomous AI supervisor (technical repair / trade executor)")
+    parser.add_argument("--topic-key", required=True,
+                        choices=sorted(k for k, v in TOPIC_SPECS.items() if v.can_trade or v.can_self_heal),
+                        help="Permanent LLM topic thread to run")
+    parser.add_argument("--mode", choices=["shadow", "enforce"], default=None,
+                        help="Override supervisor_mode from order_guard.conf (bounds trading and self-heal)")
+    parser.add_argument("--focus-symbols", default="", help="Comma-separated watchlist (e.g. TAOUSDC,BTCUSDC)")
+    parser.add_argument("--lookback-hours", type=float, default=24.0,
+                        help="Log anomaly lookback window in hours (default: 24; 0.6 for 30-minute runs)")
     args = parser.parse_args()
 
-    focus_list = [s.strip().upper() for s in args.focus_symbols.split(",") if s.strip()] if args.focus_symbols else None
+    focus = [s.strip().upper() for s in args.focus_symbols.split(",") if s.strip()] or None
     reconciler = AutonomousAIReconciler(mode=args.mode, lookback_hours=args.lookback_hours)
-    report = reconciler.run_cycle(
-        force=args.force,
-        focus_symbols=focus_list,
-        topic_key=args.topic_key,
-        thread_title=args.title,
-        allow_code_remediation=not args.no_code_remediation,
-    )
-    print(f"[{report.mode.upper()}] Audit completed ({args.topic_key}): {report.summary}")
+    report = reconciler.run_cycle(topic_key=args.topic_key, focus_symbols=focus)
+    print(f"[{report.mode.upper()}] {args.topic_key}: {report.summary}")
 
 
 if __name__ == "__main__":

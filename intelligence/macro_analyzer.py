@@ -216,10 +216,8 @@ class MacroAnalyzer:
     def prune_cli_threads(self) -> int:
         """Periodic retention: prune automated CLI threads older than retention limit."""
         try:
-            from orchestratorOS.admin.prune_llm_threads import (
-                prune_old_cli_threads,
-                resolve_bot_cli_base,
-            )
+            from orchestratorOS.admin.prune_llm_threads import prune_old_cli_threads
+            from orchestratorOS.agy.paths import resolve_bot_cli_base
             retention_d = required_float_env("CLI_THREAD_RETENTION_DAYS")
             bot_cli_base = resolve_bot_cli_base()
             pruned_cnt, _ = prune_old_cli_threads(

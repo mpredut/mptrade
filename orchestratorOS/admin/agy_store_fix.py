@@ -30,7 +30,6 @@ from __future__ import annotations
 import fcntl
 import glob
 import hashlib
-import io
 import json
 import logging
 import os
@@ -40,6 +39,13 @@ import sqlite3
 import subprocess
 import sys
 import time
+
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT_DIR not in sys.path:   # executed directly by the systemd drop-in with /usr/bin/python3
+    sys.path.insert(0, _ROOT_DIR)
+
+from orchestratorOS.agy.protobuf import enc_fields, parse_fields, summary_ui_visible  # noqa: E402 (stdlib-only)
+
 
 def visible_conversations_dir(cli_base: str) -> str:
     """SSOT for the daemon's visible conversations dir that sits next to a CLI store (agy 1.4.0 watchDirs layout)."""
@@ -66,85 +72,13 @@ UNIT = "antigravity-cli-daemon.service"
 log = logging.getLogger("agy_store_fix")
 
 
-# ---------------------------------------------------------------- protobuf helpers
-def enc_varint(v: int) -> bytes:
-    if v < 0:
-        v += 1 << 64
-    out = bytearray()
-    while v > 0x7F:
-        out.append((v & 0x7F) | 0x80)
-        v >>= 7
-    out.append(v)
-    return bytes(out)
-
-
-def dec_varint(buf: bytes, pos: int):
-    val = shift = 0
-    while pos < len(buf):
-        b = buf[pos]
-        pos += 1
-        val |= (b & 0x7F) << shift
-        if not b & 0x80:
-            return val, pos
-        shift += 7
-    raise ValueError("truncated varint")
-
-
-def parse_fields(buf: bytes):
-    pos, out = 0, []
-    while pos < len(buf):
-        key, pos = dec_varint(buf, pos)
-        tag, wire = key >> 3, key & 7
-        if wire == 0:
-            v, pos = dec_varint(buf, pos)
-        elif wire == 2:
-            n, pos = dec_varint(buf, pos)
-            v = buf[pos:pos + n]
-            pos += n
-        elif wire == 1:
-            v = buf[pos:pos + 8]
-            pos += 8
-        elif wire == 5:
-            v = buf[pos:pos + 4]
-            pos += 4
-        else:
-            raise ValueError(f"unsupported wire type {wire}")
-        out.append((tag, wire, v))
-    return out
-
-
-def enc_fields(fields) -> bytes:
-    out = bytearray()
-    for tag, wire, v in fields:
-        out += enc_varint((tag << 3) | wire)
-        if wire == 0:
-            out += enc_varint(int(v))
-        elif wire == 2:
-            out += enc_varint(len(v)) + bytes(v)
-        else:
-            out += bytes(v)
-    return bytes(out)
-
-
+# ---------------------------------------------------------------- summary helpers
 def fix_summary(raw: bytes, title: str) -> bytes:
-    """Drop field 20 (source) and make sure annotations (15) carry the title; keep other annotation sub-fields."""
-    keep, annot_sub = [], []
-    for tag, wire, v in parse_fields(raw):
-        if tag == 20:
-            continue
-        if tag == 15 and wire == 2:
-            annot_sub = [x for x in parse_fields(v) if x[0] != 1]   # keep e.g. last_user_view_time
-            continue
-        if tag == 28 and wire == 0 and v == 2:   # stale RUNNING -> IDLE
-            keep.append((28, 0, 4))
-            continue
-        keep.append((tag, wire, v))
-    if title:
-        annot_sub = [(1, 2, title.encode())] + [x for x in annot_sub if x[0] != 1]
-    if annot_sub:
-        keep.append((15, 2, enc_fields(annot_sub)))
-    keep.sort(key=lambda x: x[0])
-    return enc_fields(keep)
+    """UI-visible summary (source dropped, title applied) with a stale RUNNING status reset to IDLE."""
+    fields = [(28, 0, 4) if (tag == 28 and wire == 0 and v == 2) else (tag, wire, v)
+              for tag, wire, v in parse_fields(summary_ui_visible(raw, title))]
+    fields.sort(key=lambda x: x[0])
+    return enc_fields(fields)
 
 
 def raw_title(raw: bytes) -> str:

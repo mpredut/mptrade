@@ -332,3 +332,35 @@ def test_process_intent_enforce_passes_intent_and_client_order_id(temp_workspace
     assert mock_inst.place.call_args.kwargs["intent_id"] == "intent_unique_12345"
     assert mock_inst.place.call_args.kwargs["client_order_id"] == "AI_intent_unique_12345"
 
+
+
+def test_submit_is_the_single_validated_entry_point(temp_workspace):
+    ws, _ = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
+    seen_modes = []
+
+    def fake_process(intent, instruments_map=None, mode=None):
+        seen_modes.append(mode)
+        intent["status"] = "OBSERVED_SHADOW" if mode == "shadow" else "EXECUTED"
+        return intent
+
+    gw.process_intent = fake_process
+    assert gw.submit({"decision": "HOLD", "confidence": 0.99}, source="t", max_mode="enforce") is None
+    assert gw.submit({"decision": "BUY", "symbol": "TAOUSDC", "venue": "binance", "confidence": 0.5},
+                     source="t", max_mode="enforce") is None
+    assert gw.submit({"decision": "BUY", "symbol": "TAOUSDC", "confidence": 0.95}, source="t",
+                     max_mode="enforce") is None   # venue is mandatory
+
+    buy = {"decision": "BUY", "symbol": "TAOUSDC", "venue": "binance", "confidence": 0.95,
+           "suggested_notional_eur": 9999.0}
+    first = gw.submit(buy, source="auto_trade_executor", max_mode="shadow")
+    assert seen_modes == ["shadow"]                      # producer mode bounds an enforce gateway
+    assert first["status"] == "OBSERVED_SHADOW" and first["created_by"] == "auto_trade_executor"
+    assert first["suggested_notional_eur"] == gw.max_notional_eur   # clamped to the configured cap
+
+    dup = gw.submit(buy, source="auto_trade_executor", max_mode="enforce")
+    assert dup["intent_id"] == first["intent_id"] and seen_modes == ["shadow"]   # de-duplicated, not re-run
+    assert len(gw.load_all_intents()) == 1
+
+    sell = gw.submit(dict(buy, decision="SELL"), source="auto_trade_executor", max_mode="enforce")
+    assert sell["status"] == "EXECUTED" and seen_modes == ["shadow", "enforce"]

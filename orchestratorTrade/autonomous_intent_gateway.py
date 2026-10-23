@@ -55,6 +55,11 @@ class TradeIntentRecord:
     history: List[Dict[str, Any]] = field(default_factory=list)
 
 
+MODE_RANK = {"off": 0, "shadow": 1, "enforce": 2}
+# Intents that count as "already acted on" for de-duplication (guard blocks and rejections allow a later retry).
+DEDUP_STATUSES = ("PENDING", "OBSERVED_SHADOW", "EXECUTED")
+
+
 class AutonomousIntentGateway:
     """Gateway bridge consuming decoupled trade intents and executing through Instrument.place."""
 
@@ -102,6 +107,10 @@ class AutonomousIntentGateway:
             if "autonomous_trading_min_confidence" not in conf:
                 raise KeyError("Missing required 'autonomous_trading_min_confidence' in order_guard.conf")
             self.min_confidence = float(conf["autonomous_trading_min_confidence"])
+
+        if "autonomous_trading_dedup_window_sec" not in conf:
+            raise KeyError("Missing required 'autonomous_trading_dedup_window_sec' in order_guard.conf")
+        self.dedup_window_sec = float(conf["autonomous_trading_dedup_window_sec"])
 
         if notify_enabled is not None:
             self.notify_enabled = bool(notify_enabled)
@@ -253,8 +262,10 @@ class AutonomousIntentGateway:
         self,
         intent: Dict[str, Any],
         instruments_map: Optional[Dict[str, Any]] = None,
+        mode: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Validates and processes a single intent according to operational mode."""
+        """Validates and processes a single intent according to ``mode`` (default: the gateway mode)."""
+        mode = mode or self.mode
         intent_id = intent.get("intent_id") or intent.get("id") or f"intent_{int(time.time())}"
         decision = str(intent.get("decision", "HOLD")).strip().upper()
         symbol = str(intent.get("symbol", "")).strip().upper()
@@ -342,7 +353,7 @@ class AutonomousIntentGateway:
         thesis = intent.get("thesis", "Autonomous strategy thesis")
 
         # Execution or Observation Branch
-        if self.mode == "shadow":
+        if mode == "shadow":
             logger.info("[LLM TRADER · SHADOW] Would execute %s %s (qty=%g, price=$%.2f, notional=€%.2f) on %s. Thesis: %s",
                         decision, inst.symbol, target_qty, price, effective_eur, inst.provider_name, thesis)
 
@@ -368,13 +379,13 @@ class AutonomousIntentGateway:
             return intent
 
         # Gate: only "enforce" mode is permitted to execute live orders
-        if self.mode != "enforce":
-            logger.info("[LLM TRADER] Gateway mode is %r — skipping execution for intent %s", self.mode, intent_id)
+        if mode != "enforce":
+            logger.info("[LLM TRADER] Gateway mode is %r — skipping execution for intent %s", mode, intent_id)
             intent["status"] = "REJECTED_GATEWAY_DISABLED"
             intent.setdefault("history", []).append({
                 "ts": now,
                 "action": "REJECTED_GATEWAY_DISABLED",
-                "mode": self.mode,
+                "mode": mode,
             })
             return intent
 
@@ -462,6 +473,76 @@ class AutonomousIntentGateway:
             })
 
         return intent
+
+    def submit(
+        self,
+        decision: Dict[str, Any],
+        *,
+        source: str,
+        max_mode: str,
+        instruments_map: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Single entry point for autonomous LLM trade decisions.
+
+        Validates, clamps the notional, de-duplicates against recent intents for the same symbol and side,
+        persists the intent and processes it immediately in the more restrictive of the gateway mode and
+        ``max_mode`` (the producer's own mode), so a shadow producer can never trigger a live order.
+        """
+        side = str(decision.get("decision", "HOLD")).strip().upper()
+        if side not in ("BUY", "SELL"):
+            logger.info("[INTENT GATEWAY] %s decision is %s (no intent).", source, side)
+            return None
+        symbol = str(decision.get("symbol", "")).strip().upper()
+        venue = str(decision.get("venue", "")).strip().lower()
+        if not symbol or not venue:
+            logger.warning("[INTENT GATEWAY] %s %s decision missing symbol/venue (no intent).", source, side)
+            return None
+        try:
+            confidence = float(decision.get("confidence", 0.0))
+        except (ValueError, TypeError):
+            confidence = 0.0
+        if confidence < self.min_confidence:
+            logger.info("[INTENT GATEWAY] %s %s %s confidence %.2f < %.2f (no intent).",
+                        source, side, symbol, confidence, self.min_confidence)
+            return None
+        try:
+            notional = float(decision.get("suggested_notional_eur", self.max_notional_eur))
+        except (ValueError, TypeError):
+            notional = self.max_notional_eur
+        notional = max(self.min_notional_eur, min(notional, self.max_notional_eur))
+
+        now = time.time()
+        intents = self.load_all_intents()
+        for existing in reversed(intents):
+            if (
+                existing.get("symbol") == symbol
+                and existing.get("decision") == side
+                and existing.get("status") in DEDUP_STATUSES
+                and now - float(existing.get("timestamp", 0.0)) < self.dedup_window_sec
+            ):
+                logger.info("[INTENT GATEWAY] %s %s already acted on within %.0fs (%s); skipping duplicate.",
+                            side, symbol, self.dedup_window_sec, existing.get("intent_id"))
+                return existing
+
+        intent = asdict(TradeIntentRecord(
+            intent_id=f"intent_{int(now)}_{side.lower()}_{symbol.lower()}",
+            timestamp=now,
+            decision=side,
+            symbol=symbol,
+            venue=venue,
+            confidence=confidence,
+            suggested_notional_eur=notional,
+            urgency=str(decision.get("urgency", "NORMAL")).strip().upper(),
+            thesis=str(decision.get("thesis", "")).strip(),
+            created_by=source,
+        ))
+        intents.append(intent)
+        self.save_all_intents(intents)
+        mode = min(self.mode, max_mode, key=MODE_RANK.__getitem__)
+        processed = self.process_intent(intent, instruments_map=instruments_map, mode=mode)
+        intents[-1] = processed
+        self.save_all_intents(intents)
+        return processed
 
     def process_all_pending(self) -> List[Dict[str, Any]]:
         """Processes all pending trade intents from the durable queue."""

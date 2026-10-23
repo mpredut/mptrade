@@ -115,10 +115,9 @@ CURRENT_HOUR="$(date +%-H)"
 if [ $((CURRENT_HOUR % 3)) -eq 0 ]; then
     PRUNE_SCRIPT="$ROOT/orchestratorOS/admin/prune_llm_threads.py"
     if [ -f "$PRUNE_SCRIPT" ]; then
-        BOT_HOME_DIR="${AGY_BOT_HOME:-$HOME/agy_bot_home}"
-        RETENTION_DAYS="${CLI_THREAD_RETENTION_DAYS:-1}"
-        echo "  pruning automated CLI threads older than ${RETENTION_DAYS}d in ${BOT_HOME_DIR} (3h cycle)..."
-        "$ROOT/orchestratorOS/run_python.sh" "$PRUNE_SCRIPT" --cli-base "$BOT_HOME_DIR/.gemini/antigravity-cli" --days "$RETENTION_DAYS" || true
+        # Store and retention come from config.env (AGY_BOT_HOME, CLI_THREAD_RETENTION_DAYS); topic threads are protected.
+        echo "  pruning automated agy-bot CLI threads (3h cycle)..."
+        "$ROOT/orchestratorOS/run_python.sh" "$PRUNE_SCRIPT" || true
     fi
 fi
 

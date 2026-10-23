@@ -12,14 +12,8 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import urllib.request
 
 from botcore import load_dotenv, required_env
-from orchestratorOS.admin.prune_llm_threads import (
-    TopicSession,
-    prepare_topic_session,
-    record_topic_turn,
-    resolve_agy_bot_bin,
-    resolve_bot_cli_base,
-    resolve_project_uuid,
-)
+from orchestratorOS.agy.paths import resolve_agy_bot_bin, resolve_bot_cli_base
+from orchestratorOS.agy.topics import TopicSession, prepare_topic_session, record_topic_turn
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
@@ -28,9 +22,6 @@ logger = logging.getLogger("intelligence.sentiment.gemini_client")
 
 DEFAULT_MODEL = required_env("LLM_DEFAULT_MODEL")
 AGY_CLI_PATH = resolve_agy_bot_bin()
-
-
-DEFAULT_AUTONOMOUS_PROJECT_ID = resolve_project_uuid(required_env("AGY_PROJECT"))
 
 
 class GeminiClient:
@@ -50,9 +41,9 @@ class GeminiClient:
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        self.cli_path = resolve_agy_bot_bin(cli_path) if cli_path else resolve_agy_bot_bin(AGY_CLI_PATH)
-        raw_project = project_id or required_env("AGY_PROJECT")
-        self.project_id = resolve_project_uuid(raw_project, fallback_uuid=DEFAULT_AUTONOMOUS_PROJECT_ID)
+        self.cli_path = resolve_agy_bot_bin(cli_path) if cli_path else AGY_CLI_PATH
+        # agy resolves `--project` by name or id; the configured name is the SSOT.
+        self.project_id = project_id or required_env("AGY_PROJECT")
         self._custom_runner = custom_runner
         self._cache: Dict[str, tuple[float, str]] = {}
 
