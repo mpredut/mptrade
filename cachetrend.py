@@ -42,7 +42,12 @@ from providers.base import extract_timestamp_s, normalize_timestamp_ms
 
 _cm = sys.modules.get("cacheManager")
 if _cm is None or not hasattr(_cm, "CacheManagerInterface"):
-    import cacheManager as _cm
+    _main_mod = sys.modules.get("__main__")
+    if _main_mod is not None and hasattr(_main_mod, "CacheManagerInterface"):
+        _cm = _main_mod
+        sys.modules.setdefault("cacheManager", _main_mod)
+    else:
+        import cacheManager as _cm
 
 CacheManagerInterface = _cm.CacheManagerInterface
 
@@ -65,7 +70,7 @@ _NB_FETCH_DEADLINE_SEC = 8
 
 def _cm_attr(name: str, default=None):
     """Resolve an attribute from ``cacheManager`` if loaded, allowing test monkeypatching."""
-    mod = sys.modules.get("cacheManager")
+    mod = sys.modules.get("cacheManager") or _cm
     if mod is not None and hasattr(mod, name):
         return getattr(mod, name)
     return default

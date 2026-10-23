@@ -3015,6 +3015,10 @@ class Cache365PriceManager(Cache24PriceManager):
 Cache365Price = Cache365PriceManager
 
 
+if __name__ == "__main__":
+    import sys as _sys
+    _sys.modules.setdefault("cacheManager", _sys.modules[__name__])
+
 import cachetrend as _cache_trend
 
 CacheLongTrendManager = _cache_trend.CacheLongTrendManager
