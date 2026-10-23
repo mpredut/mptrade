@@ -327,6 +327,12 @@ class AutonomousIntentGateway:
         target_qty = effective_eur / price
 
         # Preflight Guard Vetting
+        # Autonomous BUY intents represent high-conviction tactical entries/re-entries already vetted against
+        # 24h multi-horizon prices, slopes, and Kalman velocity, so they bypass the static historical SELL
+        # reference anchor (math_reference / GF1) while keeping all portfolio weight (GO1), cooldown,
+        # internal (GI1), microstructure (GI2), high-stake (GI3), and geopolitical (GI4) guards enforced.
+        # SELL intents keep math_reference enforced so autonomous exits never sell below buy reference + margin.
+        bypass_guards = {"math_reference"} if decision == "BUY" else None
         guard_allowed = True
         guard_reason = "Preflight checks passed"
         regime_context = None
@@ -345,6 +351,7 @@ class AutonomousIntentGateway:
             guard_allowed = order_guard.profit_guard(
                 inst._provider, inst.symbol, decision, price, profit_margin,
                 window_ref=window_ref, regime_context=regime_context, qty=target_qty,
+                bypass_guards=bypass_guards,
             )
             if not guard_allowed:
                 guard_reason = f"Profit guard vetoed {decision} {inst.symbol} @ {price}"
@@ -428,6 +435,7 @@ class AutonomousIntentGateway:
                 intent_id=intent_id,
                 client_order_id=intent_cid,
                 regime_context=regime_context,
+                bypass_guards=bypass_guards,
             )
             if order_res:
                 from providers.base import extract_order_id

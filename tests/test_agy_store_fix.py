@@ -127,3 +127,48 @@ def test_orphan_summary_row_without_db_file_does_not_trigger_new_sync(store):
     assert asf.pending_ui_sync() == []
     assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_NOTHING
 
+
+def test_stale_running_status_does_not_deadlock_ui_sync_while_fresh_running_blocks(store, tmp_path):
+    import json
+
+    cli, d1, d2 = store
+    conn = sqlite3.connect(asf.DB)
+    conn.execute("DROP TABLE conversation_summaries")
+    conn.execute(
+        "CREATE TABLE conversation_summaries ("
+        "conversation_id text primary key, title text, source text, status text, "
+        "not_fully_idle integer, raw_summary blob)"
+    )
+    conn.execute(
+        "INSERT INTO conversation_summaries VALUES ('stale-run', 'ntfy-guard: old', '', 'CASCADE_RUN_STATUS_RUNNING', 1, ?)",
+        (b"\x0a\x01t",),
+    )
+    conn.execute(
+        "INSERT INTO conversation_summaries VALUES ('new-topic', 'ntfy-macro: old', '', 'CASCADE_RUN_STATUS_IDLE', 0, ?)",
+        (b"\x0a\x01t",),
+    )
+    conn.commit()
+    conn.close()
+
+    (d1 / "stale-run.db").write_text("x")
+    (d1 / "new-topic.db").write_text("y")
+    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids(["stale-run"]))
+
+    # Freshly modified (<300s) RUNNING conversation blocks ui-sync
+    assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_BUSY
+
+    # Once both files are older than 900s, a stale RUNNING status from a crashed session must not deadlock ui-sync
+    _age_store(d1, 1200)
+    assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_READY
+
+    # And repair_summaries restores canonical topic titles from TOPIC_REGISTRY over stale ntfy-* titles
+    (tmp_path / "llm_topic_threads.json").write_text(
+        json.dumps({"macro_sentiment": {"conversation_id": "new-topic", "title": "🧭 [auto_macro_sentiment] Canonical"}})
+    )
+    asf.repair_summaries({"stale-run": 100, "new-topic": 100})
+    conn = sqlite3.connect(asf.DB)
+    rows = dict(conn.execute("SELECT conversation_id, title FROM conversation_summaries").fetchall())
+    conn.close()
+    assert rows["new-topic"] == "🧭 [auto_macro_sentiment] Canonical"
+
+

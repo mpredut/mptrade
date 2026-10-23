@@ -331,6 +331,8 @@ def test_process_intent_enforce_passes_intent_and_client_order_id(temp_workspace
     assert mock_inst.place.call_args.kwargs["force"] is True
     assert mock_inst.place.call_args.kwargs["intent_id"] == "intent_unique_12345"
     assert mock_inst.place.call_args.kwargs["client_order_id"] == "AI_intent_unique_12345"
+    assert mock_inst.place.call_args.kwargs["bypass_guards"] == {"math_reference"}
+
 
 
 

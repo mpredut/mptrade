@@ -232,16 +232,17 @@ class TestMirrorTopicThreadToUi:
         ).fetchone()[0]
         assert bot_steps == 6
 
-        # Hybrid Markdown report + trailing JSON block condenses cleanly
+        # Hybrid Markdown report + trailing JSON block condenses cleanly and keeps trade=... before long summary
+        long_summary = "TAO si BTC in consolidare " + ("x" * 240)
         hybrid_reply = (
-            "### Raport TAO & BTC\n"
+            "### Raport TAO & BTC {formula}\n"
             "- **TAOUSDC:** `$260.10` (`BULL +1`)\n"
             "```text\nsample log line\n```\n"
             "```json\n"
-            '{"summary": "TAO si BTC in consolidare", "market_trading_decision": {"decision": "HOLD", "symbol": "TAOUSDC", "confidence": 0.88}}\n'
+            f'{{"summary": "{long_summary}", "market_trading_decision": {{"decision": "HOLD", "symbol": "TAOUSDC", "confidence": 0.88}}}}\n'
             "```"
         )
         condensed = condense_decision(hybrid_reply)
-        assert "summary=TAO si BTC in consolidare" in condensed
-        assert "trade=HOLD:TAOUSDC@0.88" in condensed
+        assert condensed.startswith("trade=HOLD:TAOUSDC@0.88; summary=TAO si BTC in consolidare")
+
 

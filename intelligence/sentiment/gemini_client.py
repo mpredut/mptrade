@@ -178,8 +178,8 @@ class GeminiClient:
                 else:
                     logger.warning(
                         "agy CLI exited with code %s: %s",
-                        proc.returncode,
-                        proc.stderr.strip()[:200],
+                        proc.returncode if proc is not None else "timeout",
+                        (proc.stderr or "").strip()[:200] if proc is not None else "",
                     )
             except subprocess.TimeoutExpired:
                 logger.warning("Gemini query timed out after %s seconds", timeout_sec)
@@ -252,13 +252,19 @@ class GeminiClient:
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError:
-            start = cleaned.find("{")
-            end = cleaned.rfind("}")
-            if start != -1 and end != -1 and end > start:
+            decoder = json.JSONDecoder()
+            pos = len(cleaned)
+            while True:
+                idx = cleaned.rfind("{", 0, pos)
+                if idx < 0:
+                    break
                 try:
-                    return json.loads(cleaned[start : end + 1])
+                    obj, _ = decoder.raw_decode(cleaned[idx:])
+                    if isinstance(obj, dict):
+                        return obj
                 except json.JSONDecodeError:
                     pass
+                pos = idx
             logger.warning("Failed to decode JSON from Gemini output (raw text: %s)", raw_text[:200])
             return None
 

@@ -16,7 +16,12 @@ from typing import Dict, NamedTuple, Optional, Set
 
 from botcore import required_int_env
 from orchestratorOS.agy.paths import expand_config_path, resolve_bot_cli_base
-from orchestratorOS.agy.summary_store import get_thread_step_count, write_annotation_title
+from orchestratorOS.agy.summary_store import (
+    get_thread_step_count,
+    read_summary_row,
+    upsert_ui_visible_summary,
+    write_annotation_title,
+)
 
 logger = logging.getLogger("orchestratorOS.agy.topics")
 
@@ -138,8 +143,33 @@ def prepare_topic_session(
     return TopicSession(None, "\n".join(lines) + "\n\n", False)
 
 
-_SUMMARY_KEYS = ("decision", "threat_level", "market_bias", "risk_level", "recommended_action",
-                 "recommended_brake", "suggested_scale", "confidence", "summary", "reason")
+_SHORT_SUMMARY_KEYS = (
+    "decision",
+    "threat_level",
+    "market_bias",
+    "risk_level",
+    "recommended_action",
+    "recommended_brake",
+    "suggested_scale",
+    "confidence",
+)
+_PROSE_SUMMARY_KEYS = ("summary", "reason")
+
+
+def _extract_last_json_dict(text: str) -> Optional[dict]:
+    decoder = json.JSONDecoder()
+    pos = len(text)
+    while True:
+        idx = text.rfind("{", 0, pos)
+        if idx < 0:
+            return None
+        try:
+            obj, _ = decoder.raw_decode(text[idx:])
+            if isinstance(obj, dict):
+                return obj
+        except ValueError:
+            pass
+        pos = idx
 
 
 def condense_decision(response_text: str, max_len: int = 220) -> str:
@@ -158,16 +188,13 @@ def condense_decision(response_text: str, max_len: int = 220) -> str:
     try:
         parsed = json.loads(condensed)
     except ValueError:
-        start, end = condensed.find("{"), condensed.rfind("}")
-        try:
-            parsed = json.loads(condensed[start : end + 1]) if 0 <= start < end else None
-        except ValueError:
-            parsed = None
+        parsed = _extract_last_json_dict(condensed)
     if isinstance(parsed, dict):
-        parts = [f"{k}={parsed[k]}" for k in _SUMMARY_KEYS if parsed.get(k) not in (None, "")]
+        parts = [f"{k}={parsed[k]}" for k in _SHORT_SUMMARY_KEYS if parsed.get(k) not in (None, "")]
         mtd = parsed.get("market_trading_decision")
         if isinstance(mtd, dict):
             parts.append(f"trade={mtd.get('decision', 'HOLD')}:{mtd.get('symbol', '')}@{mtd.get('confidence', 0)}")
+        parts.extend(f"{k}={parsed[k]}" for k in _PROSE_SUMMARY_KEYS if parsed.get(k) not in (None, ""))
         if parts:
             condensed = "; ".join(parts)
     return condensed if len(condensed) <= max_len else condensed[: max_len - 3] + "..."
@@ -223,7 +250,11 @@ def record_topic_turn(
     save_topic_registry(reg, registry_path)
     if active_cid:
         try:
-            write_annotation_title(base, active_cid, spec.title)
+            bot_row = read_summary_row(base, active_cid)
+            if bot_row is not None:
+                upsert_ui_visible_summary(base, bot_row, spec.title)
+            else:
+                write_annotation_title(base, active_cid, spec.title)
         except OSError:
             pass
         mirror_topic_thread_to_ui(active_cid, spec.title, bot_cli_base=base)

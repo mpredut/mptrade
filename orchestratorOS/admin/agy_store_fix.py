@@ -303,13 +303,14 @@ def mode_pre(force: bool = False) -> int:
 def repair_summaries(mt: dict) -> int:
     if not os.path.exists(DB):
         return 0
+    topic_titles = topic_canonical_titles()
     con = sqlite3.connect(DB, timeout=15)
     rows = con.execute("SELECT conversation_id, title, raw_summary FROM conversation_summaries").fetchall()
     raws, fixed, orphans = {}, 0, []
     for cid, title, raw in rows:
         raw = bytes(raw or b"")
         if cid in mt:
-            ttl = (title or "").strip() or raw_title(raw) or pbtxt_title(cid)
+            ttl = topic_titles.get(cid) or pbtxt_title(cid) or (title or "").strip() or raw_title(raw)
             new = fix_summary(raw, ttl)
             con.execute(
                 "UPDATE conversation_summaries SET title=?, source='', status='CASCADE_RUN_STATUS_IDLE', "
@@ -508,6 +509,24 @@ def mirrored_topic_cids() -> set[str]:
     return {str(e["conversation_id"]) for e in data.values() if isinstance(e, dict) and e.get("conversation_id")}
 
 
+def topic_canonical_titles() -> dict[str, str]:
+    """Canonical permanent titles for topic threads from cachedb/llm_topic_threads.json."""
+    if not os.path.exists(TOPIC_REGISTRY):
+        return {}
+    try:
+        with open(TOPIC_REGISTRY, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        str(e["conversation_id"]): str(e["title"]).strip()
+        for e in data.values()
+        if isinstance(e, dict) and e.get("conversation_id") and str(e.get("title") or "").strip()
+    }
+
+
 def last_store_activity() -> float:
     """Newest mtime of interactive conversation content, active WAL writes, or brain artifacts."""
     ignored = mirrored_topic_cids()
@@ -516,13 +535,25 @@ def last_store_activity() -> float:
         try:
             con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5)
             try:
-                running = con.execute(
-                    "SELECT 1 FROM conversation_summaries WHERE status='CASCADE_RUN_STATUS_RUNNING' LIMIT 1"
-                ).fetchone()
-                if running:
-                    return time.time()
+                running_cids = [
+                    r[0]
+                    for r in con.execute(
+                        "SELECT conversation_id FROM conversation_summaries WHERE status='CASCADE_RUN_STATUS_RUNNING'"
+                    )
+                    if r and r[0]
+                ]
             finally:
                 con.close()
+            now = time.time()
+            for rcid in running_cids:
+                for d in (D1, D2):
+                    for ext in (".db", ".db-wal"):
+                        p = os.path.join(d, f"{rcid}{ext}")
+                        try:
+                            if os.path.exists(p) and (now - os.stat(p).st_mtime) < 300:
+                                return now
+                        except OSError:
+                            pass
         except sqlite3.Error:
             pass
     if os.path.isdir(D1):

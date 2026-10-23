@@ -91,7 +91,7 @@ def write_annotation_title(cli_base: str, cid: str, title: str) -> None:
 
 def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
     """Insert/replace a summary row with the CLI source cleared and ``title`` applied (column + proto)."""
-    row = dict(row, title=title, source="")
+    row = dict(row, title=title, source="", status="CASCADE_RUN_STATUS_IDLE", not_fully_idle=0)
     if row.get("raw_summary"):
         row["raw_summary"] = summary_ui_visible(row["raw_summary"], title)
     conn = sqlite3.connect(summaries_db(cli_base))
