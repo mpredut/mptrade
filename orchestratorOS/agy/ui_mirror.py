@@ -113,7 +113,7 @@ def sync_topic_thread_from_ui(
             merged = dict(ui_row)
             if bot_row and bot_row.get("project_id"):
                 merged["project_id"] = bot_row["project_id"]
-            if bot_row and str(bot_row.get("title") or "").strip():
+            if not str(merged.get("title") or "").strip() and bot_row and bot_row.get("title"):
                 merged["title"] = bot_row["title"]
             conn = sqlite3.connect(bot_sum_db)
             try:

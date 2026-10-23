@@ -13,7 +13,7 @@ import shutil
 import sqlite3
 from typing import Iterable, Optional, Set, Tuple
 
-from orchestratorOS.agy.protobuf import drop_entries, summary_ui_visible
+from orchestratorOS.agy.protobuf import drop_entries, replace_summary_entry, summary_ui_visible
 
 logger = logging.getLogger("orchestratorOS.agy.summary_store")
 
@@ -106,6 +106,17 @@ def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
         conn.commit()
     finally:
         conn.close()
+    raw_sum = row.get("raw_summary")
+    if raw_sum:
+        for name in SUMMARIES_PB_FILES:
+            pb_path = os.path.join(cli_base, name)
+            if os.path.exists(pb_path):
+                with open(pb_path, "rb") as f:
+                    buf, updated = replace_summary_entry(f.read(), row["conversation_id"], raw_sum)
+                if updated:
+                    with open(pb_path + ".tmp", "wb") as f:
+                        f.write(buf)
+                    os.replace(pb_path + ".tmp", pb_path)
     write_annotation_title(cli_base, row["conversation_id"], title)
 
 

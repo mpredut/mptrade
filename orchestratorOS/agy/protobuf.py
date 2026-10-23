@@ -114,3 +114,16 @@ def drop_entries(buf: bytes, cids: Set[str]) -> Tuple[bytes, int]:
             continue
         kept.append((tag, wire, v))
     return enc_fields(kept), removed
+
+
+def replace_summary_entry(buf: bytes, cid: str, raw_summary: bytes) -> Tuple[bytes, bool]:
+    """Update the stored TrajectorySummary of ``cid`` in place if present; never adds new conversation IDs."""
+    out, updated = [], False
+    for tag, wire, v in parse_fields(buf):
+        if tag == 1 and wire == 2 and entry_cid(v) == cid:
+            out.append((1, 2, enc_fields([(1, 2, cid.encode()), (2, 2, raw_summary)])))
+            updated = True
+        else:
+            out.append((tag, wire, v))
+    return (enc_fields(out), True) if updated else (buf, False)
+
