@@ -847,6 +847,18 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             mgr._reload_from_disk()
             self.assertEqual(mgr.symbol_preferred_source.get("BTCUSDT"), "CoinGecko")
 
+    def test_factory_remove_short_trend_cleans_singleton(self):
+        prev_st = cm._short_trend_instance
+        try:
+            cm._short_trend_instance = None
+            st_mgr = cm.CacheFactory.get("ShortTrend", symbols=["BTCUSDT"])
+            self.assertIsNotNone(cm._short_trend_instance)
+            self.assertIs(st_mgr, cm._short_trend_instance)
+            self.assertTrue(cm.CacheFactory.remove("ShortTrend"))
+            self.assertIsNone(cm._short_trend_instance)
+        finally:
+            cm._short_trend_instance = prev_st
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -3716,8 +3716,14 @@ class CacheFactory:
     @classmethod
     def remove(cls, name, timeout=5.0):
         """Remove a singleton cleanly after stopping all threads it owns."""
-        global _current_price_instance
+        global _current_price_instance, _short_trend_instance
         with cls._lock:
+            if name == "ShortTrend":
+                inst = _short_trend_instance
+                _short_trend_instance = None
+                if inst is not None and hasattr(inst, "shutdown"):
+                    return bool(inst.shutdown(timeout=timeout))
+                return True
             value = cls._instances.pop(name, None)
             cls._sync_started.discard(name)
             if value is None:
