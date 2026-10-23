@@ -3412,7 +3412,8 @@ def _default_price_tracking():
 
 def get_current_price_manager(ws_manager=None, symbols=None, sync_ts=None,
                               start_sync=True,
-                              provider_names=None) -> CacheCurrentPriceManager:
+                              provider_names=None,
+                              read_only=None) -> CacheCurrentPriceManager:
     """Return or lazily create the CacheCurrentPriceManager singleton.
 
     ``sync_ts=None`` preserves the current interval and uses the configured default on
@@ -3429,8 +3430,8 @@ def get_current_price_manager(ws_manager=None, symbols=None, sync_ts=None,
         and (
             not start_sync
             or (
-                inst.thread is not None
-                and inst.thread.is_alive()
+                (thread := inst.thread) is not None
+                and thread.is_alive()
                 and not inst.read_only
             )
         )
@@ -3460,7 +3461,7 @@ def get_current_price_manager(ws_manager=None, symbols=None, sync_ts=None,
             ws_manager  = ws_manager,
             provider_names = provider_names,
             api_client  = api,
-            read_only   = not start_sync,
+            read_only   = (not start_sync) if read_only is None else bool(read_only),
         )
         if start_sync:
             instance.periodic_sync(save_state=False)
@@ -4558,6 +4559,7 @@ class CacheFactory:
                         sync_ts=current_price_sync_ts,
                         start_sync=False,
                         provider_names=provider_names,
+                        read_only=not start_sync,
                     )
                     sync_ts = instance.sync_ts
                 elif name in ("SparsePrice", "24Price", "365Price"):
@@ -4623,6 +4625,8 @@ class CacheFactory:
                     if id(manager) not in seen_ids:
                         seen_ids.add(id(manager))
                         managers.append(manager)
+            cls._instances = {}
+            cls._sync_started = set()
             results = [manager.shutdown(timeout=timeout) for manager in managers
                        if hasattr(manager, "shutdown")]
             if (
@@ -4630,8 +4634,6 @@ class CacheFactory:
                 and getattr(current_price, "thread", None) is None
             ):
                 _current_price_instance = None
-            cls._instances = {}
-            cls._sync_started = set()
             return all(results) if results else True
 
     @classmethod
