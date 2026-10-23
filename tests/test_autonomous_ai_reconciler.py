@@ -82,11 +82,14 @@ def test_harvest_sensors_telemetry(temp_env):
 def test_harvest_log_anomalies(temp_env):
     workspace, _, logs_dir = temp_env
     sample_log = os.path.join(logs_dir, "rtrade_test.log")
+    now = time.time()
+    stamp = lambda ago: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - ago))  # noqa: E731
     with open(sample_log, "w", encoding="utf-8") as f:
-        f.write("2026-10-07 12:00:00 [INFO] Bot started\n")
-        f.write("2026-10-07 12:05:00 [ERROR] Connection timeout to Binance\n")
-        f.write("2026-10-07 12:10:00 [TAOUSDC] BUY BLOCKED (fail-closed): guard vetoed\n")
-        f.write("2026-10-07 12:15:00 [HIGH-STAKE GUARD] vetoed: funding is elevated\n")
+        f.write(f"{stamp(7200)} [ERROR] Stale DNS failure from two hours ago\n")
+        f.write(f"{stamp(1500)} [INFO] Bot started\n")
+        f.write(f"{stamp(1200)} [ERROR] Connection timeout to Binance\n")
+        f.write(f"{stamp(900)} [TAOUSDC] BUY BLOCKED (fail-closed): guard vetoed\n")
+        f.write(f"{stamp(600)} [HIGH-STAKE GUARD] vetoed: funding is elevated\n")
 
     reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"])
     summary = reconciler.harvest_log_anomalies(lookback_hours=1.0)
@@ -96,6 +99,46 @@ def test_harvest_log_anomalies(temp_env):
     assert summary.warning_count == 1
     assert len(summary.critical_events) >= 1
     assert any("BUY BLOCKED" in evt for evt in summary.critical_events)
+    assert not any("Stale DNS" in evt for evt in summary.critical_events)
+
+
+def test_recent_log_lines_handles_clock_only_stamps_and_midnight_wrap():
+    from datetime import datetime
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import recent_log_lines
+
+    mtime = datetime(2026, 10, 23, 0, 10, 0).timestamp()
+    lines = [
+        "14:54:17 Error: APIError(code=-1021): recvWindow\n",   # yesterday 14:54 -> outside 1h window
+        "23:50:00 [ERROR] just before midnight\n",
+        "Traceback (most recent call last):\n",                 # inherits the next later stamp
+        "00:05:00 ERROR after midnight\n",
+    ]
+    picked = recent_log_lines(lines, mtime, mtime - 3600)
+    assert picked == lines[1:]
+
+
+def test_shadow_supervisor_forces_gateway_shadow(temp_env):
+    workspace, _, _ = temp_env
+    gw_dir = os.path.join(workspace, "orchestratorTrade")
+    os.makedirs(gw_dir)
+    open(os.path.join(gw_dir, "autonomous_intent_gateway.py"), "w").close()
+    for mode, expect_shadow in (("shadow", True), ("enforce", False)):
+        reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"], mode=mode)
+        with patch("subprocess.run") as run:
+            reconciler.trigger_intent_gateway()
+        cmd = run.call_args[0][0]
+        assert ("--mode" in cmd and cmd[cmd.index("--mode") + 1] == "shadow") is expect_shadow
+
+
+def test_code_remediation_can_be_disabled_in_enforce(temp_env):
+    workspace, _, _ = temp_env
+    reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"], mode="enforce")
+    plan = {"venue_actions": [], "code_remediation": {
+        "has_fix": True, "target_file": "x.py", "search_block": "a", "replace_block": "b"}}
+    with patch.object(reconciler, "_apply_code_patch_safely") as patcher:
+        executed, tests_passed = reconciler.apply_reconciliation(plan, allow_code_remediation=False)
+    patcher.assert_not_called()
+    assert executed is False and tests_passed is None
 
 
 def test_synthesize_and_diagnose_mocked(temp_env):
@@ -245,6 +288,13 @@ def test_full_run_cycle_and_artifacts(temp_env):
         hb = json.load(f)
     assert hb["status"] == "alive"
     assert hb["mode"] == "shadow"
+
+    # A tactical topic writes its own artifacts and leaves the nightly report untouched.
+    nightly_mtime = os.path.getmtime(state_file)
+    reconciler.run_cycle(force=True, topic_key="prod_tactical_monitor")
+    assert os.path.exists(os.path.join(cache_dir, "prod_tactical_monitor_eval.json"))
+    assert os.path.exists(os.path.join(cache_dir, "prod_tactical_monitor.heartbeat"))
+    assert os.path.getmtime(state_file) == nightly_mtime
 
 
 def test_harvest_prices_and_trends(temp_env):

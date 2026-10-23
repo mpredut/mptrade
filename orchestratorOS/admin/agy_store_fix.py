@@ -16,6 +16,11 @@ Modes (run by the systemd drop-in of antigravity-cli-daemon.service):
          summary rows (source cleared, title kept, mtimes normalised, fileModTimes refreshed).
   post   daemon started: wait for its startup scan to finish, then hard-link the files back for content loading.
   check  print a status summary (read-only).
+  ui-sync-check --idle-sec N
+         read-only: exit 0 when the store diverges from the daemon's in-memory list (new/removed/rewritten
+         conversations, e.g. mirrored autonomous topic threads) AND no conversation activity for N seconds,
+         i.e. an idle restart is due (driven by `manage_agy.sh ui-sync`). 10=nothing pending, 11=busy,
+         12=same divergence survived the previous restart (no restart loop).
 
 Safety: a file is never deleted unless the identical inode/content already exists in the visible dir; anything that
 diverges is moved into ~/agy_store_fix_backups/<timestamp>/ instead of being overwritten.
@@ -24,7 +29,9 @@ from __future__ import annotations
 
 import fcntl
 import glob
+import hashlib
 import io
+import json
 import logging
 import os
 import re
@@ -34,10 +41,16 @@ import subprocess
 import sys
 import time
 
+def visible_conversations_dir(cli_base: str) -> str:
+    """SSOT for the daemon's visible conversations dir that sits next to a CLI store (agy 1.4.0 watchDirs layout)."""
+    return os.path.join(os.path.dirname(os.path.abspath(cli_base)), "antigravity", "conversations")
+
+
 HOME = os.environ.get("AGY_FIX_HOME") or os.path.expanduser("~")
 CLI = os.path.join(HOME, ".gemini", "antigravity-cli")
 D1 = os.path.join(CLI, "conversations")                       # content dir (source forced to 17 by the daemon)
-D2 = os.path.join(HOME, ".gemini", "antigravity", "conversations")  # visible dir (source stays 0)
+D2 = visible_conversations_dir(CLI)                           # visible dir (source stays 0)
+UI_SYNC_STATE = os.path.join(HOME, ".agy_ui_sync_state.json")
 ANN = os.path.join(CLI, "annotations")
 DB = os.path.join(CLI, "conversation_summaries.db")
 PB = os.path.join(CLI, "agyhub_summaries_proto.pb")
@@ -480,6 +493,110 @@ def mode_check() -> int:
     return 0
 
 
+# ---------------------------------------------------------------- ui-sync-check
+# The daemon keeps its conversation list in memory, discovers .db files only during its startup scan and
+# persists that in-memory list to agyhub_summaries_proto.pb. Anything written into the store from outside
+# (mirrored autonomous topic threads, rows removed on rotation) becomes visible only after a daemon restart.
+# ui-sync-check decides, read-only, whether such an idle-gated restart is due.
+UI_SYNC_READY, UI_SYNC_NOTHING, UI_SYNC_BUSY, UI_SYNC_STUCK = 0, 10, 11, 12
+
+
+def daemon_known_cids() -> set[str]:
+    """Conversation IDs the running daemon holds in memory (as persisted in agyhub_summaries_proto.pb)."""
+    with open(PB, "rb") as f:
+        buf = f.read()
+    out: set[str] = set()
+    for tag, wire, v in parse_fields(buf):
+        if tag == 1 and wire == 2:
+            for t, w, x in parse_fields(v):
+                if t == 1 and w == 2:
+                    out.add(x.decode("utf-8", "replace"))
+    return out
+
+
+def summary_row_cids() -> set[str]:
+    c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=15)
+    try:
+        return {r[0] for r in c.execute("SELECT conversation_id FROM conversation_summaries")}
+    finally:
+        c.close()
+
+
+def pending_ui_sync() -> list[str]:
+    """Divergences between the on-disk store and the daemon's in-memory list, as stable fingerprint entries.
+
+    new:<cid>       summary row exists on disk, daemon does not know the conversation yet
+    gone:<cid>      daemon still lists a conversation whose summary row was removed (deleted/rotated)
+    content:<cid>   content file is not hard-linked into the visible dir (new or rewritten since startup)
+    """
+    rows = summary_row_cids()
+    known = daemon_known_cids()
+    entries = [f"new:{cid}" for cid in rows - known] + [f"gone:{cid}" for cid in known - rows]
+    if os.path.isdir(D1):
+        for name in os.listdir(D1):
+            cid = name[:-3]
+            if not name.endswith(".db") or cid not in rows:
+                continue
+            p1 = os.path.join(D1, name)
+            if not same_file(p1, os.path.join(D2, name)):
+                entries.append(f"content:{cid}:{os.stat(p1).st_ino}")
+    return sorted(entries)
+
+
+def last_store_activity() -> float:
+    """Newest mtime of conversation content (db/WAL) or brain artifacts; proxy for an active session."""
+    newest = 0.0
+    if os.path.isdir(D1):
+        for name in os.listdir(D1):
+            if name.endswith((".db", ".db-wal")):
+                try:
+                    newest = max(newest, os.stat(os.path.join(D1, name)).st_mtime)
+                except OSError:
+                    pass
+    brain = os.path.join(CLI, "brain")
+    for root, dirs, files in os.walk(brain):
+        if root.count(os.sep) - brain.count(os.sep) >= 3:
+            dirs[:] = []
+        for name in files:
+            try:
+                newest = max(newest, os.stat(os.path.join(root, name)).st_mtime)
+            except OSError:
+                pass
+    return newest
+
+
+def mode_ui_sync_check(idle_sec: int) -> int:
+    if idle_sec <= 0:
+        raise ValueError(f"--idle-sec must be > 0, got {idle_sec}")
+    if not (os.path.exists(PB) and os.path.exists(DB)):
+        log.warning("ui-sync-check: summary store not initialised (%s / %s); skipping", PB, DB)
+        return UI_SYNC_NOTHING
+    entries = pending_ui_sync()
+    if not entries:
+        return UI_SYNC_NOTHING
+    idle_for = time.time() - last_store_activity()
+    if idle_for < idle_sec:
+        log.info("ui-sync-check: %d pending, store active %.0fs ago (< %ds); waiting", len(entries), idle_for, idle_sec)
+        return UI_SYNC_BUSY
+    fingerprint = hashlib.sha1("\n".join(entries).encode()).hexdigest()
+    state = {}
+    if os.path.exists(UI_SYNC_STATE):
+        try:
+            with open(UI_SYNC_STATE, encoding="utf-8") as f:
+                state = json.load(f)
+        except (OSError, ValueError):
+            state = {}
+    if state.get("fingerprint") == fingerprint:
+        log.warning("ui-sync-check: same %d pending entries persisted after the last restart; not restarting again: %s",
+                    len(entries), entries[:5])
+        return UI_SYNC_STUCK
+    with open(UI_SYNC_STATE + ".tmp", "w", encoding="utf-8") as f:
+        json.dump({"fingerprint": fingerprint, "ts": time.time(), "entries": entries}, f, indent=1)
+    os.replace(UI_SYNC_STATE + ".tmp", UI_SYNC_STATE)
+    log.info("ui-sync-check: restart due (%d pending, idle %.0fs): %s", len(entries), idle_for, entries[:10])
+    return UI_SYNC_READY
+
+
 def main(argv) -> int:
     mode = argv[1] if len(argv) > 1 else "check"
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
@@ -497,6 +614,10 @@ def main(argv) -> int:
             return mode_post()
         if mode == "check":
             return mode_check()
+        if mode == "ui-sync-check":
+            if "--idle-sec" not in argv or argv.index("--idle-sec") + 1 >= len(argv):
+                raise ValueError("ui-sync-check requires --idle-sec <seconds>")
+            return mode_ui_sync_check(int(argv[argv.index("--idle-sec") + 1]))
         print(__doc__)
         return 1
     except Exception:

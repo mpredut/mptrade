@@ -44,6 +44,50 @@ DEFAULT_STATE_FILE = "cachedb/supervisor_nightly_eval.json"
 DEFAULT_HEARTBEAT_FILE = "cachedb/supervisor_nightly.heartbeat"
 DEFAULT_AUTONOMOUS_PROJECT_ID = resolve_project_uuid(required_env("AGY_PROJECT"))
 
+_FULL_TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2}):(\d{2})")
+_GLOG_TS_RE = re.compile(r"^[IWEF](\d{2})(\d{2}) (\d{2}):(\d{2}):(\d{2})")
+_CLOCK_TS_RE = re.compile(r"^\[?(\d{2}):(\d{2}):(\d{2})\b")
+
+
+def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> List[str]:
+    """Return the tail of ``lines`` whose own timestamps are >= cutoff_ts (chronological order).
+
+    Bot logs mix full dates, glog headers and clock-only stamps ("14:54:17 ..."). Clock-only stamps are
+    anchored to the file's mtime day and walked backwards, stepping one day back on a midnight wrap.
+    Lines without a stamp (tracebacks) inherit the nearest later stamp; a file mtime inside the window
+    alone is not enough to pull hours-old errors into a short lookback.
+    """
+    from datetime import datetime, timedelta
+
+    ref = datetime.fromtimestamp(file_mtime)
+    day = ref.date()
+    prev_secs = ref.hour * 3600 + ref.minute * 60 + ref.second + 60
+    picked: List[str] = []
+    for line in reversed(lines):
+        ts: Optional[float] = None
+        m = _FULL_TS_RE.search(line)
+        if m:
+            dt = datetime.strptime(f"{m.group(1)} {m.group(2)}:{m.group(3)}:{m.group(4)}", "%Y-%m-%d %H:%M:%S")
+            day, prev_secs, ts = dt.date(), dt.hour * 3600 + dt.minute * 60 + dt.second, dt.timestamp()
+        else:
+            g = _GLOG_TS_RE.match(line)
+            c = None if g else _CLOCK_TS_RE.match(line)
+            if g:
+                dt = datetime(ref.year, int(g.group(1)), int(g.group(2)),
+                              int(g.group(3)), int(g.group(4)), int(g.group(5)))
+                day, prev_secs, ts = dt.date(), dt.hour * 3600 + dt.minute * 60 + dt.second, dt.timestamp()
+            elif c:
+                secs = int(c.group(1)) * 3600 + int(c.group(2)) * 60 + int(c.group(3))
+                if secs > prev_secs + 300:
+                    day -= timedelta(days=1)
+                prev_secs = secs
+                ts = (datetime.combine(day, datetime.min.time()) + timedelta(seconds=secs)).timestamp()
+        if ts is not None and ts < cutoff_ts:
+            break
+        picked.append(line)
+    picked.reverse()
+    return picked
+
 
 @dataclass
 class TelemetrySensorSnapshot:
@@ -330,8 +374,8 @@ class AutonomousAIReconciler:
                             continue
                         scanned_count += 1
                         with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                            lines = f.readlines()
-                            for line in lines[-1000:]:
+                            lines = recent_log_lines(f.readlines()[-1000:], mtime, cutoff_ts)
+                            for line in lines:
                                 if err_pattern.search(line):
                                     error_count += 1
                                     cleaned = line.strip()
@@ -487,11 +531,13 @@ class AutonomousAIReconciler:
 
         return resp
 
-    def apply_reconciliation(self, plan: Dict[str, Any]) -> Tuple[bool, Optional[bool]]:
+    def apply_reconciliation(
+        self, plan: Dict[str, Any], *, allow_code_remediation: bool = True
+    ) -> Tuple[bool, Optional[bool]]:
         """Applies or simulates venue actions and code remediation based on operational mode."""
         is_enforce = (self.mode == "enforce")
         venue_actions = plan.get("venue_actions", [])
-        code_fix = plan.get("code_remediation", {})
+        code_fix = plan.get("code_remediation", {}) if allow_code_remediation else {}
 
         for act in venue_actions:
             action_type = act.get("action", "NONE")
@@ -665,9 +711,14 @@ class AutonomousAIReconciler:
         if not py_exec or not os.path.exists(py_exec):
             py_exec = "python3"
         try:
-            logger.info("Invoking Autonomous Intent Gateway out-of-band: %s", gateway_path)
+            # The supervisor mode bounds every side effect it triggers: a shadow audit must never let an
+            # enforce-configured gateway place live orders.
+            cmd = [py_exec, gateway_path, "--process-pending"]
+            if self.mode != "enforce":
+                cmd += ["--mode", "shadow"]
+            logger.info("Invoking Autonomous Intent Gateway out-of-band: %s", " ".join(cmd[1:]))
             subprocess.run(
-                [py_exec, gateway_path, "--process-pending"],
+                cmd,
                 cwd=self.workspace_dir,
                 capture_output=True,
                 text=True,
@@ -782,10 +833,14 @@ class AutonomousAIReconciler:
         focus_symbols: Optional[List[str]] = None,
         topic_key: str = "supervisor_nightly",
         thread_title: Optional[str] = None,
+        allow_code_remediation: bool = True,
     ) -> SupervisorAuditReport:
         """Executes the complete decoupled audit cycle."""
         logger.info("Starting Autonomous AI Supervisor audit cycle (mode=%s, topic=%s)...", self.mode, topic_key)
         now = time.time()
+        # Per-topic artifacts so a tactical run never overwrites the nightly report (and vice versa).
+        self.state_file = os.path.join(self.cache_dir, f"{topic_key}_eval.json")
+        self.heartbeat_file = os.path.join(self.cache_dir, f"{topic_key}.heartbeat")
 
         # Step 1: Ingest passive sensors telemetry from cachedb/
         sensors = self.harvest_sensors_telemetry()
@@ -803,7 +858,7 @@ class AutonomousAIReconciler:
         )
 
         # Step 4: Apply or simulate reconciliation
-        executed, tests_passed = self.apply_reconciliation(plan)
+        executed, tests_passed = self.apply_reconciliation(plan, allow_code_remediation=allow_code_remediation)
 
         # Step 5: Emit autonomous trading intent if high-conviction BUY/SELL
         market_decision = plan.get("market_trading_decision", {})
@@ -866,6 +921,11 @@ def main() -> None:
         default=None,
         help="Custom thread title override",
     )
+    parser.add_argument(
+        "--no-code-remediation",
+        action="store_true",
+        help="Never apply self-healing code patches in this run (frequent tactical checks)",
+    )
     args = parser.parse_args()
 
     focus_list = [s.strip().upper() for s in args.focus_symbols.split(",") if s.strip()] if args.focus_symbols else None
@@ -875,6 +935,7 @@ def main() -> None:
         focus_symbols=focus_list,
         topic_key=args.topic_key,
         thread_title=args.title,
+        allow_code_remediation=not args.no_code_remediation,
     )
     print(f"[{report.mode.upper()}] Audit completed ({args.topic_key}): {report.summary}")
 

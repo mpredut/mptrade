@@ -5,6 +5,7 @@
 #   watchdog     Verify daemon is active & tunnel connected; revive/restart if down or stuck
 #   cron-update  Check for updates; restart daemon only if a new version was applied
 #   restart      Restart daemon registered as 'prod-vm'
+#   ui-sync      Idle-gated restart that surfaces externally mirrored threads in the Web UI (cron */5)
 #   status       Display daemon status, tunnel health, and binary version
 #   stop         Stop the daemon
 set -euo pipefail
@@ -180,6 +181,31 @@ do_status() {
     fi
 }
 
+# Surface threads written into the UI store from outside (mirrored autonomous topic threads, rotations)
+# without manual intervention: the daemon only discovers conversations at startup, so restart it, but only
+# when agy_store_fix reports a divergence AND no conversation activity for AGY_UI_SYNC_IDLE_SEC.
+do_ui_sync() {
+    exec 200>"$LOCK_FILE"
+    flock -n 200 || exit 0
+    # shellcheck source=../lib/env_common.sh
+    source "$ROOT/orchestratorOS/lib/env_common.sh"
+    local idle_sec rc
+    idle_sec="$(env_get AGY_UI_SYNC_IDLE_SEC)"
+    if ! [[ "$idle_sec" =~ ^[0-9]+$ ]] || [ "$idle_sec" -le 0 ]; then
+        log "ERROR: AGY_UI_SYNC_IDLE_SEC missing or invalid in config.env ('$idle_sec')" >&2
+        exit 1
+    fi
+    is_active || exit 0   # down daemon is the watchdog's job
+    rc=0
+    /usr/bin/python3 "$SCRIPT_DIR/agy_store_fix.py" ui-sync-check --idle-sec "$idle_sec" >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+        0)  log "ui-sync: store diverged from daemon and idle >= ${idle_sec}s; restarting to surface threads."
+            do_restart ;;
+        10|11|12|3) ;;    # nothing pending / busy / already restarted for this divergence / store-fix running
+        *)  log "WARNING: ui-sync-check failed (rc=$rc); see ~/agy_store_fix.log" >&2 ;;
+    esac
+}
+
 CMD="${1:-update}"
 case "$CMD" in
     update|--update)
@@ -187,6 +213,9 @@ case "$CMD" in
         ;;
     cron-update|--cron|--cron-update)
         do_update "cron"
+        ;;
+    ui-sync|--ui-sync)
+        do_ui_sync
         ;;
     watchdog|--watchdog)
         shift 1 2>/dev/null || true
@@ -210,6 +239,7 @@ case "$CMD" in
         echo "  watchdog     Check if daemon is active & tunnel healthy; revive/restart if down or stuck"
         echo "  cron-update  Run update, restart daemon only if an update was applied"
         echo "  restart      Restart daemon registered as '${INSTANCE_NAME}'"
+        echo "  ui-sync      Restart daemon only if mirrored threads are pending and the store is idle"
         echo "  status       Show daemon status, tunnel health, and CLI version"
         echo "  stop         Stop daemon"
         ;;

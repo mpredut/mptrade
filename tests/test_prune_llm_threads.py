@@ -3,12 +3,23 @@ from datetime import datetime, timezone, timedelta
 import os
 import sqlite3
 
+import pytest
+
 from orchestratorOS.admin.prune_llm_threads import (
     ensure_proto_synced,
     is_automated_thread,
     prune_old_cli_threads,
     sync_thread_title,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_agy_stores(tmp_path, monkeypatch):
+    """Never let topic mirroring touch the real Web UI store or topic registry."""
+    ui_base = tmp_path / "ui_home" / ".gemini" / "antigravity-cli"
+    (ui_base / "conversations").mkdir(parents=True)
+    monkeypatch.setenv("AGY_UI_CLI_BASE", str(ui_base))
+    monkeypatch.setenv("LLM_TOPIC_REGISTRY_PATH", str(tmp_path / "llm_topic_threads.json"))
 
 
 
@@ -520,3 +531,62 @@ class TestPruneCliThreads:
         reg = load_topic_registry()
         assert reg["macro_sentiment"]["rotated_count"] == 1
         assert len(reg["macro_sentiment"]["rolling_history"]) == 1
+
+
+def _make_summary_db(path, rows):
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE conversation_summaries (conversation_id text primary key, title text, source text, "
+        "project_id text, step_count integer, raw_summary blob)"
+    )
+    for row in rows:
+        conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)", row)
+    conn.commit()
+    conn.close()
+
+
+def _make_conv_db(path, source=17):
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE trajectory_meta (trajectory_id text, cascade_id text, kind integer, source integer)")
+    conn.execute("INSERT INTO trajectory_meta VALUES ('t', 'c', 4, ?)", (source,))
+    conn.commit()
+    conn.close()
+
+
+class TestMirrorTopicThreadToUi:
+    def test_mirror_marks_ui_visible_and_drops_stale_visible_copy(self, tmp_path):
+        from orchestratorOS.admin.agy_store_fix import visible_conversations_dir
+        from orchestratorOS.admin.prune_llm_threads import (
+            _strip_proto_tag_20,
+            encode_varint,
+            mirror_topic_thread_to_ui,
+            resolve_ui_cli_base,
+        )
+
+        cid = "cid-mirror-1"
+        bot_base = tmp_path / "bot" / ".gemini" / "antigravity-cli"
+        (bot_base / "conversations").mkdir(parents=True)
+        _make_conv_db(str(bot_base / "conversations" / f"{cid}.db"))
+        title_b = b"t"
+        raw = b"\x0a" + encode_varint(len(title_b)) + title_b + b"\xa0\x01\x11"  # field 1 + field 20 = 17
+        _make_summary_db(str(bot_base / "conversation_summaries.db"),
+                         [(cid, "t", "CORTEX_TRAJECTORY_SOURCE_CLI", "proj", 2, raw)])
+
+        ui_base = resolve_ui_cli_base()
+        _make_summary_db(os.path.join(ui_base, "conversation_summaries.db"), [])
+        visible = visible_conversations_dir(ui_base)
+        os.makedirs(visible)
+        stale = os.path.join(visible, f"{cid}.db")
+        with open(stale, "w") as f:
+            f.write("old")
+
+        assert mirror_topic_thread_to_ui(cid, bot_cli_base=str(bot_base)) is True
+
+        dst = os.path.join(ui_base, "conversations", f"{cid}.db")
+        assert sqlite3.connect(dst).execute("SELECT source FROM trajectory_meta").fetchone()[0] == 1
+        assert not os.path.exists(stale)
+        row = sqlite3.connect(os.path.join(ui_base, "conversation_summaries.db")).execute(
+            "SELECT source, raw_summary FROM conversation_summaries WHERE conversation_id=?", (cid,)
+        ).fetchone()
+        assert row[0] == ""
+        assert row[1] == _strip_proto_tag_20(raw) == b"\x0a\x01t"

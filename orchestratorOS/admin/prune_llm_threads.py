@@ -866,21 +866,13 @@ def mirror_topic_thread_to_ui(
         except Exception:
             pass
 
-        # Also link into ~/.gemini/antigravity/conversations (D2) which is the directory monitored for visible conversations
-        try:
-            d2_dir = os.path.join(os.path.dirname(dst_base), "antigravity", "conversations")
-            os.makedirs(d2_dir, exist_ok=True)
-            d2_db = os.path.join(d2_dir, f"{cid}.db")
-            if os.path.exists(d2_db):
-                try:
-                    os.remove(d2_db)
-                except OSError:
-                    pass
-            shutil.copy2(dst_conv_db, d2_db)
-            os.remove(dst_conv_db)
-            os.link(d2_db, dst_conv_db)
-        except Exception as e:
-            logger.debug("Failed creating hard link in visible dir for %s: %s", cid, e)
+        # The visible-dir layout is owned by agy_store_fix (moved/linked on the next idle daemon restart via
+        # `manage_agy.sh ui-sync`). A previous mirror of this thread there is now stale: drop it so the rewritten
+        # content is picked up instead of being treated as a diverged copy.
+        from orchestratorOS.admin.agy_store_fix import visible_conversations_dir
+        stale_visible = os.path.join(visible_conversations_dir(dst_base), f"{cid}.db")
+        if os.path.exists(stale_visible) and not os.path.samefile(stale_visible, dst_conv_db):
+            os.remove(stale_visible)
 
         # 2. Copy annotations/<cid>.pbtxt if present
         src_annot = os.path.join(src_base, "annotations", f"{cid}.pbtxt")

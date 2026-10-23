@@ -1,0 +1,99 @@
+"""Unit tests for agy_store_fix ui-sync-check (idle-gated daemon restart decision)."""
+import os
+import sqlite3
+import time
+
+import pytest
+
+from orchestratorOS.admin import agy_store_fix as asf
+
+
+def _pb_with_cids(cids):
+    out = b""
+    for cid in cids:
+        entry = asf.enc_fields([(1, 2, cid.encode()), (2, 2, b"\x0a\x01t")])
+        out += asf.enc_fields([(1, 2, entry)])
+    return out
+
+
+@pytest.fixture
+def store(tmp_path, monkeypatch):
+    cli = tmp_path / ".gemini" / "antigravity-cli"
+    d1 = cli / "conversations"
+    d2 = tmp_path / ".gemini" / "antigravity" / "conversations"
+    d1.mkdir(parents=True)
+    d2.mkdir(parents=True)
+    monkeypatch.setattr(asf, "CLI", str(cli))
+    monkeypatch.setattr(asf, "D1", str(d1))
+    monkeypatch.setattr(asf, "D2", str(d2))
+    monkeypatch.setattr(asf, "DB", str(cli / "conversation_summaries.db"))
+    monkeypatch.setattr(asf, "PB", str(cli / "agyhub_summaries_proto.pb"))
+    monkeypatch.setattr(asf, "UI_SYNC_STATE", str(tmp_path / "ui_sync_state.json"))
+    conn = sqlite3.connect(asf.DB)
+    conn.execute("CREATE TABLE conversation_summaries (conversation_id text primary key)")
+    conn.commit()
+    conn.close()
+    return cli, d1, d2
+
+
+def _set_rows(cids):
+    conn = sqlite3.connect(asf.DB)
+    conn.execute("DELETE FROM conversation_summaries")
+    conn.executemany("INSERT INTO conversation_summaries VALUES (?)", [(c,) for c in cids])
+    conn.commit()
+    conn.close()
+
+
+def _age_store(d1, seconds):
+    old = time.time() - seconds
+    for name in os.listdir(d1):
+        os.utime(os.path.join(d1, name), (old, old))
+
+
+def test_visible_dir_is_sibling_of_cli_store():
+    assert asf.visible_conversations_dir("/h/.gemini/antigravity-cli") == "/h/.gemini/antigravity/conversations"
+
+
+def test_nothing_pending_when_store_matches_daemon(store):
+    cli, d1, d2 = store
+    (d2 / "a.db").write_text("x")
+    os.link(d2 / "a.db", d1 / "a.db")
+    _set_rows(["a"])
+    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids(["a"]))
+    assert asf.pending_ui_sync() == []
+    assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_NOTHING
+
+
+def test_new_gone_and_rewritten_content_are_pending(store):
+    cli, d1, d2 = store
+    (d2 / "kept.db").write_text("x")
+    os.link(d2 / "kept.db", d1 / "kept.db")
+    (d1 / "new.db").write_text("y")          # mirrored, daemon does not know it yet
+    (d1 / "rewritten.db").write_text("z")    # known, but content replaced (no longer linked)
+    (d2 / "rewritten.db").write_text("old")
+    _set_rows(["kept", "new", "rewritten"])
+    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids(["kept", "rewritten", "gone"]))
+    kinds = sorted(e.split(":")[0] + ":" + e.split(":")[1] for e in asf.pending_ui_sync())
+    assert kinds == ["content:new", "content:rewritten", "gone:gone", "new:new"]
+
+
+def test_restart_gated_by_idle_and_not_repeated_for_same_divergence(store):
+    cli, d1, _ = store
+    (d1 / "new.db").write_text("y")
+    _set_rows(["new"])
+    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids([]))
+
+    assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_BUSY      # just written -> active
+    _age_store(d1, 1000)
+    assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_READY     # idle -> restart due
+    assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_STUCK     # same divergence after restart -> no loop
+
+    (d1 / "other.db").write_text("w")                           # a new divergence re-arms the restart
+    _set_rows(["new", "other"])
+    _age_store(d1, 1000)
+    assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_READY
+
+
+def test_invalid_idle_fails_fast(store):
+    with pytest.raises(ValueError):
+        asf.mode_ui_sync_check(0)
