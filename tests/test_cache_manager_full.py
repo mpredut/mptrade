@@ -1373,6 +1373,24 @@ class TestCacheFactory(unittest.TestCase):
             periodic.assert_called_once_with(cm.ORDER_SYNC_INTERVAL_SEC, False)
             _reset()
 
+        with self.subTest("start_sync_false_never_queries_remote_when_cache_missing_or_empty"):
+            _reset()
+            empty_dir = tempfile.mkdtemp()
+            with patch.object(cm.u, "cache_path", side_effect=lambda f: os.path.join(empty_dir, f)), \
+                 patch.object(cm.CacheTradeManager, "query_remote_and_update_cache") as trade_remote, \
+                 patch.object(cm.CacheOrderManager, "query_remote_and_update_cache") as order_remote, \
+                 patch.object(cm.CacheCurrentPriceManager, "query_remote_and_update_cache") as price_remote:
+                trade_mgr = cm.CacheFactory.get("Trade", symbols=["BTC"], start_sync=False)
+                order_mgr = cm.CacheFactory.get("Order", symbols=["BTC"], start_sync=False)
+                price_mgr = cm.CacheFactory.get("CurrentPrice", symbols=["BTC"], start_sync=False)
+                self.assertTrue(trade_mgr.read_only)
+                self.assertTrue(order_mgr.read_only)
+                self.assertTrue(price_mgr.read_only)
+                trade_remote.assert_not_called()
+                order_remote.assert_not_called()
+                price_remote.assert_not_called()
+            _reset()
+
     def test_price_factories_return_per_symbol_managers_and_filenames(self):
         cur_mock = MagicMock()
         cur_mock.get_price.return_value = [int(time.time() * 1000), 50000.0]

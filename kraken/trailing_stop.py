@@ -177,8 +177,10 @@ class KrakenTrailing:
             import json
             with open(CACHE_TREND) as f:
                 snap = json.load(f).get(pair)
-            if snap:
-                return float(snap.get("gradient_recent", snap.get("slope_small", 0.0)) or 0.0)
+            if isinstance(snap, dict):
+                age = time.time() - float(snap["ts"])
+                if -5.0 <= age <= 15.0:
+                    return float(snap.get("gradient_recent", snap.get("slope_small", 0.0)) or 0.0)
         except Exception:
             pass
         return 0.0

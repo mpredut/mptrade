@@ -367,6 +367,19 @@ class TestPerCoinRebuy(Base):
             self.assertIn("rebuy", state["TAOUSDC"])
             self.assertEqual(self.po.orders, [])
 
+        with self.subTest(msg="trend_value_uses_get_fresh_snapshot_not_stale_get_snapshot"):
+            from unittest.mock import MagicMock, patch
+            ts = self.ts(FakeApi(100.0))
+            fake_mgr = MagicMock()
+            fake_mgr.get_fresh_snapshot.return_value = None
+            fake_mgr.get_snapshot.return_value = {"gradient_recent": -0.5}
+            with patch("cacheManager.get_short_trend_manager", return_value=fake_mgr):
+                self.assertEqual(ts._trend_value("TAOUSDC"), 0.0)
+                fake_mgr.get_fresh_snapshot.assert_called_once_with("TAOUSDC")
+                fake_mgr.get_snapshot.assert_not_called()
+                fake_mgr.get_fresh_snapshot.return_value = {"gradient_recent": -0.25}
+                self.assertEqual(ts._trend_value("TAOUSDC"), -0.25)
+
 
 class TestPerCoin(Base):
     def test_per_coin_configurations(self):

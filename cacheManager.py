@@ -249,7 +249,7 @@ class CacheManagerInterface(ABC):
     DEDUP_WINDOW = CM_DEDUP_WINDOW
 
     def __init__(self, sync_ts, symbols, filename, append_mode = True, api_client=api,
-                 append_persist=False):
+                 append_persist=False, read_only=False):
         self._live_instances.add(self)
         self.cls_name = self.__class__.__name__
 
@@ -265,6 +265,7 @@ class CacheManagerInterface(ABC):
         # JSONL persistence for append-only Trade and AssetValue caches writes only
         # new lines rather than rewriting the entire file.
         self.append_persist = append_persist
+        self.read_only = bool(read_only)
         self._persisted_counts = {}   # Number of items already persisted per symbol.
         self._persisted_data_version = ""
         self._persisted_stream_id = ""
@@ -372,7 +373,7 @@ class CacheManagerInterface(ABC):
         if self.append_persist:
             self._migrate_legacy_json_if_needed()
             self._load_jsonl()
-            if not self.cache:
+            if not self.cache and not self.read_only:
                 self.query_remote_and_update_cache()
                 self.save_state_to_file_if_enabled()
             return
@@ -399,12 +400,14 @@ class CacheManagerInterface(ABC):
                     
             except Exception as e:
                 print(f"[{self.cls_name}][Error] While reading the cache file {self.filename} : {e}")
-                self.query_remote_and_update_cache()
-                self.save_state_to_file_if_enabled()
+                if not self.read_only:
+                    self.query_remote_and_update_cache()
+                    self.save_state_to_file_if_enabled()
         else :
             print(f"[{self.cls_name}][Info] File is missing, may be is it first time run. Creating it ....")
-            self.query_remote_and_update_cache()
-            self.save_state_to_file_if_enabled()
+            if not self.read_only:
+                self.query_remote_and_update_cache()
+                self.save_state_to_file_if_enabled()
 
     def _load_order_state(self):
         """Load Order cache state strictly when durable data or metadata exists."""
@@ -412,6 +415,8 @@ class CacheManagerInterface(ABC):
         has_file = os.path.exists(self.filename)
         has_meta = os.path.exists(meta_path)
         if not has_file and not has_meta:
+            if self.read_only:
+                return
             print(f"[{self.cls_name}][Info] File is missing, may be is it first time run. Creating it ....")
             self.query_remote_and_update_cache()
             self.save_state_to_file_if_enabled()
@@ -2141,6 +2146,7 @@ class CacheManagerInterface(ABC):
 
     def periodic_sync(self, sync_ts=None, save_state=True):
         with self.lock:
+            self.read_only = False
             if sync_ts is not None:
                 self.sync_ts = sync_ts
 
@@ -2212,9 +2218,10 @@ class CacheManagerInterface(ABC):
 # ###### 
 
 class CacheTradeManager(CacheManagerInterface):
-    def __init__(self, sync_ts, symbols, filename, api_client=api):
+    def __init__(self, sync_ts, symbols, filename, api_client=api, read_only=False):
         super().__init__(sync_ts, symbols, filename, append_mode=True,
-                         api_client=api_client, append_persist=True)
+                         api_client=api_client, append_persist=True,
+                         read_only=read_only)
 
     @staticmethod
     def _is_valid_item(trade):
@@ -2362,11 +2369,12 @@ CacheTrade = CacheTradeManager
 
 
 class CacheOrderManager(CacheManagerInterface):
-    def __init__(self, sync_ts, symbols, filename, api_client=api):
+    def __init__(self, sync_ts, symbols, filename, api_client=api, read_only=False):
         # Orders are mutable: an execution report updates the same order from partial
         # to filled. Keep an atomic snapshot so an in-place update is persisted.
         super().__init__(sync_ts, symbols, filename, append_mode=True,
-                         api_client=api_client, append_persist=False)
+                         api_client=api_client, append_persist=False,
+                         read_only=read_only)
         
     def _is_valid_item(self, trade):
         if not isinstance(trade, dict):
@@ -2567,10 +2575,11 @@ class CacheSparsePriceManager(CacheManagerInterface):
     mutable retention policy. priceAnalysis is its only consumer.
     """
 
-    def __init__(self, sync_ts, symbols, filename, api_client=api):
+    def __init__(self, sync_ts, symbols, filename, api_client=api, read_only=False):
         # Continuous append-only three-minute history uses JSONL append persistence.
         super().__init__(sync_ts, symbols, filename, append_mode=True,
-                         api_client=api_client, append_persist=True)
+                         api_client=api_client, append_persist=True,
+                         read_only=read_only)
 
     def rebuild_fetchtimes(self):
         if not self.cache:
@@ -2627,8 +2636,9 @@ class Cache24PriceManager(CacheManagerInterface):
     """
     KEEP_HOURS = 24   # May be configured per instance.
 
-    def __init__(self, sync_ts, symbols, filename, api_client=api):
-        super().__init__(sync_ts, symbols, filename, append_mode=True, api_client=api_client)
+    def __init__(self, sync_ts, symbols, filename, api_client=api, read_only=False):
+        super().__init__(sync_ts, symbols, filename, append_mode=True,
+                         api_client=api_client, read_only=read_only)
         # Remove unrelated symbols loaded from legacy redundant files that stored every coin.
         with self.lock:
             self.cache = {s: v for s, v in self.cache.items() if s in self.symbols}
@@ -2757,7 +2767,7 @@ class Cache365PriceManager(Cache24PriceManager):
 
     LONG_TRIM_INTERVAL_SEC = 24 * 3600
 
-    def __init__(self, sync_ts, symbols, filename, api_client=api):
+    def __init__(self, sync_ts, symbols, filename, api_client=api, read_only=False):
         # Long archives must not rewrite the entire JSONL whenever a single oldest
         # tick expires.  Initialize the maintenance clock before callbacks can run.
         self._last_long_trim = 0.0
@@ -2765,7 +2775,7 @@ class Cache365PriceManager(Cache24PriceManager):
         # append_persist and invokes load_state before this class could change it.
         CacheManagerInterface.__init__(self, sync_ts, symbols, filename,
                                         append_mode=True, api_client=api_client,
-                                        append_persist=True)
+                                        append_persist=True, read_only=read_only)
         # Mirror Cache24PriceManager's cleanup of unrelated symbols from legacy files.
         with self.lock:
             self.cache = {s: v for s, v in self.cache.items() if s in self.symbols}
@@ -2993,8 +3003,9 @@ Cache365Price = Cache365PriceManager
 
 
 class CacheLongTrendManager(CacheManagerInterface):
-    def __init__(self, sync_ts, symbols, filename, api_client=api):
-        super().__init__(sync_ts, symbols, filename, append_mode=False, api_client=api_client)
+    def __init__(self, sync_ts, symbols, filename, api_client=api, read_only=False):
+        super().__init__(sync_ts, symbols, filename, append_mode=False,
+                         api_client=api_client, read_only=read_only)
 
     # Inherit get_all_symbols_from_cache from the base class.
 
@@ -3036,9 +3047,10 @@ CacheLongTrend = CacheLongTrendManager
 
 
 class CacheAssetValueManager(CacheManagerInterface):
-    def __init__(self, sync_ts, symbols, filename, api_client=api):
+    def __init__(self, sync_ts, symbols, filename, api_client=api, read_only=False):
         super().__init__(sync_ts, symbols, filename, append_mode=True,
-                         api_client=api_client, append_persist=True)
+                         api_client=api_client, append_persist=True,
+                         read_only=read_only)
         changed = False
         with self.lock:
             for items in self.cache.values():
@@ -3106,7 +3118,7 @@ class CacheCurrentPriceManager(CacheManagerInterface):
     FREQ_WINDOW_SEC    = 60     # Window used to measure update frequency.
 
     def __init__(self, sync_ts, symbols, filename, ws_manager=None, api_client=api,
-                 market_api=None, provider_names=None):
+                 market_api=None, provider_names=None, read_only=False):
         self._ws_manager        = ws_manager
         self._ws_default_event_ts = 0.0
         self._ws_last_event_ts_value = 0.0
@@ -3119,7 +3131,8 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         self.market_api = market_api or _market_api.api
         self._provider_names = {}
         self.bind_providers(provider_names)
-        super().__init__(sync_ts, symbols, filename, append_mode=False, api_client=api_client)
+        super().__init__(sync_ts, symbols, filename, append_mode=False,
+                         api_client=api_client, read_only=read_only)
         if ws_manager is not None:
             ws_manager.subscribe(self)
 
@@ -3421,6 +3434,7 @@ def get_current_price_manager(ws_manager=None, symbols=None, sync_ts=None,
             ws_manager  = ws_manager,
             provider_names = provider_names,
             api_client  = api,
+            read_only   = not start_sync,
         )
         if start_sync:
             instance.periodic_sync(save_state=False)
@@ -4523,6 +4537,7 @@ class CacheFactory:
                             filename=f"{prefix}{s}.{ext}",
                             symbols=[s],
                             api_client=api,
+                            read_only=not start_sync,
                             **extra_kwargs,
                         )
                         for s in symbols
@@ -4533,6 +4548,7 @@ class CacheFactory:
                         filename=config["filename"],
                         symbols=symbols,
                         api_client=api,
+                        read_only=not start_sync,
                         **extra_kwargs,
                     )
 

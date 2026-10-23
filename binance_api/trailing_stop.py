@@ -267,7 +267,7 @@ class TrailingStop:
         Errors return 0: optional filters do not block, but this is not a safety guarantee."""
         try:
             import cacheManager as cm
-            snap = cm.get_short_trend_manager().get_snapshot(symbol)
+            snap = cm.get_short_trend_manager().get_fresh_snapshot(symbol)
             if snap:
                 return float(snap.get('gradient_recent', snap.get('slope_small', 0.0)) or 0.0)
         except Exception:
