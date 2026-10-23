@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-10-23T20:21:25",
+    "ts": "2026-10-23T20:53:03",
     "full_key": "BINANCE_BTC.trailing.pct",
     "section": "BINANCE_BTC",
     "key": "trailing.pct",
@@ -14,7 +14,7 @@
     "dev_commit": "46f3340"
   },
   {
-    "ts": "2026-10-23T20:21:25",
+    "ts": "2026-10-23T20:53:03",
     "full_key": "KRAKEN_HYPE.mt.maxage_days",
     "section": "KRAKEN_HYPE",
     "key": "mt.maxage_days",
@@ -22,8 +22,8 @@
     "current_on_dev": 15.5,
     "winner_value": 17.0,
     "margin_vs_current": {
-      "half1": 120.27,
-      "half2": 297.07
+      "half1": 132.21,
+      "half2": 293.7
     },
     "dev_commit": "46f3340"
   }
