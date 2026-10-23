@@ -36,6 +36,7 @@ from state_io import (
     atomic_write_json,
     discard_generation_file,
     meta_file_path,
+    previous_generation_path,
     read_recovering_previous,
 )
 from providers.base import extract_timestamp_s, normalize_timestamp_ms
@@ -581,26 +582,40 @@ class CacheShortTrendManager(CacheManagerInterface):
         """Load raw [ts_ms, price] entries from cachedb/cache_24_price_<symbol>.json if present."""
         base_dir = os.path.dirname(self.filename)
         c24_file = os.path.join(base_dir, f"cache_24_price_{symbol}.json")
-        if not os.path.exists(c24_file):
+        if not os.path.exists(c24_file) and not os.path.exists(
+            previous_generation_path(c24_file)
+        ):
             legacy_file = os.path.join(base_dir, f"cache_24price_{symbol}.json")
-            if os.path.exists(legacy_file):
+            if os.path.exists(legacy_file) or os.path.exists(
+                previous_generation_path(legacy_file)
+            ):
                 c24_file = legacy_file
             else:
                 return []
         try:
-            mtime = os.stat(c24_file).st_mtime_ns
-            cached = self._disk_c24_cache.get(symbol)
-            if cached and cached[0] == mtime:
-                return cached[1]
-            with open(c24_file, "r", encoding="utf-8") as fh:
-                raw = json.load(fh)
-            items = (
-                (raw.get("items") or {}).get(symbol)
-                if isinstance(raw, dict)
-                else None
+            backup_path = previous_generation_path(c24_file)
+            if os.path.exists(c24_file) and not os.path.exists(backup_path):
+                mtime = os.stat(c24_file).st_mtime_ns
+                with self._lock:
+                    cached = self._disk_c24_cache.get(symbol)
+                    if cached and cached[0] == mtime:
+                        return cached[1]
+
+            def _read_c24(candidate_path):
+                with open(candidate_path, "r", encoding="utf-8") as fh:
+                    raw = json.load(fh)
+                if not isinstance(raw, dict):
+                    raise ValueError("Cache24 root must be a dict")
+                items = (raw.get("items") or {}).get(symbol)
+                return list(items) if isinstance(items, list) else []
+
+            entries = read_recovering_previous(
+                c24_file, _read_c24, backup_path=backup_path
             )
-            entries = list(items) if isinstance(items, list) else []
-            self._disk_c24_cache[symbol] = (mtime, entries)
+            if os.path.exists(c24_file):
+                mtime = os.stat(c24_file).st_mtime_ns
+                with self._lock:
+                    self._disk_c24_cache[symbol] = (mtime, entries)
             return entries
         except Exception:
             return []

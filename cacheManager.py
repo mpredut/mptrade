@@ -1586,6 +1586,16 @@ class CacheManagerInterface(ABC):
             self.cache = {}
             had_invalid_line = False
             seen_trade_items = defaultdict(dict)
+            backup_path = self._previous_generation_path()
+            if (
+                self.cls_name not in _TRADE_CACHE_CLASSES
+                and not os.path.exists(self.filename)
+                and os.path.exists(backup_path)
+            ):
+                try:
+                    self._restore_previous_generation(backup_path)
+                except OSError:
+                    pass
             if os.path.exists(self.filename):
                 with open(self.filename, "r", encoding="utf-8") as f:
                     for line in f:
@@ -1653,6 +1663,12 @@ class CacheManagerInterface(ABC):
                 had_invalid_line
                 or self.cls_name in _TRADE_CACHE_CLASSES
             )
+            if (
+                self.cls_name not in _TRADE_CACHE_CLASSES
+                and not had_invalid_line
+                and os.path.exists(backup_path)
+            ):
+                self._discard_generation_file(backup_path)
             self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
             fetchtime = legacy_metadata.get("fetchtime")
             if isinstance(fetchtime, dict):
@@ -2830,6 +2846,12 @@ class Cache365PriceManager(Cache24PriceManager):
         """Load only a recent working set; the JSONL file remains the full archive."""
         with self.lock:
             self.cache = {}
+            backup_path = self._previous_generation_path()
+            if not os.path.exists(self.filename) and os.path.exists(backup_path):
+                try:
+                    self._restore_previous_generation(backup_path)
+                except OSError:
+                    pass
             if os.path.exists(self.filename):
                 for raw_line in self._tail_lines(self.filename, CM_LONG_ARCHIVE_MEMORY_ROWS):
                     try:
@@ -3243,8 +3265,7 @@ class CacheCurrentPriceManager(CacheManagerInterface):
                 print(f"[{self.cls_name}][Info] {symbol}:  No remote items starting with {u.timestampToTime(startTime)} ")
             else:
                 self._persist_items(symbol, new_items)
-        with _ws_health_lock:
-            _ws_needs_rest_resync.discard(self.cls_name)
+        _bapi_ws_health.clear_ws_rest_resync_for_manager(self.cls_name)
         return True
 
     def get_remote_items(self, symbol, startTime):

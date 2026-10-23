@@ -760,6 +760,33 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertEqual(reader.get_snapshot("BTCUSDT")["current_price"], 61500.0)
         self.assertEqual(reader.fetchtime_per_symbol.get("BTCUSDT"), int((t0 + 10.0) * 1000))
 
+    def test_disk_cache24_and_jsonl_recover_previous_generation(self):
+        trend_file = os.path.join(self.tmp, "cache_short_trend.json")
+        c24_file = os.path.join(self.tmp, "cache_24_price_BTCUSDT.json")
+        entries = _entries_now(15, interval_ms=500, start=60000.0, delta=5.0)
+        with open(c24_file + ".previous", "w", encoding="utf-8") as fh:
+            json.dump({"items": {"BTCUSDT": entries}, "fetchtime": {"BTCUSDT": entries[-1][0]}}, fh)
+        with open(c24_file, "w", encoding="utf-8") as fh:
+            fh.write("{corrupted")
+
+        reader = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, writer=False)
+        loaded_entries = reader._load_disk_cache24_entries("BTCUSDT")
+        self.assertEqual(len(loaded_entries), 15)
+        self.assertFalse(os.path.exists(c24_file + ".previous"))
+
+        sparse_file = os.path.join(self.tmp, "cache_sparse_price_BTCUSDT.jsonl")
+        with open(sparse_file + ".previous", "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"s": "BTCUSDT", "i": [1700000000000, 60123.0]}) + "\n")
+        sparse_mgr = cm.CacheSparsePriceManager(
+            sync_ts=9999,
+            symbols=["BTCUSDT"],
+            filename=sparse_file,
+            api_client=mock_api,
+            read_only=True,
+        )
+        self.assertEqual(sparse_mgr.cache.get("BTCUSDT"), [[1700000000000, 60123.0]])
+        self.assertFalse(os.path.exists(sparse_file + ".previous"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
