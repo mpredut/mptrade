@@ -258,6 +258,28 @@ def _skip_proto_field(stream: io.BytesIO, wire_type: int) -> Optional[bytes]:
     return None
 
 
+def _strip_proto_tag_20(raw: bytes) -> bytes:
+    """Strip field 20 (source=17, CORTEX_TRAJECTORY_SOURCE_CLI) from TrajectorySummary proto bytes."""
+    if not raw:
+        return raw
+    stream = io.BytesIO(raw)
+    out = bytearray()
+    while stream.tell() < len(raw):
+        tag = read_varint(stream)
+        if tag is None:
+            break
+        fn = tag >> 3
+        wire = tag & 0x7
+        val_bytes = _skip_proto_field(stream, wire)
+        if val_bytes is None:
+            break
+        if fn == 20:  # strip field 20 (source=CLI)
+            continue
+        out.extend(encode_varint(tag))
+        out.extend(val_bytes)
+    return bytes(out)
+
+
 def _patch_summary_annotations_title(summary_bytes: bytes, new_title: str) -> bytes:
     """Update field 15 (annotations.title, tag 122) inside a serialized TrajectorySummary."""
     tb = new_title.encode("utf-8")
@@ -826,13 +848,39 @@ def mirror_topic_thread_to_ui(
         if title:
             sync_thread_title(cid, title, cli_base=src_base)
 
-        # 1. Copy conversation .db to UI conversations/
+        # 1. Copy conversation .db to UI conversations/ and set source = 1 (native UI visible)
         dst_conv_dir = os.path.join(dst_base, "conversations")
         os.makedirs(dst_conv_dir, exist_ok=True)
         dst_conv_db = os.path.join(dst_conv_dir, f"{cid}.db")
         tmp_conv_db = dst_conv_db + ".tmp"
         shutil.copy2(src_conv_db, tmp_conv_db)
         os.replace(tmp_conv_db, dst_conv_db)
+
+        # Ensure trajectory_meta inside .db has source = 1 (UI source) so daemon/web UI treats it as visible
+        try:
+            mconn = sqlite3.connect(dst_conv_db)
+            mconn.execute("UPDATE trajectory_meta SET source = 1")
+            mconn.commit()
+            mconn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            mconn.close()
+        except Exception:
+            pass
+
+        # Also link into ~/.gemini/antigravity/conversations (D2) which is the directory monitored for visible conversations
+        try:
+            d2_dir = os.path.join(os.path.dirname(dst_base), "antigravity", "conversations")
+            os.makedirs(d2_dir, exist_ok=True)
+            d2_db = os.path.join(d2_dir, f"{cid}.db")
+            if os.path.exists(d2_db):
+                try:
+                    os.remove(d2_db)
+                except OSError:
+                    pass
+            shutil.copy2(dst_conv_db, d2_db)
+            os.remove(dst_conv_db)
+            os.link(d2_db, dst_conv_db)
+        except Exception as e:
+            logger.debug("Failed creating hard link in visible dir for %s: %s", cid, e)
 
         # 2. Copy annotations/<cid>.pbtxt if present
         src_annot = os.path.join(src_base, "annotations", f"{cid}.pbtxt")
@@ -861,11 +909,15 @@ def mirror_topic_thread_to_ui(
 
             if srow:
                 row_map = dict(zip(s_cols, srow))
+                row_map["source"] = ""  # Never keep CORTEX_TRAJECTORY_SOURCE_CLI in UI summaries
                 if title:
                     row_map["title"] = title
                     if "raw_summary" in row_map and row_map["raw_summary"]:
                         row_map["raw_summary"] = _patch_summary_annotations_title(row_map["raw_summary"], title)
                 raw_summary = row_map.get("raw_summary") or b""
+                if raw_summary:
+                    raw_summary = _strip_proto_tag_20(raw_summary)
+                    row_map["raw_summary"] = raw_summary
 
                 dconn = sqlite3.connect(dst_sum_db)
                 dcur = dconn.cursor()
