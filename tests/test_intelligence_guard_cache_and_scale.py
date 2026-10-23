@@ -1419,7 +1419,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
 
         prompts = []
         class FakeGeminiClient:
-            def query_json(self, prompt, timeout_sec=None, thread_title=None):
+            def query_json(self, prompt, timeout_sec=None, thread_title=None, **kwargs):
                 prompts.append((thread_title, prompt))
                 return {"decision": "APPROVED", "suggested_scale": 1.0, "reason": "ok"}
 
