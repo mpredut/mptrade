@@ -485,3 +485,26 @@ def test_intent_gateway_inherits_workspace_dir_and_null_plan_fields_are_safe(tem
     assert report.market_trading_decision == {}
 
 
+def test_extract_symbol_recent_fills_sorts_by_timestamp(temp_env):
+    workspace, cache_dir, _ = temp_env
+    with open(os.path.join(cache_dir, "cache_order.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "items": {
+                    "TAOUSDC": [
+                        {"side": "SELL", "price": 265.0, "quantity": 1.0, "timestamp": 2000},
+                        {"side": "BUY", "price": 250.0, "quantity": 1.0, "timestamp": 1000},
+                    ]
+                }
+            },
+            f,
+        )
+    reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"])
+    snap = reconciler.harvest_sensors_telemetry()
+    recent = snap.portfolio_summary["recent_orders"]["TAOUSDC"]
+    assert recent["last_action_side"] == "SELL"
+    assert recent["last_sell"] == {"price": 265.0, "qty": 1.0, "ts_ms": 2000}
+    assert recent["last_buy"] == {"price": 250.0, "qty": 1.0, "ts_ms": 1000}
+
+
+

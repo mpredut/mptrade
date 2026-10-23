@@ -55,11 +55,19 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
     """Extract last action side, last BUY fill, and last SELL fill from a symbol's cache_order.json list."""
     if not isinstance(orders_list, list) or not orders_list:
         return None
-    last_buy = next((o for o in reversed(orders_list) if isinstance(o, dict) and o.get("side") == "BUY"), None)
-    last_sell = next((o for o in reversed(orders_list) if isinstance(o, dict) and o.get("side") == "SELL"), None)
-    last_any = orders_list[-1] if isinstance(orders_list[-1], dict) else None
+    valid = [o for o in orders_list if isinstance(o, dict)]
+    if not valid:
+        return None
+    ordered = sorted(
+        enumerate(valid),
+        key=lambda item: (float(item[1].get("timestamp") or 0.0), item[0]),
+    )
+    chron = [o for _, o in ordered]
+    last_buy = next((o for o in reversed(chron) if o.get("side") == "BUY"), None)
+    last_sell = next((o for o in reversed(chron) if o.get("side") == "SELL"), None)
+    last_any = chron[-1]
     return {
-        "last_action_side": last_any.get("side") if last_any else None,
+        "last_action_side": last_any.get("side"),
         "last_buy": (
             {"price": last_buy.get("price"), "qty": last_buy.get("quantity"), "ts_ms": last_buy.get("timestamp")}
             if last_buy else None
