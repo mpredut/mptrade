@@ -29,6 +29,7 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(asf, "DB", str(cli / "conversation_summaries.db"))
     monkeypatch.setattr(asf, "PB", str(cli / "agyhub_summaries_proto.pb"))
     monkeypatch.setattr(asf, "UI_SYNC_STATE", str(tmp_path / "ui_sync_state.json"))
+    monkeypatch.setattr(asf, "TOPIC_REGISTRY", str(tmp_path / "llm_topic_threads.json"))
     conn = sqlite3.connect(asf.DB)
     conn.execute("CREATE TABLE conversation_summaries (conversation_id text primary key)")
     conn.commit()
@@ -97,3 +98,22 @@ def test_restart_gated_by_idle_and_not_repeated_for_same_divergence(store):
 def test_invalid_idle_fails_fast(store):
     with pytest.raises(ValueError):
         asf.mode_ui_sync_check(0)
+
+
+def test_mirrored_5min_topic_thread_does_not_block_idle_sync(store, tmp_path):
+    import json
+
+    cli, d1, _ = store
+    (tmp_path / "llm_topic_threads.json").write_text(
+        json.dumps({"auto_trade_executor": {"conversation_id": "topic-5m"}})
+    )
+    (d1 / "human.db").write_text("h")
+    _age_store(d1, 1200)                         # human session has been idle for 20 minutes
+    (d1 / "topic-5m.db").write_text("bot")       # 5-minute bot thread just mirrored now
+    (cli / "brain" / "topic-5m").mkdir(parents=True)
+    (cli / "brain" / "topic-5m" / "step.txt").write_text("bot")
+    _set_rows(["human", "topic-5m"])
+    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids(["human"]))
+
+    assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_READY
+

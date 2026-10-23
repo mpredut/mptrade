@@ -477,19 +477,39 @@ def pending_ui_sync() -> list[str]:
     return sorted(entries)
 
 
+TOPIC_REGISTRY = os.path.join(_ROOT_DIR, "cachedb", "llm_topic_threads.json")
+
+
+def mirrored_topic_cids() -> set[str]:
+    """Conversation IDs owned by mirrored background topic threads (excluded from interactive idle detection)."""
+    if not os.path.exists(TOPIC_REGISTRY):
+        return set()
+    try:
+        with open(TOPIC_REGISTRY, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    return {str(e["conversation_id"]) for e in data.values() if isinstance(e, dict) and e.get("conversation_id")}
+
+
 def last_store_activity() -> float:
-    """Newest mtime of conversation content (db/WAL) or brain artifacts; proxy for an active session."""
+    """Newest mtime of interactive (non-mirrored) conversation content or brain artifacts."""
+    ignored = mirrored_topic_cids()
     newest = 0.0
     if os.path.isdir(D1):
         for name in os.listdir(D1):
-            if name.endswith((".db", ".db-wal")):
+            if name.endswith((".db", ".db-wal")) and name.split(".", 1)[0] not in ignored:
                 try:
                     newest = max(newest, os.stat(os.path.join(D1, name)).st_mtime)
                 except OSError:
                     pass
     brain = os.path.join(CLI, "brain")
     for root, dirs, files in os.walk(brain):
-        if root.count(os.sep) - brain.count(os.sep) >= 3:
+        if root == brain:
+            dirs[:] = [d for d in dirs if d not in ignored]
+        elif root.count(os.sep) - brain.count(os.sep) >= 3:
             dirs[:] = []
         for name in files:
             try:
