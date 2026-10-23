@@ -125,6 +125,7 @@ def _shutdown_runtime_threads_after_suite():
         "CacheOrder", "CacheOrderManager",
         "CacheCurrentPrice", "CacheCurrentPriceManager", "NonBinanceTrendPoller",
         "InstantTrendFullEval", "InstantTrendFlush",
+        "ShortTrendFullEval", "ShortTrendFlush",
     }
     leaked = sorted(thread.name for thread in threading.enumerate()
                     if thread.name in forbidden)

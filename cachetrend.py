@@ -879,7 +879,7 @@ class CacheShortTrendManager(CacheManagerInterface):
 
         with self._lock:
             sym_hist = self._hist_windows.setdefault(symbol, {})
-            if slice_key in sym_hist:
+            if isinstance(sym_hist.get(slice_key), dict):
                 return dict(sym_hist[slice_key])
             hist_path = self._hist_trend_file(symbol)
             if os.path.exists(hist_path):
@@ -887,8 +887,10 @@ class CacheShortTrendManager(CacheManagerInterface):
                     with open(hist_path, "r", encoding="utf-8") as fh:
                         loaded = json.load(fh)
                     if isinstance(loaded, dict):
-                        sym_hist.update(loaded)
-                        if slice_key in sym_hist:
+                        for k, v in loaded.items():
+                            if isinstance(v, dict):
+                                sym_hist[k] = v
+                        if isinstance(sym_hist.get(slice_key), dict):
                             return dict(sym_hist[slice_key])
                 except Exception:
                     pass
@@ -930,9 +932,20 @@ class CacheShortTrendManager(CacheManagerInterface):
         )
         with self._lock:
             sym_hist = self._hist_windows.setdefault(symbol, {})
+            hist_path = self._hist_trend_file(symbol)
+            if os.path.exists(hist_path):
+                try:
+                    with open(hist_path, "r", encoding="utf-8") as fh:
+                        loaded = json.load(fh)
+                    if isinstance(loaded, dict):
+                        for k, v in loaded.items():
+                            if isinstance(v, dict) and k not in sym_hist:
+                                sym_hist[k] = v
+                except Exception:
+                    pass
             sym_hist[slice_key] = res
             try:
-                _write_json_atomic(self._hist_trend_file(symbol), sym_hist)
+                _write_json_atomic(hist_path, sym_hist)
             except Exception as e:
                 print(f"[{self.cls_name}] hist write failure for {symbol}: {e}")
         return dict(res)

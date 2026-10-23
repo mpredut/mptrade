@@ -420,6 +420,7 @@ class TestComputation(unittest.TestCase):
 
     def test_full_eval_loop_thread_started(self):
         m2 = cm.CacheShortTrendManager(["BTCUSDT"], os.path.join(self.tmp, "t2.json"))
+        self.addCleanup(m2.shutdown)
         m2.start_computation({"BTCUSDT": self.cache24}, self.cpm, run_full_eval=True)
         self.assertIsNotNone(m2._full_eval_thread)
         self.assertTrue(m2._full_eval_thread.is_alive())
@@ -858,6 +859,39 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             self.assertIsNone(cm._short_trend_instance)
         finally:
             cm._short_trend_instance = prev_st
+
+    def test_get_trend_for_slice_preserves_concurrent_disk_slices(self):
+        trend_file = os.path.join(self.tmp, "cache_short_trend.json")
+        c24_file = os.path.join(self.tmp, "cache_24_price_BTCUSDT.json")
+        entries = _entries_now(40, interval_ms=1000, start=60000.0, delta=5.0)
+        with open(c24_file, "w", encoding="utf-8") as fh:
+            json.dump({"items": {"BTCUSDT": entries}, "fetchtime": {"BTCUSDT": entries[-1][0]}}, fh)
+
+        r1 = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, writer=False)
+        r2 = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, writer=False)
+
+        t1_a, t2_a = entries[0][0], entries[15][0]
+        t1_b, t2_b = entries[10][0], entries[30][0]
+
+        res_a = r1.get_trend_for_slice("BTCUSDT", t1_a, t2_a)
+        self.assertIsNotNone(res_a)
+
+        # Inject a corrupt non-dict entry alongside res_a on disk before r2 computes slice B
+        hist_path = r1._hist_trend_file("BTCUSDT")
+        with open(hist_path, "r", encoding="utf-8") as fh:
+            disk_hist = json.load(fh)
+        disk_hist["corrupt_key"] = "not_a_dict"
+        with open(hist_path, "w", encoding="utf-8") as fh:
+            json.dump(disk_hist, fh)
+
+        res_b = r2.get_trend_for_slice("BTCUSDT", t1_b, t2_b)
+        self.assertIsNotNone(res_b)
+
+        with open(hist_path, "r", encoding="utf-8") as fh:
+            merged_hist = json.load(fh)
+        self.assertIn(f"{t1_a}_{t2_a}", merged_hist)
+        self.assertIn(f"{t1_b}_{t2_b}", merged_hist)
+        self.assertNotIn("corrupt_key", merged_hist)
 
 
 if __name__ == "__main__":
