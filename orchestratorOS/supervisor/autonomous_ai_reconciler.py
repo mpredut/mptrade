@@ -24,12 +24,21 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import urllib.request
 
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+
+from orchestratorOS.admin.prune_llm_threads import (
+    resolve_agy_bot_bin,
+    resolve_project_uuid,
+)
+
 logger = logging.getLogger("orchestratorOS.supervisor")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 DEFAULT_STATE_FILE = "cachedb/supervisor_nightly_eval.json"
 DEFAULT_HEARTBEAT_FILE = "cachedb/supervisor_nightly.heartbeat"
-DEFAULT_AUTONOMOUS_PROJECT_ID = "f5f9d01f-01e5-4fac-80f2-97364688afab"
+DEFAULT_AUTONOMOUS_PROJECT_ID = resolve_project_uuid("autonommptrade")
 
 
 @dataclass
@@ -77,16 +86,14 @@ class StandaloneGeminiAuditor:
     def __init__(
         self,
         model: str = "gemini-3.8-flash-low",
-        project_id: str = DEFAULT_AUTONOMOUS_PROJECT_ID,
+        project_id: Optional[str] = None,
         cli_path: Optional[str] = None,
         custom_runner: Optional[Callable[[str, str, float], str]] = None,
     ) -> None:
         self.model = model
-        self.project_id = project_id
-        self.cli_path = cli_path or os.path.expanduser("~/.local/bin/agy-bot")
-        if not os.path.exists(self.cli_path):
-            fallback_cli = os.path.expanduser("~/.local/bin/agy")
-            self.cli_path = fallback_cli if os.path.exists(fallback_cli) else (shutil.which("agy-bot") or shutil.which("agy") or "")
+        raw_project = project_id or os.environ.get("AGY_PROJECT", DEFAULT_AUTONOMOUS_PROJECT_ID)
+        self.project_id = resolve_project_uuid(raw_project, fallback_uuid=DEFAULT_AUTONOMOUS_PROJECT_ID)
+        self.cli_path = resolve_agy_bot_bin(cli_path)
         self._custom_runner = custom_runner
 
     def query_json(

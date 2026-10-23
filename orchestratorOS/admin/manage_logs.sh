@@ -109,14 +109,16 @@ if [ -d "$LOGGER_DIR" ]; then
     echo "  after retention:  $(du -sh "$LOGGER_DIR" 2>/dev/null | cut -f1)"
 fi
 
-# 3. Retention for autonomous LLM CLI threads older than 1 day (autonommptrade)
+# 3. Retention for autonomous LLM CLI threads older than CLI_THREAD_RETENTION_DAYS (autonommptrade)
 # Runs every 3 hours (not every hour) to avoid unnecessary churn
 CURRENT_HOUR="$(date +%-H)"
 if [ $((CURRENT_HOUR % 3)) -eq 0 ]; then
     PRUNE_SCRIPT="$ROOT/orchestratorOS/admin/prune_llm_threads.py"
     if [ -f "$PRUNE_SCRIPT" ]; then
-        echo "  pruning automated CLI threads older than 1 day (3h cycle)..."
-        python3 "$PRUNE_SCRIPT" --cli-base "$HOME/agy_bot_home/.gemini/antigravity-cli" --days 1 || true
+        BOT_HOME_DIR="${AGY_BOT_HOME:-$HOME/agy_bot_home}"
+        RETENTION_DAYS="${CLI_THREAD_RETENTION_DAYS:-1}"
+        echo "  pruning automated CLI threads older than ${RETENTION_DAYS}d in ${BOT_HOME_DIR} (3h cycle)..."
+        "$ROOT/orchestratorOS/run_python.sh" "$PRUNE_SCRIPT" --cli-base "$BOT_HOME_DIR/.gemini/antigravity-cli" --days "$RETENTION_DAYS" || true
     fi
 fi
 

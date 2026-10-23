@@ -14,9 +14,75 @@ from typing import List, Optional, Set, Tuple
 
 import json
 
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+
+try:
+    from botcore import load_dotenv
+    load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
+except Exception:
+    pass
+
 logger = logging.getLogger("prune_llm_threads")
 
-DEFAULT_CLI_BASE = os.path.expanduser("~/.gemini/antigravity-cli")
+
+def expand_config_path(raw_path: str) -> str:
+    """Expand environment variables ($HOME, ${HOME}) and ~ in a configured filesystem path."""
+    if not raw_path:
+        return ""
+    expanded = os.path.expandvars(raw_path.strip())
+    if "$HOME" in expanded or "${HOME}" in expanded:
+        home_dir = os.path.expanduser("~")
+        expanded = expanded.replace("${HOME}", home_dir).replace("$HOME", home_dir)
+    return os.path.expanduser(expanded)
+
+
+def resolve_bot_home_dir() -> str:
+    """Resolve the isolated bot HOME directory from AGY_BOT_HOME or ~/agy_bot_home."""
+    raw = os.environ.get("AGY_BOT_HOME", "~/agy_bot_home")
+    return expand_config_path(raw)
+
+
+def resolve_bot_cli_base(cli_base: Optional[str] = None) -> str:
+    """Resolve the Antigravity CLI store directory for autonomous bot threads."""
+    if cli_base:
+        return expand_config_path(cli_base)
+    env_cli_base = os.environ.get("AGY_CLI_BASE", "").strip()
+    if env_cli_base:
+        return expand_config_path(env_cli_base)
+    bot_home = resolve_bot_home_dir()
+    bot_cli = os.path.join(bot_home, ".gemini", "antigravity-cli")
+    if os.path.isdir(bot_cli) or os.path.isdir(bot_home):
+        return bot_cli
+    return expand_config_path("~/.gemini/antigravity-cli")
+
+
+def resolve_agy_bot_bin(cli_path: Optional[str] = None) -> str:
+    """Resolve the isolated agy-bot CLI binary path without hardcoded user directories."""
+    if cli_path:
+        expanded = expand_config_path(cli_path)
+        if os.path.exists(expanded):
+            return expanded
+        return cli_path
+    for env_key in ("MPTRADE_AGY_BIN", "AGY_BOT_BIN"):
+        raw = os.environ.get(env_key, "").strip()
+        if raw:
+            cand = expand_config_path(raw)
+            if os.path.exists(cand):
+                return cand
+    for candidate in (
+        expand_config_path("~/.local/bin/agy-bot"),
+        shutil.which("agy-bot") or "",
+        expand_config_path("~/.local/bin/agy"),
+        shutil.which("agy") or "",
+    ):
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return expand_config_path(os.environ.get("AGY_BOT_BIN", "~/.local/bin/agy-bot"))
+
+
+DEFAULT_CLI_BASE = resolve_bot_cli_base()
 DEFAULT_PROJECTS = ["autonommptrade", "default-cli-project", "f5f9d01f-01e5-4fac-80f2-97364688afab"]
 PROTECTED_PROJECT_NAMES = ["mptrade"]
 DEFAULT_RETENTION_DAYS = 1.0  # 1 day default
@@ -33,13 +99,29 @@ AUTONOMOUS_PROMPT_PATTERNS = [
     "macrogeopolitical risk assessment",
     "macroeconomic impact",
     "macroeconomic war",
+    "macroeconomic shock",
+    "macro shock",
+    "shock assessment",
+    "shock shield",
     "iran war",
     "middle east war",
     "geopolitical risk",
+    "geopolitical macro",
     "crypto risk assessment",
     "crypto risk evaluation",
     "crypto bot trade risk",
     "crypto trade risk",
+    "crypto macro",
+    "crypto quantitative macro",
+    "macro risk",
+    "re-entry risk",
+    "re-entry evaluation",
+    "post-stop re-entry",
+    "reconciliation audit",
+    "morning reconciliation",
+    "diagnostic audit",
+    "acknowledge confirmation request",
+    "acknowledge instruction test",
     "analiză risc tranzacție",
     "analiza risc tranzactie",
     "evaluated by gemini",
@@ -52,21 +134,57 @@ AUTONOMOUS_PROMPT_PATTERNS = [
     "trade evaluation",
     "risk evaluation",
     "risk assessment",
-    "morning reconciliation",
-    "diagnostic audit",
 ]
 
 
-def resolve_project_ids(project_names_or_ids: List[str] | Set[str], cli_base: str = DEFAULT_CLI_BASE) -> Set[str]:
-    """Resolve project names/IDs into full set of matching IDs and UUIDs from ~/.gemini/config/projects."""
-    resolved = set(project_names_or_ids)
-    projects_dir = os.path.join(os.path.dirname(cli_base), "config", "projects")
-    if not os.path.isdir(projects_dir):
-        alt_dir = os.path.expanduser("~/.gemini/config/projects")
-        if os.path.isdir(alt_dir):
-            projects_dir = alt_dir
+def resolve_project_uuid(
+    project_name_or_id: str,
+    cli_base: Optional[str] = None,
+    fallback_uuid: str = "f5f9d01f-01e5-4fac-80f2-97364688afab",
+) -> str:
+    """Resolve a project name (e.g. 'autonommptrade') into its canonical UUID from config/projects/*.json."""
+    target = (project_name_or_id or "").strip()
+    if not target:
+        return fallback_uuid
+    effective_base = resolve_bot_cli_base(cli_base)
+    search_dirs = [
+        os.path.join(os.path.dirname(effective_base), "config", "projects"),
+        expand_config_path("~/.gemini/config/projects"),
+        os.path.join(resolve_bot_home_dir(), ".gemini", "config", "projects"),
+    ]
+    for pdir in search_dirs:
+        if not os.path.isdir(pdir):
+            continue
+        for fname in sorted(os.listdir(pdir)):
+            if not fname.endswith(".json"):
+                continue
+            fpath = os.path.join(pdir, fname)
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                pid = str(data.get("id") or "").strip()
+                pname = str(data.get("name") or "").strip()
+                if target in (pid, pname) and pid:
+                    return pid
+            except Exception:
+                pass
+    if target == "autonommptrade":
+        return fallback_uuid
+    return target
 
-    if os.path.isdir(projects_dir):
+
+def resolve_project_ids(project_names_or_ids: List[str] | Set[str], cli_base: Optional[str] = None) -> Set[str]:
+    """Resolve project names/IDs into full set of matching IDs and UUIDs from config/projects."""
+    effective_base = resolve_bot_cli_base(cli_base)
+    resolved = set(project_names_or_ids)
+    search_dirs = [
+        os.path.join(os.path.dirname(effective_base), "config", "projects"),
+        expand_config_path("~/.gemini/config/projects"),
+        os.path.join(resolve_bot_home_dir(), ".gemini", "config", "projects"),
+    ]
+    for projects_dir in search_dirs:
+        if not os.path.isdir(projects_dir):
+            continue
         for fname in os.listdir(projects_dir):
             if fname.endswith(".json"):
                 fpath = os.path.join(projects_dir, fname)
@@ -528,6 +646,7 @@ def prune_old_cli_threads(
 
     candidate_cids: Set[str] = set()
     kept_automated: List[Tuple[datetime, str]] = []
+    dedicated_auto_pids = resolve_project_ids(["autonommptrade", "f5f9d01f-01e5-4fac-80f2-97364688afab"], cli_base)
     for row in rows:
         cid, title, preview, ts_str, proj = row[:5]
         step_count = row[5] if has_step_count and len(row) > 5 and row[5] is not None else 0
@@ -537,7 +656,8 @@ def prune_old_cli_threads(
         if not matched_auto_pattern and step_count > 6:
             # Multi-turn interactive conversation: never prune even if --all is passed
             continue
-        is_auto = all_threads_in_project or matched_auto_pattern
+        in_dedicated_auto_project = (proj in dedicated_auto_pids) and (not has_step_count or step_count <= 6)
+        is_auto = all_threads_in_project or matched_auto_pattern or in_dedicated_auto_project
         if not is_auto:
             continue
         dt = parse_db_timestamp(ts_str)
@@ -687,8 +807,8 @@ def reconcile_summaries_store(cli_base: str = DEFAULT_CLI_BASE) -> int:
         return 0
 
     os.makedirs(annot_dir, exist_ok=True)
-    mptrade_uuid = "3ed4aa5d-0873-407a-a8e9-c21a932a565c"
-    autonom_uuid = "f5f9d01f-01e5-4fac-80f2-97364688afab"
+    mptrade_uuid = resolve_project_uuid("mptrade", cli_base=cli_base, fallback_uuid="3ed4aa5d-0873-407a-a8e9-c21a932a565c")
+    autonom_uuid = resolve_project_uuid("autonommptrade", cli_base=cli_base, fallback_uuid="f5f9d01f-01e5-4fac-80f2-97364688afab")
 
     # Collect known titles and rows across backups
     backup_dbs = [

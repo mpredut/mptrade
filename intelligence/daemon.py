@@ -223,11 +223,23 @@ class IntelligenceTelemetryDaemon:
         # Periodic retention: automatically prune automated CLI threads older than 1 day (autonommptrade)
         if force or (current_ts - self._last_thread_prune_ts) >= self.thread_prune_interval_sec:
             try:
-                from orchestratorOS.admin.prune_llm_threads import prune_old_cli_threads
+                from orchestratorOS.admin.prune_llm_threads import (
+                    prune_old_cli_threads,
+                    resolve_bot_cli_base,
+                )
                 retention_d = required_float_env("CLI_THREAD_RETENTION_DAYS")
-                pruned_cnt, _ = prune_old_cli_threads(retention_days=retention_d)
+                bot_cli_base = resolve_bot_cli_base()
+                pruned_cnt, _ = prune_old_cli_threads(
+                    cli_base=bot_cli_base,
+                    retention_days=retention_d,
+                )
                 if pruned_cnt > 0:
-                    logger.info("Periodic CLI cleanup: pruned %d automated threads older than %.1f days", pruned_cnt, retention_d)
+                    logger.info(
+                        "Periodic CLI cleanup: pruned %d automated threads older than %.1f days from %s",
+                        pruned_cnt,
+                        retention_d,
+                        bot_cli_base,
+                    )
                 self._last_thread_prune_ts = current_ts
             except Exception as e:
                 logger.debug("Automatic CLI thread pruning error: %s", e)

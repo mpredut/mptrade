@@ -365,3 +365,79 @@ class TestPruneCliThreads:
         assert title_col == "Custom Thread Title"
         assert b"My Preview" in raw_col
         assert b"Custom Thread Title" in raw_col
+
+    def test_agy_generated_titles_in_dedicated_project_are_pruned(self, tmp_path):
+        cli_base = str(tmp_path / "cli")
+        os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
+        db_path = os.path.join(cli_base, "conversation_summaries.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE conversation_summaries (
+                conversation_id text PRIMARY KEY,
+                title text,
+                preview text,
+                last_modified_time datetime,
+                project_id text,
+                step_count integer
+            )
+        """)
+        now = datetime.now(timezone.utc)
+        ts_old = (now - timedelta(days=3)).isoformat()
+        conn.execute(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)",
+            ("bot-synth-1", "Crypto Macro Risk Synthesis", "Crypto Macro Risk Synthesis", ts_old, "f5f9d01f-01e5-4fac-80f2-97364688afab", 2),
+        )
+        conn.execute(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)",
+            ("bot-shield-2", "Macroeconomic Shock Shield Evaluation", "Macroeconomic Shock Shield Evaluation", ts_old, "f5f9d01f-01e5-4fac-80f2-97364688afab", 2),
+        )
+        conn.execute(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)",
+            ("user-interactive-3", "Custom Architecture Discussion", "Let us discuss design", ts_old, "f5f9d01f-01e5-4fac-80f2-97364688afab", 18),
+        )
+        conn.commit()
+        conn.close()
+
+        pruned, _ = prune_old_cli_threads(
+            cli_base=cli_base,
+            retention_days=1.0,
+            dry_run=False,
+        )
+        assert pruned == 2
+        conn = sqlite3.connect(db_path)
+        remaining = {r[0] for r in conn.execute("SELECT conversation_id FROM conversation_summaries").fetchall()}
+        conn.close()
+        assert remaining == {"user-interactive-3"}
+
+    def test_resolve_bot_cli_base_and_agy_bot_bin_configurable(self, tmp_path, monkeypatch):
+        from orchestratorOS.admin.prune_llm_threads import (
+            expand_config_path,
+            resolve_agy_bot_bin,
+            resolve_bot_cli_base,
+            resolve_project_uuid,
+        )
+
+        bot_home = tmp_path / "custom_bot_home"
+        bot_cli = bot_home / ".gemini" / "antigravity-cli"
+        bot_cli.mkdir(parents=True)
+        proj_dir = bot_home / ".gemini" / "config" / "projects"
+        proj_dir.mkdir(parents=True)
+        (proj_dir / "custom.json").write_text(
+            '{"id": "12345678-1234-1234-1234-123456789abc", "name": "autonommptrade"}',
+            encoding="utf-8",
+        )
+
+        custom_bin = tmp_path / "agy-bot-custom"
+        custom_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+        custom_bin.chmod(0o755)
+
+        monkeypatch.setenv("AGY_BOT_HOME", str(bot_home))
+        monkeypatch.setenv("AGY_BOT_BIN", str(custom_bin))
+        monkeypatch.delenv("MPTRADE_AGY_BIN", raising=False)
+        monkeypatch.delenv("AGY_CLI_BASE", raising=False)
+
+        assert resolve_bot_cli_base() == str(bot_cli)
+        assert resolve_agy_bot_bin() == str(custom_bin)
+        assert resolve_project_uuid("autonommptrade", cli_base=str(bot_cli)) == "12345678-1234-1234-1234-123456789abc"
+        assert expand_config_path("$HOME/test_dir").endswith("/test_dir")
+        assert "$HOME" not in expand_config_path("$HOME/test_dir")

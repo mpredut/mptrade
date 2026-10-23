@@ -12,6 +12,11 @@ from typing import Any, Callable, Dict, Optional
 import urllib.request
 
 from botcore import load_dotenv, required_env
+from orchestratorOS.admin.prune_llm_threads import (
+    resolve_agy_bot_bin,
+    resolve_bot_cli_base,
+    resolve_project_uuid,
+)
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
@@ -19,12 +24,11 @@ load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 logger = logging.getLogger("intelligence.sentiment.gemini_client")
 
 DEFAULT_MODEL = "gemini-3.8-flash-low"
-AGY_CLI_PATH = os.environ.get("MPTRADE_AGY_BIN", "/home/predut/.local/bin/agy-bot")
-AGY_FALLBACK_CLI_PATH = "/home/predut/.local/bin/agy"
+AGY_CLI_PATH = resolve_agy_bot_bin()
 AGY_STORE_SYNC_ENABLED = os.environ.get("MPTRADE_AGY_STORE_SYNC", "0") == "1"
 
 
-DEFAULT_AUTONOMOUS_PROJECT_ID = "f5f9d01f-01e5-4fac-80f2-97364688afab"
+DEFAULT_AUTONOMOUS_PROJECT_ID = resolve_project_uuid("autonommptrade")
 
 
 class GeminiClient:
@@ -44,18 +48,9 @@ class GeminiClient:
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        self.cli_path = cli_path or (
-            AGY_CLI_PATH if os.path.exists(AGY_CLI_PATH) else (
-                AGY_FALLBACK_CLI_PATH if os.path.exists(AGY_FALLBACK_CLI_PATH) else (
-                    shutil.which("agy-bot") or shutil.which("agy")
-                )
-            )
-        )
+        self.cli_path = resolve_agy_bot_bin(cli_path) if cli_path else resolve_agy_bot_bin(AGY_CLI_PATH)
         raw_project = project_id or required_env("AGY_PROJECT")
-        if raw_project in ("autonommptrade", DEFAULT_AUTONOMOUS_PROJECT_ID):
-            self.project_id = DEFAULT_AUTONOMOUS_PROJECT_ID
-        else:
-            self.project_id = raw_project
+        self.project_id = resolve_project_uuid(raw_project, fallback_uuid=DEFAULT_AUTONOMOUS_PROJECT_ID)
         self._custom_runner = custom_runner
         self._cache: Dict[str, tuple[float, str]] = {}
 
@@ -132,11 +127,12 @@ class GeminiClient:
                                 sync_thread_title,
                             )
                             import sqlite3
+                            bot_cli_base = resolve_bot_cli_base()
                             if thread_title:
                                 target_cid = None
-                                db_path = os.path.expanduser("~/.gemini/antigravity-cli/conversation_summaries.db")
+                                db_path = os.path.join(bot_cli_base, "conversation_summaries.db")
                                 if os.path.exists(db_path):
-                                    resolved_pids = list(resolve_project_ids([self.project_id]))
+                                    resolved_pids = list(resolve_project_ids([self.project_id], cli_base=bot_cli_base))
                                     placeholders = ",".join("?" for _ in resolved_pids)
                                     conn = sqlite3.connect(db_path)
                                     cur = conn.cursor()
@@ -149,7 +145,7 @@ class GeminiClient:
                                     if row:
                                         target_cid = row[0]
                                 if not target_cid:
-                                    presence_dir = os.path.expanduser("~/.gemini/antigravity-cli/presence")
+                                    presence_dir = os.path.join(bot_cli_base, "presence")
                                     if os.path.isdir(presence_dir):
                                         locks = [
                                             os.path.splitext(f)[0]
@@ -163,9 +159,10 @@ class GeminiClient:
                                             )
                                             target_cid = locks[0]
                                 if target_cid:
-                                    sync_thread_title(target_cid, thread_title)
+                                    sync_thread_title(target_cid, thread_title, cli_base=bot_cli_base)
                             if self.project_id == DEFAULT_AUTONOMOUS_PROJECT_ID:
                                 prune_old_cli_threads(
+                                    cli_base=bot_cli_base,
                                     retention_days=1.0,
                                     project_id=self.project_id,
                                     all_threads_in_project=False,
