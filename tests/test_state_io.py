@@ -1,10 +1,24 @@
+import gzip
 import json
+from pathlib import Path
 
 import pytest
 
 from state_io import (
-    StateReadError, atomic_snapshot_file, atomic_text_writer,
-    atomic_write_json, load_json_state,
+    StateReadError,
+    atomic_file_path,
+    atomic_gzip_file,
+    atomic_snapshot_file,
+    atomic_text_writer,
+    atomic_write_bytes,
+    atomic_write_json,
+    commit_file_and_meta,
+    load_json_state,
+    meta_file_path,
+    previous_generation_path,
+    read_recovering_previous,
+    stage_previous_generation,
+    write_meta_json,
 )
 
 
@@ -135,4 +149,62 @@ def test_strategy_test_commands_use_instrument_daemon_locks():
     assert 'single_instance(f"kraken_bot_{args.test_strategy.strip()}")' in kraken
     assert 'single_instance(f"hl_bot_{args.test_strategy.strip()}")' in hyperliquid
     assert 'single_instance(f"hl_bot_{token}")' in hyperliquid
+
+
+def test_atomic_binary_and_gzip_helpers(tmp_path):
+    bin_path = tmp_path / "payload.bin"
+    atomic_write_bytes(bin_path, b"\x00\x01\x02")
+    assert bin_path.read_bytes() == b"\x00\x01\x02"
+
+    staged_path = tmp_path / "rendered.bin"
+    with atomic_file_path(staged_path, suffix=".part") as tmp_file:
+        Path(tmp_file).write_bytes(b"rendered-ok")
+    assert staged_path.read_bytes() == b"rendered-ok"
+
+    archive_src = tmp_path / "events.jsonl"
+    archive_src.write_text("line1\nline2\n", encoding="utf-8")
+    gz_path = Path(atomic_gzip_file(archive_src, remove_source=True))
+    assert not archive_src.exists()
+    assert gz_path.exists()
+    with gzip.open(gz_path, "rt", encoding="utf-8") as handle:
+        assert handle.read() == "line1\nline2\n"
+
+
+def test_commit_file_and_meta_rolls_back_and_recovers_previous(tmp_path):
+    data_path = str(tmp_path / "cache.json")
+
+    # Initial commit succeeds and leaves no .previous file behind.
+    assert commit_file_and_meta(
+        data_path,
+        lambda: atomic_write_json(data_path, {"version": 1}),
+        lambda: (write_meta_json(data_path, {"version": 1}) or True),
+    )
+    assert not Path(previous_generation_path(data_path)).exists()
+    assert json.loads(Path(data_path).read_text(encoding="utf-8")) == {"version": 1}
+
+    # Failed meta commit rolls data_path back to version 1.
+    assert not commit_file_and_meta(
+        data_path,
+        lambda: atomic_write_json(data_path, {"version": 2}),
+        lambda: False,
+    )
+    assert not Path(previous_generation_path(data_path)).exists()
+    assert json.loads(Path(data_path).read_text(encoding="utf-8")) == {"version": 1}
+
+    # Simulated crash between data write and meta write is recovered by read_recovering_previous.
+    stage_previous_generation(data_path)
+    atomic_write_json(data_path, {"version": 2})
+
+    def _strict_reader(candidate_path: str):
+        meta = json.loads(Path(meta_file_path(data_path)).read_text(encoding="utf-8"))
+        payload = json.loads(Path(candidate_path).read_text(encoding="utf-8"))
+        if payload.get("version") != meta.get("version"):
+            raise ValueError("version mismatch")
+        return payload
+
+    recovered = read_recovering_previous(data_path, _strict_reader)
+    assert recovered == {"version": 1}
+    assert json.loads(Path(data_path).read_text(encoding="utf-8")) == {"version": 1}
+    assert not Path(previous_generation_path(data_path)).exists()
+
 

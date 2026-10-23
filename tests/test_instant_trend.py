@@ -693,6 +693,8 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertIs(cm.CacheAssetValue, cm.CacheAssetValueManager)
         self.assertIs(cm.CacheTrade, cm.CacheTradeManager)
         self.assertIs(cm.CacheOrder, cm.CacheOrderManager)
+        self.assertTrue(issubclass(cm.CacheShortTrendManager, cm.CacheManagerInterface))
+        self.assertTrue(issubclass(cm.CacheLongTrendManager, cm.CacheManagerInterface))
         for legacy_alias in (
             "Cache24LongPrice",
             "Cache24LongPriceManager",
@@ -704,6 +706,41 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             "CachePriceManager",
         ):
             self.assertFalse(hasattr(cm, legacy_alias))
+
+    def test_short_trend_transactional_commit_and_previous_recovery(self):
+        trend_file = os.path.join(self.tmp, "tx_short_trend.json")
+        writer = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, writer=True)
+        t0 = time.time()
+        writer.update_snapshot("BTCUSDT", gradient_recent=0.25, current_price=61000.0, ts=t0)
+
+        self.assertTrue(os.path.exists(trend_file))
+        self.assertTrue(os.path.exists(trend_file + ".meta"))
+        self.assertFalse(os.path.exists(trend_file + ".previous"))
+        with open(trend_file, encoding="utf-8") as fh:
+            raw_disk = json.load(fh)
+        self.assertEqual(set(raw_disk.keys()), {"BTCUSDT"})
+        self.assertEqual(raw_disk["BTCUSDT"]["gradient_recent"], 0.25)
+
+        # Simulate metadata commit failure: previous generation must be rolled back
+        with patch.object(writer, "_write_meta", return_value=False):
+            writer.update_snapshot("BTCUSDT", gradient_recent=-0.99, current_price=59000.0, ts=t0 + 1)
+
+        reader = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, writer=False)
+        snap = reader.get_snapshot("BTCUSDT")
+        self.assertIsNotNone(snap)
+        self.assertEqual(snap["gradient_recent"], 0.25)
+        self.assertEqual(snap["current_price"], 61000.0)
+
+        # Simulate hard crash leaving corrupted primary file + valid .previous backup
+        with open(trend_file + ".previous", "w", encoding="utf-8") as fh:
+            json.dump({"BTCUSDT": {"symbol": "BTCUSDT", "gradient_recent": 0.42, "current_price": 62000.0, "ts": t0 + 2}}, fh)
+        with open(trend_file, "w", encoding="utf-8") as fh:
+            fh.write("{corrupted_json")
+
+        recovered = reader.get_snapshot("BTCUSDT")
+        self.assertIsNotNone(recovered)
+        self.assertEqual(recovered["gradient_recent"], 0.42)
+        self.assertFalse(os.path.exists(trend_file + ".previous"))
 
 
 if __name__ == "__main__":

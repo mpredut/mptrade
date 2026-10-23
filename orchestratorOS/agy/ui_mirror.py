@@ -28,6 +28,7 @@ from orchestratorOS.agy.summary_store import (
     summaries_db,
     upsert_ui_visible_summary,
 )
+from state_io import durable_replace_file
 
 logger = logging.getLogger("orchestratorOS.agy.ui_mirror")
 
@@ -84,7 +85,7 @@ def sync_topic_thread_from_ui(
         os.makedirs(os.path.dirname(bot_db), exist_ok=True)
         shutil.copy2(ui_db, bot_db + ".tmp")
         drop_wal_sidecars(bot_db, force=True)
-        os.replace(bot_db + ".tmp", bot_db)
+        durable_replace_file(bot_db + ".tmp", bot_db)
         mtime = os.stat(ui_db).st_mtime
         os.utime(bot_db, (mtime, mtime))
 
@@ -159,7 +160,7 @@ def mirror_topic_thread_to_ui(
             checkpoint_db(dst_db)
         shutil.copy2(src_db, dst_db + ".tmp")
         drop_wal_sidecars(dst_db, force=True)
-        os.replace(dst_db + ".tmp", dst_db)
+        durable_replace_file(dst_db + ".tmp", dst_db)
         conn = sqlite3.connect(dst_db)
         try:
             conn.execute("UPDATE trajectory_meta SET source = ?", (UI_TRAJECTORY_SOURCE,))

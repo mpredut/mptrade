@@ -8,12 +8,16 @@ and observational state intentionally have different concurrency semantics.
 from __future__ import annotations
 
 import contextlib
+import glob
+import gzip
 import json
 import os
 import shutil
 import tempfile
-from collections.abc import Iterator
-from typing import Any
+from collections.abc import Callable, Iterator
+from typing import Any, TypeVar
+
+T = TypeVar("T")
 
 
 class StateReadError(RuntimeError):
@@ -40,6 +44,8 @@ def durable_replace_file(source: str, destination: str) -> None:
     destination = os.path.abspath(os.fspath(destination))
     os.makedirs(os.path.dirname(destination), exist_ok=True)
     os.replace(source, destination)
+    if source != destination and os.path.exists(source):
+        os.remove(source)
     with open(destination, "rb") as handle:
         os.fsync(handle.fileno())
     _fsync_parent_directory(destination)
@@ -138,3 +144,267 @@ def atomic_write_json(path: str, value: Any, *, indent: int | None = None,
             value, handle, indent=indent, sort_keys=sort_keys,
             separators=separators, ensure_ascii=ensure_ascii,
         )
+
+
+@contextlib.contextmanager
+def atomic_binary_writer(path: str) -> Iterator[Any]:
+    """Yield a binary handle and atomically publish it only after a durable write."""
+    destination = os.path.abspath(os.fspath(path))
+    directory = os.path.dirname(destination)
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        dir=directory, prefix=f".{os.path.basename(destination)}.", suffix=".tmp",
+    )
+    handle = os.fdopen(fd, "wb")
+    try:
+        yield handle
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.close()
+        os.replace(temporary, destination)
+        _fsync_parent_directory(destination)
+    except BaseException:
+        handle.close()
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_bytes(path: str, data: bytes | bytearray | memoryview) -> None:
+    """Durably and atomically write binary bytes to ``path``."""
+    with atomic_binary_writer(path) as handle:
+        handle.write(data)
+
+
+@contextlib.contextmanager
+def atomic_file_path(
+    path: str,
+    *,
+    prefix: str | None = None,
+    suffix: str = ".tmp",
+) -> Iterator[str]:
+    """Yield a temporary sibling path and durably publish it onto ``path`` on exit."""
+    destination = os.path.abspath(os.fspath(path))
+    directory = os.path.dirname(destination)
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        dir=directory,
+        prefix=prefix if prefix is not None else f".{os.path.basename(destination)}.",
+        suffix=suffix,
+    )
+    os.close(fd)
+    try:
+        yield temporary
+        durable_replace_file(temporary, destination)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_gzip_file(
+    source: str,
+    destination: str | None = None,
+    *,
+    remove_source: bool = False,
+    chunk_size: int = 1024 * 1024,
+) -> str:
+    """Compress ``source`` into ``destination`` (default ``<source>.gz``) atomically."""
+    source_path = os.path.abspath(os.fspath(source))
+    target_path = os.path.abspath(
+        os.fspath(destination) if destination is not None else f"{source_path}.gz"
+    )
+    with atomic_file_path(target_path, suffix=".tmp") as temp_gz:
+        with open(source_path, "rb") as src_handle, gzip.open(temp_gz, "wb") as gz_handle:
+            shutil.copyfileobj(src_handle, gz_handle, length=chunk_size)
+    if remove_source:
+        discard_generation_file(source_path)
+    return target_path
+
+
+def read_tail_lines(
+    path: str,
+    limit: int,
+    *,
+    chunk_size: int = 65536,
+) -> list[bytes]:
+    """Read up to the last ``limit`` lines from ``path`` with bounded memory."""
+    if limit <= 0 or not os.path.exists(path):
+        return []
+    chunks: list[bytes] = []
+    newline_count = 0
+    with open(path, "rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        position = handle.tell()
+        while position > 0 and newline_count <= limit:
+            step = min(chunk_size, position)
+            position -= step
+            handle.seek(position)
+            chunk = handle.read(step)
+            chunks.append(chunk)
+            newline_count += chunk.count(b"\n")
+    return b"".join(reversed(chunks)).splitlines()[-limit:]
+
+
+def truncate_file_bytes(path: str, size: int) -> None:
+    """Durably truncate ``path`` back to ``size`` bytes."""
+    with open(path, "r+b") as handle:
+        handle.truncate(size)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def prune_rotated_archives(
+    base_filename: str,
+    keep_count: int,
+) -> list[str]:
+    """Retain the newest ``keep_count`` ``<base_filename>.*.archive*`` files."""
+    pattern = f"{os.fspath(base_filename)}.*.archive*"
+    archives = sorted(
+        (path for path in glob.glob(pattern) if not path.endswith(".tmp")),
+        key=os.path.getmtime,
+        reverse=True,
+    )
+    for old_archive in archives[max(0, int(keep_count)):]:
+        discard_generation_file(old_archive)
+    return archives[:max(0, int(keep_count))]
+
+
+# ---------------------------------------------------------------------------
+# Transactional multi-file generation API (<file> + <file>.previous + <file>.meta)
+# ---------------------------------------------------------------------------
+
+def previous_generation_path(path: str) -> str:
+    """Return the canonical ``.previous`` staging path for ``path``."""
+    return f"{os.fspath(path)}.previous"
+
+
+def meta_file_path(path: str) -> str:
+    """Return the canonical ``.meta`` manifest path for ``path``."""
+    return f"{os.fspath(path)}.meta"
+
+
+def generation_lock_path(path: str) -> str:
+    """Return the canonical cross-process generation lock path for ``path``."""
+    return f"{os.fspath(path)}.generation.lock"
+
+
+def discard_generation_file(path: str | None) -> None:
+    """Best-effort removal of a staged or temporary generation file."""
+    if not path:
+        return
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def stage_previous_generation(path: str, *, backup_path: str | None = None) -> str:
+    """Snapshot the currently certified ``path`` at ``backup_path`` (default ``.previous``)."""
+    target_backup = backup_path or previous_generation_path(path)
+    atomic_snapshot_file(path, target_backup)
+    return target_backup
+
+
+def restore_previous_generation(path: str, *, backup_path: str | None = None) -> None:
+    """Durably restore ``backup_path`` (default ``.previous``) onto ``path``."""
+    durable_replace_file(backup_path or previous_generation_path(path), path)
+
+
+def write_meta_json(path: str, payload: dict[str, Any]) -> None:
+    """Atomically write ``payload`` to ``<path>.meta``."""
+    atomic_write_json(meta_file_path(path), payload)
+
+
+def commit_file_and_meta(
+    path: str,
+    write_data_fn: Callable[[], Any],
+    write_meta_fn: Callable[[], bool],
+    *,
+    backup_path: str | None = None,
+    had_prior_file: bool | None = None,
+    on_rollback_error: Callable[[OSError], None] | None = None,
+) -> bool:
+    """Transactionally replace ``path`` and commit its ``.meta`` manifest.
+
+    The currently certified generation of ``path`` is staged at ``<path>.previous``
+    before ``write_data_fn`` replaces ``path``. ``write_meta_fn`` is the single
+    atomic commit point: if it returns ``False`` or raises after ``path`` was
+    replaced, ``<path>.previous`` is durably restored (or the newly created
+    uncertified ``path`` is removed when no prior generation existed).
+    """
+    target_path = os.fspath(path)
+    if had_prior_file is None:
+        had_prior_file = os.path.exists(target_path)
+        if had_prior_file and backup_path is None:
+            backup_path = stage_previous_generation(target_path)
+        elif not had_prior_file:
+            discard_generation_file(previous_generation_path(target_path))
+    data_replaced = False
+    try:
+        write_data_fn()
+        data_replaced = True
+        if not write_meta_fn():
+            if backup_path is not None and os.path.exists(backup_path):
+                restore_previous_generation(target_path, backup_path=backup_path)
+            elif not had_prior_file:
+                discard_generation_file(target_path)
+            return False
+        if backup_path is not None:
+            discard_generation_file(backup_path)
+        return True
+    except BaseException:
+        if data_replaced:
+            if backup_path is not None and os.path.exists(backup_path):
+                try:
+                    restore_previous_generation(target_path, backup_path=backup_path)
+                except OSError as rollback_error:
+                    if on_rollback_error is not None:
+                        on_rollback_error(rollback_error)
+            elif not had_prior_file:
+                discard_generation_file(target_path)
+        raise
+    finally:
+        if backup_path is not None and os.path.exists(backup_path):
+            discard_generation_file(backup_path)
+
+
+def read_recovering_previous(
+    path: str,
+    read_fn: Callable[[str], T],
+    *,
+    backup_path: str | None = None,
+    error_mapper: Callable[[BaseException], BaseException] | None = None,
+) -> T:
+    """Read and validate ``path`` via ``read_fn``, recovering ``.previous`` if needed.
+
+    If ``read_fn(path)`` succeeds, any leftover ``.previous`` file is discarded.
+    If ``read_fn(path)`` fails and a valid ``.previous`` generation exists,
+    ``.previous`` is validated with ``read_fn(backup_path)``, durably promoted
+    onto ``path``, and re-read from ``path``.
+    """
+    target_path = os.fspath(path)
+    target_backup = backup_path or previous_generation_path(target_path)
+    try:
+        result = read_fn(target_path)
+        if os.path.exists(target_backup):
+            discard_generation_file(target_backup)
+        return result
+    except BaseException as primary_exc:
+        if not os.path.exists(target_backup):
+            raise
+        try:
+            read_fn(target_backup)
+            restore_previous_generation(target_path, backup_path=target_backup)
+            return read_fn(target_path)
+        except BaseException as recovery_exc:
+            if error_mapper is not None:
+                mapped = error_mapper(recovery_exc)
+                if mapped is not recovery_exc:
+                    raise mapped from recovery_exc
+            raise primary_exc from recovery_exc
+

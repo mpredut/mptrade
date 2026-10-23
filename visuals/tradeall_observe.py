@@ -477,18 +477,10 @@ def _close_new_figures(function):
 
 def _save_figure_atomic(fig, out_path, **savefig_kwargs):
     """Publish a PNG only after rendering completes successfully."""
-    directory = os.path.dirname(os.path.abspath(out_path))
-    os.makedirs(directory, exist_ok=True)
-    fd, temp_path = tempfile.mkstemp(prefix=".tradeall_observe_", suffix=".png", dir=directory)
-    os.close(fd)
-    try:
+    from state_io import atomic_file_path
+
+    with atomic_file_path(out_path, prefix=".tradeall_observe_", suffix=".png") as temp_path:
         fig.savefig(temp_path, format="png", **savefig_kwargs)
-        os.replace(temp_path, out_path)
-    finally:
-        try:
-            os.unlink(temp_path)
-        except FileNotFoundError:
-            pass
 
 
 def _release_unused_memory():

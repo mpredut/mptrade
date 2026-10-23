@@ -1659,32 +1659,12 @@ def resolve(symbol, side):
 
 
 def _write_nolock(items):
-    """Replace the queue file atomically while the caller holds the lock.
+    """Replace the queue file atomically while the caller holds the lock."""
+    from state_io import atomic_text_writer
 
-    The temporary file and parent directory are fsynced around the atomic rename so a
-    successful mutation survives an ordinary process crash and is power-loss resilient
-    on filesystems that honor those primitives.
-    """
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(QUEUE_FILE), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            for rec in items:
-                f.write(json.dumps(rec) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, QUEUE_FILE)
-        try:
-            dfd = os.open(os.path.dirname(QUEUE_FILE), os.O_RDONLY)
-            try:
-                os.fsync(dfd)
-            finally:
-                os.close(dfd)
-        except OSError:
-            pass
-    except Exception:
-        if os.path.exists(tmp):
-            os.remove(tmp)
-        raise
+    with atomic_text_writer(QUEUE_FILE) as f:
+        for rec in items:
+            f.write(json.dumps(rec) + "\n")
 
 
 def rewrite(items):

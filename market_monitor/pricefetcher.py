@@ -735,9 +735,10 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         try:
             with self.lock:
                 counts = {s: len(v) for s, v in self.cache.items()}
-                atomic_write_json(self.filename, {
+                payload = {
                     "items": self.cache,
                     "fetchtime": self.fetchtime_per_symbol,
+                    "rest_sync_cursor": self._rest_sync_cursor_per_symbol,
                     "metadata": {
                         "last_cleanup": time.time(),
                         "retention_days": PRICE_HISTORY_RETENTION_DAYS,
@@ -749,12 +750,18 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                         "active_symbols": list(self.active_symbols),
                         "preferred_source": self.symbol_preferred_source,
                     }
-                }, indent=1)
-                self._persisted_counts = counts
-                self._write_meta({
+                }
+                meta_payload = {
                     "counts": dict(counts),
                     "fetchtime": dict(self.fetchtime_per_symbol),
-                })
+                    "rest_sync_cursor": dict(self._rest_sync_cursor_per_symbol),
+                }
+                if not self._commit_file_and_meta_locked(
+                    lambda: atomic_write_json(self.filename, payload, indent=1),
+                    meta_payload,
+                ):
+                    return False
+                self._persisted_counts = counts
                 print(f"[{self.cls_name}][info] Save cache to file {self.filename}")
                 return True
         except Exception as e:

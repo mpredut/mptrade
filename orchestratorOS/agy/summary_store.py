@@ -15,6 +15,7 @@ import sqlite3
 from typing import Iterable, Optional, Set, Tuple
 
 from orchestratorOS.agy.protobuf import drop_entries, replace_summary_entry, summary_ui_visible
+from state_io import atomic_write_bytes
 
 logger = logging.getLogger("orchestratorOS.agy.summary_store")
 
@@ -157,9 +158,7 @@ def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
                 with open(pb_path, "rb") as f:
                     buf, updated = replace_summary_entry(f.read(), row["conversation_id"], raw_sum)
                 if updated:
-                    with open(pb_path + ".tmp", "wb") as f:
-                        f.write(buf)
-                    os.replace(pb_path + ".tmp", pb_path)
+                    atomic_write_bytes(pb_path, buf)
     write_annotation_title(cli_base, row["conversation_id"], title)
 
 
@@ -194,9 +193,7 @@ def _drop_summaries(cli_base: str, cids: Set[str]) -> None:
             with open(path, "rb") as f:
                 buf, removed = drop_entries(f.read(), cids)
             if removed:
-                with open(path + ".tmp", "wb") as f:
-                    f.write(buf)
-                os.replace(path + ".tmp", path)
+                atomic_write_bytes(path, buf)
 
 
 def delete_threads(cids: Set[str], cli_base: str, dry_run: bool = False) -> Tuple[int, int]:

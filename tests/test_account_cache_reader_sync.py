@@ -1448,6 +1448,266 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
                     )
                 remote_mock.assert_not_called()
 
+    def test_restart_preserves_rest_sync_cursor_and_recovers_ws_gap_before_ready(self):
+        t0 = 2_000_000_000_000
+        fill_1_order = {**_order(1, t0), "_fillIds": ["1"]}
+        fill_2_order = {**_order(2, t0 + 1000), "_fillId": "2"}
+        fill_3_order = {**_order(3, t0 + 3000), "_fillId": "3"}
+        trade_1 = _trade(1, t0)
+        trade_2 = _trade(2, t0 + 1000)
+        trade_3 = _trade(3, t0 + 3000)
+
+        order_path = os.path.join(self.tmp.name, "orders_gap.json")
+        trade_path = os.path.join(self.tmp.name, "trades_gap.jsonl")
+        health_path = os.path.join(self.tmp.name, "health_gap.json")
+
+        with patch.object(
+            cm.CacheOrderManager, "get_remote_items", return_value=[fill_1_order]
+        ), patch.object(
+            cm.CacheTradeManager, "get_remote_items", return_value=[trade_1]
+        ), patch.object(
+            cm.time, "time", return_value=t0 / 1000.0
+        ):
+            order_writer = cm.CacheOrderManager(
+                3600, ["BTCUSDC"], order_path, api_client=cm.api
+            )
+            trade_writer = cm.CacheTradeManager(
+                3600, ["BTCUSDC"], trade_path, api_client=cm.api
+            )
+            order_writer.save_state = True
+            trade_writer.save_state = True
+            self.assertTrue(order_writer.query_remote_and_update_cache())
+            self.assertTrue(trade_writer.query_remote_and_update_cache())
+            self.assertTrue(order_writer.save_state_to_file())
+            self.assertTrue(trade_writer.save_state_to_file())
+
+        self.assertEqual(
+            order_writer._rest_sync_cursor_per_symbol["BTCUSDC"], t0 - 1
+        )
+        self.assertEqual(
+            trade_writer._rest_sync_cursor_per_symbol["BTCUSDC"], t0 - 1
+        )
+
+        # Fill 2 at T0+1s is missed by WS; Fill 3 at T0+3s arrives via WS and is saved.
+        with patch.object(cm.time, "time", return_value=(t0 + 3000) / 1000.0):
+            order_writer.on_items_update("BTCUSDC", [fill_3_order])
+            trade_writer.on_items_update("BTCUSDC", [trade_3])
+            self.assertTrue(order_writer.save_state_to_file())
+            self.assertTrue(trade_writer.save_state_to_file())
+
+        self.assertEqual(
+            order_writer.fetchtime_per_symbol["BTCUSDC"], t0 + 3000
+        )
+        self.assertEqual(
+            trade_writer.fetchtime_per_symbol["BTCUSDC"], t0 + 3000
+        )
+        self.assertEqual(
+            order_writer._rest_sync_cursor_per_symbol["BTCUSDC"], t0 - 1
+        )
+        self.assertEqual(
+            trade_writer._rest_sync_cursor_per_symbol["BTCUSDC"], t0 - 1
+        )
+
+        # Simulate process restart: reload from disk before any new REST call.
+        restarted_order = cm.CacheOrderManager(
+            3600, ["BTCUSDC"], order_path, api_client=cm.api
+        )
+        restarted_trade = cm.CacheTradeManager(
+            3600, ["BTCUSDC"], trade_path, api_client=cm.api
+        )
+        restarted_order.save_state = True
+        restarted_trade.save_state = True
+        self.assertEqual(
+            restarted_order._rest_sync_cursor_per_symbol["BTCUSDC"], t0 - 1
+        )
+        self.assertEqual(
+            restarted_trade._rest_sync_cursor_per_symbol["BTCUSDC"], t0 - 1
+        )
+
+        order_poll_starts = []
+        trade_poll_starts = []
+
+        def fake_order_remote(symbol, startTime):
+            order_poll_starts.append(startTime)
+            all_fills = [fill_1_order, fill_2_order, fill_3_order]
+            return [f for f in all_fills if int(f["timestamp"]) >= startTime]
+
+        def fake_trade_remote(symbol, startTime):
+            trade_poll_starts.append(startTime)
+            all_trades = [trade_1, trade_2, trade_3]
+            return [t for t in all_trades if int(t["time"]) >= startTime]
+
+        with patch.object(
+            restarted_order, "get_remote_items", side_effect=fake_order_remote
+        ), patch.object(
+            restarted_trade, "get_remote_items", side_effect=fake_trade_remote
+        ), patch.object(
+            restarted_order, "_is_canonical_account_cache", return_value=True
+        ), patch.object(
+            restarted_trade, "_is_canonical_account_cache", return_value=True
+        ), patch.object(
+            cm.time, "time", return_value=(t0 + 5000) / 1000.0
+        ), patch.object(
+            health.time, "time", return_value=(t0 + 5000) / 1000.0
+        ):
+            health.enable_writer(path=health_path, now_ms=t0 + 5000)
+            try:
+                self.assertTrue(restarted_order.query_remote_and_update_cache())
+                self.assertTrue(restarted_order._persist_periodic_state(True))
+                self.assertTrue(restarted_trade.query_remote_and_update_cache())
+                self.assertTrue(restarted_trade._persist_periodic_state(True))
+                status = health.inspect_health(
+                    now_ms=t0 + 5000, path=health_path
+                )
+            finally:
+                health.disable_writer(now_ms=t0 + 5000)
+
+        self.assertEqual(order_poll_starts, [t0 - 1])
+        self.assertEqual(trade_poll_starts, [t0 - 1])
+        self.assertEqual(
+            sorted(int(o["orderId"]) for o in restarted_order.cache["BTCUSDC"]),
+            [1, 2, 3],
+        )
+        self.assertEqual(
+            sorted(int(t["id"]) for t in restarted_trade.cache["BTCUSDC"]),
+            [1, 2, 3],
+        )
+        self.assertTrue(status.ready)
+        self.assertEqual(
+            restarted_order._rest_sync_cursor_per_symbol["BTCUSDC"],
+            t0 + 5000 - 1,
+        )
+        self.assertEqual(
+            restarted_trade._rest_sync_cursor_per_symbol["BTCUSDC"],
+            t0 + 5000 - 1,
+        )
+
+    def test_interrupted_order_save_recovers_previous_certified_generation(self):
+        now_ms = 2_000_000_000_000
+        first_order = _order(1, now_ms)
+        second_order = _order(2, now_ms + 1000)
+
+        with self.subTest("failed _write_meta rolls back Order data to prior generation"):
+            self._reset_temp()
+            writer = self._order_manager([first_order], now_ms)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            v1 = writer._persisted_data_version
+
+            writer.on_items_update(
+                "BTCUSDC", [{**second_order, "_fillId": "2"}]
+            )
+            with patch.object(writer, "_write_meta", return_value=False):
+                self.assertFalse(writer.save_state_to_file())
+
+            self.assertFalse(
+                os.path.exists(writer._order_previous_generation_path())
+            )
+            restarted_writer = cm.CacheOrderManager(
+                3600, ["BTCUSDC"], writer.filename, api_client=cm.api
+            )
+            restarted_reader = cm.CacheOrderManager(
+                3600,
+                ["BTCUSDC"],
+                writer.filename,
+                api_client=cm.api,
+                read_only=True,
+            )
+            restarted_reader.ensure_persisted_version(v1)
+            self.assertEqual(
+                [int(o["orderId"]) for o in restarted_writer.cache["BTCUSDC"]],
+                [1],
+            )
+            self.assertEqual(
+                [int(o["orderId"]) for o in restarted_reader.cache["BTCUSDC"]],
+                [1],
+            )
+
+        with self.subTest("crash between Order data write and meta write recovers from .previous"):
+            self._reset_temp()
+            writer = self._order_manager([first_order], now_ms)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            v1 = writer._persisted_data_version
+
+            # Stage .previous and overwrite main file with v2 while leaving .meta at v1.
+            cm.atomic_snapshot_file(
+                writer.filename, writer._order_previous_generation_path()
+            )
+            v2_items = {"BTCUSDC": [first_order, second_order]}
+            v2_ft = {"BTCUSDC": now_ms + 1000}
+            v2_version = writer._snapshot_data_version(v2_items, v2_ft)
+            with cm.atomic_write(writer.filename) as handle:
+                json.dump(
+                    {
+                        "data_version": v2_version,
+                        "fetchtime": v2_ft,
+                        "rest_sync_cursor": {"BTCUSDC": now_ms},
+                        "items": v2_items,
+                    },
+                    handle,
+                )
+
+            restarted_reader = cm.CacheOrderManager(
+                3600,
+                ["BTCUSDC"],
+                writer.filename,
+                api_client=cm.api,
+                read_only=True,
+            )
+            restarted_reader.ensure_persisted_version(v1)
+            self.assertFalse(
+                os.path.exists(writer._order_previous_generation_path())
+            )
+            self.assertEqual(
+                [int(o["orderId"]) for o in restarted_reader.cache["BTCUSDC"]],
+                [1],
+            )
+            restarted_writer = cm.CacheOrderManager(
+                3600, ["BTCUSDC"], writer.filename, api_client=cm.api
+            )
+            self.assertEqual(
+                [int(o["orderId"]) for o in restarted_writer.cache["BTCUSDC"]],
+                [1],
+            )
+
+        with self.subTest(msg="crashed_trade_compaction_recovered_by_live_reader_and_restart"):
+            self._reset_temp()
+            writer = self._trade_manager([_trade(1, 1000)], 1000)
+            writer.save_state = True
+            self.assertTrue(writer.save_state_to_file())
+            v1 = writer._persisted_data_version
+
+            reader = cm.CacheTradeManager(
+                3600, ["BTCUSDC"], writer.filename, api_client=cm.api, read_only=True
+            )
+            reader.ensure_persisted_version(v1)
+
+            with writer.lock:
+                writer.cache["BTCUSDC"].append(_trade(2, 2000))
+                writer.fetchtime_per_symbol["BTCUSDC"] = 2000
+                writer._mark_account_cache_dirty_locked()
+            self.assertTrue(writer.save_state_to_file())
+            certified_version = writer._persisted_data_version
+
+            # Simulate a process crash during compaction after replacing JSONL
+            # with a truncated/uncommitted payload before .meta update.
+            cm.atomic_snapshot_file(writer.filename, writer._previous_generation_path())
+            with cm.atomic_write(writer.filename) as handle:
+                handle.write(
+                    json.dumps({"s": "BTCUSDC", "i": _trade(1, 1000)}, separators=(",", ":"))
+                    + "\n"
+                )
+            self.assertTrue(os.path.exists(writer._previous_generation_path()))
+
+            # Live reader ensure_persisted_version must recover .previous and advance to v2.
+            reader.ensure_persisted_version(certified_version)
+            self.assertFalse(os.path.exists(writer._previous_generation_path()))
+            self.assertEqual(
+                [int(t["id"]) for t in reader.cache["BTCUSDC"]],
+                [1, 2],
+            )
+
 
 class AccountCacheReaderConfirmationTest(unittest.TestCase):
     def setUp(self):

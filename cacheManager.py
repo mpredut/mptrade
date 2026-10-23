@@ -20,11 +20,32 @@ from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from typing import Optional
 from state_io import (
+    atomic_gzip_file,
     atomic_snapshot_file,
     atomic_text_writer,
     atomic_write_json as _atomic_write_json,
+    commit_file_and_meta,
+    discard_generation_file,
     durable_replace_file,
+    generation_lock_path,
+    meta_file_path,
+    previous_generation_path,
+    prune_rotated_archives,
+    read_recovering_previous,
+    read_tail_lines,
+    restore_previous_generation,
+    stage_previous_generation,
+    truncate_file_bytes,
 )
+from cachepaths import (
+    EXACT_LEGACY_FILENAMES as _EXACT_LEGACY_FILENAMES,
+    PREFIX_LEGACY_FILENAMES as _PREFIX_LEGACY_FILENAMES,
+    legacy_filenames_for as _legacy_filenames_for,
+    migrate_legacy_filename_if_needed as _migrate_legacy_filename_if_needed,
+)
+import cacheintegrity as _cache_integrity
+from binance_api import bapi_ws_bridge as _bapi_ws_bridge
+from binance_api import bapi_ws_health as _bapi_ws_health
 from lock import FileLock
 import binance_cache_health as account_cache_health
 
@@ -125,117 +146,47 @@ def atomic_write_json(path, obj, indent=None):
 
 #log.disable_print()
 
-# WS-only mode: when True, polling for Order/Trade/AssetValue is paused while WS is healthy.
-WS_ONLY_MODE = False
-WS_LOSS_TIMEOUT_SEC = 40 # 600  # 10 minute
-WS_EVENT_LOG_ENABLED = True
+# WS-only mode and health state live in ``binance_api.bapi_ws_health``.
+WS_ONLY_MODE = _bapi_ws_health.WS_ONLY_MODE
+WS_LOSS_TIMEOUT_SEC = _bapi_ws_health.WS_LOSS_TIMEOUT_SEC
+WS_EVENT_LOG_ENABLED = _bapi_ws_health.WS_EVENT_LOG_ENABLED
 
-_ws_health_lock = threading.Lock()
-_ws_available = False
-_ws_last_event_ts = 0.0
-_ws_is_healthy = False
-_ws_needs_rest_resync = set()
+_ws_health_lock = _bapi_ws_health._ws_health_lock
+_ws_available = _bapi_ws_health._ws_available
+_ws_last_event_ts = _bapi_ws_health._ws_last_event_ts
+_ws_is_healthy = _bapi_ws_health._ws_is_healthy
+_ws_needs_rest_resync = _bapi_ws_health._ws_needs_rest_resync
 
-_CACHE_META_SCHEMA_VERSION = 2
+_CACHE_META_SCHEMA_VERSION = _cache_integrity.CACHE_META_SCHEMA_VERSION
 _TRADE_CACHE_CLASSES = {"CacheTrade", "CacheTradeManager"}
 _ORDER_CACHE_CLASSES = {"CacheOrder", "CacheOrderManager"}
 _ACCOUNT_CACHE_CLASSES = _ORDER_CACHE_CLASSES | _TRADE_CACHE_CLASSES
 
-_EXACT_LEGACY_FILENAMES = {
-    "cache_current_price.json": ("cache_currentprice.json",),
-    "cache_short_trend.json": ("cache_instant_trend.json",),
-    "cache_long_trend.json": ("cache_price_long_trend.json",),
-}
-_PREFIX_LEGACY_FILENAMES = (
-    ("cache_sparse_price_", ("cache_price_sparse_", "cache_price_")),
-    ("cache_24_price_", ("cache_24price_",)),
-    ("cache_365_price_", ("cache_365price_", "cache_24price_long_")),
-)
-
-
-def _legacy_filenames_for(filepath: str) -> tuple[str, ...]:
-    dirname, basename = os.path.split(filepath)
-    candidates = _EXACT_LEGACY_FILENAMES.get(basename)
-    if candidates is None:
-        for new_prefix, old_prefixes in _PREFIX_LEGACY_FILENAMES:
-            if basename.startswith(new_prefix):
-                suffix = basename[len(new_prefix):]
-                candidates = tuple(old_prefix + suffix for old_prefix in old_prefixes)
-                break
-    if not candidates:
-        return ()
-    return tuple(os.path.join(dirname, c) for c in candidates)
-
-
-def _migrate_legacy_filename_if_needed(filepath: str) -> None:
-    """Rename legacy pre-symmetry cache files in place when the new path is absent."""
-    if os.path.exists(filepath):
-        return
-    for legacy_path in _legacy_filenames_for(filepath):
-        if not os.path.exists(legacy_path):
-            continue
-        try:
-            os.replace(legacy_path, filepath)
-            if (
-                os.path.exists(legacy_path + ".meta")
-                and not os.path.exists(filepath + ".meta")
-            ):
-                os.replace(legacy_path + ".meta", filepath + ".meta")
-            for old_archive in glob.glob(legacy_path + ".*.archive*"):
-                suffix = old_archive[len(legacy_path):]
-                new_archive = filepath + suffix
-                if not os.path.exists(new_archive):
-                    os.replace(old_archive, new_archive)
-            builtins.print(
-                f"[cacheManager][migration] renamed {legacy_path} -> {filepath}"
-            )
-            return
-        except OSError as exc:
-            builtins.print(
-                f"[cacheManager][migration] failed renaming "
-                f"{legacy_path} -> {filepath}: {exc}"
-            )
-
 
 def _mark_ws_available(value):
     global _ws_available
-    with _ws_health_lock:
-        _ws_available = value
+    _ws_available = _bapi_ws_health.mark_ws_available(value)
 
 
 def _mark_ws_event_received():
     global _ws_last_event_ts, _ws_is_healthy
-    with _ws_health_lock:
-        _ws_last_event_ts = time.time()
-        _ws_is_healthy = True
+    _ws_last_event_ts = _bapi_ws_health.mark_ws_event_received()
+    _ws_is_healthy = _bapi_ws_health._ws_is_healthy
 
 
 def _mark_ws_unhealthy():
-    builtins.print("[cacheManager][WS] marked unhealthy")
     global _ws_is_healthy
-    with _ws_health_lock:
-        _ws_is_healthy = False
-        _ws_needs_rest_resync.update({
-            "CacheOrder", "CacheOrderManager",
-            "CacheTrade", "CacheTradeManager",
-            "CacheAssetValue", "CacheAssetValueManager",
-        })
+    _bapi_ws_health.mark_ws_unhealthy()
+    _ws_is_healthy = _bapi_ws_health._ws_is_healthy
 
 
 def _should_poll_for_manager(cls_name):
-    if not WS_ONLY_MODE:
-        return True
-    ws_managed_classes = {
-        "CacheOrder", "CacheOrderManager",
-        "CacheTrade", "CacheTradeManager",
-        "CacheAssetValue", "CacheAssetValueManager",
-    }
-    if cls_name not in ws_managed_classes:
-        return True
-    with _ws_health_lock:
-        if cls_name in _ws_needs_rest_resync:
-            return True
-        return (not _ws_available) or (not _ws_is_healthy)
+    return _bapi_ws_health.should_poll_for_manager(
+        cls_name,
+        ws_only_mode=WS_ONLY_MODE,
+        ws_available=_ws_available,
+        ws_is_healthy=_ws_is_healthy,
+    )
 
 class CacheManagerInterface(ABC):
     _live_instances = weakref.WeakSet()
@@ -380,24 +331,34 @@ class CacheManagerInterface(ABC):
         if self.cls_name in _ORDER_CACHE_CLASSES:
             self._load_order_state()
             return
-        if os.path.exists(self.filename):
+        backup_path = self._previous_generation_path()
+        if os.path.exists(self.filename) or os.path.exists(backup_path):
             try:
-                with open(self.filename, "r") as f:
-                    data = json.load(f)
-                    with self.lock:
-                        self.cache = data.get("items", {})
-                        if not isinstance(self.cache, dict):
-                            # Convert the legacy list format to a dictionary.
-                            self.cache = {sym: item for sym, item in zip(self.symbols, self.cache)}
-                            print(f"[{self.cls_name}][warning] self.cache is not Dict!!!!")    
-                        
-                        self.fetchtime_per_symbol = data.get("fetchtime", {})
-                        self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
-                        if not self.cache:
-                            print(f"[{self.cls_name}][warning] cache is None")
-                        if not self.fetchtime_per_symbol:
-                            print(f"[{self.cls_name}][warning] fetchtime_per_symbol is None")
+                def _read_json(candidate_path):
+                    with open(candidate_path, "r") as handle:
+                        return json.load(handle)
+
+                data = read_recovering_previous(
+                    self.filename, _read_json, backup_path=backup_path
+                )
+                with self.lock:
+                    self.cache = data.get("items", {})
+                    if not isinstance(self.cache, dict):
+                        # Convert the legacy list format to a dictionary.
+                        self.cache = {sym: item for sym, item in zip(self.symbols, self.cache)}
+                        print(f"[{self.cls_name}][warning] self.cache is not Dict!!!!")    
                     
+                    self.fetchtime_per_symbol = data.get("fetchtime", {})
+                    rest_cursor = data.get("rest_sync_cursor")
+                    self._rest_sync_cursor_per_symbol = dict(
+                        rest_cursor
+                        if isinstance(rest_cursor, dict)
+                        else self.fetchtime_per_symbol
+                    )
+                    if not self.cache:
+                        print(f"[{self.cls_name}][warning] cache is None")
+                    if not self.fetchtime_per_symbol:
+                        print(f"[{self.cls_name}][warning] fetchtime_per_symbol is None")
             except Exception as e:
                 print(f"[{self.cls_name}][Error] While reading the cache file {self.filename} : {e}")
                 if not self.read_only:
@@ -409,18 +370,74 @@ class CacheManagerInterface(ABC):
                 self.query_remote_and_update_cache()
                 self.save_state_to_file_if_enabled()
 
+    _normalize_timestamp_map = staticmethod(
+        _cache_integrity.normalize_timestamp_map
+    )
+
+    def _preserve_rest_sync_cursor_before_update_locked(self, symbol):
+        """Anchor the REST cursor before a non-REST update advances fetchtime."""
+        if symbol in self._rest_sync_cursor_per_symbol:
+            return
+        if symbol in self.fetchtime_per_symbol:
+            prior_cursor = int(self.fetchtime_per_symbol[symbol] or 0)
+        else:
+            rebuilt = self._rebuild_fetchtimes()
+            prior_cursor = int(
+                rebuilt.get(symbol, self.fallback_time_default) or 0
+            )
+        self._rest_sync_cursor_per_symbol[symbol] = max(0, prior_cursor)
+
+    def _read_legacy_order_snapshot_strict(self, legacy_meta, *, path=None):
+        with open(path or self.filename, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict):
+            raise ValueError("Order cache root is not an object")
+        if data.get("data_version") is not None:
+            raise ValueError("versioned Order cache is missing its versioned manifest")
+        items = data.get("items")
+        fetchtime = data.get("fetchtime", {})
+        if not isinstance(items, dict) or not isinstance(fetchtime, dict):
+            raise ValueError("invalid Order cache maps")
+        raw_cursor = data.get("rest_sync_cursor")
+        if raw_cursor is None and legacy_meta is not None:
+            raw_cursor = legacy_meta.get("rest_sync_cursor")
+        if raw_cursor is None:
+            rest_sync_cursor = dict(fetchtime)
+        else:
+            rest_sync_cursor = self._normalize_timestamp_map(
+                raw_cursor, "Order cache rest_sync_cursor"
+            )
+        actual_counts = {
+            s: len(v) for s, v in items.items() if isinstance(v, list)
+        }
+        if legacy_meta is not None and "counts" in legacy_meta:
+            expected_counts = legacy_meta["counts"]
+            if not isinstance(expected_counts, dict) or any(
+                not isinstance(s, str) or isinstance(c, bool) or not isinstance(c, int) or c < 0
+                for s, c in expected_counts.items()
+            ):
+                raise ValueError("invalid legacy Order manifest counts")
+            if actual_counts != expected_counts:
+                raise ValueError("Order cache counts differ from legacy manifest")
+        return items, dict(fetchtime), dict(rest_sync_cursor), actual_counts
+
     def _load_order_state(self):
         """Load Order cache state strictly when durable data or metadata exists."""
-        meta_path = self.filename + ".meta"
-        has_file = os.path.exists(self.filename)
-        has_meta = os.path.exists(meta_path)
-        if not has_file and not has_meta:
-            if self.read_only:
-                return
+        with self._order_generation_lock():
+            loaded = self._load_order_state_generation_locked()
+        if not loaded and not self.read_only:
             print(f"[{self.cls_name}][Info] File is missing, may be is it first time run. Creating it ....")
             self.query_remote_and_update_cache()
             self.save_state_to_file_if_enabled()
-            return
+
+    def _load_order_state_generation_locked(self):
+        meta_path = self.filename + ".meta"
+        backup_path = self._order_previous_generation_path()
+        has_file = os.path.exists(self.filename)
+        has_meta = os.path.exists(meta_path)
+        has_backup = os.path.exists(backup_path)
+        if not has_file and not has_meta and not has_backup:
+            return False
 
         reason = self._account_reader_reason()
         legacy_meta = None
@@ -434,42 +451,30 @@ class CacheManagerInterface(ABC):
                 raise account_cache_health.AccountCacheNotReady(reason)
             if raw_meta.get("schema_version") is not None:
                 metadata = self._load_versioned_account_meta(optional=False)
-                self._ensure_order_version(str(metadata["data_version"]))
-                return
+                self._ensure_order_version_generation_locked(
+                    str(metadata["data_version"])
+                )
+                return True
             legacy_meta = raw_meta
 
-        if not has_file:
+        if not has_file and not has_backup:
             raise account_cache_health.AccountCacheNotReady(reason)
         try:
-            with open(self.filename, "r", encoding="utf-8") as handle:
-                data = json.load(handle)
-            if not isinstance(data, dict):
-                raise ValueError("Order cache root is not an object")
-            if data.get("data_version") is not None:
-                raise ValueError("versioned Order cache is missing its versioned manifest")
-            items = data.get("items")
-            fetchtime = data.get("fetchtime", {})
-            if not isinstance(items, dict) or not isinstance(fetchtime, dict):
-                raise ValueError("invalid Order cache maps")
-            if legacy_meta is not None and "counts" in legacy_meta:
-                expected_counts = legacy_meta["counts"]
-                if not isinstance(expected_counts, dict) or any(
-                    not isinstance(s, str) or isinstance(c, bool) or not isinstance(c, int) or c < 0
-                    for s, c in expected_counts.items()
-                ):
-                    raise ValueError("invalid legacy Order manifest counts")
-                actual_counts = {
-                    s: len(v) for s, v in items.items() if isinstance(v, list)
-                }
-                if actual_counts != expected_counts:
-                    raise ValueError("Order cache counts differ from legacy manifest")
+            items, fetchtime, rest_sync_cursor, counts = (
+                read_recovering_previous(
+                    self.filename,
+                    lambda candidate_path: self._read_legacy_order_snapshot_strict(
+                        legacy_meta, path=candidate_path
+                    ),
+                    backup_path=backup_path,
+                )
+            )
             with self.lock:
                 self.cache = items
                 self.fetchtime_per_symbol = dict(fetchtime)
-                self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
-                self._persisted_counts = {
-                    s: len(v) for s, v in items.items() if isinstance(v, list)
-                }
+                self._rest_sync_cursor_per_symbol = dict(rest_sync_cursor)
+                self._persisted_counts = dict(counts)
+            return True
         except account_cache_health.AccountCacheNotReady:
             raise
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -503,69 +508,32 @@ class CacheManagerInterface(ABC):
             and set(self.symbols) == set(sym.symbols)
         )
 
-    @staticmethod
-    def _snapshot_data_version(items, fetchtime=None):
-        """Return a stable version for an exact atomic JSON items snapshot."""
-        canonical = json.dumps(
-            {"items": items},
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        return "snapshot:" + hashlib.blake2s(
-            canonical, digest_size=16
-        ).hexdigest()
-
-    @staticmethod
-    def _trade_data_version(stream_id, revision):
-        return f"{stream_id}:{int(revision)}"
-
-    @staticmethod
-    def _trade_records_digest(records, initial_digest=""):
-        """Extend a deterministic digest chain with canonical Trade rows."""
-        if initial_digest:
-            if (
-                not isinstance(initial_digest, str)
-                or not initial_digest.startswith("chain:")
-            ):
-                raise ValueError("invalid Trade content digest")
-            try:
-                state = bytes.fromhex(initial_digest.removeprefix("chain:"))
-            except ValueError as exc:
-                raise ValueError("invalid Trade content digest") from exc
-            if len(state) != 16:
-                raise ValueError("invalid Trade content digest")
-        else:
-            state = bytes(16)
-        for symbol, item in records:
-            row = json.dumps(
-                {"s": symbol, "i": item},
-                ensure_ascii=True,
-                separators=(",", ":"),
-            ).encode("utf-8") + b"\n"
-            state = hashlib.blake2s(
-                state + row, digest_size=16
-            ).digest()
-        return "chain:" + state.hex()
+    _snapshot_data_version = staticmethod(
+        _cache_integrity.snapshot_data_version
+    )
+    _trade_data_version = staticmethod(
+        _cache_integrity.trade_data_version
+    )
+    _trade_records_digest = staticmethod(
+        _cache_integrity.trade_records_digest
+    )
 
     def _account_meta_snapshot(self, *, data_version, fetchtime, counts,
+                               rest_sync_cursor=None,
                                stream_id="", revision=0,
                                committed_bytes=None,
                                content_digest=None):
-        payload = {
-            "schema_version": _CACHE_META_SCHEMA_VERSION,
-            "data_version": data_version,
-            "fetchtime": dict(fetchtime),
-            "counts": dict(counts),
-        }
-        if committed_bytes is not None:
-            payload.update({
-                "stream_id": stream_id,
-                "revision": int(revision),
-                "committed_bytes": int(committed_bytes),
-                "content_digest": content_digest,
-            })
-        return payload
+        return _cache_integrity.build_account_meta_snapshot(
+            data_version=data_version,
+            fetchtime=fetchtime,
+            counts=counts,
+            rest_sync_cursor=rest_sync_cursor,
+            stream_id=stream_id,
+            revision=revision,
+            committed_bytes=committed_bytes,
+            content_digest=content_digest,
+            schema_version=_CACHE_META_SCHEMA_VERSION,
+        )
 
     def _remember_account_commit_locked(self, metadata):
         """Remember and publish one durable account-cache version."""
@@ -601,36 +569,12 @@ class CacheManagerInterface(ABC):
         if self._is_account_cache():
             self._account_cache_dirty = True
 
-    @staticmethod
-    def _trade_semantic_signature(item):
-        """Normalize the immutable financial fields shared by REST and WebSocket."""
-        return (
-            str(item["symbol"]).upper(),
-            int(item["id"]),
-            int(item["orderId"]),
-            Decimal(str(item["price"])).normalize(),
-            Decimal(str(item["qty"])).normalize(),
-            int(item["time"]),
-            item["isBuyer"],
-        )
-
-    @classmethod
-    def _dedupe_trade_items_by_id(cls, items):
-        """Collapse equivalent Trade IDs and reject conflicting immutable fills."""
-        seen = {}
-        deduped = []
-        for item in items:
-            trade_id = str(int(item["id"]))
-            signature = cls._trade_semantic_signature(item)
-            if trade_id in seen:
-                if seen[trade_id] != signature:
-                    raise ValueError(
-                        f"conflicting Trade rows for immutable ID {trade_id}"
-                    )
-                continue
-            seen[trade_id] = signature
-            deduped.append(item)
-        return deduped
+    _trade_semantic_signature = staticmethod(
+        _cache_integrity.trade_semantic_signature
+    )
+    _dedupe_trade_items_by_id = staticmethod(
+        _cache_integrity.dedupe_trade_items_by_id
+    )
 
     def _validate_account_rows_locked(self):
         """Reject any financial row that strict readers could not accept."""
@@ -689,11 +633,34 @@ class CacheManagerInterface(ABC):
             fetchtime_map = payload.get("fetchtime", {})
             payload["max_ts"] = max(fetchtime_map.values()) if fetchtime_map else 0
             payload["saved_at"] = int(time.time() * 1000)
-            atomic_write_json(self.filename + ".meta", payload)
+            atomic_write_json(meta_file_path(self.filename), payload)
             return True
         except Exception as e:
             print(f"[{self.cls_name}][Error] metadata {self.filename}: {e}")
             return False
+
+    def _commit_file_and_meta_locked(
+        self,
+        write_data_fn,
+        metadata_or_fn,
+        *,
+        backup_path=None,
+        had_prior_file=None,
+    ):
+        """Delegate transactional file + ``.meta`` commit to ``state_io.commit_file_and_meta``."""
+        return commit_file_and_meta(
+            self.filename,
+            write_data_fn,
+            lambda: self._write_meta(
+                metadata_or_fn() if callable(metadata_or_fn) else metadata_or_fn
+            ),
+            backup_path=backup_path,
+            had_prior_file=had_prior_file,
+            on_rollback_error=lambda rollback_error: builtins.print(
+                f"[{self.cls_name}][Error] could not restore the prior "
+                f"generation for {self.filename}: {rollback_error}"
+            ),
+        )
 
     def save_state_to_file_if_enabled(self):
         """Persist enabled writers and return whether the commit succeeded."""
@@ -709,6 +676,8 @@ class CacheManagerInterface(ABC):
         try:
             if self.append_persist and self.cls_name in _TRADE_CACHE_CLASSES:
                 return self._save_account_trade_append()
+            if self.cls_name in _ORDER_CACHE_CLASSES:
+                return self._save_account_order_snapshot()
             with self.lock:
                 if self._persisted_max_ts() > self._mem_max_ts():
                     builtins.print(f"[{self.cls_name}][resync] file newer than memory -> "
@@ -717,38 +686,135 @@ class CacheManagerInterface(ABC):
                 if self.append_persist:
                     return self._save_jsonl_append()
                 fetchtime = dict(self.fetchtime_per_symbol)
+                rest_sync_cursor = {
+                    str(symbol): max(0, int(cursor or 0))
+                    for symbol, cursor in self._rest_sync_cursor_per_symbol.items()
+                }
                 counts = {symbol: len(items) for symbol, items in self.cache.items()}
-                data_version = ""
                 payload = {
                     "items": self.cache,
                     "fetchtime": fetchtime,
+                    "rest_sync_cursor": rest_sync_cursor,
                 }
                 metadata = {
                     "fetchtime": fetchtime,
+                    "rest_sync_cursor": rest_sync_cursor,
                     "counts": counts,
                 }
-                if self._is_account_cache():
-                    self._validate_account_rows_locked()
-                    data_version = self._snapshot_data_version(
-                        self.cache, fetchtime
-                    )
-                    payload["data_version"] = data_version
-                    metadata = self._account_meta_snapshot(
-                        data_version=data_version,
-                        fetchtime=fetchtime,
-                        counts=counts,
-                    )
-                atomic_write_json(self.filename,
-                                  payload,
-                                  indent=1)
-                if not self._write_meta(metadata):
+                if not self._commit_file_and_meta_locked(
+                    lambda: atomic_write_json(
+                        self.filename, payload, indent=1
+                    ),
+                    metadata,
+                ):
                     return False
-                if data_version:
-                    self._remember_account_commit_locked(metadata)
                 print(f"[{self.cls_name}][info] Save cache to file {self.filename}")
                 return True
         except Exception as e:
             print(f"[{self.cls_name}][Error] While saving the cache file {self.filename} / .tmp : {e}")
+            return False
+
+    def _save_account_order_snapshot(self):
+        """Commit Order snapshot and its manifest under the generation lock."""
+        try:
+            with self._order_generation_lock():
+                return self._save_account_order_snapshot_generation_locked()
+        except Exception as exc:
+            print(
+                f"[{self.cls_name}][Error] lock Order snapshot "
+                f"{self.filename}: {exc}"
+            )
+            return False
+
+    def _save_account_order_snapshot_generation_locked(self):
+        """Write Order data and manifest while retaining the prior certified generation."""
+        try:
+            with self.lock:
+                previous_metadata = self._load_versioned_account_meta(
+                    optional=True
+                )
+                if (
+                    previous_metadata is not None
+                    and self._persisted_data_version
+                    and previous_metadata["data_version"]
+                    != self._persisted_data_version
+                ):
+                    builtins.print(
+                        f"[{self.cls_name}][resync] durable Order generation "
+                        "differs from this manager; refusing stale overwrite"
+                    )
+                    return False
+                if self._persisted_max_ts() > self._mem_max_ts():
+                    builtins.print(
+                        f"[{self.cls_name}][resync] file newer than memory -> "
+                        f"refusing to overwrite with stale data ({self.filename})"
+                    )
+                    return False
+
+                self._validate_account_rows_locked()
+
+                backup_path = None
+                had_prior_file = False
+                if previous_metadata is not None:
+                    self._read_order_snapshot_recovering_previous_locked(
+                        previous_metadata
+                    )
+                    backup_path = self._stage_previous_order_generation()
+                    had_prior_file = True
+                elif os.path.exists(self.filename):
+                    backup_path = self._stage_previous_order_generation()
+                    had_prior_file = True
+                else:
+                    self._discard_trade_generation(
+                        self._order_previous_generation_path()
+                    )
+
+                fetchtime = dict(self.fetchtime_per_symbol)
+                rest_sync_cursor = {
+                    str(symbol): max(0, int(cursor or 0))
+                    for symbol, cursor in self._rest_sync_cursor_per_symbol.items()
+                }
+                counts = {
+                    symbol: len(items)
+                    for symbol, items in self.cache.items()
+                }
+                data_version = self._snapshot_data_version(
+                    self.cache, fetchtime
+                )
+                payload = {
+                    "items": self.cache,
+                    "fetchtime": fetchtime,
+                    "rest_sync_cursor": rest_sync_cursor,
+                    "data_version": data_version,
+                }
+                metadata = self._account_meta_snapshot(
+                    data_version=data_version,
+                    fetchtime=fetchtime,
+                    rest_sync_cursor=rest_sync_cursor,
+                    counts=counts,
+                )
+                if not self._commit_file_and_meta_locked(
+                    lambda: atomic_write_json(
+                        self.filename, payload, indent=1
+                    ),
+                    metadata,
+                    backup_path=backup_path,
+                    had_prior_file=had_prior_file,
+                ):
+                    self._mark_account_cache_dirty_locked()
+                    return False
+
+                self._persisted_counts = dict(counts)
+                self._remember_account_commit_locked(metadata)
+                print(f"[{self.cls_name}][info] Save cache to file {self.filename}")
+                return True
+        except Exception as exc:
+            with self.lock:
+                self._mark_account_cache_dirty_locked()
+            print(
+                f"[{self.cls_name}][Error] While saving the cache file "
+                f"{self.filename} / .tmp : {exc}"
+            )
             return False
 
     def _reload_from_disk(self):
@@ -765,10 +831,16 @@ class CacheManagerInterface(ABC):
             except Exception as e:
                 print(f"[{self.cls_name}][Error] reload {self.filename}: {e}")
                 return
-        if os.path.exists(self.filename):
+        backup_path = self._previous_generation_path()
+        if os.path.exists(self.filename) or os.path.exists(backup_path):
             try:
-                with open(self.filename) as f:
-                    data = json.load(f)
+                def _read_json(candidate_path):
+                    with open(candidate_path) as handle:
+                        return json.load(handle)
+
+                data = read_recovering_previous(
+                    self.filename, _read_json, backup_path=backup_path
+                )
                 with self.lock:
                     items = data.get("items", {})
                     if isinstance(items, dict):
@@ -776,7 +848,12 @@ class CacheManagerInterface(ABC):
                             items = {s: v for s, v in items.items() if s in self.symbols}
                         self.cache = items
                     self.fetchtime_per_symbol = data.get("fetchtime", {})
-                    self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
+                    rest_cursor = data.get("rest_sync_cursor")
+                    self._rest_sync_cursor_per_symbol = dict(
+                        rest_cursor
+                        if isinstance(rest_cursor, dict)
+                        else self.fetchtime_per_symbol
+                    )
                     self._account_cache_dirty = False
             except Exception as e:
                 print(f"[{self.cls_name}][Error] reload {self.filename}: {e}")
@@ -851,7 +928,12 @@ class CacheManagerInterface(ABC):
             with self.lock:
                 self.cache = items
                 self.fetchtime_per_symbol = payload.get("fetchtime", {})
-                self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
+                rest_cursor = payload.get("rest_sync_cursor")
+                self._rest_sync_cursor_per_symbol = dict(
+                    rest_cursor
+                    if isinstance(rest_cursor, dict)
+                    else self.fetchtime_per_symbol
+                )
                 self._persisted_counts = {}
             migrated = (
                 self._compact_account_trade_jsonl_generation_locked()
@@ -908,6 +990,7 @@ class CacheManagerInterface(ABC):
                 fetchtime = dict(self.fetchtime_per_symbol)
                 return self._write_meta({
                     "fetchtime": fetchtime,
+                    "rest_sync_cursor": dict(self._rest_sync_cursor_per_symbol),
                     "counts": dict(candidate_counts),
                 })
         except Exception as e:
@@ -1042,6 +1125,7 @@ class CacheManagerInterface(ABC):
                 revision = max(1, revision)
                 version = self._trade_data_version(stream_id, revision)
                 fetchtime = dict(self.fetchtime_per_symbol)
+                rest_sync_cursor = dict(self._rest_sync_cursor_per_symbol)
                 metadata = self._account_meta_snapshot(
                     data_version=version,
                     stream_id=stream_id,
@@ -1049,6 +1133,7 @@ class CacheManagerInterface(ABC):
                     committed_bytes=committed_bytes,
                     content_digest=content_digest,
                     fetchtime=fetchtime,
+                    rest_sync_cursor=rest_sync_cursor,
                     counts=candidate_counts,
                 )
                 if not self._write_meta(metadata):
@@ -1076,10 +1161,7 @@ class CacheManagerInterface(ABC):
     def _truncate_failed_jsonl_append(self, initial_size):
         """Best-effort rollback of bytes written by a failed append attempt."""
         try:
-            with open(self.filename, "r+b") as rollback:
-                rollback.truncate(initial_size)
-                rollback.flush()
-                os.fsync(rollback.fileno())
+            truncate_file_bytes(self.filename, initial_size)
         except Exception as rollback_error:
             builtins.print(
                 f"[{self.cls_name}][Error] could not roll back failed JSONL append "
@@ -1089,126 +1171,27 @@ class CacheManagerInterface(ABC):
     def _load_versioned_account_meta(self, *, optional=False,
                                      required_version=None):
         """Load and validate the small durable account-cache manifest."""
-        try:
-            with open(self.filename + ".meta", "r", encoding="utf-8") as handle:
-                metadata = json.load(handle)
-        except (OSError, ValueError, TypeError) as exc:
-            if optional:
-                return None
-            raise account_cache_health.AccountCacheNotReady(
-                self._account_reader_reason()
-            ) from exc
-
-        if not isinstance(metadata, dict):
-            if optional:
-                return None
-            raise account_cache_health.AccountCacheNotReady(
-                self._account_reader_reason()
-            )
-        if metadata.get("schema_version") != _CACHE_META_SCHEMA_VERSION:
-            if optional:
-                return None
-            raise account_cache_health.AccountCacheNotReady(
-                self._account_reader_reason()
-            )
-        if self.cls_name in _TRADE_CACHE_CLASSES:
-            content_digest = metadata.get("content_digest")
-            try:
-                if (
-                    not isinstance(content_digest, str)
-                    or not content_digest.startswith("chain:")
-                ):
-                    raise ValueError("missing Trade content digest")
-                self._trade_records_digest([], content_digest)
-            except ValueError as exc:
-                if optional:
-                    return None
-                raise account_cache_health.AccountCacheNotReady(
-                    self._account_reader_reason()
-                ) from exc
-        try:
-            version = metadata["data_version"]
-            fetchtime = metadata["fetchtime"]
-            counts = metadata["counts"]
-            if not isinstance(version, str) or not version:
-                raise ValueError("missing data version")
-            if required_version is not None and version != required_version:
-                raise ValueError("cache marker and manifest versions differ")
-            if not isinstance(fetchtime, dict) or not isinstance(counts, dict):
-                raise ValueError("invalid cache manifest maps")
-            normalized_counts = {}
-            for symbol, count in counts.items():
-                if (not isinstance(symbol, str) or isinstance(count, bool)
-                        or not isinstance(count, int) or count < 0):
-                    raise ValueError("invalid cache manifest count")
-                normalized_counts[symbol] = count
-            metadata["counts"] = normalized_counts
-            if self.cls_name in _TRADE_CACHE_CLASSES:
-                stream_id = metadata["stream_id"]
-                revision = metadata["revision"]
-                committed_bytes = metadata["committed_bytes"]
-                content_digest = metadata["content_digest"]
-                if not isinstance(stream_id, str) or not stream_id:
-                    raise ValueError("missing Trade stream ID")
-                if (isinstance(revision, bool) or not isinstance(revision, int)
-                        or revision <= 0):
-                    raise ValueError("invalid Trade revision")
-                if (isinstance(committed_bytes, bool)
-                        or not isinstance(committed_bytes, int)
-                        or committed_bytes < 0):
-                    raise ValueError("invalid Trade committed boundary")
-                if version != self._trade_data_version(stream_id, revision):
-                    raise ValueError("invalid Trade data version")
-            return metadata
-        except (KeyError, TypeError, ValueError) as exc:
-            raise account_cache_health.AccountCacheNotReady(
-                self._account_reader_reason()
-            ) from exc
+        return _cache_integrity.load_versioned_account_meta_file(
+            meta_file_path(self.filename),
+            is_trade_cache=self.cls_name in _TRADE_CACHE_CLASSES,
+            reader_reason=self._account_reader_reason(),
+            optional=optional,
+            required_version=required_version,
+            schema_version=_CACHE_META_SCHEMA_VERSION,
+        )
 
     def _read_trade_records_strict(self, start, end, *, path=None):
         """Parse only the requested committed JSONL byte range."""
-        if end < start:
-            raise ValueError("Trade committed boundary moved backwards")
-        try:
-            with open(path or self.filename, "rb") as handle:
-                file_size = os.fstat(handle.fileno()).st_size
-                if file_size < end:
-                    raise ValueError("Trade cache is shorter than its manifest")
-                handle.seek(start)
-                raw = handle.read(end - start)
-            if raw and not raw.endswith(b"\n"):
-                raise ValueError("Trade committed data ends with a partial row")
-            records = []
-            for line in raw.splitlines():
-                if not line.strip():
-                    continue
-                record = json.loads(line.decode("utf-8"))
-                if (not isinstance(record, dict)
-                        or not isinstance(record.get("s"), str)
-                        or not isinstance(record.get("i"), dict)
-                        or not self._is_valid_item(record["i"])
-                        or str(record["i"]["symbol"]).upper()
-                        != str(record["s"]).upper()
-                ):
-                    raise ValueError("invalid Trade cache row")
-                records.append((record["s"], record["i"]))
-            return records
-        except (OSError, UnicodeError, TypeError, ValueError,
-                json.JSONDecodeError) as exc:
-            raise account_cache_health.AccountCacheNotReady(
-                self._account_reader_reason()
-            ) from exc
+        return _cache_integrity.read_trade_records_range_strict(
+            path or self.filename,
+            start,
+            end,
+            is_valid_item_fn=self._is_valid_item,
+            reader_reason=self._account_reader_reason(),
+        )
 
-    @staticmethod
-    def _counts_for_records(records):
-        counts = defaultdict(int)
-        for symbol, _item in records:
-            counts[symbol] += 1
-        return dict(counts)
-
-    @staticmethod
-    def _nonzero_counts(counts):
-        return {symbol: count for symbol, count in counts.items() if count}
+    _counts_for_records = staticmethod(_cache_integrity.counts_for_records)
+    _nonzero_counts = staticmethod(_cache_integrity.nonzero_counts)
 
     def _read_trade_snapshot_strict(self, metadata, *, path=None):
         records = self._read_trade_records_strict(
@@ -1275,13 +1258,12 @@ class CacheManagerInterface(ABC):
             else:
                 self._ensure_order_version(required_version)
 
-    def _ensure_order_version(self, required_version):
+    def _read_order_snapshot_strict(self, metadata, *, path=None):
+        """Read and validate an Order snapshot against its durable manifest."""
         reason = self._account_reader_reason()
+        required_version = str(metadata["data_version"])
         try:
-            metadata = self._load_versioned_account_meta(
-                required_version=required_version
-            )
-            with open(self.filename, "r", encoding="utf-8") as handle:
+            with open(path or self.filename, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
             if not isinstance(payload, dict):
                 raise ValueError("Order cache root is not an object")
@@ -1291,6 +1273,16 @@ class CacheManagerInterface(ABC):
                 raise ValueError("invalid Order cache maps")
             if payload.get("data_version") != required_version:
                 raise ValueError("Order cache and marker versions differ")
+            normalized_fetchtime = self._normalize_timestamp_map(
+                fetchtime,
+                error_message="invalid Order cache fetchtime",
+            )
+            raw_rest_cursor = payload.get("rest_sync_cursor")
+            if raw_rest_cursor is not None:
+                self._normalize_timestamp_map(
+                    raw_rest_cursor,
+                    error_message="invalid Order cache rest_sync_cursor",
+                )
             for symbol, orders in items.items():
                 if (not isinstance(symbol, str) or not isinstance(orders, list)
                         or any(
@@ -1303,20 +1295,70 @@ class CacheManagerInterface(ABC):
             }
             if actual_counts != metadata["counts"]:
                 raise ValueError("Order cache counts differ from its manifest")
-            if self._snapshot_data_version(items, fetchtime) != required_version:
+            if normalized_fetchtime != metadata["fetchtime"]:
+                raise ValueError(
+                    "Order cache fetchtimes differ from its manifest"
+                )
+            if (
+                self._snapshot_data_version(items, normalized_fetchtime)
+                != required_version
+            ):
                 raise ValueError("Order cache digest is invalid")
+            return items, normalized_fetchtime, actual_counts
+        except account_cache_health.AccountCacheNotReady:
+            raise
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise account_cache_health.AccountCacheNotReady(reason) from exc
+
+    def _read_order_snapshot_recovering_previous_locked(self, metadata):
+        """Read an Order snapshot against ``metadata``, restoring ``.previous`` if needed."""
+        return read_recovering_previous(
+            self.filename,
+            lambda candidate_path: self._read_order_snapshot_strict(
+                metadata, path=candidate_path
+            ),
+            backup_path=self._order_previous_generation_path(),
+        )
+
+    def _read_trade_snapshot_recovering_previous_locked(self, metadata):
+        """Read a Trade snapshot against ``metadata``, restoring ``.previous`` if needed."""
+        return read_recovering_previous(
+            self.filename,
+            lambda candidate_path: self._read_trade_snapshot_strict(
+                metadata, path=candidate_path
+            ),
+            backup_path=self._trade_previous_generation_path(),
+        )
+
+    def _ensure_order_version(self, required_version):
+        with self._order_generation_lock():
+            self._ensure_order_version_generation_locked(required_version)
+
+    def _ensure_order_version_generation_locked(self, required_version):
+        reason = self._account_reader_reason()
+        try:
+            metadata = self._load_versioned_account_meta(
+                required_version=required_version
+            )
+            items, fetchtime, actual_counts = (
+                self._read_order_snapshot_recovering_previous_locked(metadata)
+            )
             after = self._load_versioned_account_meta(
                 required_version=required_version
             )
             if (
                 after["data_version"] != metadata["data_version"]
                 or after["counts"] != metadata["counts"]
+                or after["fetchtime"] != metadata["fetchtime"]
+                or after["rest_sync_cursor"] != metadata["rest_sync_cursor"]
             ):
                 raise ValueError("Order manifest changed during reload")
             with self.lock:
                 self.cache = items
                 self.fetchtime_per_symbol = dict(fetchtime)
-                self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
+                self._rest_sync_cursor_per_symbol = dict(
+                    metadata["rest_sync_cursor"]
+                )
                 self._persisted_counts = dict(actual_counts)
                 self._persisted_data_version = required_version
                 self._loaded_data_version = required_version
@@ -1328,6 +1370,10 @@ class CacheManagerInterface(ABC):
             raise account_cache_health.AccountCacheNotReady(reason) from exc
 
     def _ensure_trade_version(self, required_version):
+        with self._trade_generation_lock():
+            self._ensure_trade_version_generation_locked(required_version)
+
+    def _ensure_trade_version_generation_locked(self, required_version):
         reason = self._account_reader_reason()
         try:
             metadata = self._load_versioned_account_meta(
@@ -1354,36 +1400,60 @@ class CacheManagerInterface(ABC):
                 old_digest = self._loaded_content_digest
 
             if can_append:
-                records = self._read_trade_records_strict(
-                    old_boundary, metadata["committed_bytes"]
-                )
-                suffix_ids = defaultdict(set)
-                for symbol, item in records:
-                    normalized_symbol = str(symbol).upper()
-                    trade_id = str(int(item["id"]))
-                    if (
-                        trade_id in old_trade_ids.get(normalized_symbol, set())
-                        or trade_id in suffix_ids[normalized_symbol]
-                    ):
-                        raise ValueError("duplicate immutable Trade ID in suffix")
-                    suffix_ids[normalized_symbol].add(trade_id)
-                delta_counts = self._counts_for_records(records)
-                candidate_counts = dict(old_counts)
-                for symbol, count in delta_counts.items():
-                    candidate_counts[symbol] = (
-                        candidate_counts.get(symbol, 0) + count
+                try:
+                    records = self._read_trade_records_strict(
+                        old_boundary, metadata["committed_bytes"]
                     )
-                if candidate_counts != metadata["counts"]:
-                    raise ValueError("Trade suffix counts differ from manifest")
-                if (
-                    self._trade_records_digest(records, old_digest)
-                    != metadata["content_digest"]
+                    suffix_ids = defaultdict(set)
+                    for symbol, item in records:
+                        normalized_symbol = str(symbol).upper()
+                        trade_id = str(int(item["id"]))
+                        if (
+                            trade_id in old_trade_ids.get(normalized_symbol, set())
+                            or trade_id in suffix_ids[normalized_symbol]
+                        ):
+                            raise ValueError("duplicate immutable Trade ID in suffix")
+                        suffix_ids[normalized_symbol].add(trade_id)
+                    delta_counts = self._counts_for_records(records)
+                    candidate_counts = dict(old_counts)
+                    for symbol, count in delta_counts.items():
+                        candidate_counts[symbol] = (
+                            candidate_counts.get(symbol, 0) + count
+                        )
+                    if candidate_counts != metadata["counts"]:
+                        raise ValueError("Trade suffix counts differ from manifest")
+                    if (
+                        self._trade_records_digest(records, old_digest)
+                        != metadata["content_digest"]
+                    ):
+                        raise ValueError("Trade suffix digest differs from manifest")
+                    candidate_cache = None
+                    self._discard_trade_generation(
+                        self._trade_previous_generation_path()
+                    )
+                except (
+                    account_cache_health.AccountCacheNotReady,
+                    OSError,
+                    TypeError,
+                    ValueError,
+                    json.JSONDecodeError,
                 ):
-                    raise ValueError("Trade suffix digest differs from manifest")
-                candidate_cache = None
+                    if not os.path.exists(
+                        self._trade_previous_generation_path()
+                    ):
+                        raise
+                    can_append = False
+                    candidate_cache, candidate_counts = (
+                        self._read_trade_snapshot_recovering_previous_locked(
+                            metadata
+                        )
+                    )
+                    records = []
             else:
                 candidate_cache, candidate_counts = (
-                    self._read_trade_snapshot_strict(metadata)
+                    self._read_trade_snapshot_recovering_previous_locked(
+                        metadata
+                    )
                 )
                 records = []
 
@@ -1411,14 +1481,18 @@ class CacheManagerInterface(ABC):
                         for symbol, item in records:
                             self.cache.setdefault(symbol, []).append(item)
                         self.fetchtime_per_symbol = dict(metadata["fetchtime"])
-                        self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
+                        self._rest_sync_cursor_per_symbol = dict(
+                            metadata["rest_sync_cursor"]
+                        )
                         self._persisted_counts = dict(candidate_counts)
                         self._remember_loaded_trade_manifest_locked(
                             metadata, candidate_counts
                         )
                         return
                 candidate_cache, candidate_counts = (
-                    self._read_trade_snapshot_strict(metadata)
+                    self._read_trade_snapshot_recovering_previous_locked(
+                        metadata
+                    )
                 )
                 after = self._load_versioned_account_meta(
                     required_version=required_version
@@ -1429,7 +1503,9 @@ class CacheManagerInterface(ABC):
             with self.lock:
                 self.cache = candidate_cache
                 self.fetchtime_per_symbol = dict(metadata["fetchtime"])
-                self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
+                self._rest_sync_cursor_per_symbol = dict(
+                    metadata["rest_sync_cursor"]
+                )
                 self._persisted_counts = dict(candidate_counts)
                 self._remember_loaded_trade_manifest_locked(
                     metadata, candidate_counts
@@ -1439,30 +1515,34 @@ class CacheManagerInterface(ABC):
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise account_cache_health.AccountCacheNotReady(reason) from exc
 
-    def _trade_previous_generation_path(self):
-        return self.filename + ".previous"
+    def _previous_generation_path(self):
+        return previous_generation_path(self.filename)
 
-    def _trade_generation_lock(self):
-        """Serialize Trade data/manifest publication and canonical recovery."""
+    def _generation_lock(self):
+        """Serialize cache data/manifest publication and canonical recovery."""
         os.makedirs(os.path.dirname(os.path.abspath(self.filename)), exist_ok=True)
-        return FileLock(self.filename + ".generation.lock")
+        return FileLock(generation_lock_path(self.filename))
 
-    def _stage_previous_trade_generation(self):
-        """Keep the currently certified Trade data until the new manifest commits."""
-        backup_path = self._trade_previous_generation_path()
-        atomic_snapshot_file(self.filename, backup_path)
-        return backup_path
+    def _stage_previous_generation(self):
+        """Keep the currently certified cache data until the new manifest commits."""
+        return stage_previous_generation(self.filename)
 
-    def _restore_previous_trade_generation(self, backup_path):
-        """Atomically restore data matching the still-current Trade manifest."""
-        durable_replace_file(backup_path, self.filename)
+    def _restore_previous_generation(self, backup_path=None):
+        """Atomically restore data matching the still-current manifest."""
+        restore_previous_generation(self.filename, backup_path=backup_path)
 
-    @staticmethod
-    def _discard_trade_generation(path):
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+    _discard_generation_file = staticmethod(discard_generation_file)
+
+    _order_previous_generation_path = _previous_generation_path
+    _order_generation_lock = _generation_lock
+    _stage_previous_order_generation = _stage_previous_generation
+    _restore_previous_order_generation = _restore_previous_generation
+
+    _trade_previous_generation_path = _previous_generation_path
+    _trade_generation_lock = _generation_lock
+    _stage_previous_trade_generation = _stage_previous_generation
+    _restore_previous_trade_generation = _restore_previous_generation
+    _discard_trade_generation = _discard_generation_file
 
     def _load_jsonl(self):
         """Load JSONL under a lock when canonical recovery is possible."""
@@ -1476,25 +1556,17 @@ class CacheManagerInterface(ABC):
         if self.cls_name in _TRADE_CACHE_CLASSES:
             metadata = self._load_versioned_account_meta(optional=True)
             if metadata is not None:
-                backup_path = self._trade_previous_generation_path()
-                try:
-                    cache, counts = self._read_trade_snapshot_strict(metadata)
-                except account_cache_health.AccountCacheNotReady as current_error:
-                    if not os.path.exists(backup_path):
-                        raise
-                    try:
-                        cache, counts = self._read_trade_snapshot_strict(
-                            metadata, path=backup_path
-                        )
-                        self._restore_previous_trade_generation(backup_path)
-                    except (account_cache_health.AccountCacheNotReady, OSError):
-                        raise current_error
-                else:
-                    self._discard_trade_generation(backup_path)
+                cache, counts = (
+                    self._read_trade_snapshot_recovering_previous_locked(
+                        metadata
+                    )
+                )
                 with self.lock:
                     self.cache = cache
                     self.fetchtime_per_symbol = dict(metadata["fetchtime"])
-                    self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
+                    self._rest_sync_cursor_per_symbol = dict(
+                        metadata["rest_sync_cursor"]
+                    )
                     self._persisted_counts = counts
                     self._remember_loaded_trade_manifest_locked(metadata, counts)
                 return
@@ -1585,7 +1657,12 @@ class CacheManagerInterface(ABC):
             fetchtime = legacy_metadata.get("fetchtime")
             if isinstance(fetchtime, dict):
                 self.fetchtime_per_symbol = fetchtime
-                self._rest_sync_cursor_per_symbol = dict(fetchtime)
+                rest_cursor = legacy_metadata.get("rest_sync_cursor")
+                self._rest_sync_cursor_per_symbol = dict(
+                    rest_cursor
+                    if isinstance(rest_cursor, dict)
+                    else fetchtime
+                )
 
     def compact_jsonl(self):
         """Rewrite JSONL from memory after full in-memory and on-disk deduplication.
@@ -1597,7 +1674,6 @@ class CacheManagerInterface(ABC):
         if self.cls_name in _TRADE_CACHE_CLASSES:
             return self._compact_account_trade_jsonl()
 
-        backup_path = None
         original_cache = None
         original_counts = None
         try:
@@ -1606,9 +1682,6 @@ class CacheManagerInterface(ABC):
                     symbol: list(items) for symbol, items in self.cache.items()
                 }
                 original_counts = dict(self._persisted_counts)
-                if os.path.exists(self.filename):
-                    backup_path = self.filename + ".compact_backup"
-                    atomic_snapshot_file(self.filename, backup_path)
                 for symbol, items in list(self.cache.items()):
                     seen = set()
                     deduped = []
@@ -1620,27 +1693,27 @@ class CacheManagerInterface(ABC):
                     self.cache[symbol] = deduped   # Keep memory deduplicated too.
                 candidate_counts = {s: len(v) for s, v in self.cache.items()}
                 fetchtime = dict(self.fetchtime_per_symbol)
-                with atomic_write(self.filename) as f:
-                    for symbol, items in self.cache.items():
-                        for item in items:
-                            f.write(json.dumps(
-                                {"s": symbol, "i": item}, separators=(",", ":"),
-                            ) + "\n")
-                if not self._write_meta({
+                metadata = {
                     "fetchtime": fetchtime,
+                    "rest_sync_cursor": dict(self._rest_sync_cursor_per_symbol),
                     "counts": dict(candidate_counts),
-                }):
+                }
+
+                def _write_compacted():
+                    with atomic_write(self.filename) as f:
+                        for symbol, items in self.cache.items():
+                            for item in items:
+                                f.write(json.dumps(
+                                    {"s": symbol, "i": item},
+                                    separators=(",", ":"),
+                                ) + "\n")
+
+                if not self._commit_file_and_meta_locked(
+                    _write_compacted, metadata
+                ):
                     self.cache = original_cache
                     self._persisted_counts = original_counts
-                    if backup_path is not None and os.path.exists(backup_path):
-                        os.replace(backup_path, self.filename)
-                        if os.path.exists(backup_path):
-                            os.remove(backup_path)
-                        backup_path = None
                     return False
-                if backup_path is not None:
-                    self._discard_trade_generation(backup_path)
-                    backup_path = None
                 self._persisted_counts = candidate_counts
                 return True
         except Exception as e:
@@ -1648,13 +1721,6 @@ class CacheManagerInterface(ABC):
                 self.cache = original_cache
             if original_counts is not None:
                 self._persisted_counts = original_counts
-            if backup_path is not None and os.path.exists(backup_path):
-                try:
-                    os.replace(backup_path, self.filename)
-                    if os.path.exists(backup_path):
-                        os.remove(backup_path)
-                except OSError:
-                    pass
             print(f"[{self.cls_name}][Error] compact JSONL {self.filename}: {e}")
             return False
 
@@ -1673,16 +1739,22 @@ class CacheManagerInterface(ABC):
 
     def _compact_account_trade_jsonl_generation_locked(self):
         """Rewrite Trade data while retaining the prior certified generation."""
-        backup_path = None
-        data_replaced = False
         try:
             with self.lock:
+                backup_path = None
+                had_prior_file = False
                 previous_metadata = self._load_versioned_account_meta(
                     optional=True
                 )
                 if previous_metadata is not None:
-                    self._read_trade_snapshot_strict(previous_metadata)
+                    self._read_trade_snapshot_recovering_previous_locked(
+                        previous_metadata
+                    )
                     backup_path = self._stage_previous_trade_generation()
+                    had_prior_file = True
+                elif os.path.exists(self.filename):
+                    backup_path = self._stage_previous_trade_generation()
+                    had_prior_file = True
                 else:
                     self._discard_trade_generation(
                         self._trade_previous_generation_path()
@@ -1709,55 +1781,52 @@ class CacheManagerInterface(ABC):
                     for symbol, items in self.cache.items()
                 }
                 fetchtime = dict(self.fetchtime_per_symbol)
+                rest_sync_cursor = dict(self._rest_sync_cursor_per_symbol)
                 records = []
-                with atomic_write(self.filename) as handle:
-                    for symbol, items in self.cache.items():
-                        for item in items:
-                            records.append((symbol, item))
-                            handle.write(json.dumps(
-                                {"s": symbol, "i": item},
-                                separators=(",", ":"),
-                            ) + "\n")
-                data_replaced = True
-                committed_bytes = os.path.getsize(self.filename)
-                content_digest = self._trade_records_digest(records)
-                stream_id = uuid.uuid4().hex
-                revision = 1
-                version = self._trade_data_version(stream_id, revision)
-                metadata = self._account_meta_snapshot(
-                    data_version=version, stream_id=stream_id,
-                    revision=revision, committed_bytes=committed_bytes,
-                    content_digest=content_digest,
-                    fetchtime=fetchtime, counts=counts,
-                )
-                if not self._write_meta(metadata):
-                    if backup_path is not None:
-                        self._restore_previous_trade_generation(backup_path)
-                        backup_path = None
-                        data_replaced = False
+                committed_metadata = {}
+
+                def _write_trade_data():
+                    with atomic_write(self.filename) as handle:
+                        for symbol, items in self.cache.items():
+                            for item in items:
+                                records.append((symbol, item))
+                                handle.write(json.dumps(
+                                    {"s": symbol, "i": item},
+                                    separators=(",", ":"),
+                                ) + "\n")
+
+                def _build_trade_meta():
+                    committed_bytes = os.path.getsize(self.filename)
+                    content_digest = self._trade_records_digest(records)
+                    stream_id = uuid.uuid4().hex
+                    revision = 1
+                    version = self._trade_data_version(stream_id, revision)
+                    committed_metadata["value"] = self._account_meta_snapshot(
+                        data_version=version, stream_id=stream_id,
+                        revision=revision, committed_bytes=committed_bytes,
+                        content_digest=content_digest,
+                        fetchtime=fetchtime,
+                        rest_sync_cursor=rest_sync_cursor,
+                        counts=counts,
+                    )
+                    return committed_metadata["value"]
+
+                if not self._commit_file_and_meta_locked(
+                    _write_trade_data,
+                    _build_trade_meta,
+                    backup_path=backup_path,
+                    had_prior_file=had_prior_file,
+                ):
                     self._legacy_jsonl_needs_rewrite = True
                     return False
 
-                if backup_path is not None:
-                    self._discard_trade_generation(backup_path)
-                    backup_path = None
                 self._persisted_counts = counts
                 self._legacy_jsonl_needs_rewrite = False
-                self._remember_account_commit_locked(metadata)
+                self._remember_account_commit_locked(
+                    committed_metadata["value"]
+                )
                 return True
         except Exception as exc:
-            if (
-                data_replaced
-                and backup_path is not None
-                and os.path.exists(backup_path)
-            ):
-                try:
-                    self._restore_previous_trade_generation(backup_path)
-                except OSError as rollback_error:
-                    builtins.print(
-                        f"[{self.cls_name}][Error] could not restore the prior "
-                        f"Trade generation: {rollback_error}"
-                    )
             self._legacy_jsonl_needs_rewrite = True
             print(
                 f"[{self.cls_name}][Error] compact JSONL "
@@ -1850,36 +1919,16 @@ class CacheManagerInterface(ABC):
                 self.cache = original_cache
                 self._persisted_counts = original_persisted_counts
                 try:
-                    os.replace(archive, self.filename)
-                    if os.path.exists(archive):
-                        os.remove(archive)
+                    self._restore_previous_generation(archive)
                 except OSError as restore_err:
                     builtins.print(f"[{self.cls_name}][maintain] failed to restore active file from {archive}: {restore_err}")
                 builtins.print(f"[{self.cls_name}][maintain] rotation aborted; restored active file and in-memory state")
                 return False
-            prefix = f"{self.filename}."
-            compressed_archive = archive + ".gz"
-            compressed_tmp = compressed_archive + ".tmp"
             try:
-                with open(archive, "rb") as source, gzip.open(compressed_tmp, "wb") as target:
-                    shutil.copyfileobj(source, target, length=1024 * 1024)
-                os.replace(compressed_tmp, compressed_archive)
-                os.remove(archive)
-                archive = compressed_archive
+                archive = atomic_gzip_file(archive, archive + ".gz", remove_source=True)
             except OSError as e:
-                try:
-                    os.remove(compressed_tmp)
-                except OSError:
-                    pass
                 builtins.print(f"[{self.cls_name}][maintain] archive compression failed: {e}")
-            archives = sorted(
-                (path for path in glob.glob(prefix + "*.archive*") if not path.endswith(".tmp")),
-                key=lambda path: os.path.getmtime(path), reverse=True)
-            for old_archive in archives[self.ROTATE_ARCHIVE_COUNT:]:
-                try:
-                    os.remove(old_archive)
-                except OSError:
-                    pass
+            prune_rotated_archives(self.filename, self.ROTATE_ARCHIVE_COUNT)
         builtins.print(f"[{self.cls_name}][maintain] ROTATION: archived -> {archive}, "
                        f"kept the last {int(self.ROTATE_KEEP_FRACTION*100)}%")
         return True
@@ -1927,41 +1976,15 @@ class CacheManagerInterface(ABC):
                         return False
                     published = True
 
-            compressed_archive = archive + ".gz"
-            compressed_tmp = compressed_archive + ".tmp"
             try:
-                with (
-                    open(archive, "rb") as source,
-                    gzip.open(compressed_tmp, "wb") as target,
-                ):
-                    shutil.copyfileobj(source, target, length=1024 * 1024)
-                os.replace(compressed_tmp, compressed_archive)
-                os.remove(archive)
-                archive = compressed_archive
+                archive = atomic_gzip_file(archive, archive + ".gz", remove_source=True)
             except OSError as exc:
-                try:
-                    os.remove(compressed_tmp)
-                except OSError:
-                    pass
                 builtins.print(
                     f"[{self.cls_name}][maintain] archive compression "
                     f"failed: {exc}"
                 )
 
-            prefix = f"{self.filename}."
-            archives = sorted(
-                (
-                    path for path in glob.glob(prefix + "*.archive*")
-                    if not path.endswith(".tmp")
-                ),
-                key=lambda path: os.path.getmtime(path),
-                reverse=True,
-            )
-            for old_archive in archives[self.ROTATE_ARCHIVE_COUNT:]:
-                try:
-                    os.remove(old_archive)
-                except OSError:
-                    pass
+            prune_rotated_archives(self.filename, self.ROTATE_ARCHIVE_COUNT)
             builtins.print(
                 f"[{self.cls_name}][maintain] ROTATION: archived -> "
                 f"{archive}, kept the last "
@@ -2026,8 +2049,12 @@ class CacheManagerInterface(ABC):
                 self.cache[symbol].extend(new_items)
             else:  # Snapshot mode stores only the latest trend values.
                 self.cache[symbol] = new_items if isinstance(new_items, list) else [new_items]             #self.cache[symbol] = new_items[0]
-              
-            self.fetchtime_per_symbol[symbol] = current_time
+
+            self._preserve_rest_sync_cursor_before_update_locked(symbol)
+            self.fetchtime_per_symbol[symbol] = max(
+                int(self.fetchtime_per_symbol.get(symbol, 0) or 0),
+                current_time,
+            )
             self._mark_account_cache_dirty_locked()
 
         print(f"[{self.cls_name}][Info] {symbol}: Added {len(new_items)} new items.")
@@ -2041,9 +2068,11 @@ class CacheManagerInterface(ABC):
         self.update_cache_per_symbol(symbol, new_items)
 
     def query_remote_and_update_cache(self):
-        if not self.fetchtime_per_symbol:
-            self.fetchtime_per_symbol = self._rebuild_fetchtimes()
-            self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
+        with self.lock:
+            if not self.fetchtime_per_symbol:
+                self.fetchtime_per_symbol = self._rebuild_fetchtimes()
+            for sym, rebuilt_ft in self.fetchtime_per_symbol.items():
+                self._rest_sync_cursor_per_symbol.setdefault(sym, rebuilt_ft)
 
         account_cycle_high_water = None
         for symbol in list(self.symbols):
@@ -2082,23 +2111,16 @@ class CacheManagerInterface(ABC):
             with self.lock:
                 self._last_complete_sync_at_ms = (
                     account_cycle_high_water or 0)
-        with _ws_health_lock:
-            if self.cls_name in _ORDER_CACHE_CLASSES:
-                _ws_needs_rest_resync.difference_update(_ORDER_CACHE_CLASSES)
-            elif self.cls_name in _TRADE_CACHE_CLASSES:
-                _ws_needs_rest_resync.difference_update(_TRADE_CACHE_CLASSES)
-            elif self.cls_name in ("CacheAssetValue", "CacheAssetValueManager"):
-                _ws_needs_rest_resync.difference_update(
-                    {"CacheAssetValue", "CacheAssetValueManager"}
-                )
-            else:
-                _ws_needs_rest_resync.discard(self.cls_name)
+        _bapi_ws_health.clear_ws_rest_resync_for_manager(self.cls_name)
         return True
 
     def on_items_update(self, symbol, items):
         print(f"[{self.cls_name}][Info] {symbol}: WS Items updated to {items}")
-        if not self.fetchtime_per_symbol:
-            self.fetchtime_per_symbol = self._rebuild_fetchtimes()
+        with self.lock:
+            if not self.fetchtime_per_symbol:
+                self.fetchtime_per_symbol = self._rebuild_fetchtimes()
+                for sym, rebuilt_ft in self.fetchtime_per_symbol.items():
+                    self._rest_sync_cursor_per_symbol.setdefault(sym, rebuilt_ft)
         self._persist_items(symbol, items)
         
     def _should_poll(self):
@@ -2110,7 +2132,7 @@ class CacheManagerInterface(ABC):
         return _should_poll_for_manager(self.cls_name)
 
     def _persist_periodic_state(self, sync_complete):
-        """Persist one cycle without reversing the Trade generation lock order."""
+        """Persist one cycle without reversing the Trade or Order generation lock order."""
         if self.cls_name in _TRADE_CACHE_CLASSES and self.save_state:
             with self._trade_generation_lock():
                 persisted = (
@@ -2132,8 +2154,8 @@ class CacheManagerInterface(ABC):
                     )
                 return persisted
 
+        persisted = self.save_state_to_file_if_enabled()
         with self.lock:
-            persisted = self.save_state_to_file_if_enabled()
             if (sync_complete and persisted
                     and self._is_canonical_account_cache()
                     and self._persisted_data_version
@@ -2345,7 +2367,12 @@ class CacheTradeManager(CacheManagerInterface):
                 unpersisted_tail = bucket[persisted_count:]
                 unpersisted_tail.sort(key=lambda t: (int(t["time"]), int(t["id"])))
                 bucket[persisted_count:] = unpersisted_tail
-            self.fetchtime_per_symbol[symbol] = int(time.time() * 1000)
+            self._preserve_rest_sync_cursor_before_update_locked(symbol)
+            now_ms = int(time.time() * 1000)
+            self.fetchtime_per_symbol[symbol] = max(
+                int(self.fetchtime_per_symbol.get(symbol, 0) or 0),
+                now_ms,
+            )
             self._mark_account_cache_dirty_locked()
 
     def get_last_opposite_fill_price(self, symbol, order_type):
@@ -2570,7 +2597,11 @@ class CacheOrderManager(CacheManagerInterface):
 
             if candidate != bucket:
                 self.cache[symbol] = candidate
-                self.fetchtime_per_symbol[symbol] = now_ms
+                self._preserve_rest_sync_cursor_before_update_locked(symbol)
+                self.fetchtime_per_symbol[symbol] = max(
+                    int(self.fetchtime_per_symbol.get(symbol, 0) or 0),
+                    now_ms,
+                )
                 self._mark_account_cache_dirty_locked()
 
 
@@ -2793,19 +2824,7 @@ class Cache365PriceManager(Cache24PriceManager):
     @staticmethod
     def _tail_lines(path, limit, block_size=1024 * 1024):
         """Read at most the last complete ``limit`` lines without scanning the file."""
-        with open(path, "rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            position = handle.tell()
-            chunks = []
-            newline_count = 0
-            while position > 0 and newline_count <= limit:
-                size = min(block_size, position)
-                position -= size
-                handle.seek(position)
-                chunk = handle.read(size)
-                chunks.append(chunk)
-                newline_count += chunk.count(b"\n")
-        return b"".join(reversed(chunks)).splitlines()[-limit:]
+        return read_tail_lines(path, limit, chunk_size=block_size)
 
     def _load_jsonl(self):
         """Load only a recent working set; the JSONL file remains the full archive."""
@@ -2824,8 +2843,14 @@ class Cache365PriceManager(Cache24PriceManager):
             if os.path.exists(metaf):
                 try:
                     with open(metaf) as handle:
-                        self.fetchtime_per_symbol = json.load(handle).get("fetchtime", {})
-                        self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
+                        meta_payload = json.load(handle)
+                        self.fetchtime_per_symbol = meta_payload.get("fetchtime", {})
+                        rest_cursor = meta_payload.get("rest_sync_cursor")
+                        self._rest_sync_cursor_per_symbol = dict(
+                            rest_cursor
+                            if isinstance(rest_cursor, dict)
+                            else self.fetchtime_per_symbol
+                        )
                 except (OSError, ValueError, TypeError):
                     pass
 
@@ -2891,18 +2916,17 @@ class Cache365PriceManager(Cache24PriceManager):
                     if not self._write_meta({
                         "counts": dict(self._persisted_counts),
                         "fetchtime": dict(self.fetchtime_per_symbol),
+                        "rest_sync_cursor": dict(self._rest_sync_cursor_per_symbol),
                     }):
                         self.cache = original_cache
                         self._persisted_counts = original_persisted_counts
                         self.fetchtime_per_symbol = original_fetchtimes
                         self._rest_sync_cursor_per_symbol = original_rest_cursors
-                        os.replace(backup_path, self.filename)
-                        if os.path.exists(backup_path):
-                            os.remove(backup_path)
+                        self._restore_previous_generation(backup_path)
                         backup_path = None
                         return False
                 if backup_path is not None:
-                    self._discard_trade_generation(backup_path)
+                    self._discard_generation_file(backup_path)
                     backup_path = None
             if changed:
                 builtins.print(f"[{self.cls_name}][maintain] pruned expired/corrupt disk records")
@@ -2917,9 +2941,7 @@ class Cache365PriceManager(Cache24PriceManager):
                 self._rest_sync_cursor_per_symbol = original_rest_cursors
             if backup_path is not None and os.path.exists(backup_path):
                 try:
-                    os.replace(backup_path, self.filename)
-                    if os.path.exists(backup_path):
-                        os.remove(backup_path)
+                    self._restore_previous_generation(backup_path)
                 except OSError:
                     pass
             builtins.print(f"[{self.cls_name}][Error] streaming maintenance {self.filename}: {exc}")
@@ -2964,6 +2986,7 @@ class Cache365PriceManager(Cache24PriceManager):
                 meta_ok = self._write_meta({
                     "counts": dict(self._persisted_counts),
                     "fetchtime": dict(self.fetchtime_per_symbol),
+                    "rest_sync_cursor": dict(self._rest_sync_cursor_per_symbol),
                 })
             except Exception as exc:
                 builtins.print(f"[{self.cls_name}][maintain] rotation rewrite failed: {exc}")
@@ -2974,36 +2997,16 @@ class Cache365PriceManager(Cache24PriceManager):
                 self.fetchtime_per_symbol = original_fetchtimes
                 self._rest_sync_cursor_per_symbol = original_rest_cursors
                 try:
-                    os.replace(archive, self.filename)
-                    if os.path.exists(archive):
-                        os.remove(archive)
+                    self._restore_previous_generation(archive)
                 except OSError as restore_err:
                     builtins.print(f"[{self.cls_name}][maintain] failed to restore active file from {archive}: {restore_err}")
                 builtins.print(f"[{self.cls_name}][maintain] rotation aborted; restored active file and in-memory state")
                 return False
-            compressed_tmp = archive + ".gz.tmp"
-            compressed_archive = archive + ".gz"
             try:
-                with open(archive, "rb") as source, gzip.open(compressed_tmp, "wb") as target:
-                    shutil.copyfileobj(source, target, length=1024 * 1024)
-                os.replace(compressed_tmp, compressed_archive)
-                os.remove(archive)
+                atomic_gzip_file(archive, archive + ".gz", remove_source=True)
             except OSError as exc:
-                try:
-                    os.remove(compressed_tmp)
-                except OSError:
-                    pass
                 builtins.print(f"[{self.cls_name}][maintain] archive compression failed: {exc}")
-            archives = sorted(
-                (path for path in glob.glob(f"{self.filename}.*.archive*") if not path.endswith(".tmp")),
-                key=os.path.getmtime,
-                reverse=True,
-            )
-            for old_archive in archives[self.ROTATE_ARCHIVE_COUNT:]:
-                try:
-                    os.remove(old_archive)
-                except OSError:
-                    pass
+            prune_rotated_archives(self.filename, self.ROTATE_ARCHIVE_COUNT)
             return True
 
     # Inherit get_remote_items from Cache24PriceManager, including real observation timestamps.
@@ -3012,47 +3015,9 @@ class Cache365PriceManager(Cache24PriceManager):
 Cache365Price = Cache365PriceManager
 
 
-class CacheLongTrendManager(CacheManagerInterface):
-    def __init__(self, sync_ts, symbols, filename, api_client=api, read_only=False):
-        super().__init__(sync_ts, symbols, filename, append_mode=False,
-                         api_client=api_client, read_only=read_only)
+import cachetrend as _cache_trend
 
-    # Inherit get_all_symbols_from_cache from the base class.
-
-    def rebuild_fetchtimes(self):
-        last_times = defaultdict(int)
-        for symbol, items in self.cache.items():
-            for item in items:
-                ts_sec = extract_timestamp_s(item, default=0.0) or 0.0
-                if ts_sec <= 0:
-                    continue
-                ts = int(ts_sec * 1000)
-                if ts > last_times[symbol]:
-                    last_times[symbol] = ts
-        for symbol in last_times:
-            last_times[symbol] = max(0, last_times[symbol] - 60_000)
-        return dict(last_times)
-
-    def get_remote_items(self, symbol, startTime):
-        trend_filename = os.path.join(_CONFIG_ROOT, "priceanalysis.json")
-        if not os.path.exists(trend_filename):
-            print(f"[{self.cls_name}] File {trend_filename} does not exist.")
-            return []
-
-        try:
-            with open(trend_filename, "r", encoding="utf-8") as handle:
-                data = json.load(handle)
-        except Exception as exc:
-            print(f"[{self.cls_name}] Could not read {trend_filename}: {exc}")
-            return []
-
-        if not isinstance(data, dict) or symbol not in data:
-            return []
-        # An explicitly published null is a neutral snapshot, distinct from a
-        # missing symbol. Preserve it so stale in-memory trends are cleared.
-        return [data[symbol]]
-
-
+CacheLongTrendManager = _cache_trend.CacheLongTrendManager
 CacheLongTrend = CacheLongTrendManager
 
 
@@ -3470,934 +3435,10 @@ def get_current_price_manager(ws_manager=None, symbols=None, sync_ts=None,
 
 
 # ######
-# ###### CacheShortTrendManager: windows, calculated trend, and cross-process cache
+# ###### CacheShortTrendManager: delegated to cachetrend
 # ######
 
-class CacheShortTrendManager:
-    """Calculate per-symbol short trends and share snapshots across processes.
-
-    Writers build windows, subscribe to Cache24, and publish fast gradient/epsilon values.
-    Readers such as rtrade use only the gate backed by the shared file.
-    """
-    EPSILON_K         = 1.0     # Informed noise threshold: k * stddev(gradient).
-    FAVORABLE_REL_EPS = 1e-5    # Price-relative fallback when epsilon is absent.
-    TREND_STALE_SEC   = 15.0    # Do not delay based on older snapshots.
-    # Percentage thresholds are scale-invariant and configurable per window or symbol.
-    PRICE_CHANGE_THRESHOLD_SMALL = u.calculate_difference_percent(60000, 60000 - 310)
-    PRICE_CHANGE_THRESHOLD_BIG   = u.calculate_difference_percent(97000, 95000 - 377)
-    FULL_EVAL_INTERVAL_SEC = 3.0   # Cadence for expensive complete metrics.
-    FLUSH_INTERVAL_SEC     = 0.5   # Writer-only file flush cadence.
-    # Every window is a slice of the same 24-hour Cache24 buffer. The smallest is primary.
-    WINDOW_SECONDS = [3.7 * 60, 2.5 * 60 * 60]   # [3.7 min momentum, 2.5 hours trend]
-    _live_instances = weakref.WeakSet()
-
-    def __init__(self, symbols, filename="cache_short_trend.json", writer=False,
-                 window_seconds=None, thresholds=None):
-        self._live_instances.add(self)
-        self.cls_name = type(self).__name__
-        self.symbols = list(symbols)
-        self.filename = u.cache_path(filename)   # Store cache data in the cachedb subdirectory.
-        _migrate_legacy_filename_if_needed(self.filename)
-        self.trend_dir = os.path.join(os.path.dirname(self.filename), "24trend")
-        self.writer = writer   # Only the writer process persists the file.
-        # Sort N window durations so index zero is primary.
-        secs = list(window_seconds) if window_seconds else list(self.WINDOW_SECONDS)
-        self.window_seconds = sorted(float(s) for s in secs)
-        # Thresholds may be callable, keyed by window, keyed by symbol and window, or None.
-        self._threshold_fn = self._build_threshold_fn(thresholds)
-        self._mem = {}
-        self.cache = self._mem
-        self._live_windows = {}
-        self._hist_windows = {}
-        self._trend_buffers = {}
-        self._active_dynamic_windows = set()
-        self._disk_c24_cache = {}
-        self._lock = threading.RLock()
-        self.lock = self._lock
-        self._file_mtime = None
-        self._file_cache = None
-        # Writer state populated by start_computation: symbol/window to analyzer objects.
-        self.windows = {}
-        self.analyzers = {}
-        self.current_price_mgr = None
-        # start_computation supplies raw Cache24 buffers for dynamic windows. Until then,
-        # dynamic windows are unavailable and safely return unknown.
-        self._cache24_managers = None
-        self._computing = False
-        self._full_eval_thread = None
-        self._flush_thread = None
-        self._stop_event = threading.Event()
-
-    # Extreme window durations derived from the sorted list.
-    @property
-    def window_small_sec(self):
-        return self.window_seconds[0]
-
-    @property
-    def window_big_sec(self):
-        return self.window_seconds[-1]
-
-    def _live_trend_file(self, symbol: str) -> str:
-        return os.path.join(self.trend_dir, f"live_{symbol}.json")
-
-    def _hist_trend_file(self, symbol: str) -> str:
-        return os.path.join(self.trend_dir, f"hist_{symbol}.json")
-
-    def _get_trend_buffer(self, symbol: str):
-        import pricewindow as pw
-        buf = self._trend_buffers.get(symbol)
-        if buf is None:
-            buf = pw.IncrementalTrendBuffer()
-            self._trend_buffers[symbol] = buf
-        return buf
-
-    def _build_threshold_fn(self, thresholds):
-        """Normalize ``thresholds`` to a ``(symbol, seconds) -> percentage`` function."""
-        if callable(thresholds):
-            return thresholds
-        small, big = self.window_seconds[0], self.window_seconds[-1]
-
-        def per_window_default(sec):
-            # The smallest window uses SMALL; all others use BIG.
-            return self.PRICE_CHANGE_THRESHOLD_SMALL if float(sec) <= small else self.PRICE_CHANGE_THRESHOLD_BIG
-
-        if isinstance(thresholds, dict):
-            # Accept either per-symbol/per-window or direct per-window dictionaries.
-            per_symbol = all(isinstance(v, dict) for v in thresholds.values()) and len(thresholds) > 0
-            if per_symbol:
-                tbl = {sym: {float(k): v for k, v in d.items()} for sym, d in thresholds.items()}
-                return lambda sym, sec: tbl.get(sym, {}).get(float(sec), per_window_default(sec))
-            tbl = {float(k): v for k, v in thresholds.items()}
-            return lambda sym, sec: tbl.get(float(sec), per_window_default(sec))
-
-        return lambda sym, sec: per_window_default(sec)
-
-    def threshold_for(self, symbol, seconds):
-        """Return the percentage threshold for one symbol window."""
-        return self._threshold_fn(symbol, float(seconds))
-
-    # ── Writer: build windows and subscribe to Cache24 ───────────────────────
-    def start_computation(self, cache24_managers=None, current_price_mgr=None, run_full_eval=False):
-        """Build windows and the fast channel, optionally starting full evaluation."""
-        if self._computing:
-            if run_full_eval:
-                self._start_full_eval_loop()
-            return
-        self._stop_event.clear()
-        if self.writer:
-            self.prime_from_file(symbols=self.symbols, overwrite=False)
-        import pricewindow as pw
-        if cache24_managers is None:
-            cache24_managers = get_cache_manager("24Price")
-        if current_price_mgr is None:
-            current_price_mgr = get_current_price_manager()
-        self.current_price_mgr = current_price_mgr
-        self._cache24_managers = cache24_managers   # Raw sources for dynamic windows.
-        for s in self.symbols:
-          try:
-            c24 = cache24_managers[s]
-            current_price_mgr.subscribe_price(c24)          # CurrentPrice → Cache24
-            with getattr(c24, "lock", threading.RLock()):
-                raw_entries = list(getattr(c24, "cache", {}).get(s, []))
-            if raw_entries:
-                self._get_trend_buffer(s).sync_entries(raw_entries)
-            self.windows[s]   = {}
-            self.analyzers[s] = {}
-            parts = []
-            for sec in self.window_seconds:
-                w = pw.PriceWindow.from_cache24(s, sec, c24)
-                self.windows[s][sec]   = w
-                self.analyzers[s][sec] = pw.WindowAnalyzer(w)
-                parts.append(f"{sec:.0f}s: {len(w.prices)} (rate={w.sample_rate_sec:.2f}s)")
-            c24.subscribe_price(self)                       # tick signal to the fast channel
-            print(f"[ShortTrend][{s}] " + " ".join(parts))
-          except Exception as _e:
-            builtins.print(
-                f"[ShortTrend][{s}] setup failed ({_e}) — skipping; "
-                "Binance is unaffected"
-            )
-        self._computing = True
-        self._start_flush_loop()        # Decouple file I/O into a background thread.
-        if run_full_eval:
-            self._start_full_eval_loop()
-
-    # ── Full metric calculation without trading logic ────────────────────────
-    def evaluate_full(self, symbol):
-        wins = self.windows.get(symbol)
-        ans  = self.analyzers.get(symbol)
-        if not wins or not ans:
-            return None
-        primary = self.window_seconds[0]
-        if primary not in wins:
-            return None
-        if self.current_price_mgr is None:
-            return None
-        observation = self.current_price_mgr.get_cached_price_observation(
-            symbol, self.TREND_STALE_SEC
-        )
-        if observation is None:
-            return None
-        observed_at, current_price = observation
-
-        # Calculate slopes for every window, keyed by seconds.
-        slopes = {}
-        primary_pos = None
-        for sec in self.window_seconds:
-            slope, pos = ans[sec].check_price_change(self._threshold_fn(symbol, sec))
-            slopes[sec] = slope
-            if sec == primary:
-                primary_pos = pos
-
-        # Detailed metrics for primary window and published/active windows.
-        pwin, pan = wins[primary], ans[primary]
-        gradient, gc, slope_full, gradient_recent = pwin.get_short_trend()
-        eps_primary = pwin.get_noise_epsilon(self.EPSILON_K)
-        published_dyn = self._published_dynamic_windows(symbol, now=observed_at)
-        primary_key = _dynamic_window_key(primary)
-        if primary_key not in published_dyn:
-            published_dyn[primary_key] = dict(
-                final_trend=gradient,
-                growth_coefficient=gc,
-                slope_full=slope_full,
-                gradient_recent=gradient_recent,
-                epsilon=eps_primary,
-                n_samples=len(pwin.prices),
-                window_seconds=float(primary),
-                sample_rate_sec=float(pwin.sample_rate_sec),
-                current_price=current_price,
-                ts=observed_at,
-            )
-        with self._lock:
-            live_sym = self._live_windows.setdefault(symbol, {})
-            for wk, wval in published_dyn.items():
-                entry = dict(wval)
-                entry.setdefault("current_price", current_price)
-                live_sym[wk] = entry
-
-        w_big = wins.get(self.window_seconds[-1])
-        v1h = None
-        adapt_re = None
-        adapt_dca = None
-        if w_big is not None:
-            try:
-                from intelligence.internal.state.volatility import (
-                    adaptive_thresholds,
-                    calculate_volatility_1h,
-                )
-                v1h = calculate_volatility_1h(list(w_big.prices), w_big.sample_rate_sec)
-                adapt_re, adapt_dca = adaptive_thresholds(v1h)
-            except Exception:
-                pass
-
-        # Update memory only; the flush loop writes in the background.
-        self._set_mem(
-            symbol,
-            final_trend=gradient, growth_coefficient=gc,
-            slope_full=slope_full, gradient_recent=gradient_recent,
-            slope_small=slopes[self.window_seconds[0]],     # Smallest.
-            slope_big=slopes[self.window_seconds[-1]],      # Largest.
-            slopes={f"{int(s)}": v for s, v in slopes.items()},
-            slope_max_min=pan.calculate_slope_max_min(),
-            pos=primary_pos, epsilon=eps_primary,
-            vol_1h_pct=v1h,
-            adapt_reentry_pct=adapt_re,
-            adapt_dca_pct=adapt_dca,
-            current_price=current_price,
-            ts=observed_at,
-            dynamic=published_dyn,
-        )
-
-    def _published_dynamic_windows(self, symbol, now=None):
-        """Compute configured, secondary (e.g. 2.5h), and active dynamic windows."""
-        published = {}
-        target_windows = list(dict.fromkeys(
-            list(self.window_seconds)
-            + list(CM_PUBLISHED_TREND_WINDOWS_SEC)
-            + sorted(self._active_dynamic_windows)
-        ))
-        for window in target_windows:
-            dyn = self.get_short_trend_for_window(symbol, window, now=now)
-            if dyn is not None:
-                published[_dynamic_window_key(dyn["window_seconds"])] = dyn
-        return published
-
-    def _start_full_eval_loop(self):
-        if self._full_eval_thread is not None and self._full_eval_thread.is_alive():
-            return
-        def run():
-            while not self._stop_event.is_set():
-                for s in list(self.symbols):
-                    if self._stop_event.is_set():
-                        break
-                    try:
-                        self.evaluate_full(s)
-                    except Exception as e:
-                        print(f"[{self.cls_name}] evaluate_full {s}: {e}")
-                self._stop_event.wait(self.FULL_EVAL_INTERVAL_SEC)
-        self._full_eval_thread = threading.Thread(target=run, name="ShortTrendFullEval", daemon=True)
-        self._full_eval_thread.start()
-
-    # ── Fast Cache24 subscriber channel: gradient and epsilon on every tick ───
-    def on_price_update(self, symbol, ts_ms, price):
-        with self._lock:
-            buf = self._get_trend_buffer(symbol)
-            if not buf.timestamps:
-                buf.append(price, ts_ms)
-            elif int(ts_ms) >= buf.timestamps[-1] and not (
-                int(ts_ms) == buf.timestamps[-1] and float(price) == buf.prices[-1]
-            ):
-                buf.append(price, ts_ms)
-        win = self.get_window(symbol)   # Primary window.
-        if win is None:
-            return
-        try:
-            # The fast path computes only a cheap gradient in memory. It writes separate
-            # ``_fast`` keys for low-latency gates and never overwrites richer full-evaluation
-            # results. Sharing keys previously created a network-timing race between paths.
-            g = win.get_recent_gradient()
-            eps = win.get_noise_epsilon(self.EPSILON_K)
-            self._set_mem(symbol, gradient_recent_fast=g, epsilon=eps,
-                          trend_fast=(1 if g > 0 else -1 if g < 0 else 0),
-                          current_price=price, ts_fast=float(ts_ms) / 1000.0)
-        except Exception as e:
-            print(f"[{self.cls_name}] on_price_update {symbol}: {e}")
-
-    # ── Calculation API ──────────────────────────────────────────────────────
-    def get_window(self, symbol, seconds=None):
-        """Return the requested window, or the smallest primary window for None."""
-        wins = self.windows.get(symbol) or {}
-        return wins.get(float(seconds) if seconds is not None else self.window_seconds[0])
-
-    def get_analyzer(self, symbol, seconds=None):
-        """Return the requested analyzer, or the smallest primary analyzer for None."""
-        ans = self.analyzers.get(symbol) or {}
-        return ans.get(float(seconds) if seconds is not None else self.window_seconds[0])
-
-    def get_short_trend(self, symbol):
-        win = self.get_window(symbol)
-        return win.get_short_trend() if win else None
-
-    # ── Dynamic window & Historical Subslice (O(1) Prefix Sums + Persistence) ──
-    def _eval_entries_with_buffer(self, symbol, entries, a: int, b: int):
-        """Evaluate slice [a, b] of entries using the symbol's IncrementalTrendBuffer."""
-        import pricewindow as pw
-        sub_entries = entries[a : b + 1]
-        sample_rate = pw.PriceWindow._sample_rate_from_entries(sub_entries)
-        with self._lock:
-            buf = self._get_trend_buffer(symbol)
-            buf.sync_entries(entries)
-            if len(buf.prices) == len(entries):
-                ft, gc, sf, gr, eps = buf.eval_slice(
-                    a, b, sample_rate_sec=sample_rate, eps_k=self.EPSILON_K
-                )
-                return ft, gc, sf, gr, eps, sample_rate
-        # Fallback if entries were non-monotonic or ad-hoc:
-        tmp_buf = pw.IncrementalTrendBuffer()
-        tmp_buf.sync_entries(sub_entries)
-        ft, gc, sf, gr, eps = tmp_buf.eval_slice(
-            0, len(sub_entries) - 1, sample_rate_sec=sample_rate, eps_k=self.EPSILON_K
-        )
-        return ft, gc, sf, gr, eps, sample_rate
-
-    def _load_disk_cache24_entries(self, symbol):
-        """Load raw [ts_ms, price] entries from cachedb/cache_24_price_<symbol>.json if present."""
-        base_dir = os.path.dirname(self.filename)
-        c24_file = os.path.join(base_dir, f"cache_24_price_{symbol}.json")
-        if not os.path.exists(c24_file):
-            legacy_file = os.path.join(base_dir, f"cache_24price_{symbol}.json")
-            if os.path.exists(legacy_file):
-                c24_file = legacy_file
-            else:
-                return []
-        try:
-            mtime = os.stat(c24_file).st_mtime_ns
-            cached = self._disk_c24_cache.get(symbol)
-            if cached and cached[0] == mtime:
-                return cached[1]
-            with open(c24_file, "r", encoding="utf-8") as fh:
-                raw = json.load(fh)
-            items = (raw.get("items") or {}).get(symbol) if isinstance(raw, dict) else None
-            entries = list(items) if isinstance(items, list) else []
-            self._disk_c24_cache[symbol] = (mtime, entries)
-            return entries
-        except Exception:
-            return []
-
-    def get_short_trend_for_window(self, symbol, window_seconds, now=None):
-        """Calculate trend on demand for an arbitrary window in seconds.
-
-        Uses O(1) incremental prefix sums over Cache24 and memoizes results in
-        per-symbol persistence (cachedb/24trend/live_<SYMBOL>.json) so repeated
-        requests for the same tick state are served directly from persistence.
-        """
-        req = float(window_seconds)
-        clamped = min(max(req, CM_DYNAMIC_WINDOW_MIN_SEC), CM_DYNAMIC_WINDOW_MAX_SEC)
-        if clamped != req:
-            print(f"[get_short_trend_for_window] {symbol}: window_seconds={req:.0f} "
-                  f"outside [{CM_DYNAMIC_WINDOW_MIN_SEC:.0f}, {CM_DYNAMIC_WINDOW_MAX_SEC:.0f}] "
-                  f"-> clamped to {clamped:.0f}")
-        w_key = _dynamic_window_key(clamped)
-
-        if self._cache24_managers is None:
-            # Reader process: check published live_<SYMBOL>.json / shared file first,
-            # then fall back to on-disk cache_24_price_<SYMBOL>.json if available.
-            pub = self._published_window(symbol, clamped, now=now)
-            if pub is not None:
-                return pub
-            disk_entries = self._load_disk_cache24_entries(symbol)
-            if not disk_entries:
-                return None
-            now_val = now if now is not None else time.time()
-            cutoff_ms = int((now_val - clamped) * 1000)
-            a = bisect.bisect_left(disk_entries, cutoff_ms, key=lambda e: e[0])
-            b = len(disk_entries) - 1
-            if b - a + 1 < 3:
-                return None
-            newest_ts_sec = disk_entries[b][0] / 1000.0
-            if now_val - newest_ts_sec > self.TREND_STALE_SEC:
-                return None
-            ft, gc, sf, gr, eps, sample_rate = self._eval_entries_with_buffer(
-                symbol, disk_entries, a, b
-            )
-            res = dict(
-                final_trend=ft, growth_coefficient=gc,
-                slope_full=sf, gradient_recent=gr,
-                epsilon=eps, n_samples=b - a + 1, window_seconds=clamped,
-                sample_rate_sec=sample_rate, current_price=float(disk_entries[b][1]),
-                ts=now_val,
-            )
-            self._persist_live_window(symbol, w_key, res, last_tick_ts_ms=disk_entries[b][0])
-            return res
-
-        c24 = self._cache24_managers.get(symbol)
-        if c24 is None:
-            return None
-
-        now_val = now if now is not None else time.time()
-        self._active_dynamic_windows.add(clamped)
-
-        # Fast path when c24 is a real Cache24PriceManager instance with direct buffer access:
-        if hasattr(c24, "cache") and hasattr(c24, "lock"):
-            with c24.lock:
-                all_entries = list(c24.cache.get(symbol, []))
-            if len(all_entries) < 3:
-                return None
-            cutoff_ms = int((now_val - clamped) * 1000)
-            a = bisect.bisect_left(all_entries, cutoff_ms, key=lambda e: e[0])
-            b = len(all_entries) - 1
-            n_samples = b - a + 1
-            if n_samples < 3:
-                return None
-            newest_ts_ms = int(all_entries[b][0])
-            newest_ts_sec = newest_ts_ms / 1000.0
-            if now_val - newest_ts_sec > self.TREND_STALE_SEC:
-                return None
-            with self._lock:
-                cached = (self._live_windows.get(symbol) or {}).get(w_key)
-                if (
-                    isinstance(cached, dict)
-                    and cached.get("_last_tick_ts_ms") == newest_ts_ms
-                    and cached.get("n_samples") == n_samples
-                ):
-                    hit = {k: v for k, v in cached.items() if not k.startswith("_")}
-                    hit["ts"] = now_val
-                    return hit
-            ft, gc, sf, gr, eps, sample_rate = self._eval_entries_with_buffer(
-                symbol, all_entries, a, b
-            )
-            res = dict(
-                final_trend=ft, growth_coefficient=gc,
-                slope_full=sf, gradient_recent=gr,
-                epsilon=eps, n_samples=n_samples, window_seconds=clamped,
-                sample_rate_sec=sample_rate, current_price=float(all_entries[b][1]),
-                ts=now_val,
-            )
-            self._persist_live_window(symbol, w_key, res, last_tick_ts_ms=newest_ts_ms)
-            return res
-
-        # Compatibility path for custom/mock c24 objects implementing only get_recent_entries:
-        try:
-            entries = c24.get_recent_entries(symbol, last_seconds=clamped)
-        except Exception as e:
-            print(f"[get_short_trend_for_window] {symbol}: get_recent_entries failed ({e})")
-            return None
-        if len(entries) < 3:
-            return None
-
-        newest_ts_sec = entries[-1][0] / 1000.0
-        if now_val - newest_ts_sec > self.TREND_STALE_SEC:
-            return None
-
-        ft, gc, sf, gr, eps, sample_rate = self._eval_entries_with_buffer(
-            symbol, entries, 0, len(entries) - 1
-        )
-        res = dict(
-            final_trend=ft, growth_coefficient=gc,
-            slope_full=sf, gradient_recent=gr,
-            epsilon=eps, n_samples=len(entries), window_seconds=clamped,
-            sample_rate_sec=sample_rate, current_price=float(entries[-1][1]),
-            ts=now_val,
-        )
-        self._persist_live_window(symbol, w_key, res, last_tick_ts_ms=int(entries[-1][0]))
-        return res
-
-    def _persist_live_window(self, symbol: str, w_key: str, data: dict,
-                             last_tick_ts_ms: Optional[int] = None, flush: bool = False):
-        """Store a computed sliding window in memory and optionally flush 24trend/live_<SYMBOL>.json."""
-        with self._lock:
-            sym_live = self._live_windows.setdefault(symbol, {})
-            stored = dict(data)
-            if last_tick_ts_ms is not None:
-                stored["_last_tick_ts_ms"] = int(last_tick_ts_ms)
-            sym_live[w_key] = stored
-            if flush and self.writer:
-                self._write_live_symbol_file(symbol)
-
-    def _write_live_symbol_file(self, symbol: str):
-        """Persist cachedb/24trend/live_<SYMBOL>.json with clean window-keyed entries only."""
-        try:
-            sym_live = self._live_windows.get(symbol)
-            if not sym_live:
-                return
-            clean = {
-                wk: {k: v for k, v in wv.items() if not k.startswith("_")}
-                for wk, wv in sym_live.items()
-                if isinstance(wv, dict)
-            }
-            atomic_write_json(self._live_trend_file(symbol), clean)
-        except Exception as e:
-            print(f"[{self.cls_name}] live write failure for {symbol}: {e}")
-
-    def _read_live_symbol_file(self, symbol: str) -> dict:
-        path = self._live_trend_file(symbol)
-        try:
-            if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as fh:
-                    data = json.load(fh)
-                return data if isinstance(data, dict) else {}
-        except Exception:
-            pass
-        return {}
-
-    def _published_window(self, symbol, window_seconds, now=None):
-        """Return a dynamic window published in 24trend/live_<SYMBOL>.json or shared file."""
-        req = float(window_seconds)
-        clamped = min(max(req, CM_DYNAMIC_WINDOW_MIN_SEC), CM_DYNAMIC_WINDOW_MAX_SEC)
-        w_key = _dynamic_window_key(clamped)
-        now = now if now is not None else time.time()
-
-        def _check_fresh(dyn):
-            if not isinstance(dyn, dict):
-                return None
-            try:
-                age = float(now) - float(dyn["ts"])
-            except (KeyError, TypeError, ValueError, OverflowError):
-                return None
-            if not -5.0 <= age <= self.TREND_STALE_SEC:
-                return None
-            return {k: v for k, v in dyn.items() if not k.startswith("_")}
-
-        # 1. Check in-memory _live_windows first:
-        with self._lock:
-            mem_live = (self._live_windows.get(symbol) or {}).get(w_key)
-        if isinstance(mem_live, dict):
-            fresh = _check_fresh(mem_live)
-            if fresh is not None:
-                return fresh
-
-        # 2. Check shared snapshot file dynamic dict (authoritative if present):
-        snap = self._read_file().get(symbol)
-        if isinstance(snap, dict):
-            published = snap.get("dynamic")
-            if isinstance(published, dict) and w_key in published:
-                fresh = _check_fresh(published.get(w_key))
-                if fresh is not None:
-                    return fresh
-            if clamped == self.window_seconds[0] and "gradient_recent" in snap and "ts" in snap:
-                fresh = _check_fresh(snap)
-                if fresh is not None:
-                    return fresh
-
-        # 3. Check per-symbol 24trend/live_<SYMBOL>.json:
-        file_live = self._read_live_symbol_file(symbol).get(w_key)
-        if isinstance(file_live, dict):
-            return _check_fresh(file_live)
-
-        return None
-
-    # ── Historical fixed subslice [t1, t2] with immutable persistence ─────────
-    def get_trend_for_slice(self, symbol: str, start_ts: float, end_ts: float):
-        """Return trend metrics for a fixed historical interval [start_ts, end_ts].
-
-        Serves directly from cachedb/24trend/hist_<SYMBOL>.json on cache hit; otherwise
-        computes in O(1) from IncrementalTrendBuffer prefix sums and persists the result.
-        Accepts timestamps in either seconds or milliseconds.
-        """
-        t1_ms = normalize_timestamp_ms(start_ts)
-        t2_ms = normalize_timestamp_ms(end_ts)
-        if t1_ms is None or t2_ms is None or t2_ms <= t1_ms:
-            return None
-        slice_key = f"{t1_ms}_{t2_ms}"
-
-        with self._lock:
-            sym_hist = self._hist_windows.setdefault(symbol, {})
-            if slice_key in sym_hist:
-                return dict(sym_hist[slice_key])
-            hist_path = self._hist_trend_file(symbol)
-            if os.path.exists(hist_path):
-                try:
-                    with open(hist_path, "r", encoding="utf-8") as fh:
-                         loaded = json.load(fh)
-                    if isinstance(loaded, dict):
-                        sym_hist.update(loaded)
-                        if slice_key in sym_hist:
-                            return dict(sym_hist[slice_key])
-                except Exception:
-                    pass
-
-        # Cache miss: resolve raw entries from memory Cache24 or disk Cache24
-        entries = []
-        if self._cache24_managers is not None:
-            c24 = self._cache24_managers.get(symbol)
-            if c24 is not None:
-                if hasattr(c24, "cache") and hasattr(c24, "lock"):
-                    with c24.lock:
-                        entries = list(c24.cache.get(symbol, []))
-                elif hasattr(c24, "entries"):
-                    entries = list(c24.entries)
-        if not entries:
-            entries = self._load_disk_cache24_entries(symbol)
-        if len(entries) < 3:
-            return None
-
-        a = bisect.bisect_left(entries, t1_ms, key=lambda e: e[0])
-        b = bisect.bisect_right(entries, t2_ms, key=lambda e: e[0]) - 1
-        if a < 0 or b >= len(entries) or (b - a + 1) < 3:
-            return None
-
-        ft, gc, sf, gr, eps, sample_rate = self._eval_entries_with_buffer(symbol, entries, a, b)
-        res = dict(
-            t1_ms=t1_ms,
-            t2_ms=t2_ms,
-            final_trend=ft,
-            growth_coefficient=gc,
-            slope_full=sf,
-            gradient_recent=gr,
-            epsilon=eps,
-            n_samples=b - a + 1,
-            window_seconds=round((t2_ms - t1_ms) / 1000.0, 3),
-            sample_rate_sec=sample_rate,
-        )
-        with self._lock:
-            sym_hist = self._hist_windows.setdefault(symbol, {})
-            sym_hist[slice_key] = res
-            try:
-                atomic_write_json(self._hist_trend_file(symbol), sym_hist)
-            except Exception as e:
-                print(f"[{self.cls_name}] hist write failure for {symbol}: {e}")
-        return dict(res)
-
-    def is_trend_up_for_slice(self, symbol: str, start_ts: float, end_ts: float) -> bool:
-        """Evaluate upward-trend condition on a fixed historical interval [start_ts, end_ts]."""
-        res = self.get_trend_for_slice(symbol, start_ts, end_ts)
-        return self._eval_upward_formula(res)
-
-    @staticmethod
-    def _eval_upward_formula(data) -> bool:
-        """Single canonical upward-trend formula (SSOT): slope > 0 or (slope == 0 and gradient > 0)."""
-        if not isinstance(data, dict):
-            return False
-        slope = float(data.get("gradient_recent", data.get("slope_small", 0.0)) or 0.0)
-        gradient = float(data.get("final_trend", 0.0) or 0.0)
-        return slope > 0 or (slope == 0 and gradient > 0)
-
-    def is_trend_up(self, symbol, window_seconds=None, now=None) -> bool:
-        """Evaluate upward-trend condition over a dynamic window or the default primary snapshot."""
-        if window_seconds is not None and float(window_seconds) != self.window_seconds[0]:
-            dyn = self.get_short_trend_for_window(symbol, window_seconds, now=now)
-            return self._eval_upward_formula(dyn)
-        snap = self.get_fresh_snapshot(symbol, now=now)
-        if snap is not None:
-            return self._eval_upward_formula(snap)
-        if window_seconds is not None:
-            dyn = self.get_short_trend_for_window(symbol, window_seconds, now=now)
-            return self._eval_upward_formula(dyn)
-        return False
-
-    def is_trend_up_for_window(self, symbol, window_seconds, now=None):
-        """Evaluate upward-trend condition over a configurable window in seconds."""
-        dyn = self.get_short_trend_for_window(symbol, window_seconds, now=now)
-        return self._eval_upward_formula(dyn)
-
-    # ── Atomic cross-process JSON store ──────────────────────────────────────
-    def _write_file(self):
-        try:
-            atomic_write_json(self.filename, self._mem)
-            for symbol in list(self._live_windows.keys()):
-                self._write_live_symbol_file(symbol)
-        except Exception as e:
-            print(f"[{self.cls_name}] write failure for {self.filename}: {e}")
-
-    def _read_file(self):
-        # Always read this small, infrequently accessed file to guarantee cross-process
-        # correctness without relying on coarse mtime resolution.
-        try:
-            with open(self.filename, "r") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-
-    def _set_mem(self, symbol, **fields):
-        """Merge fields in memory only; the flush loop owns file I/O."""
-        with self._lock:
-            snap = dict(self._mem.get(symbol) or self._read_file().get(symbol) or {})
-            snap.update(fields)
-            snap["symbol"] = symbol
-            self._mem[symbol] = snap
-
-    def update_snapshot(self, symbol, **fields):
-        """Update memory and flush immediately only when this instance is the writer."""
-        self._set_mem(symbol, **fields)
-        if self.writer:
-            with self._lock:
-                self._write_file()
-
-    def _start_flush_loop(self):
-        """Run a writer-only thread that decouples periodic file I/O from calculation."""
-        if not self.writer:
-            return
-        if self._flush_thread is not None and self._flush_thread.is_alive():
-            return
-        def run():
-            while not self._stop_event.wait(self.FLUSH_INTERVAL_SEC):
-                with self._lock:
-                    if self._mem:
-                        self._write_file()
-        self._flush_thread = threading.Thread(target=run, name="ShortTrendFlush", daemon=True)
-        self._flush_thread.start()
-
-    def shutdown(self, timeout=5.0):
-        """Stop evaluation and flush loops, then unsubscribe Cache24 sources."""
-        self._stop_event.set()
-        for cache24 in (self._cache24_managers or {}).values():
-            unsubscribe = getattr(cache24, "unsubscribe_price", None)
-            if unsubscribe is not None:
-                unsubscribe(self)
-        for thread in (self._full_eval_thread, self._flush_thread):
-            if thread is not None and thread is not threading.current_thread():
-                thread.join(timeout=timeout)
-        stopped = all(thread is None or not thread.is_alive()
-                      for thread in (self._full_eval_thread, self._flush_thread))
-        if stopped:
-            self._full_eval_thread = None
-            self._flush_thread = None
-            self._computing = False
-        return stopped
-
-    @classmethod
-    def shutdown_all_instances(cls, timeout=5.0):
-        results = [manager.shutdown(timeout=timeout)
-                   for manager in list(cls._live_instances)]
-        return all(results) if results else True
-
-    def prime_from_file(self, symbols=None, *, overwrite=True):
-        """Prime memory from startup data so a reader can calculate fresh trends locally."""
-        data = self._read_file()
-        allowed = (
-            None
-            if symbols is None
-            else {str(symbol) for symbol in symbols}
-        )
-        with self._lock:
-            for symbol, snap in data.items():
-                if (
-                    isinstance(snap, dict)
-                    and (allowed is None or symbol in allowed)
-                    and (overwrite or symbol not in self._mem)
-                ):
-                    self._mem[symbol] = dict(snap)
-            self.cache = self._mem
-        return len(self._mem)
-
-    def get_snapshot(self, symbol):
-        """Return local calculated/primed memory, or the file for a pure reader."""
-        with self._lock:
-            if symbol in self._mem:
-                return dict(self._mem[symbol])
-        return self._read_file().get(symbol)
-
-    @staticmethod
-    def _snapshot_is_usable(snap, now, max_age_sec):
-        """Validate the common full-snapshot price and observation timestamp."""
-        if not isinstance(snap, dict):
-            return False
-        try:
-            observed_at = float(snap["ts"])
-            price = float(snap["current_price"])
-            age = float(now) - observed_at
-        except (KeyError, TypeError, ValueError, OverflowError):
-            return False
-        return (
-            math.isfinite(observed_at)
-            and observed_at > 0
-            and math.isfinite(price)
-            and price > 0
-            and -5.0 <= age <= float(max_age_sec)
-        )
-
-    def is_snapshot_fresh(self, symbol=None, max_age_sec=None):
-        """Return whether memory or file state is fresh enough to trust the writer."""
-        max_age_sec = max_age_sec if max_age_sec is not None else self.TREND_STALE_SEC
-        now = time.time()
-        if symbol is not None:
-            snap = self.get_snapshot(symbol)
-            return self._snapshot_is_usable(snap, now, max_age_sec)
-        allt = self.get_all_snapshots()
-        if not allt:
-            return False
-        return any(
-            self._snapshot_is_usable(s, now, max_age_sec)
-            for s in allt.values()
-        )
-
-    def become_writer(self):
-        """Promote a calculating reader to writer when the previous writer is stale."""
-        self.writer = True
-        self._start_flush_loop()
-
-    def get_snapshot_resilient(self, symbol, max_age_sec=None,
-                               cache24_managers=None, current_price_mgr=None):
-        """Read resiliently with lazy failover.
-
-        Use authoritative memory while calculating, otherwise use a fresh shared file.
-        If the file is stale, start local calculation once, become writer, and use memory.
-        """
-        if self._computing:
-            return self.get_snapshot(symbol)
-        if self.is_snapshot_fresh(symbol, max_age_sec):
-            return self.get_snapshot(symbol)
-        # A stale file triggers autonomous local calculation and writer failover.
-        builtins.print(
-            f"[{self.cls_name}][WARN] stale file -> "
-            f"local-computation failover ({symbol})"
-        )
-        self.prime_from_file()
-        self.start_computation(cache24_managers, current_price_mgr)
-        self.become_writer()
-        return self.get_snapshot(symbol)
-
-    def get_all_snapshots(self):
-        with self._lock:
-            if self._mem:
-                return {s: dict(v) for s, v in self._mem.items()}
-        return dict(self._read_file())
-
-    def clear(self):
-        with self._lock:
-            self._mem.clear()
-            self.cache = self._mem
-            self._live_windows.clear()
-            self._hist_windows.clear()
-            self._trend_buffers.clear()
-            self._active_dynamic_windows.clear()
-            self._disk_c24_cache.clear()
-            self._file_mtime = None
-            self._file_cache = None
-            try:
-                if os.path.exists(self.filename):
-                    os.remove(self.filename)
-                if os.path.isdir(self.trend_dir):
-                    for fn in os.listdir(self.trend_dir):
-                        if fn.startswith(("live_", "hist_")) and fn.endswith(".json"):
-                            os.remove(os.path.join(self.trend_dir, fn))
-            except Exception:
-                pass
-
-    # ── Opportunistic-delay gate with informed epsilon ───────────────────────
-    def _epsilon(self, snap):
-        eps = snap.get("epsilon")
-        if eps is not None and eps > 0:
-            return float(eps)
-        price = abs(snap.get("current_price") or 0.0)
-        return price * self.FAVORABLE_REL_EPS
-
-    def get_fresh_snapshot(self, symbol, now=None):
-        """Return a symbol snapshot only when it is within ``TREND_STALE_SEC``.
-
-        This is the shared public staleness check used by both trend and wait decisions.
-        """
-        snap = self.get_snapshot(symbol)
-        now = now if now is not None else time.time()
-        if not self._snapshot_is_usable(snap, now, self.TREND_STALE_SEC):
-            return None
-        return snap
-
-    def should_wait(self, side, symbol, window_seconds=None, fast=False,
-                     use_noise_gate=True, now=None):
-        """Decide whether to delay a BUY or SELL intent; True means wait.
-
-        Unknown or stale data returns False and executes immediately, so a failed cache
-        cannot block orders. ``window_seconds=None`` uses the precomputed primary window;
-        another value calculates a bounded dynamic window where Cache24 is available.
-        ``fast`` selects low-latency keys only for the primary window. The optional noise
-        gate treats ``|gradient| <= epsilon`` as a reason to wait.
-        """
-        side = side.upper()
-
-        if window_seconds is not None and float(window_seconds) != self.window_seconds[0]:
-            dyn = self.get_short_trend_for_window(symbol, window_seconds, now=now)
-            if dyn is None:
-                return False   # Unknown because Cache24 is unavailable, insufficient, or stale.
-            g = float(dyn["growth_coefficient"] or 0.0)
-            if use_noise_gate and abs(g) <= dyn["epsilon"]:
-                return True
-            if side == "BUY":
-                return g < 0
-            if side == "SELL":
-                return g > 0
-            return False
-
-        snap = self.get_fresh_snapshot(symbol, now=now)
-        if snap is None:
-            return False   # Unknown or stale data executes immediately.
-        if fast:
-            g = snap.get("gradient_recent_fast", snap.get("gradient_recent", 0.0))
-        else:
-            g = snap.get("growth_coefficient", snap.get("gradient_recent", 0.0))
-        g = float(g or 0.0)
-        if use_noise_gate:
-            eps = self._epsilon(snap)
-            if abs(g) <= eps:
-                return True
-        if side == "BUY":
-            return g < 0
-        if side == "SELL":
-            return g > 0
-        return False
-
-    def wait_for_favorable_entry(self, side, symbol, max_wait_sec=10.0,
-                                 poll_sec=0.2, sleep_fn=time.sleep, mode="full",
-                                 window_seconds=None):
-        """Wait while trend favors delay, bounded by ``max_wait_sec``.
-
-        Emit a visual heartbeat roughly once per second and return elapsed seconds.
-        Forward ``window_seconds`` to ``should_wait`` for primary or dynamic evaluation.
-        """
-        deadline = time.time() + max_wait_sec
-        waited = 0.0
-        next_dot = 1.0
-        while time.time() < deadline and self.should_wait(
-                side, symbol, window_seconds=window_seconds, fast=(mode == "gradient")):
-            sleep_fn(poll_sec)
-            waited += poll_sec
-            if waited >= next_dot:
-                print(".", end="", flush=True)
-                next_dot += 1.0
-        if waited > 0:
-            print()
-        return waited
-
-
+CacheShortTrendManager = _cache_trend.CacheShortTrendManager
 CacheShortTrend = CacheShortTrendManager
 
 
@@ -4711,232 +3752,68 @@ def ensure_account_cache_readers(status):
 
 
 # ######
-# ###### Real-time Binance user stream -> cache actions
+# ###### Real-time Binance user stream -> cache actions (delegated to binance_api.bapi_ws_bridge)
 # ######
-_ws_bridge = None
-_ws_bridge_lock = threading.Lock()
-_ws_event_stats = defaultdict(int)
+_ws_bridge = _bapi_ws_bridge._ws_bridge
+_ws_bridge_lock = _bapi_ws_bridge._ws_bridge_lock
+_ws_event_stats = _bapi_ws_bridge._ws_event_stats
+
 
 def _upsert_order_from_execution_report(event):
-    symbol = event.get("s")
-    if not symbol:
-        return
-
-    # Cache only executed orders, matching get_filled_orders. NEW or terminal orders
-    # without fills are not transactions and would pollute the profit guard with zero prices.
-    if (
-        event.get("x") != "TRADE"
-        or event.get("X") not in ("FILLED", "PARTIALLY_FILLED")
-    ):
-        return
-
-    try:
-        fill_id = int(event.get("t"))
-        if fill_id < 0:
-            raise ValueError("missing Binance trade ID")
-        last_quantity = float(event.get("l") or 0)
-        if last_quantity <= 0 and event.get("X") == "FILLED":
-            last_quantity = float(event.get("z") or 0) or float(event.get("q") or 0)
-        last_price = extract_order_price(event, default=0.0)
-        if last_price <= 0 and last_quantity > 0:
-            last_quote = float(event.get("Y") or 0)
-            if last_quote > 0:
-                last_price = last_quote / last_quantity
-            else:
-                cum_quote = float(event.get("Z") or 0)
-                cum_qty = float(event.get("z") or 0) or last_quantity
-                if cum_quote > 0 and cum_qty > 0:
-                    last_price = cum_quote / cum_qty
-        order_item = {
-            "orderId": event.get("i"),
-            # Store one immutable fill. A cumulative Z/z aggregate cannot name all
-            # constituent fill IDs after reconnect, so REST backfill could count the
-            # older fills twice. L/l plus t is exactly deduplicable across both paths.
-            "price": last_price,
-            "quantity": last_quantity,
-            "timestamp": int(
-                extract_timestamp_ms(event, default=None)
-                or int(time.time() * 1000)
-            ),
-            "side": extract_order_side(event) or event.get("S"),
-            "status": event.get("X"),
-            "symbol": symbol,
-            "eventType": event.get("x"),
-            "_fillId": str(fill_id),
-        }
-    except (TypeError, ValueError, OverflowError) as exc:
-        builtins.print(
-            f"[cacheManager][WS] rejected malformed order report: {exc}"
-        )
-        return
-
-    order_cache = get_cache_manager("Order")
-    if not order_cache._is_valid_item(order_item):
-        builtins.print("[cacheManager][WS] rejected malformed order report")
-        return
-    order_cache._persist_items(symbol, [order_item])
+    _bapi_ws_bridge.upsert_order_from_execution_report(
+        event, cache_getter=get_cache_manager
+    )
 
 
 def _append_trade_from_execution_report(event):
-    if event.get("x") != "TRADE":
-        return
-    symbol = event.get("s")
-    if not symbol:
-        return
-
-    trade_cache = get_cache_manager("Trade")
-    side = extract_order_side(event)
-    if side not in ("BUY", "SELL"):
-        builtins.print("[cacheManager][WS] rejected Trade report with invalid side")
-        return
-    raw_trade_id = event.get("t")
-    try:
-        if raw_trade_id is not None and int(raw_trade_id) < 0:
-            builtins.print("[cacheManager][WS] rejected Trade report with missing trade ID")
-            return
-    except (TypeError, ValueError):
-        pass
-    trade_id = str(
-        raw_trade_id if raw_trade_id is not None
-        else f"{event.get('i')}-{event.get('T')}"
+    _bapi_ws_bridge.append_trade_from_execution_report(
+        event, cache_getter=get_cache_manager
     )
-    raw_price = event.get("L")
-    try:
-        if raw_price is None or float(raw_price) <= 0:
-            raw_price = event.get("p")
-    except (TypeError, ValueError):
-        raw_price = event.get("p")
-    raw_qty = event.get("l")
-    try:
-        if (raw_qty is None or float(raw_qty) <= 0) and event.get("X") in (None, "FILLED"):
-            raw_qty = event.get("z") if event.get("z") is not None else event.get("q")
-    except (TypeError, ValueError):
-        if event.get("X") in (None, "FILLED"):
-            raw_qty = event.get("q")
-    try:
-        if raw_price is None or float(raw_price) <= 0:
-            extracted_px = extract_order_price(event, default=0.0)
-            if extracted_px > 0:
-                raw_price = str(extracted_px)
-    except (TypeError, ValueError):
-        pass
-    ts_ms = extract_timestamp_ms(event)
-    if ts_ms is None or ts_ms <= 0:
-        ts_ms = int(time.time() * 1000)
-    trade_item = {
-        "symbol": symbol,
-        "id": trade_id,
-        "orderId": event.get("i"),
-        "price": raw_price,
-        "qty": raw_qty,
-        "time": int(ts_ms),
-        "isBuyer": side == "BUY",
-    }
-    if event.get("n") is not None:
-        trade_item["commission"] = str(event.get("n"))
-    if event.get("N") is not None:
-        trade_item["commissionAsset"] = str(event.get("N"))
-
-    if not trade_cache._is_valid_item(trade_item):
-        builtins.print("[cacheManager][WS] rejected malformed Trade report")
-        return
-    trade_cache._persist_items(symbol, [trade_item])
 
 
 def _refresh_asset_value_from_ws_event():
-    asset_cache = get_cache_manager("AssetValue", symbols=["TOTAL"])
-    items = asset_cache.get_remote_items("TOTAL", None)
-    if items:
-        asset_cache._persist_items("TOTAL", items)
+    _bapi_ws_bridge.refresh_asset_value_from_ws_event(
+        cache_getter=get_cache_manager
+    )
 
 
 def _persist_ws_updated_caches(event_type):
-    if event_type == "executionReport":
-        get_cache_manager("Order").save_state_to_file_if_enabled()
-        get_cache_manager("Trade").save_state_to_file_if_enabled()
-    elif event_type in ("balanceUpdate", "outboundAccountPosition"):
-        get_cache_manager("AssetValue", symbols=["TOTAL"]).save_state_to_file_if_enabled()
+    _bapi_ws_bridge.persist_ws_updated_caches(
+        event_type, cache_getter=get_cache_manager
+    )
 
 
-def _refresh_symbol_in_cache(manager, symbol):
-    """Refresh only one manager symbol efficiently for a WebSocket event."""
-    try:
-        start_time = manager.fetchtime_per_symbol.get(symbol, manager.fallback_time_default)
-        items = manager.get_remote_items(symbol, start_time)
-        if items:
-            manager._persist_items(symbol, items)
-    except Exception as e:
-        print(f"[cacheManager] _refresh_symbol_in_cache {manager.cls_name}/{symbol}: {e}")
+_refresh_symbol_in_cache = _bapi_ws_bridge.refresh_symbol_in_cache
 
 
 def _handle_binance_ws_event(event):
-    print("cacheManager handler call from binance ....")
-    event_type = event.get("e")
-    if not event_type:
-        return
+    _bapi_ws_bridge.handle_binance_ws_event(
+        event,
+        cache_getter=get_cache_manager,
+        log_enabled=WS_EVENT_LOG_ENABLED,
+        upsert_order_fn=_upsert_order_from_execution_report,
+        append_trade_fn=_append_trade_from_execution_report,
+        persist_fn=_persist_ws_updated_caches,
+    )
 
-    _ws_event_stats[event_type] += 1
-
-    if event_type == "executionReport":
-        symbol = event.get("s")
-        if WS_EVENT_LOG_ENABLED:
-            print(
-                "[cacheManager][WS] executionReport "
-                f"symbol={symbol} orderId={event.get('i')} "
-                f"status={event.get('X')} execType={event.get('x')} side={event.get('S')}"
-            )
-        # Derive Order and Trade directly from the WebSocket payload without REST calls.
-        # REST remains a rare fallback for missing symbols, while fallback polling covers
-        # gaps created by WebSocket disconnections.
-        if symbol:
-            _upsert_order_from_execution_report(event)
-            _append_trade_from_execution_report(event)
-        else:
-            for cache_name in ("Order", "Trade"):
-                get_cache_manager(cache_name).query_remote_and_update_cache()
-        _persist_ws_updated_caches(event_type)
-        return
-
-    if event_type in ("balanceUpdate", "outboundAccountPosition"):
-        if WS_EVENT_LOG_ENABLED:
-            print(
-                f"[cacheManager][WS] {event_type} event received"
-            )
-        #_refresh_asset_value_from_ws_event()
-        #_persist_ws_updated_caches(event_type)
-        return
 
 def enable_real_ws_event_sync():
     global _ws_bridge
-    import sys
-    if sys.modules.get("_cacheManager_initialized"):
-        # Already started by an earlier import.
-        if _ws_bridge is not None:
-            return _ws_bridge
-    with _ws_bridge_lock:
-        if _ws_bridge is not None:
-            return _ws_bridge
-        from binance_api import bapi_ws
-        # bapi_ws owns the stream class; cacheManager wires health callbacks that drive
-        # fallback polling through ``_should_poll``.
-        _ws_bridge = bapi_ws.BinanceAccountStream(
-            on_event=_handle_binance_ws_event,
-            on_available=_mark_ws_available,
-            on_healthy=_mark_ws_event_received,
-            on_unhealthy=_mark_ws_unhealthy,
-            loss_timeout_sec=WS_LOSS_TIMEOUT_SEC,
-        )
-        _ws_bridge.start()
-        return _ws_bridge
-        
+    _bapi_ws_bridge._ws_bridge = _ws_bridge
+    _ws_bridge = _bapi_ws_bridge.enable_real_ws_event_sync(
+        on_event=_handle_binance_ws_event,
+        on_available=_mark_ws_available,
+        on_healthy=_mark_ws_event_received,
+        on_unhealthy=_mark_ws_unhealthy,
+        loss_timeout_sec=WS_LOSS_TIMEOUT_SEC,
+    )
+    return _ws_bridge
+
+
 def _initialize_once():
-    import sys
-    if sys.modules.get("_cacheManager_initialized"):
-        print("[cacheManager] Already initialized, skip.")
-        return
-    sys.modules["_cacheManager_initialized"] = True
-    enable_real_ws_event_sync()
-    print("⚙️ cacheManager: WS user-data bridge started (execution reports).")
+    _bapi_ws_bridge.initialize_ws_bridge_once(
+        enable_fn=enable_real_ws_event_sync
+    )
 
 # The user-data WebSocket bridge is opt-in and does not start during import. Processes
 # that need real-time execution reports enable it explicitly:
@@ -4945,103 +3822,10 @@ def _initialize_once():
 # Read-only consumers rely on polling and do not start WebSocket.
 
 
-import concurrent.futures as _futures
-
-# A poll deadline prevents the loop from waiting on one slow provider call. The
-# provider's own network timeout still owns the worker lifecycle.
-_NB_FETCH_DEADLINE_SEC = 8   # Shorter than the poll interval, so hangs do not extend a cycle.
-
-
-def _fetch_price_with_deadline(
-    market_api,
-    symbol,
-    pool,
-    deadline_sec=_NB_FETCH_DEADLINE_SEC,
-    provider_name=None,
-):
-    """Bound the poller's wait while the provider owns the network-call timeout."""
-    kwargs = {"symbol": symbol}
-    if provider_name is not None:
-        kwargs["provider_name"] = provider_name
-    fut = pool.submit(market_api.get_current_price, **kwargs)
-    try:
-        return fut.result(timeout=deadline_sec)
-    except _futures.TimeoutError:
-        fut.cancel()
-        raise
-
-
-class _NonBinanceTrendPoller:
-    """Own the non-Binance poller's thread and executor lifecycle."""
-    def __init__(self, thread, pool, stop_event):
-        self.thread = thread
-        self.pool = pool
-        self.stop_event = stop_event
-
-    def stop(self, timeout=5.0):
-        self.stop_event.set()
-        if self.thread is not threading.current_thread():
-            self.thread.join(timeout=timeout)
-        self.pool.shutdown(wait=False, cancel_futures=True)
-        return not self.thread.is_alive()
-
-
-def _start_nonbinance_trend_poller(cpm, symbols, interval_sec=10,
-                                   fetch_deadline_sec=_NB_FETCH_DEADLINE_SEC,
-                                   provider_names=None):
-    """Feed short trends for non-WebSocket, non-Binance symbols.
-
-    Poll through the facade and push into the CurrentPrice/Cache24/ShortTrend chain.
-    Per-symbol failures do not affect Binance. A bounded poll wait and at least two
-    workers keep one slow fetch from freezing the poller; provider timeouts remain visible.
-    """
-    symbols = tuple(str(symbol or "").strip() for symbol in symbols)
-    bindings = {
-        str(symbol or "").strip().upper(): str(provider_name or "").strip()
-        for symbol, provider_name in dict(provider_names or {}).items()
-    }
-    missing = [
-        symbol for symbol in symbols
-        if (
-            not symbol
-            or not bindings.get(symbol.upper())
-            or bindings[symbol.upper()].lower() == "binance"
-        )
-    ]
-    if missing:
-        raise ValueError(
-            "explicit provider bindings are required for non-Binance symbols: "
-            + ", ".join(missing)
-        )
-    cpm.bind_providers(bindings)
-    pool = _futures.ThreadPoolExecutor(
-        max_workers=max(2, len(symbols)), thread_name_prefix="NBTrendFetch")
-    stop_event = threading.Event()
-
-    def run():
-        while not stop_event.is_set():
-            for s in symbols:
-                if stop_event.is_set():
-                    break
-                try:
-                    p = _fetch_price_with_deadline(
-                        cpm.market_api,
-                        s,
-                        pool,
-                        fetch_deadline_sec,
-                        provider_name=bindings[s.upper()],
-                    )
-                    if p is not None and float(p) > 0:
-                        cpm._push_price(s, float(p))
-                except _futures.TimeoutError:
-                    builtins.print(f"[NB-trend] {s}: fetch BLOCKED >{fetch_deadline_sec}s "
-                                   f"(poll deadline — probably DNS or the network) — skipping, retrying next cycle")
-                except Exception as _e:
-                    builtins.print(f"[NB-trend] {s}: {_e}")
-            stop_event.wait(interval_sec)
-    t = threading.Thread(target=run, name="NonBinanceTrendPoller", daemon=True)
-    t.start()
-    return _NonBinanceTrendPoller(t, pool, stop_event)
+_NB_FETCH_DEADLINE_SEC = _cache_trend._NB_FETCH_DEADLINE_SEC
+_fetch_price_with_deadline = _cache_trend._fetch_price_with_deadline
+_NonBinanceTrendPoller = _cache_trend._NonBinanceTrendPoller
+_start_nonbinance_trend_poller = _cache_trend._start_nonbinance_trend_poller
 
 
 if __name__ == "__main__":
