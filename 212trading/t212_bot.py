@@ -93,12 +93,7 @@ def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_
             if not verify_isin(client, ticker, isin):
                 return  # invalid configuration: do not retry blindly
             if not skip_wait:
-                ok = wait_for_launch(
-                    yahoo, label, interval, stop=STOP,
-                    on_launch=lambda m: notify(
-                        title=f"{label} available — starting!", source="T212",
-                        body=f"{label} tradable on {m.get('exchange')} @ {m.get('price')}",
-                        price=m.get("price"), symbol=label))
+                ok = wait_for_launch(yahoo, label, interval, stop=STOP)
                 if not ok:
                     return  # stop requested
                 if not verify_isin(client, ticker, isin):

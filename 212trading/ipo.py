@@ -262,9 +262,6 @@ def _wait_for_launch(args, yahoo_symbol, label, interval) -> bool:
                 log(f">>> {label} E DISPONIBIL — pornesc tranzactionarea <<<")
                 log(body.replace("\n", " | "))
                 log("############################################")
-                notify(title=f"{label} disponibil — pornesc!", body=body,
-                       source=m.get("exchange") or "market", price=m.get("price"),
-                       desktop=args.desktop)
                 return True
             if m:
                 log(f"ping - waiting for the launch  |  price={m.get('price')} vol={m.get('volume')} "
