@@ -117,3 +117,13 @@ def test_mirrored_5min_topic_thread_does_not_block_idle_sync(store, tmp_path):
 
     assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_READY
 
+
+def test_orphan_summary_row_without_db_file_does_not_trigger_new_sync(store):
+    cli, d1, d2 = store
+    (d2 / "kept.db").write_text("x")
+    os.link(d2 / "kept.db", d1 / "kept.db")
+    _set_rows(["kept", "orphan_deleted_in_ui"])
+    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids(["kept"]))
+    assert asf.pending_ui_sync() == []
+    assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_NOTHING
+

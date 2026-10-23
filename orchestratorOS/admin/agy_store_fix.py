@@ -305,7 +305,7 @@ def repair_summaries(mt: dict) -> int:
         return 0
     con = sqlite3.connect(DB, timeout=15)
     rows = con.execute("SELECT conversation_id, title, raw_summary FROM conversation_summaries").fetchall()
-    raws, fixed = {}, 0
+    raws, fixed, orphans = {}, 0, []
     for cid, title, raw in rows:
         raw = bytes(raw or b"")
         if cid in mt:
@@ -317,7 +317,13 @@ def repair_summaries(mt: dict) -> int:
             raws[cid] = new
             fixed += 1
         else:
-            raws[cid] = raw
+            orphans.append(cid)
+    if orphans:
+        con.execute(
+            f"DELETE FROM conversation_summaries WHERE conversation_id IN ({','.join('?' for _ in orphans)})",
+            orphans,
+        )
+        log.info("pre: removed %d orphan summary rows from conversation_summaries.db", len(orphans))
     con.commit()
     try:
         con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -325,17 +331,20 @@ def repair_summaries(mt: dict) -> int:
         pass
     con.close()
 
-    # rebuild agyhub_summaries_proto.pb: tag1 = summaries, tag2 = fileModTimes (seconds). Keep only existing mt files.
+    # rebuild agyhub_summaries_proto.pb (and jetbox_summaries_proto.pb if present): Keep only existing mt files.
     out = bytearray()
     for cid, raw in raws.items():
         if cid in mt:
             out += enc_fields([(1, 2, enc_fields([(1, 2, cid.encode()), (2, 2, raw)]))])
     for cid, sec in mt.items():
         out += enc_fields([(2, 2, enc_fields([(1, 2, cid.encode()), (2, 0, sec)]))])
-    tmp = PB + ".tmp"
-    with open(tmp, "wb") as f:
-        f.write(bytes(out))
-    os.replace(tmp, PB)
+    for pb_path in (PB, os.path.join(CLI, "jetbox_summaries_proto.pb")):
+        if pb_path != PB and not os.path.exists(pb_path):
+            continue
+        tmp = pb_path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(bytes(out))
+        os.replace(tmp, pb_path)
     return fixed
 
 
@@ -459,13 +468,18 @@ def summary_row_cids() -> set[str]:
 def pending_ui_sync() -> list[str]:
     """Divergences between the on-disk store and the daemon's in-memory list, as stable fingerprint entries.
 
-    new:<cid>       summary row exists on disk, daemon does not know the conversation yet
+    new:<cid>       summary row (with content on disk) exists, daemon does not know the conversation yet
     gone:<cid>      daemon still lists a conversation whose summary row was removed (deleted/rotated)
     content:<cid>   content file is not hard-linked into the visible dir (new or rewritten since startup)
     """
     rows = summary_row_cids()
     known = daemon_known_cids()
-    entries = [f"new:{cid}" for cid in rows - known] + [f"gone:{cid}" for cid in known - rows]
+    disk_cids: set[str] = set()
+    for d in (D1, D2):
+        if os.path.isdir(d):
+            disk_cids.update(n[:-3] for n in os.listdir(d) if n.endswith(".db"))
+    active_rows = rows & disk_cids
+    entries = [f"new:{cid}" for cid in active_rows - known] + [f"gone:{cid}" for cid in known - active_rows]
     if os.path.isdir(D1):
         for name in os.listdir(D1):
             cid = name[:-3]
