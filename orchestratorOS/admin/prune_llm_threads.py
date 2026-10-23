@@ -10,7 +10,7 @@ import os
 import shutil
 import sqlite3
 import sys
-from typing import List, Optional, Set, Tuple
+from typing import List, NamedTuple, Optional, Set, Tuple
 
 import json
 
@@ -948,92 +948,97 @@ def mirror_topic_thread_to_ui(
         return False
 
 
+TOPIC_THREAD_TITLES: dict[str, str] = {
+    "macro_geopolitical": "ntfy-macro: 🛡 [MACRO SHOCK SHIELD] Geopolitical Risk Monitor",
+    "macro_sentiment": "ntfy-macro: 🧭 [MACRO ADVISOR] Sentiment & Breadth Monitor",
+    "guard_high_stake": "ntfy-guard: 🛡 [HIGH-STAKE GUARD] Pre-Trade Risk Vetting",
+    "guard_post_stop": "ntfy-guard: 🛡 [POST-STOP RE-ENTRY] Bounce Validator",
+    "supervisor_nightly": "ntfy-guard: 🛡 [AI-SUPERVISOR] Nightly Reconciliation",
+    "prod_tactical_monitor": "ntfy-guard: 🎯 [TACTICAL MONITOR 30M] TAO & BTC",
+}
+
+
+def topic_thread_title(topic_key: str) -> str:
+    """Canonical, permanent thread name for a topic (SSOT); unknown topics fail fast."""
+    if topic_key not in TOPIC_THREAD_TITLES:
+        raise KeyError(f"Unknown LLM topic '{topic_key}'; register it in TOPIC_THREAD_TITLES")
+    return TOPIC_THREAD_TITLES[topic_key]
+
+
+class TopicSession(NamedTuple):
+    """How the next turn of a topic thread must be issued."""
+    conversation_id: Optional[str]   # permanent thread to resume; None only before the thread exists
+    history_prefix: str              # carried-over decisions, only when the thread must be (re)created
+    compact: bool                    # issue the turn as `/compact <prompt>` (in-place context compaction)
+
+
 def prepare_topic_session(
     topic_key: str,
     cli_base: Optional[str] = None,
-    max_steps: Optional[int] = None,
+    compact_steps: Optional[int] = None,
     registry_path: Optional[str] = None,
-) -> Tuple[Optional[str], str]:
-    """Resolve active conversation_id for a topic, rotating & compacting if step_count >= max_steps.
+) -> TopicSession:
+    """Resolve the permanent conversation of a topic and whether this turn must compact it.
 
-    Returns:
-        (resume_cid_or_none, compacted_history_context_block)
+    A topic owns one conversation for its whole life (fixed id and name). Instead of rotating to a new
+    thread, the context is compacted in place with Antigravity's `/compact` once LLM_TOPIC_COMPACT_STEPS
+    trajectory steps accumulated since the previous compaction.
     """
-    if not topic_key:
-        return (None, "")
+    topic_thread_title(topic_key)
     effective_base = resolve_bot_cli_base(cli_base)
-    if max_steps is None:
+    if compact_steps is None:
         from botcore import required_int_env
-        max_steps = required_int_env("LLM_TOPIC_MAX_STEPS")
+        compact_steps = required_int_env("LLM_TOPIC_COMPACT_STEPS")
+    if compact_steps <= 0:
+        raise ValueError(f"LLM_TOPIC_COMPACT_STEPS must be > 0, got {compact_steps}")
 
     reg = load_topic_registry(registry_path)
     entry = reg.get(topic_key)
     if not isinstance(entry, dict):
-        return (None, "")
+        return TopicSession(None, "", False)
 
-    cid = str(entry.get("conversation_id") or "").strip()
-    turn_count = int(entry.get("turn_count") or 0)
     history = entry.get("rolling_history")
     if not isinstance(history, list):
         history = []
-
-    def _format_history_block(hist_items: list) -> str:
-        if not hist_items:
-            return ""
-        lines = ["[COMPACTED TOPIC MEMORY — PRIOR DECISIONS IN THIS TOPIC]:"]
-        for item in hist_items:
-            if isinstance(item, dict):
-                ts_s = item.get("utc", "")
-                summary_s = item.get("summary", "")
-                lines.append(f"- [{ts_s}] {summary_s}")
-            elif isinstance(item, str):
-                lines.append(f"- {item}")
-        return "\n".join(lines) + "\n\n"
-
-    if not cid:
-        return (None, _format_history_block(history))
-
-    exists, step_count, status = get_thread_step_count(cid, cli_base=effective_base)
-    effective_steps = max(step_count, turn_count * 2)
-
-    if not exists or status == "CASCADE_RUN_STATUS_RUNNING" or effective_steps >= max_steps:
-        if exists and status != "CASCADE_RUN_STATUS_RUNNING":
-            logger.info(
-                "Topic '%s' thread %s reached %d steps (max=%d). Rotating and compacting old thread.",
-                topic_key,
-                cid,
-                effective_steps,
-                max_steps,
-            )
-            delete_specific_cli_threads({cid}, cli_base=effective_base)
-            try:
-                ui_base = resolve_ui_cli_base()
-                if os.path.abspath(ui_base) != os.path.abspath(effective_base):
-                    delete_specific_cli_threads({cid}, cli_base=ui_base)
-            except Exception:
-                pass
+    cid = str(entry.get("conversation_id") or "").strip()
+    if cid:
+        exists, step_count, _ = get_thread_step_count(cid, cli_base=effective_base)
+        if exists:
+            since = step_count - int(entry.get("compacted_at_step") or 0)
+            return TopicSession(cid, "", since >= compact_steps)
+        # Runtime resilience: the permanent thread vanished from the store; recreate it once with memory.
+        logger.warning("Topic '%s' conversation %s no longer exists; recreating the topic thread.", topic_key, cid)
         entry["conversation_id"] = None
-        entry["turn_count"] = 0
-        entry["rotated_count"] = int(entry.get("rotated_count") or 0) + 1
+        entry["compacted_at_step"] = 0
         reg[topic_key] = entry
         save_topic_registry(reg, registry_path)
-        return (None, _format_history_block(history))
 
-    return (cid, "")
+    if not history:
+        return TopicSession(None, "", False)
+    lines = ["[TOPIC MEMORY — PRIOR DECISIONS IN THIS TOPIC]:"]
+    for item in history:
+        if isinstance(item, dict):
+            lines.append(f"- [{item.get('utc', '')}] {item.get('summary', '')}")
+        elif isinstance(item, str):
+            lines.append(f"- {item}")
+    return TopicSession(None, "\n".join(lines) + "\n\n", False)
 
 
 def record_topic_turn(
     topic_key: str,
     conversation_id: Optional[str],
     response_text: str,
-    thread_title: Optional[str] = None,
+    compacted: bool = False,
     cli_base: Optional[str] = None,
     max_history_entries: Optional[int] = None,
     registry_path: Optional[str] = None,
 ) -> None:
-    """Update topic thread registry after a completed turn and append condensed decision summary."""
-    if not topic_key:
-        return
+    """Update the topic registry after a completed turn and append a condensed decision summary.
+
+    The topic's conversation id is adopted once and then never replaced; ``compacted`` marks a turn that
+    was issued as `/compact <prompt>` so the next compaction is scheduled from the current step count.
+    """
+    title = topic_thread_title(topic_key)
     effective_base = resolve_bot_cli_base(cli_base)
     if max_history_entries is None:
         from botcore import required_int_env
@@ -1044,15 +1049,19 @@ def record_topic_turn(
     if not isinstance(entry, dict):
         entry = {"topic_key": topic_key, "turn_count": 0, "rolling_history": []}
 
-    active_cid = conversation_id or entry.get("conversation_id")
+    if not entry.get("conversation_id") and conversation_id:
+        entry["conversation_id"] = conversation_id
+        entry["compacted_at_step"] = 0
+    active_cid = entry.get("conversation_id")
     if active_cid:
-        entry["conversation_id"] = active_cid
         _, step_count, _ = get_thread_step_count(active_cid, cli_base=effective_base)
         entry["step_count"] = step_count
+        if compacted and active_cid == conversation_id:
+            entry["compacted_at_step"] = step_count
+            entry["compaction_count"] = int(entry.get("compaction_count") or 0) + 1
     entry["turn_count"] = int(entry.get("turn_count") or 0) + 1
     entry["updated_ts"] = datetime.now(timezone.utc).timestamp()
-    if thread_title:
-        entry["title"] = thread_title
+    entry["title"] = title
 
     # Extract a single-line compact decision summary from response_text (<= 220 chars)
     raw_stripped = (response_text or "").strip()
@@ -1111,7 +1120,7 @@ def record_topic_turn(
     if active_cid:
         mirror_topic_thread_to_ui(
             active_cid,
-            title=entry.get("title") or thread_title,
+            title=title,
             bot_cli_base=effective_base,
         )
 

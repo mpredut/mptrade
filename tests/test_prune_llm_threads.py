@@ -453,8 +453,9 @@ class TestPruneCliThreads:
         assert expand_config_path("$HOME/test_dir").endswith("/test_dir")
         assert "$HOME" not in expand_config_path("$HOME/test_dir")
 
-    def test_hybrid_topic_session_reuse_and_compaction_rotation(self, tmp_path, monkeypatch):
+    def test_topic_thread_is_permanent_and_compacts_in_place(self, tmp_path, monkeypatch):
         from orchestratorOS.admin.prune_llm_threads import (
+            TOPIC_THREAD_TITLES,
             get_active_topic_cids,
             load_topic_registry,
             prepare_topic_session,
@@ -478,60 +479,67 @@ class TestPruneCliThreads:
         """)
         conn.commit()
         conn.close()
-
-        reg_path = str(tmp_path / "llm_topic_threads.json")
-        monkeypatch.setenv("LLM_TOPIC_REGISTRY_PATH", reg_path)
-        monkeypatch.setenv("LLM_TOPIC_MAX_STEPS", "6")
+        monkeypatch.setenv("LLM_TOPIC_COMPACT_STEPS", "6")
         monkeypatch.setenv("LLM_TOPIC_HISTORY_MAX_ENTRIES", "3")
 
-        # 1. Initial call: no active thread yet
-        cid, hist_prefix = prepare_topic_session("macro_sentiment", cli_base=cli_base)
-        assert cid is None
-        assert hist_prefix == ""
+        def set_steps(cid, steps):
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "INSERT OR REPLACE INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (cid, "x", "p", datetime.now(timezone.utc).isoformat(), "autonommptrade", steps,
+                 "CASCADE_RUN_STATUS_IDLE"),
+            )
+            conn.commit()
+            conn.close()
 
-        # Simulate first turn creating cid-111 with step_count=2
+        # 1. No thread yet -> the first turn creates it
+        assert tuple(prepare_topic_session("macro_sentiment", cli_base=cli_base)) == (None, "", False)
         cid1 = "cid-topic-111"
         with open(os.path.join(cli_base, "conversations", f"{cid1}.db"), "w") as f:
             f.write("db1")
-        conn = sqlite3.connect(db_path)
-        conn.execute(
-            "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (cid1, "Macro Advisor", "Preview", datetime.now(timezone.utc).isoformat(), "autonommptrade", 2, "CASCADE_RUN_STATUS_IDLE"),
-        )
-        conn.commit()
-        conn.close()
-
-        record_topic_turn(
-            "macro_sentiment",
-            cid1,
-            '{"market_bias": "BULLISH", "risk_level": "LOW", "summary": "Strong spot inflow"}',
-            thread_title="ntfy-macro: 🧭 [MACRO ADVISOR] F&G=65",
-            cli_base=cli_base,
-        )
-
+        set_steps(cid1, 2)
+        record_topic_turn("macro_sentiment", cid1, '{"market_bias": "BULLISH", "summary": "inflow"}', cli_base=cli_base)
         assert cid1 in get_active_topic_cids()
 
-        # 2. Second call: step_count=2 < max_steps=6 -> should reuse cid1 with empty prefix
-        cid_reuse, hist_prefix_reuse = prepare_topic_session("macro_sentiment", cli_base=cli_base)
-        assert cid_reuse == cid1
-        assert hist_prefix_reuse == ""
+        # 2. Below the threshold -> resume, no compaction
+        assert tuple(prepare_topic_session("macro_sentiment", cli_base=cli_base)) == (cid1, "", False)
 
-        # 3. Simulate thread reaching step_count=6 (>= max_steps=6) -> should rotate, delete old .db, and return compacted history!
+        # 3. Threshold reached -> SAME thread, compact in place (never rotate or delete)
+        set_steps(cid1, 6)
+        session = prepare_topic_session("macro_sentiment", cli_base=cli_base)
+        assert session == (cid1, "", True)
+        set_steps(cid1, 10)
+        record_topic_turn("macro_sentiment", cid1, '{"summary": "after compact"}', compacted=True, cli_base=cli_base)
+        assert os.path.exists(os.path.join(cli_base, "conversations", f"{cid1}.db"))
+
+        # 4. Counting restarts from the compaction point
+        set_steps(cid1, 14)
+        assert prepare_topic_session("macro_sentiment", cli_base=cli_base).compact is False
+        set_steps(cid1, 16)
+        assert prepare_topic_session("macro_sentiment", cli_base=cli_base).compact is True
+
+        # 5. A different conversation id (e.g. a detached one-off answer) never replaces the permanent one
+        record_topic_turn("macro_sentiment", "cid-other", '{"summary": "x"}', cli_base=cli_base)
+        reg = load_topic_registry()["macro_sentiment"]
+        assert reg["conversation_id"] == cid1
+        assert reg["compacted_at_step"] == 10 and reg["compaction_count"] == 1
+        assert reg["title"] == TOPIC_THREAD_TITLES["macro_sentiment"]
+
+        # 6. Thread vanished from the store -> recreate once, replaying the rolling memory
+        os.remove(os.path.join(cli_base, "conversations", f"{cid1}.db"))
         conn = sqlite3.connect(db_path)
-        conn.execute("UPDATE conversation_summaries SET step_count=6 WHERE conversation_id=?", (cid1,))
+        conn.execute("DELETE FROM conversation_summaries")
         conn.commit()
         conn.close()
+        session = prepare_topic_session("macro_sentiment", cli_base=cli_base)
+        assert session.conversation_id is None and "TOPIC MEMORY" in session.history_prefix
 
-        cid_rot, hist_prefix_rot = prepare_topic_session("macro_sentiment", cli_base=cli_base)
-        assert cid_rot is None
-        assert "COMPACTED TOPIC MEMORY" in hist_prefix_rot
-        assert "market_bias=BULLISH" in hist_prefix_rot
-        assert not os.path.exists(os.path.join(cli_base, "conversations", f"{cid1}.db"))
+    def test_unknown_topic_fails_fast(self):
+        import pytest as _pytest
+        from orchestratorOS.admin.prune_llm_threads import prepare_topic_session
 
-        reg = load_topic_registry()
-        assert reg["macro_sentiment"]["rotated_count"] == 1
-        assert len(reg["macro_sentiment"]["rolling_history"]) == 1
-
+        with _pytest.raises(KeyError):
+            prepare_topic_session("not_a_topic", compact_steps=6)
 
 def _make_summary_db(path, rows):
     conn = sqlite3.connect(path)

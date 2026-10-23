@@ -8,19 +8,17 @@ import re
 import shutil
 import subprocess
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 import urllib.request
 
-from botcore import load_dotenv, required_env, required_float_env, required_int_env
+from botcore import load_dotenv, required_env
 from orchestratorOS.admin.prune_llm_threads import (
-    find_latest_project_cid,
+    TopicSession,
     prepare_topic_session,
-    prune_old_cli_threads,
     record_topic_turn,
     resolve_agy_bot_bin,
     resolve_bot_cli_base,
     resolve_project_uuid,
-    sync_thread_title,
 )
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -30,7 +28,6 @@ logger = logging.getLogger("intelligence.sentiment.gemini_client")
 
 DEFAULT_MODEL = required_env("LLM_DEFAULT_MODEL")
 AGY_CLI_PATH = resolve_agy_bot_bin()
-AGY_STORE_SYNC_ENABLED = os.environ.get("MPTRADE_AGY_STORE_SYNC", "0") == "1"
 
 
 DEFAULT_AUTONOMOUS_PROJECT_ID = resolve_project_uuid(required_env("AGY_PROJECT"))
@@ -109,90 +106,66 @@ class GeminiClient:
         if self.cli_path and os.path.exists(self.cli_path):
             try:
                 bot_cli_base = resolve_bot_cli_base()
-                resume_cid: Optional[str] = conversation_id
-                history_prefix = ""
-                if topic_key and not resume_cid and not hasattr(subprocess.run, "_mock_name"):
-                    try:
-                        resume_cid, history_prefix = prepare_topic_session(
-                            topic_key,
-                            cli_base=bot_cli_base,
-                        )
-                    except Exception as e:
-                        logger.debug("Failed preparing topic session for %s: %s", topic_key, e)
+                session = TopicSession(conversation_id, "", False)
+                if topic_key and not conversation_id and not hasattr(subprocess.run, "_mock_name"):
+                    session = prepare_topic_session(topic_key, cli_base=bot_cli_base)
 
-                effective_prompt = f"{history_prefix}{prompt}" if history_prefix else prompt
-                cli_prompt = f"{thread_title}\n\n{effective_prompt}" if thread_title else effective_prompt
-
-                cmd = [
-                    self.cli_path,
-                    "--project", self.project_id,
-                    "--model", selected_model,
-                ]
-                if resume_cid:
-                    cmd.extend(["--conversation", resume_cid])
-                cmd.extend(["-p", cli_prompt])
+                # The per-call title is a turn header; the thread itself keeps its permanent topic name.
+                body = f"{session.history_prefix}{prompt}" if session.history_prefix else prompt
+                cli_prompt = f"{thread_title}\n\n{body}" if thread_title else body
+                if session.compact:
+                    cli_prompt = f"/compact {cli_prompt}"
 
                 run_env = os.environ.copy()
                 run_env["AGY_BOT_HOME"] = os.path.dirname(os.path.dirname(bot_cli_base))
 
-                proc = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_sec,
-                    check=False,
-                    env=run_env,
-                )
-                # If resuming an existing topic thread failed, fall back cleanly to a fresh thread once
-                if (proc.returncode != 0 or not proc.stdout.strip()) and resume_cid and not conversation_id:
-                    logger.info("Resuming topic '%s' conversation %s failed; rotating to new thread.", topic_key, resume_cid)
-                    resume_cid = None
-                    fresh_cmd = [
-                        self.cli_path,
-                        "--project", self.project_id,
-                        "--model", selected_model,
-                        "-p", cli_prompt,
-                    ]
-                    proc = subprocess.run(
-                        fresh_cmd,
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout_sec,
-                        check=False,
-                        env=run_env,
-                    )
+                def _run_cli(resume: Optional[str], text: str) -> subprocess.CompletedProcess:
+                    cmd = [self.cli_path, "--project", self.project_id, "--model", selected_model,
+                           "--output-format", "json"]
+                    if resume:
+                        cmd.extend(["--conversation", resume])
+                    cmd.extend(["-p", text])
+                    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec,
+                                          check=False, env=run_env)
 
-                if proc.returncode == 0 and proc.stdout.strip():
-                    output = proc.stdout.strip()
+                def _parse(proc: subprocess.CompletedProcess) -> Tuple[Optional[str], Optional[str]]:
+                    raw = (proc.stdout or "").strip()
+                    if proc.returncode != 0 or not raw:
+                        return None, None
+                    try:
+                        payload = json.loads(raw)
+                    except ValueError:
+                        return raw, None
+                    if not isinstance(payload, dict):
+                        return raw, None
+                    text_out = str(payload.get("response") or "").strip()
+                    return (text_out or None), (payload.get("conversation_id") or None)
+
+                proc = _run_cli(session.conversation_id, cli_prompt)
+                output, turn_cid = _parse(proc)
+                if output is None and session.conversation_id and not conversation_id:
+                    # Runtime resilience: answer this call from a detached one-off thread. The topic keeps its
+                    # permanent conversation; the next call resumes it again.
+                    logger.info("Resuming topic '%s' conversation %s failed; answering from a one-off thread.",
+                                topic_key, session.conversation_id)
+                    proc = _run_cli(None, cli_prompt.removeprefix("/compact "))
+                    output, _ = _parse(proc)
+                    turn_cid = None
+
+                if output:
                     if cache_ttl_sec > 0:
                         self._cache[prompt] = (now, output)
-                    if not hasattr(subprocess.run, "_mock_name"):
+                    if topic_key and not hasattr(subprocess.run, "_mock_name"):
                         try:
-                            target_cid = resume_cid or find_latest_project_cid(
-                                self.project_id,
+                            record_topic_turn(
+                                topic_key=topic_key,
+                                conversation_id=turn_cid,
+                                response_text=output,
+                                compacted=session.compact and turn_cid is not None,
                                 cli_base=bot_cli_base,
                             )
-                            if topic_key:
-                                record_topic_turn(
-                                    topic_key=topic_key,
-                                    conversation_id=target_cid,
-                                    response_text=output,
-                                    thread_title=thread_title,
-                                    cli_base=bot_cli_base,
-                                )
-                            if AGY_STORE_SYNC_ENABLED:
-                                if thread_title and target_cid:
-                                    sync_thread_title(target_cid, thread_title, cli_base=bot_cli_base)
-                                if self.project_id == DEFAULT_AUTONOMOUS_PROJECT_ID:
-                                    prune_old_cli_threads(
-                                        cli_base=bot_cli_base,
-                                        retention_days=required_float_env("CLI_THREAD_RETENTION_DAYS"),
-                                        project_id=self.project_id,
-                                        all_threads_in_project=False,
-                                        max_threads=required_int_env("LLM_MAX_AUTONOMOUS_THREADS"),
-                                    )
                         except Exception as e:
-                            logger.debug("Failed syncing/pruning CLI thread: %s", e)
+                            logger.debug("Failed recording topic turn for %s: %s", topic_key, e)
                     return output
                 else:
                     logger.warning(
