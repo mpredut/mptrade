@@ -2145,6 +2145,15 @@ class CacheManagerInterface(ABC):
             return persisted
 
     def periodic_sync(self, sync_ts=None, save_state=True):
+        thread = self.thread
+        if (
+            thread is not None
+            and thread.is_alive()
+            and not self.read_only
+            and sync_ts is None
+            and (not save_state or self.save_state)
+        ):
+            return thread
         with self.lock:
             self.read_only = False
             if sync_ts is not None:
@@ -2186,9 +2195,10 @@ class CacheManagerInterface(ABC):
                     if self._stop_event.wait(self.sync_ts):
                         break
 
-            self.thread = threading.Thread(target=run, name=self.cls_name, daemon=True)
-            self.thread.daemon = True  # Do not let this thread block process shutdown.
-            self.thread.start()
+            thread = threading.Thread(target=run, name=self.cls_name, daemon=True)
+            thread.daemon = True  # Do not let this thread block process shutdown.
+            thread.start()
+            self.thread = thread
             return self.thread
 
     def shutdown(self, timeout=5.0):
@@ -3410,6 +3420,22 @@ def get_current_price_manager(ws_manager=None, symbols=None, sync_ts=None,
     Internal calls must pass None so they do not override main-process configuration.
     """
     global _current_price_instance
+    inst = _current_price_instance
+    if (
+        inst is not None
+        and sync_ts is None
+        and not provider_names
+        and ws_manager is None
+        and (
+            not start_sync
+            or (
+                inst.thread is not None
+                and inst.thread.is_alive()
+                and not inst.read_only
+            )
+        )
+    ):
+        return inst
     with _current_price_lock:
         if _current_price_instance is not None:
             if sync_ts is not None:
@@ -4383,6 +4409,9 @@ def get_short_trend_manager(symbols=None, filename="cache_short_trend.json", wri
     ``writer=True`` lets the process persist the file; calculators and readers use False.
     """
     global _short_trend_instance
+    inst = _short_trend_instance
+    if inst is not None and not writer:
+        return inst
     with _short_trend_lock:
         if _short_trend_instance is not None:
             if writer:
@@ -4469,6 +4498,14 @@ class CacheFactory:
     def get(cls, name, symbols=None, *, start_sync=True, provider_names=None):
         if name == "ShortTrend":
             return get_short_trend_manager(symbols=symbols)
+        inst = cls._instances.get(name)
+        if (
+            inst is not None
+            and symbols is None
+            and provider_names is None
+            and (not start_sync or name in cls._sync_started)
+        ):
+            return inst
         with cls._lock:
             if name not in cls._CONFIG:
                 raise ValueError(f"Unknown cache type: {name}")
@@ -4552,8 +4589,6 @@ class CacheFactory:
                         **extra_kwargs,
                     )
 
-                cls._instances[name] = instance
-
                 managers = (instance.values()
                             if isinstance(instance, dict)
                             else (instance,))
@@ -4561,6 +4596,8 @@ class CacheFactory:
                     for manager in managers:
                         manager.periodic_sync(sync_ts, False)
                     cls._sync_started.add(name)
+
+                cls._instances[name] = instance
 
             elif start_sync and name not in cls._sync_started:
                 value = cls._instances[name]

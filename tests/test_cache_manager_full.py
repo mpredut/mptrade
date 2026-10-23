@@ -1473,6 +1473,35 @@ class TestGetCurrentPriceManagerSingleton(unittest.TestCase):
             )
             ws.subscribe.assert_called_once_with(mgr)
 
+        with self.subTest("initialized singletons and periodic_sync use lock-free fast path"):
+            class _ForbidLock:
+                def __enter__(self):
+                    raise AssertionError("fast path must not acquire lock")
+
+                def __exit__(self, *args):
+                    return False
+
+            with patch.object(cm.CacheCurrentPriceManager, "load_state", return_value=None), \
+                 patch.object(cm.CacheTradeManager, "load_state", return_value=None):
+                mgr = cm.get_current_price_manager(symbols=["BTC"], start_sync=True)
+                short_mgr = cm.get_short_trend_manager(symbols=["BTC"])
+                trade_mgr = cm.CacheFactory.get("Trade", symbols=["BTC"], start_sync=False)
+                try:
+                    with patch.object(cm, "_current_price_lock", _ForbidLock()), \
+                         patch.object(cm, "_short_trend_lock", _ForbidLock()), \
+                         patch.object(cm.CacheFactory, "_lock", _ForbidLock()), \
+                         patch.object(mgr, "lock", _ForbidLock()):
+                        self.assertIs(cm.get_current_price_manager(), mgr)
+                        self.assertIs(mgr.periodic_sync(save_state=False), mgr.thread)
+                        self.assertIs(cm.get_short_trend_manager(), short_mgr)
+                        self.assertIs(
+                            cm.CacheFactory.get("Trade", start_sync=False),
+                            trade_mgr,
+                        )
+                finally:
+                    mgr.shutdown()
+                    cm.CacheFactory.remove("Trade")
+
 
 class TestRefreshSymbolInCache(unittest.TestCase):
     """Test the WebSocket handler helper that refreshes one symbol."""
