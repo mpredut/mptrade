@@ -458,3 +458,30 @@ def test_none_venue_actions_and_routine_hold_do_not_trigger_executed_or_notify_s
     assert report.notification_sent is False
     mock_notify.assert_not_called()
 
+
+def test_intent_gateway_inherits_workspace_dir_and_null_plan_fields_are_safe(temp_env):
+    workspace, _, _ = temp_env
+    null_plan = {
+        "summary": None,
+        "diagnosed_issues": None,
+        "venue_actions": None,
+        "code_remediation": None,
+        "market_trading_decision": None,
+    }
+    auditor = GeminiClient(custom_runner=lambda prompt, model, timeout: json.dumps(null_plan))
+    reconciler = AutonomousAIReconciler(
+        workspace_dir=workspace,
+        cache_dir="cachedb",
+        logs_dirs=["logs"],
+        gemini_auditor=auditor,
+        mode="shadow",
+        notify_enabled=False,
+    )
+    assert os.path.abspath(reconciler.intent_gateway.workspace_dir) == os.path.abspath(workspace)
+    report = reconciler.run_cycle(topic_key="auto_trade_executor")
+    assert report.summary == "Audit complete."
+    assert report.diagnosed_issues == []
+    assert report.venue_actions == []
+    assert report.market_trading_decision == {}
+
+

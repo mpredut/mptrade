@@ -51,6 +51,27 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
         return {}
 
 
+def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
+    """Extract last action side, last BUY fill, and last SELL fill from a symbol's cache_order.json list."""
+    if not isinstance(orders_list, list) or not orders_list:
+        return None
+    last_buy = next((o for o in reversed(orders_list) if isinstance(o, dict) and o.get("side") == "BUY"), None)
+    last_sell = next((o for o in reversed(orders_list) if isinstance(o, dict) and o.get("side") == "SELL"), None)
+    last_any = orders_list[-1] if isinstance(orders_list[-1], dict) else None
+    return {
+        "last_action_side": last_any.get("side") if last_any else None,
+        "last_buy": (
+            {"price": last_buy.get("price"), "qty": last_buy.get("quantity"), "ts_ms": last_buy.get("timestamp")}
+            if last_buy else None
+        ),
+        "last_sell": (
+            {"price": last_sell.get("price"), "qty": last_sell.get("quantity"), "ts_ms": last_sell.get("timestamp")}
+            if last_sell else None
+        ),
+    }
+
+
+
 
 def collect_pretrade_telemetry(
     symbol: str,
@@ -155,6 +176,24 @@ def collect_pretrade_telemetry(
                 s15 = (dyn.get("900") or {}).get("slope_full", 0.0)
                 s25h = (dyn.get("9000") or {}).get("slope_full", 0.0)
                 telemetry["Dynamic Multi-Window Slopes"] = f"3.7m={s37:+.5f}, 15m={s15:+.5f}, 2.5h={s25h:+.5f}"
+    except Exception:
+        pass
+
+    try:
+        ord_path = os.path.join(cachedb_dir, "cache_order.json")
+        if os.path.exists(ord_path):
+            with open(ord_path, "r", encoding="utf-8") as f:
+                ord_data = json.load(f)
+            o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) else {}
+            fills = extract_symbol_recent_fills(o_items.get(symbol, []))
+            if fills:
+                lb = fills.get("last_buy") or {}
+                ls = fills.get("last_sell") or {}
+                telemetry["Recent Venue Fills"] = (
+                    f"Last Action={fills.get('last_action_side')}, "
+                    f"Last BUY={lb.get('qty')} @ {lb.get('price')}, "
+                    f"Last SELL={ls.get('qty')} @ {ls.get('price')}"
+                )
     except Exception:
         pass
 

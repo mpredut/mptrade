@@ -28,8 +28,9 @@ if _ROOT_DIR not in sys.path:
 
 from botcore import load_dotenv
 from intelligence.sentiment.gemini_client import GeminiClient
-from intelligence.sentiment.guards.high_stake_guard import compute_24h_price_metrics
+from intelligence.sentiment.guards.high_stake_guard import compute_24h_price_metrics, extract_symbol_recent_fills
 from orchestratorOS.agy.topics import TOPIC_SPECS, topic_spec
+from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway, load_key_value_conf
 
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 
@@ -177,30 +178,12 @@ class AutonomousAIReconciler:
     def intent_gateway(self) -> Any:
         """The single trade-intent choke point (owns autonomous_trading_* config, clamping, dedup, mode)."""
         if self._intent_gateway is None:
-            from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
-            self._intent_gateway = AutonomousIntentGateway()
+            self._intent_gateway = AutonomousIntentGateway(workspace_dir=self.workspace_dir)
         return self._intent_gateway
 
     def _load_decoupled_conf(self) -> Dict[str, str]:
         """Parses key-value pairs from order_guard.conf and .env without external imports."""
-        conf: Dict[str, str] = {}
-        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        search_dirs = [repo_root]
-        if os.path.abspath(self.workspace_dir) != os.path.abspath(repo_root):
-            search_dirs.append(self.workspace_dir)
-        for base_dir in search_dirs:
-            for fname in ("order_guard.conf", "config.env", ".env"):
-                fpath = os.path.join(base_dir, fname)
-                if not os.path.exists(fpath):
-                    continue
-                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                    for line in f:
-                        line = line.split("#", 1)[0].strip()
-                        if not line or "=" not in line:
-                            continue
-                        k, v = line.split("=", 1)
-                        conf[k.strip().lower()] = v.strip().strip('"').strip("'")
-        return conf
+        return load_key_value_conf(self.workspace_dir, _ROOT_DIR)
 
     def harvest_sensors_telemetry(self) -> TelemetrySensorSnapshot:
         """Reads passive telemetry and sensor files published to disk by trading bots."""
@@ -362,22 +345,9 @@ class AutonomousAIReconciler:
         if isinstance(orders_data, dict) and isinstance(orders_data.get("items"), dict):
             recent_orders: Dict[str, Any] = {}
             for sym, o_list in orders_data["items"].items():
-                if not isinstance(o_list, list) or not o_list:
-                    continue
-                last_buy = next((o for o in reversed(o_list) if isinstance(o, dict) and o.get("side") == "BUY"), None)
-                last_sell = next((o for o in reversed(o_list) if isinstance(o, dict) and o.get("side") == "SELL"), None)
-                last_any = o_list[-1] if isinstance(o_list[-1], dict) else None
-                recent_orders[sym] = {
-                    "last_action_side": last_any.get("side") if last_any else None,
-                    "last_buy": (
-                        {"price": last_buy.get("price"), "qty": last_buy.get("quantity"), "ts_ms": last_buy.get("timestamp")}
-                        if last_buy else None
-                    ),
-                    "last_sell": (
-                        {"price": last_sell.get("price"), "qty": last_sell.get("quantity"), "ts_ms": last_sell.get("timestamp")}
-                        if last_sell else None
-                    ),
-                }
+                fills = extract_symbol_recent_fills(o_list)
+                if fills:
+                    recent_orders[sym] = fills
             if recent_orders:
                 snapshot.portfolio_summary["recent_orders"] = recent_orders
 
@@ -622,8 +592,10 @@ class AutonomousAIReconciler:
     ) -> Tuple[bool, Optional[bool]]:
         """Applies or simulates venue actions and code remediation based on operational mode."""
         is_enforce = (self.mode == "enforce")
-        venue_actions = plan.get("venue_actions", [])
-        code_fix = plan.get("code_remediation", {}) if allow_code_remediation else {}
+        raw_actions = plan.get("venue_actions")
+        venue_actions = raw_actions if isinstance(raw_actions, list) else []
+        raw_fix = plan.get("code_remediation") if allow_code_remediation else None
+        code_fix = raw_fix if isinstance(raw_fix, dict) else {}
 
         for act in venue_actions:
             action_type = act.get("action", "NONE")
@@ -834,20 +806,24 @@ class AutonomousAIReconciler:
         plan = self.synthesize_and_diagnose(sensors, logs, focus_symbols=focus_symbols, topic_key=topic_key)
         executed, tests_passed = self.apply_reconciliation(plan, allow_code_remediation=spec.can_self_heal)
 
-        market_decision = plan.get("market_trading_decision", {}) if spec.can_trade else {}
+        raw_mtd = plan.get("market_trading_decision") if spec.can_trade else None
+        market_decision = raw_mtd if isinstance(raw_mtd, dict) else {}
         intent = None
         if market_decision:
             intent = self.intent_gateway.submit(market_decision, source=topic_key, max_mode=self.mode)
             if self.mode == "enforce" and isinstance(intent, dict) and intent.get("status") == "EXECUTED":
                 executed = True
 
+        raw_issues = plan.get("diagnosed_issues")
+        raw_actions = plan.get("venue_actions")
+        raw_fix = plan.get("code_remediation") if spec.can_self_heal else None
         report = SupervisorAuditReport(
             ts=now,
             mode=self.mode,
-            summary=plan.get("summary", "Audit complete."),
-            diagnosed_issues=plan.get("diagnosed_issues", []),
-            venue_actions=plan.get("venue_actions", []),
-            code_remediation=plan.get("code_remediation", {}) if spec.can_self_heal else {},
+            summary=str(plan.get("summary") or "Audit complete."),
+            diagnosed_issues=raw_issues if isinstance(raw_issues, list) else [],
+            venue_actions=raw_actions if isinstance(raw_actions, list) else [],
+            code_remediation=raw_fix if isinstance(raw_fix, dict) else {},
             market_trading_decision=market_decision,
             intent_emitted=intent,
             sensor_health={

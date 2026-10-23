@@ -60,6 +60,28 @@ MODE_RANK = {"off": 0, "shadow": 1, "enforce": 2}
 DEDUP_STATUSES = ("PENDING", "OBSERVED_SHADOW", "EXECUTED")
 
 
+def load_key_value_conf(workspace_dir: str, root_dir: str = ROOT_DIR) -> Dict[str, str]:
+    """Load key=value settings from order_guard.conf / config.env / .env (root_dir overlaid by workspace_dir)."""
+    conf: Dict[str, str] = {}
+    search_dirs = [root_dir]
+    if os.path.abspath(workspace_dir) != os.path.abspath(root_dir):
+        search_dirs.append(workspace_dir)
+    for base_dir in search_dirs:
+        for fname in ("order_guard.conf", "config.env", ".env"):
+            fpath = os.path.join(base_dir, fname)
+            if not os.path.exists(fpath):
+                continue
+            with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.split("#", 1)[0].strip()
+                    if not line or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    conf[k.strip().lower()] = v.strip().strip('"').strip("'")
+    return conf
+
+
+
 class AutonomousIntentGateway:
     """Gateway bridge consuming decoupled trade intents and executing through Instrument.place."""
 
@@ -121,24 +143,7 @@ class AutonomousIntentGateway:
 
     def _load_conf(self) -> Dict[str, str]:
         """Loads configuration from order_guard._load_margins() SSOT, overlaying any workspace-specific overrides."""
-        conf: Dict[str, str] = {}
-        is_default_workspace = os.path.abspath(self.workspace_dir) == os.path.abspath(ROOT_DIR)
-        search_dirs = [ROOT_DIR]
-        if not is_default_workspace:
-            search_dirs.append(self.workspace_dir)
-        for base_dir in search_dirs:
-            for fname in ("order_guard.conf", "config.env", ".env"):
-                fpath = os.path.join(base_dir, fname)
-                if not os.path.exists(fpath):
-                    continue
-                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                    for line in f:
-                        line = line.split("#", 1)[0].strip()
-                        if not line or "=" not in line:
-                            continue
-                        k, v = line.split("=", 1)
-                        conf[k.strip().lower()] = v.strip().strip('"').strip("'")
-        return conf
+        return load_key_value_conf(self.workspace_dir, ROOT_DIR)
 
     def load_all_intents(self) -> List[Dict[str, Any]]:
         """Loads all intents from the durable JSON queue."""

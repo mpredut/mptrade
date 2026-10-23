@@ -29,7 +29,7 @@ from orchestratorOS.agy.summary_store import (  # noqa: E402
     parse_db_timestamp,
     resolve_project_ids,
 )
-from orchestratorOS.agy.topics import get_active_topic_cids  # noqa: E402
+from orchestratorOS.agy.topics import TOPIC_SPECS, get_active_topic_cids  # noqa: E402
 
 logger = logging.getLogger("prune_llm_threads")
 
@@ -85,14 +85,10 @@ AUTONOMOUS_PROMPT_PATTERNS = [
     "trade evaluation",
     "risk evaluation",
     "risk assessment",
-    "[auto_trade_executor]",
-    "[auto_technical_repair]",
-    "[auto_macro_news_shield]",
-    "[auto_macro_sentiment]",
-    "[auto_guard_large_order]",
-    "[auto_guard_post_stop]",
     "autonomous trade decisions",
     "lead sre and quantitative trading systems architect",
+    *[spec.title.lower() for spec in TOPIC_SPECS.values()],
+    *[f"[{key}]" for key in TOPIC_SPECS],
 ]
 
 

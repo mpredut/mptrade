@@ -1387,89 +1387,30 @@ def check_intelligence_guards(
         dur_sec = _resolve_trend_duration(symbol)
 
     # 2. Dynamic LLM Pre-Trade Guard if notional crossed the threshold
-    skip_llm = GUARD_REGISTRY["GI3"].is_bypassed(bypassed) or any(
-        os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on")
-        for k in ("DISABLE_GEMINI_LLM", "BACKTEST_MODE", "REPLAY_MODE")
+    from intelligence_order_guard import evaluate_high_stake_order_guard
+
+    hs_ok, hs_reason, hs_scale = evaluate_high_stake_order_guard(
+        symbol=symbol,
+        side=side,
+        price=price,
+        qty=qty,
+        computed_notional=computed_notional,
+        is_stop_loss=is_stop_loss,
+        regime_context=regime_context,
+        valid_context=valid_context,
+        cache_key=cache_key,
+        margins=m,
+        bypassed=bypassed,
+        now=now,
+        dur_sec=dur_sec,
+        fallback_notional=cached_notional,
+        notify_on_eval=True,
     )
-    llm_mode = validate_guard_mode_cfg(m["llm_guard_mode"], "llm_guard_mode")
-    if not skip_llm and llm_mode != "off":
-        min_notional = float(m["llm_min_notional_eur"])
-        if computed_notional is not None and computed_notional >= min_notional:
-            decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None) if valid_context else None
-            entry_for_key = decisions_map.get(cache_key, {}) if isinstance(decisions_map, dict) else {}
-            if "gemini_notional" in entry_for_key:
-                cached_gemini_notional = entry_for_key.get("gemini_notional")
-            elif getattr(regime_context, "_gemini_decision_key", cache_key) == cache_key:
-                cached_gemini_notional = getattr(regime_context, "_gemini_evaluated_notional", None)
-            else:
-                cached_gemini_notional = None
-            if cached_gemini_notional is None:
-                cached_gemini_notional = entry_for_key.get("notional", cached_notional)
-            notional_jump = (
-                cached_gemini_notional is not None
-                and (computed_notional - cached_gemini_notional) / max(cached_gemini_notional, 1.0) > 0.20
-            )
-            # If notional wasn't evaluated for high-stake in cached_res, or has jumped significantly (>20%) from evaluated baseline, re-evaluate now
-            if cached_gemini_notional is None or cached_gemini_notional < min_notional or notional_jump:
-                from intelligence.internal.guards.guard_decision import BrakeAction
-                from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
-                timeout_sec = float(m["llm_timeout_sec"])
-                fallback = str(m["llm_fallback"]).strip().lower()
-                llm_guard = HighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
-                try:
-                    g_dec = llm_guard.check(
-                        symbol,
-                        side,
-                        price,
-                        qty if qty is not None else 1.0,
-                        notional_eur=computed_notional,
-                        regime_context=regime_context if valid_context else None,
-                        dur_sec=dur_sec,
-                        is_stop_loss=is_stop_loss,
-                    )
-                except TypeError:
-                    g_dec = llm_guard.check(
-                        symbol,
-                        side,
-                        price,
-                        qty if qty is not None else 1.0,
-                        notional_eur=computed_notional,
-                    )
-                if valid_context:
-                    try:
-                        g_tuple = (g_dec.allowed, g_dec.reason, g_dec.suggested_scale)
-                        if isinstance(decisions_map, dict) and cache_key in decisions_map:
-                            decisions_map[cache_key]["gemini_notional"] = computed_notional
-                            decisions_map[cache_key]["gemini_decision"] = g_tuple
-                        object.__setattr__(regime_context, "_gemini_decision_key", cache_key)
-                        object.__setattr__(regime_context, "_gemini_evaluated_notional", computed_notional)
-                        object.__setattr__(regime_context, "_gemini_decision", g_tuple)
-                    except Exception:
-                        pass
-                if not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                    prefix = "[LLM_GUARD_SHADOW]" if llm_mode == "shadow" else "[LLM_GUARD_ENFORCE]"
-                    print(f"{prefix} {side} {symbol} €{computed_notional:.2f}: {g_dec.reason} (brake={g_dec.brake_action}, suggested_scale={g_dec.suggested_scale})")
-                    if llm_mode == "enforce":
-                        if not g_dec.allowed:
-                            return False, g_dec.reason, 0.0
-                        effective_scale = min(effective_scale, g_dec.suggested_scale)
-                        active_reason = g_dec.reason
-            else:
-                # Re-apply cached Gemini decision for unchanged notional baseline
-                if "gemini_decision" in entry_for_key:
-                    cached_g_dec = entry_for_key.get("gemini_decision")
-                elif getattr(regime_context, "_gemini_decision_key", cache_key) == cache_key:
-                    cached_g_dec = getattr(regime_context, "_gemini_decision", None) if valid_context else None
-                else:
-                    cached_g_dec = None
-                if cached_g_dec is not None:
-                    g_allowed, g_reason, g_scale = cached_g_dec
-                    if not g_allowed or g_scale < 1.0:
-                        if llm_mode == "enforce":
-                            if not g_allowed:
-                                return False, g_reason, 0.0
-                            effective_scale = min(effective_scale, g_scale)
-                            active_reason = g_reason
+    if not hs_ok:
+        return False, hs_reason, 0.0
+    if hs_scale < 1.0:
+        effective_scale = min(effective_scale, hs_scale)
+        active_reason = hs_reason
 
     # 3. Dynamic Weibull trend exhaustion check if duration provided or resolved
     if internal_active and dur_sec and dur_sec > 0:
