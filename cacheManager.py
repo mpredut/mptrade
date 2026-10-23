@@ -879,6 +879,11 @@ class CacheManagerInterface(ABC):
         initial_size = None
         try:
             with self.lock:
+                if not isinstance(self, Cache365PriceManager) and any(
+                    self._persisted_counts.get(symbol, 0) > len(items)
+                    for symbol, items in self.cache.items()
+                ):
+                    return self.compact_jsonl()
                 previous_counts = dict(self._persisted_counts)
                 candidate_counts = dict(previous_counts)
                 with open(self.filename, "a+", encoding="utf-8") as f:
@@ -894,8 +899,8 @@ class CacheManagerInterface(ABC):
                         candidate_counts[symbol] = len(items)
                     f.flush()
                     os.fsync(f.fileno())
-                fetchtime = dict(self.fetchtime_per_symbol)
                 self._persisted_counts = candidate_counts
+                fetchtime = dict(self.fetchtime_per_symbol)
                 return self._write_meta({
                     "fetchtime": fetchtime,
                     "counts": dict(candidate_counts),
@@ -1587,8 +1592,18 @@ class CacheManagerInterface(ABC):
         if self.cls_name in _TRADE_CACHE_CLASSES:
             return self._compact_account_trade_jsonl()
 
+        backup_path = None
+        original_cache = None
+        original_counts = None
         try:
             with self.lock:
+                original_cache = {
+                    symbol: list(items) for symbol, items in self.cache.items()
+                }
+                original_counts = dict(self._persisted_counts)
+                if os.path.exists(self.filename):
+                    backup_path = self.filename + ".compact_backup"
+                    atomic_snapshot_file(self.filename, backup_path)
                 for symbol, items in list(self.cache.items()):
                     seen = set()
                     deduped = []
@@ -1606,12 +1621,35 @@ class CacheManagerInterface(ABC):
                             f.write(json.dumps(
                                 {"s": symbol, "i": item}, separators=(",", ":"),
                             ) + "\n")
-                self._persisted_counts = candidate_counts
-                return self._write_meta({
+                if not self._write_meta({
                     "fetchtime": fetchtime,
                     "counts": dict(candidate_counts),
-                })
+                }):
+                    self.cache = original_cache
+                    self._persisted_counts = original_counts
+                    if backup_path is not None and os.path.exists(backup_path):
+                        os.replace(backup_path, self.filename)
+                        if os.path.exists(backup_path):
+                            os.remove(backup_path)
+                        backup_path = None
+                    return False
+                if backup_path is not None:
+                    self._discard_trade_generation(backup_path)
+                    backup_path = None
+                self._persisted_counts = candidate_counts
+                return True
         except Exception as e:
+            if original_cache is not None:
+                self.cache = original_cache
+            if original_counts is not None:
+                self._persisted_counts = original_counts
+            if backup_path is not None and os.path.exists(backup_path):
+                try:
+                    os.replace(backup_path, self.filename)
+                    if os.path.exists(backup_path):
+                        os.remove(backup_path)
+                except OSError:
+                    pass
             print(f"[{self.cls_name}][Error] compact JSONL {self.filename}: {e}")
             return False
 
@@ -1746,6 +1784,10 @@ class CacheManagerInterface(ABC):
         cutoff_ms = int((time.time() - self.RETENTION_DAYS * 24 * 3600) * 1000)
         changed = False
         with self.lock:
+            original_cache = {
+                symbol: list(items) for symbol, items in self.cache.items()
+            }
+            original_dirty = self._account_cache_dirty
             for symbol, items in list(self.cache.items()):
                 kept = [it for it in items if self._entry_timestamp_ms(it) >= cutoff_ms]
                 if len(kept) != len(items):
@@ -1756,10 +1798,16 @@ class CacheManagerInterface(ABC):
         if changed:
             builtins.print(f"[{self.cls_name}][maintain] pruning >{self.RETENTION_DAYS}d from {self.filename}")
             if self.save_state:
-                if self.append_persist:
+                persisted = (
                     self.compact_jsonl()
-                else:
-                    self.save_state_to_file()   # A full rewrite is normal for these classes.
+                    if self.append_persist
+                    else self.save_state_to_file()   # A full rewrite is normal for these classes.
+                )
+                if not persisted:
+                    with self.lock:
+                        self.cache = original_cache
+                        self._account_cache_dirty = original_dirty
+                    return False
         # Rotate by size only for JSONL; see the docstring.
         if not self.append_persist or not self.save_state:
             return
@@ -2092,49 +2140,50 @@ class CacheManagerInterface(ABC):
             return persisted
 
     def periodic_sync(self, sync_ts=None, save_state=True):
-        if sync_ts is not None:
-            self.sync_ts = sync_ts
+        with self.lock:
+            if sync_ts is not None:
+                self.sync_ts = sync_ts
 
-        if self.thread is not None and self.thread.is_alive():
-            # A later reader-style factory lookup must never demote the sole writer.
-            if save_state:
-                self.save_state = True
-            return self.thread  # Return the existing thread; it reads sync_ts dynamically.
+            if self.thread is not None and self.thread.is_alive():
+                # A later reader-style factory lookup must never demote the sole writer.
+                if save_state:
+                    self.save_state = True
+                return self.thread  # Return the existing thread; it reads sync_ts dynamically.
 
-        self.save_state = save_state
+            self.save_state = save_state
 
-        self._stop_event.clear()
+            self._stop_event.clear()
 
-        def run():
-            if self._first_sleep and self._stop_event.wait(self.sync_ts):
-                return   # Run the first iteration after one interval, as CurrentPrice requires.
-            last_maint = time.time()
-            last_resync = time.time()
-            while not self._stop_event.is_set():
-                try:
-                    sync_complete = False
-                    if self._should_poll():
-                        sync_complete = self.query_remote_and_update_cache()
-                    self._persist_periodic_state(sync_complete)
-                    # Periodically reconcile memory and disk.
-                    if (time.time() - last_resync) > self.RESYNC_INTERVAL_SEC:
-                        self.resync_mem_file()
-                        last_resync = time.time()
-                    # Run weekly retention/rotation for every append-mode cache, including
-                    # full-JSON managers that previously received no effective retention.
-                    if self.append_mode and (time.time() - last_maint) > self.RETENTION_CHECK_INTERVAL_SEC:
-                        self.maintain_append_persist()
-                        last_maint = time.time()
-                except Exception as _e:   # Transient network/HTTP errors must not kill synchronization.
-                    builtins.print(
-                        f"[{self.cls_name}] synchronization error (continuing): {_e}")
-                if self._stop_event.wait(self.sync_ts):
-                    break
+            def run():
+                if self._first_sleep and self._stop_event.wait(self.sync_ts):
+                    return   # Run the first iteration after one interval, as CurrentPrice requires.
+                last_maint = time.time()
+                last_resync = time.time()
+                while not self._stop_event.is_set():
+                    try:
+                        sync_complete = False
+                        if self._should_poll():
+                            sync_complete = self.query_remote_and_update_cache()
+                        self._persist_periodic_state(sync_complete)
+                        # Periodically reconcile memory and disk.
+                        if (time.time() - last_resync) > self.RESYNC_INTERVAL_SEC:
+                            self.resync_mem_file()
+                            last_resync = time.time()
+                        # Run weekly retention/rotation for every append-mode cache, including
+                        # full-JSON managers that previously received no effective retention.
+                        if self.append_mode and (time.time() - last_maint) > self.RETENTION_CHECK_INTERVAL_SEC:
+                            self.maintain_append_persist()
+                            last_maint = time.time()
+                    except Exception as _e:   # Transient network/HTTP errors must not kill synchronization.
+                        builtins.print(
+                            f"[{self.cls_name}] synchronization error (continuing): {_e}")
+                    if self._stop_event.wait(self.sync_ts):
+                        break
 
-        self.thread = threading.Thread(target=run, name=self.cls_name, daemon=True)
-        self.thread.daemon = True  # Do not let this thread block process shutdown.
-        self.thread.start()
-        return self.thread
+            self.thread = threading.Thread(target=run, name=self.cls_name, daemon=True)
+            self.thread.daemon = True  # Do not let this thread block process shutdown.
+            self.thread.start()
+            return self.thread
 
     def shutdown(self, timeout=5.0):
         """Deterministically stop the synchronization loop started by ``periodic_sync``."""
@@ -2548,8 +2597,19 @@ class CacheSparsePriceManager(CacheManagerInterface):
         ts_ms, price = entry
         if price is None:
             return []
+        try:
+            ts_val = int(ts_ms)
+            price_val = float(price)
+        except (TypeError, ValueError, OverflowError):
+            return []
+        if ts_val <= 0 or not math.isfinite(price_val) or price_val <= 0:
+            return []
+        with self.lock:
+            entries = self.cache.get(symbol)
+            if entries and ts_val < int(entries[-1][0]):
+                return []
 
-        return [[int(ts_ms), price]]
+        return [[ts_val, price]]
 
     def get_all_symbols_from_cache(self):
         return self.symbols
@@ -2583,9 +2643,18 @@ class Cache24PriceManager(CacheManagerInterface):
         # per-symbol. Store and forward only this instance's symbol.
         if symbol not in self.symbols:
             return
+        try:
+            if isinstance(ts_ms, bool) or isinstance(price, bool):
+                return
+            ts_val = int(ts_ms)
+            price_val = float(price)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if ts_val <= 0 or not math.isfinite(price_val) or price_val <= 0:
+            return
         with self.lock:
             entries = self.cache.get(symbol)
-            if entries and int(ts_ms) < int(entries[-1][0]):
+            if entries and ts_val < int(entries[-1][0]):
                 return
         if not self.fetchtime_per_symbol:
             self.fetchtime_per_symbol = self._rebuild_fetchtimes()
@@ -2646,7 +2715,18 @@ class Cache24PriceManager(CacheManagerInterface):
             entry = get_current_price_manager().get_price(symbol)
             if not entry or entry[1] is None:
                 return []
-            return [[int(entry[0]), entry[1]]]
+            ts_ms, price = entry
+            if isinstance(ts_ms, bool) or isinstance(price, bool):
+                return []
+            ts_val = int(ts_ms)
+            price_val = float(price)
+            if ts_val <= 0 or not math.isfinite(price_val) or price_val <= 0:
+                return []
+            with self.lock:
+                entries = self.cache.get(symbol)
+                if entries and ts_val < int(entries[-1][0]):
+                    return []
+            return [[ts_val, price]]
         except Exception as e:
             print(f"[{self.cls_name}][Error] get_price {symbol}: {e}")
             return []
@@ -2760,9 +2840,22 @@ class Cache365PriceManager(Cache24PriceManager):
         if not os.path.exists(self.filename):
             return False
         changed = False
+        backup_path = None
+        original_cache = None
+        original_persisted_counts = None
+        original_fetchtimes = None
+        original_rest_cursors = None
         try:
             with self.lock:
-                with atomic_write(self.filename) as target, open(self.filename, encoding="utf-8") as source:
+                original_cache = {
+                    symbol: list(items) for symbol, items in self.cache.items()
+                }
+                original_persisted_counts = dict(self._persisted_counts)
+                original_fetchtimes = dict(self.fetchtime_per_symbol)
+                original_rest_cursors = dict(self._rest_sync_cursor_per_symbol)
+                backup_path = self.filename + ".maint_backup"
+                atomic_snapshot_file(self.filename, backup_path)
+                with atomic_write(self.filename) as target, open(backup_path, encoding="utf-8") as source:
                     for line in source:
                         try:
                             rec = json.loads(line)
@@ -2779,13 +2872,36 @@ class Cache365PriceManager(Cache24PriceManager):
                         "counts": dict(self._persisted_counts),
                         "fetchtime": dict(self.fetchtime_per_symbol),
                     }):
+                        self.cache = original_cache
+                        self._persisted_counts = original_persisted_counts
+                        self.fetchtime_per_symbol = original_fetchtimes
+                        self._rest_sync_cursor_per_symbol = original_rest_cursors
+                        os.replace(backup_path, self.filename)
+                        if os.path.exists(backup_path):
+                            os.remove(backup_path)
+                        backup_path = None
                         return False
+                if backup_path is not None:
+                    self._discard_trade_generation(backup_path)
+                    backup_path = None
             if changed:
                 builtins.print(f"[{self.cls_name}][maintain] pruned expired/corrupt disk records")
             if os.path.getsize(self.filename) > self.MAX_FILE_BYTES:
                 return self._rotate_disk_archive()
             return True
         except OSError as exc:
+            if original_cache is not None:
+                self.cache = original_cache
+                self._persisted_counts = original_persisted_counts
+                self.fetchtime_per_symbol = original_fetchtimes
+                self._rest_sync_cursor_per_symbol = original_rest_cursors
+            if backup_path is not None and os.path.exists(backup_path):
+                try:
+                    os.replace(backup_path, self.filename)
+                    if os.path.exists(backup_path):
+                        os.remove(backup_path)
+                except OSError:
+                    pass
             builtins.print(f"[{self.cls_name}][Error] streaming maintenance {self.filename}: {exc}")
             return False
 
@@ -2933,7 +3049,7 @@ class CacheAssetValueManager(CacheManagerInterface):
                         item["total_value_usdc"] = item.pop("total_value_usdt")
                         changed = True
         if changed:
-            self.save_state_to_file()
+            self.compact_jsonl()
 
     def rebuild_fetchtimes(self):
         last_times = {}
@@ -3263,7 +3379,7 @@ CacheCurrentPrice = CacheCurrentPriceManager
 # ── Singleton ─────────────────────────────────────────────────────────────────
 
 _current_price_instance: Optional[CacheCurrentPriceManager] = None
-_current_price_lock = threading.Lock()
+_current_price_lock = threading.RLock()
 
 def _default_price_tracking():
     """Return ``(symbols, nonbinance_symbols, provider_names)`` from ``instruments.conf``."""
@@ -3281,16 +3397,6 @@ def get_current_price_manager(ws_manager=None, symbols=None, sync_ts=None,
     Internal calls must pass None so they do not override main-process configuration.
     """
     global _current_price_instance
-    if _current_price_instance is not None:
-        if sync_ts is not None:
-            _current_price_instance.sync_ts = sync_ts   # Live update.
-        if provider_names:
-            _current_price_instance.bind_providers(provider_names)
-        if ws_manager is not None:
-            _current_price_instance.attach_ws_manager(ws_manager)
-        if start_sync:
-            _current_price_instance.periodic_sync(save_state=False)
-        return _current_price_instance
     with _current_price_lock:
         if _current_price_instance is not None:
             if sync_ts is not None:
@@ -3308,7 +3414,7 @@ def get_current_price_manager(ws_manager=None, symbols=None, sync_ts=None,
                 provider_names = _default_providers
         else:
             _syms = symbols
-        _current_price_instance = CacheCurrentPriceManager(
+        instance = CacheCurrentPriceManager(
             sync_ts     = sync_ts if sync_ts is not None else CURRENT_PRICE_SYNC_INTERVAL_SEC,
             symbols     = _syms,
             filename    = "cache_current_price.json",
@@ -3317,7 +3423,8 @@ def get_current_price_manager(ws_manager=None, symbols=None, sync_ts=None,
             api_client  = api,
         )
         if start_sync:
-            _current_price_instance.periodic_sync(save_state=False)
+            instance.periodic_sync(save_state=False)
+        _current_price_instance = instance
     return _current_price_instance
 
 
@@ -4107,20 +4214,10 @@ class CacheShortTrendManager:
         allt = self.get_all_snapshots()
         if not allt:
             return False
-        valid_ts = []
-        for s in allt.values():
-            if not isinstance(s, dict):
-                continue
-            try:
-                ts_val = float(s.get("ts") or 0.0)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if math.isfinite(ts_val) and ts_val > 0:
-                valid_ts.append(ts_val)
-        if not valid_ts:
-            return False
-        latest = max(valid_ts)
-        return -5.0 <= (now - latest) <= float(max_age_sec)
+        return any(
+            self._snapshot_is_usable(s, now, max_age_sec)
+            for s in allt.values()
+        )
 
     def become_writer(self):
         """Promote a calculating reader to writer when the previous writer is stale."""
@@ -4264,7 +4361,7 @@ CacheShortTrend = CacheShortTrendManager
 
 
 _short_trend_instance = None
-_short_trend_lock = threading.Lock()
+_short_trend_lock = threading.RLock()
 
 def get_short_trend_manager(symbols=None, filename="cache_short_trend.json", writer=False):
     """Return the CacheShortTrendManager singleton.
@@ -4272,10 +4369,6 @@ def get_short_trend_manager(symbols=None, filename="cache_short_trend.json", wri
     ``writer=True`` lets the process persist the file; calculators and readers use False.
     """
     global _short_trend_instance
-    if _short_trend_instance is not None:
-        if writer:
-            _short_trend_instance.become_writer()   # Idempotent writer promotion.
-        return _short_trend_instance
     with _short_trend_lock:
         if _short_trend_instance is not None:
             if writer:

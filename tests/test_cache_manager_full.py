@@ -676,6 +676,20 @@ class TestCacheSparsePriceManager(unittest.TestCase):
             mgr = self._make()
             self.assertTrue(mgr.append_mode)
 
+        with self.subTest("get_remote_items_rejects_out_of_order_and_invalid_price"):
+            mgr = self._make()
+            now_ms = int(time.time() * 1000)
+            with mgr.lock:
+                mgr.cache["BTC"] = [[now_ms, 50000.0]]
+            cur_mgr = MagicMock()
+            with patch("cacheManager.get_current_price_manager", return_value=cur_mgr):
+                cur_mgr.get_price.return_value = [now_ms - 1, 51000.0]
+                self.assertEqual(mgr.get_remote_items("BTC", 0), [])
+                cur_mgr.get_price.return_value = [now_ms + 1, 0.0]
+                self.assertEqual(mgr.get_remote_items("BTC", 0), [])
+                cur_mgr.get_price.return_value = [now_ms + 1, 52000.0]
+                self.assertEqual(mgr.get_remote_items("BTC", 0), [[now_ms + 1, 52000.0]])
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 5. Cache24PriceManager
@@ -761,6 +775,20 @@ class TestCache24PriceManager(unittest.TestCase):
         with self.subTest("append_mode_true"):
             mgr = self._make()
             self.assertTrue(mgr.append_mode)
+
+        with self.subTest("get_remote_items_rejects_out_of_order_and_invalid_price"):
+            mgr = self._make()
+            now_ms = int(time.time() * 1000)
+            with mgr.lock:
+                mgr.cache["BTC"] = [[now_ms, 50000.0]]
+            cur_mgr = MagicMock()
+            with patch("cacheManager.get_current_price_manager", return_value=cur_mgr):
+                cur_mgr.get_price.return_value = [now_ms - 1, 51000.0]
+                self.assertEqual(mgr.get_remote_items("BTC", 0), [])
+                cur_mgr.get_price.return_value = [now_ms + 1, 0.0]
+                self.assertEqual(mgr.get_remote_items("BTC", 0), [])
+                cur_mgr.get_price.return_value = [now_ms + 1, 52000.0]
+                self.assertEqual(mgr.get_remote_items("BTC", 0), [[now_ms + 1, 52000.0]])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -888,6 +916,21 @@ class TestCacheAssetValueManager(unittest.TestCase):
         with self.subTest(msg="append_mode_true"):
             mgr = self._make()
             self.assertTrue(mgr.append_mode)
+
+        with self.subTest(msg="usdt_to_usdc_migration_persists_to_jsonl_on_disk"):
+            fname = _tmp_file(self.tmp, "cache_asset_value_mig.jsonl")
+            with open(fname, "w", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps({"s": "TOTAL", "i": {"timestamp": 500, "total_value_usdt": 1234.5}}) + "\n"
+                )
+            api_mock = MagicMock()
+            api_mock.get_total_assets_value_usdc.return_value = 1234.5
+            cm.CacheAssetValueManager(9999, ["TOTAL"], fname, api_client=api_mock)
+            with open(fname, encoding="utf-8") as handle:
+                rows = [json.loads(line) for line in handle if line.strip()]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["i"].get("total_value_usdc"), 1234.5)
+            self.assertNotIn("total_value_usdt", rows[0]["i"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1539,6 +1582,30 @@ class TestAppendJsonlPersist(unittest.TestCase):
             self.assertEqual(n, 5)
             r = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
             self.assertEqual(len(r.cache.get("SYM")), 5)
+
+        with self.subTest("compact rollback when write_meta fails and shortened append compacts"):
+            fname = os.path.join(self.tmp, "meta_fail.jsonl")
+            m = ConcreteTestManager(9999, ["SYM"], fname, append_persist=True)
+            m.save_state = True
+            with m.lock:
+                m.cache["SYM"] = [{"id": 1}, {"id": 2}]
+            m.save_state_to_file_if_enabled()
+            self.assertEqual(self._count_lines(fname), 2)
+            self.assertEqual(m._persisted_counts.get("SYM"), 2)
+
+            with m.lock:
+                m.cache["SYM"] = [{"id": 1}, {"id": 1}, {"id": 2}]
+            with patch.object(m, "_write_meta", return_value=False):
+                self.assertFalse(m.compact_jsonl())
+            self.assertEqual(self._count_lines(fname), 2)
+            self.assertEqual(m._persisted_counts.get("SYM"), 2)
+            self.assertEqual(len(m.cache["SYM"]), 3)
+
+            with m.lock:
+                m.cache["SYM"] = [{"id": 2}]
+            self.assertTrue(m._save_jsonl_append())
+            self.assertEqual(self._count_lines(fname), 1)
+            self.assertEqual(m._persisted_counts.get("SYM"), 1)
 
     def test_maintain_pruning_and_rotation(self):
         tmp = tempfile.mkdtemp(dir=self.tmp)
