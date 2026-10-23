@@ -124,7 +124,7 @@ class TopicSession(NamedTuple):
     """How the next turn of a topic thread must be issued."""
     conversation_id: Optional[str]   # permanent thread to resume; None only before the thread exists
     history_prefix: str              # carried-over decisions, only when the thread must be (re)created
-    compact: bool                    # issue the turn as `/compact <prompt>` (in-place context compaction)
+    compact: bool                    # compact the thread in-place with `/compact` after the turn completes
 
 
 def prepare_topic_session(
@@ -246,7 +246,7 @@ def record_topic_turn(
     """Update the topic registry after a completed turn and mirror the thread into the Web UI store.
 
     The topic's conversation id is adopted once and then never replaced; ``compacted`` marks a turn that
-    was issued as `/compact <prompt>` so the next compaction is scheduled from the current step count.
+    compacted the thread in-place with `/compact` so the next compaction is scheduled from the current step count.
     """
     from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui
 

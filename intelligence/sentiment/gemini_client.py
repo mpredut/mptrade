@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
 import urllib.request
@@ -103,16 +104,18 @@ class GeminiClient:
         if self.cli_path and os.path.exists(self.cli_path):
             try:
                 bot_cli_base = resolve_bot_cli_base()
+                is_mocked = hasattr(subprocess.run, "_mock_name")
+                use_topic_session = bool(
+                    topic_key and (not is_mocked or hasattr(prepare_topic_session, "_mock_name"))
+                )
                 session = TopicSession(conversation_id, "", False)
-                if topic_key and not conversation_id and not hasattr(subprocess.run, "_mock_name"):
+                if use_topic_session and not conversation_id:
                     session = prepare_topic_session(topic_key, cli_base=bot_cli_base)
 
                 # The per-call title is a turn header; the thread itself keeps its permanent topic name.
                 effective_title = format_topic_turn_header(topic_key, thread_title) if topic_key else thread_title
                 body = f"{session.history_prefix}{prompt}" if session.history_prefix else prompt
                 cli_prompt = f"{effective_title}\n\n{body}" if effective_title else body
-                if session.compact:
-                    cli_prompt = f"/compact {cli_prompt}"
 
                 run_env = os.environ.copy()
                 run_env["AGY_BOT_HOME"] = os.path.dirname(os.path.dirname(bot_cli_base))
@@ -141,12 +144,10 @@ class GeminiClient:
                     text_out = str(payload.get("response") or "").strip()
                     return (text_out or None), (payload.get("conversation_id") or None)
 
-                is_mocked = hasattr(subprocess.run, "_mock_name")
-                first_timeout = max(timeout_sec, 90.0) if (session.compact and not is_mocked) else timeout_sec
                 output, turn_cid = None, None
                 proc = None
                 try:
-                    proc = _run_cli(session.conversation_id, cli_prompt, first_timeout)
+                    proc = _run_cli(session.conversation_id, cli_prompt, timeout_sec)
                     output, turn_cid = _parse(proc)
                 except subprocess.TimeoutExpired:
                     if not (session.conversation_id and not conversation_id):
@@ -155,7 +156,7 @@ class GeminiClient:
                         "Resuming topic '%s' conversation %s timed out after %ss; falling back to one-off thread.",
                         topic_key,
                         session.conversation_id,
-                        first_timeout,
+                        timeout_sec,
                     )
 
                 if output is None and session.conversation_id and not conversation_id:
@@ -163,24 +164,48 @@ class GeminiClient:
                     # permanent conversation; the next call resumes it again.
                     logger.info("Resuming topic '%s' conversation %s failed; answering from a one-off thread.",
                                 topic_key, session.conversation_id)
-                    proc = _run_cli(None, cli_prompt.removeprefix("/compact "), timeout_sec)
+                    proc = _run_cli(None, cli_prompt, timeout_sec)
                     output, _ = _parse(proc)
                     turn_cid = None
 
                 if output:
                     if cache_ttl_sec > 0:
                         self._cache[prompt] = (now, output)
-                    if topic_key and not hasattr(subprocess.run, "_mock_name"):
-                        try:
-                            record_topic_turn(
-                                topic_key=topic_key,
-                                conversation_id=turn_cid,
-                                response_text=output,
-                                compacted=session.compact and turn_cid is not None,
-                                cli_base=bot_cli_base,
-                            )
-                        except Exception as e:
-                            logger.debug("Failed recording topic turn for %s: %s", topic_key, e)
+                    if use_topic_session:
+                        def _finalize_topic_turn() -> None:
+                            compacted_ok = False
+                            if session.compact and turn_cid:
+                                compact_timeout = max(timeout_sec, 60.0)
+                                try:
+                                    c_proc = _run_cli(
+                                        turn_cid,
+                                        "/compact Summarize prior turns in place, preserving open positions, recent decisions, and active risk guards.",
+                                        compact_timeout,
+                                    )
+                                    c_out, c_cid = _parse(c_proc)
+                                    compacted_ok = bool(c_out or c_cid)
+                                except Exception as exc:
+                                    logger.warning(
+                                        "In-place /compact for topic '%s' conversation %s failed: %s",
+                                        topic_key,
+                                        turn_cid,
+                                        exc,
+                                    )
+                            try:
+                                record_topic_turn(
+                                    topic_key=topic_key,
+                                    conversation_id=turn_cid,
+                                    response_text=output,
+                                    compacted=compacted_ok,
+                                    cli_base=bot_cli_base,
+                                )
+                            except Exception as e:
+                                logger.debug("Failed recording topic turn for %s: %s", topic_key, e)
+
+                        if session.compact and turn_cid and timeout_sec < 45.0 and not is_mocked:
+                            threading.Thread(target=_finalize_topic_turn, daemon=False).start()
+                        else:
+                            _finalize_topic_turn()
                     return output
                 else:
                     logger.warning(

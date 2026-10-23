@@ -153,6 +153,48 @@ class TestTopics:
         with pytest.raises(KeyError):
             prepare_topic_session("not_a_topic", compact_steps=6)
 
+    def test_gemini_client_compacts_after_prompt_preserving_json_decision(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+        import subprocess
+        from intelligence.sentiment import gemini_client as gc
+        from orchestratorOS.agy.topics import TopicSession
+
+        fake_bin = tmp_path / "agy-bot"
+        fake_bin.write_text("#!/bin/sh\n")
+        client = gc.GeminiClient(cli_path=str(fake_bin))
+
+        cli_calls = []
+
+        def _fake_run(cmd, **kwargs):
+            prompt_arg = cmd[cmd.index("-p") + 1]
+            cli_calls.append((cmd, prompt_arg))
+            if prompt_arg.startswith("/compact "):
+                resp = "Sistemul a compactat istoricul conversatiei si functioneaza autonom."
+            else:
+                resp = '{"summary": "Nominal 5m cycle", "market_trading_decision": {"decision": "HOLD", "symbol": "TAOUSDC", "confidence": 0.91}}'
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=f'{{"response": {gc.json.dumps(resp)}, "conversation_id": "cid-perm-1"}}',
+                stderr="",
+            )
+
+        mock_run = MagicMock(side_effect=_fake_run)
+        with patch.object(gc.subprocess, "run", mock_run), \
+             patch.object(gc, "prepare_topic_session", return_value=TopicSession("cid-perm-1", "", True)), \
+             patch.object(gc, "record_topic_turn") as mock_record:
+            parsed = client.query_json("Evaluate TAO & BTC", topic_key="auto_trade_executor", timeout_sec=60.0)
+
+        assert parsed is not None
+        assert parsed["market_trading_decision"]["decision"] == "HOLD"
+        assert len(cli_calls) == 2
+        assert not cli_calls[0][1].startswith("/compact ")
+        assert cli_calls[1][1].startswith("/compact ")
+        mock_record.assert_called_once()
+        assert mock_record.call_args.kwargs["compacted"] is True
+        assert "Nominal 5m cycle" in mock_record.call_args.kwargs["response_text"]
+
+
 
 
 def _make_summary_db(path, rows):
