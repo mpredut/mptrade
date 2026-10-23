@@ -1123,8 +1123,22 @@ class CacheShortTrendManager(CacheManagerInterface):
                     and (overwrite or symbol not in self._mem)
                 ):
                     self._mem[symbol] = dict(snap)
+                    ts_val = snap.get("ts") or snap.get("ts_fast")
+                    if (
+                        isinstance(ts_val, (int, float))
+                        and math.isfinite(ts_val)
+                        and ts_val > 0
+                    ):
+                        ts_ms = int(float(ts_val) * 1000)
+                        self.fetchtime_per_symbol[symbol] = ts_ms
+                        self._rest_sync_cursor_per_symbol[symbol] = ts_ms
             self.cache = self._mem
+            self._account_cache_dirty = False
         return len(self._mem)
+
+    def _reload_from_disk(self):
+        """Reload flat symbol snapshots and synchronize fetchtime cursors."""
+        self.prime_from_file(overwrite=True)
 
     def get_snapshot(self, symbol):
         """Return local calculated/primed memory, or the file for a pure reader."""

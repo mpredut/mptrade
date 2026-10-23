@@ -394,14 +394,14 @@ def read_recovering_previous(
         if os.path.exists(target_backup):
             discard_generation_file(target_backup)
         return result
-    except BaseException as primary_exc:
+    except Exception as primary_exc:
         if not os.path.exists(target_backup):
             raise
         try:
             read_fn(target_backup)
             restore_previous_generation(target_path, backup_path=target_backup)
             return read_fn(target_path)
-        except BaseException as recovery_exc:
+        except Exception as recovery_exc:
             if error_mapper is not None:
                 mapped = error_mapper(recovery_exc)
                 if mapped is not recovery_exc:

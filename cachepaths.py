@@ -48,6 +48,11 @@ def migrate_legacy_filename_if_needed(filepath: str) -> None:
                 and not os.path.exists(filepath + ".meta")
             ):
                 os.replace(legacy_path + ".meta", filepath + ".meta")
+            if (
+                os.path.exists(legacy_path + ".previous")
+                and not os.path.exists(filepath + ".previous")
+            ):
+                os.replace(legacy_path + ".previous", filepath + ".previous")
             for old_archive in glob.glob(legacy_path + ".*.archive*"):
                 suffix = old_archive[len(legacy_path):]
                 new_archive = filepath + suffix

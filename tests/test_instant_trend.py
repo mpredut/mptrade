@@ -742,6 +742,24 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertEqual(recovered["gradient_recent"], 0.42)
         self.assertFalse(os.path.exists(trend_file + ".previous"))
 
+    def test_short_trend_resync_mem_file_reloads_flat_snapshots(self):
+        trend_file = os.path.join(self.tmp, "resync_short_trend.json")
+        writer = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, writer=True)
+        t0 = 1700000000.0
+        writer.update_snapshot("BTCUSDT", gradient_recent=0.15, current_price=60000.0, ts=t0)
+
+        reader = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, writer=False)
+        reader.prime_from_file()
+        self.assertEqual(reader.get_snapshot("BTCUSDT")["gradient_recent"], 0.15)
+        self.assertEqual(reader.fetchtime_per_symbol.get("BTCUSDT"), int(t0 * 1000))
+
+        # Writer publishes a newer snapshot; resync_mem_file must reload flat snapshot without wiping _mem
+        writer.update_snapshot("BTCUSDT", gradient_recent=0.85, current_price=61500.0, ts=t0 + 10.0)
+        reader.resync_mem_file()
+        self.assertEqual(reader.get_snapshot("BTCUSDT")["gradient_recent"], 0.85)
+        self.assertEqual(reader.get_snapshot("BTCUSDT")["current_price"], 61500.0)
+        self.assertEqual(reader.fetchtime_per_symbol.get("BTCUSDT"), int((t0 + 10.0) * 1000))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
