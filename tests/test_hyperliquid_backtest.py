@@ -471,6 +471,8 @@ def test_hyperliquid_walk_forward_baseline_runner(tmp_path):
             data = json.loads(report_file.read_text(encoding="utf-8"))
             assert data["runtime"]["coin"] == "HYPE"
             assert data["runtime"]["engine"] == "spot"
+            assert data["strategy_params"]["currency"] == "USDC"
+            assert data["strategy_params"]["entry_amount"] == 350.0
             assert "aggregate_test" in data
             assert "folds" in data
             assert len(data["folds"]) > 0

@@ -89,7 +89,9 @@ def main(argv: list[str] | None = None) -> int:
         p = Path(path_str)
         if p.exists():
             cfg.update(dict(parse_dotenv(str(p))))
-    cfg.update({k: v for k, v in os.environ.items() if k.startswith("HL_") or k.startswith("STRAT_")})
+    for k, v in os.environ.items():
+        if k.startswith("HL_") or (k.startswith("STRAT_") and k not in cfg):
+            cfg[k] = v
 
     coin = (args.coin or cfg.get("HL_COIN", "HYPE")).strip().upper()
     direction = (args.direction or cfg.get("HL_DIRECTION", "long")).strip().lower()

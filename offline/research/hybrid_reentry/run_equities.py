@@ -12,6 +12,7 @@ if T212_DIR not in sys.path:
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from botcore import parse_dotenv
 from offline.research.hybrid_reentry.harness import (
     build_ablation_variants,
     format_ablation_result,
@@ -53,7 +54,20 @@ BASE_CONFIG = {
     "STRAT_REENTRY_HYBRID_ENABLED": "false",
     "STRAT_REENTRY_PEAK_RELATIVE": "false",
     "STRAT_REENTRY_PULLBACK_PCT": "1.5",
+    "STRAT_REENTRY_PULLBACK_ADAPTIVE": "false",
+    "STRAT_REENTRY_PULLBACK_K": "1.0",
+    "STRAT_REENTRY_PULLBACK_MIN": "0.8",
+    "STRAT_REENTRY_PULLBACK_MAX": "4.0",
     "STRAT_REENTRY_TTL_HOURS": "0.0",
+    "STRAT_SL_MHDSL_ENABLED": "true",
+    "STRAT_SL_DISASTER_BUFFER_RATIO": "0.30",
+    "STRAT_SL_DISASTER_BUFFER_MAX_PCT": "15.0",
+    "STRAT_SL_TREND_DEFER_MAX_SEC": "220.0",
+    "STRAT_SL_BOUNCE_MIN_RECOVERY_PCT": "0.40",
+    "STRAT_SL_BOUNCE_PULLBACK_PCT": "0.30",
+    "STRAT_SL_STRUCTURAL_BREAK_ENABLED": "true",
+    "STRAT_TP_MDHTP_ENABLED": "true",
+    "STRAT_TP_STAGNATION_MAX_SEC": "1080.0",
 }
 
 
@@ -92,7 +106,9 @@ def main():
             continue
         print(f"Evaluating {symbol} ({len(ohlc)} daily bars)...", flush=True)
         
-        cfg = dict(BASE_CONFIG)
+        profile_path = os.path.join(T212_DIR, f"config.{symbol.lower()}.env")
+        cfg = parse_dotenv(profile_path) if os.path.isfile(profile_path) else {}
+        cfg.update(BASE_CONFIG)
         cfg["YAHOO_SYMBOL"] = symbol
         base_params = _strat.StratParams.from_env(cfg)
         variants = build_equity_variants(base_params)

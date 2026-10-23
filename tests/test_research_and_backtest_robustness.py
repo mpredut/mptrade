@@ -771,3 +771,59 @@ def test_align_spot_interval_params_and_walk_forward_compare_multi_interval():
     assert seg_1440["metrics"]["account_currency"] == "USD"
 
 
+def test_hybrid_reentry_equities_base_config_and_backtest_invariants(tmp_path):
+    """Verify run_equities BASE_CONFIG, BacktestBroker unbacked SELL guard, InstrumentedTrendState super call, and scheduled_pilot diag cache isolation."""
+    from offline.backtests.tradeall import BacktestBroker
+    from offline.research.hybrid_reentry import run_equities
+    from offline.research.monitortrades_backtest import run_replay_backtest as rb
+    from offline.research.monitortrades_backtest import scheduled_pilot as sp
+    from offline.research.tradeall_trigger_gate import common as tg_common
+
+    # 1. run_equities.BASE_CONFIG must satisfy 212trading StratParams.from_env
+    strat_mod, _rp = run_equities._import_t212()
+    cfg = dict(run_equities.BASE_CONFIG, YAHOO_SYMBOL="NVDA")
+    params = strat_mod.StratParams.from_env(cfg)
+    assert params.yahoo_sym == "NVDA"
+    assert params.reentry_pullback_adaptive is False
+
+    # 2. BacktestBroker.place_order_smart must reject unbacked SELL when flat even if trend_gate wants to wait
+    class _AlwaysWaitGate:
+        def should_wait(self, symbol, side, timeout_sec):
+            return True
+
+    broker = BacktestBroker(str(tmp_path), clock=lambda: 1000.0, trend_gate=_AlwaysWaitGate())
+    assert broker.place_order_smart("SELL", "BTCUSDC", 50000.0) is None
+    assert broker.n_waited == 0
+    assert broker.pending == []
+
+    # 3. InstrumentedTrendState.mark_confirmed must increment parent TrendState confirmation counter
+    stats = {"starts": 0, "confirms": 0, "expires": 0, "max_confirm_count": 0}
+    ts_cls = tg_common.make_instrumented_trend_state(stats)
+    ts_inst = ts_cls(3600, 160, 220)
+    ts_inst.start_trend("UP")
+    ts_inst.mark_confirmed("UP")
+    assert ts_inst.already_confirmed("UP") is True
+    assert ts_inst._confirmed_count_up == 1
+
+    # 4. scheduled_pilot._RUN_ONE_DIAG_CACHE isolates diagnostics per (symbol, params, series)
+    series = [(1_700_000_000.0 + i * 60.0, 100.0 + i * 0.1) for i in range(105)]
+    p_a = {"mt.hardtp": "3.0"}
+    p_b = {"mt.hardtp": "20.0"}
+    ck_a = sp._run_one_cache_key("BTCUSDC", p_a, series)
+    ck_b = sp._run_one_cache_key("BTCUSDC", p_b, series)
+    tk = rb._series_cache_key("BTCUSDC", series, rb.DEFAULT_WINDOW_SECONDS)
+    sp._RUN_ONE_CACHE[ck_a] = {"net": 15.0, "buy_hold": 5.0}
+    sp._RUN_ONE_DIAG_CACHE[ck_a] = {"hard_tp_touched": True, "min_hard_tp_gain_ratio": 0.035}
+    sp._RUN_ONE_CACHE[ck_b] = {"net": 10.0, "buy_hold": 5.0}
+    sp._RUN_ONE_DIAG_CACHE[ck_b] = {"hard_tp_touched": False, "min_hard_tp_gain_ratio": 0.0}
+    # Simulate worker B finishing last and overwriting params-agnostic rb._LAST_RUN_DIAGNOSTICS[tk]
+    rb._LAST_RUN_DIAGNOSTICS[tk] = dict(sp._RUN_ONE_DIAG_CACHE[ck_b])
+    rb._LAST_HARD_TP_TOUCHED[tk] = False
+    # Calling _run_one for p_a must restore p_a's own diagnostics
+    res_a = sp._run_one("BTCUSDC", "BTC", p_a, series)
+    assert res_a == {"net": 15.0, "buy_hold": 5.0}
+    assert rb._LAST_HARD_TP_TOUCHED[tk] is True
+    assert rb._LAST_RUN_DIAGNOSTICS[tk]["min_hard_tp_gain_ratio"] == 0.035
+
+
+

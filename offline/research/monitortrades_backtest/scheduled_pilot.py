@@ -155,6 +155,7 @@ def _num_str(x):
 
 _SERIES_SPLIT_CACHE: dict[str, tuple[list, list]] = {}
 _RUN_ONE_CACHE: dict[tuple, dict | None] = {}
+_RUN_ONE_DIAG_CACHE: dict[tuple, dict] = {}
 
 
 def _norm_params_key(params: dict) -> tuple:
@@ -200,12 +201,22 @@ def _run_one(symbol, base, params, series):
     if not series:
         return None
     ck = _run_one_cache_key(symbol, params, series)
+    tk = rb._series_cache_key(symbol, series, rb.DEFAULT_WINDOW_SECONDS)
     if ck in _RUN_ONE_CACHE:
         cached = _RUN_ONE_CACHE[ck]
+        if ck in _RUN_ONE_DIAG_CACHE:
+            diag = dict(_RUN_ONE_DIAG_CACHE[ck])
+            rb._LAST_RUN_DIAGNOSTICS[tk] = diag
+            rb._LAST_HARD_TP_TOUCHED[tk] = diag.get("hard_tp_touched", True)
         return dict(cached) if cached is not None else None
     res = rb.run_symbol(symbol, params, base, quiet=True, series=series)
     out = {"net": res["net"], "buy_hold": res["buy_hold"]} if res else None
     _RUN_ONE_CACHE[ck] = out
+    diag = dict(
+        rb._LAST_RUN_DIAGNOSTICS.get(tk)
+        or {"hard_tp_touched": rb._LAST_HARD_TP_TOUCHED.get(tk, True)}
+    )
+    _RUN_ONE_DIAG_CACHE[ck] = diag
     return dict(out) if out is not None else None
 
 
@@ -216,9 +227,11 @@ def _eval_one_half(task: tuple[str, str, dict, int]):
     if len(series) < 100:
         return symbol, params, half_idx, None, {}
     res = _run_one(symbol, base, params, series)
+    ck = _run_one_cache_key(symbol, params, series)
     tk = rb._series_cache_key(symbol, series, rb.DEFAULT_WINDOW_SECONDS)
     diag = dict(
-        rb._LAST_RUN_DIAGNOSTICS.get(tk)
+        _RUN_ONE_DIAG_CACHE.get(ck)
+        or rb._LAST_RUN_DIAGNOSTICS.get(tk)
         or {"hard_tp_touched": rb._LAST_HARD_TP_TOUCHED.get(tk, True)}
     )
     return symbol, params, half_idx, res, diag
@@ -230,11 +243,13 @@ def _eval_symbol_baseline(symbol: str, base: str):
         return symbol, None, None, None, {}, {}
     base_params = dict(rb.SYMBOLS[symbol]["params"])
     r1 = _run_one(symbol, base, base_params, half1)
+    ck1 = _run_one_cache_key(symbol, base_params, half1)
     k1 = rb._series_cache_key(symbol, half1, rb.DEFAULT_WINDOW_SECONDS)
-    diag1 = dict(rb._LAST_RUN_DIAGNOSTICS.get(k1) or {"hard_tp_touched": rb._LAST_HARD_TP_TOUCHED.get(k1, True)})
+    diag1 = dict(_RUN_ONE_DIAG_CACHE.get(ck1) or rb._LAST_RUN_DIAGNOSTICS.get(k1) or {"hard_tp_touched": rb._LAST_HARD_TP_TOUCHED.get(k1, True)})
     r2 = _run_one(symbol, base, base_params, half2)
+    ck2 = _run_one_cache_key(symbol, base_params, half2)
     k2 = rb._series_cache_key(symbol, half2, rb.DEFAULT_WINDOW_SECONDS)
-    diag2 = dict(rb._LAST_RUN_DIAGNOSTICS.get(k2) or {"hard_tp_touched": rb._LAST_HARD_TP_TOUCHED.get(k2, True)})
+    diag2 = dict(_RUN_ONE_DIAG_CACHE.get(ck2) or rb._LAST_RUN_DIAGNOSTICS.get(k2) or {"hard_tp_touched": rb._LAST_HARD_TP_TOUCHED.get(k2, True)})
     return symbol, base_params, r1, r2, diag1, diag2
 
 
@@ -276,9 +291,11 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
         else:
             r1 = _run_one(symbol, base, params, half1)
             if key == "mt.hardtp" and r1 is not None:
+                ck1 = _run_one_cache_key(symbol, params, half1)
                 tk1 = rb._series_cache_key(symbol, half1, rb.DEFAULT_WINDOW_SECONDS)
-                d1 = rb._LAST_RUN_DIAGNOSTICS.get(tk1) or {}
-                if not rb._LAST_HARD_TP_TOUCHED.get(tk1, True):
+                d1 = _RUN_ONE_DIAG_CACHE.get(ck1) or rb._LAST_RUN_DIAGNOSTICS.get(tk1) or {}
+                htp_touched1 = d1.get("hard_tp_touched", rb._LAST_HARD_TP_TOUCHED.get(tk1, True))
+                if not htp_touched1:
                     invariant_r1 = r1
                     invariant_max_htp1 = float("inf")
                 elif d1.get("min_hard_tp_gain_ratio", 0.0) >= v_ratio:
@@ -290,9 +307,11 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
         else:
             r2 = _run_one(symbol, base, params, half2)
             if key == "mt.hardtp" and r2 is not None:
+                ck2 = _run_one_cache_key(symbol, params, half2)
                 tk2 = rb._series_cache_key(symbol, half2, rb.DEFAULT_WINDOW_SECONDS)
-                d2 = rb._LAST_RUN_DIAGNOSTICS.get(tk2) or {}
-                if not rb._LAST_HARD_TP_TOUCHED.get(tk2, True):
+                d2 = _RUN_ONE_DIAG_CACHE.get(ck2) or rb._LAST_RUN_DIAGNOSTICS.get(tk2) or {}
+                htp_touched2 = d2.get("hard_tp_touched", rb._LAST_HARD_TP_TOUCHED.get(tk2, True))
+                if not htp_touched2:
                     invariant_r2 = r2
                     invariant_max_htp2 = float("inf")
                 elif d2.get("min_hard_tp_gain_ratio", 0.0) >= v_ratio:
@@ -510,8 +529,12 @@ def main():
         diag1, diag2 = entry_b["diag"]
         if base_params is not None:
             half1, half2 = _split_series(sym)
-            _RUN_ONE_CACHE[_run_one_cache_key(sym, base_params, half1)] = r1
-            _RUN_ONE_CACHE[_run_one_cache_key(sym, base_params, half2)] = r2
+            bck1 = _run_one_cache_key(sym, base_params, half1)
+            bck2 = _run_one_cache_key(sym, base_params, half2)
+            _RUN_ONE_CACHE[bck1] = r1
+            _RUN_ONE_CACHE[bck2] = r2
+            _RUN_ONE_DIAG_CACHE[bck1] = dict(diag1)
+            _RUN_ONE_DIAG_CACHE[bck2] = dict(diag2)
             htp1 = diag1.get("hard_tp_touched", True)
             htp2 = diag2.get("hard_tp_touched", True)
             base_htp = float(base_params.get("mt.hardtp") or 0.0)
@@ -525,9 +548,13 @@ def main():
                     for gv in all_ranges.get(fk, ()):
                         p = dict(base_params, **{k_name: gv})
                         if not htp1:
-                            _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half1)] = r1
+                            ck = _run_one_cache_key(sym, p, half1)
+                            _RUN_ONE_CACHE[ck] = r1
+                            _RUN_ONE_DIAG_CACHE[ck] = dict(diag1)
                         if not htp2:
-                            _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half2)] = r2
+                            ck = _run_one_cache_key(sym, p, half2)
+                            _RUN_ONE_CACHE[ck] = r2
+                            _RUN_ONE_DIAG_CACHE[ck] = dict(diag2)
                 elif k_name == "mt.hardtp_cooldown_h":
                     dts1 = diag1.get("hard_tp_cooldown_dts", ())
                     dts2 = diag2.get("hard_tp_cooldown_dts", ())
@@ -535,9 +562,13 @@ def main():
                         cand_cd_s = float(gv) * 3600.0
                         p = dict(base_params, **{k_name: gv})
                         if not htp1 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in dts1):
-                            _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half1)] = r1
+                            ck = _run_one_cache_key(sym, p, half1)
+                            _RUN_ONE_CACHE[ck] = r1
+                            _RUN_ONE_DIAG_CACHE[ck] = dict(diag1)
                         if not htp2 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in dts2):
-                            _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half2)] = r2
+                            ck = _run_one_cache_key(sym, p, half2)
+                            _RUN_ONE_CACHE[ck] = r2
+                            _RUN_ONE_DIAG_CACHE[ck] = dict(diag2)
                 elif k_name == "mt.hardtp" and base_htp > 0:
                     min_g1 = diag1.get("min_hard_tp_gain_ratio", 0.0)
                     min_g2 = diag2.get("min_hard_tp_gain_ratio", 0.0)
@@ -547,9 +578,13 @@ def main():
                         if gv_f >= base_htp:
                             p = dict(base_params, **{k_name: gv})
                             if not htp1 or min_g1 >= gv_r:
-                                _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half1)] = r1
+                                ck = _run_one_cache_key(sym, p, half1)
+                                _RUN_ONE_CACHE[ck] = r1
+                                _RUN_ONE_DIAG_CACHE[ck] = dict(diag1)
                             if not htp2 or min_g2 >= gv_r:
-                                _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half2)] = r2
+                                ck = _run_one_cache_key(sym, p, half2)
+                                _RUN_ONE_CACHE[ck] = r2
+                                _RUN_ONE_DIAG_CACHE[ck] = dict(diag2)
                 elif k_name == "trailing.pct" and base_tr > 0:
                     min_tr1 = diag1.get("min_trail_trigger_ratio", 0.0)
                     max_untr1 = diag1.get("max_untriggered_trail_ratio", 1.0)
@@ -559,9 +594,13 @@ def main():
                         gv_r = float(gv) / 100.0
                         p = dict(base_params, **{k_name: gv})
                         if (gv_r >= base_tr_r and gv_r <= min_tr1) or (gv_r <= base_tr_r and gv_r > max_untr1):
-                            _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half1)] = r1
+                            ck = _run_one_cache_key(sym, p, half1)
+                            _RUN_ONE_CACHE[ck] = r1
+                            _RUN_ONE_DIAG_CACHE[ck] = dict(diag1)
                         if (gv_r >= base_tr_r and gv_r <= min_tr2) or (gv_r <= base_tr_r and gv_r > max_untr2):
-                            _RUN_ONE_CACHE[_run_one_cache_key(sym, p, half2)] = r2
+                            ck = _run_one_cache_key(sym, p, half2)
+                            _RUN_ONE_CACHE[ck] = r2
+                            _RUN_ONE_DIAG_CACHE[ck] = dict(diag2)
 
     # Pre-evaluate all remaining uncached (symbol, base, params, half_idx) tasks across the worker pool,
     # sorted by descending series length so no single worker is left with a long tail.
@@ -602,7 +641,9 @@ def main():
                 chunksize=1,
             ):
                 h_series = _split_series(sym)[half_idx]
-                _RUN_ONE_CACHE[_run_one_cache_key(sym, p, h_series)] = res
+                ck = _run_one_cache_key(sym, p, h_series)
+                _RUN_ONE_CACHE[ck] = res
+                _RUN_ONE_DIAG_CACHE[ck] = dict(diag)
                 tk = rb._series_cache_key(sym, h_series, rb.DEFAULT_WINDOW_SECONDS)
                 rb._LAST_RUN_DIAGNOSTICS[tk] = diag
                 rb._LAST_HARD_TP_TOUCHED[tk] = diag.get("hard_tp_touched", True)

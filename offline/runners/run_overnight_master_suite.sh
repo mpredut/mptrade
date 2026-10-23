@@ -171,7 +171,7 @@ run_step "4B" "Deep Parabolic Surge & Bear-Bounce Multi-Variable Grid Sweep (555
     "$PYTHON_BIN offline/research/comprehensive_surge_sweep/run_deep_surge_sweep.py --fee-pct 0.26"
 
 run_step "4C" "Hybrid Re-Entry Ablation Suite (11 Crypto Assets & US Equities)" \
-    "$PYTHON_BIN offline/research/hybrid_reentry/run_suite.py && $PYTHON_BIN offline/research/hybrid_reentry/run_equities.py"
+    "$PYTHON_BIN offline/research/hybrid_reentry/run_suite.py && $PYTHON_BIN offline/research/hybrid_reentry/run_equities.py && $PYTHON_BIN offline/research/hybrid_reentry/report.py"
 
 # ------------------------------------------------------------------------------
 # STEP 5: TradeAll Trigger Gate Experiments

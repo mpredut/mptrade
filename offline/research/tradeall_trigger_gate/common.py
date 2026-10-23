@@ -120,6 +120,7 @@ def make_instrumented_trend_state(
             return self._confirmed_up if direction == "UP" else self._confirmed_down
 
         def mark_confirmed(self, direction: str):
+            super().mark_confirmed(direction)
             if direction == "UP":
                 self._confirmed_up = True
             else:
@@ -220,15 +221,6 @@ def make_tradeall_logic(
             if (trend_state.is_trend_consistent_validated()
                     or trend_state.is_started_trend_older_than(ta.TREND_TO_BE_OLD_SECONDS)):
                 fire("DOWN", "SELL", "consistent_or_old_down")
-
-        if slope <= -5.1 and trend_state.is_trend_up():
-            if (trend_state.is_trend_consistent_validated()
-                    or trend_state.is_started_trend_older_than(ta.TREND_TO_BE_OLD_SECONDS)):
-                fire("UP", "BUY", "slope<=-5.1_up")
-        if slope >= 5.1 and trend_state.is_trend_down():
-            if (trend_state.is_trend_consistent_validated()
-                    or trend_state.is_started_trend_older_than(ta.TREND_TO_BE_OLD_SECONDS)):
-                fire("DOWN", "SELL", "slope>=5.1_down")
 
         if slope <= -5.1 and trend_state.is_trend_down():
             if (trend_state.is_trend_consistent_validated()

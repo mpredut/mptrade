@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "kraken"))
 sys.path.insert(0, str(ROOT))
 
-from kraken_common import load_dotenv
+from botcore import parse_dotenv
 import replay as kraken_replay
 from strategies.spot_engine import StratParams
 from offline.backtests.datasets import load_dataset
@@ -28,11 +28,13 @@ from offline.backtests.walk_forward import walk_forward_splits
 from offline.backtests.evaluation import evaluate_segment
 from offline.backtests.execution import ExecutionModel
 
-# Load live configuration
+# Load live configuration into an isolated dict without polluting os.environ
 KRAKEN_DIR = ROOT / "kraken"
-load_dotenv(KRAKEN_DIR / ".env")
-load_dotenv(KRAKEN_DIR / "config.env")
-LIVE_PARAMS = StratParams.from_env()
+_KRAKEN_CFG: dict[str, str] = {}
+for _cfg_file in (KRAKEN_DIR / "config.env", KRAKEN_DIR / ".env"):
+    if _cfg_file.is_file():
+        _KRAKEN_CFG.update(parse_dotenv(str(_cfg_file)))
+LIVE_PARAMS = StratParams.from_env(_KRAKEN_CFG)
 
 DATASET_CSV = ROOT / "offline" / "research" / "hype_dataset" / "HYPEUSDC_240m_hlspot.csv"
 SHADOW_OHLC_JSON = ROOT / "logs" / "shadow_live" / "HYPEUSD_240m.ohlc.json"

@@ -27,10 +27,15 @@ OUT = os.path.join(EXP, "results.jsonl")
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "kraken"))
 os.chdir(ROOT)
-from kraken import shadow_live  # noqa: E402
-shadow_live._load_runtime_config()
+from botcore import parse_dotenv  # noqa: E402
 from strategies import spot_dca as strat  # noqa: E402
 from kraken import replay as rp  # noqa: E402
+
+_KRAKEN_CFG: dict[str, str] = {}
+for _cfg_name in ("config.env", ".env"):
+    _cfg_path = os.path.join(ROOT, "kraken", _cfg_name)
+    if os.path.isfile(_cfg_path):
+        _KRAKEN_CFG.update(parse_dotenv(_cfg_path))
 
 FLAGS = {"peak": False}
 _orig_step = strat.Strategy.step
@@ -45,7 +50,7 @@ def _step(self, price, *args, **kwargs):
 
 
 R = dataclasses.replace
-LIVE = strat.StratParams.from_env()
+LIVE = strat.StratParams.from_env(_KRAKEN_CFG)
 OLD = R(LIVE, takeprofit_pct=5.0, dca_spacing_growth_pct=0.0, tp_trail_adaptive=False,
         tp_regime_gate=False, tp_trail_profit_floor_pct=0.0, stop_loss_pct=12.5,
         reentry_hybrid_enabled=False, reentry_bear_bounce_pct=0.0,

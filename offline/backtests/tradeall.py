@@ -115,6 +115,8 @@ class BacktestBroker:
         return {"orderId": -1, "backtest": True}   # A truthy object, as in logic()'s "if order:".
 
     def place_order_smart(self, order_type, symbol, price, qty=None, motivation=None, **kwargs):
+        if order_type != "BUY" and self.pos_qty <= 1e-12:
+            return None
         # The gate applies UNCONDITIONALLY (force=True included) — user (29 Jul, "the
         # is always welcome"), consistent with live. If the direction is NOT favourable yet,
         # It DELAYS (it does not block): the order is recorded as pending and executed on the
@@ -425,21 +427,18 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                     ta.logic("BIG", True, symbol, gradient, slope_big, trend_state_big, price)
     
                 # SHADOW: the same call as in the live TrendCoordinator.evaluate, with a simulated clock.
-                try:
-                    need_eps = (
-                        ts - shadow._last_fed.get(symbol, -1e18) >= shadow_signals.KALMAN_SAMPLE_SEC
-                        and len(shadow._fed_prices.get(symbol, ())) < 4
-                    )
-                    shadow_fields = shadow.update(
-                        symbol,
-                        ts,
-                        price,
-                        epsilon=window_small.get_noise_epsilon() if need_eps else 0.0,
-                        big_prices=window_big.prices,
-                        big_sample_rate=window_big.sample_rate_sec,
-                    )
-                except Exception:
-                    shadow_fields = {}
+                need_eps = (
+                    ts - shadow._last_fed.get(symbol, -1e18) >= shadow_signals.KALMAN_SAMPLE_SEC
+                    and len(shadow._fed_prices.get(symbol, ())) < 4
+                )
+                shadow_fields = shadow.update(
+                    symbol,
+                    ts,
+                    price,
+                    epsilon=window_small.get_noise_epsilon() if need_eps else 0.0,
+                    big_prices=window_big.prices,
+                    big_sample_rate=window_big.sample_rate_sec,
+                )
     
                 if first_price is None:
                     first_price = price

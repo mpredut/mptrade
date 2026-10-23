@@ -1,6 +1,7 @@
 """Tests for offline/research/backtest_ranges.py and live config # BACKTEST annotations."""
 import configparser
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -18,6 +19,9 @@ class TestScanBacktestRanges(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp(prefix="backtest_ranges_")
         self._tmp = os.path.join(self._tmpdir, "backtest_ranges.conf")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def _write(self, content):
         with open(self._tmp, "w", encoding="utf-8") as f:
