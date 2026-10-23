@@ -32,14 +32,16 @@ class TopicSpec:
 
 
 TOPIC_SPECS: Dict[str, TopicSpec] = {
-    "macro_geopolitical": TopicSpec("ntfy-macro: 🛡 [MACRO SHOCK SHIELD] Geopolitical Risk Monitor"),
-    "macro_sentiment": TopicSpec("ntfy-macro: 🧭 [MACRO ADVISOR] Sentiment & Breadth Monitor"),
-    "guard_high_stake": TopicSpec("ntfy-guard: 🛡 [HIGH-STAKE GUARD] Pre-Trade Risk Vetting"),
-    "guard_post_stop": TopicSpec("ntfy-guard: 🛡 [POST-STOP RE-ENTRY] Bounce Validator"),
     "auto_technical_repair": TopicSpec(
-        "ntfy-guard: 🛠 [AUTO TECHNICAL REPAIR] Nightly SRE Audit & Self-Heal", can_self_heal=True
+        "🛠 [auto_technical_repair] System Audit & Code Self-Heal (03:35)", can_self_heal=True
     ),
-    "auto_trade_executor": TopicSpec("ntfy-guard: 🎯 [AUTO TRADE EXECUTOR] TAO & BTC", can_trade=True),
+    "auto_trade_executor": TopicSpec(
+        "🎯 [auto_trade_executor] Autonomous Trade Decisions (TAO & BTC 5m)", can_trade=True
+    ),
+    "macro_geopolitical": TopicSpec("🌍 [auto_macro_news_shield] Geopolitical Crisis & Breaking News Brake"),
+    "macro_sentiment": TopicSpec("🧭 [auto_macro_sentiment] Fear & Greed, Breadth & Market Bias (3h)"),
+    "guard_high_stake": TopicSpec("🛡 [auto_guard_large_order] Pre-Trade Veto for Large Orders (>=700 EUR)"),
+    "guard_post_stop": TopicSpec("🛡 [auto_guard_post_stop] Pre-Trade Veto for Post-Stop Re-Buy Bounce"),
 }
 
 
