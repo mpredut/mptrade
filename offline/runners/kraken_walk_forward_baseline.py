@@ -23,7 +23,7 @@ KRAKEN_DIR = ROOT / "kraken"
 sys.path.insert(0, str(KRAKEN_DIR))
 sys.path.insert(0, str(ROOT))
 
-from kraken_common import load_dotenv  # noqa: E402
+from botcore import parse_dotenv  # noqa: E402
 import market_data as kraken_market_data  # noqa: E402
 import replay as kraken_replay  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
@@ -114,12 +114,18 @@ def main(argv: list[str] | None = None) -> int:
     execution = build_execution_model_from_args(parser, args)
 
     # The same order as kraken_bot.py: .env takes priority, config.env fills in the rest.
-    load_dotenv(args.env_file)
-    load_dotenv(args.config_file)
-    pair = (args.pair or os.environ.get("KRAKEN_PAIR") or "").strip().upper()
+    cfg: dict[str, str] = {}
+    for path_str in (args.config_file, args.env_file):
+        p = Path(path_str)
+        if p.exists():
+            cfg.update(dict(parse_dotenv(str(p))))
+    for k, v in os.environ.items():
+        if k.startswith("KRAKEN_") or (k.startswith("STRAT_") and k not in cfg):
+            cfg[k] = v
+    pair = (args.pair or cfg.get("KRAKEN_PAIR") or "").strip().upper()
     if not pair:
         parser.error("missing pair: --pair or KRAKEN_PAIR")
-    params = StratParams.from_env()
+    params = StratParams.from_env(cfg)
     supplied = _parse_dataset_specs(args.dataset)
     output_dir = Path(args.output_dir).expanduser().resolve()
     dataset_dir = output_dir / "datasets"
@@ -131,8 +137,8 @@ def main(argv: list[str] | None = None) -> int:
         "purpose": "fixed-live-config walk-forward baseline; no parameter selection",
         "runtime": {
             "pair": pair,
-            "strategy_mode": os.environ.get("STRATEGY_MODE", "avg_tp"),
-            "execute_live": os.environ.get("STRAT_EXECUTE", "false").lower() == "true",
+            "strategy_mode": cfg.get("STRATEGY_MODE", "avg_tp"),
+            "execute_live": cfg.get("STRAT_EXECUTE", "false").lower() == "true",
         },
         "strategy_params": dataclasses.asdict(params),
         "fee_pct_per_leg": args.fee,

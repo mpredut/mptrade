@@ -79,10 +79,17 @@ def strat_params_from_dict(values: dict) -> StratParams:
 
 
 def _load_params(args) -> StratParams:
-    load_dotenv(args.env_file)
-    load_dotenv(args.config_file)
+    from botcore import parse_dotenv
+    cfg: dict[str, str] = {}
+    for path_str in (args.config_file, args.env_file):
+        p = Path(path_str)
+        if p.exists():
+            cfg.update(dict(parse_dotenv(str(p))))
+    for k, v in os.environ.items():
+        if k.startswith("STRAT_") and k not in cfg:
+            cfg[k] = v
     if not args.params_report:
-        return StratParams.from_env()
+        return StratParams.from_env(cfg)
     with args.params_report.open(encoding="utf-8") as handle:
         payload = json.load(handle)
     values = payload.get("strategy_params", payload)

@@ -825,5 +825,15 @@ def test_hybrid_reentry_equities_base_config_and_backtest_invariants(tmp_path):
     assert rb._LAST_HARD_TP_TOUCHED[tk] is True
     assert rb._LAST_RUN_DIAGNOSTICS[tk]["min_hard_tp_gain_ratio"] == 0.035
 
+    # 5. migrate_price_cache outputs cache_sparse_price_<SYM>.jsonl
+    from offline.legacy_tools import migrate_price_cache as mpc
+    legacy_json = tmp_path / "cache_price_TESTUSDC.json"
+    legacy_json.write_text(json.dumps({"items": {"TESTUSDC": [[1700000000000, 123.45]]}}), encoding="utf-8")
+    added = mpc.migrate_file(str(legacy_json), dry_run=False)
+    assert added == 1
+    assert (tmp_path / "cache_sparse_price_TESTUSDC.jsonl").exists()
+    assert (tmp_path / "cache_price_TESTUSDC.json.bak").exists()
+
+
 
 

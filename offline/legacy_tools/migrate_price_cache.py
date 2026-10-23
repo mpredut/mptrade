@@ -69,7 +69,7 @@ def _load_jsonl(path):
 
 def migrate_file(json_path, dry_run=False):
     sym_from_name = os.path.basename(json_path)[len("cache_price_"):-len(".json")]
-    jsonl_path = json_path[:-len(".json")] + ".jsonl"
+    jsonl_path = os.path.join(os.path.dirname(json_path), f"cache_sparse_price_{sym_from_name}.jsonl")
 
     old = _load_old_json(json_path)
     new = _load_jsonl(jsonl_path)

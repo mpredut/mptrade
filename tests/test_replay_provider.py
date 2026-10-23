@@ -42,7 +42,9 @@ def _make_provider(prices, start_ts=1_000_000.0, step_s=60.0):
 class TestLoadPriceSeries(unittest.TestCase):
 
     def test_parses_real_cache_format(self):
-        path = os.path.join(tempfile.mkdtemp(prefix="replay_series_"), "price_series.jsonl")
+        tmpdir = tempfile.mkdtemp(prefix="replay_series_")
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmpdir, ignore_errors=True))
+        path = os.path.join(tmpdir, "price_series.jsonl")
         with open(path, "w", encoding="utf-8") as f:
             f.write('{"s": "BTCUSDC", "i": [1756248610634, 111702.25]}\n')
             f.write('{"s": "TAOUSDC", "i": [1756248611000, 200.0]}\n')   # other symbol, ignored

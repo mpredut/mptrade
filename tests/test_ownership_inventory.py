@@ -57,8 +57,13 @@ mt.gain=9
 
 
 class OwnershipInventoryTest(unittest.TestCase):
-    def test_two_primary_kraken_owners_are_warning_but_trailing_is_protective(self):
+    def _make_fixture(self) -> Path:
         root = _fixture()
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        return root
+
+    def test_two_primary_kraken_owners_are_warning_but_trailing_is_protective(self):
+        root = self._make_fixture()
         owners = build_inventory(root)
 
         overlap = next(
@@ -73,7 +78,7 @@ class OwnershipInventoryTest(unittest.TestCase):
         self.assertIn("kraken-trailing", overlap["owners"])
 
     def test_running_scope_omits_disabled_dn_and_non_running_trailing(self):
-        root = _fixture()
+        root = self._make_fixture()
         commands = ["python3 kraken_bot.py", "python monitortrades.py"]
         owners = build_inventory(root, commands=commands)
 
@@ -88,7 +93,7 @@ class OwnershipInventoryTest(unittest.TestCase):
         self.assertNotIn("kraken-trailing", overlap["owners"])
 
     def test_running_scope_detects_owner_started_outside_manifest(self):
-        root = _fixture()
+        root = self._make_fixture()
         owners = build_inventory(root, commands=["python3 hl_bot.py"])
 
         spot = next(
@@ -100,7 +105,7 @@ class OwnershipInventoryTest(unittest.TestCase):
         self.assertTrue(spot.active(require_running=True))
 
     def test_explicit_monitortrades_account_removes_false_conflict(self):
-        root = _fixture()
+        root = self._make_fixture()
         instruments = root / "instruments.conf"
         instruments.write_text(
             instruments.read_text(encoding="utf-8").replace(
@@ -119,7 +124,7 @@ class OwnershipInventoryTest(unittest.TestCase):
         self.assertEqual(warnings, [])
 
     def test_same_coordination_domain_is_informational_not_warning(self):
-        root = _fixture()
+        root = self._make_fixture()
         _write(root, "procs.conf", """
 tradeall.py|x||tradeall|||fleet
 monitortrades.py|x||monitortrades|||fleet
