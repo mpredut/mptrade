@@ -1481,3 +1481,19 @@ def _start_nonbinance_trend_poller(
     t = threading.Thread(target=run, name="NonBinanceTrendPoller", daemon=True)
     t.start()
     return _NonBinanceTrendPoller(t, pool, stop_event)
+
+
+get_short_trend_manager = _cm_attr("get_short_trend_manager")
+
+if _cm is not None:
+    _cm.CacheLongTrendManager = CacheLongTrendManager
+    _cm.CacheLongTrend = CacheLongTrend
+    _cm.CacheShortTrendManager = CacheShortTrendManager
+    _cm.CacheShortTrend = CacheShortTrend
+    _cm.SHORT_TREND_EVAL_INTERVAL_SEC = CacheShortTrendManager.FULL_EVAL_INTERVAL_SEC
+    _cm._NB_FETCH_DEADLINE_SEC = _NB_FETCH_DEADLINE_SEC
+    _cm._fetch_price_with_deadline = _fetch_price_with_deadline
+    _cm._NonBinanceTrendPoller = _NonBinanceTrendPoller
+    _cm._start_nonbinance_trend_poller = _start_nonbinance_trend_poller
+    if hasattr(_cm, "CacheFactory") and "LongTrend" in _cm.CacheFactory._CONFIG:
+        _cm.CacheFactory._CONFIG["LongTrend"]["class"] = CacheLongTrendManager

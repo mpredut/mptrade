@@ -3043,7 +3043,7 @@ if __name__ == "__main__":
 
 import cachetrend as _cache_trend
 
-CacheLongTrendManager = _cache_trend.CacheLongTrendManager
+CacheLongTrendManager = getattr(_cache_trend, "CacheLongTrendManager", None)
 CacheLongTrend = CacheLongTrendManager
 
 
@@ -3463,7 +3463,7 @@ def get_current_price_manager(ws_manager=None, symbols=None, sync_ts=None,
 # ###### CacheShortTrendManager: delegated to cachetrend
 # ######
 
-CacheShortTrendManager = _cache_trend.CacheShortTrendManager
+CacheShortTrendManager = getattr(_cache_trend, "CacheShortTrendManager", None)
 CacheShortTrend = CacheShortTrendManager
 
 
@@ -3489,6 +3489,9 @@ def get_short_trend_manager(symbols=None, filename="cache_short_trend.json", wri
     return _short_trend_instance
 
 
+_cache_trend.get_short_trend_manager = get_short_trend_manager
+
+
 # ######
 # ###### GLOBAL VARIABLE FOR CACHE #######
 # ######
@@ -3499,7 +3502,11 @@ SPARSE_PRICE_SYNC_INTERVAL_SEC = 3 * 60     # 3 minutes
 PRICE_24_SYNC_INTERVAL_SEC = 30         # Fallback polling while WebSocket is inactive.
 PRICE_365_SYNC_INTERVAL_SEC = 30        # Long-archive 24h/365d price sync interval.
 CURRENT_PRICE_SYNC_INTERVAL_SEC = 30    # Same policy for CacheCurrentPriceManager.
-SHORT_TREND_EVAL_INTERVAL_SEC = CacheShortTrendManager.FULL_EVAL_INTERVAL_SEC
+SHORT_TREND_EVAL_INTERVAL_SEC = (
+    CacheShortTrendManager.FULL_EVAL_INTERVAL_SEC
+    if CacheShortTrendManager is not None
+    else 3.0
+)
 LONG_TREND_SYNC_INTERVAL_SEC = 10 * 60   # 10 minutes
 ASSET_VALUE_SYNC_INTERVAL_SEC = 10 * 60  # 10 minutes
 # TODO: set this to 60 * 60  # 1 hour
@@ -3847,10 +3854,10 @@ def _initialize_once():
 # Read-only consumers rely on polling and do not start WebSocket.
 
 
-_NB_FETCH_DEADLINE_SEC = _cache_trend._NB_FETCH_DEADLINE_SEC
-_fetch_price_with_deadline = _cache_trend._fetch_price_with_deadline
-_NonBinanceTrendPoller = _cache_trend._NonBinanceTrendPoller
-_start_nonbinance_trend_poller = _cache_trend._start_nonbinance_trend_poller
+_NB_FETCH_DEADLINE_SEC = getattr(_cache_trend, "_NB_FETCH_DEADLINE_SEC", 8)
+_fetch_price_with_deadline = getattr(_cache_trend, "_fetch_price_with_deadline", None)
+_NonBinanceTrendPoller = getattr(_cache_trend, "_NonBinanceTrendPoller", None)
+_start_nonbinance_trend_poller = getattr(_cache_trend, "_start_nonbinance_trend_poller", None)
 
 
 if __name__ == "__main__":

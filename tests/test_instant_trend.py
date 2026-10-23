@@ -787,6 +787,26 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertEqual(sparse_mgr.cache.get("BTCUSDT"), [[1700000000000, 60123.0]])
         self.assertFalse(os.path.exists(sparse_file + ".previous"))
 
+    def test_cachetrend_first_import_order_has_no_circular_error(self):
+        import subprocess
+        code = (
+            "import sys; from unittest.mock import MagicMock; "
+            "sys.modules['bapi'] = MagicMock(); "
+            "import cachetrend as ct, cacheManager as cm; "
+            "assert ct.CacheShortTrendManager is cm.CacheShortTrendManager; "
+            "assert ct.CacheLongTrendManager is cm.CacheLongTrendManager; "
+            "assert ct.get_short_trend_manager is cm.get_short_trend_manager; "
+            "assert cm.CacheFactory._CONFIG['LongTrend']['class'] is ct.CacheLongTrendManager"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr or proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
