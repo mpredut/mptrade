@@ -151,6 +151,7 @@ class SentimentAdvisor:
             prompt,
             timeout_sec=25.0,
             thread_title=macro_thread_title,
+            topic_key="macro_sentiment",
         )
         if not resp:
             return self._cached_assessment

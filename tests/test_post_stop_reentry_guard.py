@@ -30,7 +30,7 @@ class FakeGeminiClient(GeminiClient):
         self.raises_timeout = raises_timeout
         self.last_prompt = None
 
-    def query_json(self, prompt: str, timeout_sec: float = 25.0, thread_title=None):
+    def query_json(self, prompt: str, timeout_sec: float = 25.0, thread_title=None, **kwargs):
         self.last_prompt = prompt
         if self.raises_timeout:
             return None
@@ -281,10 +281,10 @@ def test_decision_caching_and_notify_cooldown():
     call_count = 0
 
     class CountingGeminiClient(FakeGeminiClient):
-        def query_json(self, prompt: str, timeout_sec: float = 25.0, thread_title=None):
+        def query_json(self, prompt: str, timeout_sec: float = 25.0, thread_title=None, **kwargs):
             nonlocal call_count
             call_count += 1
-            return super().query_json(prompt, timeout_sec=timeout_sec, thread_title=thread_title)
+            return super().query_json(prompt, timeout_sec=timeout_sec, thread_title=thread_title, **kwargs)
 
     client = CountingGeminiClient(response_dict={
         "decision": "APPROVED",

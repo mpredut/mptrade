@@ -272,6 +272,7 @@ class HighStakeGuard:
             prompt,
             timeout_sec=self.timeout_sec,
             thread_title=thread_title,
+            topic_key="guard_high_stake",
         )
         if not resp:
             # Fallback on timeout or connectivity failure

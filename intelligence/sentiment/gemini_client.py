@@ -13,9 +13,14 @@ import urllib.request
 
 from botcore import load_dotenv, required_env
 from orchestratorOS.admin.prune_llm_threads import (
+    find_latest_project_cid,
+    prepare_topic_session,
+    prune_old_cli_threads,
+    record_topic_turn,
     resolve_agy_bot_bin,
     resolve_bot_cli_base,
     resolve_project_uuid,
+    sync_thread_title,
 )
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -62,6 +67,8 @@ class GeminiClient:
         timeout_sec: float = 15.0,
         cache_ttl_sec: float = 0.0,
         thread_title: Optional[str] = None,
+        topic_key: Optional[str] = None,
+        conversation_id: Optional[str] = None,
     ) -> Optional[str]:
         """Query Gemini with a prompt and return the text response."""
         now = time.time()
@@ -101,13 +108,30 @@ class GeminiClient:
         # 2. Local authenticated CLI runner (subscription mode)
         if self.cli_path and os.path.exists(self.cli_path):
             try:
-                cli_prompt = f"{thread_title}\n\n{prompt}" if thread_title else prompt
+                bot_cli_base = resolve_bot_cli_base()
+                resume_cid: Optional[str] = conversation_id
+                history_prefix = ""
+                if topic_key and not resume_cid and not hasattr(subprocess.run, "_mock_name"):
+                    try:
+                        resume_cid, history_prefix = prepare_topic_session(
+                            topic_key,
+                            cli_base=bot_cli_base,
+                        )
+                    except Exception as e:
+                        logger.debug("Failed preparing topic session for %s: %s", topic_key, e)
+
+                effective_prompt = f"{history_prefix}{prompt}" if history_prefix else prompt
+                cli_prompt = f"{thread_title}\n\n{effective_prompt}" if thread_title else effective_prompt
+
                 cmd = [
                     self.cli_path,
                     "--project", self.project_id,
                     "--model", selected_model,
-                    "-p", cli_prompt,
                 ]
+                if resume_cid:
+                    cmd.extend(["--conversation", resume_cid])
+                cmd.extend(["-p", cli_prompt])
+
                 proc = subprocess.run(
                     cmd,
                     capture_output=True,
@@ -115,59 +139,53 @@ class GeminiClient:
                     timeout=timeout_sec,
                     check=False,
                 )
+                # If resuming an existing topic thread failed, fall back cleanly to a fresh thread once
+                if (proc.returncode != 0 or not proc.stdout.strip()) and resume_cid and not conversation_id:
+                    logger.info("Resuming topic '%s' conversation %s failed; rotating to new thread.", topic_key, resume_cid)
+                    resume_cid = None
+                    fresh_cmd = [
+                        self.cli_path,
+                        "--project", self.project_id,
+                        "--model", selected_model,
+                        "-p", cli_prompt,
+                    ]
+                    proc = subprocess.run(
+                        fresh_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout_sec,
+                        check=False,
+                    )
+
                 if proc.returncode == 0 and proc.stdout.strip():
                     output = proc.stdout.strip()
                     if cache_ttl_sec > 0:
                         self._cache[prompt] = (now, output)
-                    if AGY_STORE_SYNC_ENABLED and not hasattr(subprocess.run, "_mock_name"):
+                    if not hasattr(subprocess.run, "_mock_name"):
                         try:
-                            from orchestratorOS.admin.prune_llm_threads import (
-                                prune_old_cli_threads,
-                                resolve_project_ids,
-                                sync_thread_title,
+                            target_cid = resume_cid or find_latest_project_cid(
+                                self.project_id,
+                                cli_base=bot_cli_base,
                             )
-                            import sqlite3
-                            bot_cli_base = resolve_bot_cli_base()
-                            if thread_title:
-                                target_cid = None
-                                db_path = os.path.join(bot_cli_base, "conversation_summaries.db")
-                                if os.path.exists(db_path):
-                                    resolved_pids = list(resolve_project_ids([self.project_id], cli_base=bot_cli_base))
-                                    placeholders = ",".join("?" for _ in resolved_pids)
-                                    conn = sqlite3.connect(db_path)
-                                    cur = conn.cursor()
-                                    cur.execute(
-                                        f"SELECT conversation_id FROM conversation_summaries WHERE project_id IN ({placeholders}) ORDER BY last_modified_time DESC LIMIT 1",
-                                        resolved_pids,
-                                    )
-                                    row = cur.fetchone()
-                                    conn.close()
-                                    if row:
-                                        target_cid = row[0]
-                                if not target_cid:
-                                    presence_dir = os.path.join(bot_cli_base, "presence")
-                                    if os.path.isdir(presence_dir):
-                                        locks = [
-                                            os.path.splitext(f)[0]
-                                            for f in os.listdir(presence_dir)
-                                            if f.endswith(".lock")
-                                        ]
-                                        if locks:
-                                            locks.sort(
-                                                key=lambda cid: os.path.getmtime(os.path.join(presence_dir, f"{cid}.lock")),
-                                                reverse=True,
-                                            )
-                                            target_cid = locks[0]
-                                if target_cid:
-                                    sync_thread_title(target_cid, thread_title, cli_base=bot_cli_base)
-                            if self.project_id == DEFAULT_AUTONOMOUS_PROJECT_ID:
-                                prune_old_cli_threads(
+                            if topic_key:
+                                record_topic_turn(
+                                    topic_key=topic_key,
+                                    conversation_id=target_cid,
+                                    response_text=output,
+                                    thread_title=thread_title,
                                     cli_base=bot_cli_base,
-                                    retention_days=1.0,
-                                    project_id=self.project_id,
-                                    all_threads_in_project=False,
-                                    max_threads=20,
                                 )
+                            if AGY_STORE_SYNC_ENABLED:
+                                if thread_title and target_cid:
+                                    sync_thread_title(target_cid, thread_title, cli_base=bot_cli_base)
+                                if self.project_id == DEFAULT_AUTONOMOUS_PROJECT_ID:
+                                    prune_old_cli_threads(
+                                        cli_base=bot_cli_base,
+                                        retention_days=1.0,
+                                        project_id=self.project_id,
+                                        all_threads_in_project=False,
+                                        max_threads=20,
+                                    )
                         except Exception as e:
                             logger.debug("Failed syncing/pruning CLI thread: %s", e)
                     return output
@@ -216,6 +234,8 @@ class GeminiClient:
         timeout_sec: float = 15.0,
         cache_ttl_sec: float = 0.0,
         thread_title: Optional[str] = None,
+        topic_key: Optional[str] = None,
+        conversation_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Query Gemini and parse the response strictly as a JSON object."""
         raw_text = self.query_text(
@@ -224,6 +244,8 @@ class GeminiClient:
             timeout_sec=timeout_sec,
             cache_ttl_sec=cache_ttl_sec,
             thread_title=thread_title,
+            topic_key=topic_key,
+            conversation_id=conversation_id,
         )
         if not raw_text:
             return None

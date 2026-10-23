@@ -159,6 +159,7 @@ class PostStopReentryGuard:
             prompt,
             timeout_sec=self.timeout_sec,
             thread_title=thread_title,
+            topic_key="guard_post_stop",
         )
 
         if not resp:

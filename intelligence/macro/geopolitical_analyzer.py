@@ -210,6 +210,7 @@ class GeopoliticalThreatAnalyzer:
             prompt,
             timeout_sec=25.0,
             thread_title=macro_thread_title,
+            topic_key="macro_geopolitical",
         )
         if not resp:
             has_acute_phrase = any(

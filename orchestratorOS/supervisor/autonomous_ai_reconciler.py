@@ -29,8 +29,13 @@ if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
 from orchestratorOS.admin.prune_llm_threads import (
+    find_latest_project_cid,
+    prepare_topic_session,
+    record_topic_turn,
     resolve_agy_bot_bin,
+    resolve_bot_cli_base,
     resolve_project_uuid,
+    sync_thread_title,
 )
 
 logger = logging.getLogger("orchestratorOS.supervisor")
@@ -101,6 +106,8 @@ class StandaloneGeminiAuditor:
         prompt: str,
         timeout_sec: float = 45.0,
         thread_title: Optional[str] = None,
+        topic_key: Optional[str] = "supervisor_nightly",
+        conversation_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Invokes Gemini CLI and parses structured JSON output."""
         if self._custom_runner is not None:
@@ -116,13 +123,29 @@ class StandaloneGeminiAuditor:
             return None
 
         try:
-            full_prompt = f"{thread_title}\n\n{prompt}" if thread_title else prompt
+            bot_cli_base = resolve_bot_cli_base()
+            resume_cid: Optional[str] = conversation_id
+            history_prefix = ""
+            if topic_key and not resume_cid and not hasattr(subprocess.run, "_mock_name"):
+                try:
+                    resume_cid, history_prefix = prepare_topic_session(
+                        topic_key,
+                        cli_base=bot_cli_base,
+                    )
+                except Exception as e:
+                    logger.debug("Failed preparing topic session for %s: %s", topic_key, e)
+
+            effective_prompt = f"{history_prefix}{prompt}" if history_prefix else prompt
+            full_prompt = f"{thread_title}\n\n{effective_prompt}" if thread_title else effective_prompt
             cmd = [
                 self.cli_path,
                 "--project", self.project_id,
                 "--model", self.model,
-                "-p", full_prompt,
             ]
+            if resume_cid:
+                cmd.extend(["--conversation", resume_cid])
+            cmd.extend(["-p", full_prompt])
+
             proc = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -130,11 +153,47 @@ class StandaloneGeminiAuditor:
                 timeout=timeout_sec,
                 check=False,
             )
+            if (proc.returncode != 0 or not proc.stdout.strip()) and resume_cid and not conversation_id:
+                logger.info("Resuming supervisor topic '%s' conversation %s failed; rotating to new thread.", topic_key, resume_cid)
+                resume_cid = None
+                fresh_cmd = [
+                    self.cli_path,
+                    "--project", self.project_id,
+                    "--model", self.model,
+                    "-p", full_prompt,
+                ]
+                proc = subprocess.run(
+                    fresh_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_sec,
+                    check=False,
+                )
+
             if proc.returncode != 0 or not proc.stdout.strip():
                 logger.warning("agy CLI exited with code %d. stderr: %s", proc.returncode, proc.stderr.strip()[:200])
                 return None
 
             output = proc.stdout.strip()
+            if not hasattr(subprocess.run, "_mock_name"):
+                try:
+                    target_cid = resume_cid or find_latest_project_cid(
+                        self.project_id,
+                        cli_base=bot_cli_base,
+                    )
+                    if topic_key:
+                        record_topic_turn(
+                            topic_key=topic_key,
+                            conversation_id=target_cid,
+                            response_text=output,
+                            thread_title=thread_title,
+                            cli_base=bot_cli_base,
+                        )
+                    if thread_title and target_cid:
+                        sync_thread_title(target_cid, thread_title, cli_base=bot_cli_base)
+                except Exception as e:
+                    logger.debug("Failed recording supervisor topic turn: %s", e)
+
             # Extract JSON block
             match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", output)
             clean = match.group(1).strip() if match else output
@@ -378,6 +437,10 @@ class AutonomousAIReconciler:
         self,
         sensors: TelemetrySensorSnapshot,
         logs: LogEventSummary,
+        *,
+        focus_symbols: Optional[List[str]] = None,
+        topic_key: str = "supervisor_nightly",
+        thread_title: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Feeds sensor telemetry and log anomalies to Gemini to diagnose root causes."""
         context_items = [
@@ -387,7 +450,7 @@ class AutonomousAIReconciler:
             f"- Sentiment Advisor Bias: {sensors.sentiment_advisor.get('market_bias', 'N/A') if sensors.sentiment_advisor else 'None'}",
             f"- Geopolitical Threat Level: {sensors.geopolitical_threat.get('threat_level', 'N/A') if sensors.geopolitical_threat else 'None'}",
             f"- Active Heartbeats: {list(sensors.active_heartbeats.keys())}",
-            "\n### 2. LOG ANOMALIES & GUARD VETOES (PAST 24H):",
+            f"\n### 2. LOG ANOMALIES & GUARD VETOES (PAST {self.lookback_hours:g}H):",
             f"- Scanned Logs: {logs.total_scanned_files}",
             f"- Error Count: {logs.error_count}",
             f"- Guard Interventions: {logs.warning_count}",
@@ -408,6 +471,14 @@ class AutonomousAIReconciler:
                 growth = pinfo.get("growth_coefficient", 0.0)
                 context_items.append(f"  * {sym}: Price={px_str}, Trend={tr_label}, Growth={growth:+.5f}")
 
+        if focus_symbols:
+            clean_syms = [s.strip().upper() for s in focus_symbols if s.strip()]
+            if clean_syms:
+                context_items.append(
+                    f"\n### 4. TACTICAL WATCHLIST FOCUS: {', '.join(clean_syms)}\n"
+                    "- Pay special attention to momentum, gentle upward recovery, or downward breakdown on these focus symbols."
+                )
+
         context_str = "\n".join(context_items)
 
         prompt = (
@@ -419,7 +490,7 @@ class AutonomousAIReconciler:
             "2. Determine whether open orders or venue positions require reconciliation.\n"
             "3. If a reproducible code bug exists, formulate an exact search_block and replace_block.\n"
             "4. Formulate an autonomous market trading decision ('BUY', 'SELL', or 'HOLD') based on prevailing macro sentiment, geopolitical threat level, market breadth, and real-time trend coefficients.\n"
-            "   If high-conviction (confidence >= 0.85) opportunities exist, specify symbol (e.g. BTCUSDC), venue ('binance'/'kraken'/'hyperliquid'/'t212'), confidence, suggested_notional_eur (up to 500 EUR), and thesis. Otherwise default to 'HOLD'.\n\n"
+            "   If high-conviction (confidence >= 0.85) opportunities exist, specify symbol (e.g. BTCUSDC, TAOBTC, TAOUSDC), venue ('binance'/'kraken'/'hyperliquid'/'t212'), confidence, suggested_notional_eur (up to 500 EUR), and thesis. Otherwise default to 'HOLD'.\n\n"
             "Respond STRICTLY in valid JSON with exact schema:\n"
             "{\n"
             '  "summary": "1-2 sentence executive assessment of system health",\n'
@@ -459,11 +530,12 @@ class AutonomousAIReconciler:
             "}"
         )
 
-        thread_title = f"ntfy-guard: 🛡 [AI-SUPERVISOR] Morning Reconciliation ({self.mode.upper()})"
+        effective_title = thread_title or f"ntfy-guard: 🛡 [AI-SUPERVISOR] Morning Reconciliation ({self.mode.upper()})"
         resp = self.gemini_auditor.query_json(
             prompt,
             timeout_sec=45.0,
-            thread_title=thread_title,
+            thread_title=effective_title,
+            topic_key=topic_key,
         )
 
         if not resp or not isinstance(resp, dict):
@@ -775,9 +847,16 @@ class AutonomousAIReconciler:
         except Exception as e:
             logger.warning("Could not persist audit artifact: %s", e)
 
-    def run_cycle(self, force: bool = False) -> SupervisorAuditReport:
+    def run_cycle(
+        self,
+        force: bool = False,
+        *,
+        focus_symbols: Optional[List[str]] = None,
+        topic_key: str = "supervisor_nightly",
+        thread_title: Optional[str] = None,
+    ) -> SupervisorAuditReport:
         """Executes the complete decoupled audit cycle."""
-        logger.info("Starting Autonomous AI Supervisor audit cycle (mode=%s)...", self.mode)
+        logger.info("Starting Autonomous AI Supervisor audit cycle (mode=%s, topic=%s)...", self.mode, topic_key)
         now = time.time()
 
         # Step 1: Ingest passive sensors telemetry from cachedb/
@@ -787,7 +866,13 @@ class AutonomousAIReconciler:
         logs = self.harvest_log_anomalies()
 
         # Step 3: Synthesize diagnostic plan via Gemini
-        plan = self.synthesize_and_diagnose(sensors, logs)
+        plan = self.synthesize_and_diagnose(
+            sensors,
+            logs,
+            focus_symbols=focus_symbols,
+            topic_key=topic_key,
+            thread_title=thread_title,
+        )
 
         # Step 4: Apply or simulate reconciliation
         executed, tests_passed = self.apply_reconciliation(plan)
@@ -828,15 +913,42 @@ class AutonomousAIReconciler:
 
 
 def main() -> None:
-    """CLI entry-point for cron execution."""
-    parser = argparse.ArgumentParser(description="Autonomous AI Nightly Reconciliation Supervisor")
+    """CLI entry-point for cron or tactical periodic execution."""
+    parser = argparse.ArgumentParser(description="Autonomous AI Reconciliation & Tactical Supervisor")
     parser.add_argument("--mode", choices=["shadow", "enforce"], default=None, help="Execution mode override")
     parser.add_argument("--force", action="store_true", help="Force cycle execution")
+    parser.add_argument(
+        "--topic-key",
+        default="supervisor_nightly",
+        help="Dedicated LLM topic thread key (e.g., supervisor_nightly or prod_tactical_monitor)",
+    )
+    parser.add_argument(
+        "--focus-symbols",
+        default="",
+        help="Comma-separated tactical focus symbols (e.g., TAOUSDC,BTCUSDC)",
+    )
+    parser.add_argument(
+        "--lookback-hours",
+        type=float,
+        default=24.0,
+        help="Log anomaly lookback window in hours (default: 24.0; use 0.6 for 30m tactical checks)",
+    )
+    parser.add_argument(
+        "--title",
+        default=None,
+        help="Custom thread title override",
+    )
     args = parser.parse_args()
 
-    reconciler = AutonomousAIReconciler(mode=args.mode)
-    report = reconciler.run_cycle(force=args.force)
-    print(f"[{report.mode.upper()}] Audit completed: {report.summary}")
+    focus_list = [s.strip().upper() for s in args.focus_symbols.split(",") if s.strip()] if args.focus_symbols else None
+    reconciler = AutonomousAIReconciler(mode=args.mode, lookback_hours=args.lookback_hours)
+    report = reconciler.run_cycle(
+        force=args.force,
+        focus_symbols=focus_list,
+        topic_key=args.topic_key,
+        thread_title=args.title,
+    )
+    print(f"[{report.mode.upper()}] Audit completed ({args.topic_key}): {report.summary}")
 
 
 if __name__ == "__main__":

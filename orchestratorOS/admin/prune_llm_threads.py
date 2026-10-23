@@ -587,6 +587,364 @@ def is_automated_thread(title: str, preview: str) -> bool:
     return any(pattern in combined for pattern in AUTONOMOUS_PROMPT_PATTERNS)
 
 
+def get_topic_registry_path(registry_path: Optional[str] = None) -> str:
+    """Resolve the persistent JSON path storing active topic-scoped LLM threads."""
+    if registry_path:
+        return expand_config_path(registry_path)
+    env_path = os.environ.get("LLM_TOPIC_REGISTRY_PATH", "").strip()
+    if env_path:
+        return expand_config_path(env_path)
+    return os.path.join(_ROOT_DIR, "cachedb", "llm_topic_threads.json")
+
+
+def load_topic_registry(registry_path: Optional[str] = None) -> dict[str, dict]:
+    """Load the topic thread registry mapping topic_key -> state dict."""
+    fpath = get_topic_registry_path(registry_path)
+    if not os.path.exists(fpath):
+        return {}
+    try:
+        with open(fpath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_topic_registry(registry: dict[str, dict], registry_path: Optional[str] = None) -> bool:
+    """Atomically persist the topic thread registry to disk."""
+    fpath = get_topic_registry_path(registry_path)
+    try:
+        os.makedirs(os.path.dirname(fpath), exist_ok=True)
+        try:
+            from state_io import atomic_write_json
+            atomic_write_json(fpath, registry, indent=2)
+        except Exception:
+            tmp_path = fpath + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(registry, f, indent=2)
+            os.replace(tmp_path, fpath)
+        return True
+    except Exception as e:
+        logger.debug("Failed saving topic registry %s: %s", fpath, e)
+        return False
+
+
+def get_active_topic_cids(registry_path: Optional[str] = None) -> Set[str]:
+    """Return all conversation IDs currently active in the topic registry."""
+    reg = load_topic_registry(registry_path)
+    cids: Set[str] = set()
+    for entry in reg.values():
+        if isinstance(entry, dict):
+            cid = str(entry.get("conversation_id") or "").strip()
+            if cid:
+                cids.add(cid)
+    return cids
+
+
+def get_thread_step_count(cid: str, cli_base: str = DEFAULT_CLI_BASE) -> Tuple[bool, int, str]:
+    """Inspect a conversation's physical .db and SQLite summary row.
+
+    Returns:
+        (exists_on_disk, step_count, status)
+    """
+    if not cid:
+        return (False, 0, "")
+    effective_base = resolve_bot_cli_base(cli_base)
+    conv_db = os.path.join(effective_base, "conversations", f"{cid}.db")
+    exists = os.path.exists(conv_db)
+    step_count = 0
+    status = ""
+    sum_db = os.path.join(effective_base, "conversation_summaries.db")
+    if os.path.exists(sum_db):
+        try:
+            conn = sqlite3.connect(sum_db)
+            cur = conn.cursor()
+            cols = {r[1] for r in cur.execute("PRAGMA table_info(conversation_summaries)").fetchall()}
+            if "step_count" in cols and "status" in cols:
+                cur.execute(
+                    "SELECT step_count, status FROM conversation_summaries WHERE conversation_id=?",
+                    (cid,),
+                )
+                row = cur.fetchone()
+                if row:
+                    step_count = int(row[0] or 0)
+                    status = str(row[1] or "")
+            elif "step_count" in cols:
+                cur.execute(
+                    "SELECT step_count FROM conversation_summaries WHERE conversation_id=?",
+                    (cid,),
+                )
+                row = cur.fetchone()
+                if row:
+                    step_count = int(row[0] or 0)
+            conn.close()
+        except Exception:
+            pass
+    return (exists, step_count, status)
+
+
+def find_latest_project_cid(
+    project_id: str,
+    cli_base: str = DEFAULT_CLI_BASE,
+    exclude_cids: Optional[Set[str]] = None,
+) -> Optional[str]:
+    """Find the most recently modified conversation_id for the given project."""
+    effective_base = resolve_bot_cli_base(cli_base)
+    excluded = exclude_cids or set()
+    db_path = os.path.join(effective_base, "conversation_summaries.db")
+    if os.path.exists(db_path):
+        try:
+            resolved_pids = list(resolve_project_ids([project_id], cli_base=effective_base))
+            placeholders = ",".join("?" for _ in resolved_pids)
+            conn = sqlite3.connect(db_path)
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT conversation_id FROM conversation_summaries WHERE project_id IN ({placeholders}) ORDER BY last_modified_time DESC LIMIT 10",
+                resolved_pids,
+            )
+            rows = cur.fetchall()
+            conn.close()
+            for (cid,) in rows:
+                if cid and cid not in excluded:
+                    return cid
+        except Exception:
+            pass
+    presence_dir = os.path.join(effective_base, "presence")
+    if os.path.isdir(presence_dir):
+        try:
+            locks = [
+                os.path.splitext(f)[0]
+                for f in os.listdir(presence_dir)
+                if f.endswith(".lock")
+            ]
+            locks = [c for c in locks if c not in excluded]
+            if locks:
+                locks.sort(
+                    key=lambda c: os.path.getmtime(os.path.join(presence_dir, f"{c}.lock")),
+                    reverse=True,
+                )
+                return locks[0]
+        except Exception:
+            pass
+    return None
+
+
+def delete_specific_cli_threads(
+    cids_to_delete: Set[str],
+    cli_base: str = DEFAULT_CLI_BASE,
+    dry_run: bool = False,
+) -> Tuple[int, int]:
+    """Delete specific conversation IDs from conversations/, annotations/, SQLite, and protobuf stores."""
+    if not cids_to_delete:
+        return (0, 0)
+    effective_base = resolve_bot_cli_base(cli_base)
+    total_bytes_freed = 0
+    for cid in cids_to_delete:
+        files_to_check = [
+            os.path.join(effective_base, "conversations", f"{cid}.db"),
+            os.path.join(effective_base, "conversations", f"{cid}.db-shm"),
+            os.path.join(effective_base, "conversations", f"{cid}.db-wal"),
+            os.path.join(effective_base, "annotations", f"{cid}.pbtxt"),
+            os.path.join(effective_base, "presence", f"{cid}.lock"),
+        ]
+        for f in files_to_check:
+            if os.path.exists(f):
+                try:
+                    total_bytes_freed += os.path.getsize(f)
+                    if not dry_run:
+                        os.remove(f)
+                except Exception as e:
+                    logger.debug("Could not remove file %s: %s", f, e)
+        brain_dir = os.path.join(effective_base, "brain", cid)
+        if os.path.isdir(brain_dir):
+            for root, _, files in os.walk(brain_dir):
+                for f in files:
+                    try:
+                        total_bytes_freed += os.path.getsize(os.path.join(root, f))
+                    except Exception:
+                        pass
+            if not dry_run:
+                try:
+                    shutil.rmtree(brain_dir)
+                except Exception as e:
+                    logger.debug("Could not remove brain dir %s: %s", brain_dir, e)
+
+    if dry_run:
+        return (len(cids_to_delete), total_bytes_freed)
+
+    db_path = os.path.join(effective_base, "conversation_summaries.db")
+    if os.path.exists(db_path):
+        try:
+            conn = sqlite3.connect(db_path)
+            cur = conn.cursor()
+            placeholders = ",".join("?" for _ in cids_to_delete)
+            cur.execute(
+                f"DELETE FROM conversation_summaries WHERE conversation_id IN ({placeholders})",
+                list(cids_to_delete),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.debug("Failed deleting specific cids from SQLite: %s", e)
+
+    for pb_name in ["agyhub_summaries_proto.pb", "jetbox_summaries_proto.pb"]:
+        pb_path = os.path.join(effective_base, pb_name)
+        if os.path.exists(pb_path):
+            filter_proto_file(pb_path, cids_to_delete)
+
+    return (len(cids_to_delete), total_bytes_freed)
+
+
+def prepare_topic_session(
+    topic_key: str,
+    cli_base: Optional[str] = None,
+    max_steps: Optional[int] = None,
+    registry_path: Optional[str] = None,
+) -> Tuple[Optional[str], str]:
+    """Resolve active conversation_id for a topic, rotating & compacting if step_count >= max_steps.
+
+    Returns:
+        (resume_cid_or_none, compacted_history_context_block)
+    """
+    if not topic_key:
+        return (None, "")
+    effective_base = resolve_bot_cli_base(cli_base)
+    if max_steps is None:
+        from botcore import required_int_env
+        max_steps = required_int_env("LLM_TOPIC_MAX_STEPS")
+
+    reg = load_topic_registry(registry_path)
+    entry = reg.get(topic_key)
+    if not isinstance(entry, dict):
+        return (None, "")
+
+    cid = str(entry.get("conversation_id") or "").strip()
+    turn_count = int(entry.get("turn_count") or 0)
+    history = entry.get("rolling_history")
+    if not isinstance(history, list):
+        history = []
+
+    def _format_history_block(hist_items: list) -> str:
+        if not hist_items:
+            return ""
+        lines = ["[COMPACTED TOPIC MEMORY — PRIOR DECISIONS IN THIS TOPIC]:"]
+        for item in hist_items:
+            if isinstance(item, dict):
+                ts_s = item.get("utc", "")
+                summary_s = item.get("summary", "")
+                lines.append(f"- [{ts_s}] {summary_s}")
+            elif isinstance(item, str):
+                lines.append(f"- {item}")
+        return "\n".join(lines) + "\n\n"
+
+    if not cid:
+        return (None, _format_history_block(history))
+
+    exists, step_count, status = get_thread_step_count(cid, cli_base=effective_base)
+    effective_steps = max(step_count, turn_count * 2)
+
+    if not exists or status == "CASCADE_RUN_STATUS_RUNNING" or effective_steps >= max_steps:
+        if exists and status != "CASCADE_RUN_STATUS_RUNNING":
+            logger.info(
+                "Topic '%s' thread %s reached %d steps (max=%d). Rotating and compacting old thread.",
+                topic_key,
+                cid,
+                effective_steps,
+                max_steps,
+            )
+            delete_specific_cli_threads({cid}, cli_base=effective_base)
+        entry["conversation_id"] = None
+        entry["turn_count"] = 0
+        entry["rotated_count"] = int(entry.get("rotated_count") or 0) + 1
+        reg[topic_key] = entry
+        save_topic_registry(reg, registry_path)
+        return (None, _format_history_block(history))
+
+    return (cid, "")
+
+
+def record_topic_turn(
+    topic_key: str,
+    conversation_id: Optional[str],
+    response_text: str,
+    thread_title: Optional[str] = None,
+    cli_base: Optional[str] = None,
+    max_history_entries: Optional[int] = None,
+    registry_path: Optional[str] = None,
+) -> None:
+    """Update topic thread registry after a completed turn and append condensed decision summary."""
+    if not topic_key:
+        return
+    effective_base = resolve_bot_cli_base(cli_base)
+    if max_history_entries is None:
+        from botcore import required_int_env
+        max_history_entries = required_int_env("LLM_TOPIC_HISTORY_MAX_ENTRIES")
+
+    reg = load_topic_registry(registry_path)
+    entry = reg.get(topic_key)
+    if not isinstance(entry, dict):
+        entry = {"topic_key": topic_key, "turn_count": 0, "rolling_history": []}
+
+    active_cid = conversation_id or entry.get("conversation_id")
+    if active_cid:
+        entry["conversation_id"] = active_cid
+        _, step_count, _ = get_thread_step_count(active_cid, cli_base=effective_base)
+        entry["step_count"] = step_count
+    entry["turn_count"] = int(entry.get("turn_count") or 0) + 1
+    entry["updated_ts"] = datetime.now(timezone.utc).timestamp()
+    if thread_title:
+        entry["title"] = thread_title
+
+    # Extract a single-line compact decision summary from response_text (<= 220 chars)
+    condensed = " ".join((response_text or "").strip().split())
+    try:
+        parsed = json.loads(condensed)
+        if isinstance(parsed, dict):
+            parts = []
+            for k in (
+                "decision",
+                "threat_level",
+                "market_bias",
+                "risk_level",
+                "recommended_action",
+                "recommended_brake",
+                "suggested_scale",
+                "confidence",
+                "summary",
+                "reason",
+            ):
+                if k in parsed and parsed[k] is not None and parsed[k] != "":
+                    parts.append(f"{k}={parsed[k]}")
+            if "market_trading_decision" in parsed and isinstance(parsed["market_trading_decision"], dict):
+                mtd = parsed["market_trading_decision"]
+                parts.append(
+                    f"trade={mtd.get('decision', 'HOLD')}:{mtd.get('symbol', '')}@{mtd.get('confidence', 0)}"
+                )
+            if parts:
+                condensed = "; ".join(parts)
+    except Exception:
+        pass
+
+    if len(condensed) > 220:
+        condensed = condensed[:217] + "..."
+
+    history = entry.get("rolling_history")
+    if not isinstance(history, list):
+        history = []
+    if condensed:
+        history.append(
+            {
+                "utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                "summary": condensed,
+            }
+        )
+    if max_history_entries > 0 and len(history) > max_history_entries:
+        history = history[-max_history_entries:]
+    entry["rolling_history"] = history
+    reg[topic_key] = entry
+    save_topic_registry(reg, registry_path)
+
+
 def prune_old_cli_threads(
     cli_base: str = DEFAULT_CLI_BASE,
     retention_days: float = DEFAULT_RETENTION_DAYS,
@@ -608,7 +966,7 @@ def prune_old_cli_threads(
 
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=retention_days)
-    protected = set(exclude_cids or [])
+    protected = set(exclude_cids or []) | get_active_topic_cids()
 
     active_env_cid = os.environ.get("CURRENT_CONVERSATION_ID")
     if active_env_cid:
