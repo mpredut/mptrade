@@ -27,14 +27,19 @@ _os_notify_env() {  # $1=root $2=KEY -> value from .env/config.env
 # (vpn/autodeploy), drop to the repo owner so shared state files keep their owner.
 send_os_email() {  # $1=title $2=body [$3=topic: email only if that topic is mirrored]
     local root; root="$(_os_notify_root)"
+    local log_file="$root/logs/mailer.log"
     local cmd=("$root/orchestratorOS/run_python.sh" "$root/notify_engine/mailer.py")
     [ -n "${3:-}" ] && cmd+=(--topic "$3")
     cmd+=("$1" "${2:-}")
     if [ "$(id -u)" = "0" ]; then
-        local owner; owner="$(stat -c %U "$root")"
-        [ "$owner" != "root" ] && cmd=(runuser -u "$owner" -- "${cmd[@]}")
+        local owner; owner="$(stat -c %U "$root" 2>/dev/null || echo "")"
+        if [ -n "$owner" ] && [ "$owner" != "root" ]; then
+            touch "$log_file" 2>/dev/null && chown "$owner:$owner" "$log_file" 2>/dev/null || true
+            chmod 0664 "$log_file" 2>/dev/null || true
+            cmd=(runuser -u "$owner" -- "${cmd[@]}")
+        fi
     fi
-    ( cd "$root" && "${cmd[@]}" >>"$root/logs/mailer.log" 2>&1 ) </dev/null &
+    ( cd "$root" && "${cmd[@]}" >>"$log_file" 2>&1 ) </dev/null &
 }
 
 send_os_ntfy() {
@@ -56,6 +61,7 @@ send_os_ntfy() {
     if [ "$dedup_sec" -gt 0 ] 2>/dev/null; then
         local dedup_dir="$root/logs/.os_notify_dedup"
         mkdir -p "$dedup_dir" 2>/dev/null || true
+        chmod 0777 "$dedup_dir" 2>/dev/null || true
         # Normalize volatile numbers/timestamps from title and first body line for similarity hash
         local norm_title norm_body key_hash
         norm_title="$(printf '%s' "$title" | sed -E 's/[0-9]+([.][0-9]+)?/<N>/g')"
@@ -74,6 +80,7 @@ send_os_ntfy() {
                 fi
             fi
             printf '%s\n' "$now_ts" > "$stamp_file" 2>/dev/null || true
+            chmod 0666 "$stamp_file" 2>/dev/null || true
             # 2. Enforce 5-minute common gate and bulk synthesis for distinct messages
             if [ "$gate_sec" -gt 0 ] 2>/dev/null && [ -f "$gate_file" ]; then
                 local gate_ts; gate_ts="$(cat "$gate_file" 2>/dev/null || echo 0)"
@@ -81,6 +88,7 @@ send_os_ntfy() {
                     local compact_line
                     compact_line="$(printf '%s: %s' "$title" "$(printf '%s' "$body" | tr '\n' ' ' | cut -c1-160)")"
                     printf '%s\n' "$compact_line" >> "$bulk_file" 2>/dev/null || true
+                    chmod 0666 "$bulk_file" 2>/dev/null || true
                     return 0
                 fi
             fi
@@ -92,6 +100,12 @@ send_os_ntfy() {
                 rm -f "$bulk_file" 2>/dev/null || true
             fi
             printf '%s\n' "$now_ts" > "$gate_file" 2>/dev/null || true
+            chmod 0666 "$gate_file" 2>/dev/null || true
+            if [ "$(id -u)" = "0" ]; then
+                rm -rf "$root/logs/.os_notify_dedup.root_old" 2>/dev/null || true
+                local owner; owner="$(stat -c %U "$root" 2>/dev/null || echo "")"
+                [ -n "$owner" ] && [ "$owner" != "root" ] && chown -R "$owner:$owner" "$dedup_dir" 2>/dev/null || true
+            fi
         fi
     fi
 

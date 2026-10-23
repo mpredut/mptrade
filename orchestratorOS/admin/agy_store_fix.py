@@ -45,6 +45,9 @@ LOGS = os.path.join(CLI, "log")
 LOCK = os.path.join(HOME, ".agy_store_fix.lock")
 LOG_FILE = os.path.join(HOME, "agy_store_fix.log")
 BACKUPS = os.path.join(HOME, "agy_store_fix_backups")
+AGY_BIN = os.path.join(HOME, ".local", "bin", "agy")
+WEBRTC_FLAG_ORIG = b"remote-control-webrtc-mesh"
+WEBRTC_FLAG_PATCHED = b"remote-control-webrtc-mes0"
 UNIT = "antigravity-cli-daemon.service"
 
 log = logging.getLogger("agy_store_fix")
@@ -199,6 +202,52 @@ def unit_active() -> bool:
         return False
 
 
+def disable_webrtc_mesh(stamp: str) -> str:
+    """Disable the Mendel flag 'remote-control-webrtc-mesh' in the agy binary so remote-control
+    stays on Boq WebChannel (HTTPS/TCP) and never upgrades to Pion WebRTC DataChannel (UDP),
+    whose hardcoded 1228-byte SCTP MTU exceeds the wgpia0 WireGuard MTU (1200) and freezes streams."""
+    if not os.path.isfile(AGY_BIN):
+        return "missing"
+    try:
+        with open(AGY_BIN, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        log.warning("cannot read %s: %s", AGY_BIN, e)
+        return "error"
+    if WEBRTC_FLAG_ORIG not in data:
+        return "already_disabled" if WEBRTC_FLAG_PATCHED in data else "flag_not_found"
+    try:
+        backup_dir = os.path.join(BACKUPS, stamp)
+        os.makedirs(backup_dir, exist_ok=True)
+        shutil.copy2(AGY_BIN, os.path.join(backup_dir, "agy.orig"))
+        patched = data.replace(WEBRTC_FLAG_ORIG, WEBRTC_FLAG_PATCHED)
+        tmp_bin = AGY_BIN + ".tmp"
+        with open(tmp_bin, "wb") as f:
+            f.write(patched)
+        shutil.copymode(AGY_BIN, tmp_bin)
+        os.replace(tmp_bin, AGY_BIN)
+        log.info("pre: patched %s to disable remote-control-webrtc-mesh (backup in %s)", AGY_BIN, backup_dir)
+        return "patched"
+    except OSError as e:
+        log.warning("failed to patch %s: %s", AGY_BIN, e)
+        return "error"
+
+
+def webrtc_mesh_status() -> str:
+    if not os.path.isfile(AGY_BIN):
+        return "missing"
+    try:
+        with open(AGY_BIN, "rb") as f:
+            data = f.read()
+    except OSError:
+        return "unreadable"
+    if WEBRTC_FLAG_ORIG in data:
+        return "ENABLED (unpatched)"
+    if WEBRTC_FLAG_PATCHED in data:
+        return "disabled (patched)"
+    return "unknown"
+
+
 # ---------------------------------------------------------------- pre
 def mode_pre(force: bool = False) -> int:
     if not force and os.environ.get("AGY_FIX_HOME") is None and unit_active():
@@ -206,7 +255,47 @@ def mode_pre(force: bool = False) -> int:
         return 2
     os.makedirs(D2, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    moved = unlinked = diverged = skipped = 0
+    mesh_state = disable_webrtc_mesh(stamp)
+    moved = unlinked = diverged = skipped = deleted = 0
+
+    # Detect conversations that existed in D2 from a previous session but whose summary row was
+    # deleted in the Web UI (removed from conversation_summaries.db). Move them to backups so
+    # they are not resurrected into D1 on post.
+    known_cids: set[str] = set()
+    if os.path.exists(DB):
+        try:
+            con = sqlite3.connect(DB, timeout=15)
+            known_cids = {r[0] for r in con.execute("SELECT conversation_id FROM conversation_summaries")}
+            con.close()
+        except sqlite3.Error as e:
+            log.warning("cannot read summary IDs from %s: %s", DB, e)
+
+    if known_cids:
+        del_dir = os.path.join(BACKUPS, stamp, "deleted_in_ui")
+        for p2 in sorted(glob.glob(os.path.join(D2, "*.db"))):
+            name = os.path.basename(p2)
+            cid = name[:-3]
+            if cid in known_cids:
+                continue
+            p1 = os.path.join(D1, name)
+            checkpoint(p2)
+            os.makedirs(del_dir, exist_ok=True)
+            shutil.move(p2, os.path.join(del_dir, name))
+            drop_sidecars(p2)
+            if os.path.exists(p1):
+                checkpoint(p1)
+                try:
+                    os.remove(p1)
+                except OSError:
+                    pass
+                drop_sidecars(p1)
+            ann_file = os.path.join(ANN, cid + ".pbtxt")
+            if os.path.exists(ann_file):
+                try:
+                    shutil.move(ann_file, os.path.join(del_dir, cid + ".pbtxt"))
+                except OSError:
+                    pass
+            deleted += 1
 
     for name in sorted(os.listdir(D1)):
         if not name.endswith(".db"):
@@ -245,9 +334,10 @@ def mode_pre(force: bool = False) -> int:
         drop_sidecars(p1)
         moved += 1
 
-    # leftover WAL on the real files
+    # leftover WAL/SHM sidecars on the real files
     for p2 in glob.glob(os.path.join(D2, "*.db")):
-        checkpoint(p2)
+        if checkpoint(p2):
+            drop_sidecars(p2)
 
     # normalise mtimes to whole seconds so stored fileModTimes (seconds) always >= disk mtime
     mt = {}
@@ -258,8 +348,8 @@ def mode_pre(force: bool = False) -> int:
         mt[cid] = sec
 
     rows_fixed = repair_summaries(mt)
-    log.info("pre: moved=%d unlinked=%d diverged=%d skipped=%d rows_fixed=%d visible_files=%d",
-             moved, unlinked, diverged, skipped, rows_fixed, len(mt))
+    log.info("pre: moved=%d unlinked=%d deleted=%d diverged=%d skipped=%d rows_fixed=%d visible_files=%d webrtc_mesh=%s",
+             moved, unlinked, deleted, diverged, skipped, rows_fixed, len(mt), mesh_state)
     return 0
 
 
@@ -379,7 +469,7 @@ def mode_check() -> int:
     d1 = {f for f in os.listdir(D1) if f.endswith(".db")} if os.path.isdir(D1) else set()
     d2 = {f for f in os.listdir(D2) if f.endswith(".db")} if os.path.isdir(D2) else set()
     linked = sum(1 for f in d1 & d2 if same_file(os.path.join(D1, f), os.path.join(D2, f)))
-    print(f"visible dir files={len(d2)}  content dir files={len(d1)}  hard-linked={linked}  only-in-content-dir={len(d1 - d2)}")
+    print(f"visible dir files={len(d2)}  content dir files={len(d1)}  hard-linked={linked}  only-in-content-dir={len(d1 - d2)}  webrtc_mesh={webrtc_mesh_status()}")
     if os.path.exists(DB):
         c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
         import collections
