@@ -417,3 +417,44 @@ def test_monitor_run_cycle_report(mock_workspace, monkeypatch):
     data = json.loads(status_file.read_text())
     assert data["autonomous_ai_mode"] == "enforce"
     assert data["fleet_healthy"] is True
+
+
+def test_none_venue_actions_and_routine_hold_do_not_trigger_executed_or_notify_spam(temp_env):
+    workspace, cache_dir, _ = temp_env
+    with open(os.path.join(cache_dir, "cache_24_price_TAOUSDC.json"), "w", encoding="utf-8") as f:
+        json.dump({"items": {"TAOUSDC": [[1000000, 250.0], [1900000, 255.0]]}}, f)
+    with open(os.path.join(cache_dir, "cache_short_trend.json"), "w", encoding="utf-8") as f:
+        json.dump({"TAOUSDC": {"current_price": 255.0, "final_trend": 1, "growth_coefficient": 0.01,
+                               "dynamic": {"900": {"slope_full": 0.005, "final_trend": 1}}}}, f)
+    with open(os.path.join(cache_dir, "cache_order.json"), "w", encoding="utf-8") as f:
+        json.dump({"items": {"TAOUSDC": [{"side": "SELL", "price": 258.9, "quantity": 8.68, "timestamp": 123}]}}, f)
+
+    plan = {
+        "summary": "Routine 5m check",
+        "diagnosed_issues": [{"severity": "INFO", "category": "HEALTHY", "description": "ok", "root_cause": "ok"}],
+        "venue_actions": [{"action": "NONE", "venue": "binance", "symbol": "TAOUSDC", "reason": "aligned"}],
+        "market_trading_decision": {"decision": "HOLD", "symbol": "TAOUSDC", "venue": "binance", "confidence": 0.6},
+    }
+    auditor = GeminiClient(custom_runner=lambda prompt, model, timeout: json.dumps(plan))
+    gateway = MagicMock(min_confidence=0.85, max_notional_eur=500.0)
+    gateway.submit.return_value = None
+    reconciler = AutonomousAIReconciler(
+        workspace_dir=workspace,
+        cache_dir="cachedb",
+        logs_dirs=["logs"],
+        gemini_auditor=auditor,
+        mode="enforce",
+        notify_enabled=True,
+        intent_gateway=gateway,
+    )
+    snap = reconciler.harvest_sensors_telemetry()
+    assert snap.prices_and_trends["TAOUSDC"]["chg_15m_pct"] == 2.0
+    assert snap.prices_and_trends["TAOUSDC"]["slope_15m"] == 0.005
+    assert snap.portfolio_summary["recent_orders"]["TAOUSDC"]["last_action_side"] == "SELL"
+
+    with patch.object(reconciler, "dispatch_notification") as mock_notify:
+        report = reconciler.run_cycle(topic_key="auto_trade_executor", focus_symbols=["TAOUSDC"])
+    assert report.actions_executed is False
+    assert report.notification_sent is False
+    mock_notify.assert_not_called()
+

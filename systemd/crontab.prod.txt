@@ -14,11 +14,12 @@ SHELL=/bin/bash
 */5 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh orchestratorOS/livecheck/os_resources_watchdog.py >> logs/os_resources_watchdog.log 2>&1
 */2 * * * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh watchdog >> logs/manage_agy.log 2>&1
 # Idle-gated UI daemon restart so mirrored autonomous topic threads show up in the Web UI (AGY_UI_SYNC_IDLE_SEC)
-*/5 * * * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh ui-sync >> logs/manage_agy.log 2>&1
+# Offset by +1m from */5 auto_trade_executor so the 5m turn finishes & mirrors before ui-sync runs
+1-59/5 * * * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh ui-sync >> logs/manage_agy.log 2>&1
 
 15 4 1,15 * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh cron-update >> logs/manage_agy.log 2>&1
 
 # Nightly technical audit + verified self-heal on the permanent auto_technical_repair thread (never trades)
-35 3 * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_technical_repair >> logs/auto_technical_repair.log 2>&1
+35 3 * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_technical_repair.lock /usr/bin/timeout 600 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_technical_repair >> logs/auto_technical_repair.log 2>&1
 # 5-min TAO/BTC trade executor on the permanent auto_trade_executor thread (the only LLM topic allowed to trade)
 */5 * * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_trade_executor.lock /usr/bin/timeout 270 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_trade_executor --focus-symbols TAOUSDC,BTCUSDC --lookback-hours 0.1 >> logs/auto_trade_executor.log 2>&1

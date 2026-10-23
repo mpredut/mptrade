@@ -6,13 +6,14 @@ on the next idle `manage_agy.sh ui-sync` restart.
 """
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 import shutil
 import sqlite3
 from typing import Optional
 
-from orchestratorOS.admin.agy_store_fix import visible_conversations_dir
+from orchestratorOS.admin.agy_store_fix import LOCK, visible_conversations_dir
 from orchestratorOS.agy.paths import resolve_bot_cli_base, resolve_ui_cli_base
 from orchestratorOS.agy.summary_store import conversation_db, read_summary_row, upsert_ui_visible_summary
 
@@ -36,7 +37,13 @@ def mirror_topic_thread_to_ui(
     row = read_summary_row(src_base, cid)
     if row is None or not os.path.exists(os.path.join(dst_base, "conversation_summaries.db")):
         return False
+    lock_fh = None
     try:
+        try:
+            lock_fh = open(LOCK, "w")
+            fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        except OSError:
+            pass
         dst_db = conversation_db(dst_base, cid)
         os.makedirs(os.path.dirname(dst_db), exist_ok=True)
         shutil.copy2(src_db, dst_db + ".tmp")
@@ -64,3 +71,9 @@ def mirror_topic_thread_to_ui(
     except (OSError, sqlite3.Error) as e:
         logger.warning("Failed mirroring topic thread %s to the UI store: %s", cid, e)
         return False
+    finally:
+        if lock_fh is not None:
+            try:
+                lock_fh.close()
+            except OSError:
+                pass

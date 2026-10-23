@@ -85,6 +85,14 @@ AUTONOMOUS_PROMPT_PATTERNS = [
     "trade evaluation",
     "risk evaluation",
     "risk assessment",
+    "[auto_trade_executor]",
+    "[auto_technical_repair]",
+    "[auto_macro_news_shield]",
+    "[auto_macro_sentiment]",
+    "[auto_guard_large_order]",
+    "[auto_guard_post_stop]",
+    "autonomous trade decisions",
+    "lead sre and quantitative trading systems architect",
 ]
 
 

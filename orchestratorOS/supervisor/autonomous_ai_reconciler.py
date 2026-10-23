@@ -38,7 +38,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 _FULL_TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2}):(\d{2})")
 _GLOG_TS_RE = re.compile(r"^[IWEF](\d{2})(\d{2}) (\d{2}):(\d{2}):(\d{2})")
-_CLOCK_TS_RE = re.compile(r"^\[?(\d{2}):(\d{2}):(\d{2})\b")
+_CLOCK_TS_RE = re.compile(r"^\.*\[?(\d{2}):(\d{2}):(\d{2})\b")
 
 
 def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> List[str]:
@@ -91,6 +91,8 @@ class TelemetrySensorSnapshot:
     active_heartbeats: Dict[str, Any] = field(default_factory=dict)
     state_files: Dict[str, Any] = field(default_factory=dict)
     prices_and_trends: Dict[str, Any] = field(default_factory=dict)
+    microstructure: Dict[str, Any] = field(default_factory=dict)
+    portfolio_summary: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -253,9 +255,11 @@ class AutonomousAIReconciler:
                 mtime = os.path.getmtime(os.path.join(self.workspace_dir, s_file))
                 snapshot.state_files[s_file] = {"age_hours": (time.time() - mtime) / 3600.0}
 
-        # 7. Live market prices and short trend telemetry
+        # 7. Live market prices, short/long trend, Kalman, and 24h price evolution
         prices_data = _read_json(os.path.join(self.cache_dir, "cache_current_price.json"))
         trends_data = _read_json(os.path.join(self.cache_dir, "cache_short_trend.json"))
+        long_trends_data = _read_json(os.path.join(self.cache_dir, "cache_long_trend.json"))
+        kalman_data = _read_json(os.path.join(self.cache_dir, "kalman_state.json"))
 
         price_map: Dict[str, float] = {}
         if prices_data and isinstance(prices_data.get("items"), dict):
@@ -266,6 +270,8 @@ class AutonomousAIReconciler:
                     except (ValueError, TypeError):
                         pass
 
+        long_items = long_trends_data.get("items", {}) if isinstance(long_trends_data, dict) else {}
+
         if trends_data and isinstance(trends_data, dict):
             for sym, tinfo in trends_data.items():
                 if isinstance(tinfo, dict):
@@ -273,16 +279,146 @@ class AutonomousAIReconciler:
                     trend = tinfo.get("final_trend", 0)
                     growth = tinfo.get("growth_coefficient", 0.0)
                     slope = tinfo.get("slope_full", 0.0)
-                    snapshot.prices_and_trends[sym] = {
+                    dyn = tinfo.get("dynamic", {}) if isinstance(tinfo.get("dynamic"), dict) else {}
+                    d222 = dyn.get("222", {}) if isinstance(dyn.get("222"), dict) else {}
+                    d900 = dyn.get("900", {}) if isinstance(dyn.get("900"), dict) else {}
+                    d9000 = dyn.get("9000", {}) if isinstance(dyn.get("9000"), dict) else {}
+                    entry: Dict[str, Any] = {
                         "price": px,
                         "trend": trend,
                         "growth_coefficient": growth,
                         "slope_full": slope,
+                        "gradient_recent": tinfo.get("gradient_recent", 0.0),
+                        "trend_fast": tinfo.get("trend_fast", trend),
+                        "slope_3_7m": d222.get("slope_full", 0.0),
+                        "trend_3_7m": d222.get("final_trend", trend),
+                        "slope_15m": d900.get("slope_full", 0.0),
+                        "trend_15m": d900.get("final_trend", trend),
+                        "slope_2_5h": d9000.get("slope_full", 0.0),
+                        "trend_2_5h": d9000.get("final_trend", trend),
+                        "vol_1h_pct": tinfo.get("vol_1h_pct"),
                     }
+                    if isinstance(kalman_data, dict) and isinstance(kalman_data.get(sym), dict):
+                        k_sym = kalman_data[sym]
+                        entry["kalman_vel"] = k_sym.get("kalman_vel")
+                        entry["kalman_trend"] = k_sym.get("kalman_trend")
+                    if isinstance(long_items, dict) and isinstance(long_items.get(sym), list) and long_items[sym]:
+                        lt = long_items[sym][0]
+                        if isinstance(lt, dict):
+                            entry["long_trend_dir"] = lt.get("direction")
+                            entry["long_trend_hours"] = round(float(lt.get("duration_seconds", 0.0)) / 3600.0, 1)
+                    snapshot.prices_and_trends[sym] = entry
 
         for sym, px in price_map.items():
             if sym not in snapshot.prices_and_trends:
                 snapshot.prices_and_trends[sym] = {"price": px, "trend": 0, "growth_coefficient": 0.0}
+
+        # 8. 24h multi-horizon price evolution & Pillar 2 microstructure per symbol
+        for sym in list(snapshot.prices_and_trends.keys()):
+            p24_data = _read_json(os.path.join(self.cache_dir, f"cache_24_price_{sym}.json"))
+            if isinstance(p24_data, dict):
+                raw_items = p24_data.get("items", {})
+                series = raw_items.get(sym, []) if isinstance(raw_items, dict) else raw_items
+                if isinstance(series, list) and len(series) >= 2:
+                    try:
+                        now_ms = float(series[-1][0])
+                        cur_px = float(series[-1][1])
+                        if cur_px > 0:
+                            def _px_ago(mins: float) -> float:
+                                target = now_ms - mins * 60000.0
+                                for ts_ms, p_val in reversed(series):
+                                    if float(ts_ms) <= target:
+                                        return float(p_val)
+                                return float(series[0][1])
+
+                            p15, p30, p60, p180 = _px_ago(15), _px_ago(30), _px_ago(60), _px_ago(180)
+                            sample_prices = [float(x[1]) for x in series[::max(1, len(series) // 500)] if len(x) > 1]
+                            low24 = min(sample_prices) if sample_prices else cur_px
+                            high24 = max(sample_prices) if sample_prices else cur_px
+                            p_entry = snapshot.prices_and_trends[sym]
+                            if p15 > 0:
+                                p_entry["chg_15m_pct"] = round((cur_px / p15 - 1.0) * 100.0, 2)
+                            if p30 > 0:
+                                p_entry["chg_30m_pct"] = round((cur_px / p30 - 1.0) * 100.0, 2)
+                            if p60 > 0:
+                                p_entry["chg_1h_pct"] = round((cur_px / p60 - 1.0) * 100.0, 2)
+                            if p180 > 0:
+                                p_entry["chg_3h_pct"] = round((cur_px / p180 - 1.0) * 100.0, 2)
+                            p_entry["low_24h"] = low24
+                            p_entry["high_24h"] = high24
+                    except Exception:
+                        pass
+
+            ob = _read_json(os.path.join(self.cache_dir, f"orderbook_depth_{sym}.json"))
+            deriv = _read_json(os.path.join(self.cache_dir, f"derivatives_telemetry_{sym}.json"))
+            whale = _read_json(os.path.join(self.cache_dir, f"whale_snapshot_{sym}.json"))
+            if ob or deriv or whale:
+                m_info: Dict[str, Any] = {}
+                if isinstance(ob, dict):
+                    m_info["ob_imbalance"] = ob.get("imbalance_ratio")
+                    m_info["bid_wall_px"] = ob.get("largest_bid_wall_price")
+                    m_info["ask_wall_px"] = ob.get("largest_ask_wall_price")
+                if isinstance(deriv, dict):
+                    m_info["funding_rate"] = deriv.get("funding_rate")
+                    m_info["oi_usd"] = deriv.get("open_interest_usd")
+                if isinstance(whale, dict):
+                    m_info["whale_long_pct"] = whale.get("top_traders_long_pct")
+                    m_info["taker_buy_sell_ratio"] = whale.get("taker_buy_sell_ratio")
+                    m_info["oi_1h_chg_pct"] = whale.get("open_interest_1h_change_pct")
+                snapshot.microstructure[sym] = m_info
+
+        # 9. Portfolio value, recent orders/fills per symbol & recent autonomous intents
+        asset_val_path = os.path.join(self.cache_dir, "cache_asset_value.jsonl")
+        if os.path.exists(asset_val_path):
+            try:
+                with open(asset_val_path, "rb") as f:
+                    f.seek(0, os.SEEK_END)
+                    size = f.tell()
+                    f.seek(max(0, size - 2048))
+                    tail_lines = f.read().decode("utf-8", errors="replace").strip().splitlines()
+                if tail_lines:
+                    last_av = json.loads(tail_lines[-1])
+                    if isinstance(last_av, dict) and isinstance(last_av.get("i"), dict):
+                        snapshot.portfolio_summary["total_value_usdc"] = last_av["i"].get("total_value_usdc")
+            except Exception:
+                pass
+
+        orders_data = _read_json(os.path.join(self.cache_dir, "cache_order.json"))
+        if isinstance(orders_data, dict) and isinstance(orders_data.get("items"), dict):
+            recent_orders: Dict[str, Any] = {}
+            for sym, o_list in orders_data["items"].items():
+                if not isinstance(o_list, list) or not o_list:
+                    continue
+                last_buy = next((o for o in reversed(o_list) if isinstance(o, dict) and o.get("side") == "BUY"), None)
+                last_sell = next((o for o in reversed(o_list) if isinstance(o, dict) and o.get("side") == "SELL"), None)
+                last_any = o_list[-1] if isinstance(o_list[-1], dict) else None
+                recent_orders[sym] = {
+                    "last_action_side": last_any.get("side") if last_any else None,
+                    "last_buy": (
+                        {"price": last_buy.get("price"), "qty": last_buy.get("quantity"), "ts_ms": last_buy.get("timestamp")}
+                        if last_buy else None
+                    ),
+                    "last_sell": (
+                        {"price": last_sell.get("price"), "qty": last_sell.get("quantity"), "ts_ms": last_sell.get("timestamp")}
+                        if last_sell else None
+                    ),
+                }
+            if recent_orders:
+                snapshot.portfolio_summary["recent_orders"] = recent_orders
+
+        intents_data = _read_json(os.path.join(self.cache_dir, "autonomous_trade_intents.json"))
+        if isinstance(intents_data, list) and intents_data:
+            snapshot.portfolio_summary["recent_ai_intents"] = [
+                {
+                    "decision": i.get("decision"),
+                    "symbol": i.get("symbol"),
+                    "status": i.get("status"),
+                    "notional_eur": i.get("suggested_notional_eur"),
+                    "ts": i.get("timestamp"),
+                }
+                for i in intents_data[-5:]
+                if isinstance(i, dict)
+            ]
 
         return snapshot
 
@@ -297,7 +433,10 @@ class AutonomousAIReconciler:
         warning_count = 0
         scanned_count = 0
 
-        err_pattern = re.compile(r"(ERROR|CRITICAL|Traceback|fail-closed|BUY BLOCKED|Exception)", re.IGNORECASE)
+        err_pattern = re.compile(
+            r"(\bERROR\b|\bCRITICAL\b(?!_SHOCK)|Traceback|fail-closed|BUY BLOCKED|\bException\b)",
+            re.IGNORECASE,
+        )
         guard_pattern = re.compile(r"(\[.*GUARD.*\]|vetoed|downscaled|HARD_VETO|DOWNSCALE_QTY)", re.IGNORECASE)
 
         for l_dir in self.logs_dirs:
@@ -367,21 +506,62 @@ class AutonomousAIReconciler:
             context_items.append(f"  * [GUARD] {g_evt}")
 
         if sensors.prices_and_trends:
-            context_items.append("\n### 3. LIVE MARKET PRICES & SHORT-TERM REGIMES:")
+            context_items.append("\n### 3. LIVE MARKET PRICES, MULTI-HORIZON TRENDS & 24H EVOLUTION:")
             for sym, pinfo in sorted(sensors.prices_and_trends.items()):
                 px = pinfo.get("price")
                 px_str = f"${px:,.2f}" if isinstance(px, (int, float)) and px > 1 else (f"${px}" if px is not None else "N/A")
                 tr = pinfo.get("trend", 0)
                 tr_label = "BULL (+1)" if tr > 0 else ("BEAR (-1)" if tr < 0 else "FLAT (0)")
                 growth = pinfo.get("growth_coefficient", 0.0)
-                context_items.append(f"  * {sym}: Price={px_str}, Trend={tr_label}, Growth={growth:+.5f}")
+                extras: List[str] = []
+                if "chg_15m_pct" in pinfo:
+                    extras.append(
+                        f"15m={pinfo.get('chg_15m_pct', 0):+.2f}% 30m={pinfo.get('chg_30m_pct', 0):+.2f}% "
+                        f"1h={pinfo.get('chg_1h_pct', 0):+.2f}% 3h={pinfo.get('chg_3h_pct', 0):+.2f}% "
+                        f"24h_range=[{pinfo.get('low_24h')}, {pinfo.get('high_24h')}]"
+                    )
+                if "slope_15m" in pinfo:
+                    extras.append(
+                        f"slopes(3.7m={pinfo.get('slope_3_7m', 0):+.5f}, 15m={pinfo.get('slope_15m', 0):+.5f}, "
+                        f"2.5h={pinfo.get('slope_2_5h', 0):+.5f})"
+                    )
+                if pinfo.get("kalman_vel") is not None:
+                    extras.append(f"kalman_vel={pinfo.get('kalman_vel'):+.5f}")
+                if pinfo.get("long_trend_dir"):
+                    extras.append(f"long_trend={pinfo.get('long_trend_dir')}({pinfo.get('long_trend_hours')}h)")
+                extra_str = f" | {' | '.join(extras)}" if extras else ""
+                context_items.append(f"  * {sym}: Price={px_str}, Trend={tr_label}, Growth={growth:+.5f}{extra_str}")
+
+        if sensors.microstructure:
+            context_items.append("\n### 3B. PILLAR 2 MICROSTRUCTURE, DERIVATIVES & WHALE POSITIONING:")
+            for sym, minfo in sorted(sensors.microstructure.items()):
+                context_items.append(
+                    f"  * {sym}: ob_imbalance={minfo.get('ob_imbalance')}, "
+                    f"bid_wall={minfo.get('bid_wall_px')}, ask_wall={minfo.get('ask_wall_px')}, "
+                    f"whale_long_pct={minfo.get('whale_long_pct')}, taker_ratio={minfo.get('taker_buy_sell_ratio')}, "
+                    f"funding={minfo.get('funding_rate')}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
+                )
+
+        if sensors.portfolio_summary:
+            context_items.append("\n### 3C. PORTFOLIO STATE, LAST FILLS & AUTONOMOUS INTENTS:")
+            if sensors.portfolio_summary.get("total_value_usdc") is not None:
+                context_items.append(f"  * Total Portfolio Value: ${sensors.portfolio_summary['total_value_usdc']:,.2f} USDC")
+            for sym, oinfo in sorted((sensors.portfolio_summary.get("recent_orders") or {}).items()):
+                lb = oinfo.get("last_buy") or {}
+                ls = oinfo.get("last_sell") or {}
+                context_items.append(
+                    f"  * {sym} Last Action={oinfo.get('last_action_side')}: "
+                    f"Last BUY={lb.get('qty')} @ {lb.get('price')} | Last SELL={ls.get('qty')} @ {ls.get('price')}"
+                )
+            if sensors.portfolio_summary.get("recent_ai_intents"):
+                context_items.append(f"  * Recent Autonomous Intents: {sensors.portfolio_summary['recent_ai_intents']}")
 
         if focus_symbols:
             clean_syms = [s.strip().upper() for s in focus_symbols if s.strip()]
             if clean_syms:
                 context_items.append(
                     f"\n### 4. TACTICAL WATCHLIST FOCUS: {', '.join(clean_syms)}\n"
-                    "- Pay special attention to momentum, gentle upward recovery, or downward breakdown on these focus symbols."
+                    "- Pay special attention to momentum, gentle upward recovery (re-entry after SELL), or downward breakdown on these focus symbols."
                 )
 
         context_str = "\n".join(context_items)
@@ -408,9 +588,13 @@ class AutonomousAIReconciler:
             gw = self.intent_gateway
             tasks.append(
                 f"{len(tasks) + 1}. Formulate an autonomous market trading decision ('BUY', 'SELL', or 'HOLD') based on "
-                "prevailing macro sentiment, geopolitical threat level, market breadth, and real-time trend coefficients. "
-                f"Only with high conviction (confidence >= {gw.min_confidence:g}) specify symbol (e.g. BTCUSDC, TAOBTC, "
-                "TAOUSDC), venue ('binance'/'kraken'/'hyperliquid'/'t212'), confidence, suggested_notional_eur "
+                "prevailing macro sentiment, geopolitical threat level, market breadth, multi-horizon price evolution "
+                "(15m/30m/1h/3h), dynamic slopes (3.7m/15m/2.5h), Pillar 2 whale/orderbook flow, and last BUY/SELL fill anchors. "
+                "Specifically: if we exited a position (Last Action=SELL) and TAOUSDC & BTCUSDC show a steady upward "
+                "inflection/recovery so we risk being left out, or if there is a high-conviction dip/breakout, emit 'BUY'; "
+                "if an active position shows exhaustion/reversal above our last BUY anchor, emit 'SELL'. "
+                f"Only with high conviction (confidence >= {gw.min_confidence:g}) specify a fiat/stablecoin-quoted symbol "
+                "(e.g. TAOUSDC, BTCUSDC), venue ('binance'/'kraken'/'hyperliquid'/'t212'), confidence, suggested_notional_eur "
                 f"(up to {gw.max_notional_eur:g} EUR) and thesis; otherwise 'HOLD'."
             )
             schema.append('  "market_trading_decision": {"decision": "BUY" | "SELL" | "HOLD", "symbol": "BTCUSDC", '
@@ -422,6 +606,7 @@ class AutonomousAIReconciler:
             "Analyze the passive telemetry sensors and log anomalies collected from trading bots:\n\n"
             f"{context_str}\n\n"
             "Perform an executive diagnostic audit:\n" + "\n".join(tasks) + "\n\n"
+            "IMPORTANT: Do NOT call any tools, shell commands, or file readers; all required telemetry is provided above.\n"
             "Respond STRICTLY in valid JSON with exact schema:\n{\n" + ",\n".join(schema) + "\n}"
         )
 
@@ -483,7 +668,11 @@ class AutonomousAIReconciler:
                     rationale=rationale,
                 )
 
-        executed = is_enforce and bool(venue_actions or (code_fix.get("has_fix") and tests_passed))
+        real_venue_actions = [
+            act for act in venue_actions
+            if isinstance(act, dict) and str(act.get("action", "NONE")).strip().upper() != "NONE"
+        ]
+        executed = is_enforce and bool(real_venue_actions or (code_fix.get("has_fix") and tests_passed))
         return executed, tests_passed
 
     def _apply_code_patch_safely(
@@ -498,6 +687,11 @@ class AutonomousAIReconciler:
             logger.error("Target patch file does not exist: %s", target_file)
             return False
 
+        base_name = os.path.basename(target_file)
+        if base_name in (".env", "config.env", "order_guard.conf", "instruments.conf", "procs.conf") or base_name.endswith(".env"):
+            logger.warning("Refusing autonomous patch on protected configuration file: %s", target_file)
+            return False
+
         try:
             with open(target_file, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -510,23 +704,29 @@ class AutonomousAIReconciler:
             with open(target_file, "w", encoding="utf-8") as f:
                 f.write(new_content)
 
-            test_cmd = ["myenv/bin/pytest", "tests/"] if os.path.exists("myenv/bin/pytest") else ["pytest", "tests/"]
-            res = subprocess.run(test_cmd, capture_output=True, text=True, timeout=120)
+            pytest_bin = "pytest"
+            for cand in (".venv/bin/pytest", "myenv/bin/pytest"):
+                cand_abs = os.path.join(self.workspace_dir, cand)
+                if os.path.exists(cand_abs):
+                    pytest_bin = cand_abs
+                    break
+            test_cmd = [pytest_bin, "tests/"]
+            res = subprocess.run(test_cmd, cwd=self.workspace_dir, capture_output=True, text=True, timeout=120)
 
             if res.returncode == 0:
                 logger.info("Self-healing patch verified with 100%% green tests. Committing to git.")
-                subprocess.run(["git", "add", target_file], check=False)
+                subprocess.run(["git", "add", target_file], cwd=self.workspace_dir, check=False)
                 commit_msg = f"[AI-SUPERVISOR] Autonomous self-heal: {rationale}"
-                subprocess.run(["git", "commit", "-m", commit_msg], check=False)
-                subprocess.run(["git", "push", "origin", "main"], check=False)
+                subprocess.run(["git", "commit", "-m", commit_msg], cwd=self.workspace_dir, check=False)
+                subprocess.run(["git", "push", "origin", "main"], cwd=self.workspace_dir, check=False)
                 return True
             else:
                 logger.warning("Self-healing patch broke tests (exit code %d). Performing immediate rollback.", res.returncode)
-                subprocess.run(["git", "checkout", "--", target_file], check=False)
+                subprocess.run(["git", "checkout", "--", target_file], cwd=self.workspace_dir, check=False)
                 return False
         except Exception as e:
             logger.error("Error during safe code patching: %s. Performing rollback.", e)
-            subprocess.run(["git", "checkout", "--", target_file], check=False)
+            subprocess.run(["git", "checkout", "--", target_file], cwd=self.workspace_dir, check=False)
             return False
 
     def dispatch_notification(self, report: SupervisorAuditReport) -> bool:
@@ -641,6 +841,11 @@ class AutonomousAIReconciler:
         self.state_file = os.path.join(self.cache_dir, f"{topic_key}_eval.json")
         self.heartbeat_file = os.path.join(self.cache_dir, f"{topic_key}.heartbeat")
 
+        if self.mode == "off":
+            report = SupervisorAuditReport(ts=now, mode="off", summary="Supervisor mode is off; cycle skipped.")
+            self.write_audit_artifact(report)
+            return report
+
         sensors = self.harvest_sensors_telemetry()
         logs = self.harvest_log_anomalies()
         plan = self.synthesize_and_diagnose(sensors, logs, focus_symbols=focus_symbols, topic_key=topic_key)
@@ -650,6 +855,8 @@ class AutonomousAIReconciler:
         intent = None
         if market_decision:
             intent = self.intent_gateway.submit(market_decision, source=topic_key, max_mode=self.mode)
+            if self.mode == "enforce" and isinstance(intent, dict) and intent.get("status") == "EXECUTED":
+                executed = True
 
         report = SupervisorAuditReport(
             ts=now,
@@ -671,7 +878,17 @@ class AutonomousAIReconciler:
             actions_executed=executed,
             tests_passed=tests_passed,
         )
-        report.notification_sent = self.dispatch_notification(report)
+        has_high_issue = any(
+            isinstance(i, dict) and str(i.get("severity", "")).upper() in ("HIGH", "CRITICAL")
+            for i in report.diagnosed_issues
+        )
+        should_notify = (
+            spec.can_self_heal
+            or executed
+            or has_high_issue
+            or str(market_decision.get("decision", "HOLD")).upper() in ("BUY", "SELL")
+        )
+        report.notification_sent = self.dispatch_notification(report) if should_notify else False
         self.write_audit_artifact(report)
         logger.info("Autonomous AI Supervisor cycle complete: %s", report.summary)
         return report

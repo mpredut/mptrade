@@ -527,6 +527,11 @@ def mode_ui_sync_check(idle_sec: int) -> int:
         return UI_SYNC_NOTHING
     entries = pending_ui_sync()
     if not entries:
+        if os.path.exists(UI_SYNC_STATE):
+            try:
+                os.remove(UI_SYNC_STATE)
+            except OSError:
+                pass
         return UI_SYNC_NOTHING
     idle_for = time.time() - last_store_activity()
     if idle_for < idle_sec:

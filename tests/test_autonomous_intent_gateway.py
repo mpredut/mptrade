@@ -364,3 +364,8 @@ def test_submit_is_the_single_validated_entry_point(temp_workspace):
 
     sell = gw.submit(dict(buy, decision="SELL"), source="auto_trade_executor", max_mode="enforce")
     assert sell["status"] == "EXECUTED" and seen_modes == ["shadow", "enforce"]
+
+    # After an opposite-side SELL, a fresh BUY re-entry is allowed (not blocked by the pre-sell BUY)
+    reentry = gw.submit(buy, source="auto_trade_executor", max_mode="enforce")
+    assert reentry["intent_id"] != first["intent_id"] and seen_modes == ["shadow", "enforce", "enforce"]
+

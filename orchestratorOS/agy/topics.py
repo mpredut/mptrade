@@ -16,7 +16,7 @@ from typing import Dict, NamedTuple, Optional, Set
 
 from botcore import required_int_env
 from orchestratorOS.agy.paths import expand_config_path, resolve_bot_cli_base
-from orchestratorOS.agy.summary_store import get_thread_step_count
+from orchestratorOS.agy.summary_store import get_thread_step_count, write_annotation_title
 
 logger = logging.getLogger("orchestratorOS.agy.topics")
 
@@ -209,4 +209,8 @@ def record_topic_turn(
     reg[topic_key] = entry
     save_topic_registry(reg, registry_path)
     if active_cid:
+        try:
+            write_annotation_title(base, active_cid, spec.title)
+        except OSError:
+            pass
         mirror_topic_thread_to_ui(active_cid, spec.title, bot_cli_base=base)

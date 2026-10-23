@@ -295,8 +295,11 @@ class AutonomousIntentGateway:
             return intent
 
         inst = self.resolve_instrument(symbol, venue=venue, instruments_map=instruments_map)
-        if not inst:
-            logger.warning("[INTENT GATEWAY] Intent %s rejected: unknown instrument %s on %s",
+        if not inst or (
+            str(getattr(inst, "provider_name", "")).lower() != "t212"
+            and str(getattr(inst, "symbol", "")).upper().endswith("BTC")
+        ):
+            logger.warning("[INTENT GATEWAY] Intent %s rejected: unknown or non-fiat instrument %s on %s",
                            intent_id, symbol, venue)
             intent["status"] = "REJECTED_UNKNOWN_INSTRUMENT"
             intent.setdefault("history", []).append({
@@ -514,18 +517,21 @@ class AutonomousIntentGateway:
         now = time.time()
         intents = self.load_all_intents()
         for existing in reversed(intents):
-            if (
-                existing.get("symbol") == symbol
-                and existing.get("decision") == side
-                and existing.get("status") in DEDUP_STATUSES
-                and now - float(existing.get("timestamp", 0.0)) < self.dedup_window_sec
-            ):
-                logger.info("[INTENT GATEWAY] %s %s already acted on within %.0fs (%s); skipping duplicate.",
-                            side, symbol, self.dedup_window_sec, existing.get("intent_id"))
-                return existing
+            if existing.get("symbol") == symbol and existing.get("status") in DEDUP_STATUSES:
+                if (
+                    existing.get("decision") == side
+                    and now - float(existing.get("timestamp", 0.0)) < self.dedup_window_sec
+                ):
+                    logger.info("[INTENT GATEWAY] %s %s already acted on within %.0fs (%s); skipping duplicate.",
+                                side, symbol, self.dedup_window_sec, existing.get("intent_id"))
+                    return existing
+                break
 
+        base_id = f"intent_{int(now)}_{side.lower()}_{symbol.lower()}"
+        existing_ids = {i.get("intent_id") for i in intents if isinstance(i, dict)}
+        intent_id = base_id if base_id not in existing_ids else f"{base_id}_{len(intents) + 1}"
         intent = asdict(TradeIntentRecord(
-            intent_id=f"intent_{int(now)}_{side.lower()}_{symbol.lower()}",
+            intent_id=intent_id,
             timestamp=now,
             decision=side,
             symbol=symbol,
@@ -538,7 +544,8 @@ class AutonomousIntentGateway:
         ))
         intents.append(intent)
         self.save_all_intents(intents)
-        mode = min(self.mode, max_mode, key=MODE_RANK.__getitem__)
+        norm_max_mode = str(max_mode or "shadow").strip().lower()
+        mode = min(self.mode, norm_max_mode, key=lambda m: MODE_RANK.get(m, 0))
         processed = self.process_intent(intent, instruments_map=instruments_map, mode=mode)
         intents[-1] = processed
         self.save_all_intents(intents)

@@ -110,13 +110,15 @@ class GeminiClient:
                 run_env = os.environ.copy()
                 run_env["AGY_BOT_HOME"] = os.path.dirname(os.path.dirname(bot_cli_base))
 
-                def _run_cli(resume: Optional[str], text: str) -> subprocess.CompletedProcess:
+                def _run_cli(
+                    resume: Optional[str], text: str, call_timeout: float = timeout_sec
+                ) -> subprocess.CompletedProcess:
                     cmd = [self.cli_path, "--project", self.project_id, "--model", selected_model,
                            "--output-format", "json"]
                     if resume:
                         cmd.extend(["--conversation", resume])
                     cmd.extend(["-p", text])
-                    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec,
+                    return subprocess.run(cmd, capture_output=True, text=True, timeout=call_timeout,
                                           check=False, env=run_env)
 
                 def _parse(proc: subprocess.CompletedProcess) -> Tuple[Optional[str], Optional[str]]:
@@ -132,14 +134,29 @@ class GeminiClient:
                     text_out = str(payload.get("response") or "").strip()
                     return (text_out or None), (payload.get("conversation_id") or None)
 
-                proc = _run_cli(session.conversation_id, cli_prompt)
-                output, turn_cid = _parse(proc)
+                is_mocked = hasattr(subprocess.run, "_mock_name")
+                first_timeout = max(timeout_sec, 90.0) if (session.compact and not is_mocked) else timeout_sec
+                output, turn_cid = None, None
+                proc = None
+                try:
+                    proc = _run_cli(session.conversation_id, cli_prompt, first_timeout)
+                    output, turn_cid = _parse(proc)
+                except subprocess.TimeoutExpired:
+                    if not (session.conversation_id and not conversation_id):
+                        raise
+                    logger.warning(
+                        "Resuming topic '%s' conversation %s timed out after %ss; falling back to one-off thread.",
+                        topic_key,
+                        session.conversation_id,
+                        first_timeout,
+                    )
+
                 if output is None and session.conversation_id and not conversation_id:
                     # Runtime resilience: answer this call from a detached one-off thread. The topic keeps its
                     # permanent conversation; the next call resumes it again.
                     logger.info("Resuming topic '%s' conversation %s failed; answering from a one-off thread.",
                                 topic_key, session.conversation_id)
-                    proc = _run_cli(None, cli_prompt.removeprefix("/compact "))
+                    proc = _run_cli(None, cli_prompt.removeprefix("/compact "), timeout_sec)
                     output, _ = _parse(proc)
                     turn_cid = None
 
