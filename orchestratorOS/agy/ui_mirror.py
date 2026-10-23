@@ -13,10 +13,16 @@ import shutil
 import sqlite3
 from typing import Optional
 
-from orchestratorOS.admin.agy_store_fix import LOCK, visible_conversations_dir
-from orchestratorOS.agy.paths import resolve_bot_cli_base, resolve_ui_cli_base
+from orchestratorOS.agy.paths import (
+    resolve_bot_cli_base,
+    resolve_store_lock_path,
+    resolve_ui_cli_base,
+    visible_conversations_dir,
+)
 from orchestratorOS.agy.summary_store import (
+    checkpoint_db,
     conversation_db,
+    drop_wal_sidecars,
     get_thread_step_count,
     read_summary_row,
     summaries_db,
@@ -26,28 +32,6 @@ from orchestratorOS.agy.summary_store import (
 logger = logging.getLogger("orchestratorOS.agy.ui_mirror")
 
 UI_TRAJECTORY_SOURCE = 1   # trajectory_meta.source of conversations created in the UI (CLI print mode = 17)
-
-
-def _checkpoint_wal(db_path: str) -> None:
-    wal = db_path + "-wal"
-    if os.path.exists(wal) and os.path.getsize(wal) > 0:
-        conn = sqlite3.connect(db_path, timeout=15)
-        try:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        except sqlite3.Error:
-            pass
-        finally:
-            conn.close()
-
-
-def _remove_wal_sidecars(db_path: str) -> None:
-    for ext in ("-wal", "-shm"):
-        sidecar = db_path + ext
-        if os.path.exists(sidecar):
-            try:
-                os.remove(sidecar)
-            except OSError:
-                pass
 
 
 def sync_topic_thread_from_ui(
@@ -89,17 +73,17 @@ def sync_topic_thread_from_ui(
     lock_fh = None
     try:
         try:
-            lock_fh = open(LOCK, "w")
+            lock_fh = open(resolve_store_lock_path(), "w")
             fcntl.flock(lock_fh, fcntl.LOCK_EX)
         except OSError:
             pass
-        _checkpoint_wal(ui_db)
+        checkpoint_db(ui_db)
         if bot_exists:
-            _checkpoint_wal(bot_db)
+            checkpoint_db(bot_db)
 
         os.makedirs(os.path.dirname(bot_db), exist_ok=True)
         shutil.copy2(ui_db, bot_db + ".tmp")
-        _remove_wal_sidecars(bot_db)
+        drop_wal_sidecars(bot_db, force=True)
         os.replace(bot_db + ".tmp", bot_db)
         mtime = os.stat(ui_db).st_mtime
         os.utime(bot_db, (mtime, mtime))
@@ -164,17 +148,17 @@ def mirror_topic_thread_to_ui(
     lock_fh = None
     try:
         try:
-            lock_fh = open(LOCK, "w")
+            lock_fh = open(resolve_store_lock_path(), "w")
             fcntl.flock(lock_fh, fcntl.LOCK_EX)
         except OSError:
             pass
-        _checkpoint_wal(src_db)
+        checkpoint_db(src_db)
         dst_db = conversation_db(dst_base, cid)
         os.makedirs(os.path.dirname(dst_db), exist_ok=True)
         if os.path.exists(dst_db):
-            _checkpoint_wal(dst_db)
+            checkpoint_db(dst_db)
         shutil.copy2(src_db, dst_db + ".tmp")
-        _remove_wal_sidecars(dst_db)
+        drop_wal_sidecars(dst_db, force=True)
         os.replace(dst_db + ".tmp", dst_db)
         conn = sqlite3.connect(dst_db)
         try:
@@ -183,7 +167,7 @@ def mirror_topic_thread_to_ui(
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         finally:
             conn.close()
-        _remove_wal_sidecars(dst_db)
+        drop_wal_sidecars(dst_db, force=True)
         mtime = os.stat(dst_db).st_mtime
         os.utime(src_db, (mtime, mtime))
 

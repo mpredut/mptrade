@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
+from orchestratorOS.agy.topics import topic_spec
 
 logger = logging.getLogger("intelligence.sentiment.sentiment_advisor")
 
@@ -146,7 +147,7 @@ class SentimentAdvisor:
         )
 
         fg_label = f"F&G={fear_greed.value}" if fear_greed else "Pulse"
-        macro_thread_title = f"ntfy-macro: 🧭 [MACRO ADVISOR] {fg_label}"
+        macro_thread_title = f"{topic_spec('macro_sentiment').title} — {fg_label}"
         resp = self.gemini_client.query_json(
             prompt,
             timeout_sec=25.0,

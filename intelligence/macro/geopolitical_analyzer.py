@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from intelligence.macro.news_feed_collector import NewsFeedSnapshot
 from intelligence.sentiment.gemini_client import GeminiClient
+from orchestratorOS.agy.topics import topic_spec
 from botcore import load_dotenv, required_float_env
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -202,9 +203,8 @@ class GeopoliticalThreatAnalyzer:
             "}"
         )
 
-        # Exact title aligned with ntfy-macro alert naming
         lead_headline = high_sev[0].title[:60] if high_sev else "Macro Geopolitical Assessment"
-        macro_thread_title = f"ntfy-macro: 🛡 [MACRO SHOCK SHIELD] {lead_headline}"
+        macro_thread_title = f"{topic_spec('macro_geopolitical').title} — {lead_headline}"
 
         resp = self.gemini_client.query_json(
             prompt,

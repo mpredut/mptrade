@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import re
-from typing import Dict, NamedTuple, Optional, Set
+from typing import Any, Dict, NamedTuple, Optional, Set
 
 from botcore import required_int_env
 from orchestratorOS.agy.paths import expand_config_path, resolve_bot_cli_base
@@ -93,6 +93,33 @@ def get_active_topic_cids(registry_path: Optional[str] = None) -> Set[str]:
     }
 
 
+def get_topic_canonical_titles(registry_path: Optional[str] = None) -> Dict[str, str]:
+    """Map each topic's conversation_id to its canonical TopicSpec title (or registry title)."""
+    out: Dict[str, str] = {}
+    for key, entry in load_topic_registry(registry_path).items():
+        if not isinstance(entry, dict) or not entry.get("conversation_id"):
+            continue
+        cid = str(entry["conversation_id"])
+        spec_title = TOPIC_SPECS[key].title if key in TOPIC_SPECS else ""
+        title = spec_title or str(entry.get("title") or "").strip()
+        if title:
+            out[cid] = title
+    return out
+
+
+def format_topic_turn_header(topic_key: Optional[str], thread_title: Optional[str]) -> Optional[str]:
+    """Normalize the per-turn header so every topic thread always starts with its canonical TopicSpec title."""
+    raw = (thread_title or "").strip()
+    if not topic_key or topic_key not in TOPIC_SPECS:
+        return raw or None
+    canonical = TOPIC_SPECS[topic_key].title
+    if not raw or raw == canonical or raw.startswith(canonical):
+        return raw or canonical
+    cleaned = re.sub(r"^ntfy-(?:guard|macro):\s*", "", raw)
+    return f"{canonical} — {cleaned}" if cleaned else canonical
+
+
+
 class TopicSession(NamedTuple):
     """How the next turn of a topic thread must be issued."""
     conversation_id: Optional[str]   # permanent thread to resume; None only before the thread exists
@@ -156,15 +183,35 @@ _SHORT_SUMMARY_KEYS = (
 _PROSE_SUMMARY_KEYS = ("summary", "reason")
 
 
-def _extract_last_json_dict(text: str) -> Optional[dict]:
+def extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+    """Extract a JSON object from pure JSON or a hybrid Markdown + trailing JSON response."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    if "```" in cleaned:
+        fences = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned)
+        for block in reversed(fences):
+            cand = block.strip()
+            if cand.startswith("{") and cand.endswith("}"):
+                cleaned = cand
+                break
+        else:
+            if fences:
+                cleaned = fences[-1].strip()
+    try:
+        obj = json.loads(cleaned)
+        if isinstance(obj, dict):
+            return obj
+    except ValueError:
+        pass
     decoder = json.JSONDecoder()
-    pos = len(text)
+    pos = len(cleaned)
     while True:
-        idx = text.rfind("{", 0, pos)
+        idx = cleaned.rfind("{", 0, pos)
         if idx < 0:
             return None
         try:
-            obj, _ = decoder.raw_decode(text[idx:])
+            obj, _ = decoder.raw_decode(cleaned[idx:])
             if isinstance(obj, dict):
                 return obj
         except ValueError:
@@ -174,21 +221,8 @@ def _extract_last_json_dict(text: str) -> Optional[dict]:
 
 def condense_decision(response_text: str, max_len: int = 220) -> str:
     """Single-line summary of an LLM JSON decision (falls back to the whitespace-collapsed text)."""
-    raw = (response_text or "").strip()
-    fences = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", raw)
-    for block in reversed(fences):
-        cand = block.strip()
-        if cand.startswith("{") and cand.endswith("}"):
-            raw = cand
-            break
-    else:
-        if fences:
-            raw = fences[-1].strip()
-    condensed = " ".join(raw.split())
-    try:
-        parsed = json.loads(condensed)
-    except ValueError:
-        parsed = _extract_last_json_dict(condensed)
+    condensed = " ".join((response_text or "").split())
+    parsed = extract_json_object(response_text)
     if isinstance(parsed, dict):
         parts = [f"{k}={parsed[k]}" for k in _SHORT_SUMMARY_KEYS if parsed.get(k) not in (None, "")]
         mtd = parsed.get("market_trading_decision")

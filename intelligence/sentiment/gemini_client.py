@@ -13,7 +13,13 @@ import urllib.request
 
 from botcore import load_dotenv, required_env
 from orchestratorOS.agy.paths import resolve_agy_bot_bin, resolve_bot_cli_base
-from orchestratorOS.agy.topics import TopicSession, prepare_topic_session, record_topic_turn
+from orchestratorOS.agy.topics import (
+    TopicSession,
+    extract_json_object,
+    format_topic_turn_header,
+    prepare_topic_session,
+    record_topic_turn,
+)
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
@@ -102,8 +108,9 @@ class GeminiClient:
                     session = prepare_topic_session(topic_key, cli_base=bot_cli_base)
 
                 # The per-call title is a turn header; the thread itself keeps its permanent topic name.
+                effective_title = format_topic_turn_header(topic_key, thread_title) if topic_key else thread_title
                 body = f"{session.history_prefix}{prompt}" if session.history_prefix else prompt
-                cli_prompt = f"{thread_title}\n\n{body}" if thread_title else body
+                cli_prompt = f"{effective_title}\n\n{body}" if effective_title else body
                 if session.compact:
                     cli_prompt = f"/compact {cli_prompt}"
 
@@ -236,37 +243,10 @@ class GeminiClient:
         if not raw_text:
             return None
 
-        # Clean code fence markdown block if present (prefer the last JSON object fence in hybrid Markdown+JSON replies)
-        cleaned = raw_text.strip()
-        if "```" in cleaned:
-            fences = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned)
-            for block in reversed(fences):
-                cand = block.strip()
-                if cand.startswith("{") and cand.endswith("}"):
-                    cleaned = cand
-                    break
-            else:
-                if fences:
-                    cleaned = fences[-1].strip()
-
-        try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            decoder = json.JSONDecoder()
-            pos = len(cleaned)
-            while True:
-                idx = cleaned.rfind("{", 0, pos)
-                if idx < 0:
-                    break
-                try:
-                    obj, _ = decoder.raw_decode(cleaned[idx:])
-                    if isinstance(obj, dict):
-                        return obj
-                except json.JSONDecodeError:
-                    pass
-                pos = idx
+        parsed = extract_json_object(raw_text)
+        if parsed is None:
             logger.warning("Failed to decode JSON from Gemini output (raw text: %s)", raw_text[:200])
-            return None
+        return parsed
 
 
 # Generic LLM alias

@@ -12,6 +12,7 @@ Field = Tuple[int, int, object]   # (field number, wire type, int | bytes)
 SUMMARY_TITLE_FIELD = 1           # TrajectorySummary.title (fallback display text)
 SUMMARY_ANNOTATIONS_FIELD = 15    # TrajectorySummary.annotations (sub-field 1 = user-visible title)
 SUMMARY_SOURCE_FIELD = 20         # TrajectorySummary.source (17 = CORTEX_TRAJECTORY_SOURCE_CLI, hidden in Web UI)
+SUMMARY_STATUS_FIELD = 28         # TrajectorySummary.status (2 = RUNNING, 4 = IDLE)
 
 
 def enc_varint(v: int) -> bytes:
@@ -73,10 +74,11 @@ def enc_fields(fields: Iterable[Field]) -> bytes:
     return bytes(out)
 
 
-def summary_ui_visible(raw: bytes, title: str = "") -> bytes:
+def summary_ui_visible(raw: bytes, title: str = "", *, reset_running: bool = False) -> bytes:
     """Return a TrajectorySummary without the CLI source marker and, if given, with ``title`` as its UI title.
 
-    Other annotation sub-fields (e.g. last_user_view_time) are preserved.
+    Other annotation sub-fields (e.g. last_user_view_time) are preserved. When ``reset_running`` is True,
+    a stale RUNNING status (field 28 = 2) is reset to IDLE (4) and fields are sorted by tag.
     """
     keep, annot_sub = [], []
     for tag, wire, v in parse_fields(raw):
@@ -85,12 +87,26 @@ def summary_ui_visible(raw: bytes, title: str = "") -> bytes:
         if tag == SUMMARY_ANNOTATIONS_FIELD and wire == 2:
             annot_sub = parse_fields(v)
             continue
+        if reset_running and tag == SUMMARY_STATUS_FIELD and wire == 0 and v == 2:
+            v = 4
         keep.append((tag, wire, v))
     if title:
         annot_sub = [(1, 2, title.encode())] + [x for x in annot_sub if x[0] != 1]
     if annot_sub:
         keep.append((SUMMARY_ANNOTATIONS_FIELD, 2, enc_fields(annot_sub)))
+    if reset_running:
+        keep.sort(key=lambda x: x[0])
     return enc_fields(keep)
+
+
+def summary_annotation_title(raw: bytes) -> str:
+    """Extract the user-visible annotation title (field 15, sub-field 1) from a TrajectorySummary."""
+    for tag, wire, v in parse_fields(raw):
+        if tag == SUMMARY_ANNOTATIONS_FIELD and wire == 2:
+            for t, w, x in parse_fields(v):
+                if t == 1 and w == 2:
+                    return x.decode("utf-8", "ignore").strip()
+    return ""
 
 
 def entry_cid(entry: bytes) -> str:
@@ -103,6 +119,15 @@ def entry_cid(entry: bytes) -> str:
         if tag == 1 and wire == 2:
             return v.decode("utf-8", "replace")
     return ""
+
+
+def list_entry_cids(buf: bytes) -> Set[str]:
+    """Return all conversation IDs stored in top-level summary map entries (field 1) of a summaries .pb file."""
+    return {
+        cid
+        for tag, wire, v in parse_fields(buf)
+        if tag == 1 and wire == 2 and (cid := entry_cid(v))
+    }
 
 
 def drop_entries(buf: bytes, cids: Set[str]) -> Tuple[bytes, int]:

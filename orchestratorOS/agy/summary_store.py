@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 from typing import Iterable, Optional, Set, Tuple
@@ -27,6 +28,37 @@ def summaries_db(cli_base: str) -> str:
 
 def conversation_db(cli_base: str, cid: str) -> str:
     return os.path.join(cli_base, "conversations", f"{cid}.db")
+
+
+def checkpoint_db(path: str) -> bool:
+    """Flush SQLite WAL into the main database file. Returns False if it could not be done safely."""
+    wal = path + "-wal"
+    try:
+        if not os.path.exists(wal) or os.path.getsize(wal) == 0:
+            return True
+        conn = sqlite3.connect(path, timeout=15)
+        try:
+            row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            return bool(row) and row[0] == 0
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        logger.warning("checkpoint failed for %s: %s", path, e)
+        return False
+
+
+def drop_wal_sidecars(path: str, *, force: bool = False) -> None:
+    """Remove -wal and -shm sidecar files next to ``path`` (refuses non-empty -wal unless ``force=True``)."""
+    for ext in ("-wal", "-shm"):
+        sidecar = path + ext
+        if os.path.exists(sidecar):
+            try:
+                if not force and ext == "-wal" and os.path.getsize(sidecar) > 0:
+                    logger.warning("refusing to drop non-empty %s", sidecar)
+                    continue
+                os.remove(sidecar)
+            except OSError as e:
+                logger.warning("cannot remove %s: %s", sidecar, e)
 
 
 def parse_db_timestamp(ts_str: str) -> Optional[datetime]:
@@ -73,6 +105,17 @@ def get_thread_step_count(cid: str, cli_base: str) -> Tuple[bool, int, str]:
     exists = os.path.exists(conversation_db(cli_base, cid))
     row = read_summary_row(cli_base, cid)
     return (exists, int(row.get("step_count") or 0), str(row.get("status") or "")) if row else (exists, 0, "")
+
+
+def read_annotation_title(cli_base: str, cid: str) -> str:
+    """Read ``title`` from annotations/<cid>.pbtxt, or '' if absent."""
+    try:
+        with open(os.path.join(cli_base, "annotations", f"{cid}.pbtxt"), encoding="utf-8", errors="ignore") as f:
+            txt = f.read()
+    except OSError:
+        return ""
+    m = re.search(r'title:\s*"((?:[^"\\]|\\.)*)"', txt)
+    return m.group(1).replace('\\"', '"').replace("\\\\", "\\").strip() if m else ""
 
 
 def write_annotation_title(cli_base: str, cid: str, title: str) -> None:

@@ -8,10 +8,48 @@ from typing import Any, Dict, Optional
 
 from intelligence.internal.guards.guard_decision import GuardDecision
 from intelligence.sentiment.gemini_client import GeminiClient
+from orchestratorOS.agy.topics import topic_spec
 
 logger = logging.getLogger("intelligence.sentiment.high_stake_guard")
 
 DEFAULT_MIN_NOTIONAL_EUR = 1000.0
+
+
+def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
+    """Compute multi-horizon percentage changes (15m, 30m, 1h, 3h) and 24h range from a cache_24_price series."""
+    if not isinstance(series, list) or len(series) < 2:
+        return {}
+    try:
+        now_ms = float(series[-1][0])
+        cur_px = float(series[-1][1])
+        if cur_px <= 0:
+            return {}
+
+        def _px_ago(mins: float) -> float:
+            target = now_ms - mins * 60000.0
+            for ts_ms, p_val in reversed(series):
+                if float(ts_ms) <= target:
+                    return float(p_val)
+            return float(series[0][1])
+
+        p15, p30, p60, p180 = _px_ago(15), _px_ago(30), _px_ago(60), _px_ago(180)
+        sample_prices = [float(x[1]) for x in series[::max(1, len(series) // 500)] if len(x) > 1]
+        out: Dict[str, Any] = {
+            "low_24h": min(sample_prices) if sample_prices else cur_px,
+            "high_24h": max(sample_prices) if sample_prices else cur_px,
+        }
+        if p15 > 0:
+            out["chg_15m_pct"] = round((cur_px / p15 - 1.0) * 100.0, 2)
+        if p30 > 0:
+            out["chg_30m_pct"] = round((cur_px / p30 - 1.0) * 100.0, 2)
+        if p60 > 0:
+            out["chg_1h_pct"] = round((cur_px / p60 - 1.0) * 100.0, 2)
+        if p180 > 0:
+            out["chg_3h_pct"] = round((cur_px / p180 - 1.0) * 100.0, 2)
+        return out
+    except Exception:
+        return {}
+
 
 
 def collect_pretrade_telemetry(
@@ -87,6 +125,39 @@ def collect_pretrade_telemetry(
     if dur_sec and dur_sec > 0:
         telemetry["Trend Duration"] = f"{dur_sec / 3600.0:.1f} hours"
 
+    # 4B. 24h Multi-Horizon Price Evolution & Dynamic Multi-Window Slopes (shared with Reconciler)
+    try:
+        p24_path = os.path.join(cachedb_dir, f"cache_24_price_{symbol}.json")
+        if os.path.exists(p24_path):
+            with open(p24_path, "r", encoding="utf-8") as f:
+                p24_data = json.load(f)
+            raw_items = p24_data.get("items", {}) if isinstance(p24_data, dict) else {}
+            series = raw_items.get(symbol, []) if isinstance(raw_items, dict) else raw_items
+            m24 = compute_24h_price_metrics(series)
+            if m24:
+                telemetry["24h Multi-Horizon Price Evolution"] = (
+                    f"15m={m24.get('chg_15m_pct', 0):+.2f}%, 30m={m24.get('chg_30m_pct', 0):+.2f}%, "
+                    f"1h={m24.get('chg_1h_pct', 0):+.2f}%, 3h={m24.get('chg_3h_pct', 0):+.2f}%, "
+                    f"24h Range=[${m24.get('low_24h')}, ${m24.get('high_24h')}]"
+                )
+    except Exception:
+        pass
+
+    try:
+        st_path = os.path.join(cachedb_dir, "cache_short_trend.json")
+        if os.path.exists(st_path):
+            with open(st_path, "r", encoding="utf-8") as f:
+                st_data = json.load(f)
+            tinfo = st_data.get(symbol) if isinstance(st_data, dict) else None
+            if isinstance(tinfo, dict):
+                dyn = tinfo.get("dynamic", {}) if isinstance(tinfo.get("dynamic"), dict) else {}
+                s37 = (dyn.get("222") or {}).get("slope_full", 0.0)
+                s15 = (dyn.get("900") or {}).get("slope_full", 0.0)
+                s25h = (dyn.get("9000") or {}).get("slope_full", 0.0)
+                telemetry["Dynamic Multi-Window Slopes"] = f"3.7m={s37:+.5f}, 15m={s15:+.5f}, 2.5h={s25h:+.5f}"
+    except Exception:
+        pass
+
     # 5. Macro Sentiment Bias & Fear/Greed Index (Pillar 3)
     try:
         for m_file in ("sentiment_advisor_eval.json", "macro_advisor_eval.json", "gemini_macro_advisor.json"):
@@ -136,6 +207,67 @@ import time
 
 DEFAULT_HIGH_STAKE_CACHE_TTL_SEC = 600.0
 _HIGH_STAKE_DECISION_CACHE: Dict[tuple[str, str, int], tuple[float, GuardDecision]] = {}
+
+
+def is_llm_guard_exempt(explicit_client: bool = False) -> bool:
+    """True when LLM pre-trade guards are suppressed via environment flags (backtest/replay/disabled)."""
+    return not explicit_client and any(
+        os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on")
+        for k in ("DISABLE_GEMINI_LLM", "BACKTEST_MODE", "REPLAY_MODE")
+    )
+
+
+def evaluate_llm_guard_response(
+    guard_name: str,
+    action_label: str,
+    resp: Optional[Dict[str, Any]],
+    *,
+    fallback_action: str,
+    notional_eur: float,
+) -> GuardDecision:
+    """SSOT converter from a pre-trade LLM JSON response (or timeout None) into a canonical GuardDecision."""
+    if not resp:
+        if fallback_action == "veto":
+            return GuardDecision.veto(guard_name, "llm_query_timeout_fail_closed", notional_eur=notional_eur)
+        if fallback_action == "downscale":
+            return GuardDecision.downscale(
+                guard_name, scale=0.5, reason="llm_query_timeout_downscaled", notional_eur=notional_eur
+            )
+        return GuardDecision.allow(guard_name, "llm_query_timeout_fallback_allowed", notional_eur=notional_eur)
+
+    decision_str = str(resp.get("decision") or "APPROVED").upper().strip()
+    reason = str(resp.get("reason") or "evaluated by LLM")
+    raw_scale = resp.get("suggested_scale")
+    try:
+        scale = float(1.0 if raw_scale is None else raw_scale)
+        if not (0.0 <= scale <= 10.0):
+            scale = 1.0
+    except (TypeError, ValueError):
+        scale = 1.0
+
+    if decision_str == "REJECTED":
+        return GuardDecision.veto(
+            guard_name,
+            f"Gemini vetoed {action_label}: {reason}",
+            notional_eur=notional_eur,
+            gemini_reason=reason,
+        )
+    if decision_str == "DOWNSCALE":
+        clamped_scale = max(0.1, min(1.0, scale))
+        return GuardDecision.downscale(
+            guard_name,
+            scale=clamped_scale,
+            reason=f"Gemini downscaled {action_label}: {reason}",
+            notional_eur=notional_eur,
+            gemini_reason=reason,
+        )
+    return GuardDecision.allow(
+        guard_name,
+        f"Gemini approved {action_label}: {reason}",
+        notional_eur=notional_eur,
+        gemini_reason=reason,
+    )
+
 
 
 class HighStakeGuard:
@@ -197,10 +329,7 @@ class HighStakeGuard:
                 notional_eur=notional,
             )
 
-        if not self._explicit_client and any(
-            os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on")
-            for k in ("DISABLE_GEMINI_LLM", "BACKTEST_MODE", "REPLAY_MODE")
-        ):
+        if is_llm_guard_exempt(self._explicit_client):
             return GuardDecision.allow("HighStakeGuard", "backtest_mode_exempt", notional_eur=notional)
 
         now = time.time()
@@ -267,7 +396,7 @@ class HighStakeGuard:
             "}"
         )
 
-        thread_title = f"ntfy-guard: 🛡 [HIGH-STAKE GUARD] {side_norm} {symbol} €{notional:,.2f}"
+        thread_title = f"{topic_spec('guard_high_stake').title} — {side_norm} {symbol} €{notional:,.2f}"
         resp = self.gemini_client.query_json(
             prompt,
             timeout_sec=self.timeout_sec,
@@ -275,47 +404,27 @@ class HighStakeGuard:
             topic_key="guard_high_stake",
         )
         if not resp:
-            # Fallback on timeout or connectivity failure
-            logger.warning("LLM high-stake query failed or timed out for %s €%.2f. Fallback: %s", symbol, notional, self.fallback_action)
-            if self.fallback_action == "veto":
-                return GuardDecision.veto("HighStakeGuard", "llm_query_timeout_fail_closed", notional_eur=notional)
-            elif self.fallback_action == "downscale":
-                return GuardDecision.downscale("HighStakeGuard", scale=0.5, reason="llm_query_timeout_downscaled", notional_eur=notional)
-            return GuardDecision.allow("HighStakeGuard", "llm_query_timeout_fallback_allowed", notional_eur=notional)
+            logger.warning(
+                "LLM high-stake query failed or timed out for %s €%.2f. Fallback: %s",
+                symbol,
+                notional,
+                self.fallback_action,
+            )
+            return evaluate_llm_guard_response(
+                "HighStakeGuard",
+                f"high-stake {side_norm}",
+                None,
+                fallback_action=self.fallback_action,
+                notional_eur=notional,
+            )
 
-        decision_str = str(resp.get("decision") or "APPROVED").upper().strip()
-        reason = str(resp.get("reason") or "evaluated by LLM")
-        raw_scale = resp.get("suggested_scale")
-        try:
-            scale = float(1.0 if raw_scale is None else raw_scale)
-            if not (0.0 <= scale <= 10.0):
-                scale = 1.0
-        except (TypeError, ValueError):
-            scale = 1.0
-
-        if decision_str == "REJECTED":
-            dec = GuardDecision.veto(
-                "HighStakeGuard",
-                f"Gemini vetoed high-stake {side_norm}: {reason}",
-                notional_eur=notional,
-                gemini_reason=reason,
-            )
-        elif decision_str == "DOWNSCALE":
-            clamped_scale = max(0.1, min(1.0, scale))
-            dec = GuardDecision.downscale(
-                "HighStakeGuard",
-                scale=clamped_scale,
-                reason=f"Gemini downscaled high-stake {side_norm}: {reason}",
-                notional_eur=notional,
-                gemini_reason=reason,
-            )
-        else:
-            dec = GuardDecision.allow(
-                "HighStakeGuard",
-                f"Gemini approved high-stake {side_norm}: {reason}",
-                notional_eur=notional,
-                gemini_reason=reason,
-            )
+        dec = evaluate_llm_guard_response(
+            "HighStakeGuard",
+            f"high-stake {side_norm}",
+            resp,
+            fallback_action=self.fallback_action,
+            notional_eur=notional,
+        )
 
         if self.cache_ttl_sec > 0:
             _HIGH_STAKE_DECISION_CACHE[cache_key] = (now, dec)

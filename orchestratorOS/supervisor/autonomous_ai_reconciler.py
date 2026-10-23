@@ -28,6 +28,7 @@ if _ROOT_DIR not in sys.path:
 
 from botcore import load_dotenv
 from intelligence.sentiment.gemini_client import GeminiClient
+from intelligence.sentiment.guards.high_stake_guard import compute_24h_price_metrics
 from orchestratorOS.agy.topics import TOPIC_SPECS, topic_spec
 
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
@@ -319,35 +320,9 @@ class AutonomousAIReconciler:
             if isinstance(p24_data, dict):
                 raw_items = p24_data.get("items", {})
                 series = raw_items.get(sym, []) if isinstance(raw_items, dict) else raw_items
-                if isinstance(series, list) and len(series) >= 2:
-                    try:
-                        now_ms = float(series[-1][0])
-                        cur_px = float(series[-1][1])
-                        if cur_px > 0:
-                            def _px_ago(mins: float) -> float:
-                                target = now_ms - mins * 60000.0
-                                for ts_ms, p_val in reversed(series):
-                                    if float(ts_ms) <= target:
-                                        return float(p_val)
-                                return float(series[0][1])
-
-                            p15, p30, p60, p180 = _px_ago(15), _px_ago(30), _px_ago(60), _px_ago(180)
-                            sample_prices = [float(x[1]) for x in series[::max(1, len(series) // 500)] if len(x) > 1]
-                            low24 = min(sample_prices) if sample_prices else cur_px
-                            high24 = max(sample_prices) if sample_prices else cur_px
-                            p_entry = snapshot.prices_and_trends[sym]
-                            if p15 > 0:
-                                p_entry["chg_15m_pct"] = round((cur_px / p15 - 1.0) * 100.0, 2)
-                            if p30 > 0:
-                                p_entry["chg_30m_pct"] = round((cur_px / p30 - 1.0) * 100.0, 2)
-                            if p60 > 0:
-                                p_entry["chg_1h_pct"] = round((cur_px / p60 - 1.0) * 100.0, 2)
-                            if p180 > 0:
-                                p_entry["chg_3h_pct"] = round((cur_px / p180 - 1.0) * 100.0, 2)
-                            p_entry["low_24h"] = low24
-                            p_entry["high_24h"] = high24
-                    except Exception:
-                        pass
+                m24 = compute_24h_price_metrics(series)
+                if m24:
+                    snapshot.prices_and_trends[sym].update(m24)
 
             ob = _read_json(os.path.join(self.cache_dir, f"orderbook_depth_{sym}.json"))
             deriv = _read_json(os.path.join(self.cache_dir, f"derivatives_telemetry_{sym}.json"))

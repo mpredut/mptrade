@@ -45,3 +45,15 @@ def resolve_agy_bot_bin(cli_path: Optional[str] = None) -> str:
     Existence is checked by the caller at invocation time (the CLI may be absent on CI hosts).
     """
     return expand_config_path(cli_path or required_env("AGY_BOT_BIN"))
+
+
+def visible_conversations_dir(cli_base: str) -> str:
+    """SSOT for the daemon's visible conversations dir that sits next to a CLI store (agy 1.4.0 watchDirs layout)."""
+    return os.path.join(os.path.dirname(os.path.abspath(cli_base)), "antigravity", "conversations")
+
+
+def resolve_store_lock_path(home_dir: Optional[str] = None) -> str:
+    """Shared flock file coordinating agy_store_fix and ui_mirror store operations."""
+    base = expand_config_path(home_dir) if home_dir else (os.environ.get("AGY_FIX_HOME") or os.path.expanduser("~"))
+    return os.path.join(base, ".agy_store_fix.lock")
+

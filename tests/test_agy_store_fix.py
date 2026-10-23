@@ -161,14 +161,14 @@ def test_stale_running_status_does_not_deadlock_ui_sync_while_fresh_running_bloc
     _age_store(d1, 1200)
     assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_READY
 
-    # And repair_summaries restores canonical topic titles from TOPIC_REGISTRY over stale ntfy-* titles
+    # And repair_summaries restores canonical topic titles from TOPIC_REGISTRY / TOPIC_SPECS over stale ntfy-* titles
     (tmp_path / "llm_topic_threads.json").write_text(
-        json.dumps({"macro_sentiment": {"conversation_id": "new-topic", "title": "🧭 [auto_macro_sentiment] Canonical"}})
+        json.dumps({"macro_sentiment": {"conversation_id": "new-topic"}})
     )
     asf.repair_summaries({"stale-run": 100, "new-topic": 100})
     conn = sqlite3.connect(asf.DB)
     rows = dict(conn.execute("SELECT conversation_id, title FROM conversation_summaries").fetchall())
     conn.close()
-    assert rows["new-topic"] == "🧭 [auto_macro_sentiment] Canonical"
+    assert rows["new-topic"] == "🧭 [auto_macro_sentiment] Fear & Greed, Breadth & Market Bias (3h)"
 
 

@@ -5,12 +5,22 @@ import sqlite3
 
 import pytest
 
-from orchestratorOS.admin.agy_store_fix import visible_conversations_dir
 from orchestratorOS.agy import paths
-from orchestratorOS.agy.protobuf import drop_entries, enc_fields, entry_cid, parse_fields, summary_ui_visible
+from orchestratorOS.agy.paths import visible_conversations_dir
+from orchestratorOS.agy.protobuf import (
+    drop_entries,
+    enc_fields,
+    entry_cid,
+    list_entry_cids,
+    parse_fields,
+    summary_annotation_title,
+    summary_ui_visible,
+)
 from orchestratorOS.agy.topics import (
     TOPIC_SPECS,
     condense_decision,
+    extract_json_object,
+    format_topic_turn_header,
     get_active_topic_cids,
     load_topic_registry,
     prepare_topic_session,
@@ -44,14 +54,16 @@ class TestPaths:
 
 class TestProtobuf:
     def test_summary_ui_visible_drops_cli_source_and_sets_title_keeping_other_annotations(self):
-        raw = enc_fields([(1, 2, b"preview"), (15, 2, enc_fields([(1, 2, b"old"), (3, 0, 7)])), (20, 0, 17)])
-        out = dict((t, v) for t, _, v in parse_fields(summary_ui_visible(raw, "New")))
-        assert 20 not in out and out[1] == b"preview"
+        raw = enc_fields([(1, 2, b"preview"), (15, 2, enc_fields([(1, 2, b"old"), (3, 0, 7)])), (20, 0, 17), (28, 0, 2)])
+        out = dict((t, v) for t, _, v in parse_fields(summary_ui_visible(raw, "New", reset_running=True)))
+        assert 20 not in out and out[1] == b"preview" and out[28] == 4
         assert parse_fields(out[15]) == [(1, 2, b"New"), (3, 0, 7)]
+        assert summary_annotation_title(summary_ui_visible(raw, "New")) == "New"
 
     def test_drop_entries_removes_summary_and_mtime_entries_of_given_cids(self):
         buf = b"".join(enc_fields([(tag, 2, enc_fields([(1, 2, cid.encode()), (2, 0, 1)]))])
                        for tag, cid in ((1, "a"), (1, "b"), (2, "a")))
+        assert list_entry_cids(buf) == {"a", "b"}
         out, removed = drop_entries(buf, {"a"})
         assert removed == 2 and [entry_cid(v) for _, _, v in parse_fields(out)] == ["b"]
 
@@ -244,5 +256,10 @@ class TestMirrorTopicThreadToUi:
         )
         condensed = condense_decision(hybrid_reply)
         assert condensed.startswith("trade=HOLD:TAOUSDC@0.88; summary=TAO si BTC in consolidare")
+        assert extract_json_object(hybrid_reply)["market_trading_decision"]["symbol"] == "TAOUSDC"
+        header = format_topic_turn_header("guard_high_stake", "ntfy-guard: BUY TAOUSDC €850")
+        assert header.startswith(TOPIC_SPECS["guard_high_stake"].title)
+        assert "ntfy-guard:" not in header
+
 
 

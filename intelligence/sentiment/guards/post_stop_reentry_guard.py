@@ -21,7 +21,12 @@ from typing import Any, Dict, Optional, Tuple
 
 from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
 from intelligence.sentiment.gemini_client import GeminiClient
-from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
+from intelligence.sentiment.guards.high_stake_guard import (
+    collect_pretrade_telemetry,
+    evaluate_llm_guard_response,
+    is_llm_guard_exempt,
+)
+from orchestratorOS.agy.topics import topic_spec
 
 logger = logging.getLogger("intelligence.sentiment.guards.post_stop_reentry_guard")
 
@@ -81,10 +86,7 @@ class PostStopReentryGuard:
         if self.mode in ("off", "0", "disabled"):
             return GuardDecision.allow("PostStopReentryGuard", "post_stop_reentry_guard_disabled")
 
-        if not self._explicit_client and any(
-            os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on")
-            for k in ("DISABLE_GEMINI_LLM", "BACKTEST_MODE", "REPLAY_MODE")
-        ):
+        if is_llm_guard_exempt(self._explicit_client):
             return GuardDecision.allow("PostStopReentryGuard", "backtest_mode_exempt")
 
         now_ts = float(now) if now is not None else time.time()
@@ -154,7 +156,7 @@ class PostStopReentryGuard:
             "}"
         )
 
-        thread_title = f"ntfy-guard: 🛡 [POST-STOP RE-ENTRY] BUY {symbol} €{notional:,.2f}"
+        thread_title = f"{topic_spec('guard_post_stop').title} — BUY {symbol} €{notional:,.2f}"
         resp = self.gemini_client.query_json(
             prompt,
             timeout_sec=self.timeout_sec,
@@ -163,32 +165,19 @@ class PostStopReentryGuard:
         )
 
         if not resp:
-            # Fallback on timeout or connectivity failure
             logger.warning(
                 "LLM post-stop re-entry query failed or timed out for %s €%.2f. Fallback: %s",
                 symbol,
                 notional,
                 self.fallback_action,
             )
-            if self.fallback_action == "veto":
-                dec = GuardDecision.veto(
-                    "PostStopReentryGuard",
-                    "llm_query_timeout_fail_closed",
-                    notional_eur=notional,
-                )
-            elif self.fallback_action == "downscale":
-                dec = GuardDecision.downscale(
-                    "PostStopReentryGuard",
-                    scale=0.5,
-                    reason="llm_query_timeout_downscaled",
-                    notional_eur=notional,
-                )
-            else:
-                dec = GuardDecision.allow(
-                    "PostStopReentryGuard",
-                    "llm_query_timeout_fallback_allowed",
-                    notional_eur=notional,
-                )
+            dec = evaluate_llm_guard_response(
+                "PostStopReentryGuard",
+                "post-stop re-entry",
+                None,
+                fallback_action=self.fallback_action,
+                notional_eur=notional,
+            )
             self._maybe_notify(symbol, current_price, last_sell_price, trough, bounce_from_trough_pct, dec, now_ts=now_ts)
             if self.mode == "shadow":
                 final_dec = GuardDecision.allow(
@@ -205,37 +194,13 @@ class PostStopReentryGuard:
 
         decision_str = str(resp.get("decision") or "APPROVED").upper().strip()
         reason = str(resp.get("reason") or "evaluated by LLM")
-        raw_scale = resp.get("suggested_scale")
-        try:
-            scale = float(1.0 if raw_scale is None else raw_scale)
-            if not (0.0 <= scale <= 10.0):
-                scale = 1.0
-        except (TypeError, ValueError):
-            scale = 1.0
-
-        if decision_str == "REJECTED":
-            dec = GuardDecision.veto(
-                "PostStopReentryGuard",
-                f"Gemini vetoed post-stop re-entry: {reason}",
-                notional_eur=notional,
-                gemini_reason=reason,
-            )
-        elif decision_str == "DOWNSCALE":
-            clamped_scale = max(0.1, min(1.0, scale))
-            dec = GuardDecision.downscale(
-                "PostStopReentryGuard",
-                scale=clamped_scale,
-                reason=f"Gemini downscaled post-stop re-entry: {reason}",
-                notional_eur=notional,
-                gemini_reason=reason,
-            )
-        else:
-            dec = GuardDecision.allow(
-                "PostStopReentryGuard",
-                f"Gemini approved post-stop re-entry: {reason}",
-                notional_eur=notional,
-                gemini_reason=reason,
-            )
+        dec = evaluate_llm_guard_response(
+            "PostStopReentryGuard",
+            "post-stop re-entry",
+            resp,
+            fallback_action=self.fallback_action,
+            notional_eur=notional,
+        )
 
         self._maybe_notify(symbol, current_price, last_sell_price, trough, bounce_from_trough_pct, dec, now_ts=now_ts)
 

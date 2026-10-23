@@ -44,12 +44,16 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _ROOT_DIR not in sys.path:   # executed directly by the systemd drop-in with /usr/bin/python3
     sys.path.insert(0, _ROOT_DIR)
 
-from orchestratorOS.agy.protobuf import enc_fields, parse_fields, summary_ui_visible  # noqa: E402 (stdlib-only)
-
-
-def visible_conversations_dir(cli_base: str) -> str:
-    """SSOT for the daemon's visible conversations dir that sits next to a CLI store (agy 1.4.0 watchDirs layout)."""
-    return os.path.join(os.path.dirname(os.path.abspath(cli_base)), "antigravity", "conversations")
+from orchestratorOS.agy.paths import resolve_store_lock_path, visible_conversations_dir  # noqa: E402
+from orchestratorOS.agy.protobuf import (  # noqa: E402
+    enc_fields,
+    list_entry_cids,
+    parse_fields,
+    summary_annotation_title,
+    summary_ui_visible,
+)
+from orchestratorOS.agy.summary_store import checkpoint_db, drop_wal_sidecars, read_annotation_title  # noqa: E402
+from orchestratorOS.agy.topics import get_active_topic_cids, get_topic_canonical_titles  # noqa: E402
 
 
 HOME = os.environ.get("AGY_FIX_HOME") or os.path.expanduser("~")
@@ -61,7 +65,7 @@ ANN = os.path.join(CLI, "annotations")
 DB = os.path.join(CLI, "conversation_summaries.db")
 PB = os.path.join(CLI, "agyhub_summaries_proto.pb")
 LOGS = os.path.join(CLI, "log")
-LOCK = os.path.join(HOME, ".agy_store_fix.lock")
+LOCK = resolve_store_lock_path(HOME)
 LOG_FILE = os.path.join(HOME, "agy_store_fix.log")
 BACKUPS = os.path.join(HOME, "agy_store_fix_backups")
 AGY_BIN = os.path.join(HOME, ".local", "bin", "agy")
@@ -75,57 +79,25 @@ log = logging.getLogger("agy_store_fix")
 # ---------------------------------------------------------------- summary helpers
 def fix_summary(raw: bytes, title: str) -> bytes:
     """UI-visible summary (source dropped, title applied) with a stale RUNNING status reset to IDLE."""
-    fields = [(28, 0, 4) if (tag == 28 and wire == 0 and v == 2) else (tag, wire, v)
-              for tag, wire, v in parse_fields(summary_ui_visible(raw, title))]
-    fields.sort(key=lambda x: x[0])
-    return enc_fields(fields)
+    return summary_ui_visible(raw, title, reset_running=True)
 
 
 def raw_title(raw: bytes) -> str:
-    for tag, wire, v in parse_fields(raw):
-        if tag == 15 and wire == 2:
-            for t, w, x in parse_fields(v):
-                if t == 1 and w == 2:
-                    return x.decode("utf-8", "ignore").strip()
-    return ""
+    return summary_annotation_title(raw)
 
 
 def pbtxt_title(cid: str) -> str:
-    try:
-        txt = open(os.path.join(ANN, cid + ".pbtxt"), encoding="utf-8", errors="ignore").read()
-    except OSError:
-        return ""
-    m = re.search(r'title:\s*"((?:[^"\\]|\\.)*)"', txt)
-    return m.group(1).replace('\\"', '"').replace("\\\\", "\\").strip() if m else ""
+    return read_annotation_title(CLI, cid)
 
 
 # ---------------------------------------------------------------- file helpers
 def checkpoint(path: str) -> bool:
     """Flush the WAL into the main file. Returns False if it could not be done safely."""
-    wal = path + "-wal"
-    try:
-        if not os.path.exists(wal) or os.path.getsize(wal) == 0:
-            return True
-        c = sqlite3.connect(path, timeout=15)
-        row = c.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-        c.close()
-        return bool(row) and row[0] == 0
-    except sqlite3.Error as e:
-        log.warning("checkpoint failed for %s: %s", path, e)
-        return False
+    return checkpoint_db(path)
 
 
 def drop_sidecars(path: str) -> None:
-    for ext in ("-wal", "-shm"):
-        p = path + ext
-        if os.path.exists(p):
-            try:
-                if ext == "-wal" and os.path.getsize(p) > 0:
-                    log.warning("refusing to drop non-empty %s", p)
-                    continue
-                os.remove(p)
-            except OSError as e:
-                log.warning("cannot remove %s: %s", p, e)
+    drop_wal_sidecars(path, force=False)
 
 
 def same_file(a: str, b: str) -> bool:
@@ -448,14 +420,7 @@ UI_SYNC_READY, UI_SYNC_NOTHING, UI_SYNC_BUSY, UI_SYNC_STUCK = 0, 10, 11, 12
 def daemon_known_cids() -> set[str]:
     """Conversation IDs the running daemon holds in memory (as persisted in agyhub_summaries_proto.pb)."""
     with open(PB, "rb") as f:
-        buf = f.read()
-    out: set[str] = set()
-    for tag, wire, v in parse_fields(buf):
-        if tag == 1 and wire == 2:
-            for t, w, x in parse_fields(v):
-                if t == 1 and w == 2:
-                    out.add(x.decode("utf-8", "replace"))
-    return out
+        return list_entry_cids(f.read())
 
 
 def summary_row_cids() -> set[str]:
@@ -497,34 +462,12 @@ TOPIC_REGISTRY = os.path.join(_ROOT_DIR, "cachedb", "llm_topic_threads.json")
 
 def mirrored_topic_cids() -> set[str]:
     """Conversation IDs owned by mirrored background topic threads (excluded from interactive idle detection)."""
-    if not os.path.exists(TOPIC_REGISTRY):
-        return set()
-    try:
-        with open(TOPIC_REGISTRY, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return set()
-    if not isinstance(data, dict):
-        return set()
-    return {str(e["conversation_id"]) for e in data.values() if isinstance(e, dict) and e.get("conversation_id")}
+    return get_active_topic_cids(TOPIC_REGISTRY)
 
 
 def topic_canonical_titles() -> dict[str, str]:
     """Canonical permanent titles for topic threads from cachedb/llm_topic_threads.json."""
-    if not os.path.exists(TOPIC_REGISTRY):
-        return {}
-    try:
-        with open(TOPIC_REGISTRY, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    return {
-        str(e["conversation_id"]): str(e["title"]).strip()
-        for e in data.values()
-        if isinstance(e, dict) and e.get("conversation_id") and str(e.get("title") or "").strip()
-    }
+    return get_topic_canonical_titles(TOPIC_REGISTRY)
 
 
 def last_store_activity() -> float:
