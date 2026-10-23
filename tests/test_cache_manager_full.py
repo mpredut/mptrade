@@ -717,6 +717,14 @@ class TestCache24PriceManager(unittest.TestCase):
             with mgr.lock:
                 self.assertGreaterEqual(len(mgr.cache.get("BTC", [])), 5)
 
+        with self.subTest("on_price_update_rejects_older_timestamp"):
+            mgr = self._make()
+            base_ts = int(time.time() * 1000) + 10_000
+            mgr.on_price_update("BTC", base_ts, 60000.0)
+            mgr.on_price_update("BTC", base_ts - 1000, 50000.0)
+            with mgr.lock:
+                self.assertEqual(mgr.cache["BTC"][-1], [base_ts, 60000.0])
+
         with self.subTest("trim_removes_entries_older_than_keep_hours"):
             mgr = self._make()
             old_ts = int((time.time() - (mgr.KEEP_HOURS + 1) * 3600) * 1000)
@@ -1245,6 +1253,44 @@ class TestCacheFactory(unittest.TestCase):
             self.assertIs(factory_manager, singleton_manager)
             self.assertEqual(factory_manager.sync_ts, 0.8)
             periodic.assert_called_once_with(0.8, False)
+            _reset()
+
+        with self.subTest("concurrent first get constructs once and promotes sync"):
+            _reset()
+            barrier = threading.Barrier(2)
+            results = []
+            load_calls = 0
+
+            def slow_load_state(_self):
+                nonlocal load_calls
+                load_calls += 1
+                time.sleep(0.03)
+
+            def worker(start_sync):
+                barrier.wait(timeout=2.0)
+                results.append(
+                    cm.CacheFactory.get(
+                        "Order", symbols=["BTC"], start_sync=start_sync
+                    )
+                )
+
+            with patch.object(
+                    cm.CacheOrderManager, "load_state", autospec=True,
+                    side_effect=slow_load_state), \
+                 patch.object(
+                    cm.CacheOrderManager, "periodic_sync") as periodic:
+                threads = [
+                    threading.Thread(target=worker, args=(False,)),
+                    threading.Thread(target=worker, args=(True,)),
+                ]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(timeout=5.0)
+            self.assertEqual(len(results), 2)
+            self.assertIs(results[0], results[1])
+            self.assertEqual(load_calls, 1)
+            periodic.assert_called_once_with(cm.ORDER_SYNC_INTERVAL_SEC, False)
             _reset()
 
     def test_price_factories_return_per_symbol_managers_and_filenames(self):

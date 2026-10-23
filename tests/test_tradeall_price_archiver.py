@@ -133,6 +133,42 @@ class TestArchiverLifecycle(unittest.TestCase):
                 except OSError:
                     pass
 
+    def test_legacy_json_migration_succeeds_for_cache365_price_manager(self):
+        tmp_dir = tempfile.mkdtemp()
+        legacy_json = os.path.join(tmp_dir, "cache_365_price_BTCUSDC.json")
+        target_jsonl = os.path.join(tmp_dir, "cache_365_price_BTCUSDC.jsonl")
+        try:
+            with open(legacy_json, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "items": {"BTCUSDC": [[1000, 10.0], [2000, 11.0]]},
+                        "fetchtime": {"BTCUSDC": 2000},
+                    },
+                    handle,
+                )
+            manager = cm.Cache365PriceManager(60, ["BTCUSDC"], target_jsonl)
+            self.assertTrue(os.path.exists(target_jsonl))
+            self.assertEqual(manager.cache.get("BTCUSDC"), [[1000, 10.0], [2000, 11.0]])
+            with open(target_jsonl, encoding="utf-8") as handle:
+                rows = [json.loads(line) for line in handle if line.strip()]
+            self.assertEqual(
+                rows,
+                [
+                    {"s": "BTCUSDC", "i": [1000, 10.0]},
+                    {"s": "BTCUSDC", "i": [2000, 11.0]},
+                ],
+            )
+        finally:
+            for p in (legacy_json, target_jsonl, target_jsonl + ".meta"):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            try:
+                os.rmdir(tmp_dir)
+            except OSError:
+                pass
+
 
 if __name__ == "__main__":
     unittest.main()

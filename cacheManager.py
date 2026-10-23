@@ -2499,7 +2499,7 @@ class Cache24PriceManager(CacheManagerInterface):
         with self.lock:
             entries = self.cache.get(symbol)
             if entries and int(ts_ms) < int(entries[-1][0]):
-                ts_ms = int(entries[-1][0])
+                return
         if not self.fetchtime_per_symbol:
             self.fetchtime_per_symbol = self._rebuild_fetchtimes()
         self.update_cache_per_symbol(symbol, [[ts_ms, price]])
@@ -2668,10 +2668,10 @@ class Cache365PriceManager(Cache24PriceManager):
     def maintain_append_persist(self):
         """Prune the full disk archive with bounded memory, then reload its recent tail."""
         if not self.save_state:
-            return
+            return False
         cutoff_ms = int((time.time() - self.RETENTION_DAYS * 86400) * 1000)
         if not os.path.exists(self.filename):
-            return
+            return False
         changed = False
         try:
             with self.lock:
@@ -2696,15 +2696,16 @@ class Cache365PriceManager(Cache24PriceManager):
                 builtins.print(f"[{self.cls_name}][maintain] pruned expired/corrupt disk records")
             if os.path.getsize(self.filename) > self.MAX_FILE_BYTES:
                 self._rotate_disk_archive()
+            return True
         except OSError as exc:
             builtins.print(f"[{self.cls_name}][Error] streaming maintenance {self.filename}: {exc}")
+            return False
 
     def compact_jsonl(self):
         """Never rebuild an existing long archive from its bounded memory tail."""
         if os.path.exists(self.filename):
-            self.maintain_append_persist()
-        else:
-            super().compact_jsonl()  # Legacy JSON migration still starts from full memory.
+            return self.maintain_append_persist()
+        return super().compact_jsonl()  # Legacy JSON migration still starts from full memory.
 
     def _rotate_disk_archive(self):
         """Archive an oversized file while retaining a complete-line tail on disk."""
@@ -4118,6 +4119,7 @@ _PRICE_TREND_CACHES = frozenset({
 
 
 class CacheFactory:
+    _lock = threading.RLock()
     _instances = {}
     _sync_started = set()
 
@@ -4168,145 +4170,148 @@ class CacheFactory:
     def get(cls, name, symbols=None, *, start_sync=True, provider_names=None):
         if name == "ShortTrend":
             return get_short_trend_manager(symbols=symbols)
-        if name not in cls._CONFIG:
-            raise ValueError(f"Unknown cache type: {name}")
-        if provider_names is not None and name != "CurrentPrice":
-            raise ValueError("provider_names is supported only for CurrentPrice")
+        with cls._lock:
+            if name not in cls._CONFIG:
+                raise ValueError(f"Unknown cache type: {name}")
+            if provider_names is not None and name != "CurrentPrice":
+                raise ValueError("provider_names is supported only for CurrentPrice")
 
-        # This name-keyed singleton fixes symbols on first creation. Warn explicitly
-        # when a later call requests a different set that will be ignored.
-        if name in cls._instances and symbols is not None:
-            inst = cls._instances[name]
-            existing = set(inst.keys()) if isinstance(inst, dict) else set(getattr(inst, "symbols", []))
-            requested = set(symbols)
-            if requested != existing:
-                missing = requested - existing
-                # Use builtins.print so this warning remains visible if module logging
-                # replaces print with a no-op.
-                builtins.print(
-                    f"[CacheFactory][WARN] '{name}' already exists with symbols {sorted(existing)}; "
-                    f"the request for {sorted(requested)} is IGNORED"
-                    + (f" (missing: {sorted(missing)})" if missing else "")
-                    + ". Singleton per name — the first instance is used.")
-        if name == "CurrentPrice" and name in cls._instances:
-            cls._instances[name].bind_providers(provider_names)
+            # This name-keyed singleton fixes symbols on first creation. Warn explicitly
+            # when a later call requests a different set that will be ignored.
+            if name in cls._instances and symbols is not None:
+                inst = cls._instances[name]
+                existing = set(inst.keys()) if isinstance(inst, dict) else set(getattr(inst, "symbols", []))
+                requested = set(symbols)
+                if requested != existing:
+                    missing = requested - existing
+                    # Use builtins.print so this warning remains visible if module logging
+                    # replaces print with a no-op.
+                    builtins.print(
+                        f"[CacheFactory][WARN] '{name}' already exists with symbols {sorted(existing)}; "
+                        f"the request for {sorted(requested)} is IGNORED"
+                        + (f" (missing: {sorted(missing)})" if missing else "")
+                        + ". Singleton per name — the first instance is used.")
+            if name == "CurrentPrice" and name in cls._instances:
+                cls._instances[name].bind_providers(provider_names)
 
-        created = name not in cls._instances
-        if created:
-            config = cls._CONFIG[name]
-            manager_class = config["class"]
-            sync_ts = config["sync_ts"]()
-            extra_kwargs = {
-                key: value for key, value in config.items()
-                if key not in {"class", "filename", "sync_ts"}
-            }
-            if symbols is None:
-                if name == "AssetValue":
-                    symbols = ["TOTAL"]
-                elif name in _PRICE_TREND_CACHES:
-                    symbols, _, _default_providers = _default_price_tracking()
-                    if name == "CurrentPrice" and provider_names is None and _default_providers:
-                        provider_names = _default_providers
+            created = name not in cls._instances
+            if created:
+                config = cls._CONFIG[name]
+                manager_class = config["class"]
+                sync_ts = config["sync_ts"]()
+                extra_kwargs = {
+                    key: value for key, value in config.items()
+                    if key not in {"class", "filename", "sync_ts"}
+                }
+                if symbols is None:
+                    if name == "AssetValue":
+                        symbols = ["TOTAL"]
+                    elif name in _PRICE_TREND_CACHES:
+                        symbols, _, _default_providers = _default_price_tracking()
+                        if name == "CurrentPrice" and provider_names is None and _default_providers:
+                            provider_names = _default_providers
+                    else:
+                        symbols = sym.symbols
+
+                if name == "CurrentPrice":
+                    current_price_sync_ts = (
+                        None if _current_price_instance is not None else sync_ts
+                    )
+                    instance = get_current_price_manager(
+                        symbols=symbols,
+                        sync_ts=current_price_sync_ts,
+                        start_sync=False,
+                        provider_names=provider_names,
+                    )
+                    sync_ts = instance.sync_ts
+                elif name in ("SparsePrice", "24Price", "365Price"):
+                    # SparsePrice and 365Price are append-JSONL history; 24Price is a bounded full-rewrite cache.
+                    if name == "SparsePrice":
+                        prefix, ext = ("cache_sparse_price_", "jsonl")
+                    elif name == "365Price":
+                        prefix, ext = ("cache_365_price_", "jsonl")
+                    else:
+                        prefix, ext = ("cache_24_price_", "json")
+                    instance = {
+                        s: manager_class(
+                            sync_ts=sync_ts,
+                            filename=f"{prefix}{s}.{ext}",
+                            symbols=[s],
+                            api_client=api,
+                            **extra_kwargs,
+                        )
+                        for s in symbols
+                    }
                 else:
-                    symbols = sym.symbols
-
-            if name == "CurrentPrice":
-                current_price_sync_ts = (
-                    None if _current_price_instance is not None else sync_ts
-                )
-                instance = get_current_price_manager(
-                    symbols=symbols,
-                    sync_ts=current_price_sync_ts,
-                    start_sync=False,
-                    provider_names=provider_names,
-                )
-                sync_ts = instance.sync_ts
-            elif name in ("SparsePrice", "24Price", "365Price"):
-                # SparsePrice and 365Price are append-JSONL history; 24Price is a bounded full-rewrite cache.
-                if name == "SparsePrice":
-                    prefix, ext = ("cache_sparse_price_", "jsonl")
-                elif name == "365Price":
-                    prefix, ext = ("cache_365_price_", "jsonl")
-                else:
-                    prefix, ext = ("cache_24_price_", "json")
-                instance = {
-                    s: manager_class(
+                    instance = manager_class(
                         sync_ts=sync_ts,
-                        filename=f"{prefix}{s}.{ext}",
-                        symbols=[s],
+                        filename=config["filename"],
+                        symbols=symbols,
                         api_client=api,
                         **extra_kwargs,
                     )
-                    for s in symbols
-                }
-            else:
-                instance = manager_class(
-                    sync_ts=sync_ts,
-                    filename=config["filename"],
-                    symbols=symbols,
-                    api_client=api,
-                    **extra_kwargs,
-                )
 
-            cls._instances[name] = instance
+                cls._instances[name] = instance
 
-            managers = (instance.values()
-                        if isinstance(instance, dict)
-                        else (instance,))
-            if start_sync:
+                managers = (instance.values()
+                            if isinstance(instance, dict)
+                            else (instance,))
+                if start_sync:
+                    for manager in managers:
+                        manager.periodic_sync(sync_ts, False)
+                    cls._sync_started.add(name)
+
+            elif start_sync and name not in cls._sync_started:
+                value = cls._instances[name]
+                managers = value.values() if isinstance(value, dict) else (value,)
+                sync_ts = cls._CONFIG[name]["sync_ts"]()
                 for manager in managers:
                     manager.periodic_sync(sync_ts, False)
                 cls._sync_started.add(name)
 
-        elif start_sync and name not in cls._sync_started:
-            value = cls._instances[name]
-            managers = value.values() if isinstance(value, dict) else (value,)
-            sync_ts = cls._CONFIG[name]["sync_ts"]()
-            for manager in managers:
-                manager.periodic_sync(sync_ts, False)
-            cls._sync_started.add(name)
-
-        return cls._instances[name]
+            return cls._instances[name]
 
     @classmethod
     def shutdown_all(cls, timeout=5.0):
         """Stop every factory-owned synchronization loop and clear the registry."""
         global _current_price_instance
-        current_price = cls._instances.get("CurrentPrice")
-        managers = []
-        seen_ids = set()
-        for value in cls._instances.values():
-            items = value.values() if isinstance(value, dict) else (value,)
-            for manager in items:
-                if id(manager) not in seen_ids:
-                    seen_ids.add(id(manager))
-                    managers.append(manager)
-        results = [manager.shutdown(timeout=timeout) for manager in managers
-                   if hasattr(manager, "shutdown")]
-        if (
-            current_price is _current_price_instance
-            and getattr(current_price, "thread", None) is None
-        ):
-            _current_price_instance = None
-        cls._instances = {}
-        cls._sync_started = set()
-        return all(results) if results else True
+        with cls._lock:
+            current_price = cls._instances.get("CurrentPrice")
+            managers = []
+            seen_ids = set()
+            for value in cls._instances.values():
+                items = value.values() if isinstance(value, dict) else (value,)
+                for manager in items:
+                    if id(manager) not in seen_ids:
+                        seen_ids.add(id(manager))
+                        managers.append(manager)
+            results = [manager.shutdown(timeout=timeout) for manager in managers
+                       if hasattr(manager, "shutdown")]
+            if (
+                current_price is _current_price_instance
+                and getattr(current_price, "thread", None) is None
+            ):
+                _current_price_instance = None
+            cls._instances = {}
+            cls._sync_started = set()
+            return all(results) if results else True
 
     @classmethod
     def remove(cls, name, timeout=5.0):
         """Remove a singleton cleanly after stopping all threads it owns."""
         global _current_price_instance
-        value = cls._instances.pop(name, None)
-        cls._sync_started.discard(name)
-        if value is None:
-            return True
-        managers = value.values() if isinstance(value, dict) else (value,)
-        results = [manager.shutdown(timeout=timeout) for manager in managers
-                   if hasattr(manager, "shutdown")]
-        stopped = all(results) if results else True
-        if name == "CurrentPrice" and value is _current_price_instance and stopped:
-            _current_price_instance = None
-        return stopped
+        with cls._lock:
+            value = cls._instances.pop(name, None)
+            cls._sync_started.discard(name)
+            if value is None:
+                return True
+            managers = value.values() if isinstance(value, dict) else (value,)
+            results = [manager.shutdown(timeout=timeout) for manager in managers
+                       if hasattr(manager, "shutdown")]
+            stopped = all(results) if results else True
+            if name == "CurrentPrice" and value is _current_price_instance and stopped:
+                _current_price_instance = None
+            return stopped
         
 def get_cache_manager(name, symbols=None, *, start_sync=True):
     return CacheFactory.get(name, symbols, start_sync=start_sync)

@@ -917,9 +917,6 @@ class TestTrendCoordinator(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         entries = _synthetic_entries(60, interval_ms=800)
-        base = entries[0][0]
-        now_ms = int(time.time() * 1000)
-        entries = [[now_ms + (e[0] - base), e[1]] for e in entries]
         self.cache24 = _make_cache24_manager("BTCUSDT", entries, self.tmp)
 
         fname = os.path.join(self.tmp, "cp.json")
