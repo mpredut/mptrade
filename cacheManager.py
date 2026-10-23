@@ -2992,7 +2992,9 @@ class CacheCurrentPriceManager(CacheManagerInterface):
     def __init__(self, sync_ts, symbols, filename, ws_manager=None, api_client=api,
                  market_api=None, provider_names=None):
         self._ws_manager        = ws_manager
-        self._ws_last_event_ts  = 0.0      # Set before the base initializer.
+        self._ws_default_event_ts = 0.0
+        self._ws_last_event_ts_value = 0.0
+        self._ws_last_event_ts_per_symbol: dict = {}
         self._price_subscribers = []       # The base initializer preserves existing values.
         self._update_timestamps: dict = defaultdict(deque)  # Also required before super().
         self._first_sleep       = True     # Let WebSocket connect before HTTP fallback.
@@ -3006,6 +3008,17 @@ class CacheCurrentPriceManager(CacheManagerInterface):
             ws_manager.subscribe(self)
 
     # ── WS health ────────────────────────────────────────────────────────────
+
+    @property
+    def _ws_last_event_ts(self) -> float:
+        return self._ws_last_event_ts_value
+
+    @_ws_last_event_ts.setter
+    def _ws_last_event_ts(self, value: float) -> None:
+        ts = float(value)
+        self._ws_last_event_ts_value = ts
+        self._ws_default_event_ts = ts
+        self._ws_last_event_ts_per_symbol.clear()
 
     def bind_provider(self, symbol: str, provider_name: str) -> None:
         """Bind one symbol to its configured venue and reject ambiguity."""
@@ -3028,8 +3041,20 @@ class CacheCurrentPriceManager(CacheManagerInterface):
     def provider_name_for(self, symbol: str):
         return self._provider_names.get(str(symbol or "").strip().upper())
 
-    def _ws_is_healthy(self):
-        return (time.time() - self._ws_last_event_ts) < self.WS_TIMEOUT_SEC
+    def _ws_is_healthy(self, symbol: Optional[str] = None) -> bool:
+        now = time.time()
+        if symbol is not None:
+            last_ts = self._ws_last_event_ts_per_symbol.get(
+                symbol, self._ws_default_event_ts
+            )
+            return (now - last_ts) < self.WS_TIMEOUT_SEC
+        if not self.symbols:
+            return (now - self._ws_last_event_ts_value) < self.WS_TIMEOUT_SEC
+        return all(
+            (now - self._ws_last_event_ts_per_symbol.get(s, self._ws_default_event_ts))
+            < self.WS_TIMEOUT_SEC
+            for s in self.symbols
+        )
 
     # Inherit price subscription and notification methods from CacheManagerInterface.
 
@@ -3065,20 +3090,54 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         if isinstance(first, (list, tuple)):
             if len(first) < 2 or first[0] is None or first[1] is None:
                 return None, None
-            return first[1], int(first[0])
-        if len(items) >= 2 and items[0] is not None and items[1] is not None:
-            return items[1], int(items[0])
-        return None, None
+            raw_ts, raw_price = first[0], first[1]
+        elif len(items) >= 2 and items[0] is not None and items[1] is not None:
+            raw_ts, raw_price = items[0], items[1]
+        else:
+            return None, None
+        try:
+            if isinstance(raw_ts, bool) or isinstance(raw_price, bool):
+                return None, None
+            ts_ms = int(raw_ts)
+            price = float(raw_price)
+        except (TypeError, ValueError, OverflowError):
+            return None, None
+        if not math.isfinite(price) or price <= 0:
+            return None, None
+        return price, ts_ms
 
     def on_items_update(self, symbol: str, items):
-        """Handle a real WebSocket event and update WebSocket health."""
-        self._ws_last_event_ts = time.time()   # Real WebSocket events only.
+        """Handle a real WebSocket event and update WebSocket health only for valid prices."""
         price, ts_ms = self._extract_price_and_ts(items)
         if price is None:
             return
+        now = time.time()
+        self._ws_last_event_ts_value = now
+        self._ws_last_event_ts_per_symbol[symbol] = now
         self._push_price(symbol, price, ts_ms=ts_ms)
 
     # ── CacheManagerInterface abstract methods ───────────────────────────────
+
+    def query_remote_and_update_cache(self):
+        """Poll only symbols whose WebSocket stream is unhealthy."""
+        if not self.fetchtime_per_symbol:
+            self.fetchtime_per_symbol = self._rebuild_fetchtimes()
+            self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
+        for symbol in list(self.symbols):
+            if self._ws_is_healthy(symbol):
+                continue
+            startTime = self.fetchtime_per_symbol.get(symbol, self.fallback_time_default)
+            new_items = self.get_remote_items(symbol=symbol, startTime=startTime)
+            if new_items is None:
+                raise RuntimeError(
+                    f"{self.cls_name} returned no synchronization result for {symbol}")
+            if not new_items:
+                print(f"[{self.cls_name}][Info] {symbol}:  No remote items starting with {u.timestampToTime(startTime)} ")
+            else:
+                self._persist_items(symbol, new_items)
+        with _ws_health_lock:
+            _ws_needs_rest_resync.discard(self.cls_name)
+        return True
 
     def get_remote_items(self, symbol, startTime):
         """Fetch current price through the market-data facade."""

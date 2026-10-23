@@ -934,6 +934,11 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
             with mgr.lock:
                 entries = mgr.cache.get("BTC", [])
             self.assertFalse(entries)
+            self.assertEqual(mgr._ws_last_event_ts, 0.0)
+            self.assertFalse(mgr._ws_is_healthy("BTC"))
+            mgr.on_items_update("BTC", [[int(time.time() * 1000), 0]])
+            self.assertEqual(mgr._ws_last_event_ts, 0.0)
+            self.assertFalse(mgr._ws_is_healthy("BTC"))
 
         with self.subTest("snapshot mode replaces"):
             mgr, _ = self._make()
@@ -1116,6 +1121,38 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
             with self.subTest(case=label):
                 mgr._ws_last_event_ts = timestamp
                 self.assertEqual(mgr._ws_is_healthy(), expected)
+
+        with self.subTest(case="per_symbol_ws_health_polls_only_stale_symbols"):
+            api_mock = MagicMock()
+            api_mock.get_current_price.side_effect = (
+                lambda symbol, **kwargs: 3200.0 if symbol == "ETH" else 60000.0
+            )
+            fname = _tmp_file(self.tmp, "cache_current_price_multi.json")
+            multi = cm.CacheCurrentPriceManager(
+                sync_ts=9999,
+                symbols=["BTC", "ETH"],
+                filename=fname,
+                ws_manager=None,
+                api_client=api_mock,
+                market_api=api_mock,
+            )
+            api_mock.get_current_price.reset_mock()
+            now_ms = int(time.time() * 1000)
+            multi.on_items_update("BTC", [[now_ms, 59000.0]])
+            self.assertTrue(multi._ws_is_healthy("BTC"))
+            self.assertFalse(multi._ws_is_healthy("ETH"))
+            self.assertFalse(multi._ws_is_healthy())
+            self.assertTrue(multi._should_poll())
+
+            multi.query_remote_and_update_cache()
+            api_mock.get_current_price.assert_called_once_with(symbol="ETH")
+            self.assertEqual(multi.cache["BTC"][0][1], 59000.0)
+            self.assertEqual(multi.cache["ETH"][0][1], 3200.0)
+
+            multi.on_items_update("ETH", [[now_ms + 1, 3210.0]])
+            self.assertTrue(multi._ws_is_healthy("ETH"))
+            self.assertTrue(multi._ws_is_healthy())
+            self.assertFalse(multi._should_poll())
 
     # -- Persistence. ----------------------------------------------------------
 
