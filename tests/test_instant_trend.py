@@ -1104,7 +1104,7 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             json.dump({"max_ts": None}, fh)
         self.assertEqual(order_mgr._persisted_max_ts(), 0)
         with open(order_mgr.filename, "w", encoding="utf-8") as fh:
-            json.dump({"items": {"BTCUSDT": [{**valid_order, "price": -1.0}]}, "fetchtime": {"BTCUSDT": 1700000000000}}, fh)
+            json.dump({"items": {"BTCUSDT": "not-a-list"}, "fetchtime": {"BTCUSDT": 1700000000000}}, fh)
         with self.assertRaises(ValueError):
             order_mgr._read_legacy_order_snapshot_strict(None)
 

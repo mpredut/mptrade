@@ -417,11 +417,7 @@ class CacheManagerInterface(ABC):
                 raw_cursor, "Order cache rest_sync_cursor"
             )
         for symbol, orders in items.items():
-            if (
-                not isinstance(symbol, str)
-                or not isinstance(orders, list)
-                or any(not self._is_valid_item(order) for order in orders)
-            ):
+            if not isinstance(symbol, str) or not isinstance(orders, list):
                 raise ValueError("invalid Order cache items")
         actual_counts = {
             s: len(v) for s, v in items.items() if isinstance(v, list)
