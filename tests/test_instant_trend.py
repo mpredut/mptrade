@@ -1393,6 +1393,18 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertIsNone(tm.get_last_opposite_fill_price("BTCUSDT", None))
         self.assertEqual(tm.get_last_opposite_fill_price("BTCUSDT", "BUY"), 60000.0)
 
+        # CacheCurrentPriceManager._extract_price_and_ts / _push_price / get_sample_rate zero-span guard
+        cp_file = os.path.join(self.tmp, "cache_cp_a35.json")
+        cpm = cm.CacheCurrentPriceManager(60, ["BTCUSDT"], cp_file, read_only=True)
+        self.assertEqual(cpm._extract_price_and_ts([[0, 60000.0]]), (None, None))
+        self.assertEqual(cpm._extract_price_and_ts([[-5, 60000.0]]), (None, None))
+        cpm._push_price("BTCUSDT", 60000.0, ts_ms=True)
+        cpm._push_price("BTCUSDT", 60000.0, ts_ms=0)
+        self.assertEqual(cpm.cache.get("BTCUSDT", []), [])
+        cpm._update_timestamps["BTCUSDT"].clear()
+        cpm._update_timestamps["BTCUSDT"].extend([1000.0, 1000.0])
+        self.assertEqual(cpm.get_sample_rate("BTCUSDT", fallback=1.5), 1.5)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

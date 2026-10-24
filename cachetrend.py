@@ -410,8 +410,10 @@ class CacheShortTrendManager(CacheManagerInterface):
 
         # Keep PriceWindow sampling rate synchronized with sustained live cadence.
         try:
-            dq = (getattr(self.current_price_mgr, "_update_timestamps", None) or {}).get(symbol)
-            if dq and len(dq) >= 2 and (dq[-1] - dq[0]) >= 5.0:
+            with getattr(self.current_price_mgr, "lock", threading.RLock()):
+                dq = (getattr(self.current_price_mgr, "_update_timestamps", None) or {}).get(symbol)
+                samples = list(dq) if dq else []
+            if len(samples) >= 2 and (samples[-1] - samples[0]) >= 5.0:
                 actual_rate = self.current_price_mgr.get_sample_rate(symbol, fallback=None)
                 if (
                     isinstance(actual_rate, (int, float))

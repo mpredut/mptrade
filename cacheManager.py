@@ -3414,11 +3414,12 @@ class CacheCurrentPriceManager(CacheManagerInterface):
 
     def _record_price_timestamp(self, symbol: str) -> None:
         now = time.time()
-        dq = self._update_timestamps[symbol]
-        dq.append(now)
         cutoff = now - self.FREQ_WINDOW_SEC
-        while dq and dq[0] < cutoff:
-            dq.popleft()
+        with self.lock:
+            dq = self._update_timestamps[symbol]
+            dq.append(now)
+            while dq and dq[0] < cutoff:
+                dq.popleft()
 
     def _push_price(self, symbol: str, price: float, ts_ms: Optional[int] = None) -> None:
         """Insert a price and notify subscribers without changing WebSocket health.
@@ -3426,20 +3427,20 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         The polling thread and get_price also use this path; only a real WebSocket event
         in ``on_items_update`` updates ``_ws_last_event_ts``.
         """
-        if price is None or isinstance(price, bool):
+        if price is None or isinstance(price, bool) or isinstance(ts_ms, bool):
             return
         try:
             price_val = float(price)
+            ts_val = int(ts_ms) if ts_ms is not None else int(time.time() * 1000)
         except (TypeError, ValueError, OverflowError):
             return
-        if not math.isfinite(price_val) or price_val <= 0:
+        if not math.isfinite(price_val) or price_val <= 0 or ts_val <= 0:
             return
-        ts_ms = int(ts_ms) if ts_ms is not None else int(time.time() * 1000)
         if not self.fetchtime_per_symbol:
             self.fetchtime_per_symbol = self._rebuild_fetchtimes()
         self._record_price_timestamp(symbol)
-        self.update_cache_per_symbol(symbol, [[ts_ms, price]])
-        self._notify_price_subscribers(symbol, ts_ms, price)
+        self.update_cache_per_symbol(symbol, [[ts_val, price_val]])
+        self._notify_price_subscribers(symbol, ts_val, price_val)
 
     @staticmethod
     def _extract_price_and_ts(items):
@@ -3462,7 +3463,7 @@ class CacheCurrentPriceManager(CacheManagerInterface):
             price = float(raw_price)
         except (TypeError, ValueError, OverflowError):
             return None, None
-        if not math.isfinite(price) or price <= 0:
+        if ts_ms <= 0 or not math.isfinite(price) or price <= 0:
             return None, None
         return price, ts_ms
 
@@ -3558,17 +3559,24 @@ class CacheCurrentPriceManager(CacheManagerInterface):
 
     def get_sample_rate(self, symbol: str, fallback: float = 1.0) -> float:
         """Return the mean update interval, or ``fallback`` when samples are insufficient."""
-        dq = self._update_timestamps.get(symbol)
-        if not dq or len(dq) < 2:
+        with self.lock:
+            dq = self._update_timestamps.get(symbol)
+            samples = list(dq) if dq else []
+        if len(samples) < 2:
             return fallback
-        return (dq[-1] - dq[0]) / (len(dq) - 1)
+        span = samples[-1] - samples[0]
+        if not math.isfinite(span) or span <= 0:
+            return fallback
+        return span / (len(samples) - 1)
 
     def get_update_frequency(self, symbol: str) -> float:
         """Return updates per second over the latest frequency window."""
-        dq = self._update_timestamps.get(symbol)
-        if not dq or len(dq) < 2:
+        with self.lock:
+            dq = self._update_timestamps.get(symbol)
+            samples = list(dq) if dq else []
+        if len(samples) < 2:
             return 0.0
-        return len(dq) / self.FREQ_WINDOW_SEC
+        return len(samples) / self.FREQ_WINDOW_SEC
 
     def get_cached_price_observation(self, symbol: str, max_age_sec: float):
         """Return a fresh cached timestamp and price without fetching."""
