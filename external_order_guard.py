@@ -86,18 +86,13 @@ def check_external_order_guards(
     from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards) if bypass_guards else set()
 
-    from order_guard import _load_margins, resolve_high_stake_min_notional_usd, validate_guard_mode_cfg
+    from order_guard import _load_margins, validate_guard_mode_cfg
     if margins is None:
         m = _load_margins()
     else:
         m = margins
 
-    # For SELL orders: small routine orders (< high_stake_min_notional_usd) bypass with 0 ms overhead
     computed_notional = float(notional_eur) if notional_eur is not None else (float(price * qty) if (price and qty) else 0.0)
-    if order_side == "SELL":
-        sell_min_notional = resolve_high_stake_min_notional_usd(m, side="SELL")
-        if computed_notional < sell_min_notional:
-            return True, "small_sell_exempt", 1.0
 
     from intelligence.internal.guards.guard_decision import BrakeAction
 

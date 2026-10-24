@@ -1338,11 +1338,6 @@ def check_intelligence_guards(
     if computed_notional is None and qty is not None and price > 0:
         computed_notional = price * qty
 
-    if side == "SELL":
-        sell_min_notional = resolve_high_stake_min_notional_usd(m, side="SELL")
-        if computed_notional is None or computed_notional < sell_min_notional:
-            return True, "small_sell_exempt", 1.0
-
     # Check if expensive static analysis is already cached on regime_context for this (side, bypassed) key
     cache_key = (side, frozenset(bypassed))
     decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None) if valid_context else None
@@ -1567,11 +1562,6 @@ def _evaluate_intelligence_guards_raw(
     computed_notional = notional_eur
     if computed_notional is None and qty is not None and price > 0:
         computed_notional = price * qty
-
-    if side == "SELL":
-        sell_min_notional = resolve_high_stake_min_notional_usd(m, side="SELL")
-        if computed_notional is None or computed_notional < sell_min_notional:
-            return True, "small_sell_exempt", 1.0
 
     effective_scale = 1.0
     active_reason = "ok"

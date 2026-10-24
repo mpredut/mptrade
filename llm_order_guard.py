@@ -322,12 +322,7 @@ def check_llm_order_guards(
 
     computed_notional = float(notional_eur) if notional_eur is not None else (float(price * qty) if (price and qty) else 0.0)
 
-    if side == "SELL":
-        sell_min_notional = resolve_high_stake_min_notional_usd(m, side="SELL")
-        if computed_notional < sell_min_notional:
-            return True, "small_sell_exempt", 1.0
-
-    # 1. GLLM1: High-Stake LLM Pre-Trade Guard
+    # 1. GLLM1: High-Stake LLM Pre-Trade Guard (symmetric for BUY & SELL >= high_stake_min_notional_usd)
     valid_context = False
     if regime_context is not None and hasattr(regime_context, "__dict__"):
         if hasattr(regime_context, "is_valid_for"):

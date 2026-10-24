@@ -41,14 +41,15 @@ def _margins(**overrides):
 # =====================================================================
 
 def test_internal_guard_non_buy_order_passes():
-    # Small SELL order (< sell_guard_min_notional_usd) is exempt
+    # Stop-loss order is exempt
     allowed, reason, scale = check_internal_order_guards(
         symbol="BTCUSDC",
         side="SELL",
         price=60000.0,
+        is_stop_loss=True,
     )
     assert allowed is True
-    assert reason == "small_sell_exempt"
+    assert reason == "stop_loss_exempt"
     assert scale == 1.0
 
     # Unsupported side passes
@@ -105,15 +106,15 @@ def test_internal_parabolic_surge_guard():
 # =====================================================================
 
 def test_external_microstructure_sell_and_stop_loss_exempt():
-    # Small sell order (< 1000 EUR) passes with 0 ms overhead
+    # Unsupported side passes with 0 ms overhead
     allowed, reason, scale = check_external_order_guards(
         symbol="BTCUSDC",
-        side="SELL",
+        side="HOLD",
         price=60000.0,
-        qty=0.01, # 600 EUR < 1000 EUR
+        qty=0.01,
     )
     assert allowed is True
-    assert reason == "small_sell_exempt"
+    assert reason == "not_supported_side"
     assert scale == 1.0
 
     # Stop-loss order is explicitly exempt
@@ -236,7 +237,7 @@ def test_external_microstructure_funding_crowding_downscale():
 # =====================================================================
 
 def test_intelligence_sell_and_stop_loss_exempt():
-    # Small sell order (< 1000 EUR)
+    # Small sell order (< high_stake_min_notional_usd = 700 USD) skips GLLM1 symmetrically (like small BUY) and returns 'ok'
     allowed, reason, scale = check_intelligence_order_guards(
         provider="binance",
         symbol="BTCUSDC",
@@ -245,7 +246,7 @@ def test_intelligence_sell_and_stop_loss_exempt():
         qty=0.01,
     )
     assert allowed is True
-    assert reason == "small_sell_exempt"
+    assert reason == "ok"
     assert scale == 1.0
 
     # Stop-loss order
