@@ -435,47 +435,10 @@ class AutonomousAIReconciler:
                     entry["trend_2_5h"] = w9000.get("final_trend", entry.get("trend_2_5h", 0))
                     entry["growth_2_5h"] = w9000.get("growth_coefficient")
 
-        # Enrich every symbol with Kalman velocity/volatility, Long Trend forecast, Weibull survival & 7d range
-        multi_items = prices_multi_data.get("items", {}) if isinstance(prices_multi_data, dict) else {}
-        for sym, entry in list(snapshot.prices_and_trends.items()):
-            if isinstance(kalman_data, dict) and isinstance(kalman_data.get(sym), dict):
-                k_sym = kalman_data[sym]
-                entry["kalman_vel"] = k_sym.get("kalman_vel")
-                entry["kalman_vel_std"] = k_sym.get("kalman_vel_std")
-                entry["kalman_trend"] = k_sym.get("kalman_trend")
-                if entry.get("vol_1h_pct") is None and k_sym.get("vol_1h_pct") is not None:
-                    entry["vol_1h_pct"] = k_sym.get("vol_1h_pct")
-                if k_sym.get("adapt_reentry_pct") is not None:
-                    entry["adapt_reentry_pct"] = k_sym.get("adapt_reentry_pct")
-                if k_sym.get("adapt_dca_pct") is not None:
-                    entry["adapt_dca_pct"] = k_sym.get("adapt_dca_pct")
-            if isinstance(long_items, dict) and isinstance(long_items.get(sym), list) and long_items[sym]:
-                lt = long_items[sym][-1]
-                if isinstance(lt, dict):
-                    entry["long_trend_dir"] = lt.get("direction")
-                    entry["long_trend_hours"] = round(float(lt.get("duration_seconds", 0.0)) / 3600.0, 1)
-                    if isinstance(lt.get("estimated_future_hours"), (int, float)):
-                        entry["long_trend_est_rem_hours"] = round(float(lt["estimated_future_hours"]), 1)
-            if isinstance(t_trend_map.get(sym), dict):
-                tt = t_trend_map[sym]
-                entry["weibull_median_d"] = tt.get("median_d")
-                entry["weibull_p90_d"] = tt.get("p90_d")
-            if isinstance(multi_items, dict):
-                base_prefix = sym[:-4] if sym.endswith(("USDC", "USDT")) else (sym[:-3] if sym.endswith(("USD", "EUR")) else sym)
-                m_series = multi_items.get(sym) or multi_items.get(base_prefix)
-                if isinstance(m_series, list) and len(m_series) >= 2:
-                    try:
-                        vals = [float(pt[1]) for pt in m_series if isinstance(pt, list) and len(pt) > 1 and float(pt[1]) > 0]
-                        if len(vals) >= 2:
-                            entry["chg_7d_pct"] = round(((vals[-1] - vals[0]) / vals[0]) * 100.0, 2)
-                            entry["low_7d"] = min(vals)
-                            entry["high_7d"] = max(vals)
-                    except (ValueError, TypeError):
-                        pass
-
         # 7B. Discover all enabled tradable instruments & real spot wallet balances (when workspace has instruments.conf)
         tradable_positions: List[Dict[str, Any]] = []
         venue_quote_cash: Dict[str, Dict[str, Any]] = {}
+        inst_by_sym: Dict[str, Any] = {}
         load_tradable_fn = getattr(self.intent_gateway, "load_tradable_instruments", None)
         if callable(load_tradable_fn) and os.path.exists(os.path.join(self.workspace_dir, "instruments.conf")):
             try:
@@ -514,6 +477,7 @@ class AutonomousAIReconciler:
                     quote = str(getattr(inst, "quote", "")).upper()
                     if not sym or not venue:
                         continue
+                    inst_by_sym[sym] = inst
 
                     px = snapshot.prices_and_trends.get(sym, {}).get("price")
                     if not (isinstance(px, (int, float)) and math.isfinite(float(px)) and float(px) > 0):
@@ -578,26 +542,144 @@ class AutonomousAIReconciler:
         if trailing_map:
             snapshot.portfolio_summary["trailing_peaks"] = trailing_map
 
+        # Enrich every symbol (including Kraken pairs discovered in 7B) with cross-venue trend/Kalman/Weibull & 7d range
+        multi_items = prices_multi_data.get("items", {}) if isinstance(prices_multi_data, dict) else {}
+        for sym, entry in list(snapshot.prices_and_trends.items()):
+            base_prefix = sym[:-4] if sym.endswith(("USDC", "USDT")) else (sym[:-3] if sym.endswith(("USD", "EUR")) else sym)
+            cand_keys = (sym, f"{base_prefix}USDC", f"{base_prefix}USDT", base_prefix)
+
+            # Inherit short/dynamic slopes from cross-venue sibling (e.g. TAOUSDC -> TAOUSD) when missing
+            if "slope_15m" not in entry and isinstance(trends_data, dict):
+                for ck in cand_keys[1:]:
+                    tinfo = trends_data.get(ck)
+                    if isinstance(tinfo, dict):
+                        dyn = tinfo.get("dynamic", {}) if isinstance(tinfo.get("dynamic"), dict) else {}
+                        d222 = dyn.get("222", {}) if isinstance(dyn.get("222"), dict) else {}
+                        d900 = dyn.get("900", {}) if isinstance(dyn.get("900"), dict) else {}
+                        d9000 = dyn.get("9000", {}) if isinstance(dyn.get("9000"), dict) else {}
+                        entry["trend"] = tinfo.get("final_trend", entry.get("trend", 0))
+                        entry["growth_coefficient"] = tinfo.get("growth_coefficient", entry.get("growth_coefficient", 0.0))
+                        entry["slope_full"] = tinfo.get("slope_full", 0.0)
+                        entry["slope_3_7m"] = d222.get("slope_full", 0.0)
+                        entry["trend_3_7m"] = d222.get("final_trend", entry["trend"])
+                        entry["slope_15m"] = d900.get("slope_full", 0.0)
+                        entry["trend_15m"] = d900.get("final_trend", entry["trend"])
+                        entry["slope_2_5h"] = d9000.get("slope_full", 0.0)
+                        entry["trend_2_5h"] = d9000.get("final_trend", entry["trend"])
+                        if tinfo.get("vol_1h_pct") is not None:
+                            entry["vol_1h_pct"] = tinfo.get("vol_1h_pct")
+                        break
+
+            if isinstance(kalman_data, dict):
+                k_sym = next((kalman_data[ck] for ck in cand_keys if isinstance(kalman_data.get(ck), dict)), None)
+                if isinstance(k_sym, dict):
+                    entry["kalman_vel"] = k_sym.get("kalman_vel")
+                    entry["kalman_vel_std"] = k_sym.get("kalman_vel_std")
+                    entry["kalman_trend"] = k_sym.get("kalman_trend")
+                    if entry.get("vol_1h_pct") is None and k_sym.get("vol_1h_pct") is not None:
+                        entry["vol_1h_pct"] = k_sym.get("vol_1h_pct")
+                    if k_sym.get("adapt_reentry_pct") is not None:
+                        entry["adapt_reentry_pct"] = k_sym.get("adapt_reentry_pct")
+                    if k_sym.get("adapt_dca_pct") is not None:
+                        entry["adapt_dca_pct"] = k_sym.get("adapt_dca_pct")
+            if isinstance(long_items, dict):
+                lt_list = next((long_items[ck] for ck in cand_keys if isinstance(long_items.get(ck), list) and long_items[ck]), None)
+                if lt_list:
+                    lt = lt_list[-1]
+                    if isinstance(lt, dict):
+                        entry["long_trend_dir"] = lt.get("direction")
+                        entry["long_trend_hours"] = round(float(lt.get("duration_seconds", 0.0)) / 3600.0, 1)
+                        if isinstance(lt.get("estimated_future_hours"), (int, float)):
+                            entry["long_trend_est_rem_hours"] = round(float(lt["estimated_future_hours"]), 1)
+            tt = next((t_trend_map[ck] for ck in cand_keys if isinstance(t_trend_map.get(ck), dict)), None)
+            if isinstance(tt, dict):
+                entry["weibull_median_d"] = tt.get("median_d")
+                entry["weibull_p90_d"] = tt.get("p90_d")
+            if isinstance(multi_items, dict):
+                m_series = next((multi_items[ck] for ck in cand_keys if isinstance(multi_items.get(ck), list) and len(multi_items[ck]) >= 2), None)
+                if isinstance(m_series, list) and len(m_series) >= 2:
+                    try:
+                        vals = [float(pt[1]) for pt in m_series if isinstance(pt, list) and len(pt) > 1 and float(pt[1]) > 0]
+                        if len(vals) >= 2:
+                            entry["chg_7d_pct"] = round(((vals[-1] - vals[0]) / vals[0]) * 100.0, 2)
+                            entry["low_7d"] = min(vals)
+                            entry["high_7d"] = max(vals)
+                    except (ValueError, TypeError):
+                        pass
+
         # 8. 24h multi-horizon price evolution & Pillar 2 microstructure per symbol
         for sym in list(snapshot.prices_and_trends.keys()):
+            base_sym = sym[:-4] if sym.endswith(("USDC", "USDT")) else (sym[:-3] if sym.endswith(("USD", "EUR")) else sym)
             p24_data = _read_json(os.path.join(self.cache_dir, f"cache_24_price_{sym}.json"))
+            p24_key = sym
+            if p24_data is None and base_sym:
+                for sib in (f"{base_sym}USDC", f"{base_sym}USDT"):
+                    p24_data = _read_json(os.path.join(self.cache_dir, f"cache_24_price_{sib}.json"))
+                    if p24_data is not None:
+                        p24_key = sib
+                        break
+            m24: Dict[str, Any] = {}
             if isinstance(p24_data, dict):
                 raw_items = p24_data.get("items", {})
-                series = raw_items.get(sym, []) if isinstance(raw_items, dict) else raw_items
-                m24 = compute_24h_price_metrics(series)
-                if m24:
-                    snapshot.prices_and_trends[sym].update(m24)
+                series = raw_items.get(p24_key, []) if isinstance(raw_items, dict) else raw_items
+                m24 = compute_24h_price_metrics(series) or {}
+            elif sym in inst_by_sym:
+                # Fallback for standalone Kraken pairs (e.g. ADAUSD) without a cachedb/cache_24_price_* file
+                prov = getattr(inst_by_sym[sym], "_provider", None)
+                ohlc_fn = getattr(prov, "ohlc_series", None)
+                if callable(ohlc_fn):
+                    try:
+                        s5 = ohlc_fn(sym, 5)
+                        cutoff_24h = now_ts - 86400.0
+                        pts_24h = [
+                            [int(ts * 1000), float(px)]
+                            for ts, px in zip(getattr(s5, "timestamps", ()), getattr(s5, "closes", ()))
+                            if ts >= cutoff_24h and float(px) > 0
+                        ]
+                        m24 = compute_24h_price_metrics(pts_24h) or {}
+                        if "chg_7d_pct" not in snapshot.prices_and_trends[sym]:
+                            s60 = ohlc_fn(sym, 60)
+                            cutoff_7d = now_ts - 7 * 86400.0
+                            vals_7d = [
+                                float(px)
+                                for ts, px in zip(getattr(s60, "timestamps", ()), getattr(s60, "closes", ()))
+                                if ts >= cutoff_7d and float(px) > 0
+                            ]
+                            if len(vals_7d) >= 2:
+                                snapshot.prices_and_trends[sym]["chg_7d_pct"] = round(
+                                    ((vals_7d[-1] - vals_7d[0]) / vals_7d[0]) * 100.0, 2
+                                )
+                                snapshot.prices_and_trends[sym]["low_7d"] = min(vals_7d)
+                                snapshot.prices_and_trends[sym]["high_7d"] = max(vals_7d)
+                    except Exception:
+                        pass
+            if m24:
+                snapshot.prices_and_trends[sym].update(m24)
+                if snapshot.prices_and_trends[sym].get("trend", 0) == 0 and "chg_1h_pct" in m24:
+                    c1h = float(m24.get("chg_1h_pct") or 0.0)
+                    if c1h >= 0.25:
+                        snapshot.prices_and_trends[sym]["trend"] = 1
+                    elif c1h <= -0.25:
+                        snapshot.prices_and_trends[sym]["trend"] = -1
 
-            base_sym = sym[:-4] if sym.endswith(("USDC", "USDT")) else (sym[:-3] if sym.endswith(("USD", "EUR")) else sym)
             ob = _read_json(os.path.join(self.cache_dir, f"orderbook_depth_{sym}.json"))
             if ob is None and base_sym:
-                ob = _read_json(os.path.join(self.cache_dir, f"orderbook_depth_{base_sym}USDT.json"))
+                ob = (
+                    _read_json(os.path.join(self.cache_dir, f"orderbook_depth_{base_sym}USDC.json"))
+                    or _read_json(os.path.join(self.cache_dir, f"orderbook_depth_{base_sym}USDT.json"))
+                )
             deriv = _read_json(os.path.join(self.cache_dir, f"derivatives_telemetry_{sym}.json"))
             if deriv is None and base_sym:
-                deriv = _read_json(os.path.join(self.cache_dir, f"derivatives_telemetry_{base_sym}USDT.json"))
+                deriv = (
+                    _read_json(os.path.join(self.cache_dir, f"derivatives_telemetry_{base_sym}USDC.json"))
+                    or _read_json(os.path.join(self.cache_dir, f"derivatives_telemetry_{base_sym}USDT.json"))
+                )
             whale = _read_json(os.path.join(self.cache_dir, f"whale_snapshot_{sym}.json"))
             if whale is None and base_sym:
-                whale = _read_json(os.path.join(self.cache_dir, f"whale_snapshot_{base_sym}USDT.json"))
+                whale = (
+                    _read_json(os.path.join(self.cache_dir, f"whale_snapshot_{base_sym}USDC.json"))
+                    or _read_json(os.path.join(self.cache_dir, f"whale_snapshot_{base_sym}USDT.json"))
+                )
             if ob or deriv or whale:
                 m_info: Dict[str, Any] = {}
                 if isinstance(ob, dict):
@@ -837,6 +919,7 @@ class AutonomousAIReconciler:
             r"(\bERROR\b|\bCRITICAL\b(?!_SHOCK)|Traceback|fail-closed|BUY BLOCKED|\bException\b)",
             re.IGNORECASE,
         )
+        benign_warn_pattern = re.compile(r"(\[CMCPlatform\]\s+Warning|\[WARNING\])", re.IGNORECASE)
         guard_pattern = re.compile(r"(\[.*GUARD.*\]|vetoed|downscaled|HARD_VETO|DOWNSCALE_QTY)", re.IGNORECASE)
 
         for l_dir in self.logs_dirs:
@@ -855,7 +938,10 @@ class AutonomousAIReconciler:
                         with open(fpath, "r", encoding="utf-8", errors="replace") as f:
                             lines = recent_log_lines(f.readlines()[-1000:], mtime, cutoff_ts)
                             for line in lines:
-                                if err_pattern.search(line):
+                                if err_pattern.search(line) and not (
+                                    benign_warn_pattern.search(line)
+                                    and not re.search(r"(Traceback|CRITICAL(?!_SHOCK)|fail-closed|BUY BLOCKED)", line, re.IGNORECASE)
+                                ):
                                     error_count += 1
                                     cleaned = line.strip()
                                     if cleaned not in critical_events and len(critical_events) < 50:

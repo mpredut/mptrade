@@ -268,7 +268,12 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
         self._supported_symbols: Set[str] = set()
         self._all_listings: Dict[str, Dict] = {}
         self._last_refresh = 0
-        self._refresh_interval = 3600
+        self._refresh_interval = 86400
+        self._cache_file = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "cachedb",
+            "cmc_listings_cache.json",
+        )
         
         if self.api_key:
             self._load_symbols()
@@ -279,8 +284,28 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
     def platform_name(self) -> str:
         return "CoinMarketCap"
     
+    def _load_symbols_from_disk_cache(self, max_age_s: Optional[float] = None) -> bool:
+        try:
+            if not os.path.exists(self._cache_file):
+                return False
+            mtime = os.path.getmtime(self._cache_file)
+            if max_age_s is not None and (time.time() - mtime) > max_age_s:
+                return False
+            with open(self._cache_file, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            if not isinstance(cached, dict) or not cached:
+                return False
+            self._all_listings = cached
+            self._supported_symbols = set(cached.keys())
+            self._last_refresh = mtime
+            return True
+        except Exception:
+            return False
+
     def _load_symbols(self):
         if not self.api_key:
+            return
+        if self._load_symbols_from_disk_cache(max_age_s=self._refresh_interval):
             return
         try:
             headers = {'X-CMC_PRO_API_KEY': self.api_key, 'Accept': 'application/json'}
@@ -303,9 +328,17 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
                     }
             print(f"[CMCPlatform] Loaded {len(self._supported_symbols)} symbols")
             self._last_refresh = time.time()
+            try:
+                os.makedirs(os.path.dirname(self._cache_file), exist_ok=True)
+                with open(self._cache_file, "w", encoding="utf-8") as f:
+                    json.dump(self._all_listings, f)
+            except Exception:
+                pass
         except Exception as e:
+            if not self._supported_symbols:
+                self._load_symbols_from_disk_cache(max_age_s=None)
             print(f"[CMCPlatform] Warning loading symbols: {e}")
-            self._last_refresh = time.time()  # Do not retest immediately; honour _refresh_interval (3600s).
+            self._last_refresh = time.time()  # Do not retest immediately; honour _refresh_interval.
 
     def refresh_symbols(self):
         if self.api_key and time.time() - self._last_refresh > self._refresh_interval:
