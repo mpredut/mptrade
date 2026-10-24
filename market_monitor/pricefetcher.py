@@ -539,19 +539,32 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
             try:
                 def _read_json(path: str):
                     with open(path, "r") as f:
-                        return json.load(f)
+                        payload = json.load(f)
+                    if not isinstance(payload, dict):
+                        raise ValueError("pricefetcher root must be a dict")
+                    return payload
 
                 data = read_recovering_previous(self.filename, _read_json)
-                if isinstance(data, dict) and "symbol_metadata" in data:
-                    self.symbol_added_time = data["symbol_metadata"].get("added_time", {})
-                    preferred = data["symbol_metadata"].get("preferred_source", {})
+                sym_meta = data.get("symbol_metadata") if isinstance(data, dict) else None
+                if isinstance(sym_meta, dict):
+                    raw_added = sym_meta.get("added_time")
+                    self.symbol_added_time = dict(raw_added) if isinstance(raw_added, dict) else {}
+                    preferred = sym_meta.get("preferred_source")
                     if isinstance(preferred, dict):
                         self.symbol_preferred_source = dict(preferred)
                     seen_bases = {get_base_symbol(symbol) for symbol in self.active_symbols}
-                    active_symbols = data["symbol_metadata"].get("active_symbols", [])
+                    raw_active = sym_meta.get("active_symbols")
+                    active_symbols = list(raw_active) if isinstance(raw_active, list) else []
+                    raw_items = data.get("items")
+                    items_map = raw_items if isinstance(raw_items, dict) else {}
                     recovered_symbols = [
                         symbol for symbol, added_time in self.symbol_added_time.items()
-                        if symbol in data.get("items", {}) and time.time() - added_time <= PRICE_HISTORY_RETENTION_DAYS * 24 * 3600
+                        if (
+                            symbol in items_map
+                            and isinstance(added_time, (int, float))
+                            and not isinstance(added_time, bool)
+                            and time.time() - added_time <= PRICE_HISTORY_RETENTION_DAYS * 24 * 3600
+                        )
                     ]
                     for symbol in list(dict.fromkeys(active_symbols + recovered_symbols)):
                         if len(self.active_symbols) >= MAX_MONITORED_SYMBOLS:
@@ -592,8 +605,10 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         last_times = {}
         for symbol in self.symbols:
             entries = self.cache.get(symbol, [])
-            if entries:
-                last_times[symbol] = max(entry[0] for entry in entries)
+            if isinstance(entries, list) and entries:
+                max_ts = max((self._entry_timestamp_ms(entry) for entry in entries), default=0)
+                if max_ts > 0:
+                    last_times[symbol] = max_ts
         return last_times
     
     def get_remote_items(self, symbol, startTime):
@@ -718,6 +733,8 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                     print(f"[Cleanup] {symbol}: trimmed to the latest {MAX_PRICE_HISTORY_PER_SYMBOL} entries")
                 if not self.cache[symbol] and symbol not in self.active_symbols:
                     del self.cache[symbol]
+                    self.fetchtime_per_symbol.pop(symbol, None)
+                    self._rest_sync_cursor_per_symbol.pop(symbol, None)
                     print(f"[Cleanup] {symbol}: fully removed")
             if removed_count > 0:
                 print(f"[Cleanup] Total: {removed_count} old entries removed")
@@ -742,6 +759,12 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         self.cleanup_old_symbols(max_age_days=PRICE_HISTORY_RETENTION_DAYS)
         try:
             with self.lock:
+                if self._persisted_max_ts() > self._mem_max_ts():
+                    print(
+                        f"[{self.cls_name}][resync] file newer than memory -> "
+                        f"refusing to overwrite with stale data ({self.filename})"
+                    )
+                    return False
                 counts = {s: len(v) for s, v in self.cache.items()}
                 payload = {
                     "items": self.cache,

@@ -2080,6 +2080,26 @@ class TestAtomicWrite(unittest.TestCase):
                 reader_reason="trade_cache_reader_not_current",
             )
 
+        # CacheAllPriceFetcherManager overwrite guard, null symbol_metadata resilience, and fetchtime cleanup
+        from market_monitor import pricefetcher
+
+        pf_path = os.path.join(self.tmp, "cache_prices_multi.json")
+        with open(pf_path, "w", encoding="utf-8") as fh:
+            json.dump({"items": {"BTC": [[1000, 60000.0]]}, "fetchtime": {"BTC": 1000}, "symbol_metadata": None}, fh)
+        with patch.object(pricefetcher, "PricePlatformFactory") as pf_cls:
+            pf_cls.return_value.check_symbol_support.return_value = {"Binance": True}
+            pf_mgr = pricefetcher.CacheAllPriceFetcherManager(60, ["BTC"], pf_path, read_only=True)
+            pf_mgr.fetchtime_per_symbol["OLD"] = 500
+            pf_mgr._rest_sync_cursor_per_symbol["OLD"] = 500
+            pf_mgr.cache["OLD"] = [[1, 1.0]]
+            pf_mgr.cleanup_old_prices()
+            self.assertNotIn("OLD", pf_mgr.cache)
+            self.assertNotIn("OLD", pf_mgr.fetchtime_per_symbol)
+            self.assertNotIn("OLD", pf_mgr._rest_sync_cursor_per_symbol)
+            with open(pf_path + ".meta", "w", encoding="utf-8") as fh:
+                json.dump({"max_ts": 9999999999999}, fh)
+            self.assertFalse(pf_mgr.save_state_to_file())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
