@@ -138,7 +138,7 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
         _smtp_send(msg, cfg)
     except smtplib.SMTPAuthenticationError as e:
         _LAST_ERROR_IS_AUTH = True
-        logging.error(f"Email delivery failed for {subject!r} (SMTP auth rejected): {e}")
+        logging.warning(f"Email delivery skipped for {subject!r} (SMTP auth rejected): {e}")
         return False
     except Exception as e:  # noqa: BLE001 — any SMTP/network failure is a soft failure
         logging.error(f"Email delivery failed for {subject!r}: {e}")
