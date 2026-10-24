@@ -1001,6 +1001,15 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
             self.assertEqual(len(entries), 1)
             self.assertEqual(entries[0][1], 60000.0)
 
+        with self.subTest("out of order delayed ws frame does not overwrite newer timestamp"):
+            mgr, _ = self._make()
+            now_ms = int(time.time() * 1000)
+            mgr.on_items_update("BTC", [[now_ms, 60000.0]])
+            mgr.on_items_update("BTC", [[now_ms - (mgr.STALE_THRESHOLD_MS + 1000), 49000.0]])
+            with mgr.lock:
+                entries = mgr.cache["BTC"]
+            self.assertEqual(entries[0], [now_ms, 60000.0])
+
     # ── get_price / get_price_value ───────────────────────────────────────────
 
     def test_fresh_price_read_apis_use_cached_value(self):

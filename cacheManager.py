@@ -3288,6 +3288,15 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         price, ts_ms = self._extract_price_and_ts(items)
         if price is None:
             return
+        with self.lock:
+            entries = self.cache.get(symbol)
+            existing_ts = (
+                int(entries[0][0])
+                if entries and isinstance(entries[0], (list, tuple)) and entries[0]
+                else 0
+            )
+        if existing_ts > 0 and (existing_ts - ts_ms) > self.STALE_THRESHOLD_MS:
+            return
         now = time.time()
         self._ws_last_event_ts_value = now
         self._ws_last_event_ts_per_symbol[symbol] = now

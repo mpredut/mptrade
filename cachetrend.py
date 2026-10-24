@@ -191,6 +191,8 @@ class CacheShortTrendManager(CacheManagerInterface):
         self._trend_buffers = {}
         self._active_dynamic_windows = set()
         self._disk_c24_cache = {}
+        self._mem_dirty = False
+        self._dirty_live_symbols = set()
         self._file_mtime = None
         self._file_cache = None
         # Writer state populated by start_computation: symbol/window to analyzer objects.
@@ -456,6 +458,7 @@ class CacheShortTrendManager(CacheManagerInterface):
                 if prev_tick_ts is not None:
                     entry["_last_tick_ts_ms"] = prev_tick_ts
                 live_sym[wk] = entry
+            self._dirty_live_symbols.add(symbol)
 
         w_big = wins.get(self.window_seconds[-1])
         v1h = None
@@ -809,8 +812,10 @@ class CacheShortTrendManager(CacheManagerInterface):
             if last_tick_ts_ms is not None:
                 stored["_last_tick_ts_ms"] = int(last_tick_ts_ms)
             sym_live[w_key] = stored
+            self._dirty_live_symbols.add(symbol)
             if flush and self.writer:
                 self._write_live_symbol_file(symbol)
+                self._dirty_live_symbols.discard(symbol)
 
     def _write_live_symbol_file(self, symbol: str):
         """Persist cachedb/24trend/live_<SYMBOL>.json with clean window-keyed entries only."""
@@ -1054,8 +1059,13 @@ class CacheShortTrendManager(CacheManagerInterface):
                     metadata,
                 ):
                     return False
+                self._mem_dirty = False
                 for symbol in list(self._live_windows.keys()):
-                    self._write_live_symbol_file(symbol)
+                    if symbol in self._dirty_live_symbols or not os.path.exists(
+                        self._live_trend_file(symbol)
+                    ):
+                        self._write_live_symbol_file(symbol)
+                        self._dirty_live_symbols.discard(symbol)
                 return True
         except Exception as e:
             print(f"[{self.cls_name}] write failure for {self.filename}: {e}")
@@ -1101,6 +1111,7 @@ class CacheShortTrendManager(CacheManagerInterface):
             snap["symbol"] = symbol
             self._mem[symbol] = snap
             self.cache = self._mem
+            self._mem_dirty = True
             ts_val = snap.get("ts") or snap.get("ts_fast")
             if (
                 isinstance(ts_val, (int, float))
@@ -1128,7 +1139,7 @@ class CacheShortTrendManager(CacheManagerInterface):
         def run():
             while not self._stop_event.wait(self.FLUSH_INTERVAL_SEC):
                 with self._lock:
-                    if self._mem:
+                    if self._mem and (self._mem_dirty or self._dirty_live_symbols):
                         self._write_file()
 
         self._flush_thread = threading.Thread(
@@ -1290,6 +1301,8 @@ class CacheShortTrendManager(CacheManagerInterface):
             self._trend_buffers.clear()
             self._active_dynamic_windows.clear()
             self._disk_c24_cache.clear()
+            self._mem_dirty = False
+            self._dirty_live_symbols.clear()
             self._file_mtime = None
             self._file_cache = None
             try:

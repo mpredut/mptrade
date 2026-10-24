@@ -1037,6 +1037,11 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         cpm.get_sample_rate.return_value = 10.0
         mgr.evaluate_full("BTCUSDT")
         self.assertAlmostEqual(mgr.get_window("BTCUSDT").sample_rate_sec, 10.0)
+        self.assertTrue(mgr._mem_dirty)
+        self.assertIn("BTCUSDT", mgr._dirty_live_symbols)
+        mgr.save_state_to_file()
+        self.assertFalse(mgr._mem_dirty)
+        self.assertEqual(len(mgr._dirty_live_symbols), 0)
 
 
 if __name__ == "__main__":
