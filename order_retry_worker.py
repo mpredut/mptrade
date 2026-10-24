@@ -626,9 +626,9 @@ def process_once(mkt, now=None):
             kwargs["bypass_guards"] = sorted(list(existing_bypasses))
             if side_u == "SELL":
                 kwargs["allow_math_reference_sell"] = True
-            kwargs["wait_for_trend"] = False
+            kwargs["wait_for_trend"] = True
         else:
-            kwargs["wait_for_trend"] = bool(kwargs.get("wait_for_trend", True))
+            kwargs["wait_for_trend"] = True
             cur_pm = kwargs.get("profit_margin")
             try:
                 cur_pm_f = float(cur_pm) if cur_pm is not None else None

@@ -1400,6 +1400,54 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertNotIn("applied_scale", stdout_text)
             self.assertEqual(oq.load_all(), [])
 
+    def test_gt_s_mandatory_infinite_wait_and_stop_loss_timeout(self):
+        """GT_S cannot be bypassed by bypass_guards on normal orders (infinite wait),
+        and Stop-Loss orders respect GT_S up to gt_s_stop_loss_max_wait_sec before releasing."""
+        from unittest.mock import MagicMock
+        import instrument as inst_mod
+        self._clear_state()
+        inst_mod._GT_S_STOP_LOSS_WAIT_SINCE.clear()
+        p = _FakeProvider(price=100.0)
+        inst = self._inst(p)
+
+        fake_stm = MagicMock()
+        fake_stm.should_wait.return_value = True
+
+        with patch("cacheManager.get_short_trend_manager", return_value=fake_stm), \
+             patch("order_guard.daily_limit_guard", return_value=(True, None)), \
+             patch("order_guard.profit_guard", return_value=True):
+            # 1. Normal order with bypass_guards={"GT_S"} or {"all"} still waits indefinitely while should_wait=True
+            out_norm = {}
+            res_norm = inst.place(
+                "BUY", 100.0, 1.0, smart=False, wait_for_trend=True,
+                bypass_guards={"GT_S", "all"}, caller_owns_retry=True,
+                _outcome_context=out_norm,
+            )
+            self.assertIsNone(res_norm)
+            self.assertEqual(out_norm.get("reason"), "trend_deferred")
+
+            # 2. Stop-Loss order before gt_s_stop_loss_max_wait_sec (300s) is also deferred by GT_S
+            out_sl_early = {}
+            res_sl_early = inst.place(
+                "SELL", 100.0, 1.0, smart=False, wait_for_trend=True,
+                is_stop_loss=True, kind="STOP", caller_owns_retry=True,
+                sl_wait_started_at=time.time() - 120.0,
+                _outcome_context=out_sl_early,
+            )
+            self.assertIsNone(res_sl_early)
+            self.assertEqual(out_sl_early.get("reason"), "trend_deferred")
+
+            # 3. Stop-Loss order once gt_s_stop_loss_max_wait_sec (>= 300s) is reached is released regardless of trend
+            out_sl_timeout = {}
+            res_sl_timeout = inst.place(
+                "SELL", 100.0, 1.0, smart=False, wait_for_trend=True,
+                is_stop_loss=True, kind="STOP", caller_owns_retry=True,
+                sl_wait_started_at=time.time() - 305.0,
+                _outcome_context=out_sl_timeout,
+            )
+            self.assertIsNotNone(res_sl_timeout)
+            self.assertEqual(len(p.placed), 1)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

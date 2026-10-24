@@ -103,16 +103,16 @@ LLM-ul (`gemini-3.8-flash-low` prin CLI-ul local `agy`) este invocat în sistem 
   - **Trigger**: Periodic prin `intelligence/macro_analyzer.py` sau on-demand.
   - **Observație de producție**: Decuplat de calea fierbinte de tranzacționare; scrie pasiv în `cachedb/`.
 
-### B. Guardul pentru Ordine de Miză Mare (`HighStakeGuard`) — Pilonul 3
-- **Fișier sursă**: `intelligence/sentiment/guards/high_stake_guard.py`
+### B. Guardul pentru Ordine de Miză Mare (`HighStakeGuard` / `GLLM1`) — Pilonul 3
+- **Fișier sursă**: `intelligence/sentiment/guards/high_stake_guard.py` (coordonat de `llm_order_guard.py`)
 - **Integrare**: Apelat direct în `order_guard.py` (`check_intelligence_guards`).
 - **Frecvență și Trigger**:
   - **Fără frecvență de timp (Event-Driven)**: Se declanșează strict în momentul în care un bot de tranzacționare dorește să transmită un ordin.
-  - **Condiții de activare**:
-    1. Tip ordin: `BUY` (ordinele de SELL sau Stop-Loss sunt scutite).
-    2. Valoare noțională: $\ge 1000\text{ EUR}$ (`min_notional_eur = 1000.0`). Ordinele sub 1000 EUR trec instant cu 0 ms latență.
+  - **Condiții de activare (Simetrice BUY & SELL)**:
+    1. Toate gărzile locale ($0\text{ ms}$: `G_QLIMIT2`, `GI_OBOOK`, `GI_WHALE`, `GI_FUNDING`) rulează simetric pe **orice** ordin `BUY` și `SELL`, indiferent de valoare.
+    2. `GLLM1` (`HighStakeGuard`) se activează simetric pe `BUY` și `SELL` exclusiv la valoare noțională $\ge 700\text{ USD}$ (`high_stake_min_notional_usd = 700.0`). Ordinele sub $700\text{ USD}$ sau cele de tip Stop-Loss nu invocă LLM-ul sincron.
     3. Protecție cache noțional: dacă un context de ordin a fost deja evaluat la un nivel similar de noțional ($\pm 20\%$), decizia este refolosită fără re-interogare LLM.
-- **Decizii posibile**: `allow`, `downscale` (ex: 25% sau 50% din cantitate), `hard_veto` (blocare completă).
+- **Decizii posibile**: `allow`, `downscale` (pe BUY), `defer_wait` (pe SELL în timpul unui short squeeze activ), `hard_veto` (blocare completă).
 
 ### C. Scutul Macro Geopolitic (`GeopoliticalThreatAnalyzer`) — Pilonul 4
 - **Fișier sursă**: `intelligence/macro/geopolitical_analyzer.py`
@@ -154,9 +154,12 @@ MACRO_NEWS_INTERVAL_SEC=120           # Frecvență colectare RSS și agregare r
 CLI_THREAD_RETENTION_DAYS=1.0         # Ștergere automată a thread-urilor CLI > 1 zi
 AGY_PROJECT=autonommptrade            # Spațiu de lucru dedicat apelurilor autonome
 
-# Pilonul 3: Guard Noțional Mare (order_guard.conf)
-gemini_guard_mode=shadow              # Mod rulare: off | shadow | enforce
-gemini_min_notional_eur=400.0         # Prag noțional minim pentru activare LLM
-gemini_timeout_sec=12.0               # Timeout maxim pentru răspunsul LLM
-gemini_fallback=allow                 # Acțiune de siguranță în caz de timeout LLM
+# GLLM1: Guard Noțional Mare (order_guard.conf) — Simetric BUY & SELL
+llm_guard_mode=enforce                # Mod rulare: off | shadow | enforce
+high_stake_min_notional_usd=700.0     # Prag noțional unic (USD) pentru activarea GLLM1 (BUY & SELL)
+llm_timeout_sec=25.0                  # Timeout maxim pentru răspunsul LLM
+llm_fallback=allow                    # Acțiune de siguranță în caz de timeout LLM
+
+# GT_S: Garda de Trend Scurt (5m) — Obligatorie pe toate modulele
+gt_s_stop_loss_max_wait_sec=300.0     # Pe ordine normale așteaptă la infinit; pe Stop-Loss eliberează după 300s (5 min)
 ```

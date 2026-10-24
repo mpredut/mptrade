@@ -593,7 +593,7 @@ def sell_asset(symbol, qty, current_price, client_order_id, tier_threshold):
             force=False, smart=False, caller_owns_retry=True,
             bypass_quantity_policy=True,
             module="assetguardian",
-            wait_for_trend=False,
+            wait_for_trend=True,
             client_order_id=client_order_id,
             motivation=f"assetguardian_growth_exit_tier_{tier_threshold:g}",
             _outcome_context=_LAST_SUBMIT_OUTCOME)
@@ -670,7 +670,7 @@ def buy_with_all_cash(buy_symbol, cash_ratio=BUY_USE_CASH_RATIO,
             force=False, smart=False, caller_owns_retry=True,
             bypass_profit_reference=not respect_guard,
             module="assetguardian",
-            wait_for_trend=False,
+            wait_for_trend=True,
             client_order_id=client_order_id,
             motivation="assetguardian_drawdown_buy",
             _outcome_context=_LAST_SUBMIT_OUTCOME)

@@ -1014,7 +1014,7 @@ def _restore_resting_tp_orders(inst, symbol: str, cancelled_orders: list[dict], 
             extract_order_price(p, default=0.0),
             extract_remaining_qty(p, default=0.0),
             kind="TP",
-            wait_for_trend=False,
+            wait_for_trend=True,
         )),
         log_fn=lambda msg: print(f"[{symbol}] {msg}"),
         reason=f"Stop-Loss was not placed (sellable_qty={sellable_qty}, state={sl_state})",
@@ -1123,12 +1123,11 @@ def _execute_take_profit(
         "cancelorders": True,
         "hours": MT_SELL_SAFEBACK_HOURS,
         "bypass_profit_guard": bypass_pg,
+        "wait_for_trend": True,
         "kind": "TP",
         "intent_id": tp_intent_id,
         "_outcome_context": tp_outcome_ctx,
     }
-    if tp_decision.forced:
-        place_kw["wait_for_trend"] = False
     if tp_cid:
         place_kw["client_order_id"] = tp_cid
     placed = _place_guarded(inst, "SELL", current_price, sell_qty, min_qty, **place_kw)
@@ -1191,8 +1190,12 @@ def _execute_stop_loss(
         print(f"🛑 [{symbol}] MHDSL DISASTER CIRCUIT BREAKER: {sl_reason} — bypassing bounce deferral!")
     print(f"Price decreased with {snapshot.loss_pct}% by more than {lost_threshold * 100}% versus buy price! (decision={sl_reason})")
 
-    # Pre-flight gate check: verify trend manager will not defer
-    if not sl_decision.forced and _is_trend_gate_deferred(symbol, inst):
+    # Pre-flight gate check: verify trend manager (GT_S) will not defer (releases after gt_s_stop_loss_max_wait_sec)
+    import order_guard
+    sl_started_at = (prev_sl_state or {}).get("started_at")
+    max_sl_wait = float(order_guard._load_margins().get("gt_s_stop_loss_max_wait_sec", 300.0))
+    sl_elapsed = (current_time_s - float(sl_started_at)) if sl_started_at is not None else 0.0
+    if (not sl_decision.forced or (sl_started_at is not None and sl_elapsed < max_sl_wait)) and _is_trend_gate_deferred(symbol, inst):
         print(f"[{symbol}] Stop-Loss placement would be deferred by trend gate (trend up) — keeping resting TP orders intact!")
         if prev_sl_state:
             _SL_BOUNCE_STATE[symbol] = prev_sl_state
@@ -1221,7 +1224,8 @@ def _execute_stop_loss(
         place_kw = {
             "safeback_seconds": sbs, "force": True, "cancelorders": True,
             "hours": MT_SELL_SAFEBACK_HOURS, "bypass_profit_guard": True,
-            "bypass_guards": {"all"}, "wait_for_trend": False,
+            "bypass_guards": {"all"}, "wait_for_trend": True,
+            "sl_wait_started_at": sl_started_at if sl_started_at is not None else (current_time_s - max_sl_wait),
             "kind": "STOP", "is_stop_loss": True,
             "intent_id": stop_intent_id,
             "_outcome_context": outcome_ctx,

@@ -433,7 +433,7 @@ class TrailingStop:
                 pair, side, price, qty, force=True,
                 bypass_guards=bypass_guards,
                 bypass_profit_guard=is_all_bypassed, smart=False,
-                caller_owns_retry=True, wait_for_trend=False,
+                caller_owns_retry=True, wait_for_trend=True,
                 client_order_id=intent["client_order_id"],
                 _outcome_context=outcome_context)
             return propagate_submission_refusal(response, outcome_context)

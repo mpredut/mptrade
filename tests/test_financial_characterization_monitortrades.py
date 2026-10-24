@@ -1677,7 +1677,7 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             sold = mt._execute_take_profit(inst_tp, snap_tp, forced_dec, 3600, 0.001, {}, 0.05)
             self.assertTrue(sold)
             self.assertEqual(len(inst_tp.placed), 1)
-            self.assertFalse(inst_tp.placed[0]["kwargs"].get("wait_for_trend", True))
+            self.assertTrue(inst_tp.placed[0]["kwargs"].get("wait_for_trend", True))
 
             mt._SL_BOUNCE_STATE[sym] = {"buy_price": 120.0, "started_at": NOW - 30}
             printed_lines = []

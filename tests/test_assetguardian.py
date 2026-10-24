@@ -387,7 +387,7 @@ class AssetGuardianTest(unittest.TestCase):
                 self.assertTrue(ag.buy_with_all_cash("TAOUSDC", cash_ratio=0.5))
             self.assertTrue(place.call_args.kwargs["caller_owns_retry"])
             self.assertTrue(place.call_args.kwargs["bypass_profit_reference"])
-            self.assertFalse(place.call_args.kwargs["wait_for_trend"])
+            self.assertTrue(place.call_args.kwargs["wait_for_trend"])
             self.assertNotIn("bypass_profit_guard", place.call_args.kwargs)
             self.assertEqual(place.call_args.kwargs["motivation"],
                              "assetguardian_drawdown_buy")
