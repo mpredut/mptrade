@@ -327,6 +327,31 @@ _PROCESS_TO_MODULE = {
     "TA": "tradeall",
     "RT": "rtrade",
 }
+_KNOWN_GUARD_MODULES = frozenset(_PROCESS_TO_MODULE.values())
+
+
+def resolve_caller_module(
+    module: Optional[str] = None,
+    *,
+    prefix: Optional[str] = None,
+    client_order_id: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve canonical module identity from explicit module, order lineage prefix, or process name."""
+    if module:
+        return str(module).strip().lower()
+    if client_order_id or prefix:
+        try:
+            from binance_api.order_id_context import resolve_order_owner
+            owner = resolve_order_owner(client_order_id or prefix)
+            if owner in _KNOWN_GUARD_MODULES:
+                return owner
+        except Exception:
+            pass
+    try:
+        from binance_api.order_id_context import get_process_name
+        return _PROCESS_TO_MODULE.get(get_process_name())
+    except Exception:
+        return None
 
 
 def opposite_side(order_type: str) -> str:
@@ -381,13 +406,7 @@ def get_profit_guard_mode_cfg(
         raise ValueError(f"Missing provider_name for get_profit_guard_mode_cfg({provider_name!r}, {order_type!r})")
 
     m = _load_margins()
-    mod = str(module).strip().lower() if module else None
-    if not mod:
-        try:
-            from binance_api.order_id_context import get_process_name
-            mod = _PROCESS_TO_MODULE.get(get_process_name())
-        except Exception:
-            mod = None
+    mod = resolve_caller_module(module)
 
     if mod:
         mod_key = f"{mod}_{side_l}_reference"

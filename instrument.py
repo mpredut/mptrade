@@ -276,6 +276,12 @@ class Instrument:
                 )
             if caller_module is None:
                 caller_module = self.params.get("module")
+        if caller_module is None:
+            caller_module = order_guard.resolve_caller_module(
+                None,
+                prefix=kwargs.get("prefix"),
+                client_order_id=kwargs.get("client_order_id"),
+            )
         if not bypass_guards_raw:
             m = order_guard._load_margins()
             venue_key = f"{str(self._provider.name).lower()}_bypass_guards"

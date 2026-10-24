@@ -513,7 +513,11 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         if not ok:
             return False, reason
 
-        caller_module = kwargs.get("module")
+        caller_module = order_guard.resolve_caller_module(
+            kwargs.get("module"),
+            prefix=kwargs.get("prefix"),
+            client_order_id=kwargs.get("client_order_id"),
+        )
         profit_ref_mode = kwargs.get("reference_mode") or kwargs.get("profit_reference_mode")
         eff_ref_mode = order_guard.get_profit_guard_mode_cfg(
             "binance",

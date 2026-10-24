@@ -794,6 +794,27 @@ class BuyReferenceSwitchTest(unittest.TestCase):
             self.assertTrue(ok_last)
             self.assertIsNone(reason_last)
 
+    def test_repository_config_sets_tradeall_symmetric_hybrid_reference(self):
+        """Verify live order_guard.conf sets symmetric hybrid BUY/SELL reference for tradeall."""
+        with mock.patch.object(order_guard, "_MARGINS", None):
+            self.assertEqual(order_guard.get_profit_guard_mode_cfg("binance", "BUY", module="tradeall"), "hybrid")
+            self.assertEqual(order_guard.get_profit_guard_mode_cfg("binance", "SELL", module="tradeall"), "hybrid")
+            self.assertEqual(order_guard.get_profit_guard_mode_cfg("binance", "BUY", module="monitortrades"), "dynamic")
+            self.assertEqual(order_guard.get_profit_guard_mode_cfg("binance", "SELL", module="monitortrades"), "hybrid")
+
+    def test_resolve_caller_module_preserves_lineage_across_outbox_and_repricer(self):
+        """Ensure outbox retries (TA_OR) and monitororder repricing (MO_TA_) retain module identity."""
+        from binance_api import order_id_context as oic
+
+        with mock.patch.object(oic, "get_process_name", return_value="ORW"):
+            self.assertIsNone(order_guard.resolve_caller_module(None))
+            self.assertEqual(order_guard.resolve_caller_module(None, prefix="TA_OR"), "tradeall")
+            self.assertEqual(order_guard.resolve_caller_module(None, client_order_id="TA_OR_abc123"), "tradeall")
+            self.assertEqual(order_guard.resolve_caller_module(None, client_order_id="MO_TA_abc123"), "tradeall")
+            self.assertEqual(order_guard.resolve_caller_module(None, prefix="AG_OR"), "assetguardian")
+            self.assertEqual(order_guard.resolve_caller_module(None, prefix="MT_OR"), "monitortrades")
+            self.assertEqual(order_guard.resolve_caller_module(None, prefix="RT_OR"), "rtrade")
+
 
 if __name__ == "__main__":
     unittest.main()
