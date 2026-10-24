@@ -175,7 +175,7 @@ class CacheShortTrendManager(CacheManagerInterface):
     FULL_EVAL_INTERVAL_SEC = 3.0   # Cadence for expensive complete metrics.
     FLUSH_INTERVAL_SEC     = 0.5   # Writer-only file flush cadence.
     # Every window is a slice of the same 24-hour Cache24 buffer. The smallest is primary.
-    WINDOW_SECONDS = [3.7 * 60, 2.5 * 60 * 60]   # [3.7 min momentum, 2.5 hours trend]
+    WINDOW_SECONDS = [round(3.7 * 60, 6), round(2.5 * 60 * 60, 6)]   # [3.7 min momentum, 2.5 hours trend]
     _live_instances = weakref.WeakSet()
 
     def __init__(
@@ -192,7 +192,7 @@ class CacheShortTrendManager(CacheManagerInterface):
         self.writer = bool(writer)   # Only the writer process persists the file.
         # Sort N window durations so index zero is primary.
         secs = list(window_seconds) if window_seconds else list(self.WINDOW_SECONDS)
-        self.window_seconds = sorted(float(s) for s in secs)
+        self.window_seconds = sorted(round(float(s), 6) for s in secs)
         # Thresholds may be callable, keyed by window, keyed by symbol and window, or None.
         self._threshold_fn = self._build_threshold_fn(thresholds)
         self._live_windows = {}
@@ -312,7 +312,7 @@ class CacheShortTrendManager(CacheManagerInterface):
             # The smallest window uses SMALL; all others use BIG.
             return (
                 self.PRICE_CHANGE_THRESHOLD_SMALL
-                if float(sec) <= small
+                if round(float(sec), 6) <= small
                 else self.PRICE_CHANGE_THRESHOLD_BIG
             )
 
@@ -324,20 +324,20 @@ class CacheShortTrendManager(CacheManagerInterface):
             )
             if per_symbol:
                 tbl = {
-                    sym: {float(k): v for k, v in d.items()}
+                    sym: {round(float(k), 6): v for k, v in d.items()}
                     for sym, d in thresholds.items()
                 }
                 return lambda sym, sec: tbl.get(sym, {}).get(
-                    float(sec), per_window_default(sec)
+                    round(float(sec), 6), per_window_default(sec)
                 )
-            tbl = {float(k): v for k, v in thresholds.items()}
-            return lambda sym, sec: tbl.get(float(sec), per_window_default(sec))
+            tbl = {round(float(k), 6): v for k, v in thresholds.items()}
+            return lambda sym, sec: tbl.get(round(float(sec), 6), per_window_default(sec))
 
         return lambda sym, sec: per_window_default(sec)
 
     def threshold_for(self, symbol, seconds):
         """Return the percentage threshold for one symbol window."""
-        return self._threshold_fn(symbol, float(seconds))
+        return self._threshold_fn(symbol, round(float(seconds), 6))
 
     # ── Writer: build windows and subscribe to Cache24 ───────────────────────
     def start_computation(
@@ -517,9 +517,12 @@ class CacheShortTrendManager(CacheManagerInterface):
         )
         target_windows = list(
             dict.fromkeys(
-                list(self.window_seconds)
-                + list(published_cfg)
-                + sorted(self._active_dynamic_windows)
+                round(float(w), 6)
+                for w in (
+                    list(self.window_seconds)
+                    + list(published_cfg)
+                    + sorted(self._active_dynamic_windows)
+                )
             )
         )
         for window in target_windows:
@@ -591,16 +594,28 @@ class CacheShortTrendManager(CacheManagerInterface):
     def get_window(self, symbol, seconds=None):
         """Return the requested window, or the smallest primary window for None."""
         wins = self.windows.get(symbol) or {}
-        return wins.get(
-            float(seconds) if seconds is not None else self.window_seconds[0]
-        )
+        if seconds is None:
+            return wins.get(self.window_seconds[0])
+        if isinstance(seconds, bool):
+            return None
+        try:
+            key = round(float(seconds), 6)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return wins.get(key)
 
     def get_analyzer(self, symbol, seconds=None):
         """Return the requested analyzer, or the smallest primary analyzer for None."""
         ans = self.analyzers.get(symbol) or {}
-        return ans.get(
-            float(seconds) if seconds is not None else self.window_seconds[0]
-        )
+        if seconds is None:
+            return ans.get(self.window_seconds[0])
+        if isinstance(seconds, bool):
+            return None
+        try:
+            key = round(float(seconds), 6)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return ans.get(key)
 
     def get_short_trend(self, symbol):
         win = self.get_window(symbol)
@@ -954,6 +969,16 @@ class CacheShortTrendManager(CacheManagerInterface):
                 return None
             if not -5.0 <= age <= self.TREND_STALE_SEC:
                 return None
+            if "current_price" in dyn and dyn.get("current_price") is not None:
+                cp = dyn.get("current_price")
+                if isinstance(cp, bool):
+                    return None
+                try:
+                    cp_val = float(cp)
+                except (TypeError, ValueError, OverflowError):
+                    return None
+                if not math.isfinite(cp_val) or cp_val <= 0:
+                    return None
             return {k: v for k, v in dyn.items() if not k.startswith("_")}
 
         # 1. Check in-memory _live_windows first:
@@ -973,7 +998,7 @@ class CacheShortTrendManager(CacheManagerInterface):
                 if fresh is not None:
                     return fresh
             if (
-                clamped == self.window_seconds[0]
+                math.isclose(clamped, self.window_seconds[0], rel_tol=0.0, abs_tol=1e-6)
                 and "gradient_recent" in snap
                 and "ts" in snap
             ):
@@ -1113,7 +1138,7 @@ class CacheShortTrendManager(CacheManagerInterface):
                 return False
             if not math.isfinite(win_sec) or win_sec <= 0:
                 return False
-            if win_sec != self.window_seconds[0]:
+            if not math.isclose(win_sec, self.window_seconds[0], rel_tol=0.0, abs_tol=1e-6):
                 dyn = self.get_short_trend_for_window(
                     symbol, win_sec, now=now
                 )
@@ -1515,7 +1540,7 @@ class CacheShortTrendManager(CacheManagerInterface):
                 return False
             if not math.isfinite(win_sec) or win_sec <= 0:
                 return False
-            if win_sec != self.window_seconds[0]:
+            if not math.isclose(win_sec, self.window_seconds[0], rel_tol=0.0, abs_tol=1e-6):
                 dyn = self.get_short_trend_for_window(
                     symbol, win_sec, now=now
                 )

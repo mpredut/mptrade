@@ -2837,7 +2837,7 @@ class CacheSparsePriceManager(CacheManagerInterface):
             if entries and ts_val < self._entry_timestamp_ms(entries[-1]):
                 return []
 
-        return [[ts_val, price]]
+        return [[ts_val, price_val]]
 
     def get_all_symbols_from_cache(self):
         return self.symbols
@@ -2893,9 +2893,9 @@ class Cache24PriceManager(CacheManagerInterface):
                 return
         if not self.fetchtime_per_symbol:
             self.fetchtime_per_symbol = self._rebuild_fetchtimes()
-        self.update_cache_per_symbol(symbol, [[ts_ms, price]])
+        self.update_cache_per_symbol(symbol, [[ts_val, price_val]])
         self._trim_old_data(symbol)
-        self._notify_price_subscribers(symbol, ts_ms, price)
+        self._notify_price_subscribers(symbol, ts_val, price_val)
 
     def _trim_old_data(self, symbol):
         """Remove entries older than ``KEEP_HOURS`` efficiently on every tick.
@@ -2971,7 +2971,7 @@ class Cache24PriceManager(CacheManagerInterface):
                 entries = self.cache.get(symbol)
                 if entries and ts_val < self._entry_timestamp_ms(entries[-1]):
                     return []
-            return [[ts_val, price]]
+            return [[ts_val, price_val]]
         except Exception as e:
             print(f"[{self.cls_name}][Error] get_price {symbol}: {e}")
             return []
@@ -3556,7 +3556,7 @@ class CacheCurrentPriceManager(CacheManagerInterface):
             if not math.isfinite(price_val) or price_val <= 0:
                 return []
             ts_ms = int(time.time() * 1000)
-            return [[ts_ms, price]]
+            return [[ts_ms, price_val]]
         except Exception as e:
             print(f"[{self.cls_name}][Error] HTTP fetch {symbol}: {e}")
             return []

@@ -1677,6 +1677,66 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             bapi.cancel_expired_orders("BUY", "BTCUSDC", 3600)
             mock_cancel.assert_called_once_with("BTCUSDC", 11)
 
+    def test_audit41_primary_window_float_precision_and_price_coercion(self):
+        """Audit #41: CacheShortTrendManager primary window 222.0 exact matching, price coercion in Cache24/Sparse/CurrentPrice, and bapi_ws_health mirroring."""
+        from decimal import Decimal
+        from binance_api import bapi_ws_health
+
+        # 1. WINDOW_SECONDS[0] is exact 222.0 and matches both 222 and 3.7*60 without duplicate evaluation
+        stm = cm.CacheShortTrendManager(
+            ["BTCUSDT"], os.path.join(self.tmp, "st_audit41.json"), writer=False
+        )
+        self.assertEqual(stm.window_seconds[0], 222.0)
+        now = time.time()
+        stm._mem["BTCUSDT"] = {
+            "final_trend": 0.5,
+            "growth_coefficient": 0.25,
+            "slope_full": 0.2,
+            "gradient_recent": 0.3,
+            "slope_small": 0.3,
+            "slope_big": 0.1,
+            "epsilon": 0.01,
+            "current_price": 65000.0,
+            "ts": now,
+        }
+        # Passing window_seconds=222 or 3.7*60 uses the primary snapshot directly without requiring Cache24
+        self.assertTrue(stm.is_trend_up("BTCUSDT", window_seconds=222, now=now))
+        self.assertTrue(stm.is_trend_up("BTCUSDT", window_seconds=3.7 * 60, now=now))
+        self.assertTrue(stm.should_wait("SELL", "BTCUSDT", window_seconds=222, now=now))
+        self.assertFalse(stm.should_wait("BUY", "BTCUSDT", window_seconds=222, now=now))
+
+        # 2. _published_window rejects invalid current_price in live_windows
+        stm._live_windows["BTCUSDT"] = {
+            "222": {"gradient_recent": 0.5, "final_trend": 0.5, "current_price": -10.0, "ts": now}
+        }
+        self.assertIsNone(stm._published_window("BTCUSDT", 222, now=now))
+
+        # 3. Cache24PriceManager.on_price_update coerces numeric strings/Decimals to int/float in cache & notifications
+        c24 = cm.Cache24PriceManager(
+            60, ["BTCUSDT"], os.path.join(self.tmp, "c24_audit41.json"), read_only=True
+        )
+        notified = []
+        c24.subscribe_price(
+            type("Sub", (), {"on_price_update": lambda _s, sym, ts, p: notified.append((sym, ts, p))})()
+        )
+        fresh_ts_ms = int(now * 1000)
+        c24.on_price_update("BTCUSDT", str(fresh_ts_ms), Decimal("64123.45"))
+        self.assertEqual(c24.cache["BTCUSDT"], [[fresh_ts_ms, 64123.45]])
+        self.assertIs(type(c24.cache["BTCUSDT"][0][0]), int)
+        self.assertIs(type(c24.cache["BTCUSDT"][0][1]), float)
+        self.assertEqual(notified, [("BTCUSDT", fresh_ts_ms, 64123.45)])
+
+        # 4. bapi_ws_health.mark_ws_* mirrors state to cacheManager module attributes
+        bapi_ws_health.mark_ws_available(True)
+        self.assertTrue(cm._ws_available)
+        ev_ts = bapi_ws_health.mark_ws_event_received(1700000000.0)
+        self.assertEqual(cm._ws_last_event_ts, ev_ts)
+        self.assertTrue(cm._ws_is_healthy)
+        bapi_ws_health.mark_ws_unhealthy()
+        self.assertFalse(cm._ws_is_healthy)
+        bapi_ws_health.mark_ws_available(False)
+        self.assertFalse(cm._ws_available)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

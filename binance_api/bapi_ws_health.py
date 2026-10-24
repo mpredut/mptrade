@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import builtins
+import sys
 import threading
 import time
 
@@ -29,6 +30,9 @@ def mark_ws_available(value: bool) -> bool:
     global _ws_available
     with _ws_health_lock:
         _ws_available = bool(value)
+        cm = sys.modules.get("cacheManager")
+        if cm is not None:
+            cm._ws_available = _ws_available
         return _ws_available
 
 
@@ -39,6 +43,10 @@ def mark_ws_event_received(now: float | None = None) -> float:
     with _ws_health_lock:
         _ws_last_event_ts = ts
         _ws_is_healthy = True
+        cm = sys.modules.get("cacheManager")
+        if cm is not None:
+            cm._ws_last_event_ts = ts
+            cm._ws_is_healthy = True
         return _ws_last_event_ts
 
 
@@ -49,6 +57,9 @@ def mark_ws_unhealthy() -> None:
     with _ws_health_lock:
         _ws_is_healthy = False
         _ws_needs_rest_resync.update(WS_MANAGED_CACHE_CLASSES)
+        cm = sys.modules.get("cacheManager")
+        if cm is not None:
+            cm._ws_is_healthy = False
 
 
 def clear_ws_rest_resync_for_manager(cls_name: str) -> None:
