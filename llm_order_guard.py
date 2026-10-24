@@ -51,14 +51,14 @@ def evaluate_high_stake_order_guard(
     from guard_hierarchy import GUARD_REGISTRY
     from intelligence.internal.guards.guard_decision import BrakeAction
     from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, is_llm_guard_exempt
-    from order_guard import validate_guard_mode_cfg
+    from order_guard import resolve_high_stake_min_notional_usd, validate_guard_mode_cfg
 
     skip_llm = GUARD_REGISTRY["GLLM1"].is_bypassed(bypassed) or is_llm_guard_exempt()
     llm_mode = validate_guard_mode_cfg(margins["llm_guard_mode"], "llm_guard_mode")
     if skip_llm or llm_mode == "off":
         return True, "ok", 1.0
 
-    min_notional = float(margins["llm_min_notional_eur"])
+    min_notional = resolve_high_stake_min_notional_usd(margins, side=side, require_key=True)
     if computed_notional is None or computed_notional < min_notional:
         return True, "ok", 1.0
 
@@ -211,7 +211,7 @@ def check_geopolitical_order_guards(
     if order_side != "BUY":
         return True, "not_buy_side", 1.0
 
-    from order_guard import _load_margins, validate_guard_mode_cfg
+    from order_guard import _load_margins, resolve_high_stake_min_notional_usd, validate_guard_mode_cfg
     if margins is None:
         m = _load_margins()
     else:
@@ -311,7 +311,7 @@ def check_llm_order_guards(
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
-    from order_guard import _load_margins
+    from order_guard import _load_margins, resolve_high_stake_min_notional_usd
     if margins is None:
         m = _load_margins()
     else:
@@ -323,7 +323,7 @@ def check_llm_order_guards(
     computed_notional = float(notional_eur) if notional_eur is not None else (float(price * qty) if (price and qty) else 0.0)
 
     if side == "SELL":
-        sell_min_notional = float(m.get("sell_guard_min_notional_usd", m.get("sell_guard_min_notional_eur", 700.0)))
+        sell_min_notional = resolve_high_stake_min_notional_usd(m, side="SELL")
         if computed_notional < sell_min_notional:
             return True, "small_sell_exempt", 1.0
 

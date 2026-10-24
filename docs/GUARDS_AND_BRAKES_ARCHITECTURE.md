@@ -119,8 +119,8 @@ To ensure absolute transparency between microsecond execution and qualitative re
        - **Market Bias:** `BULLISH` | `NEUTRAL` | `CAUTION` | `BEARISH`
        - **Recommended Action:** `ALLOW` | `TRIM_PROFITS` | `DEFENSIVE` | `HALT_NEW_BUYS`
        - **Risk Level:** `LOW` | `MODERATE` | `HIGH` | `EXTREME`
-  3. `HighStakeGuard` (`[P3C · HIGH-STAKE]`):
-     - *Pre-Trade Trigger:* Fires **for orders $\ge$ `llm_min_notional_eur = 400.0`**. Orders below 400 EUR pass immediately with $0\text{ ms}$ latency (`ACCEPT`).
+  3. `HighStakeGuard` (`[P3C · HIGH-STAKE]` / `GLLM1`):
+     - *Pre-Trade Trigger:* Fires **for orders $\ge$ `high_stake_min_notional_usd = 700.0`**. Orders below 700 USD pass immediately with $0\text{ ms}$ latency (`ACCEPT`).
      - *Context Ingested:* Real-time synthesis of L2 orderbook imbalance, overhead whale walls, funding rates, whale OI positioning, Fear & Greed index, and current geopolitical threat state.
      - *Decisions:*
        - `APPROVED`: Allows execution (`ALLOW`, 100% scale).

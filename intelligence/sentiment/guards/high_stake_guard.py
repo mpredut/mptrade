@@ -13,7 +13,8 @@ from orchestratorOS.agy.topics import topic_spec
 
 logger = logging.getLogger("intelligence.sentiment.high_stake_guard")
 
-DEFAULT_MIN_NOTIONAL_EUR = 1000.0
+DEFAULT_MIN_NOTIONAL_USD = 700.0
+DEFAULT_MIN_NOTIONAL_EUR = DEFAULT_MIN_NOTIONAL_USD
 
 
 def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
@@ -336,14 +337,17 @@ class HighStakeGuard:
     def __init__(
         self,
         gemini_client: Optional[GeminiClient] = None,
-        min_notional_eur: float = DEFAULT_MIN_NOTIONAL_EUR,
+        min_notional_eur: float = DEFAULT_MIN_NOTIONAL_USD,
+        min_notional_usd: Optional[float] = None,
         timeout_sec: float = 25.0,
         fallback_action: str = "allow",  # "allow" | "downscale" | "veto"
         cache_ttl_sec: Optional[float] = None,
     ) -> None:
         self._explicit_client = gemini_client is not None
         self.gemini_client = gemini_client or GeminiClient()
-        self.min_notional_eur = float(min_notional_eur)
+        resolved_min = float(min_notional_usd) if min_notional_usd is not None else float(min_notional_eur)
+        self.min_notional_usd = resolved_min
+        self.min_notional_eur = resolved_min
         self.timeout_sec = float(timeout_sec)
         self.fallback_action = fallback_action.strip().lower()
         if cache_ttl_sec is not None:

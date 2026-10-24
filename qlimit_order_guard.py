@@ -109,7 +109,7 @@ def check_qlimit2_order_guards(
     if order_side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
-    from order_guard import _load_margins, validate_guard_mode_cfg
+    from order_guard import _load_margins, resolve_high_stake_min_notional_usd, validate_guard_mode_cfg
     m = _load_margins() if margins is None else margins
 
     mode = validate_guard_mode_cfg(m["internal_guard_mode"], "internal_guard_mode")
@@ -118,7 +118,7 @@ def check_qlimit2_order_guards(
 
     if order_side == "SELL":
         computed_notional = float(notional_eur) if notional_eur is not None else (float(price * qty) if (price and qty) else 0.0)
-        sell_min_notional = float(m.get("sell_guard_min_notional_usd", m.get("sell_guard_min_notional_eur", 700.0)))
+        sell_min_notional = resolve_high_stake_min_notional_usd(m, side="SELL")
         if computed_notional < sell_min_notional:
             return True, "small_sell_exempt", 1.0
 

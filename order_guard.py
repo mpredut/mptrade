@@ -90,7 +90,7 @@ _REQUIRED_ORDER_GUARD_KEYS = frozenset({
     "whale_wall_usd_limit",
     "min_buy_imbalance",
     "max_sell_imbalance",
-    "sell_guard_min_notional_usd",
+    "high_stake_min_notional_usd",
     "funding_guard_mode",
     "funding_max_long_rate",
     "funding_min_short_rate",
@@ -105,7 +105,6 @@ _REQUIRED_ORDER_GUARD_KEYS = frozenset({
     "smart_sl_min_taker_ratio",
     # Pillar 3: AI Intelligence High-Stake Guard & Post-Stop Re-entry
     "llm_guard_mode",
-    "llm_min_notional_eur",
     "llm_timeout_sec",
     "llm_fallback",
     "post_stop_reentry_mode",
@@ -274,16 +273,43 @@ def _load_margins():
                 m[k] = float(v)
             except ValueError:
                 m[k] = v
-    if "sell_guard_min_notional_usd" not in m and "sell_guard_min_notional_eur" in m:
-        m["sell_guard_min_notional_usd"] = m["sell_guard_min_notional_eur"]
-    if "sell_guard_min_notional_eur" not in m and "sell_guard_min_notional_usd" in m:
-        m["sell_guard_min_notional_eur"] = m["sell_guard_min_notional_usd"]
+    if "high_stake_min_notional_usd" not in m:
+        for legacy_key in ("sell_guard_min_notional_usd", "llm_min_notional_eur", "sell_guard_min_notional_eur"):
+            if legacy_key in m:
+                m["high_stake_min_notional_usd"] = m[legacy_key]
+                break
     missing = sorted(_REQUIRED_ORDER_GUARD_KEYS - set(m.keys()))
     if missing:
         raise KeyError(f"Missing required keys in {path}: {', '.join(missing)}")
     _validate_margins_cfg(m, path)
     _MARGINS = m
     return m
+
+
+def resolve_high_stake_min_notional_usd(
+    margins: Dict[str, Any],
+    *,
+    side: Optional[str] = None,
+    require_key: bool = False,
+) -> float:
+    """Resolve the unified high-stake notional threshold (high_stake_min_notional_usd) from margins."""
+    order_side = (side or "").upper()
+    if order_side == "SELL":
+        if "sell_guard_min_notional_usd" in margins:
+            return float(margins["sell_guard_min_notional_usd"])
+        if "sell_guard_min_notional_eur" in margins:
+            return float(margins["sell_guard_min_notional_eur"])
+    if "llm_min_notional_eur" in margins:
+        return float(margins["llm_min_notional_eur"])
+    if "high_stake_min_notional_usd" in margins:
+        return float(margins["high_stake_min_notional_usd"])
+    if "sell_guard_min_notional_usd" in margins:
+        return float(margins["sell_guard_min_notional_usd"])
+    if "sell_guard_min_notional_eur" in margins:
+        return float(margins["sell_guard_min_notional_eur"])
+    if require_key:
+        raise KeyError("high_stake_min_notional_usd")
+    return 700.0
 
 
 _load_margins()
@@ -1285,7 +1311,7 @@ def check_intelligence_guards(
         computed_notional = price * qty
 
     if side == "SELL":
-        sell_min_notional = float(m.get("sell_guard_min_notional_usd", m.get("sell_guard_min_notional_eur", 700.0)))
+        sell_min_notional = resolve_high_stake_min_notional_usd(m, side="SELL")
         if computed_notional is None or computed_notional < sell_min_notional:
             return True, "small_sell_exempt", 1.0
 
@@ -1515,7 +1541,7 @@ def _evaluate_intelligence_guards_raw(
         computed_notional = price * qty
 
     if side == "SELL":
-        sell_min_notional = float(m.get("sell_guard_min_notional_usd", m.get("sell_guard_min_notional_eur", 700.0)))
+        sell_min_notional = resolve_high_stake_min_notional_usd(m, side="SELL")
         if computed_notional is None or computed_notional < sell_min_notional:
             return True, "small_sell_exempt", 1.0
 
