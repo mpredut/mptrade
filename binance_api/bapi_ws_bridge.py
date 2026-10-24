@@ -38,12 +38,16 @@ def upsert_order_from_execution_report(
         return False
     symbol, order_item = parsed
     getter = cache_getter or _default_cache_getter
-    order_cache = getter("Order")
-    if not order_cache._is_valid_item(order_item):
-        builtins.print("[cacheManager][WS] rejected malformed order report")
+    try:
+        order_cache = getter("Order")
+        if not order_cache._is_valid_item(order_item):
+            builtins.print("[cacheManager][WS] rejected malformed order report")
+            return False
+        order_cache._persist_items(symbol, [order_item])
+        return True
+    except Exception as exc:
+        builtins.print(f"[cacheManager][WS] order report persist failed: {exc}")
         return False
-    order_cache._persist_items(symbol, [order_item])
-    return True
 
 
 def append_trade_from_execution_report(
@@ -57,12 +61,16 @@ def append_trade_from_execution_report(
         return False
     symbol, trade_item = parsed
     getter = cache_getter or _default_cache_getter
-    trade_cache = getter("Trade")
-    if not trade_cache._is_valid_item(trade_item):
-        builtins.print("[cacheManager][WS] rejected malformed Trade report")
+    try:
+        trade_cache = getter("Trade")
+        if not trade_cache._is_valid_item(trade_item):
+            builtins.print("[cacheManager][WS] rejected malformed Trade report")
+            return False
+        trade_cache._persist_items(symbol, [trade_item])
+        return True
+    except Exception as exc:
+        builtins.print(f"[cacheManager][WS] trade report persist failed: {exc}")
         return False
-    trade_cache._persist_items(symbol, [trade_item])
-    return True
 
 
 def refresh_asset_value_from_ws_event(
@@ -139,18 +147,25 @@ def handle_binance_ws_event(
         # REST remains a rare fallback for missing symbols, while fallback polling covers
         # gaps created by WebSocket disconnections.
         if symbol:
-            (upsert_order_fn or (lambda ev: upsert_order_from_execution_report(ev, cache_getter=getter)))(event)
-            (append_trade_fn or (lambda ev: append_trade_from_execution_report(ev, cache_getter=getter)))(event)
+            order_res = (upsert_order_fn or (lambda ev: upsert_order_from_execution_report(ev, cache_getter=getter)))(event)
+            trade_res = (append_trade_fn or (lambda ev: append_trade_from_execution_report(ev, cache_getter=getter)))(event)
+            should_persist = not (order_res is False and trade_res is False)
         else:
             for cache_name in ("Order", "Trade"):
                 getter(cache_name).query_remote_and_update_cache()
-        (persist_fn or (lambda et: persist_ws_updated_caches(et, cache_getter=getter)))(event_type)
+            should_persist = True
+        if should_persist:
+            (persist_fn or (lambda et: persist_ws_updated_caches(et, cache_getter=getter)))(event_type)
         return
 
     if event_type in ("balanceUpdate", "outboundAccountPosition"):
         if should_log:
             print(f"[cacheManager][WS] {event_type} event received")
         return
+
+
+def _bridge_is_usable(bridge: Any) -> bool:
+    return bridge is not None and bool(getattr(bridge, "is_running", True))
 
 
 def enable_real_ws_event_sync(
@@ -164,10 +179,10 @@ def enable_real_ws_event_sync(
     """Start the singleton ``BinanceAccountStream`` bridge if not already running."""
     global _ws_bridge
     if sys.modules.get("_cacheManager_initialized"):
-        if _ws_bridge is not None:
+        if _bridge_is_usable(_ws_bridge):
             return _ws_bridge
     with _ws_bridge_lock:
-        if _ws_bridge is not None:
+        if _bridge_is_usable(_ws_bridge):
             return _ws_bridge
         from binance_api import bapi_ws
 

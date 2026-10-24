@@ -1141,6 +1141,51 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertEqual(extract_order_side({"type": True}), "")
         self.assertEqual(extract_remaining_qty({"origQty": True, "executedQty": False}), 0.0)
 
+        # bapi_ws_bridge skips redundant persistence on non-fill executionReport events and isolates persist errors
+        from binance_api import bapi_ws_bridge
+
+        persisted_events = []
+        bapi_ws_bridge.handle_binance_ws_event(
+            {"e": "executionReport", "s": "BTCUSDC", "x": "NEW", "X": "NEW", "i": 100},
+            persist_fn=lambda et: persisted_events.append(et),
+        )
+        self.assertEqual(persisted_events, [])
+
+        class _ExplodingCache:
+            def _is_valid_item(self, _item):
+                return True
+
+            def _persist_items(self, _symbol, _items):
+                raise RuntimeError("boom")
+
+        trade_event = {
+            "e": "executionReport",
+            "x": "TRADE",
+            "X": "FILLED",
+            "s": "BTCUSDC",
+            "S": "BUY",
+            "i": 101,
+            "t": 500,
+            "l": "0.1",
+            "L": "80000",
+            "q": "0.1",
+            "p": "80000",
+            "T": 1700000000000,
+            "E": 1700000000000,
+        }
+        self.assertFalse(
+            bapi_ws_bridge.upsert_order_from_execution_report(
+                trade_event, cache_getter=lambda _name, **_kw: _ExplodingCache()
+            )
+        )
+        self.assertFalse(
+            bapi_ws_bridge.append_trade_from_execution_report(
+                trade_event, cache_getter=lambda _name, **_kw: _ExplodingCache()
+            )
+        )
+        self.assertFalse(bapi_ws_bridge._bridge_is_usable(type("_DeadBridge", (), {"is_running": False})()))
+        self.assertTrue(bapi_ws_bridge._bridge_is_usable(type("_LiveBridge", (), {"is_running": True})()))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

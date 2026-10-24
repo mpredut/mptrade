@@ -3984,13 +3984,13 @@ _ws_event_stats = _bapi_ws_bridge._ws_event_stats
 
 
 def _upsert_order_from_execution_report(event):
-    _bapi_ws_bridge.upsert_order_from_execution_report(
+    return _bapi_ws_bridge.upsert_order_from_execution_report(
         event, cache_getter=get_cache_manager
     )
 
 
 def _append_trade_from_execution_report(event):
-    _bapi_ws_bridge.append_trade_from_execution_report(
+    return _bapi_ws_bridge.append_trade_from_execution_report(
         event, cache_getter=get_cache_manager
     )
 
