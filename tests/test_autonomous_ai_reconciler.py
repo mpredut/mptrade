@@ -672,7 +672,26 @@ def test_dispatch_notification_routes_system_and_bot_errors_to_ntfy_error(temp_e
         title_str = req.headers["Title"].encode("latin-1").decode("utf-8")
         assert title_str == "🛠 [auto_technical_repair] Issues: 0 | Actions: 0"
 
-    # 2. Fleet bot error / repair routes to ntfy-error-1978
+    # 2. Linux OS / VPN / Memory / Disk issue routes to ntfy-server-1978 (with high priority)
+    sys_error_report = SupervisorAuditReport(
+        ts=time.time(),
+        mode="enforce",
+        summary="Disk usage elevated at 88% and VPN wgpia0 reconnected.",
+        diagnosed_issues=[{"severity": "HIGH", "category": "OS_RESOURCE", "description": "Disk usage 88%"}],
+        venue_actions=[],
+        code_remediation={"has_fix": False},
+        actions_executed=False,
+    )
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen, \
+         patch("notify_engine.alertnotifiers.pass_common_gate", return_value=(True, "ok", "fp", None)):
+        assert reconciler.dispatch_notification(sys_error_report) is True
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "https://ntfy.sh/ntfy-server-1978"
+        title_str = req.headers["Title"].encode("latin-1").decode("utf-8")
+        assert title_str == "🚨 [auto_technical_repair] SYSTEM Issues: 1 | Actions: 0"
+        assert req.headers["Priority"] == "high"
+
+    # 3. Fleet bot error / order / Python code repair routes to ntfy-error-1978
     error_report = SupervisorAuditReport(
         ts=time.time(),
         mode="enforce",

@@ -545,7 +545,7 @@ class AutonomousAIReconciler:
         schema = [
             '  "summary": "1-2 sentence executive assessment of system health"',
             '  "diagnosed_issues": [{"severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO", '
-            '"category": "BOT_EXCEPTION" | "FLEET_STALE" | "SYSTEM_ERROR" | "ORPHAN_ORDER" | "GUARD_VETO" | "HEALTHY", '
+            '"category": "BOT_EXCEPTION" | "ORPHAN_ORDER" | "FLEET_STALE" | "SYSTEM_ERROR" | "OS_RESOURCE" | "VPN_ERROR" | "GUARD_VETO" | "HEALTHY", '
             '"description": "Short explanation", "root_cause": "Detailed technical root cause"}]',
             '  "venue_actions": [{"action": "CANCEL_ORDER" | "SYNC_POSITION" | "RESTART_BOT" | "NONE", '
             '"venue": "binance" | "kraken" | "hyperliquid" | "t212" | "fleet", "symbol": "BTCUSDC or bot_name", '
@@ -818,26 +818,58 @@ class AutonomousAIReconciler:
             subprocess.run(["git", "checkout", "--", real_target], cwd=self.workspace_dir, check=False)
             return False
 
-    @staticmethod
-    def _is_error_report(report: SupervisorAuditReport) -> bool:
-        """Return True if the audit report diagnoses a system, server, or fleet-bot error or repair action."""
+    _BOT_AND_ORDER_ERROR_CATEGORIES = frozenset({
+        "BOT_EXCEPTION",
+        "ORPHAN_ORDER",
+        "FLEET_STALE",
+        "CODE_BUG",
+    })
+    _SYSTEM_OS_ERROR_CATEGORIES = frozenset({
+        "SYSTEM_ERROR",
+        "SERVER_ERROR",
+        "OS_RESOURCE",
+        "VPN_ERROR",
+    })
+
+    @classmethod
+    def _is_bot_or_code_error_report(cls, report: SupervisorAuditReport) -> bool:
+        """Return True strictly for trading bot exceptions, venue order anomalies, or Python code bugs/patches."""
         for issue in report.diagnosed_issues or []:
             if not isinstance(issue, dict):
                 continue
-            sev = str(issue.get("severity") or "").strip().upper()
             cat = str(issue.get("category") or "").strip().upper()
-            if sev in ("CRITICAL", "HIGH", "MEDIUM"):
-                return True
-            if cat in ("BOT_EXCEPTION", "FLEET_STALE", "SYSTEM_ERROR", "SERVER_ERROR", "ORPHAN_ORDER"):
+            sev = str(issue.get("severity") or "").strip().upper()
+            if cat in cls._BOT_AND_ORDER_ERROR_CATEGORIES and sev != "INFO":
                 return True
         if isinstance(report.code_remediation, dict) and report.code_remediation.get("has_fix"):
             return True
         if report.tests_passed is False:
             return True
         for act in report.venue_actions or []:
-            if isinstance(act, dict) and str(act.get("action") or "NONE").strip().upper() != "NONE":
+            if isinstance(act, dict) and str(act.get("action") or "NONE").strip().upper() in (
+                "CANCEL_ORDER", "SYNC_POSITION", "RESTART_BOT"
+            ):
                 return True
         return False
+
+    @classmethod
+    def _is_system_os_error_report(cls, report: SupervisorAuditReport) -> bool:
+        """Return True for Linux OS, VPN, memory, disk space, or server infrastructure anomalies."""
+        for issue in report.diagnosed_issues or []:
+            if not isinstance(issue, dict):
+                continue
+            cat = str(issue.get("category") or "").strip().upper()
+            sev = str(issue.get("severity") or "").strip().upper()
+            if cat in cls._SYSTEM_OS_ERROR_CATEGORIES and sev != "INFO":
+                return True
+            if sev in ("CRITICAL", "HIGH", "MEDIUM") and cat not in cls._BOT_AND_ORDER_ERROR_CATEGORIES:
+                return True
+        return False
+
+    @classmethod
+    def _is_error_report(cls, report: SupervisorAuditReport) -> bool:
+        """Return True if the audit report diagnoses any bot/order/code error or system/OS error."""
+        return cls._is_bot_or_code_error_report(report) or cls._is_system_os_error_report(report)
 
     def dispatch_notification(
         self,
@@ -847,8 +879,9 @@ class AutonomousAIReconciler:
     ) -> bool:
         """Sends a clean, compact push alert via standard HTTP POST to ntfy.
 
-        Routes system, server, and fleet-bot errors/repairs to NTFY_TOPIC_ERROR (ntfy-error),
-        and routine healthy system audits to NTFY_TOPIC_SERVER (ntfy-server).
+        Routing policy:
+        - Trading bot errors (Python exceptions/code patches, order anomalies, hung fleet bots) -> NTFY_TOPIC_ERROR (ntfy-error).
+        - Linux OS / server / VPN / memory / disk issues and routine server health audits -> NTFY_TOPIC_SERVER (ntfy-server).
         """
         if not self.notify_enabled:
             return False
@@ -865,12 +898,18 @@ class AutonomousAIReconciler:
         if has_fix:
             actions_cnt += 1
         mode_label = report.mode.upper()
-        is_error = self._is_error_report(report)
+        is_bot_error = self._is_bot_or_code_error_report(report)
+        is_sys_error = self._is_system_os_error_report(report)
+        is_any_error = is_bot_error or is_sys_error
 
         spec = topic_spec(topic_key) if topic_key in TOPIC_SPECS else topic_spec("auto_technical_repair")
-        if is_error:
+        if is_bot_error:
             title = f"🚨 {spec.bracket_tag} ERROR Issues: {issues_cnt} | Actions: {actions_cnt}"
             target_topic = self.ntfy_topic_error or self.ntfy_topic or "ntfy-error-1978"
+            priority = "high"
+        elif is_sys_error:
+            title = f"🚨 {spec.bracket_tag} SYSTEM Issues: {issues_cnt} | Actions: {actions_cnt}"
+            target_topic = self.ntfy_topic_server or self.ntfy_topic or "ntfy-server-1978"
             priority = "high"
         else:
             title = f"{spec.ntfy_prefix} Issues: {issues_cnt} | Actions: {actions_cnt}"
@@ -909,7 +948,7 @@ class AutonomousAIReconciler:
                 priority,
                 target_topic,
                 [{"type": "bot_event", "name": title, "body": body, "source": "ai_supervisor", "symbol": "SYSTEM"}],
-                urgent=is_error,
+                urgent=is_any_error,
             )
             if not allowed:
                 logger.info("Supervisor ntfy gated by common policy (%s): %s", reason, title)
@@ -923,7 +962,7 @@ class AutonomousAIReconciler:
         headers = {
             "Title": title.encode("utf-8").decode("latin-1", "ignore"),
             "Priority": priority,
-            "Tags": "rotating_light,robot" if is_error else "shield,robot",
+            "Tags": "rotating_light,robot" if is_any_error else "shield,robot",
         }
         if self.ntfy_token:
             headers["Authorization"] = f"Bearer {self.ntfy_token}"
