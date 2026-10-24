@@ -1217,6 +1217,78 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
                 counts={"BTCUSDT": 0},
             )
 
+    def test_audit34_short_trend_window_guards_and_c24_fetchtime_filtering(self):
+        st_file = os.path.join(self.tmp, "cache_short_trend_a34.json")
+        mgr = cm.CacheShortTrendManager(["BTCUSDT"], filename=st_file, writer=False)
+        try:
+            for bad_win in (float("nan"), float("inf"), float("-inf"), True, False, -5, 0, "bad"):
+                self.assertIsNone(mgr.get_short_trend_for_window("BTCUSDT", bad_win))
+                self.assertIsNone(mgr._published_window("BTCUSDT", bad_win))
+                self.assertFalse(mgr.is_trend_up("BTCUSDT", window_seconds=bad_win))
+                self.assertFalse(mgr.should_wait("BUY", "BTCUSDT", window_seconds=bad_win))
+            for bad_now in (float("nan"), float("inf"), True, -10):
+                self.assertIsNone(mgr.get_short_trend_for_window("BTCUSDT", 300, now=bad_now))
+            self.assertFalse(mgr.should_wait(None, "BTCUSDT"))
+
+            # on_price_update rejects invalid ticks without corrupting _mem
+            mgr._set_mem("BTCUSDT", current_price=60000.0, ts=1700000000.0)
+            mgr.on_price_update("BTCUSDT", True, 61000.0)
+            mgr.on_price_update("BTCUSDT", 1700000001000, float("nan"))
+            mgr.on_price_update("BTCUSDT", 1700000001000, -50.0)
+            self.assertEqual(mgr.get_snapshot("BTCUSDT")["current_price"], 60000.0)
+
+            # _load_disk_cache24_entries recovers .previous when primary items is not a dict
+            c24_disk = os.path.join(self.tmp, "cache_24_price_BTCUSDT.json")
+            with open(c24_disk, "w", encoding="utf-8") as fh:
+                json.dump({"items": "corrupt"}, fh)
+            with open(c24_disk + ".previous", "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "items": {
+                            "BTCUSDT": [
+                                [1700000000000, 60000.0],
+                                ["bad", 60010.0],
+                                [True, 60020.0],
+                                [1700000001000, 60030.0],
+                                [1700000002000, 60060.0],
+                            ]
+                        }
+                    },
+                    fh,
+                )
+            recovered = mgr._load_disk_cache24_entries("BTCUSDT")
+            self.assertEqual(
+                recovered,
+                [
+                    [1700000000000, 60000.0],
+                    [1700000001000, 60030.0],
+                    [1700000002000, 60060.0],
+                ],
+            )
+            # Future timestamps (> 5s ahead of now) are rejected by get_short_trend_for_window
+            self.assertIsNone(mgr.get_short_trend_for_window("BTCUSDT", 60, now=1699999990.0))
+            self.assertIsNotNone(mgr.get_short_trend_for_window("BTCUSDT", 60, now=1700000002.0))
+
+            # Cache24PriceManager filters unrelated symbols from fetchtime_per_symbol on init & reload
+            c24_multi = os.path.join(self.tmp, "cache_24_multi.json")
+            with open(c24_multi, "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "items": {"BTCUSDT": [[1700000000000, 60000.0]], "ETHUSDT": [[1700000099000, 3000.0]]},
+                        "fetchtime": {"BTCUSDT": 1700000000000, "ETHUSDT": 1700000099000},
+                        "rest_sync_cursor": {"BTCUSDT": 1700000000000, "ETHUSDT": 1700000099000},
+                    },
+                    fh,
+                )
+            c24_single = cm.Cache24PriceManager(60, ["BTCUSDT"], c24_multi, read_only=True)
+            self.assertEqual(set(c24_single.fetchtime_per_symbol.keys()), {"BTCUSDT"})
+            self.assertEqual(set(c24_single._rest_sync_cursor_per_symbol.keys()), {"BTCUSDT"})
+            c24_single._reload_from_disk()
+            self.assertEqual(set(c24_single.fetchtime_per_symbol.keys()), {"BTCUSDT"})
+            self.assertEqual(set(c24_single._rest_sync_cursor_per_symbol.keys()), {"BTCUSDT"})
+        finally:
+            mgr.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

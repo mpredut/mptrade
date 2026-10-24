@@ -916,15 +916,18 @@ class CacheManagerInterface(ABC):
                             items = {s: v for s, v in items.items() if s in self.symbols}
                         self.cache = items
                     raw_ft = data.get("fetchtime")
-                    self.fetchtime_per_symbol = (
-                        dict(raw_ft) if isinstance(raw_ft, dict) else {}
-                    )
+                    ft_map = dict(raw_ft) if isinstance(raw_ft, dict) else {}
                     rest_cursor = data.get("rest_sync_cursor")
-                    self._rest_sync_cursor_per_symbol = dict(
+                    cursor_map = dict(
                         rest_cursor
                         if isinstance(rest_cursor, dict)
-                        else self.fetchtime_per_symbol
+                        else ft_map
                     )
+                    if isinstance(self, Cache24PriceManager):
+                        ft_map = {s: v for s, v in ft_map.items() if s in self.symbols}
+                        cursor_map = {s: v for s, v in cursor_map.items() if s in self.symbols}
+                    self.fetchtime_per_symbol = ft_map
+                    self._rest_sync_cursor_per_symbol = cursor_map
                     self._account_cache_dirty = False
             except Exception as e:
                 print(f"[{self.cls_name}][Error] reload {self.filename}: {e}")
@@ -2800,6 +2803,12 @@ class Cache24PriceManager(CacheManagerInterface):
         # Remove unrelated symbols loaded from legacy redundant files that stored every coin.
         with self.lock:
             self.cache = {s: v for s, v in self.cache.items() if s in self.symbols}
+            self.fetchtime_per_symbol = {
+                s: v for s, v in self.fetchtime_per_symbol.items() if s in self.symbols
+            }
+            self._rest_sync_cursor_per_symbol = {
+                s: v for s, v in self._rest_sync_cursor_per_symbol.items() if s in self.symbols
+            }
 
     # Inherit price subscription and notification methods from CacheManagerInterface.
 
@@ -2894,7 +2903,7 @@ class Cache24PriceManager(CacheManagerInterface):
                 return []
             with self.lock:
                 entries = self.cache.get(symbol)
-                if entries and ts_val < int(entries[-1][0]):
+                if entries and ts_val < self._entry_timestamp_ms(entries[-1]):
                     return []
             return [[ts_val, price]]
         except Exception as e:
@@ -2939,6 +2948,12 @@ class Cache365PriceManager(Cache24PriceManager):
         # Mirror Cache24PriceManager's cleanup of unrelated symbols from legacy files.
         with self.lock:
             self.cache = {s: v for s, v in self.cache.items() if s in self.symbols}
+            self.fetchtime_per_symbol = {
+                s: v for s, v in self.fetchtime_per_symbol.items() if s in self.symbols
+            }
+            self._rest_sync_cursor_per_symbol = {
+                s: v for s, v in self._rest_sync_cursor_per_symbol.items() if s in self.symbols
+            }
 
     @staticmethod
     def _tail_lines(path, limit, block_size=1024 * 1024):
@@ -2972,13 +2987,15 @@ class Cache365PriceManager(Cache24PriceManager):
                     if isinstance(meta_payload, dict):
                         raw_ft = meta_payload.get("fetchtime")
                         self.fetchtime_per_symbol = (
-                            dict(raw_ft) if isinstance(raw_ft, dict) else {}
+                            {s: v for s, v in raw_ft.items() if s in self.symbols}
+                            if isinstance(raw_ft, dict)
+                            else {}
                         )
                         rest_cursor = meta_payload.get("rest_sync_cursor")
-                        self._rest_sync_cursor_per_symbol = dict(
-                            rest_cursor
+                        self._rest_sync_cursor_per_symbol = (
+                            {s: v for s, v in rest_cursor.items() if s in self.symbols}
                             if isinstance(rest_cursor, dict)
-                            else self.fetchtime_per_symbol
+                            else dict(self.fetchtime_per_symbol)
                         )
                 except (OSError, ValueError, TypeError):
                     pass

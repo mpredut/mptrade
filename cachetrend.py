@@ -548,14 +548,23 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     # ── Fast Cache24 subscriber channel: gradient and epsilon on every tick ───
     def on_price_update(self, symbol, ts_ms, price):
+        if isinstance(ts_ms, bool) or isinstance(price, bool):
+            return
+        try:
+            ts_int = int(ts_ms)
+            price_f = float(price)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if ts_int <= 0 or not math.isfinite(price_f) or price_f <= 0:
+            return
         with self._lock:
             buf = self._get_trend_buffer(symbol)
             if not buf.timestamps:
-                buf.append(price, ts_ms)
-            elif int(ts_ms) >= buf.timestamps[-1] and not (
-                int(ts_ms) == buf.timestamps[-1] and float(price) == buf.prices[-1]
+                buf.append(price_f, ts_int)
+            elif ts_int >= buf.timestamps[-1] and not (
+                ts_int == buf.timestamps[-1] and price_f == buf.prices[-1]
             ):
-                buf.append(price, ts_ms)
+                buf.append(price_f, ts_int)
         win = self.get_window(symbol)   # Primary window.
         if win is None:
             return
@@ -570,8 +579,8 @@ class CacheShortTrendManager(CacheManagerInterface):
                 gradient_recent_fast=g,
                 epsilon=eps,
                 trend_fast=(1 if g > 0 else -1 if g < 0 else 0),
-                current_price=price,
-                ts_fast=float(ts_ms) / 1000.0,
+                current_price=price_f,
+                ts_fast=float(ts_int) / 1000.0,
             )
         except Exception as e:
             print(f"[{self.cls_name}] on_price_update {symbol}: {e}")
@@ -645,8 +654,26 @@ class CacheShortTrendManager(CacheManagerInterface):
                     raw = json.load(fh)
                 if not isinstance(raw, dict):
                     raise ValueError("Cache24 root must be a dict")
-                items = (raw.get("items") or {}).get(symbol)
-                return list(items) if isinstance(items, list) else []
+                items_map = raw.get("items")
+                if not isinstance(items_map, dict):
+                    raise ValueError("Cache24 items must be a dict")
+                items = items_map.get(symbol)
+                if not isinstance(items, list):
+                    return []
+                valid_entries = []
+                for entry in items:
+                    if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+                        continue
+                    if isinstance(entry[0], bool) or isinstance(entry[1], bool):
+                        continue
+                    try:
+                        ts_val = int(entry[0])
+                        price_val = float(entry[1])
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if ts_val > 0 and math.isfinite(price_val) and price_val > 0:
+                        valid_entries.append([ts_val, price_val])
+                return valid_entries
 
             entries = read_recovering_previous(
                 c24_file, _read_c24, backup_path=backup_path
@@ -666,7 +693,24 @@ class CacheShortTrendManager(CacheManagerInterface):
         per-symbol persistence (cachedb/24trend/live_<SYMBOL>.json) so repeated
         requests for the same tick state are served directly from persistence.
         """
-        req = float(window_seconds)
+        if isinstance(window_seconds, bool):
+            return None
+        try:
+            req = float(window_seconds)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(req) or req <= 0:
+            return None
+        if now is not None:
+            if isinstance(now, bool):
+                return None
+            try:
+                now_f = float(now)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not math.isfinite(now_f) or now_f <= 0:
+                return None
+            now = now_f
         min_sec = _cm_attr("CM_DYNAMIC_WINDOW_MIN_SEC", CM_DYNAMIC_WINDOW_MIN_SEC)
         max_sec = _cm_attr("CM_DYNAMIC_WINDOW_MAX_SEC", CM_DYNAMIC_WINDOW_MAX_SEC)
         clamped = min(max(req, min_sec), max_sec)
@@ -694,7 +738,11 @@ class CacheShortTrendManager(CacheManagerInterface):
             if b - a + 1 < 3:
                 return None
             newest_ts_sec = disk_entries[b][0] / 1000.0
-            if now_val - newest_ts_sec > self.TREND_STALE_SEC:
+            age_sec = now_val - newest_ts_sec
+            if not (-5.0 <= age_sec <= self.TREND_STALE_SEC):
+                return None
+            latest_price = float(disk_entries[b][1])
+            if not (math.isfinite(latest_price) and latest_price > 0):
                 return None
             ft, gc, sf, gr, eps, sample_rate = self._eval_entries_with_buffer(
                 symbol, disk_entries, a, b
@@ -708,7 +756,7 @@ class CacheShortTrendManager(CacheManagerInterface):
                 n_samples=b - a + 1,
                 window_seconds=clamped,
                 sample_rate_sec=sample_rate,
-                current_price=float(disk_entries[b][1]),
+                current_price=latest_price,
                 ts=now_val,
             )
             self._persist_live_window(
@@ -735,9 +783,15 @@ class CacheShortTrendManager(CacheManagerInterface):
             n_samples = b - a + 1
             if n_samples < 3:
                 return None
+            if isinstance(all_entries[b][0], bool) or isinstance(all_entries[b][1], bool):
+                return None
             newest_ts_ms = int(all_entries[b][0])
             newest_ts_sec = newest_ts_ms / 1000.0
-            if now_val - newest_ts_sec > self.TREND_STALE_SEC:
+            age_sec = now_val - newest_ts_sec
+            if not (-5.0 <= age_sec <= self.TREND_STALE_SEC):
+                return None
+            latest_price = float(all_entries[b][1])
+            if not (math.isfinite(latest_price) and latest_price > 0):
                 return None
             with self._lock:
                 cached = (self._live_windows.get(symbol) or {}).get(w_key)
@@ -763,7 +817,7 @@ class CacheShortTrendManager(CacheManagerInterface):
                 n_samples=n_samples,
                 window_seconds=clamped,
                 sample_rate_sec=sample_rate,
-                current_price=float(all_entries[b][1]),
+                current_price=latest_price,
                 ts=now_val,
             )
             self._persist_live_window(
@@ -782,8 +836,14 @@ class CacheShortTrendManager(CacheManagerInterface):
         if len(entries) < 3:
             return None
 
+        if isinstance(entries[-1][0], bool) or isinstance(entries[-1][1], bool):
+            return None
         newest_ts_sec = entries[-1][0] / 1000.0
-        if now_val - newest_ts_sec > self.TREND_STALE_SEC:
+        age_sec = now_val - newest_ts_sec
+        if not (-5.0 <= age_sec <= self.TREND_STALE_SEC):
+            return None
+        latest_price = float(entries[-1][1])
+        if not (math.isfinite(latest_price) and latest_price > 0):
             return None
 
         ft, gc, sf, gr, eps, sample_rate = self._eval_entries_with_buffer(
@@ -798,7 +858,7 @@ class CacheShortTrendManager(CacheManagerInterface):
             n_samples=len(entries),
             window_seconds=clamped,
             sample_rate_sec=sample_rate,
-            current_price=float(entries[-1][1]),
+            current_price=latest_price,
             ts=now_val,
         )
         self._persist_live_window(
@@ -854,7 +914,24 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     def _published_window(self, symbol, window_seconds, now=None):
         """Return a dynamic window published in 24trend/live_<SYMBOL>.json or shared file."""
-        req = float(window_seconds)
+        if isinstance(window_seconds, bool):
+            return None
+        try:
+            req = float(window_seconds)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(req) or req <= 0:
+            return None
+        if now is not None:
+            if isinstance(now, bool):
+                return None
+            try:
+                now_f = float(now)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not math.isfinite(now_f) or now_f <= 0:
+                return None
+            now = now_f
         min_sec = _cm_attr("CM_DYNAMIC_WINDOW_MIN_SEC", CM_DYNAMIC_WINDOW_MIN_SEC)
         max_sec = _cm_attr("CM_DYNAMIC_WINDOW_MAX_SEC", CM_DYNAMIC_WINDOW_MAX_SEC)
         clamped = min(max(req, min_sec), max_sec)
@@ -1025,14 +1102,20 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     def is_trend_up(self, symbol, window_seconds=None, now=None) -> bool:
         """Evaluate upward-trend condition over a dynamic window or the default primary snapshot."""
-        if (
-            window_seconds is not None
-            and float(window_seconds) != self.window_seconds[0]
-        ):
-            dyn = self.get_short_trend_for_window(
-                symbol, window_seconds, now=now
-            )
-            return self._eval_upward_formula(dyn)
+        if window_seconds is not None:
+            if isinstance(window_seconds, bool):
+                return False
+            try:
+                win_sec = float(window_seconds)
+            except (TypeError, ValueError, OverflowError):
+                return False
+            if not math.isfinite(win_sec) or win_sec <= 0:
+                return False
+            if win_sec != self.window_seconds[0]:
+                dyn = self.get_short_trend_for_window(
+                    symbol, win_sec, now=now
+                )
+                return self._eval_upward_formula(dyn)
         snap = self.get_fresh_snapshot(symbol, now=now)
         if snap is not None:
             return self._eval_upward_formula(snap)
@@ -1401,43 +1484,51 @@ class CacheShortTrendManager(CacheManagerInterface):
         ``fast`` selects low-latency keys only for the primary window. The optional noise
         gate treats ``|gradient| <= epsilon`` as a reason to wait.
         """
+        if not isinstance(side, str):
+            return False
         side = side.upper()
 
-        if (
-            window_seconds is not None
-            and float(window_seconds) != self.window_seconds[0]
-        ):
-            dyn = self.get_short_trend_for_window(
-                symbol, window_seconds, now=now
-            )
-            if dyn is None:
-                return False   # Unknown because Cache24 is unavailable, insufficient, or stale.
-            raw_g = dyn.get("growth_coefficient", dyn.get("gradient_recent", 0.0))
-            if isinstance(raw_g, bool):
+        if window_seconds is not None:
+            if isinstance(window_seconds, bool):
                 return False
             try:
-                g = float(raw_g if raw_g is not None else 0.0)
+                win_sec = float(window_seconds)
             except (TypeError, ValueError, OverflowError):
                 return False
-            if not math.isfinite(g):
+            if not math.isfinite(win_sec) or win_sec <= 0:
                 return False
-            if use_noise_gate:
-                raw_eps = dyn.get("epsilon")
-                eps = (
-                    float(raw_eps)
-                    if isinstance(raw_eps, (int, float))
-                    and not isinstance(raw_eps, bool)
-                    and math.isfinite(raw_eps)
-                    and raw_eps >= 0
-                    else self._epsilon(dyn)
+            if win_sec != self.window_seconds[0]:
+                dyn = self.get_short_trend_for_window(
+                    symbol, win_sec, now=now
                 )
-                if abs(g) <= eps:
-                    return True
-            if side == "BUY":
-                return g < 0
-            if side == "SELL":
-                return g > 0
-            return False
+                if dyn is None:
+                    return False   # Unknown because Cache24 is unavailable, insufficient, or stale.
+                raw_g = dyn.get("growth_coefficient", dyn.get("gradient_recent", 0.0))
+                if isinstance(raw_g, bool):
+                    return False
+                try:
+                    g = float(raw_g if raw_g is not None else 0.0)
+                except (TypeError, ValueError, OverflowError):
+                    return False
+                if not math.isfinite(g):
+                    return False
+                if use_noise_gate:
+                    raw_eps = dyn.get("epsilon")
+                    eps = (
+                        float(raw_eps)
+                        if isinstance(raw_eps, (int, float))
+                        and not isinstance(raw_eps, bool)
+                        and math.isfinite(raw_eps)
+                        and raw_eps >= 0
+                        else self._epsilon(dyn)
+                    )
+                    if abs(g) <= eps:
+                        return True
+                if side == "BUY":
+                    return g < 0
+                if side == "SELL":
+                    return g > 0
+                return False
 
         snap = self.get_fresh_snapshot(symbol, now=now)
         if snap is None:
