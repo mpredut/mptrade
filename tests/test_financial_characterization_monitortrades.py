@@ -322,6 +322,7 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
 
         with self.subTest(msg="loss_exit_bypasses_profit_guard_and_uses_shared_outbox"):
             mt.HARD_TP_ENABLED = False
+            mt._TP_RIDE_STATE.clear()
             inst = FakeInstrument(price=93, free=4, fills=[_fill("BUY", 100, 4)])
             self.run_tick(inst, trend_up=False, loss=0.05)
             self.assertEqual(len(inst.placed), 1)

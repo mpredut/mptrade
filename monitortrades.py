@@ -1200,11 +1200,32 @@ def _execute_stop_loss(
         print(f"🛑 [{symbol}] MHDSL DISASTER CIRCUIT BREAKER: {sl_reason} — bypassing bounce deferral!")
     print(f"Price decreased with {snapshot.loss_pct}% by more than {lost_threshold * 100}% versus buy price! (decision={sl_reason})")
 
-    # Pre-flight gate check: verify trend manager (GT_S) will not defer unless Stop-Loss timer expired (sl_decision.forced)
-    if not sl_decision.forced and _is_trend_gate_deferred(symbol, inst):
+    # Pre-flight gate check: GT_S (short_trend) cannot be bypassed by force=True or forced=True;
+    # ONLY the expiration of the Stop-Loss timer (sub_reason == "timeout" or elapsed >= MT_SL_TREND_DEFER_MAX_SEC)
+    # releases the Stop-Loss order while the trend is still ascending.
+    bounce_started_at = (prev_sl_state or {}).get("started_at")
+    sl_timer_expired = bool(
+        sl_decision.metadata.get("sub_reason") == "timeout"
+        or sl_decision.metadata.get("sl_timer_expired")
+        or (
+            bounce_started_at is not None
+            and (current_time_s - float(bounce_started_at)) >= MT_SL_TREND_DEFER_MAX_SEC
+        )
+    )
+    if not sl_timer_expired and _is_trend_gate_deferred(symbol, inst):
         print(f"[{symbol}] Stop-Loss placement would be deferred by trend gate (trend up) — keeping resting TP orders intact!")
         if prev_sl_state:
             _SL_BOUNCE_STATE[symbol] = prev_sl_state
+        else:
+            _SL_BOUNCE_STATE[symbol] = {
+                "started_at": current_time_s,
+                "entry_loss": snapshot.loss_ratio,
+                "lowest_price": current_price,
+                "peak_bounce_price": current_price,
+                "min_loss": snapshot.loss_ratio,
+                "buy_price": snapshot.avg_buy_price,
+            }
+        _save_mt_state()
         return False
 
     # Atomic cancel-and-replace: unlock coins for Stop-Loss
@@ -1230,7 +1251,7 @@ def _execute_stop_loss(
         place_kw = {
             "safeback_seconds": sbs, "force": True, "cancelorders": True,
             "hours": MT_SELL_SAFEBACK_HOURS,
-            "bypass_guards": {"all"}, "wait_for_trend": not bool(sl_decision.forced),
+            "bypass_guards": {"all"}, "wait_for_trend": not sl_timer_expired,
             "kind": "STOP",
             "intent_id": stop_intent_id,
             "_outcome_context": outcome_ctx,

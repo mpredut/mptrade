@@ -960,9 +960,9 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         # 1. Kwargs priority
         inst = self._inst(provider, params={"bypass_guards": "math_reference"})
         with patch("order_guard.profit_guard", return_value=True) as guard:
-            inst.place("BUY", 100.0, 1.0, smart=False, wait_for_trend=False, bypass_guards="cooldown")
+            inst.place("BUY", 100.0, 1.0, smart=False, wait_for_trend=False, bypass_guards="GO1")
             self.assertIn("bypass_guards", guard.call_args.kwargs)
-            self.assertIn("cooldown", guard.call_args.kwargs["bypass_guards"])
+            self.assertIn("daily_limit", guard.call_args.kwargs["bypass_guards"])
 
         # 2. Instrument params fallback
         inst_params = self._inst(provider, params={"bypass_guards": "G_QLIMIT2,GI_OBOOK"})
@@ -1423,14 +1423,15 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             dec_mid = pem.evaluate_stop_loss(snap_mid)
             self.assertEqual(dec_mid.action, ExitAction.HOLD)
 
-            # Still ascendent at 305s (>= 300s) -> releases SELL order with forced=True
+            # Still ascendent at 305s (>= 300s) -> releases SELL order with sub_reason == "timeout"
             snap_timeout = PositionSnapshot(symbol=SYMBOL, current_price=94.2, avg_buy_price=100.0, net_qty=1.0, sellable_qty=1.0, current_time_s=t0 + 305.0, trend_up=True)
             dec_timeout = pem.evaluate_stop_loss(snap_timeout)
             self.assertEqual(dec_timeout.action, ExitAction.SELL)
-            self.assertTrue(dec_timeout.forced)
+            self.assertEqual(dec_timeout.metadata.get("sub_reason"), "timeout")
+            sl_timer_expired = (dec_timeout.metadata.get("sub_reason") == "timeout")
             res_sl_released = inst.place(
                 "SELL", 94.2, 1.0, smart=False,
-                bypass_guards={"all"}, wait_for_trend=not dec_timeout.forced,
+                bypass_guards={"all"}, wait_for_trend=not sl_timer_expired,
                 caller_owns_retry=True,
             )
             self.assertIsNotNone(res_sl_released)
