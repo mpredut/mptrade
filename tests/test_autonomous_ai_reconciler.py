@@ -604,6 +604,95 @@ def test_intent_gateway_and_advisors_reject_nan_bool_and_null_json_fields(temp_e
     assert adv_res.recommended_action == "HOLD"
 
 
+def test_enforce_executes_cancel_order_sync_position_and_restart_bot(mock_workspace):
+    gateway = MagicMock(min_confidence=0.85, max_notional_eur=500.0)
+    mock_inst = MagicMock()
+    mock_inst.symbol = "TAOUSDC"
+    mock_inst.provider_name = "binance"
+    gateway.resolve_instrument.return_value = mock_inst
+
+    reconciler = AutonomousAIReconciler(
+        workspace_dir=str(mock_workspace),
+        cache_dir="cachedb",
+        logs_dirs=["logs"],
+        mode="enforce",
+        notify_enabled=False,
+        intent_gateway=gateway,
+    )
+
+    plan = {
+        "venue_actions": [
+            {"action": "CANCEL_ORDER", "venue": "binance", "symbol": "TAOUSDC", "order_id": "778899", "reason": "orphan"},
+            {"action": "SYNC_POSITION", "venue": "binance", "symbol": "TAOUSDC", "reason": "reconcile"},
+            {"action": "RESTART_BOT", "venue": "fleet", "symbol": "bot1", "reason": "stale heartbeat"},
+            {"action": "RESTART_BOT", "venue": "fleet", "symbol": "unauthorized_evil_proc", "reason": "must refuse"},
+        ]
+    }
+    with patch("subprocess.run") as mock_subproc:
+        executed, tests_passed = reconciler.apply_reconciliation(plan, allow_code_remediation=True)
+
+    assert executed is True
+    assert tests_passed is None
+    mock_inst._api.cancel_order.assert_called_once_with("TAOUSDC", "778899", provider_name="binance")
+    mock_inst._api.open_orders.assert_called_once_with("TAOUSDC", provider_name="binance")
+    mock_subproc.assert_called_once_with(["pkill", "-f", "bot1.py"], check=False)
+
+
+def test_dispatch_notification_routes_system_and_bot_errors_to_ntfy_error(temp_env):
+    workspace, _, _ = temp_env
+    reconciler = AutonomousAIReconciler(
+        workspace_dir=workspace,
+        cache_dir="cachedb",
+        logs_dirs=["logs"],
+        mode="enforce",
+        notify_enabled=True,
+    )
+    reconciler.ntfy_url = ""
+    reconciler.ntfy_topic_server = "ntfy-server-1978"
+    reconciler.ntfy_topic_error = "ntfy-error-1978"
+
+    mock_resp = MagicMock(status=200, code=200)
+    mock_resp.__enter__.return_value = mock_resp
+
+    # 1. Healthy report routes to ntfy-server-1978
+    healthy_report = SupervisorAuditReport(
+        ts=time.time(),
+        mode="enforce",
+        summary="All fleet bots and venues healthy.",
+        diagnosed_issues=[{"severity": "INFO", "category": "HEALTHY", "description": "0 anomalies"}],
+        venue_actions=[],
+        code_remediation={"has_fix": False},
+        actions_executed=False,
+    )
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen, \
+         patch("notify_engine.alertnotifiers.pass_common_gate", return_value=(True, "ok", "fp", None)):
+        assert reconciler.dispatch_notification(healthy_report) is True
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "https://ntfy.sh/ntfy-server-1978"
+        title_str = req.headers["Title"].encode("latin-1").decode("utf-8")
+        assert title_str == "🛠 [auto_technical_repair] Issues: 0 | Actions: 0"
+
+    # 2. Fleet bot error / repair routes to ntfy-error-1978
+    error_report = SupervisorAuditReport(
+        ts=time.time(),
+        mode="enforce",
+        summary="Bot rtrade threw unhandled exception; restarted.",
+        diagnosed_issues=[{"severity": "HIGH", "category": "BOT_EXCEPTION", "description": "Socket hang in rtrade"}],
+        venue_actions=[{"action": "RESTART_BOT", "venue": "fleet", "symbol": "rtrade", "reason": "hung"}],
+        code_remediation={"has_fix": False},
+        actions_executed=True,
+    )
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen, \
+         patch("notify_engine.alertnotifiers.pass_common_gate", return_value=(True, "ok", "fp", None)):
+        assert reconciler.dispatch_notification(error_report) is True
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "https://ntfy.sh/ntfy-error-1978"
+        title_str = req.headers["Title"].encode("latin-1").decode("utf-8")
+        assert title_str == "🚨 [auto_technical_repair] ERROR Issues: 1 | Actions: 1"
+        assert req.headers["Priority"] == "high"
+
+
+
 
 
 

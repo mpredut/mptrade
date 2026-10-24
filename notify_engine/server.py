@@ -62,6 +62,10 @@ def resolve_topic(category: str) -> str:
 def _category_for_title_and_source(title: str, source: str) -> str:
     t = (title or "").upper()
     s = (source or "").lower()
+    if "AUTO_TECHNICAL_REPAIR" in t or s == "ai_supervisor":
+        if any(m in t for m in _EXPLICIT_ERROR_MARKERS):
+            return "ERROR"
+        return "SERVER"
     if "MACRO" in t or "macro" in s or "geopolitical" in s:
         return "MACRO"
     if any(m in t for m in _GUARD_MARKERS) or any(m in s for m in ("guard", "trail", "assetguardian", "stop")):

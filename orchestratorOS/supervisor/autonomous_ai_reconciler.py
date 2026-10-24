@@ -95,6 +95,7 @@ class TelemetrySensorSnapshot:
     prices_and_trends: Dict[str, Any] = field(default_factory=dict)
     microstructure: Dict[str, Any] = field(default_factory=dict)
     portfolio_summary: Dict[str, Any] = field(default_factory=dict)
+    fleet_processes: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -167,7 +168,10 @@ class AutonomousAIReconciler:
         self.ntfy_url = conf.get("phone_alert_url", "")
         if "ntfy_topic_guard" not in conf:
             raise KeyError("Missing required 'ntfy_topic_guard' in config.env")
-        self.ntfy_topic = conf["ntfy_topic_guard"]
+        self.ntfy_topic_guard = conf["ntfy_topic_guard"]
+        self.ntfy_topic_server = conf.get("ntfy_topic_server") or self.ntfy_topic_guard
+        self.ntfy_topic_error = conf.get("ntfy_topic_error") or self.ntfy_topic_server
+        self.ntfy_topic = self.ntfy_topic_server
         self.ntfy_token = conf.get("ntfy_token", "")
 
         # Per-topic artifact paths are set by run_cycle(topic_key=...).
@@ -365,6 +369,14 @@ class AutonomousAIReconciler:
                 if isinstance(i, dict)
             ]
 
+        # 10. Fleet processes health from procs.conf
+        try:
+            from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
+            monitor = AutonomousOvernightMonitor(workspace_dir=self.workspace_dir)
+            snapshot.fleet_processes = [asdict(p) for p in monitor.check_processes()]
+        except Exception:
+            pass
+
         return snapshot
 
     def harvest_log_anomalies(self, lookback_hours: Optional[float] = None) -> LogEventSummary:
@@ -450,6 +462,20 @@ class AutonomousAIReconciler:
         for g_evt in logs.guard_interventions[:10]:
             context_items.append(f"  * [GUARD] {g_evt}")
 
+        if sensors.fleet_processes:
+            running_p = [p for p in sensors.fleet_processes if p.get("is_running")]
+            stopped_p = [p["name"] for p in sensors.fleet_processes if not p.get("is_running")]
+            stale_p = [
+                f"{p['name']} (age={p.get('age_seconds')}s > {p.get('max_stale_seconds')}s)"
+                for p in sensors.fleet_processes
+                if p.get("is_running") and not p.get("heartbeat_fresh", True)
+            ]
+            context_items.append(
+                f"\n### 2B. FLEET PROCESSES (procs.conf): {len(running_p)}/{len(sensors.fleet_processes)} running"
+                + (f" | STOPPED: {stopped_p}" if stopped_p else "")
+                + (f" | STALE HEARTBEAT: {stale_p}" if stale_p else " | All heartbeats fresh")
+            )
+
         if sensors.prices_and_trends:
             context_items.append("\n### 3. LIVE MARKET PRICES, MULTI-HORIZON TRENDS & 24H EVOLUTION:")
             for sym, pinfo in sorted(sensors.prices_and_trends.items()):
@@ -513,16 +539,16 @@ class AutonomousAIReconciler:
         spec = topic_spec(topic_key)
 
         tasks = [
-            "1. Explain the technical root cause of any bot exceptions, fail-closed blocks, or guard vetoes.",
-            "2. Determine whether open orders or venue positions require reconciliation.",
+            "1. Explain the technical root cause of any bot exceptions, fail-closed blocks, stale heartbeats, or guard vetoes.",
+            "2. Determine whether open orders, venue positions, or hung/errored fleet bots require reconciliation or restart.",
         ]
         schema = [
             '  "summary": "1-2 sentence executive assessment of system health"',
-            '  "diagnosed_issues": [{"severity": "HIGH" | "MEDIUM" | "LOW" | "INFO", '
-            '"category": "ORPHAN_ORDER" | "BOT_EXCEPTION" | "GUARD_VETO" | "HEALTHY", '
+            '  "diagnosed_issues": [{"severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO", '
+            '"category": "BOT_EXCEPTION" | "FLEET_STALE" | "SYSTEM_ERROR" | "ORPHAN_ORDER" | "GUARD_VETO" | "HEALTHY", '
             '"description": "Short explanation", "root_cause": "Detailed technical root cause"}]',
-            '  "venue_actions": [{"action": "CANCEL_ORDER" | "SYNC_POSITION" | "NONE", '
-            '"venue": "binance" | "kraken" | "hyperliquid" | "t212", "symbol": "BTCUSDC", '
+            '  "venue_actions": [{"action": "CANCEL_ORDER" | "SYNC_POSITION" | "RESTART_BOT" | "NONE", '
+            '"venue": "binance" | "kraken" | "hyperliquid" | "t212" | "fleet", "symbol": "BTCUSDC or bot_name", '
             '"order_id": "optional order id", "reason": "Why this action is needed"}]',
         ]
         if spec.can_self_heal:
@@ -546,6 +572,13 @@ class AutonomousAIReconciler:
                           '"venue": "binance" | "kraken" | "hyperliquid" | "t212", "confidence": 0.88, '
                           '"suggested_notional_eur": 250.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}')
 
+        tool_rule = (
+            "- If you diagnose a reproducible code bug and need to verify exact lines before proposing `code_remediation`, "
+            "you MAY read the target file in the workspace so `search_block` matches verbatim.\n"
+            if spec.can_self_heal
+            else "- For this automated telemetry snapshot turn, do NOT call tools, shell commands, or file readers because all "
+                 "required telemetry is provided above (use tools only when the user asks a direct interactive question in chat).\n"
+        )
         prompt = (
             "You are the Lead SRE and Quantitative Trading Systems Architect for MPTrade.\n"
             "Analyze the passive telemetry sensors and log anomalies collected from trading bots:\n\n"
@@ -554,8 +587,7 @@ class AutonomousAIReconciler:
             "INTERACTIVE THREAD RULES:\n"
             "- If the user wrote any tactical instructions, price targets, overrides, or questions earlier in this "
             "conversation thread, honor them with highest priority and address them directly.\n"
-            "- For this automated telemetry snapshot turn, do NOT call tools, shell commands, or file readers because all "
-            "required telemetry is provided above (use tools only when the user asks a direct interactive question in chat).\n"
+            + tool_rule +
             "- Format your response in TWO parts so this thread stays cleanly readable in the Web UI:\n"
             "  1) A concise, well-structured Markdown report in **Romanian** (bullet points for: Starea Flotei & Loguri, "
             "Piața Live & Pante TAO/BTC, Portofoliu & Poziții Active, și Decizia AI / Răspuns la intervențiile din chat).\n"
@@ -587,26 +619,109 @@ class AutonomousAIReconciler:
 
         return resp
 
+    def _execute_venue_or_fleet_action(self, act: Dict[str, Any]) -> bool:
+        """Executes a single repair action (CANCEL_ORDER, SYNC_POSITION, or RESTART_BOT) in enforce mode."""
+        action_type = str(act.get("action") or "NONE").strip().upper()
+        venue = str(act.get("venue") or "binance").strip().lower()
+        symbol = str(act.get("symbol") or act.get("bot") or act.get("target") or "").strip()
+        order_id = str(act.get("order_id") or "").strip()
+        reason = str(act.get("reason") or "")
+
+        if action_type == "RESTART_BOT":
+            if not symbol:
+                logger.warning("[ENFORCE] RESTART_BOT missing bot name/symbol in action: %s", act)
+                return False
+            try:
+                from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
+                monitor = AutonomousOvernightMonitor(workspace_dir=self.workspace_dir)
+                target_lower = symbol.lower()
+                matched = next(
+                    (
+                        p for p in monitor.parse_process_manifest()
+                        if p["name"].lower() == target_lower
+                        or p["pattern"].rstrip("$").lower() == target_lower
+                        or os.path.basename(p["pattern"].rstrip("$")).lower() == target_lower
+                    ),
+                    None,
+                )
+                if not matched:
+                    logger.warning("[ENFORCE] Refusing RESTART_BOT for unknown process %r (not in procs.conf)", symbol)
+                    return False
+                pattern = matched["pattern"].rstrip("$")
+                logger.warning("[ENFORCE EXECUTING] Restarting fleet bot %s (pattern=%s): %s", matched["name"], pattern, reason)
+                subprocess.run(["pkill", "-f", pattern], check=False)
+                return True
+            except Exception as e:
+                logger.error("[ENFORCE] Failed restarting fleet bot %s: %s", symbol, e)
+                return False
+
+        if action_type == "CANCEL_ORDER":
+            if not symbol or not order_id:
+                logger.warning("[ENFORCE] CANCEL_ORDER missing symbol or order_id: %s", act)
+                return False
+            try:
+                inst = self.intent_gateway.resolve_instrument(symbol.upper(), venue=venue)
+                if inst is None:
+                    logger.warning("[ENFORCE] CANCEL_ORDER could not resolve instrument %s on %s", symbol, venue)
+                    return False
+                logger.warning("[ENFORCE EXECUTING] Canceling order %s for %s on %s: %s",
+                               order_id, inst.symbol, inst.provider_name, reason)
+                if getattr(inst, "_api", None) is not None and hasattr(inst._api, "cancel_order"):
+                    inst._api.cancel_order(inst.symbol, order_id, provider_name=inst.provider_name)
+                elif getattr(inst, "_provider", None) is not None and hasattr(inst._provider, "cancel_order"):
+                    inst._provider.cancel_order(inst.symbol, order_id)
+                else:
+                    logger.warning("[ENFORCE] Provider for %s does not expose cancel_order", inst.symbol)
+                    return False
+                return True
+            except Exception as e:
+                logger.error("[ENFORCE] Failed CANCEL_ORDER %s on %s (%s): %s", order_id, symbol, venue, e)
+                return False
+
+        if action_type == "SYNC_POSITION":
+            if not symbol:
+                return False
+            try:
+                inst = self.intent_gateway.resolve_instrument(symbol.upper(), venue=venue)
+                if inst is None:
+                    return False
+                logger.info("[ENFORCE EXECUTING] Syncing open orders/state for %s on %s: %s",
+                            inst.symbol, inst.provider_name, reason)
+                if getattr(inst, "_api", None) is not None and hasattr(inst._api, "open_orders"):
+                    inst._api.open_orders(inst.symbol, provider_name=inst.provider_name)
+                elif getattr(inst, "_provider", None) is not None and hasattr(inst._provider, "open_orders"):
+                    inst._provider.open_orders(inst.symbol)
+                return True
+            except Exception as e:
+                logger.error("[ENFORCE] Failed SYNC_POSITION for %s on %s: %s", symbol, venue, e)
+                return False
+
+        logger.warning("[ENFORCE] Unsupported venue/fleet action %r: %s", action_type, act)
+        return False
+
     def apply_reconciliation(
         self, plan: Dict[str, Any], *, allow_code_remediation: bool = True
     ) -> Tuple[bool, Optional[bool]]:
-        """Applies or simulates venue actions and code remediation based on operational mode."""
+        """Applies or simulates venue/fleet repair actions and code remediation based on operational mode."""
         is_enforce = (self.mode == "enforce")
         raw_actions = plan.get("venue_actions")
         venue_actions = raw_actions if isinstance(raw_actions, list) else []
         raw_fix = plan.get("code_remediation") if allow_code_remediation else None
         code_fix = raw_fix if isinstance(raw_fix, dict) else {}
 
+        venue_executed = False
         for act in venue_actions:
-            action_type = act.get("action", "NONE")
+            if not isinstance(act, dict):
+                continue
+            action_type = str(act.get("action") or "NONE").strip().upper()
             if action_type == "NONE":
                 continue
-            if not is_enforce:
-                logger.info("[SHADOW WOULD EXECUTE] Venue action %s for %s (%s): %s",
+            if not is_enforce or not allow_code_remediation:
+                logger.info("[SHADOW WOULD EXECUTE] Venue/fleet action %s for %s (%s): %s",
                             action_type, act.get("symbol"), act.get("venue"), act.get("reason"))
             else:
-                logger.info("[ENFORCE EXECUTING] Venue action %s for %s (%s): %s",
-                            action_type, act.get("symbol"), act.get("venue"), act.get("reason"))
+                if self._execute_venue_or_fleet_action(act):
+                    venue_executed = True
 
         tests_passed: Optional[bool] = None
         if code_fix.get("has_fix") and code_fix.get("target_file") and code_fix.get("search_block"):
@@ -623,11 +738,7 @@ class AutonomousAIReconciler:
                     rationale=rationale,
                 )
 
-        real_venue_actions = [
-            act for act in venue_actions
-            if isinstance(act, dict) and str(act.get("action", "NONE")).strip().upper() != "NONE"
-        ]
-        executed = is_enforce and bool(real_venue_actions or (code_fix.get("has_fix") and tests_passed))
+        executed = is_enforce and bool(venue_executed or (code_fix.get("has_fix") and tests_passed))
         return executed, tests_passed
 
     def _apply_code_patch_safely(
@@ -707,27 +818,65 @@ class AutonomousAIReconciler:
             subprocess.run(["git", "checkout", "--", real_target], cwd=self.workspace_dir, check=False)
             return False
 
+    @staticmethod
+    def _is_error_report(report: SupervisorAuditReport) -> bool:
+        """Return True if the audit report diagnoses a system, server, or fleet-bot error or repair action."""
+        for issue in report.diagnosed_issues or []:
+            if not isinstance(issue, dict):
+                continue
+            sev = str(issue.get("severity") or "").strip().upper()
+            cat = str(issue.get("category") or "").strip().upper()
+            if sev in ("CRITICAL", "HIGH", "MEDIUM"):
+                return True
+            if cat in ("BOT_EXCEPTION", "FLEET_STALE", "SYSTEM_ERROR", "SERVER_ERROR", "ORPHAN_ORDER"):
+                return True
+        if isinstance(report.code_remediation, dict) and report.code_remediation.get("has_fix"):
+            return True
+        if report.tests_passed is False:
+            return True
+        for act in report.venue_actions or []:
+            if isinstance(act, dict) and str(act.get("action") or "NONE").strip().upper() != "NONE":
+                return True
+        return False
+
     def dispatch_notification(
         self,
         report: SupervisorAuditReport,
         *,
         topic_key: str = "auto_technical_repair",
     ) -> bool:
-        """Sends a clean, compact push alert via standard HTTP POST to ntfy."""
+        """Sends a clean, compact push alert via standard HTTP POST to ntfy.
+
+        Routes system, server, and fleet-bot errors/repairs to NTFY_TOPIC_ERROR (ntfy-error),
+        and routine healthy system audits to NTFY_TOPIC_SERVER (ntfy-server).
+        """
         if not self.notify_enabled:
             return False
 
-        issues_cnt = len(report.diagnosed_issues)
-        actions_cnt = len(report.venue_actions)
-        has_fix = report.code_remediation.get("has_fix", False)
-        mode_label = report.mode.upper()
-
-        spec_prefix = (
-            topic_spec(topic_key).ntfy_prefix
-            if topic_key in TOPIC_SPECS
-            else topic_spec("auto_technical_repair").ntfy_prefix
+        issues_cnt = sum(
+            1 for i in (report.diagnosed_issues or [])
+            if isinstance(i, dict) and str(i.get("category") or "").strip().upper() != "HEALTHY"
         )
-        title = f"{spec_prefix} Issues: {issues_cnt} | Actions: {actions_cnt}"
+        actions_cnt = sum(
+            1 for a in (report.venue_actions or [])
+            if isinstance(a, dict) and str(a.get("action") or "NONE").strip().upper() != "NONE"
+        )
+        has_fix = bool(isinstance(report.code_remediation, dict) and report.code_remediation.get("has_fix", False))
+        if has_fix:
+            actions_cnt += 1
+        mode_label = report.mode.upper()
+        is_error = self._is_error_report(report)
+
+        spec = topic_spec(topic_key) if topic_key in TOPIC_SPECS else topic_spec("auto_technical_repair")
+        if is_error:
+            title = f"🚨 {spec.bracket_tag} ERROR Issues: {issues_cnt} | Actions: {actions_cnt}"
+            target_topic = self.ntfy_topic_error or self.ntfy_topic or "ntfy-error-1978"
+            priority = "high"
+        else:
+            title = f"{spec.ntfy_prefix} Issues: {issues_cnt} | Actions: {actions_cnt}"
+            target_topic = self.ntfy_topic_server or self.ntfy_topic or "ntfy-server-1978"
+            priority = "default"
+
         body_lines = [
             f"Mode: {mode_label} · Status: {'Executed' if report.actions_executed else 'Simulated/Observed'}",
             f"{report.summary}",
@@ -757,24 +906,24 @@ class AutonomousAIReconciler:
                 "ntfy",
                 title,
                 body,
-                "default",
-                self.ntfy_topic or "ntfy-server-1978",
+                priority,
+                target_topic,
                 [{"type": "bot_event", "name": title, "body": body, "source": "ai_supervisor", "symbol": "SYSTEM"}],
-                urgent=False,
+                urgent=is_error,
             )
             if not allowed:
                 logger.info("Supervisor ntfy gated by common policy (%s): %s", reason, title)
                 return reason == "buffered_for_bulk"
             if out_payload:
-                title, body, _, _ = out_payload
+                title, body, priority, target_topic = out_payload
         except Exception as e:
             logger.debug("Common gate fallback in reconciler: %s", e)
 
-        url = self.ntfy_url or f"https://ntfy.sh/{self.ntfy_topic}"
+        url = self.ntfy_url or f"https://ntfy.sh/{target_topic}"
         headers = {
             "Title": title.encode("utf-8").decode("latin-1", "ignore"),
-            "Priority": "default",
-            "Tags": "shield,robot",
+            "Priority": priority,
+            "Tags": "rotating_light,robot" if is_error else "shield,robot",
         }
         if self.ntfy_token:
             headers["Authorization"] = f"Bearer {self.ntfy_token}"
@@ -877,6 +1026,7 @@ class AutonomousAIReconciler:
         should_notify = (
             spec.can_self_heal
             or executed
+            or (spec.can_self_heal and self._is_error_report(report))
             or has_high_issue
             or str(market_decision.get("decision", "HOLD")).upper() in ("BUY", "SELL")
         )
