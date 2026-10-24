@@ -190,7 +190,9 @@ class GeminiClient:
                     logger.info("Resuming topic '%s' conversation %s failed; answering from a one-off thread.",
                                 topic_key, session.conversation_id)
                     proc = _run_cli(None, cli_prompt, timeout_sec)
-                    output, _ = _parse(proc)
+                    output, detached_cid = _parse(proc)
+                    if detached_cid and detached_cid != session.conversation_id and not is_mocked:
+                        self._remove_detached_thread(bot_cli_base, detached_cid)
                     turn_cid = None
 
                 if output:
@@ -227,7 +229,7 @@ class GeminiClient:
                             except Exception as e:
                                 logger.debug("Failed recording topic turn for %s: %s", topic_key, e)
 
-                        if session.compact and turn_cid and timeout_sec < 45.0 and not is_mocked:
+                        if session.compact and turn_cid and not is_mocked:
                             threading.Thread(target=_finalize_topic_turn, daemon=False).start()
                         else:
                             _finalize_topic_turn()
@@ -268,6 +270,39 @@ class GeminiClient:
                 logger.error("Gemini REST API error: %s", e)
 
         return None
+
+    @staticmethod
+    def _remove_detached_thread(bot_cli_base: str, cid: str) -> None:
+        """Delete a one-off fallback conversation from the isolated bot store so orphans never accumulate."""
+        import sqlite3
+
+        if not bot_cli_base or not cid:
+            return
+        conv_db = os.path.join(bot_cli_base, "conversations", f"{cid}.db")
+        for sfx in ("", "-wal", "-shm"):
+            try:
+                if os.path.exists(conv_db + sfx):
+                    os.remove(conv_db + sfx)
+            except OSError:
+                pass
+        ann_path = os.path.join(bot_cli_base, "annotations", f"{cid}.pbtxt")
+        try:
+            if os.path.exists(ann_path):
+                os.remove(ann_path)
+        except OSError:
+            pass
+        shutil.rmtree(os.path.join(bot_cli_base, "brain", cid), ignore_errors=True)
+        sum_db = os.path.join(bot_cli_base, "conversation_summaries.db")
+        if os.path.exists(sum_db):
+            try:
+                conn = sqlite3.connect(sum_db, timeout=5)
+                try:
+                    conn.execute("DELETE FROM conversation_summaries WHERE conversation_id = ?", (cid,))
+                    conn.commit()
+                finally:
+                    conn.close()
+            except sqlite3.Error:
+                pass
 
     def query_json(
         self,

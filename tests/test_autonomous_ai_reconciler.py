@@ -710,6 +710,26 @@ def test_dispatch_notification_routes_system_and_bot_errors_to_ntfy_error(temp_e
         assert title_str == "🚨 [auto_technical_repair] ERROR Issues: 1 | Actions: 1"
         assert req.headers["Priority"] == "high"
 
+    # 4. LOW-severity note with 0 repair actions stays on ntfy-server-1978 with default priority (no false alarm)
+    low_note_report = SupervisorAuditReport(
+        ts=time.time(),
+        mode="enforce",
+        summary="All healthy; minor HTTP 429 rate-limit note handled by cache fallback.",
+        diagnosed_issues=[{"severity": "LOW", "category": "BOT_EXCEPTION", "description": "CMC HTTP 429 fallback"}],
+        venue_actions=[],
+        code_remediation={"has_fix": False},
+        actions_executed=False,
+    )
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen, \
+         patch("notify_engine.alertnotifiers.pass_common_gate", return_value=(True, "ok", "fp", None)):
+        assert reconciler.dispatch_notification(low_note_report) is True
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "https://ntfy.sh/ntfy-server-1978"
+        title_str = req.headers["Title"].encode("latin-1").decode("utf-8")
+        assert title_str == "🛠 [auto_technical_repair] Issues: 1 | Actions: 0"
+        assert req.headers["Priority"] == "default"
+
+
 
 def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env):
     workspace, cache_dir, _ = temp_env
@@ -899,6 +919,41 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
     assert report.market_trading_decision["symbol"] == "BTCUSDC"
     assert len(report.market_trading_decisions) == 2
     assert len(report.intents_emitted) == 2
+    assert report.venue_actions == []
+
+
+def test_auto_trade_executor_never_dispatches_sre_notifications_or_executes_venue_actions(temp_env):
+    workspace, _, _ = temp_env
+    plan = {
+        "summary": "Trade execution turn with incidental venue_actions from LLM.",
+        "diagnosed_issues": [{"severity": "HIGH", "category": "ORPHAN_ORDER", "description": "Queued retry"}],
+        "venue_actions": [{"action": "CANCEL_ORDER", "venue": "binance", "symbol": "TAOUSDC", "order_id": "123"}],
+        "market_trading_decisions": [
+            {"decision": "BUY", "symbol": "TAOUSDC", "venue": "binance", "confidence": 0.92, "suggested_notional_usd": 400.0}
+        ],
+    }
+    auditor = GeminiClient(custom_runner=lambda p, m, t: json.dumps(plan))
+    gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0, notify_enabled=True)
+    gateway.submit.return_value = {"intent_id": "i_tao", "symbol": "TAOUSDC", "status": "EXECUTED"}
+    reconciler = AutonomousAIReconciler(
+        workspace_dir=workspace,
+        cache_dir="cachedb",
+        logs_dirs=["logs"],
+        gemini_auditor=auditor,
+        mode="enforce",
+        notify_enabled=True,
+        intent_gateway=gateway,
+    )
+    with patch.object(reconciler, "dispatch_notification") as mock_sre_notify, \
+         patch.object(reconciler, "apply_reconciliation") as mock_reconcile:
+        report = reconciler.run_cycle(topic_key="auto_trade_executor")
+
+    mock_sre_notify.assert_not_called()
+    mock_reconcile.assert_not_called()
+    assert report.venue_actions == []
+    assert report.actions_executed is True
+    assert report.notification_sent is True
+
 
 
 

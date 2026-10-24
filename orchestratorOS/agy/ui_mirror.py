@@ -178,7 +178,7 @@ def mirror_topic_thread_to_ui(
         os.makedirs(visible_dir, exist_ok=True)
         visible_db = os.path.join(visible_dir, f"{cid}.db")
         if os.path.lexists(visible_db):
-            if not os.path.samefile(visible_db, dst_db):
+            if not os.path.exists(visible_db) or not os.path.samefile(visible_db, dst_db):
                 os.remove(visible_db)
                 os.link(dst_db, visible_db)
         else:

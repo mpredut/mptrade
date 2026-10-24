@@ -1050,19 +1050,21 @@ class AutonomousAIReconciler:
 
         tasks = [
             "1. Explain the technical root cause of any bot exceptions, fail-closed blocks, stale heartbeats, or guard vetoes.",
-            "2. Determine whether open orders, venue positions, or hung/errored fleet bots require reconciliation or restart.",
         ]
         schema = [
             '  "summary": "1-2 sentence executive assessment of system health and multi-coin market posture"',
             '  "diagnosed_issues": [{"severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO", '
             '"category": "BOT_EXCEPTION" | "ORPHAN_ORDER" | "FLEET_STALE" | "SYSTEM_ERROR" | "OS_RESOURCE" | "VPN_ERROR" | "GUARD_VETO" | "HEALTHY", '
             '"description": "Short explanation", "root_cause": "Detailed technical root cause"}]',
-            '  "venue_actions": [{"action": "CANCEL_ORDER" | "SYNC_POSITION" | "RESTART_BOT" | "NONE", '
-            '"venue": "binance" | "kraken" | "hyperliquid" | "t212" | "fleet", "symbol": "BTCUSDC or bot_name", '
-            '"order_id": "optional order id", "reason": "Why this action is needed"}]',
         ]
         if spec.can_self_heal:
+            tasks.append("2. Determine whether open orders, venue positions, or hung/errored fleet bots require reconciliation or restart.")
             tasks.append("3. If a reproducible code bug exists, formulate an exact search_block and replace_block.")
+            schema.append(
+                '  "venue_actions": [{"action": "CANCEL_ORDER" | "SYNC_POSITION" | "RESTART_BOT" | "NONE", '
+                '"venue": "binance" | "kraken" | "hyperliquid" | "t212" | "fleet", "symbol": "BTCUSDC or bot_name", '
+                '"order_id": "optional order id", "reason": "Why this action is needed"}]'
+            )
             schema.append('  "code_remediation": {"has_fix": false, "target_file": "", "rationale": "", '
                           '"search_block": "", "replace_block": ""}')
         if spec.can_trade:
@@ -1368,7 +1370,7 @@ class AutonomousAIReconciler:
                 continue
             cat = str(issue.get("category") or "").strip().upper()
             sev = str(issue.get("severity") or "").strip().upper()
-            if cat in cls._BOT_AND_ORDER_ERROR_CATEGORIES and sev != "INFO":
+            if cat in cls._BOT_AND_ORDER_ERROR_CATEGORIES and sev in ("CRITICAL", "HIGH", "MEDIUM"):
                 return True
         if isinstance(report.code_remediation, dict) and report.code_remediation.get("has_fix"):
             return True
@@ -1389,7 +1391,7 @@ class AutonomousAIReconciler:
                 continue
             cat = str(issue.get("category") or "").strip().upper()
             sev = str(issue.get("severity") or "").strip().upper()
-            if cat in cls._SYSTEM_OS_ERROR_CATEGORIES and sev != "INFO":
+            if cat in cls._SYSTEM_OS_ERROR_CATEGORIES and sev in ("CRITICAL", "HIGH", "MEDIUM"):
                 return True
             if sev in ("CRITICAL", "HIGH", "MEDIUM") and cat not in cls._BOT_AND_ORDER_ERROR_CATEGORIES:
                 return True
@@ -1561,7 +1563,11 @@ class AutonomousAIReconciler:
         sensors = self.harvest_sensors_telemetry()
         logs = self.harvest_log_anomalies()
         plan = self.synthesize_and_diagnose(sensors, logs, focus_symbols=focus_symbols, topic_key=topic_key)
-        executed, tests_passed = self.apply_reconciliation(plan, allow_code_remediation=spec.can_self_heal)
+        executed, tests_passed = (
+            self.apply_reconciliation(plan, allow_code_remediation=True)
+            if spec.can_self_heal
+            else (False, None)
+        )
 
         decisions_list: List[Dict[str, Any]] = _normalize_trading_decisions(plan) if spec.can_trade else []
         market_decision: Dict[str, Any] = decisions_list[0] if decisions_list else {}
@@ -1575,7 +1581,7 @@ class AutonomousAIReconciler:
         primary_intent = intents_emitted[0] if intents_emitted else None
 
         raw_issues = plan.get("diagnosed_issues")
-        raw_actions = plan.get("venue_actions")
+        raw_actions = plan.get("venue_actions") if spec.can_self_heal else []
         raw_fix = plan.get("code_remediation") if spec.can_self_heal else None
         report = SupervisorAuditReport(
             ts=now,
@@ -1599,25 +1605,14 @@ class AutonomousAIReconciler:
             actions_executed=executed,
             tests_passed=tests_passed,
         )
-        has_high_issue = any(
-            isinstance(i, dict) and str(i.get("severity", "")).upper() in ("HIGH", "CRITICAL")
-            for i in report.diagnosed_issues
-        )
-        has_trade_signal = any(
-            str(d.get("decision", "HOLD")).upper() in ("BUY", "SELL")
-            for d in decisions_list
-            if isinstance(d, dict)
-        )
-        should_notify = (
-            spec.can_self_heal
-            or executed
-            or (spec.can_self_heal and self._is_error_report(report))
-            or has_high_issue
-            or has_trade_signal
-        )
-        report.notification_sent = (
-            self.dispatch_notification(report, topic_key=topic_key) if should_notify else False
-        )
+        # SRE/system/bot-error notifications (ntfy-server / ntfy-error) belong strictly to auto_technical_repair
+        # (spec.can_self_heal); auto_trade_executor notifications are dispatched by AutonomousIntentGateway to ntfy-trade.
+        if spec.can_self_heal:
+            report.notification_sent = self.dispatch_notification(report, topic_key=topic_key)
+        else:
+            report.notification_sent = bool(
+                intents_emitted and getattr(self.intent_gateway, "notify_enabled", False)
+            )
         self.write_audit_artifact(report)
         logger.info("Autonomous AI Supervisor cycle complete: %s", report.summary)
         return report
