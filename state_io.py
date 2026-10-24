@@ -233,21 +233,31 @@ def read_tail_lines(
     chunk_size: int = 65536,
 ) -> list[bytes]:
     """Read up to the last ``limit`` lines from ``path`` with bounded memory."""
-    if limit <= 0 or not os.path.exists(path):
+    if isinstance(limit, bool) or limit <= 0 or not os.path.exists(path):
         return []
     chunks: list[bytes] = []
     newline_count = 0
     with open(path, "rb") as handle:
         handle.seek(0, os.SEEK_END)
         position = handle.tell()
-        while position > 0 and newline_count <= limit:
+        while position > 0:
             step = min(chunk_size, position)
             position -= step
             handle.seek(position)
             chunk = handle.read(step)
             chunks.append(chunk)
             newline_count += chunk.count(b"\n")
-    return b"".join(reversed(chunks)).splitlines()[-limit:]
+            if newline_count > limit and position > 0:
+                joined = b"".join(reversed(chunks))
+                complete = joined.split(b"\n", 1)[1] if b"\n" in joined else b""
+                non_empty = [line for line in complete.splitlines() if line.strip()]
+                if len(non_empty) >= limit:
+                    return non_empty[-limit:]
+                newline_count = len(non_empty)
+    joined = b"".join(reversed(chunks))
+    if position > 0 and b"\n" in joined:
+        joined = joined.split(b"\n", 1)[1]
+    return [line for line in joined.splitlines() if line.strip()][-limit:]
 
 
 def truncate_file_bytes(path: str, size: int) -> None:

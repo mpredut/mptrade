@@ -245,6 +245,12 @@ class TestArchiverLifecycle(unittest.TestCase):
                 handle.write("[]")
             manager._load_jsonl()
             self.assertGreaterEqual(manager.fetchtime_per_symbol.get("BTCUSDC", 0), now_ms + 1000)
+            self.assertEqual(cm.Cache365PriceManager._tail_lines(target_jsonl, True), [])
+            with open(target_jsonl, "a", encoding="utf-8") as handle:
+                handle.write("\n\n")
+            tail_rows = cm.Cache365PriceManager._tail_lines(target_jsonl, 1, block_size=7)
+            self.assertEqual(len(tail_rows), 1)
+            self.assertEqual(json.loads(tail_rows[0])["i"], [now_ms + 1000, 15.0])
         finally:
             for name in os.listdir(tmp_dir):
                 try:
