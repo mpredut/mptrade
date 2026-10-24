@@ -1,8 +1,7 @@
 """Unit tests for modular order guard pillars:
-- Pillar 1: internal_order_guard
-- Pillar 2: external_order_guard
-- Pillar 3: intelligence_order_guard
-- Pillar 4: geopolitical_order_guard
+- Pillar 1 (G_QLIMIT2): qlimit_order_guard
+- Pillar 2 (GI_OBOOK / GI_WHALE / GI_FUNDING): external_order_guard
+- Pillar 3 & 4 (GLLM1 / GLLM2 / GLLM3): llm_order_guard
 """
 
 from __future__ import annotations
@@ -11,15 +10,17 @@ import time
 from unittest.mock import patch
 
 import order_guard
-from internal_order_guard import check_internal_order_guards
+from qlimit_order_guard import check_qlimit2_order_guards as check_internal_order_guards
 from external_order_guard import (
     check_external_order_guards,
     get_whale_collector,
     get_orderbook_collector,
     get_derivatives_collector,
 )
-from intelligence_order_guard import check_intelligence_order_guards
-from geopolitical_order_guard import check_geopolitical_order_guards
+from llm_order_guard import (
+    check_geopolitical_order_guards,
+    check_llm_order_guards as check_intelligence_order_guards,
+)
 from intelligence.macro.geopolitical_analyzer import (
     GeopoliticalThreatAssessment,
     GeopoliticalThreatAnalyzer,
@@ -453,10 +454,10 @@ def test_profit_guard_rebuy_bypasses_math_reference_but_enforces_microstructure(
         )
         assert allowed is False
 
-        # If Pillar 2 & Pillar 4 are ALSO bypassed, it goes through
+        # If GI (microstructure) & GLLM3 (geopolitical) are ALSO bypassed, it goes through
         allowed_p2_bypassed = order_guard.profit_guard(
             p, "TAOUSDC", "BUY", 250.0, 1.15, window_ref=200.0, qty=1.0,
-            bypass_guards={"math_reference", "p2", "p4"},
+            bypass_guards={"math_reference", "gi", "GLLM3"},
         )
         assert allowed_p2_bypassed is True
 
@@ -525,14 +526,14 @@ def test_whale_divergence_liquidation_cascade_blocks():
 
 def test_granular_bypass_p3_p4_avoids_unbound_local_error():
     from order_guard import check_intelligence_guards
-    # Passing p2, p3, and p4 bypass skips intelligence guards and must NOT raise UnboundLocalError
+    # Passing GI and GLLM bypass skips external and LLM guards and must NOT raise UnboundLocalError
     allowed, reason, scale = check_intelligence_guards(
         provider="binance",
         symbol="BTCUSDC",
         order_type="BUY",
         price=60000.0,
         qty=0.01,
-        bypass_guards={"p2", "p3", "p4"},
+        bypass_guards={"gi", "GLLM1", "GLLM3"},
     )
     assert allowed is True
     assert scale == 1.0
@@ -553,7 +554,7 @@ def test_internal_guard_mode_off_does_not_disable_other_pillars(monkeypatch):
         order_type="BUY",
         price=60000.0,
         qty=0.01,
-        bypass_guards={"p1", "p3", "p4"},
+        bypass_guards={"G_QLIMIT2", "GLLM1", "GLLM3"},
     )
     # With intelligence_guards_mode=enforce, global check does NOT short-circuit
     assert reason != "intelligence_guards_off"
@@ -577,6 +578,62 @@ def test_pillars_fail_fast_on_missing_config_keys():
 
     with pytest.raises(KeyError):
         get_post_stop_reentry_guard(margins={}, gemini_client=object())
+
+
+def test_weibull_does_not_overlap_gaussian_horizon_and_computes_weibull_survival(monkeypatch):
+    """Verify WeibullExhaustionGuard (G_QLIMIT2) uses true Weibull survival math and does not overlap
+    with G_QLIMIT1's Gaussian Zone 1 & Zone 2 (0 .. 1.4*T)."""
+    import qlimit_order_guard
+    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+
+    guard = WeibullExhaustionGuard(default_p90_days=7.0, policy="downscale", exhausted_scale=0.25)
+
+    # On TAOUSDC: T=8d -> gaussian_horizon_days = 11.2d. At 10.3d (inside Gauss Zone 2), Weibull must NOT downscale!
+    dec_in_zone2 = guard.check(
+        "TAOUSDC",
+        "SELL",
+        trend_duration_seconds=10.3 * 86400,
+        median_days=3.0,
+        trend_direction="bear",
+        gaussian_horizon_days=11.2,
+    )
+    assert dec_in_zone2.allowed is True
+    assert dec_in_zone2.suggested_scale == 1.0
+    assert "trend_healthy" in dec_in_zone2.reason
+    assert "weibull_survival" in dec_in_zone2.metadata
+
+    # Beyond 11.2d (e.g. 12.5d, Zone 3 tail), Weibull downscales to 0.25 with S_weibull < 0.10
+    dec_zone3 = guard.check(
+        "TAOUSDC",
+        "SELL",
+        trend_duration_seconds=12.5 * 86400,
+        median_days=3.0,
+        trend_direction="bear",
+        gaussian_horizon_days=11.2,
+    )
+    assert dec_zone3.allowed is True
+    assert dec_zone3.suggested_scale == 0.25
+    assert "trend_exhausted" in dec_zone3.reason
+    assert dec_zone3.metadata["weibull_survival"] < 0.10
+
+    # Verify check_qlimit2_order_guards resolves cached Gaussian horizon when G_QLIMIT1 is active
+    monkeypatch.setattr(qlimit_order_guard, "_resolve_trend_duration", lambda _s: 10.3 * 86400)
+    monkeypatch.setattr(qlimit_order_guard, "_resolve_trend_direction", lambda _s, **_k: "bear")
+    monkeypatch.setattr(qlimit_order_guard, "resolve_cached_gaussian_horizon", lambda _s, **_k: (6.6, 3.0, 11.2))
+    m = _margins(
+        internal_guard_mode="enforce",
+        weibull_exhaustion_policy="downscale",
+        weibull_exhausted_scale=0.25,
+        weibull_p90_days=7.0,
+        sell_guard_min_notional_usd=700.0,
+    )
+    ok, reason, scale = qlimit_order_guard.check_qlimit2_order_guards(
+        "TAOUSDC", "SELL", 250.0, qty=4.0, notional_eur=1000.0, price_history=[], margins=m
+    )
+    assert ok is True
+    assert scale == 1.0
+    assert reason == "ok"
+
 
 
 

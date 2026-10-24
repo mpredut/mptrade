@@ -1,12 +1,11 @@
-"""External Order Guard (Pillar 2).
+"""External Market Intelligence Order Guards (GI_OBOOK, GI_WHALE, GI_FUNDING).
 
 Evaluates pre-trade orders against external market microstructure math (NO LLM, 0 ms):
-- OrderbookWallGuard: Spot orderbook depth, bid/ask imbalance ratio, and large ask walls.
-- FundingCrowdingGuard: Perpetual derivatives funding rate crowding & long squeeze risk.
-- WhaleDivergenceGuard: Top traders Long/Short ratio, taker volume flow, and OI divergence.
+- GI_OBOOK (OrderbookWallGuard): Spot orderbook depth, bid/ask imbalance ratio, and large ask/bid walls.
+- GI_WHALE (WhaleDivergenceGuard): Top traders Long/Short ratio, taker volume flow, and OI divergence.
+- GI_FUNDING / GI_CROWD (FundingCrowdingGuard): Perpetual derivatives funding rate crowding & squeeze risk.
 
 Executes in 0 ms (reads local cachedb/ telemetry, zero network calls during order placement).
-Symmetrically mirrors internal_order_guard.py (Pillar 1).
 """
 
 from __future__ import annotations
@@ -70,8 +69,9 @@ def check_external_order_guards(
     is_stop_loss: bool = False,
     margins: Optional[Dict[str, Any]] = None,
     now: Optional[float] = None,
+    bypass_guards: Optional[set[str]] = None,
 ) -> Tuple[bool, str, float]:
-    """Evaluate external orderbook depth, derivatives funding, and whale positioning guards (Pillar 2).
+    """Evaluate external orderbook depth (GI_OBOOK), whale positioning (GI_WHALE), and funding (GI_FUNDING).
 
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
@@ -82,6 +82,9 @@ def check_external_order_guards(
 
     if order_side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
+
+    from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards) if bypass_guards else set()
 
     from order_guard import _load_margins, validate_guard_mode_cfg
     if margins is None:
@@ -129,9 +132,9 @@ def check_external_order_guards(
         except Exception:
             pass
 
-    # 1. Whale Flow & Open Interest Divergence Guard
+    # 1. GI_WHALE: Whale Flow & Open Interest Divergence Guard
     whale_mode = validate_guard_mode_cfg(m["whale_guard_mode"], "whale_guard_mode")
-    if whale_mode != "off":
+    if whale_mode != "off" and not GUARD_REGISTRY["GI_WHALE"].is_bypassed(bypassed):
         try:
             from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
             w_snap = get_whale_collector().fetch(symbol, allow_network=False)
@@ -151,7 +154,7 @@ def check_external_order_guards(
                 print(f"{prefix} {order_side} {symbol}: {w_dec.reason} (brake={w_dec.brake_action})")
                 if whale_mode == "shadow" and shadow_notify_enabled:
                     scale_pct = int(w_dec.suggested_scale * 100) if w_dec.suggested_scale < 1.0 else None
-                    _send_micro_shadow_notify("whale", f"🛡 [P2 · WHALE-FLOW] {w_dec.brake_action.value} {order_side} {symbol}", w_dec.reason, scale_pct=scale_pct)
+                    _send_micro_shadow_notify("whale", f"🛡 [GI_WHALE] {w_dec.brake_action.value} {order_side} {symbol}", w_dec.reason, scale_pct=scale_pct)
                 if whale_mode == "enforce":
                     if not w_dec.allowed:
                         return False, w_dec.reason, 0.0
@@ -161,9 +164,9 @@ def check_external_order_guards(
         except Exception:
             pass
 
-    # 2. Orderbook Depth & Whale Limit Wall Guard
+    # 2. GI_OBOOK: Orderbook Depth & Whale Limit Wall Guard
     ob_mode = validate_guard_mode_cfg(m["orderbook_wall_guard_mode"], "orderbook_wall_guard_mode")
-    if ob_mode != "off":
+    if ob_mode != "off" and not GUARD_REGISTRY["GI_OBOOK"].is_bypassed(bypassed):
         try:
             from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
             ob_snap = get_orderbook_collector().fetch(symbol, allow_network=False)
@@ -182,7 +185,7 @@ def check_external_order_guards(
                 if ob_mode == "shadow" and shadow_notify_enabled:
                     scale_pct = int(ob_dec.suggested_scale * 100) if ob_dec.suggested_scale < 1.0 else None
                     action_str = f"SCALE {scale_pct}%" if (ob_dec.allowed and scale_pct is not None) else "DEFER"
-                    _send_micro_shadow_notify("orderbook", f"🛡 [P2 · ORDERBOOK] {action_str} {order_side} {symbol}", ob_dec.reason, scale_pct=scale_pct)
+                    _send_micro_shadow_notify("orderbook", f"🛡 [GI_OBOOK] {action_str} {order_side} {symbol}", ob_dec.reason, scale_pct=scale_pct)
                 if ob_mode == "enforce":
                     if not ob_dec.allowed:
                         return False, ob_dec.reason, 0.0
@@ -192,9 +195,9 @@ def check_external_order_guards(
         except Exception:
             pass
 
-    # 3. Perpetual Derivatives Funding Rate Crowding Guard
+    # 3. GI_FUNDING (GI_CROWD): Perpetual Derivatives Funding Rate Crowding Guard
     funding_mode = validate_guard_mode_cfg(m["funding_guard_mode"], "funding_guard_mode")
-    if funding_mode != "off":
+    if funding_mode != "off" and not GUARD_REGISTRY["GI_FUNDING"].is_bypassed(bypassed):
         try:
             from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
             f_snap = get_derivatives_collector().fetch(symbol, allow_network=False)
@@ -214,10 +217,10 @@ def check_external_order_guards(
                 print(f"{prefix} {order_side} {symbol}: {f_dec.reason} (brake={f_dec.brake_action}, suggested_scale={f_dec.suggested_scale})")
                 if funding_mode == "shadow" and shadow_notify_enabled:
                     if not f_dec.allowed:
-                        _send_micro_shadow_notify("funding", f"🛡 [P2 · FUNDING] DEFER {order_side} {symbol}", f_dec.reason)
+                        _send_micro_shadow_notify("funding", f"🛡 [GI_FUNDING] DEFER {order_side} {symbol}", f_dec.reason)
                     else:
                         scale_pct = int(f_dec.suggested_scale * 100)
-                        _send_micro_shadow_notify("funding", f"🛡 [P2 · FUNDING] SCALE {scale_pct}% {order_side} {symbol}", f_dec.reason, scale_pct=scale_pct)
+                        _send_micro_shadow_notify("funding", f"🛡 [GI_FUNDING] SCALE {scale_pct}% {order_side} {symbol}", f_dec.reason, scale_pct=scale_pct)
                 if funding_mode == "enforce":
                     if not f_dec.allowed:
                         return False, f_dec.reason, 0.0

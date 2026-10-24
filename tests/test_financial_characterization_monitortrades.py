@@ -1206,12 +1206,12 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
         self.assertEqual(mt._LAST_EXIT_KIND.get(sym), "STOP")
         self.assertEqual(mt._REENTRY_STATE[sym]["trough"], 90.0)
 
-        # Tick 2 at 92.0 (+2.22% bounce >= 1.5%): places Post-STOP re-entry BUY with GF1+GI3 bypass
+        # Tick 2 at 92.0 (+2.22% bounce >= 1.5%): places Post-STOP re-entry BUY with G_PROF+GLLM1 bypass
         inst._price = 92.0
         self.run_tick(inst, trend_up=True, now=NOW + 60)
         self.assertEqual(len(inst.placed), 1)
         self.assertEqual(inst.placed[0]["side"], "BUY")
-        self.assertEqual(inst.placed[0]["kwargs"]["bypass_guards"], {"GF1", "GI3"})
+        self.assertEqual(inst.placed[0]["kwargs"]["bypass_guards"], {"G_PROF", "GLLM1"})
 
     def test_stop_loss_does_not_fall_through_and_resets_stale_reentry_and_min_notional_dust(self):
         """Regression for ARBUSDC incident:

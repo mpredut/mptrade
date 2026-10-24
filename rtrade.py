@@ -359,7 +359,7 @@ class _LivePairVenue:
                 self.symbol, side, price, qty,
                 force=False, cancelorders=False, hours=hours, smart=False,
                 cooldown_pair_id=pair_id,
-                bypass_guards={"GI3"},
+                bypass_guards={"GLLM1"},
                 # The coordinator owns retry/reconciliation. The global outbox
                 # must not later recreate a leg from an expired pair.
                 caller_owns_retry=True, motivation="rtrade_pair_quote",
@@ -1220,7 +1220,7 @@ class TradingBot:
                 self.symbol, "SELL", sell_price, total_qty,
                 force=_followup_force(self.symbol, "SELL"),
                 cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                bypass_guards={"GF1", "GI3"}, allow_math_reference_sell=True,
+                bypass_guards={"G_PROF", "GLLM1"}, allow_math_reference_sell=True,
                 caller_owns_retry=True)
             completed = True
             return self.mark_buy_filled(avg_px)
@@ -1279,7 +1279,7 @@ class TradingBot:
                             self.symbol, "BUY", target_buy_price, target_buy_qty,
                             safeback_seconds=RTRADE_DESPERATE_SAFEBACK_SEC,
                             force=False, cancelorders=True, hours=h, smart=False,
-                            bypass_guards={"GF1", "GI3"},
+                            bypass_guards={"G_PROF", "GLLM1"},
                             kind="rtrade_legacy_quote", caller_owns_retry=True,
                             cache_permit=submit_cache_permit,
                             _outcome_context=outcome_context)
@@ -1293,7 +1293,7 @@ class TradingBot:
                             self.symbol, "BUY", target_buy_price, target_buy_qty,
                             cancelorders=True, hours=RTRADE_BUY_NORMAL_HOURS,
                             smart=False, kind="rtrade_legacy_quote",
-                            bypass_guards={"GF1", "GI3"} if RTRADE_BYPASS_PROFIT_GUARD else {"GI3"},
+                            bypass_guards={"G_PROF", "GLLM1"} if RTRADE_BYPASS_PROFIT_GUARD else {"GLLM1"},
                             caller_owns_retry=True,
                             cache_permit=submit_cache_permit,
                             _outcome_context=outcome_context,
@@ -1447,7 +1447,7 @@ class TradingBot:
                 self.symbol, "BUY", buy_price, total_qty,
                 force=_followup_force(self.symbol, "BUY"),
                 cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                bypass_guards={"GF1", "GI3"},
+                bypass_guards={"G_PROF", "GLLM1"},
                 caller_owns_retry=True)
             completed = True
             return self.mark_sell_filled(avg_px)
@@ -1506,7 +1506,7 @@ class TradingBot:
                             self.symbol, "SELL", target_sell_price, target_sell_qty,
                             safeback_seconds=RTRADE_DESPERATE_SAFEBACK_SEC,
                             force=False, cancelorders=True, hours=h, smart=False,
-                            bypass_guards={"GF1", "GI3"}, allow_math_reference_sell=True,
+                            bypass_guards={"G_PROF", "GLLM1"}, allow_math_reference_sell=True,
                             kind="rtrade_legacy_quote", caller_owns_retry=True,
                             cache_permit=submit_cache_permit,
                             _outcome_context=outcome_context)
@@ -1520,7 +1520,7 @@ class TradingBot:
                             self.symbol, "SELL", target_sell_price, target_sell_qty,
                             cancelorders=True, hours=RTRADE_SELL_NORMAL_HOURS,
                             smart=False, kind="rtrade_legacy_quote",
-                            bypass_guards={"GF1", "GI3"} if RTRADE_BYPASS_PROFIT_GUARD else {"GI3"},
+                            bypass_guards={"G_PROF", "GLLM1"} if RTRADE_BYPASS_PROFIT_GUARD else {"GLLM1"},
                             allow_math_reference_sell=bool(RTRADE_BYPASS_PROFIT_GUARD),
                             caller_owns_retry=True,
                             cache_permit=submit_cache_permit,

@@ -33,7 +33,7 @@ _DEFAULT_REGIME_SERVICE = MarketRegimeService()
 _MARGINS = None   # cache: {provider_lower: percentage, "default": 1.15}
 _MARGINS_FILE_MTIME: float = 0.0
 _MARGINS_LAST_CHECK: float = 0.0
-from geopolitical_order_guard import _GEO_SHADOW_NOTIFY_COOLDOWN as _SHADOW_NOTIFY_COOLDOWN
+from llm_order_guard import _GEO_SHADOW_NOTIFY_COOLDOWN as _SHADOW_NOTIFY_COOLDOWN
 
 
 _REQUIRED_ORDER_GUARD_KEYS = frozenset({
@@ -1362,7 +1362,7 @@ def check_intelligence_guards(
     effective_scale = static_scale
     active_reason = static_reason
 
-    skip_internal = GUARD_REGISTRY["GI1"].is_bypassed(bypassed)
+    skip_internal = GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed)
     internal_mode = validate_guard_mode_cfg(m["internal_guard_mode"], "internal_guard_mode")
     internal_active = was_cached and not skip_internal and internal_mode != "off"
 
@@ -1391,7 +1391,7 @@ def check_intelligence_guards(
         dur_sec = _resolve_trend_duration(symbol)
 
     # 2. Dynamic LLM Pre-Trade Guard if notional crossed the threshold
-    from intelligence_order_guard import evaluate_high_stake_order_guard
+    from llm_order_guard import evaluate_high_stake_order_guard
 
     hs_ok, hs_reason, hs_scale = evaluate_high_stake_order_guard(
         symbol=symbol,
@@ -1420,15 +1420,31 @@ def check_intelligence_guards(
     if internal_active and dur_sec and dur_sec > 0:
         from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
         from intelligence.internal.guards.guard_decision import BrakeAction
+        from qlimit_order_guard import resolve_cached_gaussian_horizon
         e_policy = str(m["weibull_exhaustion_policy"]).strip().lower()
         e_scale = float(m["weibull_exhausted_scale"])
         e_p90 = float(m["weibull_p90_days"])
         e_guard = WeibullExhaustionGuard(default_p90_days=e_p90, policy=e_policy, exhausted_scale=e_scale)
-        if trend_duration_seconds and trend_duration_seconds > 0 and getattr(regime_context, "resolved_trend", None) is None:
+        explicit_dur = bool(trend_duration_seconds and trend_duration_seconds > 0)
+        if explicit_dur and getattr(regime_context, "resolved_trend", None) is None:
             trend_dir = None
         else:
             trend_dir = _resolve_trend_direction(symbol, regime_context=regime_context if valid_context else None)
-        e_dec = e_guard.check(symbol, side, trend_duration_seconds=dur_sec, trend_direction=trend_dir)
+        gauss_horizon_d = None
+        median_d = None
+        if not explicit_dur:
+            qlimit1_active = not GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(bypassed)
+            _, median_d, cached_gauss_h = resolve_cached_gaussian_horizon(symbol)
+            if qlimit1_active and cached_gauss_h:
+                gauss_horizon_d = cached_gauss_h
+        e_dec = e_guard.check(
+            symbol,
+            side,
+            trend_duration_seconds=dur_sec,
+            median_days=median_d,
+            trend_direction=trend_dir,
+            gaussian_horizon_days=gauss_horizon_d,
+        )
         if e_dec.brake_action != BrakeAction.NONE:
             prefix = "[INTELLIGENCE_GUARD_SHADOW]" if internal_mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
             print(f"{prefix} {side} {symbol} @ {price}: {e_dec.reason} (brake={e_dec.brake_action}, suggested_scale={e_dec.suggested_scale})")
@@ -1506,10 +1522,10 @@ def _evaluate_intelligence_guards_raw(
     effective_scale = 1.0
     active_reason = "ok"
 
-    # 1. Internal Quantitative Mathematical Guards (Pillar 1 / GI1: Parabolic Surge, Weibull Exhaustion)
-    if not GUARD_REGISTRY["GI1"].is_bypassed(bypassed):
-        from internal_order_guard import check_internal_order_guards
-        int_ok, int_reason, int_scale = check_internal_order_guards(
+    # 1. Internal Quantitative Mathematical Guards (G_QLIMIT2: Parabolic Surge, Weibull Exhaustion)
+    if not GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed):
+        from qlimit_order_guard import check_qlimit2_order_guards
+        int_ok, int_reason, int_scale = check_qlimit2_order_guards(
             symbol=symbol,
             side=side,
             price=price,
@@ -1521,6 +1537,7 @@ def _evaluate_intelligence_guards_raw(
             regime_context=regime_context,
             margins=m,
             now=now,
+            bypass_guards=bypassed,
         )
         if not int_ok:
             return False, int_reason, 0.0
@@ -1528,8 +1545,13 @@ def _evaluate_intelligence_guards_raw(
             effective_scale = min(effective_scale, int_scale)
             active_reason = int_reason
 
-    # 2. External Microstructure & Derivatives Guards (Pillar 2 / GI2: Orderbook Depth, Funding, Whale Flow)
-    if not GUARD_REGISTRY["GI2"].is_bypassed(bypassed):
+    # 2. External Microstructure & Derivatives Guards (GI_OBOOK, GI_WHALE, GI_FUNDING)
+    skip_external = (
+        GUARD_REGISTRY["GI_OBOOK"].is_bypassed(bypassed)
+        and GUARD_REGISTRY["GI_WHALE"].is_bypassed(bypassed)
+        and GUARD_REGISTRY["GI_FUNDING"].is_bypassed(bypassed)
+    )
+    if not skip_external:
         from external_order_guard import check_external_order_guards
         ext_ok, ext_reason, ext_scale = check_external_order_guards(
             symbol=symbol,
@@ -1540,6 +1562,7 @@ def _evaluate_intelligence_guards_raw(
             is_stop_loss=is_stop_loss,
             margins=m,
             now=now,
+            bypass_guards=bypassed,
         )
         if not ext_ok:
             return False, ext_reason, 0.0
@@ -1547,11 +1570,15 @@ def _evaluate_intelligence_guards_raw(
             effective_scale = min(effective_scale, ext_scale)
             active_reason = ext_reason
 
-    # 3. Intelligence & LLM Guards (Pillar 3 / GI3 + Pillar 4 / GI4)
-    skip_intel = GUARD_REGISTRY["GI3"].is_bypassed(bypassed) and GUARD_REGISTRY["GI4"].is_bypassed(bypassed)
+    # 3. LLM Guards (GLLM1 High-Stake + GLLM2 Sentiment + GLLM3 Geopolitical)
+    skip_intel = (
+        GUARD_REGISTRY["GLLM1"].is_bypassed(bypassed)
+        and GUARD_REGISTRY["GLLM2"].is_bypassed(bypassed)
+        and GUARD_REGISTRY["GLLM3"].is_bypassed(bypassed)
+    )
     if not skip_intel:
-        from intelligence_order_guard import check_intelligence_order_guards
-        intel_ok, intel_reason, intel_scale = check_intelligence_order_guards(
+        from llm_order_guard import check_llm_order_guards
+        intel_ok, intel_reason, intel_scale = check_llm_order_guards(
             provider=provider,
             symbol=symbol,
             order_type=order_type,
@@ -1758,8 +1785,8 @@ def profit_guard(
     if is_stop_loss or "all" in bypassed or "*" in bypassed:
         return True
 
-    # Stage 1: Deterministic Mathematical Reference Check (GF1)
-    if not GUARD_REGISTRY["GF1"].is_bypassed(bypassed):
+    # Stage 1: Deterministic Mathematical Reference Check (G_PROF)
+    if not GUARD_REGISTRY["G_PROF"].is_bypassed(bypassed):
         cm_kwargs = dict(window_ref=window_ref, regime_context=regime_context)
         if reference_mode is not None:
             cm_kwargs["reference_mode"] = reference_mode

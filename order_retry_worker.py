@@ -622,7 +622,7 @@ def process_once(mkt, now=None):
         retry_stage = "standard"
         if r.get("kind") == "monitor_order_replace":
             existing_bypasses = set(kwargs.get("bypass_guards") or [])
-            existing_bypasses.update({"GF1", "math_reference"})
+            existing_bypasses.update({"G_PROF", "math_reference"})
             kwargs["bypass_guards"] = sorted(list(existing_bypasses))
             if side_u == "SELL":
                 kwargs["allow_math_reference_sell"] = True
@@ -638,7 +638,7 @@ def process_once(mkt, now=None):
                 retry_stage = "salvage"
                 if side_u == "SELL":
                     existing_bypasses = set(kwargs.get("bypass_guards") or [])
-                    existing_bypasses.update({"GF1", "math_reference"})
+                    existing_bypasses.update({"G_PROF", "math_reference"})
                     kwargs["bypass_guards"] = sorted(list(existing_bypasses))
                     kwargs["allow_math_reference_sell"] = True
                 if cur_pm_f is None or not math.isfinite(cur_pm_f) or cur_pm_f > 0.15:

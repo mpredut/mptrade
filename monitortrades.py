@@ -1378,7 +1378,7 @@ def _can_pass_buy_quantity_policy(
             "BUY",
             current_price,
             qty=final_qty,
-            bypass_guards={"GF1", "GI3"},
+            bypass_guards={"G_PROF", "GLLM1"},
         )
         if not intel_ok:
             print(
@@ -1566,7 +1566,7 @@ def _execute_reentry_buy(
     _default_offset = min(MT_BUY_PRICE_OFFSET, current_price * 0.01)
     _buy_offset = inst.param("mt", "buy_price_offset", _default_offset, float)
     reentry_outcome_ctx = {}
-    reentry_bypass = {"GF1", "GI3"} if last_exit_kind == "STOP" else ({"GF1"} if MT_REENTRY_HYBRID_ENABLED else None)
+    reentry_bypass = {"G_PROF", "GLLM1"} if last_exit_kind == "STOP" else ({"G_PROF"} if MT_REENTRY_HYBRID_ENABLED else None)
     extra_kwargs = {}
     if 0.0 < float(applied_scale) < 1.0 and not _is_simulated_env_or_inst(inst):
         extra_kwargs["applied_scale"] = float(applied_scale)

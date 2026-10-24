@@ -269,7 +269,7 @@ def test_monitortrades_integration_downscale():
     mock_place.assert_called_once()
     args, kwargs = mock_place.call_args
     assert args[3] == 1.0
-    assert kwargs.get("bypass_guards") == {"GF1", "GI3"}
+    assert kwargs.get("bypass_guards") == {"G_PROF", "GLLM1"}
 
 
 def test_decision_caching_and_notify_cooldown():

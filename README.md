@@ -26,20 +26,19 @@ flowchart TD
 
     subgraph ChokePoint ["3. Unified Linear Choke Point: Instrument.place()"]
         KRAKEN & HL & BINANCE & T212 --> PLACE["🎯 Instrument.place()\n(Single Linear Dispatch Choke Point)"]
-        PLACE --> STAGE1["Stage 1: Deterministic Math Margin Check\n(Profit Window Ref vs Historical Fills)"]
-        STAGE1 --> STAGE2["Stage 2: Dynamic Sizing & Gauss/Chop Weights\n(Regime Gauss, Chop Weight 0.03, PROXY_BTC)"]
-        STAGE2 --> STAGE3["Stage 3: The 4-Pillars Risk Fortress\n(order_guard.py - 0 ms local & AI)"]
+        PLACE --> STAGE1["Stage 1: Deterministic Math Margin Check\n(G_PROF: profit_order_guard.py)"]
+        STAGE1 --> STAGE2["Stage 2: Dynamic Sizing & Gauss/Weibull Limits\n(G_QLIMIT1 & G_QLIMIT2: qlimit_order_guard.py)"]
+        STAGE2 --> STAGE3["Stage 3: External Microstructure & AI Fortress\n(order_guard.py - 0 ms local & AI)"]
     end
 
-    subgraph Pillars ["4. The 4-Pillars Fortress (order_guard.py)"]
-        STAGE3 --> P1["🛡 Pillar 1: Mathematical Invariants\n(internal_order_guard.py)\nAnti-FOMO, Weibull Exhaustion (0 ms)"]
-        P1 --> P2["🛡 Pillar 2: Microstructure & Flow\n(external_order_guard.py)\nOrderbook Depth, Whale Flow, Smart SL (0 ms)"]
-        P2 --> P3["🛡 Pillar 3: AI Vetting & Sentiment\n(high_stake_guard.py)\nOnly on Orders ≥ €1,000 (Gemini LLM)"]
-        P3 --> P4["🛡 Pillar 4: Geopolitical Shock Shield\n(geopolitical_order_guard.py)\nBlack Swan War / Energy Filter (< 1 ms)"]
+    subgraph Pillars ["4. Symmetrical Guard Architecture (guard_hierarchy.py)"]
+        STAGE3 --> P1["🛡 G_QLIMIT1 & G_QLIMIT2: Quantitative Limits\n(qlimit_order_guard.py)\nGaussian 24h Cap, Anti-FOMO, Weibull Exhaustion (0 ms)"]
+        P1 --> P2["🛡 GI_OBOOK, GI_WHALE, GI_FUNDING: Microstructure\n(external_order_guard.py)\nOrderbook Depth, Whale Flow, Funding Crowding (0 ms)"]
+        P2 --> P3["🛡 GLLM1, GLLM2, GLLM3: AI & Geopolitical Layer\n(llm_order_guard.py)\nHigh-Stake ≥ €700, Sentiment 3h, Geo Shock 4.5h"]
     end
 
     subgraph Execution ["5. Exchange Wire Dispatch"]
-        P4 --> DISPATCH["🚀 Exchange Dispatch\n(Binance, Kraken, Hyperliquid, T212)"]
+        P3 --> DISPATCH["🚀 Exchange Dispatch\n(Binance, Kraken, Hyperliquid, T212)"]
     end
 ```
 
@@ -85,14 +84,15 @@ All order generation flows pass through the 3-stage pipeline in [`instrument.py`
 
 ---
 
-## 5. The 4-Pillars Risk Fortress (`order_guard.py`)
+## 5. Symmetrical Guard Hierarchy (`guard_hierarchy.py` & `order_guard.py`)
 
-| Pillar | Module | Latency | LLM Status | Enforced Policies & Safeguards |
+| Category & Codes | Coordinator Module | Latency | LLM Status | Enforced Policies & Safeguards |
 | :--- | :--- | :--- | :--- | :--- |
-| **Pillar 1** | [`internal_order_guard.py`](file:///home/predut/mptrade/internal_order_guard.py) | **0 ms** (in-memory) | 🚫 **NO LLM** | **Anti-FOMO Parabolic Surge:** Vetoes buys during parabolic spikes (>18% gain without 3.5% pullback).<br>**Weibull Exhaustion:** Statistical hazard ratio scales down aged trends by 75% (`scale=0.25`).<br>**Daily Loss Budget:** Blocks orders when rolling 24h drawdown limit is reached. |
-| **Pillar 2** | [`external_order_guard.py`](file:///home/predut/mptrade/external_order_guard.py) | **0 ms** (local cache) | 🚫 **NO LLM** | **Orderbook Depth & Walls:** Vetoes or defers orders facing overhead ask walls > \$1,000,000 or bid depth < 25%.<br>**Whale Taker Flow Supremacy:** Evaluates aggressive whale taker selling vs bid liquidity; progressively downscales sizing (downscale threshold 0.90 -> scale 0.50) or vetoes entries during acute short waterfalls.<br>**Funding Crowding:** Downscales order by 50% if perpetual funding rate exceeds 0.05% (squeeze risk).<br>**Whale Flow & Cascades:** Blocks entries during net whale short cascades (preventing falling knives).<br>**Smart Stop Loss:** Pauses tight stop-loss orders ($\le 6\%$) for 120s if whale absorption indicates a predatory wick hunt. |
-| **Pillar 3** | [`high_stake_guard.py`](file:///home/predut/mptrade/intelligence/sentiment/guards/high_stake_guard.py) | **10–15 s** (event-driven) | 🤖 **ACTIVE LLM** | Pre-trade qualitative risk vetting via Gemini LLM **strictly for large orders ($\ge 1,000\text{ EUR}$)**. Evaluates macro sentiment, liquidity conditions, and market breadth. |
-| **Pillar 4** | [`geopolitical_order_guard.py`](file:///home/predut/mptrade/geopolitical_order_guard.py) | **< 1 ms** (local cache) | 🤖 **BACKGROUND LLM** | Evaluates international news, military conflicts, and energy crises asynchronously every 4.5 hours. Enforces immediate `HARD_VETO` during `CRITICAL_SHOCK` events. |
+| **`GO` (`GO1`) & `GT` (`GT_S`, `GT_M`, `GT_L`)** | [`order_guard.py`](file:///home/predut/mptrade/order_guard.py) / [`market_regime.py`](file:///home/predut/mptrade/market_regime.py) | **0 ms** (in-memory) | 🚫 **NO LLM** | **`GO1` (`daily_limit`):** Blocks orders when rolling 24h trade count limit is reached.<br>**`GT_S` / `GT_M` / `GT_L`:** Multi-horizon Kalman & linear regression trend regime guards (5m short, 1h medium, 24h long). |
+| **`G_PROF`** | [`profit_order_guard.py`](file:///home/predut/mptrade/profit_order_guard.py) | **0 ms** (in-memory) | 🚫 **NO LLM** | **Mathematical Profit Margin (`math_profit`):** Protects sells from executing below historical buy anchor and prevents buys above active-cycle sell anchor. |
+| **`G_QLIMIT` (`G_QLIMIT1`, `G_QLIMIT2`)** | [`qlimit_order_guard.py`](file:///home/predut/mptrade/qlimit_order_guard.py) | **0 ms** (in-memory) | 🚫 **NO LLM** | **`G_QLIMIT1` (`quantity_policy`):** 24h Gaussian persistence weight curve ($0 \dots 1.4 \times T$) & dynamic sizing.<br>**`G_QLIMIT2` (`internal_quant_limit`):** Anti-FOMO Parabolic Surge/Dump (2h window) + Asymmetric Weibull Survival Exhaustion ($S(t) = \exp(-(t/\lambda)^k)$ beyond Gaussian horizon $1.4 \times T$). |
+| **`GI` (`GI_OBOOK`, `GI_WHALE`, `GI_FUNDING`)** | [`external_order_guard.py`](file:///home/predut/mptrade/external_order_guard.py) | **0 ms** (local cache) | 🚫 **NO LLM** | **`GI_OBOOK` (`orderbook_wall`):** Vetoes/defers orders facing overhead ask/bid walls > \$1,000,000 or severe book imbalance.<br>**`GI_WHALE` (`whale_flow`):** Evaluates whale OI divergence & taker flow supremacy; blocks liquidation cascades or downscales size.<br>**`GI_FUNDING` (`funding_crowding`):** Downscales/defers orders when perpetual funding rate is overcrowded. |
+| **`GLLM` (`GLLM1`, `GLLM2`, `GLLM3`)** | [`llm_order_guard.py`](file:///home/predut/mptrade/llm_order_guard.py) | **`GLLM1`: 10–15 s**<br>**`GLLM2/3`: < 1 ms** (cache) | 🤖 **ACTIVE & ASYNC LLM** | **`GLLM1` (`llm_high_stake`):** Pre-trade Gemini LLM vetting for large BUY/SELL orders ($\ge 700\text{ EUR/USD}$) + post-stop re-entry bounce check.<br>**`GLLM2` (`llm_sentiment`):** 3h background LLM synthesis of Fear & Greed + Market Breadth (`sentiment_advisor.py`).<br>**`GLLM3` (`llm_geopolitical`):** 4.5h background + event-driven LLM geopolitical shock shield (`geopolitical_guard.py`). |
 
 ---
 

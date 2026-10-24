@@ -1,20 +1,21 @@
 """guard_hierarchy.py — Canonical Object-Oriented Guard Hierarchy & SSOT Registry.
 
-Implements the Separation of Concerns (SoC) for trading safety and intelligence guards
-with mnemonic G<LETTER><INDEX> encoding:
+Implements the Separation of Concerns (SoC) for trading safety, quantitative limits,
+market microstructure intelligence, and LLM guards with mnemonic codes:
 1. OperationalGuards (GO1): Execution velocity, volume caps, and anti-spam filters.
-2. TrendGuards (GT1..GT3): Multi-horizon trend deferrals and regime gates (short, medium, long).
-3. FinancialGuards (GF1, GF2): Mathematical price profitability and risk-weighted sizing.
-4. IntelligenceGuards (GI1..GI4): Multi-pillar macro, micro, sentiment, and geopolitical threats.
+2. TrendGuards (GT_S, GT_M, GT_L): Multi-horizon trend deferrals and regime gates (short, medium, long).
+3. ProfitGuards (G_PROF): Deterministic historical profit margin reference check.
+4. QuantLimitGuards (G_QLIMIT1, G_QLIMIT2): 24h Gaussian weight limit and internal Parabolic/Weibull limits.
+5. IntelligenceGuards (GI_OBOOK, GI_WHALE, GI_FUNDING): External market microstructure (Orderbook, Whales, Funding).
+6. LLMGuards (GLLM1, GLLM2, GLLM3): Live High-Stake/Post-Stop LLM, 3h Sentiment Advisor LLM, and 4.5h Geopolitical LLM.
 
 Guards are opt-out: any guard not explicitly bypassed executes with its default behavior.
-Legacy codes G1..G8 are fully supported as seamless backward-compatible aliases.
 """
 
 from __future__ import annotations
 
 from abc import ABC
-from typing import Any, Optional, Set, Dict, Type
+from typing import Any
 
 
 class BaseGuard(ABC):
@@ -61,12 +62,12 @@ class OperationalGuard(BaseGuard):
 class DailyLimitGuard(OperationalGuard):
     code = "GO1"
     canonical = "daily_limit"
-    aliases = {"go1", "g1", "daily_limit", "daily_cap"}
+    aliases = {"go1", "daily_limit", "daily_cap"}
     description = "Daily trade count cap and anti-spam temporal filter"
 
 
 # ============================================================================
-# Category 2: Trend & Momentum Guards (GT)
+# Category 2: Trend & Momentum Guards (GT_S, GT_M, GT_L)
 # ============================================================================
 
 class TrendGuard(BaseGuard):
@@ -75,84 +76,127 @@ class TrendGuard(BaseGuard):
 
 
 class ShortTrendGuard(TrendGuard):
-    code = "GT1"
+    code = "GT_S"
     canonical = "short_trend"
-    aliases = {"gt1", "g2", "short_trend", "trend_short"}
+    aliases = {"gt_s", "short_trend", "trend_short"}
     description = "Short-term trend & momentum deferral via short_trend_manager (3.7m - 2.5h)"
 
 
 class MediumTrendGuard(TrendGuard):
-    code = "GT2"
+    code = "GT_M"
     canonical = "medium_trend"
-    aliases = {"gt2", "g9", "medium_trend", "trend_medium"}
+    aliases = {"gt_m", "medium_trend", "trend_medium"}
     description = "Medium-term trend & market regime filter (4h - 24h)"
 
 
 class LongTrendGuard(TrendGuard):
-    code = "GT3"
+    code = "GT_L"
     canonical = "long_trend"
-    aliases = {"gt3", "g10", "long_trend", "trend_long", "macro_trend"}
+    aliases = {"gt_l", "long_trend", "trend_long", "macro_trend"}
     description = "Long-term macro trend validation from priceAnalysis (24h - 30 days)"
 
 
 # ============================================================================
-# Category 3: Financial & Capital Protection Guards (GF)
+# Category 3: Deterministic Profit Reference Guard (G_PROF)
 # ============================================================================
 
-class FinancialGuard(BaseGuard):
-    """Guards governing deterministic pricing profitability and capital exposure."""
-    category = "financial"
+class ProfitGuard(BaseGuard):
+    """Guards governing deterministic historical pricing profitability."""
+    category = "profit"
 
 
-class MathProfitGuard(FinancialGuard):
-    code = "GF1"
+class MathProfitGuard(ProfitGuard):
+    code = "G_PROF"
     canonical = "math_profit"
-    aliases = {"gf1", "g3", "math_profit", "math_reference", "profit_margin"}
+    aliases = {"g_prof", "math_profit", "math_reference", "profit_margin"}
     description = "Deterministic historical profit margin reference check"
 
 
-class QuantityPolicyGuard(FinancialGuard):
-    code = "GF2"
+# ============================================================================
+# Category 4: Internal Quantitative Limit Guards (G_QLIMIT1, G_QLIMIT2)
+# ============================================================================
+
+class QuantLimitGuard(BaseGuard):
+    """Guards governing internal quantitative exposure sizing, parabolic spikes, and Weibull exhaustion."""
+    category = "qlimit"
+
+
+class QuantityPolicyGuard(QuantLimitGuard):
+    code = "G_QLIMIT1"
     canonical = "quantity_policy"
-    aliases = {"gf2", "g4", "quantity_policy", "weight", "weight_sizing"}
-    description = "Dynamic exposure and risk-weighted quantity sizing"
+    aliases = {"g_qlimit1", "quantity_policy", "weight_limit", "weight", "weight_sizing"}
+    description = "24h cumulative risk-weighted quantity sizing via Gaussian curve and empirical T AUTO"
+
+
+class InternalQuantLimitGuard(QuantLimitGuard):
+    code = "G_QLIMIT2"
+    canonical = "internal_quant_limit"
+    aliases = {"g_qlimit2", "internal_quant_limit", "parabolic_surge", "weibull_exhaustion", "quantitative"}
+    description = "Internal quantitative per-order limits: 2h Parabolic Surge and late-tail Weibull exhaustion"
+
+
+# Keep FinancialGuard as a base alias for type checks where needed
+FinancialGuard = (ProfitGuard, QuantLimitGuard)
 
 
 # ============================================================================
-# Category 4: Market Intelligence & Threat Shield Guards (GI)
+# Category 5: External Market Microstructure Intelligence Guards (GI_*)
 # ============================================================================
 
 class IntelligenceGuard(BaseGuard):
-    """Guards evaluating market microstructure, momentum exhaustion, AI, and geopolitics."""
+    """Guards evaluating external market microstructure (Orderbook, Whale OI/Flow, Funding)."""
     category = "intelligence"
 
 
-class Pillar1QuantitativeGuard(IntelligenceGuard):
-    code = "GI1"
-    canonical = "p1_quantitative"
-    aliases = {"gi1", "g5", "p1_quantitative", "p1", "pillar1", "quantitative"}
-    description = "Pillar 1: Parabolic Surge and Weibull trend exhaustion"
+class OrderbookWallGuardSpec(IntelligenceGuard):
+    code = "GI_OBOOK"
+    canonical = "orderbook_wall"
+    aliases = {"gi_obook", "orderbook_wall", "orderbook", "obook"}
+    description = "External Microstructure: Spot Orderbook depth imbalance and Ask/Bid whale walls"
 
 
-class Pillar2MicrostructureGuard(IntelligenceGuard):
-    code = "GI2"
-    canonical = "p2_microstructure"
-    aliases = {"gi2", "g6", "p2_microstructure", "p2", "pillar2", "microstructure"}
-    description = "Pillar 2: Orderbook Ask Wall, Funding crowding, and Whale flow"
+class WhaleFlowGuardSpec(IntelligenceGuard):
+    code = "GI_WHALE"
+    canonical = "whale_flow"
+    aliases = {"gi_whale", "whale_flow", "whale_divergence", "whale"}
+    description = "External Microstructure: Whale Top-Trader L/S ratio, Taker flow, and OI cascades"
 
 
-class Pillar3LLMGuard(IntelligenceGuard):
-    code = "GI3"
-    canonical = "p3_llm"
-    aliases = {"gi3", "g7", "p3_llm", "p3", "pillar3", "ai", "llm"}
-    description = "Pillar 3: High-stake pre-trade LLM validation"
+class FundingCrowdingGuardSpec(IntelligenceGuard):
+    code = "GI_FUNDING"
+    canonical = "funding_crowding"
+    aliases = {"gi_funding", "gi_crowd", "funding_crowding", "funding", "crowd"}
+    description = "External Microstructure: Perpetual derivatives funding rate crowding"
 
 
-class Pillar4GeopoliticalGuard(IntelligenceGuard):
-    code = "GI4"
-    canonical = "p4_geopolitical"
-    aliases = {"gi4", "g8", "p4_geopolitical", "p4", "pillar4", "geopolitical"}
-    description = "Pillar 4: Geopolitical Black Swan shock shield"
+# ============================================================================
+# Category 6: LLM Reasoning & Macro Threat Guards (GLLM1, GLLM2, GLLM3)
+# ============================================================================
+
+class LLMGuard(BaseGuard):
+    """Guards powered by LLM reasoning (live pre-trade, 3h sentiment advisor, 4.5h geopolitical)."""
+    category = "llm"
+
+
+class LLMHighStakeGuardSpec(LLMGuard):
+    code = "GLLM1"
+    canonical = "llm_high_stake"
+    aliases = {"gllm1", "llm_high_stake", "high_stake", "ai", "llm"}
+    description = "Live pre-trade LLM validation for high-stake orders (>= 700 USD) and post-stop re-entry"
+
+
+class LLMSentimentGuardSpec(LLMGuard):
+    code = "GLLM2"
+    canonical = "llm_sentiment"
+    aliases = {"gllm2", "llm_sentiment", "sentiment_advisor"}
+    description = "Periodic 3h LLM Macro Sentiment Advisor (Fear & Greed, Market Breadth, Crypto News)"
+
+
+class LLMGeopoliticalGuardSpec(LLMGuard):
+    code = "GLLM3"
+    canonical = "llm_geopolitical"
+    aliases = {"gllm3", "llm_geopolitical", "geopolitical"}
+    description = "Periodic 4.5h LLM Geopolitical & Energy Black Swan shock shield"
 
 
 # ============================================================================
@@ -166,48 +210,46 @@ GUARD_INSTANCES: tuple[BaseGuard, ...] = (
     LongTrendGuard(),
     MathProfitGuard(),
     QuantityPolicyGuard(),
-    Pillar1QuantitativeGuard(),
-    Pillar2MicrostructureGuard(),
-    Pillar3LLMGuard(),
-    Pillar4GeopoliticalGuard(),
+    InternalQuantLimitGuard(),
+    OrderbookWallGuardSpec(),
+    WhaleFlowGuardSpec(),
+    FundingCrowdingGuardSpec(),
+    LLMHighStakeGuardSpec(),
+    LLMSentimentGuardSpec(),
+    LLMGeopoliticalGuardSpec(),
 )
 
-# Registry index keyed by both canonical codes (GO1, GT1..GT3, GF1..GF2, GI1..GI4)
-# and legacy codes (G1..G8, G9, G10) for seamless backward compatibility.
-GUARD_REGISTRY: dict[str, BaseGuard] = {}
-for g in GUARD_INSTANCES:
-    GUARD_REGISTRY[g.code] = g
-    for al in g.aliases:
-        if al.upper().startswith("G") and len(al) in (2, 3, 4):
-            GUARD_REGISTRY.setdefault(al.upper(), g)
+# Registry index keyed strictly by canonical codes (no legacy G1..G10 codes).
+GUARD_REGISTRY: dict[str, BaseGuard] = {g.code: g for g in GUARD_INSTANCES}
+# Also allow lookup by uppercase alias when it starts with GI_ (e.g. GI_CROWD -> GI_FUNDING)
+GUARD_REGISTRY["GI_CROWD"] = GUARD_REGISTRY["GI_FUNDING"]
 
 GUARD_CATEGORIES: dict[str, list[BaseGuard]] = {
     "operational": [g for g in GUARD_INSTANCES if isinstance(g, (OperationalGuard, ShortTrendGuard))],
     "trend": [g for g in GUARD_INSTANCES if isinstance(g, TrendGuard)],
-    "financial": [g for g in GUARD_INSTANCES if isinstance(g, FinancialGuard)],
+    "profit": [g for g in GUARD_INSTANCES if isinstance(g, ProfitGuard)],
+    "qlimit": [g for g in GUARD_INSTANCES if isinstance(g, QuantLimitGuard)],
+    "financial": [g for g in GUARD_INSTANCES if isinstance(g, (ProfitGuard, QuantLimitGuard))],
     "intelligence": [g for g in GUARD_INSTANCES if isinstance(g, IntelligenceGuard)],
+    "llm": [g for g in GUARD_INSTANCES if isinstance(g, LLMGuard)],
 }
 
-# Catalog mapping matching both new codes and legacy G1..G8 schemas
-GUARD_CATALOG: dict[str, dict[str, Any]] = {}
-for g in GUARD_INSTANCES:
-    d = {
+GUARD_CATALOG: dict[str, dict[str, Any]] = {
+    g.code: {
         "code": g.code,
         "canonical": g.canonical,
         "aliases": g.aliases,
         "description": g.description,
         "category": g.category,
     }
-    GUARD_CATALOG[g.code] = d
-    for al in g.aliases:
-        if al.upper().startswith("G") and len(al) in (2, 3, 4):
-            GUARD_CATALOG.setdefault(al.upper(), d)
+    for g in GUARD_INSTANCES
+}
 
 _ALL_GUARD_ALIASES: set[str] = set().union(*(g.aliases for g in GUARD_INSTANCES)) | {
     "all", "*", "profit_guard", "legacy_profit_guard", "cooldown",
     "recent_transaction", "anti_spam",
-    "operational", "trend", "financial", "intelligence",
-    "go", "gt", "gf", "gi",
+    "operational", "trend", "profit", "qlimit", "financial", "intelligence", "microstructure", "llm",
+    "go", "gt", "g_prof", "g_qlimit", "gf", "gi", "gllm",
 }
 
 
@@ -223,11 +265,14 @@ def normalize_bypassed_guards(
     executes with its standard default behavior.
 
     Supported inputs:
-      - Canonical codes: GO1, GT1..GT3, GF1..GF2, GI1..GI4
-      - Legacy codes: G1..G8, G9, G10
-      - Canonical names: daily_limit, short_trend, medium_trend, long_trend, math_profit, etc.
-      - Category groups: 'operational' ('go'), 'trend' ('gt'), 'financial' ('gf'), 'intelligence' ('gi')
-      - Composite aliases: 'profit_guard' (bypasses GF1 + GF2)
+      - Canonical codes: GO1, GT_S, GT_M, GT_L, G_PROF, G_QLIMIT1, G_QLIMIT2,
+        GI_OBOOK, GI_WHALE, GI_FUNDING (or GI_CROWD), GLLM1, GLLM2, GLLM3
+      - Canonical names: daily_limit, short_trend, medium_trend, long_trend,
+        math_profit, quantity_policy, internal_quant_limit, orderbook_wall,
+        whale_flow, funding_crowding, llm_high_stake, llm_sentiment, llm_geopolitical
+      - Category groups: 'operational' ('go'), 'trend' ('gt'), 'profit', 'qlimit' ('g_qlimit'),
+        'intelligence' ('gi'), 'llm' ('gllm')
+      - Composite aliases: 'profit_guard' (bypasses G_PROF + G_QLIMIT1)
       - Master bypass: 'all' or '*' (bypasses all guards for emergency exits)
     """
     bypassed: set[str] = set()
@@ -257,23 +302,31 @@ def normalize_bypassed_guards(
         if token in _ALL_GUARD_ALIASES:
             bypassed.add(token)
         else:
-            print(f"[GUARD] Warning: unrecognized bypass guard token {token!r} ignored; "
-                  f"known guards are GO1, GT1..GT3, GF1..GF2, GI1..GI4")
+            print(
+                f"[GUARD] Warning: unrecognized bypass guard token {token!r} ignored; "
+                f"known guards are {', '.join(g.code for g in GUARD_INSTANCES)}"
+            )
 
     # Expand master bypass ('all' or '*')
     if "all" in bypassed or "*" in bypassed:
-        bypassed.update({"all", "*", "profit_guard", "operational", "trend", "financial", "intelligence"})
+        bypassed.update({
+            "all", "*", "profit_guard", "operational", "trend",
+            "profit", "qlimit", "financial", "intelligence", "llm",
+        })
         for g in GUARD_INSTANCES:
             bypassed.update(g.aliases)
             bypassed.add(g.canonical)
             bypassed.add(g.code.lower())
 
-    # Expand category groups ('operational', 'trend', 'financial', 'intelligence') and short prefixes
+    # Expand category groups and short prefixes
     category_shortcuts = {
         "go": "operational",
         "gt": "trend",
+        "g_qlimit": "qlimit",
         "gf": "financial",
         "gi": "intelligence",
+        "microstructure": "intelligence",
+        "gllm": "llm",
     }
     for sc, cat_name in category_shortcuts.items():
         if sc in bypassed:
@@ -286,10 +339,10 @@ def normalize_bypassed_guards(
                 bypassed.add(g.canonical)
                 bypassed.add(g.code.lower())
 
-    # Expand legacy/composite profit_guard (GF1: math_profit + GF2: quantity_policy)
+    # Expand composite profit_guard (G_PROF: math_profit + G_QLIMIT1: quantity_policy)
     if "profit_guard" in bypassed or "legacy_profit_guard" in bypassed:
         bypassed.update({"profit_guard", "legacy_profit_guard"})
-        for code in ("GF1", "GF2"):
+        for code in ("G_PROF", "G_QLIMIT1"):
             g = GUARD_REGISTRY[code]
             bypassed.update(g.aliases)
             bypassed.add(g.canonical)

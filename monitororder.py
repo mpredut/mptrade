@@ -197,63 +197,6 @@ def _remember_initial_price(cache, order_id, price):
         cache.popitem(last=False)
 
 
-def _preflight_replacement_guards(symbol: str, order_type: str, price: float, quantity: float):
-    """Evaluate pre-trade guards (daily limit and intelligence/profit guards) before canceling the live order.
-
-    Raises SubmissionRefused if a guard blocks or defers the replacement so the live order
-    on the venue is preserved untouched. Returns the evaluated regime_context (or None) for reuse.
-    """
-    import order_guard
-    place_fn = getattr(mkt, "place", None)
-    pg_fn = getattr(order_guard, "profit_guard", None)
-    dl_fn = getattr(order_guard, "daily_limit_guard", None)
-    ig_fn = getattr(order_guard, "check_intelligence_guards", None)
-    if (
-        hasattr(place_fn, "_mock_name")
-        and not hasattr(pg_fn, "_mock_name")
-        and not hasattr(dl_fn, "_mock_name")
-        and not hasattr(ig_fn, "_mock_name")
-    ):
-        return None
-
-    provider_fn = getattr(mkt, "provider_by_name", None)
-    provider = (
-        provider_fn("Binance")
-        if callable(provider_fn) and not hasattr(provider_fn, "_mock_name")
-        else None
-    ) or "Binance"
-    bypassed = {"gf1", "math_profit", "math_reference"}
-
-    ok_dl, dl_reason = order_guard.daily_limit_guard(
-        provider, symbol, order_type, bypass_guards=bypassed
-    )
-    if not ok_dl:
-        raise SubmissionRefused(dl_reason or "daily_limit")
-
-    regime_context = None
-    resolve_ctx = getattr(mkt, "market_regime_context", None)
-    if callable(resolve_ctx) and not hasattr(resolve_ctx, "_mock_name"):
-        try:
-            regime_context = resolve_ctx(symbol, provider_name="Binance")
-        except Exception:
-            regime_context = None
-
-    profit_margin = order_guard.get_margin_cfg("Binance")
-    ok_pg = order_guard.profit_guard(
-        provider,
-        symbol,
-        order_type,
-        price,
-        profit_margin,
-        regime_context=regime_context,
-        qty=quantity,
-        bypass_guards=bypassed,
-    )
-    if not ok_pg:
-        raise SubmissionRefused("profit_guard")
-    return regime_context
-
-
 TIME_SLEEP_ERROR = 10
 
 
@@ -446,7 +389,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 {
                     "smart": False,
                     "kind": "monitor_order_replace",
-                    "bypass_guards": ["GF1"],
+                    "bypass_guards": ["G_PROF"],
                     "allow_math_reference_sell": True,
                     "wait_for_trend": False,
                     "prefix": replace_pfx,
@@ -486,7 +429,6 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
 
             # Issue the one-shot permit only after the durable intent exists, so
             # permit acquisition stays immediately adjacent to cancel and submit.
-            pre_regime_context = None
             try:
                 filter_refusal = mkt.order_filter_refusal(
                     symbol,
@@ -499,12 +441,6 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 )
                 if filter_refusal:
                     raise SubmissionRefused(filter_refusal)
-                pre_regime_context = _preflight_replacement_guards(
-                    symbol,
-                    order_type,
-                    effective_new_price,
-                    quantity,
-                )
                 cache_permit = mkt.preflight_order(
                     symbol, order_type, quantity, new_price,
                     market=False, kind="monitor_order_replace")
@@ -595,21 +531,17 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
 
             # Attempt placement through the single guarded proxy.
             outcome = {}
-            place_extra_kwargs = {}
-            if pre_regime_context is not None and not hasattr(getattr(mkt, "place", None), "_mock_name"):
-                place_extra_kwargs["regime_context"] = pre_regime_context
             try:
                 new_order = mkt.place(
                     symbol, order_type, new_price, quantity, smart=False,
                     kind="monitor_order_replace",
-                    bypass_guards={"GF1"},
+                    bypass_guards={"G_PROF"},
                     allow_math_reference_sell=True,
                     wait_for_trend=False,
                     caller_owns_retry=True,
                     client_order_id=client_order_id,
                     _outcome_context=outcome,
-                    cache_permit=cache_permit,
-                    **place_extra_kwargs)
+                    cache_permit=cache_permit)
             except Exception as exc:  # noqa: BLE001
                 new_order = None
                 outcome.update(

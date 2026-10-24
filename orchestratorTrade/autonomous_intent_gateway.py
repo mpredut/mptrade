@@ -339,8 +339,8 @@ class AutonomousIntentGateway:
         # Preflight Guard Vetting
         # Autonomous BUY intents represent high-conviction tactical entries/re-entries already vetted against
         # 24h multi-horizon prices, slopes, and Kalman velocity, so they bypass the static historical SELL
-        # reference anchor (math_reference / GF1) while keeping all portfolio weight (GO1), cooldown,
-        # internal (GI1), microstructure (GI2), high-stake (GI3), and geopolitical (GI4) guards enforced.
+        # reference anchor (math_reference / G_PROF) while keeping all daily limit (GO1), cooldown,
+        # quantitative limit (G_QLIMIT1/2), microstructure (GI_OBOOK/WHALE/FUNDING), and LLM (GLLM1..3) guards enforced.
         # SELL intents keep math_reference enforced so autonomous exits never sell below buy reference + margin.
         bypass_guards = {"math_reference"} if decision == "BUY" else None
         guard_allowed = True

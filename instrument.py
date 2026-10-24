@@ -289,9 +289,9 @@ class Instrument:
         )
         bypass_all = "all" in bypassed_guards
         bypass_profit_guard = "profit_guard" in bypassed_guards or bypass_all
-        bypass_math_ref = GUARD_REGISTRY["GF1"].is_bypassed(bypassed_guards) or bypass_profit_guard
-        bypass_quantity_policy = GUARD_REGISTRY["GF2"].is_bypassed(bypassed_guards) or bypass_profit_guard
-        wait_for_trend = bool(kwargs.pop("wait_for_trend", True)) and not GUARD_REGISTRY["GT1"].is_bypassed(bypassed_guards)
+        bypass_math_ref = GUARD_REGISTRY["G_PROF"].is_bypassed(bypassed_guards) or bypass_profit_guard
+        bypass_quantity_policy = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(bypassed_guards) or bypass_profit_guard
+        wait_for_trend = bool(kwargs.pop("wait_for_trend", True)) and not GUARD_REGISTRY["GT_S"].is_bypassed(bypassed_guards)
         kwargs.pop("cooldown_pair_id", None)
         abort_if = kwargs.pop("abort_if", None)
         side_u = side.upper()
@@ -304,9 +304,9 @@ class Instrument:
             print(
                 f"[GUARD] {side_u} {self.symbol}: bypass math_profit/math_reference ignored; "
                 "is allowed only for BUY")
-            bypassed_guards.difference_update(GUARD_REGISTRY["GF1"].aliases)
-            bypassed_guards.discard(GUARD_REGISTRY["GF1"].canonical)
-            bypassed_guards.discard(GUARD_REGISTRY["GF1"].code.lower())
+            bypassed_guards.difference_update(GUARD_REGISTRY["G_PROF"].aliases)
+            bypassed_guards.discard(GUARD_REGISTRY["G_PROF"].canonical)
+            bypassed_guards.discard(GUARD_REGISTRY["G_PROF"].code.lower())
             bypass_math_ref = False
         # Quantity-policy bypass reduces exposure and is therefore SELL-only.
         # Ignore it on BUY so a misplaced argument can never increase exposure.
@@ -314,9 +314,9 @@ class Instrument:
             print(
                 f"[GUARD] {side_u} {self.symbol}: bypass_quantity_policy ignored; "
                 "is allowed only for SELL")
-            bypassed_guards.difference_update(GUARD_REGISTRY["GF2"].aliases)
-            bypassed_guards.discard(GUARD_REGISTRY["GF2"].canonical)
-            bypassed_guards.discard(GUARD_REGISTRY["GF2"].code.lower())
+            bypassed_guards.difference_update(GUARD_REGISTRY["G_QLIMIT1"].aliases)
+            bypassed_guards.discard(GUARD_REGISTRY["G_QLIMIT1"].canonical)
+            bypassed_guards.discard(GUARD_REGISTRY["G_QLIMIT1"].code.lower())
             bypass_quantity_policy = False
         requires_permit = bool(getattr(self._provider, "requires_cache_permit", lambda: False)())
         defers_smart_cancel = bool(getattr(self._provider, "defers_smart_cancellation", lambda: False)())
@@ -575,7 +575,7 @@ class Instrument:
                     module=caller_module,
                 )
 
-                # Stage 1: Deterministic Mathematical Reference Check (GF1).
+                # Stage 1: Deterministic Mathematical Reference Check (G_PROF).
                 # Must beat historical reference before sizing or intelligence evaluation.
                 if bypass_math_ref:
                     print(
@@ -640,7 +640,7 @@ class Instrument:
                     reason = refusal
                     return None
 
-            # 2. Optional provider-agnostic short trend gate (GT1) is instantaneous. Placement
+            # 2. Optional provider-agnostic short trend gate (GT_S) is instantaneous. Placement
             # must never sleep or poll: a negative decision returns immediately and
             # the durable outbox retries it on a later worker tick. Callers that own
             # their lifecycle (AssetGuardian) apply the same check in their strategy
@@ -663,11 +663,11 @@ class Instrument:
                 except Exception as e:  # noqa: BLE001 — Opportunistic gate.
                     print(f"[{self.symbol}] {side_u} trend gate unavailable: {e}")
 
-            # 2b. Medium-Term Trend Gate (GT2 / medium_trend, 4h - 24h):
+            # 2b. Medium-Term Trend Gate (GT_M / medium_trend, 4h - 24h):
             # Evaluates the broader directional regime (bull / bear / flat / chop).
             # Supports configurable action: 'defer' (postpones retry), 'scale' (scales down risk),
             # or observational pass-through.
-            check_medium_trend = not GUARD_REGISTRY["GT2"].is_bypassed(bypassed_guards)
+            check_medium_trend = not GUARD_REGISTRY["GT_M"].is_bypassed(bypassed_guards)
             medium_trend_action = kwargs.get("medium_trend_action")
             gt2_context = regime_context
             if (

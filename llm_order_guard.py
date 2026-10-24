@@ -1,26 +1,33 @@
-"""Intelligence & LLM Pre-Trade Order Guard Coordinator (Pillar 3).
+"""LLM Pre-Trade Order Guard Coordinator (GLLM1, GLLM2, GLLM3).
 
-Evaluates high-stake orders and macro threat context using LLM reasoning:
-- HighStakeGuard: Real-time LLM validation for high-notional orders (BUY >= 1000 EUR).
-  Sub-1000 EUR orders pass with 0 ms latency (zero overhead).
-- GeopoliticalShockGuard: Evaluates acute conflict, war escalation, and energy supply crisis threats.
-- Sentiment Advisor context: Incorporates 3h macro sentiment evaluation (sentiment_advisor_eval.json).
+Single symmetric coordinator for all LLM-powered trading guards:
+- GLLM1 (LLMHighStakeGuardSpec / llm_high_stake):
+    Real-time pre-trade LLM validation (HighStakeGuard >= 700 USD & PostStopReentryGuard).
+    Sub-700 USD orders pass with 0 ms latency (zero overhead).
+- GLLM2 (LLMSentimentGuardSpec / llm_sentiment):
+    3h periodic LLM Macro Sentiment Advisor evaluation (sentiment_advisor_eval.json:
+    Fear & Greed, Market Breadth, Crypto News).
+- GLLM3 (LLMGeopoliticalGuardSpec / llm_geopolitical):
+    4.5h periodic LLM Geopolitical & Energy Black Swan shock shield (geopolitical_threat_eval.json:
+    CRITICAL_SHOCK -> BUY veto, ELEVATED -> 50% BUY downscale, NORMAL -> 0 ms pass).
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import re
 import time
 from typing import Any, Dict, Optional, Tuple
 
-from geopolitical_order_guard import check_geopolitical_order_guards
-
-logger = logging.getLogger("intelligence_order_guard")
+logger = logging.getLogger("llm_order_guard")
 
 _LLM_SHADOW_NOTIFY_COOLDOWN: Dict[Tuple[str, str], float] = {}
+_GEO_SHADOW_NOTIFY_COOLDOWN: Dict[Tuple[str, str], float] = {}
 
+
+# ============================================================================
+# GLLM1: Live Pre-Trade High-Stake LLM Guard (>= 700 USD)
+# ============================================================================
 
 def evaluate_high_stake_order_guard(
     *,
@@ -40,13 +47,13 @@ def evaluate_high_stake_order_guard(
     fallback_notional: Optional[float] = None,
     notify_on_eval: bool = True,
 ) -> Tuple[bool, str, float]:
-    """SSOT evaluator for HighStakeGuard (GI3) across both initial and cached-context re-evaluations."""
+    """SSOT evaluator for HighStakeGuard (GLLM1) across both initial and cached-context re-evaluations."""
     from guard_hierarchy import GUARD_REGISTRY
     from intelligence.internal.guards.guard_decision import BrakeAction
     from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, is_llm_guard_exempt
     from order_guard import validate_guard_mode_cfg
 
-    skip_llm = GUARD_REGISTRY["GI3"].is_bypassed(bypassed) or is_llm_guard_exempt()
+    skip_llm = GUARD_REGISTRY["GLLM1"].is_bypassed(bypassed) or is_llm_guard_exempt()
     llm_mode = validate_guard_mode_cfg(margins["llm_guard_mode"], "llm_guard_mode")
     if skip_llm or llm_mode == "off":
         return True, "ok", 1.0
@@ -184,7 +191,99 @@ def evaluate_high_stake_order_guard(
     return True, "ok", 1.0
 
 
-def check_intelligence_order_guards(
+# ============================================================================
+# GLLM3: Geopolitical & Energy Crisis Shock Guard (4.5h LLM Assessment)
+# ============================================================================
+
+def check_geopolitical_order_guards(
+    symbol: str,
+    side: str,
+    *,
+    margins: Optional[Dict[str, Any]] = None,
+    now: Optional[float] = None,
+) -> Tuple[bool, str, float]:
+    """Evaluate pre-trade orders against published geopolitical threat assessment (GLLM3).
+
+    Returns:
+        (allowed: bool, reason: str, suggested_scale: float)
+    """
+    order_side = (side or "").upper()
+    if order_side != "BUY":
+        return True, "not_buy_side", 1.0
+
+    from order_guard import _load_margins, validate_guard_mode_cfg
+    if margins is None:
+        m = _load_margins()
+    else:
+        m = margins
+
+    from intelligence.internal.guards.guard_decision import BrakeAction
+
+    geo_mode = validate_guard_mode_cfg(m["geopolitical_guard_mode"], "geopolitical_guard_mode")
+    if geo_mode == "off":
+        return True, "geopolitical_guard_off", 1.0
+
+    raw_shadow_notify = m["shadow_notify"]
+    if isinstance(raw_shadow_notify, str):
+        shadow_notify = raw_shadow_notify.strip().lower() in ("1", "1.0", "true", "yes", "on")
+    else:
+        shadow_notify = bool(float(raw_shadow_notify))
+
+    try:
+        from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+        from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+        analyzer = GeopoliticalThreatAnalyzer()
+        cached_geo = analyzer._cached_assessment
+        if cached_geo is not None:
+            geo_guard = GeopoliticalShockGuard()
+            geo_dec = geo_guard.check(symbol, order_side, cached_geo)
+            if not geo_dec.allowed or geo_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+                prefix = "[GEOPOLITICAL_GUARD_SHADOW]" if geo_mode == "shadow" else "[GEOPOLITICAL_GUARD_ENFORCE]"
+                print(f"{prefix} {order_side} {symbol}: {geo_dec.reason} (brake={geo_dec.brake_action}, suggested_scale={geo_dec.suggested_scale})")
+                if geo_mode == "shadow" and shadow_notify:
+                    cd_key = (symbol, order_side)
+                    now_ts = now if now is not None else time.time()
+                    if now_ts - _GEO_SHADOW_NOTIFY_COOLDOWN.get(cd_key, 0.0) >= 1800.0:
+                        _GEO_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
+                        try:
+                            from notify_engine.alertnotifiers import notify
+                            from orchestratorOS.agy.topics import topic_spec
+
+                            geo_tag = topic_spec("macro_geopolitical").bracket_tag
+                            scale_pct = int(geo_dec.suggested_scale * 100)
+                            if not geo_dec.allowed:
+                                geo_title = f"🛑 {geo_tag} BLOCK {order_side} {symbol}"
+                            else:
+                                geo_title = f"🛡 {geo_tag} SCALE {scale_pct}% {order_side} {symbol}"
+
+                            clean_summary = cached_geo.summary or geo_dec.reason
+                            if "(" in geo_dec.reason and geo_dec.reason.endswith(")"):
+                                clean_summary = geo_dec.reason.split("(", 1)[1].rstrip(")")
+
+                            geo_body = f"Threat: {cached_geo.threat_level} (Risk: {cached_geo.risk_score:.2f}, Scale: {scale_pct}%)\n{clean_summary}"
+                            notify(
+                                title=geo_title,
+                                body=geo_body,
+                                source="macro_shadow",
+                                symbol=symbol,
+                            )
+                        except Exception:
+                            pass
+                if geo_mode == "enforce":
+                    if not geo_dec.allowed:
+                        return False, geo_dec.reason, 0.0
+                    return True, geo_dec.reason, geo_dec.suggested_scale
+    except Exception as e:
+        logger.debug("Geopolitical guard evaluation exception: %s", e)
+
+    return True, "ok", 1.0
+
+
+# ============================================================================
+# Unified LLM Order Guards Coordinator (GLLM1 + GLLM2 + GLLM3)
+# ============================================================================
+
+def check_llm_order_guards(
     provider: Optional[str],
     symbol: str,
     order_type: str,
@@ -198,12 +297,12 @@ def check_intelligence_order_guards(
     now: Optional[float] = None,
     bypass_guards: Optional[set[str]] = None,
 ) -> Tuple[bool, str, float]:
-    """Evaluate external microstructure, geopolitical shock, and high-stake LLM guards (Pillars 2, 3, 4).
+    """Evaluate LLM pre-trade guards (GLLM1 High-Stake, GLLM2 Sentiment Advisor, GLLM3 Geopolitical Shock).
 
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    from guard_hierarchy import normalize_bypassed_guards, GUARD_REGISTRY
+    from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
     if is_stop_loss or "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
@@ -212,18 +311,15 @@ def check_intelligence_order_guards(
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
-    from order_guard import _load_margins, validate_guard_mode_cfg
+    from order_guard import _load_margins
     if margins is None:
         m = _load_margins()
     else:
         m = margins
 
-    from intelligence.internal.guards.guard_decision import BrakeAction
-
     effective_scale = 1.0
     active_reason = "ok"
 
-    # Compute notional EUR
     computed_notional = float(notional_eur) if notional_eur is not None else (float(price * qty) if (price and qty) else 0.0)
 
     if side == "SELL":
@@ -231,7 +327,7 @@ def check_intelligence_order_guards(
         if computed_notional < sell_min_notional:
             return True, "small_sell_exempt", 1.0
 
-    # 1. High-Stake LLM Pre-Trade Guard (Pillar 3 / GI3)
+    # 1. GLLM1: High-Stake LLM Pre-Trade Guard
     valid_context = False
     if regime_context is not None and hasattr(regime_context, "__dict__"):
         if hasattr(regime_context, "is_valid_for"):
@@ -267,8 +363,8 @@ def check_intelligence_order_guards(
         effective_scale = min(effective_scale, hs_scale)
         active_reason = hs_reason
 
-    # 2. Geopolitical & Energy Shock Guard (Pillar 4 / GI4)
-    skip_geo = GUARD_REGISTRY["GI4"].is_bypassed(bypassed)
+    # 2. GLLM3: Geopolitical & Energy Shock Guard
+    skip_geo = GUARD_REGISTRY["GLLM3"].is_bypassed(bypassed)
     if not skip_geo:
         geo_ok, geo_reason, geo_scale = check_geopolitical_order_guards(
             symbol=symbol,
@@ -283,3 +379,6 @@ def check_intelligence_order_guards(
             active_reason = geo_reason
 
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
+
+
+check_intelligence_order_guards = check_llm_order_guards

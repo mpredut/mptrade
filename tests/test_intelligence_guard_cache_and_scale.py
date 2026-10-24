@@ -1163,9 +1163,9 @@ class TestBatch6IntelligenceAndRoutingFixes:
         )
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
 
-        import intelligence_order_guard
+        import llm_order_guard
         monkeypatch.setattr(
-            intelligence_order_guard,
+            llm_order_guard,
             "check_geopolitical_order_guards",
             lambda symbol, side, **kw: (False, "critical_geopolitical_shock", 0.0)
             if side == "BUY"
@@ -1230,9 +1230,9 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert ok_spike is False
         assert "parabolic_surge" in reason_spike
 
-        # 2. Bypassing GI1 on the same context at 125.0 must NOT reuse the un-bypassed block
+        # 2. Bypassing G_QLIMIT2 on the same context at 125.0 must NOT reuse the un-bypassed block
         ok_bypass, _, _ = order_guard.check_intelligence_guards(
-            "binance", "BTCUSDC", "BUY", 125.0, price_history=history, regime_context=ctx, bypass_guards={"GI1"}
+            "binance", "BTCUSDC", "BUY", 125.0, price_history=history, regime_context=ctx, bypass_guards={"G_QLIMIT2"}
         )
         assert ok_bypass is True
 
@@ -1295,8 +1295,8 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert scale_enf == 0.0
 
     def test_batch6_geopolitical_string_shadow_notify_no_crash(self, monkeypatch):
-        """geopolitical_order_guard must parse shadow_notify='true'/'false' without raising ValueError."""
-        import geopolitical_order_guard
+        """llm_order_guard must parse shadow_notify='true'/'false' without raising ValueError."""
+        import llm_order_guard
         from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
 
         class DummyAnalyzer:
@@ -1318,7 +1318,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
             geopolitical_guard_mode="enforce",
             shadow_notify="true",
         )
-        ok, reason, scale = geopolitical_order_guard.check_geopolitical_order_guards(
+        ok, reason, scale = llm_order_guard.check_geopolitical_order_guards(
             "BTCUSDC", "BUY", margins=margins
         )
         assert ok is True
@@ -1450,7 +1450,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
         """ParabolicSurgeGuard and WeibullExhaustionGuard must operate symmetrically on BUY and SELL."""
         from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
         from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
-        from internal_order_guard import check_internal_order_guards
+        from qlimit_order_guard import check_qlimit2_order_guards as check_internal_order_guards
 
         p_guard = ParabolicSurgeGuard(surge_threshold_pct=10.0, pullback_required_pct=2.0)
 
@@ -1643,7 +1643,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
         )
         assert getattr(ctx, "suggested_scale", None) is None
 
-        # Evaluate SELL on shared context (bear trend exhausted -> SELL downscaled to 0.5)
+        # Evaluate SELL on shared context (bear trend exhausted -> SELL downscaled to 0.25)
         ok_s, reason_s, scale_s = order_guard.check_intelligence_guards(
             "binance",
             "BTCUSDC",
@@ -1652,7 +1652,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
             regime_context=ctx,
             notional_eur=5000.0,
             now=1005.0,
-            bypass_guards={"p2", "p3", "p4"},
+            bypass_guards={"gi", "gllm"},
         )
         assert ok_s is True
         assert scale_s == pytest.approx(0.25)
@@ -1669,7 +1669,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
             regime_context=ctx,
             notional_eur=5000.0,
             now=1005.0,
-            bypass_guards={"p2", "p3", "p4"},
+            bypass_guards={"gi", "gllm"},
         )
         assert ok_b is True
         assert scale_b == pytest.approx(1.0)
@@ -1801,7 +1801,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
             WhalePositioningCollector,
             WhalePositioningSnapshot,
         )
-        from intelligence_order_guard import check_intelligence_order_guards
+        from llm_order_guard import check_llm_order_guards as check_intelligence_order_guards
 
         assert _resolve_binance_lookup_symbol("SOLUSD") == "SOLUSDT"
         assert _resolve_binance_lookup_symbol("HYPE/USDC") == "HYPEUSDT"

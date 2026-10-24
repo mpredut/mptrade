@@ -10,72 +10,79 @@
 
 [`order_guard.py`](file:///home/predut/mptrade/order_guard.py) is the **single top-level root entry point** for all trading engines (`tradeall`, `rtrade`, `monitortrades`, `kraken`, `hyperliquid`). No order can reach an exchange without traversing this choke point.
 
-`order_guard.py` coordinates the **Three-Pillar Fortress** in a strict sequential pipeline, maintaining clean separation of concerns and deterministic fail-closed protection:
+`order_guard.py` coordinates the **Symmetrical 6-Category Guard Hierarchy** ([`guard_hierarchy.py`](file:///home/predut/mptrade/guard_hierarchy.py)) in a strict sequential pipeline, maintaining clean separation of concerns and deterministic fail-closed protection:
 
 ```mermaid
 flowchart TD
-    Order["🎯 NEW ORDER INTENT (BUY / SELL)\nChoke Point: order_guard.py"] --> P1["🛡 PILLAR 1: internal_order_guard.py\nMathematical & Account Invariants\n⚡ 0 ms | 🚫 NO LLM"]
+    Order["🎯 NEW ORDER INTENT (BUY / SELL)\nChoke Point: order_guard.py"] --> GO["🛡 GO1 & GT_S / GT_M / GT_L\nOperational Daily Limit & Multi-Horizon Trend\n⚡ 0 ms | 🚫 NO LLM"]
     
-    P1 -- Invariant Violated --> VetoP1["⛔ VETO_STOP (Immediate Rejection)"]
-    P1 -- Passed --> P2["🛡 PILLAR 2: external_order_guard.py\nMicrostructure: Orderbook, Funding, Whales\n⚡ 0 ms local cache | 🚫 NO LLM"]
+    GO -- Passed --> GPROF["🛡 G_PROF: profit_order_guard.py\nMathematical Profit Margin Reference\n⚡ 0 ms | 🚫 NO LLM"]
+    GPROF -- Margin Violated --> VetoProf["⛔ VETO_STOP (Below Anchor / Basis)"]
+    GPROF -- Passed --> P1["🛡 G_QLIMIT1 & G_QLIMIT2: qlimit_order_guard.py\nGaussian 24h Weight + Parabolic Surge + Weibull Exhaustion\n⚡ 0 ms | 🚫 NO LLM"]
     
-    P2 -- Massive Ask Wall / Severe Imbalance --> DeferP2["⏳ DEFER_WAIT (Defer in worker retry buffer)"]
+    P1 -- Parabolic Spike / Dump --> VetoP1["⛔ VETO_STOP / DEFER_WAIT"]
+    P1 -- Passed / Scaled --> P2["🛡 GI_OBOOK, GI_WHALE, GI_FUNDING: external_order_guard.py\nMicrostructure: Orderbook, Whales, Funding\n⚡ 0 ms local cache | 🚫 NO LLM"]
+    
+    P2 -- Massive Wall / Cascade --> DeferP2["⏳ DEFER_WAIT (Defer in worker retry buffer)"]
     P2 -- Crowded Perp Funding --> ScaleP2["📉 DOWNSCALE_QTY (Scale: 50%)"]
-    P2 -- Passed / Scaled --> P3["🛡 PILLAR 3: intelligence_order_guard.py\nAI & LLM Intelligence Layer\nGeopolitical Shield + High-Stake Vetting"]
+    P2 -- Passed / Scaled --> P3["🛡 GLLM1, GLLM2, GLLM3: llm_order_guard.py\nAI & LLM Layer: High-Stake, Sentiment 3h, Geopolitical 4.5h"]
     
-    P3 -- War / Energy Critical Shock --> VetoGeo["⛔ VETO_STOP (P3A · GEO-SHIELD)"]
-    P3 -- Elevated Geopolitical Risk --> ScaleGeo["📉 DOWNSCALE_QTY (P3A · GEO-SHIELD: 25-50%)"]
-    P3 -- Large Order (≥ €1k) Vetoed by LLM --> VetoStake["⛔ VETO_STOP (P3C · HIGH-STAKE)"]
-    P3 -- Large Order (≥ €1k) Scaled by LLM --> ScaleStake["📉 DOWNSCALE_QTY (P3C · HIGH-STAKE)"]
+    P3 -- War / Energy Critical Shock (GLLM3) --> VetoGeo["⛔ VETO_STOP (GLLM3 · GEO-SHIELD)"]
+    P3 -- Elevated Geopolitical Risk (GLLM3) --> ScaleGeo["📉 DOWNSCALE_QTY (GLLM3 · GEO-SHIELD: 25-50%)"]
+    P3 -- Large Order (≥ €700) Vetoed (GLLM1) --> VetoStake["⛔ VETO_STOP (GLLM1 · HIGH-STAKE)"]
+    P3 -- Large Order (≥ €700) Scaled (GLLM1) --> ScaleStake["📉 DOWNSCALE_QTY (GLLM1 · HIGH-STAKE)"]
     P3 -- Passed / Approved --> Exec["🚀 EXCHANGE DISPATCH\n(Executed with Final Safe Quantity)"]
 ```
 
 ---
 
-## 2. LLM Usage Classification Matrix
+## 2. Guard Category & LLM Classification Matrix
 
-To ensure absolute transparency between microsecond execution and qualitative reasoning, LLM usage is strictly classified across the three pillars:
+To ensure absolute transparency between microsecond execution and qualitative reasoning, every guard has a single canonical code in [`guard_hierarchy.py`](file:///home/predut/mptrade/guard_hierarchy.py) and a dedicated coordinator module:
 
-| Pillar | Guard Module | LLM Status | Execution Latency | Frequency / Cadence |
+| Category & Guard Code | Coordinator Module | LLM Status | Execution Latency | Frequency / Cadence |
 | :--- | :--- | :--- | :--- | :--- |
-| **Pillar 1** | [`internal_order_guard.py`](file:///home/predut/mptrade/internal_order_guard.py) | 🚫 **NO LLM** (Pure Math) | $0\text{ ms}$ (In-memory) | Every single order intent |
-| **Pillar 2** | [`external_order_guard.py`](file:///home/predut/mptrade/external_order_guard.py) | 🚫 **NO LLM** (Pure Microstructure) | $0\text{ ms}$ (Local cache) | Every BUY order intent |
-| **Pillar 3** | [`intelligence_order_guard.py`](file:///home/predut/mptrade/intelligence_order_guard.py)<br>↳ [`geopolitical_order_guard.py`](file:///home/predut/mptrade/geopolitical_order_guard.py) | 🤖 **BACKGROUND LLM** | $< 1\text{ ms}$ at pre-trade | Asynchronous cycle: **Every 4.5 hours** |
-| **Pillar 3** | [`macro_analyzer.py`](file:///home/predut/mptrade/intelligence/macro_analyzer.py)<br>↳ `sentiment_advisor_eval.json` | 🤖 **BACKGROUND LLM** | $0\text{ ms}$ at pre-trade | Asynchronous cycle: **Every 3.0 hours** |
-| **Pillar 3** | [`intelligence_order_guard.py`](file:///home/predut/mptrade/intelligence_order_guard.py)<br>↳ [`high_stake_guard.py`](file:///home/predut/mptrade/intelligence/sentiment/guards/high_stake_guard.py) | 🤖 **ACTIVE LLM** | $\sim 10\text{--}15\text{ s}$ | Event-driven: **Only on BUY $\ge 1,000\text{ EUR}$** |
+| **`GO1`, `GT_S`, `GT_M`, `GT_L`** | [`order_guard.py`](file:///home/predut/mptrade/order_guard.py) / [`market_regime.py`](file:///home/predut/mptrade/market_regime.py) | 🚫 **NO LLM** (Pure Math) | $0\text{ ms}$ (In-memory) | Every single order intent |
+| **`G_PROF`** | [`profit_order_guard.py`](file:///home/predut/mptrade/profit_order_guard.py) | 🚫 **NO LLM** (Pure Math) | $0\text{ ms}$ (In-memory) | Every single order intent |
+| **`G_QLIMIT1`, `G_QLIMIT2`** | [`qlimit_order_guard.py`](file:///home/predut/mptrade/qlimit_order_guard.py) | 🚫 **NO LLM** (Gaussian + Weibull) | $0\text{ ms}$ (In-memory) | Every single order intent |
+| **`GI_OBOOK`, `GI_WHALE`, `GI_FUNDING`** | [`external_order_guard.py`](file:///home/predut/mptrade/external_order_guard.py) | 🚫 **NO LLM** (Pure Microstructure) | $0\text{ ms}$ (Local cache) | Every BUY & large SELL ($\ge \$700$) |
+| **`GLLM3`** (`llm_geopolitical`) | [`llm_order_guard.py`](file:///home/predut/mptrade/llm_order_guard.py)<br>↳ [`geopolitical_guard.py`](file:///home/predut/mptrade/intelligence/macro/geopolitical_guard.py) | 🤖 **BACKGROUND LLM** | $< 1\text{ ms}$ at pre-trade | Asynchronous cycle: **Every 4.5 hours** |
+| **`GLLM2`** (`llm_sentiment`) | [`llm_order_guard.py`](file:///home/predut/mptrade/llm_order_guard.py)<br>↳ [`sentiment_advisor.py`](file:///home/predut/mptrade/intelligence/sentiment/sentiment_advisor.py) | 🤖 **BACKGROUND LLM** | $0\text{ ms}$ at pre-trade | Asynchronous cycle: **Every 3.0 hours** |
+| **`GLLM1`** (`llm_high_stake`) | [`llm_order_guard.py`](file:///home/predut/mptrade/llm_order_guard.py)<br>↳ [`high_stake_guard.py`](file:///home/predut/mptrade/intelligence/sentiment/guards/high_stake_guard.py) | 🤖 **ACTIVE LLM** | $\sim 10\text{--}15\text{ s}$ | Event-driven: **BUY / SELL $\ge 700\text{ EUR/USD}$** |
 
 ---
 
-## 3. Pillar-by-Pillar Detailed Architecture
+## 3. Category-by-Category Detailed Architecture
 
-### Pillar 1: Mathematical Invariants & Base Risk (Internal)
-* **File:** [`internal_order_guard.py`](file:///home/predut/mptrade/internal_order_guard.py)
-* **Role:** Internal mathematical invariants, capital preservation, execution mechanics.
+### Category `G_PROF` & `G_QLIMIT`: Profit Margin & Quantitative Limits (Internal)
+* **Files:** [`profit_order_guard.py`](file:///home/predut/mptrade/profit_order_guard.py), [`qlimit_order_guard.py`](file:///home/predut/mptrade/qlimit_order_guard.py)
+* **Role:** Internal mathematical invariants, capital preservation, quantitative sizing limits.
 * **LLM:** 🚫 **NO LLM** — Deterministic math, $0\text{ ms}$.
 * **Guards & Triggers:**
-  1. `daily_limit_guard`: Rolling 24h loss budget (`max_daily_loss_eur`). Blocks trading if account drawdown threshold is breached.
-  2. `profit_guard` & `surge_profit_floor_guard`: Reentry profit floor & trailing margin protection. Prevents selling below breakeven basis or dumping into an active parabolic surge.
-  3. `inventory_guard`: Position exposure caps per symbol and globally.
-  4. `stale_cache_guard` & `spread_and_liquidity_guard`: Rejects orders on stale price ticks ($> 10\text{s}$) or abnormally wide spreads.
-  5. `weibull_exhaustion_guard`: Statistical Weibull hazard ratio detecting trend exhaustion. Triggers `DOWNSCALE_QTY` (default: 25% scale via `weibull_exhausted_scale = 0.25`).
+  1. `GO1` (`daily_limit_guard`): Rolling 24h trade count limit per symbol.
+  2. `G_PROF` (`profit_order_guard.py`): Mathematical profit reference floor against historical buys (for SELL) and active-cycle sells (for BUY).
+  3. `G_QLIMIT1` (`check_qlimit1_weight_limit`): 24h Gaussian persistence curve ($w(t) = \exp(-\frac{(t-\mu)^2}{2\sigma^2})$ over $0 \dots 1.4 \times T$) scaling allowed daily order volume.
+  4. `G_QLIMIT2` (`check_qlimit2_order_guards`):
+     - `ParabolicSurgeGuard`: Anti-FOMO 2h vertical surge/dump detector.
+     - `WeibullExhaustionGuard`: Asymmetric Weibull survival & hazard rate ($S(t) = \exp(-(t/\lambda)^k)$) calibrated from `median_days` and `p90_days`, active strictly beyond the Gaussian persistence horizon ($t > 1.4 \times T$) so `G_QLIMIT1` and `G_QLIMIT2` never double-penalize the same trend age.
 
 ---
 
-### Pillar 2: Market Microstructure & Flow (External)
-* **File:** [`external_order_guard.py`](file:///home/predut/mptrade/external_order_guard.py) *(mirrors `internal_order_guard.py`)*
-* **Role:** Spot orderbook depth, large whale limit walls, perpetual derivatives crowding.
+### Category `GI`: Market Microstructure & Flow (External)
+* **File:** [`external_order_guard.py`](file:///home/predut/mptrade/external_order_guard.py)
+* **Role:** Spot orderbook depth (`GI_OBOOK`), whale flow & OI divergence (`GI_WHALE`), perpetual derivatives crowding (`GI_FUNDING`).
 * **LLM:** 🚫 **NO LLM** — Pure quantitative market microstructure, $0\text{ ms}$ local telemetry cache.
 * **Guards & Triggers:**
-  1. `OrderbookWallGuard` (`[P2 · ORDERBOOK]`):
+  1. `OrderbookWallGuard` (`GI_OBOOK`):
      - *Telemetry:* `cachedb/orderbook_depth_collect.json`
      - *Trigger 1:* `min_buy_imbalance < 0.25` (less than 25% bids in top 20 book levels).
      - *Trigger 2:* Overhead ask wall exceeding `whale_wall_usd_limit` (default: $\$1,000,000$) within 1–2% of entry price.
      - *Brake:* `DEFER_WAIT` (holds order in worker retry queue until wall softens or pulls) or `VETO_STOP`.
-  2. `FundingCrowdingGuard` (`[P2 · FUNDING]`):
+  2. `FundingCrowdingGuard` (`GI_FUNDING` / `GI_CROWD`):
      - *Telemetry:* `cachedb/funding_rates_collect.json`
      - *Trigger:* Perpetual funding rate exceeds `funding_max_long_rate = 0.0005` (0.05% per 8h), signaling overcrowded long positioning prone to long squeezes.
      - *Brake:* `DOWNSCALE_QTY` (scales down size by `funding_crowded_scale = 0.50`) or `VETO_STOP`.
-  3. `WhaleDivergenceGuard` (`[P2 · WHALE-FLOW]`):
+  3. `WhaleDivergenceGuard` (`GI_WHALE`):
      - *Telemetry:* `cachedb/whale_snapshot_<SYM>.json` (correlating $\Delta P_{1h}$, $\Delta OI_{1h}$, Taker Buy/Sell ratio, and perpetual funding rate).
      - *Trigger 1 (OI Divergence & Regime Matrix):* Classifies 8 distinct microstructural regimes:
        - `aggressive_shorting`: Heavy short expansion ($P \downarrow, OI \uparrow, \text{Taker} < 0.85$). *Brake:* `DEFER_WAIT` on BUY.
@@ -90,8 +97,8 @@ To ensure absolute transparency between microsecond execution and qualitative re
 
 ---
 
-### Pillar 3: AI Intelligence Layer (Geopolitical Shield, Sentiment Advisor & High-Stake LLM)
-* **Files:** [`intelligence_order_guard.py`](file:///home/predut/mptrade/intelligence_order_guard.py), [`geopolitical_order_guard.py`](file:///home/predut/mptrade/geopolitical_order_guard.py), [`intelligence/sentiment/sentiment_advisor.py`](file:///home/predut/mptrade/intelligence/sentiment/sentiment_advisor.py), [`intelligence/sentiment/guards/high_stake_guard.py`](file:///home/predut/mptrade/intelligence/sentiment/guards/high_stake_guard.py), [`intelligence/macro_analyzer.py`](file:///home/predut/mptrade/intelligence/macro_analyzer.py)
+### Category `GLLM`: AI Intelligence Layer (`GLLM1` High-Stake, `GLLM2` Sentiment Advisor, `GLLM3` Geopolitical Shield)
+* **Files:** [`llm_order_guard.py`](file:///home/predut/mptrade/llm_order_guard.py), [`intelligence/sentiment/guards/high_stake_guard.py`](file:///home/predut/mptrade/intelligence/sentiment/guards/high_stake_guard.py), [`intelligence/sentiment/sentiment_advisor.py`](file:///home/predut/mptrade/intelligence/sentiment/sentiment_advisor.py), [`intelligence/macro/geopolitical_guard.py`](file:///home/predut/mptrade/intelligence/macro/geopolitical_guard.py), [`intelligence/macro_analyzer.py`](file:///home/predut/mptrade/intelligence/macro_analyzer.py)
 * **Role:** Qualitative AI reasoning, macro shock detection, and real-time high-notional risk vetting.
 * **LLM:** 🤖 **ACTIVE & ASYNC LLM** (Google Gemini via isolated `agy` CLI).
 * **Guards & Sub-Components:**

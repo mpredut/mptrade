@@ -722,10 +722,12 @@ class BuyReferenceSwitchTest(unittest.TestCase):
 
     def test_validate_guard_mode_cfg_and_margins_validation_fail_fast(self):
         """Verify invalid Pillar 1-4 guard modes or discrete policies fail fast instead of silently passing."""
-        from internal_order_guard import check_internal_order_guards
+        from qlimit_order_guard import check_qlimit2_order_guards as check_internal_order_guards
         from external_order_guard import check_external_order_guards
-        from intelligence_order_guard import check_intelligence_order_guards
-        from geopolitical_order_guard import check_geopolitical_order_guards
+        from llm_order_guard import (
+            check_geopolitical_order_guards,
+            check_llm_order_guards as check_intelligence_order_guards,
+        )
 
         for valid_mode in ("off", "shadow", "enforce"):
             self.assertEqual(order_guard.validate_guard_mode_cfg(valid_mode, "llm_guard_mode"), valid_mode)
