@@ -1043,6 +1043,28 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertFalse(mgr._mem_dirty)
         self.assertEqual(len(mgr._dirty_live_symbols), 0)
 
+        # should_wait and _snapshot_is_usable reject NaN, Inf, bool, and malformed values
+        self.assertFalse(mgr._snapshot_is_usable({"ts": True, "current_price": 60000.0}, now_sec, 15.0))
+        self.assertFalse(mgr._snapshot_is_usable({"ts": now_sec, "current_price": True}, now_sec, 15.0))
+        for bad_g in (float("nan"), float("inf"), float("-inf"), True, "not-a-float"):
+            mgr._set_mem("BTCUSDT", ts=now_sec, current_price=60000.0, growth_coefficient=bad_g, gradient_recent=bad_g)
+            self.assertFalse(mgr.should_wait("BUY", "BTCUSDT", now=now_sec))
+            self.assertFalse(mgr.should_wait("SELL", "BTCUSDT", now=now_sec))
+            with patch.object(mgr, "get_short_trend_for_window", return_value={"growth_coefficient": bad_g, "current_price": 60000.0}):
+                self.assertFalse(mgr.should_wait("BUY", "BTCUSDT", window_seconds=900, now=now_sec))
+
+        # CacheLongTrendManager recovers from priceanalysis.json.previous
+        pa_dir = os.path.join(self.tmp, "pa_dir")
+        os.makedirs(pa_dir, exist_ok=True)
+        pa_file = os.path.join(pa_dir, "priceanalysis.json")
+        with open(pa_file, "w", encoding="utf-8") as fh:
+            fh.write("{corrupt")
+        with open(pa_file + ".previous", "w", encoding="utf-8") as fh:
+            json.dump({"BTCUSDT": {"trend": 1, "ts": now_sec}}, fh)
+        lt = cm.CacheLongTrendManager(60, ["BTCUSDT"], os.path.join(pa_dir, "cache_long_trend.json"), read_only=True)
+        with patch.object(cm, "_CONFIG_ROOT", pa_dir):
+            self.assertEqual(lt.get_remote_items("BTCUSDT", 0), [{"trend": 1, "ts": now_sec}])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

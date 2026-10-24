@@ -126,13 +126,22 @@ class CacheLongTrendManager(CacheManagerInterface):
             os.path.dirname(os.path.abspath(__file__)),
         )
         trend_filename = os.path.join(config_root, "priceanalysis.json")
-        if not os.path.exists(trend_filename):
+        backup_path = previous_generation_path(trend_filename)
+        if not os.path.exists(trend_filename) and not os.path.exists(backup_path):
             print(f"[{self.cls_name}] File {trend_filename} does not exist.")
             return []
 
         try:
-            with open(trend_filename, "r", encoding="utf-8") as handle:
-                data = json.load(handle)
+            def _read_pa(candidate_path):
+                with open(candidate_path, "r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                if not isinstance(payload, dict):
+                    raise ValueError("priceanalysis root must be a dict")
+                return payload
+
+            data = read_recovering_previous(
+                trend_filename, _read_pa, backup_path=backup_path
+            )
         except Exception as exc:
             print(f"[{self.cls_name}] Could not read {trend_filename}: {exc}")
             return []
@@ -259,8 +268,8 @@ class CacheShortTrendManager(CacheManagerInterface):
         for symbol, snap in (source or {}).items():
             if not isinstance(snap, dict):
                 continue
-            ts_val = snap.get("ts") or snap.get("ts_fast")
-            if isinstance(ts_val, (int, float)) and math.isfinite(ts_val) and ts_val > 0:
+            ts_val = snap.get("ts") if not isinstance(snap.get("ts"), bool) and snap.get("ts") else snap.get("ts_fast")
+            if isinstance(ts_val, (int, float)) and not isinstance(ts_val, bool) and math.isfinite(ts_val) and ts_val > 0:
                 last_times[symbol] = int(float(ts_val) * 1000)
         return last_times
 
@@ -1112,9 +1121,10 @@ class CacheShortTrendManager(CacheManagerInterface):
             self._mem[symbol] = snap
             self.cache = self._mem
             self._mem_dirty = True
-            ts_val = snap.get("ts") or snap.get("ts_fast")
+            ts_val = snap.get("ts") if not isinstance(snap.get("ts"), bool) and snap.get("ts") else snap.get("ts_fast")
             if (
                 isinstance(ts_val, (int, float))
+                and not isinstance(ts_val, bool)
                 and math.isfinite(ts_val)
                 and ts_val > 0
             ):
@@ -1191,9 +1201,10 @@ class CacheShortTrendManager(CacheManagerInterface):
                     and (overwrite or symbol not in self._mem)
                 ):
                     self._mem[symbol] = dict(snap)
-                    ts_val = snap.get("ts") or snap.get("ts_fast")
+                    ts_val = snap.get("ts") if not isinstance(snap.get("ts"), bool) and snap.get("ts") else snap.get("ts_fast")
                     if (
                         isinstance(ts_val, (int, float))
+                        and not isinstance(ts_val, bool)
                         and math.isfinite(ts_val)
                         and ts_val > 0
                     ):
@@ -1221,6 +1232,8 @@ class CacheShortTrendManager(CacheManagerInterface):
         if not isinstance(snap, dict):
             return False
         try:
+            if isinstance(snap.get("ts"), bool) or isinstance(snap.get("current_price"), bool):
+                return False
             observed_at = float(snap["ts"])
             price = float(snap["current_price"])
             age = float(now) - observed_at
@@ -1380,10 +1393,15 @@ class CacheShortTrendManager(CacheManagerInterface):
             )
             if dyn is None:
                 return False   # Unknown because Cache24 is unavailable, insufficient, or stale.
-            g = float(
-                dyn.get("growth_coefficient", dyn.get("gradient_recent", 0.0))
-                or 0.0
-            )
+            raw_g = dyn.get("growth_coefficient", dyn.get("gradient_recent", 0.0))
+            if isinstance(raw_g, bool):
+                return False
+            try:
+                g = float(raw_g if raw_g is not None else 0.0)
+            except (TypeError, ValueError, OverflowError):
+                return False
+            if not math.isfinite(g):
+                return False
             if use_noise_gate:
                 raw_eps = dyn.get("epsilon")
                 eps = (
@@ -1406,14 +1424,21 @@ class CacheShortTrendManager(CacheManagerInterface):
         if snap is None:
             return False   # Unknown or stale data executes immediately.
         if fast:
-            g = snap.get(
+            raw_g = snap.get(
                 "gradient_recent_fast", snap.get("gradient_recent", 0.0)
             )
         else:
-            g = snap.get(
+            raw_g = snap.get(
                 "growth_coefficient", snap.get("gradient_recent", 0.0)
             )
-        g = float(g or 0.0)
+        if isinstance(raw_g, bool):
+            return False
+        try:
+            g = float(raw_g if raw_g is not None else 0.0)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not math.isfinite(g):
+            return False
         if use_noise_gate:
             eps = self._epsilon(snap)
             if abs(g) <= eps:
