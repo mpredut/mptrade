@@ -119,6 +119,42 @@ def get_topic_canonical_titles(registry_path: Optional[str] = None) -> Dict[str,
     return out
 
 
+def sync_all_topic_titles(
+    cli_base: Optional[str] = None,
+    registry_path: Optional[str] = None,
+) -> int:
+    """Ensure registry, bot store, and UI store carry the canonical TopicSpec title for every registered topic."""
+    from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui
+
+    base = resolve_bot_cli_base(cli_base)
+    reg = load_topic_registry(registry_path)
+    updated = 0
+    changed_reg = False
+    for key, entry in reg.items():
+        if not isinstance(entry, dict) or key not in TOPIC_SPECS:
+            continue
+        canonical = TOPIC_SPECS[key].title
+        if entry.get("title") != canonical:
+            entry["title"] = canonical
+            changed_reg = True
+        cid = str(entry.get("conversation_id") or "").strip()
+        if not cid:
+            continue
+        try:
+            bot_row = read_summary_row(base, cid)
+            if bot_row is not None:
+                upsert_ui_visible_summary(base, bot_row, canonical)
+            else:
+                write_annotation_title(base, cid, canonical)
+        except OSError:
+            pass
+        mirror_topic_thread_to_ui(cid, canonical, bot_cli_base=base)
+        updated += 1
+    if changed_reg:
+        save_topic_registry(reg, registry_path)
+    return updated
+
+
 def format_topic_turn_header(topic_key: Optional[str], thread_title: Optional[str]) -> Optional[str]:
     """Normalize the per-turn header so every topic thread always starts with its canonical TopicSpec title."""
     raw = (thread_title or "").strip()

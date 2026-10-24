@@ -29,7 +29,7 @@ from orchestratorOS.agy.summary_store import (  # noqa: E402
     parse_db_timestamp,
     resolve_project_ids,
 )
-from orchestratorOS.agy.topics import TOPIC_SPECS, get_active_topic_cids  # noqa: E402
+from orchestratorOS.agy.topics import TOPIC_SPECS, get_active_topic_cids, sync_all_topic_titles  # noqa: E402
 
 logger = logging.getLogger("prune_llm_threads")
 
@@ -110,6 +110,11 @@ def prune_old_cli_threads(
 ) -> Tuple[int, int]:
     """Delete automated LLM threads older than retention_days or beyond max_threads. Returns (count, bytes)."""
     base = resolve_bot_cli_base(cli_base)
+    if not dry_run and cli_base is None:
+        try:
+            sync_all_topic_titles(cli_base=base)
+        except Exception as e:
+            logger.debug("Topic title sync skipped: %s", e)
     db_path = os.path.join(base, "conversation_summaries.db")
     if not os.path.exists(db_path):
         logger.info("conversation_summaries.db not found at %s. Nothing to prune.", db_path)
