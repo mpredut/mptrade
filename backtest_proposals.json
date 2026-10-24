@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-10-24T08:38:09",
+    "ts": "2026-10-24T09:10:36",
     "full_key": "BINANCE_BTC.trailing.pct",
     "section": "BINANCE_BTC",
     "key": "trailing.pct",
@@ -11,6 +11,6 @@
       "half1": 16.44,
       "half2": 566.43
     },
-    "dev_commit": "ed72319"
+    "dev_commit": "600d0f0"
   }
 ]
