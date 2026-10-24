@@ -124,7 +124,7 @@ def test_only_trade_executor_topic_reaches_gateway_bounded_by_supervisor_mode(te
             "market_trading_decision": {"decision": "BUY", "symbol": "TAOUSDC", "venue": "binance", "confidence": 0.95}}
     auditor = GeminiClient(custom_runner=lambda prompt, model, timeout: json.dumps(plan))
     gateway = MagicMock()
-    gateway.min_confidence, gateway.max_notional_eur = 0.85, 500.0
+    gateway.min_confidence, gateway.max_notional_usd = 0.85, 2000.0
     gateway.submit.return_value = {"status": "OBSERVED_SHADOW"}
     reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"],
                                         gemini_auditor=auditor, mode="shadow", notify_enabled=False,
@@ -309,7 +309,7 @@ def test_full_run_cycle_and_artifacts(temp_env):
 
     # The trade topic writes its own artifacts and leaves the repair report untouched.
     nightly_mtime = os.path.getmtime(state_file)
-    reconciler._intent_gateway = MagicMock(min_confidence=0.85, max_notional_eur=500.0)
+    reconciler._intent_gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0)
     reconciler.run_cycle(topic_key="auto_trade_executor")
     assert os.path.exists(os.path.join(cache_dir, "auto_trade_executor_eval.json"))
     assert os.path.exists(os.path.join(cache_dir, "auto_trade_executor.heartbeat"))
@@ -436,7 +436,7 @@ def test_none_venue_actions_and_routine_hold_do_not_trigger_executed_or_notify_s
         "market_trading_decision": {"decision": "HOLD", "symbol": "TAOUSDC", "venue": "binance", "confidence": 0.6},
     }
     auditor = GeminiClient(custom_runner=lambda prompt, model, timeout: json.dumps(plan))
-    gateway = MagicMock(min_confidence=0.85, max_notional_eur=500.0)
+    gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0)
     gateway.submit.return_value = None
     reconciler = AutonomousAIReconciler(
         workspace_dir=workspace,
@@ -541,7 +541,7 @@ def test_intent_gateway_and_advisors_reject_nan_bool_and_null_json_fields(temp_e
     from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
 
     workspace, _, _ = temp_env
-    gw = AutonomousIntentGateway(workspace_dir=workspace, mode="shadow", min_confidence=0.80, max_notional_eur=500.0)
+    gw = AutonomousIntentGateway(workspace_dir=workspace, mode="shadow", min_confidence=0.80, max_notional_usd=2000.0)
 
     for bad_conf in (float("nan"), "NaN", True, False, None):
         assert gw.submit(
@@ -605,7 +605,7 @@ def test_intent_gateway_and_advisors_reject_nan_bool_and_null_json_fields(temp_e
 
 
 def test_enforce_executes_cancel_order_sync_position_and_restart_bot(mock_workspace):
-    gateway = MagicMock(min_confidence=0.85, max_notional_eur=500.0)
+    gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0)
     mock_inst = MagicMock()
     mock_inst.symbol = "TAOUSDC"
     mock_inst.provider_name = "binance"
@@ -709,6 +709,124 @@ def test_dispatch_notification_routes_system_and_bot_errors_to_ntfy_error(temp_e
         title_str = req.headers["Title"].encode("latin-1").decode("utf-8")
         assert title_str == "🚨 [auto_technical_repair] ERROR Issues: 1 | Actions: 1"
         assert req.headers["Priority"] == "high"
+
+
+def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env):
+    workspace, cache_dir, _ = temp_env
+
+    with open(os.path.join(cache_dir, "sentiment_advisor_eval.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "market_bias": "BEARISH",
+                "risk_level": "HIGH",
+                "recommended_action": "DEFENSIVE",
+                "confidence": 0.88,
+                "summary": "Broad washout risk",
+                "key_risks": ["Breadth collapse"],
+            },
+            f,
+        )
+    with open(os.path.join(cache_dir, "geopolitical_threat_eval.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "threat_level": "ELEVATED",
+                "risk_score": 0.62,
+                "recommended_brake": "DOWNSCALE_QTY",
+                "summary": "Regional energy tension",
+            },
+            f,
+        )
+    with open(os.path.join(cache_dir, "market_breadth_cache.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "advance_ratio": 0.18,
+                "median_change_pct": -3.1,
+                "regime": "BEARISH_BREADTH",
+                "advancing": 12,
+                "total_symbols": 66,
+            },
+            f,
+        )
+    krk_dir = os.path.join(workspace, "kraken")
+    os.makedirs(krk_dir, exist_ok=True)
+    with open(os.path.join(krk_dir, ".state_HYPEUSD.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "qty": 13.68,
+                "cost": 1079.47,
+                "entry_price": 80.30,
+                "last_buy_price": 75.55,
+                "last_sell_price": 80.75,
+                "last_exit_kind": "TP",
+                "dca_buys": 2,
+            },
+            f,
+        )
+
+    captured_prompts = []
+    plan = {
+        "summary": "Multi-coin protective de-risking on BTCUSDC and HYPEUSD.",
+        "diagnosed_issues": [],
+        "venue_actions": [],
+        "market_trading_decisions": [
+            {
+                "decision": "SELL",
+                "symbol": "HYPEUSD",
+                "venue": "kraken",
+                "confidence": 0.89,
+                "suggested_notional_usd": 800.0,
+                "thesis": "Breakdown below 76 support",
+            },
+            {
+                "decision": "SELL",
+                "symbol": "BTCUSDC",
+                "venue": "binance",
+                "confidence": 0.94,
+                "suggested_notional_usd": 1800.0,
+                "thesis": "Protective sell against cascading flush",
+            },
+        ],
+    }
+
+    def _runner(prompt, model, timeout):
+        captured_prompts.append(prompt)
+        return json.dumps(plan)
+
+    auditor = GeminiClient(custom_runner=_runner)
+    gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
+    gateway.submit.side_effect = [
+        {"intent_id": "i_btc", "symbol": "BTCUSDC", "status": "EXECUTED"},
+        {"intent_id": "i_hype", "symbol": "HYPEUSD", "status": "EXECUTED"},
+    ]
+    reconciler = AutonomousAIReconciler(
+        workspace_dir=workspace,
+        cache_dir="cachedb",
+        logs_dirs=["logs"],
+        gemini_auditor=auditor,
+        mode="enforce",
+        notify_enabled=False,
+        intent_gateway=gateway,
+    )
+    report = reconciler.run_cycle(topic_key="auto_trade_executor")
+
+    assert len(captured_prompts) == 1
+    prompt_text = captured_prompts[0]
+    assert "action=DEFENSIVE" in prompt_text
+    assert "Breadth collapse" in prompt_text
+    assert "brake=DOWNSCALE_QTY" in prompt_text
+    assert "median_chg=-3.1%" in prompt_text
+    assert "[kraken] HYPEUSD: qty=13.68" in prompt_text
+    assert "ZERO PROFIT GUARDS" in prompt_text
+    assert "between 10 and 2000 USD" in prompt_text
+
+    # Highest-confidence actionable decision (BTCUSDC @ 0.94) executes first and becomes primary summary
+    assert gateway.submit.call_count == 2
+    assert gateway.submit.call_args_list[0].args[0]["symbol"] == "BTCUSDC"
+    assert gateway.submit.call_args_list[1].args[0]["symbol"] == "HYPEUSD"
+    assert report.actions_executed is True
+    assert report.market_trading_decision["symbol"] == "BTCUSDC"
+    assert len(report.market_trading_decisions) == 2
+    assert len(report.intents_emitted) == 2
 
 
 

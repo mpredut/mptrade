@@ -53,7 +53,7 @@ TOPIC_SPECS: Dict[str, TopicSpec] = {
         "🛠 [auto_technical_repair] System Audit & Code Self-Heal (03:35)", can_self_heal=True
     ),
     "auto_trade_executor": TopicSpec(
-        "🎯 [auto_trade_executor] Autonomous Trade Decisions (TAO & BTC 10m)", can_trade=True
+        "🎯 [auto_trade_executor] Autonomous Trade Decisions (All Coins 10m)", can_trade=True
     ),
     "macro_geopolitical": TopicSpec("🌍 [auto_macro_geopolitical] Geopolitical Crisis & Breaking News Brake"),
     "macro_sentiment": TopicSpec("🧭 [auto_macro_sentiment] Fear & Greed, Breadth & Market Bias (3h)"),
@@ -273,9 +273,19 @@ def condense_decision(response_text: str, max_len: int = 220) -> str:
     parsed = extract_json_object(response_text)
     if isinstance(parsed, dict):
         parts = [f"{k}={parsed[k]}" for k in _SHORT_SUMMARY_KEYS if parsed.get(k) not in (None, "")]
-        mtd = parsed.get("market_trading_decision")
-        if isinstance(mtd, dict):
-            parts.append(f"trade={mtd.get('decision', 'HOLD')}:{mtd.get('symbol', '')}@{mtd.get('confidence', 0)}")
+        mtds = parsed.get("market_trading_decisions")
+        if isinstance(mtds, list) and mtds:
+            t_items = [
+                f"{d.get('decision', 'HOLD')}:{d.get('symbol', '')}@{d.get('confidence', 0)}"
+                for d in mtds
+                if isinstance(d, dict)
+            ]
+            if t_items:
+                parts.append(f"trade={','.join(t_items)}")
+        else:
+            mtd = parsed.get("market_trading_decision")
+            if isinstance(mtd, dict):
+                parts.append(f"trade={mtd.get('decision', 'HOLD')}:{mtd.get('symbol', '')}@{mtd.get('confidence', 0)}")
         parts.extend(f"{k}={parsed[k]}" for k in _PROSE_SUMMARY_KEYS if parsed.get(k) not in (None, ""))
         if parts:
             condensed = "; ".join(parts)

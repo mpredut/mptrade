@@ -6,15 +6,16 @@ unified MPTrade execution pipeline (Instrument.place & order_guard).
 Operational Architecture:
 1. Decoupled Ingestion:
    Reads high-conviction trade intents emitted into `cachedb/autonomous_trade_intents.json`.
-2. Guard Validation & Safety Caps:
-   - Confidence threshold verification (default >= 0.85).
-   - Maximum notional EUR position cap (default <= 500 EUR).
-   - Deterministic profit guard vetting (order_guard.profit_guard).
+2. Minimal Operational Safety (Full Strategic Judgment Delegated to Gemini):
+   - Confidence threshold verification (`autonomous_trading_min_confidence`, e.g. >= 0.85).
+   - Symmetric USD notional bounds (`[autonomous_trading_min_notional_usd, autonomous_trading_max_notional_usd]`, up to $2,000 USD) clamped to available spot wallet balance.
+   - Symmetric elimination of profit guards (`G_PROF` / `profit_guard`), trend deferrals (`GT_S` / `GT_M`), strategy weight caps (`G_QLIMIT*`), microstructure vetoes (`GI_*`), and secondary LLM vetoes (`GLLM1..3`) across both `BUY` and `SELL`.
+   - Operational `GO1` (`order_guard.daily_limit_guard`) daily cap & rapid-fire anti-spam protection.
 3. Modes of Operation:
-   - "shadow" (default): Simulates order, validates guards, logs simulated action, dispatches phone alerts via ntfy.
-   - "enforce": Preflights guards, sizes lot units, and submits order via canonical `Instrument.place()`.
+   - "shadow": Simulates order, validates operational preflight, logs simulated action, dispatches phone alerts via ntfy.
+   - "enforce": Preflights operational safety, clamps to live spot wallet balance, and submits market order via canonical `Instrument.place()`.
 4. Durable Intent Tracking:
-   Updates intent lifecycle state: PENDING -> OBSERVED_SHADOW | EXECUTED | BLOCKED_BY_GUARD | REJECTED.
+   Updates intent lifecycle state: PENDING -> OBSERVED_SHADOW | EXECUTED | BLOCKED_BY_GUARD | REJECTED_*.
 """
 
 from __future__ import annotations
@@ -37,16 +38,32 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 
+# Symmetric guard bypass set for autonomous AI orders across both BUY and SELL:
+# Trade thesis, profit/loss protection, trend timing, microstructure, and macro risk are
+# evaluated directly by the Gemini model on full telemetry context, so all profit reference
+# guards, trend deferrals, weight caps, and secondary intelligence/LLM vetoes are bypassed.
+# Operational GO1 (daily_limit_guard) and exchange balance/filter mechanics remain enforced.
+AUTONOMOUS_BYPASS_GUARDS: frozenset[str] = frozenset({
+    "profit_guard",
+    "trend",
+    "qlimit",
+    "intelligence",
+    "llm",
+})
+
+_QUOTE_SUFFIXES: Tuple[str, ...] = ("USDC", "USDT", "USD", "EUR")
+
+
 @dataclass
 class TradeIntentRecord:
     """Canonical structure for an autonomous trade intent."""
     intent_id: str
     timestamp: float
     decision: str                          # "BUY" | "SELL"
-    symbol: str                            # e.g. "BTCUSDC"
+    symbol: str                            # e.g. "BTCUSDC", "TAOUSDC", "HYPEUSD"
     venue: str                             # "binance" | "kraken" | "hyperliquid" | "t212"
     confidence: float
-    suggested_notional_eur: float
+    suggested_notional_usd: float
     urgency: str = "NORMAL"
     thesis: str = ""
     status: str = "PENDING"                # "PENDING" | "OBSERVED_SHADOW" | "EXECUTED" | "BLOCKED_BY_GUARD" | "REJECTED_LOW_CONFIDENCE" | "REJECTED_UNKNOWN_INSTRUMENT" | "FAILED"
@@ -71,6 +88,45 @@ def _parse_finite_float(val: Any, default: float) -> float:
         return default
 
 
+def _split_symbol_assets(symbol: str) -> Optional[Tuple[str, str]]:
+    """Split a standard spot pair symbol (e.g. TAOUSD, BTCUSDC) into (base, quote)."""
+    sym_u = symbol.strip().upper()
+    for quote in _QUOTE_SUFFIXES:
+        if sym_u.endswith(quote) and len(sym_u) > len(quote):
+            return sym_u[: -len(quote)], quote
+    return None
+
+
+def _discover_kraken_cache_pairs(workspace_dir: str) -> List[Tuple[str, str, str]]:
+    """Read KRAKEN_CACHE_PAIRS from kraken/config.env to include all live Kraken spot pairs."""
+    cfg_path = os.path.join(workspace_dir, "kraken", "config.env")
+    if not os.path.exists(cfg_path):
+        return []
+    raw_pairs = ""
+    try:
+        with open(cfg_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                cleaned = line.split("#", 1)[0].strip()
+                if not cleaned or "=" not in cleaned:
+                    continue
+                k, v = cleaned.split("=", 1)
+                if k.strip().upper() == "KRAKEN_CACHE_PAIRS":
+                    raw_pairs = v.strip().strip('"').strip("'")
+                    break
+    except OSError:
+        return []
+
+    out: List[Tuple[str, str, str]] = []
+    for item in raw_pairs.split(","):
+        pair = item.strip().upper()
+        if not pair:
+            continue
+        split = _split_symbol_assets(pair)
+        if split is not None:
+            out.append((pair, split[0], split[1]))
+    return out
+
+
 def load_key_value_conf(workspace_dir: str, root_dir: str = ROOT_DIR) -> Dict[str, str]:
     """Load key=value settings from order_guard.conf / config.env / .env (root_dir overlaid by workspace_dir)."""
     conf: Dict[str, str] = {}
@@ -92,7 +148,6 @@ def load_key_value_conf(workspace_dir: str, root_dir: str = ROOT_DIR) -> Dict[st
     return conf
 
 
-
 class AutonomousIntentGateway:
     """Gateway bridge consuming decoupled trade intents and executing through Instrument.place."""
 
@@ -101,7 +156,7 @@ class AutonomousIntentGateway:
         workspace_dir: Optional[str] = None,
         cache_dir: str = "cachedb",
         mode: Optional[str] = None,
-        max_notional_eur: Optional[float] = None,
+        max_notional_usd: Optional[float] = None,
         min_confidence: Optional[float] = None,
         notify_enabled: Optional[bool] = None,
     ) -> None:
@@ -123,16 +178,23 @@ class AutonomousIntentGateway:
                 f"Invalid autonomous_trading_mode {raw_mode!r}; must be one of ['enforce', 'off', 'shadow']"
             )
 
-        if max_notional_eur is not None:
-            self.max_notional_eur = float(max_notional_eur)
-        else:
-            if "autonomous_trading_max_notional_eur" not in conf:
-                raise KeyError("Missing required 'autonomous_trading_max_notional_eur' in order_guard.conf")
-            self.max_notional_eur = float(conf["autonomous_trading_max_notional_eur"])
+        if "autonomous_trading_min_notional_usd" not in conf:
+            raise KeyError("Missing required 'autonomous_trading_min_notional_usd' in order_guard.conf")
+        self.min_notional_usd = float(conf["autonomous_trading_min_notional_usd"])
+        if not (math.isfinite(self.min_notional_usd) and self.min_notional_usd > 0):
+            raise ValueError(f"Invalid autonomous_trading_min_notional_usd {self.min_notional_usd!r}")
 
-        if "autonomous_trading_min_notional_eur" not in conf:
-            raise KeyError("Missing required 'autonomous_trading_min_notional_eur' in order_guard.conf")
-        self.min_notional_eur = float(conf["autonomous_trading_min_notional_eur"])
+        if max_notional_usd is not None:
+            self.max_notional_usd = float(max_notional_usd)
+        else:
+            if "autonomous_trading_max_notional_usd" not in conf:
+                raise KeyError("Missing required 'autonomous_trading_max_notional_usd' in order_guard.conf")
+            self.max_notional_usd = float(conf["autonomous_trading_max_notional_usd"])
+        if not (math.isfinite(self.max_notional_usd) and self.max_notional_usd >= self.min_notional_usd):
+            raise ValueError(
+                f"Invalid autonomous_trading_max_notional_usd {self.max_notional_usd!r}; "
+                f"must be >= autonomous_trading_min_notional_usd ({self.min_notional_usd})"
+            )
 
         if min_confidence is not None:
             self.min_confidence = float(min_confidence)
@@ -153,7 +215,7 @@ class AutonomousIntentGateway:
             self.notify_enabled = bool(int(float(conf["autonomous_trading_notify"])))
 
     def _load_conf(self) -> Dict[str, str]:
-        """Loads configuration from order_guard._load_margins() SSOT, overlaying any workspace-specific overrides."""
+        """Loads configuration from order_guard.conf / config.env, overlaying workspace-specific overrides."""
         return load_key_value_conf(self.workspace_dir, ROOT_DIR)
 
     def load_all_intents(self) -> List[Dict[str, Any]]:
@@ -189,30 +251,74 @@ class AutonomousIntentGateway:
         """Returns all intents with PENDING status."""
         return [i for i in self.load_all_intents() if i.get("status") == "PENDING"]
 
+    def load_tradable_instruments(self, *, only_workspace_conf: bool = False) -> Dict[str, Any]:
+        """Load all enabled instruments from instruments.conf plus live Kraken spot pairs."""
+        ws_inst_conf = os.path.join(self.workspace_dir, "instruments.conf")
+        if only_workspace_conf and not os.path.exists(ws_inst_conf):
+            return {}
+
+        try:
+            from instruments_config import load_instruments
+            raw_map = load_instruments(ws_inst_conf) if os.path.exists(ws_inst_conf) else load_instruments()
+        except Exception as e:
+            logger.error("Failed loading instrument registry: %s", e)
+            return {}
+
+        active_map: Dict[str, Any] = {
+            k: inst
+            for k, inst in raw_map.items()
+            if getattr(inst, "enabled", True) is not False
+        }
+
+        existing_kraken_syms = {
+            str(getattr(inst, "symbol", "")).upper()
+            for inst in active_map.values()
+            if str(getattr(inst, "provider_name", "")).lower() == "kraken"
+        }
+        for pair, base, quote in _discover_kraken_cache_pairs(self.workspace_dir):
+            if pair in existing_kraken_syms:
+                continue
+            try:
+                from instrument import Instrument
+                inst = Instrument(
+                    name=f"KRAKEN_{base}",
+                    provider="kraken",
+                    symbol=pair,
+                    base=base,
+                    quote=quote,
+                    enabled=True,
+                )
+                active_map[f"KRAKEN_{base}"] = inst
+                existing_kraken_syms.add(pair)
+            except Exception as exc:
+                logger.debug("Could not bind Kraken pair %s: %s", pair, exc)
+
+        return active_map
+
     def resolve_instrument(
         self,
         symbol: str,
         venue: Optional[str] = None,
         instruments_map: Optional[Dict[str, Any]] = None,
     ) -> Optional[Any]:
-        """Resolves Instrument instance for the given symbol and venue."""
+        """Resolves an enabled Instrument instance for the given symbol and venue."""
         if instruments_map is None:
-            try:
-                from instruments_config import load_instruments
-                instruments_map = load_instruments()
-            except Exception as e:
-                logger.error("Failed loading instrument registry: %s", e)
-                return None
+            instruments_map = self.load_tradable_instruments()
+
+        active_values = [
+            inst for inst in instruments_map.values()
+            if getattr(inst, "enabled", True) is not False
+        ]
 
         sym_norm = symbol.strip().upper()
         venue_norm = venue.strip().lower() if venue else None
 
-        # 1. Match by venue if venue is explicitly specified
+        # 1. Match strictly within the specified venue (never cross-venue fallback)
         if venue_norm:
-            for inst in instruments_map.values():
+            for inst in active_values:
                 if inst.symbol.upper() == sym_norm and inst.provider_name.lower() == venue_norm:
                     return inst
-            for inst in instruments_map.values():
+            for inst in active_values:
                 if inst.provider_name.lower() == venue_norm and (
                     inst.symbol.upper().startswith(sym_norm) or sym_norm.startswith(inst.symbol.upper())
                 ):
@@ -220,12 +326,12 @@ class AutonomousIntentGateway:
             return None
 
         # 2. Match by exact symbol
-        for inst in instruments_map.values():
+        for inst in active_values:
             if inst.symbol.upper() == sym_norm:
                 return inst
 
         # 3. Match by base asset prefix (e.g. BTC in BTCUSDC)
-        for inst in instruments_map.values():
+        for inst in active_values:
             if inst.symbol.upper().startswith(sym_norm) or sym_norm.startswith(inst.symbol.upper()):
                 return inst
 
@@ -255,6 +361,57 @@ class AutonomousIntentGateway:
                 pass
 
         return float("nan")
+
+    def _clamp_notional_to_wallet_balance(
+        self,
+        inst: Any,
+        decision: str,
+        price: float,
+        desired_usd: float,
+    ) -> Tuple[bool, float, str]:
+        """Clamp desired USD notional to real spot wallet liquidity when finite balance is exposed.
+
+        Returns ``(allowed, clamped_usd, reason)`` symmetrically across BUY (quote asset) and SELL (base asset).
+        """
+        provider = getattr(inst, "_provider", None)
+        free_fn = getattr(provider, "free_balance", None)
+        if not callable(free_fn):
+            return True, desired_usd, "Wallet balance check skipped (no provider hook)"
+
+        from providers.quantity import resolve_assets
+        raw_base = getattr(inst, "base", None)
+        raw_quote = getattr(inst, "quote", None)
+        base_asset, quote_asset = resolve_assets(
+            str(inst.symbol),
+            raw_base if isinstance(raw_base, str) else None,
+            raw_quote if isinstance(raw_quote, str) else None,
+        )
+        target_asset = quote_asset if decision == "BUY" else base_asset
+        if not target_asset:
+            return True, desired_usd, "Wallet balance check skipped (unresolved asset)"
+
+        try:
+            raw_bal = free_fn(target_asset)
+        except Exception as exc:
+            logger.debug("Wallet free_balance(%s) check skipped: %s", target_asset, exc)
+            return True, desired_usd, "Wallet balance check unavailable"
+
+        if raw_bal is None or isinstance(raw_bal, bool) or not isinstance(raw_bal, (int, float)):
+            return True, desired_usd, "Wallet balance check skipped (non-numeric)"
+        bal = float(raw_bal)
+        if not math.isfinite(bal):
+            return True, desired_usd, "Wallet balance check skipped (non-finite)"
+
+        avail_usd = bal * 0.998 if decision == "BUY" else bal * price
+        if avail_usd < self.min_notional_usd:
+            return (
+                False,
+                0.0,
+                f"Insufficient free {target_asset} balance (${avail_usd:.2f} < ${self.min_notional_usd:.2f})",
+            )
+        if avail_usd < desired_usd:
+            return True, avail_usd, f"Clamped notional from ${desired_usd:.2f} to available ${avail_usd:.2f}"
+        return True, desired_usd, "Sufficient wallet balance"
 
     def _dispatch_notify(self, title: str, body: str, symbol: str) -> bool:
         """Dispatches an alert notification via notify_engine."""
@@ -320,10 +477,8 @@ class AutonomousIntentGateway:
             })
             return intent
 
-        suggested_eur = _parse_finite_float(intent.get("suggested_notional_eur"), self.max_notional_eur)
-
-        effective_eur = min(suggested_eur, self.max_notional_eur)
-        effective_eur = max(self.min_notional_eur, effective_eur)
+        suggested_usd = _parse_finite_float(intent.get("suggested_notional_usd"), self.max_notional_usd)
+        effective_usd = max(self.min_notional_usd, min(suggested_usd, self.max_notional_usd))
 
         price = self._get_live_price(inst)
         if not math.isfinite(price) or price <= 0:
@@ -334,41 +489,33 @@ class AutonomousIntentGateway:
             })
             return intent
 
-        target_qty = effective_eur / price
+        # Minimal Operational Preflight (Symmetric BUY / SELL, Zero Profit Guards):
+        # 1) Spot wallet free-balance check & clamping
+        # 2) GO1 daily trade cap & rapid-fire anti-spam check
+        guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
+            inst, decision, price, effective_usd
+        )
+        target_qty = effective_usd / price if effective_usd > 0 else 0.0
 
-        # Preflight Guard Vetting
-        # Autonomous BUY intents represent high-conviction tactical entries/re-entries already vetted against
-        # 24h multi-horizon prices, slopes, and Kalman velocity, so they bypass the static historical SELL
-        # reference anchor (math_reference / G_PROF) while keeping all daily limit (GO1), cooldown,
-        # quantitative limit (G_QLIMIT1/2), microstructure (GI_OBOOK/WHALE/FUNDING), and LLM (GLLM1..3) guards enforced.
-        # SELL intents keep math_reference enforced so autonomous exits never sell below buy reference + margin.
-        bypass_guards = {"math_reference"} if decision == "BUY" else None
-        guard_allowed = True
-        guard_reason = "Preflight checks passed"
-        regime_context = None
-        try:
-            import order_guard
-            resolve_ctx = getattr(getattr(inst, "_api", None), "market_regime_context", None)
-            if callable(resolve_ctx):
-                try:
-                    regime_context = resolve_ctx(inst.symbol, provider_name=inst.provider_name)
-                except Exception:
-                    regime_context = None
-            profit_margin = order_guard.get_margin_cfg(inst.provider_name)
-            window_ref = inst._call_profit_guard_window_ref(
-                inst.symbol, decision, None, regime_context=regime_context
-            )
-            guard_allowed = order_guard.profit_guard(
-                inst._provider, inst.symbol, decision, price, profit_margin,
-                window_ref=window_ref, regime_context=regime_context, qty=target_qty,
-                bypass_guards=bypass_guards,
-            )
-            if not guard_allowed:
-                guard_reason = f"Profit guard vetoed {decision} {inst.symbol} @ {price}"
-        except Exception as g_err:
-            logger.warning("[INTENT GATEWAY] Guard evaluation exception: %s", g_err)
-            guard_allowed = False
-            guard_reason = f"Guard check failed: {g_err}"
+        if guard_allowed:
+            try:
+                import order_guard
+                prov_obj = getattr(inst, "_provider", None)
+                if prov_obj is not None and not isinstance(getattr(prov_obj, "name", None), str):
+                    prov_obj.name = str(getattr(inst, "provider_name", venue))
+                ok_dl, dl_reason = order_guard.daily_limit_guard(
+                    prov_obj,
+                    inst.symbol,
+                    decision,
+                    bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
+                )
+                if not ok_dl:
+                    guard_allowed = False
+                    guard_reason = f"Daily/cooldown guard ({dl_reason}) blocked {decision} {inst.symbol}"
+            except Exception as g_err:
+                logger.warning("[INTENT GATEWAY] Operational guard evaluation exception: %s", g_err)
+                guard_allowed = False
+                guard_reason = f"Operational guard check failed: {g_err}"
 
         thesis = intent.get("thesis", "Autonomous strategy thesis")
         from orchestratorOS.agy.topics import topic_spec
@@ -376,14 +523,14 @@ class AutonomousIntentGateway:
 
         # Execution or Observation Branch
         if mode == "shadow":
-            logger.info("[LLM TRADER · SHADOW] Would execute %s %s (qty=%g, price=$%.2f, notional=€%.2f) on %s. Thesis: %s",
-                        decision, inst.symbol, target_qty, price, effective_eur, inst.provider_name, thesis)
+            logger.info("[LLM TRADER · SHADOW] Would execute %s %s (qty=%g, price=$%.2f, notional=$%.2f) on %s. Thesis: %s",
+                        decision, inst.symbol, target_qty, price, effective_usd, inst.provider_name, thesis)
 
-            title = f"🟢 [{trade_tag.strip('[]')} · SHADOW] {decision} {inst.symbol} €{effective_eur:.0f}"
+            title = f"🟢 [{trade_tag.strip('[]')} · SHADOW] {decision} {inst.symbol} ${effective_usd:.0f}"
             body = (
                 f"Venue: {inst.provider_name} · Qty: {target_qty:g} @ ${price:,.2f}\n"
-                f"Confidence: {confidence:.2f} · Notional: €{effective_eur:.2f}\n"
-                f"Guards Preflight: {'PASSED' if guard_allowed else 'BLOCKED_BY_PROFIT_GUARD'}\n"
+                f"Confidence: {confidence:.2f} · Notional: ${effective_usd:.2f}\n"
+                f"Operational Preflight: {'PASSED' if guard_allowed else guard_reason}\n"
                 f"Thesis: {thesis}"
             )
             self._dispatch_notify(title=title, body=body, symbol=inst.symbol)
@@ -396,7 +543,7 @@ class AutonomousIntentGateway:
                 "guard_reason": guard_reason,
                 "price": price,
                 "qty": target_qty,
-                "notional_eur": effective_eur,
+                "notional_usd": effective_usd,
             })
             return intent
 
@@ -413,10 +560,11 @@ class AutonomousIntentGateway:
 
         # Mode == "enforce"
         if not guard_allowed:
-            logger.warning("[LLM TRADER · ENFORCE] Guard blocked %s %s: %s", decision, inst.symbol, guard_reason)
+            logger.warning("[LLM TRADER · ENFORCE] Operational guard blocked %s %s: %s",
+                           decision, inst.symbol, guard_reason)
             title = f"🛡 {trade_tag} BLOCKED {decision} {inst.symbol}"
             body = (
-                f"Venue: {inst.provider_name} · Price: ${price:,.2f} · Notional: €{effective_eur:.0f}\n"
+                f"Venue: {inst.provider_name} · Price: ${price:,.2f} · Notional: ${effective_usd:.0f}\n"
                 f"Reason: {guard_reason}\n"
                 f"Thesis: {thesis}"
             )
@@ -429,11 +577,12 @@ class AutonomousIntentGateway:
                 "guard_reason": guard_reason,
                 "price": price,
                 "qty": target_qty,
+                "notional_usd": effective_usd,
             })
             return intent
 
-        logger.warning("[LLM TRADER · ENFORCE] Executing %s %s (qty=%g, notional=€%.2f) on %s...",
-                       decision, inst.symbol, target_qty, effective_eur, inst.provider_name)
+        logger.warning("[LLM TRADER · ENFORCE] Executing %s %s (qty=%g, notional=$%.2f) on %s...",
+                       decision, inst.symbol, target_qty, effective_usd, inst.provider_name)
 
         try:
             intent_cid = f"AI_{intent_id[:28]}" if intent_id else None
@@ -444,19 +593,20 @@ class AutonomousIntentGateway:
                 market=True,
                 force=True,
                 is_market=True,
+                enforce_business_minimum=False,
                 intent_id=intent_id,
                 client_order_id=intent_cid,
-                regime_context=regime_context,
-                bypass_guards=bypass_guards,
+                regime_context=None,
+                bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
             )
             if order_res:
                 from providers.base import extract_order_id
                 logger.info("[LLM TRADER · ENFORCE] Successfully placed %s %s: %s",
                             decision, inst.symbol, order_res)
-                title = f"🚀 {trade_tag} EXECUTED {decision} {inst.symbol} €{effective_eur:.0f}"
+                title = f"🚀 {trade_tag} EXECUTED {decision} {inst.symbol} ${effective_usd:.0f}"
                 order_id_str = extract_order_id(order_res, default="N/A")
                 body = (
-                    f"Venue: {inst.provider_name} · Qty: {target_qty:g} @ ${price:,.2f}\n"
+                    f"Venue: {inst.provider_name} · Qty: {target_qty:g} @ ${price:,.2f} (${effective_usd:,.0f})\n"
                     f"Order ID: {order_id_str}\n"
                     f"Thesis: {thesis}"
                 )
@@ -467,6 +617,7 @@ class AutonomousIntentGateway:
                 intent.setdefault("history", []).append({
                     "ts": now,
                     "action": "EXECUTED",
+                    "notional_usd": effective_usd,
                     "payload": order_res,
                 })
             else:
@@ -507,7 +658,7 @@ class AutonomousIntentGateway:
     ) -> Optional[Dict[str, Any]]:
         """Single entry point for autonomous LLM trade decisions.
 
-        Validates, clamps the notional, de-duplicates against recent intents for the same symbol and side,
+        Validates, clamps the USD notional, de-duplicates against recent intents for the same venue+symbol+side,
         persists the intent and processes it immediately in the more restrictive of the gateway mode and
         ``max_mode`` (the producer's own mode), so a shadow producer can never trigger a live order.
         """
@@ -525,19 +676,23 @@ class AutonomousIntentGateway:
             logger.info("[INTENT GATEWAY] %s %s %s confidence %.2f < %.2f (no intent).",
                         source, side, symbol, confidence, self.min_confidence)
             return None
-        notional = _parse_finite_float(decision.get("suggested_notional_eur"), self.max_notional_eur)
-        notional = max(self.min_notional_eur, min(notional, self.max_notional_eur))
+        notional = _parse_finite_float(decision.get("suggested_notional_usd"), self.max_notional_usd)
+        notional = max(self.min_notional_usd, min(notional, self.max_notional_usd))
 
         now = time.time()
         intents = self.load_all_intents()
         for existing in reversed(intents):
-            if existing.get("symbol") == symbol and existing.get("status") in DEDUP_STATUSES:
+            if (
+                existing.get("symbol") == symbol
+                and str(existing.get("venue", venue)).lower() == venue
+                and existing.get("status") in DEDUP_STATUSES
+            ):
                 if (
                     existing.get("decision") == side
                     and now - float(existing.get("timestamp", 0.0)) < self.dedup_window_sec
                 ):
-                    logger.info("[INTENT GATEWAY] %s %s already acted on within %.0fs (%s); skipping duplicate.",
-                                side, symbol, self.dedup_window_sec, existing.get("intent_id"))
+                    logger.info("[INTENT GATEWAY] %s %s (%s) already acted on within %.0fs (%s); skipping duplicate.",
+                                side, symbol, venue, self.dedup_window_sec, existing.get("intent_id"))
                     return existing
                 break
 
@@ -551,7 +706,7 @@ class AutonomousIntentGateway:
             symbol=symbol,
             venue=venue,
             confidence=confidence,
-            suggested_notional_eur=notional,
+            suggested_notional_usd=notional,
             urgency=str(decision.get("urgency", "NORMAL")).strip().upper(),
             thesis=str(decision.get("thesis", "")).strip(),
             created_by=source,
@@ -580,12 +735,7 @@ class AutonomousIntentGateway:
         logger.info("Processing %d pending autonomous trade intent(s) (mode=%s)...",
                     len(pending_indices), self.mode)
 
-        instruments_map = None
-        try:
-            from instruments_config import load_instruments
-            instruments_map = load_instruments()
-        except Exception as e:
-            logger.warning("Could not pre-load instruments: %s", e)
+        instruments_map = self.load_tradable_instruments() or None
 
         processed: List[Dict[str, Any]] = []
         for idx in pending_indices:
@@ -598,6 +748,7 @@ class AutonomousIntentGateway:
 
 
 def main() -> None:
+    os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
     parser = argparse.ArgumentParser(description="MPTrade Autonomous Intent Gateway")
     parser.add_argument("--process-pending", action="store_true", help="Process all pending trade intents")
     parser.add_argument("--mode", choices=["shadow", "enforce"], default=None, help="Override operational mode")
@@ -611,8 +762,9 @@ def main() -> None:
         intents = gateway.load_all_intents()
         print(f"Total Intents in Queue: {len(intents)}")
         for i in intents[-10:]:
+            notional_val = i.get("suggested_notional_usd")
             print(f"- [{i.get('status')}] {i.get('decision')} {i.get('symbol')} "
-                  f"(conf={i.get('confidence')}, notional=€{i.get('suggested_notional_eur')}): {i.get('intent_id')}")
+                  f"(venue={i.get('venue')}, conf={i.get('confidence')}, notional=${notional_val}): {i.get('intent_id')}")
         return
 
     if args.clear_pending:

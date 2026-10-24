@@ -125,8 +125,8 @@ _REQUIRED_ORDER_GUARD_KEYS = frozenset({
     "supervisor_mode",
     "supervisor_notify",
     "autonomous_trading_mode",
-    "autonomous_trading_max_notional_eur",
-    "autonomous_trading_min_notional_eur",
+    "autonomous_trading_max_notional_usd",
+    "autonomous_trading_min_notional_usd",
     "autonomous_trading_min_confidence",
     "autonomous_trading_dedup_window_sec",
     "autonomous_trading_notify",
@@ -239,6 +239,18 @@ def _validate_margins_cfg(m: Dict[str, Any], path: str) -> None:
             raise ValueError(
                 f"Invalid {policy_key} {raw_val!r} in {path}; must be one of {sorted(valid_set)}"
             )
+
+    min_auto_usd = float(m["autonomous_trading_min_notional_usd"])
+    max_auto_usd = float(m["autonomous_trading_max_notional_usd"])
+    if not (math.isfinite(min_auto_usd) and min_auto_usd > 0):
+        raise ValueError(
+            f"Invalid autonomous_trading_min_notional_usd {m['autonomous_trading_min_notional_usd']!r} in {path}"
+        )
+    if not (math.isfinite(max_auto_usd) and max_auto_usd >= min_auto_usd):
+        raise ValueError(
+            f"Invalid autonomous_trading_max_notional_usd {m['autonomous_trading_max_notional_usd']!r} in {path}; "
+            f"must be >= autonomous_trading_min_notional_usd ({min_auto_usd})"
+        )
 
 
 def _load_margins():

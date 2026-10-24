@@ -1705,16 +1705,16 @@ class TestBatch6IntelligenceAndRoutingFixes:
 
         # Verify AutonomousIntentGateway extracts Kraken txid via extract_order_id
         from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
-        gw = AutonomousIntentGateway(mode="enforce", max_notional_eur=500.0, min_confidence=0.80, notify_enabled=True)
+        gw = AutonomousIntentGateway(mode="enforce", max_notional_usd=500.0, min_confidence=0.80, notify_enabled=True)
         notified = []
         monkeypatch.setattr(gw, "_dispatch_notify", lambda title, body, symbol: notified.append((title, body, symbol)) or True)
-        monkeypatch.setattr(order_guard, "profit_guard", lambda *a, **k: True)
+        monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
 
         fake_inst = MagicMock()
         fake_inst.symbol = "SOLUSD"
         fake_inst.provider_name = "kraken"
+        fake_inst._provider.name = "kraken"
         fake_inst._provider.get_current_price.return_value = 100.0
-        fake_inst._call_profit_guard_window_ref.return_value = None
         fake_inst.place.return_value = {"txid": ["OQCLML-BW3P3-BUCMWZ"]}
 
         intent = {
@@ -1723,7 +1723,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
             "symbol": "SOLUSD",
             "venue": "kraken",
             "confidence": 0.92,
-            "suggested_notional_eur": 200.0,
+            "suggested_notional_usd": 200.0,
             "status": "PENDING",
         }
         res = gw.process_intent(intent, instruments_map={"SOLUSD": fake_inst})

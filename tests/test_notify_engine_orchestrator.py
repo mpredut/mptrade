@@ -361,14 +361,14 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.dispatched.clear()
         trade_alert = {
             "type": "bot_event",
-            "name": "🚀 [auto_trade_executor] EXECUTED BUY TAOUSDC €250",
+            "name": "🚀 [auto_trade_executor] EXECUTED BUY TAOUSDC $250",
             "body": "Venue: binance · Qty: 1 @ $250.00",
             "source": "llm_trader",
             "symbol": "TAOUSDC",
         }
         self.server.dispatch_alerts([trade_alert], bot_name="ai_reconciler")
         self.assertEqual(len(self.dispatched), 1)
-        self.assertEqual(self.dispatched[0]["title"], "🚀 [auto_trade_executor] EXECUTED BUY TAOUSDC €250")
+        self.assertEqual(self.dispatched[0]["title"], "🚀 [auto_trade_executor] EXECUTED BUY TAOUSDC $250")
         self.assertEqual(self.dispatched[0]["topic"], "ntfy-trades-test")
 
     def test_flush_queue_preserves_concurrent_appends_and_deduplicates_delayed_prefix(self):

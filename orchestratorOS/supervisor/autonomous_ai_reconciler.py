@@ -1,10 +1,10 @@
 """Autonomous AI supervisor running the cron-driven LLM topic threads.
 
-- Ingests passive telemetry, sensors and state files published by the bots in cachedb/ and logs/.
+- Ingests passive telemetry, sensors, spot wallet balances, cycle states, and fills from cachedb/, kraken/, and logs/.
 - Reasons on the topic's permanent Antigravity thread (orchestratorOS.agy.topics) via GeminiClient/agy-bot.
 - Each topic's TopicSpec bounds its side effects:
   * auto_technical_repair: diagnostics + verified self-healing code patches (never trades);
-  * auto_trade_executor: diagnostics + trade decisions submitted to AutonomousIntentGateway (never patches code).
+  * auto_trade_executor: multi-coin diagnostics + symmetric BUY/SELL trade decisions submitted to AutonomousIntentGateway (never patches code).
 - supervisor_mode ('shadow' / 'enforce') bounds every side effect, including the gateway execution mode.
 """
 
@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass, field
+import glob
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -26,11 +28,17 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
+os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
+
 from botcore import load_dotenv
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.guards.high_stake_guard import compute_24h_price_metrics, extract_symbol_recent_fills
 from orchestratorOS.agy.topics import TOPIC_SPECS, topic_spec
-from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway, load_key_value_conf
+from orchestratorTrade.autonomous_intent_gateway import (
+    AutonomousIntentGateway,
+    _parse_finite_float,
+    load_key_value_conf,
+)
 
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 
@@ -83,9 +91,54 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
     return picked
 
 
+def _normalize_trading_decisions(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Extract and deduplicate single or multi-coin trading decisions from Gemini's JSON plan."""
+    decisions: List[Dict[str, Any]] = []
+    seen_keys: set[Tuple[str, str, str]] = set()
+
+    raw_multi = plan.get("market_trading_decisions")
+    if isinstance(raw_multi, list):
+        for item in raw_multi:
+            if isinstance(item, dict):
+                key = (
+                    str(item.get("venue") or "").strip().lower(),
+                    str(item.get("symbol") or "").strip().upper(),
+                    str(item.get("decision") or "HOLD").strip().upper(),
+                )
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    decisions.append(item)
+
+    raw_single = plan.get("market_trading_decision")
+    if isinstance(raw_single, dict) and raw_single:
+        key = (
+            str(raw_single.get("venue") or "").strip().lower(),
+            str(raw_single.get("symbol") or "").strip().upper(),
+            str(raw_single.get("decision") or "HOLD").strip().upper(),
+        )
+        if key not in seen_keys:
+            seen_keys.add(key)
+            decisions.append(raw_single)
+
+    # Sort actionable BUY/SELL decisions ahead of HOLD, ordered by highest confidence first.
+    def _sort_key(d: Dict[str, Any]) -> Tuple[int, float]:
+        side = str(d.get("decision") or "HOLD").strip().upper()
+        is_action = 1 if side in ("BUY", "SELL") else 0
+        try:
+            conf = float(d.get("confidence") or 0.0)
+            if not math.isfinite(conf):
+                conf = 0.0
+        except (ValueError, TypeError):
+            conf = 0.0
+        return (-is_action, -conf)
+
+    decisions.sort(key=_sort_key)
+    return decisions
+
+
 @dataclass
 class TelemetrySensorSnapshot:
-    """Consolidated snapshot of passive sensors collected from bot runtime files."""
+    """Consolidated snapshot of passive sensors and wallet state collected from bot runtime files."""
     fear_greed: Optional[Dict[str, Any]] = None
     market_breadth: Optional[Dict[str, Any]] = None
     sentiment_advisor: Optional[Dict[str, Any]] = None
@@ -110,15 +163,17 @@ class LogEventSummary:
 
 @dataclass
 class SupervisorAuditReport:
-    """Consolidated nightly audit result produced by the autonomous supervisor."""
+    """Consolidated audit and autonomous trade execution result produced by the supervisor."""
     ts: float
-    mode: str                          # "shadow" | "enforce"
+    mode: str                          # "shadow" | "enforce" | "off"
     summary: str
     diagnosed_issues: List[Dict[str, Any]] = field(default_factory=list)
     venue_actions: List[Dict[str, Any]] = field(default_factory=list)
     code_remediation: Dict[str, Any] = field(default_factory=dict)
     market_trading_decision: Dict[str, Any] = field(default_factory=dict)
+    market_trading_decisions: List[Dict[str, Any]] = field(default_factory=list)
     intent_emitted: Optional[Dict[str, Any]] = None
+    intents_emitted: List[Dict[str, Any]] = field(default_factory=list)
     sensor_health: Dict[str, Any] = field(default_factory=dict)
     actions_executed: bool = False
     tests_passed: Optional[bool] = None
@@ -126,7 +181,7 @@ class SupervisorAuditReport:
 
 
 class AutonomousAIReconciler:
-    """Autonomous supervisor orchestrating decoupled sensor harvesting, log auditing, and self-healing."""
+    """Autonomous supervisor orchestrating decoupled sensor harvesting, log auditing, and multi-coin trading."""
 
     def __init__(
         self,
@@ -190,10 +245,10 @@ class AutonomousAIReconciler:
         return load_key_value_conf(self.workspace_dir, _ROOT_DIR)
 
     def harvest_sensors_telemetry(self) -> TelemetrySensorSnapshot:
-        """Reads passive telemetry and sensor files published to disk by trading bots."""
+        """Reads passive telemetry, spot wallet balances, cycle states, and fills published to disk."""
         snapshot = TelemetrySensorSnapshot()
 
-        def _read_json(fpath: str) -> Optional[Dict[str, Any]]:
+        def _read_json(fpath: str) -> Optional[Any]:
             if os.path.exists(fpath):
                 try:
                     with open(fpath, "r", encoding="utf-8", errors="replace") as f:
@@ -205,52 +260,59 @@ class AutonomousAIReconciler:
         # 1. Fear & Greed sensor
         for fg_name in ("fear_greed_cache.json", "fear_greed_collect.json"):
             data = _read_json(os.path.join(self.cache_dir, fg_name))
-            if data:
+            if isinstance(data, dict) and data:
                 snapshot.fear_greed = data
                 break
 
         # 2. Market Breadth sensor
         for mb_name in ("market_breadth_cache.json", "market_breadth_collect.json"):
             data = _read_json(os.path.join(self.cache_dir, mb_name))
-            if data:
+            if isinstance(data, dict) and data:
                 snapshot.market_breadth = data
                 break
 
         # 3. Macro Sentiment Advisor sensor
         for sa_name in ("sentiment_advisor_eval.json", "macro_advisor_eval.json", "gemini_macro_advisor.json"):
             data = _read_json(os.path.join(self.cache_dir, sa_name))
-            if data:
+            if isinstance(data, dict) and data:
                 snapshot.sentiment_advisor = data
                 break
 
         # 4. Geopolitical Threat Shield sensor
         for gt_name in ("geopolitical_threat_eval.json", "geopolitical_threat_state.json"):
             data = _read_json(os.path.join(self.cache_dir, gt_name))
-            if data:
+            if isinstance(data, dict) and data:
                 snapshot.geopolitical_threat = data
                 break
 
         # 5. Heartbeat sensors
-        for hb_name in ("macro_analyzer.heartbeat", "intelligence_daemon.heartbeat", "rtrade.heartbeat"):
+        for hb_name in (
+            "macro_analyzer.heartbeat",
+            "globaltelemetry_collector.heartbeat",
+            "intelligence_daemon.heartbeat",
+            "rtrade.heartbeat",
+        ):
             data = _read_json(os.path.join(self.cache_dir, hb_name))
-            if data:
+            if isinstance(data, dict) and data:
                 snapshot.active_heartbeats[hb_name] = data
 
         # 6. Bot state files in workspace
         for s_file in (".watchdog_state.json", ".anomaly_watchdog_state.json", "kraken_trades_full.json"):
-            data = _read_json(os.path.join(self.workspace_dir, s_file))
-            if data is not None:
-                mtime = os.path.getmtime(os.path.join(self.workspace_dir, s_file))
+            s_path = os.path.join(self.workspace_dir, s_file)
+            if os.path.exists(s_path):
+                mtime = os.path.getmtime(s_path)
                 snapshot.state_files[s_file] = {"age_hours": (time.time() - mtime) / 3600.0}
 
-        # 7. Live market prices, short/long trend, Kalman, and 24h price evolution
+        # 7. Live market prices, short/long trend, and Kalman velocity
         prices_data = _read_json(os.path.join(self.cache_dir, "cache_current_price.json"))
         trends_data = _read_json(os.path.join(self.cache_dir, "cache_short_trend.json"))
         long_trends_data = _read_json(os.path.join(self.cache_dir, "cache_long_trend.json"))
         kalman_data = _read_json(os.path.join(self.cache_dir, "kalman_state.json"))
+        trailing_data = _read_json(os.path.join(self.cache_dir, "trailing_state.json"))
+        trailing_map = trailing_data if isinstance(trailing_data, dict) else {}
 
         price_map: Dict[str, float] = {}
-        if prices_data and isinstance(prices_data.get("items"), dict):
+        if isinstance(prices_data, dict) and isinstance(prices_data.get("items"), dict):
             for sym, item in prices_data["items"].items():
                 if isinstance(item, list) and item and isinstance(item[0], list) and len(item[0]) > 1:
                     try:
@@ -260,7 +322,7 @@ class AutonomousAIReconciler:
 
         long_items = long_trends_data.get("items", {}) if isinstance(long_trends_data, dict) else {}
 
-        if trends_data and isinstance(trends_data, dict):
+        if isinstance(trends_data, dict):
             for sym, tinfo in trends_data.items():
                 if isinstance(tinfo, dict):
                     px = tinfo.get("current_price", price_map.get(sym))
@@ -301,6 +363,111 @@ class AutonomousAIReconciler:
             if sym not in snapshot.prices_and_trends:
                 snapshot.prices_and_trends[sym] = {"price": px, "trend": 0, "growth_coefficient": 0.0}
 
+        # 7B. Discover all enabled tradable instruments & real spot wallet balances (when workspace has instruments.conf)
+        tradable_positions: List[Dict[str, Any]] = []
+        venue_quote_cash: Dict[str, Dict[str, Any]] = {}
+        load_tradable_fn = getattr(self.intent_gateway, "load_tradable_instruments", None)
+        if callable(load_tradable_fn) and os.path.exists(os.path.join(self.workspace_dir, "instruments.conf")):
+            try:
+                inst_map = load_tradable_fn(only_workspace_conf=True)
+            except Exception as exc:
+                logger.debug("Could not load tradable instruments for telemetry: %s", exc)
+                inst_map = {}
+
+            balance_memo: Dict[Tuple[str, str], Optional[float]] = {}
+
+            def _query_free_bal(inst_obj: Any, asset: str) -> Optional[float]:
+                if not asset:
+                    return None
+                v_name = str(getattr(inst_obj, "provider_name", "")).lower()
+                key = (v_name, asset.upper())
+                if key in balance_memo:
+                    return balance_memo[key]
+                prov = getattr(inst_obj, "_provider", None)
+                free_fn = getattr(prov, "free_balance", None)
+                val_f: Optional[float] = None
+                if callable(free_fn):
+                    try:
+                        raw = free_fn(asset)
+                        if isinstance(raw, (int, float)) and not isinstance(raw, bool) and math.isfinite(float(raw)):
+                            val_f = float(raw)
+                    except Exception:
+                        val_f = None
+                balance_memo[key] = val_f
+                return val_f
+
+            if isinstance(inst_map, dict):
+                for inst in inst_map.values():
+                    sym = str(getattr(inst, "symbol", "")).upper()
+                    venue = str(getattr(inst, "provider_name", "")).lower()
+                    base = str(getattr(inst, "base", "")).upper()
+                    quote = str(getattr(inst, "quote", "")).upper()
+                    if not sym or not venue:
+                        continue
+
+                    px = snapshot.prices_and_trends.get(sym, {}).get("price")
+                    if not (isinstance(px, (int, float)) and math.isfinite(float(px)) and float(px) > 0):
+                        try:
+                            get_px_fn = getattr(inst._provider, "get_current_price", None)
+                            if callable(get_px_fn):
+                                live_px = float(get_px_fn(sym))
+                                if math.isfinite(live_px) and live_px > 0:
+                                    px = live_px
+                                    snapshot.prices_and_trends.setdefault(
+                                        sym, {"price": px, "trend": 0, "growth_coefficient": 0.0}
+                                    )["price"] = px
+                        except Exception:
+                            px = None
+
+                    base_free = _query_free_bal(inst, base)
+                    quote_free = _query_free_bal(inst, quote)
+                    if quote_free is not None:
+                        venue_quote_cash[f"{venue}:{quote}"] = {
+                            "venue": venue,
+                            "asset": quote,
+                            "free": round(quote_free, 2),
+                        }
+
+                    pos_val_usd = (
+                        round(base_free * float(px), 2)
+                        if base_free is not None and isinstance(px, (int, float)) and float(px) > 0
+                        else None
+                    )
+                    params = getattr(inst, "params", {}) if isinstance(getattr(inst, "params", None), dict) else {}
+                    t_state = trailing_map.get(sym, {}) if isinstance(trailing_map.get(sym), dict) else {}
+                    peak = t_state.get("peak")
+                    dd_from_peak_pct = (
+                        round(((float(px) - float(peak)) / float(peak)) * 100.0, 2)
+                        if isinstance(px, (int, float)) and isinstance(peak, (int, float)) and float(peak) > 0
+                        else None
+                    )
+                    pos_entry: Dict[str, Any] = {
+                        "venue": venue,
+                        "symbol": sym,
+                        "base": base,
+                        "quote": quote,
+                        "price": px,
+                        "free_base": round(base_free, 6) if base_free is not None else None,
+                        "value_usd": pos_val_usd,
+                        "free_quote": round(quote_free, 2) if quote_free is not None else None,
+                    }
+                    if peak is not None:
+                        pos_entry["trailing_peak"] = peak
+                        pos_entry["dd_from_peak_pct"] = dd_from_peak_pct
+                    if params.get("trailing.pct"):
+                        pos_entry["trailing_pct_cfg"] = params.get("trailing.pct")
+                    if params.get("mt.gain") or params.get("mt.lost"):
+                        pos_entry["mt_gain_pct"] = params.get("mt.gain")
+                        pos_entry["mt_lost_pct"] = params.get("mt.lost")
+                    tradable_positions.append(pos_entry)
+
+        if tradable_positions:
+            snapshot.portfolio_summary["tradable_positions"] = tradable_positions
+        if venue_quote_cash:
+            snapshot.portfolio_summary["venue_quote_cash"] = venue_quote_cash
+        if trailing_map:
+            snapshot.portfolio_summary["trailing_peaks"] = trailing_map
+
         # 8. 24h multi-horizon price evolution & Pillar 2 microstructure per symbol
         for sym in list(snapshot.prices_and_trends.keys()):
             p24_data = _read_json(os.path.join(self.cache_dir, f"cache_24_price_{sym}.json"))
@@ -318,8 +485,12 @@ class AutonomousAIReconciler:
                 m_info: Dict[str, Any] = {}
                 if isinstance(ob, dict):
                     m_info["ob_imbalance"] = ob.get("imbalance_ratio")
+                    m_info["bid_depth_usd"] = round(float(ob["bid_depth_usd"]), 0) if isinstance(ob.get("bid_depth_usd"), (int, float)) else None
+                    m_info["ask_depth_usd"] = round(float(ob["ask_depth_usd"]), 0) if isinstance(ob.get("ask_depth_usd"), (int, float)) else None
                     m_info["bid_wall_px"] = ob.get("largest_bid_wall_price")
+                    m_info["bid_wall_usd"] = round(float(ob["largest_bid_wall_usd"]), 0) if isinstance(ob.get("largest_bid_wall_usd"), (int, float)) else None
                     m_info["ask_wall_px"] = ob.get("largest_ask_wall_price")
+                    m_info["ask_wall_usd"] = round(float(ob["largest_ask_wall_usd"]), 0) if isinstance(ob.get("largest_ask_wall_usd"), (int, float)) else None
                 if isinstance(deriv, dict):
                     m_info["funding_rate"] = deriv.get("funding_rate")
                     m_info["oi_usd"] = deriv.get("open_interest_usd")
@@ -329,7 +500,7 @@ class AutonomousAIReconciler:
                     m_info["oi_1h_chg_pct"] = whale.get("open_interest_1h_change_pct")
                 snapshot.microstructure[sym] = m_info
 
-        # 9. Portfolio value, recent orders/fills per symbol & recent autonomous intents
+        # 9. Portfolio value, Kraken cycle states, cross-venue snapshot, recent orders/fills & autonomous intents
         asset_val_path = os.path.join(self.cache_dir, "cache_asset_value.jsonl")
         if os.path.exists(asset_val_path):
             try:
@@ -345,15 +516,72 @@ class AutonomousAIReconciler:
             except Exception:
                 pass
 
-        orders_data = _read_json(os.path.join(self.cache_dir, "cache_order.json"))
-        if isinstance(orders_data, dict) and isinstance(orders_data.get("items"), dict):
-            recent_orders: Dict[str, Any] = {}
-            for sym, o_list in orders_data["items"].items():
-                fills = extract_symbol_recent_fills(o_list)
-                if fills:
-                    recent_orders[sym] = fills
-            if recent_orders:
-                snapshot.portfolio_summary["recent_orders"] = recent_orders
+        # 9B. Kraken active DCA cycle states (kraken/.state_<PAIR>.json)
+        kraken_cycles: Dict[str, Any] = {}
+        kraken_dir = os.path.join(self.workspace_dir, "kraken")
+        if os.path.isdir(kraken_dir):
+            for st_path in sorted(glob.glob(os.path.join(kraken_dir, ".state_*.json"))):
+                fname = os.path.basename(st_path)
+                pair_name = fname[len(".state_") : -len(".json")].upper()
+                if not pair_name.endswith(("USD", "EUR", "USDC", "USDT")):
+                    continue
+                st_data = _read_json(st_path)
+                if not isinstance(st_data, dict):
+                    continue
+                qty = float(st_data.get("qty") or 0.0)
+                cost = float(st_data.get("cost") or 0.0)
+                avg_cost = round(cost / qty, 6) if qty > 1e-12 and cost > 0 else None
+                px = snapshot.prices_and_trends.get(pair_name, {}).get("price")
+                dd_pct = (
+                    round(((float(px) - avg_cost) / avg_cost) * 100.0, 2)
+                    if avg_cost and isinstance(px, (int, float)) and float(px) > 0
+                    else None
+                )
+                kraken_cycles[pair_name] = {
+                    "qty": round(qty, 6),
+                    "cost_usd": round(cost, 2),
+                    "avg_cost_px": avg_cost,
+                    "entry_price": st_data.get("entry_price"),
+                    "last_buy_price": st_data.get("last_buy_price"),
+                    "last_sell_price": st_data.get("last_sell_price"),
+                    "last_exit_kind": st_data.get("last_exit_kind"),
+                    "dca_buys": st_data.get("dca_buys"),
+                    "dd_pct": dd_pct,
+                }
+        if kraken_cycles:
+            snapshot.portfolio_summary["kraken_cycles"] = kraken_cycles
+
+        # 9C. Cross-venue portfolio snapshot tail (e.g. Hyperliquid read-only holdings)
+        for l_dir in self.logs_dirs:
+            ps_path = os.path.join(l_dir, "portfolio_snapshot.jsonl")
+            if os.path.exists(ps_path):
+                try:
+                    with open(ps_path, "rb") as f:
+                        f.seek(0, os.SEEK_END)
+                        size = f.tell()
+                        f.seek(max(0, size - 4096))
+                        ps_lines = f.read().decode("utf-8", errors="replace").strip().splitlines()
+                    if ps_lines:
+                        last_ps = json.loads(ps_lines[-1])
+                        if isinstance(last_ps, dict) and isinstance(last_ps.get("hl"), dict):
+                            snapshot.portfolio_summary["hyperliquid_readonly"] = last_ps["hl"]
+                except Exception:
+                    pass
+                break
+
+        # 9D. Recent fills across Binance (cache_order.json) and Kraken (cache_trade_kraken.json)
+        recent_orders: Dict[str, Any] = {}
+        for order_cache_name in ("cache_order.json", "cache_trade_kraken.json"):
+            orders_data = _read_json(os.path.join(self.cache_dir, order_cache_name))
+            if isinstance(orders_data, dict) and isinstance(orders_data.get("items"), dict):
+                for sym, o_list in orders_data["items"].items():
+                    if sym in recent_orders:
+                        continue
+                    fills = extract_symbol_recent_fills(o_list)
+                    if fills:
+                        recent_orders[sym] = fills
+        if recent_orders:
+            snapshot.portfolio_summary["recent_orders"] = recent_orders
 
         intents_data = _read_json(os.path.join(self.cache_dir, "autonomous_trade_intents.json"))
         if isinstance(intents_data, list) and intents_data:
@@ -361,11 +589,12 @@ class AutonomousAIReconciler:
                 {
                     "decision": i.get("decision"),
                     "symbol": i.get("symbol"),
+                    "venue": i.get("venue"),
                     "status": i.get("status"),
-                    "notional_eur": i.get("suggested_notional_eur"),
+                    "notional_usd": i.get("suggested_notional_usd"),
                     "ts": i.get("timestamp"),
                 }
-                for i in intents_data[-5:]
+                for i in intents_data[-8:]
                 if isinstance(i, dict)
             ]
 
@@ -443,13 +672,41 @@ class AutonomousAIReconciler:
         focus_symbols: Optional[List[str]] = None,
         topic_key: str,
     ) -> Dict[str, Any]:
-        """Feeds sensor telemetry and log anomalies to Gemini; the topic spec bounds what it may propose."""
+        """Feeds full sensor, market, and portfolio telemetry to Gemini; the topic spec bounds side effects."""
+        fg = sensors.fear_greed or {}
+        mb = sensors.market_breadth or {}
+        sa = sensors.sentiment_advisor or {}
+        gt = sensors.geopolitical_threat or {}
+
+        fg_line = (
+            f"{fg.get('value', 'N/A')} ({fg.get('classification') or fg.get('sentiment') or 'N/A'}, "
+            f"7d_chg={fg.get('trend_7d_change', 'N/A')})"
+            if fg else "None"
+        )
+        mb_line = (
+            f"advance_ratio={mb.get('advance_ratio', 'N/A')}, regime={mb.get('regime', 'N/A')}, "
+            f"median_chg={mb.get('median_change_pct', 'N/A')}%, "
+            f"advancing={mb.get('advancing', 'N/A')}/{mb.get('total_symbols', 'N/A')}"
+            if mb else "None"
+        )
+        sa_line = (
+            f"bias={sa.get('market_bias', 'N/A')}, risk={sa.get('risk_level', 'N/A')}, "
+            f"action={sa.get('recommended_action', 'N/A')}, conf={sa.get('confidence', 'N/A')} | "
+            f"summary={sa.get('summary', '')} | key_risks={sa.get('key_risks', [])}"
+            if sa else "None"
+        )
+        gt_line = (
+            f"level={gt.get('threat_level', 'N/A')}, risk_score={gt.get('risk_score', 'N/A')}, "
+            f"brake={gt.get('recommended_brake', 'N/A')} | summary={gt.get('summary', '')}"
+            if gt else "None"
+        )
+
         context_items = [
-            "### 1. ACTIVE SENSOR TELEMETRY:",
-            f"- Fear & Greed: {sensors.fear_greed.get('value', 'N/A') if sensors.fear_greed else 'None'}",
-            f"- Market Breadth Advance Ratio: {sensors.market_breadth.get('advance_ratio', 'N/A') if sensors.market_breadth else 'None'}",
-            f"- Sentiment Advisor Bias: {sensors.sentiment_advisor.get('market_bias', 'N/A') if sensors.sentiment_advisor else 'None'}",
-            f"- Geopolitical Threat Level: {sensors.geopolitical_threat.get('threat_level', 'N/A') if sensors.geopolitical_threat else 'None'}",
+            "### 1. ACTIVE MACRO, SENTIMENT & GEOPOLITICAL TELEMETRY:",
+            f"- Fear & Greed: {fg_line}",
+            f"- Market Breadth: {mb_line}",
+            f"- Macro Sentiment Advisor: {sa_line}",
+            f"- Geopolitical Threat Shield: {gt_line}",
             f"- Active Heartbeats: {list(sensors.active_heartbeats.keys())}",
             f"\n### 2. LOG ANOMALIES & GUARD VETOES (PAST {self.lookback_hours:g}H):",
             f"- Scanned Logs: {logs.total_scanned_files}",
@@ -477,10 +734,14 @@ class AutonomousAIReconciler:
             )
 
         if sensors.prices_and_trends:
-            context_items.append("\n### 3. LIVE MARKET PRICES, MULTI-HORIZON TRENDS & 24H EVOLUTION:")
+            context_items.append("\n### 3. LIVE MARKET PRICES, MULTI-HORIZON TRENDS & 24H EVOLUTION (ALL COINS):")
             for sym, pinfo in sorted(sensors.prices_and_trends.items()):
                 px = pinfo.get("price")
-                px_str = f"${px:,.2f}" if isinstance(px, (int, float)) and px > 1 else (f"${px}" if px is not None else "N/A")
+                px_str = (
+                    f"${px:,.2f}"
+                    if isinstance(px, (int, float)) and px >= 1.0
+                    else (f"${px:.6g}" if isinstance(px, (int, float)) else (f"${px}" if px is not None else "N/A"))
+                )
                 tr = pinfo.get("trend", 0)
                 tr_label = "BULL (+1)" if tr > 0 else ("BEAR (-1)" if tr < 0 else "FLAT (0)")
                 growth = pinfo.get("growth_coefficient", 0.0)
@@ -496,6 +757,8 @@ class AutonomousAIReconciler:
                         f"slopes(3.7m={pinfo.get('slope_3_7m', 0):+.5f}, 15m={pinfo.get('slope_15m', 0):+.5f}, "
                         f"2.5h={pinfo.get('slope_2_5h', 0):+.5f})"
                     )
+                if pinfo.get("vol_1h_pct") is not None:
+                    extras.append(f"vol_1h={pinfo.get('vol_1h_pct')}%" )
                 if pinfo.get("kalman_vel") is not None:
                     extras.append(f"kalman_vel={pinfo.get('kalman_vel'):+.5f}")
                 if pinfo.get("long_trend_dir"):
@@ -504,35 +767,74 @@ class AutonomousAIReconciler:
                 context_items.append(f"  * {sym}: Price={px_str}, Trend={tr_label}, Growth={growth:+.5f}{extra_str}")
 
         if sensors.microstructure:
-            context_items.append("\n### 3B. PILLAR 2 MICROSTRUCTURE, DERIVATIVES & WHALE POSITIONING:")
+            context_items.append("\n### 3B. PILLAR 2 MICROSTRUCTURE, ORDERBOOK WALLS, DERIVATIVES & WHALE FLOW:")
             for sym, minfo in sorted(sensors.microstructure.items()):
                 context_items.append(
-                    f"  * {sym}: ob_imbalance={minfo.get('ob_imbalance')}, "
-                    f"bid_wall={minfo.get('bid_wall_px')}, ask_wall={minfo.get('ask_wall_px')}, "
+                    f"  * {sym}: ob_imbalance={minfo.get('ob_imbalance')} "
+                    f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}), "
+                    f"bid_wall={minfo.get('bid_wall_px')} (${minfo.get('bid_wall_usd')}), "
+                    f"ask_wall={minfo.get('ask_wall_px')} (${minfo.get('ask_wall_usd')}), "
                     f"whale_long_pct={minfo.get('whale_long_pct')}, taker_ratio={minfo.get('taker_buy_sell_ratio')}, "
-                    f"funding={minfo.get('funding_rate')}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
+                    f"funding={minfo.get('funding_rate')}, oi_usd={minfo.get('oi_usd')}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
                 )
 
         if sensors.portfolio_summary:
-            context_items.append("\n### 3C. PORTFOLIO STATE, LAST FILLS & AUTONOMOUS INTENTS:")
-            if sensors.portfolio_summary.get("total_value_usdc") is not None:
-                context_items.append(f"  * Total Portfolio Value: ${sensors.portfolio_summary['total_value_usdc']:,.2f} USDC")
-            for sym, oinfo in sorted((sensors.portfolio_summary.get("recent_orders") or {}).items()):
+            ps = sensors.portfolio_summary
+            context_items.append("\n### 3C. SPOT WALLET BALANCES, TRADABLE POSITIONS, CYCLE COST ANCHORS & LAST FILLS:")
+            if ps.get("total_value_usdc") is not None:
+                context_items.append(f"  * Total Binance Portfolio Value: ${ps['total_value_usdc']:,.2f} USDC")
+            if ps.get("venue_quote_cash"):
+                cash_parts = [
+                    f"{v['venue']} {v['asset']}=${v['free']:,.2f}"
+                    for v in ps["venue_quote_cash"].values()
+                    if isinstance(v, dict)
+                ]
+                if cash_parts:
+                    context_items.append(f"  * Available Free Quote Cash per Venue: {', '.join(cash_parts)}")
+            if ps.get("tradable_positions"):
+                context_items.append("  * Live Tradable Spot Instruments (Eligible for Autonomous BUY / SELL):")
+                for pos in ps["tradable_positions"]:
+                    t_extra = ""
+                    if pos.get("trailing_peak") is not None:
+                        t_extra += f", trail_peak={pos.get('trailing_peak')} (dd_from_peak={pos.get('dd_from_peak_pct')}%)"
+                    if pos.get("mt_gain_pct") or pos.get("mt_lost_pct"):
+                        t_extra += f", bot_ref_gain={pos.get('mt_gain_pct')}%/lost={pos.get('mt_lost_pct')}%"
+                    context_items.append(
+                        f"    - [{pos['venue']}] {pos['symbol']}: free_{pos['base']}={pos.get('free_base')} "
+                        f"(${pos.get('value_usd')} USD), free_{pos['quote']}=${pos.get('free_quote')}, "
+                        f"px={pos.get('price')}{t_extra}"
+                    )
+            if ps.get("kraken_cycles"):
+                context_items.append("  * Kraken Active Cycle Cost & Drawdown Anchors:")
+                for k_sym, kc in sorted(ps["kraken_cycles"].items()):
+                    context_items.append(
+                        f"    - [kraken] {k_sym}: qty={kc.get('qty')}, cost=${kc.get('cost_usd')}, "
+                        f"avg_cost={kc.get('avg_cost_px')}, entry_px={kc.get('entry_price')}, "
+                        f"last_buy={kc.get('last_buy_price')}, last_sell={kc.get('last_sell_price')} "
+                        f"({kc.get('last_exit_kind')}), dca_buys={kc.get('dca_buys')}, dd={kc.get('dd_pct')}%"
+                    )
+            if ps.get("hyperliquid_readonly"):
+                context_items.append(f"  * Hyperliquid Read-Only Holding (managed by HL-bot): {ps['hyperliquid_readonly']}")
+            for sym, oinfo in sorted((ps.get("recent_orders") or {}).items()):
                 lb = oinfo.get("last_buy") or {}
                 ls = oinfo.get("last_sell") or {}
+                now_ms = int(time.time() * 1000)
+                lb_age_h = round((now_ms - int(lb["ts_ms"])) / 3_600_000.0, 1) if lb.get("ts_ms") else None
+                ls_age_h = round((now_ms - int(ls["ts_ms"])) / 3_600_000.0, 1) if ls.get("ts_ms") else None
                 context_items.append(
                     f"  * {sym} Last Action={oinfo.get('last_action_side')}: "
-                    f"Last BUY={lb.get('qty')} @ {lb.get('price')} | Last SELL={ls.get('qty')} @ {ls.get('price')}"
+                    f"Last BUY={lb.get('qty')} @ {lb.get('price')} (age={lb_age_h}h) | "
+                    f"Last SELL={ls.get('qty')} @ {ls.get('price')} (age={ls_age_h}h)"
                 )
-            if sensors.portfolio_summary.get("recent_ai_intents"):
-                context_items.append(f"  * Recent Autonomous Intents: {sensors.portfolio_summary['recent_ai_intents']}")
+            if ps.get("recent_ai_intents"):
+                context_items.append(f"  * Recent Autonomous Intents: {ps['recent_ai_intents']}")
 
         if focus_symbols:
             clean_syms = [s.strip().upper() for s in focus_symbols if s.strip()]
             if clean_syms:
                 context_items.append(
-                    f"\n### 4. TACTICAL WATCHLIST FOCUS: {', '.join(clean_syms)}\n"
-                    "- Pay special attention to momentum, gentle upward recovery (re-entry after SELL), or downward breakdown on these focus symbols."
+                    f"\n### 4. TACTICAL PRIORITY SYMBOLS: {', '.join(clean_syms)}\n"
+                    "- Pay heightened attention to these symbols alongside all other live tradable coins above."
                 )
 
         context_str = "\n".join(context_items)
@@ -543,7 +845,7 @@ class AutonomousAIReconciler:
             "2. Determine whether open orders, venue positions, or hung/errored fleet bots require reconciliation or restart.",
         ]
         schema = [
-            '  "summary": "1-2 sentence executive assessment of system health"',
+            '  "summary": "1-2 sentence executive assessment of system health and multi-coin market posture"',
             '  "diagnosed_issues": [{"severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO", '
             '"category": "BOT_EXCEPTION" | "ORPHAN_ORDER" | "FLEET_STALE" | "SYSTEM_ERROR" | "OS_RESOURCE" | "VPN_ERROR" | "GUARD_VETO" | "HEALTHY", '
             '"description": "Short explanation", "root_cause": "Detailed technical root cause"}]',
@@ -557,40 +859,56 @@ class AutonomousAIReconciler:
                           '"search_block": "", "replace_block": ""}')
         if spec.can_trade:
             gw = self.intent_gateway
+            max_usd = _parse_finite_float(getattr(gw, "max_notional_usd", None), 2000.0)
+            min_usd = _parse_finite_float(getattr(gw, "min_notional_usd", None), 10.0)
+            min_conf = _parse_finite_float(getattr(gw, "min_confidence", None), 0.85)
             tasks.append(
-                f"{len(tasks) + 1}. Formulate an autonomous market trading decision ('BUY', 'SELL', or 'HOLD') based on "
-                "prevailing macro sentiment, geopolitical threat level, market breadth, multi-horizon price evolution "
-                "(15m/30m/1h/3h), dynamic slopes (3.7m/15m/2.5h), Pillar 2 whale/orderbook flow, and last BUY/SELL fill anchors. "
-                "Specifically: if we exited a position (Last Action=SELL) and TAOUSDC & BTCUSDC show a steady upward "
-                "inflection/recovery so we risk being left out, or if there is a high-conviction dip/breakout, emit 'BUY'; "
-                "if an active position shows exhaustion/reversal above our last BUY anchor, emit 'SELL'. "
-                f"Only with high conviction (confidence >= {gw.min_confidence:g}) specify a fiat/stablecoin-quoted symbol "
-                "(e.g. TAOUSDC, BTCUSDC), venue ('binance'/'kraken'/'hyperliquid'/'t212'), confidence, suggested_notional_eur "
-                f"(up to {gw.max_notional_eur:g} EUR) and thesis; otherwise 'HOLD'."
+                f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across ALL live tradable spot coins "
+                "(e.g. BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSD, TAOUSD, ADAUSD on 'kraken') using the complete "
+                "macro sentiment, geopolitical risk, market breadth, multi-horizon price evolution (15m/30m/1h/3h), "
+                "dynamic slopes (3.7m/15m/2.5h), Kalman velocity, Pillar 2 whale/orderbook walls/taker flow, and real "
+                "spot wallet balances + cycle entry anchors above.\n"
+                "   - FULL AI AUTHORITY (ZERO PROFIT GUARDS): Deterministic profit reference guards (G_PROF), trend "
+                "deferrals, weight caps, and secondary guard vetoes are BYPASSED symmetrically on both BUY and SELL. "
+                "You hold full quantitative responsibility for both profit harvesting and capital protection:\n"
+                "     * SELL (Take-Profit OR Defensive Risk Reduction): Emit 'SELL' on any tradable coin with free base "
+                f"inventory >= ${min_usd:g} USD BOTH when an advance shows rally exhaustion AND when protective/defensive "
+                "de-risking is warranted EVEN BELOW entry/last-BUY price (e.g. structural breakdown, accelerating multi-horizon "
+                "selloff, distribution, or macro deterioration where cutting/trimming exposure protects capital against a "
+                "deeper drop). Distinguish true structural breakdowns from shallow liquidity sweeps into strong bid walls.\n"
+                "     * BUY (Accumulation, Re-Entry & Breakout): Emit 'BUY' on any tradable coin whose venue has free quote "
+                f"cash >= ${min_usd:g} USD on high-conviction washed-out reversals, steady upward recovery/inflection after "
+                "a prior exit, or confirmed momentum breakouts.\n"
+                f"   - Emit one entry per actionable coin in `market_trading_decisions` with `confidence >= {min_conf:g}` "
+                f"and `suggested_notional_usd` sized between {min_usd:g} and {max_usd:g} USD (the gateway automatically "
+                "clamps notional to available free wallet balance; Operational GO1 caps at 3 trades/day per symbol and "
+                "6h same-side dedup). If no coin warrants action right now, return a single 'HOLD' entry."
             )
-            schema.append('  "market_trading_decision": {"decision": "BUY" | "SELL" | "HOLD", "symbol": "BTCUSDC", '
-                          '"venue": "binance" | "kraken" | "hyperliquid" | "t212", "confidence": 0.88, '
-                          '"suggested_notional_eur": 250.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}')
+            schema.append(
+                '  "market_trading_decisions": [{"decision": "BUY" | "SELL" | "HOLD", "symbol": "BTCUSDC", '
+                '"venue": "binance" | "kraken", "confidence": 0.90, '
+                f'"suggested_notional_usd": 500.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}}]'
+            )
 
         tool_rule = (
             "- If you diagnose a reproducible code bug and need to verify exact lines before proposing `code_remediation`, "
             "you MAY read the target file in the workspace so `search_block` matches verbatim.\n"
             if spec.can_self_heal
             else "- For this automated telemetry snapshot turn, do NOT call tools, shell commands, or file readers because all "
-                 "required telemetry is provided above (use tools only when the user asks a direct interactive question in chat).\n"
+                 "required telemetry and wallet balances are provided above (use tools only when the user asks a direct interactive question in chat).\n"
         )
         prompt = (
-            "You are the Lead SRE and Quantitative Trading Systems Architect for MPTrade.\n"
-            "Analyze the passive telemetry sensors and log anomalies collected from trading bots:\n\n"
+            "You are the Lead SRE and Quantitative Autonomous Portfolio Manager for MPTrade.\n"
+            "Analyze the complete telemetry sensors, spot wallet balances, cycle states, and log anomalies:\n\n"
             f"{context_str}\n\n"
-            "Perform an executive diagnostic audit:\n" + "\n".join(tasks) + "\n\n"
+            "Perform an executive diagnostic and trading audit:\n" + "\n".join(tasks) + "\n\n"
             "INTERACTIVE THREAD RULES:\n"
             "- If the user wrote any tactical instructions, price targets, overrides, or questions earlier in this "
             "conversation thread, honor them with highest priority and address them directly.\n"
             + tool_rule +
             "- Format your response in TWO parts so this thread stays cleanly readable in the Web UI:\n"
             "  1) A concise, well-structured Markdown report in **Romanian** (bullet points for: Starea Flotei & Loguri, "
-            "Piața Live & Pante TAO/BTC, Portofoliu & Poziții Active, și Decizia AI / Răspuns la intervențiile din chat).\n"
+            "Piața Live & Pante (Toate Monedele), Portofoliu, Solduri & Poziții Active, și Decizia AI / Răspuns la intervențiile din chat).\n"
             "  2) At the very end, a single fenced ```json ... ``` block matching this exact schema:\n"
             "```json\n{\n" + ",\n".join(schema) + "\n}\n```"
         )
@@ -928,14 +1246,20 @@ class AutonomousAIReconciler:
             patch_file = report.code_remediation.get("target_file", "unknown")
             body_lines.append(f"Code Patch Proposed: {patch_file} (tests={report.tests_passed})")
 
-        if report.market_trading_decision:
-            m_dec = report.market_trading_decision
-            m_decision = m_dec.get("decision", "HOLD")
+        decisions_to_show = report.market_trading_decisions or (
+            [report.market_trading_decision] if report.market_trading_decision else []
+        )
+        for m_dec in decisions_to_show:
+            if not isinstance(m_dec, dict):
+                continue
+            m_decision = str(m_dec.get("decision", "HOLD")).upper()
             if m_decision in ("BUY", "SELL"):
                 m_sym = m_dec.get("symbol", "")
-                m_conf = m_dec.get("confidence", 0.0)
-                m_eur = m_dec.get("suggested_notional_eur", 0.0)
-                body_lines.append(f"Trading Intent: {m_decision} {m_sym} €{m_eur:.0f} (conf={m_conf:.2f})")
+                m_venue = m_dec.get("venue", "")
+                m_conf = float(m_dec.get("confidence") or 0.0)
+                m_usd = float(m_dec.get("suggested_notional_usd") or 0.0)
+                venue_sfx = f" ({m_venue})" if m_venue else ""
+                body_lines.append(f"Trading Intent: {m_decision} {m_sym}{venue_sfx} ${m_usd:.0f} (conf={m_conf:.2f})")
 
         body = "\n".join(body_lines)
 
@@ -998,6 +1322,7 @@ class AutonomousAIReconciler:
                 "diagnosed_issues_count": len(report.diagnosed_issues),
                 "venue_actions_count": len(report.venue_actions),
                 "market_trading_decision": report.market_trading_decision,
+                "market_trading_decisions": report.market_trading_decisions,
             }
             atomic_write_json(self.heartbeat_file, hb, indent=2)
         except Exception as e:
@@ -1027,13 +1352,16 @@ class AutonomousAIReconciler:
         plan = self.synthesize_and_diagnose(sensors, logs, focus_symbols=focus_symbols, topic_key=topic_key)
         executed, tests_passed = self.apply_reconciliation(plan, allow_code_remediation=spec.can_self_heal)
 
-        raw_mtd = plan.get("market_trading_decision") if spec.can_trade else None
-        market_decision = raw_mtd if isinstance(raw_mtd, dict) else {}
-        intent = None
-        if market_decision:
-            intent = self.intent_gateway.submit(market_decision, source=topic_key, max_mode=self.mode)
-            if self.mode == "enforce" and isinstance(intent, dict) and intent.get("status") == "EXECUTED":
-                executed = True
+        decisions_list: List[Dict[str, Any]] = _normalize_trading_decisions(plan) if spec.can_trade else []
+        market_decision: Dict[str, Any] = decisions_list[0] if decisions_list else {}
+        intents_emitted: List[Dict[str, Any]] = []
+        for dec in decisions_list:
+            emitted = self.intent_gateway.submit(dec, source=topic_key, max_mode=self.mode)
+            if isinstance(emitted, dict):
+                intents_emitted.append(emitted)
+                if self.mode == "enforce" and emitted.get("status") == "EXECUTED":
+                    executed = True
+        primary_intent = intents_emitted[0] if intents_emitted else None
 
         raw_issues = plan.get("diagnosed_issues")
         raw_actions = plan.get("venue_actions")
@@ -1046,7 +1374,9 @@ class AutonomousAIReconciler:
             venue_actions=raw_actions if isinstance(raw_actions, list) else [],
             code_remediation=raw_fix if isinstance(raw_fix, dict) else {},
             market_trading_decision=market_decision,
-            intent_emitted=intent,
+            market_trading_decisions=decisions_list,
+            intent_emitted=primary_intent,
+            intents_emitted=intents_emitted,
             sensor_health={
                 "fear_greed_present": sensors.fear_greed is not None,
                 "market_breadth_present": sensors.market_breadth is not None,
@@ -1062,12 +1392,17 @@ class AutonomousAIReconciler:
             isinstance(i, dict) and str(i.get("severity", "")).upper() in ("HIGH", "CRITICAL")
             for i in report.diagnosed_issues
         )
+        has_trade_signal = any(
+            str(d.get("decision", "HOLD")).upper() in ("BUY", "SELL")
+            for d in decisions_list
+            if isinstance(d, dict)
+        )
         should_notify = (
             spec.can_self_heal
             or executed
             or (spec.can_self_heal and self._is_error_report(report))
             or has_high_issue
-            or str(market_decision.get("decision", "HOLD")).upper() in ("BUY", "SELL")
+            or has_trade_signal
         )
         report.notification_sent = (
             self.dispatch_notification(report, topic_key=topic_key) if should_notify else False
@@ -1085,9 +1420,10 @@ def main() -> None:
                         help="Permanent LLM topic thread to run")
     parser.add_argument("--mode", choices=["shadow", "enforce"], default=None,
                         help="Override supervisor_mode from order_guard.conf (bounds trading and self-heal)")
-    parser.add_argument("--focus-symbols", default="", help="Comma-separated watchlist (e.g. TAOUSDC,BTCUSDC)")
+    parser.add_argument("--focus-symbols", default="",
+                        help="Optional comma-separated priority watchlist (by default all live coins are evaluated)")
     parser.add_argument("--lookback-hours", type=float, default=24.0,
-                        help="Log anomaly lookback window in hours (default: 24; 0.6 for 30-minute runs)")
+                        help="Log anomaly lookback window in hours (default: 24; 0.2 for 10-minute runs)")
     args = parser.parse_args()
 
     focus = [s.strip().upper() for s in args.focus_symbols.split(",") if s.strip()] or None

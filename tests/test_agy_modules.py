@@ -298,6 +298,15 @@ class TestMirrorTopicThreadToUi:
         )
         condensed = condense_decision(hybrid_reply)
         assert condensed.startswith("trade=HOLD:TAOUSDC@0.88; summary=TAO si BTC in consolidare")
+
+        multi_reply = (
+            "```json\n"
+            '{"summary": "Protective de-risk", "market_trading_decisions": ['
+            '{"decision": "SELL", "symbol": "BTCUSDC", "confidence": 0.91}, '
+            '{"decision": "SELL", "symbol": "HYPEUSD", "confidence": 0.89}]}\n'
+            "```"
+        )
+        assert condense_decision(multi_reply).startswith("trade=SELL:BTCUSDC@0.91,SELL:HYPEUSD@0.89; summary=Protective de-risk")
         assert extract_json_object(hybrid_reply)["market_trading_decision"]["symbol"] == "TAOUSDC"
         header = format_topic_turn_header("guard_high_stake", "ntfy-guard: BUY TAOUSDC €850")
         assert header.startswith(TOPIC_SPECS["guard_high_stake"].title)
