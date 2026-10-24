@@ -1400,13 +1400,12 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertNotIn("applied_scale", stdout_text)
             self.assertEqual(oq.load_all(), [])
 
-    def test_gt_s_mandatory_infinite_wait_and_stop_loss_timeout(self):
-        """GT_S cannot be bypassed by bypass_guards on normal orders (infinite wait),
-        and Stop-Loss orders respect GT_S up to gt_s_stop_loss_max_wait_sec before releasing."""
+    def test_gt_s_ignores_bypass_guards_and_stop_loss_module_owns_timer(self):
+        """GT_S cannot be bypassed by bypass_guards ('GT_S' or 'all') in Instrument.place,
+        and Instrument.place contains no is_stop timer logic (managed by PositionExitManager)."""
         from unittest.mock import MagicMock
-        import instrument as inst_mod
+        from strategies.position_exit_manager import PositionExitManager, PositionExitConfig, PositionSnapshot, ExitAction
         self._clear_state()
-        inst_mod._GT_S_STOP_LOSS_WAIT_SINCE.clear()
         p = _FakeProvider(price=100.0)
         inst = self._inst(p)
 
@@ -1416,36 +1415,51 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         with patch("cacheManager.get_short_trend_manager", return_value=fake_stm), \
              patch("order_guard.daily_limit_guard", return_value=(True, None)), \
              patch("order_guard.profit_guard", return_value=True):
-            # 1. Normal order with bypass_guards={"GT_S"} or {"all"} still waits indefinitely while should_wait=True
-            out_norm = {}
-            res_norm = inst.place(
-                "BUY", 100.0, 1.0, smart=False, wait_for_trend=True,
+            # 1. Caller requests bypass_guards={"GT_S"} or {"all"} -> ignored for GT_S, waits while trend is adverse
+            out_buy = {}
+            res_buy = inst.place(
+                "BUY", 100.0, 1.0, smart=False,
                 bypass_guards={"GT_S", "all"}, caller_owns_retry=True,
-                _outcome_context=out_norm,
+                _outcome_context=out_buy,
             )
-            self.assertIsNone(res_norm)
-            self.assertEqual(out_norm.get("reason"), "trend_deferred")
+            self.assertIsNone(res_buy)
+            self.assertEqual(out_buy.get("reason"), "trend_deferred")
 
-            # 2. Stop-Loss order before gt_s_stop_loss_max_wait_sec (300s) is also deferred by GT_S
-            out_sl_early = {}
-            res_sl_early = inst.place(
-                "SELL", 100.0, 1.0, smart=False, wait_for_trend=True,
-                is_stop_loss=True, kind="STOP", caller_owns_retry=True,
-                sl_wait_started_at=time.time() - 120.0,
-                _outcome_context=out_sl_early,
+            out_sell = {}
+            res_sell = inst.place(
+                "SELL", 100.0, 1.0, smart=False,
+                bypass_guards={"GT_S", "all"}, caller_owns_retry=True,
+                _outcome_context=out_sell,
             )
-            self.assertIsNone(res_sl_early)
-            self.assertEqual(out_sl_early.get("reason"), "trend_deferred")
+            self.assertIsNone(res_sell)
+            self.assertEqual(out_sell.get("reason"), "trend_deferred")
 
-            # 3. Stop-Loss order once gt_s_stop_loss_max_wait_sec (>= 300s) is reached is released regardless of trend
-            out_sl_timeout = {}
-            res_sl_timeout = inst.place(
-                "SELL", 100.0, 1.0, smart=False, wait_for_trend=True,
-                is_stop_loss=True, kind="STOP", caller_owns_retry=True,
-                sl_wait_started_at=time.time() - 305.0,
-                _outcome_context=out_sl_timeout,
+            # 2. Stop-Loss module (PositionExitManager) manages the timer (e.g. 300s):
+            # - While trend is ascendent (trend_up=True) and elapsed < 300s -> HOLD
+            # - If trend changes from ascendent to descendent (trend_up=False) -> SELL immediately
+            # - If after 300s trend is still ascendent (trend_up=True) -> SELL forced=True (timeout)
+            pem = PositionExitManager(PositionExitConfig(lost_threshold=0.05, sl_trend_defer_max_sec=300.0, smart_sl_enabled=False))
+            t0 = 1000.0
+            snap_init = PositionSnapshot(symbol=SYMBOL, current_price=94.0, avg_buy_price=100.0, net_qty=1.0, sellable_qty=1.0, current_time_s=t0, trend_up=True)
+            dec_init = pem.evaluate_stop_loss(snap_init)
+            self.assertEqual(dec_init.action, ExitAction.HOLD)
+
+            # Still ascendent at 120s (< 300s) -> HOLD
+            snap_mid = PositionSnapshot(symbol=SYMBOL, current_price=94.1, avg_buy_price=100.0, net_qty=1.0, sellable_qty=1.0, current_time_s=t0 + 120.0, trend_up=True)
+            dec_mid = pem.evaluate_stop_loss(snap_mid)
+            self.assertEqual(dec_mid.action, ExitAction.HOLD)
+
+            # Still ascendent at 305s (>= 300s) -> releases SELL order with forced=True
+            snap_timeout = PositionSnapshot(symbol=SYMBOL, current_price=94.2, avg_buy_price=100.0, net_qty=1.0, sellable_qty=1.0, current_time_s=t0 + 305.0, trend_up=True)
+            dec_timeout = pem.evaluate_stop_loss(snap_timeout)
+            self.assertEqual(dec_timeout.action, ExitAction.SELL)
+            self.assertTrue(dec_timeout.forced)
+            res_sl_released = inst.place(
+                "SELL", 94.2, 1.0, smart=False,
+                bypass_guards={"all"}, wait_for_trend=not dec_timeout.forced,
+                caller_owns_retry=True,
             )
-            self.assertIsNotNone(res_sl_timeout)
+            self.assertIsNotNone(res_sl_released)
             self.assertEqual(len(p.placed), 1)
 
 

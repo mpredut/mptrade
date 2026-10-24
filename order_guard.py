@@ -70,7 +70,6 @@ _REQUIRED_ORDER_GUARD_KEYS = frozenset({
     "dynamic_window_flat_h",
     "dynamic_window_adverse_h",
     "regime_context_max_age_sec",
-    "gt_s_stop_loss_max_wait_sec",
     # Pillar 1: Internal Quantitative Mathematical Guards
     "internal_guard_mode",
     "intelligence_guards_mode",

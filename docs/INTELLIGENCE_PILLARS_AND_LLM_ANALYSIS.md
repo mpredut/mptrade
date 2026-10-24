@@ -160,6 +160,6 @@ high_stake_min_notional_usd=700.0     # Prag noțional unic (USD) pentru activar
 llm_timeout_sec=25.0                  # Timeout maxim pentru răspunsul LLM
 llm_fallback=allow                    # Acțiune de siguranță în caz de timeout LLM
 
-# GT_S: Garda de Trend Scurt (5m) — Obligatorie pe toate modulele
-gt_s_stop_loss_max_wait_sec=300.0     # Pe ordine normale așteaptă la infinit; pe Stop-Loss eliberează după 300s (5 min)
+# GT_S: Garda de Trend Scurt (5m) — Obligatorie pe toate modulele (nu poate fi dezactivată prin bypass_guards)
+# Timerul pentru Stop-Loss pe trend ascendent este gestionat exclusiv în modulul de Stop-Loss (monitortrades.conf: sl_trend_defer_max_s)
 ```

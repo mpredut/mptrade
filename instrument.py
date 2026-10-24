@@ -58,9 +58,6 @@ from guard_hierarchy import (
 )
 
 
-_GT_S_STOP_LOSS_WAIT_SINCE: dict[tuple[str, str], float] = {}
-
-
 class Instrument:
     """Provider-bound symbol with namespaced consumer parameters.
 
@@ -301,11 +298,10 @@ class Instrument:
         bypass_profit_guard = "profit_guard" in bypassed_guards or bypass_all
         bypass_math_ref = GUARD_REGISTRY["G_PROF"].is_bypassed(bypassed_guards) or bypass_profit_guard
         bypass_quantity_policy = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(bypassed_guards) or bypass_profit_guard
-        raw_wait_for_trend = kwargs.pop("wait_for_trend", True)
-        # GT_S (short_trend) is mandatory across all production modules (market or limit, normal or stop-loss).
-        # Only isolated unit tests running under pytest that explicitly pass wait_for_trend=False skip the disk reader.
-        wait_for_trend = not (bool(raw_wait_for_trend) is False and "PYTEST_CURRENT_TEST" in os.environ)
-        sl_wait_started_at = kwargs.pop("sl_wait_started_at", None)
+        # GT_S (short_trend) ignores bypass_guards ("all" or "GT_S"); it is controlled
+        # strictly by wait_for_trend (which defaults to True across all modules, and is
+        # only set to False by the Stop-Loss module after its own timer expires).
+        wait_for_trend = bool(kwargs.pop("wait_for_trend", True))
         kwargs.pop("cooldown_pair_id", None)
         abort_if = kwargs.pop("abort_if", None)
         side_u = side.upper()
@@ -414,8 +410,6 @@ class Instrument:
         retry_kwargs["bypass_quantity_policy"] = bypass_quantity_policy
         retry_kwargs["wait_for_trend"] = wait_for_trend
         retry_kwargs["smart"] = smart
-        if sl_wait_started_at is not None:
-            retry_kwargs["sl_wait_started_at"] = sl_wait_started_at
         if caller_applied_scale < 1.0:
             retry_kwargs["applied_scale"] = caller_applied_scale
         if caller_profit_margin is not None:
@@ -498,12 +492,7 @@ class Instrument:
                         pass
 
             # 1. Provider-agnostic daily cap and anti-spam.
-            is_stop = bool(
-                kwargs.get("is_stop_loss")
-                or str(kwargs.get("kind", "")).upper() == "STOP"
-                or str(kwargs.get("motivation", "")).upper() == "STOP"
-            )
-            is_exempt_daily_limit = bool("daily_limit" in bypassed_guards or is_stop)
+            is_exempt_daily_limit = bool("daily_limit" in bypassed_guards)
             if not is_exempt_daily_limit:
                 recent_tx_sec = kwargs.get("recent_transaction_sec")
                 recent_tx_side = kwargs.get("recent_transaction_side")
@@ -599,8 +588,7 @@ class Instrument:
                         f"[GUARD] {side_u} {self.symbol}: the historical price reference "
                         "was explicitly bypassed; the quantity/weight guard remains active")
                 elif (
-                    not is_stop
-                    and not bypass_all
+                    not bypass_all
                     and not hasattr(order_guard.profit_guard, "_mock_name")
                     and getattr(order_guard.profit_guard, "__name__", "") == "profit_guard"
                 ):
@@ -671,39 +659,12 @@ class Instrument:
                             side_u, self.symbol, use_noise_gate=False)
                     except TypeError:
                         deferred = short_tm.should_wait(side_u, self.symbol)
-                    wait_key = (str(self._provider.name).lower(), self.symbol)
                     if deferred:
-                        if is_stop:
-                            now_ts = time.time()
-                            started_ts = _GT_S_STOP_LOSS_WAIT_SINCE.get(wait_key)
-                            if sl_wait_started_at is not None:
-                                try:
-                                    cand_ts = float(sl_wait_started_at)
-                                    if math.isfinite(cand_ts) and cand_ts > 0:
-                                        started_ts = min(started_ts, cand_ts) if started_ts else cand_ts
-                                except (TypeError, ValueError):
-                                    pass
-                            if started_ts is None:
-                                started_ts = now_ts
-                            _GT_S_STOP_LOSS_WAIT_SINCE[wait_key] = started_ts
-                            retry_kwargs["sl_wait_started_at"] = started_ts
-                            max_sl_wait = float(order_guard._load_margins().get("gt_s_stop_loss_max_wait_sec", 300.0))
-                            elapsed_sl_wait = max(0.0, now_ts - started_ts)
-                            if elapsed_sl_wait >= max_sl_wait:
-                                print(
-                                    f"[GT_S] [{self.symbol}] {side_u} STOP-LOSS max wait {max_sl_wait:.0f}s "
-                                    f"reached ({elapsed_sl_wait:.0f}s) -> releasing order regardless of trend"
-                                )
-                                _GT_S_STOP_LOSS_WAIT_SINCE.pop(wait_key, None)
-                                deferred = False
-                        if deferred:
-                            print(
-                                f"[{self.symbol}] {side_u} deferred by trend; "
-                                "placement does not wait, the intent stays queued for retry")
-                            reason = "trend_deferred"
-                            return None
-                    else:
-                        _GT_S_STOP_LOSS_WAIT_SINCE.pop(wait_key, None)
+                        print(
+                            f"[{self.symbol}] {side_u} deferred by trend; "
+                            "placement does not wait, the intent stays queued for retry")
+                        reason = "trend_deferred"
+                        return None
                 except Exception as e:  # noqa: BLE001 — Opportunistic gate.
                     print(f"[{self.symbol}] {side_u} trend gate unavailable: {e}")
 
@@ -738,7 +699,7 @@ class Instrument:
                 resolved_regime = getattr(gt2_context, "regime", None) or getattr(gt2_context, "resolved_trend", None)
                 adverse_medium_trend = (
                     (side_u == "BUY" and resolved_regime == "bear")
-                    or (side_u == "SELL" and resolved_regime == "bull" and not is_stop)
+                    or (side_u == "SELL" and resolved_regime == "bull")
                 )
                 if medium_trend_action == "defer" and adverse_medium_trend:
                     regime_label = "BEAR regime" if side_u == "BUY" else "BULL regime, riding trend"
