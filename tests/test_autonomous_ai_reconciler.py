@@ -910,6 +910,13 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
     assert "ZERO PROFIT OR STRATEGY GUARDS" in prompt_text
     assert "between 10 and 2000 USD" in prompt_text
     assert "zero artificial cooldowns or dedup locks" in prompt_text
+    assert "1. Formulate symmetric autonomous trading decisions" in prompt_text
+    assert "Explain the technical root cause of any bot exceptions" not in prompt_text
+    assert "LOG ANOMALIES & GUARD VETOES" not in prompt_text
+    assert "FLEET PROCESSES" not in prompt_text
+    assert "diagnosed_issues" not in prompt_text
+    assert "bullet points for: Piața Live & Pante" in prompt_text
+    assert "bullet points for: Starea Flotei & Loguri" not in prompt_text
 
     # Highest-confidence actionable decision (BTCUSDC @ 0.94) executes first and becomes primary summary
     assert gateway.submit.call_count == 2

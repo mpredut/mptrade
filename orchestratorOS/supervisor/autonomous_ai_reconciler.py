@@ -4,7 +4,7 @@
 - Reasons on the topic's permanent Antigravity thread (orchestratorOS.agy.topics) via GeminiClient/agy-bot.
 - Each topic's TopicSpec bounds its side effects:
   * auto_technical_repair: diagnostics + verified self-healing code patches (never trades);
-  * auto_trade_executor: multi-coin diagnostics + symmetric BUY/SELL trade decisions submitted to AutonomousIntentGateway (never patches code).
+  * auto_trade_executor: multi-coin market/portfolio evaluation + symmetric BUY/SELL trade decisions submitted to AutonomousIntentGateway (no fleet/log audit, never patches code).
 - supervisor_mode ('shadow' / 'enforce') bounds every side effect, including the gateway execution mode.
 """
 
@@ -245,7 +245,7 @@ class AutonomousAIReconciler:
         """Parses key-value pairs from order_guard.conf and .env without external imports."""
         return load_key_value_conf(self.workspace_dir, _ROOT_DIR)
 
-    def harvest_sensors_telemetry(self) -> TelemetrySensorSnapshot:
+    def harvest_sensors_telemetry(self, *, include_fleet: bool = True) -> TelemetrySensorSnapshot:
         """Reads passive telemetry, spot wallet balances, cycle states, and fills published to disk."""
         snapshot = TelemetrySensorSnapshot()
         now_ts = time.time()
@@ -764,13 +764,14 @@ class AutonomousAIReconciler:
             if active_mt:
                 snapshot.portfolio_summary["monitortrades_active_state"] = active_mt
 
-        # 10. Fleet processes health from procs.conf
-        try:
-            from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
-            monitor = AutonomousOvernightMonitor(workspace_dir=self.workspace_dir)
-            snapshot.fleet_processes = [asdict(p) for p in monitor.check_processes()]
-        except Exception:
-            pass
+        # 10. Fleet processes health from procs.conf (only needed for SRE/self-heal audits)
+        if include_fleet:
+            try:
+                from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
+                monitor = AutonomousOvernightMonitor(workspace_dir=self.workspace_dir)
+                snapshot.fleet_processes = [asdict(p) for p in monitor.check_processes()]
+            except Exception:
+                pass
 
         return snapshot
 
@@ -879,6 +880,8 @@ class AutonomousAIReconciler:
             if gt else "None"
         )
 
+        spec = topic_spec(topic_key)
+
         context_items = [
             "### 1. ACTIVE MACRO, SENTIMENT, GEOPOLITICAL & LIVE BREAKING NEWS TELEMETRY:",
             f"- Fear & Greed: {fg_line}",
@@ -893,32 +896,33 @@ class AutonomousAIReconciler:
                 kw_sfx = f" kw={hn.get('keywords')}" if hn.get("keywords") else ""
                 age_sfx = f" (age={hn.get('age_min')}m)" if hn.get("age_min") is not None else ""
                 context_items.append(f"  * {sev_tag}{hn.get('title')}{kw_sfx}{age_sfx}")
-        context_items.extend([
-            f"- Active Heartbeats: {list(sensors.active_heartbeats.keys())}",
-            f"\n### 2. LOG ANOMALIES & GUARD VETOES (PAST {self.lookback_hours:g}H):",
-            f"- Scanned Logs: {logs.total_scanned_files}",
-            f"- Error Count: {logs.error_count}",
-            f"- Guard Interventions: {logs.warning_count}",
-            "- Sample Errors & Interventions:",
-        ])
-        for evt in logs.critical_events[:15]:
-            context_items.append(f"  * {evt}")
-        for g_evt in logs.guard_interventions[:10]:
-            context_items.append(f"  * [GUARD] {g_evt}")
+        if spec.can_self_heal:
+            context_items.extend([
+                f"- Active Heartbeats: {list(sensors.active_heartbeats.keys())}",
+                f"\n### 2. LOG ANOMALIES & GUARD VETOES (PAST {self.lookback_hours:g}H):",
+                f"- Scanned Logs: {logs.total_scanned_files}",
+                f"- Error Count: {logs.error_count}",
+                f"- Guard Interventions: {logs.warning_count}",
+                "- Sample Errors & Interventions:",
+            ])
+            for evt in logs.critical_events[:15]:
+                context_items.append(f"  * {evt}")
+            for g_evt in logs.guard_interventions[:10]:
+                context_items.append(f"  * [GUARD] {g_evt}")
 
-        if sensors.fleet_processes:
-            running_p = [p for p in sensors.fleet_processes if p.get("is_running")]
-            stopped_p = [p["name"] for p in sensors.fleet_processes if not p.get("is_running")]
-            stale_p = [
-                f"{p['name']} (age={p.get('age_seconds')}s > {p.get('max_stale_seconds')}s)"
-                for p in sensors.fleet_processes
-                if p.get("is_running") and not p.get("heartbeat_fresh", True)
-            ]
-            context_items.append(
-                f"\n### 2B. FLEET PROCESSES (procs.conf): {len(running_p)}/{len(sensors.fleet_processes)} running"
-                + (f" | STOPPED: {stopped_p}" if stopped_p else "")
-                + (f" | STALE HEARTBEAT: {stale_p}" if stale_p else " | All heartbeats fresh")
-            )
+            if sensors.fleet_processes:
+                running_p = [p for p in sensors.fleet_processes if p.get("is_running")]
+                stopped_p = [p["name"] for p in sensors.fleet_processes if not p.get("is_running")]
+                stale_p = [
+                    f"{p['name']} (age={p.get('age_seconds')}s > {p.get('max_stale_seconds')}s)"
+                    for p in sensors.fleet_processes
+                    if p.get("is_running") and not p.get("heartbeat_fresh", True)
+                ]
+                context_items.append(
+                    f"\n### 2B. FLEET PROCESSES (procs.conf): {len(running_p)}/{len(sensors.fleet_processes)} running"
+                    + (f" | STOPPED: {stopped_p}" if stopped_p else "")
+                    + (f" | STALE HEARTBEAT: {stale_p}" if stale_p else " | All heartbeats fresh")
+                )
 
         if sensors.prices_and_trends:
             context_items.append("\n### 3. LIVE MARKET PRICES, MULTI-HORIZON TRENDS & 24H EVOLUTION (ALL COINS):")
@@ -1046,27 +1050,30 @@ class AutonomousAIReconciler:
                 )
 
         context_str = "\n".join(context_items)
-        spec = topic_spec(topic_key)
 
-        tasks = [
-            "1. Explain the technical root cause of any bot exceptions, fail-closed blocks, stale heartbeats, or guard vetoes.",
-        ]
-        schema = [
-            '  "summary": "1-2 sentence executive assessment of system health and multi-coin market posture"',
-            '  "diagnosed_issues": [{"severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO", '
-            '"category": "BOT_EXCEPTION" | "ORPHAN_ORDER" | "FLEET_STALE" | "SYSTEM_ERROR" | "OS_RESOURCE" | "VPN_ERROR" | "GUARD_VETO" | "HEALTHY", '
-            '"description": "Short explanation", "root_cause": "Detailed technical root cause"}]',
-        ]
+        tasks: List[str] = []
+        schema: List[str] = []
         if spec.can_self_heal:
-            tasks.append("2. Determine whether open orders, venue positions, or hung/errored fleet bots require reconciliation or restart.")
-            tasks.append("3. If a reproducible code bug exists, formulate an exact search_block and replace_block.")
-            schema.append(
+            tasks.extend([
+                "1. Explain the technical root cause of any bot exceptions, fail-closed blocks, stale heartbeats, or guard vetoes.",
+                "2. Determine whether open orders, venue positions, or hung/errored fleet bots require reconciliation or restart.",
+                "3. If a reproducible code bug exists, formulate an exact search_block and replace_block.",
+            ])
+            schema.extend([
+                '  "summary": "1-2 sentence executive assessment of system health and multi-coin market posture"',
+                '  "diagnosed_issues": [{"severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO", '
+                '"category": "BOT_EXCEPTION" | "ORPHAN_ORDER" | "FLEET_STALE" | "SYSTEM_ERROR" | "OS_RESOURCE" | "VPN_ERROR" | "GUARD_VETO" | "HEALTHY", '
+                '"description": "Short explanation", "root_cause": "Detailed technical root cause"}]',
                 '  "venue_actions": [{"action": "CANCEL_ORDER" | "SYNC_POSITION" | "RESTART_BOT" | "NONE", '
                 '"venue": "binance" | "kraken" | "hyperliquid" | "t212" | "fleet", "symbol": "BTCUSDC or bot_name", '
-                '"order_id": "optional order id", "reason": "Why this action is needed"}]'
+                '"order_id": "optional order id", "reason": "Why this action is needed"}]',
+                '  "code_remediation": {"has_fix": false, "target_file": "", "rationale": "", '
+                '"search_block": "", "replace_block": ""}',
+            ])
+        else:
+            schema.append(
+                '  "summary": "1-2 sentence executive assessment of multi-coin market posture and trading decisions"'
             )
-            schema.append('  "code_remediation": {"has_fix": false, "target_file": "", "rationale": "", '
-                          '"search_block": "", "replace_block": ""}')
         if spec.can_trade:
             gw = self.intent_gateway
             max_usd = _parse_finite_float(getattr(gw, "max_notional_usd", None), 2000.0)
@@ -1103,26 +1110,49 @@ class AutonomousAIReconciler:
                 f'"suggested_notional_usd": 500.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}}]'
             )
 
-        tool_rule = (
-            "- If you diagnose a reproducible code bug and need to verify exact lines before proposing `code_remediation`, "
-            "you MAY read the target file in the workspace so `search_block` matches verbatim.\n"
-            if spec.can_self_heal
-            else "- For this automated telemetry snapshot turn, do NOT call tools, shell commands, or file readers because all "
-                 "required telemetry and wallet balances are provided above (use tools only when the user asks a direct interactive question in chat).\n"
-        )
+        if spec.can_self_heal:
+            role_intro = (
+                "You are the Lead SRE and Quantitative Autonomous System Supervisor for MPTrade.\n"
+                "Analyze the complete telemetry sensors, spot wallet balances, cycle states, and log anomalies:\n\n"
+                f"{context_str}\n\n"
+                "Perform an executive diagnostic and self-healing audit:\n" + "\n".join(tasks) + "\n\n"
+            )
+            tool_rule = (
+                "- If you diagnose a reproducible code bug and need to verify exact lines before proposing `code_remediation`, "
+                "you MAY read the target file in the workspace so `search_block` matches verbatim.\n"
+            )
+            report_format_rule = (
+                "- Format your response in TWO parts so this thread stays cleanly readable in the Web UI:\n"
+                "  1) A concise, well-structured Markdown report in **Romanian** (bullet points for: Starea Flotei & Loguri, "
+                "Piața Live & Pante (Toate Monedele), Portofoliu, Solduri & Poziții Active, și Decizia AI / Răspuns la intervențiile din chat).\n"
+            )
+        else:
+            role_intro = (
+                "You are the Quantitative Autonomous Portfolio Manager and Trade Executor for MPTrade.\n"
+                "Analyze the complete market telemetry, macro/geopolitical sensors, microstructure, spot wallet balances, and cycle states:\n\n"
+                f"{context_str}\n\n"
+                "Evaluate the market context and formulate autonomous BUY/SELL trading decisions:\n" + "\n".join(tasks) + "\n\n"
+            )
+            tool_rule = (
+                "- For this automated telemetry snapshot turn, do NOT call tools, shell commands, or file readers because all "
+                "required telemetry and wallet balances are provided above (use tools only when the user asks a direct interactive question in chat).\n"
+                "- Do NOT check or report on fleet process state, heartbeats, or system logs ('Starea Flotei & Loguri'); "
+                "your sole responsibility on this thread is executing BUY/SELL transactions based on market and portfolio context.\n"
+            )
+            report_format_rule = (
+                "- Format your response in TWO parts so this thread stays cleanly readable in the Web UI:\n"
+                "  1) A concise, well-structured Markdown report in **Romanian** (bullet points for: "
+                "Piața Live & Pante (Toate Monedele), Portofoliu, Solduri & Poziții Active, și Decizia AI de Tranzacționare / Răspuns la intervențiile din chat).\n"
+            )
+
         prompt = (
-            "You are the Lead SRE and Quantitative Autonomous Portfolio Manager for MPTrade.\n"
-            "Analyze the complete telemetry sensors, spot wallet balances, cycle states, and log anomalies:\n\n"
-            f"{context_str}\n\n"
-            "Perform an executive diagnostic and trading audit:\n" + "\n".join(tasks) + "\n\n"
-            "INTERACTIVE THREAD RULES:\n"
+            role_intro
+            + "INTERACTIVE THREAD RULES:\n"
             "- If the user wrote any tactical instructions, price targets, overrides, or questions earlier in this "
             "conversation thread, honor them with highest priority and address them directly.\n"
-            + tool_rule +
-            "- Format your response in TWO parts so this thread stays cleanly readable in the Web UI:\n"
-            "  1) A concise, well-structured Markdown report in **Romanian** (bullet points for: Starea Flotei & Loguri, "
-            "Piața Live & Pante (Toate Monedele), Portofoliu, Solduri & Poziții Active, și Decizia AI / Răspuns la intervențiile din chat).\n"
-            "  2) At the very end, a single fenced ```json ... ``` block matching this exact schema:\n"
+            + tool_rule
+            + report_format_rule
+            + "  2) At the very end, a single fenced ```json ... ``` block matching this exact schema:\n"
             "```json\n{\n" + ",\n".join(schema) + "\n}\n```"
         )
 
@@ -1134,7 +1164,12 @@ class AutonomousAIReconciler:
         )
 
         if not resp or not isinstance(resp, dict):
-            logger.warning("Gemini supervisor query failed. Falling back to default health baseline.")
+            logger.warning("Gemini supervisor query failed. Falling back to default baseline.")
+            if not spec.can_self_heal:
+                return {
+                    "summary": "Autonomous trade evaluation completed: holding posture.",
+                    "market_trading_decisions": [],
+                }
             return {
                 "summary": "Autonomous audit completed: telemetry sensors active and bots healthy.",
                 "diagnosed_issues": [
@@ -1560,8 +1595,12 @@ class AutonomousAIReconciler:
             self.write_audit_artifact(report)
             return report
 
-        sensors = self.harvest_sensors_telemetry()
-        logs = self.harvest_log_anomalies()
+        sensors = self.harvest_sensors_telemetry(include_fleet=spec.can_self_heal)
+        logs = (
+            self.harvest_log_anomalies()
+            if spec.can_self_heal
+            else LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0)
+        )
         plan = self.synthesize_and_diagnose(sensors, logs, focus_symbols=focus_symbols, topic_key=topic_key)
         executed, tests_passed = (
             self.apply_reconciliation(plan, allow_code_remediation=True)
@@ -1580,7 +1619,7 @@ class AutonomousAIReconciler:
                     executed = True
         primary_intent = intents_emitted[0] if intents_emitted else None
 
-        raw_issues = plan.get("diagnosed_issues")
+        raw_issues = plan.get("diagnosed_issues") if spec.can_self_heal else []
         raw_actions = plan.get("venue_actions") if spec.can_self_heal else []
         raw_fix = plan.get("code_remediation") if spec.can_self_heal else None
         report = SupervisorAuditReport(

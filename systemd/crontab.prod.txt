@@ -21,4 +21,4 @@ SHELL=/bin/bash
 # Nightly technical audit + verified self-heal on the permanent auto_technical_repair thread (never trades)
 35 3 * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_technical_repair.lock /usr/bin/timeout 600 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_technical_repair >> logs/auto_technical_repair.log 2>&1
 # 10-min multi-coin trade executor on the permanent auto_trade_executor thread (the only LLM topic allowed to trade)
-*/10 * * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_trade_executor.lock /usr/bin/timeout 270 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_trade_executor --lookback-hours 0.2 >> logs/auto_trade_executor.log 2>&1
+*/10 * * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_trade_executor.lock /usr/bin/timeout 270 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_trade_executor >> logs/auto_trade_executor.log 2>&1
