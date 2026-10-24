@@ -53,7 +53,7 @@ TOPIC_SPECS: Dict[str, TopicSpec] = {
         "🛠 [auto_technical_repair] System Audit & Code Self-Heal (03:35)", can_self_heal=True
     ),
     "auto_trade_executor": TopicSpec(
-        "🎯 [auto_trade_executor] Autonomous Trade Decisions (TAO & BTC 5m)", can_trade=True
+        "🎯 [auto_trade_executor] Autonomous Trade Decisions (TAO & BTC 10m)", can_trade=True
     ),
     "macro_geopolitical": TopicSpec("🌍 [auto_macro_geopolitical] Geopolitical Crisis & Breaking News Brake"),
     "macro_sentiment": TopicSpec("🧭 [auto_macro_sentiment] Fear & Greed, Breadth & Market Bias (3h)"),

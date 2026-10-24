@@ -368,11 +368,11 @@ def mode_post(timeout: int = 50) -> int:
         if newest_daemon_log_ready(start - 15, pid):
             ready = True
             break
-        time.sleep(1)
+        time.sleep(0.2)
     if not ready:
         log.warning("post: daemon startup scan not confirmed within %ds; continuing after a fixed wait", timeout)
-        time.sleep(10)
-    time.sleep(6)   # let the initial scan/refresh settle before adding files to the watched dir
+        time.sleep(5)
+    time.sleep(0.5)   # link immediately after startup scan so reconnecting Web UI tabs find trajectories in D1
     linked = exists = bad = 0
     for p2 in sorted(glob.glob(os.path.join(D2, "*.db"))):
         p1 = os.path.join(D1, os.path.basename(p2))
@@ -471,44 +471,85 @@ def topic_canonical_titles() -> dict[str, str]:
 
 
 def last_store_activity() -> float:
-    """Newest mtime of interactive conversation content, active WAL writes, or brain artifacts."""
+    """Newest mtime of interactive conversation content, active WAL writes, daemon Web UI stream, or brain artifacts."""
     ignored = mirrored_topic_cids()
     newest = 0.0
     if os.path.exists(DB):
         try:
             con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5)
             try:
-                running_cids = [
-                    r[0]
-                    for r in con.execute(
+                try:
+                    rows = con.execute(
+                        "SELECT conversation_id FROM conversation_summaries "
+                        "WHERE status='CASCADE_RUN_STATUS_RUNNING' OR COALESCE(not_fully_idle, 0) != 0"
+                    ).fetchall()
+                except sqlite3.Error:
+                    rows = con.execute(
                         "SELECT conversation_id FROM conversation_summaries WHERE status='CASCADE_RUN_STATUS_RUNNING'"
-                    )
-                    if r and r[0]
-                ]
+                    ).fetchall()
+                running_cids = [r[0] for r in rows if r and r[0] and r[0] not in ignored]
             finally:
                 con.close()
             now = time.time()
             for rcid in running_cids:
+                found_on_disk = False
                 for d in (D1, D2):
                     for ext in (".db", ".db-wal"):
                         p = os.path.join(d, f"{rcid}{ext}")
                         try:
-                            if os.path.exists(p) and (now - os.stat(p).st_mtime) < 300:
+                            if os.path.exists(p):
+                                found_on_disk = True
+                                if (now - os.stat(p).st_mtime) < 900:
+                                    return now
+                        except OSError:
+                            pass
+                if not found_on_disk:
+                    for sum_p in (DB, DB + "-wal"):
+                        try:
+                            if os.path.exists(sum_p) and (now - os.stat(sum_p).st_mtime) < 900:
                                 return now
                         except OSError:
                             pass
         except sqlite3.Error:
             pass
-    if os.path.isdir(D1):
-        for name in os.listdir(D1):
-            p = os.path.join(D1, name)
-            try:
-                if name.endswith(".db-wal") and os.path.getsize(p) > 0:
-                    newest = max(newest, os.stat(p).st_mtime)
-                elif name.endswith((".db", ".db-wal")) and name.split(".", 1)[0] not in ignored:
-                    newest = max(newest, os.stat(p).st_mtime)
-            except OSError:
-                pass
+    for d in (D1, D2):
+        if os.path.isdir(d):
+            for name in os.listdir(d):
+                p = os.path.join(d, name)
+                try:
+                    cid = name.split(".", 1)[0]
+                    if name.endswith(".db-wal") and os.path.getsize(p) > 0 and cid not in ignored:
+                        newest = max(newest, os.stat(p).st_mtime)
+                    elif name.endswith((".db", ".db-wal")) and cid not in ignored:
+                        newest = max(newest, os.stat(p).st_mtime)
+                except OSError:
+                    pass
+    if os.path.isdir(LOGS):
+        try:
+            cli_logs = sorted(glob.glob(os.path.join(LOGS, "cli-*.log")), key=os.path.getmtime, reverse=True)
+            if cli_logs:
+                latest_log = cli_logs[0]
+                with open(latest_log, errors="ignore") as f:
+                    txt = f.read()
+                conn_idx = txt.rfind("Connection status: Connected")
+                if conn_idx >= 0:
+                    tail = txt[conn_idx:]
+                    if any(
+                        marker in tail
+                        for marker in (
+                            "SEND_USER_CASCADE_MESSAGE",
+                            "streamGenerateContent",
+                            "LLM Monitor",
+                            "StreamAgentStateUpdates",
+                            "RequestAgentStatePageUpdate",
+                            "GetSlashCommands",
+                            "fetchAvailableModels",
+                            "loadCodeAssist",
+                        )
+                    ):
+                        newest = max(newest, os.stat(latest_log).st_mtime)
+        except OSError:
+            pass
     brain = os.path.join(CLI, "brain")
     for root, dirs, files in os.walk(brain):
         if root == brain:

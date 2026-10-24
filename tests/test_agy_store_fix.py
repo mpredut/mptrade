@@ -26,6 +26,7 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(asf, "CLI", str(cli))
     monkeypatch.setattr(asf, "D1", str(d1))
     monkeypatch.setattr(asf, "D2", str(d2))
+    monkeypatch.setattr(asf, "LOGS", str(cli / "log"))
     monkeypatch.setattr(asf, "DB", str(cli / "conversation_summaries.db"))
     monkeypatch.setattr(asf, "PB", str(cli / "agyhub_summaries_proto.pb"))
     monkeypatch.setattr(asf, "UI_SYNC_STATE", str(tmp_path / "ui_sync_state.json"))
@@ -170,5 +171,29 @@ def test_stale_running_status_does_not_deadlock_ui_sync_while_fresh_running_bloc
     rows = dict(conn.execute("SELECT conversation_id, title FROM conversation_summaries").fetchall())
     conn.close()
     assert rows["new-topic"] == "🧭 [auto_macro_sentiment] Fear & Greed, Breadth & Market Bias (3h)"
+
+
+def test_active_webui_daemon_log_or_new_running_thread_blocks_ui_sync(store):
+    cli, d1, _ = store
+    (d1 / "pending-topic.db").write_text("y")
+    _set_rows(["pending-topic"])
+    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids([]))
+    _age_store(d1, 1200)
+
+    # 1. Active Web UI session in daemon log (after 'Connection status: Connected') blocks ui-sync
+    log_dir = cli / "log"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "cli-20261024_221208.log"
+    log_file.write_text(
+        "I1024 22:12:13.000000 1 remote_control_v2.go:2056] Connection status: Connected\n"
+        "I1024 22:15:00.000000 2 http_helpers.go:349] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse\n"
+    )
+    assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_BUSY
+
+    # Once the daemon log is also older than 900s, ui-sync is ready
+    old = time.time() - 1200
+    os.utime(log_file, (old, old))
+    assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_READY
+
 
 
