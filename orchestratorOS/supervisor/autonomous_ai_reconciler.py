@@ -565,7 +565,7 @@ class AutonomousAIReconciler:
 
         resp = self.gemini_auditor.query_json(
             prompt,
-            timeout_sec=90.0 if spec.can_self_heal else 60.0,
+            timeout_sec=90.0,
             thread_title=f"{spec.title} — {self.mode.upper()}",
             topic_key=topic_key,
         )
