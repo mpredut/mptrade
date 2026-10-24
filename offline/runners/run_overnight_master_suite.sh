@@ -26,6 +26,9 @@ TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
 MASTER_LOG="$LOG_DIR/master_suite_${TIMESTAMP}.log"
 REPORT_MD="$RESULTS_DIR/OVERNIGHT_MASTER_REPORT.md"
 
+# Prune old master_suite logs beyond the 20 most recent runs
+ls -1t "$LOG_DIR"/master_suite_20*.log 2>/dev/null | tail -n +21 | xargs -r rm -f || true
+
 # Symlink to latest
 ln -sf "$MASTER_LOG" "$LOG_DIR/latest_overnight.log"
 ln -sf "$MASTER_LOG" "$LOG_DIR/master_suite_current.log"
@@ -48,6 +51,9 @@ else
 fi
 
 START_SEC=$(date +%s)
+PASSED_STEPS=0
+FAILED_STEPS=0
+STEP_REPORT_LINES=""
 
 # Helper function to run a step with timing and error isolation
 run_step() {
@@ -60,22 +66,35 @@ run_step() {
     echo "CMD: $step_cmd"
     echo "--------------------------------------------------------------------------------"
     local step_start=$(date +%s)
-    
-    eval "$step_cmd" || echo "[WARN] Step $step_num finished with exit code $?"
-    
+    local rc=0
+
+    eval "$step_cmd" || rc=$?
+
     local step_end=$(date +%s)
     local step_elapsed=$((step_end - step_start))
-    echo "[STEP $step_num] COMPLETED: $step_name in ${step_elapsed}s"
+    if [ "$rc" -eq 0 ]; then
+        PASSED_STEPS=$((PASSED_STEPS + 1))
+        STEP_REPORT_LINES="${STEP_REPORT_LINES}| \`$step_num\` | $step_name | PASS | ${step_elapsed}s |"$'\n'
+        echo "[STEP $step_num] COMPLETED: $step_name in ${step_elapsed}s"
+    else
+        FAILED_STEPS=$((FAILED_STEPS + 1))
+        STEP_REPORT_LINES="${STEP_REPORT_LINES}| \`$step_num\` | $step_name | **FAIL (exit $rc)** | ${step_elapsed}s |"$'\n'
+        echo "[WARN] Step $step_num finished with exit code $rc"
+        echo "[STEP $step_num] COMPLETED (WITH ERRORS): $step_name in ${step_elapsed}s"
+    fi
 }
 
 # ------------------------------------------------------------------------------
-# STEP 0: Market Intelligence 4-Pillar Backtest & Chop Weight Benchmark
+# STEP 0: Market Intelligence 4-Pillar Backtest, Chop Benchmark & Numerical Parity
 # ------------------------------------------------------------------------------
 run_step "0A" "4-Pillar Market Intelligence Backtest (SSOT symbols)" \
     "$PYTHON_BIN offline/research/intelligence_backtest.py"
 
 run_step "0B" "Chop Regime & Dynamic Weight Benchmark (407 days)" \
     "$PYTHON_BIN offline/research/chop_weight_backtest.py"
+
+run_step "0C" "Numerical Parity & Zero-Regression Suite (30,000+ validations)" \
+    "$PYTHON_BIN offline/research/verify_optimizations_parity.py"
 
 # ------------------------------------------------------------------------------
 # STEP 1: Kraken & HYPE Multi-Interval Walk-Forward Baselines & Comparisons
@@ -91,6 +110,9 @@ run_step "1B" "HYPE 240m Candidate Comparison" \
     "$PYTHON_BIN offline/runners/walk_forward.py --mode compare \
         \$(ls -t $RESULTS_DIR/kraken_wf_240/baseline_HYPEUSD_*.json | head -1) \
         --candidate-set hype-240"
+
+run_step "1C" "HYPE Financial Central & Stress Promotion Gate Comparison" \
+    "$PYTHON_BIN offline/runners/kraken_financial_compare.py"
 
 # No 1440m step: the live config is regime-aware (STRAT_TP_REGIME_GATE=true, 4h classifier),
 # and replay refuses any bar size other than trend_interval (240m) because it does not resample.
@@ -167,11 +189,14 @@ run_step "3C" "Kraken Adaptive Reentry Verification" \
 run_step "4A" "Comprehensive 30-Candidate Multi-Factor Strategy Sweep" \
     "$PYTHON_BIN offline/research/comprehensive_strategy_sweep.py"
 
-run_step "4B" "Deep Parabolic Surge & Bear-Bounce Multi-Variable Grid Sweep (555 Candidates)" \
+run_step "4B" "Deep Parabolic Surge & Bear-Bounce Multi-Variable Grid Sweep (969 Candidates)" \
     "$PYTHON_BIN offline/research/comprehensive_surge_sweep/run_deep_surge_sweep.py --fee-pct 0.26"
 
 run_step "4C" "Hybrid Re-Entry Ablation Suite (11 Crypto Assets & US Equities)" \
     "$PYTHON_BIN offline/research/hybrid_reentry/run_suite.py && $PYTHON_BIN offline/research/hybrid_reentry/run_equities.py && $PYTHON_BIN offline/research/hybrid_reentry/report.py"
+
+run_step "4D" "MHDSL & RSI-Oversold DCA Filter Replay Comparisons" \
+    "$PYTHON_BIN offline/research/compare_mhdsl_reentry_replay.py && $PYTHON_BIN offline/research/tradeall_trigger_gate/experiment_rsi_dca_filter.py"
 
 # ------------------------------------------------------------------------------
 # STEP 5: TradeAll Trigger Gate Experiments
@@ -188,6 +213,9 @@ run_step "5C" "TradeAll RSI & Bollinger Experiment" \
 run_step "5D" "TradeAll Dual Timeframe Experiment" \
     "$PYTHON_BIN offline/research/tradeall_trigger_gate/experiment_dual_timeframe.py"
 
+run_step "5E" "TradeAll 329-Day Sparse Quality Signal Retry-Limit Experiment" \
+    "$PYTHON_BIN offline/research/tradeall_trigger_gate/experiment_quality_signal_v2.py"
+
 # ------------------------------------------------------------------------------
 # STEP 6: TradeAll Adaptive Thresholds & Kalman Lag Sweeps
 # ------------------------------------------------------------------------------
@@ -200,8 +228,11 @@ run_step "6B" "TradeAll Kalman Filter Sampling Lag Sweep (20s/60s/90s/150s)" \
 # ------------------------------------------------------------------------------
 # STEP 7: Monitortrades Binance Replay Backtest (BTC & TAO over 392 days)
 # ------------------------------------------------------------------------------
-run_step "7" "Monitortrades Replay Backtest on Binance Historical Ticks" \
+run_step "7A" "Monitortrades Replay Backtest on Binance Historical Ticks" \
     "$PYTHON_BIN offline/research/monitortrades_backtest/run_replay_backtest.py"
+
+run_step "7B" "Monitortrades MHDSL Structural Break Variant Comparison" \
+    "$PYTHON_BIN offline/research/monitortrades_backtest/compare_sl_variants.py"
 
 # ------------------------------------------------------------------------------
 # STEP 8: Scheduled Pilot & Proposals Branch Generation
@@ -218,6 +249,12 @@ run_step "9A" "Kraken Continuous Multi-Asset Grid (11 assets since 2018)" \
 run_step "9B" "Trading212 Continuous Multi-Asset Factorial Grid (16 equities/ETFs, 54 variants)" \
     "$PYTHON_BIN offline/research/t212_continuous_grid/fetch.py --missing-only && $PYTHON_BIN offline/research/t212_continuous_grid/grid.py && $PYTHON_BIN offline/research/t212_continuous_grid/report.py"
 
+# ------------------------------------------------------------------------------
+# STEP 10: Full DEV CI Pytest Regression Suite
+# ------------------------------------------------------------------------------
+run_step "10" "Full DEV Test Regression Suite (pytest tests/)" \
+    "bash offline/runners/run_dev_regression.sh"
+
 END_SEC=$(date +%s)
 TOTAL_ELAPSED=$((END_SEC - START_SEC))
 HOURS=$((TOTAL_ELAPSED / 3600))
@@ -227,7 +264,7 @@ SECONDS=$((TOTAL_ELAPSED % 60))
 echo ""
 echo "================================================================================"
 echo "      AUTONOMOUS OVERNIGHT MASTER SUITE FINISHED: $(date '+%F %T %Z')"
-echo "      Total Duration: ${HOURS}h ${MINUTES}m ${SECONDS}s"
+echo "      Total Duration: ${HOURS}h ${MINUTES}m ${SECONDS}s | Passed: $PASSED_STEPS | Failed: $FAILED_STEPS"
 echo "================================================================================"
 
 # Generate Consolidated Summary Report
@@ -238,24 +275,12 @@ Generated: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
 Duration: ${HOURS}h ${MINUTES}m ${SECONDS}s
 Host: $(hostname)
 Commit: $(git rev-parse --short HEAD)
+Passed Steps: $PASSED_STEPS | Failed Steps: $FAILED_STEPS
 
-## Executed Modules
-- [x] **4-Pillar Market Intelligence & Chop Weight Benchmark**: SSOT symbols & 407-day dynamic weights
-- [x] **Kraken HYPE 240m Walk-Forward (628 days, 31 folds)**: Baseline & Comparative Pareto ranking
-- [x] **Trading212 Walk-Forward & Comparisons**: NVDA (1d), RGNT (1d), SPCX (5m)
-- [x] **Hyperliquid Walk-Forward**: HYPE (240m)
-- [x] **Binance Walk-Forward**: BTCUSDC (240m)
-- [x] **Kraken Adaptive Multipliers**: K_REENTRY & K_DCA sweeps
-- [x] **30-Candidate Multi-Factor Strategy Sweep**: Out-of-sample, continuous compounding, and forward live shadow
-- [x] **Deep Parabolic Surge & Bear-Bounce Sweep (555 Candidates)**: Fixed/dynamic surge & bounce re-entry grid
-- [x] **Hybrid Re-Entry Ablation Suite**: 11 Crypto assets & US equities
-- [x] **TradeAll Trigger Gate Experiments**: Trend gate, quality signal, RSI/BB, dual timeframe
-- [x] **TradeAll Adaptive Thresholds & Kalman Lag Sweeps**: Real-tick volatility and sampling latencies
-- [x] **Monitortrades 392-Day Replay**: Full Binance BTC & TAO simulation
-- [x] **Kraken Continuous Grid**: \`offline/results/kraken_continuous_grid/REPORT*.md\`
-- [x] **Trading212 Continuous Multi-Asset Grid**: \`offline/results/t212_continuous_grid/REPORT.md\`
-- [x] **Proposal Publishing Pipeline**: Verified candidate parameters pushed to \`backtest-proposals\`
-
+## Stage Execution Matrix
+| Step | Module | Status | Duration |
+| :--- | :--- | :--- | ---: |
+${STEP_REPORT_LINES}
 ## Artifacts & Logs
 - Master Log: \`$MASTER_LOG\`
 - Latest Log Symlink: \`$LOG_DIR/latest_overnight.log\`

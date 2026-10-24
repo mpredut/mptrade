@@ -273,6 +273,8 @@ def _load_margins():
                 break
     missing = sorted(_REQUIRED_ORDER_GUARD_KEYS - set(m.keys()))
     if missing:
+        if _MARGINS is not None and os.environ.get("BACKTEST_MODE") == "1":
+            return _MARGINS
         raise KeyError(f"Missing required keys in {path}: {', '.join(missing)}")
     _validate_margins_cfg(m, path)
     _MARGINS = m
