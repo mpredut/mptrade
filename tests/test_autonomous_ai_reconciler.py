@@ -534,5 +534,76 @@ def test_apply_code_patch_safely_guards_workspace_boundary_and_restores_in_memor
         assert f.read() == "val = 10\n"
 
 
+def test_intent_gateway_and_advisors_reject_nan_bool_and_null_json_fields(temp_env, tmp_path):
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.macro.news_feed_collector import NewsFeedSnapshot, NewsHeadline
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+
+    workspace, _, _ = temp_env
+    gw = AutonomousIntentGateway(workspace_dir=workspace, mode="shadow", min_confidence=0.80, max_notional_eur=500.0)
+
+    for bad_conf in (float("nan"), "NaN", True, False, None):
+        assert gw.submit(
+            {"decision": "BUY", "symbol": "TAOUSDC", "venue": "binance", "confidence": bad_conf},
+            source="auto_trade_executor",
+            max_mode="shadow",
+        ) is None
+        res = gw.process_intent(
+            {"intent_id": "test_bad", "decision": "BUY", "symbol": "TAOUSDC", "venue": "binance", "confidence": bad_conf}
+        )
+        assert res["status"] == "REJECTED_LOW_CONFIDENCE"
+
+    null_resp_client = GeminiClient(
+        custom_runner=lambda p, m, t: json.dumps(
+            {
+                "threat_level": None,
+                "risk_score": None,
+                "summary": None,
+                "recommended_brake": None,
+                "market_bias": None,
+                "risk_level": None,
+                "confidence": True,
+                "key_risks": None,
+                "recommended_action": None,
+            }
+        )
+    )
+    geo = GeopoliticalThreatAnalyzer(
+        gemini_client=null_resp_client,
+        state_file=str(tmp_path / "geo.json"),
+    )
+    snap = NewsFeedSnapshot(
+        headlines=(
+            NewsHeadline(
+                title="Major offensive reported in Strait",
+                source="Test",
+                pub_date="2026-10-24",
+                url="https://example.com/1",
+                matched_keywords=("war",),
+                is_high_severity=True,
+            ),
+        ),
+        high_severity_count=1,
+        total_fetched=1,
+        has_critical_shock_keywords=False,
+        ts=100.0,
+    )
+    geo_res = geo.assess(snap, force_refresh=True, now_ts=100.0)
+    assert geo_res.threat_level == "NORMAL"
+    assert geo_res.risk_score == 0.5
+    assert geo_res.recommended_brake == "NONE"
+
+    adv = SentimentAdvisor(gemini_client=null_resp_client, cache_file=str(tmp_path / "sent.json"))
+    adv_res = adv.review(force_refresh=True, now_ts=100.0)
+    assert adv_res is not None
+    assert adv_res.market_bias == "NEUTRAL"
+    assert adv_res.risk_level == "MODERATE"
+    assert adv_res.confidence == 0.5
+    assert adv_res.key_risks == []
+    assert adv_res.recommended_action == "HOLD"
+
+
+
 
 

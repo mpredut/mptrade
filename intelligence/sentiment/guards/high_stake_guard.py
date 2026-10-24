@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from typing import Any, Dict, Optional
 
@@ -273,10 +274,11 @@ def evaluate_llm_guard_response(
     notional_eur: float,
 ) -> GuardDecision:
     """SSOT converter from a pre-trade LLM JSON response (or timeout None) into a canonical GuardDecision."""
+    fb_norm = str(fallback_action or "allow").strip().lower()
     if not resp:
-        if fallback_action == "veto":
+        if fb_norm in ("veto", "block"):
             return GuardDecision.veto(guard_name, "llm_query_timeout_fail_closed", notional_eur=notional_eur)
-        if fallback_action == "downscale":
+        if fb_norm == "downscale":
             return GuardDecision.downscale(
                 guard_name, scale=0.5, reason="llm_query_timeout_downscaled", notional_eur=notional_eur
             )
@@ -285,14 +287,18 @@ def evaluate_llm_guard_response(
     decision_str = str(resp.get("decision") or "APPROVED").upper().strip()
     reason = str(resp.get("reason") or "evaluated by LLM")
     raw_scale = resp.get("suggested_scale")
-    try:
-        scale = float(1.0 if raw_scale is None else raw_scale)
-        if not (0.0 <= scale <= 10.0):
-            scale = 1.0
-    except (TypeError, ValueError):
-        scale = 1.0
+    default_scale = 0.5 if decision_str == "DOWNSCALE" else 1.0
+    if raw_scale is None or isinstance(raw_scale, bool):
+        scale = default_scale
+    else:
+        try:
+            scale = float(raw_scale)
+            if not math.isfinite(scale) or not (0.0 <= scale <= 10.0):
+                scale = default_scale
+        except (TypeError, ValueError):
+            scale = default_scale
 
-    if decision_str == "REJECTED":
+    if decision_str in ("REJECTED", "VETO", "BLOCK"):
         return GuardDecision.veto(
             guard_name,
             f"Gemini vetoed {action_label}: {reason}",
@@ -300,6 +306,8 @@ def evaluate_llm_guard_response(
             gemini_reason=reason,
         )
     if decision_str == "DOWNSCALE":
+        if scale <= 0.0 or scale >= 1.0:
+            scale = 0.5
         clamped_scale = max(0.1, min(1.0, scale))
         return GuardDecision.downscale(
             guard_name,

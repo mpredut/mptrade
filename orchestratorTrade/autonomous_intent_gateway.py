@@ -60,6 +60,17 @@ MODE_RANK = {"off": 0, "shadow": 1, "enforce": 2}
 DEDUP_STATUSES = ("PENDING", "OBSERVED_SHADOW", "EXECUTED")
 
 
+def _parse_finite_float(val: Any, default: float) -> float:
+    """Parse ``val`` into a finite float, rejecting booleans, None, and NaN/Inf."""
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        parsed = float(val)
+        return parsed if math.isfinite(parsed) else default
+    except (ValueError, TypeError):
+        return default
+
+
 def load_key_value_conf(workspace_dir: str, root_dir: str = ROOT_DIR) -> Dict[str, str]:
     """Load key=value settings from order_guard.conf / config.env / .env (root_dir overlaid by workspace_dir)."""
     conf: Dict[str, str] = {}
@@ -284,10 +295,7 @@ class AutonomousIntentGateway:
             })
             return intent
 
-        try:
-            confidence = float(intent.get("confidence", 0.0))
-        except (ValueError, TypeError):
-            confidence = 0.0
+        confidence = _parse_finite_float(intent.get("confidence"), 0.0)
 
         if confidence < self.min_confidence:
             logger.info("[INTENT GATEWAY] Intent %s rejected: confidence %.2f < %.2f",
@@ -312,10 +320,7 @@ class AutonomousIntentGateway:
             })
             return intent
 
-        try:
-            suggested_eur = float(intent.get("suggested_notional_eur", self.max_notional_eur))
-        except (ValueError, TypeError):
-            suggested_eur = self.max_notional_eur
+        suggested_eur = _parse_finite_float(intent.get("suggested_notional_eur"), self.max_notional_eur)
 
         effective_eur = min(suggested_eur, self.max_notional_eur)
         effective_eur = max(self.min_notional_eur, effective_eur)
@@ -513,18 +518,12 @@ class AutonomousIntentGateway:
         if not symbol or not venue:
             logger.warning("[INTENT GATEWAY] %s %s decision missing symbol/venue (no intent).", source, side)
             return None
-        try:
-            confidence = float(decision.get("confidence", 0.0))
-        except (ValueError, TypeError):
-            confidence = 0.0
+        confidence = _parse_finite_float(decision.get("confidence"), 0.0)
         if confidence < self.min_confidence:
             logger.info("[INTENT GATEWAY] %s %s %s confidence %.2f < %.2f (no intent).",
                         source, side, symbol, confidence, self.min_confidence)
             return None
-        try:
-            notional = float(decision.get("suggested_notional_eur", self.max_notional_eur))
-        except (ValueError, TypeError):
-            notional = self.max_notional_eur
+        notional = _parse_finite_float(decision.get("suggested_notional_eur"), self.max_notional_eur)
         notional = max(self.min_notional_eur, min(notional, self.max_notional_eur))
 
         now = time.time()

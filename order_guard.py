@@ -171,8 +171,8 @@ _MODULE_REFERENCE_KEYS = frozenset({
 _DISCRETE_POLICY_SETS: Dict[str, frozenset] = {
     "weibull_exhaustion_policy": frozenset({"block", "downscale"}),
     "funding_crowding_policy": frozenset({"defer", "downscale"}),
-    "llm_fallback": frozenset({"allow", "block", "downscale"}),
-    "post_stop_reentry_fallback": frozenset({"allow", "block", "downscale"}),
+    "llm_fallback": frozenset({"allow", "block", "veto", "downscale"}),
+    "post_stop_reentry_fallback": frozenset({"allow", "block", "veto", "downscale"}),
 }
 
 

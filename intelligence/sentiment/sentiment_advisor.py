@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import json
 import logging
+import math
 import os
 import time
 from typing import Any, Dict, List, Optional
@@ -158,13 +159,25 @@ class SentimentAdvisor:
             return self._cached_assessment
 
         try:
+            raw_conf = resp.get("confidence")
+            if raw_conf is None or isinstance(raw_conf, bool):
+                conf = 0.5
+            else:
+                try:
+                    conf = float(raw_conf)
+                    if not math.isfinite(conf) or not (0.0 <= conf <= 1.0):
+                        conf = 0.5
+                except (TypeError, ValueError):
+                    conf = 0.5
+            raw_risks = resp.get("key_risks")
+            key_risks = [str(r) for r in raw_risks if r is not None] if isinstance(raw_risks, list) else []
             assessment = SentimentAdvisorAssessment(
-                market_bias=str(resp.get("market_bias", "NEUTRAL")).upper(),
-                risk_level=str(resp.get("risk_level", "MODERATE")).upper(),
-                confidence=float(resp.get("confidence", 0.5)),
-                summary=str(resp.get("summary", "")),
-                key_risks=list(resp.get("key_risks", [])),
-                recommended_action=str(resp.get("recommended_action", "HOLD")).upper(),
+                market_bias=str(resp.get("market_bias") or "NEUTRAL").upper(),
+                risk_level=str(resp.get("risk_level") or "MODERATE").upper(),
+                confidence=conf,
+                summary=str(resp.get("summary") or ""),
+                key_risks=key_risks,
+                recommended_action=str(resp.get("recommended_action") or "HOLD").upper(),
                 ts=now,
             )
             self._cached_assessment = assessment

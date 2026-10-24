@@ -670,3 +670,23 @@ def test_post_stop_reentry_shadow_mode_on_timeout_and_null_suggested_scale():
     hs_guard = HighStakeGuard(gemini_client=null_scale_client, min_notional_eur=1000.0, cache_ttl_sec=0.0)
     hs_dec = hs_guard.check("ETHUSDC", "BUY", 2000.0, 1.0, notional_eur=2000.0, telemetry={})
     assert hs_dec.allowed is False
+
+    # 3. fallback_action='block' (order_guard.conf canonical value) must fail-closed on timeout
+    block_guard = HighStakeGuard(gemini_client=timeout_client, min_notional_eur=1000.0, fallback_action="block", cache_ttl_sec=0.0)
+    block_dec = block_guard.check("ETHUSDC", "BUY", 2000.0, 1.0, notional_eur=2000.0, telemetry={})
+    assert block_dec.allowed is False
+    assert block_dec.reason == "llm_query_timeout_fail_closed"
+
+    # 4. decision='DOWNSCALE' with missing/null/1.0/bool suggested_scale defaults to 0.5 (< 1.0)
+    for bad_scale in (None, 1.0, True, "nan"):
+        ds_client = MagicMock()
+        ds_client.query_json.return_value = {
+            "decision": "DOWNSCALE",
+            "suggested_scale": bad_scale,
+            "reason": "Mixed flow",
+        }
+        ds_guard = HighStakeGuard(gemini_client=ds_client, min_notional_eur=1000.0, cache_ttl_sec=0.0)
+        ds_dec = ds_guard.check("ETHUSDC", "BUY", 2000.0, 1.0, notional_eur=2000.0, telemetry={})
+        assert ds_dec.allowed is True
+        assert ds_dec.brake_action == BrakeAction.DOWNSCALE_QTY
+        assert ds_dec.suggested_scale == 0.5

@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import json
 import logging
+import math
 import os
 import time
 from typing import Any, Dict, List, Optional
@@ -256,10 +257,19 @@ class GeopoliticalThreatAnalyzer:
             self._save_to_disk(fallback_assessment)
             return fallback_assessment
 
-        threat_level = str(resp.get("threat_level", "NORMAL")).upper().strip()
-        risk_score = float(resp.get("risk_score", 0.5))
-        summary = str(resp.get("summary", ""))
-        recommended_brake = str(resp.get("recommended_brake", "NONE")).upper().strip()
+        threat_level = str(resp.get("threat_level") or "NORMAL").upper().strip()
+        raw_score = resp.get("risk_score")
+        if raw_score is None or isinstance(raw_score, bool):
+            risk_score = 0.5
+        else:
+            try:
+                risk_score = float(raw_score)
+                if not math.isfinite(risk_score) or not (0.0 <= risk_score <= 1.0):
+                    risk_score = 0.5
+            except (TypeError, ValueError):
+                risk_score = 0.5
+        summary = str(resp.get("summary") or "")
+        recommended_brake = str(resp.get("recommended_brake") or "NONE").upper().strip()
 
         assessment = GeopoliticalThreatAssessment(
             threat_level=threat_level,
