@@ -105,7 +105,11 @@ class CacheLongTrendManager(CacheManagerInterface):
     def rebuild_fetchtimes(self):
         last_times = defaultdict(int)
         for symbol, items in self.cache.items():
+            if not isinstance(items, (list, tuple)):
+                continue
             for item in items:
+                if not isinstance(item, dict):
+                    continue
                 ts_sec = extract_timestamp_s(item, default=0.0) or 0.0
                 if ts_sec <= 0:
                     continue
@@ -1328,9 +1332,22 @@ class CacheShortTrendManager(CacheManagerInterface):
             )
             if dyn is None:
                 return False   # Unknown because Cache24 is unavailable, insufficient, or stale.
-            g = float(dyn["growth_coefficient"] or 0.0)
-            if use_noise_gate and abs(g) <= dyn["epsilon"]:
-                return True
+            g = float(
+                dyn.get("growth_coefficient", dyn.get("gradient_recent", 0.0))
+                or 0.0
+            )
+            if use_noise_gate:
+                raw_eps = dyn.get("epsilon")
+                eps = (
+                    float(raw_eps)
+                    if isinstance(raw_eps, (int, float))
+                    and not isinstance(raw_eps, bool)
+                    and math.isfinite(raw_eps)
+                    and raw_eps >= 0
+                    else self._epsilon(dyn)
+                )
+                if abs(g) <= eps:
+                    return True
             if side == "BUY":
                 return g < 0
             if side == "SELL":

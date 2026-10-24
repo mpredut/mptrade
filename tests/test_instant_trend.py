@@ -925,6 +925,44 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             for win in mgr.windows["BTCUSDT"].values():
                 self.assertNotIn(win, c24._price_subscribers)
 
+    def test_long_trend_rebuild_fetchtimes_and_should_wait_partial_published_dyn(self):
+        lt_file = os.path.join(self.tmp, "cache_long_trend.json")
+        lt_mgr = cm.CacheLongTrendManager(
+            sync_ts=9999,
+            symbols=["BTCUSDT", "ETHUSDT"],
+            filename=lt_file,
+            api_client=mock_api,
+            read_only=True,
+        )
+        with lt_mgr.lock:
+            lt_mgr.cache = {
+                "BTCUSDT": [None],
+                "ETHUSDT": None,
+                "SOLUSDT": [{"timestamp": 1700000120, "direction": "up"}],
+            }
+        rebuilt = lt_mgr.rebuild_fetchtimes()
+        self.assertEqual(rebuilt, {"SOLUSDT": 1700000120 * 1000 - 60_000})
+
+        trend_file = os.path.join(self.tmp, "cache_short_trend_partial_dyn.json")
+        now_sec = time.time()
+        writer = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, writer=True)
+        writer.update_snapshot(
+            "BTCUSDT",
+            gradient_recent=-2.5,
+            current_price=60000.0,
+            ts=now_sec,
+            dynamic={
+                "900": {
+                    "gradient_recent": -2.5,
+                    "current_price": 60000.0,
+                    "ts": now_sec,
+                }
+            },
+        )
+        reader = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, writer=False)
+        self.assertTrue(reader.should_wait("BUY", "BTCUSDT", window_seconds=900, now=now_sec))
+        self.assertFalse(reader.should_wait("SELL", "BTCUSDT", window_seconds=900, now=now_sec))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
