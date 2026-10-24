@@ -575,9 +575,29 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
             self.assertTrue(blocked)
             self.assertIn("taker_sell_dominance", b_reason)
 
-            # SELL is unaffected
+            # SELL is unaffected by taker selling
             blocked_sell, _ = _whale_flow_blocks_side("TAOUSDC", "SELL")
             self.assertFalse(blocked_sell)
+
+            # Symmetric SELL check: Taker buying (> 1.25) blocks SELL while BUY is unaffected
+            buying_snap = WhalePositioningSnapshot(
+                symbol="TAOUSDC",
+                top_traders_long_ratio=2.0,
+                top_traders_long_pct=0.66,
+                taker_buy_sell_ratio=1.35,
+                taker_buy_vol_usd=135_000.0,
+                taker_sell_vol_usd=100_000.0,
+                open_interest_usd=50_000_000.0,
+                open_interest_1h_change_pct=0.0,
+                divergence_regime="neutral",
+                ts=time.time(),
+            )
+            collector.record_snapshot(buying_snap)
+            blocked_sell_squeeze, s_reason = _whale_flow_blocks_side("TAOUSDC", "SELL")
+            self.assertTrue(blocked_sell_squeeze)
+            self.assertIn("taker_buy_dominance", s_reason)
+            blocked_buy_on_squeeze, _ = _whale_flow_blocks_side("TAOUSDC", "BUY")
+            self.assertFalse(blocked_buy_on_squeeze)
 
             # Moderate taker ratio widens adjustment by 1.5x
             moderate_snap = WhalePositioningSnapshot(

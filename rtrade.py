@@ -929,7 +929,7 @@ def _market_regime_decision(symbol) -> MarketRegimeDecision:
 def _whale_flow_blocks_side(symbol: str, side: str) -> tuple[bool, str]:
     """Check if whale taker flow or OI divergence conflicts with initiating an rtrade round."""
     side_u = (side or "").upper()
-    if side_u != "BUY":
+    if side_u not in {"BUY", "SELL"}:
         return False, "ok"
     try:
         from external_order_guard import get_whale_collector
@@ -939,24 +939,30 @@ def _whale_flow_blocks_side(symbol: str, side: str) -> tuple[bool, str]:
         snap = collector.fetch(symbol, allow_network=False)
         if snap is None:
             return False, "no_snapshot"
-        if snap.taker_buy_sell_ratio < 0.80:
-            return True, f"taker_sell_dominance (ratio={snap.taker_buy_sell_ratio:.2f} < 0.80)"
-        if snap.divergence_regime == "aggressive_shorting":
-            return True, f"aggressive_shorting_divergence (OI={snap.open_interest_1h_change_pct:+.1f}%)"
+        if side_u == "BUY":
+            if snap.taker_buy_sell_ratio < 0.80:
+                return True, f"taker_sell_dominance (ratio={snap.taker_buy_sell_ratio:.2f} < 0.80)"
+            if snap.divergence_regime == "aggressive_shorting":
+                return True, f"aggressive_shorting_divergence (OI={snap.open_interest_1h_change_pct:+.1f}%)"
+        elif side_u == "SELL":
+            if snap.taker_buy_sell_ratio > 1.25:
+                return True, f"taker_buy_dominance (ratio={snap.taker_buy_sell_ratio:.2f} > 1.25)"
+            if snap.divergence_regime in ("short_squeeze", "short_squeeze_primed"):
+                return True, f"short_squeeze_divergence (OI={snap.open_interest_1h_change_pct:+.1f}%)"
     except Exception as exc:
         return False, f"error:{exc}"
     return False, "ok"
 
 
 def _effective_adjustment_fraction(symbol: str, base_adjustment: float) -> float:
-    """Widen grid quote adjustment when moderate taker selling pressure exists (0.80 <= ratio < 0.90)."""
+    """Widen grid quote adjustment when moderate taker flow pressure exists (0.80 <= ratio < 0.90 or 1.11 < ratio <= 1.25)."""
     try:
         from external_order_guard import get_whale_collector
         collector = get_whale_collector()
         if collector is not None:
             snap = collector.fetch(symbol, allow_network=False)
-            if snap is not None and snap.taker_buy_sell_ratio < 0.90:
-                # Widen grid spacing by 50% to quote deeper on dips rather than top ticks
+            if snap is not None and (snap.taker_buy_sell_ratio < 0.90 or snap.taker_buy_sell_ratio > (1.0 / 0.90)):
+                # Widen grid spacing by 50% to quote deeper on dips/rips rather than top/bottom ticks
                 return base_adjustment * 1.5
     except Exception:
         pass
