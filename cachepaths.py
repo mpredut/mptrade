@@ -36,13 +36,14 @@ def legacy_filenames_for(filepath: str) -> tuple[str, ...]:
 
 def migrate_legacy_filename_if_needed(filepath: str) -> None:
     """Rename legacy pre-symmetry cache files in place when the new path is absent."""
-    if os.path.exists(filepath):
+    if os.path.exists(filepath) or os.path.exists(filepath + ".previous"):
         return
     for legacy_path in legacy_filenames_for(filepath):
-        if not os.path.exists(legacy_path):
+        if not os.path.exists(legacy_path) and not os.path.exists(legacy_path + ".previous"):
             continue
         try:
-            os.replace(legacy_path, filepath)
+            if os.path.exists(legacy_path):
+                os.replace(legacy_path, filepath)
             if (
                 os.path.exists(legacy_path + ".meta")
                 and not os.path.exists(filepath + ".meta")

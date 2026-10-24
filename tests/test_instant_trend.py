@@ -963,6 +963,48 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertTrue(reader.should_wait("BUY", "BTCUSDT", window_seconds=900, now=now_sec))
         self.assertFalse(reader.should_wait("SELL", "BTCUSDT", window_seconds=900, now=now_sec))
 
+    def test_legacy_migration_respects_previous_and_ws_bridge_init_rollback(self):
+        from cachepaths import migrate_legacy_filename_if_needed
+        from binance_api import bapi_ws_bridge
+
+        mig_dir = os.path.join(self.tmp, "mig")
+        os.makedirs(mig_dir, exist_ok=True)
+        new_path = os.path.join(mig_dir, "cache_short_trend.json")
+        old_path = os.path.join(mig_dir, "cache_instant_trend.json")
+
+        with open(new_path + ".previous", "w", encoding="utf-8") as fh:
+            json.dump({"BTCUSDT": {"gradient_recent": 0.77, "current_price": 62000.0, "ts": 1000.0}}, fh)
+        with open(old_path, "w", encoding="utf-8") as fh:
+            json.dump({"BTCUSDT": {"gradient_recent": -9.99, "current_price": 1000.0, "ts": 1.0}}, fh)
+
+        # Must not clobber new_path with old_path when new_path.previous is already staged
+        migrate_legacy_filename_if_needed(new_path)
+        self.assertFalse(os.path.exists(new_path))
+        self.assertTrue(os.path.exists(new_path + ".previous"))
+        self.assertTrue(os.path.exists(old_path))
+
+        # Also test initialize_ws_bridge_once rolls back _cacheManager_initialized on failure
+        prev_init = sys.modules.pop("_cacheManager_initialized", None)
+        try:
+            def _boom():
+                raise RuntimeError("ws start failed")
+
+            with self.assertRaises(RuntimeError):
+                bapi_ws_bridge.initialize_ws_bridge_once(enable_fn=_boom)
+            self.assertNotIn("_cacheManager_initialized", sys.modules)
+
+            called = []
+            bapi_ws_bridge.initialize_ws_bridge_once(enable_fn=lambda: called.append(True))
+            self.assertEqual(called, [True])
+            self.assertTrue(sys.modules.get("_cacheManager_initialized"))
+            bapi_ws_bridge.stop_ws_bridge()
+            self.assertNotIn("_cacheManager_initialized", sys.modules)
+        finally:
+            if prev_init is not None:
+                sys.modules["_cacheManager_initialized"] = prev_init
+            else:
+                sys.modules.pop("_cacheManager_initialized", None)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
