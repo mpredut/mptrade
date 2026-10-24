@@ -1737,6 +1737,73 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         bapi_ws_health.mark_ws_available(False)
         self.assertFalse(cm._ws_available)
 
+    def test_audit42_long_trend_neutral_snapshot_and_pricefetcher_guards(self):
+        """Audit #42: explicit trailing None in cache_long_trend.json stops reverse scan, order_guard recovers .previous, and pricefetcher guards malformed entries."""
+        import order_guard
+        from market_monitor import pricefetcher as pf
+
+        # 1. Explicit trailing None in cache_long_trend.json is a neutral snapshot and does not resurrect stale entry
+        lt_path = os.path.join(self.tmp, "cache_long_trend.json")
+        with open(lt_path, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "items": {
+                        "BTCUSDC": [
+                            {"direction": "up", "duration_seconds": 86400.0, "timestamp": 1700000000},
+                            None,
+                        ]
+                    }
+                },
+                fh,
+            )
+        with unittest.mock.patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": self.tmp}):
+            self.assertEqual(order_guard._read_cached_trend_duration("BTCUSDC"), 0.0)
+            self.assertIsNone(order_guard._read_cached_trend_direction("BTCUSDC"))
+
+        # 2. order_guard._read_cached_price_history recovers from .previous when primary is corrupt and filters non-finite rows
+        p24_path = os.path.join(self.tmp, "cache_24_price_BTCUSDC.json")
+        with open(p24_path, "w", encoding="utf-8") as fh:
+            fh.write("{corrupt")
+        now_ms = int(time.time() * 1000)
+        with open(p24_path + ".previous", "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "items": {
+                        "BTCUSDC": [
+                            [now_ms - 10000, float("inf")],
+                            [True, 60000.0],
+                            [now_ms - 5000, 61000.0],
+                        ]
+                    }
+                },
+                fh,
+            )
+        with unittest.mock.patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": self.tmp}):
+            hist = order_guard._read_cached_price_history("BTCUSDC", window_seconds=3600.0)
+        self.assertIsNotNone(hist)
+        self.assertEqual(len(hist), 1)
+        self.assertEqual(hist[0][1], 61000.0)
+
+        # 3. CacheAllPriceFetcherManager.get_latest_price and get_price_history skip malformed/corrupt rows
+        with unittest.mock.patch.object(pf, "PricePlatformFactory"):
+            pf_mgr = pf.CacheAllPriceFetcherManager(
+                60, ["BTC"], os.path.join(self.tmp, "pf_audit42.json"), read_only=True
+            )
+        pf_mgr.cache["BTC"] = [
+            [now_ms - 2000, 62000.0],
+            [now_ms - 1000, None],
+            [-1e18, 63000.0],
+            [now_ms, False],
+        ]
+        self.assertEqual(pf_mgr.get_latest_price("BTC"), 62000.0)
+        valid_hist = pf_mgr.get_price_history("BTC", limit=10)
+        self.assertEqual(len(valid_hist), 1)
+        self.assertEqual(valid_hist[0]["price"], 62000.0)
+        # Invalid retention_days / max_age_days do not wipe cache or symbols
+        pf_mgr.cleanup_old_prices(retention_days=0)
+        pf_mgr.cleanup_old_prices(retention_days=False)
+        self.assertEqual(len(pf_mgr.cache["BTC"]), 4)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

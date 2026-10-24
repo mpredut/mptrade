@@ -291,7 +291,7 @@ class AutonomousAIReconciler:
                         entry["kalman_vel"] = k_sym.get("kalman_vel")
                         entry["kalman_trend"] = k_sym.get("kalman_trend")
                     if isinstance(long_items, dict) and isinstance(long_items.get(sym), list) and long_items[sym]:
-                        lt = long_items[sym][0]
+                        lt = long_items[sym][-1]
                         if isinstance(lt, dict):
                             entry["long_trend_dir"] = lt.get("direction")
                             entry["long_trend_hours"] = round(float(lt.get("duration_seconds", 0.0)) / 3600.0, 1)

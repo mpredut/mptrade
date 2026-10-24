@@ -1086,14 +1086,30 @@ def _normalize_base_asset(sym: str) -> str:
     return s
 
 
+def _read_json_recovering(path: str) -> Optional[dict]:
+    from state_io import previous_generation_path, read_recovering_previous
+
+    backup_path = previous_generation_path(path)
+    if not os.path.exists(path) and not os.path.exists(backup_path):
+        return None
+
+    def _loader(candidate: str) -> dict:
+        with open(candidate, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            raise ValueError("cache payload must be a dict")
+        return payload
+
+    return read_recovering_previous(path, _loader, backup_path=backup_path)
+
+
 def _read_cached_trend_duration(symbol: str) -> float:
     try:
         cachedb_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
         p = os.path.join(cachedb_dir, "cache_long_trend.json")
-        if not os.path.exists(p):
+        data = _read_json_recovering(p)
+        if not isinstance(data, dict):
             return 0.0
-        with open(p, "r", encoding="utf-8") as f:
-            data = json.load(f)
         all_items = data.get("items", {})
         items = all_items.get(symbol.upper())
         if not items:
@@ -1104,9 +1120,14 @@ def _read_cached_trend_duration(symbol: str) -> float:
                     break
         if items and isinstance(items, list):
             for entry in reversed(items):
+                if entry is None:
+                    break
                 if isinstance(entry, dict) and entry.get("duration_seconds") is not None:
-                    dur = float(entry.get("duration_seconds", 0.0) or 0.0)
-                    if dur > 0:
+                    raw_dur = entry.get("duration_seconds", 0.0)
+                    if isinstance(raw_dur, bool):
+                        continue
+                    dur = float(raw_dur or 0.0)
+                    if math.isfinite(dur) and dur > 0:
                         return dur
     except Exception:
         pass
@@ -1122,7 +1143,7 @@ def _resolve_trend_duration(symbol: str) -> float:
         trend_meta = getattr(cm, "read_long_term_trend_file", lambda s: None)(symbol)
         if trend_meta and "duration_seconds" in trend_meta:
             dur = float(trend_meta["duration_seconds"] or 0.0)
-            if dur > 0:
+            if math.isfinite(dur) and dur > 0:
                 return dur
     except Exception:
         pass
@@ -1133,10 +1154,9 @@ def _read_cached_trend_direction(symbol: str) -> Optional[str]:
     try:
         cachedb_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
         p = os.path.join(cachedb_dir, "cache_long_trend.json")
-        if not os.path.exists(p):
+        data = _read_json_recovering(p)
+        if not isinstance(data, dict):
             return None
-        with open(p, "r", encoding="utf-8") as f:
-            data = json.load(f)
         all_items = data.get("items", {})
         items = all_items.get(symbol.upper())
         if not items:
@@ -1147,6 +1167,8 @@ def _read_cached_trend_direction(symbol: str) -> Optional[str]:
                     break
         if items and isinstance(items, list):
             for entry in reversed(items):
+                if entry is None:
+                    break
                 if isinstance(entry, dict) and entry.get("direction"):
                     d = str(entry.get("direction")).strip().lower()
                     if d in ("up", "down", "bull", "bear"):
@@ -1197,23 +1219,26 @@ def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> O
         p24_base = os.path.join(cachedb_dir, f"cache_24_price_{su_base}.json")
         if os.path.exists(p24_base):
             p24 = p24_base
-    if os.path.exists(p24):
+    data = _read_json_recovering(p24)
+    if isinstance(data, dict):
         try:
-            with open(p24, "r", encoding="utf-8") as f:
-                data = json.load(f)
             raw_items = data.get("items", {}).get(su)
             if not raw_items:
                 su_base = _normalize_base_asset(su)
                 raw_items = data.get("items", {}).get(su_base, [])
-            for item in raw_items:
+            for item in raw_items or []:
                 if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    if isinstance(item[0], bool) or isinstance(item[1], bool):
+                        continue
                     try:
                         ts_raw = float(item[0])
-                        ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
                         px = float(item[1])
+                        if not (math.isfinite(ts_raw) and math.isfinite(px)):
+                            continue
+                        ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
                         if ts_sec >= cutoff_ts and px > 0:
                             history.append((ts_sec, px))
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, OverflowError):
                         continue
         except Exception:
             pass
@@ -1221,10 +1246,9 @@ def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> O
     # 2. Fallback: shared multi-symbol cache (cache_prices_multi.json)
     if not history:
         p_multi = os.path.join(cachedb_dir, "cache_prices_multi.json")
-        if os.path.exists(p_multi):
+        data = _read_json_recovering(p_multi)
+        if isinstance(data, dict):
             try:
-                with open(p_multi, "r", encoding="utf-8") as f:
-                    data = json.load(f)
                 all_items = data.get("items", {})
                 raw_items = all_items.get(su)
                 if not raw_items:
@@ -1239,13 +1263,17 @@ def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> O
                 if raw_items:
                     for item in raw_items:
                         if isinstance(item, (list, tuple)) and len(item) >= 2:
+                            if isinstance(item[0], bool) or isinstance(item[1], bool):
+                                continue
                             try:
                                 ts_raw = float(item[0])
-                                ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
                                 px = float(item[1])
+                                if not (math.isfinite(ts_raw) and math.isfinite(px)):
+                                    continue
+                                ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
                                 if ts_sec >= cutoff_ts and px > 0:
                                     history.append((ts_sec, px))
-                            except (ValueError, TypeError):
+                            except (ValueError, TypeError, OverflowError):
                                 continue
             except Exception:
                 pass

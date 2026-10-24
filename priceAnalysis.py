@@ -662,10 +662,12 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
         print(f"Symbol {symbol} is not present in the trends that were read.")
         return None
 
-    # Retrieve latest non-null trend record
+    # Retrieve latest trend record; an explicit trailing None is a neutral snapshot
     trend = None
     if isinstance(items, list):
         for entry in reversed(items):
+            if entry is None:
+                break
             if isinstance(entry, dict) and entry.get("duration_seconds") is not None:
                 trend = entry
                 break
