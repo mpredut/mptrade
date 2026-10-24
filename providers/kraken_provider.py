@@ -254,54 +254,8 @@ class KrakenProvider(MarketDataProvider):
             if rows is None:
                 raise ProviderError(f"get_orders({symbol}): fills history unavailable")
             cutoff_ms = (time.time() - since_s) * 1000.0
-            want = (side or "").upper()
-            out = []
-            grouped = {}
-            for r in rows:
-                order_id = (r.get("ordertxid") or r.get("orderId")) if isinstance(r, dict) else None
-                norm = _normalize_order(r)
-                ts_ms = norm["timestamp"] if norm["timestamp"] is not None else 0
-                if ts_ms < cutoff_ms:
-                    continue
-                if want and norm["side"] != want:
-                    continue
-                if order_id:
-                    key = (str(order_id), norm["side"])
-                    px = float(norm["price"] or 0.0)
-                    qty = float(norm["qty"] or 0.0)
-                    if key not in grouped:
-                        grouped[key] = {
-                            "side": norm["side"],
-                            "cost": px * qty,
-                            "qty": qty,
-                            "fallback_price": px,
-                            "timestamp": ts_ms,
-                        }
-                        out.append(grouped[key])
-                    else:
-                        g = grouped[key]
-                        g["cost"] += px * qty
-                        g["qty"] += qty
-                        if px > 0:
-                            g["fallback_price"] = px
-                        if ts_ms > (g["timestamp"] or 0):
-                            g["timestamp"] = ts_ms
-                else:
-                    out.append(norm)
-            result = []
-            for item in out:
-                if "cost" in item:
-                    total_qty = item["qty"]
-                    vwap = (item["cost"] / total_qty) if total_qty > 0 else item["fallback_price"]
-                    result.append({
-                        "side": item["side"],
-                        "price": vwap,
-                        "qty": total_qty,
-                        "timestamp": item["timestamp"],
-                    })
-                else:
-                    result.append(item)
-            return result
+            from .base import aggregate_fills_by_order_id
+            return aggregate_fills_by_order_id(rows, cutoff_ms=cutoff_ms, side=side)
         except ProviderError:
             raise
         except Exception as e:  # noqa: BLE001

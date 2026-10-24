@@ -480,11 +480,9 @@ class Instrument:
                         pass
 
             # 1. Provider-agnostic daily trade cap (25 orders / 24h + 5s per-symbol anti-spam).
-            is_exempt_daily_limit = bool("daily_limit" in bypassed_guards)
-            if not is_exempt_daily_limit:
+            if not GUARD_REGISTRY["GO1"].is_bypassed(bypassed_guards):
                 ok, reason = order_guard.daily_limit_guard(
                     self._provider, self.symbol, side_u,
-                    bypass_guards=bypassed_guards,
                 )
                 if not ok:
                     return None

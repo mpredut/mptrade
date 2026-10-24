@@ -90,6 +90,11 @@ def check_external_order_guards(
     else:
         m = margins
 
+    if "external_guard_mode" in m:
+        ext_mode = validate_guard_mode_cfg(m["external_guard_mode"], "external_guard_mode")
+        if ext_mode == "off":
+            return True, "external_guards_off", 1.0
+
     computed_notional = float(notional_eur) if notional_eur is not None else (float(price * qty) if (price and qty) else 0.0)
 
     from intelligence.internal.guards.guard_decision import BrakeAction

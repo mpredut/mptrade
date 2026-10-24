@@ -529,7 +529,7 @@ class TestOrderGuardWithGemini:
             **order_guard._load_margins(),
             "intelligence_guards_mode": "shadow",
             "llm_guard_mode": "shadow",
-            "llm_min_notional_eur": 1000.0,
+            "high_stake_min_notional_usd": 1000.0,
             "default": 1.15,
         }
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
@@ -590,7 +590,7 @@ class TestOrderGuardWithGemini:
             **order_guard._load_margins(),
             "intelligence_guards_mode": "enforce",
             "llm_guard_mode": "enforce",
-            "llm_min_notional_eur": 1000.0,
+            "high_stake_min_notional_usd": 1000.0,
             "default": 1.15,
             "default_buy_reference": "strict",
             "binance_buy_reference": "strict",

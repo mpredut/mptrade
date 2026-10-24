@@ -151,7 +151,7 @@ def test_external_microstructure_large_sell_whale_support_defer():
         funding_guard_mode="off",
         whale_wall_usd_limit=1_000_000.0,
         max_sell_imbalance=0.75,
-        sell_guard_min_notional_usd=700.0,
+        high_stake_min_notional_usd=700.0,
     )
 
     with patch.object(get_orderbook_collector(), "fetch", return_value=wall_snap):
@@ -444,7 +444,6 @@ def test_profit_guard_rebuy_bypasses_math_reference_but_enforces_microstructure(
          patch("order_guard.get_orderbook_collector", return_value=ob_collector), \
          patch.dict(order_guard._load_margins(), {
              "external_guard_mode": "enforce",
-             "microstructure_guard_mode": "enforce",
              "orderbook_wall_guard_mode": "enforce",
              "max_sell_imbalance": 0.75,
          }):
@@ -626,7 +625,7 @@ def test_weibull_does_not_overlap_gaussian_horizon_and_computes_weibull_survival
         weibull_exhaustion_policy="downscale",
         weibull_exhausted_scale=0.25,
         weibull_p90_days=7.0,
-        sell_guard_min_notional_usd=700.0,
+        high_stake_min_notional_usd=700.0,
     )
     ok, reason, scale = qlimit_order_guard.check_qlimit2_order_guards(
         "TAOUSDC", "SELL", 250.0, qty=4.0, notional_eur=1000.0, price_history=[], margins=m

@@ -36,7 +36,6 @@ _load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
 PLACE_ORDER_FEE_PCT = required_float_env("PLACE_ORDER_FEE_PCT")
 PLACE_ORDER_HOURS = required_int_env("PLACE_ORDER_HOURS")
 PLACE_ORDER_SAFEBACK_SEC = required_int_env("PLACE_ORDER_SAFEBACK_SEC")
-PLACE_ORDER_MAX_DAILY_TRADES = required_int_env("PLACE_ORDER_MAX_DAILY_TRADES")
 PLACE_ORDER_MIN_NOTIONAL = required_float_env("PLACE_ORDER_MIN_NOTIONAL")
 
 
@@ -506,7 +505,6 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         # Delegate daily trade cap to order_guard.daily_limit_guard
         ok, reason = order_guard.daily_limit_guard(
             provider, symbol, order_type,
-            max_daily_trades=PLACE_ORDER_MAX_DAILY_TRADES,
             bypass_guards=bypass_guards)
         if not ok:
             return False, reason

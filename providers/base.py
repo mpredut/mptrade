@@ -452,6 +452,82 @@ def normalize_order(order: dict) -> dict:
     }
 
 
+_PARENT_ORDER_ID_KEYS = ("orderId", "order_id", "ordertxid", "oid")
+
+
+def aggregate_fills_by_order_id(
+    rows: list,
+    *,
+    cutoff_ms: Optional[float] = None,
+    side: Optional[str] = None,
+) -> List[dict]:
+    """Normalize and aggregate fills sharing the same parent order ID and side.
+
+    Multi-fill executions sharing the same parent order ID (``orderId``, ``order_id``,
+    ``ordertxid``, ``oid``) and side are combined into a single order record with
+    volume-weighted average ``price``, summed ``qty``, and ``max(timestamp)``,
+    matching ``BinanceProvider.get_orders()``.
+    """
+    want = (side or "").strip().upper()
+    out: List[dict] = []
+    grouped: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        parent_oid = None
+        for k in _PARENT_ORDER_ID_KEYS:
+            val = r.get(k)
+            if val is not None and not isinstance(val, bool) and str(val).strip():
+                parent_oid = str(val).strip()
+                break
+        norm = normalize_order(r)
+        ts_ms = norm["timestamp"]
+        if cutoff_ms is not None and (ts_ms is None or float(ts_ms) < cutoff_ms):
+            continue
+        if want and norm["side"] != want:
+            continue
+        if parent_oid:
+            key = (parent_oid, norm["side"])
+            px = float(norm["price"] or 0.0)
+            qty = float(norm["qty"] or 0.0)
+            ts_val = ts_ms if ts_ms is not None else 0
+            if key not in grouped:
+                grouped[key] = {
+                    "orderId": parent_oid,
+                    "side": norm["side"],
+                    "cost": px * qty,
+                    "qty": qty,
+                    "fallback_price": px,
+                    "timestamp": ts_val,
+                }
+                out.append(grouped[key])
+            else:
+                g = grouped[key]
+                g["cost"] += px * qty
+                g["qty"] += qty
+                if px > 0:
+                    g["fallback_price"] = px
+                if ts_val > (g["timestamp"] or 0):
+                    g["timestamp"] = ts_val
+        else:
+            out.append(norm)
+    result: List[dict] = []
+    for item in out:
+        if "cost" in item:
+            total_qty = item["qty"]
+            vwap = (item["cost"] / total_qty) if total_qty > 0 else item["fallback_price"]
+            result.append({
+                "orderId": item["orderId"],
+                "side": item["side"],
+                "price": vwap,
+                "qty": total_qty,
+                "timestamp": item["timestamp"],
+            })
+        else:
+            result.append(item)
+    return result
+
+
 # Compatibility alias retained for existing internal and external imports.
 _normalize_order = normalize_order
 

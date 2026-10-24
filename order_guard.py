@@ -79,7 +79,6 @@ _REQUIRED_ORDER_GUARD_KEYS = frozenset({
     "weibull_p90_days",
     # Pillar 2: External Microstructure & Derivatives Flow Guards
     "external_guard_mode",
-    "microstructure_guard_mode",
     "whale_guard_mode",
     "severe_cascade_oi_pct",
     "min_taker_ratio",
@@ -111,11 +110,7 @@ _REQUIRED_ORDER_GUARD_KEYS = frozenset({
     "post_stop_reentry_fallback",
     "post_stop_reentry_notify",
     "post_stop_reentry_cache_ttl_sec",
-    "sentiment_advisor_interval_h",
-    "sentiment_advisor_interval_sec",
-    "macro_advisor_interval_h",
     "macro_advisor_interval_sec",
-    "macro_llm_interval_h",
     "macro_llm_interval_sec",
     # Pillar 4 & Global
     "geopolitical_guard_mode",
@@ -141,7 +136,6 @@ _GUARD_MODE_KEYS = (
     "internal_guard_mode",
     "intelligence_guards_mode",
     "external_guard_mode",
-    "microstructure_guard_mode",
     "whale_guard_mode",
     "orderbook_wall_guard_mode",
     "funding_guard_mode",
@@ -266,11 +260,6 @@ def _load_margins():
                 m[k] = float(v)
             except ValueError:
                 m[k] = v
-    if "high_stake_min_notional_usd" not in m:
-        for legacy_key in ("sell_guard_min_notional_usd", "llm_min_notional_eur", "sell_guard_min_notional_eur"):
-            if legacy_key in m:
-                m["high_stake_min_notional_usd"] = m[legacy_key]
-                break
     missing = sorted(_REQUIRED_ORDER_GUARD_KEYS - set(m.keys()))
     if missing:
         if _MARGINS is not None and os.environ.get("BACKTEST_MODE") == "1":
@@ -288,20 +277,8 @@ def resolve_high_stake_min_notional_usd(
     require_key: bool = False,
 ) -> float:
     """Resolve the unified high-stake notional threshold (high_stake_min_notional_usd) from margins."""
-    order_side = (side or "").upper()
-    if order_side == "SELL":
-        if "sell_guard_min_notional_usd" in margins:
-            return float(margins["sell_guard_min_notional_usd"])
-        if "sell_guard_min_notional_eur" in margins:
-            return float(margins["sell_guard_min_notional_eur"])
-    if "llm_min_notional_eur" in margins:
-        return float(margins["llm_min_notional_eur"])
     if "high_stake_min_notional_usd" in margins:
         return float(margins["high_stake_min_notional_usd"])
-    if "sell_guard_min_notional_usd" in margins:
-        return float(margins["sell_guard_min_notional_usd"])
-    if "sell_guard_min_notional_eur" in margins:
-        return float(margins["sell_guard_min_notional_eur"])
     if require_key:
         raise KeyError("high_stake_min_notional_usd")
     return 700.0
@@ -958,7 +935,7 @@ def get_antispam_sec_cfg(provider_name):
     """Return the per-symbol anti-spam pause in seconds from order_guard.conf."""
     m = _load_margins()
     key = (provider_name or "").lower() + "_antispam_sec"
-    return float(m.get(key, m.get("default_antispam_sec", 5.0)))
+    return float(m.get(key, m["default_antispam_sec"]))
 
 
 def get_safeback_sec_cfg(provider_name):
@@ -974,14 +951,14 @@ DAILY_LIMIT_WINDOW_SEC = 86400.0
 def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, bypass_guards=None):
     """Enforce GO1 symmetrically per symbol and side:
     1. Max 25 filled orders per 24 hours (86400s).
-    2. Minimum 5-second anti-spam pause between orders on the same symbol.
+    2. Minimum 5-second anti-spam pause between orders on the same symbol and side.
 
     Return (True, None) or (False, "daily_limit" | "history_unavailable").
     """
     if bypass_guards:
         from guard_hierarchy import normalize_bypassed_guards, GUARD_REGISTRY
         bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
-        if "all" in bypassed or "*" in bypassed or GUARD_REGISTRY["GO1"].is_bypassed(bypassed):
+        if GUARD_REGISTRY["GO1"].is_bypassed(bypassed):
             return True, None
     name = _provider_name(provider)
     order_type = order_type.upper()
@@ -1006,10 +983,12 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
         now_s = time.time()
         for t in trades:
             ts_s = extract_timestamp_s(t, default=0.0) or 0.0
-            if ts_s > 0 and 0.0 <= (now_s - ts_s) < antispam_sec:
-                print(f"[DAILY-LIMIT] {order_type} {symbol}: last fill {now_s - ts_s:.1f}s ago "
-                      f"< {antispam_sec:.0f}s anti-spam -> BLOCKED")
-                return False, "daily_limit"
+            if ts_s > 0:
+                elapsed_s = max(0.0, now_s - ts_s)
+                if elapsed_s < antispam_sec:
+                    print(f"[DAILY-LIMIT] {order_type} {symbol}: last fill {elapsed_s:.1f}s ago "
+                          f"< {antispam_sec:.0f}s anti-spam -> BLOCKED")
+                    return False, "daily_limit"
     return True, None
 
 

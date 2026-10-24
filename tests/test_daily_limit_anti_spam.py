@@ -187,6 +187,32 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
             if os.path.exists(cache_path):
                 os.remove(cache_path)
 
+    def test_5s_antispam_clock_skew_future_fill_timestamp_still_blocks(self):
+        """A fill whose exchange timestamp is slightly ahead of local host time (e.g. +200ms)
+        must still trigger the 5-second anti-spam pause instead of slipping through."""
+        for side in ("BUY", "SELL"):
+            prov = FakeProvider()
+            prov.seed_trade(side, age_sec=-0.2, symbol="BTCUSDC")
+            ok, reason = order_guard.daily_limit_guard(
+                prov, "BTCUSDC", side, max_daily_trades=25)
+            self.assertFalse(ok)
+            self.assertEqual(reason, "daily_limit")
+
+    def test_hyperliquid_multi_fill_aggregation_by_oid(self):
+        from providers.base import aggregate_fills_by_order_id
+        now_ms = int(time.time() * 1000)
+        raw_fills = [
+            {"coin": "@107", "side": "B", "px": "40.0", "sz": "2.0", "time": now_ms - 4000, "oid": 999001},
+            {"coin": "@107", "side": "B", "px": "43.0", "sz": "1.0", "time": now_ms - 3900, "oid": 999001},
+            {"coin": "@107", "side": "B", "px": "45.0", "sz": "1.0", "time": now_ms - 1000, "oid": 999002},
+        ]
+        orders = aggregate_fills_by_order_id(raw_fills, cutoff_ms=now_ms - 60_000, side="BUY")
+        self.assertEqual(len(orders), 2)
+        self.assertAlmostEqual(orders[0]["price"], 41.0)
+        self.assertAlmostEqual(orders[0]["qty"], 3.0)
+        self.assertEqual(orders[0]["timestamp"], now_ms - 3900)
+        self.assertEqual(orders[1]["orderId"], "999002")
+
     def test_instrument_place_unified_kind_and_motivation(self):
         prov = FakeProvider(name="kraken")
         api = MarketApi([prov])

@@ -249,7 +249,7 @@ class HyperliquidProvider(MarketDataProvider):
             return None
 
     def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
-        """Return normalized recent spot fills, optionally filtered by side.
+        """Return normalized recent spot orders (fills aggregated by oid), optionally filtered by side.
 
         Exclude perpetual HYPE fills to avoid mixing delta-neutral activity.
         """
@@ -262,25 +262,18 @@ class HyperliquidProvider(MarketDataProvider):
             addr = os.environ.get("HL_ACCOUNT_ADDRESS")
             if not addr:
                 raise ProviderError(f"get_orders({symbol}): HL_ACCOUNT_ADDRESS missing")
-            want = side.upper() if side else None
             cutoff_ms = (time.time() - float(since_s)) * 1000.0
-            out = []
             fills = c.info.user_fills(addr)
             if fills is None:
                 raise ProviderError(f"get_orders({symbol}): user_fills returned None")
             if not isinstance(fills, list):
                 raise ProviderError(f"get_orders({symbol}): user_fills returned unexpected type {type(fills).__name__}")
-            for f in fills:
-                if f.get("coin") != pair:        # Spot pair only; exclude perpetual HYPE.
-                    continue
-                t_ms = extract_timestamp_ms(f, default=None)
-                if t_ms is None or float(t_ms) < cutoff_ms:
-                    continue
-                norm = _normalize_order(f)
-                if want and norm["side"] != want:
-                    continue
-                out.append(norm)
-            return out
+            spot_fills = [
+                f for f in fills
+                if isinstance(f, dict) and f.get("coin") == pair
+            ]
+            from .base import aggregate_fills_by_order_id
+            return aggregate_fills_by_order_id(spot_fills, cutoff_ms=cutoff_ms, side=side)
         except ProviderError:
             raise
         except Exception as e:  # noqa: BLE001
