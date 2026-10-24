@@ -39,6 +39,7 @@ APPROVED_BOUNDARIES = {
         "order_market_buy", "order_market_sell",
     },
     "monitororder.py": {"cancel_order"},
+    "orchestratorOS/supervisor/autonomous_ai_reconciler.py": {"cancel_order"},
     "providers/hyperliquid_provider.py": {"spot_order"},
     "providers/kraken_provider.py": {"add_order", "cancel_order"},
     "providers/market_api.py": {"cancel_order"},

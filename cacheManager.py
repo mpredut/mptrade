@@ -2485,7 +2485,9 @@ class CacheTradeManager(CacheManagerInterface):
         authoritative exchange time and immutable trade ID determine recency.
         """
         self.sync_account_reader_if_needed()
-        want_buyer = (order_type.upper() == "SELL")   # The opposite of SELL is BUY.
+        if not isinstance(order_type, str) or order_type.strip().upper() not in ("BUY", "SELL"):
+            return None
+        want_buyer = (order_type.strip().upper() == "SELL")   # The opposite of SELL is BUY.
         latest_key = None
         latest_price = None
         with self.lock:
@@ -2551,15 +2553,15 @@ class CacheOrderManager(CacheManagerInterface):
                 "_fillIds" not in trade
                 or (
                     isinstance(trade["_fillIds"], list)
-                    and len({
-                        str(fill_id) for fill_id in trade["_fillIds"]
-                    }) == len(trade["_fillIds"])
                     and all(
                         not isinstance(fill_id, bool)
-                        and str(fill_id).isdigit()
-                        and int(fill_id) >= 0
+                        and str(fill_id).strip().isdigit()
+                        and int(str(fill_id).strip()) >= 0
                         for fill_id in trade["_fillIds"]
                     )
+                    and len({
+                        str(int(str(fill_id).strip())) for fill_id in trade["_fillIds"]
+                    }) == len(trade["_fillIds"])
                 )
             )
         )
@@ -2626,15 +2628,39 @@ class CacheOrderManager(CacheManagerInterface):
         with self.lock:
             bucket = self.cache.setdefault(symbol, [])
             candidate = [dict(item) for item in bucket]
-            by_id = {
-                str(item.get("orderId")): index
-                for index, item in enumerate(candidate)
-                if item.get("orderId") is not None
-            }
+            by_id = {}
+            fill_owners = {}
+            for index, item in enumerate(candidate):
+                if (
+                    not isinstance(item, dict)
+                    or not self._is_valid_item(item)
+                    or (
+                        item.get("symbol") is not None
+                        and str(item["symbol"]).upper() != str(symbol).upper()
+                    )
+                ):
+                    raise RuntimeError("invalid Order row already in memory")
+                oid_key = str(int(item["orderId"]))
+                if oid_key in by_id:
+                    raise RuntimeError(f"duplicate Order aggregate ID {oid_key} in memory")
+                by_id[oid_key] = index
+                for existing_fid in item.get("_fillIds", []):
+                    fid_key = str(int(str(existing_fid).strip()))
+                    prev_owner = fill_owners.get(fid_key)
+                    if prev_owner is not None and prev_owner != oid_key:
+                        raise RuntimeError(
+                            f"immutable fill ID {fid_key} belongs to both orders {prev_owner} and {oid_key}"
+                        )
+                    fill_owners[fid_key] = oid_key
             for item in new_items:
                 if not isinstance(item, dict):
                     raise RuntimeError("invalid incoming Order row")
                 incoming = dict(item)
+                if (
+                    incoming.get("symbol") is not None
+                    and str(incoming["symbol"]).upper() != str(symbol).upper()
+                ):
+                    raise RuntimeError("invalid incoming Order row symbol")
                 raw_fill_id = incoming.pop("_fillId", None)
                 fill_id = (
                     "" if raw_fill_id is None else str(raw_fill_id).strip()
@@ -2645,24 +2671,34 @@ class CacheOrderManager(CacheManagerInterface):
                     or int(fill_id) < 0
                 ):
                     raise RuntimeError("invalid incoming Order fill ID")
+                if fill_id:
+                    fill_id = str(int(fill_id))
                 if not self._is_valid_item(incoming):
                     raise RuntimeError("invalid incoming Order row")
-                key = str(incoming["orderId"])
+                key = str(int(incoming["orderId"]))
+                if fill_id:
+                    prev_owner = fill_owners.get(fill_id)
+                    if prev_owner is not None and prev_owner != key:
+                        raise RuntimeError(
+                            f"immutable fill ID {fill_id} belongs to both orders {prev_owner} and {key}"
+                        )
                 existing_index = by_id.get(key)
                 if existing_index is None:
                     by_id[key] = len(candidate)
+                    incoming["orderId"] = int(incoming["orderId"])
                     incoming["price"] = float(incoming["price"])
                     incoming["quantity"] = float(incoming["quantity"])
                     incoming["timestamp"] = int(incoming["timestamp"])
                     incoming["side"] = str(incoming["side"]).upper()
                     if fill_id:
                         incoming["_fillIds"] = [fill_id]
+                        fill_owners[fill_id] = key
                     candidate.append(incoming)
                     continue
 
                 existing = candidate[existing_index]
                 known_fill_id_list = [
-                    str(existing_fill_id)
+                    str(int(str(existing_fill_id).strip()))
                     for existing_fill_id in existing.get("_fillIds", [])
                 ]
                 legacy_cutoff = existing.get("_legacyCoveredThrough")
@@ -2695,20 +2731,25 @@ class CacheOrderManager(CacheManagerInterface):
                     float(existing["price"]) * previous_quantity
                     + float(incoming["price"]) * additional_quantity
                 ) / total_quantity
+                rounded_price = round(aggregate_price, 8)
+                rounded_qty = round(total_quantity, 8)
                 merged = dict(existing)
                 merged.update(incoming)
                 merged.update({
-                    "price": round(aggregate_price, 8),
-                    "quantity": round(total_quantity, 8),
+                    "orderId": int(existing["orderId"]),
+                    "price": rounded_price if rounded_price > 0 else aggregate_price,
+                    "quantity": rounded_qty if rounded_qty > 0 else total_quantity,
                     "timestamp": max(
                         int(existing["timestamp"]),
                         int(incoming["timestamp"]),
                     ),
+                    "side": str(existing["side"]).upper(),
                 })
                 if fill_id:
                     merged["_fillIds"] = list(
                         dict.fromkeys([*known_fill_id_list, fill_id])
                     )
+                    fill_owners[fill_id] = key
                 if legacy_cutoff is not None:
                     merged["_legacyCoveredThrough"] = int(legacy_cutoff)
                 candidate[existing_index] = merged

@@ -1289,6 +1289,110 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         finally:
             mgr.shutdown()
 
+    def test_audit35_order_manager_canonical_ids_and_sub_satoshi_merge(self):
+        ord_file = os.path.join(self.tmp, "cache_order_a35.json")
+        om = cm.CacheOrderManager(60, ["BTCUSDT"], ord_file, read_only=True)
+        # _is_valid_item rejects numerically duplicate _fillIds like ["01", "1"]
+        self.assertFalse(
+            om._is_valid_item(
+                {
+                    "orderId": 100,
+                    "price": 60000.0,
+                    "quantity": 0.1,
+                    "timestamp": 1700000000000,
+                    "side": "BUY",
+                    "_fillIds": ["01", "1"],
+                }
+            )
+        )
+        # Canonical orderId ("0100" vs 100) and _fillId ("05" vs "5") deduplicate and sub-1e-8 prices survive merge
+        om._persist_items(
+            "BTCUSDT",
+            [
+                {
+                    "orderId": "0100",
+                    "price": 4e-9,
+                    "quantity": 1000.0,
+                    "timestamp": 1700000000000,
+                    "side": "buy",
+                    "_fillId": "05",
+                },
+                {
+                    "orderId": 100,
+                    "price": 4e-9,
+                    "quantity": 500.0,
+                    "timestamp": 1700000001000,
+                    "side": "BUY",
+                    "_fillId": "5",  # duplicate of "05" -> skipped
+                },
+                {
+                    "orderId": 100,
+                    "price": 4e-9,
+                    "quantity": 1000.0,
+                    "timestamp": 1700000002000,
+                    "side": "buy",
+                    "_fillId": "6",
+                },
+            ],
+        )
+        self.assertEqual(len(om.cache["BTCUSDT"]), 1)
+        row = om.cache["BTCUSDT"][0]
+        self.assertEqual(row["orderId"], 100)
+        self.assertEqual(row["side"], "BUY")
+        self.assertEqual(row["quantity"], 2000.0)
+        self.assertAlmostEqual(row["price"], 4e-9, places=15)
+        self.assertTrue(om._is_valid_item(row))
+        self.assertEqual(row["_fillIds"], ["5", "6"])
+        # Cross-order _fillId conflict and mismatched symbol are rejected
+        with self.assertRaises(RuntimeError):
+            om._persist_items(
+                "BTCUSDT",
+                [
+                    {
+                        "orderId": 200,
+                        "price": 60000.0,
+                        "quantity": 0.1,
+                        "timestamp": 1700000003000,
+                        "side": "BUY",
+                        "_fillId": "5",
+                    }
+                ],
+            )
+        with self.assertRaises(RuntimeError):
+            om._persist_items(
+                "BTCUSDT",
+                [
+                    {
+                        "symbol": "ETHUSDT",
+                        "orderId": 300,
+                        "price": 3000.0,
+                        "quantity": 0.1,
+                        "timestamp": 1700000003000,
+                        "side": "BUY",
+                    }
+                ],
+            )
+        # CacheTradeManager.get_last_opposite_fill_price rejects invalid order_type
+        tr_file = os.path.join(self.tmp, "cache_trade_a35.jsonl")
+        tm = cm.CacheTradeManager(60, ["BTCUSDT"], tr_file, read_only=True)
+        tm._persist_items(
+            "BTCUSDT",
+            [
+                {
+                    "symbol": "BTCUSDT",
+                    "id": 1,
+                    "orderId": 10,
+                    "price": "60000.0",
+                    "qty": "0.1",
+                    "time": 1700000000000,
+                    "isBuyer": False,
+                }
+            ],
+        )
+        self.assertIsNone(tm.get_last_opposite_fill_price("BTCUSDT", "UNKNOWN"))
+        self.assertIsNone(tm.get_last_opposite_fill_price("BTCUSDT", None))
+        self.assertEqual(tm.get_last_opposite_fill_price("BTCUSDT", "BUY"), 60000.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
