@@ -1974,6 +1974,31 @@ class TestAtomicWrite(unittest.TestCase):
                 self.assertTrue(os.path.exists(new_p + ".meta"), f"Expected {new_name}.meta to exist")
                 self.assertFalse(os.path.exists(old_p), f"Expected {old_name} to be moved")
 
+    def test_factory_shutdown_all_clears_short_trend_and_ws_bridge_rollback_on_start_error(self):
+        from binance_api import bapi_ws, bapi_ws_bridge
+
+        st = cm.CacheFactory.get("ShortTrend", symbols=["BTCUSDC"])
+        self.assertIs(cm._short_trend_instance, st)
+        self.assertTrue(cm.CacheFactory.shutdown_all())
+        self.assertIsNone(cm._short_trend_instance)
+
+        bapi_ws_bridge.stop_ws_bridge()
+        failing_stream = MagicMock()
+        failing_stream.start.side_effect = RuntimeError("stream start failed")
+        ok_stream = MagicMock()
+        with patch.object(
+            bapi_ws,
+            "BinanceAccountStream",
+            side_effect=[failing_stream, ok_stream],
+        ):
+            with self.assertRaises(RuntimeError):
+                bapi_ws_bridge.enable_real_ws_event_sync()
+            self.assertIsNone(bapi_ws_bridge._ws_bridge)
+            started = bapi_ws_bridge.enable_real_ws_event_sync()
+            self.assertIs(started, ok_stream)
+            ok_stream.start.assert_called_once()
+        bapi_ws_bridge.stop_ws_bridge()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

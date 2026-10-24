@@ -169,7 +169,7 @@ def enable_real_ws_event_sync(
             return _ws_bridge
         from binance_api import bapi_ws
 
-        _ws_bridge = bapi_ws.BinanceAccountStream(
+        bridge = bapi_ws.BinanceAccountStream(
             on_event=on_event or handle_binance_ws_event,
             on_available=on_available or ws_health.mark_ws_available,
             on_healthy=on_healthy or ws_health.mark_ws_event_received,
@@ -180,7 +180,8 @@ def enable_real_ws_event_sync(
                 else loss_timeout_sec
             ),
         )
-        _ws_bridge.start()
+        bridge.start()
+        _ws_bridge = bridge
         return _ws_bridge
 
 

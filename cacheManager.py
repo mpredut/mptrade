@@ -2933,7 +2933,25 @@ class Cache365PriceManager(Cache24PriceManager):
                             target.write(line if line.endswith("\n") else line + "\n")
                         else:
                             changed = True
+                    for symbol, items in original_cache.items():
+                        start = min(max(0, original_persisted_counts.get(symbol, 0)), len(items))
+                        for item in items[start:]:
+                            if self._entry_timestamp_ms(item) >= cutoff_ms:
+                                target.write(
+                                    json.dumps({"s": symbol, "i": item}, separators=(",", ":")) + "\n"
+                                )
+                            changed = True
                 self._load_jsonl()
+                for sym, ft in original_fetchtimes.items():
+                    self.fetchtime_per_symbol[sym] = max(
+                        int(self.fetchtime_per_symbol.get(sym, 0) or 0),
+                        int(ft or 0),
+                    )
+                for sym, cur in original_rest_cursors.items():
+                    self._rest_sync_cursor_per_symbol[sym] = max(
+                        int(self._rest_sync_cursor_per_symbol.get(sym, 0) or 0),
+                        int(cur or 0),
+                    )
                 if changed:
                     if not self._write_meta({
                         "counts": dict(self._persisted_counts),
@@ -3005,6 +3023,16 @@ class Cache365PriceManager(Cache24PriceManager):
                 with atomic_write(self.filename) as target:
                     target.write(tail.decode("utf-8", errors="ignore"))
                 self._load_jsonl()
+                for sym, ft in original_fetchtimes.items():
+                    self.fetchtime_per_symbol[sym] = max(
+                        int(self.fetchtime_per_symbol.get(sym, 0) or 0),
+                        int(ft or 0),
+                    )
+                for sym, cur in original_rest_cursors.items():
+                    self._rest_sync_cursor_per_symbol[sym] = max(
+                        int(self._rest_sync_cursor_per_symbol.get(sym, 0) or 0),
+                        int(cur or 0),
+                    )
                 meta_ok = self._write_meta({
                     "counts": dict(self._persisted_counts),
                     "fetchtime": dict(self.fetchtime_per_symbol),
@@ -3691,9 +3719,10 @@ class CacheFactory:
     @classmethod
     def shutdown_all(cls, timeout=5.0):
         """Stop every factory-owned synchronization loop and clear the registry."""
-        global _current_price_instance
+        global _current_price_instance, _short_trend_instance
         with cls._lock:
             current_price = cls._instances.get("CurrentPrice")
+            short_trend = _short_trend_instance
             managers = []
             seen_ids = set()
             for value in cls._instances.values():
@@ -3702,6 +3731,9 @@ class CacheFactory:
                     if id(manager) not in seen_ids:
                         seen_ids.add(id(manager))
                         managers.append(manager)
+            if short_trend is not None and id(short_trend) not in seen_ids:
+                seen_ids.add(id(short_trend))
+                managers.append(short_trend)
             cls._instances = {}
             cls._sync_started = set()
             results = [manager.shutdown(timeout=timeout) for manager in managers
@@ -3711,6 +3743,12 @@ class CacheFactory:
                 and getattr(current_price, "thread", None) is None
             ):
                 _current_price_instance = None
+            if (
+                short_trend is _short_trend_instance
+                and getattr(short_trend, "_eval_thread", None) is None
+                and getattr(short_trend, "_flush_thread", None) is None
+            ):
+                _short_trend_instance = None
             return all(results) if results else True
 
     @classmethod

@@ -206,6 +206,46 @@ class TestArchiverLifecycle(unittest.TestCase):
             except OSError:
                 pass
 
+    def test_cache365_maintenance_preserves_unpersisted_memory_tail_and_fetchtime(self):
+        tmp_dir = tempfile.mkdtemp()
+        target_jsonl = os.path.join(tmp_dir, "cache_365_price_BTCUSDC.jsonl")
+        try:
+            now_ms = int(cm.time.time() * 1000)
+            with open(target_jsonl, "w", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps({"s": "BTCUSDC", "i": [now_ms - 2000, 10.0]}) + "\n"
+                )
+            manager = cm.Cache365PriceManager(60, ["BTCUSDC"], target_jsonl)
+            manager.save_state = True
+            manager.KEEP_HOURS = 10**9
+            manager.on_price_update("BTCUSDC", now_ms, 12.5)
+            self.assertTrue(manager.maintain_append_persist())
+            self.assertEqual(
+                manager.cache.get("BTCUSDC"),
+                [[now_ms - 2000, 10.0], [now_ms, 12.5]],
+            )
+            self.assertEqual(manager._persisted_counts.get("BTCUSDC"), 2)
+            self.assertGreaterEqual(manager.fetchtime_per_symbol.get("BTCUSDC", 0), now_ms)
+            with open(target_jsonl, encoding="utf-8") as handle:
+                rows = [json.loads(line) for line in handle if line.strip()]
+            self.assertEqual(
+                rows,
+                [
+                    {"s": "BTCUSDC", "i": [now_ms - 2000, 10.0]},
+                    {"s": "BTCUSDC", "i": [now_ms, 12.5]},
+                ],
+            )
+        finally:
+            for name in os.listdir(tmp_dir):
+                try:
+                    os.remove(os.path.join(tmp_dir, name))
+                except OSError:
+                    pass
+            try:
+                os.rmdir(tmp_dir)
+            except OSError:
+                pass
+
 
 if __name__ == "__main__":
     unittest.main()
