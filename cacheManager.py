@@ -2661,8 +2661,10 @@ class CacheSparsePriceManager(CacheManagerInterface):
         last_times = {}
         for symbol in self.symbols:
             entries = self.cache.get(symbol, [])
-            if entries:
-                last_times[symbol] = max(entry[0] for entry in entries)
+            if isinstance(entries, list) and entries:
+                max_ts = max((self._entry_timestamp_ms(entry) for entry in entries), default=0)
+                if max_ts > 0:
+                    last_times[symbol] = max_ts
         return last_times
 
     def get_remote_items(self, symbol, startTime):
@@ -2785,8 +2787,10 @@ class Cache24PriceManager(CacheManagerInterface):
         last_times = {}
         for symbol in self.symbols:
             entries = self.cache.get(symbol, [])
-            if entries:
-                last_times[symbol] = max(entry[0] for entry in entries)
+            if isinstance(entries, list) and entries:
+                max_ts = max((self._entry_timestamp_ms(entry) for entry in entries), default=0)
+                if max_ts > 0:
+                    last_times[symbol] = max_ts
         return last_times
 
     def get_remote_items(self, symbol, startTime):
@@ -3372,7 +3376,10 @@ class CacheCurrentPriceManager(CacheManagerInterface):
             else:
                 price = self.market_api.get_current_price(
                     symbol=symbol, provider_name=provider_name)
-            if price is None:
+            if price is None or isinstance(price, bool):
+                return []
+            price_val = float(price)
+            if not math.isfinite(price_val) or price_val <= 0:
                 return []
             ts_ms = int(time.time() * 1000)
             return [[ts_ms, price]]
@@ -3391,8 +3398,10 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         last_times = {}
         for symbol in self.symbols:
             entries = self.cache.get(symbol, [])
-            if entries:
-                last_times[symbol] = entries[0][0]   # Snapshot contains one entry.
+            if isinstance(entries, list) and entries:
+                max_ts = self._entry_timestamp_ms(entries[0])
+                if max_ts > 0:
+                    last_times[symbol] = max_ts   # Snapshot contains one entry.
         return last_times
 
     def get_all_symbols_from_cache(self):
@@ -3423,15 +3432,19 @@ class CacheCurrentPriceManager(CacheManagerInterface):
 
     def get_cached_price_observation(self, symbol: str, max_age_sec: float):
         """Return a fresh cached timestamp and price without fetching."""
+        if isinstance(max_age_sec, bool):
+            raise ValueError("max_age_sec must be finite and positive")
         max_age = float(max_age_sec)
         if not math.isfinite(max_age) or max_age <= 0:
             raise ValueError("max_age_sec must be finite and positive")
         with self.lock:
             entries = self.cache.get(symbol)
-            entry = list(entries[0]) if entries else None
+            entry = list(entries[0]) if entries and isinstance(entries[0], (list, tuple)) else None
         if not entry or len(entry) < 2:
             return None
         try:
+            if isinstance(entry[0], bool) or isinstance(entry[1], bool):
+                return None
             observed_at = float(entry[0]) / 1000.0
             price = float(entry[1])
         except (TypeError, ValueError, OverflowError):
@@ -3452,13 +3465,13 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         """Return ``[timestamp_ms, price]``, forcing HTTP when missing or stale."""
         with self.lock:
             entries = self.cache.get(symbol)
-        last_ts = entries[0][0] if entries else 0
+        last_ts = self._entry_timestamp_ms(entries[0]) if entries else 0
         now_ms  = int(time.time() * 1000)
         if not entries or (now_ms - last_ts) > self.STALE_THRESHOLD_MS:
             age = now_ms - last_ts if entries else -1
             print(f"[{self.cls_name}] {symbol} stale ({age}ms) - forced HTTP fetch")
             new = self.get_remote_items(symbol, None)
-            if not new:
+            if not new or self._extract_price_and_ts(new)[0] is None:
                 # Preserve the old row for diagnostics, but never return it as a
                 # usable quote after its bounded-age refresh has failed.
                 return None

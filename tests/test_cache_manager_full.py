@@ -1060,15 +1060,21 @@ class TestCacheCurrentPriceManager(unittest.TestCase):
 
         with self.subTest("get_price does not return stale row after http failure"):
             mgr, api_mock = self._make()
-            api_mock.get_current_price.return_value = None
-            stale = [0, 50000.0]
-            with mgr.lock:
-                mgr.cache["BTC"] = [stale]
+            for bad_return in (None, -1.0, 0.0, float("nan"), float("inf"), True):
+                api_mock.get_current_price.return_value = bad_return
+                stale = [0, 50000.0]
+                with mgr.lock:
+                    mgr.cache["BTC"] = [stale]
 
-            self.assertIsNone(mgr.get_price("BTC"))
-            api_mock.get_current_price.assert_called()
+                self.assertIsNone(mgr.get_price("BTC"))
+                api_mock.get_current_price.assert_called()
+                with mgr.lock:
+                    self.assertEqual([stale], mgr.cache["BTC"])
+            with self.assertRaises(ValueError):
+                mgr.get_cached_price_observation("BTC", True)
             with mgr.lock:
-                self.assertEqual([stale], mgr.cache["BTC"])
+                mgr.cache["BTC"] = [[int(time.time() * 1000), True]]
+            self.assertIsNone(mgr.get_cached_price_observation("BTC", 60.0))
 
     def test_provider_binding_and_cached_observation(self):
         with self.subTest("unbound remote price keeps implicit provider routing"):
