@@ -573,6 +573,7 @@ class TestOrderRetryTTL:
         ]
         with patch.object(og, "_load_margins", return_value={
             "default_max_daily_trades": 1,
+            "default_antispam_sec": 5.0,
             "default_safeback_sec": 86400,
         }):
             ok, reason = og.daily_limit_guard(provider, "TAOUSD", "BUY")
