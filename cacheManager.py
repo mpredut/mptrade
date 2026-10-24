@@ -2297,6 +2297,12 @@ class CacheTradeManager(CacheManagerInterface):
         )
         if not all(key in trade for key in required_keys):
             return False
+        if (
+            isinstance(trade["price"], bool)
+            or isinstance(trade["qty"], bool)
+            or isinstance(trade["time"], bool)
+        ):
+            return False
         try:
             price = float(trade["price"])
             quantity = float(trade["qty"])
@@ -2452,6 +2458,12 @@ class CacheOrderManager(CacheManagerInterface):
         required_keys = ("orderId", "price", "quantity", "timestamp", "side")
         if not all(key in trade for key in required_keys):
             return False
+        if (
+            isinstance(trade["price"], bool)
+            or isinstance(trade["quantity"], bool)
+            or isinstance(trade["timestamp"], bool)
+        ):
+            return False
         try:
             order_id = int(trade["orderId"])
             price = float(trade["price"])
@@ -2481,7 +2493,8 @@ class CacheOrderManager(CacheManagerInterface):
                         str(fill_id) for fill_id in trade["_fillIds"]
                     }) == len(trade["_fillIds"])
                     and all(
-                        str(fill_id).isdigit()
+                        not isinstance(fill_id, bool)
+                        and str(fill_id).isdigit()
                         and int(fill_id) >= 0
                         for fill_id in trade["_fillIds"]
                     )
@@ -2557,12 +2570,22 @@ class CacheOrderManager(CacheManagerInterface):
                 if item.get("orderId") is not None
             }
             for item in new_items:
-                key = str(item["orderId"])
+                if not isinstance(item, dict):
+                    raise RuntimeError("invalid incoming Order row")
                 incoming = dict(item)
                 raw_fill_id = incoming.pop("_fillId", None)
                 fill_id = (
                     "" if raw_fill_id is None else str(raw_fill_id).strip()
                 )
+                if raw_fill_id is not None and (
+                    isinstance(raw_fill_id, bool)
+                    or not fill_id.isdigit()
+                    or int(fill_id) < 0
+                ):
+                    raise RuntimeError("invalid incoming Order fill ID")
+                if not self._is_valid_item(incoming):
+                    raise RuntimeError("invalid incoming Order row")
+                key = str(incoming["orderId"])
                 existing_index = by_id.get(key)
                 if existing_index is None:
                     by_id[key] = len(candidate)
@@ -2680,7 +2703,7 @@ class CacheSparsePriceManager(CacheManagerInterface):
         if not entry:
             return []
         ts_ms, price = entry
-        if price is None:
+        if price is None or isinstance(ts_ms, bool) or isinstance(price, bool):
             return []
         try:
             ts_val = int(ts_ms)
@@ -2691,7 +2714,7 @@ class CacheSparsePriceManager(CacheManagerInterface):
             return []
         with self.lock:
             entries = self.cache.get(symbol)
-            if entries and ts_val < int(entries[-1][0]):
+            if entries and ts_val < self._entry_timestamp_ms(entries[-1]):
                 return []
 
         return [[ts_val, price]]
@@ -2740,7 +2763,7 @@ class Cache24PriceManager(CacheManagerInterface):
             return
         with self.lock:
             entries = self.cache.get(symbol)
-            if entries and ts_val < int(entries[-1][0]):
+            if entries and ts_val < self._entry_timestamp_ms(entries[-1]):
                 return
         if not self.fetchtime_per_symbol:
             self.fetchtime_per_symbol = self._rebuild_fetchtimes()
@@ -3334,8 +3357,8 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         with self.lock:
             entries = self.cache.get(symbol)
             existing_ts = (
-                int(entries[0][0])
-                if entries and isinstance(entries[0], (list, tuple)) and entries[0]
+                self._entry_timestamp_ms(entries[0])
+                if entries
                 else 0
             )
         if existing_ts > 0 and (existing_ts - ts_ms) > self.STALE_THRESHOLD_MS:

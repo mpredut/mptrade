@@ -1084,6 +1084,21 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertEqual(w.sample_rate_sec, 1.0)
         self.assertEqual(w.get_short_trend()[0], 1)
 
+        # CacheTradeManager and CacheOrderManager reject bool price/qty/time and invalid incoming order rows
+        valid_trade = {"symbol": "BTCUSDT", "id": 1, "orderId": 10, "price": 60000.0, "qty": 0.1, "time": 1700000000000, "isBuyer": True}
+        self.assertTrue(cm.CacheTradeManager._is_valid_item(valid_trade))
+        for k in ("price", "qty", "time"):
+            self.assertFalse(cm.CacheTradeManager._is_valid_item({**valid_trade, k: True}))
+        order_mgr = cm.CacheOrderManager(60, ["BTCUSDT"], os.path.join(self.tmp, "cache_order_test.json"), read_only=True)
+        valid_order = {"orderId": 10, "price": 60000.0, "quantity": 0.1, "timestamp": 1700000000000, "side": "BUY"}
+        self.assertTrue(order_mgr._is_valid_item(valid_order))
+        for k in ("price", "quantity", "timestamp"):
+            self.assertFalse(order_mgr._is_valid_item({**valid_order, k: True}))
+        with self.assertRaises(RuntimeError):
+            order_mgr._persist_items("BTCUSDT", [{**valid_order, "quantity": 0.0}])
+        with self.assertRaises(RuntimeError):
+            order_mgr._persist_items("BTCUSDT", [{**valid_order, "_fillId": True}])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
