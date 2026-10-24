@@ -1804,6 +1804,67 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         pf_mgr.cleanup_old_prices(retention_days=False)
         self.assertEqual(len(pf_mgr.cache["BTC"]), 4)
 
+    def test_audit43_live_and_hist_trend_files_recover_from_previous(self):
+        """Audit #43: 24trend/live_<SYMBOL>.json, hist_<SYMBOL>.json, and priceanalysis.json stage and recover .previous."""
+        import priceAnalysis as pa
+
+        stm = cm.CacheShortTrendManager(
+            ["BTCUSDT"], os.path.join(self.tmp, "st_audit43.json"), writer=True
+        )
+        os.makedirs(stm.trend_dir, exist_ok=True)
+        now = time.time()
+
+        # 1. _read_live_symbol_file recovers from .previous when live_<SYMBOL>.json is corrupt
+        live_path = stm._live_trend_file("BTCUSDT")
+        with open(live_path, "w", encoding="utf-8") as fh:
+            fh.write("{corrupt")
+        with open(live_path + ".previous", "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "222": {
+                        "gradient_recent": 0.4,
+                        "final_trend": 0.4,
+                        "current_price": 65000.0,
+                        "ts": now,
+                    }
+                },
+                fh,
+            )
+        recovered_live = stm._read_live_symbol_file("BTCUSDT")
+        self.assertIn("222", recovered_live)
+        self.assertFalse(os.path.exists(live_path + ".previous"))
+
+        # 2. _read_hist_symbol_file recovers from .previous so get_trend_for_slice preserves prior slices
+        hist_path = stm._hist_trend_file("BTCUSDT")
+        with open(hist_path, "w", encoding="utf-8") as fh:
+            fh.write("{corrupt")
+        with open(hist_path + ".previous", "w", encoding="utf-8") as fh:
+            json.dump({"1000_2000": {"final_trend": 0.25, "t1_ms": 1000, "t2_ms": 2000}}, fh)
+        slice_res = stm.get_trend_for_slice("BTCUSDT", 1000, 2000)
+        self.assertIsNotNone(slice_res)
+        self.assertEqual(slice_res["final_trend"], 0.25)
+        self.assertFalse(os.path.exists(hist_path + ".previous"))
+
+        # 3. priceAnalysis.write_all_trends restores .previous if atomic_write_json fails
+        pa_file = os.path.join(self.tmp, "priceanalysis.json")
+        pa.write_all_trends(
+            {
+                "BTCUSDT": {
+                    "timestamp": int(now),
+                    "direction": "up",
+                    "start_timestamp": now - 3600,
+                    "duration_seconds": 3600.0,
+                    "estimated_future_hours": 12.0,
+                }
+            },
+            filename=pa_file,
+        )
+        with unittest.mock.patch("priceAnalysis.atomic_write_json", side_effect=OSError("disk full")):
+            pa.write_all_trends({"BTCUSDT": None}, filename=pa_file)
+        with open(pa_file, "r", encoding="utf-8") as fh:
+            persisted_pa = json.load(fh)
+        self.assertEqual(persisted_pa["BTCUSDT"]["direction"], "up")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -208,3 +208,18 @@ def test_commit_file_and_meta_rolls_back_and_recovers_previous(tmp_path):
     assert not Path(previous_generation_path(data_path)).exists()
 
 
+def test_load_json_state_recovers_from_previous_generation(tmp_path):
+    path = tmp_path / "bot_state.json"
+    backup = Path(previous_generation_path(str(path)))
+    path.write_text("{corrupted", encoding="utf-8")
+    backup.write_text('{"cycle": 42, "status": "ok"}', encoding="utf-8")
+
+    loaded = load_json_state(
+        path, default_factory=dict, fail_closed=True, label="bot_state"
+    )
+    assert loaded == {"cycle": 42, "status": "ok"}
+    assert json.loads(path.read_text(encoding="utf-8")) == {"cycle": 42, "status": "ok"}
+    assert not backup.exists()
+
+
+

@@ -38,6 +38,8 @@ from state_io import (
     meta_file_path,
     previous_generation_path,
     read_recovering_previous,
+    restore_previous_generation,
+    stage_previous_generation,
 )
 from providers.base import extract_timestamp_s, normalize_timestamp_ms
 
@@ -79,7 +81,27 @@ def _cm_attr(name: str, default=None):
 
 def _write_json_atomic(path, data, **kwargs):
     fn = _cm_attr("atomic_write_json", atomic_write_json)
-    return fn(path, data, **kwargs)
+    backup_path = None
+    had_prior = os.path.exists(path)
+    if had_prior:
+        try:
+            backup_path = stage_previous_generation(path)
+        except Exception:
+            backup_path = None
+    try:
+        res = fn(path, data, **kwargs)
+        if backup_path is not None:
+            discard_generation_file(backup_path)
+        return res
+    except BaseException:
+        if backup_path is not None and os.path.exists(backup_path):
+            try:
+                restore_previous_generation(path, backup_path=backup_path)
+            except Exception:
+                pass
+        elif not had_prior:
+            discard_generation_file(path)
+        raise
 
 
 def _dynamic_window_key(window_seconds: float) -> str:
@@ -920,14 +942,37 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     def _read_live_symbol_file(self, symbol: str) -> dict:
         path = self._live_trend_file(symbol)
+        backup_path = previous_generation_path(path)
+        if not os.path.exists(path) and not os.path.exists(backup_path):
+            return {}
         try:
-            if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as fh:
+            def _loader(candidate: str) -> dict:
+                with open(candidate, "r", encoding="utf-8") as fh:
                     data = json.load(fh)
-                return data if isinstance(data, dict) else {}
+                if not isinstance(data, dict):
+                    raise ValueError("live trend symbol file must be a dict")
+                return data
+
+            return read_recovering_previous(path, _loader, backup_path=backup_path)
         except Exception:
-            pass
-        return {}
+            return {}
+
+    def _read_hist_symbol_file(self, symbol: str) -> dict:
+        path = self._hist_trend_file(symbol)
+        backup_path = previous_generation_path(path)
+        if not os.path.exists(path) and not os.path.exists(backup_path):
+            return {}
+        try:
+            def _loader(candidate: str) -> dict:
+                with open(candidate, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                if not isinstance(data, dict):
+                    raise ValueError("hist trend symbol file must be a dict")
+                return data
+
+            return read_recovering_previous(path, _loader, backup_path=backup_path)
+        except Exception:
+            return {}
 
     def _published_window(self, symbol, window_seconds, now=None):
         """Return a dynamic window published in 24trend/live_<SYMBOL>.json or shared file."""
@@ -1031,19 +1076,13 @@ class CacheShortTrendManager(CacheManagerInterface):
             sym_hist = self._hist_windows.setdefault(symbol, {})
             if isinstance(sym_hist.get(slice_key), dict):
                 return dict(sym_hist[slice_key])
-            hist_path = self._hist_trend_file(symbol)
-            if os.path.exists(hist_path):
-                try:
-                    with open(hist_path, "r", encoding="utf-8") as fh:
-                        loaded = json.load(fh)
-                    if isinstance(loaded, dict):
-                        for k, v in loaded.items():
-                            if isinstance(v, dict):
-                                sym_hist[k] = v
-                        if isinstance(sym_hist.get(slice_key), dict):
-                            return dict(sym_hist[slice_key])
-                except Exception:
-                    pass
+            loaded = self._read_hist_symbol_file(symbol)
+            if isinstance(loaded, dict):
+                for k, v in loaded.items():
+                    if isinstance(v, dict):
+                        sym_hist[k] = v
+                if isinstance(sym_hist.get(slice_key), dict):
+                    return dict(sym_hist[slice_key])
 
         # Cache miss: resolve raw entries from memory Cache24 or disk Cache24
         entries = []
@@ -1083,16 +1122,11 @@ class CacheShortTrendManager(CacheManagerInterface):
         with self._lock:
             sym_hist = self._hist_windows.setdefault(symbol, {})
             hist_path = self._hist_trend_file(symbol)
-            if os.path.exists(hist_path):
-                try:
-                    with open(hist_path, "r", encoding="utf-8") as fh:
-                        loaded = json.load(fh)
-                    if isinstance(loaded, dict):
-                        for k, v in loaded.items():
-                            if isinstance(v, dict) and k not in sym_hist:
-                                sym_hist[k] = v
-                except Exception:
-                    pass
+            loaded = self._read_hist_symbol_file(symbol)
+            if isinstance(loaded, dict):
+                for k, v in loaded.items():
+                    if isinstance(v, dict) and k not in sym_hist:
+                        sym_hist[k] = v
             sym_hist[slice_key] = res
             try:
                 _write_json_atomic(hist_path, sym_hist)

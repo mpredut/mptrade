@@ -90,19 +90,28 @@ def load_json_state(path: str, *, default_factory, fail_closed: bool,
     """Load JSON state with an explicit live-versus-observational failure policy.
 
     A missing file represents first start and returns the factory default. Invalid,
-    unreadable, or structurally wrong state raises in fail-closed mode; paper,
-    shadow, and monitoring callers may explicitly opt into a clean default.
+    unreadable, or structurally wrong state heals from ``<path>.previous`` when
+    present, or raises in fail-closed mode; paper, shadow, and monitoring callers
+    may explicitly opt into a clean default.
     """
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
+    target_path = os.fspath(path)
+    backup_path = previous_generation_path(target_path)
+    if not os.path.exists(target_path) and not os.path.exists(backup_path):
+        return default_factory()
+
+    def _read_and_validate(candidate_path: str):
+        with open(candidate_path, "r", encoding="utf-8") as handle:
             value = json.load(handle)
         if not isinstance(value, root_type):
             raise ValueError(
                 f"expected {root_type.__name__}, got {type(value).__name__}"
             )
         return value
-    except FileNotFoundError:
-        return default_factory()
+
+    try:
+        return read_recovering_previous(
+            target_path, _read_and_validate, backup_path=backup_path
+        )
     except (OSError, TypeError, ValueError) as exc:
         if fail_closed:
             raise StateReadError(f"invalid {label} state in {path}: {exc}") from exc
