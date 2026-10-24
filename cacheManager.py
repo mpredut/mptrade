@@ -348,7 +348,10 @@ class CacheManagerInterface(ABC):
                     self.cache = data.get("items", {})
                     if not isinstance(self.cache, dict):
                         # Convert the legacy list format to a dictionary.
-                        self.cache = {sym: item for sym, item in zip(self.symbols, self.cache)}
+                        if isinstance(self.cache, (list, tuple)):
+                            self.cache = {sym: item for sym, item in zip(self.symbols, self.cache)}
+                        else:
+                            self.cache = {}
                         print(f"[{self.cls_name}][warning] self.cache is not Dict!!!!")    
                     
                     raw_ft = data.get("fetchtime")
@@ -3950,6 +3953,7 @@ class CacheFactory:
         global _current_price_instance, _short_trend_instance
         with cls._lock:
             current_price = cls._instances.get("CurrentPrice")
+            trade_mgr = cls._instances.get("Trade")
             short_trend = _short_trend_instance
             managers = []
             seen_ids = set()
@@ -3978,6 +3982,10 @@ class CacheFactory:
                 and getattr(short_trend, "thread", None) is None
             ):
                 _short_trend_instance = None
+            import sys as _sys
+            _bapi_tr = _sys.modules.get("binance_api.bapi_trades")
+            if _bapi_tr is not None and getattr(_bapi_tr, "cache_trade_manager", None) is trade_mgr:
+                _bapi_tr.cache_trade_manager = None
             return all(results) if results else True
 
     @classmethod
@@ -4001,6 +4009,11 @@ class CacheFactory:
             stopped = all(results) if results else True
             if name == "CurrentPrice" and value is _current_price_instance and stopped:
                 _current_price_instance = None
+            if name == "Trade" and stopped:
+                import sys as _sys
+                _bapi_tr = _sys.modules.get("binance_api.bapi_trades")
+                if _bapi_tr is not None and getattr(_bapi_tr, "cache_trade_manager", None) is value:
+                    _bapi_tr.cache_trade_manager = None
             return stopped
         
 def get_cache_manager(name, symbols=None, *, start_sync=True):

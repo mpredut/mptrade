@@ -53,7 +53,15 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
         out.extend(batch)
         if len(batch) < limit:          # Final page.
             break
-        from_id = batch[-1]["id"] + 1   # Continue from the next fill ID.
+        try:
+            next_from_id = int(batch[-1]["id"]) + 1   # Continue from the next fill ID.
+        except (KeyError, TypeError, ValueError):
+            if strict:
+                raise RuntimeError(f"Binance trade page missing valid tail id for {symbol}")
+            break
+        if from_id is not None and next_from_id <= from_id:
+            break
+        from_id = next_from_id
         time.sleep(0.2)                 # Polite towards the rate limit.
     return out
 

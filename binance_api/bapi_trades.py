@@ -172,7 +172,10 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
                 break
 
             # Continue one millisecond after the newest fill to avoid duplicates.
-            start_time = (extract_timestamp_ms(trades[-1], default=0) or 0) + 1
+            next_start = (extract_timestamp_ms(trades[-1], default=0) or 0) + 1
+            if next_start <= start_time:
+                break
+            start_time = next_start
         
         
         # aggregated_trades = {}
@@ -417,7 +420,10 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
 
     # Copy one coherent snapshot while the manager may reload a new generation.
     with manager.lock:
-        trades = [dict(trade) for trade in manager.cache.get(symbol, [])]
+        trades = [
+            dict(trade) for trade in manager.cache.get(symbol, [])
+            if isinstance(trade, dict)
+        ]
     if not trades:
         return []
         

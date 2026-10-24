@@ -1405,6 +1405,47 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         cpm._update_timestamps["BTCUSDT"].extend([1000.0, 1000.0])
         self.assertEqual(cpm.get_sample_rate("BTCUSDT", fallback=1.5), 1.5)
 
+        # paginate_my_trades handles string IDs and breaks on non-advancing IDs
+        from binance_api import bapi_allorders, bapi_trades
+
+        class _MockTradeClient:
+            def __init__(self):
+                self.calls = 0
+
+            def get_my_trades(self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return [{"id": "10"}, {"id": "11"}]
+                if self.calls == 2:
+                    return [{"id": "11"}, {"id": "11"}]  # non-advancing -> must break
+                return [{"id": "99"}]
+
+        mock_client = _MockTradeClient()
+        with unittest.mock.patch.object(bapi_allorders.time, "sleep"):
+            pages = bapi_allorders.paginate_my_trades(mock_client, "BTCUSDT", 1000, limit=2)
+        self.assertEqual(len(pages), 4)
+        self.assertEqual(mock_client.calls, 2)
+
+        # CacheManagerInterface.load_state handles {"items": null} without TypeError
+        null_items_file = os.path.join(self.tmp, "cache_null_items.json")
+        with open(null_items_file, "w", encoding="utf-8") as fh:
+            json.dump({"items": None, "fetchtime": {"BTCUSDT": 1000}}, fh)
+        c24_null = cm.Cache24PriceManager(60, ["BTCUSDT"], null_items_file, read_only=True)
+        self.assertEqual(c24_null.cache, {})
+
+        # CacheFactory.remove("Trade") resets bapi_trades.cache_trade_manager if it points to the removed instance
+        prev_inst = cm.CacheFactory._instances.get("Trade")
+        prev_bt_mgr = bapi_trades.cache_trade_manager
+        try:
+            cm.CacheFactory._instances["Trade"] = tm
+            bapi_trades.cache_trade_manager = tm
+            cm.CacheFactory.remove("Trade")
+            self.assertIsNone(bapi_trades.cache_trade_manager)
+        finally:
+            if prev_inst is not None:
+                cm.CacheFactory._instances["Trade"] = prev_inst
+            bapi_trades.cache_trade_manager = prev_bt_mgr
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
