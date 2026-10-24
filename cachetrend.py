@@ -1311,9 +1311,21 @@ class CacheShortTrendManager(CacheManagerInterface):
     # ── Opportunistic-delay gate with informed epsilon ───────────────────────
     def _epsilon(self, snap):
         eps = snap.get("epsilon")
-        if eps is not None and eps > 0:
+        if (
+            isinstance(eps, (int, float))
+            and not isinstance(eps, bool)
+            and math.isfinite(eps)
+            and eps > 0
+        ):
             return float(eps)
-        price = abs(snap.get("current_price") or 0.0)
+        raw_price = snap.get("current_price")
+        price = (
+            abs(float(raw_price))
+            if isinstance(raw_price, (int, float))
+            and not isinstance(raw_price, bool)
+            and math.isfinite(raw_price)
+            else 0.0
+        )
         return price * self.FAVORABLE_REL_EPS
 
     def get_fresh_snapshot(self, symbol, now=None):
@@ -1522,7 +1534,12 @@ def _start_nonbinance_trend_poller(
                         fetch_deadline_sec,
                         provider_name=bindings[s.upper()],
                     )
-                    if p is not None and float(p) > 0:
+                    if (
+                        p is not None
+                        and not isinstance(p, bool)
+                        and math.isfinite(float(p))
+                        and float(p) > 0
+                    ):
                         ws_ts_map = getattr(cpm, "_ws_last_event_ts_per_symbol", None)
                         if isinstance(ws_ts_map, dict):
                             ws_ts_map[s] = time.time()

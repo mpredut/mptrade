@@ -3243,6 +3243,14 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         The polling thread and get_price also use this path; only a real WebSocket event
         in ``on_items_update`` updates ``_ws_last_event_ts``.
         """
+        if price is None or isinstance(price, bool):
+            return
+        try:
+            price_val = float(price)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if not math.isfinite(price_val) or price_val <= 0:
+            return
         ts_ms = int(ts_ms) if ts_ms is not None else int(time.time() * 1000)
         if not self.fetchtime_per_symbol:
             self.fetchtime_per_symbol = self._rebuild_fetchtimes()

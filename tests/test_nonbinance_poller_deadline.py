@@ -169,6 +169,13 @@ class TestFetchDeadline(unittest.TestCase):
             time.sleep(0.05)
         self.assertTrue(cpm._ws_is_healthy("HYPEUSD"))
 
+        # Non-finite or boolean prices must never be pushed or mark the symbol healthy
+        cpm._ws_last_event_ts_per_symbol.clear()
+        cpm.cache.clear()
+        for bad_price in (float("nan"), float("inf"), float("-inf"), True, False, 0.0, -1.0):
+            cpm._push_price("HYPEUSD", bad_price)
+        self.assertEqual(cpm.cache, {})
+
 
 if __name__ == "__main__":
     unittest.main()
