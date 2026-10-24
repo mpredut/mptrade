@@ -239,6 +239,7 @@ def _run_monitortrades_reentry_tick(decision, *, buy_qty=None, place_return=True
     exit_mgr.evaluate_reentry.return_value = MagicMock(should_enter=True, reason="bounce confirmed")
 
     with patch("intelligence.sentiment.guards.post_stop_reentry_guard.get_post_stop_reentry_guard", return_value=fake_guard), \
+         patch("order_guard.check_intelligence_guards", return_value=(True, "ok", 1.0)), \
          patch.object(mt, "_place_guarded", return_value=place_return) as mock_place, \
          patch.object(mt, "get_position_stats", return_value={"average_buy_price": 0.0, "average_sell_price": 0.0, "net_qty": 0.0}), \
          patch.object(mt, "get_exit_manager", return_value=exit_mgr), \

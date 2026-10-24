@@ -25,7 +25,15 @@ _BASE_MARGINS = dict(order_guard._load_margins())
 
 
 def _margins(**overrides):
-    return {**_BASE_MARGINS, **overrides}
+    return {
+        **_BASE_MARGINS,
+        "whale_guard_mode": "off",
+        "orderbook_wall_guard_mode": "off",
+        "funding_guard_mode": "off",
+        "geopolitical_guard_mode": "off",
+        "weibull_exhaustion_policy": "off",
+        **overrides,
+    }
 
 
 def _build_test_context(symbol="BTCUSDC", provider="binance"):
@@ -1892,10 +1900,11 @@ class TestBatch6IntelligenceAndRoutingFixes:
                 suggested_scale=1.0,
             ),
         )
-        margins = dict(order_guard._load_margins())
-        margins["llm_guard_mode"] = "enforce"
-        margins["high_stake_min_notional_usd"] = 1000.0
-        margins["geopolitical_guard_mode"] = "off"
+        margins = _margins(
+            llm_guard_mode="enforce",
+            high_stake_min_notional_usd=1000.0,
+            geopolitical_guard_mode="off",
+        )
         allowed, reason, scale = check_intelligence_order_guards(
             provider="binance",
             symbol="ETHUSDC",

@@ -529,6 +529,11 @@ class TestOrderGuardWithGemini:
             **order_guard._load_margins(),
             "intelligence_guards_mode": "shadow",
             "llm_guard_mode": "shadow",
+            "whale_guard_mode": "off",
+            "orderbook_wall_guard_mode": "off",
+            "funding_guard_mode": "off",
+            "geopolitical_guard_mode": "off",
+            "weibull_exhaustion_policy": "off",
             "high_stake_min_notional_usd": 1000.0,
             "default": 1.15,
         }
@@ -556,6 +561,16 @@ class TestOrderGuardWithGemini:
     def test_check_intelligence_guards_memoized_on_regime_context(self, monkeypatch):
         import order_guard
         from market_regime import MarketRegimeContext, MarketRegimeDecision
+
+        margins = {
+            **order_guard._load_margins(),
+            "whale_guard_mode": "off",
+            "orderbook_wall_guard_mode": "off",
+            "funding_guard_mode": "off",
+            "geopolitical_guard_mode": "off",
+            "weibull_exhaustion_policy": "off",
+        }
+        monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
 
         mock_decision = MarketRegimeDecision(
             regime="bull", gradient=0.5, epsilon=0.1, strength=5.0,
@@ -590,6 +605,11 @@ class TestOrderGuardWithGemini:
             **order_guard._load_margins(),
             "intelligence_guards_mode": "enforce",
             "llm_guard_mode": "enforce",
+            "whale_guard_mode": "off",
+            "orderbook_wall_guard_mode": "off",
+            "funding_guard_mode": "off",
+            "geopolitical_guard_mode": "off",
+            "weibull_exhaustion_policy": "off",
             "high_stake_min_notional_usd": 1000.0,
             "default": 1.15,
             "default_buy_reference": "strict",
