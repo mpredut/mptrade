@@ -1065,6 +1065,19 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         with patch.object(cm, "_CONFIG_ROOT", pa_dir):
             self.assertEqual(lt.get_remote_items("BTCUSDT", 0), [{"trend": 1, "ts": now_sec}])
 
+        # PriceWindow and IncrementalTrendBuffer ignore NaN/Inf/bool without poisoning prefix sums
+        import pricewindow as pw
+
+        w = pw.PriceWindow("BTCUSDT", 5, sample_rate_sec=1.0, window_seconds=50.0)
+        for p in (100.0, 101.0, float("nan"), float("inf"), True, None, 102.0):
+            w.process_price(p)
+        for bad_r in (float("nan"), float("inf"), True, -1.0, 0.0, None):
+            w.set_sample_rate(bad_r)
+        self.assertEqual(list(w.prices), [100.0, 101.0, 102.0])
+        self.assertEqual(w.sorted_prices, [100.0, 101.0, 102.0])
+        self.assertEqual(w.sample_rate_sec, 1.0)
+        self.assertEqual(w.get_short_trend()[0], 1)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

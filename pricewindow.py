@@ -151,13 +151,21 @@ class IncrementalTrendBuffer:
         self.y_ref = None
 
     def append(self, price: float, ts_ms: int = 0) -> None:
-        y = float(price)
+        if price is None or isinstance(price, bool) or isinstance(ts_ms, bool):
+            return
+        try:
+            y = float(price)
+            ts_int = int(ts_ms)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if not math.isfinite(y):
+            return
         if self.y_ref is None:
             self.y_ref = y
         i = len(self.prices)
         k = self.offset + i
         dy = y - self.y_ref
-        self.timestamps.append(int(ts_ms))
+        self.timestamps.append(ts_int)
         self.prices.append(y)
         prev0 = self.p0[-1] if i > 0 else self.base_p0
         prev1 = self.p1[-1] if i > 0 else self.base_p1
@@ -360,12 +368,18 @@ class PriceWindow:
 
     def set_sample_rate(self, rate):
         """Update observed sampling rate and resize a duration-based window."""
-        if rate is None or rate <= 0:
+        if rate is None or isinstance(rate, bool):
+            return
+        try:
+            rate_val = float(rate)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if not math.isfinite(rate_val) or rate_val <= 0:
             return
         self.sample_rate_sec = rate
         if self.window_seconds is None:
             return
-        new_size = max(10, int(self.window_seconds / rate))
+        new_size = max(10, int(self.window_seconds / rate_val))
         if new_size == self.window_size:
             return
         with self._lock:
@@ -437,6 +451,13 @@ class PriceWindow:
 
     def process_price(self, price):
         #print(f"{self.symbol}: {price}")
+        if price is None or isinstance(price, bool):
+            return
+        try:
+            if not math.isfinite(float(price)):
+                return
+        except (TypeError, ValueError, OverflowError):
+            return
         with self._lock:
             if len(self.prices) >= self.window_size:
                 while len(self.prices) >= self.window_size:
