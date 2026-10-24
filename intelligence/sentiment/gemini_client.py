@@ -1,6 +1,7 @@
 """Google Gemini client providing LLM reasoning via authenticated CLI or REST API."""
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -128,8 +129,32 @@ class GeminiClient:
                     if resume:
                         cmd.extend(["--conversation", resume])
                     cmd.extend(["-p", text])
-                    return subprocess.run(cmd, capture_output=True, text=True, timeout=call_timeout,
-                                          check=False, env=run_env)
+                    if is_mocked or not os.path.isdir(bot_cli_base):
+                        return subprocess.run(cmd, capture_output=True, text=True, timeout=call_timeout,
+                                              check=False, env=run_env)
+                    lock_path = os.path.join(bot_cli_base, ".agy_bot_cli.lock")
+                    lock_wait = 90.0 if call_timeout >= 30.0 else min(call_timeout * 0.5, 5.0)
+                    deadline = time.monotonic() + lock_wait
+                    with open(lock_path, "a+", encoding="utf-8") as lock_fh:
+                        locked = False
+                        while True:
+                            try:
+                                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                                locked = True
+                                break
+                            except BlockingIOError:
+                                if time.monotonic() >= deadline:
+                                    break
+                                time.sleep(0.15)
+                        try:
+                            return subprocess.run(cmd, capture_output=True, text=True, timeout=call_timeout,
+                                                  check=False, env=run_env)
+                        finally:
+                            if locked:
+                                try:
+                                    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+                                except OSError:
+                                    pass
 
                 def _parse(proc: subprocess.CompletedProcess) -> Tuple[Optional[str], Optional[str]]:
                     raw = (proc.stdout or "").strip()
