@@ -318,6 +318,22 @@ class KrakenExecutorContractTest(unittest.TestCase):
                     "HYPEUSD", "fedcba9876543210fedcba9876543210"),
                 {"orderId": "CLOSED-1", "status": "closed"},
             )
+
+        with self.subTest(msg="get_price_history_snaps_to_valid_kraken_ohlc_intervals"):
+            import time as _time
+            now_s = int(_time.time())
+            observed_intervals = []
+            def _fake_public(endpoint, params=None):
+                self.assertEqual(endpoint, "OHLC")
+                observed_intervals.append(params["interval"])
+                return {"ADAUSD": [[now_s - 60, "0.24", "0.25", "0.24", "0.245", "0.244", "100", 5]], "last": now_s - 60}
+            self.fake._public = _fake_public
+            hist_24h = self.p.get_price_history("ADAUSD", 24.0)
+            hist_7d = self.p.get_price_history("ADAUSD", 168.0)
+            self.assertEqual(observed_intervals, [5, 15])
+            self.assertEqual(len(hist_24h), 1)
+            self.assertAlmostEqual(hist_24h[0]["price"], 0.245)
+            self.assertEqual(len(hist_7d), 1)
             self.assertIsNone(
                 self.p.order_by_client_id("HYPEUSD", "0" * 32))
 

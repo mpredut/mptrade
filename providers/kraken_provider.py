@@ -205,8 +205,10 @@ class KrakenProvider(MarketDataProvider):
         """Return ascending public OHLC closes as timestamp/price mappings."""
         try:
             cli = self._client()
-            # Choose a minute interval that fits roughly 720 points or fewer.
-            interval = max(1, int(math.ceil((lookback_h * 60.0) / 720.0)))
+            # Choose a valid Kraken OHLC minute interval that fits roughly 720 points or fewer.
+            raw_interval = max(1, int(math.ceil((lookback_h * 60.0) / 720.0)))
+            valid_intervals = (1, 5, 15, 30, 60, 240, 1440, 10080, 21600)
+            interval = next((v for v in valid_intervals if v >= raw_interval), valid_intervals[-1])
             res = cli._public("OHLC", {"pair": symbol, "interval": interval})
             rows = next((v for k, v in res.items() if k != "last"), None)
             if not rows:
