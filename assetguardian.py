@@ -591,7 +591,7 @@ def sell_asset(symbol, qty, current_price, client_order_id, tier_threshold):
         order = mkt.place(
             symbol, "SELL", price, qty_to_sell,
             force=False, smart=False, caller_owns_retry=True,
-            bypass_quantity_policy=True,
+            bypass_guards={"G_QLIMIT1"},
             module="assetguardian",
             wait_for_trend=True,
             client_order_id=client_order_id,
@@ -662,13 +662,13 @@ def buy_with_all_cash(buy_symbol, cash_ratio=BUY_USE_CASH_RATIO,
         f"(safe cap {cash_ratio*100:.2f}% of free cash), qty={qty:.8f}"
     )
     try:
-        # respect_guard=True keeps the historical-price anti-chasing guard active
-        # (bypass_profit_reference=False), so a shallow-dip tier will not buy far above
-        # the recent sell reference. Deeper tiers pass respect_guard=False and bypass it.
+        # respect_guard=True keeps the historical-price anti-chasing guard active,
+        # so a shallow-dip tier will not buy far above the recent sell reference.
+        # Deeper tiers pass respect_guard=False and bypass G_PROF.
         order = mkt.place(
             buy_symbol, "BUY", current_price, qty,
             force=False, smart=False, caller_owns_retry=True,
-            bypass_profit_reference=not respect_guard,
+            bypass_guards=None if respect_guard else {"G_PROF"},
             module="assetguardian",
             wait_for_trend=True,
             client_order_id=client_order_id,

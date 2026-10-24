@@ -474,19 +474,21 @@ def _last_opposite_fill_price_api(symbol, order_type):
 
 
 def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
-                        bypass_profit_guard=False, *, regime_context=None,
-                        bypass_guards=None, **kwargs):
+                        *, regime_context=None, bypass_guards=None, **kwargs):
     """Legacy preflight safety check for Binance orders.
 
     Validates daily trade counts, dynamic market regimes,
     and historical price profit references before order placement.
     """
     from . import bapi_allorders as apiorders
+    from guard_hierarchy import normalize_bypassed_guards
     from providers.market_api import BinanceProvider
 
     order_type = order_type.upper()
     sym.validate_params(order_type, symbol, price, qty)
     provider = BinanceProvider()
+    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
+    bypass_pg = "profit_guard" in bypassed or "all" in bypassed or "*" in bypassed
 
     try:
         current_price = api.get_current_price(symbol)
@@ -505,7 +507,6 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         ok, reason = order_guard.daily_limit_guard(
             provider, symbol, order_type,
             max_daily_trades=PLACE_ORDER_MAX_DAILY_TRADES,
-            safeback_sec=time_back_in_seconds,
             bypass_guards=bypass_guards)
         if not ok:
             return False, reason
@@ -515,7 +516,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
             prefix=kwargs.get("prefix"),
             client_order_id=kwargs.get("client_order_id"),
         )
-        profit_ref_mode = kwargs.get("reference_mode") or kwargs.get("profit_reference_mode")
+        profit_ref_mode = kwargs.get("reference_mode")
         eff_ref_mode = order_guard.get_profit_guard_mode_cfg(
             "binance",
             order_type,
@@ -523,7 +524,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
             reference_mode=profit_ref_mode,
         )
 
-        if regime_context is None and not bypass_profit_guard:
+        if regime_context is None and not bypass_pg:
             from providers.market_api import api as market_api
             regime_context = market_api.market_regime_context(
                 symbol, provider_name="binance")
@@ -546,7 +547,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
                                   if (extract_timestamp_ms(trade, default=0) or 0) >= time_limit
                                   and extract_order_price(trade, default=0.0) > 0]
 
-        if not bypass_profit_guard:
+        if not bypass_pg:
             window_ref = None
             if recent_opposite_trades and eff_ref_mode != "off":
                 if len(recent_opposite_trades) > 1:
@@ -600,8 +601,8 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         return False, "guard_check_api_exception"
     except Exception as e:
         print(f"[GUARD] {order_type} {symbol}: the check failed ({e}) -> "
-              f"{'PASSING (bypass)' if bypass_profit_guard else 'BLOCKED (fail-closed)'}")
-        return bool(bypass_profit_guard), (None if bypass_profit_guard else "guard_check_failed")
+              f"{'PASSING (bypass)' if bypass_pg else 'BLOCKED (fail-closed)'}")
+        return bool(bypass_pg), (None if bypass_pg else "guard_check_failed")
 
 
 
@@ -619,7 +620,7 @@ def _guarded_market_place(symbol, order_type, price, qty, **kwargs):
 def place_safe_order(order_type, symbol, price, qty=None,
                      safeback_seconds=PLACE_ORDER_SAFEBACK_SEC, force=False,
                      cancelorders=False, hours=PLACE_ORDER_HOURS,
-                     bypass_profit_guard=False, _reason_out=None, **kwargs):
+                     _reason_out=None, **kwargs):
     """Adapt the compatible safe API to the common pipeline without smart repricing."""
     order_type = order_type.upper()
     # ``None`` is the legacy "maximum permitted" request. Preserve it until the
@@ -634,7 +635,6 @@ def place_safe_order(order_type, symbol, price, qty=None,
         force=force,
         cancelorders=cancelorders,
         hours=hours,
-        bypass_profit_guard=bypass_profit_guard,
         **kwargs,
     )
     # The common pipeline logs the exact reason. Retain dict compatibility without

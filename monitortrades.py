@@ -1132,7 +1132,7 @@ def _execute_take_profit(
         "force": bool(tp_decision.forced),
         "cancelorders": True,
         "hours": MT_SELL_SAFEBACK_HOURS,
-        "bypass_profit_guard": bypass_pg,
+        "bypass_guards": {"profit_guard"} if bypass_pg else None,
         "wait_for_trend": True,
         "kind": "TP",
         "intent_id": tp_intent_id,
@@ -1229,7 +1229,7 @@ def _execute_stop_loss(
         stop_cid = (pending_stop or {}).get("client_order_id")
         place_kw = {
             "safeback_seconds": sbs, "force": True, "cancelorders": True,
-            "hours": MT_SELL_SAFEBACK_HOURS, "bypass_profit_guard": True,
+            "hours": MT_SELL_SAFEBACK_HOURS,
             "bypass_guards": {"all"}, "wait_for_trend": not bool(sl_decision.forced),
             "kind": "STOP",
             "intent_id": stop_intent_id,

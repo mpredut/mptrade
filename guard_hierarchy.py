@@ -62,8 +62,8 @@ class OperationalGuard(BaseGuard):
 class DailyLimitGuard(OperationalGuard):
     code = "GO1"
     canonical = "daily_limit"
-    aliases = {"go1", "daily_limit", "daily_cap"}
-    description = "Symmetric rolling daily trade count cap per symbol and side"
+    aliases = {"go1", "daily_limit"}
+    description = "Symmetric 24h filled order cap (25/24h) and 5s anti-spam pause per symbol and side"
 
 
 # ============================================================================
@@ -246,8 +246,7 @@ GUARD_CATALOG: dict[str, dict[str, Any]] = {
 }
 
 _ALL_GUARD_ALIASES: set[str] = set().union(*(g.aliases for g in GUARD_INSTANCES)) | {
-    "all", "*", "profit_guard", "legacy_profit_guard", "cooldown",
-    "recent_transaction", "anti_spam",
+    "all", "*", "profit_guard",
     "operational", "trend", "profit", "qlimit", "financial", "intelligence", "microstructure", "llm",
     "go", "gt", "g_prof", "g_qlimit", "gf", "gi", "gllm",
 }
@@ -255,9 +254,6 @@ _ALL_GUARD_ALIASES: set[str] = set().union(*(g.aliases for g in GUARD_INSTANCES)
 
 def normalize_bypassed_guards(
     bypass_guards=None,
-    legacy_bypass_profit_guard=None,
-    legacy_bypass_profit_reference=None,
-    legacy_bypass_quantity_policy=None,
 ) -> set[str]:
     """Canonical resolver for bypassed guard identifiers (SSOT).
 
@@ -266,7 +262,7 @@ def normalize_bypassed_guards(
 
     Supported inputs:
       - Canonical codes: GO1, GT_S, GT_M, GT_L, G_PROF, G_QLIMIT1, G_QLIMIT2,
-        GI_OBOOK, GI_WHALE, GI_FUNDING (or GI_CROWD), GLLM1, GLLM2, GLLM3
+        GI_OBOOK, GI_WHALE, GI_FUNDING, GLLM1, GLLM2, GLLM3
       - Canonical names: daily_limit, short_trend, medium_trend, long_trend,
         math_profit, quantity_policy, internal_quant_limit, orderbook_wall,
         whale_flow, funding_crowding, llm_high_stake, llm_sentiment, llm_geopolitical
@@ -276,12 +272,6 @@ def normalize_bypassed_guards(
       - Master bypass: 'all' or '*' (bypasses all guards for emergency exits)
     """
     bypassed: set[str] = set()
-    if legacy_bypass_profit_guard:
-        bypassed.add("profit_guard")
-    if legacy_bypass_profit_reference:
-        bypassed.add("math_profit")
-    if legacy_bypass_quantity_policy:
-        bypassed.add("quantity_policy")
 
     raw_tokens: list[str] = []
     if bypass_guards is not None:
@@ -340,8 +330,8 @@ def normalize_bypassed_guards(
                 bypassed.add(g.code.lower())
 
     # Expand composite profit_guard (G_PROF: math_profit + G_QLIMIT1: quantity_policy)
-    if "profit_guard" in bypassed or "legacy_profit_guard" in bypassed:
-        bypassed.update({"profit_guard", "legacy_profit_guard"})
+    if "profit_guard" in bypassed:
+        bypassed.add("profit_guard")
         for code in ("G_PROF", "G_QLIMIT1"):
             g = GUARD_REGISTRY[code]
             bypassed.update(g.aliases)

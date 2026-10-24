@@ -181,7 +181,7 @@ class TestQuantityDecisionAndAvailableBalance(unittest.TestCase):
         inst = Instrument("AVAIL_TEST_USDC", symbol="AVAIL_TEST_USDC", provider="custom", api=registry)
 
         # Call with qty=None: sizes to available balance (500 / 100 = 5.0)
-        res = inst.place("BUY", 100.0, None, bypass_profit_guard=True, wait_for_trend=False)
+        res = inst.place("BUY", 100.0, None, bypass_guards={"profit_guard"}, wait_for_trend=False)
         self.assertIsNotNone(res)
         self.assertEqual(len(placed_orders), 1)
         sym, side, px, q, kw = placed_orders[0]
@@ -262,7 +262,7 @@ class TestCentralizedBalanceSingleSourceOfTruth(unittest.TestCase):
         registry = MarketApi([p])
         inst = Instrument("SSOT_BUY_USDC", symbol="SSOT_BUY_USDC", provider="custom", api=registry)
 
-        res = inst.place("BUY", 100.0, None, bypass_profit_guard=True, wait_for_trend=False)
+        res = inst.place("BUY", 100.0, None, bypass_guards={"profit_guard"}, wait_for_trend=False)
         self.assertIsNotNone(res)
         self.assertEqual(p.free_balance.call_count, 1)
         p.free_balance.assert_called_once_with("USDC")
@@ -285,7 +285,7 @@ class TestCentralizedBalanceSingleSourceOfTruth(unittest.TestCase):
         inst = Instrument("SSOT_SELL_USDC", symbol="SSOT_SELL_USDC", provider="custom",
                           base="SSOT_SELL", quote="USDC", api=registry)
 
-        res = inst.place("SELL", 100.0, None, bypass_profit_guard=True, wait_for_trend=False)
+        res = inst.place("SELL", 100.0, None, bypass_guards={"profit_guard"}, wait_for_trend=False)
         self.assertIsNotNone(res)
         self.assertEqual(p.free_balance.call_count, 1)
         p.free_balance.assert_called_once_with("SSOT_SELL")

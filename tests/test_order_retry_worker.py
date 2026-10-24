@@ -245,7 +245,7 @@ class ProcessOnceTest(unittest.TestCase):
             oq.enqueue(
                 "BTCUSDC", "SELL", 0.2,
                 {"force": True, "smart": False, "wait_for_trend": False,
-                 "bypass_profit_guard": True},
+                 "bypass_guards": ["profit_guard"]},
                 requested_price=100.0, failure_reason="profit_guard",
                 provider_name="Protective", now=1000.0)
 

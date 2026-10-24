@@ -1,4 +1,4 @@
-"""Unit tests for symmetric GO1 (daily_limit_guard), Kraken multi-fill aggregation, and daily_limit deferral."""
+"""Unit tests for symmetric GO1 (25 filled orders / 24h + 5s per-symbol anti-spam) and Kraken multi-fill aggregation."""
 
 import json
 import os
@@ -75,24 +75,48 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
         order_guard._MARGINS = None
         order_guard._MARGINS_FILE_MTIME = 0.0
 
-    def test_recent_trades_below_daily_cap_are_allowed_symmetrically(self):
+    def test_5s_antispam_per_symbol_symmetric(self):
         for side in ("BUY", "SELL"):
             prov = FakeProvider()
-            prov.seed_trade(side, age_sec=2.0)
-            ok, reason = order_guard.daily_limit_guard(
-                prov, "BTCUSDC", side, max_daily_trades=25, safeback_sec=86400)
-            self.assertTrue(ok)
-            self.assertIsNone(reason)
+            # Fill on BTCUSDC 2s ago (< 5s) blocks BTCUSDC
+            prov.seed_trade(side, age_sec=2.0, symbol="BTCUSDC")
+            ok_same, reason_same = order_guard.daily_limit_guard(
+                prov, "BTCUSDC", side, max_daily_trades=25)
+            self.assertFalse(ok_same)
+            self.assertEqual(reason_same, "daily_limit")
 
-    def test_daily_limit_blocks_buy_and_sell_symmetrically(self):
+            # Another symbol (TAOUSDC) in the exact same second is NOT blocked
+            ok_other, reason_other = order_guard.daily_limit_guard(
+                prov, "TAOUSDC", side, max_daily_trades=25)
+            self.assertTrue(ok_other)
+            self.assertIsNone(reason_other)
+
+            # After 5s (>= 5s), BTCUSDC is allowed
+            prov_after = FakeProvider()
+            prov_after.seed_trade(side, age_sec=6.0, symbol="BTCUSDC")
+            ok_after, reason_after = order_guard.daily_limit_guard(
+                prov_after, "BTCUSDC", side, max_daily_trades=25)
+            self.assertTrue(ok_after)
+            self.assertIsNone(reason_after)
+
+    def test_daily_limit_25_orders_in_24h_blocks_buy_and_sell_symmetrically(self):
         for side in ("BUY", "SELL"):
             prov = FakeProvider()
-            for _ in range(30):
+            for _ in range(25):
                 prov.seed_trade(side, age_sec=3600.0)
             ok, reason = order_guard.daily_limit_guard(
-                prov, "BTCUSDC", side, max_daily_trades=25, safeback_sec=86400)
+                prov, "BTCUSDC", side, max_daily_trades=25)
             self.assertFalse(ok)
             self.assertEqual(reason, "daily_limit")
+
+            # 24 orders in 24h is allowed
+            prov_24 = FakeProvider()
+            for _ in range(24):
+                prov_24.seed_trade(side, age_sec=3600.0)
+            ok_24, reason_24 = order_guard.daily_limit_guard(
+                prov_24, "BTCUSDC", side, max_daily_trades=25)
+            self.assertTrue(ok_24)
+            self.assertIsNone(reason_24)
 
     def test_bypass_go1_or_daily_limit_or_all_skips_cap(self):
         prov = FakeProvider()
@@ -100,7 +124,7 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
             prov.seed_trade("BUY", age_sec=3600.0)
         for bypass in ({"GO1"}, {"daily_limit"}, {"all"}):
             ok, reason = order_guard.daily_limit_guard(
-                prov, "BTCUSDC", "BUY", max_daily_trades=25, safeback_sec=86400,
+                prov, "BTCUSDC", "BUY", max_daily_trades=25,
                 bypass_guards=bypass)
             self.assertTrue(ok)
             self.assertIsNone(reason)

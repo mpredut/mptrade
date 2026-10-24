@@ -75,7 +75,8 @@ def _load_expected_dataset(manifest_path: Path, interval: int) -> dict:
 
 def strat_params_from_dict(values: dict) -> StratParams:
     """Build StratParams from a stored report, dropping fields that no longer exist."""
-    return StratParams.from_dict(values, warn_dropped=True)
+    merged = {"sl_mhdsl_enabled": False, **values}
+    return StratParams.from_dict(merged, warn_dropped=False)
 
 
 def _load_params(args) -> StratParams:
@@ -286,25 +287,8 @@ def markdown_report(report: dict) -> str:
 
 
 def _projection(report: dict) -> dict:
-    strategy_params = dict(report.get("strategy_params") or {})
-    # The new fields, off by default, stay compatible with older baseline artefacts;
-    # normalisation avoids regenerating them when the decisions are identical.
-    strategy_params.setdefault("dca_spacing_growth_pct", 0.0)
-    strategy_params.setdefault("dca_vol_scale_k", 0.0)
-    strategy_params.setdefault("dca_vol_ref", 2.0)
-    strategy_params.setdefault("dca_vol_interval", 240)
-    strategy_params.setdefault("tp_trail_profit_floor_pct", 0.0)
-    strategy_params.setdefault("tp_regime_gate", False)
-    # The common classifier superseded the overlay-only confirmation field. Its
-    # shared warm-up is inactive while all regime gates are disabled.
-    strategy_params.pop("trend_confirm_bars", None)
-    strategy_params.setdefault("regime_min_samples", 20)
-    # Percentage-sizing fields were added after the baseline artefact. Normalise
-    # their disabled all-zero state so metadata-only differences do not fail.
-    strategy_params.setdefault("total_budget", 0.0)
-    strategy_params.setdefault("alloc_pct", 0.0)
-    strategy_params.setdefault("entry_pct", 0.0)
-    strategy_params.setdefault("dca_pct", 0.0)
+    raw_params = dict(report.get("strategy_params") or {})
+    strategy_params = dataclasses.asdict(strat_params_from_dict(raw_params))
     return {
         "schema_version": report.get("schema_version"),
         "strategy_params": strategy_params,

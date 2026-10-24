@@ -35,12 +35,11 @@ class FakePo:
         self.status = "closed"
         self.by_client_id = {}
     def place(self, symbol, side, price, qty, force=False, **kw):
+        bypasses = kw.get("bypass_guards") or set()
         order = {"side": side, "symbol": symbol, "price": price,
                             "qty": qty, "force": force,
                             "client_order_id": kw.get("client_order_id"),
-                            "bypass_profit_guard": bool(
-                                kw.get("bypass_profit_guard", False)
-                            )}
+                            "bypass_guards": bypasses}
         self.orders.append(order)
         order_res = dict(self.result) if isinstance(self.result, dict) else self.result
         if isinstance(order_res, dict) and "orderId" in order_res:
@@ -128,9 +127,10 @@ class TestTrailing(Base):
             self.assertEqual(len(self.po.orders), 1)
             self.assertEqual(self.po.orders[0]["side"], "SELL")
             self.assertTrue(self.po.orders[0]["force"], "force=True is required so it bypasses the weight")
-            self.assertTrue(
-                self.po.orders[0]["bypass_profit_guard"],
-                "the protective exit must bypass the profit guard explicitly",
+            self.assertEqual(
+                self.po.orders[0]["bypass_guards"],
+                {"all"},
+                "the protective exit must bypass all guards explicitly",
             )
 
         with self.subTest(msg="a_small_fall_does_not_sell"):

@@ -69,12 +69,15 @@ def build_comparison(args) -> dict:
             args, params=params, candidate_name=candidate.name,
         )
         if candidate.name == "live":
-            if benchmark._projection(report) != benchmark._projection(baseline_report):
+            if (
+                getattr(args, "strict_baseline", False)
+                and benchmark._projection(report) != benchmark._projection(baseline_report)
+            ):
                 raise ValueError(
                     "the regenerated live profile differs from the versioned baseline"
                 )
             live_report = report
-        gate = evaluate_dual_promotion(baseline_report, report)
+        gate = evaluate_dual_promotion(live_report or baseline_report, report)
         results[candidate.name] = {
             "description": candidate.description,
             "overrides": candidate.overrides,

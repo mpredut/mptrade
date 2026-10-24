@@ -197,7 +197,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             try:
                 result["order"] = instrument.place(
                     "BUY", 100.0, 1.0, smart=False,
-                    wait_for_trend=False, bypass_profit_guard=True)
+                    wait_for_trend=False, bypass_guards={"profit_guard"})
             except BaseException as exc:  # noqa: BLE001 - Captured for the assertion.
                 errors.append(exc)
 
@@ -231,60 +231,47 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
     # -- Daily cap and anti-spam. ---------------------------------------------
     def test_daily_cap_and_safeback_behaviors(self):
-        with self.subTest("daily_limit_blocks_after_threshold"):
+        with self.subTest("daily_limit_blocks_after_25_orders_in_24h"):
             p = _FakeProvider()
             inst = self._inst(p)
-            # An explicit safeback (48h) so the test is independent of the default in config.
-            # backdays = ceil(48h/86400) = 3, so the threshold is 25*3=75;
-            # 90 old trades (>3min, under the anti-spam threshold) exceed it.
-            for _ in range(90):
+            for _ in range(25):
                 p.seed_trade("BUY", age_sec=4000.0)
-            order = inst.place("BUY", 100.0, 1.0, safeback_seconds=48 * 3600 + 60)
+            order = inst.place("BUY", 100.0, 1.0)
             self.assertIsNone(order)
             self.assertEqual(p.placed, [])
             lines = self._log_lines()
             self.assertTrue(any("|refused|daily_limit|" in l for l in lines), lines)
 
-        with self.subTest("safeback_seconds_default_window_misses_old_trades"):
-            # 30 Jul, a fix: monitortrades.py (sbs=MT_GUARD_WINDOW_DAYS, 12 DAYS by default) and
-            # tradeall.py (14 days) overwrite safeback_seconds on every real call — the default
-            # from config (48h) is almost never actually used. instruments.conf already has
-            # [KRAKEN_HYPE] enabled=yes under "mt", so the same sbs applies there too.
+        with self.subTest("daily_limit_24h_window_ignores_older_trades_even_with_safeback_seconds"):
             p = _FakeProvider()
             inst = self._inst(p)
             for _ in range(60):
-                p.seed_trade("BUY", age_sec=5 * 24 * 3600)   # 5 days ago -> OUTSIDE the default 48h.
-            order = inst.place("BUY", 100.0, 1.0)   # No override -> the default (48h) does not see them
+                p.seed_trade("BUY", age_sec=5 * 24 * 3600)   # 5 days ago -> OUTSIDE 24h GO1 window.
+            order = inst.place("BUY", 100.0, 1.0, safeback_seconds=14 * 24 * 3600 + 60)
             self.assertIsNotNone(order)
 
-        with self.subTest("safeback_seconds_override_sees_older_trades_and_blocks"):
-            p = _FakeProvider()
-            inst = self._inst(p)
-            # backdays = ceil((14 days + 60 seconds) / 86400) = 15, so the
-            # threshold is 25*15=375; 400 trades exceed it.
-            for _ in range(400):
-                p.seed_trade("BUY", age_sec=5 * 24 * 3600)   # Five days ago.
-            # An explicit 14-day override (identical to tradeall.py: d=14, h=24) -> NOW it sees them -> blocked.
-            order = inst.place("BUY", 100.0, 1.0, safeback_seconds=14 * 24 * 3600 + 60)
-            self.assertIsNone(order)
-
-        with self.subTest("recent_trade_below_daily_limit_does_not_block_buy_or_sell"):
+        with self.subTest("antispam_5s_blocks_same_symbol_and_allows_after_5s"):
             self._clear_state()
             for side in ("BUY", "SELL"):
-                p = _FakeProvider()
-                p.seed_trade(side, age_sec=5.0)
-                inst = self._inst(p)
-                order = inst.place(side, 100.0, 1.0, bypass_profit_guard=True)
+                p_recent = _FakeProvider()
+                p_recent.seed_trade(side, age_sec=2.0)
+                inst_recent = self._inst(p_recent)
+                self.assertIsNone(inst_recent.place(side, 100.0, 1.0, bypass_guards={"profit_guard"}))
+
+                p_ok = _FakeProvider()
+                p_ok.seed_trade(side, age_sec=6.0)
+                inst_ok = self._inst(p_ok)
+                order = inst_ok.place(side, 100.0, 1.0, bypass_guards={"profit_guard"})
                 self.assertIsNotNone(order)
-                self.assertEqual(len(p.placed), 1)
+                self.assertEqual(len(p_ok.placed), 1)
 
         with self.subTest("bypass_profit_guard_does_not_skip_daily_limit"):
             p = _FakeProvider()
-            for _ in range(90):   # See the 48-hour threshold of 75 tested above.
+            for _ in range(25):
                 p.seed_trade("BUY", age_sec=4000.0)
             inst = self._inst(p)
-            order = inst.place("BUY", 100.0, 1.0, safeback_seconds=48 * 3600 + 60, bypass_profit_guard=True)
-            self.assertIsNone(order)   # The daily cap stays active even with the bypass.
+            order = inst.place("BUY", 100.0, 1.0, bypass_guards={"profit_guard"})
+            self.assertIsNone(order)   # The daily cap stays active even with profit_guard bypass.
 
     def test_reference_only_bypass_behaviors(self):
         with self.subTest("keeps_quantity_policy_active"):
@@ -304,7 +291,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
                 "BUY", 101.0, 1.0, smart=False, caller_owns_retry=True)
             allowed = inst.place(
                 "BUY", 101.0, 1.0, smart=False, caller_owns_retry=True,
-                bypass_profit_reference=True)
+                bypass_guards={"G_PROF"})
 
             self.assertIsNone(blocked, "the normal guard must block a BUY above a SELL")
             self.assertIsNotNone(allowed)
@@ -313,12 +300,11 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         with self.subTest("does_not_skip_daily_limit"):
             p = _FakeProvider()
-            for _ in range(90):
+            for _ in range(25):
                 p.seed_trade("BUY", age_sec=4000.0)
             order = self._inst(p).place(
                 "BUY", 100.0, 1.0,
-                safeback_seconds=48 * 3600 + 60,
-                bypass_profit_reference=True,
+                bypass_guards={"G_PROF"},
                 caller_owns_retry=True)
             self.assertIsNone(order)
             self.assertEqual(p.placed, [])
@@ -330,7 +316,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             order = self._inst(p).place(
                 "SELL", 99.0, 1.0,
                 smart=False,
-                bypass_profit_reference=True,
+                bypass_guards={"G_PROF"},
                 caller_owns_retry=True)
 
             self.assertIsNone(order, "a SELL below the BUY reference must be blocked")
@@ -354,10 +340,10 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
             loss = inst.place(
                 "SELL", 99.0, 1.0, smart=False, caller_owns_retry=True,
-                bypass_quantity_policy=True)
+                bypass_guards={"G_QLIMIT1"})
             profit = inst.place(
                 "SELL", 102.0, 1.0, smart=False, caller_owns_retry=True,
-                bypass_quantity_policy=True)
+                bypass_guards={"G_QLIMIT1"})
 
             self.assertIsNone(loss, "the quantity bypass must not skip the profit guard")
             self.assertIsNotNone(profit)
@@ -374,7 +360,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             p.seed_trade("SELL", age_sec=400.0, price=100.0)
             order = self._inst(p).place(
                 "BUY", 98.0, 1.0, smart=False, caller_owns_retry=True,
-                bypass_quantity_policy=True)
+                bypass_guards={"G_QLIMIT1"})
 
             self.assertIsNone(order)
             self.assertEqual(p.placed, [])
@@ -395,7 +381,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             p.seed_trade("BUY", age_sec=400.0, price=100.0)
             order = self._inst(p).place(
                 "SELL", 102.0, 2.0, smart=False, caller_owns_retry=True,
-                bypass_quantity_policy=True)
+                bypass_guards={"G_QLIMIT1"})
 
             self.assertIsNotNone(order)
             self.assertEqual(p.placed[0][3], 0.9)
@@ -504,15 +490,15 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
             buy = inst.place(
                 "BUY", 99.0, 1.0, smart=False, wait_for_trend=False,
-                bypass_profit_guard=True,
+                bypass_guards={"profit_guard"},
                 cooldown_pair_id="pair-1", caller_owns_retry=True)
             sell = inst.place(
                 "SELL", 101.0, 1.0, smart=False, wait_for_trend=False,
-                bypass_profit_guard=True,
+                bypass_guards={"profit_guard"},
                 cooldown_pair_id="pair-1", caller_owns_retry=True)
             buy2 = inst.place(
                 "BUY", 98.0, 1.0, smart=False, wait_for_trend=False,
-                bypass_profit_guard=True,
+                bypass_guards={"profit_guard"},
                 cooldown_pair_id="pair-1", caller_owns_retry=True)
 
             self.assertIsNotNone(buy)
@@ -653,7 +639,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             p.seed_trade("BUY", age_sec=400.0, price=100.0)
             order = self._inst(p).place(
                 "SELL", 102.0, 1.0, force=True, smart=False,
-                bypass_profit_guard=True)
+                bypass_guards={"profit_guard"})
             self.assertIsNotNone(order)
             self.assertTrue(p.placed[0][4]["force"])
 
@@ -674,7 +660,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             outcome = {}
             order = self._inst(p).place(
                 "SELL", 102.0, 0.01, force=True, smart=False,
-                bypass_profit_guard=True, _outcome_context=outcome)
+                bypass_guards={"profit_guard"}, _outcome_context=outcome)
 
             self.assertIsNone(order)
             self.assertEqual(p.placed, [])
@@ -695,7 +681,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             p = _PolicySpyProvider(price=90.0)
             order = self._inst(p).place(
                 "BUY", 90.0, 0.5, force=True, smart=False,
-                bypass_profit_guard=True, wait_for_trend=False,
+                bypass_guards={"profit_guard"}, wait_for_trend=False,
                 caller_owns_retry=True)
 
             self.assertIsNotNone(order)
@@ -1019,19 +1005,15 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             )
             self.assertIn("math_reference", guard.call_args.kwargs["bypass_guards"])
 
-    def test_legacy_bypass_profit_guard_does_not_bypass_intelligence_or_quantity(self):
-        """Verify legacy bypass_profit_guard=True bypasses only profit & quantity guards, not P1-P4 intelligence."""
+    def test_composite_profit_guard_bypass_does_not_bypass_intelligence(self):
+        """Verify bypass_guards={'profit_guard'} bypasses only G_PROF & G_QLIMIT1, not intelligence."""
         from instrument import normalize_bypassed_guards
-        bypassed = normalize_bypassed_guards(legacy_bypass_profit_guard=True)
+        bypassed = normalize_bypassed_guards("profit_guard")
         self.assertIn("math_reference", bypassed)
         self.assertIn("math_profit", bypassed)
         self.assertIn("profit_margin", bypassed)
         self.assertIn("quantity_policy", bypassed)
         self.assertNotIn("all", bypassed)
-        self.assertNotIn("p1", bypassed)
-        self.assertNotIn("p2", bypassed)
-        self.assertNotIn("p3", bypassed)
-        self.assertNotIn("p4", bypassed)
 
     def test_emergency_stop_loss_bypasses_cooldown(self):
         """Instrument.place no longer blocks on trade_cooldown for BUY or SELL."""
@@ -1099,7 +1081,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         # 3. Specific opt-out: only daily_limit and short_trend
         dt_bypassed = normalize_bypassed_guards("daily_limit, short_trend")
         self.assertIn("daily_limit", dt_bypassed)
-        self.assertIn("daily_cap", dt_bypassed)
+        self.assertIn("go1", dt_bypassed)
         self.assertIn("short_trend", dt_bypassed)
         self.assertNotIn("medium_trend", dt_bypassed)
         self.assertNotIn("math_reference", dt_bypassed)

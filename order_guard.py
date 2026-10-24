@@ -49,6 +49,7 @@ _REQUIRED_ORDER_GUARD_KEYS = frozenset({
     "binance_chop_weight",
     "kraken_chop_weight",
     "default_max_daily_trades",
+    "default_antispam_sec",
     "default_safeback_sec",
     "default_buy_reference",
     "binance_buy_reference",
@@ -945,32 +946,36 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
 
 
 def get_max_daily_trades_cfg(provider_name):
-    """Return the venue's daily trade cap strictly from order_guard.conf."""
+    """Return the venue's 24h trade cap strictly from order_guard.conf."""
     m = _load_margins()
     key = (provider_name or "").lower() + "_max_daily_trades"
     return int(m.get(key, m["default_max_daily_trades"]))
 
 
+def get_antispam_sec_cfg(provider_name):
+    """Return the per-symbol anti-spam pause in seconds from order_guard.conf."""
+    m = _load_margins()
+    key = (provider_name or "").lower() + "_antispam_sec"
+    return float(m.get(key, m.get("default_antispam_sec", 5.0)))
+
+
 def get_safeback_sec_cfg(provider_name):
-    """Return the per-venue trade-search window in seconds strictly from order_guard.conf for the daily cap."""
+    """Return the per-venue historical lookback window in seconds for the profit guard reference."""
     m = _load_margins()
     key = (provider_name or "").lower() + "_safeback_sec"
     return float(m.get(key, m["default_safeback_sec"]))
 
 
-def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
-                      safeback_sec=None, *, bypass_guards=None):
-    """Enforce the symmetric daily trade count cap as the SINGLE implementation.
-    Since July 30, Binance bapi_placeorder.if_place_safe_order delegates here instead of
-    maintaining a second inline version; Kraken and Hyperliquid use it through
-    Instrument.place(). provider.get_orders supplies same-side orders from safeback_sec.
-    Exceeding max_daily_trades per day returns "daily_limit".
+DAILY_LIMIT_WINDOW_SEC = 86400.0
 
-    backdays = math.ceil(safeback_sec/86400), rounded UP to preserve the historical
-    Binance formula and its effective threshold rather than using simple division.
 
-    Return (True, None) or (False, reason). Read errors propagate so the caller can fail
-    closed, consistently with profit_guard and weight_limit."""
+def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, bypass_guards=None):
+    """Enforce GO1 symmetrically per symbol and side:
+    1. Max 25 filled orders per 24 hours (86400s).
+    2. Minimum 5-second anti-spam pause between orders on the same symbol.
+
+    Return (True, None) or (False, "daily_limit" | "history_unavailable").
+    """
     if bypass_guards:
         from guard_hierarchy import normalize_bypassed_guards, GUARD_REGISTRY
         bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
@@ -979,9 +984,9 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
     name = _provider_name(provider)
     order_type = order_type.upper()
     max_daily_trades = max_daily_trades if max_daily_trades is not None else get_max_daily_trades_cfg(name)
-    safeback_sec = float(safeback_sec if safeback_sec is not None else get_safeback_sec_cfg(name))
+    antispam_sec = get_antispam_sec_cfg(name)
     try:
-        trades = provider.get_orders(symbol, order_type, safeback_sec)
+        trades = provider.get_orders(symbol, order_type, DAILY_LIMIT_WINDOW_SEC)
     except ProviderError as exc:
         print(f"[DAILY-LIMIT] {order_type} {symbol}: history unavailable ({exc}) -> BLOCKED")
         return False, "history_unavailable"
@@ -991,11 +996,18 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
     if trades is None:
         print(f"[DAILY-LIMIT] {order_type} {symbol}: history unavailable -> BLOCKED")
         return False, "history_unavailable"
-    backdays = max(math.ceil(safeback_sec / 86400.0), 1)
-    if len(trades) / backdays > max_daily_trades:
-        print(f"[DAILY-LIMIT] {order_type} {symbol}: {len(trades)} trades in "
-              f"{safeback_sec/3600:.1f}h, a cap of {max_daily_trades}/day -> BLOCKED")
+    if len(trades) >= max_daily_trades:
+        print(f"[DAILY-LIMIT] {order_type} {symbol}: {len(trades)} trades in 24h, "
+              f"cap of {max_daily_trades}/24h -> BLOCKED")
         return False, "daily_limit"
+    if antispam_sec > 0 and trades:
+        now_s = time.time()
+        for t in trades:
+            ts_s = extract_timestamp_s(t, default=0.0) or 0.0
+            if ts_s > 0 and 0.0 <= (now_s - ts_s) < antispam_sec:
+                print(f"[DAILY-LIMIT] {order_type} {symbol}: last fill {now_s - ts_s:.1f}s ago "
+                      f"< {antispam_sec:.0f}s anti-spam -> BLOCKED")
+                return False, "daily_limit"
     return True, None
 
 

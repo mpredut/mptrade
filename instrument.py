@@ -259,17 +259,10 @@ class Instrument:
             retry_requested_price_raw is not None
             or retry_price_tolerance_raw is not None)
         bypass_guards_raw = kwargs.pop("bypass_guards", None)
-        legacy_bypass_profit_guard = kwargs.pop("bypass_profit_guard", None)
-        legacy_bypass_profit_ref = kwargs.pop("bypass_profit_reference", None)
-        legacy_bypass_qty_policy = kwargs.pop("bypass_quantity_policy", None)
         caller_profit_margin = kwargs.pop("profit_margin", None)
-        profit_reference_mode = (
-            kwargs.pop("reference_mode", None)
-            or kwargs.pop("profit_reference_mode", None)
-        )
+        profit_reference_mode = kwargs.pop("reference_mode", None)
         caller_module = kwargs.pop("module", None)
         allow_math_reference_sell = bool(kwargs.pop("allow_math_reference_sell", False))
-        kwargs.pop("is_stop_loss", None)
         order_kind = kwargs.get("kind") or kwargs.get("motivation")
         if order_kind is not None:
             kwargs["kind"] = order_kind
@@ -280,7 +273,7 @@ class Instrument:
             if profit_reference_mode is None:
                 profit_reference_mode = self.params.get(
                     f"{side.strip().lower()}_reference_mode",
-                    self.params.get("reference_mode") or self.params.get("profit_reference_mode"),
+                    self.params.get("reference_mode"),
                 )
             if caller_module is None:
                 caller_module = self.params.get("module")
@@ -295,12 +288,7 @@ class Instrument:
             venue_key = f"{str(self._provider.name).lower()}_bypass_guards"
             bypass_guards_raw = m.get(venue_key, m["default_bypass_guards"])
 
-        bypassed_guards = normalize_bypassed_guards(
-            bypass_guards=bypass_guards_raw,
-            legacy_bypass_profit_guard=legacy_bypass_profit_guard,
-            legacy_bypass_profit_reference=legacy_bypass_profit_ref,
-            legacy_bypass_quantity_policy=legacy_bypass_qty_policy,
-        )
+        bypassed_guards = normalize_bypassed_guards(bypass_guards=bypass_guards_raw)
         bypass_all = "all" in bypassed_guards
         bypass_profit_guard = "profit_guard" in bypassed_guards or bypass_all
         bypass_math_ref = GUARD_REGISTRY["G_PROF"].is_bypassed(bypassed_guards) or bypass_profit_guard
@@ -491,12 +479,11 @@ class Instrument:
                     except (TypeError, ValueError):
                         pass
 
-            # 1. Provider-agnostic daily trade cap.
+            # 1. Provider-agnostic daily trade cap (25 orders / 24h + 5s per-symbol anti-spam).
             is_exempt_daily_limit = bool("daily_limit" in bypassed_guards)
             if not is_exempt_daily_limit:
                 ok, reason = order_guard.daily_limit_guard(
                     self._provider, self.symbol, side_u,
-                    safeback_sec=safeback_override,
                     bypass_guards=bypassed_guards,
                 )
                 if not ok:

@@ -285,14 +285,14 @@ def test_place_safe_order_delegates_to_common_pipeline_without_smart_repricing()
         result = po.place_safe_order(
             "buy", TAO_SYMBOL, 225.0, 2.0,
             safeback_seconds=123, force=True, cancelorders=True,
-            hours=0.5, bypass_profit_guard=True,
+            hours=0.5, bypass_guards={"profit_guard"},
         )
 
     assert result == expected
     place.assert_called_once_with(
         TAO_SYMBOL, "BUY", 225.0, 2.0,
         smart=False, safeback_seconds=123, force=True,
-        cancelorders=True, hours=0.5, bypass_profit_guard=True,
+        cancelorders=True, hours=0.5, bypass_guards={"profit_guard"},
     )
 
 
@@ -341,7 +341,7 @@ class IfPlaceSafeOrderDailyLimitTestCase(unittest.TestCase):
             return po.if_place_safe_order(
                 side, SYMBOL, 100.0, 1.0,
                 time_back_in_seconds=48 * 3600 + 60,
-                bypass_profit_guard=True,
+                bypass_guards={"profit_guard"},
             )
 
     def test_no_trades_allowed(self):
@@ -350,21 +350,24 @@ class IfPlaceSafeOrderDailyLimitTestCase(unittest.TestCase):
         self.assertIsNone(reason)
 
     def test_daily_limit_blocks(self):
-        # backdays = math.ceil((48h+60s)/86400) = 3 -> threshold 25*3=75; 90 exceeds it.
-        ok, reason = self._run(same_side_trades=_trades(90, age_sec=4000.0))
+        # 25 filled orders in 24h reaches the 25/24h cap
+        ok, reason = self._run(same_side_trades=_trades(25, age_sec=4000.0))
         self.assertFalse(ok)
         self.assertEqual(reason, "daily_limit")
 
     def test_daily_limit_blocks_sell_symmetrically(self):
-        ok, reason = self._run(same_side_trades=_trades(90, side="SELL", age_sec=4000.0), side="SELL")
+        ok, reason = self._run(same_side_trades=_trades(25, side="SELL", age_sec=4000.0), side="SELL")
         self.assertFalse(ok)
         self.assertEqual(reason, "daily_limit")
 
-    def test_recent_transaction_does_not_block_buy_or_sell_below_daily_limit(self):
-        ok_buy, reason_buy = self._run(same_side_trades=_trades(1, age_sec=5.0))
+    def test_antispam_5s_blocks_and_after_5s_allows(self):
+        ok_recent, reason_recent = self._run(same_side_trades=_trades(1, age_sec=2.0))
+        self.assertFalse(ok_recent)
+        self.assertEqual(reason_recent, "daily_limit")
+        ok_buy, reason_buy = self._run(same_side_trades=_trades(1, age_sec=6.0))
         self.assertTrue(ok_buy)
         self.assertIsNone(reason_buy)
-        ok_sell, reason_sell = self._run(same_side_trades=_trades(1, side="SELL", age_sec=5.0), side="SELL")
+        ok_sell, reason_sell = self._run(same_side_trades=_trades(1, side="SELL", age_sec=6.0), side="SELL")
         self.assertTrue(ok_sell)
         self.assertIsNone(reason_sell)
 
@@ -651,17 +654,16 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertEqual(restore_params["price"], 60.25)
         self.assertEqual(restore_params["side"], "SELL")
 
-        # 8. order_guard.daily_limit_guard enforces symmetric daily cap
+        # 8. order_guard.daily_limit_guard enforces symmetric 24h daily cap and 5s anti-spam
         now_s = int(time.time())
         fake_provider = types.SimpleNamespace(
             name="binance",
             get_orders=lambda sym, side, window: [
-                {"price": 100.0, "qty": 1.0, "time": now_s - 5},
-                {"price": 100.0, "qty": 1.0, "time": now_s - 10},
+                {"price": 100.0, "qty": 1.0, "time": now_s - 2},
             ],
         )
         ok, reason = po.order_guard.daily_limit_guard(
-            fake_provider, SYMBOL, "BUY", max_daily_trades=1, safeback_sec=3600,
+            fake_provider, SYMBOL, "BUY", max_daily_trades=10,
         )
         self.assertFalse(ok)
         self.assertEqual(reason, "daily_limit")

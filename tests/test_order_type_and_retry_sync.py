@@ -112,7 +112,7 @@ class OrderTypeAndRetrySyncTest(unittest.TestCase):
         inst = Instrument("TESTUSDC", symbol="TESTUSDC", provider="mock", api=api)
 
         # Calling with market=True sets both market=True and force=True
-        inst.place("BUY", 100.0, 1.0, market=True, bypass_profit_guard=True)
+        inst.place("BUY", 100.0, 1.0, market=True, bypass_guards={"profit_guard"})
         self.assertTrue(received_kwargs.get("market"))
         self.assertTrue(received_kwargs.get("force"))
 

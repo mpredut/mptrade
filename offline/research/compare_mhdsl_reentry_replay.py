@@ -28,13 +28,17 @@ def run_comparison(csv_path=None):
     results = []
 
     for sl in sl_levels:
+        common_reentry = dict(
+            adopt_cost=0.0, adopt_qty=0.0, reentry_drop_pct=2.0, reentry_tolerance_pct=0.05,
+            reentry_adaptive=False, reentry_sl_bounce_pct=1.5, tp_tranches=[],
+            reentry_hybrid_enabled=True, reentry_pullback_pct=2.0, reentry_ttl_hours=48.0,
+        )
         p_base = strat.StratParams(
             currency="USD", entry_amount=350.0, entry_discount_pct=0.2, dca_amount=100.0,
             dca_drop_pct=2.0, check_minutes=2.0, takeprofit_pct=5.0, max_budget=1050.0,
             max_dca_buys=7, enable_takeprofit=True, order_ttl_min=10.0, stop_loss_pct=sl,
             sl_mhdsl_enabled=False,
-            adopt_cost=0.0, adopt_qty=0.0, reentry_drop_pct=2.0, reentry_tolerance_pct=0.05,
-            reentry_adaptive=False, reentry_sl_bounce_pct=1.5, tp_tranches=[]
+            **common_reentry,
         )
         p_prop = strat.StratParams(
             currency="USD", entry_amount=350.0, entry_discount_pct=0.2, dca_amount=100.0,
@@ -49,8 +53,7 @@ def run_comparison(csv_path=None):
             sl_bounce_pullback_pct=0.30,
             sl_bounce_ratchet_enabled=True,
             sl_structural_break_enabled=True,
-            adopt_cost=0.0, adopt_qty=0.0, reentry_drop_pct=2.0, reentry_tolerance_pct=0.05,
-            reentry_adaptive=False, reentry_sl_bounce_pct=1.5, tp_tranches=[]
+            **common_reentry,
         )
 
         res_base = run_replay(bars, p_base, fee_pct=0.26, bar_minutes=240)

@@ -386,9 +386,8 @@ class AssetGuardianTest(unittest.TestCase):
                  mock.patch.object(ag.mkt, "place", return_value={"orderId": 7}) as place:
                 self.assertTrue(ag.buy_with_all_cash("TAOUSDC", cash_ratio=0.5))
             self.assertTrue(place.call_args.kwargs["caller_owns_retry"])
-            self.assertTrue(place.call_args.kwargs["bypass_profit_reference"])
+            self.assertEqual(place.call_args.kwargs["bypass_guards"], {"G_PROF"})
             self.assertTrue(place.call_args.kwargs["wait_for_trend"])
-            self.assertNotIn("bypass_profit_guard", place.call_args.kwargs)
             self.assertEqual(place.call_args.kwargs["motivation"],
                              "assetguardian_drawdown_buy")
             self.assertEqual(place.call_args.args[0], "TAOUSDC")
@@ -580,10 +579,8 @@ class AssetGuardianTest(unittest.TestCase):
                     client_order_id="AGS_test", tier_threshold=15.0)
             self.assertEqual(order, {"orderId": 8})
             self.assertTrue(place.call_args.kwargs["caller_owns_retry"])
-            self.assertTrue(place.call_args.kwargs["bypass_quantity_policy"])
+            self.assertEqual(place.call_args.kwargs["bypass_guards"], {"G_QLIMIT1"})
             self.assertEqual(place.call_args.kwargs["module"], "assetguardian")
-            self.assertNotIn("bypass_profit_reference", place.call_args.kwargs)
-            self.assertNotIn("bypass_profit_guard", place.call_args.kwargs)
             self.assertEqual(place.call_args.kwargs["motivation"],
                              "assetguardian_growth_exit_tier_15")
             self.assertEqual(place.call_args.kwargs["client_order_id"], "AGS_test")

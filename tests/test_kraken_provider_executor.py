@@ -136,7 +136,7 @@ class KrakenExecutorContractTest(unittest.TestCase):
         ):
             return instrument.place(
                 "BUY", 60.0, 1.0, smart=False, wait_for_trend=False,
-                caller_owns_retry=True, bypass_profit_guard=True,
+                caller_owns_retry=True,
                 force=force, client_order_id=client_order_id,
                 bypass_guards={"all"})
 

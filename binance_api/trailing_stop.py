@@ -428,11 +428,9 @@ class TrailingStop:
             bypass_guards = {"all"} if side == "SELL" else {"math_reference"}
 
         def submit_once():
-            is_all_bypassed = "all" in bypass_guards or "*" in bypass_guards
             response = self.po.place(
                 pair, side, price, qty, force=True,
-                bypass_guards=bypass_guards,
-                bypass_profit_guard=is_all_bypassed, smart=False,
+                bypass_guards=bypass_guards, smart=False,
                 caller_owns_retry=True, wait_for_trend=True,
                 client_order_id=intent["client_order_id"],
                 _outcome_context=outcome_context)

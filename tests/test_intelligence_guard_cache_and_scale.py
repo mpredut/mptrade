@@ -353,7 +353,7 @@ class TestCase5HistoryFailClosed:
                 raise ProviderError("Network error fetching trade history")
 
         p = BrokenHistoryProvider()
-        ok, reason = order_guard.daily_limit_guard(p, "BTCUSDC", "BUY", safeback_sec=86400)
+        ok, reason = order_guard.daily_limit_guard(p, "BTCUSDC", "BUY")
         assert ok is False
         assert reason == "history_unavailable"
 
@@ -1776,7 +1776,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
             smart=False,
             wait_for_trend=False,
             caller_owns_retry=True,
-            profit_reference_mode="dynamic",
+            reference_mode="dynamic",
             medium_trend_action="scale",
             medium_trend_scale=0.5,
         )

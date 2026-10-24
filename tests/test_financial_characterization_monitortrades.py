@@ -327,7 +327,7 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.assertEqual(len(inst.placed), 1)
             order = inst.placed[0]
             self.assertEqual((order["side"], order["qty"]), ("SELL", 4.0))
-            self.assertTrue(order["kwargs"]["bypass_profit_guard"])
+            self.assertEqual(order["kwargs"]["bypass_guards"], {"all"})
             self.assertNotIn("caller_owns_retry", order["kwargs"])
 
         with self.subTest(msg="average_reference_can_trigger_sell_when_last_buy_does_not"):
@@ -374,7 +374,7 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.assertEqual(len(inst.placed), 1)
             self.assertEqual(inst.placed[0]["side"], "SELL")
             self.assertAlmostEqual(inst.placed[0]["qty"], 0.06625, places=6)
-            self.assertTrue(inst.placed[0]["kwargs"]["bypass_profit_guard"])
+            self.assertEqual(inst.placed[0]["kwargs"]["bypass_guards"], {"all"})
 
     def test_buyback_behaviors(self):
         with self.subTest(msg="buyback_uses_budget_divided_by_market_price_and_adds_offset"):
@@ -622,7 +622,6 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.assertEqual(len(inst.placed), 1)
             order = inst.placed[0]
             self.assertEqual((order["side"], order["qty"]), ("SELL", 4.0))
-            self.assertTrue(order["kwargs"]["bypass_profit_guard"])
             self.assertEqual(order["kwargs"]["bypass_guards"], {"all"})
 
         # Subtest 3: Disaster floor breach, trend_up=False -> EXECUTE
@@ -632,7 +631,6 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.assertEqual(len(inst.placed), 1)
             order = inst.placed[0]
             self.assertEqual((order["side"], order["qty"]), ("SELL", 4.0))
-            self.assertTrue(order["kwargs"]["bypass_profit_guard"])
             self.assertEqual(order["kwargs"]["bypass_guards"], {"all"})
 
         # Subtest 4: Active crash cascade, trend_up=True -> DEFER (bounce protection)
@@ -652,7 +650,6 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.assertEqual(len(inst.placed), 1)
             order = inst.placed[0]
             self.assertEqual((order["side"], order["qty"]), ("SELL", 4.0))
-            self.assertTrue(order["kwargs"]["bypass_profit_guard"])
             self.assertEqual(order["kwargs"]["bypass_guards"], {"all"})
 
 
@@ -679,7 +676,6 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.assertEqual(len(inst.placed), 1)
             order = inst.placed[0]
             self.assertEqual((order["side"], order["qty"]), ("SELL", 4.0))
-            self.assertTrue(order["kwargs"]["bypass_profit_guard"])
             self.assertEqual(order["kwargs"]["bypass_guards"], {"all"})
 
         # Subtest 2: Recent trade does not block Stop-Loss
@@ -1308,7 +1304,7 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.run_tick(inst, trend_up=False, gain=0.10, loss=0.04)
             self.assertEqual(len(inst.placed), 1)
             self.assertEqual(inst.placed[0]["side"], "SELL")
-            self.assertFalse(inst.placed[0]["kwargs"].get("bypass_profit_guard", False))
+            self.assertIsNone(inst.placed[0]["kwargs"].get("bypass_guards"))
 
         with self.subTest(msg="profitable_tp_on_lower_cycle_not_inferred_as_stop"):
             mt._LAST_EXIT_KIND.clear()
