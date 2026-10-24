@@ -1098,6 +1098,15 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             order_mgr._persist_items("BTCUSDT", [{**valid_order, "quantity": 0.0}])
         with self.assertRaises(RuntimeError):
             order_mgr._persist_items("BTCUSDT", [{**valid_order, "_fillId": True}])
+        order_mgr.fetchtime_per_symbol = {"BTCUSDT": None, "ETHUSDT": True}
+        self.assertEqual(order_mgr._mem_max_ts(), 0)
+        with open(order_mgr.filename + ".meta", "w", encoding="utf-8") as fh:
+            json.dump({"max_ts": None}, fh)
+        self.assertEqual(order_mgr._persisted_max_ts(), 0)
+        with open(order_mgr.filename, "w", encoding="utf-8") as fh:
+            json.dump({"items": {"BTCUSDT": [{**valid_order, "price": -1.0}]}, "fetchtime": {"BTCUSDT": 1700000000000}}, fh)
+        with self.assertRaises(ValueError):
+            order_mgr._read_legacy_order_snapshot_strict(None)
 
 
 if __name__ == "__main__":

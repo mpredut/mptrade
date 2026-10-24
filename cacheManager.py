@@ -404,6 +404,9 @@ class CacheManagerInterface(ABC):
         fetchtime = data.get("fetchtime", {})
         if not isinstance(items, dict) or not isinstance(fetchtime, dict):
             raise ValueError("invalid Order cache maps")
+        fetchtime = self._normalize_timestamp_map(
+            fetchtime, "Order cache fetchtime"
+        )
         raw_cursor = data.get("rest_sync_cursor")
         if raw_cursor is None and legacy_meta is not None:
             raw_cursor = legacy_meta.get("rest_sync_cursor")
@@ -413,6 +416,13 @@ class CacheManagerInterface(ABC):
             rest_sync_cursor = self._normalize_timestamp_map(
                 raw_cursor, "Order cache rest_sync_cursor"
             )
+        for symbol, orders in items.items():
+            if (
+                not isinstance(symbol, str)
+                or not isinstance(orders, list)
+                or any(not self._is_valid_item(order) for order in orders)
+            ):
+                raise ValueError("invalid Order cache items")
         actual_counts = {
             s: len(v) for s, v in items.items() if isinstance(v, list)
         }
@@ -493,7 +503,17 @@ class CacheManagerInterface(ABC):
         if not self.fetchtime_per_symbol:
             return 0
         try:
-            return max(self.fetchtime_per_symbol.values())
+            return max(
+                (
+                    int(v)
+                    for v in self.fetchtime_per_symbol.values()
+                    if isinstance(v, (int, float))
+                    and not isinstance(v, bool)
+                    and math.isfinite(v)
+                    and v > 0
+                ),
+                default=0,
+            )
         except Exception:
             return 0
 
@@ -501,7 +521,18 @@ class CacheManagerInterface(ABC):
         """Read file freshness cheaply from the ``.meta`` sidecar."""
         try:
             with open(self.filename + ".meta") as mf:
-                return json.load(mf).get("max_ts", 0)
+                meta = json.load(mf)
+            if not isinstance(meta, dict):
+                return 0
+            raw = meta.get("max_ts", 0)
+            if (
+                isinstance(raw, (int, float))
+                and not isinstance(raw, bool)
+                and math.isfinite(raw)
+                and raw > 0
+            ):
+                return int(raw)
+            return 0
         except Exception:
             return 0
 
@@ -636,8 +667,22 @@ class CacheManagerInterface(ABC):
                 }
             else:
                 payload = dict(snapshot)
-            fetchtime_map = payload.get("fetchtime", {})
-            payload["max_ts"] = max(fetchtime_map.values()) if fetchtime_map else 0
+            fetchtime_map = payload.get("fetchtime")
+            payload["max_ts"] = (
+                max(
+                    (
+                        int(v)
+                        for v in fetchtime_map.values()
+                        if isinstance(v, (int, float))
+                        and not isinstance(v, bool)
+                        and math.isfinite(v)
+                        and v > 0
+                    ),
+                    default=0,
+                )
+                if isinstance(fetchtime_map, dict)
+                else 0
+            )
             payload["saved_at"] = int(time.time() * 1000)
             atomic_write_json(meta_file_path(self.filename), payload)
             return True
@@ -834,6 +879,9 @@ class CacheManagerInterface(ABC):
                 if metadata is not None:
                     self._ensure_order_version(str(metadata["data_version"]))
                     return
+                with self._order_generation_lock():
+                    self._load_order_state_generation_locked()
+                return
             except Exception as e:
                 print(f"[{self.cls_name}][Error] reload {self.filename}: {e}")
                 return
