@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-10-24T15:39:31",
+    "ts": "2026-10-24T16:12:15",
     "full_key": "BINANCE_BTC.trailing.pct",
     "section": "BINANCE_BTC",
     "key": "trailing.pct",
@@ -9,8 +9,8 @@
     "winner_value": 12.0,
     "margin_vs_current": {
       "half1": 11.42,
-      "half2": 321.99
+      "half2": 322.65
     },
-    "dev_commit": "c50cb93"
+    "dev_commit": "81a2227"
   }
 ]
