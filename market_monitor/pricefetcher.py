@@ -548,7 +548,18 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                 sym_meta = data.get("symbol_metadata") if isinstance(data, dict) else None
                 if isinstance(sym_meta, dict):
                     raw_added = sym_meta.get("added_time")
-                    self.symbol_added_time = dict(raw_added) if isinstance(raw_added, dict) else {}
+                    self.symbol_added_time = (
+                        {
+                            str(k): float(v)
+                            for k, v in raw_added.items()
+                            if isinstance(k, str)
+                            and isinstance(v, (int, float))
+                            and not isinstance(v, bool)
+                            and float(v) == float(v)
+                        }
+                        if isinstance(raw_added, dict)
+                        else {}
+                    )
                     preferred = sym_meta.get("preferred_source")
                     if isinstance(preferred, dict):
                         self.symbol_preferred_source = dict(preferred)
@@ -693,8 +704,10 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         """Get the latest saved price for a symbol."""
         with self.lock:
             entries = self.cache.get(symbol, [])
-            if entries:
-                return entries[-1][1]
+            if isinstance(entries, (list, tuple)) and entries:
+                last = entries[-1]
+                if isinstance(last, (list, tuple)) and len(last) >= 2:
+                    return last[1]
         return None
 
     def get_price_history(self, symbol: str, limit: int = 100) -> List[Dict]:
@@ -703,7 +716,8 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         # Copy only references under the lock. Convert and format afterward so datetime
         # work and allocations do not block price synchronization.
         with self.lock:
-            entries = self.cache.get(symbol, ())[-limit:]
+            raw_entries = self.cache.get(symbol, ())
+            entries = raw_entries[-limit:] if isinstance(raw_entries, (list, tuple)) else ()
 
         return [
             {
@@ -712,6 +726,10 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                 "price": entry[1],
             }
             for entry in entries
+            if isinstance(entry, (list, tuple))
+            and len(entry) >= 2
+            and isinstance(entry[0], (int, float))
+            and not isinstance(entry[0], bool)
         ]
         
     def cleanup_old_prices(self, retention_days: int = PRICE_HISTORY_RETENTION_DAYS):
@@ -720,8 +738,18 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
             removed_count = 0
             trimmed_count = 0
             for symbol in list(self.cache.keys()):
-                original_count = len(self.cache[symbol])
-                self.cache[symbol] = [entry for entry in self.cache[symbol] if entry[0] >= cutoff_timestamp]
+                raw_bucket = self.cache[symbol]
+                if not isinstance(raw_bucket, list):
+                    self.cache[symbol] = []
+                    continue
+                original_count = len(raw_bucket)
+                self.cache[symbol] = [
+                    entry
+                    for entry in raw_bucket
+                    if isinstance(entry, (list, tuple))
+                    and len(entry) >= 2
+                    and self._entry_timestamp_ms(entry) >= cutoff_timestamp
+                ]
                 removed = original_count - len(self.cache[symbol])
                 if removed > 0:
                     removed_count += removed
@@ -746,7 +774,11 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         removed_symbols = []
         with self.lock:
             for symbol, added_time in list(self.symbol_added_time.items()):
-                if added_time < cutoff_time:
+                if (
+                    not isinstance(added_time, (int, float))
+                    or isinstance(added_time, bool)
+                    or added_time < cutoff_time
+                ):
                     removed_symbols.append(symbol)
         for symbol in removed_symbols:
             self.remove_symbol(symbol, reason=f"(older than {max_age_days} days)")

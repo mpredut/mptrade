@@ -340,7 +340,14 @@ class PriceWindow:
                  window_seconds=None):
         self.symbol = symbol
         self.window_size = int(window_size)
-        self.sample_rate_sec = sample_rate_sec if sample_rate_sec is not None else DEFAULT_SAMPLE_RATE_SEC
+        if sample_rate_sec is not None and not isinstance(sample_rate_sec, bool):
+            try:
+                _sr = float(sample_rate_sec)
+                self.sample_rate_sec = _sr if math.isfinite(_sr) and _sr > 0 else DEFAULT_SAMPLE_RATE_SEC
+            except (TypeError, ValueError, OverflowError):
+                self.sample_rate_sec = DEFAULT_SAMPLE_RATE_SEC
+        else:
+            self.sample_rate_sec = DEFAULT_SAMPLE_RATE_SEC
         # When set, target duration resizes with the observed sampling rate so the
         # window continues to cover the same elapsed time.
         self.window_seconds = window_seconds
@@ -362,7 +369,12 @@ class PriceWindow:
     @property
     def recent_n(self) -> int:
         """Return the sample count corresponding to ``RECENT_GRADIENT_SECONDS``."""
-        if not self.sample_rate_sec or self.sample_rate_sec <= 0:
+        if (
+            not self.sample_rate_sec
+            or isinstance(self.sample_rate_sec, bool)
+            or not math.isfinite(self.sample_rate_sec)
+            or self.sample_rate_sec <= 0
+        ):
             return 2
         return max(2, int(RECENT_GRADIENT_SECONDS / self.sample_rate_sec))
 
@@ -376,10 +388,15 @@ class PriceWindow:
             return
         if not math.isfinite(rate_val) or rate_val <= 0:
             return
-        self.sample_rate_sec = rate
-        if self.window_seconds is None:
+        self.sample_rate_sec = rate_val
+        if (
+            self.window_seconds is None
+            or isinstance(self.window_seconds, bool)
+            or not math.isfinite(float(self.window_seconds))
+            or float(self.window_seconds) <= 0
+        ):
             return
-        new_size = max(10, int(self.window_seconds / rate_val))
+        new_size = max(10, int(float(self.window_seconds) / rate_val))
         if new_size == self.window_size:
             return
         with self._lock:
@@ -454,10 +471,13 @@ class PriceWindow:
         if price is None or isinstance(price, bool):
             return
         try:
-            if not math.isfinite(float(price)):
+            price_f = float(price)
+            if not math.isfinite(price_f):
                 return
         except (TypeError, ValueError, OverflowError):
             return
+        if not isinstance(price, (int, float)):
+            price = price_f
         with self._lock:
             if len(self.prices) >= self.window_size:
                 while len(self.prices) >= self.window_size:

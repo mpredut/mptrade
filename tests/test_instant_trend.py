@@ -1446,6 +1446,83 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
                 cm.CacheFactory._instances["Trade"] = prev_inst
             bapi_trades.cache_trade_manager = prev_bt_mgr
 
+    def test_audit38_jsonl_non_dict_lines_get_price_validation_and_pricewindow_coercion(self):
+        """Audit #38: non-dict JSONL lines in Cache365/SparsePrice, get_price invalid/future row refresh, and PriceWindow coercion."""
+        now_ms = int(time.time() * 1000)
+
+        # 1. Cache365PriceManager._load_jsonl and maintain_append_persist ignore non-dict JSON lines (null, 123, [])
+        c365_file = os.path.join(self.tmp, "cache_365_price_BTCUSDT.jsonl")
+        with open(c365_file, "w", encoding="utf-8") as fh:
+            fh.write("null\n123\n[1, 2]\n")
+            fh.write(json.dumps({"s": "BTCUSDT", "i": [now_ms, 61000.0]}) + "\n")
+        c365 = cm.Cache365PriceManager(60, ["BTCUSDT"], c365_file, read_only=False)
+        c365.save_state = True
+        self.assertEqual(c365.cache.get("BTCUSDT"), [[now_ms, 61000.0]])
+        self.assertTrue(c365.maintain_append_persist())
+        self.assertEqual(c365.cache.get("BTCUSDT"), [[now_ms, 61000.0]])
+
+        # 2. CacheSparsePriceManager._load_jsonl ignores non-dict or null-symbol JSONL lines
+        sp_file = os.path.join(self.tmp, "cache_sparse_price_BTCUSDT.jsonl")
+        with open(sp_file, "w", encoding="utf-8") as fh:
+            fh.write('{"s": null, "i": [1000, 1.0]}\nnull\n')
+            fh.write(json.dumps({"s": "BTCUSDT", "i": [now_ms, 62000.0]}) + "\n")
+        sp = cm.CacheSparsePriceManager(60, ["BTCUSDT"], sp_file, read_only=True)
+        self.assertEqual(sp.cache, {"BTCUSDT": [[now_ms, 62000.0]]})
+
+        # 3. CacheCurrentPriceManager.get_price forces HTTP refresh on invalid cached price or future-skewed timestamp
+        mock_market = unittest.mock.MagicMock()
+        mock_market.get_current_price.return_value = 64000.0
+        cpm = cm.CacheCurrentPriceManager(
+            60,
+            ["BTCUSDT"],
+            os.path.join(self.tmp, "cache_cp_audit38.json"),
+            market_api=mock_market,
+            read_only=True,
+        )
+        cpm.cache["BTCUSDT"] = [[now_ms, None]]
+        refreshed = cpm.get_price("BTCUSDT")
+        self.assertIsNotNone(refreshed)
+        self.assertEqual(refreshed[1], 64000.0)
+
+        mock_market.get_current_price.return_value = 64500.0
+        cpm.cache["BTCUSDT"] = [[now_ms + 120_000, 50000.0]]
+        refreshed_future = cpm.get_price("BTCUSDT")
+        self.assertIsNotNone(refreshed_future)
+        self.assertEqual(refreshed_future[1], 64500.0)
+
+        # 4. Cache24PriceManager.get_recent_entries guards invalid last_seconds
+        c24 = cm.Cache24PriceManager(
+            60, ["BTCUSDT"], os.path.join(self.tmp, "cache_24_audit38.json"), read_only=True
+        )
+        c24.on_price_update("BTCUSDT", now_ms, 64000.0)
+        for bad_sec in (None, True, False, 0, -5, float("nan"), float("inf")):
+            self.assertEqual(c24.get_recent_entries("BTCUSDT", bad_sec), [])
+
+        # 5. PriceWindow coerces string sample_rate and string prices safely
+        import pricewindow as pw_mod
+
+        pw = pw_mod.PriceWindow("BTCUSDT", 20, sample_rate_sec=float("nan"), window_seconds=60.0)
+        self.assertEqual(pw.sample_rate_sec, 0.8)
+        self.assertEqual(pw.recent_n, 75)
+        pw.set_sample_rate("0.5")
+        self.assertEqual(pw.sample_rate_sec, 0.5)
+        self.assertEqual(pw.recent_n, 120)
+        pw.process_price("60000.5")
+        pw.process_price(60001.0)
+        self.assertEqual(list(pw.prices), [60000.5, 60001.0])
+
+        # 6. CacheShortTrendManager._snapshot_is_usable and wait_for_favorable_entry guard bool/non-positive args
+        st = cm.CacheShortTrendManager(
+            ["BTCUSDT"], filename=os.path.join(self.tmp, "st_audit38.json"), writer=True
+        )
+        st._set_mem("BTCUSDT", ts=time.time(), current_price=64000.0, gradient_recent=-1.0)
+        self.assertFalse(st.is_snapshot_fresh("BTCUSDT", max_age_sec=True))
+        self.assertFalse(st.is_snapshot_fresh("BTCUSDT", max_age_sec=0))
+        self.assertIsNone(st.get_fresh_snapshot("BTCUSDT", now=True))
+        self.assertEqual(st.wait_for_favorable_entry("BUY", "BTCUSDT", max_wait_sec=0), 0.0)
+        self.assertEqual(st.wait_for_favorable_entry("BUY", "BTCUSDT", max_wait_sec=True), 0.0)
+        self.assertEqual(st.wait_for_favorable_entry("BUY", "BTCUSDT", poll_sec=0), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

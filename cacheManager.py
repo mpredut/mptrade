@@ -1710,6 +1710,12 @@ class CacheManagerInterface(ABC):
                                     had_invalid_line = True
                                     continue
                                 symbol_items[trade_id] = signature
+                            elif (
+                                not isinstance(rec, dict)
+                                or not isinstance(rec.get("s"), str)
+                                or rec.get("i") is None
+                            ):
+                                raise ValueError("invalid JSONL record")
                             self.cache.setdefault(rec["s"], []).append(rec["i"])
                         except Exception as exc:
                             if self.cls_name in _TRADE_CACHE_CLASSES:
@@ -2893,9 +2899,9 @@ class Cache24PriceManager(CacheManagerInterface):
         cutoff_ms = int((time.time() - self.KEEP_HOURS * 3600) * 1000)
         with self.lock:
             entries = self.cache.get(symbol)
-            if not entries:
+            if not entries or not isinstance(entries, list):
                 return
-            idx = bisect.bisect_left(entries, cutoff_ms, key=lambda e: e[0])
+            idx = bisect.bisect_left(entries, cutoff_ms, key=self._entry_timestamp_ms)
             if idx > 0:
                 self.cache[symbol] = entries[idx:]
 
@@ -2906,12 +2912,20 @@ class Cache24PriceManager(CacheManagerInterface):
         costs O(k) for returned entries instead of scanning the entire 24-hour buffer.
         This matters for frequent dynamic-window queries.
         """
-        cutoff_ms = int((time.time() - last_seconds) * 1000)
+        if last_seconds is None or isinstance(last_seconds, bool):
+            return []
+        try:
+            sec_val = float(last_seconds)
+        except (TypeError, ValueError, OverflowError):
+            return []
+        if not math.isfinite(sec_val) or sec_val <= 0:
+            return []
+        cutoff_ms = int((time.time() - sec_val) * 1000)
         with self.lock:
             entries = self.cache.get(symbol, [])
-            if not entries:
+            if not entries or not isinstance(entries, list):
                 return []
-            idx = bisect.bisect_left(entries, cutoff_ms, key=lambda e: e[0])
+            idx = bisect.bisect_left(entries, cutoff_ms, key=self._entry_timestamp_ms)
             return entries[idx:]
 
     # ── CacheManagerInterface ─────────────────────────────────────────────────
@@ -3018,9 +3032,13 @@ class Cache365PriceManager(Cache24PriceManager):
                 for raw_line in self._tail_lines(self.filename, CM_LONG_ARCHIVE_MEMORY_ROWS):
                     try:
                         rec = json.loads(raw_line)
-                        if rec.get("s") in self.symbols:
+                        if (
+                            isinstance(rec, dict)
+                            and rec.get("s") in self.symbols
+                            and rec.get("i") is not None
+                        ):
                             self.cache.setdefault(rec["s"], []).append(rec["i"])
-                    except (json.JSONDecodeError, KeyError, TypeError):
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                         continue
             self._persisted_counts = {s: len(v) for s, v in self.cache.items()}
             metaf = self.filename + ".meta"
@@ -3103,7 +3121,11 @@ class Cache365PriceManager(Cache24PriceManager):
                     for line in source:
                         try:
                             rec = json.loads(line)
-                            keep = self._entry_timestamp_ms(rec.get("i")) >= cutoff_ms
+                            keep = (
+                                isinstance(rec, dict)
+                                and isinstance(rec.get("s"), str)
+                                and self._entry_timestamp_ms(rec.get("i")) >= cutoff_ms
+                            )
                         except (json.JSONDecodeError, TypeError, ValueError):
                             keep = False
                         if keep:
@@ -3616,10 +3638,17 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         """Return ``[timestamp_ms, price]``, forcing HTTP when missing or stale."""
         with self.lock:
             entries = self.cache.get(symbol)
-        last_ts = self._entry_timestamp_ms(entries[0]) if entries else 0
-        now_ms  = int(time.time() * 1000)
-        if not entries or (now_ms - last_ts) > self.STALE_THRESHOLD_MS:
-            age = now_ms - last_ts if entries else -1
+            cached_price, last_ts = self._extract_price_and_ts(entries)
+            entry = [last_ts, cached_price] if cached_price is not None else None
+        now_ms = int(time.time() * 1000)
+        age_ms = (now_ms - last_ts) if last_ts else None
+        if (
+            entry is None
+            or age_ms is None
+            or age_ms > self.STALE_THRESHOLD_MS
+            or age_ms < -5_000
+        ):
+            age = age_ms if age_ms is not None else -1
             print(f"[{self.cls_name}] {symbol} stale ({age}ms) - forced HTTP fetch")
             new = self.get_remote_items(symbol, None)
             if not new or self._extract_price_and_ts(new)[0] is None:
@@ -3630,7 +3659,9 @@ class CacheCurrentPriceManager(CacheManagerInterface):
             self.save_state_to_file_if_enabled()
             with self.lock:
                 entries = self.cache.get(symbol)
-        return entries[0] if entries else None
+                cached_price, last_ts = self._extract_price_and_ts(entries)
+                entry = [last_ts, cached_price] if cached_price is not None else None
+        return entry
 
     def get_price_value(self, symbol: str) -> float:
         """Return only the float price as a drop-in for ``bapi.get_current_price``."""

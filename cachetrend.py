@@ -1326,29 +1326,41 @@ class CacheShortTrendManager(CacheManagerInterface):
     def get_snapshot(self, symbol):
         """Return local calculated/primed memory, or the file for a pure reader."""
         with self._lock:
-            if symbol in self._mem:
-                return dict(self._mem[symbol])
-        return self._read_file().get(symbol)
+            val = self._mem.get(symbol)
+            if isinstance(val, dict):
+                return dict(val)
+        val = self._read_file().get(symbol)
+        return dict(val) if isinstance(val, dict) else None
 
     @staticmethod
     def _snapshot_is_usable(snap, now, max_age_sec):
         """Validate the common full-snapshot price and observation timestamp."""
-        if not isinstance(snap, dict):
+        if (
+            not isinstance(snap, dict)
+            or isinstance(now, bool)
+            or isinstance(max_age_sec, bool)
+        ):
             return False
         try:
             if isinstance(snap.get("ts"), bool) or isinstance(snap.get("current_price"), bool):
                 return False
+            now_f = float(now)
+            max_age_f = float(max_age_sec)
             observed_at = float(snap["ts"])
             price = float(snap["current_price"])
-            age = float(now) - observed_at
+            age = now_f - observed_at
         except (KeyError, TypeError, ValueError, OverflowError):
             return False
         return (
-            math.isfinite(observed_at)
+            math.isfinite(now_f)
+            and now_f > 0
+            and math.isfinite(max_age_f)
+            and max_age_f > 0
+            and math.isfinite(observed_at)
             and observed_at > 0
             and math.isfinite(price)
             and price > 0
-            and -5.0 <= age <= float(max_age_sec)
+            and -5.0 <= age <= max_age_f
         )
 
     def is_snapshot_fresh(self, symbol=None, max_age_sec=None):
@@ -1404,8 +1416,12 @@ class CacheShortTrendManager(CacheManagerInterface):
     def get_all_snapshots(self):
         with self._lock:
             if self._mem:
-                return {s: dict(v) for s, v in self._mem.items()}
-        return dict(self._read_file())
+                return {
+                    s: dict(v) for s, v in self._mem.items() if isinstance(v, dict)
+                }
+        return {
+            s: dict(v) for s, v in self._read_file().items() if isinstance(v, dict)
+        }
 
     def clear(self):
         with self._lock:
@@ -1576,7 +1592,21 @@ class CacheShortTrendManager(CacheManagerInterface):
         Emit a visual heartbeat roughly once per second and return elapsed seconds.
         Forward ``window_seconds`` to ``should_wait`` for primary or dynamic evaluation.
         """
-        deadline = time.time() + max_wait_sec
+        if isinstance(max_wait_sec, bool) or isinstance(poll_sec, bool):
+            return 0.0
+        try:
+            max_wait_f = float(max_wait_sec)
+            poll_f = float(poll_sec)
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+        if not (
+            math.isfinite(max_wait_f)
+            and max_wait_f > 0
+            and math.isfinite(poll_f)
+            and poll_f > 0
+        ):
+            return 0.0
+        deadline = time.time() + max_wait_f
         waited = 0.0
         next_dot = 1.0
         while time.time() < deadline and self.should_wait(
@@ -1585,8 +1615,8 @@ class CacheShortTrendManager(CacheManagerInterface):
             window_seconds=window_seconds,
             fast=(mode == "gradient"),
         ):
-            sleep_fn(poll_sec)
-            waited += poll_sec
+            sleep_fn(poll_f)
+            waited += poll_f
             if waited >= next_dot:
                 print(".", end="", flush=True)
                 next_dot += 1.0
