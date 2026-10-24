@@ -432,9 +432,16 @@ class NotificationServer:
         price_topic = self._resolve_topic("PRICE")
         trades_topic = self._resolve_topic("TRADES")
 
-        # Strip any existing [price_notifier] prefix
-        cleaned_title = re.sub(r"^\[price_notifier(?:\.py)?\]\s*", "", title, flags=re.IGNORECASE).strip()
+        # Strip any existing [price_notifier] or [macro_analyzer] prefix
+        cleaned_title = re.sub(
+            r"^\[(?:price_notifier|macro_analyzer)(?:\.py)?\]\s*",
+            "",
+            title,
+            flags=re.IGNORECASE,
+        ).strip()
 
+        has_auto_topic_tag = bool(re.search(r"\[auto_[a-z0-9_]+", cleaned_title))
+        is_macro_bot = bot_name.lower() in ("macro_analyzer", "macro_analyzer.py")
         is_price = (
             topic == price_topic
             or cat == "PRICE"
@@ -443,7 +450,7 @@ class NotificationServer:
             or any(m in cleaned_title for m in ("▲", "▼"))
         )
 
-        if is_price:
+        if is_price or is_macro_bot or has_auto_topic_tag:
             full_title = cleaned_title
         elif topic == trades_topic or cat == "TRADES":
             # For trade notifications, show only provider in brackets without coin
@@ -541,13 +548,14 @@ class NotificationServer:
 
                 intent = payload.get("__orchestrator_intent__")
                 if intent == "ntfy_webhook":
-                    # Direct retry payload
+                    # Direct retry or pre-formatted [auto_...] topic payload
                     if "title" in payload:
                         self._gate_and_send_ntfy(
                             payload["title"],
                             payload["message"],
                             payload["priority"],
                             payload["topic"],
+                            alerts=payload.get("alerts"),
                             urgent=(payload.get("priority") == "urgent"),
                         )
                         return

@@ -251,7 +251,9 @@ class PostStopReentryGuard:
                     return
                 _POST_STOP_NOTIFY_CACHE[notify_key] = ts
 
-            title = f"🛡 [P3 · POST-STOP RE-ENTRY] {action_label} {symbol}"
+            from orchestratorOS.agy.topics import topic_spec
+
+            title = f"{topic_spec('guard_post_stop').ntfy_prefix} {action_label} {symbol}"
             body = (
                 f"{symbol} @ ${current_price:.2f} (Bounce: +{bounce_pct:.2f}% de la minimul ${trough:.2f}, SL la: ${last_sell_price:.2f})\n"
                 f"Decizie: {action_label}\n"

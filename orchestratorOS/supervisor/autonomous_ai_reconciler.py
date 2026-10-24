@@ -707,7 +707,12 @@ class AutonomousAIReconciler:
             subprocess.run(["git", "checkout", "--", real_target], cwd=self.workspace_dir, check=False)
             return False
 
-    def dispatch_notification(self, report: SupervisorAuditReport) -> bool:
+    def dispatch_notification(
+        self,
+        report: SupervisorAuditReport,
+        *,
+        topic_key: str = "auto_technical_repair",
+    ) -> bool:
         """Sends a clean, compact push alert via standard HTTP POST to ntfy."""
         if not self.notify_enabled:
             return False
@@ -717,7 +722,12 @@ class AutonomousAIReconciler:
         has_fix = report.code_remediation.get("has_fix", False)
         mode_label = report.mode.upper()
 
-        title = f"[AI-SUPERVISOR - {mode_label}] Issues: {issues_cnt} | Actions: {actions_cnt}"
+        spec_prefix = (
+            topic_spec(topic_key).ntfy_prefix
+            if topic_key in TOPIC_SPECS
+            else topic_spec("auto_technical_repair").ntfy_prefix
+        )
+        title = f"{spec_prefix} Issues: {issues_cnt} | Actions: {actions_cnt}"
         body_lines = [
             f"Mode: {mode_label} · Status: {'Executed' if report.actions_executed else 'Simulated/Observed'}",
             f"{report.summary}",
@@ -762,7 +772,7 @@ class AutonomousAIReconciler:
 
         url = self.ntfy_url or f"https://ntfy.sh/{self.ntfy_topic}"
         headers = {
-            "Title": title,
+            "Title": title.encode("utf-8").decode("latin-1", "ignore"),
             "Priority": "default",
             "Tags": "shield,robot",
         }
@@ -870,7 +880,9 @@ class AutonomousAIReconciler:
             or has_high_issue
             or str(market_decision.get("decision", "HOLD")).upper() in ("BUY", "SELL")
         )
-        report.notification_sent = self.dispatch_notification(report) if should_notify else False
+        report.notification_sent = (
+            self.dispatch_notification(report, topic_key=topic_key) if should_notify else False
+        )
         self.write_audit_artifact(report)
         logger.info("Autonomous AI Supervisor cycle complete: %s", report.summary)
         return report

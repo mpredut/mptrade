@@ -35,6 +35,18 @@ class TopicSpec:
     can_trade: bool = False       # may submit trade intents to the AutonomousIntentGateway
     can_self_heal: bool = False   # may apply verified code-remediation patches
 
+    @property
+    def bracket_tag(self) -> str:
+        """Canonical '[auto_...]' tag from the thread title."""
+        m = re.search(r"(\[[^\]]+\])", self.title)
+        return m.group(1) if m else self.title
+
+    @property
+    def ntfy_prefix(self) -> str:
+        """Canonical '<icon> [auto_...]' prefix from the beginning of the thread title."""
+        m = re.match(r"^([^\[]*\[[^\]]+\])", self.title)
+        return m.group(1).strip() if m else self.title
+
 
 TOPIC_SPECS: Dict[str, TopicSpec] = {
     "auto_technical_repair": TopicSpec(
@@ -43,7 +55,7 @@ TOPIC_SPECS: Dict[str, TopicSpec] = {
     "auto_trade_executor": TopicSpec(
         "🎯 [auto_trade_executor] Autonomous Trade Decisions (TAO & BTC 5m)", can_trade=True
     ),
-    "macro_geopolitical": TopicSpec("🌍 [auto_macro_news_shield] Geopolitical Crisis & Breaking News Brake"),
+    "macro_geopolitical": TopicSpec("🌍 [auto_macro_geopolitical] Geopolitical Crisis & Breaking News Brake"),
     "macro_sentiment": TopicSpec("🧭 [auto_macro_sentiment] Fear & Greed, Breadth & Market Bias (3h)"),
     "guard_high_stake": TopicSpec("🛡 [auto_guard_large_order] Pre-Trade Veto for Large Orders (>=700 EUR)"),
     "guard_post_stop": TopicSpec("🛡 [auto_guard_post_stop] Pre-Trade Veto for Post-Stop Re-Buy Bounce"),

@@ -829,7 +829,16 @@ def notify(title: str, body: str, source: str, symbol: str,
         return
     alert = {"type": "bot_event", "name": title, "body": body, "source": source, "symbol": symbol}
     if os.environ.get("MPTRADE_ORCHESTRATED") == "1":
-        intent = {"__orchestrator_intent__": "ntfy_webhook", "alerts": [alert]}
+        intent: dict[str, Any] = {"__orchestrator_intent__": "ntfy_webhook", "alerts": [alert]}
+        if re.search(r"\[auto_[a-z0-9_]+", str(title or "")):
+            from notify_engine.server import _topic_for_category
+            urgent = _alerts_are_urgent([alert])
+            intent.update({
+                "title": title,
+                "message": body,
+                "priority": "urgent" if urgent else "high",
+                "topic": _topic_for_category(title, source),
+            })
         sys.stdout.write(json.dumps(intent) + "\n")
         sys.stdout.flush()
     else:

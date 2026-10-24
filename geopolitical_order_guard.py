@@ -74,11 +74,14 @@ def check_geopolitical_order_guards(
                         _GEO_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
                         try:
                             from notify_engine.alertnotifiers import notify
+                            from orchestratorOS.agy.topics import topic_spec
+
+                            geo_tag = topic_spec("macro_geopolitical").bracket_tag
                             scale_pct = int(geo_dec.suggested_scale * 100)
                             if not geo_dec.allowed:
-                                geo_title = f"🛑 [P3A · GEO-SHIELD] BLOCK {order_side} {symbol}"
+                                geo_title = f"🛑 {geo_tag} BLOCK {order_side} {symbol}"
                             else:
-                                geo_title = f"🛡 [P3A · GEO-SHIELD] SCALE {scale_pct}% {order_side} {symbol}"
+                                geo_title = f"🛡 {geo_tag} SCALE {scale_pct}% {order_side} {symbol}"
 
                             clean_summary = cached_geo.summary or geo_dec.reason
                             if "(" in geo_dec.reason and geo_dec.reason.endswith(")"):

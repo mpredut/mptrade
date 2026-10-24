@@ -343,6 +343,34 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             self.server.dispatch_alerts([alert2], bot_name="rtrade")
             self.assertEqual(len(self.dispatched), 1, "Guard alert should be deduplicated despite BUY keyword")
 
+    def test_macro_analyzer_and_auto_topic_alerts_omit_bot_name_prefix(self):
+        """Verify macro_analyzer and [auto_...] topic notifications do not prepend [macro_analyzer] or [bot_name]."""
+        self.dispatched.clear()
+        sentiment_alert = {
+            "type": "bot_event",
+            "name": "[macro_analyzer] 🔴 [auto_macro_sentiment] DEFENSIVE (BEARISH)",
+            "body": "Action: DEFENSIVE · Bias: BEARISH (Risk: HIGH)",
+            "source": "macro_shadow",
+            "symbol": "GLOBAL",
+        }
+        self.server.dispatch_alerts([sentiment_alert], bot_name="macro_analyzer")
+        self.assertEqual(len(self.dispatched), 1)
+        self.assertEqual(self.dispatched[0]["title"], "🔴 [auto_macro_sentiment] DEFENSIVE (BEARISH)")
+        self.assertEqual(self.dispatched[0]["topic"], "ntfy-macro-test")
+
+        self.dispatched.clear()
+        trade_alert = {
+            "type": "bot_event",
+            "name": "🚀 [auto_trade_executor] EXECUTED BUY TAOUSDC €250",
+            "body": "Venue: binance · Qty: 1 @ $250.00",
+            "source": "llm_trader",
+            "symbol": "TAOUSDC",
+        }
+        self.server.dispatch_alerts([trade_alert], bot_name="ai_reconciler")
+        self.assertEqual(len(self.dispatched), 1)
+        self.assertEqual(self.dispatched[0]["title"], "🚀 [auto_trade_executor] EXECUTED BUY TAOUSDC €250")
+        self.assertEqual(self.dispatched[0]["topic"], "ntfy-trades-test")
+
     def test_flush_queue_preserves_concurrent_appends_and_deduplicates_delayed_prefix(self):
         """Verify flush_queue_loop preserves concurrently appended queue lines and avoids duplicate [DELAYED] prefix."""
         import asyncio

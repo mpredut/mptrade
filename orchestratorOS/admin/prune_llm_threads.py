@@ -87,6 +87,7 @@ AUTONOMOUS_PROMPT_PATTERNS = [
     "risk assessment",
     "autonomous trade decisions",
     "lead sre and quantitative trading systems architect",
+    "auto_macro_news_shield",
     *[spec.title.lower() for spec in TOPIC_SPECS.values()],
     *[f"[{key}]" for key in TOPIC_SPECS],
 ]

@@ -679,12 +679,12 @@ class TestOrderGuardWithGemini:
         dispatched_alerts = []
         monkeypatch.setattr("notify_engine.alertnotifiers.notify", lambda **kw: dispatched_alerts.append(kw))
 
-        # First evaluation: must notify with clear P4 Geo-Shield block title
+        # First evaluation: must notify with clear [auto_macro_geopolitical] block title
         allowed, reason, scale = order_guard.check_intelligence_guards(None, "TAOUSDC", "BUY", 250.0)
         assert allowed is True
         assert len(dispatched_alerts) == 1
         alert = dispatched_alerts[0]
-        assert alert["title"] == "🛑 [P3A · GEO-SHIELD] BLOCK BUY TAOUSDC"
+        assert alert["title"] == "🛑 [auto_macro_geopolitical] BLOCK BUY TAOUSDC"
         assert alert["symbol"] == "TAOUSDC"
         assert "CRITICAL_SHOCK" in alert["body"]
 

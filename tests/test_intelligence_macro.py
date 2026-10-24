@@ -473,7 +473,32 @@ def test_macro_advisor_notification_dispatch(temp_cache_dir):
         mock_notify.assert_called_once()
         _, kwargs = mock_notify.call_args
         assert kwargs.get("source") == "macro_shadow"
-        assert "BULLISH" in kwargs.get("title")
+        assert kwargs.get("title") == "🟢 [auto_macro_sentiment] ACCUMULATE (BULLISH)"
+        assert kwargs.get("symbol") == "GLOBAL"
+
+
+def test_macro_geopolitical_notification_dispatch(temp_cache_dir):
+    analyzer = MacroAnalyzer(cache_dir=temp_cache_dir, macro_llm_interval_sec=16200.0)
+    analyzer.shadow_notify = True
+
+    mock_geo = GeopoliticalThreatAssessment(
+        threat_level="ELEVATED",
+        risk_score=0.65,
+        summary="Regional shipping tensions elevated.",
+        recommended_brake="DOWNSCALE_50",
+        headlines_analyzed=4,
+        ts=time.time(),
+        is_fallback=False,
+    )
+
+    with patch.object(analyzer.geopolitical_analyzer, "assess", return_value=mock_geo), \
+         patch("notify_engine.alertnotifiers.notify") as mock_notify:
+        ok = analyzer.assess_geopolitical_threat(force=True)
+        assert ok is True
+        mock_notify.assert_called_once()
+        _, kwargs = mock_notify.call_args
+        assert kwargs.get("source") == "macro_shadow"
+        assert kwargs.get("title") == "🛡 [auto_macro_geopolitical] DOWNSCALE_50 (ELEVATED)"
         assert kwargs.get("symbol") == "GLOBAL"
 
 

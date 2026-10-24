@@ -371,13 +371,15 @@ class AutonomousIntentGateway:
             guard_reason = f"Guard check failed: {g_err}"
 
         thesis = intent.get("thesis", "Autonomous strategy thesis")
+        from orchestratorOS.agy.topics import topic_spec
+        trade_tag = topic_spec("auto_trade_executor").bracket_tag
 
         # Execution or Observation Branch
         if mode == "shadow":
             logger.info("[LLM TRADER · SHADOW] Would execute %s %s (qty=%g, price=$%.2f, notional=€%.2f) on %s. Thesis: %s",
                         decision, inst.symbol, target_qty, price, effective_eur, inst.provider_name, thesis)
 
-            title = f"🟢 [LLM TRADER · SHADOW] {decision} {inst.symbol} €{effective_eur:.0f}"
+            title = f"🟢 [{trade_tag.strip('[]')} · SHADOW] {decision} {inst.symbol} €{effective_eur:.0f}"
             body = (
                 f"Venue: {inst.provider_name} · Qty: {target_qty:g} @ ${price:,.2f}\n"
                 f"Confidence: {confidence:.2f} · Notional: €{effective_eur:.2f}\n"
@@ -412,7 +414,7 @@ class AutonomousIntentGateway:
         # Mode == "enforce"
         if not guard_allowed:
             logger.warning("[LLM TRADER · ENFORCE] Guard blocked %s %s: %s", decision, inst.symbol, guard_reason)
-            title = f"🛡 [LLM TRADER · ENFORCE] BLOCKED {decision} {inst.symbol}"
+            title = f"🛡 {trade_tag} BLOCKED {decision} {inst.symbol}"
             body = (
                 f"Venue: {inst.provider_name} · Price: ${price:,.2f} · Notional: €{effective_eur:.0f}\n"
                 f"Reason: {guard_reason}\n"
@@ -451,7 +453,7 @@ class AutonomousIntentGateway:
                 from providers.base import extract_order_id
                 logger.info("[LLM TRADER · ENFORCE] Successfully placed %s %s: %s",
                             decision, inst.symbol, order_res)
-                title = f"🚀 [LLM TRADER · ENFORCE] EXECUTED {decision} {inst.symbol} €{effective_eur:.0f}"
+                title = f"🚀 {trade_tag} EXECUTED {decision} {inst.symbol} €{effective_eur:.0f}"
                 order_id_str = extract_order_id(order_res, default="N/A")
                 body = (
                     f"Venue: {inst.provider_name} · Qty: {target_qty:g} @ ${price:,.2f}\n"
@@ -470,7 +472,7 @@ class AutonomousIntentGateway:
             else:
                 logger.warning("[LLM TRADER · ENFORCE] Order placement refused or failed for %s %s",
                                decision, inst.symbol)
-                title = f"⚠️ [LLM TRADER · ENFORCE] REFUSED {decision} {inst.symbol}"
+                title = f"⚠️ {trade_tag} REFUSED {decision} {inst.symbol}"
                 body = f"Venue {inst.provider_name} refused placement.\nThesis: {thesis}"
                 self._dispatch_notify(title=title, body=body, symbol=inst.symbol)
 
@@ -482,7 +484,7 @@ class AutonomousIntentGateway:
                 })
         except Exception as e:
             logger.error("[LLM TRADER · ENFORCE] Exception executing %s %s: %s", decision, inst.symbol, e)
-            title = f"🚨 [LLM TRADER · ENFORCE] ERROR {decision} {inst.symbol}"
+            title = f"🚨 {trade_tag} ERROR {decision} {inst.symbol}"
             body = f"Execution exception: {e}\nThesis: {thesis}"
             self._dispatch_notify(title=title, body=body, symbol=inst.symbol)
 

@@ -129,14 +129,16 @@ def evaluate_high_stake_order_guard(
                 _LLM_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
                 try:
                     from notify_engine.alertnotifiers import notify
+                    from orchestratorOS.agy.topics import topic_spec
 
+                    hs_tag = topic_spec("guard_high_stake").bracket_tag
                     scale_pct = int(g_dec.suggested_scale * 100)
                     if not g_dec.allowed:
-                        g_title = f"🛡 [P3C · HIGH-STAKE] BLOCK {side} {symbol}"
+                        g_title = f"🛡 {hs_tag} BLOCK {side} {symbol}"
                     elif g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
-                        g_title = f"🛡 [P3C · HIGH-STAKE] SCALE {scale_pct}% {side} {symbol}"
+                        g_title = f"🛡 {hs_tag} SCALE {scale_pct}% {side} {symbol}"
                     else:
-                        g_title = f"🧭 [P3C · HIGH-STAKE] ACCEPT {side} {symbol}"
+                        g_title = f"🧭 {hs_tag} ACCEPT {side} {symbol}"
 
                     meta_reason = (getattr(g_dec, "metadata", None) or {}).get("gemini_reason")
                     clean_reason = str(meta_reason or re.sub(

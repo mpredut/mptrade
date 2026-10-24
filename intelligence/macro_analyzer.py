@@ -81,6 +81,7 @@ class MacroAnalyzer:
             or 0.0
         )
         self._last_macro_llm_ts: float = cached_geo_ts
+        self._last_notified_geo_ts: float = cached_geo_ts
         self._last_advisor_ts: float = cached_adv_ts
         self._last_notified_advisor_ts: float = cached_adv_ts
         self._last_thread_prune_ts: float = 0.0
@@ -104,6 +105,42 @@ class MacroAnalyzer:
                     "Published geopolitical assessment: threat=%s, risk=%.2f, headlines=%d",
                     assessment.threat_level, assessment.risk_score, assessment.headlines_analyzed,
                 )
+                now = time.time()
+                is_fresh = assessment.ts > getattr(self, "_last_notified_geo_ts", 0.0)
+                elapsed_since_notify = now - getattr(self, "_last_notified_geo_ts", 0.0)
+                min_notify_interval = min(self.macro_llm_interval_sec, 3600.0)
+                if is_fresh and not getattr(assessment, "is_fallback", False) and (
+                    force or elapsed_since_notify >= min_notify_interval
+                ):
+                    if self.shadow_notify:
+                        try:
+                            from notify_engine.alertnotifiers import notify
+                            from orchestratorOS.agy.topics import topic_spec
+
+                            threat_str = (assessment.threat_level or "NORMAL").upper()
+                            icon = (
+                                "🛑"
+                                if "CRITICAL" in threat_str
+                                else ("🛡" if "ELEVATED" in threat_str else "🌍")
+                            )
+                            tag = topic_spec("macro_geopolitical").bracket_tag
+                            title = f"{icon} {tag} {assessment.recommended_brake} ({assessment.threat_level})"
+                            body = (
+                                f"Brake: {assessment.recommended_brake} · Threat: {assessment.threat_level} "
+                                f"(Risk: {assessment.risk_score:.2f}, Headlines: {assessment.headlines_analyzed})\n"
+                                f"{assessment.summary}"
+                            )
+                            notify(
+                                title=title,
+                                body=body,
+                                source="macro_shadow",
+                                symbol="GLOBAL",
+                            )
+                            self._last_notified_geo_ts = assessment.ts
+                        except Exception as exc:
+                            logger.debug("Failed sending geopolitical assessment notification: %s", exc)
+                    else:
+                        self._last_notified_geo_ts = assessment.ts
                 return True
         except Exception as e:
             logger.warning("Failed assessing geopolitical threat: %s", e)
@@ -185,9 +222,12 @@ class MacroAnalyzer:
                     if self.shadow_notify:
                         try:
                             from notify_engine.alertnotifiers import notify
+                            from orchestratorOS.agy.topics import topic_spec
+
                             bias_str = (assessment.market_bias or "NEUTRAL").upper()
                             icon = "🟢" if "BULL" in bias_str else ("🔴" if "BEAR" in bias_str else "🧭")
-                            title = f"{icon} [P3B · SENTIMENT] {assessment.recommended_action} ({assessment.market_bias})"
+                            tag = topic_spec("macro_sentiment").bracket_tag
+                            title = f"{icon} {tag} {assessment.recommended_action} ({assessment.market_bias})"
                             body = (
                                 f"Action: {assessment.recommended_action} · Bias: {assessment.market_bias} (Risk: {assessment.risk_level})\n"
                                 f"{assessment.summary}"
