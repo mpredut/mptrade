@@ -859,7 +859,7 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
         return json.dumps(plan)
 
     auditor = GeminiClient(custom_runner=_runner)
-    gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0, dedup_window_sec=180.0)
+    gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
     gateway.submit.side_effect = [
         {"intent_id": "i_btc", "symbol": "BTCUSDC", "status": "EXECUTED"},
         {"intent_id": "i_hype", "symbol": "HYPEUSD", "status": "EXECUTED"},
@@ -889,7 +889,7 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
     assert "[kraken] HYPEUSD: qty=13.68" in prompt_text
     assert "ZERO PROFIT OR STRATEGY GUARDS" in prompt_text
     assert "between 10 and 2000 USD" in prompt_text
-    assert "180s anti-double-submit" in prompt_text
+    assert "zero artificial cooldowns or dedup locks" in prompt_text
 
     # Highest-confidence actionable decision (BTCUSDC @ 0.94) executes first and becomes primary summary
     assert gateway.submit.call_count == 2

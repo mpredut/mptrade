@@ -26,7 +26,6 @@ def temp_workspace(tmp_path):
         f.write("autonomous_trading_max_notional_usd = 2000.0\n")
         f.write("autonomous_trading_min_notional_usd = 10.0\n")
         f.write("autonomous_trading_min_confidence = 0.85\n")
-        f.write("autonomous_trading_dedup_window_sec = 180.0\n")
         f.write("autonomous_trading_notify = 1\n")
 
     return str(ws), str(cache)
@@ -39,7 +38,6 @@ def test_gateway_initialization(temp_workspace):
     assert gw.max_notional_usd == 2000.0
     assert gw.min_notional_usd == 10.0
     assert gw.min_confidence == 0.85
-    assert gw.dedup_window_sec == 180.0
     assert gw.notify_enabled is True
     assert gw.load_all_intents() == []
 
@@ -53,7 +51,6 @@ def test_gateway_fails_fast_without_usd_config_keys(tmp_path):
         "autonomous_trading_max_notional_eur = 500.0\n"
         "autonomous_trading_min_notional_eur = 10.0\n"
         "autonomous_trading_min_confidence = 0.85\n"
-        "autonomous_trading_dedup_window_sec = 21600.0\n"
         "autonomous_trading_notify = 1\n",
         encoding="utf-8",
     )
@@ -62,9 +59,7 @@ def test_gateway_fails_fast_without_usd_config_keys(tmp_path):
         return_value={
             "autonomous_trading_mode": "shadow",
             "autonomous_trading_max_notional_eur": "500.0",
-            "autonomous_trading_min_notional_eur": "10.0",
             "autonomous_trading_min_confidence": "0.85",
-            "autonomous_trading_dedup_window_sec": "21600.0",
             "autonomous_trading_notify": "1",
         },
     ):
@@ -277,8 +272,8 @@ def test_process_intent_clamps_to_available_wallet_balance_and_blocks_zero_balan
     mock_krk.place.assert_not_called()
 
 
-def test_multi_tranche_same_side_scaling_allowed_after_180s_dedup_and_previous_recovery(temp_workspace):
-    ws, cache = temp_workspace
+def test_multi_tranche_same_side_scaling_has_zero_dedup_lock_and_previous_recovery(temp_workspace):
+    ws, _ = temp_workspace
     gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
 
     mock_inst = MagicMock()
@@ -302,22 +297,10 @@ def test_multi_tranche_same_side_scaling_allowed_after_180s_dedup_and_previous_r
 
     with patch.object(gw, "_dispatch_notify", return_value=True):
         first = gw.submit(sell_dec, source="auto_trade_executor", max_mode="enforce", instruments_map={"BTC": mock_inst})
-        assert first["status"] == "EXECUTED"
-        assert mock_inst.place.call_count == 1
-
-        # Immediate double-submit within 180s is deduplicated
-        dup = gw.submit(sell_dec, source="auto_trade_executor", max_mode="enforce", instruments_map={"BTC": mock_inst})
-        assert dup["intent_id"] == first["intent_id"]
-        assert mock_inst.place.call_count == 1
-
-        # Next 10-minute cron cycle (600s > 180s): second $2,000 tranche executes freely without 6h lock!
-        intents = gw.load_all_intents()
-        intents[0]["timestamp"] = time.time() - 600.0
-        gw.save_all_intents(intents)
-
         second = gw.submit(sell_dec, source="auto_trade_executor", max_mode="enforce", instruments_map={"BTC": mock_inst})
-        assert second["intent_id"] != first["intent_id"]
+        assert first["status"] == "EXECUTED"
         assert second["status"] == "EXECUTED"
+        assert second["intent_id"] != first["intent_id"]
         assert mock_inst.place.call_count == 2
 
     # Verify .previous crash recovery on corrupted primary intents file
@@ -483,13 +466,9 @@ def test_submit_is_the_single_validated_entry_point(temp_workspace):
     assert first["status"] == "OBSERVED_SHADOW" and first["created_by"] == "auto_trade_executor"
     assert first["suggested_notional_usd"] == gw.max_notional_usd   # clamped to 2000.0 USD
 
-    dup = gw.submit(buy, source="auto_trade_executor", max_mode="enforce")
-    assert dup["intent_id"] == first["intent_id"] and seen_modes == ["shadow"]   # de-duplicated, not re-run
-    assert len(gw.load_all_intents()) == 1
+    second = gw.submit(buy, source="auto_trade_executor", max_mode="enforce")
+    assert second["intent_id"] != first["intent_id"] and seen_modes == ["shadow", "enforce"]
+    assert len(gw.load_all_intents()) == 2
 
     sell = gw.submit(dict(buy, decision="SELL"), source="auto_trade_executor", max_mode="enforce")
-    assert sell["status"] == "EXECUTED" and seen_modes == ["shadow", "enforce"]
-
-    # After an opposite-side SELL, a fresh BUY re-entry is allowed (not blocked by the pre-sell BUY)
-    reentry = gw.submit(buy, source="auto_trade_executor", max_mode="enforce")
-    assert reentry["intent_id"] != first["intent_id"] and seen_modes == ["shadow", "enforce", "enforce"]
+    assert sell["status"] == "EXECUTED" and seen_modes == ["shadow", "enforce", "enforce"]

@@ -9,7 +9,6 @@ Operational Architecture:
 2. Minimal Operational Mechanics (100% Strategic & Risk Judgment Delegated to Gemini):
    - Confidence threshold verification (`autonomous_trading_min_confidence`, e.g. >= 0.85).
    - Symmetric USD notional bounds (`[autonomous_trading_min_notional_usd, autonomous_trading_max_notional_usd]`, up to $2,000 USD) clamped to available spot wallet balance.
-   - Short anti-double-submit idempotency window (`autonomous_trading_dedup_window_sec`, e.g. 180s) within a single cycle so multi-tranche scaling across 10m cycles is never blocked.
    - Symmetric bypass of ALL deterministic/strategy/daily-cap/LLM guards (`AUTONOMOUS_BYPASS_GUARDS` includes `"all"`, `"daily_limit"`, `"profit_guard"`, `"trend"`, `"qlimit"`, `"intelligence"`, `"llm"`) across both `BUY` and `SELL`.
 3. Modes of Operation:
    - "shadow": Simulates order, validates operational preflight, logs simulated action, dispatches phone alerts via ntfy.
@@ -43,7 +42,7 @@ if ROOT_DIR not in sys.path:
 # macro risk are evaluated directly by the Gemini model on complete cachedb telemetry, so ALL
 # order_guard gates (GO1 daily/cooldown, G_PROF profit reference, GT_* trends, G_QLIMIT*, GI_*, GLLM*)
 # are bypassed symmetrically. Only confidence, USD bounds, real spot wallet balance clamping,
-# exchange lot/minNotional filters, and the 180s anti-double-submit idempotency window apply.
+# and exchange lot/minNotional filters apply.
 AUTONOMOUS_BYPASS_GUARDS: frozenset[str] = frozenset({
     "all",
     "daily_limit",
@@ -76,8 +75,6 @@ class TradeIntentRecord:
 
 
 MODE_RANK = {"off": 0, "shadow": 1, "enforce": 2}
-# Intents that count as "already acted on" for de-duplication (guard blocks and rejections allow a later retry).
-DEDUP_STATUSES = ("PENDING", "OBSERVED_SHADOW", "EXECUTED")
 
 
 def _parse_finite_float(val: Any, default: float) -> float:
@@ -205,10 +202,6 @@ class AutonomousIntentGateway:
             if "autonomous_trading_min_confidence" not in conf:
                 raise KeyError("Missing required 'autonomous_trading_min_confidence' in order_guard.conf")
             self.min_confidence = float(conf["autonomous_trading_min_confidence"])
-
-        if "autonomous_trading_dedup_window_sec" not in conf:
-            raise KeyError("Missing required 'autonomous_trading_dedup_window_sec' in order_guard.conf")
-        self.dedup_window_sec = float(conf["autonomous_trading_dedup_window_sec"])
 
         if notify_enabled is not None:
             self.notify_enabled = bool(notify_enabled)
@@ -636,11 +629,11 @@ class AutonomousIntentGateway:
         max_mode: str,
         instruments_map: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Single entry point for autonomous LLM trade decisions.
+        """Single linear entry point for autonomous LLM trade decisions.
 
-        Validates, clamps the USD notional, de-duplicates against recent intents for the same venue+symbol+side,
-        persists the intent and processes it immediately in the more restrictive of the gateway mode and
-        ``max_mode`` (the producer's own mode), so a shadow producer can never trigger a live order.
+        Validates confidence and symbol/venue, clamps the USD notional, persists the intent, and
+        processes it immediately in the more restrictive of the gateway mode and ``max_mode``
+        (the producer's own mode), so a shadow producer can never trigger a live order.
         """
         side = str(decision.get("decision", "HOLD")).strip().upper()
         if side not in ("BUY", "SELL"):
@@ -661,21 +654,6 @@ class AutonomousIntentGateway:
 
         now = time.time()
         intents = self.load_all_intents()
-        for existing in reversed(intents):
-            if (
-                existing.get("symbol") == symbol
-                and str(existing.get("venue", venue)).lower() == venue
-                and existing.get("status") in DEDUP_STATUSES
-            ):
-                if (
-                    existing.get("decision") == side
-                    and now - float(existing.get("timestamp", 0.0)) < self.dedup_window_sec
-                ):
-                    logger.info("[INTENT GATEWAY] %s %s (%s) already acted on within %.0fs (%s); skipping duplicate.",
-                                side, symbol, venue, self.dedup_window_sec, existing.get("intent_id"))
-                    return existing
-                break
-
         base_id = f"intent_{int(now)}_{side.lower()}_{symbol.lower()}"
         existing_ids = {i.get("intent_id") for i in intents if isinstance(i, dict)}
         intent_id = base_id if base_id not in existing_ids else f"{base_id}_{len(intents) + 1}"

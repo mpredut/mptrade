@@ -1070,7 +1070,6 @@ class AutonomousAIReconciler:
             max_usd = _parse_finite_float(getattr(gw, "max_notional_usd", None), 2000.0)
             min_usd = _parse_finite_float(getattr(gw, "min_notional_usd", None), 10.0)
             min_conf = _parse_finite_float(getattr(gw, "min_confidence", None), 0.85)
-            dedup_s = _parse_finite_float(getattr(gw, "dedup_window_sec", None), 180.0)
             tasks.append(
                 f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across ALL live tradable spot coins "
                 "(e.g. BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSD, TAOUSD, ADAUSD on 'kraken') using the complete "
@@ -1093,8 +1092,8 @@ class AutonomousAIReconciler:
                 "a prior exit, or confirmed momentum breakouts (scaling in across 10m cycles when warranted).\n"
                 f"   - Emit one entry per actionable coin in `market_trading_decisions` with `confidence >= {min_conf:g}` "
                 f"and `suggested_notional_usd` sized between {min_usd:g} and {max_usd:g} USD (the gateway automatically "
-                f"clamps notional to available free wallet balance and applies only a {dedup_s:g}s anti-double-submit "
-                "idempotency check). If no coin warrants action right now, return a single 'HOLD' entry."
+                "clamps notional strictly to available free wallet balance with zero artificial cooldowns or dedup locks). "
+                "If no coin warrants action right now, return a single 'HOLD' entry."
             )
             schema.append(
                 '  "market_trading_decisions": [{"decision": "BUY" | "SELL" | "HOLD", "symbol": "BTCUSDC", '

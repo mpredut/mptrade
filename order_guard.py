@@ -128,7 +128,6 @@ _REQUIRED_ORDER_GUARD_KEYS = frozenset({
     "autonomous_trading_max_notional_usd",
     "autonomous_trading_min_notional_usd",
     "autonomous_trading_min_confidence",
-    "autonomous_trading_dedup_window_sec",
     "autonomous_trading_notify",
     # Guard bypass configuration
     "default_bypass_guards",
