@@ -114,6 +114,8 @@ def handle_binance_ws_event(
     persist_fn: Callable[[str], Any] | None = None,
 ) -> None:
     """Dispatch one Binance user-data WebSocket event into the account caches."""
+    if not isinstance(event, dict):
+        return
     print("cacheManager handler call from binance ....")
     event_type = event.get("e")
     if not event_type:

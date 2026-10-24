@@ -2033,6 +2033,47 @@ class TestAtomicWrite(unittest.TestCase):
         self.assertEqual(c24.cache.get("BTC"), [[2000, 51000.0]])
         self.assertEqual(c24.fetchtime_per_symbol, {})
 
+        # bapi_ws_normalize rejects boolean IDs and falls back when l/L are NaN/Inf
+        from binance_api import bapi_ws_normalize
+        import cacheintegrity
+
+        self.assertIsNone(
+            bapi_ws_normalize.parse_order_execution_report(
+                {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "t": True, "i": 10, "l": "1", "L": "50000", "S": "BUY"}
+            )
+        )
+        self.assertIsNone(
+            bapi_ws_normalize.parse_trade_execution_report(
+                {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "t": True, "i": 10, "l": "1", "L": "50000", "S": "BUY"}
+            )
+        )
+        sym_o, ord_it = bapi_ws_normalize.parse_order_execution_report(
+            {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "t": 7, "i": 10, "l": "nan", "z": "0.5", "L": "nan", "Y": "25000", "S": "BUY", "T": 1000}
+        )
+        self.assertEqual(sym_o, "BTCUSDC")
+        self.assertAlmostEqual(ord_it["quantity"], 0.5)
+        self.assertAlmostEqual(ord_it["price"], 50000.0)
+        sym_t, trd_it = bapi_ws_normalize.parse_trade_execution_report(
+            {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "t": 7, "i": 10, "l": "nan", "z": "0.5", "L": "nan", "p": "50000", "S": "BUY", "T": 1000}
+        )
+        self.assertEqual(sym_t, "BTCUSDC")
+        self.assertEqual(trd_it["qty"], "0.5")
+        self.assertEqual(trd_it["price"], "50000")
+
+        # read_trade_records_range_strict rejects start_byte > 0 not aligned to newline
+        t_path = os.path.join(self.tmp, "trade_align.jsonl")
+        row_bytes = b'{"s":"BTCUSDC","i":{"symbol":"BTCUSDC","id":1,"orderId":10,"price":"50000","qty":"0.1","time":1000,"isBuyer":true}}\n'
+        with open(t_path, "wb") as fh:
+            fh.write(row_bytes * 2)
+        with self.assertRaises(cm.account_cache_health.AccountCacheNotReady):
+            cacheintegrity.read_trade_records_range_strict(
+                t_path,
+                5,
+                len(row_bytes) * 2,
+                is_valid_item_fn=cm.CacheTradeManager._is_valid_item,
+                reader_reason="trade_cache_reader_not_current",
+            )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

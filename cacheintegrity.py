@@ -279,7 +279,12 @@ def read_trade_records_range_strict(
             file_size = os.fstat(handle.fileno()).st_size
             if file_size < end_byte:
                 raise ValueError("Trade cache is shorter than its manifest")
-            handle.seek(start_byte)
+            if start_byte > 0:
+                handle.seek(start_byte - 1)
+                if handle.read(1) != b"\n":
+                    raise ValueError("Trade suffix does not start at a newline boundary")
+            else:
+                handle.seek(0)
             raw = handle.read(end_byte - start_byte)
         if raw and not raw.endswith(b"\n"):
             raise ValueError("Trade committed data ends with a partial row")
