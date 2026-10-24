@@ -464,6 +464,37 @@ class MonitorOrderPreflightTest(unittest.TestCase):
         cancel_order.assert_called_once()
         place.assert_called_once()
 
+    def test_intelligence_guard_refusal_before_cancel_preserves_live_order(self):
+        """When order_guard.profit_guard (e.g. OrderbookWallGuard) refuses replacement, live order is NOT canceled."""
+        import order_guard
+        orders = {101: {"price": 248.1, "quantity": 4.0306}}
+        with (
+            mock.patch.object(
+                monitororder.api, "get_open_orders", return_value=orders),
+            mock.patch.object(
+                monitororder.api, "get_current_price", return_value=247.5),
+            mock.patch.object(
+                monitororder.u, "are_close", return_value=True),
+            mock.patch.object(
+                order_guard, "daily_limit_guard", return_value=(True, None)),
+            mock.patch.object(
+                order_guard, "profit_guard", return_value=False) as pg_mock,
+            mock.patch.object(
+                monitororder.mkt, "preflight_order") as preflight,
+            mock.patch.object(
+                monitororder.api, "cancel_order") as cancel_order,
+            mock.patch.object(
+                monitororder.mkt, "place") as place,
+            mock.patch("builtins.print"),
+        ):
+            monitororder.monitor_open_orders_by_type("TAOUSDC", "SELL")
+
+        pg_mock.assert_called_once()
+        preflight.assert_not_called()
+        cancel_order.assert_not_called()
+        place.assert_not_called()
+        self.assertEqual(monitororder.order_retry.load_all(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

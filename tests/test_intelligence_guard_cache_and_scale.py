@@ -1153,7 +1153,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
             internal_guard_mode="enforce",
             intelligence_guards_mode="enforce",
             geopolitical_guard_mode="enforce",
-            sell_guard_min_notional_eur=1000.0,
+            sell_guard_min_notional_usd=700.0,
             llm_guard_mode="off",
             whale_guard_mode="off",
             orderbook_wall_guard_mode="off",
@@ -1492,13 +1492,13 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert dec_sell_bull.suggested_scale == pytest.approx(1.0)
         assert "trend_direction_favorable" in dec_sell_bull.reason
 
-        # check_internal_order_guards enforces parabolic dump on large SELL (>= sell_guard_min_notional_eur)
+        # check_internal_order_guards enforces parabolic dump on large SELL (>= sell_guard_min_notional_usd)
         margins = _margins(
             internal_guard_mode="enforce",
             intelligence_guards_mode="enforce",
             parabolic_surge_pct=10.0,
             parabolic_pullback_pct=2.0,
-            sell_guard_min_notional_eur=1000.0,
+            sell_guard_min_notional_usd=700.0,
         )
         ok_sell, reason_sell, scale_sell = check_internal_order_guards(
             symbol="SOLUSDC",

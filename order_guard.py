@@ -90,7 +90,7 @@ _REQUIRED_ORDER_GUARD_KEYS = frozenset({
     "whale_wall_usd_limit",
     "min_buy_imbalance",
     "max_sell_imbalance",
-    "sell_guard_min_notional_eur",
+    "sell_guard_min_notional_usd",
     "funding_guard_mode",
     "funding_max_long_rate",
     "funding_min_short_rate",
@@ -274,6 +274,10 @@ def _load_margins():
                 m[k] = float(v)
             except ValueError:
                 m[k] = v
+    if "sell_guard_min_notional_usd" not in m and "sell_guard_min_notional_eur" in m:
+        m["sell_guard_min_notional_usd"] = m["sell_guard_min_notional_eur"]
+    if "sell_guard_min_notional_eur" not in m and "sell_guard_min_notional_usd" in m:
+        m["sell_guard_min_notional_eur"] = m["sell_guard_min_notional_usd"]
     missing = sorted(_REQUIRED_ORDER_GUARD_KEYS - set(m.keys()))
     if missing:
         raise KeyError(f"Missing required keys in {path}: {', '.join(missing)}")
@@ -1281,7 +1285,7 @@ def check_intelligence_guards(
         computed_notional = price * qty
 
     if side == "SELL":
-        sell_min_notional = float(m["sell_guard_min_notional_eur"])
+        sell_min_notional = float(m.get("sell_guard_min_notional_usd", m.get("sell_guard_min_notional_eur", 700.0)))
         if computed_notional is None or computed_notional < sell_min_notional:
             return True, "small_sell_exempt", 1.0
 
@@ -1495,7 +1499,7 @@ def _evaluate_intelligence_guards_raw(
         computed_notional = price * qty
 
     if side == "SELL":
-        sell_min_notional = float(m["sell_guard_min_notional_eur"])
+        sell_min_notional = float(m.get("sell_guard_min_notional_usd", m.get("sell_guard_min_notional_eur", 700.0)))
         if computed_notional is None or computed_notional < sell_min_notional:
             return True, "small_sell_exempt", 1.0
 

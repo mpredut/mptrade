@@ -40,7 +40,7 @@ def _margins(**overrides):
 # =====================================================================
 
 def test_internal_guard_non_buy_order_passes():
-    # Small SELL order (< sell_guard_min_notional_eur) is exempt
+    # Small SELL order (< sell_guard_min_notional_usd) is exempt
     allowed, reason, scale = check_internal_order_guards(
         symbol="BTCUSDC",
         side="SELL",
@@ -149,7 +149,7 @@ def test_external_microstructure_large_sell_whale_support_defer():
         funding_guard_mode="off",
         whale_wall_usd_limit=1_000_000.0,
         max_sell_imbalance=0.75,
-        sell_guard_min_notional_eur=1000.0,
+        sell_guard_min_notional_usd=700.0,
     )
 
     with patch.object(get_orderbook_collector(), "fetch", return_value=wall_snap):

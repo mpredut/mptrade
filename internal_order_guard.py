@@ -74,7 +74,7 @@ def check_internal_order_guards(
 
     if order_side == "SELL":
         computed_notional = float(notional_eur) if notional_eur is not None else (float(price * qty) if (price and qty) else 0.0)
-        sell_min_notional = float(m["sell_guard_min_notional_eur"])
+        sell_min_notional = float(m.get("sell_guard_min_notional_usd", m.get("sell_guard_min_notional_eur", 700.0)))
         if computed_notional < sell_min_notional:
             return True, "small_sell_exempt", 1.0
 
