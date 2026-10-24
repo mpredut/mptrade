@@ -363,8 +363,8 @@ def main():
     parser.add_argument(
         "--advisor-interval",
         type=float,
-        default=7200.0,
-        help="Market advisor synthesis interval in seconds (default: 7200s).",
+        default=None,
+        help="Market advisor synthesis interval in seconds (default: from order_guard.conf macro_advisor_interval_sec).",
     )
     parser.add_argument(
         "--verbose",

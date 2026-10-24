@@ -429,9 +429,27 @@ def test_macro_analyzer_run_cycle_mocked(temp_cache_dir):
         assert hb["last_run"]["geopolitical_updated"] is True
 
 
-def test_macro_analyzer_default_3h_interval(temp_cache_dir):
+def test_macro_analyzer_default_3h_interval(temp_cache_dir, monkeypatch):
+    import sys
+    from intelligence import macro_analyzer
+
     analyzer = MacroAnalyzer(cache_dir=temp_cache_dir)
     assert analyzer.advisor_interval_sec == 10800.0
+
+    captured = {}
+
+    class DummyAnalyzer:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run_cycle(self, force=False):
+            pass
+
+    monkeypatch.setattr(macro_analyzer, "MacroAnalyzer", DummyAnalyzer)
+    monkeypatch.setattr(sys, "argv", ["macro_analyzer.py", "--once"])
+    macro_analyzer.main()
+    assert captured["advisor_interval_sec"] is None
+    assert captured["macro_llm_interval_sec"] is None
 
 
 def test_macro_advisor_notification_dispatch(temp_cache_dir):
