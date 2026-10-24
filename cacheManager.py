@@ -1062,18 +1062,13 @@ class CacheManagerInterface(ABC):
                         candidate_counts[symbol] = len(items)
                     f.flush()
                     os.fsync(f.fileno())
+                self._persisted_counts = candidate_counts
                 fetchtime = dict(self.fetchtime_per_symbol)
-                if not self._write_meta({
+                return self._write_meta({
                     "fetchtime": fetchtime,
                     "rest_sync_cursor": dict(self._rest_sync_cursor_per_symbol),
                     "counts": dict(candidate_counts),
-                }):
-                    self._persisted_counts = previous_counts
-                    if initial_size is not None:
-                        self._truncate_failed_jsonl_append(initial_size)
-                    return False
-                self._persisted_counts = candidate_counts
-                return True
+                })
         except Exception as e:
             self._persisted_counts = previous_counts
             if initial_size is not None:

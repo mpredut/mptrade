@@ -1186,20 +1186,19 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertFalse(bapi_ws_bridge._bridge_is_usable(type("_DeadBridge", (), {"is_running": False})()))
         self.assertTrue(bapi_ws_bridge._bridge_is_usable(type("_LiveBridge", (), {"is_running": True})()))
 
-        # _save_jsonl_append rolls back _persisted_counts and truncates uncommitted tail if _write_meta returns False
+        # _save_jsonl_append keeps _persisted_counts updated after fsync when _write_meta returns False so retry updates .meta without duplicating rows
         c24_file = os.path.join(self.tmp, "cache_24_rollback.jsonl")
         c24_mgr = cm.Cache24PriceManager(60, ["BTCUSDT"], c24_file, read_only=True)
         c24_mgr.cache = {"BTCUSDT": [[1700000000000, 60000.0]]}
         c24_mgr.fetchtime_per_symbol = {"BTCUSDT": 1700000000000}
         self.assertTrue(c24_mgr._save_jsonl_append())
-        size_after_first = os.path.getsize(c24_file)
         self.assertEqual(c24_mgr._persisted_counts, {"BTCUSDT": 1})
         c24_mgr.cache["BTCUSDT"].append([1700000001000, 60100.0])
         c24_mgr.fetchtime_per_symbol["BTCUSDT"] = 1700000001000
         with unittest.mock.patch.object(c24_mgr, "_write_meta", return_value=False):
             self.assertFalse(c24_mgr._save_jsonl_append())
-        self.assertEqual(c24_mgr._persisted_counts, {"BTCUSDT": 1})
-        self.assertEqual(os.path.getsize(c24_file), size_after_first)
+        self.assertEqual(c24_mgr._persisted_counts, {"BTCUSDT": 2})
+        self.assertTrue(c24_mgr._save_jsonl_append())
 
         # build_account_meta_snapshot rejects bool/negative timestamps in fetchtime/rest_sync_cursor
         import cacheintegrity
