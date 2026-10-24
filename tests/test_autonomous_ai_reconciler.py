@@ -763,6 +763,72 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
             f,
         )
 
+    # Extra cachedb telemetry feeds: breaking news, 24trend/live_*, kalman_state, cache_T_trend, 7d range, retry queue
+    with open(os.path.join(cache_dir, "news_feed_collect.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            [
+                {
+                    "title": "Sudden escalation alert in Strait of Hormuz",
+                    "source": "Bloomberg",
+                    "matched_keywords": ["escalation"],
+                    "is_high_severity": True,
+                    "first_seen_ts": time.time() - 120.0,
+                }
+            ],
+            f,
+        )
+    os.makedirs(os.path.join(cache_dir, "24trend"), exist_ok=True)
+    with open(os.path.join(cache_dir, "24trend", "live_HYPEUSD.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "222": {"final_trend": -1, "growth_coefficient": -0.04, "slope_full": -0.025, "current_price": 75.50},
+                "900": {"final_trend": -1, "growth_coefficient": -0.03, "slope_full": -0.018, "current_price": 75.50},
+                "9000": {"final_trend": -1, "growth_coefficient": -0.01, "slope_full": -0.009, "current_price": 75.50},
+            },
+            f,
+        )
+    with open(os.path.join(cache_dir, "kalman_state.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "HYPEUSD": {
+                    "kalman_vel": -0.031,
+                    "kalman_vel_std": 0.012,
+                    "kalman_trend": -1,
+                    "vol_1h_pct": 0.74,
+                    "adapt_reentry_pct": 1.48,
+                }
+            },
+            f,
+        )
+    with open(os.path.join(cache_dir, "cache_long_trend.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "items": {
+                    "HYPEUSD": [
+                        {"direction": "down", "duration_seconds": 36000.0, "estimated_future_hours": 42.5}
+                    ]
+                }
+            },
+            f,
+        )
+    with open(os.path.join(cache_dir, "cache_T_trend.json"), "w", encoding="utf-8") as f:
+        json.dump({"HYPEUSD": {"median_d": 3.0, "p90_d": 6.2}}, f)
+    with open(os.path.join(cache_dir, "cache_prices_multi.json"), "w", encoding="utf-8") as f:
+        json.dump({"items": {"HYPE": [[1000, 80.0], [2000, 74.5], [3000, 76.0]]}}, f)
+    with open(os.path.join(cache_dir, "order_retry_queue.jsonl"), "w", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "provider_name": "Binance",
+            "symbol": "TAOUSDC",
+            "side": "SELL",
+            "qty": 3.31,
+            "requested_price": 250.45,
+            "kind": "monitor_order_replace",
+            "attempts": 2,
+            "last_failure_reason": "profit_guard",
+            "lifecycle": "submit_pending",
+            "expires_at_ts": time.time() + 3600.0,
+        }) + "\n")
+
     captured_prompts = []
     plan = {
         "summary": "Multi-coin protective de-risking on BTCUSDC and HYPEUSD.",
@@ -793,7 +859,7 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
         return json.dumps(plan)
 
     auditor = GeminiClient(custom_runner=_runner)
-    gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
+    gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0, dedup_window_sec=180.0)
     gateway.submit.side_effect = [
         {"intent_id": "i_btc", "symbol": "BTCUSDC", "status": "EXECUTED"},
         {"intent_id": "i_hype", "symbol": "HYPEUSD", "status": "EXECUTED"},
@@ -814,10 +880,16 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
     assert "action=DEFENSIVE" in prompt_text
     assert "Breadth collapse" in prompt_text
     assert "brake=DOWNSCALE_QTY" in prompt_text
+    assert "[HIGH-SEV] Sudden escalation alert in Strait of Hormuz" in prompt_text
     assert "median_chg=-3.1%" in prompt_text
+    assert "7d=-5.00% 7d_range=[74.5, 80.0]" in prompt_text
+    assert "vol_1h=0.74%(adapt_reentry=1.48%)" in prompt_text
+    assert "est_rem=42.5h, med_d=3.0d/p90=6.2d" in prompt_text
+    assert "order_retry_queue.jsonl" in prompt_text
     assert "[kraken] HYPEUSD: qty=13.68" in prompt_text
-    assert "ZERO PROFIT GUARDS" in prompt_text
+    assert "ZERO PROFIT OR STRATEGY GUARDS" in prompt_text
     assert "between 10 and 2000 USD" in prompt_text
+    assert "180s anti-double-submit" in prompt_text
 
     # Highest-confidence actionable decision (BTCUSDC @ 0.94) executes first and becomes primary summary
     assert gateway.submit.call_count == 2

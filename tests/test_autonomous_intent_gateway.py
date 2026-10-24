@@ -26,7 +26,7 @@ def temp_workspace(tmp_path):
         f.write("autonomous_trading_max_notional_usd = 2000.0\n")
         f.write("autonomous_trading_min_notional_usd = 10.0\n")
         f.write("autonomous_trading_min_confidence = 0.85\n")
-        f.write("autonomous_trading_dedup_window_sec = 21600.0\n")
+        f.write("autonomous_trading_dedup_window_sec = 180.0\n")
         f.write("autonomous_trading_notify = 1\n")
 
     return str(ws), str(cache)
@@ -39,6 +39,7 @@ def test_gateway_initialization(temp_workspace):
     assert gw.max_notional_usd == 2000.0
     assert gw.min_notional_usd == 10.0
     assert gw.min_confidence == 0.85
+    assert gw.dedup_window_sec == 180.0
     assert gw.notify_enabled is True
     assert gw.load_all_intents() == []
 
@@ -194,9 +195,9 @@ def test_process_intent_symmetric_buy_and_sell_bypass_all_profit_guards(temp_wor
         "thesis": f"Symmetric {side} decision including protective de-risking below entry",
     }
 
-    # Profit guard must NEVER be invoked for autonomous AI orders on either BUY or SELL.
+    #Neither profit_guard nor daily_limit_guard may ever block autonomous AI orders on BUY or SELL.
     with patch("order_guard.profit_guard", side_effect=AssertionError("profit_guard must not be called")), \
-         patch("order_guard.daily_limit_guard", return_value=(True, None)), \
+         patch("order_guard.daily_limit_guard", side_effect=AssertionError("daily_limit_guard must not be called")), \
          patch.object(gw, "_dispatch_notify", return_value=True) as mock_notify:
         processed = gw.process_intent(intent, instruments_map={"BTC": mock_inst})
 
@@ -213,7 +214,7 @@ def test_process_intent_symmetric_buy_and_sell_bypass_all_profit_guards(temp_wor
     assert kwargs["intent_id"] == f"intent_sym_{side.lower()}"
     assert kwargs["client_order_id"] == f"AI_intent_sym_{side.lower()}"
     assert kwargs["bypass_guards"] == AUTONOMOUS_BYPASS_GUARDS
-    assert {"profit_guard", "trend", "qlimit", "intelligence", "llm"} <= set(kwargs["bypass_guards"])
+    assert {"all", "daily_limit", "profit_guard", "trend", "qlimit", "intelligence", "llm"} <= set(kwargs["bypass_guards"])
     assert "$1200" in mock_notify.call_args[1]["title"]
 
 
@@ -276,35 +277,57 @@ def test_process_intent_clamps_to_available_wallet_balance_and_blocks_zero_balan
     mock_krk.place.assert_not_called()
 
 
-def test_process_intent_enforce_mode_daily_limit_guard_blocked(temp_workspace):
-    ws, _ = temp_workspace
+def test_multi_tranche_same_side_scaling_allowed_after_180s_dedup_and_previous_recovery(temp_workspace):
+    ws, cache = temp_workspace
     gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
 
     mock_inst = MagicMock()
     mock_inst.symbol = "BTCUSDC"
+    mock_inst.base = "BTC"
+    mock_inst.quote = "USDC"
     mock_inst.provider_name = "binance"
     mock_inst._provider.name = "binance"
     mock_inst._provider.get_current_price.return_value = 80000.0
+    mock_inst._provider.free_balance.return_value = 0.09  # $7,200 USD BTC position
+    mock_inst.place.return_value = {"orderId": "tranche_ok"}
 
-    intent = {
-        "intent_id": "guard_blocked_1",
+    sell_dec = {
         "decision": "SELL",
         "symbol": "BTCUSDC",
         "venue": "binance",
-        "confidence": 0.90,
-        "suggested_notional_usd": 500.0,
-        "status": "PENDING",
-        "thesis": "4th sell today hits GO1 cap",
+        "confidence": 0.92,
+        "suggested_notional_usd": 2000.0,
+        "thesis": "Protective multi-tranche trim",
     }
 
-    with patch("order_guard.daily_limit_guard", return_value=(False, "daily_limit")), \
-         patch.object(gw, "_dispatch_notify", return_value=True) as mock_notify:
-        processed = gw.process_intent(intent, instruments_map={"BTC": mock_inst})
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        first = gw.submit(sell_dec, source="auto_trade_executor", max_mode="enforce", instruments_map={"BTC": mock_inst})
+        assert first["status"] == "EXECUTED"
+        assert mock_inst.place.call_count == 1
 
-    mock_inst.place.assert_not_called()
-    assert processed["status"] == "BLOCKED_BY_GUARD"
-    mock_notify.assert_called_once()
-    assert "BLOCKED" in mock_notify.call_args[1]["title"]
+        # Immediate double-submit within 180s is deduplicated
+        dup = gw.submit(sell_dec, source="auto_trade_executor", max_mode="enforce", instruments_map={"BTC": mock_inst})
+        assert dup["intent_id"] == first["intent_id"]
+        assert mock_inst.place.call_count == 1
+
+        # Next 10-minute cron cycle (600s > 180s): second $2,000 tranche executes freely without 6h lock!
+        intents = gw.load_all_intents()
+        intents[0]["timestamp"] = time.time() - 600.0
+        gw.save_all_intents(intents)
+
+        second = gw.submit(sell_dec, source="auto_trade_executor", max_mode="enforce", instruments_map={"BTC": mock_inst})
+        assert second["intent_id"] != first["intent_id"]
+        assert second["status"] == "EXECUTED"
+        assert mock_inst.place.call_count == 2
+
+    # Verify .previous crash recovery on corrupted primary intents file
+    import shutil
+    shutil.copyfile(gw.intents_file, f"{gw.intents_file}.previous")
+    with open(gw.intents_file, "w", encoding="utf-8") as f:
+        f.write("{corrupted_json")
+    recovered = gw.load_all_intents()
+    assert len(recovered) == 2
+    assert recovered[-1]["intent_id"] == second["intent_id"]
 
 
 def test_process_all_pending_lifecycle(temp_workspace):

@@ -6,11 +6,11 @@ unified MPTrade execution pipeline (Instrument.place & order_guard).
 Operational Architecture:
 1. Decoupled Ingestion:
    Reads high-conviction trade intents emitted into `cachedb/autonomous_trade_intents.json`.
-2. Minimal Operational Safety (Full Strategic Judgment Delegated to Gemini):
+2. Minimal Operational Mechanics (100% Strategic & Risk Judgment Delegated to Gemini):
    - Confidence threshold verification (`autonomous_trading_min_confidence`, e.g. >= 0.85).
    - Symmetric USD notional bounds (`[autonomous_trading_min_notional_usd, autonomous_trading_max_notional_usd]`, up to $2,000 USD) clamped to available spot wallet balance.
-   - Symmetric elimination of profit guards (`G_PROF` / `profit_guard`), trend deferrals (`GT_S` / `GT_M`), strategy weight caps (`G_QLIMIT*`), microstructure vetoes (`GI_*`), and secondary LLM vetoes (`GLLM1..3`) across both `BUY` and `SELL`.
-   - Operational `GO1` (`order_guard.daily_limit_guard`) daily cap & rapid-fire anti-spam protection.
+   - Short anti-double-submit idempotency window (`autonomous_trading_dedup_window_sec`, e.g. 180s) within a single cycle so multi-tranche scaling across 10m cycles is never blocked.
+   - Symmetric bypass of ALL deterministic/strategy/daily-cap/LLM guards (`AUTONOMOUS_BYPASS_GUARDS` includes `"all"`, `"daily_limit"`, `"profit_guard"`, `"trend"`, `"qlimit"`, `"intelligence"`, `"llm"`) across both `BUY` and `SELL`.
 3. Modes of Operation:
    - "shadow": Simulates order, validates operational preflight, logs simulated action, dispatches phone alerts via ntfy.
    - "enforce": Preflights operational safety, clamps to live spot wallet balance, and submits market order via canonical `Instrument.place()`.
@@ -39,11 +39,14 @@ if ROOT_DIR not in sys.path:
 
 
 # Symmetric guard bypass set for autonomous AI orders across both BUY and SELL:
-# Trade thesis, profit/loss protection, trend timing, microstructure, and macro risk are
-# evaluated directly by the Gemini model on full telemetry context, so all profit reference
-# guards, trend deferrals, weight caps, and secondary intelligence/LLM vetoes are bypassed.
-# Operational GO1 (daily_limit_guard) and exchange balance/filter mechanics remain enforced.
+# Trade thesis, profit/loss protection, multi-tranche scaling, trend timing, microstructure, and
+# macro risk are evaluated directly by the Gemini model on complete cachedb telemetry, so ALL
+# order_guard gates (GO1 daily/cooldown, G_PROF profit reference, GT_* trends, G_QLIMIT*, GI_*, GLLM*)
+# are bypassed symmetrically. Only confidence, USD bounds, real spot wallet balance clamping,
+# exchange lot/minNotional filters, and the 180s anti-double-submit idempotency window apply.
 AUTONOMOUS_BYPASS_GUARDS: frozenset[str] = frozenset({
+    "all",
+    "daily_limit",
     "profit_guard",
     "trend",
     "qlimit",
@@ -219,33 +222,31 @@ class AutonomousIntentGateway:
         return load_key_value_conf(self.workspace_dir, ROOT_DIR)
 
     def load_all_intents(self) -> List[Dict[str, Any]]:
-        """Loads all intents from the durable JSON queue."""
-        if not os.path.exists(self.intents_file):
-            return []
-        try:
-            with open(self.intents_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data if isinstance(data, list) else []
-        except Exception as e:
-            logger.warning("Could not load intents from %s: %s", self.intents_file, e)
-            return []
+        """Loads all intents from the durable JSON queue with `.previous` crash recovery."""
+        from state_io import load_json_state
+        data = load_json_state(
+            self.intents_file,
+            default_factory=list,
+            fail_closed=False,
+            label="autonomous_trade_intents",
+            root_type=list,
+        )
+        return [item for item in data if isinstance(item, dict)]
 
     def save_all_intents(self, intents: List[Dict[str, Any]]) -> bool:
-        """Atomically persists all intents to disk."""
+        """Transactionally persists all intents to disk using `.previous` staging and atomic replace."""
+        from state_io import atomic_write_json, discard_generation_file, stage_previous_generation
+        backup_path: Optional[str] = None
         try:
-            from state_io import atomic_text_writer
-            with atomic_text_writer(self.intents_file) as f:
-                json.dump(intents, f, indent=2)
+            if os.path.exists(self.intents_file):
+                backup_path = stage_previous_generation(self.intents_file)
+            atomic_write_json(self.intents_file, intents, indent=2)
+            if backup_path:
+                discard_generation_file(backup_path)
             return True
-        except Exception:
-            try:
-                os.makedirs(self.cache_dir, exist_ok=True)
-                with open(self.intents_file, "w", encoding="utf-8") as f:
-                    json.dump(intents, f, indent=2)
-                return True
-            except Exception as e:
-                logger.error("Failed saving intents to %s: %s", self.intents_file, e)
-                return False
+        except Exception as e:
+            logger.error("Failed saving intents to %s: %s", self.intents_file, e)
+            return False
 
     def get_pending_intents(self) -> List[Dict[str, Any]]:
         """Returns all intents with PENDING status."""
@@ -489,33 +490,12 @@ class AutonomousIntentGateway:
             })
             return intent
 
-        # Minimal Operational Preflight (Symmetric BUY / SELL, Zero Profit Guards):
-        # 1) Spot wallet free-balance check & clamping
-        # 2) GO1 daily trade cap & rapid-fire anti-spam check
+        # Minimal Operational Preflight (Symmetric BUY / SELL, Zero Strategy or Daily-Cap Guards):
+        # Clamp desired notional strictly to real spot wallet free liquidity.
         guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
             inst, decision, price, effective_usd
         )
         target_qty = effective_usd / price if effective_usd > 0 else 0.0
-
-        if guard_allowed:
-            try:
-                import order_guard
-                prov_obj = getattr(inst, "_provider", None)
-                if prov_obj is not None and not isinstance(getattr(prov_obj, "name", None), str):
-                    prov_obj.name = str(getattr(inst, "provider_name", venue))
-                ok_dl, dl_reason = order_guard.daily_limit_guard(
-                    prov_obj,
-                    inst.symbol,
-                    decision,
-                    bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
-                )
-                if not ok_dl:
-                    guard_allowed = False
-                    guard_reason = f"Daily/cooldown guard ({dl_reason}) blocked {decision} {inst.symbol}"
-            except Exception as g_err:
-                logger.warning("[INTENT GATEWAY] Operational guard evaluation exception: %s", g_err)
-                guard_allowed = False
-                guard_reason = f"Operational guard check failed: {g_err}"
 
         thesis = intent.get("thesis", "Autonomous strategy thesis")
         from orchestratorOS.agy.topics import topic_spec

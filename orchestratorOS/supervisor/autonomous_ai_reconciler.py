@@ -143,6 +143,7 @@ class TelemetrySensorSnapshot:
     market_breadth: Optional[Dict[str, Any]] = None
     sentiment_advisor: Optional[Dict[str, Any]] = None
     geopolitical_threat: Optional[Dict[str, Any]] = None
+    breaking_news: List[Dict[str, Any]] = field(default_factory=list)
     active_heartbeats: Dict[str, Any] = field(default_factory=dict)
     state_files: Dict[str, Any] = field(default_factory=dict)
     prices_and_trends: Dict[str, Any] = field(default_factory=dict)
@@ -247,43 +248,82 @@ class AutonomousAIReconciler:
     def harvest_sensors_telemetry(self) -> TelemetrySensorSnapshot:
         """Reads passive telemetry, spot wallet balances, cycle states, and fills published to disk."""
         snapshot = TelemetrySensorSnapshot()
+        now_ts = time.time()
 
         def _read_json(fpath: str) -> Optional[Any]:
-            if os.path.exists(fpath):
-                try:
-                    with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                        return json.load(f)
-                except Exception:
-                    pass
+            for cand in (fpath, f"{fpath}.previous"):
+                if os.path.exists(cand):
+                    try:
+                        with open(cand, "r", encoding="utf-8", errors="replace") as f:
+                            return json.load(f)
+                    except Exception:
+                        continue
             return None
+
+        def _with_age_min(payload: Dict[str, Any], fpath: str) -> Dict[str, Any]:
+            enriched = dict(payload)
+            raw_ts = enriched.get("ts")
+            ref_ts: Optional[float] = None
+            if isinstance(raw_ts, (int, float)) and not isinstance(raw_ts, bool) and raw_ts > 0:
+                ref_ts = float(raw_ts) / 1000.0 if float(raw_ts) > 1e12 else float(raw_ts)
+            elif os.path.exists(fpath):
+                ref_ts = os.path.getmtime(fpath)
+            if ref_ts is not None:
+                enriched.setdefault("age_min", round(max(0.0, now_ts - ref_ts) / 60.0, 1))
+            return enriched
 
         # 1. Fear & Greed sensor
         for fg_name in ("fear_greed_cache.json", "fear_greed_collect.json"):
-            data = _read_json(os.path.join(self.cache_dir, fg_name))
+            fg_path = os.path.join(self.cache_dir, fg_name)
+            data = _read_json(fg_path)
             if isinstance(data, dict) and data:
-                snapshot.fear_greed = data
+                snapshot.fear_greed = _with_age_min(data, fg_path)
                 break
 
         # 2. Market Breadth sensor
         for mb_name in ("market_breadth_cache.json", "market_breadth_collect.json"):
-            data = _read_json(os.path.join(self.cache_dir, mb_name))
+            mb_path = os.path.join(self.cache_dir, mb_name)
+            data = _read_json(mb_path)
             if isinstance(data, dict) and data:
-                snapshot.market_breadth = data
+                snapshot.market_breadth = _with_age_min(data, mb_path)
                 break
 
         # 3. Macro Sentiment Advisor sensor
         for sa_name in ("sentiment_advisor_eval.json", "macro_advisor_eval.json", "gemini_macro_advisor.json"):
-            data = _read_json(os.path.join(self.cache_dir, sa_name))
+            sa_path = os.path.join(self.cache_dir, sa_name)
+            data = _read_json(sa_path)
             if isinstance(data, dict) and data:
-                snapshot.sentiment_advisor = data
+                snapshot.sentiment_advisor = _with_age_min(data, sa_path)
                 break
 
-        # 4. Geopolitical Threat Shield sensor
+        # 4. Geopolitical Threat Shield sensor + live 1-minute Breaking News RSS feed
         for gt_name in ("geopolitical_threat_eval.json", "geopolitical_threat_state.json"):
-            data = _read_json(os.path.join(self.cache_dir, gt_name))
+            gt_path = os.path.join(self.cache_dir, gt_name)
+            data = _read_json(gt_path)
             if isinstance(data, dict) and data:
-                snapshot.geopolitical_threat = data
+                snapshot.geopolitical_threat = _with_age_min(data, gt_path)
                 break
+
+        news_data = _read_json(os.path.join(self.cache_dir, "news_feed_collect.json"))
+        if isinstance(news_data, list) and news_data:
+            valid_news = [item for item in news_data if isinstance(item, dict) and item.get("title")]
+            valid_news.sort(
+                key=lambda x: (
+                    1 if x.get("is_high_severity") else 0,
+                    float(x.get("first_seen_ts") or 0.0),
+                ),
+                reverse=True,
+            )
+            for item in valid_news[:6]:
+                seen_ts = float(item.get("first_seen_ts") or 0.0)
+                age_m = round(max(0.0, now_ts - seen_ts) / 60.0, 1) if seen_ts > 0 else None
+                snapshot.breaking_news.append({
+                    "title": item.get("title"),
+                    "source": item.get("source"),
+                    "is_high_severity": bool(item.get("is_high_severity")),
+                    "keywords": item.get("matched_keywords") or [],
+                    "age_min": age_m,
+                })
 
         # 5. Heartbeat sensors
         for hb_name in (
@@ -301,13 +341,15 @@ class AutonomousAIReconciler:
             s_path = os.path.join(self.workspace_dir, s_file)
             if os.path.exists(s_path):
                 mtime = os.path.getmtime(s_path)
-                snapshot.state_files[s_file] = {"age_hours": (time.time() - mtime) / 3600.0}
+                snapshot.state_files[s_file] = {"age_hours": (now_ts - mtime) / 3600.0}
 
-        # 7. Live market prices, short/long trend, and Kalman velocity
+        # 7. Live market prices, short/long/Weibull trend, 1s 24trend windows, 7d range, and Kalman velocity
         prices_data = _read_json(os.path.join(self.cache_dir, "cache_current_price.json"))
         trends_data = _read_json(os.path.join(self.cache_dir, "cache_short_trend.json"))
         long_trends_data = _read_json(os.path.join(self.cache_dir, "cache_long_trend.json"))
+        t_trend_data = _read_json(os.path.join(self.cache_dir, "cache_T_trend.json"))
         kalman_data = _read_json(os.path.join(self.cache_dir, "kalman_state.json"))
+        prices_multi_data = _read_json(os.path.join(self.cache_dir, "cache_prices_multi.json"))
         trailing_data = _read_json(os.path.join(self.cache_dir, "trailing_state.json"))
         trailing_map = trailing_data if isinstance(trailing_data, dict) else {}
 
@@ -321,6 +363,7 @@ class AutonomousAIReconciler:
                         pass
 
         long_items = long_trends_data.get("items", {}) if isinstance(long_trends_data, dict) else {}
+        t_trend_map = t_trend_data if isinstance(t_trend_data, dict) else {}
 
         if isinstance(trends_data, dict):
             for sym, tinfo in trends_data.items():
@@ -348,20 +391,86 @@ class AutonomousAIReconciler:
                         "trend_2_5h": d9000.get("final_trend", trend),
                         "vol_1h_pct": tinfo.get("vol_1h_pct"),
                     }
-                    if isinstance(kalman_data, dict) and isinstance(kalman_data.get(sym), dict):
-                        k_sym = kalman_data[sym]
-                        entry["kalman_vel"] = k_sym.get("kalman_vel")
-                        entry["kalman_trend"] = k_sym.get("kalman_trend")
-                    if isinstance(long_items, dict) and isinstance(long_items.get(sym), list) and long_items[sym]:
-                        lt = long_items[sym][-1]
-                        if isinstance(lt, dict):
-                            entry["long_trend_dir"] = lt.get("direction")
-                            entry["long_trend_hours"] = round(float(lt.get("duration_seconds", 0.0)) / 3600.0, 1)
                     snapshot.prices_and_trends[sym] = entry
 
         for sym, px in price_map.items():
             if sym not in snapshot.prices_and_trends:
                 snapshot.prices_and_trends[sym] = {"price": px, "trend": 0, "growth_coefficient": 0.0}
+
+        # Overlay fresh 1-second sampled dynamic windows from cachedb/24trend/live_<SYM>.json
+        live_24trend_dir = os.path.join(self.cache_dir, "24trend")
+        if os.path.isdir(live_24trend_dir):
+            for lt_path in sorted(glob.glob(os.path.join(live_24trend_dir, "live_*.json"))):
+                fname = os.path.basename(lt_path)
+                sym = fname[len("live_") : -len(".json")].upper()
+                if not sym:
+                    continue
+                lt_win = _read_json(lt_path)
+                if not isinstance(lt_win, dict):
+                    continue
+                w222 = lt_win.get("222") if isinstance(lt_win.get("222"), dict) else {}
+                w900 = lt_win.get("900") if isinstance(lt_win.get("900"), dict) else {}
+                w9000 = lt_win.get("9000") if isinstance(lt_win.get("9000"), dict) else {}
+                entry = snapshot.prices_and_trends.setdefault(
+                    sym,
+                    {
+                        "price": w222.get("current_price") or w900.get("current_price") or price_map.get(sym),
+                        "trend": w222.get("final_trend", 0),
+                        "growth_coefficient": w222.get("growth_coefficient", 0.0),
+                    },
+                )
+                if entry.get("price") is None and (w222.get("current_price") or w900.get("current_price")):
+                    entry["price"] = w222.get("current_price") or w900.get("current_price")
+                if w222:
+                    entry["slope_3_7m"] = w222.get("slope_full", entry.get("slope_3_7m", 0.0))
+                    entry["trend_3_7m"] = w222.get("final_trend", entry.get("trend_3_7m", 0))
+                    entry["growth_3_7m"] = w222.get("growth_coefficient")
+                if w900:
+                    entry["slope_15m"] = w900.get("slope_full", entry.get("slope_15m", 0.0))
+                    entry["trend_15m"] = w900.get("final_trend", entry.get("trend_15m", 0))
+                    entry["growth_15m"] = w900.get("growth_coefficient")
+                if w9000:
+                    entry["slope_2_5h"] = w9000.get("slope_full", entry.get("slope_2_5h", 0.0))
+                    entry["trend_2_5h"] = w9000.get("final_trend", entry.get("trend_2_5h", 0))
+                    entry["growth_2_5h"] = w9000.get("growth_coefficient")
+
+        # Enrich every symbol with Kalman velocity/volatility, Long Trend forecast, Weibull survival & 7d range
+        multi_items = prices_multi_data.get("items", {}) if isinstance(prices_multi_data, dict) else {}
+        for sym, entry in list(snapshot.prices_and_trends.items()):
+            if isinstance(kalman_data, dict) and isinstance(kalman_data.get(sym), dict):
+                k_sym = kalman_data[sym]
+                entry["kalman_vel"] = k_sym.get("kalman_vel")
+                entry["kalman_vel_std"] = k_sym.get("kalman_vel_std")
+                entry["kalman_trend"] = k_sym.get("kalman_trend")
+                if entry.get("vol_1h_pct") is None and k_sym.get("vol_1h_pct") is not None:
+                    entry["vol_1h_pct"] = k_sym.get("vol_1h_pct")
+                if k_sym.get("adapt_reentry_pct") is not None:
+                    entry["adapt_reentry_pct"] = k_sym.get("adapt_reentry_pct")
+                if k_sym.get("adapt_dca_pct") is not None:
+                    entry["adapt_dca_pct"] = k_sym.get("adapt_dca_pct")
+            if isinstance(long_items, dict) and isinstance(long_items.get(sym), list) and long_items[sym]:
+                lt = long_items[sym][-1]
+                if isinstance(lt, dict):
+                    entry["long_trend_dir"] = lt.get("direction")
+                    entry["long_trend_hours"] = round(float(lt.get("duration_seconds", 0.0)) / 3600.0, 1)
+                    if isinstance(lt.get("estimated_future_hours"), (int, float)):
+                        entry["long_trend_est_rem_hours"] = round(float(lt["estimated_future_hours"]), 1)
+            if isinstance(t_trend_map.get(sym), dict):
+                tt = t_trend_map[sym]
+                entry["weibull_median_d"] = tt.get("median_d")
+                entry["weibull_p90_d"] = tt.get("p90_d")
+            if isinstance(multi_items, dict):
+                base_prefix = sym[:-4] if sym.endswith(("USDC", "USDT")) else (sym[:-3] if sym.endswith(("USD", "EUR")) else sym)
+                m_series = multi_items.get(sym) or multi_items.get(base_prefix)
+                if isinstance(m_series, list) and len(m_series) >= 2:
+                    try:
+                        vals = [float(pt[1]) for pt in m_series if isinstance(pt, list) and len(pt) > 1 and float(pt[1]) > 0]
+                        if len(vals) >= 2:
+                            entry["chg_7d_pct"] = round(((vals[-1] - vals[0]) / vals[0]) * 100.0, 2)
+                            entry["low_7d"] = min(vals)
+                            entry["high_7d"] = max(vals)
+                    except (ValueError, TypeError):
+                        pass
 
         # 7B. Discover all enabled tradable instruments & real spot wallet balances (when workspace has instruments.conf)
         tradable_positions: List[Dict[str, Any]] = []
@@ -478,9 +587,16 @@ class AutonomousAIReconciler:
                 if m24:
                     snapshot.prices_and_trends[sym].update(m24)
 
+            base_sym = sym[:-4] if sym.endswith(("USDC", "USDT")) else (sym[:-3] if sym.endswith(("USD", "EUR")) else sym)
             ob = _read_json(os.path.join(self.cache_dir, f"orderbook_depth_{sym}.json"))
+            if ob is None and base_sym:
+                ob = _read_json(os.path.join(self.cache_dir, f"orderbook_depth_{base_sym}USDT.json"))
             deriv = _read_json(os.path.join(self.cache_dir, f"derivatives_telemetry_{sym}.json"))
+            if deriv is None and base_sym:
+                deriv = _read_json(os.path.join(self.cache_dir, f"derivatives_telemetry_{base_sym}USDT.json"))
             whale = _read_json(os.path.join(self.cache_dir, f"whale_snapshot_{sym}.json"))
+            if whale is None and base_sym:
+                whale = _read_json(os.path.join(self.cache_dir, f"whale_snapshot_{base_sym}USDT.json"))
             if ob or deriv or whale:
                 m_info: Dict[str, Any] = {}
                 if isinstance(ob, dict):
@@ -493,11 +609,16 @@ class AutonomousAIReconciler:
                     m_info["ask_wall_usd"] = round(float(ob["largest_ask_wall_usd"]), 0) if isinstance(ob.get("largest_ask_wall_usd"), (int, float)) else None
                 if isinstance(deriv, dict):
                     m_info["funding_rate"] = deriv.get("funding_rate")
+                    m_info["pred_funding_rate"] = deriv.get("predicted_funding_rate")
                     m_info["oi_usd"] = deriv.get("open_interest_usd")
                 if isinstance(whale, dict):
                     m_info["whale_long_pct"] = whale.get("top_traders_long_pct")
+                    m_info["whale_long_ratio"] = whale.get("top_traders_long_ratio")
                     m_info["taker_buy_sell_ratio"] = whale.get("taker_buy_sell_ratio")
+                    m_info["taker_buy_vol_usd"] = whale.get("taker_buy_vol_usd")
+                    m_info["taker_sell_vol_usd"] = whale.get("taker_sell_vol_usd")
                     m_info["oi_1h_chg_pct"] = whale.get("open_interest_1h_change_pct")
+                    m_info["divergence_regime"] = whale.get("divergence_regime")
                 snapshot.microstructure[sym] = m_info
 
         # 9. Portfolio value, Kraken cycle states, cross-venue snapshot, recent orders/fills & autonomous intents
@@ -598,6 +719,51 @@ class AutonomousAIReconciler:
                 if isinstance(i, dict)
             ]
 
+        # 9E. Active queued retry orders (cachedb/order_retry_queue.jsonl) & monitortrades active states (mt_state.json)
+        retry_q_path = os.path.join(self.cache_dir, "order_retry_queue.jsonl")
+        if os.path.exists(retry_q_path):
+            active_retries: List[Dict[str, Any]] = []
+            try:
+                with open(retry_q_path, "r", encoding="utf-8", errors="replace") as f:
+                    for raw_line in f.readlines()[-50:]:
+                        raw_line = raw_line.strip()
+                        if not raw_line:
+                            continue
+                        try:
+                            rec = json.loads(raw_line)
+                        except ValueError:
+                            continue
+                        if not isinstance(rec, dict):
+                            continue
+                        lifecycle = str(rec.get("lifecycle") or "").lower()
+                        exp_ts = float(rec.get("expires_at_ts") or 0.0)
+                        if lifecycle in ("submit_pending", "pending", "active") and (exp_ts == 0.0 or exp_ts > now_ts):
+                            active_retries.append({
+                                "venue": str(rec.get("provider_name") or "").lower(),
+                                "symbol": rec.get("symbol"),
+                                "side": rec.get("side"),
+                                "qty": rec.get("qty"),
+                                "requested_price": rec.get("requested_price"),
+                                "kind": rec.get("kind"),
+                                "attempts": rec.get("attempts"),
+                                "last_failure_reason": rec.get("last_failure_reason"),
+                            })
+            except Exception:
+                pass
+            if active_retries:
+                snapshot.portfolio_summary["active_retry_queue"] = active_retries
+
+        mt_state = _read_json(os.path.join(self.cache_dir, "mt_state.json"))
+        if isinstance(mt_state, dict):
+            active_mt = {
+                k: v
+                for k in ("tp_ride_state", "sl_bounce_state", "sl_episode_state", "reentry_state", "pending_stop_exit")
+                for v in (mt_state.get(k),)
+                if isinstance(v, dict) and v
+            }
+            if active_mt:
+                snapshot.portfolio_summary["monitortrades_active_state"] = active_mt
+
         # 10. Fleet processes health from procs.conf
         try:
             from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
@@ -678,42 +844,63 @@ class AutonomousAIReconciler:
         sa = sensors.sentiment_advisor or {}
         gt = sensors.geopolitical_threat or {}
 
+        fg_hist = fg.get("historical_values")[:7] if isinstance(fg.get("historical_values"), list) else None
         fg_line = (
             f"{fg.get('value', 'N/A')} ({fg.get('classification') or fg.get('sentiment') or 'N/A'}, "
-            f"7d_chg={fg.get('trend_7d_change', 'N/A')})"
+            f"7d_chg={fg.get('trend_7d_change', 'N/A')}"
+            + (f", 7d_hist={fg_hist}" if fg_hist else "")
+            + (f", age={fg.get('age_min')}m" if fg.get("age_min") is not None else "")
+            + ")"
             if fg else "None"
         )
+        mb_gainers = mb.get("top_gainers")[:3] if isinstance(mb.get("top_gainers"), list) else None
+        mb_losers = mb.get("top_losers")[:3] if isinstance(mb.get("top_losers"), list) else None
         mb_line = (
             f"advance_ratio={mb.get('advance_ratio', 'N/A')}, regime={mb.get('regime', 'N/A')}, "
             f"median_chg={mb.get('median_change_pct', 'N/A')}%, "
+            f"mean_chg={mb.get('mean_change_pct', 'N/A')}%, disp_std={mb.get('dispersion_std', 'N/A')}, "
             f"advancing={mb.get('advancing', 'N/A')}/{mb.get('total_symbols', 'N/A')}"
+            + (f", top_gainers={mb_gainers}" if mb_gainers else "")
+            + (f", top_losers={mb_losers}" if mb_losers else "")
             if mb else "None"
         )
         sa_line = (
             f"bias={sa.get('market_bias', 'N/A')}, risk={sa.get('risk_level', 'N/A')}, "
-            f"action={sa.get('recommended_action', 'N/A')}, conf={sa.get('confidence', 'N/A')} | "
-            f"summary={sa.get('summary', '')} | key_risks={sa.get('key_risks', [])}"
+            f"action={sa.get('recommended_action', 'N/A')}, conf={sa.get('confidence', 'N/A')}"
+            + (f", age={sa.get('age_min')}m" if sa.get("age_min") is not None else "")
+            + f" | summary={sa.get('summary', '')} | key_risks={sa.get('key_risks', [])}"
             if sa else "None"
         )
         gt_line = (
             f"level={gt.get('threat_level', 'N/A')}, risk_score={gt.get('risk_score', 'N/A')}, "
-            f"brake={gt.get('recommended_brake', 'N/A')} | summary={gt.get('summary', '')}"
+            f"brake={gt.get('recommended_brake', 'N/A')}"
+            + (f", age={gt.get('age_min')}m" if gt.get("age_min") is not None else "")
+            + f" | summary={gt.get('summary', '')}"
             if gt else "None"
         )
 
         context_items = [
-            "### 1. ACTIVE MACRO, SENTIMENT & GEOPOLITICAL TELEMETRY:",
+            "### 1. ACTIVE MACRO, SENTIMENT, GEOPOLITICAL & LIVE BREAKING NEWS TELEMETRY:",
             f"- Fear & Greed: {fg_line}",
             f"- Market Breadth: {mb_line}",
             f"- Macro Sentiment Advisor: {sa_line}",
             f"- Geopolitical Threat Shield: {gt_line}",
+        ]
+        if sensors.breaking_news:
+            context_items.append("- Live Breaking News Feed (cachedb/news_feed_collect.json, 1m refresh):")
+            for hn in sensors.breaking_news:
+                sev_tag = "[HIGH-SEV] " if hn.get("is_high_severity") else ""
+                kw_sfx = f" kw={hn.get('keywords')}" if hn.get("keywords") else ""
+                age_sfx = f" (age={hn.get('age_min')}m)" if hn.get("age_min") is not None else ""
+                context_items.append(f"  * {sev_tag}{hn.get('title')}{kw_sfx}{age_sfx}")
+        context_items.extend([
             f"- Active Heartbeats: {list(sensors.active_heartbeats.keys())}",
             f"\n### 2. LOG ANOMALIES & GUARD VETOES (PAST {self.lookback_hours:g}H):",
             f"- Scanned Logs: {logs.total_scanned_files}",
             f"- Error Count: {logs.error_count}",
             f"- Guard Interventions: {logs.warning_count}",
             "- Sample Errors & Interventions:",
-        ]
+        ])
         for evt in logs.critical_events[:15]:
             context_items.append(f"  * {evt}")
         for g_evt in logs.guard_interventions[:10]:
@@ -752,17 +939,31 @@ class AutonomousAIReconciler:
                         f"1h={pinfo.get('chg_1h_pct', 0):+.2f}% 3h={pinfo.get('chg_3h_pct', 0):+.2f}% "
                         f"24h_range=[{pinfo.get('low_24h')}, {pinfo.get('high_24h')}]"
                     )
+                if "chg_7d_pct" in pinfo:
+                    extras.append(
+                        f"7d={pinfo.get('chg_7d_pct', 0):+.2f}% 7d_range=[{pinfo.get('low_7d')}, {pinfo.get('high_7d')}]"
+                    )
                 if "slope_15m" in pinfo:
                     extras.append(
-                        f"slopes(3.7m={pinfo.get('slope_3_7m', 0):+.5f}, 15m={pinfo.get('slope_15m', 0):+.5f}, "
-                        f"2.5h={pinfo.get('slope_2_5h', 0):+.5f})"
+                        f"slopes(3.7m={pinfo.get('slope_3_7m', 0):+.5f}[T={pinfo.get('trend_3_7m', 0)}], "
+                        f"15m={pinfo.get('slope_15m', 0):+.5f}[T={pinfo.get('trend_15m', 0)}], "
+                        f"2.5h={pinfo.get('slope_2_5h', 0):+.5f}[T={pinfo.get('trend_2_5h', 0)}])"
                     )
                 if pinfo.get("vol_1h_pct") is not None:
-                    extras.append(f"vol_1h={pinfo.get('vol_1h_pct')}%" )
+                    vol_part = f"vol_1h={pinfo.get('vol_1h_pct')}%"
+                    if pinfo.get("adapt_reentry_pct") is not None:
+                        vol_part += f"(adapt_reentry={pinfo.get('adapt_reentry_pct')}%)"
+                    extras.append(vol_part)
                 if pinfo.get("kalman_vel") is not None:
                     extras.append(f"kalman_vel={pinfo.get('kalman_vel'):+.5f}")
                 if pinfo.get("long_trend_dir"):
-                    extras.append(f"long_trend={pinfo.get('long_trend_dir')}({pinfo.get('long_trend_hours')}h)")
+                    lt_str = f"long_trend={pinfo.get('long_trend_dir')}({pinfo.get('long_trend_hours')}h"
+                    if pinfo.get("long_trend_est_rem_hours") is not None:
+                        lt_str += f", est_rem={pinfo.get('long_trend_est_rem_hours')}h"
+                    if pinfo.get("weibull_median_d") is not None:
+                        lt_str += f", med_d={pinfo.get('weibull_median_d')}d/p90={pinfo.get('weibull_p90_d')}d"
+                    lt_str += ")"
+                    extras.append(lt_str)
                 extra_str = f" | {' | '.join(extras)}" if extras else ""
                 context_items.append(f"  * {sym}: Price={px_str}, Trend={tr_label}, Growth={growth:+.5f}{extra_str}")
 
@@ -774,8 +975,11 @@ class AutonomousAIReconciler:
                     f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}), "
                     f"bid_wall={minfo.get('bid_wall_px')} (${minfo.get('bid_wall_usd')}), "
                     f"ask_wall={minfo.get('ask_wall_px')} (${minfo.get('ask_wall_usd')}), "
-                    f"whale_long_pct={minfo.get('whale_long_pct')}, taker_ratio={minfo.get('taker_buy_sell_ratio')}, "
-                    f"funding={minfo.get('funding_rate')}, oi_usd={minfo.get('oi_usd')}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
+                    f"whale_long_pct={minfo.get('whale_long_pct')}, div_regime={minfo.get('divergence_regime')}, "
+                    f"taker_ratio={minfo.get('taker_buy_sell_ratio')} "
+                    f"(buy_v=${minfo.get('taker_buy_vol_usd')}/sell_v=${minfo.get('taker_sell_vol_usd')}), "
+                    f"funding={minfo.get('funding_rate')} (pred={minfo.get('pred_funding_rate')}), "
+                    f"oi_usd={minfo.get('oi_usd')}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
                 )
 
         if sensors.portfolio_summary:
@@ -826,6 +1030,10 @@ class AutonomousAIReconciler:
                     f"Last BUY={lb.get('qty')} @ {lb.get('price')} (age={lb_age_h}h) | "
                     f"Last SELL={ls.get('qty')} @ {ls.get('price')} (age={ls_age_h}h)"
                 )
+            if ps.get("active_retry_queue"):
+                context_items.append(f"  * Active Queued Retry Orders (order_retry_queue.jsonl): {ps['active_retry_queue']}")
+            if ps.get("monitortrades_active_state"):
+                context_items.append(f"  * Active MonitorTrades Ride/Stop State (mt_state.json): {ps['monitortrades_active_state']}")
             if ps.get("recent_ai_intents"):
                 context_items.append(f"  * Recent Autonomous Intents: {ps['recent_ai_intents']}")
 
@@ -862,27 +1070,31 @@ class AutonomousAIReconciler:
             max_usd = _parse_finite_float(getattr(gw, "max_notional_usd", None), 2000.0)
             min_usd = _parse_finite_float(getattr(gw, "min_notional_usd", None), 10.0)
             min_conf = _parse_finite_float(getattr(gw, "min_confidence", None), 0.85)
+            dedup_s = _parse_finite_float(getattr(gw, "dedup_window_sec", None), 180.0)
             tasks.append(
                 f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across ALL live tradable spot coins "
                 "(e.g. BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSD, TAOUSD, ADAUSD on 'kraken') using the complete "
-                "macro sentiment, geopolitical risk, market breadth, multi-horizon price evolution (15m/30m/1h/3h), "
-                "dynamic slopes (3.7m/15m/2.5h), Kalman velocity, Pillar 2 whale/orderbook walls/taker flow, and real "
-                "spot wallet balances + cycle entry anchors above.\n"
-                "   - FULL AI AUTHORITY (ZERO PROFIT GUARDS): Deterministic profit reference guards (G_PROF), trend "
-                "deferrals, weight caps, and secondary guard vetoes are BYPASSED symmetrically on both BUY and SELL. "
-                "You hold full quantitative responsibility for both profit harvesting and capital protection:\n"
+                "macro sentiment, geopolitical risk, live breaking news, market breadth, multi-horizon price evolution "
+                "(15m/30m/1h/3h/24h/7d), 1s-sampled dynamic slopes (3.7m/15m/2.5h), Kalman velocity/volatility, "
+                "Weibull long-trend survival, Pillar 2 whale/orderbook walls/taker flow, and real spot wallet balances + "
+                "cycle entry anchors + active retry queue above.\n"
+                "   - FULL AI AUTHORITY (ZERO PROFIT OR STRATEGY GUARDS): ALL deterministic order_guard gates (G_PROF "
+                "profit reference, GO1 daily cap/cooldown, GT_* trend deferrals, G_QLIMIT* weight caps, GI_* microstructure, "
+                "and GLLM* secondary vetoes) are BYPASSED symmetrically on both BUY and SELL. You hold 100% quantitative "
+                "responsibility for profit harvesting, multi-tranche scaling, and capital protection:\n"
                 "     * SELL (Take-Profit OR Defensive Risk Reduction): Emit 'SELL' on any tradable coin with free base "
                 f"inventory >= ${min_usd:g} USD BOTH when an advance shows rally exhaustion AND when protective/defensive "
                 "de-risking is warranted EVEN BELOW entry/last-BUY price (e.g. structural breakdown, accelerating multi-horizon "
-                "selloff, distribution, or macro deterioration where cutting/trimming exposure protects capital against a "
-                "deeper drop). Distinguish true structural breakdowns from shallow liquidity sweeps into strong bid walls.\n"
+                "selloff, distribution, or macro/geopolitical shock where cutting/trimming exposure protects capital against a "
+                "deeper drop). You may scale out in tranches across consecutive 10m cycles up to the per-order notional cap. "
+                "Distinguish true structural breakdowns from shallow liquidity sweeps into strong bid walls.\n"
                 "     * BUY (Accumulation, Re-Entry & Breakout): Emit 'BUY' on any tradable coin whose venue has free quote "
                 f"cash >= ${min_usd:g} USD on high-conviction washed-out reversals, steady upward recovery/inflection after "
-                "a prior exit, or confirmed momentum breakouts.\n"
+                "a prior exit, or confirmed momentum breakouts (scaling in across 10m cycles when warranted).\n"
                 f"   - Emit one entry per actionable coin in `market_trading_decisions` with `confidence >= {min_conf:g}` "
                 f"and `suggested_notional_usd` sized between {min_usd:g} and {max_usd:g} USD (the gateway automatically "
-                "clamps notional to available free wallet balance; Operational GO1 caps at 3 trades/day per symbol and "
-                "6h same-side dedup). If no coin warrants action right now, return a single 'HOLD' entry."
+                f"clamps notional to available free wallet balance and applies only a {dedup_s:g}s anti-double-submit "
+                "idempotency check). If no coin warrants action right now, return a single 'HOLD' entry."
             )
             schema.append(
                 '  "market_trading_decisions": [{"decision": "BUY" | "SELL" | "HOLD", "symbol": "BTCUSDC", '
