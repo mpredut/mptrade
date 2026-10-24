@@ -568,17 +568,20 @@ class TestOrderRetryTTL:
         provider = MagicMock()
         provider.name = "Kraken"
         provider.get_orders.return_value = [
-            {"time": now_s - 30.0, "price": "100.0", "executedQty": "2.5"}
+            {"time": now_s - 30.0, "price": "100.0", "executedQty": "2.5"},
+            {"time": now_s - 60.0, "price": "100.0", "executedQty": "1.0"},
         ]
         with patch.object(og, "_load_margins", return_value={
-            "default_max_daily_trades": 50,
+            "default_max_daily_trades": 1,
             "default_safeback_sec": 86400,
-            "default_recent_transaction_sec": 300,
-            "default_recent_transaction_side": "both",
         }):
             ok, reason = og.daily_limit_guard(provider, "TAOUSD", "BUY")
             assert ok is False
-            assert reason == "recent_transaction"
+            assert reason == "daily_limit"
+
+        provider.get_orders.return_value = [
+            {"time": now_s - 30.0, "price": "100.0", "executedQty": "2.5"}
+        ]
 
         with patch.object(og, "resolve_trade_weight", return_value=0.5):
             capped = og.weight_limit(

@@ -475,11 +475,10 @@ def _last_opposite_fill_price_api(symbol, order_type):
 
 def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
                         bypass_profit_guard=False, *, regime_context=None,
-                        bypass_guards=None, recent_transaction_sec=None,
-                        recent_transaction_side=None, **kwargs):
+                        bypass_guards=None, **kwargs):
     """Legacy preflight safety check for Binance orders.
 
-    Validates daily trade counts, temporal spam gates, dynamic market regimes,
+    Validates daily trade counts, dynamic market regimes,
     and historical price profit references before order placement.
     """
     from . import bapi_allorders as apiorders
@@ -502,13 +501,11 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         qty = round(float(qty), 8)
         opposite_order_type = "SELL" if order_type == "BUY" else "BUY"
 
-        # Delegate daily limits and anti-spam to order_guard.daily_limit_guard
+        # Delegate daily trade cap to order_guard.daily_limit_guard
         ok, reason = order_guard.daily_limit_guard(
             provider, symbol, order_type,
             max_daily_trades=PLACE_ORDER_MAX_DAILY_TRADES,
             safeback_sec=time_back_in_seconds,
-            recent_transaction_sec=recent_transaction_sec,
-            recent_transaction_side=recent_transaction_side,
             bypass_guards=bypass_guards)
         if not ok:
             return False, reason
@@ -526,11 +523,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
             reference_mode=profit_ref_mode,
         )
 
-        if (
-            regime_context is None
-            and not bypass_profit_guard
-            and (order_type == "BUY" or eff_ref_mode == "dynamic")
-        ):
+        if regime_context is None and not bypass_profit_guard:
             from providers.market_api import api as market_api
             regime_context = market_api.market_regime_context(
                 symbol, provider_name="binance")

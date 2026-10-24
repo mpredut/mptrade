@@ -98,6 +98,7 @@ def _validate_retry_config():
 _validate_retry_config()
 
 NON_FAILURE_DEFERRAL_REASONS = frozenset({
+    "daily_limit",
     "trend_deferred",
     "medium_trend_deferred",
     "account_cache_not_fresh",

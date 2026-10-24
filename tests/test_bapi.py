@@ -355,15 +355,18 @@ class IfPlaceSafeOrderDailyLimitTestCase(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "daily_limit")
 
-    def test_recent_transaction_blocks(self):
-        ok, reason = self._run(same_side_trades=_trades(1, age_sec=5.0))
+    def test_daily_limit_blocks_sell_symmetrically(self):
+        ok, reason = self._run(same_side_trades=_trades(90, side="SELL", age_sec=4000.0), side="SELL")
         self.assertFalse(ok)
-        self.assertEqual(reason, "recent_transaction")
+        self.assertEqual(reason, "daily_limit")
 
-    def test_recent_transaction_does_not_block_sell(self):
-        ok, reason = self._run(same_side_trades=_trades(1, side="SELL", age_sec=5.0), side="SELL")
-        self.assertTrue(ok)
-        self.assertIsNone(reason)
+    def test_recent_transaction_does_not_block_buy_or_sell_below_daily_limit(self):
+        ok_buy, reason_buy = self._run(same_side_trades=_trades(1, age_sec=5.0))
+        self.assertTrue(ok_buy)
+        self.assertIsNone(reason_buy)
+        ok_sell, reason_sell = self._run(same_side_trades=_trades(1, side="SELL", age_sec=5.0), side="SELL")
+        self.assertTrue(ok_sell)
+        self.assertIsNone(reason_sell)
 
 
 class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
@@ -648,18 +651,20 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertEqual(restore_params["price"], 60.25)
         self.assertEqual(restore_params["side"], "SELL")
 
-        # 8. order_guard.daily_limit_guard catches recent trades with 'time'/'updateTime' or epoch seconds
+        # 8. order_guard.daily_limit_guard enforces symmetric daily cap
         now_s = int(time.time())
         fake_provider = types.SimpleNamespace(
             name="binance",
-            get_orders=lambda sym, side, window: [{"price": 100.0, "qty": 1.0, "time": now_s - 5}],
+            get_orders=lambda sym, side, window: [
+                {"price": 100.0, "qty": 1.0, "time": now_s - 5},
+                {"price": 100.0, "qty": 1.0, "time": now_s - 10},
+            ],
         )
         ok, reason = po.order_guard.daily_limit_guard(
-            fake_provider, SYMBOL, "BUY", max_daily_trades=10, safeback_sec=3600,
-            recent_transaction_sec=60, recent_transaction_side="buy",
+            fake_provider, SYMBOL, "BUY", max_daily_trades=1, safeback_sec=3600,
         )
         self.assertFalse(ok)
-        self.assertEqual(reason, "recent_transaction")
+        self.assertEqual(reason, "daily_limit")
 
         # 9. monitortrades.get_relevant_trade normalizes epoch seconds and alternate price/timestamp keys
         rel_px, rel_ts, _ = mt_mod.get_relevant_trade(

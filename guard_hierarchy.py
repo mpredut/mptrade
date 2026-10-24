@@ -63,7 +63,7 @@ class DailyLimitGuard(OperationalGuard):
     code = "GO1"
     canonical = "daily_limit"
     aliases = {"go1", "daily_limit", "daily_cap"}
-    description = "Daily trade count cap and anti-spam temporal filter"
+    description = "Symmetric rolling daily trade count cap per symbol and side"
 
 
 # ============================================================================

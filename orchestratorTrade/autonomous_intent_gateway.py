@@ -564,8 +564,6 @@ class AutonomousIntentGateway:
                 qty=target_qty,
                 price=price,
                 market=True,
-                force=True,
-                is_market=True,
                 enforce_business_minimum=False,
                 intent_id=intent_id,
                 client_order_id=intent_cid,

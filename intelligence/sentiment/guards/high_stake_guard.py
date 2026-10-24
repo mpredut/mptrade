@@ -368,13 +368,8 @@ class HighStakeGuard:
         telemetry: Optional[Dict[str, Any]] = None,
         regime_context: Optional[Any] = None,
         dur_sec: Optional[float] = None,
-        is_stop_loss: bool = False,
     ) -> GuardDecision:
         """Evaluate order through LLM if value exceeds threshold."""
-        # 1. Emergency Stop-Loss exits are ALWAYS exempt from LLM blocking
-        if is_stop_loss:
-            return GuardDecision.allow("HighStakeGuard", "stop_loss_exempt")
-
         side_norm = side.upper()
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow("HighStakeGuard", "unsupported_side_exempt")

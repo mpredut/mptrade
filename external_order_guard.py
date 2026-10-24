@@ -66,7 +66,6 @@ def check_external_order_guards(
     *,
     qty: Optional[float] = None,
     notional_eur: Optional[float] = None,
-    is_stop_loss: bool = False,
     margins: Optional[Dict[str, Any]] = None,
     now: Optional[float] = None,
     bypass_guards: Optional[set[str]] = None,
@@ -76,15 +75,14 @@ def check_external_order_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    order_side = (side or "").upper()
-    if is_stop_loss:
-        return True, "stop_loss_exempt", 1.0
-
-    if order_side not in ("BUY", "SELL"):
-        return True, "not_supported_side", 1.0
-
     from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards) if bypass_guards else set()
+    if "all" in bypassed or "*" in bypassed:
+        return True, "stop_loss_exempt", 1.0
+
+    order_side = (side or "").upper()
+    if order_side not in ("BUY", "SELL"):
+        return True, "not_supported_side", 1.0
 
     from order_guard import _load_margins, validate_guard_mode_cfg
     if margins is None:

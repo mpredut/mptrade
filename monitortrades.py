@@ -1042,6 +1042,9 @@ def _evaluate_hard_take_profit(
         print(f"[HARD-TP] {symbol} +{snapshot.gain_pct:.1f}% but in cooldown (the last one "
               f"{u.secondsToHours(current_time_s - last_hard):.1f}h)")
         return False
+    if _is_trend_gate_deferred(symbol, inst):
+        print(f"[HARD-TP] {symbol} +{snapshot.gain_pct:.1f}% deferred by trend gate (trend up)")
+        return False
     hard_qty = round(sellable_qty * hard_tp_frac, 8)
     print(f"[HARD-TP] {symbol} +{snapshot.gain_pct:.1f}% >= {hard_tp_pct*100:.0f}% "
           f"-> vand {hard_tp_frac*100:.0f}% ({hard_qty})")
@@ -1102,6 +1105,13 @@ def _execute_take_profit(
     print(f"Price increased with {snapshot.gain_pct:.2f}% by more than {gain_threshold * 100:.2f}% versus buy price! (decision={tp_decision.reason})")
     if sellable_qty <= 0:
         print(f"No can sell (sellable_qty={sellable_qty})")
+        if prev_tp_state:
+            _TP_RIDE_STATE[symbol] = prev_tp_state
+            _save_mt_state()
+        return False
+
+    if _is_trend_gate_deferred(symbol, inst):
+        print(f"[{symbol}] Take-Profit placement would be deferred by trend gate (trend up) — keeping ride state intact!")
         if prev_tp_state:
             _TP_RIDE_STATE[symbol] = prev_tp_state
             _save_mt_state()

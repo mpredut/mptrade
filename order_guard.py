@@ -50,8 +50,6 @@ _REQUIRED_ORDER_GUARD_KEYS = frozenset({
     "kraken_chop_weight",
     "default_max_daily_trades",
     "default_safeback_sec",
-    "default_recent_transaction_sec",
-    "default_recent_transaction_side",
     "default_buy_reference",
     "binance_buy_reference",
     "kraken_buy_reference",
@@ -137,7 +135,6 @@ _REQUIRED_ORDER_GUARD_KEYS = frozenset({
 
 VALID_PROFIT_GUARD_MODES = frozenset({"strict", "average", "last", "hybrid", "dynamic", "off"})
 VALID_GUARD_MODES = frozenset({"off", "shadow", "enforce"})
-VALID_RECENT_TX_SIDES = frozenset({"buy", "sell", "both", "off"})
 
 _GUARD_MODE_KEYS = (
     "internal_guard_mode",
@@ -202,20 +199,6 @@ def validate_guard_mode_cfg(val: Any, key_name: str = "guard_mode") -> str:
     return mode
 
 
-def validate_recent_transaction_side_cfg(val: Any) -> str:
-    """Validate that anti-spam side policy is strictly one of VALID_RECENT_TX_SIDES."""
-    if not isinstance(val, str):
-        raise ValueError(
-            f"Invalid recent_transaction_side {val!r}; must be a string in {sorted(VALID_RECENT_TX_SIDES)}"
-        )
-    side_policy = val.strip().lower()
-    if side_policy not in VALID_RECENT_TX_SIDES:
-        raise ValueError(
-            f"Invalid recent_transaction_side {val!r}; must be one of {sorted(VALID_RECENT_TX_SIDES)}"
-        )
-    return side_policy
-
-
 def _validate_margins_cfg(m: Dict[str, Any], path: str) -> None:
     """Validate discrete mode and policy values in order_guard.conf at load time."""
     for key in _GUARD_MODE_KEYS:
@@ -229,8 +212,6 @@ def _validate_margins_cfg(m: Dict[str, Any], path: str) -> None:
                     validate_profit_guard_mode_cfg(val)
             else:
                 validate_profit_guard_mode_cfg(val)
-        elif key.endswith("_recent_transaction_side"):
-            validate_recent_transaction_side_cfg(val)
 
     for policy_key, valid_set in _DISCRETE_POLICY_SETS.items():
         raw_val = m[policy_key]
@@ -977,70 +958,28 @@ def get_safeback_sec_cfg(provider_name):
     return float(m.get(key, m["default_safeback_sec"]))
 
 
-def get_recent_transaction_side_cfg(provider_name) -> str:
-    """Return the venue's anti-spam side policy strictly from order_guard.conf ('buy', 'sell', 'both', or 'off')."""
-    m = _load_margins()
-    name = _provider_name(provider_name)
-    key = name.lower() + "_recent_transaction_side"
-    raw = m.get(key, m["default_recent_transaction_side"])
-    return validate_recent_transaction_side_cfg(raw)
-
-
-def get_recent_transaction_sec_cfg(provider_name, order_type=None) -> float:
-    """Return the anti-spam window strictly from order_guard.conf that rejects a recent same-symbol, same-side order.
-
-    Supports side-specific overrides (<venue>_recent_transaction_<side>_sec or
-    default_recent_transaction_<side>_sec), falling back to venue or default
-    recent_transaction_sec.
-    """
-    m = _load_margins()
-    name = _provider_name(provider_name)
-    pfx = name.lower()
-    side = str(order_type or "").strip().lower()
-    if side:
-        side_key = f"{pfx}_recent_transaction_{side}_sec"
-        if side_key in m:
-            return float(m[side_key])
-        default_side_key = f"default_recent_transaction_{side}_sec"
-        if default_side_key in m:
-            return float(m[default_side_key])
-    key = f"{pfx}_recent_transaction_sec"
-    return float(m.get(key, m["default_recent_transaction_sec"]))
-
-
 def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
-                      safeback_sec=None, recent_transaction_sec=None,
-                      recent_transaction_side=None,
-                      *, bypass_guards=None):
-    """Enforce the daily cap and anti-spam policy as the SINGLE implementation.
+                      safeback_sec=None, *, bypass_guards=None):
+    """Enforce the symmetric daily trade count cap as the SINGLE implementation.
     Since July 30, Binance bapi_placeorder.if_place_safe_order delegates here instead of
     maintaining a second inline version; Kraken and Hyperliquid use it through
     Instrument.place(). provider.get_orders supplies same-side orders from safeback_sec.
-    Exceeding max_daily_trades per day returns "daily_limit"; a record inside
-    recent_transaction_sec returns "recent_transaction".
+    Exceeding max_daily_trades per day returns "daily_limit".
 
     backdays = math.ceil(safeback_sec/86400), rounded UP to preserve the historical
     Binance formula and its effective threshold rather than using simple division.
 
     Return (True, None) or (False, reason). Read errors propagate so the caller can fail
     closed, consistently with profit_guard and weight_limit."""
-    bypass_anti_spam = False
     if bypass_guards:
         from guard_hierarchy import normalize_bypassed_guards, GUARD_REGISTRY
         bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
         if "all" in bypassed or "*" in bypassed or GUARD_REGISTRY["GO1"].is_bypassed(bypassed):
             return True, None
-        if "recent_transaction" in bypassed or "anti_spam" in bypassed:
-            bypass_anti_spam = True
     name = _provider_name(provider)
     order_type = order_type.upper()
     max_daily_trades = max_daily_trades if max_daily_trades is not None else get_max_daily_trades_cfg(name)
     safeback_sec = float(safeback_sec if safeback_sec is not None else get_safeback_sec_cfg(name))
-    recent_transaction_sec = float(recent_transaction_sec if recent_transaction_sec is not None
-                                   else get_recent_transaction_sec_cfg(name, order_type=order_type))
-    side_policy = (validate_recent_transaction_side_cfg(recent_transaction_side)
-                   if recent_transaction_side is not None
-                   else get_recent_transaction_side_cfg(name))
     try:
         trades = provider.get_orders(symbol, order_type, safeback_sec)
     except ProviderError as exc:
@@ -1057,24 +996,6 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None,
         print(f"[DAILY-LIMIT] {order_type} {symbol}: {len(trades)} trades in "
               f"{safeback_sec/3600:.1f}h, a cap of {max_daily_trades}/day -> BLOCKED")
         return False, "daily_limit"
-
-    enforce_anti_spam = (
-        not bypass_anti_spam
-        and recent_transaction_sec > 0
-        and side_policy in ("both", order_type.lower())
-    )
-
-    if enforce_anti_spam:
-        now_s = time.time()
-        cutoff_s = now_s - recent_transaction_sec
-        for t in trades:
-            ts_s, _qty, _px = _order_ts_qty_price(t)
-            if ts_s > 0 and ts_s >= cutoff_s:
-                age_s = max(0.0, now_s - ts_s)
-                print(f"[DAILY-LIMIT] {order_type} {symbol}: recent trade "
-                      f"(age={age_s:.1f}s < threshold={recent_transaction_sec:.0f}s, "
-                      f"policy={side_policy}) -> BLOCKED")
-                return False, "recent_transaction"
     return True, None
 
 
@@ -1322,7 +1243,6 @@ def check_intelligence_guards(
     regime_context=None,
     qty: Optional[float] = None,
     notional_eur: Optional[float] = None,
-    is_stop_loss: bool = False,
     now: Optional[float] = None,
     bypass_guards: Optional[set[str]] = None,
 ) -> tuple[bool, str, float]:
@@ -1341,7 +1261,7 @@ def check_intelligence_guards(
     """
     from guard_hierarchy import normalize_bypassed_guards, GUARD_REGISTRY
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
-    if is_stop_loss or "all" in bypassed or "*" in bypassed:
+    if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
     m = _load_margins()
@@ -1406,7 +1326,6 @@ def check_intelligence_guards(
             regime_context=regime_context if valid_context else None,
             qty=qty,
             notional_eur=computed_notional,
-            is_stop_loss=is_stop_loss,
             now=now,
             bypass_guards=bypassed,
         )
@@ -1478,7 +1397,6 @@ def check_intelligence_guards(
         price=price,
         qty=qty,
         computed_notional=computed_notional,
-        is_stop_loss=is_stop_loss,
         regime_context=regime_context,
         valid_context=valid_context,
         cache_key=cache_key,
@@ -1510,16 +1428,18 @@ def check_intelligence_guards(
         else:
             trend_dir = _resolve_trend_direction(symbol, regime_context=regime_context if valid_context else None)
         gauss_horizon_d = None
+        p90_d = None
         median_d = None
         if not explicit_dur:
             qlimit1_active = not GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(bypassed)
-            _, median_d, cached_gauss_h = resolve_cached_gaussian_horizon(symbol)
+            p90_d, median_d, cached_gauss_h = resolve_cached_gaussian_horizon(symbol)
             if qlimit1_active and cached_gauss_h:
                 gauss_horizon_d = cached_gauss_h
         e_dec = e_guard.check(
             symbol,
             side,
             trend_duration_seconds=dur_sec,
+            p90_days=p90_d,
             median_days=median_d,
             trend_direction=trend_dir,
             gaussian_horizon_days=gauss_horizon_d,
@@ -1568,13 +1488,12 @@ def _evaluate_intelligence_guards_raw(
     regime_context=None,
     qty: Optional[float] = None,
     notional_eur: Optional[float] = None,
-    is_stop_loss: bool = False,
     now: Optional[float] = None,
     bypass_guards: Optional[set[str]] = None,
 ) -> tuple[bool, str, float]:
     from guard_hierarchy import normalize_bypassed_guards, GUARD_REGISTRY
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
-    if is_stop_loss or "all" in bypassed or "*" in bypassed:
+    if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
     m = _load_margins()
@@ -1605,7 +1524,6 @@ def _evaluate_intelligence_guards_raw(
             price=price,
             qty=qty,
             notional_eur=computed_notional,
-            is_stop_loss=is_stop_loss,
             price_history=price_history,
             trend_duration_seconds=trend_duration_seconds,
             regime_context=regime_context,
@@ -1633,7 +1551,6 @@ def _evaluate_intelligence_guards_raw(
             price=price,
             qty=qty,
             notional_eur=computed_notional,
-            is_stop_loss=is_stop_loss,
             margins=m,
             now=now,
             bypass_guards=bypassed,
@@ -1659,7 +1576,6 @@ def _evaluate_intelligence_guards_raw(
             price=price,
             qty=qty,
             notional_eur=computed_notional,
-            is_stop_loss=is_stop_loss,
             regime_context=regime_context,
             margins=m,
             now=now,
@@ -1838,7 +1754,6 @@ def profit_guard(
     regime_context=None,
     qty: Optional[float] = None,
     notional_eur: Optional[float] = None,
-    is_stop_loss: bool = False,
     evaluate_intelligence: bool = True,
     bypass_guards: Optional[set[str]] = None,
     reference_mode: Optional[str] = None,
@@ -1847,7 +1762,7 @@ def profit_guard(
     """Return whether the order is profitable relative to its reference.
 
     Execution Pipeline:
-    - Emergency Stop-Loss exits (is_stop_loss=True) or bypass_guards with 'all' bypass all guards.
+    - Emergency Stop-Loss exits or bypass_guards with 'all' bypass all guards.
     - Stage 1 (Mathematical Reference): Deterministic profit margin vs historical reference.
       Bypassed if bypass_guards contains 'math_reference' (or 'math_profit').
     - Stage 2 (Intelligence, Macro & Sentiment): Evaluates Parabolic, Weibull, Gemini LLM,
@@ -1856,7 +1771,7 @@ def profit_guard(
     """
     from guard_hierarchy import normalize_bypassed_guards, GUARD_REGISTRY
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
-    if is_stop_loss or "all" in bypassed or "*" in bypassed:
+    if "all" in bypassed or "*" in bypassed:
         return True
 
     # Stage 1: Deterministic Mathematical Reference Check (G_PROF)
@@ -1878,7 +1793,6 @@ def profit_guard(
     # Stage 2: Intelligence, Macro & Sentiment Guards
     intel_ok, intel_reason, suggested_scale = check_intelligence_guards(
         provider, symbol, order_type, price, regime_context=regime_context, qty=qty, notional_eur=notional_eur,
-        is_stop_loss=is_stop_loss,
         bypass_guards=bypassed,
     )
     if not intel_ok:

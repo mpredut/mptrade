@@ -41,12 +41,12 @@ def _margins(**overrides):
 # =====================================================================
 
 def test_internal_guard_non_buy_order_passes():
-    # Stop-loss order is exempt
+    # Stop-loss / bypass_guards={'all'} order is exempt
     allowed, reason, scale = check_internal_order_guards(
         symbol="BTCUSDC",
         side="SELL",
         price=60000.0,
-        is_stop_loss=True,
+        bypass_guards={"all"},
     )
     assert allowed is True
     assert reason == "stop_loss_exempt"
@@ -117,13 +117,13 @@ def test_external_microstructure_sell_and_stop_loss_exempt():
     assert reason == "not_supported_side"
     assert scale == 1.0
 
-    # Stop-loss order is explicitly exempt
+    # Stop-loss / bypass_guards={'all'} order is explicitly exempt
     allowed, reason, scale = check_external_order_guards(
         symbol="BTCUSDC",
         side="SELL",
         price=60000.0,
         notional_eur=5000.0,
-        is_stop_loss=True,
+        bypass_guards={"all"},
     )
     assert allowed is True
     assert reason == "stop_loss_exempt"
@@ -249,14 +249,14 @@ def test_intelligence_sell_and_stop_loss_exempt():
     assert reason == "ok"
     assert scale == 1.0
 
-    # Stop-loss order
+    # Stop-loss / bypass_guards={'all'} order
     allowed, reason, scale = check_intelligence_order_guards(
         provider="binance",
         symbol="BTCUSDC",
         order_type="SELL",
         price=60000.0,
         notional_eur=5000.0,
-        is_stop_loss=True,
+        bypass_guards={"all"},
     )
     assert allowed is True
     assert reason == "stop_loss_exempt"
@@ -634,6 +634,59 @@ def test_weibull_does_not_overlap_gaussian_horizon_and_computes_weibull_survival
     assert ok is True
     assert scale == 1.0
     assert reason == "ok"
+
+
+def test_weibull_uses_symbol_p90_days_when_qlimit1_is_bypassed(monkeypatch):
+    """When G_QLIMIT1 is bypassed, G_QLIMIT2 must use the symbol's empirical p90_days (e.g. 6.7d)
+    from resolve_cached_gaussian_horizon rather than falling back to default_p90_days (10.0d)."""
+    import qlimit_order_guard
+
+    m = dict(order_guard._load_margins())
+    m["internal_guard_mode"] = "enforce"
+    m["weibull_exhaustion_policy"] = "downscale"
+    m["weibull_exhausted_scale"] = "0.25"
+    m["weibull_p90_days"] = "10.0"
+
+    # Symbol has empirical p90_d = 6.7d, median_d = 2.4d, gauss_horizon = 9.38d
+    monkeypatch.setattr(
+        qlimit_order_guard,
+        "resolve_cached_gaussian_horizon",
+        lambda sym: (6.7, 2.4, 9.38),
+    )
+    # Duration = 8.0 days (> p90_d=6.7d, < default_p90=10.0d, < gauss_horizon=9.38d)
+    monkeypatch.setattr(
+        qlimit_order_guard,
+        "_resolve_trend_duration",
+        lambda sym: 8.0 * 86400.0,
+    )
+    monkeypatch.setattr(
+        qlimit_order_guard,
+        "_resolve_trend_direction",
+        lambda sym, regime_context=None: "bull",
+    )
+
+    # 1. With G_QLIMIT1 active, limit_p90 = max(6.7, 9.38) = 9.38d -> 8.0d is allowed at 1.0 scale
+    ok_active, _, scale_active = qlimit_order_guard.check_qlimit2_order_guards(
+        "BTCUSDC", "BUY", 65000.0, qty=0.01, notional_eur=650.0, price_history=[], margins=m
+    )
+    assert ok_active is True
+    assert scale_active == 1.0
+
+    # 2. With G_QLIMIT1 bypassed, limit_p90 = 6.7d (empirical p90_d) -> 8.0d > 6.7d is downscaled to 0.25
+    ok_bp, reason_bp, scale_bp = qlimit_order_guard.check_qlimit2_order_guards(
+        "BTCUSDC",
+        "BUY",
+        65000.0,
+        qty=0.01,
+        notional_eur=650.0,
+        price_history=[],
+        margins=m,
+        bypass_guards={"G_QLIMIT1"},
+    )
+    assert ok_bp is True
+    assert scale_bp == 0.25
+    assert "P90=6.7d" in reason_bp
+
 
 
 

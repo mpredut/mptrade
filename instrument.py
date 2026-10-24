@@ -263,9 +263,16 @@ class Instrument:
         legacy_bypass_profit_ref = kwargs.pop("bypass_profit_reference", None)
         legacy_bypass_qty_policy = kwargs.pop("bypass_quantity_policy", None)
         caller_profit_margin = kwargs.pop("profit_margin", None)
-        profit_reference_mode = kwargs.pop("profit_reference_mode", None)
+        profit_reference_mode = (
+            kwargs.pop("reference_mode", None)
+            or kwargs.pop("profit_reference_mode", None)
+        )
         caller_module = kwargs.pop("module", None)
         allow_math_reference_sell = bool(kwargs.pop("allow_math_reference_sell", False))
+        kwargs.pop("is_stop_loss", None)
+        order_kind = kwargs.get("kind") or kwargs.get("motivation")
+        if order_kind is not None:
+            kwargs["kind"] = order_kind
 
         if hasattr(self, "params") and isinstance(self.params, dict):
             if not bypass_guards_raw:
@@ -273,7 +280,7 @@ class Instrument:
             if profit_reference_mode is None:
                 profit_reference_mode = self.params.get(
                     f"{side.strip().lower()}_reference_mode",
-                    self.params.get("profit_reference_mode"),
+                    self.params.get("reference_mode") or self.params.get("profit_reference_mode"),
                 )
             if caller_module is None:
                 caller_module = self.params.get("module")
@@ -405,9 +412,6 @@ class Instrument:
         # all other placement metadata remains in kwargs.
         retry_kwargs = dict(kwargs)
         retry_kwargs["bypass_guards"] = sorted(list(bypassed_guards))
-        retry_kwargs["bypass_profit_guard"] = bypass_profit_guard
-        retry_kwargs["bypass_profit_reference"] = bypass_math_ref
-        retry_kwargs["bypass_quantity_policy"] = bypass_quantity_policy
         retry_kwargs["wait_for_trend"] = wait_for_trend
         retry_kwargs["smart"] = smart
         if caller_applied_scale < 1.0:
@@ -415,7 +419,7 @@ class Instrument:
         if caller_profit_margin is not None:
             retry_kwargs["profit_margin"] = caller_profit_margin
         if profit_reference_mode is not None:
-            retry_kwargs["profit_reference_mode"] = profit_reference_mode
+            retry_kwargs["reference_mode"] = profit_reference_mode
         if caller_module is not None:
             retry_kwargs["module"] = caller_module
         if allow_math_reference_sell:
@@ -424,11 +428,7 @@ class Instrument:
         # before submission at the current executable price. This prevents a
         # force-market sell from passing at +1% then executing below the validated
         # margin, a financial time-of-check/time-of-use issue.
-        is_market = bool(
-            kwargs.get("force", False)
-            or kwargs.get("market", False)
-            or kwargs.pop("is_market", False)
-        )
+        is_market = bool(kwargs.get("market", False) or kwargs.get("force", False))
         enforce_business_minimum = not (
             bypass_profit_guard and side_u == "SELL" and is_market)
         profit_margin = None
@@ -471,7 +471,7 @@ class Instrument:
             if not requires_permit and callable(preflight_order):
                 preflight_order(
                     self.symbol, side_u, qty, price, market=is_market,
-                    kind=kwargs.get("kind") or kwargs.get("motivation"))
+                    kind=order_kind)
 
             # 0. Compute smart venue pricing before the guards. When deferred (e.g. Binance),
             # separate opposing-order cancellation is held until after finite quantity
@@ -491,16 +491,12 @@ class Instrument:
                     except (TypeError, ValueError):
                         pass
 
-            # 1. Provider-agnostic daily cap and anti-spam.
+            # 1. Provider-agnostic daily trade cap.
             is_exempt_daily_limit = bool("daily_limit" in bypassed_guards)
             if not is_exempt_daily_limit:
-                recent_tx_sec = kwargs.get("recent_transaction_sec")
-                recent_tx_side = kwargs.get("recent_transaction_side")
                 ok, reason = order_guard.daily_limit_guard(
                     self._provider, self.symbol, side_u,
                     safeback_sec=safeback_override,
-                    recent_transaction_sec=recent_tx_sec,
-                    recent_transaction_side=recent_tx_side,
                     bypass_guards=bypassed_guards,
                 )
                 if not ok:
@@ -553,7 +549,7 @@ class Instrument:
                     )
                 except Exception:
                     eff_ref_mode = None
-                if regime_context is None and (side_u == "BUY" or eff_ref_mode == "dynamic"):
+                if regime_context is None:
                     try:
                         resolve_context = getattr(
                             self._api, "market_regime_context", None)
@@ -788,7 +784,7 @@ class Instrument:
                             failure_reason="submit_pending",
                             provider_name=self.provider_name,
                             intent_id=kwargs.get("intent_id"),
-                            kind=kwargs.get("kind") or kwargs.get("motivation"),
+                            kind=order_kind,
                             ttl_sec=kwargs.get("ttl_sec"))
                         if prequeued_claim is None:
                             raise RuntimeError("the intent cannot be read back after persisting")
@@ -823,7 +819,7 @@ class Instrument:
                     venue=self.provider_name, symbol=self.symbol,
                     side=side_u.lower(), qty=qty, price=price,
                     market=is_market,
-                    kind=kwargs.get("kind") or kwargs.get("motivation"),
+                    kind=order_kind,
                     client_order_id=prequeued_client_order_id,
                 )
 
@@ -833,7 +829,7 @@ class Instrument:
                     raise SubmissionRefused("account_cache_not_fresh")
                 cache_permit = preflight_order(
                     self.symbol, side_u, qty, price, market=is_market,
-                    kind=kwargs.get("kind") or kwargs.get("motivation"))
+                    kind=order_kind)
                 if cache_permit is None:
                     raise SubmissionRefused("account_cache_not_fresh")
                 permit_requested_price = None if is_market else price
@@ -1019,7 +1015,7 @@ class Instrument:
                 and _is_terminal_filter_refusal(reason))
             _outcomes_log.log_order_outcome(
                 self.symbol, side_u, price, qty, submission_state,
-                None if order else reason, kwargs.get("motivation"), caller=caller,
+                None if order else reason, order_kind, caller=caller,
                 regime_context=regime_context)
             # Acceptance is not a fill. Preserve the venue ID in the exact outbox
             # record so the single worker follows open/partial/terminal state. If
@@ -1044,7 +1040,7 @@ class Instrument:
                                 venue=self.provider_name, symbol=self.symbol,
                                 side=side_u.lower(), qty=qty, price=price,
                                 market=is_market,
-                                kind=kwargs.get("kind") or kwargs.get("motivation"),
+                                kind=order_kind,
                                 client_order_id=prequeued_client_order_id,
                                 order_id=_order_id_from_payload(order),
                             )
@@ -1068,7 +1064,7 @@ class Instrument:
                             venue=self.provider_name, symbol=self.symbol,
                             side=side_u.lower(), qty=qty, price=price,
                             market=is_market,
-                            kind=kwargs.get("kind") or kwargs.get("motivation"),
+                            kind=order_kind,
                             client_order_id=prequeued_client_order_id,
                             failure_reason=reason,
                         )
@@ -1120,7 +1116,7 @@ class Instrument:
                                     failure_reason=reason,
                                     provider_name=self.provider_name,
                                     intent_id=kwargs.get("intent_id"),
-                                    kind=kwargs.get("kind") or kwargs.get("motivation"),
+                                    kind=order_kind,
                                     ttl_sec=kwargs.get("ttl_sec"))
                 except Exception as _e:  # noqa: BLE001
                     print(f"[{self.symbol}] {side_u} enqueue retry failed (ignored): {_e}")

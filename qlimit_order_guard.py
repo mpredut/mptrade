@@ -89,7 +89,6 @@ def check_qlimit2_order_guards(
     *,
     qty: Optional[float] = None,
     notional_eur: Optional[float] = None,
-    is_stop_loss: bool = False,
     price_history: Optional[List[Tuple[float, float]]] = None,
     trend_duration_seconds: float = 0.0,
     regime_context: Any = None,
@@ -102,7 +101,9 @@ def check_qlimit2_order_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    if is_stop_loss:
+    from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards) if bypass_guards else set()
+    if "all" in bypassed or "*" in bypassed or GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed):
         return True, "stop_loss_exempt", 1.0
 
     order_side = (side or "").upper()
@@ -165,12 +166,13 @@ def check_qlimit2_order_guards(
             trend_dir = _resolve_trend_direction(symbol, regime_context=regime_context)
 
         gauss_horizon_d = None
+        p90_d = None
         median_d = None
         if not explicit_duration_override:
             from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
             bp = normalize_bypassed_guards(bypass_guards=bypass_guards) if bypass_guards else set()
             qlimit1_active = not GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(bp)
-            _, median_d, cached_gauss_h = resolve_cached_gaussian_horizon(symbol)
+            p90_d, median_d, cached_gauss_h = resolve_cached_gaussian_horizon(symbol)
             if qlimit1_active and cached_gauss_h:
                 gauss_horizon_d = cached_gauss_h
 
@@ -178,6 +180,7 @@ def check_qlimit2_order_guards(
             symbol,
             order_side,
             trend_duration_seconds=dur_sec,
+            p90_days=p90_d,
             median_days=median_d,
             trend_direction=trend_dir,
             gaussian_horizon_days=gauss_horizon_d,

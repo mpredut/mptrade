@@ -36,7 +36,6 @@ def evaluate_high_stake_order_guard(
     price: float,
     qty: Optional[float],
     computed_notional: Optional[float],
-    is_stop_loss: bool,
     regime_context: Any,
     valid_context: bool,
     cache_key: Tuple[Any, ...],
@@ -96,7 +95,6 @@ def evaluate_high_stake_order_guard(
                 notional_eur=computed_notional,
                 regime_context=regime_context if valid_context else None,
                 dur_sec=dur_sec,
-                is_stop_loss=is_stop_loss,
             )
         except TypeError:
             g_dec = llm_guard.check(
@@ -211,7 +209,7 @@ def check_geopolitical_order_guards(
     if order_side != "BUY":
         return True, "not_buy_side", 1.0
 
-    from order_guard import _load_margins, resolve_high_stake_min_notional_usd, validate_guard_mode_cfg
+    from order_guard import _load_margins, validate_guard_mode_cfg
     if margins is None:
         m = _load_margins()
     else:
@@ -291,7 +289,6 @@ def check_llm_order_guards(
     *,
     qty: Optional[float] = None,
     notional_eur: Optional[float] = None,
-    is_stop_loss: bool = False,
     regime_context: Any = None,
     margins: Optional[Dict[str, Any]] = None,
     now: Optional[float] = None,
@@ -304,14 +301,14 @@ def check_llm_order_guards(
     """
     from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
-    if is_stop_loss or "all" in bypassed or "*" in bypassed:
+    if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
     side = (order_type or "").upper()
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
-    from order_guard import _load_margins, resolve_high_stake_min_notional_usd
+    from order_guard import _load_margins
     if margins is None:
         m = _load_margins()
     else:
@@ -343,7 +340,6 @@ def check_llm_order_guards(
         price=price,
         qty=qty,
         computed_notional=computed_notional,
-        is_stop_loss=is_stop_loss,
         regime_context=regime_context,
         valid_context=valid_context,
         cache_key=(side, frozenset(bypassed)),

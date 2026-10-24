@@ -66,6 +66,16 @@ def _kraken_pair_matches(expected: str, actual: str) -> bool:
     return bool(actual) and _kraken_pair_key(expected) == _kraken_pair_key(actual)
 
 
+def _normalize_kraken_fill(raw: dict) -> dict:
+    """Normalize a Kraken fill while preserving ordertxid/orderId for order-level aggregation."""
+    norm = _normalize_order(raw)
+    if isinstance(raw, dict):
+        order_id = raw.get("ordertxid") or raw.get("orderId")
+        if order_id:
+            norm["orderId"] = str(order_id)
+    return norm
+
+
 _KRAKEN_CLIENT_ID_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 
 
@@ -229,10 +239,13 @@ class KrakenProvider(MarketDataProvider):
             return None
 
     def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
-        """Return own pair fills filtered by side and age.
+        """Return own pair orders/fills filtered by side and age, grouped by parent orderId.
 
         Prefer the fresh shared cross-process cache for one fetch across processes
         and a common guard view; otherwise fall back safely to TradesHistory.
+        Multi-fill executions sharing the same ordertxid/orderId are aggregated into
+        a single order record (VWAP price, summed qty, max timestamp), symmetrically
+        with BinanceProvider.get_orders().
         """
         try:
             rows = self._fills_from_cache(symbol)
@@ -243,15 +256,52 @@ class KrakenProvider(MarketDataProvider):
             cutoff_ms = (time.time() - since_s) * 1000.0
             want = (side or "").upper()
             out = []
+            grouped = {}
             for r in rows:
+                order_id = (r.get("ordertxid") or r.get("orderId")) if isinstance(r, dict) else None
                 norm = _normalize_order(r)
                 ts_ms = norm["timestamp"] if norm["timestamp"] is not None else 0
                 if ts_ms < cutoff_ms:
                     continue
                 if want and norm["side"] != want:
                     continue
-                out.append(norm)
-            return out
+                if order_id:
+                    key = (str(order_id), norm["side"])
+                    px = float(norm["price"] or 0.0)
+                    qty = float(norm["qty"] or 0.0)
+                    if key not in grouped:
+                        grouped[key] = {
+                            "side": norm["side"],
+                            "cost": px * qty,
+                            "qty": qty,
+                            "fallback_price": px,
+                            "timestamp": ts_ms,
+                        }
+                        out.append(grouped[key])
+                    else:
+                        g = grouped[key]
+                        g["cost"] += px * qty
+                        g["qty"] += qty
+                        if px > 0:
+                            g["fallback_price"] = px
+                        if ts_ms > (g["timestamp"] or 0):
+                            g["timestamp"] = ts_ms
+                else:
+                    out.append(norm)
+            result = []
+            for item in out:
+                if "cost" in item:
+                    total_qty = item["qty"]
+                    vwap = (item["cost"] / total_qty) if total_qty > 0 else item["fallback_price"]
+                    result.append({
+                        "side": item["side"],
+                        "price": vwap,
+                        "qty": total_qty,
+                        "timestamp": item["timestamp"],
+                    })
+                else:
+                    result.append(item)
+            return result
         except ProviderError:
             raise
         except Exception as e:  # noqa: BLE001
@@ -330,7 +380,7 @@ class KrakenProvider(MarketDataProvider):
         if (time.time() * 1000.0 - float(ft.get(key, 0))) > _CACHE_MAX_STALE_S * 1000.0:
             return None                                       # Stale cachemanager data.
         return [
-            _normalize_order(t)
+            _normalize_kraken_fill(t)
             for t in items[key]
             if isinstance(t, dict)
         ]
@@ -352,7 +402,7 @@ class KrakenProvider(MarketDataProvider):
             p = str(tr.get("pair", "")).upper()
             if not (_kraken_pair_matches(symbol, p) or su in p or (p and p in su)):
                 continue
-            rows.append(_normalize_order(tr))
+            rows.append(_normalize_kraken_fill(tr))
         return rows
 
     # -- Placement remains dry until KRAKEN_LIVE_ORDERS=true. ------------------

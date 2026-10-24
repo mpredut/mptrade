@@ -268,23 +268,15 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             order = inst.place("BUY", 100.0, 1.0, safeback_seconds=14 * 24 * 3600 + 60)
             self.assertIsNone(order)
 
-        with self.subTest("recent_transaction_blocks"):
-            p = _FakeProvider()
-            p.seed_trade("BUY", age_sec=5.0)   # 5s ago, under the default threshold of 180s.
-            inst = self._inst(p)
-            order = inst.place("BUY", 100.0, 1.0)
-            self.assertIsNone(order)
-            lines = self._log_lines()
-            self.assertTrue(any("|refused|recent_transaction|" in l for l in lines), lines)
-
-        with self.subTest("recent_transaction_does_not_block_sell"):
+        with self.subTest("recent_trade_below_daily_limit_does_not_block_buy_or_sell"):
             self._clear_state()
-            p = _FakeProvider()
-            p.seed_trade("SELL", age_sec=5.0)   # 5s ago
-            inst = self._inst(p)
-            order = inst.place("SELL", 100.0, 1.0, bypass_profit_guard=True)
-            self.assertIsNotNone(order)
-            self.assertEqual(len(p.placed), 1)
+            for side in ("BUY", "SELL"):
+                p = _FakeProvider()
+                p.seed_trade(side, age_sec=5.0)
+                inst = self._inst(p)
+                order = inst.place(side, 100.0, 1.0, bypass_profit_guard=True)
+                self.assertIsNotNone(order)
+                self.assertEqual(len(p.placed), 1)
 
         with self.subTest("bypass_profit_guard_does_not_skip_daily_limit"):
             p = _FakeProvider()
@@ -532,7 +524,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         with self.subTest("facade_place_routes_through_pipeline"):
             self._clear_state()
             p = _FakeProvider()
-            p.seed_trade("BUY", age_sec=5.0)  # Recent transaction trips daily_limit_guard anti-spam
+            p.seed_trade("SELL", age_sec=5.0, price=90.0)  # Profit guard trips on BUY above recent SELL
             mkt = MarketApi([p])
             order = mkt.place(SYMBOL, "BUY", 100.0, 1.0)
             self.assertIsNone(order)
@@ -580,7 +572,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self._clear_state()
             import order_retry as _oq
             p = _FakeProvider()
-            p.seed_trade("BUY", age_sec=5.0)
+            p.seed_trade("SELL", age_sec=5.0, price=90.0)
             inst = self._inst(p)
             order = inst.place("BUY", 100.0, 1.0)
             self.assertIsNone(order)
@@ -593,7 +585,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self._clear_state()
             import order_retry as _oq
             p = _FakeProvider()
-            p.seed_trade("BUY", age_sec=5.0)
+            p.seed_trade("SELL", age_sec=5.0, price=90.0)
             inst = self._inst(p)
             order = inst.place("BUY", 100.0, 1.0, caller_owns_retry=True)
             self.assertIsNone(order)
