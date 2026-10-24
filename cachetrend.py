@@ -1226,8 +1226,9 @@ class CacheShortTrendManager(CacheManagerInterface):
                     "fetchtime": fetchtime,
                     "rest_sync_cursor": dict(fetchtime),
                 }
+                write_fn = _cm_attr("atomic_write_json", atomic_write_json)
                 if not self._commit_file_and_meta_locked(
-                    lambda: _write_json_atomic(self.filename, snapshot_mem),
+                    lambda: write_fn(self.filename, snapshot_mem),
                     metadata,
                 ):
                     return False
@@ -1297,10 +1298,22 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     def update_snapshot(self, symbol, **fields):
         """Update memory and flush immediately only when this instance is the writer."""
-        self._set_mem(symbol, **fields)
-        if self.writer:
-            with self._lock:
-                self._write_file()
+        with self._lock:
+            prev_snap = (
+                dict(self._mem[symbol])
+                if isinstance(self._mem.get(symbol), dict)
+                else None
+            )
+            self._set_mem(symbol, **fields)
+            if self.writer:
+                if not self._write_file():
+                    if prev_snap is not None:
+                        self._mem[symbol] = prev_snap
+                    else:
+                        self._mem.pop(symbol, None)
+                    self._mem_dirty = False
+                    return False
+        return True
 
     def _start_flush_loop(self):
         """Run a writer-only thread that decouples periodic file I/O from calculation."""
