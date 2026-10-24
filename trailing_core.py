@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import os
 import math
-from state_io import atomic_write_json, load_json_state
+from state_io import load_json_state, save_json_state
 
 
 def should_sell(current: float, peak: float, trail_pct: float) -> bool:
@@ -75,7 +75,7 @@ class TrailingCore:
             d = os.path.dirname(self.state_file)
             if d:
                 os.makedirs(d, exist_ok=True)
-            atomic_write_json(self.state_file, state, indent=2)
+            save_json_state(self.state_file, state, indent=2)
             return True
         except OSError as e:
             self.log(f"  ! [TRAIL] cannot save the state: {e}")

@@ -8,7 +8,7 @@ duplicate entry.
 from __future__ import annotations
 
 from collections.abc import Callable
-from state_io import StateReadError, atomic_write_json, load_json_state
+from state_io import StateReadError, load_json_state, save_json_state
 
 
 class StatePersistenceError(RuntimeError):
@@ -48,7 +48,7 @@ class JsonStateStore:
 
     def save(self, state: dict) -> bool:
         try:
-            atomic_write_json(self.path, state, indent=2)
+            save_json_state(self.path, state, indent=2)
             return True
         except (OSError, TypeError, ValueError) as exc:
             self.logger(f"  ! [STRAT] cannot save the state: {exc}")

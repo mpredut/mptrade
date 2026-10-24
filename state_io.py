@@ -155,6 +155,36 @@ def atomic_write_json(path: str, value: Any, *, indent: int | None = None,
         )
 
 
+def save_json_state(path: str, value: Any, *, indent: int | None = None,
+                    sort_keys: bool = False, separators=None,
+                    ensure_ascii: bool = True) -> None:
+    """Transactionally write JSON state while staging and cleaning up ``<path>.previous``."""
+    target_path = os.fspath(path)
+    backup_path = None
+    had_prior = os.path.exists(target_path)
+    if had_prior:
+        try:
+            backup_path = stage_previous_generation(target_path)
+        except OSError:
+            backup_path = None
+    try:
+        atomic_write_json(
+            target_path, value, indent=indent, sort_keys=sort_keys,
+            separators=separators, ensure_ascii=ensure_ascii,
+        )
+        if backup_path is not None:
+            discard_generation_file(backup_path)
+    except BaseException:
+        if backup_path is not None and os.path.exists(backup_path):
+            try:
+                restore_previous_generation(target_path, backup_path=backup_path)
+            except OSError:
+                pass
+        elif not had_prior:
+            discard_generation_file(target_path)
+        raise
+
+
 @contextlib.contextmanager
 def atomic_binary_writer(path: str) -> Iterator[Any]:
     """Yield a binary handle and atomically publish it only after a durable write."""

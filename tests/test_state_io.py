@@ -17,6 +17,7 @@ from state_io import (
     meta_file_path,
     previous_generation_path,
     read_recovering_previous,
+    save_json_state,
     stage_previous_generation,
     write_meta_json,
 )
@@ -220,6 +221,25 @@ def test_load_json_state_recovers_from_previous_generation(tmp_path):
     assert loaded == {"cycle": 42, "status": "ok"}
     assert json.loads(path.read_text(encoding="utf-8")) == {"cycle": 42, "status": "ok"}
     assert not backup.exists()
+
+
+def test_save_json_state_restores_previous_on_write_failure(tmp_path, monkeypatch):
+    path = tmp_path / "bot_state_save.json"
+    save_json_state(path, {"cycle": 10}, indent=2)
+    assert json.loads(path.read_text(encoding="utf-8")) == {"cycle": 10}
+    assert not Path(previous_generation_path(str(path))).exists()
+
+    def broken_atomic_write(*_args, **_kwargs):
+        path.unlink()
+        path.write_text("{partial", encoding="utf-8")
+        raise OSError("simulated disk error")
+
+    monkeypatch.setattr("state_io.atomic_write_json", broken_atomic_write)
+    with pytest.raises(OSError, match="simulated disk error"):
+        save_json_state(path, {"cycle": 11}, indent=2)
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {"cycle": 10}
+
 
 
 

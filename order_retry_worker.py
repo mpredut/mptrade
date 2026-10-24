@@ -82,8 +82,6 @@ class _PersistentQuarantineSet(set):
         if self._loaded_path == path:
             return
         self._loaded_path = path
-        if not os.path.exists(path):
-            return
         try:
             data = load_json_state(
                 path, default_factory=dict, fail_closed=False, label="quarantine alerts"
@@ -103,12 +101,11 @@ class _PersistentQuarantineSet(set):
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             data = {}
-            if os.path.exists(path):
-                loaded = load_json_state(
-                    path, default_factory=dict, fail_closed=False, label="quarantine alerts"
-                )
-                if isinstance(loaded, dict):
-                    data = dict(loaded)
+            loaded = load_json_state(
+                path, default_factory=dict, fail_closed=False, label="quarantine alerts"
+            )
+            if isinstance(loaded, dict):
+                data = dict(loaded)
             data[self._key] = [
                 list(x) if isinstance(x, tuple) else [x] for x in sorted(self)
             ]

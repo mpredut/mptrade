@@ -149,7 +149,7 @@ TRACKED_SYMBOLS = tuple(symbols_for("binance", "assetguardian"))
 LEGACY_BUY_SYMBOL = sym.btcsymbol
 ORDER_MISSING_CONFIRMATIONS = _required_int_config(
     "AG_ORDER_MISSING_CONFIRMATIONS")
-from state_io import atomic_write_json, load_json_state
+from state_io import atomic_write_json, load_json_state, save_json_state
 from lock import FileLock
 
 
@@ -171,7 +171,7 @@ class AssetGuardianState:
     def save(self, value):
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         with FileLock(self.lock_path):
-            atomic_write_json(
+            save_json_state(
                 self.path, value, sort_keys=True, separators=(",", ":"),
             )
 
