@@ -1125,6 +1125,22 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertEqual(ps.get_price("BTCUSDC"), 80500.0)
         self.assertEqual(bapi_ws.BinanceAccountStream._classify(None), ("event", {}))
 
+        # providers.base extractors reject bool values instead of treating True as 1.0 or "TRUE"
+        from providers.base import (
+            extract_order_price,
+            extract_order_qty,
+            extract_order_side,
+            extract_remaining_qty,
+        )
+
+        self.assertEqual(extract_order_price({"price": True}), 0.0)
+        self.assertEqual(extract_order_price({"cost": True, "vol": 1.0}), 0.0)
+        self.assertEqual(extract_order_price({"fills": [{"price": True, "qty": 1.0}]}), 0.0)
+        self.assertEqual(extract_order_qty({"qty": True}), 0.0)
+        self.assertEqual(extract_order_side({"side": True}), "")
+        self.assertEqual(extract_order_side({"type": True}), "")
+        self.assertEqual(extract_remaining_qty({"origQty": True, "executedQty": False}), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

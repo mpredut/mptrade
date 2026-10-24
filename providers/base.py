@@ -148,7 +148,17 @@ def extract_order_side(order: Any) -> str:
     """Extract and normalize order side (``'BUY'`` or ``'SELL'``) from any venue shape."""
     if not isinstance(order, dict):
         return ""
-    raw_side = order.get("side") or order.get("S") or order.get("dir")
+    raw_side = next(
+        (
+            order[k]
+            for k in ("side", "S", "dir")
+            if k in order
+            and order[k] is not None
+            and not isinstance(order[k], bool)
+            and str(order[k]).strip()
+        ),
+        None,
+    )
     if raw_side is not None and str(raw_side).strip():
         s = str(raw_side).strip().upper()
         if s in ("B", "BUY"):
@@ -159,7 +169,11 @@ def extract_order_side(order: Any) -> str:
     raw_type = order.get("type")
     if raw_type is None and isinstance(order.get("descr"), dict):
         raw_type = order["descr"].get("type")
-    if raw_type is not None and str(raw_type).strip().upper() in ("BUY", "SELL"):
+    if (
+        raw_type is not None
+        and not isinstance(raw_type, bool)
+        and str(raw_type).strip().upper() in ("BUY", "SELL")
+    ):
         return str(raw_type).strip().upper()
     if "isBuyer" in order and order.get("isBuyer") is not None:
         return "BUY" if bool(order["isBuyer"]) else "SELL"
@@ -183,7 +197,7 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
     if not isinstance(order, dict):
         return default
     for key in _PRICE_KEYS:
-        if key in order and order[key] is not None:
+        if key in order and order[key] is not None and not isinstance(order[key], bool):
             try:
                 val = float(order[key] or 0.0)
                 if math.isfinite(val) and val > 0:
@@ -191,7 +205,11 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
             except (TypeError, ValueError, OverflowError):
                 continue
     descr = order.get("descr")
-    if isinstance(descr, dict) and descr.get("price") is not None:
+    if (
+        isinstance(descr, dict)
+        and descr.get("price") is not None
+        and not isinstance(descr.get("price"), bool)
+    ):
         try:
             val = float(descr["price"] or 0.0)
             if math.isfinite(val) and val > 0:
@@ -208,7 +226,12 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
         ("Y", "l"),
         ("Z", "z"),
     ):
-        if cost_key in order and exec_key in order:
+        if (
+            cost_key in order
+            and exec_key in order
+            and not isinstance(order.get(cost_key), bool)
+            and not isinstance(order.get(exec_key), bool)
+        ):
             try:
                 cost_val = abs(float(order[cost_key] or 0.0))
                 exec_val = abs(float(order[exec_key] or 0.0))
@@ -224,8 +247,12 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
             if not isinstance(f, dict):
                 continue
             try:
-                f_px = float(f.get("price", f.get("px", 0.0)) or 0.0)
-                f_qty = abs(float(f.get("qty", f.get("quantity", f.get("sz", 0.0))) or 0.0))
+                raw_px = f.get("price", f.get("px", 0.0))
+                raw_qty = f.get("qty", f.get("quantity", f.get("sz", 0.0)))
+                if isinstance(raw_px, bool) or isinstance(raw_qty, bool):
+                    continue
+                f_px = float(raw_px or 0.0)
+                f_qty = abs(float(raw_qty or 0.0))
                 if math.isfinite(f_px) and math.isfinite(f_qty) and f_px > 0 and f_qty > 0:
                     total_quote += f_px * f_qty
                     total_qty += f_qty
@@ -241,7 +268,7 @@ def extract_order_qty(order: Any, default: float = 0.0) -> float:
     if not isinstance(order, dict):
         return default
     for key in _QTY_KEYS:
-        if key in order and order[key] is not None:
+        if key in order and order[key] is not None and not isinstance(order[key], bool):
             try:
                 val = abs(float(order[key] or 0.0))
                 if math.isfinite(val) and val > 0:
@@ -311,7 +338,7 @@ def extract_remaining_qty(order: Any, default: float = 0.0) -> float:
                 pass
     orig = 0.0
     for key in _ORIG_QTY_KEYS:
-        if key in order and order[key] is not None:
+        if key in order and order[key] is not None and not isinstance(order[key], bool):
             try:
                 val = abs(float(order[key] or 0.0))
                 if math.isfinite(val) and val > 0:
@@ -321,7 +348,7 @@ def extract_remaining_qty(order: Any, default: float = 0.0) -> float:
                 continue
     exec_q = 0.0
     for key in _EXEC_QTY_KEYS:
-        if key in order and order[key] is not None:
+        if key in order and order[key] is not None and not isinstance(order[key], bool):
             try:
                 val = abs(float(order[key] or 0.0))
                 if math.isfinite(val) and val > 0:
