@@ -390,6 +390,7 @@ class Instrument:
                     caller_applied_scale = cas_f
             except (TypeError, ValueError):
                 pass
+        applied_scale = caller_applied_scale
         # Reconstruct this call exactly for retry after bypass/smart were popped;
         # all other placement metadata remains in kwargs.
         retry_kwargs = dict(kwargs)
@@ -1086,29 +1087,37 @@ class Instrument:
                             # Capture best-effort market price only when enqueueing,
                             # for retry price guarding and deduplication.
                             queue_qty = orig_qty
+                            use_resolved_qty = False
                             try:
-                                if queue_qty is None or float(queue_qty) <= 0:
-                                    queue_qty = qty
-                                    if 0.0 < float(applied_scale) < 1.0:
-                                        retry_kwargs["applied_scale"] = float(applied_scale)
+                                if queue_qty is None or not math.isfinite(float(queue_qty)) or float(queue_qty) <= 0:
+                                    use_resolved_qty = True
                             except (TypeError, ValueError, OverflowError):
+                                use_resolved_qty = True
+                            if use_resolved_qty:
                                 queue_qty = qty
                                 if 0.0 < float(applied_scale) < 1.0:
                                     retry_kwargs["applied_scale"] = float(applied_scale)
-                            ref_price = None
+                            can_enqueue = False
                             try:
-                                ref_price = self._provider.get_current_price(self.symbol)
-                            except Exception:  # noqa: BLE001
+                                q_f = float(queue_qty)
+                                can_enqueue = math.isfinite(q_f) and q_f > 0
+                            except (TypeError, ValueError, OverflowError):
+                                can_enqueue = False
+                            if can_enqueue:
                                 ref_price = None
-                            self._apply_outbox_lineage_prefix(retry_kwargs, kwargs)
-                            order_retry.enqueue(
-                                self.symbol, side_u, queue_qty, retry_kwargs,
-                                requested_price=orig_price, ref_price=ref_price,
-                                failure_reason=reason,
-                                provider_name=self.provider_name,
-                                intent_id=kwargs.get("intent_id"),
-                                kind=kwargs.get("kind") or kwargs.get("motivation"),
-                                ttl_sec=kwargs.get("ttl_sec"))
+                                try:
+                                    ref_price = self._provider.get_current_price(self.symbol)
+                                except Exception:  # noqa: BLE001
+                                    ref_price = None
+                                self._apply_outbox_lineage_prefix(retry_kwargs, kwargs)
+                                order_retry.enqueue(
+                                    self.symbol, side_u, queue_qty, retry_kwargs,
+                                    requested_price=orig_price, ref_price=ref_price,
+                                    failure_reason=reason,
+                                    provider_name=self.provider_name,
+                                    intent_id=kwargs.get("intent_id"),
+                                    kind=kwargs.get("kind") or kwargs.get("motivation"),
+                                    ttl_sec=kwargs.get("ttl_sec"))
                 except Exception as _e:  # noqa: BLE001
                     print(f"[{self.symbol}] {side_u} enqueue retry failed (ignored): {_e}")
 

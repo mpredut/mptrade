@@ -1374,6 +1374,32 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertEqual(len(queued), 1)
             self.assertEqual(queued[0].get("ttl_sec"), 1234.0)
 
+        # 5. Pre-sizing refusal (Stage 1 G_PROF or GO1 daily_limit) with auto-qty (qty=None)
+        # symmetrically on BUY and SELL must not raise UnboundLocalError on applied_scale.
+        import contextlib
+        import io
+        for side, blocked_px, seed_side, seed_px in (
+            ("SELL", 98.0, "BUY", 100.0),
+            ("BUY", 102.0, "SELL", 100.0),
+        ):
+            self._clear_state()
+            p_sym = _FakeProvider(price=blocked_px)
+            p_sym.seed_trade(seed_side, age_sec=400.0, price=seed_px)
+            inst_sym = self._inst(p_sym)
+            buf = io.StringIO()
+            out_sym = {}
+            with contextlib.redirect_stdout(buf):
+                res_sym = inst_sym.place(
+                    side, blocked_px, None, smart=False, wait_for_trend=False,
+                    applied_scale=0.5, _outcome_context=out_sym,
+                )
+            stdout_text = buf.getvalue()
+            self.assertIsNone(res_sym)
+            self.assertEqual(out_sym.get("reason"), "profit_guard")
+            self.assertNotIn("enqueue retry failed", stdout_text)
+            self.assertNotIn("applied_scale", stdout_text)
+            self.assertEqual(oq.load_all(), [])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
