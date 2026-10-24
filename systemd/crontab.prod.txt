@@ -13,8 +13,7 @@ SHELL=/bin/bash
 27 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh hyperliquid/shadow_longterm.py --quiet >> logs/hyperliquid_shadow.log 2>&1
 */5 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh orchestratorOS/livecheck/os_resources_watchdog.py >> logs/os_resources_watchdog.log 2>&1
 */2 * * * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh watchdog >> logs/manage_agy.log 2>&1
-# Idle-gated UI daemon restart so mirrored autonomous topic threads show up in the Web UI (AGY_UI_SYNC_IDLE_SEC)
-# Offset by +3m from */10 auto_trade_executor so even a /compact turn finishes & mirrors before ui-sync runs
+# Idle-gated UI daemon sync: routine topic turns hard-link D1<->D2 in-place (0 restarts); restarts only on new:/gone: cid
 3-59/10 * * * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh ui-sync >> logs/manage_agy.log 2>&1
 
 15 4 1,15 * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh cron-update >> logs/manage_agy.log 2>&1

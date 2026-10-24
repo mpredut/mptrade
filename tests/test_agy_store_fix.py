@@ -196,4 +196,20 @@ def test_active_webui_daemon_log_or_new_running_thread_blocks_ui_sync(store):
     assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_READY
 
 
+def test_known_mirrored_topic_relinked_or_new_webui_thread_does_not_trigger_restart(store):
+    cli, d1, d2 = store
+    # 1. Known permanent topic thread updated in D1 and re-hardlinked in D2 -> 0 restarts
+    (d1 / "topic-10m.db").write_text("new-turn-content")
+    os.link(d1 / "topic-10m.db", d2 / "topic-10m.db")
+    # 2. Brand-new interactive Web UI thread created directly by the running daemon in D1 (not yet in D2) -> 0 restarts
+    (d1 / "webui-chat.db").write_text("user-chat")
+    _set_rows(["topic-10m", "webui-chat"])
+    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids(["topic-10m", "webui-chat"]))
+    _age_store(d1, 1200)
+
+    assert asf.pending_ui_sync() == []
+    assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_NOTHING
+
+
+
 

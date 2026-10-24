@@ -452,7 +452,8 @@ def pending_ui_sync() -> list[str]:
             if not name.endswith(".db") or cid not in rows:
                 continue
             p1 = os.path.join(D1, name)
-            if not same_file(p1, os.path.join(D2, name)):
+            p2 = os.path.join(D2, name)
+            if (cid not in known or os.path.exists(p2)) and not same_file(p1, p2):
                 entries.append(f"content:{cid}:{os.stat(p1).st_ino}")
     return sorted(entries)
 
