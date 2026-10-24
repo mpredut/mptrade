@@ -1043,15 +1043,21 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertFalse(mgr._mem_dirty)
         self.assertEqual(len(mgr._dirty_live_symbols), 0)
 
-        # should_wait and _snapshot_is_usable reject NaN, Inf, bool, and malformed values
+        # should_wait, _eval_upward_formula, _published_window, and _snapshot_is_usable reject NaN, Inf, bool, and malformed values
         self.assertFalse(mgr._snapshot_is_usable({"ts": True, "current_price": 60000.0}, now_sec, 15.0))
         self.assertFalse(mgr._snapshot_is_usable({"ts": now_sec, "current_price": True}, now_sec, 15.0))
         for bad_g in (float("nan"), float("inf"), float("-inf"), True, "not-a-float"):
             mgr._set_mem("BTCUSDT", ts=now_sec, current_price=60000.0, growth_coefficient=bad_g, gradient_recent=bad_g)
             self.assertFalse(mgr.should_wait("BUY", "BTCUSDT", now=now_sec))
             self.assertFalse(mgr.should_wait("SELL", "BTCUSDT", now=now_sec))
+            self.assertFalse(mgr._eval_upward_formula({"gradient_recent": bad_g, "final_trend": 0.1}))
+            self.assertFalse(mgr._eval_upward_formula({"gradient_recent": 0.0, "final_trend": bad_g}))
             with patch.object(mgr, "get_short_trend_for_window", return_value={"growth_coefficient": bad_g, "current_price": 60000.0}):
                 self.assertFalse(mgr.should_wait("BUY", "BTCUSDT", window_seconds=900, now=now_sec))
+        self.assertTrue(mgr._eval_upward_formula({"gradient_recent": 0.05, "final_trend": 0.0}))
+        self.assertTrue(mgr._eval_upward_formula({"gradient_recent": 0.0, "final_trend": 1.0}))
+        mgr._live_windows["ETHUSDT"] = {"900": {"ts": True, "gradient_recent": 0.1}}
+        self.assertIsNone(mgr._published_window("ETHUSDT", 900, now=now_sec))
 
         # CacheLongTrendManager recovers from priceanalysis.json.previous
         pa_dir = os.path.join(self.tmp, "pa_dir")

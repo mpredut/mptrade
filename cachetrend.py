@@ -865,8 +865,13 @@ class CacheShortTrendManager(CacheManagerInterface):
             if not isinstance(dyn, dict):
                 return None
             try:
-                age = float(now) - float(dyn["ts"])
+                if isinstance(dyn.get("ts"), bool):
+                    return None
+                ts_val = float(dyn["ts"])
+                age = float(now) - ts_val
             except (KeyError, TypeError, ValueError, OverflowError):
+                return None
+            if not (math.isfinite(ts_val) and ts_val > 0 and math.isfinite(age)):
                 return None
             if not -5.0 <= age <= self.TREND_STALE_SEC:
                 return None
@@ -1003,10 +1008,19 @@ class CacheShortTrendManager(CacheManagerInterface):
         """Single canonical upward-trend formula (SSOT): slope > 0 or (slope == 0 and gradient > 0)."""
         if not isinstance(data, dict):
             return False
-        slope = float(
-            data.get("gradient_recent", data.get("slope_small", 0.0)) or 0.0
-        )
-        gradient = float(data.get("final_trend", 0.0) or 0.0)
+        raw_slope = data.get("gradient_recent")
+        if raw_slope is None:
+            raw_slope = data.get("slope_small", 0.0)
+        raw_gradient = data.get("final_trend", 0.0)
+        if isinstance(raw_slope, bool) or isinstance(raw_gradient, bool):
+            return False
+        try:
+            slope = float(0.0 if raw_slope is None else raw_slope)
+            gradient = float(0.0 if raw_gradient is None else raw_gradient)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not (math.isfinite(slope) and math.isfinite(gradient)):
+            return False
         return slope > 0 or (slope == 0 and gradient > 0)
 
     def is_trend_up(self, symbol, window_seconds=None, now=None) -> bool:
@@ -1046,9 +1060,14 @@ class CacheShortTrendManager(CacheManagerInterface):
                 }
                 fetchtime = {}
                 for sym, val in snapshot_mem.items():
-                    ts_val = val.get("ts") or val.get("ts_fast")
+                    ts_val = (
+                        val.get("ts")
+                        if not isinstance(val.get("ts"), bool) and val.get("ts")
+                        else val.get("ts_fast")
+                    )
                     if (
                         isinstance(ts_val, (int, float))
+                        and not isinstance(ts_val, bool)
                         and math.isfinite(ts_val)
                         and ts_val > 0
                     ):
