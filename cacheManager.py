@@ -3934,11 +3934,25 @@ if __name__ == "__main__":
     if _nb_syms:
         builtins.print(f"[cacheManager] tracking non-Binance instruments from instruments.conf: {_nb_syms}")
 
+    try:
+        from binance_api import bapi_ws
+        get_current_price_manager(
+            ws_manager=bapi_ws.get_ws_manager(),
+            sync_ts=0.8,
+            start_sync=False,
+        )
+    except Exception as _ws_init_err:
+        print(f"[cacheManager] Warning pre-attaching price WS: {_ws_init_err}")
+
     for name, config in CacheFactory._CONFIG.items():
         if name == "365Price":
             continue
         cache = get_cache_manager(name, start_sync=False)
-        interval = config["sync_ts"]()  # Resolve the synchronization interval.
+        interval = (
+            cache.sync_ts
+            if name == "CurrentPrice" and hasattr(cache, "sync_ts")
+            else config["sync_ts"]()
+        )
 
         if isinstance(cache, dict):
             # SparsePrice and 24Price are dictionaries keyed by symbol.

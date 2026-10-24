@@ -1033,6 +1033,11 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             self.assertIsNotNone(res)
             eval_buf.assert_not_called()
 
+        cpm._update_timestamps = {"BTCUSDT": [now_sec - 20.0, now_sec - 10.0, now_sec]}
+        cpm.get_sample_rate.return_value = 10.0
+        mgr.evaluate_full("BTCUSDT")
+        self.assertAlmostEqual(mgr.get_window("BTCUSDT").sample_rate_sec, 10.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

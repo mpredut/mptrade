@@ -397,6 +397,22 @@ class CacheShortTrendManager(CacheManagerInterface):
             return None
         observed_at, current_price = observation
 
+        # Keep PriceWindow sampling rate synchronized with sustained live cadence.
+        try:
+            dq = (getattr(self.current_price_mgr, "_update_timestamps", None) or {}).get(symbol)
+            if dq and len(dq) >= 2 and (dq[-1] - dq[0]) >= 5.0:
+                actual_rate = self.current_price_mgr.get_sample_rate(symbol, fallback=None)
+                if (
+                    isinstance(actual_rate, (int, float))
+                    and not isinstance(actual_rate, bool)
+                    and math.isfinite(actual_rate)
+                    and actual_rate >= 0.1
+                ):
+                    for w in wins.values():
+                        w.set_sample_rate(float(actual_rate))
+        except Exception:
+            pass
+
         # Calculate slopes for every window, keyed by seconds.
         slopes = {}
         primary_pos = None
