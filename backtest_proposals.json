@@ -1,16 +1,16 @@
 [
   {
-    "ts": "2026-10-24T14:06:06",
+    "ts": "2026-10-24T14:34:39",
     "full_key": "BINANCE_BTC.trailing.pct",
     "section": "BINANCE_BTC",
     "key": "trailing.pct",
     "symbol": "BTCUSDC",
-    "current_on_dev": 14.0,
+    "current_on_dev": 13.0,
     "winner_value": 12.0,
     "margin_vs_current": {
-      "half1": 16.44,
-      "half2": 566.43
+      "half1": 11.42,
+      "half2": 318.47
     },
-    "dev_commit": "17c5396"
+    "dev_commit": "c50cb93"
   }
 ]
