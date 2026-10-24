@@ -605,8 +605,8 @@ class AutonomousAIReconciler:
                 logger.info("[SHADOW WOULD EXECUTE] Venue action %s for %s (%s): %s",
                             action_type, act.get("symbol"), act.get("venue"), act.get("reason"))
             else:
-                logger.warning("[ENFORCE EXECUTING] Venue action %s for %s (%s): %s",
-                               action_type, act.get("symbol"), act.get("venue"), act.get("reason"))
+                logger.info("[ENFORCE EXECUTING] Venue action %s for %s (%s): %s",
+                            action_type, act.get("symbol"), act.get("venue"), act.get("reason"))
 
         tests_passed: Optional[bool] = None
         if code_fix.get("has_fix") and code_fix.get("target_file") and code_fix.get("search_block"):
@@ -615,7 +615,7 @@ class AutonomousAIReconciler:
             if not is_enforce:
                 logger.info("[SHADOW WOULD APPLY] Code patch on %s: %s", target_file, rationale)
             else:
-                logger.warning("[ENFORCE ATTEMPTING PATCH] Applying self-healing patch on %s: %s", target_file, rationale)
+                logger.info("[ENFORCE ATTEMPTING PATCH] Applying self-healing patch on %s: %s", target_file, rationale)
                 tests_passed = self._apply_code_patch_safely(
                     target_file=target_file,
                     search_block=code_fix["search_block"],
