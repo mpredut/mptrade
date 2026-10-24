@@ -611,6 +611,15 @@ class CacheManagerInterface(ABC):
 
     def _validate_account_rows_locked(self):
         """Reject any financial row that strict readers could not accept."""
+        self._normalize_timestamp_map(
+            self.fetchtime_per_symbol,
+            error_message=f"invalid {self.cls_name} cache fetchtime",
+        )
+        if self._rest_sync_cursor_per_symbol:
+            self._normalize_timestamp_map(
+                self._rest_sync_cursor_per_symbol,
+                error_message=f"invalid {self.cls_name} cache rest_sync_cursor",
+            )
         for symbol, items in self.cache.items():
             if not isinstance(symbol, str) or not isinstance(items, list):
                 raise ValueError(f"invalid {self.cls_name} cache bucket")
@@ -734,8 +743,11 @@ class CacheManagerInterface(ABC):
                     return self._save_jsonl_append()
                 fetchtime = dict(self.fetchtime_per_symbol)
                 rest_sync_cursor = {
-                    str(symbol): max(0, int(cursor or 0))
+                    str(symbol): max(0, int(cursor))
                     for symbol, cursor in self._rest_sync_cursor_per_symbol.items()
+                    if isinstance(cursor, (int, float))
+                    and not isinstance(cursor, bool)
+                    and math.isfinite(cursor)
                 }
                 counts = {symbol: len(items) for symbol, items in self.cache.items()}
                 payload = {
@@ -818,8 +830,11 @@ class CacheManagerInterface(ABC):
 
                 fetchtime = dict(self.fetchtime_per_symbol)
                 rest_sync_cursor = {
-                    str(symbol): max(0, int(cursor or 0))
+                    str(symbol): max(0, int(cursor))
                     for symbol, cursor in self._rest_sync_cursor_per_symbol.items()
+                    if isinstance(cursor, (int, float))
+                    and not isinstance(cursor, bool)
+                    and math.isfinite(cursor)
                 }
                 counts = {
                     symbol: len(items)
@@ -1047,13 +1062,18 @@ class CacheManagerInterface(ABC):
                         candidate_counts[symbol] = len(items)
                     f.flush()
                     os.fsync(f.fileno())
-                self._persisted_counts = candidate_counts
                 fetchtime = dict(self.fetchtime_per_symbol)
-                return self._write_meta({
+                if not self._write_meta({
                     "fetchtime": fetchtime,
                     "rest_sync_cursor": dict(self._rest_sync_cursor_per_symbol),
                     "counts": dict(candidate_counts),
-                })
+                }):
+                    self._persisted_counts = previous_counts
+                    if initial_size is not None:
+                        self._truncate_failed_jsonl_append(initial_size)
+                    return False
+                self._persisted_counts = candidate_counts
+                return True
         except Exception as e:
             self._persisted_counts = previous_counts
             if initial_size is not None:

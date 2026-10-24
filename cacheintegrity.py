@@ -138,13 +138,23 @@ def build_account_meta_snapshot(
     schema_version: int = CACHE_META_SCHEMA_VERSION,
 ) -> dict[str, Any]:
     """Build a schema v2 ``.meta`` manifest dictionary for an account cache."""
+    normalized_fetchtime = normalize_timestamp_map(
+        fetchtime,
+        error_message="invalid cache manifest fetchtime",
+    )
+    normalized_rest_cursor = (
+        dict(normalized_fetchtime)
+        if rest_sync_cursor is None
+        else normalize_timestamp_map(
+            rest_sync_cursor,
+            error_message="invalid cache manifest rest_sync_cursor",
+        )
+    )
     payload: dict[str, Any] = {
         "schema_version": schema_version,
         "data_version": data_version,
-        "fetchtime": dict(fetchtime),
-        "rest_sync_cursor": dict(
-            fetchtime if rest_sync_cursor is None else rest_sync_cursor
-        ),
+        "fetchtime": normalized_fetchtime,
+        "rest_sync_cursor": normalized_rest_cursor,
         "counts": dict(counts),
     }
     if committed_bytes is not None:
