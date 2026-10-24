@@ -475,7 +475,8 @@ class BinanceAccountStream(BinanceWSBase):
         if "id" in event:
             return ("ping" if event.get("id") == "ping" else "response"), event
         if "event" in event:
-            return "event", event["event"]
+            inner = event["event"]
+            return "event", (inner if isinstance(inner, dict) else {})
         return "event", event
 
     async def _main(self) -> None:
@@ -492,7 +493,7 @@ class BinanceAccountStream(BinanceWSBase):
             # Login
             await ws.send(self._signed_logon_msg("login"))
             resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
-            if resp.get("status") != 200:
+            if not isinstance(resp, dict) or resp.get("status") != 200:
                 raise RuntimeError(f"login failed: {resp}")     # The base reconnect loop applies backoff.
             logger.info("[WS] ✅ Login OK")
             # Do not reset backoff here. The reconnect loop does so only after a stable
@@ -517,8 +518,15 @@ class BinanceAccountStream(BinanceWSBase):
                     logger.debug("[WS] Heartbeat (no events)")
                     continue
 
-                event = json.loads(raw)
-                logger.debug("[WS RAW] %s", raw[:200])
+                try:
+                    event = json.loads(raw)
+                except (TypeError, ValueError, json.JSONDecodeError) as e:
+                    logger.warning("[WS] Invalid JSON on account stream: %s", e)
+                    continue
+                if not isinstance(event, dict):
+                    logger.warning("[WS] Ignoring non-object account frame: %r", event)
+                    continue
+                logger.debug("[WS RAW] %s", str(raw)[:200])
                 kind, payload = self._classify(event)
                 if kind == "ping":
                     self._mark_event()

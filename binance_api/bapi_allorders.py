@@ -1,4 +1,5 @@
 
+import math
 import time
 from collections import defaultdict
 
@@ -81,6 +82,8 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
 
         filtered = []
         for trade in trades:
+            if not isinstance(trade, dict):
+                continue
             ts_ms = extract_timestamp_ms(trade, default=0) or 0
             side = extract_order_side(trade)
             if startTime <= ts_ms <= end_time and (
@@ -110,19 +113,27 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
             grouped[key]['timestamp'] = max(grouped[key]['timestamp'], t['timestamp'])
             grouped[key]['side'] = t['side']
 
-        result = [
-            {
+        result = []
+        for oid, data in grouped.items():
+            raw_qty = data['quantity']
+            rounded_qty = round(raw_qty, 8) if raw_qty >= 1e-8 else round(raw_qty, 12)
+            qty_out = rounded_qty if rounded_qty > 0 else raw_qty
+            if raw_qty > 0:
+                raw_px = data['price_qty'] / raw_qty
+                rounded_px = round(raw_px, 8) if raw_px >= 1e-8 else round(raw_px, 12)
+                px_out = rounded_px if rounded_px > 0 else raw_px
+            else:
+                px_out = 0
+            result.append({
                 'orderId': oid,
-                'price': round(data['price_qty'] / data['quantity'], 8) if data['quantity'] else 0,
-                'quantity': round(data['quantity'], 8),
-                'qty': round(data['quantity'], 8),
+                'price': px_out,
+                'quantity': qty_out,
+                'qty': qty_out,
                 'timestamp': data['timestamp'],
                 'time': data['timestamp'],
                 'side': data['side'],
                 'isBuyer': data['side'] == 'BUY',
-            }
-            for oid, data in grouped.items()
-        ]
+            })
 
         for r in result[:5]:
             print(r)
@@ -190,14 +201,22 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
         return []
 
     #print(f" orders_for_symbol {orders_for_symbol}")
+    try:
+        if max_age_seconds is None or isinstance(max_age_seconds, bool):
+            return []
+        max_age_val = float(max_age_seconds)
+    except (TypeError, ValueError):
+        return []
+    if not math.isfinite(max_age_val) or max_age_val < 0:
+        return []
     current_time_ms = int(time.time() * 1000)
-    max_age_ms = max_age_seconds * 1000  # convert to ms
+    max_age_ms = max_age_val * 1000.0  # convert to ms
 
     filtered_orders = []
     for order in orders_for_symbol:
         side = extract_order_side(order)
         ts_ms = extract_timestamp_ms(order, default=0) or 0
-        if (order_type is None or side == order_type) and (current_time_ms - ts_ms) <= max_age_ms:
+        if ts_ms > 0 and (order_type is None or side == order_type) and (current_time_ms - ts_ms) <= max_age_ms:
             qty = extract_order_qty(order)
             filtered_orders.append({
                 'orderId': order.get('orderId'),

@@ -1523,6 +1523,100 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertEqual(st.wait_for_favorable_entry("BUY", "BTCUSDT", max_wait_sec=True), 0.0)
         self.assertEqual(st.wait_for_favorable_entry("BUY", "BTCUSDT", poll_sec=0), 0.0)
 
+    def test_audit39_health_pid_overflow_and_sub_satoshi_aggregation_and_ws_classify(self):
+        """Audit #39: _pid_is_alive overflow guard, sub-satoshi get_filled_orders/aggregate_trades, and _classify non-dict inner event."""
+        import threading
+        import binance_cache_health as bch
+        from binance_api import bapi_allorders, bapi_trades, bapi_ws
+
+        # 1. _pid_is_alive guards against OverflowError / invalid PIDs without raising
+        self.assertFalse(bch._pid_is_alive(2**80))
+        self.assertFalse(bch._pid_is_alive(-5))
+        self.assertFalse(bch._pid_is_alive(True))
+        health_file = os.path.join(self.tmp, "health_overflow.json")
+        now_ms = int(time.time() * 1000)
+        with open(health_file, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "schema_version": bch.SCHEMA_VERSION,
+                    "writer_pid": 2**80,
+                    "writer_started_at_ms": now_ms - 1000,
+                    "published_at_ms": now_ms,
+                    "generation": 5,
+                    "stopping": False,
+                    "order_sync_at_ms": now_ms,
+                    "trade_sync_at_ms": now_ms,
+                    "order_cache_version": "snapshot:abc",
+                    "trade_cache_version": "stream:1",
+                },
+                fh,
+            )
+        status = bch.inspect_health(path=health_file, now_ms=now_ms)
+        self.assertFalse(status.ready)
+        self.assertEqual(status.reason, "account_cache_writer_not_running")
+
+        # 2. bapi_allorders.get_filled_orders preserves sub-satoshi prices (< 1e-8) and ignores non-dict trades
+        sub_satoshi_fills = [
+            "not-a-dict",
+            {
+                "id": 1,
+                "orderId": 701,
+                "price": "0.000000004",
+                "qty": "1000.0",
+                "time": now_ms - 500,
+                "isBuyer": True,
+            },
+            {
+                "id": 2,
+                "orderId": 701,
+                "price": "0.000000006",
+                "qty": "1000.0",
+                "time": now_ms - 400,
+                "isBuyer": True,
+            },
+        ]
+        with (
+            unittest.mock.patch.object(bapi_allorders.sym, "validate_symbols"),
+            unittest.mock.patch.object(bapi_allorders.sym, "validate_ordertype"),
+            unittest.mock.patch.object(
+                bapi_allorders, "paginate_my_trades", return_value=sub_satoshi_fills
+            ),
+        ):
+            filled = bapi_allorders.get_filled_orders("BUY", "BTCUSDT", now_ms - 5000)
+        self.assertEqual(len(filled), 1)
+        self.assertAlmostEqual(filled[0]["price"], 5e-9, places=14)
+        self.assertEqual(filled[0]["quantity"], 2000.0)
+
+        # 3. bapi_trades.aggregate_trades preserves sub-satoshi multi-fill VWAP and ignores non-dict items
+        agg = bapi_trades.aggregate_trades(sub_satoshi_fills)
+        self.assertEqual(len(agg), 1)
+        self.assertAlmostEqual(float(agg[0]["price"]), 5e-9, places=14)
+        self.assertEqual(float(agg[0]["qty"]), 2000.0)
+
+        # 4. bapi_allorders.get_trade_orders and bapi_trades.get_trade_orders guard invalid max_age_seconds and ts_ms <= 0
+        fake_order_mgr = unittest.mock.MagicMock()
+        fake_order_mgr.lock = threading.Lock()
+        fake_order_mgr.cache = {
+            "BTCUSDT": [
+                {"orderId": 1, "price": 100.0, "quantity": 1.0, "timestamp": 0, "side": "BUY"},
+                {"orderId": 2, "price": 101.0, "quantity": 1.0, "timestamp": now_ms, "side": "BUY"},
+            ]
+        }
+        with (
+            unittest.mock.patch("cacheManager.get_cache_manager", return_value=fake_order_mgr),
+            unittest.mock.patch.object(bapi_allorders.sym, "validate_ordertype"),
+            unittest.mock.patch.object(bapi_allorders.sym, "validate_symbols"),
+        ):
+            self.assertEqual(bapi_allorders.get_trade_orders("BUY", "BTCUSDT", True), [])
+            self.assertEqual(bapi_allorders.get_trade_orders("BUY", "BTCUSDT", -1), [])
+            valid_orders = bapi_allorders.get_trade_orders("BUY", "BTCUSDT", 60)
+            self.assertEqual(len(valid_orders), 1)
+            self.assertEqual(valid_orders[0]["orderId"], 2)
+
+        # 5. BinanceAccountStream._classify returns {} when wrapped 'event' is not a dict
+        self.assertEqual(bapi_ws.BinanceAccountStream._classify({"event": None}), ("event", {}))
+        self.assertEqual(bapi_ws.BinanceAccountStream._classify({"event": "bad"}), ("event", {}))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

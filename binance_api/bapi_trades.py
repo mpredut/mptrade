@@ -57,11 +57,19 @@ def aggregate_trades(trades):
     })
 
     # Group fills by order ID.
-    for trade in trades:
-        orderId = trade['orderId'] if 'orderId' in trade else extract_order_id(trade)
+    for trade in trades or ():
+        if not isinstance(trade, dict):
+            continue
+        orderId = trade['orderId'] if trade.get('orderId') is not None else extract_order_id(trade)
+        if orderId is None:
+            continue
         qty = extract_order_qty(trade)
         px = extract_order_price(trade)
-        quote_qty = float(trade.get('quoteQty', 0.0) or 0.0) or (px * qty)
+        try:
+            raw_qq = float(trade.get('quoteQty', 0.0) or 0.0)
+            quote_qty = raw_qq if math.isfinite(raw_qq) and raw_qq > 0 else (px * qty)
+        except (TypeError, ValueError):
+            quote_qty = px * qty
         ts_ms = extract_timestamp_ms(trade, default=0) or 0
         side = extract_order_side(trade)
         is_buyer = trade.get('isBuyer') if 'isBuyer' in trade else (side == 'BUY')
@@ -74,14 +82,19 @@ def aggregate_trades(trades):
         aggregated_trades[orderId]['symbol'] = trade.get('symbol', '')
         raw_px = trade.get('price')
         try:
-            has_pos_raw_px = raw_px is not None and float(raw_px) > 0
+            has_pos_raw_px = raw_px is not None and not isinstance(raw_px, bool) and float(raw_px) > 0
         except (TypeError, ValueError):
             has_pos_raw_px = False
         aggregated_trades[orderId]['price'] = (
             raw_px
             if has_pos_raw_px
             else (
-                f"{px:.8f}".rstrip("0").rstrip(".")
+                (
+                    (f"{px:.8f}" if px >= 1e-8 else f"{px:.12f}")
+                    .rstrip("0")
+                    .rstrip(".")
+                    or str(px)
+                )
                 if px > 0
                 else (raw_px if raw_px is not None else px)
             )
@@ -90,7 +103,12 @@ def aggregate_trades(trades):
         aggregated_trades[orderId]['quoteQty'] += quote_qty
         aggregated_trades[orderId]['weightedCost'] += px * qty
         fee_info = extract_order_fee(trade)
-        comm_val = float(trade.get('commission', 0.0) or 0.0)
+        try:
+            comm_val = float(trade.get('commission', 0.0) or 0.0)
+            if not math.isfinite(comm_val) or comm_val < 0:
+                comm_val = 0.0
+        except (TypeError, ValueError):
+            comm_val = 0.0
         if comm_val == 0.0 and fee_info is not None:
             comm_val = fee_info['fee']
         comm_asset = trade.get('commissionAsset') or (fee_info['fee_asset'] if fee_info is not None else '')
@@ -107,9 +125,23 @@ def aggregate_trades(trades):
         total_qty = aggregated['qty']
         if aggregated['count'] > 1 and total_qty > 0:
             vwap = aggregated['weightedCost'] / total_qty
-            price_val = f"{vwap:.8f}".rstrip("0").rstrip(".") or "0"
+            price_val = (
+                (
+                    (f"{vwap:.8f}" if vwap >= 1e-8 else f"{vwap:.12f}")
+                    .rstrip("0")
+                    .rstrip(".")
+                    or str(vwap)
+                )
+                if vwap > 0
+                else "0"
+            )
         else:
             price_val = aggregated['price']
+        qty_str = (
+            f"{total_qty:.8f}"
+            if total_qty <= 0 or total_qty >= 1e-8
+            else (f"{total_qty:.12f}".rstrip("0").rstrip(".") or str(total_qty))
+        )
         side = "BUY" if aggregated['isBuyer'] else "SELL"
         aggregated_list.append({
             'id': aggregated['id'],
@@ -117,8 +149,8 @@ def aggregate_trades(trades):
             'symbol': aggregated['symbol'],
             'orderListId': -1,
             'price': price_val,
-            'qty': f"{total_qty:.8f}",  # Preserve the eight-decimal format.
-            'quantity': f"{total_qty:.8f}",
+            'qty': qty_str,  # Preserve the eight-decimal format (or sub-satoshi precision).
+            'quantity': qty_str,
             'quoteQty': f"{aggregated['quoteQty']:.8f}",
             'commission': f"{aggregated['commission']:.8f}",
             'commissionAsset': aggregated['commissionAsset'],
@@ -427,14 +459,22 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     if not trades:
         return []
         
+    try:
+        if max_age_seconds is None or isinstance(max_age_seconds, bool):
+            return []
+        max_age_val = float(max_age_seconds)
+    except (TypeError, ValueError):
+        return []
+    if not math.isfinite(max_age_val) or max_age_val < 0:
+        return []
     current_time_ms = int(time.time() * 1000)
-    max_age_ms = max_age_seconds * 1000  # Convert to milliseconds.
+    max_age_ms = max_age_val * 1000.0  # Convert to milliseconds.
     
     filtered_trades = []
     for trade in trades:
         side = extract_order_side(trade)
         ts_ms = extract_timestamp_ms(trade, default=0) or 0
-        if (order_type is None or side == order_type) and (current_time_ms - ts_ms) <= max_age_ms:
+        if ts_ms > 0 and (order_type is None or side == order_type) and (current_time_ms - ts_ms) <= max_age_ms:
             qty = extract_order_qty(trade)
             is_buyer = side == "BUY"
             filtered_trades.append({

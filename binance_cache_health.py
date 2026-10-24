@@ -217,11 +217,13 @@ def _nonnegative_int(value, field: str) -> int:
 
 def _pid_is_alive(pid: int) -> bool:
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
+        if isinstance(pid, bool) or int(pid) <= 0:
+            return False
+        os.kill(int(pid), 0)
     except PermissionError:
         return True
+    except (ProcessLookupError, OverflowError, ValueError, TypeError, OSError):
+        return False
     return True
 
 
@@ -280,8 +282,35 @@ def inspect_health(*, path: str = HEALTH_PATH,
     if initializing:
         return CacheHealthStatus(False, "account_cache_initializing")
 
-    current_ms = _now_ms() if now_ms is None else int(now_ms)
-    future_tolerance_ms = int(float(future_tolerance_sec) * 1000)
+    try:
+        current_ms = (
+            _now_ms()
+            if now_ms is None
+            else (
+                int(now_ms)
+                if not isinstance(now_ms, bool) and math.isfinite(float(now_ms))
+                else _now_ms()
+            )
+        )
+        max_age_val = (
+            float(max_age_sec)
+            if not isinstance(max_age_sec, bool)
+            and math.isfinite(float(max_age_sec))
+            and float(max_age_sec) > 0
+            else MAX_AGE_SEC
+        )
+        future_tolerance_ms = (
+            int(float(future_tolerance_sec) * 1000)
+            if not isinstance(future_tolerance_sec, bool)
+            and math.isfinite(float(future_tolerance_sec))
+            and float(future_tolerance_sec) >= 0
+            else 5_000
+        )
+    except (TypeError, ValueError, OverflowError):
+        current_ms = _now_ms()
+        max_age_val = MAX_AGE_SEC
+        future_tolerance_ms = 5_000
+
     if (order_sync_ms > current_ms + future_tolerance_ms
             or trade_sync_ms > current_ms + future_tolerance_ms):
         return CacheHealthStatus(
@@ -289,10 +318,10 @@ def inspect_health(*, path: str = HEALTH_PATH,
 
     order_age = max(0.0, (current_ms - order_sync_ms) / 1000.0)
     trade_age = max(0.0, (current_ms - trade_sync_ms) / 1000.0)
-    if order_age > max_age_sec:
+    if order_age > max_age_val:
         return CacheHealthStatus(
             False, "order_cache_stale", order_age, trade_age)
-    if trade_age > max_age_sec:
+    if trade_age > max_age_val:
         return CacheHealthStatus(
             False, "trade_cache_stale", order_age, trade_age)
     return CacheHealthStatus(

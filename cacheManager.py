@@ -2740,8 +2740,16 @@ class CacheOrderManager(CacheManagerInterface):
                     float(existing["price"]) * previous_quantity
                     + float(incoming["price"]) * additional_quantity
                 ) / total_quantity
-                rounded_price = round(aggregate_price, 8)
-                rounded_qty = round(total_quantity, 8)
+                rounded_price = (
+                    round(aggregate_price, 8)
+                    if aggregate_price >= 1e-8
+                    else round(aggregate_price, 12)
+                )
+                rounded_qty = (
+                    round(total_quantity, 8)
+                    if total_quantity >= 1e-8
+                    else round(total_quantity, 12)
+                )
                 merged = dict(existing)
                 merged.update(incoming)
                 merged.update({
