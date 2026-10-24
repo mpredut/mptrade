@@ -507,4 +507,32 @@ def test_extract_symbol_recent_fills_sorts_by_timestamp(temp_env):
     assert recent["last_buy"] == {"price": 250.0, "qty": 1.0, "ts_ms": 1000}
 
 
+def test_apply_code_patch_safely_guards_workspace_boundary_and_restores_in_memory_on_failure(temp_env, tmp_path):
+    import subprocess
+    workspace, _, _ = temp_env
+    reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"], mode="enforce")
+
+    outside = tmp_path / "outside.py"
+    outside.write_text("x = 1\n", encoding="utf-8")
+    assert reconciler._apply_code_patch_safely(str(outside), "x = 1", "x = 2", "outside") is False
+    assert outside.read_text(encoding="utf-8") == "x = 1\n"
+
+    inside = os.path.join(workspace, "module_a.py")
+    with open(inside, "w", encoding="utf-8") as f:
+        f.write("val = 10\n")
+
+    # No-op patch rejected
+    assert reconciler._apply_code_patch_safely(inside, "val = 10", "val = 10", "noop") is False
+
+    # Failed pytest restores exact pre-patch content even in a non-git workspace
+    def _fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="failed")
+
+    with patch("subprocess.run", side_effect=_fake_run):
+        assert reconciler._apply_code_patch_safely(inside, "val = 10", "val = 20", "bad fix") is False
+    with open(inside, "r", encoding="utf-8") as f:
+        assert f.read() == "val = 10\n"
+
+
+
 

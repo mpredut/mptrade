@@ -565,7 +565,7 @@ class AutonomousAIReconciler:
 
         resp = self.gemini_auditor.query_json(
             prompt,
-            timeout_sec=45.0,
+            timeout_sec=90.0 if spec.can_self_heal else 60.0,
             thread_title=f"{spec.title} — {self.mode.upper()}",
             topic_key=topic_key,
         )
@@ -638,17 +638,32 @@ class AutonomousAIReconciler:
         rationale: str,
     ) -> bool:
         """Applies code patch, executes pytest test suite, commits on 100% green or rolls back immediately."""
-        if not os.path.exists(target_file):
+        real_ws = os.path.realpath(self.workspace_dir)
+        real_target = os.path.realpath(target_file)
+        try:
+            in_workspace = os.path.commonpath([real_ws, real_target]) == real_ws
+        except ValueError:
+            in_workspace = False
+        if not in_workspace:
+            logger.warning("Refusing autonomous patch outside workspace_dir: %s", target_file)
+            return False
+
+        if not os.path.exists(real_target):
             logger.error("Target patch file does not exist: %s", target_file)
             return False
 
-        base_name = os.path.basename(target_file)
+        base_name = os.path.basename(real_target)
         if base_name in (".env", "config.env", "order_guard.conf", "instruments.conf", "procs.conf") or base_name.endswith(".env"):
             logger.warning("Refusing autonomous patch on protected configuration file: %s", target_file)
             return False
 
+        if not search_block or search_block == replace_block:
+            logger.warning("Refusing empty or no-op autonomous patch on %s.", target_file)
+            return False
+
+        content: Optional[str] = None
         try:
-            with open(target_file, "r", encoding="utf-8") as f:
+            with open(real_target, "r", encoding="utf-8") as f:
                 content = f.read()
 
             if search_block not in content:
@@ -656,7 +671,7 @@ class AutonomousAIReconciler:
                 return False
 
             new_content = content.replace(search_block, replace_block, 1)
-            with open(target_file, "w", encoding="utf-8") as f:
+            with open(real_target, "w", encoding="utf-8") as f:
                 f.write(new_content)
 
             pytest_bin = "pytest"
@@ -666,22 +681,30 @@ class AutonomousAIReconciler:
                     pytest_bin = cand_abs
                     break
             test_cmd = [pytest_bin, "tests/"]
-            res = subprocess.run(test_cmd, cwd=self.workspace_dir, capture_output=True, text=True, timeout=120)
+            res = subprocess.run(test_cmd, cwd=self.workspace_dir, capture_output=True, text=True, timeout=240)
 
             if res.returncode == 0:
                 logger.info("Self-healing patch verified with 100%% green tests. Committing to git.")
-                subprocess.run(["git", "add", target_file], cwd=self.workspace_dir, check=False)
+                subprocess.run(["git", "add", real_target], cwd=self.workspace_dir, check=False)
                 commit_msg = f"[AI-SUPERVISOR] Autonomous self-heal: {rationale}"
                 subprocess.run(["git", "commit", "-m", commit_msg], cwd=self.workspace_dir, check=False)
                 subprocess.run(["git", "push", "origin", "main"], cwd=self.workspace_dir, check=False)
                 return True
             else:
                 logger.warning("Self-healing patch broke tests (exit code %d). Performing immediate rollback.", res.returncode)
-                subprocess.run(["git", "checkout", "--", target_file], cwd=self.workspace_dir, check=False)
+                with open(real_target, "w", encoding="utf-8") as f:
+                    f.write(content)
+                subprocess.run(["git", "checkout", "--", real_target], cwd=self.workspace_dir, check=False)
                 return False
         except Exception as e:
             logger.error("Error during safe code patching: %s. Performing rollback.", e)
-            subprocess.run(["git", "checkout", "--", target_file], cwd=self.workspace_dir, check=False)
+            if content is not None:
+                try:
+                    with open(real_target, "w", encoding="utf-8") as f:
+                        f.write(content)
+                except OSError:
+                    pass
+            subprocess.run(["git", "checkout", "--", real_target], cwd=self.workspace_dir, check=False)
             return False
 
     def dispatch_notification(self, report: SupervisorAuditReport) -> bool:
