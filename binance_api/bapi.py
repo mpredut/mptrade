@@ -157,6 +157,8 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
         filtered_orders = {}
         accepted_owner_map = None
         for order in open_orders:
+            if not isinstance(order, dict):
+                continue
             if extract_order_side(order) != order_type.upper():
                 continue
             cid = str(order.get('clientOrderId') or '')
@@ -185,12 +187,17 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
             executed_qty = float(order.get('executedQty', order.get('z', order.get('vol_exec', 0.0))) or 0.0)
             remaining_qty = extract_remaining_qty(order, default=max(0.0, original_qty - executed_qty))
             ts_ms = extract_timestamp_ms(order, default=0) or 0
-            if 'time' in order and order.get('time') is not None:
-                raw_time = float(order['time'])
-                ts_sec = raw_time / 1000.0 if (raw_time < 1_000_000_000.0 or raw_time >= 100_000_000_000.0) else raw_time
+            if 'time' in order and order.get('time') is not None and not isinstance(order.get('time'), bool):
+                try:
+                    raw_time = float(order['time'])
+                    ts_sec = raw_time / 1000.0 if (raw_time < 1_000_000_000.0 or raw_time >= 100_000_000_000.0) else raw_time
+                except (TypeError, ValueError):
+                    ts_sec = ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
             else:
                 ts_sec = ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
-            raw_oid = order['orderId'] if 'orderId' in order else extract_order_id(order)
+            raw_oid = order['orderId'] if order.get('orderId') is not None else extract_order_id(order)
+            if raw_oid is None:
+                continue
             filtered_orders[raw_oid] = {
                 'price': extract_order_price(order),
                 # Preserve the legacy field while exposing the financially correct
@@ -261,7 +268,7 @@ def cancel_expired_orders(order_type, symbol, expire_time, allowed_owners=None):
     for order_id, order_details in open_orders.items():
         order_time = (extract_timestamp_ms(order_details, default=0) or 0) / 1000.0
 
-        if current_time - order_time > expire_time:
+        if order_time > 0 and current_time - order_time > expire_time:
             cancel = cancel_order(symbol, order_id)
             if cancel:
                 try:
@@ -291,7 +298,7 @@ def cancel_recent_orders(order_type, symbol, max_age_seconds, allowed_owners=Non
     count = 0
     for order_id, order_details in open_orders.items():
         order_time = (extract_timestamp_ms(order_details, default=0) or 0) / 1000.0
-        if current_time - order_time <= max_age_seconds:  # Order is recent
+        if order_time > 0 and current_time - order_time <= max_age_seconds:  # Order is recent
             cancel = cancel_order(symbol, order_id)
             if cancel:
                 try:
@@ -340,7 +347,11 @@ _asset_value_cache_lock = threading.Lock()
 def _get_symbol_price_safe(symbol):
     try:
         ticker = client.get_symbol_ticker(symbol=symbol)
-        return float(ticker["price"])
+        raw_px = (ticker or {}).get("price") if isinstance(ticker, dict) else None
+        if raw_px is None or isinstance(raw_px, bool):
+            return None
+        price = float(raw_px)
+        return price if math.isfinite(price) and price > 0 else None
     except Exception:
         return None
 
@@ -364,7 +375,7 @@ def get_total_assets_value_usdc(use_cache=True, cache_ttl_seconds=ASSET_VALUE_CA
         with _asset_value_cache_lock:
             if (
                 _asset_value_cache["value"] is not None
-                and (now - _asset_value_cache["timestamp"]) < cache_ttl_seconds
+                and 0 <= (now - _asset_value_cache["timestamp"]) < cache_ttl_seconds
             ):
                 return _asset_value_cache["value"]
 

@@ -66,7 +66,7 @@ def normalize_timestamp_ms(value: Any, default: Optional[int] = None) -> Optiona
         numeric = float(value)
     except (TypeError, ValueError, OverflowError):
         return default
-    if not math.isfinite(numeric):
+    if not math.isfinite(numeric) or numeric < 0.0:
         return default
     if numeric == 0.0:
         return 0
@@ -102,7 +102,7 @@ def extract_timestamp_s(order: Any, default: Optional[float] = None) -> Optional
                 numeric = float(raw)
             except (TypeError, ValueError, OverflowError):
                 continue
-            if not math.isfinite(numeric):
+            if not math.isfinite(numeric) or numeric < 0.0:
                 continue
             if numeric >= 100_000_000_000.0:
                 return numeric / 1000.0
@@ -410,11 +410,16 @@ def extract_order_fee(
     if not fee_asset and not require_explicit_asset and quote_u:
         fee_asset = quote_u
 
-    px = (
-        float(fill_price)
-        if (fill_price is not None and math.isfinite(float(fill_price)) and float(fill_price) > 0.0)
-        else extract_order_price(order, default=0.0)
-    )
+    px = 0.0
+    if fill_price is not None and not isinstance(fill_price, bool):
+        try:
+            fp_val = float(fill_price)
+            if math.isfinite(fp_val) and fp_val > 0.0:
+                px = fp_val
+        except (TypeError, ValueError, OverflowError):
+            px = 0.0
+    if px <= 0.0:
+        px = extract_order_price(order, default=0.0)
     base_fee = 0.0
     quote_fee = 0.0
     fee_in_quote: Optional[float] = 0.0 if fee == 0.0 else None

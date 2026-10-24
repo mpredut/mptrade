@@ -3432,11 +3432,11 @@ class CacheCurrentPriceManager(CacheManagerInterface):
             last_ts = self._ws_last_event_ts_per_symbol.get(
                 symbol, self._ws_default_event_ts
             )
-            return (now - last_ts) < self.WS_TIMEOUT_SEC
+            return -5.0 <= (now - last_ts) < self.WS_TIMEOUT_SEC
         if not self.symbols:
-            return (now - self._ws_last_event_ts_value) < self.WS_TIMEOUT_SEC
+            return -5.0 <= (now - self._ws_last_event_ts_value) < self.WS_TIMEOUT_SEC
         return all(
-            (now - self._ws_last_event_ts_per_symbol.get(s, self._ws_default_event_ts))
+            -5.0 <= (now - self._ws_last_event_ts_per_symbol.get(s, self._ws_default_event_ts))
             < self.WS_TIMEOUT_SEC
             for s in self.symbols
         )
@@ -3604,9 +3604,15 @@ class CacheCurrentPriceManager(CacheManagerInterface):
 
     def get_update_frequency(self, symbol: str) -> float:
         """Return updates per second over the latest frequency window."""
+        cutoff = time.time() - self.FREQ_WINDOW_SEC
         with self.lock:
             dq = self._update_timestamps.get(symbol)
-            samples = list(dq) if dq else []
+            if dq:
+                while dq and dq[0] < cutoff:
+                    dq.popleft()
+                samples = list(dq)
+            else:
+                samples = []
         if len(samples) < 2:
             return 0.0
         return len(samples) / self.FREQ_WINDOW_SEC

@@ -1617,6 +1617,66 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertEqual(bapi_ws.BinanceAccountStream._classify({"event": None}), ("event", {}))
         self.assertEqual(bapi_ws.BinanceAccountStream._classify({"event": "bad"}), ("event", {}))
 
+    def test_audit40_update_frequency_expiry_and_bapi_timestamp_guards(self):
+        """Audit #40: get_update_frequency prunes expired samples, _ws_is_healthy guards clock rollback, and base/bapi timestamp & fee guards."""
+        from binance_api import bapi
+        from providers.base import extract_order_fee, extract_timestamp_ms, extract_timestamp_s
+
+        # 1. CacheCurrentPriceManager.get_update_frequency prunes expired samples when stream stalls
+        cpm = cm.CacheCurrentPriceManager(
+            60, ["BTCUSDT"], os.path.join(self.tmp, "cp_audit40.json"), read_only=True
+        )
+        old_t = time.time() - cpm.FREQ_WINDOW_SEC - 30.0
+        cpm._update_timestamps["BTCUSDT"].clear()
+        cpm._update_timestamps["BTCUSDT"].extend([old_t, old_t + 1.0, old_t + 2.0])
+        self.assertEqual(cpm.get_update_frequency("BTCUSDT"), 0.0)
+        self.assertEqual(len(cpm._update_timestamps["BTCUSDT"]), 0)
+
+        # 2. _ws_is_healthy rejects far-future _ws_last_event_ts caused by clock rollback
+        cpm._ws_last_event_ts = time.time() + 120.0
+        self.assertFalse(cpm._ws_is_healthy("BTCUSDT"))
+        self.assertFalse(cpm._ws_is_healthy())
+
+        # 3. extract_timestamp_ms and extract_timestamp_s skip negative timestamps and fall back to valid keys
+        self.assertEqual(
+            extract_timestamp_ms({"timestamp": -500, "time": 1_700_000_000}),
+            1_700_000_000_000,
+        )
+        self.assertEqual(
+            extract_timestamp_s({"timestamp": -500, "time": 1_700_000_000_000}),
+            1_700_000_000.0,
+        )
+
+        # 4. extract_order_fee guards boolean or non-numeric fill_price
+        fee_info = extract_order_fee(
+            {"commission": "0.1", "commissionAsset": "BTC", "price": "60000.0"},
+            base_asset="BTC",
+            quote_asset="USDC",
+            fill_price=True,
+        )
+        self.assertIsNotNone(fee_info)
+        self.assertAlmostEqual(fee_info["fee_in_quote"], 6000.0)
+
+        # 5. bapi.cancel_expired_orders does not cancel orders with missing/zero timestamp
+        with (
+            unittest.mock.patch.object(bapi.sym, "validate_params"),
+            unittest.mock.patch.object(
+                bapi,
+                "get_open_orders",
+                return_value={
+                    10: {"orderId": 10, "symbol": "BTCUSDC", "timestamp": 0},
+                    11: {
+                        "orderId": 11,
+                        "symbol": "BTCUSDC",
+                        "timestamp": int((time.time() - 7200) * 1000),
+                    },
+                },
+            ),
+            unittest.mock.patch.object(bapi, "cancel_order", return_value=True) as mock_cancel,
+        ):
+            bapi.cancel_expired_orders("BUY", "BTCUSDC", 3600)
+            mock_cancel.assert_called_once_with("BTCUSDC", 11)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
