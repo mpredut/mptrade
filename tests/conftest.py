@@ -12,6 +12,8 @@ import pytest
 # made at import time, and subprocesses started by tests cannot send
 # real notifications towards ntfy, email or the desktop.
 os.environ["DISABLE_EXTERNAL_NOTIFICATIONS"] = "1"
+for _bt_env_var in ("BACKTEST_MODE", "REPLAY_MODE", "DISABLE_GEMINI_LLM"):
+    os.environ.pop(_bt_env_var, None)
 
 # Track all tempfile.mkdtemp() directories created during the test session so
 # tests that omit explicit shutil.rmtree() never leak directories into /tmp.

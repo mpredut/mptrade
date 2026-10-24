@@ -64,6 +64,10 @@ START_ISO="$(date -Iseconds)"
 
 echo "[dev_regression $START_ISO] Starting regression on commit $COMMIT_SHORT: $COMMIT_MSG" | tee -a "$LOG_FILE"
 
+# Clear backtest/replay environment overrides (e.g. when called from run_overnight_master_suite.sh)
+# so unit tests for guards, notifications, and GeminiClient execute normally.
+unset BACKTEST_MODE REPLAY_MODE DISABLE_EXTERNAL_NOTIFICATIONS DISABLE_GEMINI_LLM
+
 # Run pytest capturing exit code and output
 set +e
 "$PYTEST_BIN" tests/ -q > "$LOG_FILE.run" 2>&1

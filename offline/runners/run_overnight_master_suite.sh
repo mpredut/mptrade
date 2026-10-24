@@ -253,7 +253,7 @@ run_step "9B" "Trading212 Continuous Multi-Asset Factorial Grid (16 equities/ETF
 # STEP 10: Full DEV CI Pytest Regression Suite
 # ------------------------------------------------------------------------------
 run_step "10" "Full DEV Test Regression Suite (pytest tests/)" \
-    "bash offline/runners/run_dev_regression.sh"
+    "env -u BACKTEST_MODE -u REPLAY_MODE -u DISABLE_EXTERNAL_NOTIFICATIONS -u DISABLE_GEMINI_LLM bash offline/runners/run_dev_regression.sh"
 
 END_SEC=$(date +%s)
 TOTAL_ELAPSED=$((END_SEC - START_SEC))
