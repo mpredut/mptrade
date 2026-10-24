@@ -202,8 +202,8 @@ def test_process_intent_symmetric_buy_and_sell_bypass_all_profit_guards(temp_wor
     kwargs = mock_inst.place.call_args.kwargs
     assert kwargs["side"] == side
     assert kwargs["market"] is True
-    assert kwargs["force"] is True
-    assert kwargs["is_market"] is True
+    assert "force" not in kwargs
+    assert "is_market" not in kwargs
     assert kwargs["enforce_business_minimum"] is False
     assert kwargs["regime_context"] is None
     assert kwargs["intent_id"] == f"intent_sym_{side.lower()}"
