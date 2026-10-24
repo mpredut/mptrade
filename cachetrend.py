@@ -1500,6 +1500,9 @@ def _start_nonbinance_trend_poller(
                         provider_name=bindings[s.upper()],
                     )
                     if p is not None and float(p) > 0:
+                        ws_ts_map = getattr(cpm, "_ws_last_event_ts_per_symbol", None)
+                        if isinstance(ws_ts_map, dict):
+                            ws_ts_map[s] = time.time()
                         cpm._push_price(s, float(p))
                 except _futures.TimeoutError:
                     builtins.print(

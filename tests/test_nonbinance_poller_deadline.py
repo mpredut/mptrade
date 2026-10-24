@@ -141,6 +141,34 @@ class TestFetchDeadline(unittest.TestCase):
         self.assertTrue(api.provider_names)
         self.assertEqual(set(api.provider_names), {"Kraken"})
 
+    def test_poller_marks_nonbinance_symbol_healthy_on_cpm(self):
+        import tempfile
+        api = _FakeApi(hang=False, price=76.5)
+        tmp_dir = tempfile.mkdtemp()
+        cpm = cm.CacheCurrentPriceManager(
+            sync_ts=9999,
+            symbols=["HYPEUSD"],
+            filename=os.path.join(tmp_dir, "cache_current_price.json"),
+            ws_manager=None,
+            api_client=api,
+            market_api=api,
+            provider_names={"HYPEUSD": "Hyperliquid"},
+            read_only=True,
+        )
+        self.assertFalse(cpm._ws_is_healthy("HYPEUSD"))
+        poller = cm._start_nonbinance_trend_poller(
+            cpm,
+            ["HYPEUSD"],
+            interval_sec=0.2,
+            fetch_deadline_sec=1.0,
+            provider_names={"HYPEUSD": "Hyperliquid"},
+        )
+        self.addCleanup(poller.stop)
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not cpm._ws_is_healthy("HYPEUSD"):
+            time.sleep(0.05)
+        self.assertTrue(cpm._ws_is_healthy("HYPEUSD"))
+
 
 if __name__ == "__main__":
     unittest.main()
