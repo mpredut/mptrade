@@ -430,8 +430,15 @@ class CacheShortTrendManager(CacheManagerInterface):
         with self._lock:
             live_sym = self._live_windows.setdefault(symbol, {})
             for wk, wval in published_dyn.items():
+                prev_tick_ts = (
+                    live_sym[wk].get("_last_tick_ts_ms")
+                    if isinstance(live_sym.get(wk), dict)
+                    else None
+                )
                 entry = dict(wval)
                 entry.setdefault("current_price", current_price)
+                if prev_tick_ts is not None:
+                    entry["_last_tick_ts_ms"] = prev_tick_ts
                 live_sym[wk] = entry
 
         w_big = wins.get(self.window_seconds[-1])

@@ -907,7 +907,7 @@ class TestCacheAssetValueManager(unittest.TestCase):
             self.assertIn("datetime_local", result[0])
 
         with self.subTest(msg="get_remote_items_invalid_values_return_empty"):
-            for value in (None, 0):
+            for value in (None, 0, -5.0, True, False, float("nan"), float("inf"), float("-inf")):
                 with self.subTest(value=value):
                     mgr = self._make()
                     mgr.api_client.get_total_assets_value_usdc.return_value = value
@@ -925,12 +925,20 @@ class TestCacheAssetValueManager(unittest.TestCase):
                 )
             api_mock = MagicMock()
             api_mock.get_total_assets_value_usdc.return_value = 1234.5
-            cm.CacheAssetValueManager(9999, ["TOTAL"], fname, api_client=api_mock)
+            mgr = cm.CacheAssetValueManager(9999, ["TOTAL"], fname, api_client=api_mock)
             with open(fname, encoding="utf-8") as handle:
                 rows = [json.loads(line) for line in handle if line.strip()]
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["i"].get("total_value_usdc"), 1234.5)
             self.assertNotIn("total_value_usdt", rows[0]["i"])
+
+            with open(fname, "a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps({"s": "TOTAL", "i": {"timestamp": 600, "total_value_usdt": 2345.6}}) + "\n"
+                )
+            mgr._reload_from_disk()
+            self.assertEqual(mgr.cache["TOTAL"][-1].get("total_value_usdc"), 2345.6)
+            self.assertNotIn("total_value_usdt", mgr.cache["TOTAL"][-1])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

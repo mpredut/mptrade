@@ -1005,6 +1005,34 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             else:
                 sys.modules.pop("_cacheManager_initialized", None)
 
+    def test_evaluate_full_preserves_live_window_memoization_tick_ts(self):
+        trend_file = os.path.join(self.tmp, "cache_short_trend_memo.json")
+        mgr = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, writer=True)
+        self.addCleanup(mgr.shutdown)
+        now_sec = time.time()
+        base_ms = int((now_sec - 10) * 1000)
+        c24 = MagicMock()
+        c24.lock = cm.threading.RLock()
+        c24.cache = {
+            "BTCUSDT": [
+                [base_ms + i * 1000, 60000.0 + i * 10.0]
+                for i in range(10)
+            ]
+        }
+        c24.get_recent_entries.return_value = list(c24.cache["BTCUSDT"])
+        cpm = MagicMock()
+        cpm.get_cached_price_observation.return_value = (now_sec, 60090.0)
+        mgr.start_computation({"BTCUSDT": c24}, cpm, run_full_eval=False)
+        mgr.evaluate_full("BTCUSDT")
+        self.assertEqual(
+            mgr._live_windows["BTCUSDT"]["900"].get("_last_tick_ts_ms"),
+            base_ms + 9000,
+        )
+        with patch.object(mgr, "_eval_entries_with_buffer") as eval_buf:
+            res = mgr.get_short_trend_for_window("BTCUSDT", 900, now=now_sec)
+            self.assertIsNotNone(res)
+            eval_buf.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -3077,9 +3077,15 @@ CacheLongTrend = CacheLongTrendManager
 
 class CacheAssetValueManager(CacheManagerInterface):
     def __init__(self, sync_ts, symbols, filename, api_client=api, read_only=False):
+        self._migrated_usdt_on_load = False
         super().__init__(sync_ts, symbols, filename, append_mode=True,
                          api_client=api_client, append_persist=True,
                          read_only=read_only)
+        if self._migrated_usdt_on_load:
+            self.compact_jsonl()
+
+    def _load_jsonl_generation_locked(self):
+        super()._load_jsonl_generation_locked()
         changed = False
         with self.lock:
             for items in self.cache.values():
@@ -3090,7 +3096,7 @@ class CacheAssetValueManager(CacheManagerInterface):
                         item["total_value_usdc"] = item.pop("total_value_usdt")
                         changed = True
         if changed:
-            self.compact_jsonl()
+            self._migrated_usdt_on_load = True
 
     def rebuild_fetchtimes(self):
         last_times = {}
@@ -3112,7 +3118,12 @@ class CacheAssetValueManager(CacheManagerInterface):
             print(f"[{self.cls_name}][Error] Cannot query the total value: {e}")
             return []
 
-        if not isinstance(total_usdc, (int, float)) or total_usdc <= 0:
+        if (
+            isinstance(total_usdc, bool)
+            or not isinstance(total_usdc, (int, float))
+            or not math.isfinite(total_usdc)
+            or total_usdc <= 0
+        ):
             print(f"[{self.cls_name}][Error] Invalid total value: {total_usdc}")
             return []
             
@@ -3745,8 +3756,9 @@ class CacheFactory:
                 _current_price_instance = None
             if (
                 short_trend is _short_trend_instance
-                and getattr(short_trend, "_eval_thread", None) is None
+                and getattr(short_trend, "_full_eval_thread", None) is None
                 and getattr(short_trend, "_flush_thread", None) is None
+                and getattr(short_trend, "thread", None) is None
             ):
                 _short_trend_instance = None
             return all(results) if results else True
