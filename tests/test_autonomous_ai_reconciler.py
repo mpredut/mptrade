@@ -914,9 +914,10 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
     assert "Explain the technical root cause of any bot exceptions" not in prompt_text
     assert "LOG ANOMALIES & GUARD VETOES" not in prompt_text
     assert "FLEET PROCESSES" not in prompt_text
+    assert "LINUX SYSTEM RESOURCES & VPN TUNNEL HEALTH" not in prompt_text
     assert "diagnosed_issues" not in prompt_text
     assert "bullet points for: Piața Live & Pante" in prompt_text
-    assert "bullet points for: Starea Flotei & Loguri" not in prompt_text
+    assert "Starea Flotei" not in prompt_text
 
     # Highest-confidence actionable decision (BTCUSDC @ 0.94) executes first and becomes primary summary
     assert gateway.submit.call_count == 2
@@ -927,6 +928,15 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
     assert len(report.market_trading_decisions) == 2
     assert len(report.intents_emitted) == 2
     assert report.venue_actions == []
+
+    # Verify auto_technical_repair receives fleet, bot heartbeats, Linux system resources, VPN (wgpia0), and log audit
+    reconciler.run_cycle(topic_key="auto_technical_repair")
+    repair_prompt = captured_prompts[-1]
+    assert "LOG ANOMALIES & GUARD VETOES" in repair_prompt
+    assert "LINUX SYSTEM RESOURCES & VPN TUNNEL HEALTH" in repair_prompt
+    assert "VPN Tunnel (wgpia0):" in repair_prompt
+    assert "Starea Flotei, Boților, Sistemului Linux & VPN (wgpia0) & Loguri" in repair_prompt
+    assert "diagnosed_issues" in repair_prompt
 
 
 def test_auto_trade_executor_never_dispatches_sre_notifications_or_executes_venue_actions(temp_env):

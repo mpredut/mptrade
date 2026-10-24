@@ -150,6 +150,7 @@ class TelemetrySensorSnapshot:
     microstructure: Dict[str, Any] = field(default_factory=dict)
     portfolio_summary: Dict[str, Any] = field(default_factory=dict)
     fleet_processes: List[Dict[str, Any]] = field(default_factory=list)
+    system_and_vpn: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -764,14 +765,60 @@ class AutonomousAIReconciler:
             if active_mt:
                 snapshot.portfolio_summary["monitortrades_active_state"] = active_mt
 
-        # 10. Fleet processes health from procs.conf (only needed for SRE/self-heal audits)
+        # 10. Fleet processes health, Linux OS resources, and VPN tunnel state (only needed for SRE/self-heal audits)
         if include_fleet:
             try:
                 from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
                 monitor = AutonomousOvernightMonitor(workspace_dir=self.workspace_dir)
                 snapshot.fleet_processes = [asdict(p) for p in monitor.check_processes()]
+                sys_vpn = dict(monitor.gather_system_resources() or {})
+            except Exception:
+                sys_vpn = {}
+
+            try:
+                if os.path.exists("/proc/meminfo"):
+                    mem_kv: Dict[str, int] = {}
+                    with open("/proc/meminfo", "r", encoding="utf-8", errors="replace") as mf:
+                        for mline in mf:
+                            parts = mline.split(":")
+                            if len(parts) == 2:
+                                k = parts[0].strip()
+                                v_parts = parts[1].strip().split()
+                                if v_parts and v_parts[0].isdigit():
+                                    mem_kv[k] = int(v_parts[0])
+                    if mem_kv.get("MemTotal", 0) > 0 and "MemAvailable" in mem_kv:
+                        total_kb = mem_kv["MemTotal"]
+                        avail_kb = mem_kv["MemAvailable"]
+                        sys_vpn["mem_used_pct"] = round(((total_kb - avail_kb) / total_kb) * 100.0, 1)
+                        sys_vpn["mem_avail_mb"] = round(avail_kb / 1024.0, 0)
             except Exception:
                 pass
+
+            vpn_if = os.environ.get("PIA_VPN_IF", "wgpia0").strip() or "wgpia0"
+            vpn_net_dir = f"/sys/class/net/{vpn_if}"
+            if os.path.exists(vpn_net_dir):
+                try:
+                    with open(f"{vpn_net_dir}/operstate", "r", encoding="utf-8") as vf:
+                        oper = vf.read().strip().lower()
+                except Exception:
+                    oper = "unknown"
+                sys_vpn["vpn_interface"] = vpn_if
+                sys_vpn["vpn_tunnel_up"] = oper in ("up", "unknown")
+            else:
+                sys_vpn["vpn_interface"] = vpn_if
+                sys_vpn["vpn_tunnel_up"] = False
+
+            rw_state = _read_json(os.path.join(self.workspace_dir, ".resource_watchdog_state.json"))
+            if isinstance(rw_state, dict) and isinstance(rw_state.get("tracked"), dict):
+                offenders = [
+                    {"key": k, "reasons": v.get("last_reasons"), "consecutive_high": v.get("high")}
+                    for k, v in rw_state["tracked"].items()
+                    if isinstance(v, dict) and int(v.get("high") or 0) > 0
+                ]
+                if offenders:
+                    sys_vpn["resource_watchdog_offenders"] = offenders
+
+            snapshot.system_and_vpn = sys_vpn
 
         return snapshot
 
@@ -919,9 +966,24 @@ class AutonomousAIReconciler:
                     if p.get("is_running") and not p.get("heartbeat_fresh", True)
                 ]
                 context_items.append(
-                    f"\n### 2B. FLEET PROCESSES (procs.conf): {len(running_p)}/{len(sensors.fleet_processes)} running"
+                    f"\n### 2B. FLEET PROCESSES & BOT HEARTBEATS (procs.conf): {len(running_p)}/{len(sensors.fleet_processes)} running"
                     + (f" | STOPPED: {stopped_p}" if stopped_p else "")
                     + (f" | STALE HEARTBEAT: {stale_p}" if stale_p else " | All heartbeats fresh")
+                )
+
+            if sensors.system_and_vpn:
+                sv = sensors.system_and_vpn
+                context_items.append(
+                    "\n### 2C. LINUX SYSTEM RESOURCES & VPN TUNNEL HEALTH:\n"
+                    f"- CPU Load Avg (1m/5m/15m): {sv.get('load_avg', 'N/A')}\n"
+                    f"- Memory: used={sv.get('mem_used_pct', 'N/A')}%, avail={sv.get('mem_avail_mb', 'N/A')} MB\n"
+                    f"- Disk: used={sv.get('disk_used_pct', 'N/A')}%, free={sv.get('disk_free_gb', 'N/A')} GB\n"
+                    f"- VPN Tunnel ({sv.get('vpn_interface', 'wgpia0')}): {'UP' if sv.get('vpn_tunnel_up') else 'DOWN / NOT PRESENT'}"
+                    + (
+                        f"\n- Sustained High-Resource Processes (.resource_watchdog_state.json): {sv['resource_watchdog_offenders']}"
+                        if sv.get("resource_watchdog_offenders")
+                        else ""
+                    )
                 )
 
         if sensors.prices_and_trends:
@@ -1055,7 +1117,7 @@ class AutonomousAIReconciler:
         schema: List[str] = []
         if spec.can_self_heal:
             tasks.extend([
-                "1. Explain the technical root cause of any bot exceptions, fail-closed blocks, stale heartbeats, or guard vetoes.",
+                "1. Audit fleet processes (procs.conf), bot heartbeats, Linux system resources (CPU load, RAM, disk), VPN tunnel (wgpia0), and log anomalies: explain the technical root cause of any bot exceptions, fail-closed blocks, stale heartbeats, OS/VPN issues, or guard vetoes.",
                 "2. Determine whether open orders, venue positions, or hung/errored fleet bots require reconciliation or restart.",
                 "3. If a reproducible code bug exists, formulate an exact search_block and replace_block.",
             ])
@@ -1123,7 +1185,7 @@ class AutonomousAIReconciler:
             )
             report_format_rule = (
                 "- Format your response in TWO parts so this thread stays cleanly readable in the Web UI:\n"
-                "  1) A concise, well-structured Markdown report in **Romanian** (bullet points for: Starea Flotei & Loguri, "
+                "  1) A concise, well-structured Markdown report in **Romanian** (bullet points for: Starea Flotei, Boților, Sistemului Linux & VPN (wgpia0) & Loguri, "
                 "Piața Live & Pante (Toate Monedele), Portofoliu, Solduri & Poziții Active, și Decizia AI / Răspuns la intervențiile din chat).\n"
             )
         else:
@@ -1136,7 +1198,7 @@ class AutonomousAIReconciler:
             tool_rule = (
                 "- For this automated telemetry snapshot turn, do NOT call tools, shell commands, or file readers because all "
                 "required telemetry and wallet balances are provided above (use tools only when the user asks a direct interactive question in chat).\n"
-                "- Do NOT check or report on fleet process state, heartbeats, or system logs ('Starea Flotei & Loguri'); "
+                "- Do NOT check or report on fleet process state, heartbeats, or system logs; "
                 "your sole responsibility on this thread is executing BUY/SELL transactions based on market and portfolio context.\n"
             )
             report_format_rule = (
