@@ -23,7 +23,10 @@ def load(name):
     try:
         def _read_json(candidate):
             with open(candidate, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("cache payload root must be a dict")
+            return data
 
         return read_recovering_previous(p, _read_json)
     except Exception as e:  # noqa: BLE001

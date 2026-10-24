@@ -336,7 +336,10 @@ class CacheManagerInterface(ABC):
             try:
                 def _read_json(candidate_path):
                     with open(candidate_path, "r") as handle:
-                        return json.load(handle)
+                        payload = json.load(handle)
+                    if not isinstance(payload, dict):
+                        raise ValueError("cache payload root must be a dict")
+                    return payload
 
                 data = read_recovering_previous(
                     self.filename, _read_json, backup_path=backup_path
@@ -348,7 +351,10 @@ class CacheManagerInterface(ABC):
                         self.cache = {sym: item for sym, item in zip(self.symbols, self.cache)}
                         print(f"[{self.cls_name}][warning] self.cache is not Dict!!!!")    
                     
-                    self.fetchtime_per_symbol = data.get("fetchtime", {})
+                    raw_ft = data.get("fetchtime")
+                    self.fetchtime_per_symbol = (
+                        dict(raw_ft) if isinstance(raw_ft, dict) else {}
+                    )
                     rest_cursor = data.get("rest_sync_cursor")
                     self._rest_sync_cursor_per_symbol = dict(
                         rest_cursor
@@ -836,7 +842,10 @@ class CacheManagerInterface(ABC):
             try:
                 def _read_json(candidate_path):
                     with open(candidate_path) as handle:
-                        return json.load(handle)
+                        payload = json.load(handle)
+                    if not isinstance(payload, dict):
+                        raise ValueError("cache payload root must be a dict")
+                    return payload
 
                 data = read_recovering_previous(
                     self.filename, _read_json, backup_path=backup_path
@@ -847,7 +856,10 @@ class CacheManagerInterface(ABC):
                         if isinstance(self, Cache24PriceManager):
                             items = {s: v for s, v in items.items() if s in self.symbols}
                         self.cache = items
-                    self.fetchtime_per_symbol = data.get("fetchtime", {})
+                    raw_ft = data.get("fetchtime")
+                    self.fetchtime_per_symbol = (
+                        dict(raw_ft) if isinstance(raw_ft, dict) else {}
+                    )
                     rest_cursor = data.get("rest_sync_cursor")
                     self._rest_sync_cursor_per_symbol = dict(
                         rest_cursor
@@ -922,12 +934,17 @@ class CacheManagerInterface(ABC):
         try:
             with open(legacy, encoding="utf-8") as handle:
                 payload = json.load(handle)
+            if not isinstance(payload, dict):
+                raise ValueError("legacy cache root must be a dictionary")
             items = payload.get("items", {})
             if not isinstance(items, dict):
                 raise ValueError("legacy cache items must be a dictionary")
             with self.lock:
                 self.cache = items
-                self.fetchtime_per_symbol = payload.get("fetchtime", {})
+                raw_ft = payload.get("fetchtime")
+                self.fetchtime_per_symbol = (
+                    dict(raw_ft) if isinstance(raw_ft, dict) else {}
+                )
                 rest_cursor = payload.get("rest_sync_cursor")
                 self._rest_sync_cursor_per_symbol = dict(
                     rest_cursor
@@ -2866,7 +2883,11 @@ class Cache365PriceManager(Cache24PriceManager):
                 try:
                     with open(metaf) as handle:
                         meta_payload = json.load(handle)
-                        self.fetchtime_per_symbol = meta_payload.get("fetchtime", {})
+                    if isinstance(meta_payload, dict):
+                        raw_ft = meta_payload.get("fetchtime")
+                        self.fetchtime_per_symbol = (
+                            dict(raw_ft) if isinstance(raw_ft, dict) else {}
+                        )
                         rest_cursor = meta_payload.get("rest_sync_cursor")
                         self._rest_sync_cursor_per_symbol = dict(
                             rest_cursor
@@ -2875,6 +2896,15 @@ class Cache365PriceManager(Cache24PriceManager):
                         )
                 except (OSError, ValueError, TypeError):
                     pass
+            if self.cache:
+                for sym, rebuilt_ft in self.rebuild_fetchtimes().items():
+                    self.fetchtime_per_symbol[sym] = max(
+                        int(self.fetchtime_per_symbol.get(sym, 0) or 0),
+                        int(rebuilt_ft or 0),
+                    )
+                    self._rest_sync_cursor_per_symbol.setdefault(
+                        sym, self.fetchtime_per_symbol[sym]
+                    )
 
     def _trim_old_data(self, symbol):
         # Bound the in-process working set on every tick. Removed rows are already at
@@ -3021,7 +3051,16 @@ class Cache365PriceManager(Cache24PriceManager):
                         lines = [line for line in source.read().splitlines(keepends=True) if line.strip()]
                         tail = lines[-1] if lines else b""
                 with atomic_write(self.filename) as target:
-                    target.write(tail.decode("utf-8", errors="ignore"))
+                    decoded_tail = tail.decode("utf-8", errors="ignore")
+                    target.write(decoded_tail)
+                    if decoded_tail and not decoded_tail.endswith("\n"):
+                        target.write("\n")
+                    for symbol, items in original_cache.items():
+                        start = min(max(0, original_persisted_counts.get(symbol, 0)), len(items))
+                        for item in items[start:]:
+                            target.write(
+                                json.dumps({"s": symbol, "i": item}, separators=(",", ":")) + "\n"
+                            )
                 self._load_jsonl()
                 for sym, ft in original_fetchtimes.items():
                     self.fetchtime_per_symbol[sym] = max(

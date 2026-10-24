@@ -235,6 +235,16 @@ class TestArchiverLifecycle(unittest.TestCase):
                     {"s": "BTCUSDC", "i": [now_ms, 12.5]},
                 ],
             )
+            # Direct _rotate_disk_archive preserves unpersisted in-memory tail items
+            manager.on_price_update("BTCUSDC", now_ms + 1000, 15.0)
+            self.assertTrue(manager._rotate_disk_archive())
+            self.assertEqual(manager.cache.get("BTCUSDC")[-1], [now_ms + 1000, 15.0])
+            self.assertEqual(manager._persisted_counts.get("BTCUSDC"), len(manager.cache.get("BTCUSDC", [])))
+            # Non-dict .meta does not crash _load_jsonl and rebuilds fetchtimes from loaded tail
+            with open(target_jsonl + ".meta", "w", encoding="utf-8") as handle:
+                handle.write("[]")
+            manager._load_jsonl()
+            self.assertGreaterEqual(manager.fetchtime_per_symbol.get("BTCUSDC", 0), now_ms + 1000)
         finally:
             for name in os.listdir(tmp_dir):
                 try:

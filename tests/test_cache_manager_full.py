@@ -2016,6 +2016,23 @@ class TestAtomicWrite(unittest.TestCase):
             ok_stream.start.assert_called_once()
         bapi_ws_bridge.stop_ws_bridge()
 
+        # Non-dict JSON root in primary file recovers from .previous on load_state / _reload_from_disk
+        p = os.path.join(self.tmp, "cache_non_dict_root.json")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("[]")
+        with open(p + ".previous", "w", encoding="utf-8") as fh:
+            json.dump({"items": {"BTC": [[1000, 50000.0]]}, "fetchtime": None}, fh)
+        c24 = cm.Cache24PriceManager(60, ["BTC"], p, read_only=True)
+        self.assertEqual(c24.cache.get("BTC"), [[1000, 50000.0]])
+        self.assertEqual(c24.fetchtime_per_symbol, {})
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("null")
+        with open(p + ".previous", "w", encoding="utf-8") as fh:
+            json.dump({"items": {"BTC": [[2000, 51000.0]]}, "fetchtime": None}, fh)
+        c24._reload_from_disk()
+        self.assertEqual(c24.cache.get("BTC"), [[2000, 51000.0]])
+        self.assertEqual(c24.fetchtime_per_symbol, {})
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
