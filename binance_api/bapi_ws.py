@@ -314,21 +314,38 @@ class BinancePriceStream(BinanceWSBase):
         """{"stream": "btcusdc@ticker", "data": {"s": "BTCUSDC", "c": "65432.10", ...}}"""
         try:
             envelope = json.loads(raw)
+            if not isinstance(envelope, dict):
+                raise TypeError("WS envelope must be a dict")
             if "result" in envelope:                    # subscribe/unsubscribe acknowledgment
                 logger.debug("WS ack: %s", envelope)
                 return
             data   = envelope.get("data", envelope)
+            if not isinstance(data, dict):
+                raise TypeError("WS ticker data must be a dict")
             symbol = data["s"]
-            price  = float(data["c"])
+            if not isinstance(symbol, str) or not symbol.strip():
+                raise ValueError(f"invalid ticker symbol: {symbol!r}")
+            raw_c = data["c"]
+            if isinstance(raw_c, bool):
+                raise ValueError("invalid boolean ticker price")
+            price  = float(raw_c)
             if not math.isfinite(price) or price <= 0:
                 raise ValueError(f"invalid ticker price: {price!r}")
-            raw_ts = data.get("E") or data.get("C")
+            raw_ts = (
+                data.get("E")
+                if not isinstance(data.get("E"), bool) and data.get("E") is not None
+                else data.get("C")
+            )
+            if isinstance(raw_ts, bool):
+                raw_ts = None
+            ts_ms = int(raw_ts) if raw_ts is not None else int(time.time() * 1000)
+            if ts_ms <= 0:
+                ts_ms = int(time.time() * 1000)
             with self._lock:
                 self._prices[symbol] = price
-            ts_ms = int(raw_ts) if raw_ts is not None else int(time.time() * 1000)
             self._notify_subscribers(symbol, [[ts_ms, price]])
-        except (KeyError, ValueError, TypeError, json.JSONDecodeError) as e:
-            logger.warning("process_message error: %s | raw: %s", e, raw[:120])
+        except (KeyError, ValueError, TypeError, OverflowError, json.JSONDecodeError) as e:
+            logger.warning("process_message error: %s | raw: %s", e, str(raw)[:120])
 
     # ─── Enqueue command (thread-safe) ────────────────────────────────────────
     def _enqueue_cmd(self, method: str, symbol: str) -> None:
@@ -453,6 +470,8 @@ class BinanceAccountStream(BinanceWSBase):
     @staticmethod
     def _classify(event: dict):
         """Return ``(kind, payload)`` for ping, command response, or unpacked event."""
+        if not isinstance(event, dict):
+            return "event", {}
         if "id" in event:
             return ("ping" if event.get("id") == "ping" else "response"), event
         if "event" in event:

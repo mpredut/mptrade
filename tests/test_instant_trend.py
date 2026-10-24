@@ -1108,6 +1108,23 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         with self.assertRaises(ValueError):
             order_mgr._read_legacy_order_snapshot_strict(None)
 
+        # BinancePriceStream._process_message rejects non-dict envelopes, bool prices, and invalid timestamps
+        from binance_api import bapi_ws
+
+        ps = bapi_ws.BinancePriceStream(symbols=["BTCUSDC"])
+        for bad_raw in (
+            "[1, 2, 3]",
+            json.dumps({"data": [1, 2]}),
+            json.dumps({"data": {"s": "BTCUSDC", "c": True}}),
+            json.dumps({"data": {"s": "", "c": "80000.0"}}),
+            json.dumps({"data": {"s": "BTCUSDC", "c": "80000.0", "E": "not-an-int"}}),
+        ):
+            ps._process_message(bad_raw)
+        self.assertIsNone(ps.get_price("BTCUSDC"))
+        ps._process_message(json.dumps({"data": {"s": "BTCUSDC", "c": "80500.0", "E": True}}))
+        self.assertEqual(ps.get_price("BTCUSDC"), 80500.0)
+        self.assertEqual(bapi_ws.BinanceAccountStream._classify(None), ("event", {}))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
