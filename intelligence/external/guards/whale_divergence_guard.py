@@ -43,11 +43,15 @@ class WhaleDivergenceGuard:
         symbol: str,
         side: str,
         snapshot: Optional[WhalePositioningSnapshot] = None,
+        now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate if whale positioning or OI divergence conflicts with the order."""
         side_norm = side.upper()
         if snapshot is None and self.collector is not None:
-            snapshot = self.collector.fetch(symbol)
+            try:
+                snapshot = self.collector.fetch(symbol, now=now) if now is not None else self.collector.fetch(symbol)
+            except TypeError:
+                snapshot = self.collector.fetch(symbol)
 
         if snapshot is None:
             return GuardDecision.allow(

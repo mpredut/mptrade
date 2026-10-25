@@ -35,11 +35,15 @@ class OrderbookWallGuard:
         symbol: str,
         side: str,
         snapshot: Optional[OrderbookSnapshot] = None,
+        now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate order book liquidity and limit walls."""
         side_norm = side.upper()
         if snapshot is None and self.collector is not None:
-            snapshot = self.collector.fetch(symbol)
+            try:
+                snapshot = self.collector.fetch(symbol, now=now) if now is not None else self.collector.fetch(symbol)
+            except TypeError:
+                snapshot = self.collector.fetch(symbol)
 
         if snapshot is None:
             return GuardDecision.allow(

@@ -55,7 +55,9 @@ class MacroAnalyzer:
         else:
             self.advisor_interval_sec = float(conf_margins["macro_advisor_interval_sec"])
 
-        self.shadow_notify = bool(int(float(conf_margins["shadow_notify"])))
+        self.shadow_notify = str(conf_margins["shadow_notify"]).strip().lower() in (
+            "1", "1.0", "true", "yes", "on"
+        )
         self.thread_prune_interval_sec = thread_prune_interval_sec
         self.symbols = symbols or ["BTCUSDC"]
         self.running = False
@@ -89,28 +91,38 @@ class MacroAnalyzer:
 
         self.heartbeat_path = os.path.join(self.cache_dir, "macro_analyzer.heartbeat")
 
-    def assess_geopolitical_threat(self, force: bool = False) -> bool:
+    def assess_geopolitical_threat(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Evaluate macro headlines and publish geopolitical threat assessment."""
         try:
-            news_history_path = os.path.join(self.cache_dir, "news_feed_collect.json")
-            if not os.path.exists(news_history_path):
-                news_history_path = os.path.join(self.cache_dir, "news_feed_history.json")
+            eval_now = float(now) if now is not None else time.time()
             from intelligence.macro.news_feed_collector import NewsFeedCollector
-            news_collector = NewsFeedCollector(history_file=news_history_path)
-            news_snap = news_collector.get_pool_snapshot()
+            news_snap = None
+            for fname in ("news_feed_collect.json", "news_feed_history.json"):
+                cand_path = os.path.join(self.cache_dir, fname)
+                if os.path.exists(cand_path) or os.path.exists(f"{cand_path}.previous"):
+                    nc = NewsFeedCollector(history_file=cand_path)
+                    if nc._history:
+                        news_snap = nc.get_pool_snapshot()
+                        break
+                    if news_snap is None:
+                        news_snap = nc.get_pool_snapshot()
+            if news_snap is None:
+                news_snap = NewsFeedCollector(
+                    history_file=os.path.join(self.cache_dir, "news_feed_collect.json")
+                ).get_pool_snapshot()
 
-            assessment = self.geopolitical_analyzer.assess(news_snap, force_refresh=force)
+            assessment = self.geopolitical_analyzer.assess(news_snap, force_refresh=force, now_ts=eval_now)
             if assessment:
                 logger.info(
                     "Published geopolitical assessment: threat=%s, risk=%.2f, headlines=%d",
                     assessment.threat_level, assessment.risk_score, assessment.headlines_analyzed,
                 )
-                now = time.time()
-                is_fresh = assessment.ts > getattr(self, "_last_notified_geo_ts", 0.0)
-                elapsed_since_notify = now - getattr(self, "_last_notified_geo_ts", 0.0)
+                last_notif = getattr(self, "_last_notified_geo_ts", 0.0)
+                is_fresh = assessment.ts > last_notif or (eval_now < last_notif)
+                elapsed_since_notify = eval_now - last_notif
                 min_notify_interval = min(self.macro_llm_interval_sec, 3600.0)
                 if is_fresh and not getattr(assessment, "is_fallback", False) and (
-                    force or elapsed_since_notify >= min_notify_interval
+                    force or not (0.0 <= elapsed_since_notify < min_notify_interval)
                 ):
                     if self.shadow_notify:
                         try:
@@ -146,79 +158,92 @@ class MacroAnalyzer:
             logger.warning("Failed assessing geopolitical threat: %s", e)
         return False
 
-    def assess_market_advisor(self, force: bool = False) -> bool:
+    def assess_market_advisor(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Synthesize multi-source sentiment & whale telemetry into a macro perspective."""
         try:
+            eval_now = float(now) if now is not None else time.time()
+            from state_io import read_recovering_previous
+
             # 1. Read cached Fear & Greed (collect file with legacy fallback)
             fg_snap = None
-            fg_path = os.path.join(self.cache_dir, "fear_greed_collect.json")
-            if not os.path.exists(fg_path):
-                fg_path = os.path.join(self.cache_dir, "fear_greed_cache.json")
-            if os.path.exists(fg_path):
-                with open(fg_path, "r", encoding="utf-8") as f:
-                    fg_data = json.load(f)
-                from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
-                raw_hist = fg_data.get("historical_values") or ()
-                fg_snap = FearGreedSnapshot(
-                    value=int(fg_data.get("value", 50)),
-                    classification=str(fg_data.get("classification", fg_data.get("sentiment", "Neutral"))),
-                    timestamp=float(fg_data.get("ts", time.time())),
-                    historical_values=tuple(int(v) for v in raw_hist),
-                    trend_7d_change=int(fg_data.get("trend_7d_change", 0)),
-                    is_extreme_fear=bool(fg_data.get("is_extreme_fear", False)),
-                    is_extreme_greed=bool(fg_data.get("is_extreme_greed", False)),
-                )
+            for fg_fname in ("fear_greed_collect.json", "fear_greed_cache.json"):
+                fg_path = os.path.join(self.cache_dir, fg_fname)
+                try:
+                    fg_data = read_recovering_previous(fg_path, json.loads, default=None)
+                    if not isinstance(fg_data, dict):
+                        continue
+                    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
+                    raw_hist = fg_data.get("historical_values") or ()
+                    fg_snap = FearGreedSnapshot(
+                        value=int(fg_data.get("value", 50)),
+                        classification=str(fg_data.get("classification", fg_data.get("sentiment", "Neutral"))),
+                        timestamp=float(fg_data.get("ts", eval_now)),
+                        historical_values=tuple(int(v) for v in raw_hist),
+                        trend_7d_change=int(fg_data.get("trend_7d_change", 0)),
+                        is_extreme_fear=bool(fg_data.get("is_extreme_fear", False)),
+                        is_extreme_greed=bool(fg_data.get("is_extreme_greed", False)),
+                    )
+                    break
+                except Exception as fg_err:
+                    logger.debug("Failed loading Fear & Greed from %s: %s", fg_path, fg_err)
 
             # 2. Read cached market breadth (collect file with legacy fallback)
             mb_snap = None
-            mb_path = os.path.join(self.cache_dir, "market_breadth_collect.json")
-            if not os.path.exists(mb_path):
-                mb_path = os.path.join(self.cache_dir, "market_breadth_cache.json")
-            if os.path.exists(mb_path):
-                with open(mb_path, "r", encoding="utf-8") as f:
-                    mb_data = json.load(f)
-                from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
-                raw_gainers = mb_data.get("top_gainers") or ()
-                raw_losers = mb_data.get("top_losers") or ()
-                mb_snap = MarketBreadthSnapshot(
-                    advance_ratio=float(mb_data.get("advance_ratio", 0.5)),
-                    advancing_count=int(mb_data.get("advancing_count", mb_data.get("advancing", 0))),
-                    declining_count=int(mb_data.get("declining_count", mb_data.get("declining", 0))),
-                    total_count=int(mb_data.get("total_count", mb_data.get("total_symbols", 0))),
-                    median_change_pct=float(mb_data.get("median_change_pct", 0.0)),
-                    mean_change_pct=float(mb_data.get("mean_change_pct", 0.0)),
-                    dispersion_std=float(mb_data.get("dispersion_std", 0.0)),
-                    regime=str(mb_data.get("regime", "NEUTRAL")),
-                    top_gainers=tuple((str(x[0]), float(x[1])) for x in raw_gainers if isinstance(x, (list, tuple)) and len(x) >= 2),
-                    top_losers=tuple((str(x[0]), float(x[1])) for x in raw_losers if isinstance(x, (list, tuple)) and len(x) >= 2),
-                    ts=float(mb_data.get("ts", time.time())),
-                )
+            for mb_fname in ("market_breadth_collect.json", "market_breadth_cache.json"):
+                mb_path = os.path.join(self.cache_dir, mb_fname)
+                try:
+                    mb_data = read_recovering_previous(mb_path, json.loads, default=None)
+                    if not isinstance(mb_data, dict):
+                        continue
+                    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
+                    raw_gainers = mb_data.get("top_gainers") or ()
+                    raw_losers = mb_data.get("top_losers") or ()
+                    mb_snap = MarketBreadthSnapshot(
+                        advance_ratio=float(mb_data.get("advance_ratio", 0.5)),
+                        advancing_count=int(mb_data.get("advancing_count", mb_data.get("advancing", 0))),
+                        declining_count=int(mb_data.get("declining_count", mb_data.get("declining", 0))),
+                        total_count=int(mb_data.get("total_count", mb_data.get("total_symbols", 0))),
+                        median_change_pct=float(mb_data.get("median_change_pct", 0.0)),
+                        mean_change_pct=float(mb_data.get("mean_change_pct", 0.0)),
+                        dispersion_std=float(mb_data.get("dispersion_std", 0.0)),
+                        regime=str(mb_data.get("regime", "NEUTRAL")),
+                        top_gainers=tuple((str(x[0]), float(x[1])) for x in raw_gainers if isinstance(x, (list, tuple)) and len(x) >= 2),
+                        top_losers=tuple((str(x[0]), float(x[1])) for x in raw_losers if isinstance(x, (list, tuple)) and len(x) >= 2),
+                        ts=float(mb_data.get("ts", eval_now)),
+                    )
+                    break
+                except Exception as mb_err:
+                    logger.debug("Failed loading market breadth from %s: %s", mb_path, mb_err)
 
             # 3. Read cached whale telemetry (e.g. for BTCUSDC)
             whale_data = None
             for sym in self.symbols:
                 w_path = os.path.join(self.cache_dir, f"whale_snapshot_{sym}.json")
-                if os.path.exists(w_path):
-                    with open(w_path, "r", encoding="utf-8") as f:
-                        whale_data = json.load(f)
-                    break
+                try:
+                    cand_w = read_recovering_previous(w_path, json.loads, default=None)
+                    if isinstance(cand_w, dict):
+                        whale_data = cand_w
+                        break
+                except Exception as w_err:
+                    logger.debug("Failed loading whale telemetry from %s: %s", w_path, w_err)
 
             assessment = self.gemini_advisor.review(
                 fear_greed=fg_snap,
                 breadth=mb_snap,
                 whale_telemetry=whale_data,
                 force_refresh=force,
+                now_ts=eval_now,
             )
             if assessment:
                 logger.info(
                     "Published Gemini macro advisor assessment: bias=%s, risk=%s, action=%s (ts=%.1f)",
                     assessment.market_bias, assessment.risk_level, assessment.recommended_action, assessment.ts,
                 )
-                now = time.time()
-                is_fresh = assessment.ts > getattr(self, "_last_notified_advisor_ts", 0.0)
-                elapsed_since_notify = now - getattr(self, "_last_notified_advisor_ts", 0.0)
+                last_notif = getattr(self, "_last_notified_advisor_ts", 0.0)
+                is_fresh = assessment.ts > last_notif or (eval_now < last_notif)
+                elapsed_since_notify = eval_now - last_notif
                 min_notify_interval = min(self.advisor_interval_sec, 3600.0)
-                if is_fresh and (force or elapsed_since_notify >= min_notify_interval):
+                if is_fresh and (force or not (0.0 <= elapsed_since_notify < min_notify_interval)):
                     if self.shadow_notify:
                         try:
                             from notify_engine.alertnotifiers import notify
@@ -296,26 +321,34 @@ class MacroAnalyzer:
             if getattr(cached_geo, "is_fallback", False)
             else self.macro_llm_interval_sec
         )
-        if force or (current_ts - self._last_macro_llm_ts) >= geo_interval:
-            if self.assess_geopolitical_threat(force=force):
+        if force or not (0.0 <= (current_ts - self._last_macro_llm_ts) < geo_interval):
+            try:
+                geo_ok = self.assess_geopolitical_threat(force=force, now=current_ts)
+            except TypeError:
+                geo_ok = self.assess_geopolitical_threat(force=force)
+            if geo_ok:
                 results["geopolitical_updated"] = True
                 self._last_macro_llm_ts = current_ts
             self.write_heartbeat(results)
 
         # 2. Market Advisor qualitative synthesis (Pillar 3)
-        if force or (current_ts - self._last_advisor_ts) >= self.advisor_interval_sec:
-            if self.assess_market_advisor(force=force):
+        if force or not (0.0 <= (current_ts - self._last_advisor_ts) < self.advisor_interval_sec):
+            try:
+                adv_ok = self.assess_market_advisor(force=force, now=current_ts)
+            except TypeError:
+                adv_ok = self.assess_market_advisor(force=force)
+            if adv_ok:
                 results["advisor_updated"] = True
                 self._last_advisor_ts = current_ts
             self.write_heartbeat(results)
 
         # 3. CLI thread pruning housekeeping
-        if force or (current_ts - self._last_thread_prune_ts) >= self.thread_prune_interval_sec:
+        if force or not (0.0 <= (current_ts - self._last_thread_prune_ts) < self.thread_prune_interval_sec):
             results["threads_pruned"] = self.prune_cli_threads()
             self._last_thread_prune_ts = current_ts
 
         # Periodic log heartbeat
-        if force or (current_ts - self._last_stdout_hb_ts) >= 120.0:
+        if force or not (0.0 <= (current_ts - self._last_stdout_hb_ts) < 120.0):
             logger.info("Macro analyzer cycle active (PID=%d)", os.getpid())
             self._last_stdout_hb_ts = current_ts
 

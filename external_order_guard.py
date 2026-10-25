@@ -113,7 +113,7 @@ def check_external_order_guards(
         scale_pct: Optional[int] = None,
     ) -> None:
         cd_key = (symbol, order_side, guard_key)
-        if now_ts - _MICRO_SHADOW_NOTIFY_COOLDOWN.get(cd_key, 0.0) < 1800.0:
+        if 0.0 <= (now_ts - _MICRO_SHADOW_NOTIFY_COOLDOWN.get(cd_key, -1e18)) < 1800.0:
             return
         _MICRO_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
         try:
@@ -138,7 +138,11 @@ def check_external_order_guards(
     if whale_mode != "off" and not GUARD_REGISTRY["GI_WHALE"].is_bypassed(bypassed):
         try:
             from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
-            w_snap = get_whale_collector().fetch(symbol, allow_network=False)
+            w_col = get_whale_collector()
+            try:
+                w_snap = w_col.fetch(symbol, allow_network=False, now=now_ts)
+            except TypeError:
+                w_snap = w_col.fetch(symbol, allow_network=False)
             sev_oi = float(m["severe_cascade_oi_pct"])
             min_tk = float(m["min_taker_ratio"])
             downscale_tk = float(m["taker_downscale_threshold"])
@@ -172,7 +176,11 @@ def check_external_order_guards(
     if ob_mode != "off" and not GUARD_REGISTRY["GI_OBOOK"].is_bypassed(bypassed):
         try:
             from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
-            ob_snap = get_orderbook_collector().fetch(symbol, allow_network=False)
+            ob_col = get_orderbook_collector()
+            try:
+                ob_snap = ob_col.fetch(symbol, allow_network=False, now=now_ts)
+            except TypeError:
+                ob_snap = ob_col.fetch(symbol, allow_network=False)
             min_imb = float(m["min_buy_imbalance"])
             max_imb = float(m["max_sell_imbalance"])
             wall_limit = float(m["whale_wall_usd_limit"])
@@ -205,7 +213,11 @@ def check_external_order_guards(
     if funding_mode != "off" and not GUARD_REGISTRY["GI_FUNDING"].is_bypassed(bypassed):
         try:
             from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
-            f_snap = get_derivatives_collector().fetch(symbol, allow_network=False)
+            f_col = get_derivatives_collector()
+            try:
+                f_snap = f_col.fetch(symbol, allow_network=False, now=now_ts)
+            except TypeError:
+                f_snap = f_col.fetch(symbol, allow_network=False)
             f_max = float(m["funding_max_long_rate"])
             f_min = float(m["funding_min_short_rate"])
             f_policy = str(m["funding_crowding_policy"]).strip().lower()

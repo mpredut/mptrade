@@ -157,10 +157,15 @@ class OrderbookDepthCollector:
         except Exception as e:
             logger.debug("Failed writing orderbook snapshot to %s: %s", p, e)
 
-    def fetch(self, symbol: str, allow_network: bool = True) -> Optional[OrderbookSnapshot]:
+    def fetch(
+        self,
+        symbol: str,
+        allow_network: bool = True,
+        now: Optional[float] = None,
+    ) -> Optional[OrderbookSnapshot]:
         """Fetch spot depth snapshot from Binance public API."""
         symbol = symbol.upper()
-        now = time.time()
+        now = float(now) if now is not None else time.time()
         cached = None
         for cand in _symbol_variants(symbol):
             cached = self._cache.get(cand)

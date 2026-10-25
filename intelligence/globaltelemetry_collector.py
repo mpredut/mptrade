@@ -181,7 +181,7 @@ class GlobalTelemetryCollector:
         try:
             snap = self.fear_greed_collector.fetch(force_refresh=force)
             if snap:
-                from state_io import atomic_write_json
+                from state_io import save_json_state
                 payload = {
                     "value": snap.value,
                     "sentiment": snap.classification,
@@ -193,8 +193,8 @@ class GlobalTelemetryCollector:
                     "ts": snap.timestamp or time.time(),
                 }
                 # Standardized collect file + legacy cache file
-                atomic_write_json(os.path.join(self.cache_dir, "fear_greed_collect.json"), payload, indent=2)
-                atomic_write_json(os.path.join(self.cache_dir, "fear_greed_cache.json"), payload, indent=2)
+                save_json_state(os.path.join(self.cache_dir, "fear_greed_collect.json"), payload, indent=2)
+                save_json_state(os.path.join(self.cache_dir, "fear_greed_cache.json"), payload, indent=2)
                 logger.debug("Fear & Greed index updated: %d (%s)", snap.value, snap.classification)
                 return True
         except Exception as e:
@@ -206,7 +206,7 @@ class GlobalTelemetryCollector:
         try:
             breadth = self.breadth_collector.fetch(force_refresh=force)
             if breadth:
-                from state_io import atomic_write_json
+                from state_io import save_json_state
                 payload = {
                     "advance_ratio": breadth.advance_ratio,
                     "median_change_pct": breadth.median_change_pct,
@@ -224,8 +224,8 @@ class GlobalTelemetryCollector:
                     "ts": breadth.ts,
                 }
                 # Standardized collect file + legacy cache file
-                atomic_write_json(os.path.join(self.cache_dir, "market_breadth_collect.json"), payload, indent=2)
-                atomic_write_json(os.path.join(self.cache_dir, "market_breadth_cache.json"), payload, indent=2)
+                save_json_state(os.path.join(self.cache_dir, "market_breadth_collect.json"), payload, indent=2)
+                save_json_state(os.path.join(self.cache_dir, "market_breadth_cache.json"), payload, indent=2)
                 logger.debug("Market breadth updated: %.1f%% advancing", breadth.advance_ratio * 100)
                 return True
         except Exception as e:
@@ -279,21 +279,21 @@ class GlobalTelemetryCollector:
             for sym in self.symbols:
                 # 1. Orderbook depth
                 last_ob = self._last_orderbook_ts.get(sym, 0.0)
-                if force or (current_ts - last_ob) >= self.orderbook_interval_sec:
+                if force or not (0.0 <= (current_ts - last_ob) < self.orderbook_interval_sec):
                     if self._run_step_bounded(self.update_orderbook, sym, timeout_sec=10.0, label=f"ob_{sym}"):
                         results["orderbook_updated"] += 1
                         self._last_orderbook_ts[sym] = current_ts
 
                 # 2. Derivatives telemetry
                 last_deriv = self._last_derivatives_ts.get(sym, 0.0)
-                if force or (current_ts - last_deriv) >= self.derivatives_interval_sec:
+                if force or not (0.0 <= (current_ts - last_deriv) < self.derivatives_interval_sec):
                     if self._run_step_bounded(self.update_derivatives, sym, timeout_sec=12.0, label=f"deriv_{sym}"):
                         results["derivatives_updated"] += 1
                         self._last_derivatives_ts[sym] = current_ts
 
                 # 3. Whale positioning & OI
                 last_whale = self._last_whale_ts.get(sym, 0.0)
-                if force or (current_ts - last_whale) >= self.whale_interval_sec:
+                if force or not (0.0 <= (current_ts - last_whale) < self.whale_interval_sec):
                     if self._run_step_bounded(self.update_whale, sym, timeout_sec=15.0, label=f"whale_{sym}"):
                         results["whale_updated"] += 1
                         self._last_whale_ts[sym] = current_ts
@@ -302,26 +302,26 @@ class GlobalTelemetryCollector:
 
         # Pillar 4: RSS Raw News Feed ingestion (zero LLM)
         if not self.skip_news:
-            if force or (current_ts - self._last_news_ts) >= self.news_interval_sec:
+            if force or not (0.0 <= (current_ts - self._last_news_ts) < self.news_interval_sec):
                 if self._run_step_bounded(self.update_news, force, timeout_sec=15.0, label="news"):
                     results["news_updated"] = True
                     self._last_news_ts = current_ts
                 self.write_heartbeat(results)
 
         # Pillar 3: Fear & Greed Index ingestion
-        if force or (current_ts - self._last_fear_greed_ts) >= self.fear_greed_interval_sec:
+        if force or not (0.0 <= (current_ts - self._last_fear_greed_ts) < self.fear_greed_interval_sec):
             if self._run_step_bounded(self.update_fear_greed, force, timeout_sec=12.0, label="fear_greed"):
                 results["fear_greed_updated"] = True
                 self._last_fear_greed_ts = current_ts
 
         # Pillar 3: Market Breadth ingestion
-        if force or (current_ts - self._last_breadth_ts) >= self.breadth_interval_sec:
+        if force or not (0.0 <= (current_ts - self._last_breadth_ts) < self.breadth_interval_sec):
             if self._run_step_bounded(self.update_market_breadth, force, timeout_sec=15.0, label="breadth"):
                 results["breadth_updated"] = True
                 self._last_breadth_ts = current_ts
 
         # Periodic stdout/log heartbeat so orchestrator sees continuous activity in log_file
-        if force or (current_ts - self._last_stdout_hb_ts) >= 60.0:
+        if force or not (0.0 <= (current_ts - self._last_stdout_hb_ts) < 60.0):
             logger.info(
                 "Global telemetry cycle active: %d symbols monitored (PID=%d)",
                 len(self.symbols),

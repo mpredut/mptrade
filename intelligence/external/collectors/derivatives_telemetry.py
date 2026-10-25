@@ -105,10 +105,15 @@ class DerivativesTelemetryCollector:
         except Exception as e:
             logger.debug("Failed writing derivatives telemetry to %s: %s", p, e)
 
-    def fetch(self, symbol: str, allow_network: bool = True) -> Optional[DerivativesTelemetry]:
+    def fetch(
+        self,
+        symbol: str,
+        allow_network: bool = True,
+        now: Optional[float] = None,
+    ) -> Optional[DerivativesTelemetry]:
         """Fetch funding rate and open interest from public Binance Futures endpoint."""
         symbol = symbol.upper()
-        now = time.time()
+        now = float(now) if now is not None else time.time()
         cached = None
         for cand in _symbol_variants(symbol):
             cached = self._cache.get(cand)

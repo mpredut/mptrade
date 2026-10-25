@@ -155,19 +155,31 @@ class WhalePositioningCollector:
                     elif isinstance(items_dict, list):
                         pts = items_dict
                     if pts and len(pts) >= 2:
-                        raw_last_ts = float(pts[-1][0])
-                        now_sec = raw_last_ts / 1000.0 if raw_last_ts > 1e11 else raw_last_ts
-                        target_sec = now_sec - 3600.0
-                        latest_p = float(pts[-1][1])
-                        ref_p = float(pts[0][1])
-                        for pt in reversed(pts):
-                            raw_pt_ts = float(pt[0])
-                            pt_sec = raw_pt_ts / 1000.0 if raw_pt_ts > 1e11 else raw_pt_ts
-                            if pt_sec <= target_sec:
-                                ref_p = float(pt[1])
-                                break
-                        if ref_p > 0:
-                            return (latest_p - ref_p) / ref_p * 100.0
+                        import math
+                        valid_pts = []
+                        for pt in pts:
+                            try:
+                                if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+                                    continue
+                                raw_ts = float(pt[0])
+                                px = float(pt[1])
+                                if not (math.isfinite(raw_ts) and raw_ts > 0 and math.isfinite(px) and px > 0):
+                                    continue
+                                ts_s = raw_ts / 1000.0 if raw_ts > 1e11 else raw_ts
+                                valid_pts.append((ts_s, px))
+                            except Exception:
+                                continue
+                        if len(valid_pts) >= 2:
+                            now_sec = valid_pts[-1][0]
+                            target_sec = now_sec - 3600.0
+                            latest_p = valid_pts[-1][1]
+                            ref_p = valid_pts[0][1]
+                            for pt_sec, pt_px in reversed(valid_pts):
+                                if pt_sec <= target_sec:
+                                    ref_p = pt_px
+                                    break
+                            if ref_p > 0:
+                                return (latest_p - ref_p) / ref_p * 100.0
                 except Exception:
                     continue
         except Exception as e:
@@ -274,10 +286,16 @@ class WhalePositioningCollector:
                 return "accumulation"
             return "neutral"
 
-    def fetch(self, symbol: str, price_1h_change_pct: float = 0.0, allow_network: bool = True) -> Optional[WhalePositioningSnapshot]:
+    def fetch(
+        self,
+        symbol: str,
+        price_1h_change_pct: float = 0.0,
+        allow_network: bool = True,
+        now: Optional[float] = None,
+    ) -> Optional[WhalePositioningSnapshot]:
         """Fetch latest whale positioning metrics from public Binance Futures endpoints."""
         symbol = symbol.upper()
-        now = time.time()
+        now = float(now) if now is not None else time.time()
         cached = None
         for cand in _symbol_variants(symbol):
             cached = self._cache.get(cand)

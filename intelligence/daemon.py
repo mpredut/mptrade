@@ -194,34 +194,34 @@ class IntelligenceTelemetryDaemon:
             for sym in self.symbols:
                 # 1. Orderbook depth
                 last_ob = self._last_orderbook_ts.get(sym, 0.0)
-                if force or (current_ts - last_ob) >= self.orderbook_interval_sec:
+                if force or not (0.0 <= (current_ts - last_ob) < self.orderbook_interval_sec):
                     if self.update_orderbook(sym):
                         results["orderbook_updated"] += 1
                         self._last_orderbook_ts[sym] = current_ts
 
                 # 2. Derivatives telemetry
                 last_deriv = self._last_derivatives_ts.get(sym, 0.0)
-                if force or (current_ts - last_deriv) >= self.derivatives_interval_sec:
+                if force or not (0.0 <= (current_ts - last_deriv) < self.derivatives_interval_sec):
                     if self.update_derivatives(sym):
                         results["derivatives_updated"] += 1
                         self._last_derivatives_ts[sym] = current_ts
 
                 # 3. Whale positioning & OI
                 last_whale = self._last_whale_ts.get(sym, 0.0)
-                if force or (current_ts - last_whale) >= self.whale_interval_sec:
+                if force or not (0.0 <= (current_ts - last_whale) < self.whale_interval_sec):
                     if self.update_whale(sym):
                         results["whale_updated"] += 1
                         self._last_whale_ts[sym] = current_ts
 
         # Pillar 4: Macro Geopolitical Shield update
         if not self.skip_macro:
-            if force or (current_ts - self._last_macro_ts) >= self.macro_interval_sec:
+            if force or not (0.0 <= (current_ts - self._last_macro_ts) < self.macro_interval_sec):
                 if self.update_macro(force=force):
                     results["macro_updated"] = True
                     self._last_macro_ts = current_ts
 
         # Periodic retention: automatically prune automated CLI threads older than 1 day (autonommptrade)
-        if force or (current_ts - self._last_thread_prune_ts) >= self.thread_prune_interval_sec:
+        if force or not (0.0 <= (current_ts - self._last_thread_prune_ts) < self.thread_prune_interval_sec):
             try:
                 from orchestratorOS.admin.prune_llm_threads import prune_old_cli_threads
                 from orchestratorOS.agy.paths import resolve_bot_cli_base
@@ -243,7 +243,7 @@ class IntelligenceTelemetryDaemon:
                 logger.debug("Automatic CLI thread pruning error: %s", e)
 
         # Periodic stdout/log heartbeat so orchestrator sees continuous activity in log_file
-        if force or (current_ts - self._last_stdout_hb_ts) >= 60.0:
+        if force or not (0.0 <= (current_ts - self._last_stdout_hb_ts) < 60.0):
             logger.info(
                 "Telemetry cycle active: %d symbols monitored (PID=%d)",
                 len(self.symbols),

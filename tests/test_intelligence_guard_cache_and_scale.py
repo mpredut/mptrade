@@ -4011,21 +4011,223 @@ def test_iteration17_price_history_now_liquidation_cascade_now_composite_gemini_
     assert snap.headlines[0].title == "Major pipeline escalation"
 
 
+def test_iteration18_macro_analyzer_resilience_and_external_collectors_now_propagation(tmp_path, monkeypatch):
+    """Verify Iteration 18 fixes:
+    1. MacroAnalyzer parses string boolean shadow_notify ("true"/"false") without ValueError,
+       recovers Fear&Greed / MarketBreadth / Whale telemetry from .previous or fallback files,
+       and protects run_cycle against backward clock skew.
+    2. GlobalTelemetryCollector and IntelligenceTelemetryDaemon protect run_cycle against backward clock skew.
+    3. WhalePositioningCollector, OrderbookDepthCollector, DerivativesTelemetryCollector, and
+       check_external_order_guards propagate `now` for deterministic cache TTL and filter NaN price points.
+    """
+    import external_order_guard
+    from intelligence.macro_analyzer import MacroAnalyzer
+    from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+    from intelligence.daemon import IntelligenceTelemetryDaemon
+    from intelligence.external.collectors.whale_positioning import (
+        WhalePositioningCollector,
+        WhalePositioningSnapshot,
+    )
+    from intelligence.external.collectors.orderbook_depth import (
+        OrderbookDepthCollector,
+        OrderbookSnapshot,
+    )
+    from intelligence.external.collectors.derivatives_telemetry import (
+        DerivativesTelemetry,
+        DerivativesTelemetryCollector,
+    )
 
+    # 1. MacroAnalyzer string shadow_notify + .previous / fallback recovery + clock-skew run_cycle
+    import order_guard
+    orig_margins = order_guard._load_margins()
+    custom_margins = dict(orig_margins)
+    custom_margins["shadow_notify"] = "false"
+    monkeypatch.setattr(order_guard, "_load_margins", lambda: custom_margins)
 
+    analyzer = MacroAnalyzer(
+        cache_dir=str(tmp_path),
+        macro_llm_interval_sec=600.0,
+        advisor_interval_sec=600.0,
+        symbols=["BTCUSDC"],
+    )
+    assert analyzer.shadow_notify is False
 
+    # Corrupt primary fear_greed_collect.json, valid fear_greed_cache.json
+    (tmp_path / "fear_greed_collect.json").write_text("{corrupt", encoding="utf-8")
+    (tmp_path / "fear_greed_cache.json").write_text(
+        json.dumps(
+            {
+                "value": 18,
+                "classification": "Extreme Fear",
+                "historical_values": [18, 22],
+                "trend_7d_change": -4,
+                "is_extreme_fear": True,
+                "is_extreme_greed": False,
+                "ts": 5000.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Corrupt primary market_breadth_collect.json, valid .previous
+    (tmp_path / "market_breadth_collect.json").write_text("{corrupt", encoding="utf-8")
+    (tmp_path / "market_breadth_collect.json.previous").write_text(
+        json.dumps(
+            {
+                "advance_ratio": 0.25,
+                "advancing_count": 25,
+                "declining_count": 75,
+                "total_count": 100,
+                "median_change_pct": -2.5,
+                "mean_change_pct": -2.8,
+                "dispersion_std": 1.2,
+                "regime": "BROAD_SELLOFF",
+                "top_gainers": [["BTCUSDC", 1.2]],
+                "top_losers": [["TAOUSDC", -5.4]],
+                "ts": 5000.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Corrupt primary whale_snapshot_BTCUSDC.json, valid .previous
+    (tmp_path / "whale_snapshot_BTCUSDC.json").write_text("{corrupt", encoding="utf-8")
+    (tmp_path / "whale_snapshot_BTCUSDC.json.previous").write_text(
+        json.dumps({"symbol": "BTCUSDC", "taker_buy_sell_ratio": 0.72, "ts": 5000.0}),
+        encoding="utf-8",
+    )
 
+    captured_review = {}
 
+    class _DummyAssessment:
+        market_bias = "DEFENSIVE"
+        risk_level = "HIGH"
+        recommended_action = "HOLD"
+        summary = "test"
+        ts = 5005.0
 
+    def _fake_review(fear_greed=None, breadth=None, whale_telemetry=None, force_refresh=False, now_ts=None):
+        captured_review["fg"] = fear_greed
+        captured_review["mb"] = breadth
+        captured_review["whale"] = whale_telemetry
+        captured_review["now_ts"] = now_ts
+        return _DummyAssessment()
 
+    monkeypatch.setattr(analyzer.gemini_advisor, "review", _fake_review)
+    monkeypatch.setattr(analyzer, "assess_geopolitical_threat", lambda force=False, now=None: True)
+    monkeypatch.setattr(analyzer, "prune_cli_threads", lambda: 0)
 
+    # Simulate future _last_advisor_ts / _last_macro_llm_ts (backward clock skew)
+    analyzer._last_macro_llm_ts = 99999.0
+    analyzer._last_advisor_ts = 99999.0
+    cycle_res = analyzer.run_cycle(force=False, now=5005.0)
+    assert cycle_res["geopolitical_updated"] is True
+    assert cycle_res["advisor_updated"] is True
+    assert captured_review["fg"] is not None and captured_review["fg"].value == 18
+    assert captured_review["mb"] is not None and captured_review["mb"].regime == "BROAD_SELLOFF"
+    assert captured_review["whale"] is not None and captured_review["whale"]["symbol"] == "BTCUSDC"
+    assert captured_review["now_ts"] == pytest.approx(5005.0)
 
+    # 2. GlobalTelemetryCollector and IntelligenceTelemetryDaemon backward clock-skew resilience
+    gtc = GlobalTelemetryCollector(symbols=["BTCUSDC"], cache_dir=str(tmp_path), skip_news=True, skip_external=True)
+    gtc._last_fear_greed_ts = 99999.0
+    gtc._last_breadth_ts = 99999.0
+    monkeypatch.setattr(gtc, "update_fear_greed", lambda force=False: True)
+    monkeypatch.setattr(gtc, "update_market_breadth", lambda force=False: True)
+    gtc_res = gtc.run_cycle(force=False, now=5000.0)
+    assert gtc_res["fear_greed_updated"] is True
+    assert gtc_res["breadth_updated"] is True
 
+    itd = IntelligenceTelemetryDaemon(symbols=["BTCUSDC"], cache_dir=str(tmp_path), skip_macro=False, skip_external=True)
+    itd._last_macro_ts = 99999.0
+    monkeypatch.setattr(itd, "update_macro", lambda force=False: True)
+    itd_res = itd.run_cycle(force=False, now=5000.0)
+    assert itd_res["macro_updated"] is True
 
+    # 3. External collectors + check_external_order_guards `now` propagation & NaN filtering
+    price_cache = tmp_path / "cache_24_price_BTCUSDC.json"
+    price_cache.write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": [
+                        [1400.0, 100.0],
+                        [2500.0, float("nan")],
+                        [5000.0, 105.0],
+                    ]
+                }
+            },
+            allow_nan=True,
+        ),
+        encoding="utf-8",
+    )
+    w_col = WhalePositioningCollector(cache_ttl_sec=120.0, cache_dir=str(tmp_path), disk_ttl_sec=300.0)
+    assert w_col._resolve_price_1h_change_pct("BTCUSDC") == pytest.approx(5.0)
 
+    w_snap = WhalePositioningSnapshot(
+        symbol="BTCUSDC",
+        top_traders_long_ratio=1.2,
+        top_traders_long_pct=0.55,
+        taker_buy_sell_ratio=0.60,  # severe taker selling (< 0.75) -> defer BUY
+        taker_buy_vol_usd=100_000.0,
+        taker_sell_vol_usd=200_000.0,
+        open_interest_usd=10_000_000.0,
+        open_interest_1h_change_pct=0.1,
+        divergence_regime="neutral",
+        ts=1000.0,
+    )
+    w_col.record_snapshot(w_snap, save_to_disk=True)
 
+    ob_col = OrderbookDepthCollector(cache_ttl_sec=120.0, cache_dir=str(tmp_path), disk_ttl_sec=300.0)
+    ob_col.record_snapshot(
+        OrderbookSnapshot(
+            symbol="BTCUSDC",
+            mid_price=100.0,
+            bid_depth_usd=500_000.0,
+            ask_depth_usd=500_000.0,
+            imbalance_ratio=0.5,
+            largest_bid_wall_usd=50_000.0,
+            largest_bid_wall_price=99.5,
+            largest_ask_wall_usd=50_000.0,
+            largest_ask_wall_price=100.5,
+            ts=1000.0,
+        ),
+        save_to_disk=True,
+    )
+    d_col = DerivativesTelemetryCollector(cache_ttl_sec=120.0, cache_dir=str(tmp_path), disk_ttl_sec=300.0)
+    d_col.record_telemetry(
+        DerivativesTelemetry(
+            symbol="BTCUSDC",
+            funding_rate=0.0001,
+            predicted_funding_rate=0.0001,
+            open_interest=100.0,
+            open_interest_usd=10_000.0,
+            ts=1000.0,
+        ),
+        save_to_disk=True,
+    )
 
+    monkeypatch.setattr(external_order_guard, "get_whale_collector", lambda: w_col)
+    monkeypatch.setattr(external_order_guard, "get_orderbook_collector", lambda: ob_col)
+    monkeypatch.setattr(external_order_guard, "get_derivatives_collector", lambda: d_col)
 
+    ext_margins = dict(custom_margins)
+    ext_margins["external_guard_mode"] = "enforce"
+    ext_margins["whale_guard_mode"] = "enforce"
+    ext_margins["orderbook_wall_guard_mode"] = "enforce"
+    ext_margins["funding_guard_mode"] = "enforce"
+
+    # At simulated now=1050.0 (within 120s TTL of ts=1000.0), w_snap is fresh and blocks BUY
+    allowed_fresh, reason_fresh, _ = external_order_guard.check_external_order_guards(
+        "BTCUSDC", "BUY", 100.0, qty=1.0, margins=ext_margins, now=1050.0
+    )
+    assert allowed_fresh is False
+    assert "severe_taker_selling_dominated" in reason_fresh
+
+    # At simulated now=2000.0 (expired > 300s disk TTL), w_snap is expired -> fail-open allow
+    allowed_stale, reason_stale, _ = external_order_guard.check_external_order_guards(
+        "BTCUSDC", "BUY", 100.0, qty=1.0, margins=ext_margins, now=2000.0
+    )
+    assert allowed_stale is True
+    assert reason_stale == "ok"
 
 
 
