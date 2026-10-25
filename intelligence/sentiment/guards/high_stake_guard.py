@@ -327,12 +327,12 @@ def collect_pretrade_telemetry(
     try:
         for g_file in ("geopolitical_threat_eval.json", "geopolitical_threat_state.json"):
             g_path = os.path.join(cachedb_dir, g_file)
-            if os.path.exists(g_path):
-                with open(g_path, "r", encoding="utf-8") as f:
-                    g_data = json.load(f)
-                    level = g_data.get("threat_level", "")
+            g_data = read_recovering_previous(g_path, json.loads, default=None)
+            if isinstance(g_data, dict):
+                level = g_data.get("threat_level", "")
+                if level is not None and level != "":
                     telemetry["Geopolitical Threat Level"] = level
-                break
+                    break
     except Exception:
         pass
 
@@ -477,7 +477,7 @@ class HighStakeGuard:
         cache_key = (symbol.upper(), side_norm, int(notional // 100.0))
         if self.cache_ttl_sec > 0:
             cached = _HIGH_STAKE_DECISION_CACHE.get(cache_key)
-            if cached is not None and (now - cached[0]) < self.cache_ttl_sec:
+            if cached is not None and 0.0 <= (now - cached[0]) < self.cache_ttl_sec:
                 return cached[1]
 
         # 3. High-stake order detected: build rich multi-pillar telemetry context for LLM

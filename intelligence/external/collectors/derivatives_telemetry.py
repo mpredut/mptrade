@@ -18,6 +18,7 @@ from intelligence.external.collectors.orderbook_depth import (
     _resolve_binance_lookup_symbol,
     _symbol_variants,
 )
+from state_io import read_recovering_previous
 
 logger = logging.getLogger("intelligence.external.derivatives_telemetry")
 
@@ -170,11 +171,11 @@ class DerivativesTelemetryCollector:
                     return cached
             for cand in _symbol_variants(symbol):
                 p = self._disk_path(cand)
-                if p and os.path.exists(p):
+                if p:
                     try:
-                        with open(p, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                        return DerivativesTelemetry.from_dict(data)
+                        data = read_recovering_previous(p, json.loads, default=None)
+                        if isinstance(data, dict):
+                            return DerivativesTelemetry.from_dict(data)
                     except Exception:
                         pass
             return None

@@ -187,8 +187,8 @@ def check_external_order_guards(
                 if ob_mode == "enforce":
                     if not ob_dec.allowed:
                         return False, ob_dec.reason, 0.0
-                    if ob_dec.suggested_scale < 1.0:
-                        effective_scale = min(effective_scale, ob_dec.suggested_scale)
+                    if ob_dec.suggested_scale < 1.0 and ob_dec.suggested_scale <= effective_scale:
+                        effective_scale = ob_dec.suggested_scale
                         active_reason = ob_dec.reason
         except Exception:
             pass
@@ -222,8 +222,9 @@ def check_external_order_guards(
                 if funding_mode == "enforce":
                     if not f_dec.allowed:
                         return False, f_dec.reason, 0.0
-                    effective_scale = min(effective_scale, f_dec.suggested_scale)
-                    active_reason = f_dec.reason
+                    if f_dec.suggested_scale < 1.0 and f_dec.suggested_scale <= effective_scale:
+                        effective_scale = f_dec.suggested_scale
+                        active_reason = f_dec.reason
         except Exception:
             pass
 

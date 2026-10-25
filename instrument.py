@@ -267,6 +267,8 @@ class Instrument:
         if order_kind is not None:
             kwargs["kind"] = order_kind
 
+        medium_trend_action_cfg = kwargs.get("medium_trend_action")
+        medium_trend_scale_cfg = kwargs.get("medium_trend_scale")
         if hasattr(self, "params") and isinstance(self.params, dict):
             if not bypass_guards_raw:
                 bypass_guards_raw = self.params.get("bypass_guards")
@@ -277,6 +279,10 @@ class Instrument:
                 )
             if caller_module is None:
                 caller_module = self.params.get("module")
+            if medium_trend_action_cfg is None:
+                medium_trend_action_cfg = self.params.get("medium_trend_action")
+            if medium_trend_scale_cfg is None:
+                medium_trend_scale_cfg = self.params.get("medium_trend_scale")
         if caller_module is None:
             caller_module = order_guard.resolve_caller_module(
                 None,
@@ -412,6 +418,10 @@ class Instrument:
             retry_kwargs["reference_mode"] = profit_reference_mode
         if caller_module is not None:
             retry_kwargs["module"] = caller_module
+        if medium_trend_action_cfg is not None:
+            retry_kwargs["medium_trend_action"] = medium_trend_action_cfg
+        if medium_trend_scale_cfg is not None:
+            retry_kwargs["medium_trend_scale"] = medium_trend_scale_cfg
         if allow_math_reference_sell:
             retry_kwargs["allow_math_reference_sell"] = allow_math_reference_sell
         # A market order ignores the requested price, so revalidate immediately

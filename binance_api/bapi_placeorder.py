@@ -486,11 +486,28 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
     order_type = order_type.upper()
     sym.validate_params(order_type, symbol, price, qty)
     provider = BinanceProvider()
-    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
-    skip_math_profit_ref = GUARD_REGISTRY["G_PROF"].is_bypassed(bypassed)
+    allow_math_reference_sell = bool(kwargs.pop("allow_math_reference_sell", False))
+    bypass_guards_raw = bypass_guards
+    if not bypass_guards_raw:
+        m = order_guard._load_margins()
+        bypass_guards_raw = m.get("binance_bypass_guards", m["default_bypass_guards"])
+    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards_raw)
+    bypass_all = "all" in bypassed or "*" in bypassed
+    bypass_profit_guard = "profit_guard" in bypassed or bypass_all
+    skip_math_profit_ref = GUARD_REGISTRY["G_PROF"].is_bypassed(bypassed) or bypass_profit_guard
+    g_prof_revoked = False
+    if skip_math_profit_ref and not bypass_profit_guard and order_type != "BUY" and not allow_math_reference_sell:
+        print(
+            f"[GUARD] {order_type} {symbol}: bypass math_profit/math_reference ignored; "
+            "is allowed only for BUY")
+        bypassed.difference_update(GUARD_REGISTRY["G_PROF"].aliases)
+        bypassed.discard(GUARD_REGISTRY["G_PROF"].canonical)
+        bypassed.discard(GUARD_REGISTRY["G_PROF"].code.lower())
+        bypassed.difference_update({"profit", "financial", "gf"})
+        skip_math_profit_ref = False
+        g_prof_revoked = True
     bypass_pg = (
-        "all" in bypassed
-        or "*" in bypassed
+        bypass_all
         or (
             skip_math_profit_ref
             and all(
@@ -516,7 +533,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         # Delegate daily trade cap to order_guard.daily_limit_guard
         ok, reason = order_guard.daily_limit_guard(
             provider, symbol, order_type,
-            bypass_guards=bypass_guards)
+            bypass_guards=bypassed)
         if not ok:
             return False, reason
 
@@ -592,8 +609,12 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
             )
             if caller_module is not None:
                 pg_kwargs["module"] = caller_module
-            if bypass_guards is not None:
+            if g_prof_revoked:
+                pg_kwargs["bypass_guards"] = bypassed
+            elif bypass_guards is not None:
                 pg_kwargs["bypass_guards"] = bypass_guards
+            elif bypassed:
+                pg_kwargs["bypass_guards"] = bypassed
 
             if not order_guard.profit_guard(
                 provider,
@@ -680,11 +701,14 @@ def _log_order_outcome(symbol, side, price, qty, outcome, refuse_reason, motivat
 
 # Retain ``pair`` only for compatibility with callers that explicitly pass it. It is
 # intentionally ignored legacy code; do not remove it without updating those callers.
-def place_order_smart(order_type, symbol, price, qty=None, safeback_seconds=PLACE_ORDER_SAFEBACK_SEC, force=False, cancelorders=True, hours=PLACE_ORDER_HOURS, pair=None, motivation=None, **kwargs):
+def place_order_smart(order_type, symbol, price, qty=None, safeback_seconds=PLACE_ORDER_SAFEBACK_SEC, force=False, cancelorders=True, hours=PLACE_ORDER_HOURS, pair=None, motivation=None, _reason_out=None, **kwargs):
     order_type = order_type.upper()
     sym.validate_params(
         order_type, symbol, price, 1.0 if qty is None else qty)
-    return _guarded_market_place(
+    call_kwargs = dict(kwargs)
+    if isinstance(_reason_out, dict) and "_outcome_context" not in call_kwargs:
+        call_kwargs["_outcome_context"] = _reason_out
+    order = _guarded_market_place(
         symbol, order_type, price, qty,
         smart=True,
         safeback_seconds=safeback_seconds,
@@ -692,8 +716,12 @@ def place_order_smart(order_type, symbol, price, qty=None, safeback_seconds=PLAC
         cancelorders=cancelorders,
         hours=hours,
         motivation=motivation,
-        **kwargs,
+        **call_kwargs,
     )
+    if order is None and isinstance(_reason_out, dict):
+        if not _reason_out.get("reason"):
+            _reason_out["reason"] = "common_pipeline_refused"
+    return order
 
 
 # ============================================================================

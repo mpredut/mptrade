@@ -2872,6 +2872,214 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert order_rec["vol"] == pytest.approx(1.0)
         assert order_rec["amount"] == pytest.approx(100.0)
 
+    def test_iteration11_bapi_safe_order_gprof_sell_instrument_retry_gtm_params_whale_collector_recovery_and_external_guard_reason(
+        self, monkeypatch, tmp_path
+    ):
+        import json
+        from types import SimpleNamespace
+        from binance_api import bapi_placeorder
+        import external_order_guard
+        import instrument as inst_mod
+        import order_guard
+        from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+        from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
+
+        # 1. bapi_placeorder.if_place_safe_order revokes G_PROF on SELL unless allow_math_reference_sell=True
+        monkeypatch.setattr(bapi_placeorder.sym, "validate_params", lambda *_a, **_k: None)
+        monkeypatch.setattr(bapi_placeorder.api, "get_current_price", lambda _s: 100.0)
+        monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *_a, **_k: (True, None))
+        monkeypatch.setattr(order_guard, "get_profit_guard_mode_cfg", lambda *_a, **_k: "average")
+        monkeypatch.setattr(order_guard, "get_window_cfg", lambda *_a, **_k: 3600)
+        monkeypatch.setattr(order_guard, "get_margin_cfg", lambda *_a, **_k: 0.01)
+
+        pg_calls = []
+        monkeypatch.setattr(
+            order_guard,
+            "profit_guard",
+            lambda _prov, _sym, _side, _px, _m, **kw: pg_calls.append(dict(kw)) or True,
+        )
+        ok_sell, _ = bapi_placeorder.if_place_safe_order(
+            "SELL",
+            "BTCUSDC",
+            100.0,
+            1.0,
+            3600,
+            regime_context=SimpleNamespace(resolved_trend="flat"),
+            bypass_guards={"G_PROF"},
+        )
+        assert ok_sell is True
+        assert pg_calls
+        assert "G_PROF" not in (pg_calls[-1].get("bypass_guards") or set())
+
+        # Also check place_order_smart maps _reason_out -> _outcome_context
+        reason_box = {}
+        monkeypatch.setattr(
+            bapi_placeorder,
+            "_guarded_market_place",
+            lambda *_a, **kw: kw["_outcome_context"].update(reason="blocked_by_test") or None,
+        )
+        res_smart = bapi_placeorder.place_order_smart(
+            "BUY", "BTCUSDC", 100.0, 1.0, _reason_out=reason_box
+        )
+        assert res_smart is None
+        assert reason_box.get("reason") == "blocked_by_test"
+
+        # 2. Instrument.place persists medium_trend_action & medium_trend_scale from self.params into retry_kwargs
+        enqueued_kwargs = []
+
+        class _DeferProv:
+            name = "binance"
+
+            @staticmethod
+            def guards_internally():
+                return False
+
+            @staticmethod
+            def execution_enabled():
+                return True
+
+            @staticmethod
+            def requires_cache_permit():
+                return False
+
+            @staticmethod
+            def defers_smart_cancellation():
+                return False
+
+            @staticmethod
+            def supports_business_minimum():
+                return False
+
+            @staticmethod
+            def get_current_price(_sym):
+                return 100.0
+
+            @staticmethod
+            def format_price(_sym, p):
+                return float(p)
+
+            @staticmethod
+            def format_quantity(_sym, q):
+                return float(q)
+
+            @staticmethod
+            def validate_order(_sym, _side, _px, _q):
+                return None
+
+            @staticmethod
+            def min_notional(_sym):
+                return 5.0
+
+            @staticmethod
+            def free_balance(_asset):
+                return 1000.0
+
+            @staticmethod
+            def get_orders(_sym, _side, _since):
+                return []
+
+            @staticmethod
+            def quantity_decision(_sym, _side, _px, req_qty, **_kw):
+                return SimpleNamespace(final_qty=req_qty, refuse_reason=None, balance_asset="USDC")
+
+            @staticmethod
+            def should_wait_for_short_trend(_sym, _side):
+                return True
+
+        import order_retry
+        monkeypatch.setattr(
+            order_retry,
+            "enqueue",
+            lambda _s, _side, _q, pkw, *_a, **_k: enqueued_kwargs.append(dict(pkw)) or {"id": "r1"},
+        )
+        inst_obj = inst_mod.Instrument.__new__(inst_mod.Instrument)
+        inst_obj.name = "BTCUSDC"
+        inst_obj.symbol = "BTCUSDC"
+        inst_obj.provider_name = "binance"
+        inst_obj.base = "BTC"
+        inst_obj.quote = "USDC"
+        inst_obj.enabled = True
+        inst_obj._provider = _DeferProv()
+        inst_obj._api = SimpleNamespace(
+            market_regime_context=lambda *_a, **_k: SimpleNamespace(resolved_trend="flat")
+        )
+        inst_obj.params = {"medium_trend_action": "scale", "medium_trend_scale": 0.4}
+        assert inst_obj.place("BUY", 100.0, 1.0, smart=False) is None
+        assert enqueued_kwargs
+        assert enqueued_kwargs[-1].get("medium_trend_action") == "scale"
+        assert enqueued_kwargs[-1].get("medium_trend_scale") == pytest.approx(0.4)
+
+        # 3. WhalePositioningCollector recovers .previous on corrupted primary JSON and sanitizes symbol in _resolve_cached_funding_rate
+        wc = WhalePositioningCollector(cache_dir=str(tmp_path))
+        corrupt_p24 = tmp_path / "cache_24_price_BTCUSDC.json"
+        prev_p24 = tmp_path / "cache_24_price_BTCUSDC.json.previous"
+        corrupt_p24.write_text("{corrupt", encoding="utf-8")
+        prev_p24.write_text(
+            json.dumps({"items": {"BTCUSDC": [[1700000000000, 100.0], [1700003600000, 105.0]]}}),
+            encoding="utf-8",
+        )
+        assert wc._resolve_price_1h_change_pct("BTC/USDC") == pytest.approx(5.0)
+
+        deriv_p = tmp_path / "derivatives_telemetry_BTCUSDC.json"
+        deriv_p.write_text(json.dumps({"ts": 1700003600.0, "funding_rate": 0.00042}), encoding="utf-8")
+        assert wc._resolve_cached_funding_rate("BTC/USDC", now=1700003610.0) == pytest.approx(0.00042)
+
+        # 4. external_order_guard preserves active_reason of the stricter upstream downscale
+        monkeypatch.setattr(
+            external_order_guard,
+            "get_whale_collector",
+            lambda: SimpleNamespace(
+                fetch=lambda *_a, **_k: SimpleNamespace(
+                    divergence_regime="neutral",
+                    open_interest_1h_change_pct=0.0,
+                    taker_buy_sell_ratio=0.80,
+                    top_traders_long_pct=0.50,
+                    top_traders_long_ratio=1.0,
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            external_order_guard,
+            "get_orderbook_collector",
+            lambda: SimpleNamespace(fetch=lambda *_a, **_k: None),
+        )
+        monkeypatch.setattr(
+            external_order_guard,
+            "get_derivatives_collector",
+            lambda: SimpleNamespace(
+                fetch=lambda *_a, **_k: DerivativesTelemetry(
+                    symbol="BTCUSDC",
+                    funding_rate=0.0008,
+                    predicted_funding_rate=0.0008,
+                    open_interest=1000.0,
+                    open_interest_usd=100000.0,
+                    ts=1700000000.0,
+                )
+            ),
+        )
+        m_cfg = dict(order_guard._load_margins())
+        m_cfg.update(
+            {
+                "external_guard_mode": "enforce",
+                "whale_guard_mode": "enforce",
+                "orderbook_wall_guard_mode": "off",
+                "funding_guard_mode": "enforce",
+                "min_taker_ratio": 0.70,
+                "taker_downscale_threshold": 0.90,
+                "taker_downscaled_scale": 0.40,
+                "funding_max_long_rate": 0.0005,
+                "funding_crowding_policy": "downscale",
+                "funding_crowded_scale": 0.75,
+            }
+        )
+        allowed, reason, eff_scale = external_order_guard.check_external_order_guards(
+            "BTCUSDC", "BUY", 100.0, qty=1.0, margins=m_cfg, now=1700000000.0
+        )
+        assert allowed is True
+        assert eff_scale == pytest.approx(0.40)
+        assert "moderate_taker_selling_pressure" in reason
+
+
 
 
 

@@ -15,6 +15,8 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from state_io import read_recovering_previous
+
 logger = logging.getLogger("intelligence.external.orderbook_depth")
 
 
@@ -248,11 +250,11 @@ class OrderbookDepthCollector:
                     return cached
             for cand in _symbol_variants(symbol):
                 p = self._disk_path(cand)
-                if p and os.path.exists(p):
+                if p:
                     try:
-                        with open(p, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                        return OrderbookSnapshot.from_dict(data)
+                        data = read_recovering_previous(p, json.loads, default=None)
+                        if isinstance(data, dict):
+                            return OrderbookSnapshot.from_dict(data)
                     except Exception:
                         pass
             return None

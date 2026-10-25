@@ -21,6 +21,7 @@ from intelligence.external.collectors.orderbook_depth import (
     _resolve_binance_lookup_symbol,
     _symbol_variants,
 )
+from state_io import read_recovering_previous
 
 logger = logging.getLogger("intelligence.external.whale_positioning")
 
@@ -135,33 +136,40 @@ class WhalePositioningCollector:
             variants = _symbol_variants(sym_u)
 
             for sym_key in variants:
-                p = os.path.join(cache_dir, f"cache_24_price_{sym_key}.json")
-                if not os.path.exists(p):
+                if "/" in sym_key:
                     continue
-                with open(p, "r", encoding="utf-8") as f:
-                    cdata = json.load(f)
-                items_dict = cdata.get("items")
-                pts = None
-                if isinstance(items_dict, dict):
-                    pts = items_dict.get(sym_key) or items_dict.get(sym_u)
-                    if not pts and items_dict:
-                        pts = next(iter(items_dict.values()))
-                elif isinstance(items_dict, list):
-                    pts = items_dict
-                if pts and len(pts) >= 2:
-                    raw_last_ts = float(pts[-1][0])
-                    now_sec = raw_last_ts / 1000.0 if raw_last_ts > 1e11 else raw_last_ts
-                    target_sec = now_sec - 3600.0
-                    latest_p = float(pts[-1][1])
-                    ref_p = float(pts[0][1])
-                    for pt in reversed(pts):
-                        raw_pt_ts = float(pt[0])
-                        pt_sec = raw_pt_ts / 1000.0 if raw_pt_ts > 1e11 else raw_pt_ts
-                        if pt_sec <= target_sec:
-                            ref_p = float(pt[1])
-                            break
-                    if ref_p > 0:
-                        return (latest_p - ref_p) / ref_p * 100.0
+                p = os.path.join(cache_dir, f"cache_24_price_{sym_key}.json")
+                try:
+                    cdata = read_recovering_previous(p, json.loads, default=None)
+                    if not isinstance(cdata, dict):
+                        continue
+                    items_dict = cdata.get("items")
+                    pts = None
+                    if isinstance(items_dict, dict):
+                        for k_cand in variants:
+                            pts = items_dict.get(k_cand)
+                            if pts:
+                                break
+                        if not pts and items_dict:
+                            pts = next(iter(items_dict.values()))
+                    elif isinstance(items_dict, list):
+                        pts = items_dict
+                    if pts and len(pts) >= 2:
+                        raw_last_ts = float(pts[-1][0])
+                        now_sec = raw_last_ts / 1000.0 if raw_last_ts > 1e11 else raw_last_ts
+                        target_sec = now_sec - 3600.0
+                        latest_p = float(pts[-1][1])
+                        ref_p = float(pts[0][1])
+                        for pt in reversed(pts):
+                            raw_pt_ts = float(pt[0])
+                            pt_sec = raw_pt_ts / 1000.0 if raw_pt_ts > 1e11 else raw_pt_ts
+                            if pt_sec <= target_sec:
+                                ref_p = float(pt[1])
+                                break
+                        if ref_p > 0:
+                            return (latest_p - ref_p) / ref_p * 100.0
+                except Exception:
+                    continue
         except Exception as e:
             logger.debug("Failed calculating 1h price change from cache for %s: %s", symbol, e)
         return 0.0
@@ -176,16 +184,20 @@ class WhalePositioningCollector:
             max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
             variants = _symbol_variants(symbol)
             for s in variants:
-                p = os.path.join(cache_dir, f"derivatives_telemetry_{s}.json")
-                if os.path.exists(p):
-                    with open(p, "r", encoding="utf-8") as f:
-                        d = json.load(f)
+                clean = s.upper().replace("/", "").replace("-", "").replace("_", "")
+                p = os.path.join(cache_dir, f"derivatives_telemetry_{clean}.json")
+                try:
+                    d = read_recovering_previous(p, json.loads, default=None)
+                    if not isinstance(d, dict):
+                        continue
                     ts_val = float(d.get("ts") or 0.0)
                     if ts_val > 0 and (now_ts - ts_val) >= max_age:
                         continue
                     fr = d.get("funding_rate")
                     if fr is not None:
                         return float(fr)
+                except Exception:
+                    continue
         except Exception as e:
             logger.debug("Failed reading funding rate from cache for %s: %s", symbol, e)
         return None
@@ -370,11 +382,11 @@ class WhalePositioningCollector:
             # Try stale disk snapshot as last resort
             for cand in _symbol_variants(symbol):
                 p = self._disk_path(cand)
-                if p and os.path.exists(p):
+                if p:
                     try:
-                        with open(p, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                        return WhalePositioningSnapshot.from_dict(data)
+                        data = read_recovering_previous(p, json.loads, default=None)
+                        if isinstance(data, dict):
+                            return WhalePositioningSnapshot.from_dict(data)
                     except Exception:
                         pass
             return None
