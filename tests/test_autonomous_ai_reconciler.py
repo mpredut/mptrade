@@ -90,6 +90,8 @@ def test_harvest_log_anomalies(temp_env):
         f.write(f"{stamp(1200)} [ERROR] Connection timeout to Binance\n")
         f.write(f"{stamp(900)} [TAOUSDC] BUY BLOCKED (fail-closed): guard vetoed\n")
         f.write(f"{stamp(600)} [HIGH-STAKE GUARD] vetoed: funding is elevated\n")
+        f.write(f"{stamp(300)} [INFO] Autonomous AI Supervisor cycle complete: fail-closed guardrails active, 0 errors\n")
+        f.write(f"{stamp(300)} [ENFORCE] auto_technical_repair: fail-closed guardrails active, 0 recvWindow errors\n")
 
     reconciler = AutonomousAIReconciler(workspace_dir=workspace, cache_dir="cachedb", logs_dirs=["logs"])
     summary = reconciler.harvest_log_anomalies(lookback_hours=1.0)
@@ -100,6 +102,7 @@ def test_harvest_log_anomalies(temp_env):
     assert len(summary.critical_events) >= 1
     assert any("BUY BLOCKED" in evt for evt in summary.critical_events)
     assert not any("Stale DNS" in evt for evt in summary.critical_events)
+    assert not any("auto_technical_repair" in evt or "Supervisor cycle complete" in evt for evt in summary.critical_events)
 
 
 def test_recent_log_lines_handles_clock_only_stamps_and_midnight_wrap():

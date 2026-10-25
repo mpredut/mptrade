@@ -920,6 +920,10 @@ class AutonomousAIReconciler:
             re.IGNORECASE,
         )
         benign_warn_pattern = re.compile(r"(\[CMCPlatform\]\s+Warning|\[WARNING\])", re.IGNORECASE)
+        supervisor_summary_pattern = re.compile(
+            r"(Autonomous AI Supervisor cycle complete:|\[(ENFORCE|SHADOW)\]\s+auto_)",
+            re.IGNORECASE,
+        )
         guard_pattern = re.compile(r"(\[.*GUARD.*\]|vetoed|downscaled|HARD_VETO|DOWNSCALE_QTY)", re.IGNORECASE)
 
         for l_dir in self.logs_dirs:
@@ -938,6 +942,8 @@ class AutonomousAIReconciler:
                         with open(fpath, "r", encoding="utf-8", errors="replace") as f:
                             lines = recent_log_lines(f.readlines()[-1000:], mtime, cutoff_ts)
                             for line in lines:
+                                if supervisor_summary_pattern.search(line):
+                                    continue
                                 if err_pattern.search(line) and not (
                                     benign_warn_pattern.search(line)
                                     and not re.search(r"(Traceback|CRITICAL(?!_SHOCK)|fail-closed|BUY BLOCKED)", line, re.IGNORECASE)
