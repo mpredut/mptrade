@@ -687,6 +687,21 @@ def test_weibull_uses_symbol_p90_days_when_qlimit1_is_bypassed(monkeypatch):
     assert "P90=6.7d" in reason_bp
 
 
+def test_normalize_bypassed_guards_accepts_frozenset():
+    """Verify normalize_bypassed_guards handles frozenset inputs (e.g. AUTONOMOUS_BYPASS_GUARDS)."""
+    from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+    from orchestratorTrade.autonomous_intent_gateway import AUTONOMOUS_BYPASS_GUARDS
+
+    assert isinstance(AUTONOMOUS_BYPASS_GUARDS, frozenset)
+    resolved = normalize_bypassed_guards(bypass_guards=AUTONOMOUS_BYPASS_GUARDS)
+    assert "all" in resolved
+    assert GUARD_REGISTRY["GO1"].is_bypassed(resolved) is True
+    assert GUARD_REGISTRY["G_PROF"].is_bypassed(resolved) is True
+    assert GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(resolved) is True
+    assert GUARD_REGISTRY["GLLM1"].is_bypassed(resolved) is True
+
+
+
 
 
 

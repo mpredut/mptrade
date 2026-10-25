@@ -282,7 +282,7 @@ def normalize_bypassed_guards(
                 p = part.strip().lower()
                 if p and p not in ("none", "off", "false", "no", "0"):
                     raw_tokens.append(p)
-        elif isinstance(bypass_guards, (set, list, tuple)):
+        elif isinstance(bypass_guards, (set, frozenset, list, tuple)):
             for item in bypass_guards:
                 p = str(item).strip().lower()
                 if p and p not in ("none", "off", "false", "no", "0"):

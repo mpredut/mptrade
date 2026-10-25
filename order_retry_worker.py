@@ -618,7 +618,12 @@ def process_once(mkt, now=None):
 
         retry_stage = "standard"
         if r.get("kind") == "monitor_order_replace":
-            existing_bypasses = set(kwargs.get("bypass_guards") or [])
+            raw_bg = kwargs.get("bypass_guards")
+            existing_bypasses = (
+                {s.strip() for s in raw_bg.split(",") if s.strip()}
+                if isinstance(raw_bg, str)
+                else set(raw_bg or [])
+            )
             existing_bypasses.update({"G_PROF", "math_reference"})
             kwargs["bypass_guards"] = sorted(list(existing_bypasses))
             if side_u == "SELL":
@@ -634,7 +639,12 @@ def process_once(mkt, now=None):
             if age_progress >= 0.75:
                 retry_stage = "salvage"
                 if side_u == "SELL":
-                    existing_bypasses = set(kwargs.get("bypass_guards") or [])
+                    raw_bg = kwargs.get("bypass_guards")
+                    existing_bypasses = (
+                        {s.strip() for s in raw_bg.split(",") if s.strip()}
+                        if isinstance(raw_bg, str)
+                        else set(raw_bg or [])
+                    )
                     existing_bypasses.update({"G_PROF", "math_reference"})
                     kwargs["bypass_guards"] = sorted(list(existing_bypasses))
                     kwargs["allow_math_reference_sell"] = True
