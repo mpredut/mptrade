@@ -53,7 +53,7 @@ AUTONOMOUS_BYPASS_GUARDS: frozenset[str] = frozenset({
     "llm",
 })
 
-_QUOTE_SUFFIXES: Tuple[str, ...] = ("USDC", "USDT", "USD", "EUR")
+_QUOTE_SUFFIXES: Tuple[str, ...] = ("USDC", "USDT", "FDUSD", "EUR", "RON", "GBP", "BTC", "ETH", "USD")
 
 
 @dataclass

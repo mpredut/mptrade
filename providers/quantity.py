@@ -6,7 +6,7 @@ import math
 from typing import Callable, Optional
 
 
-QUOTE_SUFFIXES = ("USDC", "EUR", "RON", "BTC", "ETH", "USD")
+QUOTE_SUFFIXES = ("USDC", "USDT", "FDUSD", "EUR", "RON", "GBP", "BTC", "ETH", "USD")
 
 
 def remaining_average_cost(fills, held_qty):

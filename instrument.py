@@ -417,8 +417,13 @@ class Instrument:
         # force-market sell from passing at +1% then executing below the validated
         # margin, a financial time-of-check/time-of-use issue.
         is_market = bool(kwargs.get("market", False) or kwargs.get("force", False))
-        enforce_business_minimum = not (
-            bypass_profit_guard and side_u == "SELL" and is_market)
+        caller_enforce_biz_min = kwargs.pop("enforce_business_minimum", None)
+        if caller_enforce_biz_min is not None:
+            enforce_business_minimum = bool(caller_enforce_biz_min)
+            retry_kwargs["enforce_business_minimum"] = enforce_business_minimum
+        else:
+            enforce_business_minimum = not (
+                bypass_profit_guard and side_u == "SELL" and is_market)
         profit_margin = None
         if caller_profit_margin is not None:
             try:

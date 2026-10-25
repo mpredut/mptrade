@@ -312,6 +312,108 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
         hist = api.get_price_history("HYPEUSD", 3600.0, provider_name="kraken")
         self.assertEqual(hist, [(1000, 42.5)])
 
+    def test_instrument_place_honors_caller_enforce_business_minimum_false(self):
+        """Instrument.place(..., enforce_business_minimum=False) must pass
+        enforce_business_minimum=False to quantity_decision and place_order even
+        on BUY orders (e.g. AutonomousIntentGateway $15 orders below $25 business min)."""
+        observed_flags = []
+
+        class BizMinProvider(FakeProvider):
+            def supports_business_minimum(self) -> bool:
+                return True
+
+            def order_filter_refusal(self, symbol, side, price, qty, *, market=False, enforce_business_minimum=True):
+                observed_flags.append(("filter", enforce_business_minimum))
+                if enforce_business_minimum and (price * qty) < 25.0:
+                    return "filter_business_min_notional"
+                return None
+
+            def place_order(self, symbol, side, price, qty, **kwargs):
+                observed_flags.append(("place", kwargs.get("enforce_business_minimum")))
+                return super().place_order(symbol, side, price, qty, **kwargs)
+
+        prov = BizMinProvider(name="kraken", price=15.0)
+        api = MarketApi([prov])
+        inst = Instrument(name="KRAKEN_TAO", symbol="TAOUSD", provider="kraken",
+                          base="TAO", quote="USD", api=api)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
+            lfile = os.path.join(tmpdir, "order_retry.lock")
+            with patch.object(order_retry, "QUEUE_FILE", qfile), \
+                 patch.object(order_retry, "LOCK_FILE", lfile), \
+                 patch.object(order_guard, "profit_guard", return_value=True):
+                # $15 notional BUY (price=15, qty=1.0) with enforce_business_minimum=False must succeed
+                res = inst.place(
+                    "BUY",
+                    15.0,
+                    1.0,
+                    market=True,
+                    enforce_business_minimum=False,
+                    bypass_guards={"all"},
+                )
+                self.assertIsNotNone(res)
+                self.assertIn(("filter", False), observed_flags)
+                self.assertIn(("place", False), observed_flags)
+
+    def test_resolve_assets_supports_usdt_fdusd_gbp(self):
+        from providers.quantity import resolve_assets
+        self.assertEqual(resolve_assets("BTCUSDT"), ("BTC", "USDT"))
+        self.assertEqual(resolve_assets("ETHFDUSD"), ("ETH", "FDUSD"))
+        self.assertEqual(resolve_assets("SOLGBP"), ("SOL", "GBP"))
+
+    def test_hyperliquid_order_status_does_not_use_unrelated_fill_price_for_hype_fee(self):
+        """When self._token != 'HYPE' and feeToken == 'HYPE', order_status must not
+        fall back to the non-HYPE token's fill_price if HYPE mid price is unavailable."""
+        import threading
+        from providers.hyperliquid_provider import HyperliquidProvider
+        from providers.strategy_executor import ProviderError
+
+        class FakeHLInfo:
+            def query_order_by_oid(self, addr, oid):
+                return {
+                    "status": "order",
+                    "order": {
+                        "status": "filled",
+                        "order": {"origSz": "100.0", "sz": "0.0"},
+                    },
+                }
+
+            def user_fills(self, addr):
+                return [
+                    {
+                        "oid": 777,
+                        "sz": "100.0",
+                        "px": "0.10",
+                        "fee": "0.05",
+                        "feeToken": "HYPE",
+                    }
+                ]
+
+        class FakeHLClient:
+            address = "0x123"
+            info = FakeHLInfo()
+
+            def resolve_spot_pair(self, token):
+                return None
+
+            def spot_mid(self, pair):
+                return None
+
+            def mid(self, token):
+                return None
+
+        hp = HyperliquidProvider.__new__(HyperliquidProvider)
+        hp._lock = threading.Lock()
+        hp._env_loaded = True
+        hp._token = "PURR"
+        hp._spot_pair = "@107"
+        hp._client = FakeHLClient()
+        hp._client_tried = True
+
+        with self.assertRaises(ProviderError):
+            hp.order_status("PURRUSDC", "777")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

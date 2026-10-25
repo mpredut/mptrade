@@ -668,8 +668,16 @@ class HyperliquidProvider(MarketDataProvider):
                 elif not fee_token or fee_token == "USDC":
                     fee += raw_fee
                 elif fee_token == "HYPE" and self._token != "HYPE":
-                    hype_mid = c.spot_mid(c.resolve_spot_pair("HYPE")) or fill_price
-                    fee += raw_fee * hype_mid
+                    hype_pair = c.resolve_spot_pair("HYPE")
+                    hype_mid = (
+                        (c.spot_mid(hype_pair) if hype_pair else None)
+                        or getattr(c, "mid", lambda _t: None)("HYPE")
+                    )
+                    if not hype_mid or not math.isfinite(float(hype_mid)) or float(hype_mid) <= 0:
+                        raise ProviderError(
+                            f"order_status({order_id}): cannot value HYPE fee in USDC"
+                        )
+                    fee += raw_fee * float(hype_mid)
                 else:
                     raise ProviderError(
                         f"order_status({order_id}): unknown feeToken {fee_token!r}"

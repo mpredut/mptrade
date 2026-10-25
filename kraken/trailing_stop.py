@@ -311,13 +311,15 @@ class KrakenTrailing:
                     if not st["retry_counts"]:
                         st.pop("retry_counts", None)
         if result.outcome == "terminal" and result.status.filled_qty > 0:
-            notify_action = str(result.intent.get("action") or "ORDER")
+            meta = result.intent.get("metadata") if isinstance(result.intent.get("metadata"), dict) else {}
+            notify_action = str(result.intent.get("action") or meta.get("action") or "ORDER")
+            notify_asset = result.intent.get("asset") or meta.get("asset") or result.intent.get("symbol")
             qty = result.status.filled_qty
             avg = (result.status.cost / qty
                    if result.status.cost > 0 else result.intent["requested_price"])
             notify(
                 title=f"{'🛑' if notify_action == 'SELL' else '🟢'} TRAILING "
-                      f"{result.intent.get('asset')} {notify_action} FILLED {qty:.2f}@~{avg:.2f}",
+                      f"{notify_asset} {notify_action} FILLED {qty:.2f}@~{avg:.2f}",
                 body=f"status={result.status.status} fee={result.status.fee}",
                 source="kraken-trail", price=avg, desktop=False,
             )
@@ -331,7 +333,7 @@ class KrakenTrailing:
 
         from order_guard import check_intelligence_guards
         if not ("all" in bypass_guards or "*" in bypass_guards):
-            allowed, reason, _ = check_intelligence_guards(
+            allowed, reason, suggested_scale = check_intelligence_guards(
                 self.executor._executor, pair, side.upper(), price,
                 qty=qty,
                 bypass_guards=bypass_guards,
@@ -341,6 +343,27 @@ class KrakenTrailing:
                 persist(None)
                 from order_retry import TrackedOrderResult
                 return TrackedOrderResult(outcome="refused", intent=intent, status=None)
+            if (
+                side.upper() == "BUY"
+                and suggested_scale is not None
+                and 0.0 < float(suggested_scale) < 1.0
+            ):
+                scaled_qty = float(qty) * float(suggested_scale)
+                round_fn = getattr(self.executor._executor, "round_quantity", None)
+                if callable(round_fn):
+                    try:
+                        scaled_qty = float(round_fn(pair, scaled_qty))
+                    except Exception:
+                        pass
+                min_qty_fn = getattr(self.executor._executor, "min_order_qty", None)
+                min_q = float(min_qty_fn(pair) or 0.0) if callable(min_qty_fn) else 0.0
+                if scaled_qty <= 0 or (min_q > 0 and scaled_qty < min_q):
+                    intent["refusal_reason"] = f"downscaled_below_min_qty:{reason}"
+                    persist(None)
+                    from order_retry import TrackedOrderResult
+                    return TrackedOrderResult(outcome="refused", intent=intent, status=None)
+                qty = scaled_qty
+                intent["requested_qty"] = qty
 
         result = self.order_lifecycle.submit(
             intent, persist=persist,
