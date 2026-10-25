@@ -72,18 +72,20 @@ class DerivativesTelemetryCollector:
                 cache_dir = get_cachedb_dir()
             except Exception:
                 cache_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
-        safe_sym = symbol.upper().strip().replace("/", "").replace("-", "")
+        safe_sym = symbol.upper().strip().replace("/", "").replace("-", "").replace("_", "")
         return os.path.join(cache_dir, f"derivatives_telemetry_{safe_sym}.json")
 
     def _load_from_disk(self, symbol: str, now: float) -> Optional[DerivativesTelemetry]:
+        from state_io import read_recovering_previous
         max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
         for cand in _symbol_variants(symbol):
             p = self._disk_path(cand)
-            if not p or not os.path.exists(p):
+            if not p:
                 continue
             try:
-                with open(p, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                data = read_recovering_previous(p, json.loads, default=None)
+                if not isinstance(data, dict):
+                    continue
                 telemetry = DerivativesTelemetry.from_dict(data)
                 if (now - telemetry.ts) < max_age:
                     self._cache[symbol.upper()] = (telemetry.ts, telemetry)

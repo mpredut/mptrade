@@ -495,7 +495,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
             skip_math_profit_ref
             and all(
                 GUARD_REGISTRY[gid].is_bypassed(bypassed)
-                for gid in ("G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM1", "GLLM2", "GLLM3")
+                for gid in ("GT_L", "G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM1", "GLLM2", "GLLM3")
             )
         )
     )
@@ -638,6 +638,9 @@ def place_safe_order(order_type, symbol, price, qty=None,
     # infinity here would be indistinguishable from an invalid explicit value.
     sym.validate_params(
         order_type, symbol, price, 1.0 if qty is None else qty)
+    call_kwargs = dict(kwargs)
+    if isinstance(_reason_out, dict) and "_outcome_context" not in call_kwargs:
+        call_kwargs["_outcome_context"] = _reason_out
     order = _guarded_market_place(
         symbol, order_type, price, qty,
         smart=False,
@@ -645,12 +648,13 @@ def place_safe_order(order_type, symbol, price, qty=None,
         force=force,
         cancelorders=cancelorders,
         hours=hours,
-        **kwargs,
+        **call_kwargs,
     )
     # The common pipeline logs the exact reason. Retain dict compatibility without
     # duplicating guard evaluation in the legacy chain.
     if order is None and _reason_out is not None:
-        _reason_out.setdefault("reason", "common_pipeline_refused")
+        if not _reason_out.get("reason"):
+            _reason_out["reason"] = "common_pipeline_refused"
     return order
     
 

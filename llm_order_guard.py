@@ -69,8 +69,12 @@ def evaluate_high_stake_order_guard(
         prev_notional = getattr(regime_context, "_gemini_evaluated_notional", None)
     else:
         prev_notional = None
-    if prev_notional is None and fallback_notional is not None:
-        prev_notional = entry_for_key.get("notional", fallback_notional)
+    if (
+        prev_notional is None
+        and fallback_notional is not None
+        and not (isinstance(decisions_map, dict) and cache_key in decisions_map)
+    ):
+        prev_notional = fallback_notional
 
     notional_jump = (
         prev_notional is not None
@@ -334,6 +338,11 @@ def check_llm_order_guards(
             )
         else:
             valid_context = True
+    _raw_intel_codes = ("GT_L", "G_QLIMIT1", "G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM2", "GLLM3")
+    intel_cache_key = (
+        side,
+        frozenset(code for code in _raw_intel_codes if GUARD_REGISTRY[code].is_bypassed(bypassed)),
+    )
     hs_ok, hs_reason, hs_scale = evaluate_high_stake_order_guard(
         symbol=symbol,
         side=side,
@@ -342,7 +351,7 @@ def check_llm_order_guards(
         computed_notional=computed_notional,
         regime_context=regime_context,
         valid_context=valid_context,
-        cache_key=(side, frozenset(bypassed)),
+        cache_key=intel_cache_key,
         margins=m,
         bypassed=bypassed,
         now=now,

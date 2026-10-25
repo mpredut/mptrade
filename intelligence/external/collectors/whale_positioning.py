@@ -91,18 +91,20 @@ class WhalePositioningCollector:
         cache_dir = self._effective_cache_dir()
         if not cache_dir:
             return None
-        safe_sym = symbol.upper().strip().replace("/", "").replace("-", "")
+        safe_sym = symbol.upper().strip().replace("/", "").replace("-", "").replace("_", "")
         return os.path.join(cache_dir, f"whale_snapshot_{safe_sym}.json")
 
     def _load_from_disk(self, symbol: str, now: float, *, ignore_ttl: bool = False) -> Optional[WhalePositioningSnapshot]:
+        from state_io import read_recovering_previous
         max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
         for cand in _symbol_variants(symbol):
             p = self._disk_path(cand)
-            if not p or not os.path.exists(p):
+            if not p:
                 continue
             try:
-                with open(p, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                data = read_recovering_previous(p, json.loads, default=None)
+                if not isinstance(data, dict):
+                    continue
                 snapshot = WhalePositioningSnapshot.from_dict(data)
                 if (now - snapshot.ts) < max_age:
                     self._cache[symbol.upper()] = (snapshot.ts, snapshot)

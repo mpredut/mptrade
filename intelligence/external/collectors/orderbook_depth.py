@@ -24,7 +24,9 @@ def _extract_base_asset(symbol: str) -> str:
         return s.split("/", 1)[0].strip()
     if "-" in s:
         return s.split("-", 1)[0].strip()
-    for q in ("USDC", "USDT", "EUR", "USD"):
+    if "_" in s:
+        return s.split("_", 1)[0].strip()
+    for q in ("USDC", "USDT", "FDUSD", "USD", "EUR", "RON", "GBP"):
         if s.endswith(q) and len(s) > len(q):
             return s[: -len(q)]
     return s
@@ -42,7 +44,7 @@ def _resolve_binance_lookup_symbol(symbol: str) -> str:
 
 def _symbol_variants(symbol: str) -> List[str]:
     s = (symbol or "").upper().strip()
-    safe_s = s.replace("/", "").replace("-", "")
+    safe_s = s.replace("/", "").replace("-", "").replace("_", "")
     variants: List[str] = []
     for cand in (safe_s, s):
         if cand and cand not in variants:
@@ -50,7 +52,7 @@ def _symbol_variants(symbol: str) -> List[str]:
     if safe_s != "USDCUSDT":
         base = _extract_base_asset(s)
         if base:
-            for suffix in ("USDC", "USDT", "USD"):
+            for suffix in ("USDC", "USDT", "USD", "EUR"):
                 cand = f"{base}{suffix}"
                 if cand not in variants:
                     variants.append(cand)
@@ -119,18 +121,20 @@ class OrderbookDepthCollector:
                 cache_dir = get_cachedb_dir()
             except Exception:
                 cache_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
-        safe_sym = symbol.upper().strip().replace("/", "").replace("-", "")
+        safe_sym = symbol.upper().strip().replace("/", "").replace("-", "").replace("_", "")
         return os.path.join(cache_dir, f"orderbook_depth_{safe_sym}.json")
 
     def _load_from_disk(self, symbol: str, now: float) -> Optional[OrderbookSnapshot]:
+        from state_io import read_recovering_previous
         max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
         for cand in _symbol_variants(symbol):
             p = self._disk_path(cand)
-            if not p or not os.path.exists(p):
+            if not p:
                 continue
             try:
-                with open(p, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                data = read_recovering_previous(p, json.loads, default=None)
+                if not isinstance(data, dict):
+                    continue
                 snapshot = OrderbookSnapshot.from_dict(data)
                 if (now - snapshot.ts) < max_age:
                     self._cache[symbol.upper()] = (snapshot.ts, snapshot)
@@ -163,7 +167,8 @@ class OrderbookDepthCollector:
                 if (now - cached[0]) < self.cache_ttl_sec:
                     return cached[1]
             elif isinstance(cached, OrderbookSnapshot):
-                return cached
+                if (now - cached.ts) < self.cache_ttl_sec:
+                    return cached
 
         disk_snap = self._load_from_disk(symbol, now)
         if disk_snap is not None:

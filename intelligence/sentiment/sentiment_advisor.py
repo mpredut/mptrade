@@ -58,22 +58,18 @@ class SentimentAdvisor:
         return self.cache_file
 
     def _load_from_disk(self) -> None:
+        from state_io import read_recovering_previous
         cache_file = self._effective_cache_file()
         candidates = [
             cache_file,
             cache_file.replace("sentiment_advisor_eval.json", "macro_advisor_eval.json"),
             cache_file.replace("sentiment_advisor_eval.json", "gemini_macro_advisor.json"),
         ]
-        target_file = None
         for cand in candidates:
-            if os.path.exists(cand):
-                target_file = cand
-                break
-
-        if target_file and os.path.exists(target_file):
             try:
-                with open(target_file, "r") as f:
-                    data = json.load(f)
+                data = read_recovering_previous(cand, json.loads, default=None)
+                if not isinstance(data, dict):
+                    continue
                 self._cached_assessment = SentimentAdvisorAssessment(
                     market_bias=str(data.get("market_bias", "NEUTRAL")),
                     risk_level=str(data.get("risk_level", "MODERATE")),
@@ -84,8 +80,9 @@ class SentimentAdvisor:
                     ts=float(data.get("ts", 0.0)),
                 )
                 self._last_eval_ts = self._cached_assessment.ts
+                return
             except Exception as e:
-                logger.debug("Could not load cached macro file: %s", e)
+                logger.debug("Could not load cached macro file %s: %s", cand, e)
 
     def _save_to_disk(self, assessment: SentimentAdvisorAssessment) -> None:
         cache_file = self._effective_cache_file()

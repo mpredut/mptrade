@@ -1306,16 +1306,21 @@ def check_intelligence_guards(
     if computed_notional is None and qty is not None and price > 0:
         computed_notional = price * qty
 
-    # Check if expensive static analysis is already cached on regime_context for this (side, bypassed) key
-    cache_key = (side, frozenset(bypassed))
+    # Check if expensive static analysis is already cached on regime_context for this (side, intel_bypass) key
+    _raw_intel_codes = ("GT_L", "G_QLIMIT1", "G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM2", "GLLM3")
+    cache_key = (
+        side,
+        frozenset(code for code in _raw_intel_codes if GUARD_REGISTRY[code].is_bypassed(bypassed)),
+    )
+    legacy_cache_key = (side, frozenset(bypassed))
     decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None) if valid_context else None
-    if isinstance(decisions_map, dict) and cache_key in decisions_map:
-        cached_entry = decisions_map[cache_key]
+    if isinstance(decisions_map, dict) and (cache_key in decisions_map or legacy_cache_key in decisions_map):
+        cached_entry = decisions_map.get(cache_key) or decisions_map[legacy_cache_key]
         cached_res = cached_entry.get("decision")
         cached_price = cached_entry.get("price")
         cached_notional = cached_entry.get("notional")
         cached_dur = float(cached_entry.get("trend_duration_seconds") or 0.0)
-    elif valid_context and getattr(regime_context, "_intelligence_decision_key", cache_key) == cache_key:
+    elif valid_context and getattr(regime_context, "_intelligence_decision_key", cache_key) in (cache_key, legacy_cache_key):
         cached_res = getattr(regime_context, "_intelligence_decision", None)
         cached_price = getattr(regime_context, "_intelligence_price", None)
         cached_notional = getattr(regime_context, "_intelligence_notional", None)

@@ -81,16 +81,17 @@ class GeopoliticalThreatAnalyzer:
         return self.state_file
 
     def _load_from_disk(self) -> None:
-        target_file = self._effective_state_file()
-        if not os.path.exists(target_file):
-            legacy = target_file.replace("geopolitical_threat_eval.json", "geopolitical_threat_state.json")
-            if os.path.exists(legacy):
-                target_file = legacy
-
-        if os.path.exists(target_file):
+        from state_io import read_recovering_previous
+        state_file = self._effective_state_file()
+        candidates = [
+            state_file,
+            state_file.replace("geopolitical_threat_eval.json", "geopolitical_threat_state.json"),
+        ]
+        for cand in candidates:
             try:
-                with open(target_file, "r") as f:
-                    data = json.load(f)
+                data = read_recovering_previous(cand, json.loads, default=None)
+                if not isinstance(data, dict):
+                    continue
                 summary_str = str(data.get("summary", ""))
                 is_fb = bool(data.get("is_fallback", "LLM fallback" in summary_str))
                 self._cached_assessment = GeopoliticalThreatAssessment(
@@ -104,8 +105,9 @@ class GeopoliticalThreatAnalyzer:
                 )
                 self._last_eval_ts = self._cached_assessment.ts
                 self._last_headlines_digest = str(data.get("headlines_digest", ""))
+                return
             except Exception as e:
-                logger.debug("Could not load cached geopolitical state: %s", e)
+                logger.debug("Could not load cached geopolitical state %s: %s", cand, e)
 
     def _save_to_disk(self, assessment: GeopoliticalThreatAssessment) -> None:
         state_file = self._effective_state_file()

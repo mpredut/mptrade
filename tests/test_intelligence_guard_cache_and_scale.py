@@ -2568,6 +2568,134 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert med_d == 4.0
         assert gauss_h == 14.0
 
+    def test_iteration9_intel_cache_key_high_stake_eval_orderbook_ttl_and_macro_recovery(self, tmp_path, monkeypatch):
+        """Regression test for Iteration 9 fixes:
+        1. check_intelligence_guards reuses cached static evaluation when non-intel guards (GO1, G_PROF, GLLM1)
+           are in bypass_guards, and evaluate_high_stake_order_guard still runs GLLM1 when a prior call on
+           the same regime_context bypassed GLLM1.
+        2. OrderbookDepthCollector.fetch enforces cache_ttl_sec on direct OrderbookSnapshot entries and
+           normalizes underscore/quote variants (_extract_base_asset, _symbol_variants).
+        3. SentimentAdvisor._load_from_disk and GeopoliticalThreatAnalyzer._load_from_disk recover .previous
+           or fall back to legacy files when the primary file is corrupted.
+        4. bapi_placeorder.place_safe_order propagates exact refusal reason into _reason_out.
+        """
+        from intelligence.external.collectors.orderbook_depth import (
+            OrderbookDepthCollector,
+            OrderbookSnapshot,
+            _extract_base_asset,
+            _symbol_variants,
+        )
+        from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+        from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+        from intelligence.internal.guards.guard_decision import GuardDecision
+        import binance_api.bapi_placeorder as bapi_placeorder
+
+        # 1. check_intelligence_guards cache hit across G_PROF/GLLM1 bypass & GLLM1 re-eval when un-bypassed
+        ctx = _build_test_context()
+        raw_calls = []
+        orig_raw = order_guard._evaluate_intelligence_guards_raw
+
+        def spy_raw(*a, **kw):
+            raw_calls.append(1)
+            return orig_raw(*a, **kw)
+
+        hs_calls = []
+
+        def fake_hs_check(self, symbol, side, price, qty, notional_eur=None, **kw):
+            hs_calls.append((symbol, side, notional_eur))
+            return GuardDecision.veto("gemini", "HighStake vetoed after GLLM1 un-bypassed")
+
+        monkeypatch.setattr(order_guard, "_evaluate_intelligence_guards_raw", spy_raw)
+        monkeypatch.setattr(
+            "intelligence.sentiment.guards.high_stake_guard.HighStakeGuard.check",
+            fake_hs_check,
+        )
+        monkeypatch.setattr(
+            order_guard,
+            "_load_margins",
+            lambda: _margins(
+                internal_guard_mode="off",
+                intelligence_guards_mode="enforce",
+                whale_guard_mode="off",
+                orderbook_wall_guard_mode="off",
+                funding_guard_mode="off",
+                geopolitical_guard_mode="off",
+                llm_guard_mode="enforce",
+                high_stake_min_notional_usd=700.0,
+                regime_context_max_age_sec=120.0,
+            ),
+        )
+
+        class MockProv:
+            name = "binance"
+
+        # Call 1: bypass_guards={"G_PROF", "GLLM1"} at notional=1000 -> populates static cache, skips GLLM1
+        ok1, reason1, _ = order_guard.check_intelligence_guards(
+            MockProv(), "BTCUSDC", "BUY", 100.0, regime_context=ctx, qty=10.0, bypass_guards={"G_PROF", "GLLM1"}
+        )
+        assert ok1 is True
+        assert len(raw_calls) == 1
+        assert len(hs_calls) == 0
+
+        # Call 2: bypass_guards={"GO1"} (GLLM1 now active!) at same notional=1000 -> must hit static cache AND run GLLM1!
+        ok2, reason2, _ = order_guard.check_intelligence_guards(
+            MockProv(), "BTCUSDC", "BUY", 100.0, regime_context=ctx, qty=10.0, bypass_guards={"GO1"}
+        )
+        assert len(raw_calls) == 1  # Static evaluation reused from Call 1!
+        assert len(hs_calls) == 1   # GLLM1 was NOT tricked by Call 1's static notional!
+        assert ok2 is False
+        assert "HighStake vetoed" in reason2
+
+        # 2. OrderbookDepthCollector TTL on direct OrderbookSnapshot & underscore symbol variants
+        assert _extract_base_asset("TAO_USD") == "TAO"
+        assert _extract_base_asset("BTCFDUSD") == "BTC"
+        assert "TAOUSDC" in _symbol_variants("TAO_USD")
+        ob_col = OrderbookDepthCollector(cache_ttl_sec=5.0, cache_dir=str(tmp_path))
+        ob_col._cache["BTCUSDC"] = OrderbookSnapshot(
+            symbol="BTCUSDC", mid_price=85000.0, bid_depth_usd=1000.0, ask_depth_usd=1000.0,
+            imbalance_ratio=0.5, largest_bid_wall_usd=100.0, largest_bid_wall_price=84900.0,
+            largest_ask_wall_usd=100.0, largest_ask_wall_price=85100.0, ts=1.0,
+        )
+        assert ob_col.fetch("BTCUSDC", allow_network=False) is None
+
+        # 3. SentimentAdvisor & GeopoliticalThreatAnalyzer recover .previous or legacy file when primary is corrupt
+        sa_file = tmp_path / "sentiment_advisor_eval.json"
+        sa_legacy = tmp_path / "macro_advisor_eval.json"
+        sa_file.write_text("{corrupt", encoding="utf-8")
+        sa_legacy.write_text(
+            json.dumps({"market_bias": "BEARISH", "risk_level": "HIGH", "confidence": 0.9, "summary": "ok", "key_risks": [], "recommended_action": "DEFENSIVE", "ts": 1234.0}),
+            encoding="utf-8",
+        )
+        sa = SentimentAdvisor(cache_file=str(sa_file))
+        assert sa._cached_assessment is not None
+        assert sa._cached_assessment.market_bias == "BEARISH"
+
+        geo_file = tmp_path / "geopolitical_threat_eval.json"
+        geo_prev = tmp_path / "geopolitical_threat_eval.json.previous"
+        geo_file.write_text("{corrupt", encoding="utf-8")
+        geo_prev.write_text(
+            json.dumps({"threat_level": "ELEVATED", "risk_score": 0.65, "summary": "recovered", "recommended_brake": "DOWNSCALE_50", "headlines_analyzed": 5, "ts": 5678.0}),
+            encoding="utf-8",
+        )
+        geo = GeopoliticalThreatAnalyzer(state_file=str(geo_file))
+        assert geo._cached_assessment is not None
+        assert geo._cached_assessment.threat_level == "ELEVATED"
+
+        # 4. place_safe_order forwards _reason_out as _outcome_context
+        def fake_guarded_place(symbol, order_type, price, qty, **kw):
+            ctx_out = kw.get("_outcome_context")
+            if isinstance(ctx_out, dict):
+                ctx_out["reason"] = "trend_deferred"
+            return None
+
+        monkeypatch.setattr(bapi_placeorder, "_guarded_market_place", fake_guarded_place)
+        monkeypatch.setattr(bapi_placeorder.sym, "validate_params", lambda *a, **k: None)
+        reason_box = {}
+        res_order = bapi_placeorder.place_safe_order("BUY", "BTCUSDC", 85000.0, 0.01, _reason_out=reason_box)
+        assert res_order is None
+        assert reason_box.get("reason") == "trend_deferred"
+
+
 
 
 
