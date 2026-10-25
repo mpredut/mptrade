@@ -313,6 +313,7 @@ def valid_record(rec):
 
 
 _CONSOLIDATED_DEFERRAL_REASONS = frozenset({
+    "daily_limit",
     "trend_deferred",
     "medium_trend_deferred",
     "medium_trend_qty_zero",

@@ -625,8 +625,15 @@ class MarketApi:
         provider = self._provider_explicit_or_routed(symbol, provider_name)
         return provider.get_current_price(symbol)
 
-    def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
-        return self._provider_for(symbol).get_price_history(symbol, lookback_h)
+    def get_price_history(
+        self, symbol: str, lookback_h: float, *, provider_name=None,
+    ) -> Optional[List]:
+        provider = (
+            self._provider_explicit_or_routed(symbol, provider_name)
+            if provider_name is not None
+            else self._provider_for(symbol)
+        )
+        return provider.get_price_history(symbol, lookback_h)
 
     # -- Account routing by symbol/asset, normalized by provider. ---------------
     def free_balance(self, asset: str) -> Optional[float]:
@@ -644,8 +651,15 @@ class MarketApi:
             raise ValueError(f"Unknown provider: {provider_name!r}")
         return provider.free_balance(asset)
 
-    def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
-        return self._provider_for(symbol).get_orders(symbol, side, since_s)
+    def get_orders(
+        self, symbol: str, side: Optional[str], since_s: float, *, provider_name=None,
+    ) -> List[dict]:
+        provider = (
+            self._provider_explicit_or_routed(symbol, provider_name)
+            if provider_name is not None
+            else self._provider_for(symbol)
+        )
+        return provider.get_orders(symbol, side, since_s)
 
     def get_trades(self, symbol: str, since_s: float, *,
                    provider_name=None) -> List[dict]:

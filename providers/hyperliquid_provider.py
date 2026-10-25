@@ -167,14 +167,20 @@ class HyperliquidProvider(MarketDataProvider):
         with self._lock:
             if self._client is not None or self._client_tried:
                 return self._client
-            self._client_tried = True
             self._load_env()
             try:
                 # A missing secret creates a read-only Info client.
                 self._client = self._new_client()
+                self._client_tried = True
+            except ImportError as e:
+                print(f"[HL] client unavailable (SDK missing): {e}")
+                self._client_tried = True
+                self._client = None
             except Exception as e:  # noqa: BLE001
                 print(f"[HL] client unavailable (SDK/connection): {e}")
                 self._client = None
+                if "SDK unavailable" in str(e):
+                    self._client_tried = True
         return self._client
 
     def _pair(self) -> Optional[str]:

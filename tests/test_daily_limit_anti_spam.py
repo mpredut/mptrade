@@ -228,6 +228,90 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
                 res = inst.place("SELL", 100.0, 1.0, bypass_guards={"all"}, kind="STOP")
                 self.assertIsNotNone(res)
 
+    def test_daily_limit_deferral_consolidates_when_retry_dedup_disabled(self):
+        """When RETRY_DEDUP=False, repeated GO1 'daily_limit' blocks for the same
+        (provider, symbol, side, kind) must consolidate into a single pending retry
+        record instead of piling up duplicates."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            qfile = os.path.join(tmpdir, "order_retry_queue.jsonl")
+            lfile = os.path.join(tmpdir, "order_retry.lock")
+            with patch.object(order_retry, "QUEUE_FILE", qfile), \
+                 patch.object(order_retry, "LOCK_FILE", lfile), \
+                 patch.object(order_retry, "RETRY_DEDUP", False):
+                rec1 = order_retry.enqueue(
+                    "HYPEUSD",
+                    "BUY",
+                    1.0,
+                    requested_price=40.0,
+                    failure_reason="daily_limit",
+                    provider_name="kraken",
+                    kind="ENTRY",
+                )
+                rec2 = order_retry.enqueue(
+                    "HYPEUSD",
+                    "BUY",
+                    1.2,
+                    requested_price=41.5,
+                    failure_reason="daily_limit",
+                    provider_name="kraken",
+                    kind="ENTRY",
+                )
+                self.assertIsNotNone(rec1)
+                self.assertIsNotNone(rec2)
+                pending = order_retry._read_nolock()
+                self.assertEqual(len(pending), 1)
+                self.assertAlmostEqual(pending[0]["requested_price"], 41.5)
+                self.assertAlmostEqual(pending[0]["qty"], 1.2)
+
+    def test_hyperliquid_transient_startup_timeout_does_not_permanently_disable_client(self):
+        """A transient network timeout during HyperliquidProvider._new_client() must not
+        permanently set _client_tried=True; subsequent calls must retry initialization."""
+        import threading
+        from providers.hyperliquid_provider import HyperliquidProvider
+
+        hp = HyperliquidProvider.__new__(HyperliquidProvider)
+        hp._lock = threading.Lock()
+        hp._env_loaded = True
+        hp._client = None
+        hp._client_tried = False
+
+        call_count = {"n": 0}
+        fake_sdk_client = object()
+
+        def flaky_new_client():
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise TimeoutError("HTTPSConnectionPool(host='api.hyperliquid.xyz', port=443): Read timed out.")
+            return fake_sdk_client
+
+        hp._new_client = flaky_new_client
+        # First call fails transiently -> returns None, _client_tried remains False
+        self.assertIsNone(hp._hl())
+        self.assertFalse(hp._client_tried)
+        # Second call succeeds and caches the client
+        self.assertIs(hp._hl(), fake_sdk_client)
+        self.assertTrue(hp._client_tried)
+
+    def test_market_api_get_orders_and_price_history_explicit_provider_routing(self):
+        """MarketApi.get_orders and get_price_history must honor explicit provider_name
+        even when the provider's supports_symbol() returns False (e.g. KrakenProvider)."""
+        class ExplicitOnlyProvider(FakeProvider):
+            def supports_symbol(self, symbol: str) -> bool:
+                return False
+
+            def get_price_history(self, symbol: str, lookback_sec: float):
+                return [(1000, 42.5)]
+
+        kraken_prov = ExplicitOnlyProvider(name="kraken")
+        default_prov = FakeProvider(name="binance")
+        kraken_prov.seed_trade("BUY", age_sec=10.0, symbol="HYPEUSD")
+
+        api = MarketApi([default_prov, kraken_prov])
+        orders = api.get_orders("HYPEUSD", "BUY", 3600.0, provider_name="kraken")
+        self.assertEqual(len(orders), 1)
+        hist = api.get_price_history("HYPEUSD", 3600.0, provider_name="kraken")
+        self.assertEqual(hist, [(1000, 42.5)])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
