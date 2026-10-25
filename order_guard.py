@@ -1309,6 +1309,7 @@ def check_intelligence_guards(
 
     was_cached = cached_res is not None
     if cached_res is None:
+        raw_bypass = (bypassed | {"gllm1"}) if valid_context else bypassed
         cached_res = _evaluate_intelligence_guards_raw(
             provider,
             symbol,
@@ -1320,7 +1321,7 @@ def check_intelligence_guards(
             qty=qty,
             notional_eur=computed_notional,
             now=now,
-            bypass_guards=bypassed,
+            bypass_guards=raw_bypass,
         )
         if valid_context:
             try:

@@ -1919,6 +1919,140 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert allowed is True
         assert scale == pytest.approx(1.0)
 
+    def test_gllm1_high_stake_decision_does_not_leak_to_sub_700_orders_on_shared_context(self, monkeypatch):
+        """Bug 1 regression: If Order 1 (>= $700) on a shared MarketRegimeContext is blocked or downscaled by GLLM1,
+        Order 2 (< $700) on the same context must NOT be blocked or downscaled by GLLM1."""
+        from intelligence.internal.guards.guard_decision import GuardDecision
+
+        margins = _margins(
+            internal_guard_mode="enforce",
+            intelligence_guards_mode="enforce",
+            llm_guard_mode="enforce",
+            high_stake_min_notional_usd=700.0,
+            regime_context_max_age_sec=120.0,
+        )
+        monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
+
+        calls = []
+        gemini_result = [GuardDecision.veto("HighStakeGuard", "gemini_high_stake_veto")]
+
+        def fake_gemini_check(self, symbol, side, price, qty, notional_eur=None, **kw):
+            calls.append(notional_eur)
+            return gemini_result[0]
+
+        monkeypatch.setattr(
+            "intelligence.sentiment.guards.high_stake_guard.HighStakeGuard.check",
+            fake_gemini_check,
+        )
+
+        # Case A: Order 1 ($1500) vetoed by GLLM1 -> Order 2 ($100) on same context must pass (1.0)
+        ctx_veto = _build_test_context()
+        ok1, reason1, scale1 = order_guard.check_intelligence_guards(
+            "binance", "BTCUSDC", "BUY", 100.0, qty=15.0, notional_eur=1500.0, regime_context=ctx_veto
+        )
+        assert ok1 is False
+        assert "gemini_high_stake_veto" in reason1
+        assert len(calls) == 1
+
+        ok2, reason2, scale2 = order_guard.check_intelligence_guards(
+            "binance", "BTCUSDC", "BUY", 100.0, qty=1.0, notional_eur=100.0, regime_context=ctx_veto
+        )
+        assert ok2 is True
+        assert scale2 == pytest.approx(1.0)
+        assert len(calls) == 1
+
+        # Case B: Order 1 ($1500) downscaled (0.25) by GLLM1 -> Order 2 ($100) on same context must have scale 1.0
+        ctx_scale = _build_test_context()
+        calls.clear()
+        gemini_result[0] = GuardDecision.downscale("HighStakeGuard", 0.25, "gemini_high_stake_downscale")
+
+        ok3, reason3, scale3 = order_guard.check_intelligence_guards(
+            "binance", "BTCUSDC", "BUY", 100.0, qty=15.0, notional_eur=1500.0, regime_context=ctx_scale
+        )
+        assert ok3 is True
+        assert scale3 == pytest.approx(0.25)
+        assert getattr(ctx_scale, "suggested_scale", None) == pytest.approx(0.25)
+        assert len(calls) == 1
+
+        ok4, reason4, scale4 = order_guard.check_intelligence_guards(
+            "binance", "BTCUSDC", "BUY", 100.0, qty=1.0, notional_eur=100.0, regime_context=ctx_scale
+        )
+        assert ok4 is True
+        assert scale4 == pytest.approx(1.0)
+        assert getattr(ctx_scale, "suggested_scale", None) == pytest.approx(1.0)
+        assert len(calls) == 1
+
+    def test_gaussian_horizon_and_collector_symbol_variants_normalization(self, tmp_path, monkeypatch):
+        """Bug 2 & Bug 3 regression: resolve_cached_gaussian_horizon normalizes cross-venue/case symbols,
+        and _symbol_variants prioritizes USDC before USDT and supports bare base assets."""
+        import qlimit_order_guard
+        from intelligence.internal.state import survival
+        from intelligence.external.collectors.orderbook_depth import (
+            OrderbookDepthCollector,
+            OrderbookSnapshot,
+            _symbol_variants,
+        )
+
+        # 1. Verify _symbol_variants prioritizes USDC before USDT and supports bare base symbols
+        variants_tao = _symbol_variants("TAOUSD")
+        assert variants_tao.index("TAOUSDC") < variants_tao.index("TAOUSDT")
+        variants_bare = _symbol_variants("HYPE")
+        assert "HYPEUSDC" in variants_bare
+        assert "HYPEUSDT" in variants_bare
+        assert variants_bare.index("HYPEUSDC") < variants_bare.index("HYPEUSDT")
+
+        # 2. Verify in-memory cache lookup across symbol variants in OrderbookDepthCollector
+        ob_col = OrderbookDepthCollector(cache_ttl_sec=30.0, cache_dir=str(tmp_path))
+        ob_col.record_snapshot(
+            OrderbookSnapshot(
+                symbol="TAOUSDC",
+                mid_price=450.0,
+                bid_depth_usd=100_000.0,
+                ask_depth_usd=100_000.0,
+                imbalance_ratio=0.5,
+                largest_bid_wall_usd=10_000.0,
+                largest_bid_wall_price=449.0,
+                largest_ask_wall_usd=10_000.0,
+                largest_ask_wall_price=451.0,
+                ts=time.time(),
+            ),
+            save_to_disk=False,
+        )
+        mem_hit = ob_col.fetch("TAOUSD", allow_network=False)
+        assert mem_hit is not None
+        assert mem_hit.mid_price == pytest.approx(450.0)
+
+        # 3. Verify resolve_cached_gaussian_horizon and get_trend_survival_metrics resolve TAOUSD / taousdc -> TAOUSDC
+        t_cache = tmp_path / "cache_T_trend.json"
+        t_cache.write_text(
+            json.dumps({
+                "TAOUSDC": {
+                    "T": 6.1,
+                    "median_d": 3.0,
+                    "p90_d": 9.8,
+                    "ts": time.time(),
+                }
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(survival, "T_CACHE_FILE", str(t_cache))
+
+        p90_d, med_d, gauss_h = qlimit_order_guard.resolve_cached_gaussian_horizon("TAOUSD")
+        assert p90_d == pytest.approx(9.8)
+        assert med_d == pytest.approx(3.0)
+        assert gauss_h == pytest.approx(round(6.1 * 1.4, 4))
+
+        p90_lower, med_lower, gauss_lower = qlimit_order_guard.resolve_cached_gaussian_horizon("taousdc")
+        assert p90_lower == pytest.approx(9.8)
+        assert med_lower == pytest.approx(3.0)
+        assert gauss_lower == pytest.approx(round(6.1 * 1.4, 4))
+
+        metrics = survival.get_trend_survival_metrics("TAO/USD", trend_duration_seconds=5.0 * 86400.0)
+        assert metrics["p90_days"] == pytest.approx(9.8)
+        assert metrics["median_days"] == pytest.approx(3.0)
+        assert metrics["T"] == pytest.approx(6.1)
+
+
 
 
 

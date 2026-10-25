@@ -261,7 +261,11 @@ class WhalePositioningCollector:
         """Fetch latest whale positioning metrics from public Binance Futures endpoints."""
         symbol = symbol.upper()
         now = time.time()
-        cached = self._cache.get(symbol)
+        cached = None
+        for cand in _symbol_variants(symbol):
+            cached = self._cache.get(cand)
+            if cached is not None:
+                break
         if cached:
             if isinstance(cached, tuple) and len(cached) >= 2:
                 if (now - cached[0]) < self.cache_ttl_sec:

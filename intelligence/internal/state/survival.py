@@ -142,6 +142,33 @@ def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, 
     }
 
 
+def _extract_base_symbol(symbol: str) -> str:
+    s = (symbol or "").upper().strip().replace("/", "").replace("-", "").replace("_", "")
+    for quote in ("USDC", "USDT", "BUSD", "FDUSD", "EUR", "USD"):
+        if s.endswith(quote) and len(s) > len(quote):
+            return s[: -len(quote)]
+    return s
+
+
+def _lookup_t_cache_entry(data: Dict[str, Any], symbol: str) -> Optional[dict]:
+    if not isinstance(data, dict) or not symbol:
+        return None
+    sym_u = symbol.upper().strip()
+    ent = data.get(symbol) or data.get(sym_u)
+    if isinstance(ent, dict):
+        return ent
+    target_base = _extract_base_symbol(sym_u)
+    if target_base:
+        for suffix in ("USDC", "USDT", "USD"):
+            cand = data.get(f"{target_base}{suffix}")
+            if isinstance(cand, dict):
+                return cand
+        for k, v in data.items():
+            if isinstance(v, dict) and _extract_base_symbol(str(k)) == target_base:
+                return v
+    return None
+
+
 def estimate_T(
     symbol: str,
     days: int = 540,
@@ -158,11 +185,18 @@ def estimate_T(
     except (OSError, ValueError):
         pass
 
-    ent = cache.get(symbol)
+    ent = _lookup_t_cache_entry(cache, symbol)
     if ent and time.time() - ent.get("ts", 0) < ttl_days * 86400:
         return ent
 
-    candidates = [symbol]
+    sym_u = (symbol or "").upper().strip()
+    base = _extract_base_symbol(sym_u)
+    candidates = [sym_u] if sym_u else [symbol]
+    if base and sym_u != "USDCUSDT":
+        for suffix in ("USDC", "USDT"):
+            cand = f"{base}{suffix}"
+            if cand not in candidates:
+                candidates.append(cand)
     ts = px = None
     used = None
     for sym in candidates:
@@ -224,7 +258,7 @@ def get_trend_survival_metrics(symbol: str, trend_duration_seconds: float = 0.0)
         try:
             with open(T_CACHE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                cached_entry = data.get(symbol)
+                cached_entry = _lookup_t_cache_entry(data, symbol)
         except Exception:
             cached_entry = None
 

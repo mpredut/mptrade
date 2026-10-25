@@ -177,6 +177,18 @@ class LLMGuard(BaseGuard):
     """Guards powered by LLM reasoning (live pre-trade, 3h sentiment advisor, 4.5h geopolitical)."""
     category = "llm"
 
+    def is_bypassed(self, bypassed_guards: set[str]) -> bool:
+        if not bypassed_guards:
+            return False
+        return bool(
+            "all" in bypassed_guards
+            or "*" in bypassed_guards
+            or "gllm" in bypassed_guards
+            or self.code.lower() in bypassed_guards
+            or self.canonical in bypassed_guards
+            or bool(bypassed_guards.intersection(self.aliases))
+        )
+
 
 class LLMHighStakeGuardSpec(LLMGuard):
     code = "GLLM1"
@@ -301,12 +313,18 @@ def normalize_bypassed_guards(
     if "all" in bypassed or "*" in bypassed:
         bypassed.update({
             "all", "*", "profit_guard", "operational", "trend",
-            "profit", "qlimit", "financial", "intelligence", "llm",
+            "profit", "qlimit", "financial", "intelligence", "llm", "gllm",
         })
         for g in GUARD_INSTANCES:
             bypassed.update(g.aliases)
             bypassed.add(g.canonical)
             bypassed.add(g.code.lower())
+
+    # Distinguish category-wide 'llm' / 'gllm' from GLLM1's 'llm' alias when re-normalizing
+    gllm1_specific = {"gllm1", "llm_high_stake", "high_stake", "ai"}
+    llm_category_requested = "gllm" in bypassed or (
+        "llm" in bypassed and not bool(bypassed.intersection(gllm1_specific))
+    )
 
     # Expand category groups and short prefixes
     category_shortcuts = {
@@ -323,7 +341,11 @@ def normalize_bypassed_guards(
             bypassed.add(cat_name)
 
     for cat_name, cat_guards in GUARD_CATEGORIES.items():
+        if cat_name == "llm" and not llm_category_requested:
+            continue
         if cat_name in bypassed:
+            if cat_name == "llm":
+                bypassed.add("gllm")
             for g in cat_guards:
                 bypassed.update(g.aliases)
                 bypassed.add(g.canonical)

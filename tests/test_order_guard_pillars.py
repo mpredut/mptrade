@@ -701,6 +701,32 @@ def test_normalize_bypassed_guards_accepts_frozenset():
     assert GUARD_REGISTRY["GLLM1"].is_bypassed(resolved) is True
 
 
+def test_gllm1_bypass_does_not_leak_to_gllm2_or_gllm3():
+    """Bug 4 regression: bypassing GLLM1 individually must NOT bypass GLLM2 or GLLM3 via category collision,
+    even when normalize_bypassed_guards is called multiple times (idempotent), whereas bypassing
+    category 'llm' or 'gllm' bypasses all three."""
+    from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+
+    only_gllm1 = normalize_bypassed_guards(bypass_guards={"GLLM1"})
+    assert "llm" in only_gllm1
+    assert "gllm3" not in only_gllm1
+    assert GUARD_REGISTRY["GLLM1"].is_bypassed(only_gllm1) is True
+    assert GUARD_REGISTRY["GLLM2"].is_bypassed(only_gllm1) is False
+    assert GUARD_REGISTRY["GLLM3"].is_bypassed(only_gllm1) is False
+
+    # Re-normalizing must be idempotent and still not leak into GLLM2/GLLM3
+    renormalized = normalize_bypassed_guards(bypass_guards=only_gllm1)
+    assert renormalized == only_gllm1
+    assert GUARD_REGISTRY["GLLM3"].is_bypassed(renormalized) is False
+
+    all_llm = normalize_bypassed_guards(bypass_guards={"llm"})
+    assert GUARD_REGISTRY["GLLM1"].is_bypassed(all_llm) is True
+    assert GUARD_REGISTRY["GLLM2"].is_bypassed(all_llm) is True
+    assert GUARD_REGISTRY["GLLM3"].is_bypassed(all_llm) is True
+
+
+
+
 
 
 
