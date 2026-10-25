@@ -8,9 +8,13 @@ from binance.client import Client
 _client = None
 
 # Keep the local timestamp slightly behind server time so jitter cannot trigger Binance
-# -1021 timestamp-ahead errors while remaining well within the five-second receive window.
+# -1021 timestamp-ahead errors while remaining well within the receive window.
 TIME_SAFETY_MARGIN_MS = 1000
 TIME_RESYNC_INTERVAL_SEC = 5 * 60
+
+# Use a 30s receive window (Binance allows up to 60s) so that urllib3 GET retries after a
+# 10s socket timeout + backoff do not expire the originally signed timestamp (default 5s).
+REQUEST_RECVWINDOW_MS = 30 * 1000
 
 # Resilience against brief DNS/network failures: a REST call without a timeout may hang
 # indefinitely, blocking cacheManager updates until the cache is stale and the watchdog
@@ -48,13 +52,48 @@ def sync_time(safety_margin_ms=TIME_SAFETY_MARGIN_MS):
     if _client is None:
         return None
     try:
+        t0_ms = int(time.time() * 1000)
         server_ms = _client.get_server_time()["serverTime"]
-        local_ms = int(time.time() * 1000)
+        t1_ms = int(time.time() * 1000)
+        local_ms = (t0_ms + t1_ms) // 2
         _client.timestamp_offset = server_ms - local_ms - safety_margin_ms
         return _client.timestamp_offset
     except Exception as e:
         print(f"[bapi_client] sync_time failed: {e}")
         return None
+
+
+def _install_recvwindow_retry(cl):
+    """Resynchronize server time and retry once when a signed request fails with -1021.
+
+    A -1021 error means Binance rejected the request at the pre-execution timestamp gate
+    before matching or mutating any account state, so re-signing with a fresh timestamp
+    after ``sync_time()`` is safe and prevents transient clock drift or slow network
+    retries from dropping balance/order polls.
+    """
+    orig_request = getattr(cl, "_request", None)
+    if not callable(orig_request) or getattr(cl, "_recvwindow_retry_installed", False):
+        return
+
+    def _request_with_recvwindow_retry(method, uri, signed, force_params=False, **kwargs):
+        saved_data = dict(kwargs["data"]) if isinstance(kwargs.get("data"), dict) else None
+        saved_kwargs = dict(kwargs)
+        try:
+            return orig_request(method, uri, signed, force_params=force_params, **kwargs)
+        except Exception as exc:
+            if not signed or getattr(exc, "code", None) != -1021:
+                raise
+            sync_time()
+            retry_kwargs = dict(saved_kwargs)
+            if saved_data is not None:
+                clean_data = dict(saved_data)
+                clean_data.pop("timestamp", None)
+                clean_data.pop("signature", None)
+                retry_kwargs["data"] = clean_data
+            return orig_request(method, uri, signed, force_params=force_params, **retry_kwargs)
+
+    cl._request = _request_with_recvwindow_retry
+    cl._recvwindow_retry_installed = True
 
 
 def _start_periodic_resync():
@@ -107,9 +146,11 @@ def getClient():
         if not api_key or not api_secret:
             raise ValueError("BINANCE_API_KEY and BINANCE_API_SECRET are required for the REST client")
         _client = Client(api_key, api_secret, requests_params={"timeout": REQUEST_TIMEOUT_SEC})
-        _install_retry(_client)      # Retry transient GET failures, never POST/order placement.
-        sync_time()                 # Initial server-time alignment.
-        _start_periodic_resync()    # Maintain alignment over time.
+        _client.REQUEST_RECVWINDOW = REQUEST_RECVWINDOW_MS
+        _install_retry(_client)             # Retry transient GET failures, never POST/order placement.
+        _install_recvwindow_retry(_client)  # Re-sync and re-sign once on -1021 recvWindow rejection.
+        sync_time()                         # Initial server-time alignment.
+        _start_periodic_resync()            # Maintain alignment over time.
     return _client
 
 

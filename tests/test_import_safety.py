@@ -107,6 +107,43 @@ class RuntimeImportSafetyTest(unittest.TestCase):
             text=True, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_bapi_client_recvwindow_and_minus_1021_resync_retry(self):
+        from unittest.mock import MagicMock, patch
+        from binance_api import bapi_client
+
+        class _RecvWindowError(Exception):
+            code = -1021
+
+        calls = []
+
+        class _DummyClient:
+            def __init__(self):
+                self.session = MagicMock()
+                self.REQUEST_RECVWINDOW = None
+                self.timestamp_offset = 0
+
+            def get_server_time(self):
+                return {"serverTime": 1_700_000_005_000}
+
+            def _request(self, method, uri, signed, force_params=False, **kwargs):
+                data = kwargs.get("data")
+                calls.append(dict(data) if isinstance(data, dict) else data)
+                if len(calls) == 1:
+                    if isinstance(data, dict):
+                        data["timestamp"] = 111
+                        data["signature"] = "stale_sig"
+                    raise _RecvWindowError("Timestamp outside recvWindow")
+                return {"ok": True, "data": data}
+
+        dummy = _DummyClient()
+        bapi_client._install_recvwindow_retry(dummy)
+        with patch.object(bapi_client, "_client", dummy):
+            res = dummy._request("get", "https://api.binance.com/api/v3/account", True, data={"symbol": "BTCUSDC"})
+        self.assertEqual(res["ok"], True)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1], {"symbol": "BTCUSDC"})
+        self.assertEqual(bapi_client.REQUEST_RECVWINDOW_MS, 30000)
+
 
 if __name__ == "__main__":
     unittest.main()
