@@ -519,7 +519,12 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
 
     try:
         current_price = api.get_current_price(symbol)
-        if current_price is not None and math.isfinite(float(current_price)) and float(current_price) > 0:
+        if (
+            current_price is not None
+            and not isinstance(current_price, bool)
+            and math.isfinite(float(current_price))
+            and float(current_price) > 0
+        ):
             if order_type == "BUY":
                 price = round(min(price, float(current_price)), 8)
             else:  # SELL
@@ -789,11 +794,19 @@ def adjust_price_and_cancel_opposite(order_type, symbol, price,
     if cancel_opposite:
         cancel_opposite_orders(order_type, symbol, price)
     current_price = api.get_current_price(symbol)
-    if current_price and current_price > 0:
+    try:
+        cp = (
+            float(current_price)
+            if current_price is not None and not isinstance(current_price, bool)
+            else None
+        )
+    except (TypeError, ValueError, OverflowError):
+        cp = None
+    if cp is not None and math.isfinite(cp) and cp > 0:
         if order_type == "BUY":
-            price = min(price, current_price) * 0.999
+            price = min(price, cp) * 0.999
         elif order_type == "SELL":
-            price = max(price, current_price) * (1 + 0.001)
+            price = max(price, cp) * (1 + 0.001)
     try:
         from providers.market_api import api as mkt
         price = mkt.round_price(symbol, price)
@@ -809,7 +822,7 @@ def order_candidate_price(order_type, requested_price, current_price, *, market=
     side = str(order_type).upper()
     if side not in {"BUY", "SELL"}:
         raise ValueError("order_type must be BUY or SELL")
-    if current_price is None:
+    if current_price is None or isinstance(current_price, bool):
         return requested_price
     try:
         cp = float(current_price)

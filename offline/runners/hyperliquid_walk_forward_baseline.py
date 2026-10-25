@@ -74,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--intervals", type=_parse_intervals, default=[60, 240, 1440])
     parser.add_argument("--fee", type=float, default=None, help="fee per leg (pct), defaults to HL_FEE_PCT")
-    add_walk_forward_cli_args(parser, include_warmup=False)
+    add_walk_forward_cli_args(parser, include_warmup=True, default_warmup=0)
     parser.add_argument(
         "--dataset", action="append", default=[], metavar="INTERVAL=PATH",
         help="frozen dataset CSV path for an interval (e.g. 60=path/to/candles.csv)",
@@ -96,6 +96,8 @@ def main(argv: list[str] | None = None) -> int:
     coin = (args.coin or cfg.get("HL_COIN", "HYPE")).strip().upper()
     direction = (args.direction or cfg.get("HL_DIRECTION", "long")).strip().lower()
     fee_pct = args.fee if args.fee is not None else float(cfg.get("HL_FEE_PCT", "0.035"))
+    if fee_pct < 0:
+        parser.error("--fee cannot be negative")
 
     if args.engine == "spot":
         strat_params = SpotStratParams.from_env(env=cfg)
@@ -178,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
             validation_size=val_size,
             test_size=test_size,
             step_size=step_size,
-            warmup_bars=0,
+            warmup_bars=args.warmup,
             validate_contract=True,
         )
 
@@ -209,6 +211,7 @@ def main(argv: list[str] | None = None) -> int:
                 "validation": val_size,
                 "test": test_size,
                 "step": step_size,
+                "signal_warmup_bars": args.warmup,
             },
             "evidence": evidence,
             "aggregate_test": wf_result["aggregate_test"],

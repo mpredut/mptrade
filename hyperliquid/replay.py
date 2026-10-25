@@ -246,7 +246,7 @@ def _run_once(
             avg = strategy._avg()
             if avg:
                 loss_pct = -strategy.sign * (worst_px - avg) / avg * 100.0
-                if loss_pct >= strategy.p.stop_loss_pct:
+                if loss_pct >= strategy.p.stop_loss_pct - 1e-9:
                     sl_level = avg * (1.0 - strategy.sign * strategy.p.stop_loss_pct / 100.0)
                     raw_exec_px = min(o, sl_level) if strategy.sign > 0 else max(o, sl_level)
                     exec_px = exec_model.market_price(close_side, raw_exec_px)

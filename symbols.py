@@ -41,10 +41,20 @@ def validate_params(order_type, symbol, price = 1, qty = 1):
     if order_type not in ['BUY', 'SELL']:
         raise ValueError(f"Invalid order_type '{order_type}'. It must be either 'BUY' or 'SELL'.")
     
-    if not isinstance(price, (int, float)) or price <= 0:
+    if (
+        isinstance(price, bool)
+        or not isinstance(price, (int, float))
+        or not math.isfinite(price)
+        or price <= 0
+    ):
         raise ValueError(f"Invalid price '{price}'. Price must be a positive number.")
     
-    if not isinstance(qty, (int, float)) or qty <= 0:
+    if (
+        isinstance(qty, bool)
+        or not isinstance(qty, (int, float))
+        or not math.isfinite(qty)
+        or qty <= 0
+    ):
         raise ValueError(f"Invalid quantity '{qty}'. Quantity must be a positive number.")
     
     if symbol not in symbols:

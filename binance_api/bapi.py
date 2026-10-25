@@ -130,8 +130,21 @@ def get_account_assets_balances(raise_errors=False):
         balances = account.get("balances", [])
         result = []
         for balance in balances:
-            free_qty = float(balance.get("free", 0.0))
-            locked_qty = float(balance.get("locked", 0.0))
+            if not isinstance(balance, dict):
+                raise TypeError(f"invalid balance entry: {balance!r}")
+            raw_free = balance.get("free", 0.0)
+            raw_locked = balance.get("locked", 0.0)
+            if isinstance(raw_free, bool) or isinstance(raw_locked, bool):
+                raise TypeError(f"invalid boolean balance fields: {balance!r}")
+            free_qty = float(raw_free)
+            locked_qty = float(raw_locked)
+            if (
+                not math.isfinite(free_qty)
+                or free_qty < 0
+                or not math.isfinite(locked_qty)
+                or locked_qty < 0
+            ):
+                raise ValueError(f"invalid non-finite or negative balance: {balance!r}")
             total_qty = free_qty + locked_qty
             if total_qty <= 0:
                 if balance.get('asset') in sym.symbols:

@@ -800,6 +800,32 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         summ = bybit_col.get_summary("BTCUSDT")
         self.assertEqual(summ.short_liq_usd, 200.0)
 
+        # 16. symbols.validate_params rejects booleans, NaN, and inf; bapi.get_account_assets_balances rejects non-finite/negative/bool
+        import symbols as sym_mod
+        for bad_val in (True, False, float("nan"), float("inf"), float("-inf"), 0, -1):
+            with self.assertRaises(ValueError):
+                sym_mod.validate_params("BUY", SYMBOL, price=bad_val, qty=1.0)
+            with self.assertRaises(ValueError):
+                sym_mod.validate_params("BUY", SYMBOL, price=100.0, qty=bad_val)
+
+        fake_client.get_account.return_value = {"balances": [{"asset": "BTC", "free": True, "locked": "0.0"}]}
+        with mock.patch.object(bapi_mod, "client", fake_client):
+            self.assertEqual(bapi_mod.get_account_assets_balances(), [])
+            fake_client.get_account.return_value = {"balances": [{"asset": "BTC", "free": "nan", "locked": "0.0"}]}
+            self.assertEqual(bapi_mod.get_account_assets_balances(), [])
+            fake_client.get_account.return_value = {"balances": [{"asset": "BTC", "free": "-1.0", "locked": "0.0"}]}
+            self.assertEqual(bapi_mod.get_account_assets_balances(), [])
+
+        with mock.patch.object(po.api, "get_current_price", return_value=float("inf")):
+            self.assertEqual(
+                po.adjust_price_and_cancel_opposite("SELL", SYMBOL, 100.0, cancel_opposite=False),
+                100.0,
+            )
+            self.assertEqual(
+                po.order_candidate_price("BUY", 100.0, True),
+                100.0,
+            )
+
 
 
 if __name__ == "__main__":

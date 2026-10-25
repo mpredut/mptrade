@@ -59,6 +59,8 @@ def main(argv: list[str] | None = None) -> int:
         "--output-dir", type=Path, default=ROOT / "offline/results/binance_walk_forward",
     )
     args = parser.parse_args(argv)
+    if args.fee < 0:
+        parser.error("--fee cannot be negative")
 
     cfg: dict[str, str] = {}
     for path_str in (args.config_file, args.env_file):
@@ -102,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
     for interval in args.intervals:
         frozen_path = supplied_datasets.get(interval)
         source_label = "frozen_csv"
-        if frozen_path and frozen_path.exists():
+        if frozen_path is not None:
             records = load_frozen_dataset(frozen_path)
         else:
             source_label = "binance_public_klines"
@@ -165,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
                 "validation": val_size,
                 "test": test_size,
                 "step": step_size,
+                "signal_warmup_bars": args.warmup,
             },
             "evidence": evidence,
             "aggregate_test": wf_result["aggregate_test"],

@@ -764,4 +764,49 @@ def test_hyperliquid_sz_decimals_spot_fallback_and_exact_sl_boundary():
     assert strat._check_stop_loss(sl_level) is True
 
 
+def test_walk_forward_baseline_missing_dataset_and_warmup_persistence(tmp_path):
+    import json
+    from unittest.mock import patch
+    from offline.runners import binance_walk_forward_baseline as bwf
+    from offline.runners import hyperliquid_walk_forward_baseline as hwf
+
+    # 1. Explicit missing --dataset must raise FileNotFoundError in binance_walk_forward_baseline
+    missing_csv = tmp_path / "does_not_exist.csv"
+    try:
+        bwf.main([
+            "--intervals", "60",
+            "--dataset", f"60={missing_csv}",
+            "--output-dir", str(tmp_path / "out_b"),
+        ])
+        assert False, "Expected FileNotFoundError for missing explicit --dataset"
+    except FileNotFoundError:
+        pass
+
+    # 2. Negative --fee must be rejected in both runners
+    for mod in (bwf, hwf):
+        try:
+            mod.main(["--fee", "-0.1", "--output-dir", str(tmp_path / "out_neg")])
+            assert False, "Expected SystemExit for negative --fee"
+        except SystemExit as exc:
+            assert exc.code != 0
+
+    # 3. hyperliquid_walk_forward_baseline accepts --warmup and records signal_warmup_bars in windows
+    fake_records = [
+        {"timestamp": 1700000000 + i * 3600, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}
+        for i in range(40)
+    ]
+    out_hl = tmp_path / "out_hl"
+    with patch.object(hwf, "fetch_ohlc_candles", return_value=fake_records):
+        rc = hwf.main([
+            "--intervals", "60",
+            "--coin", "HYPE",
+            "--warmup", "5",
+            "--output-dir", str(out_hl),
+        ])
+        assert rc == 0
+    hl_report = json.loads((out_hl / "HYPE_60m_baseline.json").read_text(encoding="utf-8"))
+    assert hl_report["windows"]["signal_warmup_bars"] == 5
+
+
+
 
