@@ -1392,7 +1392,7 @@ def _can_pass_buy_quantity_policy(
     """Verify whether provider balance, 24h weight policy, and intelligence/geopolitical
     scaling permit a valid executable BUY quantity before invoking external AI guards
     (PostStopReentryGuard)."""
-    provider = getattr(inst, "provider", None)
+    provider = getattr(inst, "provider", None) or getattr(inst, "_provider", None)
     if provider is None or isinstance(provider, str):
         return True
     if not callable(getattr(provider, "quantity_decision", None)):
@@ -1532,7 +1532,7 @@ def _apply_post_stop_ai_guard(
         _trough_px = reentry_snap.post_sell_trough or min(sell_price, current_price)
         _bounce_ratio = reentry_snap.bounce_ratio(_trough_px)
         _est_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
-        provider = getattr(inst, "provider", None) if inst is not None else None
+        provider = (getattr(inst, "provider", None) or getattr(inst, "_provider", None)) if inst is not None else None
         if (
             provider is not None
             and not isinstance(provider, str)

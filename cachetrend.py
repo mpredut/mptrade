@@ -168,11 +168,14 @@ class CacheLongTrendManager(CacheManagerInterface):
             print(f"[{self.cls_name}] Could not read {trend_filename}: {exc}")
             return []
 
-        if not isinstance(data, dict) or symbol not in data:
+        if not isinstance(data, dict):
             return []
-        # An explicitly published null is a neutral snapshot, distinct from a
-        # missing symbol. Preserve it so stale in-memory trends are cleared.
-        return [data[symbol]]
+        for cand in _short_trend_symbol_variants(symbol):
+            if cand in data:
+                # An explicitly published null is a neutral snapshot, distinct from a
+                # missing symbol. Preserve it so stale in-memory trends are cleared.
+                return [data[cand]]
+        return []
 
 
 CacheLongTrend = CacheLongTrendManager

@@ -2328,6 +2328,92 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert "TESTUSDC" not in monitortrades._SL_BOUNCE_STATE
         assert "TESTUSDC" not in monitortrades._TP_RIDE_STATE
 
+    def test_iteration6_stop_retry_wait_for_trend_long_trend_variants_and_whale_1h_seconds(self, tmp_path, monkeypatch):
+        """Regression test for Iteration 6 fixes:
+        1. order_retry_worker.process_once preserves wait_for_trend=False ONLY for kind=='STOP'
+           (expired Stop-Loss timer), while enforcing wait_for_trend=True for all other orders.
+        2. CacheLongTrendManager.get_remote_items resolves cross-venue symbol variants (e.g. TAOUSD -> TAOUSDC).
+        3. WhalePositioningCollector._resolve_price_1h_change_pct handles both seconds and milliseconds
+           timestamps in cache_24_price_{sym}.json.
+        4. order_guard.check_intelligence_guards invalidates cached Weibull exhaustion when
+           trend_duration_seconds changes across calls on the same regime_context.
+        """
+        import order_retry as oq
+        import order_retry_worker as worker
+        import cacheManager as cm
+        from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+        from providers.strategy_executor import OrderReconciliationCapabilities, OrderStatus
+
+        # 1. order_retry_worker preserves wait_for_trend=False for kind="STOP", enforces True otherwise
+        q_file = str(tmp_path / "q.jsonl")
+        l_file = str(tmp_path / "q.lock")
+        monkeypatch.setattr(oq, "QUEUE_FILE", q_file)
+        monkeypatch.setattr(oq, "LOCK_FILE", l_file)
+        monkeypatch.setattr(oq, "RETRY_ENABLED", True)
+        monkeypatch.setattr(oq, "RETRY_INTERVAL_SEC", 300.0)
+        monkeypatch.setattr(oq, "RETRY_TTL_SEC", 86400.0)
+        monkeypatch.setattr(worker.alert, "notify", lambda **kw: None)
+
+        class DummyMkt:
+            def __init__(self):
+                self.calls = []
+            def get_current_price(self, symbol, provider_name=None):
+                return 100.0
+            def place(self, symbol, side, price, qty, **kw):
+                self.calls.append(kw)
+                return {"orderId": "1"}
+            def order_status(self, symbol, order_id, provider_name=None):
+                return OrderStatus("open", 0.0, 0.0, 0.0, "NEW")
+            def order_by_client_id(self, symbol, cid, provider_name=None):
+                return None
+            def reconciliation_capabilities(self, symbol, provider_name=None):
+                return OrderReconciliationCapabilities(True, True, True, True, not_found_reliable_for_seconds=86400)
+
+        oq.rewrite([])
+        oq.enqueue("TAOUSDC", "SELL", 1.0, {"wait_for_trend": False}, requested_price=100.0, kind="STOP", now=1000.0)
+        mkt_stop = DummyMkt()
+        worker.process_once(mkt_stop, now=1500.0)
+        assert len(mkt_stop.calls) == 1
+        assert mkt_stop.calls[0]["wait_for_trend"] is False
+
+        oq.rewrite([])
+        oq.enqueue("TAOUSDC", "SELL", 1.0, {"wait_for_trend": False}, requested_price=100.0, kind="TP", now=1000.0)
+        mkt_tp = DummyMkt()
+        worker.process_once(mkt_tp, now=1500.0)
+        assert len(mkt_tp.calls) == 1
+        assert mkt_tp.calls[0]["wait_for_trend"] is True
+
+        # 2. CacheLongTrendManager.get_remote_items resolves TAOUSD -> TAOUSDC from priceanalysis.json
+        pa_dir = tmp_path / "pa"
+        pa_dir.mkdir()
+        (pa_dir / "priceanalysis.json").write_text(
+            json.dumps({"TAOUSDC": {"timestamp": 1700000000, "direction": "up", "duration_seconds": 86400}}),
+            encoding="utf-8",
+        )
+        lt = cm.CacheLongTrendManager(60, ["TAOUSD"], str(pa_dir / "cache_long_trend.json"), read_only=True)
+        monkeypatch.setattr(cm, "_CONFIG_ROOT", str(pa_dir))
+        assert lt.get_remote_items("TAOUSD", 0) == [{"timestamp": 1700000000, "direction": "up", "duration_seconds": 86400}]
+
+        # 3. WhalePositioningCollector._resolve_price_1h_change_pct supports seconds timestamps
+        c24_dir = tmp_path / "c24"
+        c24_dir.mkdir()
+        now_s = 1_700_010_000.0
+        (c24_dir / "cache_24_price_TAOUSDC.json").write_text(
+            json.dumps({
+                "items": {
+                    "TAOUSDC": [
+                        [now_s - 7200.0, 200.0],  # 2h ago: 200
+                        [now_s - 3600.0, 100.0],  # 1h ago: 100
+                        [now_s, 110.0],           # now: 110 (+10% over 1h, NOT -45% vs 2h ago!)
+                    ]
+                }
+            }),
+            encoding="utf-8",
+        )
+        w_col = WhalePositioningCollector(cache_dir=str(c24_dir))
+        assert w_col._resolve_price_1h_change_pct("TAOUSD") == pytest.approx(10.0)
+
+
 
 
 

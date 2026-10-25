@@ -147,12 +147,15 @@ class WhalePositioningCollector:
                 elif isinstance(items_dict, list):
                     pts = items_dict
                 if pts and len(pts) >= 2:
-                    now_ms = pts[-1][0]
-                    target_ms = now_ms - 3600.0 * 1000.0
+                    raw_last_ts = float(pts[-1][0])
+                    now_sec = raw_last_ts / 1000.0 if raw_last_ts > 1e11 else raw_last_ts
+                    target_sec = now_sec - 3600.0
                     latest_p = float(pts[-1][1])
                     ref_p = float(pts[0][1])
                     for pt in reversed(pts):
-                        if pt[0] <= target_ms:
+                        raw_pt_ts = float(pt[0])
+                        pt_sec = raw_pt_ts / 1000.0 if raw_pt_ts > 1e11 else raw_pt_ts
+                        if pt_sec <= target_sec:
                             ref_p = float(pt[1])
                             break
                     if ref_p > 0:

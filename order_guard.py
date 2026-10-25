@@ -1169,14 +1169,15 @@ def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> O
     for c in (safe_su, su, f"{su_base}USDC", f"{su_base}USDT", f"{su_base}USD", su_base):
         if c and "/" not in c and c not in cand_symbols:
             cand_symbols.append(c)
-    p24 = os.path.join(cachedb_dir, f"cache_24_price_{safe_su}.json")
+    p24_paths: List[str] = []
     for cand in cand_symbols:
         p_cand = os.path.join(cachedb_dir, f"cache_24_price_{cand}.json")
-        if os.path.exists(p_cand):
-            p24 = p_cand
-            break
-    data = _read_json_recovering(p24)
-    if isinstance(data, dict):
+        if p_cand not in p24_paths:
+            p24_paths.append(p_cand)
+    for p24 in p24_paths:
+        data = _read_json_recovering(p24)
+        if not isinstance(data, dict):
+            continue
         try:
             items_map = data.get("items", {})
             raw_items = None
@@ -1206,6 +1207,8 @@ def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> O
                             history.append((ts_sec, px))
                     except (ValueError, TypeError, OverflowError):
                         continue
+            if history:
+                break
         except Exception:
             pass
 
@@ -1311,21 +1314,32 @@ def check_intelligence_guards(
         cached_res = cached_entry.get("decision")
         cached_price = cached_entry.get("price")
         cached_notional = cached_entry.get("notional")
+        cached_dur = float(cached_entry.get("trend_duration_seconds") or 0.0)
     elif valid_context and getattr(regime_context, "_intelligence_decision_key", cache_key) == cache_key:
         cached_res = getattr(regime_context, "_intelligence_decision", None)
         cached_price = getattr(regime_context, "_intelligence_price", None)
         cached_notional = getattr(regime_context, "_intelligence_notional", None)
+        cached_dur = float(getattr(regime_context, "_intelligence_trend_duration_seconds", 0.0) or 0.0)
     else:
         cached_res = None
         cached_price = None
         cached_notional = None
+        cached_dur = 0.0
 
     if (
         cached_res is not None
-        and not cached_res[0]
-        and side in ("BUY", "SELL")
-        and ("parabolic_surge" in str(cached_res[1]) or "parabolic_dump" in str(cached_res[1]))
-        and (price != cached_price or now is not None)
+        and (
+            (
+                not cached_res[0]
+                and side in ("BUY", "SELL")
+                and ("parabolic_surge" in str(cached_res[1]) or "parabolic_dump" in str(cached_res[1]))
+                and (price != cached_price or now is not None)
+            )
+            or (
+                "weibull_exhaustion" in str(cached_res[1])
+                and float(trend_duration_seconds or 0.0) != cached_dur
+            )
+        )
     ):
         cached_res = None
 
@@ -1356,12 +1370,14 @@ def check_intelligence_guards(
                     "decision": cached_res,
                     "price": price,
                     "notional": computed_notional,
+                    "trend_duration_seconds": float(trend_duration_seconds or 0.0),
                 }
                 object.__setattr__(regime_context, "_intelligence_decisions_by_key", decisions_map)
                 object.__setattr__(regime_context, "_intelligence_decision_key", cache_key)
                 object.__setattr__(regime_context, "_intelligence_decision", cached_res)
                 object.__setattr__(regime_context, "_intelligence_price", price)
                 object.__setattr__(regime_context, "_intelligence_notional", computed_notional)
+                object.__setattr__(regime_context, "_intelligence_trend_duration_seconds", float(trend_duration_seconds or 0.0))
             except Exception:
                 pass
 

@@ -70,6 +70,11 @@ class ProcessOnceTest(unittest.TestCase):
         worker._ALERTED_PRODUCER_QUARANTINES.clear()
         worker._ALERTED_RECONCILIATION_QUARANTINES.clear()
         worker._ALERTED_TERMINALS.clear()
+        import cacheManager as cm
+        fake_stm = SimpleNamespace(should_wait=lambda *a, **k: False)
+        stm_patcher = patch.object(cm, "get_short_trend_manager", return_value=fake_stm)
+        stm_patcher.start()
+        self.addCleanup(stm_patcher.stop)
 
     def test_retry_execution_lifecycle_and_provider_routing(self):
         with self.subTest("acceptance_stays_tracked_until_fill"):

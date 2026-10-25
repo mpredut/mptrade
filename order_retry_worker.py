@@ -633,7 +633,11 @@ def process_once(mkt, now=None):
                 kwargs["allow_math_reference_sell"] = True
             kwargs["wait_for_trend"] = True
         else:
-            kwargs["wait_for_trend"] = True
+            is_stop_expired_timer = (
+                str(r.get("kind") or kwargs.get("kind") or "").strip().upper() == "STOP"
+                and kwargs.get("wait_for_trend") is False
+            )
+            kwargs["wait_for_trend"] = False if is_stop_expired_timer else True
             cur_pm = kwargs.get("profit_margin")
             try:
                 cur_pm_f = float(cur_pm) if cur_pm is not None else None
