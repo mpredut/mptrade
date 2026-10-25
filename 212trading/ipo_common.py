@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repository root
 from botcore import (  # noqa: E402,F401  (re-export: compat `from ipo_common import ...`)
@@ -18,7 +19,7 @@ from botcore import (  # noqa: E402,F401  (re-export: compat `from ipo_common im
     required_env, required_float_env, required_int_env, required_bool_env,
 )
 
-ET = timezone(timedelta(hours=-4))        # US Eastern summer time (EDT)
+ET = ZoneInfo("America/New_York")
 
 
 def load_t212_environment(env_file: str, *, profile_file: str | None = None) -> None:

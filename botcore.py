@@ -21,10 +21,11 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 HTTP_TIMEOUT = 25
-BUCHAREST = timezone(timedelta(hours=3))   # EEST in summer
+BUCHAREST = ZoneInfo("Europe/Bucharest")
 
 _LOCKS: dict = {}   # retain open lock fds for process lifetime; prevent garbage collection
 
