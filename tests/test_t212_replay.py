@@ -859,6 +859,30 @@ class T212CancellationLifecycleTest(unittest.TestCase):
             self.assertEqual(len(records_all), 3)
             self.assertEqual(records_all[-1]["close"], 103.0)
 
+        # Truncated or null quote arrays do not raise IndexError or TypeError
+        truncated_payload = {
+            "chart": {
+                "result": [{
+                    "meta": {},
+                    "timestamp": [now - 7200, now - 3600, now],
+                    "indicators": {
+                        "quote": [{
+                            "open": [100.0],
+                            "high": [102.0, 103.0],
+                            "low": [99.0],
+                            "close": [101.0],
+                        }]
+                    }
+                }],
+                "error": None,
+            }
+        }
+        mock_resp.read.return_value = json.dumps(truncated_payload).encode("utf-8")
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            records_trunc = _md.fetch_yahoo_candles("NVDA", "1d", "1h", drop_incomplete=False)
+            self.assertEqual(len(records_trunc), 1)
+            self.assertEqual(records_trunc[0]["close"], 101.0)
+
 
 if __name__ == "__main__":
     unittest.main()

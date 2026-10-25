@@ -155,14 +155,21 @@ def asymptotic_decrease(initial_procent, expired_duration, passs, half_life_dura
     :param half_life_duration: The default value after which the percentage is halved (24 hours in seconds)
     :return: The adjusted percentage based on `passs`
     """
+    if half_life_duration <= 0:
+        return 0.0
+    if expired_duration <= 0 or passs <= 0:
+        return initial_procent
     k = expired_duration / half_life_duration  # Calculate the constant k
     return initial_procent / (1 + k * passs)  # Asymptotic decrease formula
 
 
 def exponential_decrease(initial_procent, expired_duration, passs, half_life_duration=24*60*60):
     """Decreases the percentage exponentially as `passs` increases."""
-    T = half_life_duration / expired_duration  # Calculate the time constant T
-    return initial_procent * math.exp(-passs / T)  # Exponential decrease formula using e
+    if half_life_duration <= 0:
+        return 0.0
+    if expired_duration <= 0 or passs <= 0:
+        return initial_procent
+    return initial_procent * math.exp(-(expired_duration * passs) / half_life_duration)
     
 def decrese_value_by_increment_exp(increment_factor, value, coeficient=0.05):
     adjustment_v0 = value / (increment_factor + 1)

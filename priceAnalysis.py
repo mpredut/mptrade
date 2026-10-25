@@ -145,10 +145,14 @@ def weighted_moving_average(prices: np.ndarray, window: int) -> np.ndarray:
     """
     Calculate the weighted moving average, giving newer values greater weight.
     """
-    wma = np.zeros_like(prices)
+    if len(prices) == 0 or window <= 0:
+        return np.zeros_like(prices, dtype=float)
+    window = min(int(window), len(prices))
+    wma = np.zeros_like(prices, dtype=float)
     weights = np.arange(1, window + 1)
+    weight_sum = float(np.sum(weights))
     for i in range(window - 1, len(prices)):
-        wma[i] = np.sum(prices[i - window + 1:i + 1] * weights) / np.sum(weights)
+        wma[i] = np.sum(prices[i - window + 1:i + 1] * weights) / weight_sum
     return wma
 
 
@@ -160,12 +164,16 @@ def trend_wma(symbol: str, window_hours: int = 6):
 
     data = sorted(data, key=lambda x: x[0])
     timestamps, prices = zip(*data)
-    timestamps = np.array(timestamps)
-    prices = np.array(prices)
+    timestamps = np.array(timestamps, dtype=float)
+    if timestamps[-1] > 1e11:
+        timestamps = timestamps / 1000.0
+    prices = np.array(prices, dtype=float)
 
-    delta = np.median(np.diff(timestamps))
-    points_per_hour = int(3600 / delta)
-    window = points_per_hour * window_hours
+    delta = float(np.median(np.diff(timestamps)))
+    if not np.isfinite(delta) or delta <= 0:
+        return None
+    points_per_hour = max(1, int(round(3600.0 / delta)))
+    window = max(1, min(points_per_hour * window_hours, len(prices)))
 
     wma_prices = weighted_moving_average(prices, window)
 
@@ -252,18 +260,22 @@ def getTrendLongTerm(symbol: str, window_hours: int = 24, step_hours: int = 8,
     
     # Select the last N days.
     cutoff_timestamp = time.time() - (lookback_days * 86400)
-    data = [(ts, p) for ts, p in data if ts/1000 > cutoff_timestamp]
-    
+    data = [(ts, p) for ts, p in data if (ts / 1000.0 if ts > 1e11 else ts) > cutoff_timestamp]
+    if len(data) < 2:
+        return None
     
     timestamps, prices = zip(*data)
-    timestamps = np.array(timestamps) / 1000  # Convert milliseconds to seconds.
-    prices = np.array(prices)
+    timestamps = np.array(timestamps, dtype=float)
+    if timestamps[-1] > 1e11:
+        timestamps = timestamps / 1000.0  # Convert milliseconds to seconds.
+    prices = np.array(prices, dtype=float)
     
-    delta = np.median(np.diff(timestamps))
-    points_per_hour = int(3600 / delta) # Price points per hour.
-    window = points_per_hour * window_hours # Points per window.
-    window = min(window, len(prices))       # window size is never larger than the number of price points:
-    step = points_per_hour * step_hours     # Points per step.
+    delta = float(np.median(np.diff(timestamps)))
+    if not np.isfinite(delta) or delta <= 0:
+        return None
+    points_per_hour = max(1, int(round(3600.0 / delta))) # Price points per hour.
+    window = max(1, min(points_per_hour * window_hours, len(prices))) # Points per window.
+    step = max(1, points_per_hour * step_hours)     # Points per step.
     
     _dbg(f"[DEBUG] {symbol}: numar puncte={len(prices)}, window={window}, step={step}, delta(s)={delta}")
     _dbg(f"[DEBUG] {symbol}: window count={len(prices)/window}, step count in price {len(prices)/step}")

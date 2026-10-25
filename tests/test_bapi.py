@@ -705,6 +705,49 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             120.0,
         )
 
+        # 11. binance_api.market_data.fetch_ohlc_candles paginates across 1000-candle pages even when limit_per_batch > 1000
+        import json
+        from binance_api import market_data as b_md
+        import utils as u_mod
+
+        page1 = [[1_700_000_000_000 + i * 60_000, "100", "101", "99", "100", "10", 1_700_000_059_999] for i in range(1000)]
+        page2 = [[1_700_000_000_000 + (1000 + i) * 60_000, "100", "101", "99", "100", "10", 1_700_000_059_999] for i in range(200)]
+        calls = []
+
+        class _FakeResp:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self):
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def _fake_urlopen(req, timeout=20):
+            calls.append(req.full_url)
+            return _FakeResp(page1 if len(calls) == 1 else page2)
+
+        with mock.patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+            candles = b_md.fetch_ohlc_candles(
+                "BTCUSDC",
+                1,
+                start_ms=1_700_000_000_000,
+                end_ms=1_700_100_000_000,
+                limit_per_batch=1500,
+                drop_incomplete=False,
+            )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(candles), 1200)
+
+        # 12. utils.exponential_decrease and asymptotic_decrease handle zero expired_duration safely
+        self.assertEqual(u_mod.exponential_decrease(1.5, 0, 5), 1.5)
+        self.assertEqual(u_mod.asymptotic_decrease(1.5, 0, 5), 1.5)
+        self.assertEqual(u_mod.exponential_decrease(1.5, 60, 5, half_life_duration=0), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

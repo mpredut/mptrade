@@ -77,13 +77,17 @@ def fetch_yahoo_candles(
         error = payload.get("chart", {}).get("error")
         raise RuntimeError(f"Yahoo returned no data for {symbol}: {error}")
     timestamps = result.get("timestamp") or []
-    quote = (result.get("indicators", {}).get("quote") or [{}])[0]
+    quote = (result.get("indicators", {}).get("quote") or [{}])[0] or {}
+    opens = quote.get("open") or []
+    highs = quote.get("high") or []
+    lows = quote.get("low") or []
+    closes = quote.get("close") or []
+    series_len = min(len(opens), len(highs), len(lows), len(closes))
     records = []
     for index, timestamp in enumerate(timestamps):
-        values = (
-            quote.get("open", [])[index], quote.get("high", [])[index],
-            quote.get("low", [])[index], quote.get("close", [])[index],
-        )
+        if timestamp is None or index >= series_len:
+            continue
+        values = (opens[index], highs[index], lows[index], closes[index])
         if None in values:
             continue
         records.append({

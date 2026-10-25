@@ -125,9 +125,16 @@ class HLClient:
 
     def sz_decimals(self, coin: str) -> int:
         meta = self._meta().get(coin)
-        if not meta or "szDecimals" not in meta:
-            raise HLError(f"Missing size precision metadata for {coin}")
-        return int(meta["szDecimals"])
+        if meta and "szDecimals" in meta:
+            return int(meta["szDecimals"])
+        try:
+            spot_meta = self.info.spot_meta() if hasattr(self.info, "spot_meta") else {}
+            for token in (spot_meta or {}).get("tokens", []):
+                if isinstance(token, dict) and token.get("name") == coin and "szDecimals" in token:
+                    return int(token["szDecimals"])
+        except Exception:  # noqa: BLE001
+            pass
+        raise HLError(f"Missing size precision metadata for {coin}")
 
     def max_leverage(self, coin: str) -> int:
         meta = self._meta().get(coin)

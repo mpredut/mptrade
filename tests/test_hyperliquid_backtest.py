@@ -726,3 +726,42 @@ def test_walk_forward_compare_preserves_zero_fee():
     assert hl_fee == 0.0
 
 
+def test_hyperliquid_sz_decimals_spot_fallback_and_exact_sl_boundary():
+    import types
+    hl_client_spec = importlib.util.spec_from_file_location("hl_client_test_mod", os.path.join(_HL_DIR, "hl_client.py"))
+    hl_client_mod = importlib.util.module_from_spec(hl_client_spec)
+    hl_client_spec.loader.exec_module(hl_client_mod)
+
+    dummy = object.__new__(hl_client_mod.HLClient)
+    dummy._meta_cache = {}
+    dummy._sz_decimals_cache = {}
+    dummy.info = types.SimpleNamespace(
+        meta=lambda: {"universe": [{"name": "BTC", "szDecimals": 5}]},
+        spot_meta=lambda: {"tokens": [{"name": "PURR", "szDecimals": 1}]},
+    )
+    assert dummy.sz_decimals("BTC") == 5
+    assert dummy.sz_decimals("PURR") == 1
+    try:
+        dummy.sz_decimals("UNKNOWN_COIN")
+        assert False, "Expected HLError for unknown coin"
+    except hl_client_mod.HLError:
+        pass
+
+    # Exact intrabar stop_loss boundary (where IEEE-754 (avg - sl_level) / avg * 100 is 4.999999999999995 < 5.0)
+    Strategy = hl_replay.Strategy
+    StratParams = hl_replay.StratParams
+    strat = Strategy(
+        client=None,
+        coin="HYPE",
+        params=StratParams(direction="long", stop_loss_pct=5.0),
+        dry_run=True,
+        replay_mode=True,
+        initial_state={},
+    )
+    avg_px = 29.37
+    strat._apply_open(1.0, avg_px, avg_px, "ENTRY")
+    sl_level = avg_px * (1.0 - 5.0 / 100.0)
+    assert strat._check_stop_loss(sl_level) is True
+
+
+

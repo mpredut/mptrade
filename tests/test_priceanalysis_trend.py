@@ -134,6 +134,39 @@ class TestBoundedPlotIndices(unittest.TestCase):
         with self.subTest(msg="empty_series"):
             self.assertEqual(pa._bounded_plot_indices(0, max_points=5_000).size, 0)
 
+    def test_wma_and_legacy_trend_edge_cases(self):
+        with self.subTest(msg="weighted_moving_average_clamps_window"):
+            self.assertEqual(pa.weighted_moving_average(np.array([]), 5).size, 0)
+            np.testing.assert_array_equal(pa.weighted_moving_average(np.array([10.0, 20.0]), 0), np.array([0.0, 0.0]))
+            wma = pa.weighted_moving_average(np.array([10.0, 20.0]), 10)
+            self.assertAlmostEqual(float(wma[-1]), (10.0 + 40.0) / 3.0)
+
+        with self.subTest(msg="trend_wma_handles_ms_timestamps_and_large_delta"):
+            # Coarse 4h bars in milliseconds
+            ts_ms = [1_700_000_000_000 + i * 4 * 3600 * 1000 for i in range(10)]
+            data_ms = [[t, 100.0 + i * 2.0] for i, t in enumerate(ts_ms)]
+            with patch.object(pa, "priceLstFor", return_value=data_ms), patch.object(pa.plt, "show"):
+                res = pa.trend_wma("TESTUSDC", window_hours=8)
+            self.assertEqual(res["direction"], "up")
+
+            # Duplicate timestamps -> delta <= 0 -> None instead of ZeroDivisionError
+            with patch.object(pa, "priceLstFor", return_value=[[1000, 10.0], [1000, 11.0]]):
+                self.assertIsNone(pa.trend_wma("TESTUSDC"))
+
+        with self.subTest(msg="getTrendLongTerm_handles_post_cutoff_single_point_and_coarse_delta"):
+            now_s = time.time()
+            # Only 1 point remains within cutoff
+            sparse = [[now_s - 40 * 86400, 100.0], [now_s - 60, 105.0]]
+            with patch.object(pa, "priceLstFor", return_value=sparse):
+                self.assertIsNone(pa.getTrendLongTerm("TESTUSDC", lookback_days=5, draw=False))
+
+            # Coarse 2-hour sampling (> 3600s delta) does not raise ZeroDivisionError
+            coarse = [[now_s - (20 - i) * 7200, 100.0 + i * 1.5] for i in range(20)]
+            with patch.object(pa, "priceLstFor", return_value=coarse):
+                res_lt = pa.getTrendLongTerm("TESTUSDC", window_hours=6, step_hours=2, lookback_days=5, draw=False)
+                self.assertIsNotNone(res_lt)
+                self.assertEqual(res_lt["direction"], "up")
+
 
 if __name__ == "__main__":
     unittest.main()

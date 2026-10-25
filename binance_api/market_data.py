@@ -111,6 +111,7 @@ def fetch_ohlc_candles(
     records: list[dict] = []
     seen_timestamps: set[int] = set()
     current_start = final_start
+    batch_limit = min(1000, max(1, int(limit_per_batch)))
 
     while current_start < final_end:
         params = {
@@ -118,7 +119,7 @@ def fetch_ohlc_candles(
             "interval": interval_str,
             "startTime": current_start,
             "endTime": final_end,
-            "limit": min(1000, max(1, limit_per_batch)),
+            "limit": batch_limit,
         }
         url = f"{API_URL}?{urllib.parse.urlencode(params)}"
         req = urllib.request.Request(
@@ -170,7 +171,7 @@ def fetch_ohlc_candles(
 
         last_open_time = int(raw[-1][0])
         next_start = last_open_time + interval_ms
-        if next_start <= current_start or len(raw) < limit_per_batch:
+        if next_start <= current_start or len(raw) < batch_limit:
             break
         current_start = next_start
         # Respect rate limits for long paginations

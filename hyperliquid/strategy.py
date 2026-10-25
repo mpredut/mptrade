@@ -443,7 +443,7 @@ class Strategy:
         if not avg:
             return False
         loss_pct = -self.sign * (price - avg) / avg * 100   # positive while losing
-        if loss_pct >= self.p.stop_loss_pct:
+        if loss_pct >= self.p.stop_loss_pct - 1e-9:
             if not self.replay_mode:
                 log(f"  🛑 [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% — CLOSING everything (cutting the loss)")
             # Cancel every pending order, including DCA, so the position cannot refill.
