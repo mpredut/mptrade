@@ -466,6 +466,7 @@ class AutonomousAIReconciler:
 
         # 7B. Discover all enabled tradable instruments & real spot wallet balances (when workspace has instruments.conf)
         tradable_positions: List[Dict[str, Any]] = []
+        open_orders_list: List[Dict[str, Any]] = []
         venue_quote_cash: Dict[str, Dict[str, Any]] = {}
         inst_by_sym: Dict[str, Any] = {}
         load_tradable_fn = getattr(self.intent_gateway, "load_tradable_instruments", None)
@@ -564,8 +565,29 @@ class AutonomousAIReconciler:
                         pos_entry["mt_lost_pct"] = params.get("mt.lost")
                     tradable_positions.append(pos_entry)
 
+                    open_fn = getattr(inst, "open_orders", None)
+                    if callable(open_fn):
+                        try:
+                            raw_open = open_fn()
+                            if isinstance(raw_open, list):
+                                for oo in raw_open:
+                                    if isinstance(oo, dict):
+                                        open_orders_list.append({
+                                            "venue": venue,
+                                            "symbol": sym,
+                                            "side": str(oo.get("side") or oo.get("type") or "").upper(),
+                                            "price": oo.get("price"),
+                                            "origQty": oo.get("origQty") or oo.get("vol") or oo.get("qty"),
+                                            "executedQty": oo.get("executedQty") or oo.get("vol_exec") or 0,
+                                            "orderId": oo.get("orderId") or oo.get("id"),
+                                        })
+                        except Exception:
+                            pass
+
         if tradable_positions:
             snapshot.portfolio_summary["tradable_positions"] = tradable_positions
+        if open_orders_list:
+            snapshot.portfolio_summary["open_orders"] = open_orders_list
         if venue_quote_cash:
             snapshot.portfolio_summary["venue_quote_cash"] = venue_quote_cash
         if trailing_map:
@@ -826,6 +848,25 @@ class AutonomousAIReconciler:
                         recent_orders[sym] = fills
         if recent_orders:
             snapshot.portfolio_summary["recent_orders"] = recent_orders
+            for pos in snapshot.portfolio_summary.get("tradable_positions", []):
+                if not isinstance(pos, dict):
+                    continue
+                p_sym = str(pos.get("symbol") or "").upper()
+                ro = recent_orders.get(p_sym)
+                if not isinstance(ro, dict):
+                    continue
+                pos_px = pos.get("price")
+                avg_b = ro.get("active_avg_buy_px")
+                if isinstance(avg_b, (int, float)) and float(avg_b) > 0:
+                    pos["active_avg_buy_px"] = avg_b
+                    if isinstance(pos_px, (int, float)) and float(pos_px) > 0:
+                        pos["pnl_vs_avg_pct"] = round(((float(pos_px) - float(avg_b)) / float(avg_b)) * 100.0, 2)
+                lb = ro.get("last_buy")
+                if isinstance(lb, dict) and isinstance(lb.get("price"), (int, float)) and float(lb["price"]) > 0:
+                    lb_px = float(lb["price"])
+                    pos["last_buy_px"] = lb_px
+                    if isinstance(pos_px, (int, float)) and float(pos_px) > 0:
+                        pos["pnl_vs_last_buy_pct"] = round(((float(pos_px) - lb_px) / lb_px) * 100.0, 2)
 
         intents_data = _read_json(os.path.join(self.cache_dir, "autonomous_trade_intents.json"))
         if isinstance(intents_data, list) and intents_data:
@@ -1199,6 +1240,10 @@ class AutonomousAIReconciler:
                 context_items.append("  * Live Tradable Spot Instruments (Eligible for Autonomous BUY / SELL):")
                 for pos in ps["tradable_positions"]:
                     t_extra = ""
+                    if pos.get("active_avg_buy_px") is not None:
+                        t_extra += f", avg_buy_px={pos.get('active_avg_buy_px')} (pnl_vs_avg={pos.get('pnl_vs_avg_pct')}%)"
+                    if pos.get("last_buy_px") is not None:
+                        t_extra += f", last_buy_px={pos.get('last_buy_px')} (pnl_vs_last_buy={pos.get('pnl_vs_last_buy_pct')}%)"
                     if pos.get("trailing_peak") is not None:
                         t_extra += f", trail_peak={pos.get('trailing_peak')} (dd_from_peak={pos.get('dd_from_peak_pct')}%)"
                     if pos.get("mt_gain_pct") or pos.get("mt_lost_pct"):
@@ -1208,6 +1253,8 @@ class AutonomousAIReconciler:
                         f"(${pos.get('value_usd')} USD), free_{pos['quote']}=${pos.get('free_quote')}, "
                         f"px={pos.get('price')}{t_extra}"
                     )
+            if ps.get("open_orders"):
+                context_items.append(f"  * Active Open Orders on Exchange (Locking Liquidity): {ps['open_orders']}")
             if ps.get("kraken_cycles"):
                 context_items.append("  * Kraken Active Cycle Cost & Drawdown Anchors:")
                 for k_sym, kc in sorted(ps["kraken_cycles"].items()):
@@ -1225,10 +1272,17 @@ class AutonomousAIReconciler:
                 now_ms = int(time.time() * 1000)
                 lb_age_h = round((now_ms - int(lb["ts_ms"])) / 3_600_000.0, 1) if lb.get("ts_ms") else None
                 ls_age_h = round((now_ms - int(ls["ts_ms"])) / 3_600_000.0, 1) if ls.get("ts_ms") else None
+                avg_b_str = f" | Active Cycle Avg BUY={oinfo.get('active_avg_buy_px')}" if oinfo.get("active_avg_buy_px") else ""
+                r_buys = oinfo.get("recent_buys") or []
+                tranches_str = ""
+                if len(r_buys) > 1:
+                    t_parts = [f"{b.get('qty')}@{b.get('price')}" for b in r_buys if isinstance(b, dict)]
+                    tranches_str = f" | Recent BUY Tranches=[{', '.join(t_parts)}]"
                 context_items.append(
                     f"  * {sym} Last Action={oinfo.get('last_action_side')}: "
                     f"Last BUY={lb.get('qty')} @ {lb.get('price')} (age={lb_age_h}h) | "
                     f"Last SELL={ls.get('qty')} @ {ls.get('price')} (age={ls_age_h}h)"
+                    f"{avg_b_str}{tranches_str}"
                 )
             if ps.get("active_retry_queue"):
                 context_items.append(f"  * Active Queued Retry Orders (order_retry_queue.jsonl): {ps['active_retry_queue']}")

@@ -312,5 +312,74 @@ class TestMirrorTopicThreadToUi:
         assert header.startswith(TOPIC_SPECS["guard_high_stake"].title)
         assert "ntfy-guard:" not in header
 
+    def test_gemini_client_one_off_fallback_injects_rolling_topic_history(self, tmp_path, monkeypatch):
+        import subprocess
+        from unittest.mock import patch
+        from intelligence.sentiment.gemini_client import GeminiClient
+        from orchestratorOS.agy.topics import prepare_topic_session, record_topic_turn
+
+        cli_base = str(tmp_path / "cli")
+        os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
+        db_path = os.path.join(cli_base, "conversation_summaries.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE conversation_summaries (
+                conversation_id text PRIMARY KEY,
+                title text,
+                preview text,
+                last_modified_time datetime,
+                project_id text,
+                step_count integer,
+                status text
+            )
+        """)
+        cid1 = "cid-auto-trade-111"
+        conn.execute(
+            "INSERT OR REPLACE INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (cid1, "x", "p", datetime.now(timezone.utc).isoformat(), "autonommptrade", 4, "CASCADE_RUN_STATUS_IDLE"),
+        )
+        conn.commit()
+        conn.close()
+        with open(os.path.join(cli_base, "conversations", f"{cid1}.db"), "w", encoding="utf-8") as f:
+            f.write("db1")
+
+        fake_bin = tmp_path / "agy-bot"
+        fake_bin.write_text("#!/bin/sh\n")
+        monkeypatch.setenv("AGY_BOT_HOME", str(tmp_path))
+        monkeypatch.setenv("LLM_TOPIC_COMPACT_STEPS", "6")
+        monkeypatch.setenv("LLM_TOPIC_HISTORY_MAX_ENTRIES", "5")
+
+        record_topic_turn(
+            "auto_trade_executor",
+            cid1,
+            '{"decision": "SELL", "symbol": "TAOUSDC", "confidence": 0.89}',
+            cli_base=cli_base,
+        )
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            if "--conversation" in cmd:
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout", 15.0))
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout='{"response": "{\\"decision\\": \\"HOLD\\"}", "conversation_id": "detached-999"}', stderr=""
+            )
+
+        with patch("subprocess.run", side_effect=fake_run), \
+             patch("intelligence.sentiment.gemini_client.resolve_bot_cli_base", return_value=cli_base), \
+             patch("intelligence.sentiment.gemini_client.prepare_topic_session", wraps=prepare_topic_session):
+            client = GeminiClient(cli_path=str(fake_bin), project_id="mptrade")
+            out = client.query_text("Evaluate current spot portfolio.", topic_key="auto_trade_executor", timeout_sec=30.0)
+
+        assert out == '{"decision": "HOLD"}'
+        assert len(calls) == 2
+        fallback_cmd = calls[1][0]
+        assert "--conversation" not in fallback_cmd
+        fallback_prompt = fallback_cmd[-1]
+        assert "[TOPIC MEMORY — PRIOR DECISIONS IN THIS TOPIC]:" in fallback_prompt
+        assert "decision=SELL" in fallback_prompt
+
+
 
 

@@ -18,6 +18,7 @@ from orchestratorOS.agy.paths import resolve_agy_bot_bin, resolve_bot_cli_base
 from orchestratorOS.agy.topics import (
     TopicSession,
     extract_json_object,
+    format_topic_history_prefix,
     format_topic_turn_header,
     prepare_topic_session,
     record_topic_turn,
@@ -133,7 +134,7 @@ class GeminiClient:
                         return subprocess.run(cmd, capture_output=True, text=True, timeout=call_timeout,
                                               check=False, env=run_env)
                     lock_path = os.path.join(bot_cli_base, ".agy_bot_cli.lock")
-                    lock_wait = 90.0 if call_timeout >= 30.0 else min(call_timeout * 0.5, 5.0)
+                    lock_wait = max(90.0, call_timeout) if call_timeout >= 30.0 else min(call_timeout * 0.5, 5.0)
                     deadline = time.monotonic() + lock_wait
                     with open(lock_path, "a+", encoding="utf-8") as lock_fh:
                         locked = False
@@ -189,7 +190,16 @@ class GeminiClient:
                     # permanent conversation; the next call resumes it again.
                     logger.info("Resuming topic '%s' conversation %s failed; answering from a one-off thread.",
                                 topic_key, session.conversation_id)
-                    proc = _run_cli(None, cli_prompt, timeout_sec)
+                    fallback_prompt = cli_prompt
+                    if use_topic_session and topic_key and not session.history_prefix:
+                        try:
+                            hist_prefix = format_topic_history_prefix(topic_key)
+                            if hist_prefix:
+                                fallback_body = f"{hist_prefix}{prompt}"
+                                fallback_prompt = f"{effective_title}\n\n{fallback_body}" if effective_title else fallback_body
+                        except Exception:
+                            pass
+                    proc = _run_cli(None, fallback_prompt, timeout_sec)
                     output, detached_cid = _parse(proc)
                     if detached_cid and detached_cid != session.conversation_id and not is_mocked:
                         self._remove_detached_thread(bot_cli_base, detached_cid)
@@ -202,7 +212,7 @@ class GeminiClient:
                         def _finalize_topic_turn() -> None:
                             compacted_ok = False
                             if session.compact and turn_cid:
-                                compact_timeout = max(timeout_sec, 60.0)
+                                compact_timeout = max(timeout_sec, 120.0)
                                 try:
                                     c_proc = _run_cli(
                                         turn_cid,

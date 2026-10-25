@@ -26,7 +26,7 @@ from providers.base import (
 from providers.market_api import api as mkt
 from order_rollback import restore_cancelled_orders
 import cachepaths
-from state_io import atomic_write_json
+from state_io import atomic_write_json, read_recovering_previous, save_json_state
 
 import utils as u
 from strategies.position_exit_manager import (
@@ -243,6 +243,7 @@ def clear_position_stats_cache():
     _position_stats_cache.clear()
     _REENTRY_STATE.clear()
     _LAST_EXIT_KIND.clear()
+    _REENTRY_DONE_SELL_TIME.clear()
     _SL_BOUNCE_STATE.clear()
     _SL_EPISODE_STATE.clear()
     _TP_RIDE_STATE.clear()
@@ -445,6 +446,7 @@ MT_REENTRY_POST_STOP_COOLDOWN_SEC: float
 _TP_RIDE_STATE: Dict[str, Dict[str, Any]] = {}
 _REENTRY_STATE: Dict[str, Dict[str, Any]] = {}
 _LAST_EXIT_KIND: Dict[str, str] = {}
+_REENTRY_DONE_SELL_TIME: Dict[str, float] = {}
 _PENDING_STOP_EXIT: Dict[str, Dict[str, Any]] = {}
 
 _MT_STATE_FILE = cachepaths.cache_path("mt_state.json")
@@ -464,6 +466,7 @@ def _save_mt_state(ts: float | None = None):
             "tp_ride_state": _TP_RIDE_STATE,
             "reentry_state": _REENTRY_STATE,
             "last_exit_kind": _LAST_EXIT_KIND,
+            "reentry_done_sell_time": _REENTRY_DONE_SELL_TIME,
             "pending_stop_exit": _PENDING_STOP_EXIT,
             "hard_tp_last": _hard_tp_last,
         }
@@ -476,7 +479,7 @@ def _save_mt_state(ts: float | None = None):
             "ts": float(ts) if ts is not None else time.time(),
             **payload,
         }
-        atomic_write_json(_MT_STATE_FILE, data, indent=2)
+        save_json_state(_MT_STATE_FILE, data, indent=2)
         _LAST_SAVED_MT_STATE_KEY = cache_key
     except Exception:
         pass
@@ -484,11 +487,10 @@ def _save_mt_state(ts: float | None = None):
 
 def _load_mt_state(now_curr: float | None = None):
     """Restore in-flight MHDSL/MDHTP states upon monitor restart to prevent state loss."""
-    if not _MT_PERSISTENCE_ENABLED or not os.path.exists(_MT_STATE_FILE):
+    if not _MT_PERSISTENCE_ENABLED:
         return
     try:
-        with open(_MT_STATE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = read_recovering_previous(_MT_STATE_FILE, json.loads, default=None)
         if not isinstance(data, dict):
             return
         now_curr = float(now_curr) if now_curr is not None else time.time()
@@ -508,6 +510,13 @@ def _load_mt_state(now_curr: float | None = None):
         for sym, kind in (data.get("last_exit_kind") or {}).items():
             if isinstance(kind, str):
                 _LAST_EXIT_KIND[str(sym).upper()] = kind
+        for sym, s_ts in (data.get("reentry_done_sell_time") or {}).items():
+            try:
+                s_ts_val = float(s_ts)
+                if s_ts_val > 0 and (now_curr - s_ts_val) < 7 * 86400:
+                    _REENTRY_DONE_SELL_TIME[str(sym).upper()] = s_ts_val
+            except (TypeError, ValueError):
+                pass
         for sym, state in (data.get("pending_stop_exit") or {}).items():
             if isinstance(state, dict):
                 p_ts = float(state.get("time", 0))
@@ -567,6 +576,7 @@ def _resolve_exit(symbol: str, inst: Any = None, kind: Optional[str] = None, cle
     if kind:
         _LAST_EXIT_KIND[symbol] = kind
     _REENTRY_STATE.pop(symbol, None)
+    _REENTRY_DONE_SELL_TIME.pop(symbol, None)
     if clear_pending:
         _PENDING_STOP_EXIT.pop(symbol, None)
     _clear_smart_sl_exit(symbol, inst)
@@ -1634,6 +1644,9 @@ def _execute_reentry_buy(
         **extra_kwargs,
     )
     if placed or reentry_outcome_ctx.get("state") == "unknown":
+        sell_t = prev_reentry_state.get("sell_time") if isinstance(prev_reentry_state, dict) else None
+        if isinstance(sell_t, (int, float)) and sell_t > 0:
+            _REENTRY_DONE_SELL_TIME[symbol] = float(sell_t)
         _REENTRY_STATE.pop(symbol, None)
         _LAST_EXIT_KIND.pop(symbol, None)
         _save_mt_state()
@@ -1769,9 +1782,10 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     # If a newer BUY filled after the latest SELL, any post-exit re-entry tracking from
     # that older SELL is obsolete and must be cleared.
     if trade_orders_buy and trade_orders_sell and buy_time > sell_time:
-        if symbol in _REENTRY_STATE or symbol in _LAST_EXIT_KIND:
+        if symbol in _REENTRY_STATE or symbol in _LAST_EXIT_KIND or symbol in _REENTRY_DONE_SELL_TIME:
             _REENTRY_STATE.pop(symbol, None)
             _LAST_EXIT_KIND.pop(symbol, None)
+            _REENTRY_DONE_SELL_TIME.pop(symbol, None)
             _save_mt_state()
 
     # 3. Evaluate BUY history (skip if position was already closed by a subsequent SELL and only dust/zero remains).
@@ -1890,27 +1904,49 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             if _verbose:
                 print(f"No sell_price !!!!!")
             return
+        if (
+            sell_time
+            and symbol not in _LAST_EXIT_KIND
+            and symbol not in _REENTRY_STATE
+            and _REENTRY_DONE_SELL_TIME.get(symbol) == float(sell_time)
+        ):
+            if _verbose:
+                print(f"[{symbol}] Re-entry already submitted for sell at {sell_time} — skipping duplicate")
+            return
         if exit_mgr is None:
             exit_mgr = get_exit_manager()
         if vol_1h is None:
             vol_1h = get_symbol_volatility_1h(symbol) or 0.0
         if current_trend_up is None:
             current_trend_up = bool(is_trend_up(symbol))
-        explicit_exit_kind = _LAST_EXIT_KIND.get(symbol) or (
-            trade_orders_sell[0].get("kind") if isinstance(trade_orders_sell[0], dict) else None
-        )
-        if not explicit_exit_kind and buy_price and sell_time >= buy_time:
+        latest_sell = trade_orders_sell[0] if isinstance(trade_orders_sell[0], dict) else {}
+        latest_sell_cid = str(
+            latest_sell.get("clientOrderId") or latest_sell.get("client_order_id") or ""
+        ).strip().upper()
+        latest_sell_kind = str(latest_sell.get("kind") or "").strip().upper()
+        is_ai_sell = latest_sell_cid.startswith("AI_") or latest_sell_kind.startswith("AI_")
+        explicit_exit_kind = _LAST_EXIT_KIND.get(symbol) or (latest_sell_kind or None)
+        if (
+            not explicit_exit_kind
+            and position_closed_by_sell
+            and not is_ai_sell
+            and buy_price
+            and sell_time >= buy_time
+        ):
             cycle_buy_px = float(
                 position.get("last_cycle_buy_price")
                 or position.get("active_average_buy_price")
                 or buy_price
                 or 0.0
             )
-            ref_buy_px = max(float(buy_price), cycle_buy_px)
-            if sell_price < ref_buy_px * (1.0 - min(lost_threshold * 0.25, 0.002)):
+            ref_buy_px = (cycle_buy_px or float(buy_price)) if tp_ref == "average" else float(buy_price)
+            if (
+                sell_price < float(buy_price) * (1.0 - min(lost_threshold * 0.25, 0.002))
+                and sell_price < ref_buy_px * (1.0 - min(lost_threshold * 0.25, 0.002))
+            ):
                 explicit_exit_kind = "STOP"
                 _LAST_EXIT_KIND[symbol] = "STOP"
-        last_exit_kind = explicit_exit_kind or "SELL"
+        last_exit_kind = "SELL" if (is_ai_sell and explicit_exit_kind != "STOP") else (explicit_exit_kind or "SELL")
 
         prev_reentry_state = dict(_REENTRY_STATE.get(symbol, {}))
         if prev_reentry_state and sell_time:

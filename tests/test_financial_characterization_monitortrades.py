@@ -1683,6 +1683,62 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.assertNotIn(sym, mt._SL_BOUNCE_STATE)
             self.assertFalse(any("Stop-Loss bounce successfully recovered" in line for line in printed_lines))
 
+        with self.subTest(msg="ai_or_partial_profit_sell_not_misclassified_as_stop_and_no_double_reentry_buy"):
+            sym = SYMBOL
+            mt.clear_position_stats_cache()
+            # Multi-tranche buys: 3.16 @ 262.10, then dip buy 1.54 @ 246.30 (avg ~ 256.92),
+            # followed by an AI profit trim SELL of 1.50 @ 251.14 (above 246.30 last buy, below 256.92 avg).
+            fills_ai_trim = [
+                {
+                    "side": "SELL",
+                    "price": 251.14,
+                    "qty": 1.50,
+                    "timestamp": (NOW - 600) * 1000,
+                    "clientOrderId": "AI_intent_1792941034_sell_tao",
+                },
+                {"side": "BUY", "price": 246.30, "qty": 1.54, "timestamp": (NOW - 3600) * 1000},
+                {"side": "BUY", "price": 262.10, "qty": 3.16, "timestamp": (NOW - 7200) * 1000},
+            ]
+            inst_trim = FakeInstrument(
+                price=251.0,
+                free=3.20,
+                fills=fills_ai_trim,
+                params={"mt.buy_budget": 200, "mt.max_budget": 2000},
+            )
+            self.run_tick(inst_trim, trend_up=True, gain=0.05, loss=0.03, now=NOW)
+            self.assertNotEqual(mt._LAST_EXIT_KIND.get(sym), "STOP")
+            self.assertEqual(inst_trim.placed, [])
+
+            # Genuine STOP exit followed by re-entry BUY must record _REENTRY_DONE_SELL_TIME
+            # and prevent a second re-entry BUY for the same sell_time on the next tick.
+            mt.clear_position_stats_cache()
+            stop_sell_ts = NOW - 3600
+            fills_stop = [
+                {"side": "SELL", "price": 94.0, "qty": 4.0, "timestamp": stop_sell_ts * 1000},
+                {"side": "BUY", "price": 100.0, "qty": 4.0, "timestamp": (NOW - 7200) * 1000},
+            ]
+            mt._LAST_EXIT_KIND[sym] = "STOP"
+            mt._REENTRY_STATE[sym] = {
+                "trough": 90.0,
+                "peak": 94.0,
+                "peak_bounce": 92.0,
+                "started_at": NOW - 600,
+                "sell_time": float(stop_sell_ts),
+            }
+            inst_reentry = FakeInstrument(
+                price=92.0,
+                free=0.0,
+                fills=fills_stop,
+                params={"mt.buy_budget": 200, "mt.max_budget": 1000},
+            )
+            self.run_tick(inst_reentry, trend_up=True, gain=0.05, loss=0.03, now=NOW)
+            self.assertEqual(len(inst_reentry.placed), 1)
+            self.assertEqual(inst_reentry.placed[0]["side"], "BUY")
+            self.assertEqual(mt._REENTRY_DONE_SELL_TIME.get(sym), float(stop_sell_ts))
+            # Second tick with same fills (resting limit BUY not yet filled in trade history):
+            self.run_tick(inst_reentry, trend_up=True, gain=0.05, loss=0.03, now=NOW + 60)
+            self.assertEqual(len(inst_reentry.placed), 1)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

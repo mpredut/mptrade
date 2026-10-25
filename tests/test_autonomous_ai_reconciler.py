@@ -1041,6 +1041,68 @@ def test_monitor_check_processes_requires_all_heartbeat_files_fresh(tmp_path, mo
     assert res[0].age_seconds == 300.0
 
 
+def test_harvest_and_synthesize_surfaces_active_avg_buy_tranches_and_open_orders(temp_env):
+    workspace, cache_dir, _ = temp_env
+    with open(os.path.join(workspace, "instruments.conf"), "w", encoding="utf-8") as f:
+        f.write("TAOUSDC|binance|TAOUSDC|TAO|USDC|1\n")
+
+    now_ms = int(time.time() * 1000)
+    with open(os.path.join(cache_dir, "cache_order.json"), "w", encoding="utf-8") as f:
+        json.dump({
+            "items": {
+                "TAOUSDC": [
+                    {"orderId": 1, "side": "BUY", "status": "FILLED", "executedQty": "3.0", "cummulativeQuoteQty": "780.0", "time": now_ms - 7200_000},
+                    {"orderId": 2, "side": "BUY", "status": "FILLED", "executedQty": "1.0", "cummulativeQuoteQty": "240.0", "time": now_ms - 3600_000},
+                ]
+            }
+        }, f)
+
+    mock_inst = MagicMock()
+    mock_inst.symbol = "TAOUSDC"
+    mock_inst.provider_name = "binance"
+    mock_inst.base = "TAO"
+    mock_inst.quote = "USDC"
+    mock_inst.params = {}
+    mock_inst._provider.get_current_price.return_value = 255.0
+    mock_inst._provider.free_balance.side_effect = lambda a: 4.0 if a == "TAO" else 500.0
+    mock_inst.open_orders.return_value = [
+        {"orderId": "999111", "side": "BUY", "price": "248.0", "origQty": "0.5", "executedQty": "0.0"}
+    ]
+
+    gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
+    gateway.load_tradable_instruments.return_value = {"TAOUSDC": mock_inst}
+
+    captured_prompts = []
+    auditor = GeminiClient(custom_runner=lambda p, m, t: captured_prompts.append(p) or json.dumps({"summary": "ok"}))
+    reconciler = AutonomousAIReconciler(
+        workspace_dir=workspace,
+        cache_dir="cachedb",
+        logs_dirs=["logs"],
+        gemini_auditor=auditor,
+        mode="shadow",
+        notify_enabled=False,
+        intent_gateway=gateway,
+    )
+    sensors = reconciler.harvest_sensors_telemetry()
+    ps = sensors.portfolio_summary
+    assert ps["recent_orders"]["TAOUSDC"]["active_avg_buy_px"] == 255.0
+    assert len(ps["recent_orders"]["TAOUSDC"]["recent_buys"]) == 2
+    assert ps["open_orders"][0]["orderId"] == "999111"
+    pos = ps["tradable_positions"][0]
+    assert pos["active_avg_buy_px"] == 255.0
+    assert pos["last_buy_px"] == 240.0
+    assert pos["pnl_vs_last_buy_pct"] == 6.25
+
+    reconciler.synthesize_and_diagnose(sensors, reconciler.harvest_log_anomalies(), topic_key="auto_trade_executor")
+    assert len(captured_prompts) == 1
+    prompt_text = captured_prompts[0]
+    assert "avg_buy_px=255.0" in prompt_text
+    assert "last_buy_px=240.0 (pnl_vs_last_buy=6.25%)" in prompt_text
+    assert "Active Open Orders on Exchange (Locking Liquidity)" in prompt_text
+    assert "Recent BUY Tranches=[3.0@260.0, 1.0@240.0]" in prompt_text
+
+
+
 
 
 

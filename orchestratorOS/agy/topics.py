@@ -175,6 +175,23 @@ class TopicSession(NamedTuple):
     compact: bool                    # compact the thread in-place with `/compact` after the turn completes
 
 
+def format_topic_history_prefix(
+    topic_key: str,
+    registry_path: Optional[str] = None,
+) -> str:
+    """Format the rolling decision memory for a topic as a prompt prefix."""
+    reg = load_topic_registry(registry_path)
+    entry = reg.get(topic_key)
+    if not isinstance(entry, dict):
+        return ""
+    history = [h for h in entry.get("rolling_history") or [] if isinstance(h, dict)]
+    if not history:
+        return ""
+    lines = ["[TOPIC MEMORY — PRIOR DECISIONS IN THIS TOPIC]:"]
+    lines += [f"- [{h.get('utc', '')}] {h.get('summary', '')}" for h in history]
+    return "\n".join(lines) + "\n\n"
+
+
 def prepare_topic_session(
     topic_key: str,
     cli_base: Optional[str] = None,
@@ -210,12 +227,7 @@ def prepare_topic_session(
         reg[topic_key] = entry
         save_topic_registry(reg, registry_path)
 
-    history = [h for h in entry.get("rolling_history") or [] if isinstance(h, dict)]
-    if not history:
-        return TopicSession(None, "", False)
-    lines = ["[TOPIC MEMORY — PRIOR DECISIONS IN THIS TOPIC]:"]
-    lines += [f"- [{h.get('utc', '')}] {h.get('summary', '')}" for h in history]
-    return TopicSession(None, "\n".join(lines) + "\n\n", False)
+    return TopicSession(None, format_topic_history_prefix(topic_key, registry_path), False)
 
 
 _SHORT_SUMMARY_KEYS = (

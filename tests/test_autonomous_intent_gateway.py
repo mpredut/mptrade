@@ -473,3 +473,70 @@ def test_submit_is_the_single_validated_entry_point(temp_workspace):
 
     sell = gw.submit(dict(buy, decision="SELL"), source="auto_trade_executor", max_mode="enforce")
     assert sell["status"] == "EXECUTED" and seen_modes == ["shadow", "enforce", "enforce"]
+
+
+def test_reconcile_failed_intent_from_execution_audit_and_capture_outcome_reason(temp_workspace):
+    import json
+    ws, _ = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
+
+    mock_inst = MagicMock()
+    mock_inst.symbol = "TAOUSDC"
+    mock_inst.base = "TAO"
+    mock_inst.quote = "USDC"
+    mock_inst.provider_name = "binance"
+    mock_inst._provider.name = "binance"
+    mock_inst._provider.get_current_price.return_value = 251.0
+    mock_inst._provider.free_balance.return_value = 4.70
+
+    def place_deferred(**kwargs):
+        ctx = kwargs.get("_outcome_context")
+        if isinstance(ctx, dict):
+            ctx["category"] = "deferred"
+            ctx["reason"] = "retry_enqueued"
+        return None
+
+    mock_inst.place.side_effect = place_deferred
+
+    intent = {
+        "intent_id": "intent_1792941034_sell_taousdc",
+        "decision": "SELL",
+        "symbol": "TAOUSDC",
+        "venue": "binance",
+        "confidence": 0.89,
+        "suggested_notional_usd": 376.5,
+        "status": "PENDING",
+    }
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        res = gw.process_intent(intent, instruments_map={"TAO": mock_inst})
+
+    assert res["status"] == "FAILED"
+    assert res["history"][-1]["reason"] == "retry_enqueued"
+    assert res["history"][-1]["category"] == "deferred"
+    gw.save_all_intents([res])
+
+    # Now write execution_audit record showing order_retry_worker filled the order
+    audit_dir = os.path.join(ws, "logger", "execution_audit")
+    os.makedirs(audit_dir, exist_ok=True)
+    audit_file = os.path.join(audit_dir, "execution_audit_2026-10-25.jsonl")
+    with open(audit_file, "w", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "event": "order_terminal",
+            "intent_id": "intent_1792941034_sell_taousdc",
+            "order_id": "718325868",
+            "symbol": "TAOUSDC",
+            "side": "sell",
+            "filled_qty": 1.5,
+            "cost": 376.71,
+            "status": "closed",
+            "venue_status": "FILLED",
+            "ts": 1792941051.2,
+        }) + "\n")
+
+    reconciled = gw.load_all_intents()
+    assert len(reconciled) == 1
+    assert reconciled[0]["status"] == "EXECUTED"
+    assert reconciled[0]["execution_payload"]["orderId"] == "718325868"
+    assert reconciled[0]["execution_payload"]["reconciled_from_audit"] is True
+    assert reconciled[0]["history"][-1]["action"] == "RECONCILED_EXECUTED"
+

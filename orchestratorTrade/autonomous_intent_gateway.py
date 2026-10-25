@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass, field
+import glob
 import json
 import logging
 import math
@@ -224,7 +225,83 @@ class AutonomousIntentGateway:
             label="autonomous_trade_intents",
             root_type=list,
         )
-        return [item for item in data if isinstance(item, dict)]
+        items = [item for item in data if isinstance(item, dict)]
+        self.reconcile_intents(items)
+        return items
+
+    def reconcile_intents(self, intents: List[Dict[str, Any]]) -> bool:
+        """Reconciles FAILED intents against execution_audit_*.jsonl if later filled via retry worker."""
+        failed_by_id: Dict[str, Dict[str, Any]] = {
+            str(item.get("intent_id") or item.get("id")): item
+            for item in intents
+            if isinstance(item, dict)
+            and item.get("status") == "FAILED"
+            and (item.get("intent_id") or item.get("id"))
+        }
+        if not failed_by_id:
+            return False
+
+        audit_dir = os.path.join(self.workspace_dir, "logger", "execution_audit")
+        if not os.path.isdir(audit_dir):
+            return False
+
+        matched_records: Dict[str, Dict[str, Any]] = {}
+        for audit_path in sorted(glob.glob(os.path.join(audit_dir, "execution_audit_*.jsonl"))):
+            try:
+                with open(audit_path, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except ValueError:
+                            continue
+                        if not isinstance(rec, dict):
+                            continue
+                        iid = str(rec.get("intent_id") or "")
+                        if iid not in failed_by_id:
+                            continue
+                        ev = str(rec.get("event") or "")
+                        if ev == "submit_accepted":
+                            matched_records.setdefault(iid, rec)
+                        elif ev == "order_terminal":
+                            v_stat = str(rec.get("venue_status") or "").upper()
+                            l_stat = str(rec.get("status") or "").lower()
+                            if v_stat in ("FILLED", "PARTIALLY_FILLED") or l_stat in ("closed", "filled", "partially_filled"):
+                                matched_records[iid] = rec
+            except OSError:
+                continue
+
+        if not matched_records:
+            return False
+
+        updated = False
+        for iid, rec in matched_records.items():
+            intent = failed_by_id[iid]
+            filled_qty = rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty")
+            exec_payload: Dict[str, Any] = {
+                "orderId": rec.get("order_id"),
+                "symbol": rec.get("symbol") or intent.get("symbol"),
+                "side": str(rec.get("side") or intent.get("decision") or "").upper(),
+                "executedQty": str(filled_qty) if filled_qty is not None else "",
+                "cummulativeQuoteQty": str(rec.get("cost")) if rec.get("cost") is not None else "",
+                "status": str(rec.get("venue_status") or "FILLED").upper(),
+                "reconciled_from_audit": True,
+            }
+            intent["status"] = "EXECUTED"
+            intent["execution_payload"] = exec_payload
+            intent.setdefault("history", []).append({
+                "ts": float(rec.get("ts") or time.time()),
+                "action": "RECONCILED_EXECUTED",
+                "order_id": rec.get("order_id"),
+                "payload": exec_payload,
+            })
+            updated = True
+
+        if updated:
+            self.save_all_intents(intents)
+        return updated
 
     def save_all_intents(self, intents: List[Dict[str, Any]]) -> bool:
         """Transactionally persists all intents to disk using `.previous` staging and atomic replace."""
@@ -559,6 +636,7 @@ class AutonomousIntentGateway:
 
         try:
             intent_cid = f"AI_{intent_id[:28]}" if intent_id else None
+            outcome_ctx: Dict[str, Any] = {}
             order_res = inst.place(
                 side=decision,
                 qty=target_qty,
@@ -570,6 +648,7 @@ class AutonomousIntentGateway:
                 client_order_id=intent_cid,
                 regime_context=None,
                 bypass_guards=AUTONOMOUS_BYPASS_GUARDS,
+                _outcome_context=outcome_ctx,
             )
             if order_res:
                 from providers.base import extract_order_id
@@ -593,18 +672,23 @@ class AutonomousIntentGateway:
                     "payload": order_res,
                 })
             else:
-                logger.warning("[LLM TRADER · ENFORCE] Order placement refused or failed for %s %s",
-                               decision, inst.symbol)
+                refusal_reason = str(outcome_ctx.get("reason") or "Instrument.place returned None")
+                refusal_cat = str(outcome_ctx.get("category") or "")
+                logger.warning("[LLM TRADER · ENFORCE] Order placement refused or failed for %s %s: %s",
+                               decision, inst.symbol, refusal_reason)
                 title = f"⚠️ {trade_tag} REFUSED {decision} {inst.symbol}"
-                body = f"Venue {inst.provider_name} refused placement.\nThesis: {thesis}"
+                body = f"Venue {inst.provider_name} refused placement ({refusal_reason}).\nThesis: {thesis}"
                 self._dispatch_notify(title=title, body=body, symbol=inst.symbol)
 
                 intent["status"] = "FAILED"
-                intent.setdefault("history", []).append({
+                hist_entry: Dict[str, Any] = {
                     "ts": now,
                     "action": "FAILED",
-                    "reason": "Instrument.place returned None",
-                })
+                    "reason": refusal_reason,
+                }
+                if refusal_cat:
+                    hist_entry["category"] = refusal_cat
+                intent.setdefault("history", []).append(hist_entry)
         except Exception as e:
             logger.error("[LLM TRADER · ENFORCE] Exception executing %s %s: %s", decision, inst.symbol, e)
             title = f"🚨 {trade_tag} ERROR {decision} {inst.symbol}"

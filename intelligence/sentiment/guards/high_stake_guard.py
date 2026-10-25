@@ -5,11 +5,12 @@ import json
 import logging
 import math
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from intelligence.internal.guards.guard_decision import GuardDecision
 from intelligence.sentiment.gemini_client import GeminiClient
 from orchestratorOS.agy.topics import topic_spec
+from state_io import read_recovering_previous
 
 logger = logging.getLogger("intelligence.sentiment.high_stake_guard")
 
@@ -54,7 +55,7 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
 
 
 def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
-    """Extract last action side, last BUY fill, and last SELL fill from a symbol's cache_order.json list."""
+    """Extract last action side, active cycle avg BUY price, last BUY/SELL fills, and recent tranches."""
     if not isinstance(orders_list, list) or not orders_list:
         return None
     valid = [o for o in orders_list if isinstance(o, dict)]
@@ -62,22 +63,80 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
         return None
     ordered = sorted(
         enumerate(valid),
-        key=lambda item: (float(item[1].get("timestamp") or 0.0), item[0]),
+        key=lambda item: (
+            float(
+                item[1].get("timestamp")
+                if item[1].get("timestamp") is not None
+                else (item[1].get("time") or 0.0)
+            ),
+            item[0],
+        ),
     )
     chron = [o for _, o in ordered]
-    last_buy = next((o for o in reversed(chron) if o.get("side") == "BUY"), None)
-    last_sell = next((o for o in reversed(chron) if o.get("side") == "SELL"), None)
+    last_buy = next((o for o in reversed(chron) if str(o.get("side") or "").upper() == "BUY"), None)
+    last_sell = next((o for o in reversed(chron) if str(o.get("side") or "").upper() == "SELL"), None)
     last_any = chron[-1]
+
+    def _norm_fill(o: Dict[str, Any]) -> Tuple[Optional[float], Optional[float], Any]:
+        q_raw = (
+            o.get("quantity")
+            if o.get("quantity") is not None
+            else (o.get("qty") if o.get("qty") is not None else o.get("executedQty"))
+        )
+        p_raw = o.get("price")
+        ts_raw = o.get("timestamp") if o.get("timestamp") is not None else o.get("time")
+        try:
+            q_f = float(q_raw) if q_raw is not None else 0.0
+        except (TypeError, ValueError):
+            q_f = 0.0
+        try:
+            p_f = float(p_raw) if p_raw is not None else 0.0
+        except (TypeError, ValueError):
+            p_f = 0.0
+        if p_f <= 0 and q_f > 0 and o.get("cummulativeQuoteQty") is not None:
+            try:
+                p_f = round(float(o["cummulativeQuoteQty"]) / q_f, 6)
+            except (TypeError, ValueError, ZeroDivisionError):
+                p_f = 0.0
+        return (p_f if p_f > 0 else None), (q_f if q_f > 0 else None), ts_raw
+
+    cost_qty = 0.0
+    active_avg = 0.0
+    buys_fmt: list[Dict[str, Any]] = []
+    sells_fmt: list[Dict[str, Any]] = []
+    for o in chron:
+        side_o = str(o.get("side") or "").upper()
+        p_f, q_f, ts_raw = _norm_fill(o)
+        if side_o == "BUY":
+            buys_fmt.append({"price": p_f, "qty": q_f, "ts_ms": ts_raw})
+            if q_f is not None and p_f is not None and math.isfinite(q_f) and math.isfinite(p_f):
+                new_cost_qty = cost_qty + q_f
+                active_avg = ((cost_qty * active_avg) + (q_f * p_f)) / new_cost_qty if new_cost_qty > 0 else 0.0
+                cost_qty = new_cost_qty
+        elif side_o == "SELL":
+            sells_fmt.append({"price": p_f, "qty": q_f, "ts_ms": ts_raw})
+            if q_f is not None and math.isfinite(q_f):
+                if q_f >= cost_qty * 0.98 or cost_qty - q_f <= 1e-12:
+                    cost_qty = 0.0
+                    active_avg = 0.0
+                else:
+                    cost_qty -= q_f
+
+    lb_norm = _norm_fill(last_buy) if last_buy else (None, None, None)
+    ls_norm = _norm_fill(last_sell) if last_sell else (None, None, None)
     return {
         "last_action_side": last_any.get("side"),
+        "active_avg_buy_px": round(active_avg, 6) if active_avg > 0 else None,
         "last_buy": (
-            {"price": last_buy.get("price"), "qty": last_buy.get("quantity"), "ts_ms": last_buy.get("timestamp")}
+            {"price": lb_norm[0], "qty": lb_norm[1], "ts_ms": lb_norm[2]}
             if last_buy else None
         ),
         "last_sell": (
-            {"price": last_sell.get("price"), "qty": last_sell.get("quantity"), "ts_ms": last_sell.get("timestamp")}
+            {"price": ls_norm[0], "qty": ls_norm[1], "ts_ms": ls_norm[2]}
             if last_sell else None
         ),
+        "recent_buys": buys_fmt[-4:],
+        "recent_sells": sells_fmt[-3:],
     }
 
 
@@ -160,27 +219,28 @@ def collect_pretrade_telemetry(
     from intelligence.external.collectors.orderbook_depth import _symbol_variants
     sym_variants = _symbol_variants(symbol)
     try:
-        series = []
+        m24: Dict[str, Any] = {}
         for cand in sym_variants:
             if "/" in cand:
                 continue
             p24_path = os.path.join(cachedb_dir, f"cache_24_price_{cand}.json")
-            if os.path.exists(p24_path):
-                with open(p24_path, "r", encoding="utf-8") as f:
-                    p24_data = json.load(f)
-                raw_items = p24_data.get("items", {}) if isinstance(p24_data, dict) else {}
-                if isinstance(raw_items, dict):
-                    for k_cand in sym_variants:
-                        series = raw_items.get(k_cand, [])
-                        if series:
-                            break
-                    if not series and raw_items:
-                        series = next(iter(raw_items.values()), [])
-                elif isinstance(raw_items, list):
-                    series = raw_items
-                if series:
-                    break
-        m24 = compute_24h_price_metrics(series)
+            p24_data = read_recovering_previous(p24_path, json.loads, default=None)
+            if not isinstance(p24_data, dict):
+                continue
+            raw_items = p24_data.get("items", {})
+            series = []
+            if isinstance(raw_items, dict):
+                for k_cand in sym_variants:
+                    series = raw_items.get(k_cand, [])
+                    if series:
+                        break
+                if not series and raw_items:
+                    series = next(iter(raw_items.values()), [])
+            elif isinstance(raw_items, list):
+                series = raw_items
+            m24 = compute_24h_price_metrics(series)
+            if m24:
+                break
         if m24:
             telemetry["24h Multi-Horizon Price Evolution"] = (
                 f"15m={m24.get('chg_15m_pct', 0):+.2f}%, 30m={m24.get('chg_30m_pct', 0):+.2f}%, "
@@ -192,15 +252,14 @@ def collect_pretrade_telemetry(
 
     try:
         st_path = os.path.join(cachedb_dir, "cache_short_trend.json")
-        if os.path.exists(st_path):
-            with open(st_path, "r", encoding="utf-8") as f:
-                st_data = json.load(f)
+        st_data = read_recovering_previous(st_path, json.loads, default=None)
+        if isinstance(st_data, dict):
+            st_items = st_data.get("items") if isinstance(st_data.get("items"), dict) else st_data
             tinfo = None
-            if isinstance(st_data, dict):
-                for cand in sym_variants:
-                    tinfo = st_data.get(cand)
-                    if isinstance(tinfo, dict):
-                        break
+            for cand in sym_variants:
+                tinfo = st_items.get(cand)
+                if isinstance(tinfo, dict):
+                    break
             if isinstance(tinfo, dict):
                 dyn = tinfo.get("dynamic", {}) if isinstance(tinfo.get("dynamic"), dict) else {}
                 s37 = (dyn.get("222") or {}).get("slope_full", 0.0)
@@ -211,26 +270,29 @@ def collect_pretrade_telemetry(
         pass
 
     try:
-        ord_path = os.path.join(cachedb_dir, "cache_order.json")
-        if os.path.exists(ord_path):
-            with open(ord_path, "r", encoding="utf-8") as f:
-                ord_data = json.load(f)
+        fills = {}
+        for ord_file in ("cache_order.json", "cache_trade_kraken.json"):
+            ord_path = os.path.join(cachedb_dir, ord_file)
+            ord_data = read_recovering_previous(ord_path, json.loads, default=None)
             o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) else {}
+            if not isinstance(o_items, dict):
+                continue
             orders_for_sym = []
-            if isinstance(o_items, dict):
-                for cand in sym_variants:
-                    orders_for_sym = o_items.get(cand, [])
-                    if orders_for_sym:
-                        break
+            for cand in sym_variants:
+                orders_for_sym = o_items.get(cand, [])
+                if orders_for_sym:
+                    break
             fills = extract_symbol_recent_fills(orders_for_sym)
             if fills:
-                lb = fills.get("last_buy") or {}
-                ls = fills.get("last_sell") or {}
-                telemetry["Recent Venue Fills"] = (
-                    f"Last Action={fills.get('last_action_side')}, "
-                    f"Last BUY={lb.get('qty')} @ {lb.get('price')}, "
-                    f"Last SELL={ls.get('qty')} @ {ls.get('price')}"
-                )
+                break
+        if fills:
+            lb = fills.get("last_buy") or {}
+            ls = fills.get("last_sell") or {}
+            telemetry["Recent Venue Fills"] = (
+                f"Last Action={fills.get('last_action_side')}, "
+                f"Last BUY={lb.get('qty')} @ {lb.get('price')}, "
+                f"Last SELL={ls.get('qty')} @ {ls.get('price')}"
+            )
     except Exception:
         pass
 
@@ -238,28 +300,26 @@ def collect_pretrade_telemetry(
     try:
         for m_file in ("sentiment_advisor_eval.json", "macro_advisor_eval.json", "gemini_macro_advisor.json"):
             m_path = os.path.join(cachedb_dir, m_file)
-            if os.path.exists(m_path):
-                with open(m_path, "r", encoding="utf-8") as f:
-                    m_data = json.load(f)
-                    bias = m_data.get("market_bias", "")
-                    risk = m_data.get("risk_level", "")
-                    action = m_data.get("recommended_action", "")
-                    telemetry["Macro Sentiment Bias"] = f"{bias} (Risk: {risk}, Recommendation: {action})"
+            m_data = read_recovering_previous(m_path, json.loads, default=None)
+            if isinstance(m_data, dict):
+                bias = m_data.get("market_bias", "")
+                risk = m_data.get("risk_level", "")
+                action = m_data.get("recommended_action", "")
+                telemetry["Macro Sentiment Bias"] = f"{bias} (Risk: {risk}, Recommendation: {action})"
                 break
     except Exception:
         pass
 
     try:
-        for fg_file in ("fear_greed_cache.json", "fear_greed_collect.json"):
+        for fg_file in ("fear_greed_collect.json", "fear_greed_cache.json"):
             fg_path = os.path.join(cachedb_dir, fg_file)
-            if os.path.exists(fg_path):
-                with open(fg_path, "r", encoding="utf-8") as f:
-                    fg_data = json.load(f)
-                    val = fg_data.get("value", "")
-                    label = fg_data.get("classification", "")
-                    if val:
-                        telemetry["Fear & Greed Index"] = f"{val} ({label})"
-                break
+            fg_data = read_recovering_previous(fg_path, json.loads, default=None)
+            if isinstance(fg_data, dict):
+                val = fg_data.get("value", "")
+                label = fg_data.get("classification", "")
+                if val is not None and val != "":
+                    telemetry["Fear & Greed Index"] = f"{val} ({label})"
+                    break
     except Exception:
         pass
 
