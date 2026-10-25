@@ -2052,6 +2052,113 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert metrics["median_days"] == pytest.approx(3.0)
         assert metrics["T"] == pytest.approx(6.1)
 
+    def test_cross_venue_base_asset_separators_float_t_gaussian_and_pretrade_telemetry(self, tmp_path, monkeypatch):
+        """Regression test for:
+        1. _normalize_base_asset with '/' and '-' separators (e.g. HYPE/USDC, SOL-USD) and _read_cached_price_history
+           resolving cache_24_price_TAOUSDC.json for TAOUSD.
+        2. _read_cached_trend_duration skipping empty list entries [] to find non-empty base-asset matches.
+        3. priceAnalysis.get_trade_weight and utils.gaussian_weights_from_idx handling float T (e.g. T=6.1, trend_len=6.0).
+        4. collect_pretrade_telemetry resolving 24h price evolution, short slopes, and fills across symbol variants.
+        5. profit_guard evaluating check_intelligence_guards when notional_eur > 0 is passed with qty=None.
+        """
+        import priceAnalysis as pa
+        import utils as u
+        from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
+
+        assert order_guard._normalize_base_asset("HYPE/USDC") == "HYPE"
+        assert order_guard._normalize_base_asset("SOL-USD") == "SOL"
+        assert order_guard._normalize_base_asset("TAO_USDC") == "TAO"
+
+        # Float T in gaussian_weights_from_idx and get_trade_weight at seam (trend_len=6.0, T=6.1)
+        t_arr, w_arr = u.gaussian_weights_from_idx(6.1, 0)
+        assert len(w_arr) == 6
+        t_seq, w_seq = pa.get_trade_weight(T=6.1, trend_len=6.0, trend="up", order_type="BUY")
+        assert len(w_seq) >= 1
+        assert float(w_seq[0]) > 0.0
+
+        # Setup synthetic cachedb in tmp_path
+        monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path))
+        now_s = time.time()
+        now_ms = now_s * 1000.0
+
+        # cache_24_price_TAOUSDC.json read via TAOUSD and HYPE/USDC
+        p24_tao = tmp_path / "cache_24_price_TAOUSDC.json"
+        p24_tao.write_text(
+            json.dumps({
+                "items": {
+                    "TAOUSDC": [
+                        [now_ms - 3600_000, 400.0],
+                        [now_ms - 1800_000, 410.0],
+                        [now_ms, 420.0],
+                    ]
+                }
+            }),
+            encoding="utf-8",
+        )
+        hist_tao = order_guard._read_cached_price_history("TAOUSD", window_seconds=7200.0)
+        assert hist_tao is not None
+        assert len(hist_tao) == 3
+
+        # cache_long_trend.json with an empty legacy entry before the populated entry
+        lt_path = tmp_path / "cache_long_trend.json"
+        lt_path.write_text(
+            json.dumps({
+                "items": {
+                    "TAOUSDT": [],
+                    "TAOUSDC": [{"duration_seconds": 172800.0, "direction": "up"}],
+                }
+            }),
+            encoding="utf-8",
+        )
+        assert order_guard._read_cached_trend_duration("TAOUSD") == pytest.approx(172800.0)
+        assert order_guard._read_cached_trend_direction("TAOUSD") == "up"
+
+        # cache_short_trend.json and cache_order.json for collect_pretrade_telemetry("TAO/USD")
+        st_path = tmp_path / "cache_short_trend.json"
+        st_path.write_text(
+            json.dumps({
+                "TAOUSDC": {
+                    "dynamic": {
+                        "222": {"slope_full": 0.0012},
+                        "900": {"slope_full": 0.0034},
+                        "9000": {"slope_full": 0.0056},
+                    }
+                }
+            }),
+            encoding="utf-8",
+        )
+        ord_path = tmp_path / "cache_order.json"
+        ord_path.write_text(
+            json.dumps({
+                "items": {
+                    "TAOUSDC": [
+                        {"side": "BUY", "price": 395.0, "quantity": 2.0, "timestamp": now_ms - 7200_000},
+                        {"side": "SELL", "price": 415.0, "quantity": 2.0, "timestamp": now_ms - 3600_000},
+                    ]
+                }
+            }),
+            encoding="utf-8",
+        )
+        telem = collect_pretrade_telemetry("TAO/USD", cachedb_dir=str(tmp_path))
+        assert "24h Multi-Horizon Price Evolution" in telem
+        assert "Dynamic Multi-Window Slopes" in telem
+        assert "Recent Venue Fills" in telem
+
+        # profit_guard with qty=None and notional_eur=1500.0 must still call check_intelligence_guards
+        intel_called = []
+        monkeypatch.setattr(order_guard, "get_profit_guard_mode_cfg", lambda *a, **k: "off")
+        monkeypatch.setattr(
+            order_guard,
+            "check_intelligence_guards",
+            lambda *a, **k: (intel_called.append(k.get("notional_eur")) or (False, "blocked_by_notional_only", 0.0)),
+        )
+        prov = MagicMock()
+        prov.name = "binance"
+        res_pg = order_guard.profit_guard(prov, "BTCUSDC", "BUY", 85000.0, 1.15, qty=None, notional_eur=1500.0)
+        assert res_pg is False
+        assert intel_called == [1500.0]
+
+
 
 
 

@@ -157,20 +157,36 @@ def collect_pretrade_telemetry(
         telemetry["Trend Duration"] = f"{dur_sec / 3600.0:.1f} hours"
 
     # 4B. 24h Multi-Horizon Price Evolution & Dynamic Multi-Window Slopes (shared with Reconciler)
+    from intelligence.external.collectors.orderbook_depth import _symbol_variants
+    sym_variants = _symbol_variants(symbol)
     try:
-        p24_path = os.path.join(cachedb_dir, f"cache_24_price_{symbol}.json")
-        if os.path.exists(p24_path):
-            with open(p24_path, "r", encoding="utf-8") as f:
-                p24_data = json.load(f)
-            raw_items = p24_data.get("items", {}) if isinstance(p24_data, dict) else {}
-            series = raw_items.get(symbol, []) if isinstance(raw_items, dict) else raw_items
-            m24 = compute_24h_price_metrics(series)
-            if m24:
-                telemetry["24h Multi-Horizon Price Evolution"] = (
-                    f"15m={m24.get('chg_15m_pct', 0):+.2f}%, 30m={m24.get('chg_30m_pct', 0):+.2f}%, "
-                    f"1h={m24.get('chg_1h_pct', 0):+.2f}%, 3h={m24.get('chg_3h_pct', 0):+.2f}%, "
-                    f"24h Range=[${m24.get('low_24h')}, ${m24.get('high_24h')}]"
-                )
+        series = []
+        for cand in sym_variants:
+            if "/" in cand:
+                continue
+            p24_path = os.path.join(cachedb_dir, f"cache_24_price_{cand}.json")
+            if os.path.exists(p24_path):
+                with open(p24_path, "r", encoding="utf-8") as f:
+                    p24_data = json.load(f)
+                raw_items = p24_data.get("items", {}) if isinstance(p24_data, dict) else {}
+                if isinstance(raw_items, dict):
+                    for k_cand in sym_variants:
+                        series = raw_items.get(k_cand, [])
+                        if series:
+                            break
+                    if not series and raw_items:
+                        series = next(iter(raw_items.values()), [])
+                elif isinstance(raw_items, list):
+                    series = raw_items
+                if series:
+                    break
+        m24 = compute_24h_price_metrics(series)
+        if m24:
+            telemetry["24h Multi-Horizon Price Evolution"] = (
+                f"15m={m24.get('chg_15m_pct', 0):+.2f}%, 30m={m24.get('chg_30m_pct', 0):+.2f}%, "
+                f"1h={m24.get('chg_1h_pct', 0):+.2f}%, 3h={m24.get('chg_3h_pct', 0):+.2f}%, "
+                f"24h Range=[${m24.get('low_24h')}, ${m24.get('high_24h')}]"
+            )
     except Exception:
         pass
 
@@ -179,7 +195,12 @@ def collect_pretrade_telemetry(
         if os.path.exists(st_path):
             with open(st_path, "r", encoding="utf-8") as f:
                 st_data = json.load(f)
-            tinfo = st_data.get(symbol) if isinstance(st_data, dict) else None
+            tinfo = None
+            if isinstance(st_data, dict):
+                for cand in sym_variants:
+                    tinfo = st_data.get(cand)
+                    if isinstance(tinfo, dict):
+                        break
             if isinstance(tinfo, dict):
                 dyn = tinfo.get("dynamic", {}) if isinstance(tinfo.get("dynamic"), dict) else {}
                 s37 = (dyn.get("222") or {}).get("slope_full", 0.0)
@@ -195,7 +216,13 @@ def collect_pretrade_telemetry(
             with open(ord_path, "r", encoding="utf-8") as f:
                 ord_data = json.load(f)
             o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) else {}
-            fills = extract_symbol_recent_fills(o_items.get(symbol, []))
+            orders_for_sym = []
+            if isinstance(o_items, dict):
+                for cand in sym_variants:
+                    orders_for_sym = o_items.get(cand, [])
+                    if orders_for_sym:
+                        break
+            fills = extract_symbol_recent_fills(orders_for_sym)
             if fills:
                 lb = fills.get("last_buy") or {}
                 ls = fills.get("last_sell") or {}

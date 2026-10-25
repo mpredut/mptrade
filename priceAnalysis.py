@@ -670,13 +670,13 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
             print(f"[{symbol}] estimarea T failed ({e}) — using the prior T=14")
 
     all_trend_data = cm.get_cache_manager("LongTrend").cache
-    items = all_trend_data.get(symbol)
+    items = all_trend_data.get(symbol) or all_trend_data.get((symbol or "").upper())
     if not items:
         # Fallback to normalized base asset match (e.g. ARBUSD -> ARBUSDC)
         from order_guard import _normalize_base_asset
         s_base = _normalize_base_asset(symbol)
         for k, v in all_trend_data.items():
-            if _normalize_base_asset(k) == s_base:
+            if v and _normalize_base_asset(k) == s_base:
                 items = v
                 break
     if not items:
@@ -800,9 +800,10 @@ def get_trade_weight(T, trend_len, trend, order_type,
         return np.array([0.0]), np.array([w_val])
 
     # Zone 1: Gaussian over the full T, sliced from the trend's current age.
-    # Clamp index to T-1 so trend_len==T leaves a nonempty slice at the zone seam.
-    idx = min(int(trend_len), T - 1)
-    t_full, w_full = u.gaussian_weights_from_idx(T=T, idx=0)
+    # Clamp index to t_steps-1 so trend_len==T leaves a nonempty slice at the zone seam.
+    t_steps = max(1, int(round(T)))
+    idx = max(0, min(int(trend_len), t_steps - 1))
+    t_full, w_full = u.gaussian_weights_from_idx(T=t_steps, idx=0)
     if len(w_full) == 0:
         _dbg(f"[DEBUG] Zone 1: gaussian_weights_from_idx returned empty. return [0.05]")
         return np.array([0.0]), np.array([0.05])

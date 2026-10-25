@@ -1024,6 +1024,12 @@ def get_derivatives_collector():
 
 def _normalize_base_asset(sym: str) -> str:
     s = (sym or "").strip().upper()
+    if "/" in s:
+        s = s.split("/", 1)[0].strip()
+    elif "-" in s:
+        s = s.split("-", 1)[0].strip()
+    elif "_" in s:
+        s = s.split("_", 1)[0].strip()
     for q in ("USDC", "USDT", "FDUSD", "USD", "EUR", "RON", "GBP"):
         if s.endswith(q) and len(s) > len(q):
             return s[:-len(q)]
@@ -1055,11 +1061,11 @@ def _read_cached_trend_duration(symbol: str) -> float:
         if not isinstance(data, dict):
             return 0.0
         all_items = data.get("items", {})
-        items = all_items.get(symbol.upper())
+        items = all_items.get(symbol) or all_items.get(symbol.upper())
         if not items:
             su_base = _normalize_base_asset(symbol)
             for k, v in all_items.items():
-                if _normalize_base_asset(k) == su_base:
+                if v and _normalize_base_asset(k) == su_base:
                     items = v
                     break
         if items and isinstance(items, list):
@@ -1102,11 +1108,11 @@ def _read_cached_trend_direction(symbol: str) -> Optional[str]:
         if not isinstance(data, dict):
             return None
         all_items = data.get("items", {})
-        items = all_items.get(symbol.upper())
+        items = all_items.get(symbol) or all_items.get(symbol.upper())
         if not items:
             su_base = _normalize_base_asset(symbol)
             for k, v in all_items.items():
-                if _normalize_base_asset(k) == su_base:
+                if v and _normalize_base_asset(k) == su_base:
                     items = v
                     break
         if items and isinstance(items, list):
@@ -1157,19 +1163,35 @@ def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> O
     history: List[Tuple[float, float]] = []
 
     # 1. Primary: dedicated 24h cache (cache_24_price_{symbol}.json)
-    p24 = os.path.join(cachedb_dir, f"cache_24_price_{su}.json")
-    if not os.path.exists(p24):
-        su_base = _normalize_base_asset(su)
-        p24_base = os.path.join(cachedb_dir, f"cache_24_price_{su_base}.json")
-        if os.path.exists(p24_base):
-            p24 = p24_base
+    su_base = _normalize_base_asset(su)
+    safe_su = su.replace("/", "").replace("-", "")
+    cand_symbols: List[str] = []
+    for c in (safe_su, su, f"{su_base}USDC", f"{su_base}USDT", f"{su_base}USD", su_base):
+        if c and "/" not in c and c not in cand_symbols:
+            cand_symbols.append(c)
+    p24 = os.path.join(cachedb_dir, f"cache_24_price_{safe_su}.json")
+    for cand in cand_symbols:
+        p_cand = os.path.join(cachedb_dir, f"cache_24_price_{cand}.json")
+        if os.path.exists(p_cand):
+            p24 = p_cand
+            break
     data = _read_json_recovering(p24)
     if isinstance(data, dict):
         try:
-            raw_items = data.get("items", {}).get(su)
-            if not raw_items:
-                su_base = _normalize_base_asset(su)
-                raw_items = data.get("items", {}).get(su_base, [])
+            items_map = data.get("items", {})
+            raw_items = None
+            if isinstance(items_map, dict):
+                for cand in cand_symbols:
+                    raw_items = items_map.get(cand)
+                    if raw_items:
+                        break
+                if not raw_items:
+                    for k, v in items_map.items():
+                        if v and _normalize_base_asset(str(k)) == su_base:
+                            raw_items = v
+                            break
+            elif isinstance(items_map, list):
+                raw_items = items_map
             for item in raw_items or []:
                 if isinstance(item, (list, tuple)) and len(item) >= 2:
                     if isinstance(item[0], bool) or isinstance(item[1], bool):
@@ -1781,7 +1803,9 @@ def profit_guard(
         ):
             return False
 
-    if not evaluate_intelligence or qty is None or (isinstance(qty, (int, float)) and qty <= 0):
+    has_valid_qty = qty is not None and not (isinstance(qty, (int, float)) and qty <= 0)
+    has_valid_notional = notional_eur is not None and isinstance(notional_eur, (int, float)) and notional_eur > 0
+    if not evaluate_intelligence or (not has_valid_qty and not has_valid_notional):
         return True
 
     # Stage 2: Intelligence, Macro & Sentiment Guards

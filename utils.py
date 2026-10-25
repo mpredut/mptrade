@@ -175,17 +175,19 @@ def gaussian_weights_from_idx(T, idx: int):
     """
     Return ``t`` as the position axis ``[idx..T-1]`` and ``w`` as its Gaussian weights.
     """
-    if idx >= T:
+    t_steps = max(1, int(round(T))) if T and T > 0 else 0
+    idx_int = int(idx)
+    if idx_int >= t_steps or t_steps <= 0:
         return np.array([]), np.array([])
 
     # Gaussian over the complete T domain.
-    t_full = np.linspace(0, T - 1, T)
-    mu = (T - 1) / 2
-    sigma = T / 4
+    t_full = np.linspace(0, t_steps - 1, t_steps)
+    mu = (t_steps - 1) / 2
+    sigma = t_steps / 4
 
     w_full = np.exp(-0.5 * ((t_full - mu) / sigma) ** 2)
     w_full = w_full / w_full.sum()  # normalize to sum 1
-    return t_full[idx:], w_full[idx:]
+    return t_full[idx_int:], w_full[idx_int:]
 
 
 # Canonical alias for full Gaussian domain
