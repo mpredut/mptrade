@@ -1865,6 +1865,114 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
             persisted_pa = json.load(fh)
         self.assertEqual(persisted_pa["BTCUSDT"]["direction"], "up")
 
+    def test_proportional_recent_gradient_for_large_windows_and_root_dyn222_sync(self):
+        """Windows > 222s scale recent_gradient_seconds proportionally; evaluate_full syncs dynamic['222'] with root."""
+        import pricewindow as pw_mod
+
+        # 1. effective_recent_gradient_seconds keeps 60s for <= 222s and scales proportionally for > 222s
+        self.assertEqual(pw_mod.effective_recent_gradient_seconds(None), 60.0)
+        self.assertEqual(pw_mod.effective_recent_gradient_seconds(60.0), 60.0)
+        self.assertEqual(pw_mod.effective_recent_gradient_seconds(222.0), 60.0)
+        self.assertAlmostEqual(
+            pw_mod.effective_recent_gradient_seconds(900.0),
+            900.0 * (60.0 / 222.0),
+            places=9,
+        )
+        self.assertAlmostEqual(
+            pw_mod.effective_recent_gradient_seconds(9000.0),
+            9000.0 * (60.0 / 222.0),
+            places=9,
+        )
+
+        # 2. 900s dynamic window uses ~243.24s recent horizon instead of collapsing to the 60s tail
+        now_sec = time.time()
+        now_ms = int(now_sec * 1000)
+        # 901 samples at 1s spacing: strong rise (+2.0/s) for first 840s, mild pullback (-0.5/s) in last 60s.
+        # Over the last 60s: net change = -30 -> gradient_recent(222s) < 0.
+        # Over the last ~243s (for 900s window): 183s of +2.0 (+366) and 60s of -0.5 (-30) -> net +336 > 0!
+        entries = []
+        p = 60000.0
+        for i in range(901):
+            ts_i = now_ms - (900 - i) * 1000
+            if i > 0:
+                p += 2.0 if i <= 840 else -0.5
+            entries.append([ts_i, p])
+
+        c24 = _make_cache24("BTCUSDT", entries, self.tmp)
+        cpm = cm.CacheCurrentPriceManager(
+            sync_ts=9999,
+            symbols=["BTCUSDT"],
+            filename=os.path.join(self.tmp, "cp_prop.json"),
+            ws_manager=None,
+            api_client=mock_api,
+            market_api=mock_api,
+        )
+        cpm.on_items_update("BTCUSDT", [[now_ms, entries[-1][1]]])
+        # Simulate live cadence sample rate (0.5s) differing from Cache24 median spacing (1.0s)
+        cpm._update_timestamps["BTCUSDT"].clear()
+        for k in range(20):
+            cpm._update_timestamps["BTCUSDT"].append(now_sec - (19 - k) * 0.5)
+
+        stm = cm.CacheShortTrendManager(
+            ["BTCUSDT"], os.path.join(self.tmp, "st_prop.json"), writer=True
+        )
+        self.addCleanup(stm.shutdown)
+        stm.start_computation({"BTCUSDT": c24}, cpm)
+
+        dyn222 = stm.get_short_trend_for_window("BTCUSDT", 222, now=now_sec)
+        dyn900 = stm.get_short_trend_for_window("BTCUSDT", 900, now=now_sec)
+        self.assertIsNotNone(dyn222)
+        self.assertIsNotNone(dyn900)
+        self.assertLess(dyn222["gradient_recent"], 0.0)
+        self.assertGreater(dyn900["gradient_recent"], 0.0)
+        self.assertGreater(dyn900["growth_coefficient"], 0.0)
+        self.assertEqual(dyn900["final_trend"], 1)
+
+        # 3. evaluate_full synchronizes snap["dynamic"]["222"] with root 222s metrics
+        stm.evaluate_full("BTCUSDT")
+        snap = stm.get_snapshot("BTCUSDT")
+        self.assertIsNotNone(snap)
+        pub222 = snap["dynamic"]["222"]
+        for metric in (
+            "final_trend",
+            "growth_coefficient",
+            "slope_full",
+            "gradient_recent",
+            "epsilon",
+        ):
+            self.assertAlmostEqual(pub222[metric], snap[metric], places=12, msg=metric)
+
+        # 4. Unification: is_trend_up (_eval_upward_formula) and should_wait (GT_S) both follow growth_coefficient
+        # Case A: slope_full=+1.0, gradient_recent=-0.2 -> growth_coefficient=+0.4 > 0 -> UP for both
+        stm.update_snapshot(
+            "BTCUSDT",
+            slope_full=1.0,
+            gradient_recent=-0.2,
+            growth_coefficient=0.4,
+            final_trend=1,
+            epsilon=1e-9,
+            current_price=60000.0,
+            ts=now_sec,
+        )
+        self.assertTrue(stm.is_trend_up("BTCUSDT", now=now_sec))
+        self.assertFalse(stm.should_wait("BUY", "BTCUSDT", use_noise_gate=False, now=now_sec))
+        self.assertTrue(stm.should_wait("SELL", "BTCUSDT", use_noise_gate=False, now=now_sec))
+
+        # Case B: slope_full=-1.0, gradient_recent=+0.2 -> growth_coefficient=-0.4 < 0 -> DOWN for both
+        stm.update_snapshot(
+            "BTCUSDT",
+            slope_full=-1.0,
+            gradient_recent=0.2,
+            growth_coefficient=-0.4,
+            final_trend=-1,
+            epsilon=1e-9,
+            current_price=60000.0,
+            ts=now_sec,
+        )
+        self.assertFalse(stm.is_trend_up("BTCUSDT", now=now_sec))
+        self.assertTrue(stm.should_wait("BUY", "BTCUSDT", use_noise_gate=False, now=now_sec))
+        self.assertFalse(stm.should_wait("SELL", "BTCUSDT", use_noise_gate=False, now=now_sec))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

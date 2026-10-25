@@ -122,8 +122,8 @@ SMALL_TIMEOUT_RANGE_SEC = (14.0, 11 * 60.0)   # 14s - 11 min (user, 29 iul)
 
 def _is_trend_up_tuple(trend_tuple: Tuple[int, float, float, float]) -> bool:
     """Canonical monitortrades.is_trend_up() rule on (final_trend, gc, slope_full, gradient_recent)."""
-    final_trend, _gc, _slope_full, gradient_recent = trend_tuple
-    return gradient_recent > 0 or (gradient_recent == 0 and final_trend > 0)
+    final_trend, gc, _slope_full, _gradient_recent = trend_tuple
+    return gc > 0 or (gc == 0 and final_trend > 0)
 
 
 def _instant_trend_from_slice(prices: Sequence[float], sample_rate_sec: float

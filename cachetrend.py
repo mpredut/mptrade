@@ -465,19 +465,23 @@ class CacheShortTrendManager(CacheManagerInterface):
         eps_primary = pwin.get_noise_epsilon(self.EPSILON_K)
         published_dyn = self._published_dynamic_windows(symbol, now=observed_at)
         primary_key = _dynamic_window_key(primary)
-        if primary_key not in published_dyn:
-            published_dyn[primary_key] = dict(
-                final_trend=gradient,
-                growth_coefficient=gc,
-                slope_full=slope_full,
-                gradient_recent=gradient_recent,
-                epsilon=eps_primary,
-                n_samples=len(pwin.prices),
-                window_seconds=float(primary),
-                sample_rate_sec=float(pwin.sample_rate_sec),
-                current_price=current_price,
-                ts=observed_at,
-            )
+        existing_primary = (
+            published_dyn.get(primary_key)
+            if isinstance(published_dyn.get(primary_key), dict)
+            else {}
+        )
+        published_dyn[primary_key] = dict(
+            final_trend=gradient,
+            growth_coefficient=gc,
+            slope_full=slope_full,
+            gradient_recent=gradient_recent,
+            epsilon=eps_primary,
+            n_samples=existing_primary.get("n_samples", len(pwin.prices)),
+            window_seconds=float(primary),
+            sample_rate_sec=float(pwin.sample_rate_sec),
+            current_price=current_price,
+            ts=observed_at,
+        )
         with self._lock:
             live_sym = self._live_windows.setdefault(symbol, {})
             for wk, wval in published_dyn.items():
@@ -644,7 +648,9 @@ class CacheShortTrendManager(CacheManagerInterface):
         return win.get_short_trend() if win else None
 
     # ── Dynamic window & Historical Subslice (O(1) Prefix Sums + Persistence) ──
-    def _eval_entries_with_buffer(self, symbol, entries, a: int, b: int):
+    def _eval_entries_with_buffer(
+        self, symbol, entries, a: int, b: int, window_seconds=None
+    ):
         """Evaluate slice [a, b] of entries using the symbol's IncrementalTrendBuffer."""
         import pricewindow as pw
         sub_entries = entries[a : b + 1]
@@ -654,14 +660,22 @@ class CacheShortTrendManager(CacheManagerInterface):
             buf.sync_entries(entries)
             if len(buf.prices) == len(entries):
                 ft, gc, sf, gr, eps = buf.eval_slice(
-                    a, b, sample_rate_sec=sample_rate, eps_k=self.EPSILON_K
+                    a,
+                    b,
+                    sample_rate_sec=sample_rate,
+                    eps_k=self.EPSILON_K,
+                    window_seconds=window_seconds,
                 )
                 return ft, gc, sf, gr, eps, sample_rate
         # Fallback if entries were non-monotonic or ad-hoc:
         tmp_buf = pw.IncrementalTrendBuffer()
         tmp_buf.sync_entries(sub_entries)
         ft, gc, sf, gr, eps = tmp_buf.eval_slice(
-            0, len(sub_entries) - 1, sample_rate_sec=sample_rate, eps_k=self.EPSILON_K
+            0,
+            len(sub_entries) - 1,
+            sample_rate_sec=sample_rate,
+            eps_k=self.EPSILON_K,
+            window_seconds=window_seconds,
         )
         return ft, gc, sf, gr, eps, sample_rate
 
@@ -784,7 +798,7 @@ class CacheShortTrendManager(CacheManagerInterface):
             if not (math.isfinite(latest_price) and latest_price > 0):
                 return None
             ft, gc, sf, gr, eps, sample_rate = self._eval_entries_with_buffer(
-                symbol, disk_entries, a, b
+                symbol, disk_entries, a, b, window_seconds=clamped
             )
             res = dict(
                 final_trend=ft,
@@ -845,7 +859,7 @@ class CacheShortTrendManager(CacheManagerInterface):
                     hit["ts"] = now_val
                     return hit
             ft, gc, sf, gr, eps, sample_rate = self._eval_entries_with_buffer(
-                symbol, all_entries, a, b
+                symbol, all_entries, a, b, window_seconds=clamped
             )
             res = dict(
                 final_trend=ft,
@@ -886,7 +900,7 @@ class CacheShortTrendManager(CacheManagerInterface):
             return None
 
         ft, gc, sf, gr, eps, sample_rate = self._eval_entries_with_buffer(
-            symbol, entries, 0, len(entries) - 1
+            symbol, entries, 0, len(entries) - 1, window_seconds=clamped
         )
         res = dict(
             final_trend=ft,
@@ -1104,8 +1118,9 @@ class CacheShortTrendManager(CacheManagerInterface):
         if a < 0 or b >= len(entries) or (b - a + 1) < 3:
             return None
 
+        slice_win_sec = (t2_ms - t1_ms) / 1000.0
         ft, gc, sf, gr, eps, sample_rate = self._eval_entries_with_buffer(
-            symbol, entries, a, b
+            symbol, entries, a, b, window_seconds=slice_win_sec
         )
         res = dict(
             t1_ms=t1_ms,
@@ -1143,22 +1158,40 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     @staticmethod
     def _eval_upward_formula(data) -> bool:
-        """Single canonical upward-trend formula (SSOT): slope > 0 or (slope == 0 and gradient > 0)."""
+        """Single canonical upward-trend formula (SSOT) aligned with should_wait (GT_S): growth_coefficient > 0."""
         if not isinstance(data, dict):
             return False
+        for key in (
+            "growth_coefficient",
+            "gradient_recent",
+            "slope_small",
+            "final_trend",
+        ):
+            val = data.get(key)
+            if val is None:
+                continue
+            if isinstance(val, bool):
+                return False
+            try:
+                fval = float(val)
+            except (TypeError, ValueError, OverflowError):
+                return False
+            if not math.isfinite(fval):
+                return False
+
+        raw_gc = data.get("growth_coefficient")
+        if raw_gc is not None:
+            gc = float(raw_gc)
+            raw_ft = data.get("final_trend", 0.0)
+            ft = float(0.0 if raw_ft is None else raw_ft)
+            return gc > 0 or (gc == 0 and ft > 0)
+
         raw_slope = data.get("gradient_recent")
         if raw_slope is None:
             raw_slope = data.get("slope_small", 0.0)
         raw_gradient = data.get("final_trend", 0.0)
-        if isinstance(raw_slope, bool) or isinstance(raw_gradient, bool):
-            return False
-        try:
-            slope = float(0.0 if raw_slope is None else raw_slope)
-            gradient = float(0.0 if raw_gradient is None else raw_gradient)
-        except (TypeError, ValueError, OverflowError):
-            return False
-        if not (math.isfinite(slope) and math.isfinite(gradient)):
-            return False
+        slope = float(0.0 if raw_slope is None else raw_slope)
+        gradient = float(0.0 if raw_gradient is None else raw_gradient)
         return slope > 0 or (slope == 0 and gradient > 0)
 
     def is_trend_up(self, symbol, window_seconds=None, now=None) -> bool:

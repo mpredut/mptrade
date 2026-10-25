@@ -21,9 +21,28 @@ import utils as u
 
 # ── Window constants ──────────────────────────────────────────────────────────
 DEFAULT_SAMPLE_RATE_SEC = 0.8     # Nominal fallback sampling rate.
-RECENT_GRADIENT_SECONDS = 60.0    # Recent-momentum window in seconds.
-WINDOW_SECONDS_SMALL = 3.7 * 60          # 3.7 minutes
-WINDOW_SECONDS_BIG   = 2.5 * 60 * 60     # 2.5 hours
+RECENT_GRADIENT_SECONDS = 60.0    # Recent-momentum window in seconds (for primary 222s window).
+WINDOW_SECONDS_SMALL = 3.7 * 60          # 3.7 minutes (222.0s)
+WINDOW_SECONDS_BIG   = 2.5 * 60 * 60     # 2.5 hours (9000.0s)
+
+
+def effective_recent_gradient_seconds(window_seconds=None) -> float:
+    """Return the recent-gradient sub-window duration in seconds.
+
+    For the primary window (<= 222s) or unspecified windows, returns
+    ``RECENT_GRADIENT_SECONDS`` (60s). For larger windows (e.g. 900s, 9000s),
+    scales proportionally by ``RECENT_GRADIENT_SECONDS / WINDOW_SECONDS_SMALL``
+    (60 / 222 ≈ 27.03% of the window) so multi-minute/hour windows do not
+    collapse to a 60-second tail.
+    """
+    if window_seconds is not None and not isinstance(window_seconds, bool):
+        try:
+            win_f = float(window_seconds)
+            if math.isfinite(win_f) and win_f > WINDOW_SECONDS_SMALL:
+                return win_f * (RECENT_GRADIENT_SECONDS / WINDOW_SECONDS_SMALL)
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return RECENT_GRADIENT_SECONDS
 
 
 class PriceTrendAnalyzer:
@@ -84,7 +103,7 @@ class PriceTrendAnalyzer:
         return gradient, avg_gradient
 
 
-def instant_trend_from_prices(prices, sample_rate_sec):
+def instant_trend_from_prices(prices, sample_rate_sec, window_seconds=None):
     """Apply the exact ``PriceWindow.get_short_trend`` formula directly to a
     price list and sampling rate without constructing a complete window. This avoids
     incremental deque bookkeeping for a one-shot raw slice and is the single source of
@@ -100,8 +119,9 @@ def instant_trend_from_prices(prices, sample_rate_sec):
     if slope_full is None:
         slope_full = 0.0
     gradient_lst, _ = analyzer.calculate_gradient()
+    recent_sec = effective_recent_gradient_seconds(window_seconds)
     recent_n = (
-        max(2, int(RECENT_GRADIENT_SECONDS / sample_rate_sec))
+        max(2, int(recent_sec / sample_rate_sec))
         if sample_rate_sec and sample_rate_sec > 0
         else 2
     )
@@ -257,7 +277,7 @@ class IncrementalTrendBuffer:
             self.append(e[1], e[0])
 
     def eval_slice(self, a: int, b: int, sample_rate_sec: float = DEFAULT_SAMPLE_RATE_SEC,
-                   eps_k: float = 1.0):
+                   eps_k: float = 1.0, window_seconds: float | None = None):
         """Evaluate (final_trend, growth_coefficient, slope_full, gradient_recent, epsilon)
         on inclusive index range [a, b] in O(1) using cumulative prefix sums."""
         n = b - a + 1
@@ -274,8 +294,9 @@ class IncrementalTrendBuffer:
             cov_xy = s1_raw - (self.offset + a + 0.5 * (n - 1)) * s0
             slope_full = float((12.0 * cov_xy) / (n * (n * n - 1)))
 
+        recent_sec = effective_recent_gradient_seconds(window_seconds)
         recent_n = (
-            max(2, int(RECENT_GRADIENT_SECONDS / sample_rate_sec))
+            max(2, int(recent_sec / sample_rate_sec))
             if sample_rate_sec and sample_rate_sec > 0
             else 2
         )
@@ -368,7 +389,7 @@ class PriceWindow:
 
     @property
     def recent_n(self) -> int:
-        """Return the sample count corresponding to ``RECENT_GRADIENT_SECONDS``."""
+        """Return the sample count corresponding to the effective recent-gradient window."""
         if (
             not self.sample_rate_sec
             or isinstance(self.sample_rate_sec, bool)
@@ -376,7 +397,8 @@ class PriceWindow:
             or self.sample_rate_sec <= 0
         ):
             return 2
-        return max(2, int(RECENT_GRADIENT_SECONDS / self.sample_rate_sec))
+        recent_sec = effective_recent_gradient_seconds(self.window_seconds)
+        return max(2, int(recent_sec / self.sample_rate_sec))
 
     def set_sample_rate(self, rate):
         """Update observed sampling rate and resize a duration-based window."""
@@ -639,11 +661,15 @@ class PriceWindow:
                 and self._trend_buf.prices[blen - n] == self.prices[0]
                 and self._trend_buf.prices[-1] == self.prices[-1]
             ):
-                key = (blen, self._trend_buf.offset, n, self.sample_rate_sec)
+                key = (blen, self._trend_buf.offset, n, self.sample_rate_sec, self.window_seconds)
                 if self._cached_eval_key == key and self._cached_eval_val is not None:
                     return float(k * self._cached_eval_val[4])
                 res = self._trend_buf.eval_slice(
-                    blen - n, blen - 1, sample_rate_sec=self.sample_rate_sec, eps_k=1.0
+                    blen - n,
+                    blen - 1,
+                    sample_rate_sec=self.sample_rate_sec,
+                    eps_k=1.0,
+                    window_seconds=self.window_seconds,
                 )
                 self._cached_eval_key = key
                 self._cached_eval_val = res
@@ -665,12 +691,16 @@ class PriceWindow:
                 blen >= n
                 and (n == 0 or (self._trend_buf.prices[blen - n] == self.prices[0] and self._trend_buf.prices[-1] == self.prices[-1]))
             ):
-                key = (blen, self._trend_buf.offset, n, self.sample_rate_sec)
+                key = (blen, self._trend_buf.offset, n, self.sample_rate_sec, self.window_seconds)
                 if self._cached_eval_key == key and self._cached_eval_val is not None:
                     final_trend, growth_coefficient, slope_full, gradient_recent, _ = self._cached_eval_val
                 else:
                     res = self._trend_buf.eval_slice(
-                        blen - n, blen - 1, sample_rate_sec=self.sample_rate_sec, eps_k=1.0
+                        blen - n,
+                        blen - 1,
+                        sample_rate_sec=self.sample_rate_sec,
+                        eps_k=1.0,
+                        window_seconds=self.window_seconds,
                     )
                     self._cached_eval_key = key
                     self._cached_eval_val = res
@@ -678,7 +708,7 @@ class PriceWindow:
             else:
                 prices_snapshot = list(self.prices)
                 final_trend, growth_coefficient, slope_full, gradient_recent = instant_trend_from_prices(
-                    prices_snapshot, self.sample_rate_sec)
+                    prices_snapshot, self.sample_rate_sec, window_seconds=self.window_seconds)
 
         if getattr(builtins.print, "__name__", "") != "_dummy_print":
             print(
