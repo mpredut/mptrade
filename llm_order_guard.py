@@ -135,7 +135,7 @@ def evaluate_high_stake_order_guard(
         if notify_on_eval:
             now_ts = float(now) if now is not None else time.time()
             cd_key = (symbol, side)
-            if now_ts - _LLM_SHADOW_NOTIFY_COOLDOWN.get(cd_key, 0.0) >= 1800.0:
+            if not (0.0 <= (now_ts - _LLM_SHADOW_NOTIFY_COOLDOWN.get(cd_key, -1e18)) < 1800.0):
                 _LLM_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
                 try:
                     from notify_engine.alertnotifiers import notify
@@ -245,8 +245,8 @@ def check_geopolitical_order_guards(
                 print(f"{prefix} {order_side} {symbol}: {geo_dec.reason} (brake={geo_dec.brake_action}, suggested_scale={geo_dec.suggested_scale})")
                 if geo_mode == "shadow" and shadow_notify:
                     cd_key = (symbol, order_side)
-                    now_ts = now if now is not None else time.time()
-                    if now_ts - _GEO_SHADOW_NOTIFY_COOLDOWN.get(cd_key, 0.0) >= 1800.0:
+                    now_ts = float(now) if now is not None else time.time()
+                    if not (0.0 <= (now_ts - _GEO_SHADOW_NOTIFY_COOLDOWN.get(cd_key, -1e18)) < 1800.0):
                         _GEO_SHADOW_NOTIFY_COOLDOWN[cd_key] = now_ts
                         try:
                             from notify_engine.alertnotifiers import notify

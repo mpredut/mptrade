@@ -25,6 +25,8 @@ class RTradePairStore:
 
     @staticmethod
     def _finite_positive(value, field):
+        if isinstance(value, bool):
+            raise ValueError(f"invalid rtrade pair-store {field}")
         try:
             parsed = float(value)
         except (TypeError, ValueError, OverflowError) as exc:
@@ -168,8 +170,13 @@ class RTradePairStore:
                             f"invalid rtrade checkpoint snapshot "
                             f"for {pair_id!r}")
                     for field in ("filled_qty", "cost", "fee"):
+                        raw_val = snapshot.get(field, 0.0)
+                        if isinstance(raw_val, bool):
+                            raise ValueError(
+                                f"invalid rtrade checkpoint {field} "
+                                f"for {pair_id!r}")
                         try:
-                            value = float(snapshot.get(field, 0.0))
+                            value = float(raw_val)
                         except (TypeError, ValueError, OverflowError) as exc:
                             raise ValueError(
                                 f"invalid rtrade checkpoint {field} "

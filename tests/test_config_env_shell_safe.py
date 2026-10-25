@@ -56,3 +56,48 @@ def test_shell_launchers_source_env_common_correctly():
     ) as fh:
         dn_text = fh.read()
     assert 'source "$HERE/../../../orchestratorOS/lib/env_common.sh"' in dn_text
+
+
+def test_env_common_env_get_works_under_set_u_without_home():
+    proc = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            "set -u; source ./orchestratorOS/lib/env_common.sh && env_get PIA_VPN_IF wgpia0 && echo ENV_GET_OK",
+        ],
+        cwd=ROOT,
+        env={"PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert proc.returncode == 0 and "ENV_GET_OK" in proc.stdout, proc.stderr
+
+    with open(os.path.join(ROOT, "orchestratorOS", "livecheck", "pia_supervisor.sh"), encoding="utf-8") as fh:
+        pia_text = fh.read()
+    assert pia_text.index('. "$ROOT/config.env"') < pia_text.index('. "$ROOT/.env"')
+
+
+def test_botcore_env_helpers_handle_zero_booleans_and_non_finite_values():
+    import pytest
+    import botcore
+    from rtrade_pair_store import RTradePairStore
+
+    assert botcore.float_env("K", {"K": 0}) == 0.0
+    assert botcore.float_env("K", {"K": 1.5}) == 1.5
+    assert botcore.float_env("K", {"K": "2.5 # comment"}) == 2.5
+    assert botcore.float_env("K", {"K": True}) is None
+    assert botcore.float_env("K", {"K": "nan"}) is None
+    assert botcore.float_env("K", {"K": "inf"}) is None
+
+    assert botcore.required_env("K", {"K": 0}) == "0"
+    assert botcore.defined_env("K", {"K": 0}) == "0"
+    assert botcore.required_float_env("K", {"K": 0}) == 0.0
+    assert botcore.required_int_env("K", {"K": 0}) == 0
+    with pytest.raises(ValueError):
+        botcore.required_float_env("K", {"K": True})
+    with pytest.raises(ValueError):
+        RTradePairStore._finite_positive(True, "qty")
+    with pytest.raises(ValueError):
+        RTradePairStore._finite_positive(False, "qty")
+

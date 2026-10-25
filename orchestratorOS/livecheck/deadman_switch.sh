@@ -32,6 +32,7 @@ HOST=$(hostname)
 # from outside; once back UP, the heartbeat gap is detected here and the outage window
 # is emailed through the shared mailer (orchestratorOS/lib/os_notify.sh).
 DOWN_AFTER_SEC=$((35 * 60))   # keep in sync with the "In: 35m" header below
+mkdir -p "$ROOT/logs"
 BEAT_FILE="$ROOT/logs/.deadman_last_beat"
 NOW=$(date +%s)
 LAST=$(cat "$BEAT_FILE" 2>/dev/null)

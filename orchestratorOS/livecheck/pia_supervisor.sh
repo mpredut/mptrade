@@ -9,14 +9,14 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$ROOT/orchestratorOS/lib/env_common.sh"
-[ -f "$ROOT/.env" ] && {
-    set -a
-    . "$ROOT/.env" 2>/dev/null || true
-    set +a
-}
 [ -f "$ROOT/config.env" ] && {
     set -a
     . "$ROOT/config.env" 2>/dev/null || true
+    set +a
+}
+[ -f "$ROOT/.env" ] && {
+    set -a
+    . "$ROOT/.env" 2>/dev/null || true
     set +a
 }
 

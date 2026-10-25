@@ -165,17 +165,22 @@ def float_env(key: str, env: dict | None = None) -> float | None:
     """Read a float from os.environ or an injected dictionary, ignoring inline comments.
     The optional `env` argument preserves compatibility with legacy float_env(key) calls."""
     src = os.environ if env is None else env
-    raw = (src.get(key, "") or "").split("#")[0].strip()
-    try:
-        return float(raw) if raw else None
-    except ValueError:
+    val = src.get(key)
+    if val is None or isinstance(val, bool):
         return None
+    raw = str(val).split("#", 1)[0].strip()
+    try:
+        res = float(raw) if raw else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return res if (res is not None and math.isfinite(res)) else None
 
 
 def required_env(key: str, env: dict | None = None) -> str:
     """Return a mandatory setting, rejecting missing, empty, or comment-only values."""
     src = os.environ if env is None else env
-    raw = str(src.get(key, "") or "").split("#", 1)[0].strip()
+    val = src.get(key)
+    raw = "" if val is None else str(val).split("#", 1)[0].strip()
     if not raw:
         raise ValueError(f"Missing or empty mandatory setting: {key}")
     return raw
@@ -186,11 +191,15 @@ def defined_env(key: str, env: dict | None = None) -> str:
     src = os.environ if env is None else env
     if key not in src:
         raise ValueError(f"Missing mandatory setting: {key}")
-    return str(src[key] or "").split("#", 1)[0].strip()
+    val = src[key]
+    return "" if val is None else str(val).split("#", 1)[0].strip()
 
 
 def required_float_env(key: str, env: dict | None = None) -> float:
     """Return a mandatory finite floating-point setting."""
+    src = os.environ if env is None else env
+    if isinstance(src.get(key), bool):
+        raise ValueError(f"Invalid numeric setting: {key}={src.get(key)!r}")
     raw = required_env(key, env)
     try:
         value = float(raw)
