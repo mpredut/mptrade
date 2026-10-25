@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import math
 import os
 import re
 import sys

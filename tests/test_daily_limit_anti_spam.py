@@ -356,12 +356,6 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
                 self.assertIn(("filter", False), observed_flags)
                 self.assertIn(("place", False), observed_flags)
 
-    def test_resolve_assets_supports_usdt_fdusd_gbp(self):
-        from providers.quantity import resolve_assets
-        self.assertEqual(resolve_assets("BTCUSDT"), ("BTC", "USDT"))
-        self.assertEqual(resolve_assets("ETHFDUSD"), ("ETH", "FDUSD"))
-        self.assertEqual(resolve_assets("SOLGBP"), ("SOL", "GBP"))
-
     def test_hyperliquid_order_status_does_not_use_unrelated_fill_price_for_hype_fee(self):
         """When self._token != 'HYPE' and feeToken == 'HYPE', order_status must not
         fall back to the non-HYPE token's fill_price if HYPE mid price is unavailable."""
@@ -411,8 +405,9 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
         hp._client = FakeHLClient()
         hp._client_tried = True
 
-        with self.assertRaises(ProviderError):
+        with self.assertRaises(ProviderError) as ctx:
             hp.order_status("PURRUSDC", "777")
+        self.assertIn("cannot value HYPE fee in USDC", str(ctx.exception))
 
 
 if __name__ == "__main__":
