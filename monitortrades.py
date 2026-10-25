@@ -1086,6 +1086,19 @@ def _log_tp_hold_state(symbol: str, snapshot: PositionSnapshot, decision: ExitDe
               f"stagnation={stagnation_elapsed:.0f}s/{MT_TP_STAGNATION_MAX_SEC:.0f}s)")
 
 
+def _state_matches_buy_price(state: Optional[dict], buy_price: Optional[float]) -> bool:
+    """Return False if state records a buy_price that differs from the current position's buy_price."""
+    if not state or buy_price is None:
+        return True
+    saved_buy = state.get("buy_price")
+    if saved_buy is None:
+        return True
+    try:
+        return math.isclose(float(saved_buy), float(buy_price), rel_tol=1e-9, abs_tol=1e-12)
+    except (TypeError, ValueError):
+        return False
+
+
 def _execute_take_profit(
     inst,
     snapshot: PositionSnapshot,
@@ -1101,6 +1114,8 @@ def _execute_take_profit(
     current_price = snapshot.current_price
     sellable_qty = snapshot.sellable_qty
     current_time_s = snapshot.current_time_s
+    if not _state_matches_buy_price(prev_tp_state, snapshot.avg_buy_price):
+        prev_tp_state = {}
 
     print(f"Price increased with {snapshot.gain_pct:.2f}% by more than {gain_threshold * 100:.2f}% versus buy price! (decision={tp_decision.reason})")
     if sellable_qty <= 0:
@@ -1203,7 +1218,17 @@ def _execute_stop_loss(
     # Pre-flight gate check: GT_S (short_trend) cannot be bypassed by force=True or forced=True;
     # ONLY the expiration of the Stop-Loss timer (sub_reason == "timeout" or elapsed >= MT_SL_TREND_DEFER_MAX_SEC)
     # releases the Stop-Loss order while the trend is still ascending.
+    if not _state_matches_buy_price(prev_sl_state, snapshot.avg_buy_price):
+        prev_sl_state = {}
+    episode_state = _SL_EPISODE_STATE.get(symbol) or {}
+    episode_started_at = (
+        episode_state.get("started_at")
+        if _state_matches_buy_price(episode_state, snapshot.avg_buy_price)
+        else None
+    )
     bounce_started_at = (prev_sl_state or {}).get("started_at")
+    if bounce_started_at is None:
+        bounce_started_at = episode_started_at
     sl_timer_expired = bool(
         sl_decision.metadata.get("sub_reason") == "timeout"
         or sl_decision.metadata.get("sl_timer_expired")
@@ -1218,7 +1243,7 @@ def _execute_stop_loss(
             _SL_BOUNCE_STATE[symbol] = prev_sl_state
         else:
             _SL_BOUNCE_STATE[symbol] = {
-                "started_at": current_time_s,
+                "started_at": bounce_started_at if bounce_started_at is not None else current_time_s,
                 "entry_loss": snapshot.loss_ratio,
                 "lowest_price": current_price,
                 "peak_bounce_price": current_price,
@@ -1794,6 +1819,16 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 return   # Already sold this tick; do not use stale balance below.
 
         # 3.1. Evaluate the existing SELL placement rules via PositionExitManager.
+        if symbol in _TP_RIDE_STATE and not _state_matches_buy_price(_TP_RIDE_STATE.get(symbol), buy_price):
+            _TP_RIDE_STATE.pop(symbol, None)
+            _save_mt_state()
+        if symbol in _SL_BOUNCE_STATE and not _state_matches_buy_price(_SL_BOUNCE_STATE.get(symbol), buy_price):
+            _SL_BOUNCE_STATE.pop(symbol, None)
+            _save_mt_state()
+        if symbol in _SL_EPISODE_STATE and not _state_matches_buy_price(_SL_EPISODE_STATE.get(symbol), buy_price):
+            _SL_EPISODE_STATE.pop(symbol, None)
+            _save_mt_state()
+
         sl_price_territory = snapshot.in_sl_territory(lost_threshold, MT_ARE_CLOSE_TOLERANCE_PCT)
         if not sl_price_territory and symbol in _SL_EPISODE_STATE:
             exit_mgr = get_exit_manager()

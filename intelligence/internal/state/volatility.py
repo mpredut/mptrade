@@ -154,6 +154,23 @@ def get_kalman_state_path() -> str:
         )
 
 
+def _vol_symbol_variants(symbol: str) -> Tuple[str, ...]:
+    raw = str(symbol or "").strip().upper()
+    if not raw:
+        return ()
+    clean = raw.replace("/", "").replace("-", "").replace("_", "")
+    base = clean
+    for suffix in ("USDC", "USDT", "FDUSD", "EUR", "USD"):
+        if base.endswith(suffix) and len(base) > len(suffix):
+            base = base[: -len(suffix)]
+            break
+    variants = [raw]
+    for cand in (clean, f"{base}USDC", f"{base}USDT", f"{base}USD", f"{base}/USDC", base):
+        if cand and cand not in variants:
+            variants.append(cand)
+    return tuple(variants)
+
+
 def _extract_vol_ratio_from_file(path: str, symbol: str) -> Optional[float]:
     if not path or not os.path.exists(path):
         return None
@@ -161,12 +178,11 @@ def _extract_vol_ratio_from_file(path: str, symbol: str) -> Optional[float]:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
-            sym_key = str(symbol).upper()
-            entry = (
-                data.get(sym_key)
-                or data.get(sym_key.replace("USDC", "USDT"))
-                or data.get(sym_key.replace("USDT", "USDC"))
-            )
+            entry = None
+            for cand in _vol_symbol_variants(symbol):
+                if cand in data and isinstance(data[cand], dict):
+                    entry = data[cand]
+                    break
             if entry and isinstance(entry, dict):
                 v = entry.get("vol_1h_pct")
                 if v is not None and math.isfinite(float(v)) and float(v) > 0:

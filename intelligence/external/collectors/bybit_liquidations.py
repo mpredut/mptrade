@@ -17,6 +17,8 @@ from typing import Deque, Dict, List, Optional, Tuple
 
 import websockets
 
+from intelligence.external.collectors.orderbook_depth import _symbol_variants
+
 logger = logging.getLogger("intelligence.external.bybit_liquidations")
 
 BYBIT_WS_URL = "wss://stream.bybit.com/v5/public/linear"
@@ -185,6 +187,11 @@ class BybitLiquidationCollector:
 
         with self._lock:
             items = list(self._events.get(symbol, ()))
+            if not items:
+                for cand in _symbol_variants(symbol):
+                    if cand in self._events:
+                        items = list(self._events[cand])
+                        break
 
         for ts, side, notional in items:
             if ts < cutoff:

@@ -25,7 +25,7 @@ from intelligence.sentiment.triggers.sentiment_contrarian_trigger import Sentime
 from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
 from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
 from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
-from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+from intelligence.sentiment.guards.high_stake_guard import DEFAULT_MIN_NOTIONAL_USD, HighStakeGuard
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
 from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
 
@@ -57,7 +57,7 @@ class CompositeMarketIntelligence:
         max_long_funding_rate: float = 0.0005,
         greed_downscale_threshold: int = 80,
         greed_hard_veto_threshold: int = 90,
-        gemini_min_notional_eur: float = 1000.0,
+        gemini_min_notional_eur: float = DEFAULT_MIN_NOTIONAL_USD,
         gemini_guard: Optional[HighStakeGuard] = None,
         geopolitical_guard: Optional[GeopoliticalShockGuard] = None,
     ):
@@ -158,6 +158,7 @@ class CompositeMarketIntelligence:
                 symbol, side, trend_duration_seconds,
                 p90_days=surv.get("p90_days"),
                 median_days=surv.get("median_days"),
+                gaussian_horizon_days=surv.get("gaussian_horizon_days"),
             )
             if not exh_dec.allowed:
                 return exh_dec

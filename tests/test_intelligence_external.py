@@ -720,6 +720,109 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
         self.assertTrue(dec_unwind.allowed)
         self.assertEqual(dec_unwind.brake_action, BrakeAction.NONE)
 
+    def test_bybit_collector_symbol_variants_and_cascade_guard_sell_symmetry(self):
+        collector = BybitLiquidationCollector(symbols=["BTCUSDT"])
+        t0 = time.time()
+        collector.record_event("BTCUSDT", "SHORT", 650_000.0, ts=t0)
+        collector.record_event("BTCUSDT", "LONG", 50_000.0, ts=t0)
+
+        for variant in ("BTCUSDC", "BTCUSD", "BTC/USDC", "BTC"):
+            summary = collector.get_summary(variant, window_sec=60.0)
+            self.assertEqual(summary.short_liq_usd, 650_000.0)
+            self.assertEqual(summary.long_liq_usd, 50_000.0)
+
+        guard = LiquidationCascadeGuard(collector=collector, max_active_cascade_usd=500_000.0, active_window_sec=60.0)
+        dec_sell = guard.check("BTCUSDC", "SELL")
+        self.assertFalse(dec_sell.allowed)
+        self.assertEqual(dec_sell.brake_action, BrakeAction.DEFER_WAIT)
+        self.assertIn("active_short_liquidation_cascade", dec_sell.reason)
+
+        dec_buy = guard.check("BTCUSDC", "BUY")
+        self.assertTrue(dec_buy.allowed)
+
+    def test_volatility_cache_symbol_variants_and_composite_high_stake_default(self):
+        import json
+        import os
+        import tempfile
+        from intelligence.internal.state.volatility import resolve_cached_volatility_1h
+        from intelligence.composite import CompositeMarketIntelligence
+        from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            kalman_path = os.path.join(tmpdir, "kalman_state.json")
+            with open(kalman_path, "w", encoding="utf-8") as f:
+                json.dump({"TAOUSDC": {"vol_1h_pct": 3.2}, "HYPEUSDC": {"vol_1h_pct": 4.5}}, f)
+            self.assertAlmostEqual(resolve_cached_volatility_1h("TAOUSD", state_path=kalman_path), 0.032)
+            self.assertAlmostEqual(resolve_cached_volatility_1h("TAO/USD", state_path=kalman_path), 0.032)
+            self.assertAlmostEqual(resolve_cached_volatility_1h("HYPE/USDC", state_path=kalman_path), 0.045)
+            self.assertAlmostEqual(resolve_cached_volatility_1h("HYPE", state_path=kalman_path), 0.045)
+
+        comp = CompositeMarketIntelligence()
+        self.assertEqual(comp.gemini_guard.min_notional_eur, 700.0)
+
+        g1 = get_post_stop_reentry_guard(margins={
+            "post_stop_reentry_mode": "enforce",
+            "post_stop_reentry_timeout_sec": 20.0,
+            "post_stop_reentry_fallback": "allow",
+            "post_stop_reentry_notify": "false",
+            "post_stop_reentry_cache_ttl_sec": 300.0,
+        })
+        self.assertEqual(g1.mode, "enforce")
+        g2 = get_post_stop_reentry_guard(margins={
+            "post_stop_reentry_mode": "shadow",
+            "post_stop_reentry_timeout_sec": 12.0,
+            "post_stop_reentry_fallback": "veto",
+            "post_stop_reentry_notify": "true",
+            "post_stop_reentry_cache_ttl_sec": 120.0,
+        })
+        self.assertIs(g1, g2)
+        self.assertEqual(g2.mode, "shadow")
+        self.assertEqual(g2.timeout_sec, 12.0)
+        self.assertEqual(g2.fallback_action, "veto")
+
+    def test_monitortrades_stale_sl_bounce_buy_price_does_not_bypass_gt_s_timer(self):
+        from unittest.mock import patch, MagicMock
+        import monitortrades as mt
+
+        sym = "TESTSLUSDC"
+        now = 1_700_000_000.0
+        mt._SL_BOUNCE_STATE[sym] = {"buy_price": 120.0, "started_at": now - 600.0}
+        mt._SL_EPISODE_STATE[sym] = {"buy_price": 100.0, "started_at": now - 50.0, "disaster_floor": 0.065}
+        try:
+            snap = mt.PositionSnapshot(
+                symbol=sym,
+                current_price=92.0,
+                avg_buy_price=100.0,
+                net_qty=2.0,
+                sellable_qty=2.0,
+                current_time_s=now,
+                trend_up=False,
+            )
+            dec = mt.ExitDecision(
+                action=mt.ExitAction.SELL,
+                should_exit=True,
+                reason="hard_disaster_floor_breached",
+                forced=True,
+                metadata={"priority": 1},
+            )
+            inst = MagicMock()
+            inst.symbol = sym
+            inst.isolation = "shared"
+            inst.free.return_value = 2.0
+            with patch.object(mt, "_is_trend_gate_deferred", return_value=True), \
+                 patch.object(mt, "_save_mt_state"):
+                placed = mt._execute_stop_loss(
+                    inst, snap, dec, 3600.0, 0.001, 0.05,
+                    dict(mt._SL_BOUNCE_STATE[sym]),
+                )
+            self.assertFalse(placed)
+            # Stale buy_price=120.0 must be rejected and replaced by current episode started_at (now - 50.0)
+            self.assertEqual(mt._SL_BOUNCE_STATE[sym]["buy_price"], 100.0)
+            self.assertEqual(mt._SL_BOUNCE_STATE[sym]["started_at"], now - 50.0)
+        finally:
+            mt._SL_BOUNCE_STATE.pop(sym, None)
+            mt._SL_EPISODE_STATE.pop(sym, None)
+
 
 if __name__ == "__main__":
     unittest.main()

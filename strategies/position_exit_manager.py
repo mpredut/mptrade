@@ -407,7 +407,13 @@ class PositionExitManager:
             (effective_floor, locked) where locked=True when the armed floor overrode the candidate.
         """
         episode = self.sl_episode_state.get(symbol)
-        if episode is None or episode.get("buy_price") != buy_price:
+        same_buy = False
+        if episode is not None and episode.get("buy_price") is not None:
+            try:
+                same_buy = math.isclose(float(episode["buy_price"]), float(buy_price), rel_tol=1e-9, abs_tol=1e-12)
+            except (TypeError, ValueError):
+                same_buy = False
+        if episode is None or not same_buy:
             self.sl_episode_state[symbol] = {
                 "started_at": now,
                 "buy_price": buy_price,

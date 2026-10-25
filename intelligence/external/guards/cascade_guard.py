@@ -42,12 +42,11 @@ class LiquidationCascadeGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate whether an active cascade prevents order execution."""
-        side_norm = side.upper()
-        # Cascade guard primarily protects BUY orders against active long cascades (forced dump)
-        if side_norm != "BUY":
+        side_norm = str(side or "").upper()
+        if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow(
                 guard_name="LiquidationCascadeGuard",
-                reason="non_buy_order_allowed",
+                reason="unsupported_side_allowed",
             )
 
         if summary is None and self.collector is not None:
@@ -59,8 +58,8 @@ class LiquidationCascadeGuard:
                 reason="no_liquidation_data",
             )
 
-        # If long liquidations in the short window exceed the cascade threshold, it's an active knife
-        if summary.long_liq_usd >= self.max_active_cascade_usd:
+        # 1. BUY: If long liquidations in the short window exceed the cascade threshold, it's an active knife
+        if side_norm == "BUY" and summary.long_liq_usd >= self.max_active_cascade_usd:
             return GuardDecision.defer(
                 guard_name="LiquidationCascadeGuard",
                 reason=f"active_long_liquidation_cascade (${summary.long_liq_usd:,.0f} in {self.active_window_sec:.0f}s)",
@@ -68,8 +67,18 @@ class LiquidationCascadeGuard:
                 active_window_sec=self.active_window_sec,
             )
 
+        # 2. SELL: If short liquidations in the short window exceed the cascade threshold, it's an active squeeze
+        if side_norm == "SELL" and summary.short_liq_usd >= self.max_active_cascade_usd:
+            return GuardDecision.defer(
+                guard_name="LiquidationCascadeGuard",
+                reason=f"active_short_liquidation_cascade (${summary.short_liq_usd:,.0f} in {self.active_window_sec:.0f}s)",
+                short_liq_usd=summary.short_liq_usd,
+                active_window_sec=self.active_window_sec,
+            )
+
         return GuardDecision.allow(
             guard_name="LiquidationCascadeGuard",
             reason="liquidation_flow_stable",
             long_liq_usd=summary.long_liq_usd,
+            short_liq_usd=summary.short_liq_usd,
         )
