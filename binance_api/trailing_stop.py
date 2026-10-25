@@ -51,7 +51,7 @@ from order_retry import (
 )
 
 from trailing_core import TrailingCore, should_sell  # noqa: E402  (re-export should_sell for tests/compatibility)
-from botcore import (load_dotenv, required_bool_env, required_float_env,
+from botcore import (load_dotenv, log, required_bool_env, required_float_env,
                      required_int_env, single_instance)  # noqa: E402
 from cachepaths import cache_path  # noqa: E402
 
@@ -129,7 +129,7 @@ class TrailingStop:
     """Binance adapter for TrailingCore, providing balance, price, sell/buy,
     trend APIs, and provider-specific logging. TrailingCore owns the state machine."""
 
-    def __init__(self, api, po, sym, log=print, enabled=None,
+    def __init__(self, api, po, sym, log=log, enabled=None,
                  sell_fraction=SELL_FRACTION, state_file=DEFAULT_STATE,
                  min_profit_pct=MIN_PROFIT_PCT):
         self.api = api
