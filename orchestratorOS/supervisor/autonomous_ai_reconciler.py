@@ -33,9 +33,10 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 from botcore import load_dotenv
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.guards.high_stake_guard import compute_24h_price_metrics, extract_symbol_recent_fills
-from orchestratorOS.agy.topics import TOPIC_SPECS, topic_spec
+from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
 from orchestratorTrade.autonomous_intent_gateway import (
     AutonomousIntentGateway,
+    _is_us_rth_open,
     _parse_finite_float,
     load_key_value_conf,
 )
@@ -275,8 +276,14 @@ class AutonomousAIReconciler:
         """Parses key-value pairs from order_guard.conf and .env without external imports."""
         return load_key_value_conf(self.workspace_dir, _ROOT_DIR)
 
-    def harvest_sensors_telemetry(self, *, include_fleet: bool = True) -> TelemetrySensorSnapshot:
+    def harvest_sensors_telemetry(
+        self,
+        *,
+        include_fleet: bool = True,
+        asset_scope: str = "all",
+    ) -> TelemetrySensorSnapshot:
         """Reads passive telemetry, spot wallet balances, cycle states, and fills published to disk."""
+        scope = (asset_scope or "all").strip().lower()
         snapshot = TelemetrySensorSnapshot()
         now_ts = time.time()
 
@@ -472,9 +479,19 @@ class AutonomousAIReconciler:
         venue_quote_cash: Dict[str, Dict[str, Any]] = {}
         inst_by_sym: Dict[str, Any] = {}
         load_tradable_fn = getattr(self.intent_gateway, "load_tradable_instruments", None)
-        if callable(load_tradable_fn) and os.path.exists(os.path.join(self.workspace_dir, "instruments.conf")):
+        has_inst_source = os.path.exists(os.path.join(self.workspace_dir, "instruments.conf")) or (
+            scope == "equities" and os.path.isdir(os.path.join(self.workspace_dir, "212trading"))
+        )
+        if callable(load_tradable_fn) and has_inst_source:
             try:
-                inst_map = load_tradable_fn(only_workspace_conf=True)
+                try:
+                    inst_map = load_tradable_fn(
+                        only_workspace_conf=(scope != "equities"),
+                        include_closed_rth=(scope == "equities"),
+                        asset_scope=scope,
+                    )
+                except TypeError:
+                    inst_map = load_tradable_fn(only_workspace_conf=True)
             except Exception as exc:
                 logger.debug("Could not load tradable instruments for telemetry: %s", exc)
                 inst_map = {}
@@ -1056,6 +1073,34 @@ class AutonomousAIReconciler:
             if active_mt:
                 snapshot.portfolio_summary["monitortrades_active_state"] = active_mt
 
+        if scope == "equities":
+            eq_syms = set(inst_by_sym.keys()) | set(t212_cycles.keys())
+            snapshot.prices_and_trends = {
+                k: v for k, v in snapshot.prices_and_trends.items() if k in eq_syms
+            }
+            snapshot.microstructure = {}
+            for crypto_key in (
+                "total_value_usdc",
+                "kraken_cycles",
+                "hyperliquid_cycles",
+                "hyperliquid_readonly",
+                "recent_orders",
+                "monitortrades_active_state",
+                "trailing_peaks",
+            ):
+                snapshot.portfolio_summary.pop(crypto_key, None)
+            if "recent_ai_intents" in snapshot.portfolio_summary:
+                eq_intents = [
+                    i for i in snapshot.portfolio_summary["recent_ai_intents"]
+                    if isinstance(i, dict) and str(i.get("venue") or "").lower() == "t212"
+                ]
+                if eq_intents:
+                    snapshot.portfolio_summary["recent_ai_intents"] = eq_intents
+                else:
+                    snapshot.portfolio_summary.pop("recent_ai_intents", None)
+        elif scope == "crypto":
+            snapshot.portfolio_summary.pop("t212_cycles", None)
+
         # 10. Fleet processes health, Linux OS resources, and VPN tunnel state (only needed for SRE/self-heal audits)
         if include_fleet:
             try:
@@ -1518,14 +1563,19 @@ class AutonomousAIReconciler:
             max_usd = _parse_finite_float(getattr(gw, "max_notional_usd", None), 2000.0)
             min_usd = _parse_finite_float(getattr(gw, "min_notional_usd", None), 10.0)
             min_conf = _parse_finite_float(getattr(gw, "min_confidence", None), 0.85)
+            is_equities = getattr(spec, "asset_scope", "all") == "equities"
+            target_desc = (
+                "ALL live tradable US equity shares on 't212' (SPCX_US_EQ, NVDA_US_EQ, RGNT_US_EQ during US Regular Trading Hours)"
+                if is_equities
+                else "ALL live tradable crypto spot coins (e.g. BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSD, TAOUSD, ADAUSD on 'kraken'; HYPEUSDC on 'hyperliquid')"
+            )
+            venue_schema = '"t212"' if is_equities else '"binance" | "kraken" | "hyperliquid"'
+            ex_sym = '"NVDA_US_EQ"' if is_equities else '"BTCUSDC"'
             tasks.append(
-                f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across ALL live tradable spot instruments "
-                "(e.g. BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSD, TAOUSD, ADAUSD on 'kraken'; HYPEUSDC on 'hyperliquid'; "
-                "and SPCX_US_EQ, NVDA_US_EQ, RGNT_US_EQ on 't212' when US market hours are open) using the complete "
-                "macro sentiment, geopolitical risk, live breaking news, market breadth, multi-horizon price evolution "
-                "(15m/30m/1h/3h/24h/7d), 1s-sampled dynamic slopes (3.7m/15m/2.5h), Kalman velocity/volatility, "
-                "Weibull long-trend survival, Pillar 2 whale/orderbook walls/taker flow, and real spot wallet balances + "
-                "cycle entry anchors + active retry queue above.\n"
+                f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across {target_desc} using the complete "
+                "macro sentiment, geopolitical risk, live breaking news, multi-horizon price evolution "
+                "(15m/30m/1h/3h/24h/7d), dynamic slopes, volatility, and real wallet/account balances + "
+                "cycle entry anchors above.\n"
                 "   - FULL AI AUTHORITY & QUANTITATIVE GUIDANCE (ZERO PROFIT OR STRATEGY GUARDS): Your business mandate "
                 "is to maximize net portfolio value and risk-adjusted compounding returns (net of venue fees) while "
                 "protecting capital. ALL deterministic order_guard gates (G_PROF profit reference, GO1 daily cap/cooldown, "
@@ -1534,11 +1584,11 @@ class AutonomousAIReconciler:
                 "multi-tranche scaling, and capital protection, guided by these core principles:\n"
                 "     * SELL (Take-Profit, Tranche Harvesting OR Defensive Risk Reduction): Emit 'SELL' on any tradable instrument "
                 f"with free base inventory >= ${min_usd:g} USD BOTH when an advance shows rally exhaustion / approaches "
-                "major ask-wall resistance (including harvesting profitable dip-buy tranches when `pnl_vs_last_buy` is "
+                "major resistance (including harvesting profitable dip-buy tranches when `pnl_vs_last_buy` is "
                 "solidly positive) AND when protective/defensive de-risking is warranted EVEN BELOW entry/last-BUY price "
                 "(e.g. structural breakdown, accelerating multi-horizon selloff, distribution, or macro/geopolitical shock "
                 "where cutting/trimming exposure protects capital against a deeper drop). Distinguish true structural "
-                "breakdowns from shallow liquidity sweeps into strong bid walls.\n"
+                "breakdowns from shallow liquidity sweeps into strong support/bid walls.\n"
                 "     * BUY (Accumulation, Re-Entry & Breakout): Emit 'BUY' on any tradable instrument whose venue has free quote "
                 f"cash >= ${min_usd:g} USD on high-conviction washed-out reversals near support/bid walls, steady upward "
                 "recovery/inflection after a prior exit, or confirmed momentum breakouts (scaling in across cycles while "
@@ -1550,8 +1600,8 @@ class AutonomousAIReconciler:
                 "If no instrument warrants action right now, return a single 'HOLD' entry."
             )
             schema.append(
-                '  "market_trading_decisions": [{"decision": "BUY" | "SELL" | "HOLD", "symbol": "BTCUSDC", '
-                '"venue": "binance" | "kraken" | "hyperliquid" | "t212", "confidence": 0.90, '
+                f'  "market_trading_decisions": [{{"decision": "BUY" | "SELL" | "HOLD", "symbol": {ex_sym}, '
+                f'"venue": {venue_schema}, "confidence": 0.90, '
                 f'"suggested_notional_usd": 500.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}}]'
             )
 
@@ -2015,7 +2065,8 @@ class AutonomousAIReconciler:
         try:
             os.makedirs(self.cache_dir, exist_ok=True)
             from state_io import atomic_write_json
-            atomic_write_json(self.state_file, asdict(report), indent=2)
+            report_dict = asdict(report)
+            atomic_write_json(self.state_file, report_dict, indent=2)
 
             hb = {
                 "status": "alive",
@@ -2028,6 +2079,9 @@ class AutonomousAIReconciler:
                 "market_trading_decisions": report.market_trading_decisions,
             }
             atomic_write_json(self.heartbeat_file, hb, indent=2)
+            if os.path.basename(self.state_file) == "auto_cryptotrade_executor_eval.json":
+                atomic_write_json(os.path.join(self.cache_dir, "auto_trade_executor_eval.json"), report_dict, indent=2)
+                atomic_write_json(os.path.join(self.cache_dir, "auto_trade_executor.heartbeat"), hb, indent=2)
         except Exception as e:
             logger.warning("Could not persist audit artifact: %s", e)
 
@@ -2036,6 +2090,7 @@ class AutonomousAIReconciler:
         *,
         topic_key: str,
         focus_symbols: Optional[List[str]] = None,
+        force_rth_open: bool = False,
     ) -> SupervisorAuditReport:
         """Run one audit turn on the topic's permanent thread; its TopicSpec bounds the allowed side effects."""
         spec = topic_spec(topic_key)
@@ -2050,7 +2105,23 @@ class AutonomousAIReconciler:
             self.write_audit_artifact(report)
             return report
 
-        sensors = self.harvest_sensors_telemetry(include_fleet=spec.can_self_heal)
+        scope = getattr(spec, "asset_scope", "all")
+        if (
+            scope == "equities"
+            and not force_rth_open
+            and os.environ.get("FORCE_SHARE_RTH_OPEN") != "1"
+            and not _is_us_rth_open(now)
+        ):
+            msg = "US equities regular trading hours (09:30-16:00 America/New_York, Mon-Fri) closed; cycle skipped."
+            logger.info("[SHARE EXECUTOR] %s", msg)
+            report = SupervisorAuditReport(ts=now, mode=self.mode, summary=msg)
+            self.write_audit_artifact(report)
+            return report
+
+        try:
+            sensors = self.harvest_sensors_telemetry(include_fleet=spec.can_self_heal, asset_scope=scope)
+        except TypeError:
+            sensors = self.harvest_sensors_telemetry(include_fleet=spec.can_self_heal)
         logs = (
             self.harvest_log_anomalies()
             if spec.can_self_heal
@@ -2100,7 +2171,7 @@ class AutonomousAIReconciler:
             tests_passed=tests_passed,
         )
         # SRE/system/bot-error notifications (ntfy-server / ntfy-error) belong strictly to auto_technical_repair
-        # (spec.can_self_heal); auto_trade_executor notifications are dispatched by AutonomousIntentGateway to ntfy-trade.
+        # (spec.can_self_heal); trade notifications are dispatched by AutonomousIntentGateway to ntfy-trade.
         if spec.can_self_heal:
             report.notification_sent = self.dispatch_notification(report, topic_key=topic_key)
         else:
@@ -2114,9 +2185,12 @@ class AutonomousAIReconciler:
 
 def main() -> None:
     """CLI entry point for the cron-driven supervisor topics."""
+    valid_topics = sorted(
+        {k for k, v in TOPIC_SPECS.items() if v.can_trade or v.can_self_heal} | set(TOPIC_ALIASES.keys())
+    )
     parser = argparse.ArgumentParser(description="Autonomous AI supervisor (technical repair / trade executor)")
     parser.add_argument("--topic-key", required=True,
-                        choices=sorted(k for k, v in TOPIC_SPECS.items() if v.can_trade or v.can_self_heal),
+                        choices=valid_topics,
                         help="Permanent LLM topic thread to run")
     parser.add_argument("--mode", choices=["shadow", "enforce"], default=None,
                         help="Override supervisor_mode from order_guard.conf (bounds trading and self-heal)")
@@ -2124,11 +2198,17 @@ def main() -> None:
                         help="Optional comma-separated priority watchlist (by default all live coins are evaluated)")
     parser.add_argument("--lookback-hours", type=float, default=24.0,
                         help="Log anomaly lookback window in hours (default: 24; 0.2 for 10-minute runs)")
+    parser.add_argument("--force-rth-open", action="store_true",
+                        help="Allow auto_sharetrade_executor evaluation even outside US Regular Trading Hours")
     args = parser.parse_args()
 
     focus = [s.strip().upper() for s in args.focus_symbols.split(",") if s.strip()] or None
     reconciler = AutonomousAIReconciler(mode=args.mode, lookback_hours=args.lookback_hours)
-    report = reconciler.run_cycle(topic_key=args.topic_key, focus_symbols=focus)
+    report = reconciler.run_cycle(
+        topic_key=args.topic_key,
+        focus_symbols=focus,
+        force_rth_open=args.force_rth_open,
+    )
     print(f"[{report.mode.upper()}] {args.topic_key}: {report.summary}")
 
 

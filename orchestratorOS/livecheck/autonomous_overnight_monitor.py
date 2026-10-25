@@ -206,7 +206,7 @@ class AutonomousOvernightMonitor:
             }
 
         # 3. Autonomous AI Supervisor State
-        sup = _read("auto_trade_executor_eval.json")   # the only LLM topic that trades
+        sup = _read("auto_cryptotrade_executor_eval.json") or _read("auto_trade_executor_eval.json")
         if sup:
             dec = sup.get("market_trading_decision", {})
             sensors["supervisor_eval"] = {

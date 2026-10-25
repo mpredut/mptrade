@@ -34,6 +34,7 @@ class TopicSpec:
     title: str                    # thread name shown in the Web UI (never changes)
     can_trade: bool = False       # may submit trade intents to the AutonomousIntentGateway
     can_self_heal: bool = False   # may apply verified code-remediation patches
+    asset_scope: str = "all"      # "crypto" | "equities" | "all"
 
     @property
     def bracket_tag(self) -> str:
@@ -52,8 +53,15 @@ TOPIC_SPECS: Dict[str, TopicSpec] = {
     "auto_technical_repair": TopicSpec(
         "🛠 [auto_technical_repair] System Audit & Code Self-Heal (03:35)", can_self_heal=True
     ),
-    "auto_trade_executor": TopicSpec(
-        "🎯 [auto_trade_executor] Autonomous Trade Decisions (All Coins 10m)", can_trade=True
+    "auto_cryptotrade_executor": TopicSpec(
+        "🎯 [auto_cryptotrade_executor] Autonomous Crypto Trade Decisions (Binance/Kraken/HL 10m)",
+        can_trade=True,
+        asset_scope="crypto",
+    ),
+    "auto_sharetrade_executor": TopicSpec(
+        "📈 [auto_sharetrade_executor] Autonomous Share Trade Decisions (Trading212 RTH 10m)",
+        can_trade=True,
+        asset_scope="equities",
     ),
     "macro_geopolitical": TopicSpec("🌍 [auto_macro_geopolitical] Geopolitical Crisis & Breaking News Brake"),
     "macro_sentiment": TopicSpec("🧭 [auto_macro_sentiment] Fear & Greed, Breadth & Market Bias (3h)"),
@@ -61,12 +69,22 @@ TOPIC_SPECS: Dict[str, TopicSpec] = {
     "guard_post_stop": TopicSpec("🛡 [auto_guard_post_stop] Pre-Trade Veto for Post-Stop Re-Buy Bounce"),
 }
 
+TOPIC_ALIASES: Dict[str, str] = {
+    "auto_trade_executor": "auto_cryptotrade_executor",
+}
+
+
+def canonical_topic_key(topic_key: str) -> str:
+    """Resolve legacy topic aliases (e.g. auto_trade_executor -> auto_cryptotrade_executor)."""
+    return TOPIC_ALIASES.get(topic_key, topic_key)
+
 
 def topic_spec(topic_key: str) -> TopicSpec:
     """Spec of a registered topic; unknown topics fail fast."""
-    if topic_key not in TOPIC_SPECS:
+    resolved = canonical_topic_key(topic_key)
+    if resolved not in TOPIC_SPECS:
         raise KeyError(f"Unknown LLM topic '{topic_key}'; register it in TOPIC_SPECS")
-    return TOPIC_SPECS[topic_key]
+    return TOPIC_SPECS[resolved]
 
 
 def get_topic_registry_path(registry_path: Optional[str] = None) -> str:
@@ -85,7 +103,15 @@ def load_topic_registry(registry_path: Optional[str] = None) -> Dict[str, dict]:
     except (OSError, ValueError) as e:
         logger.warning("Unreadable topic registry %s: %s", path, e)
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    for old_key, new_key in TOPIC_ALIASES.items():
+        if old_key in data:
+            old_entry = data.pop(old_key)
+            if new_key not in data and isinstance(old_entry, dict):
+                old_entry["topic_key"] = new_key
+                data[new_key] = old_entry
+    return data
 
 
 def save_topic_registry(registry: Dict[str, dict], registry_path: Optional[str] = None) -> None:
@@ -158,9 +184,10 @@ def sync_all_topic_titles(
 def format_topic_turn_header(topic_key: Optional[str], thread_title: Optional[str]) -> Optional[str]:
     """Normalize the per-turn header so every topic thread always starts with its canonical TopicSpec title."""
     raw = (thread_title or "").strip()
-    if not topic_key or topic_key not in TOPIC_SPECS:
+    resolved = canonical_topic_key(topic_key) if topic_key else ""
+    if not resolved or resolved not in TOPIC_SPECS:
         return raw or None
-    canonical = TOPIC_SPECS[topic_key].title
+    canonical = TOPIC_SPECS[resolved].title
     if not raw or raw == canonical or raw.startswith(canonical):
         return raw or canonical
     cleaned = re.sub(r"^ntfy-(?:guard|macro):\s*", "", raw)
@@ -180,8 +207,9 @@ def format_topic_history_prefix(
     registry_path: Optional[str] = None,
 ) -> str:
     """Format the rolling decision memory for a topic as a prompt prefix."""
+    resolved = canonical_topic_key(topic_key)
     reg = load_topic_registry(registry_path)
-    entry = reg.get(topic_key)
+    entry = reg.get(resolved)
     if not isinstance(entry, dict):
         return ""
     history = [h for h in entry.get("rolling_history") or [] if isinstance(h, dict)]
@@ -200,6 +228,7 @@ def prepare_topic_session(
 ) -> TopicSession:
     """Resolve the permanent conversation of a topic and whether this turn must compact it."""
     topic_spec(topic_key)
+    resolved = canonical_topic_key(topic_key)
     base = resolve_bot_cli_base(cli_base)
     if compact_steps is None:
         compact_steps = required_int_env("LLM_TOPIC_COMPACT_STEPS")
@@ -207,7 +236,7 @@ def prepare_topic_session(
         raise ValueError(f"LLM_TOPIC_COMPACT_STEPS must be > 0, got {compact_steps}")
 
     reg = load_topic_registry(registry_path)
-    entry = reg.get(topic_key)
+    entry = reg.get(resolved)
     if not isinstance(entry, dict):
         return TopicSession(None, "", False)
 
@@ -221,13 +250,13 @@ def prepare_topic_session(
             since = step_count - int(entry.get("compacted_at_step") or 0)
             return TopicSession(cid, "", since >= compact_steps)
         # Runtime resilience: the permanent thread vanished from the store; recreate it once with memory.
-        logger.warning("Topic '%s' conversation %s no longer exists; recreating the topic thread.", topic_key, cid)
+        logger.warning("Topic '%s' conversation %s no longer exists; recreating the topic thread.", resolved, cid)
         entry["conversation_id"] = None
         entry["compacted_at_step"] = 0
-        reg[topic_key] = entry
+        reg[resolved] = entry
         save_topic_registry(reg, registry_path)
 
-    return TopicSession(None, format_topic_history_prefix(topic_key, registry_path), False)
+    return TopicSession(None, format_topic_history_prefix(resolved, registry_path), False)
 
 
 _SHORT_SUMMARY_KEYS = (
@@ -321,14 +350,15 @@ def record_topic_turn(
     from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui
 
     spec = topic_spec(topic_key)
+    resolved = canonical_topic_key(topic_key)
     base = resolve_bot_cli_base(cli_base)
     if max_history_entries is None:
         max_history_entries = required_int_env("LLM_TOPIC_HISTORY_MAX_ENTRIES")
 
     reg = load_topic_registry(registry_path)
-    entry = reg.get(topic_key)
+    entry = reg.get(resolved)
     if not isinstance(entry, dict):
-        entry = {"topic_key": topic_key, "turn_count": 0, "rolling_history": []}
+        entry = {"topic_key": resolved, "turn_count": 0, "rolling_history": []}
 
     if not entry.get("conversation_id") and conversation_id:
         entry["conversation_id"] = conversation_id
@@ -340,7 +370,7 @@ def record_topic_turn(
         if compacted and active_cid == conversation_id:
             entry["compacted_at_step"] = step_count
             entry["compaction_count"] = int(entry.get("compaction_count") or 0) + 1
-    entry["topic_key"] = topic_key
+    entry["topic_key"] = resolved
     entry["turn_count"] = int(entry.get("turn_count") or 0) + 1
     entry["updated_ts"] = datetime.now(timezone.utc).timestamp()
     entry["title"] = spec.title
@@ -350,7 +380,7 @@ def record_topic_turn(
     if condensed:
         history.append({"utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"), "summary": condensed})
     entry["rolling_history"] = history[-max_history_entries:] if max_history_entries > 0 else history
-    reg[topic_key] = entry
+    reg[resolved] = entry
     save_topic_registry(reg, registry_path)
     if active_cid:
         try:

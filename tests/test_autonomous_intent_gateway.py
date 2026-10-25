@@ -593,12 +593,22 @@ def test_load_tradable_instruments_discovers_hyperliquid_and_rth_gated_t212(temp
     assert "T212_SPCX" not in closed_map
     assert "T212_NVDA" not in closed_map
 
-    # 2. During US RTH (Monday 10:30 America/New_York): Both Hyperliquid and T212 are active
+    # 2. During US RTH (Monday 10:30 America/New_York): Both Hyperliquid and T212 are active in 'all' scope,
+    #    while 'crypto' scope isolates crypto and 'equities' scope isolates Trading212
     mon_rth_ts = datetime(2026, 10, 26, 10, 30, tzinfo=ZoneInfo("America/New_York")).timestamp()
     open_map = gw.load_tradable_instruments(now_ts=mon_rth_ts)
     assert "HYPERLIQUID_HYPE" in open_map
     assert "T212_SPCX" in open_map
     assert "T212_NVDA" in open_map
+
+    crypto_map = gw.load_tradable_instruments(now_ts=mon_rth_ts, asset_scope="crypto")
+    assert "HYPERLIQUID_HYPE" in crypto_map
+    assert "T212_SPCX" not in crypto_map
+
+    eq_map = gw.load_tradable_instruments(now_ts=mon_rth_ts, asset_scope="equities")
+    assert "T212_SPCX" in eq_map
+    assert "T212_NVDA" in eq_map
+    assert "HYPERLIQUID_HYPE" not in eq_map
 
     # 3. Resolve symbol variants within their respective venues
     hl_inst = gw.resolve_instrument("HYPEUSDC", venue="hyperliquid", instruments_map=open_map)

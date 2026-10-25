@@ -70,9 +70,14 @@ class TestProtobuf:
 
 class TestTopics:
     def test_only_auto_trade_executor_trades_and_only_auto_technical_repair_self_heals(self):
-        assert [k for k, v in TOPIC_SPECS.items() if v.can_trade] == ["auto_trade_executor"]
+        assert [k for k, v in TOPIC_SPECS.items() if v.can_trade] == [
+            "auto_cryptotrade_executor",
+            "auto_sharetrade_executor",
+        ]
         assert [k for k, v in TOPIC_SPECS.items() if v.can_self_heal] == ["auto_technical_repair"]
-        assert "[auto_trade_executor]" in topic_spec("auto_trade_executor").title
+        assert "[auto_cryptotrade_executor]" in topic_spec("auto_cryptotrade_executor").title
+        assert topic_spec("auto_trade_executor") == topic_spec("auto_cryptotrade_executor")
+        assert "[auto_sharetrade_executor]" in topic_spec("auto_sharetrade_executor").title
         assert "[auto_technical_repair]" in topic_spec("auto_technical_repair").title
 
     def test_topic_thread_is_permanent_and_compacts_in_place(self, tmp_path, monkeypatch):

@@ -1221,13 +1221,28 @@ def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
     assert pos_by_sym["SPCX_US_EQ"]["active_avg_buy_px"] == 30.0
     assert pos_by_sym["SPCX_US_EQ"]["pnl_vs_avg_pct"] == 3.0
 
-    reconciler.synthesize_and_diagnose(sensors, reconciler.harvest_log_anomalies(), topic_key="auto_trade_executor")
-    prompt_text = captured_prompts[0]
-    assert "Hyperliquid Active Cycle Cost & Drawdown Anchors:" in prompt_text
-    assert "Trading212 Active Cycle Cost & Drawdown Anchors:" in prompt_text
-    assert "venue_fee_per_leg=7bps" in prompt_text
-    assert "venue_fee_per_leg=15bps" in prompt_text
-    assert '"venue": "binance" | "kraken" | "hyperliquid" | "t212"' in prompt_text
+    reconciler.synthesize_and_diagnose(sensors, reconciler.harvest_log_anomalies(), topic_key="auto_cryptotrade_executor")
+    crypto_prompt = captured_prompts[0]
+    assert "Hyperliquid Active Cycle Cost & Drawdown Anchors:" in crypto_prompt
+    assert "venue_fee_per_leg=7bps" in crypto_prompt
+    assert '"venue": "binance" | "kraken" | "hyperliquid"' in crypto_prompt
+
+    reconciler.synthesize_and_diagnose(sensors, reconciler.harvest_log_anomalies(), topic_key="auto_sharetrade_executor")
+    share_prompt = captured_prompts[1]
+    assert "Trading212 Active Cycle Cost & Drawdown Anchors:" in share_prompt
+    assert "venue_fee_per_leg=15bps" in share_prompt
+    assert '"venue": "t212"' in share_prompt
+
+    # Outside US RTH, auto_sharetrade_executor skips LLM evaluation unless force_rth_open=True
+    with patch("orchestratorOS.supervisor.autonomous_ai_reconciler._is_us_rth_open", return_value=False):
+        closed_rep = reconciler.run_cycle(topic_key="auto_sharetrade_executor")
+    assert "closed; cycle skipped" in closed_rep.summary
+    assert len(captured_prompts) == 2
+
+    with patch("orchestratorOS.supervisor.autonomous_ai_reconciler._is_us_rth_open", return_value=False):
+        forced_rep = reconciler.run_cycle(topic_key="auto_sharetrade_executor", force_rth_open=True)
+    assert forced_rep.summary == "ok"
+    assert len(captured_prompts) == 3
 
 
 

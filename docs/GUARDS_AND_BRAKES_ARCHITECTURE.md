@@ -202,7 +202,7 @@ All bot and guard alerts flow through `notify_engine.alertnotifiers.notify` into
   - `autonommptrade` (`f5f9d01f-...`): Sandboxed background bot workspace for automated LLM queries.
 * **Permanent topic threads (`orchestratorOS/agy/`):**
   - Autonomous LLM calls run through the isolated `agy-bot` store (`AGY_BOT_HOME`). Each topic in `orchestratorOS/agy/topics.py` (`TOPIC_SPECS`) owns one permanent conversation (fixed id and name), compacted in place with `/compact` every `LLM_TOPIC_COMPACT_STEPS` steps.
-  - `TopicSpec` capabilities: only `auto_trade_executor` may trade, by submitting decisions to `AutonomousIntentGateway.submit()`, the single choke point for config, clamping, dedup and the effective shadow/enforce mode. Only `auto_technical_repair` may apply verified self-heal patches.
+  - `TopicSpec` capabilities: only `auto_cryptotrade_executor` (24/7 crypto) and `auto_sharetrade_executor` (US RTH equities) may trade, by submitting decisions to `AutonomousIntentGateway.submit()`, the single choke point for config, clamping, and the effective shadow/enforce mode. Only `auto_technical_repair` may apply verified self-heal patches.
   - `orchestratorOS/agy/ui_mirror.py` mirrors topic threads into the Web UI store; `manage_agy.sh ui-sync` (cron */5) surfaces them through an idle-gated daemon restart (`agy_store_fix.py ui-sync-check`).
 * **Automated Retention Management:**
   - Automated autonomous threads older than `CLI_THREAD_RETENTION_DAYS` are pruned via cron by `orchestratorOS/admin/prune_llm_threads.py`; topic threads and manual engineering discussions in `mptrade` are always preserved.

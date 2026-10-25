@@ -412,8 +412,10 @@ class AutonomousIntentGateway:
         only_workspace_conf: bool = False,
         include_closed_rth: bool = False,
         now_ts: Optional[float] = None,
+        asset_scope: str = "all",
     ) -> Dict[str, Any]:
-        """Load all enabled instruments from instruments.conf plus live Kraken, Hyperliquid, and Trading212 pairs."""
+        """Load enabled instruments filtered by asset_scope ('crypto' | 'equities' | 'all')."""
+        scope = (asset_scope or "all").strip().lower()
         ws_inst_conf = os.path.join(self.workspace_dir, "instruments.conf")
         if only_workspace_conf and not os.path.exists(ws_inst_conf):
             return {}
@@ -425,61 +427,64 @@ class AutonomousIntentGateway:
             logger.error("Failed loading instrument registry: %s", e)
             return {}
 
-        active_map: Dict[str, Any] = {
-            k: inst
-            for k, inst in raw_map.items()
-            if getattr(inst, "enabled", True) is not False
-        }
+        active_map: Dict[str, Any] = {}
+        if scope in ("all", "crypto"):
+            for k, inst in raw_map.items():
+                if getattr(inst, "enabled", True) is False:
+                    continue
+                if scope == "crypto" and str(getattr(inst, "provider_name", "")).lower() == "t212":
+                    continue
+                active_map[k] = inst
 
-        existing_kraken_syms = {
-            str(getattr(inst, "symbol", "")).upper()
-            for inst in active_map.values()
-            if str(getattr(inst, "provider_name", "")).lower() == "kraken"
-        }
-        for pair, base, quote in _discover_kraken_cache_pairs(self.workspace_dir):
-            if pair in existing_kraken_syms:
-                continue
-            try:
-                from instrument import Instrument
-                inst = Instrument(
-                    name=f"KRAKEN_{base}",
-                    provider="kraken",
-                    symbol=pair,
-                    base=base,
-                    quote=quote,
-                    enabled=True,
-                )
-                active_map[f"KRAKEN_{base}"] = inst
-                existing_kraken_syms.add(pair)
-            except Exception as exc:
-                logger.debug("Could not bind Kraken pair %s: %s", pair, exc)
+            existing_kraken_syms = {
+                str(getattr(inst, "symbol", "")).upper()
+                for inst in active_map.values()
+                if str(getattr(inst, "provider_name", "")).lower() == "kraken"
+            }
+            for pair, base, quote in _discover_kraken_cache_pairs(self.workspace_dir):
+                if pair in existing_kraken_syms:
+                    continue
+                try:
+                    from instrument import Instrument
+                    inst = Instrument(
+                        name=f"KRAKEN_{base}",
+                        provider="kraken",
+                        symbol=pair,
+                        base=base,
+                        quote=quote,
+                        enabled=True,
+                    )
+                    active_map[f"KRAKEN_{base}"] = inst
+                    existing_kraken_syms.add(pair)
+                except Exception as exc:
+                    logger.debug("Could not bind Kraken pair %s: %s", pair, exc)
 
-        existing_hl_syms = {
-            str(getattr(inst, "symbol", "")).upper()
-            for inst in active_map.values()
-            if str(getattr(inst, "provider_name", "")).lower() == "hyperliquid"
-        }
-        for pair, base, quote in _discover_hyperliquid_spot(self.workspace_dir):
-            if pair in existing_hl_syms or base in existing_hl_syms:
-                continue
-            try:
-                from instrument import Instrument
-                inst = Instrument(
-                    name=f"HYPERLIQUID_{base}",
-                    provider="hyperliquid",
-                    symbol=pair,
-                    base=base,
-                    quote=quote,
-                    enabled=True,
-                )
-                if hasattr(inst, "_provider"):
-                    inst._provider._live_enabled = True
-                active_map[f"HYPERLIQUID_{base}"] = inst
-                existing_hl_syms.add(pair)
-            except Exception as exc:
-                logger.debug("Could not bind Hyperliquid pair %s: %s", pair, exc)
+            existing_hl_syms = {
+                str(getattr(inst, "symbol", "")).upper()
+                for inst in active_map.values()
+                if str(getattr(inst, "provider_name", "")).lower() == "hyperliquid"
+            }
+            for pair, base, quote in _discover_hyperliquid_spot(self.workspace_dir):
+                if pair in existing_hl_syms or base in existing_hl_syms:
+                    continue
+                try:
+                    from instrument import Instrument
+                    inst = Instrument(
+                        name=f"HYPERLIQUID_{base}",
+                        provider="hyperliquid",
+                        symbol=pair,
+                        base=base,
+                        quote=quote,
+                        enabled=True,
+                    )
+                    if hasattr(inst, "_provider"):
+                        inst._provider._live_enabled = True
+                    active_map[f"HYPERLIQUID_{base}"] = inst
+                    existing_hl_syms.add(pair)
+                except Exception as exc:
+                    logger.debug("Could not bind Hyperliquid pair %s: %s", pair, exc)
 
-        if include_closed_rth or _is_us_rth_open(now_ts):
+        if scope in ("all", "equities") and (include_closed_rth or _is_us_rth_open(now_ts)):
             _load_env_file_defaults(os.path.join(self.workspace_dir, "212trading", "runtime.env"))
             existing_t212_syms = {
                 str(getattr(inst, "symbol", "")).upper()
@@ -747,8 +752,14 @@ class AutonomousIntentGateway:
         target_qty = effective_usd / price if effective_usd > 0 else 0.0
 
         thesis = intent.get("thesis", "Autonomous strategy thesis")
-        from orchestratorOS.agy.topics import topic_spec
-        trade_tag = topic_spec("auto_trade_executor").bracket_tag
+        from orchestratorOS.agy.topics import TOPIC_SPECS, topic_spec
+        src_topic = str(intent.get("created_by") or "").strip()
+        if src_topic in TOPIC_SPECS:
+            trade_tag = topic_spec(src_topic).bracket_tag
+        elif venue == "t212":
+            trade_tag = topic_spec("auto_sharetrade_executor").bracket_tag
+        else:
+            trade_tag = topic_spec("auto_cryptotrade_executor").bracket_tag
 
         # Execution or Observation Branch
         if mode == "shadow":
