@@ -66,7 +66,7 @@ class PriceGeometrySnapshot:
     @property
     def is_valid_price(self) -> bool:
         """Verify whether current market price is valid and strictly positive."""
-        return self.current_price > 0
+        return math.isfinite(self.current_price) and self.current_price > 0
 
     def bounce_ratio(self, trough_price: float) -> float:
         """Calculate recovery bounce ratio above trough: (current - trough) / trough."""
@@ -170,7 +170,12 @@ class PositionSnapshot(PriceGeometrySnapshot):
     @property
     def is_valid_price(self) -> bool:
         """Verify whether price geometry is valid and strictly positive."""
-        return self.avg_buy_price > 0 and self.current_price > 0
+        return (
+            math.isfinite(self.avg_buy_price)
+            and self.avg_buy_price > 0
+            and math.isfinite(self.current_price)
+            and self.current_price > 0
+        )
 
     def in_sl_territory(self, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if position is in stop-loss territory honoring fuzzy tolerance."""
@@ -565,7 +570,14 @@ class PositionExitManager:
             disaster_meta = {**disaster_meta, "source": "episode_locked", "effective_buffer": disaster_buffer}
 
         episode_state = self.sl_episode_state.get(symbol) or {}
-        episode_started_at = float(episode_state.get("started_at", now))
+        try:
+            episode_started_at = float(episode_state.get("started_at", now))
+        except (TypeError, ValueError):
+            episode_started_at = now
+        if not math.isfinite(episode_started_at) or episode_started_at <= 0 or episode_started_at > now:
+            episode_started_at = now
+            if symbol in self.sl_episode_state:
+                self.sl_episode_state[symbol]["started_at"] = now
         sl_episode_expired = (now - episode_started_at) >= self.config.sl_trend_defer_max_sec
 
         # ---------------------------------------------------------------------
@@ -626,7 +638,14 @@ class PositionExitManager:
                     metadata={"priority": 2, "state": "initiated", "disaster_floor": disaster_floor},
                 )
             else:
-                elapsed = now - bounce_state["started_at"]
+                try:
+                    b_started_at = float(bounce_state.get("started_at", now))
+                except (TypeError, ValueError):
+                    b_started_at = now
+                if not math.isfinite(b_started_at) or b_started_at <= 0 or b_started_at > now:
+                    b_started_at = now
+                    bounce_state["started_at"] = now
+                elapsed = now - b_started_at
                 if elapsed >= self.config.sl_trend_defer_max_sec or sl_episode_expired:
                     eff_elapsed = max(elapsed, now - episode_started_at)
                     reason = f"mhdsl_bounce_timeout ({eff_elapsed:.0f}s >= {self.config.sl_trend_defer_max_sec:.0f}s without full recovery)"
@@ -874,6 +893,9 @@ class PositionExitManager:
             and snapshot.in_tp_territory(self.config.hard_tp_pct, self.config.are_close_tolerance_pct)
         ):
             last_hard = self.hard_tp_last.get(symbol, 0.0)
+            if not math.isfinite(last_hard) or last_hard > now:
+                last_hard = 0.0
+                self.hard_tp_last.pop(symbol, None)
             if last_hard <= 0 or (now - last_hard) >= self.config.hard_tp_cooldown_sec:
                 reason = (
                     f"hard_tp_spike (+{snapshot.gain_pct:.1f}% >= {self.config.hard_tp_pct*100:.0f}%, "
@@ -967,7 +989,15 @@ class PositionExitManager:
 
             peak_px = ride_state["peak_price"]
             pullback_from_peak = snapshot.pullback_ratio(peak_px)
-            stagnation_elapsed = now - ride_state["last_peak_time"]
+            last_peak_t = ride_state.get("last_peak_time", now)
+            if (
+                not isinstance(last_peak_t, (int, float))
+                or not math.isfinite(float(last_peak_t))
+                or float(last_peak_t) <= 0
+                or float(last_peak_t) > now
+            ):
+                ride_state["last_peak_time"] = now
+            stagnation_elapsed = now - float(ride_state["last_peak_time"])
 
             # Optional Advanced Guard: Fast profit reversal
             if self.config.fast_profit_guard_enabled:
@@ -1102,11 +1132,11 @@ class PositionExitManager:
         last_kind = snapshot.last_exit_kind or "SELL"
         now = snapshot.current_time_s if snapshot.current_time_s is not None else time.time()
 
-        if current_price <= 0:
+        if not snapshot.is_valid_price:
             return ReentryDecision(ReentryAction.WAIT, False, "invalid_current_price")
 
         # Case 0: No prior sale reference to constrain re-entry
-        if not last_sell or last_sell <= 0:
+        if not last_sell or not math.isfinite(last_sell) or last_sell <= 0:
             self.reentry_state.pop(symbol, None)
             return ReentryDecision(ReentryAction.ENTER, True, "no_last_sale_barrier")
 
@@ -1159,7 +1189,7 @@ class PositionExitManager:
                 self.config.reentry_post_stop_cooldown_sec > 0
                 and snapshot.last_sell_time_s
                 and now > 0
-                and (now - snapshot.last_sell_time_s) < self.config.reentry_post_stop_cooldown_sec
+                and 0 <= (now - snapshot.last_sell_time_s) < self.config.reentry_post_stop_cooldown_sec
             ):
                 elapsed_s = now - snapshot.last_sell_time_s
                 return ReentryDecision(

@@ -42,7 +42,12 @@ from botcore import required_float_env, single_instance
 from lock import FileLock
 from providers.execution_audit import ExecutionAudit
 from providers.quantity import resolve_assets
-from state_io import atomic_write_json, load_json_state
+from state_io import (
+    atomic_write_json,
+    load_json_state,
+    previous_generation_path,
+    save_json_state,
+)
 
 
 WORKER_POLL_SEC = required_float_env("RETRY_WORKER_POLL_SEC")
@@ -109,9 +114,13 @@ class _PersistentQuarantineSet(set):
             data[self._key] = [
                 list(x) if isinstance(x, tuple) else [x] for x in sorted(self)
             ]
-            atomic_write_json(path, data, separators=(",", ":"))
+            save_json_state(path, data, separators=(",", ":"))
         except Exception:
             pass
+
+    def __contains__(self, element) -> bool:
+        self.sync_from_disk()
+        return super().__contains__(element)
 
     def add(self, element) -> None:
         self.sync_from_disk()
@@ -122,14 +131,14 @@ class _PersistentQuarantineSet(set):
         super().clear()
         path = self._path()
         self._loaded_path = path
-        if os.path.exists(path):
+        if os.path.exists(path) or os.path.exists(previous_generation_path(path)):
             try:
                 loaded = load_json_state(
                     path, default_factory=dict, fail_closed=False, label="quarantine alerts"
                 )
                 if isinstance(loaded, dict) and self._key in loaded:
                     loaded.pop(self._key, None)
-                    atomic_write_json(path, loaded, separators=(",", ":"))
+                    save_json_state(path, loaded, separators=(",", ":"))
             except Exception:
                 pass
 
@@ -605,7 +614,12 @@ def process_once(mkt, now=None):
         # - Stage 2 (Breakeven, 50% <= progress < 75%): Relax profit margin to fee buffer (0.15%).
         # - Stage 3 (Controlled Salvage, progress >= 75%): For SELL, allow math_reference bypass
         #           while strictly maintaining wait_for_trend=True and P2 whale/orderbook protections.
-        ttl_started = float(r.get("ttl_started_ts") or r.get("created_ts") or now)
+        try:
+            ttl_started = float(r.get("ttl_started_ts") or r.get("created_ts") or now)
+        except (TypeError, ValueError):
+            ttl_started = now
+        if not math.isfinite(ttl_started) or ttl_started <= 0:
+            ttl_started = now
         if oq.is_non_failure_deferral(r.get("last_failure_reason")):
             age_sec = 0.0
         else:
@@ -1013,7 +1027,11 @@ class IncidentDigest:
         """Return due summaries of events with labels, quantity and sample ID."""
         if not math.isfinite(now) or now <= 0:
             raise ValueError("digest time must be finite and positive")
-        if not events and not os.path.exists(self.path):
+        if (
+            not events
+            and not os.path.exists(self.path)
+            and not os.path.exists(previous_generation_path(self.path))
+        ):
             return []
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         with FileLock(self.path + ".lock"):
@@ -1105,7 +1123,7 @@ class IncidentDigest:
                                  ttl_sec=None)
                     changed = True
             if changed:
-                atomic_write_json(self.path, state, separators=(",", ":"))
+                save_json_state(self.path, state, separators=(",", ":"))
             return due
 
 

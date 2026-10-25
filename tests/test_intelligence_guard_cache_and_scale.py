@@ -4372,3 +4372,150 @@ def test_iteration19_parabolic_clock_skew_smart_sl_now_kalman_mean_reversion_nan
     rep = inspect_symbol_intelligence("BTCUSDC", cache_dir=str(tmp_path))
     assert rep["pillar2_external"]["whale"] is not None
 
+
+def test_iteration20_caller_module_quarantine_set_and_position_exit_clock_skew(tmp_path, monkeypatch):
+    """Regression test for Iteration 20 fixes:
+    1. order_guard.resolve_caller_module normalizes short process codes ('AG', 'MT', 'TA', 'RT',
+       'asset_guardian') and falls back to `prefix` when `client_order_id` does not resolve to
+       a known guard module (e.g. 'OR_12345_0' -> 'order_retry', prefix='TA_OR' -> 'tradeall').
+    2. order_retry_worker._PersistentQuarantineSet.__contains__ calls sync_from_disk() so
+       `_alert_terminal` deduplicates persisted terminal keys after worker restart, and
+       IncidentDigest.collect uses save_json_state + previous_generation_path recovery.
+    3. PositionExitManager.is_valid_price rejects Inf/NaN prices and re-anchors future
+       clock-skewed SL/TP/Re-entry timestamps (`started_at > now`, `last_peak_time > now`,
+       `last_hard > now`, `last_sell_time_s > now`) so SL timer `sl_trend_defer_max_sec`
+       is never artificially extended beyond its configured ceiling.
+    """
+    import order_guard
+    import order_retry as oq
+    import order_retry_worker as worker
+    from strategies.position_exit_manager import (
+        ExitAction,
+        PositionExitConfig,
+        PositionExitManager,
+        PositionSnapshot,
+        ReentryAction,
+        ReentrySnapshot,
+    )
+
+    # 1. resolve_caller_module short codes and client_order_id -> prefix fallback
+    assert order_guard.resolve_caller_module("AG") == "assetguardian"
+    assert order_guard.resolve_caller_module("MT") == "monitortrades"
+    assert order_guard.resolve_caller_module("TA") == "tradeall"
+    assert order_guard.resolve_caller_module("RT") == "rtrade"
+    assert order_guard.resolve_caller_module("asset_guardian") == "assetguardian"
+    assert (
+        order_guard.resolve_caller_module(
+            None,
+            client_order_id="OR_12345_0",
+            prefix="TA_OR",
+        )
+        == "tradeall"
+    )
+
+    # 2. _PersistentQuarantineSet.__contains__ syncs from disk across restart & maintains .previous
+    q_file = tmp_path / "order_retry_queue.jsonl"
+    monkeypatch.setattr(oq, "QUEUE_FILE", str(q_file))
+    pset1 = worker._PersistentQuarantineSet("terminal")
+    pset1.add(("rec1", 0, "ord1", "canceled"))
+    alerts_path = tmp_path / "order_retry_quarantine_alerts.json"
+    assert alerts_path.exists()
+
+    # Fresh instance simulating worker process restart checks `in` before any `.add()`
+    pset2 = worker._PersistentQuarantineSet("terminal")
+    assert ("rec1", 0, "ord1", "canceled") in pset2
+
+    # Simulate mid-write crash where only .previous exists on disk
+    from state_io import stage_previous_generation
+    stage_previous_generation(str(alerts_path))
+    alerts_path.unlink()
+    pset3 = worker._PersistentQuarantineSet("terminal")
+    assert ("rec1", 0, "ord1", "canceled") in pset3
+
+    # IncidentDigest.collect uses save_json_state and recovers when only .previous exists
+    digest_path = tmp_path / "digest.json"
+    digest = worker.IncidentDigest(str(digest_path), 300.0)
+    ev = {
+        "labels": {"symbol": "BTCUSDC", "side": "BUY", "reason": "active_ttl"},
+        "quantity": 0.5,
+        "sample_id": "s1",
+    }
+    due1 = digest.collect([ev], now=1000.0)
+    assert len(due1) == 1
+    due2 = digest.collect([ev], now=1010.0)
+    assert due2 == []
+    # Stage .previous and remove primary file -> collect([], now=1400.0) still recovers from .previous!
+    stage_previous_generation(str(digest_path))
+    digest_path.unlink()
+    due3 = digest.collect([], now=1400.0)
+    assert len(due3) == 1
+    assert due3[0]["count"] == 1
+
+    # 3. PositionExitManager is_valid_price rejects Inf/NaN and re-anchors future SL/TP/Re-entry timestamps
+    snap_inf = PositionSnapshot(symbol="BTCUSDC", current_price=float("inf"), avg_buy_price=100.0)
+    assert snap_inf.is_valid_price is False
+
+    mgr = PositionExitManager(
+        config=PositionExitConfig(
+            lost_threshold=0.05,
+            sl_trend_defer_max_sec=200.0,
+            gain_threshold=0.05,
+            tp_stagnation_max_sec=100.0,
+            hard_tp_enabled=True,
+            hard_tp_pct=0.10,
+            hard_tp_frac=0.5,
+            hard_tp_cooldown_sec=300.0,
+            reentry_sl_bounce_pct=0.02,
+            reentry_post_stop_cooldown_sec=60.0,
+        )
+    )
+    # Seed future started_at (clock skew) on SL episode & bounce state
+    mgr.sl_episode_state["BTCUSDC"] = {"started_at": 5000.0, "buy_price": 100.0, "disaster_floor": 0.08}
+    mgr.sl_bounce_state["BTCUSDC"] = {
+        "started_at": 5000.0,
+        "entry_loss": 0.06,
+        "lowest_price": 94.0,
+        "peak_bounce_price": 94.0,
+        "min_loss": 0.06,
+        "buy_price": 100.0,
+    }
+    d_sl1 = mgr.evaluate_stop_loss(
+        PositionSnapshot(symbol="BTCUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1000.0, trend_up=True)
+    )
+    assert d_sl1.should_exit is False
+    # Re-anchored to 1000.0 instead of staying at 5000.0
+    assert mgr.sl_episode_state["BTCUSDC"]["started_at"] == 1000.0
+    assert mgr.sl_bounce_state["BTCUSDC"]["started_at"] == 1000.0
+    # 200s later (t=1200.0), SL bounce timeout fires on schedule!
+    d_sl2 = mgr.evaluate_stop_loss(
+        PositionSnapshot(symbol="BTCUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1200.0, trend_up=True)
+    )
+    assert d_sl2.should_exit is True
+    assert d_sl2.action == ExitAction.SELL
+    assert d_sl2.metadata.get("sl_timer_expired") is True
+
+    # Future hard_tp_last is cleared on clock step-back so Hard-TP spike is not blocked for hours
+    mgr.hard_tp_last["BTCUSDC"] = 9000.0
+    d_tp_hard = mgr.evaluate_take_profit(
+        PositionSnapshot(symbol="BTCUSDC", current_price=112.0, avg_buy_price=100.0, current_time_s=1000.0, trend_up=True)
+    )
+    assert d_tp_hard.should_exit is True
+    assert d_tp_hard.action == ExitAction.PARTIAL_SELL
+
+    # Future last_sell_time_s on STOP re-entry does not permanently lock post_stop_stabilization_cooldown
+    d_re = mgr.evaluate_reentry(
+        ReentrySnapshot(
+            symbol="BTCUSDC",
+            current_price=98.0,
+            last_sell_price=100.0,
+            last_exit_kind="STOP",
+            post_sell_trough=94.0,
+            current_time_s=1000.0,
+            last_sell_time_s=9000.0,
+            trend_up=True,
+        )
+    )
+    assert d_re.should_enter is True
+    assert d_re.action == ReentryAction.ENTER
+
+

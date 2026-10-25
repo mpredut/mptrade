@@ -652,6 +652,10 @@ def monitor_orders():
     while not getattr(api, "stop", False):
         try:
             currenttime = time.time()
+            if currenttime < monitor_open_orders_lasttime:
+                monitor_open_orders_lasttime = currenttime - MONITOR_OPEN_ORDER_INTERVAL - TIME_SLEEP_ERROR
+            if currenttime < monitor_close_orders_by_age_lasttime:
+                monitor_close_orders_by_age_lasttime = currenttime - MONITOR_CLOSE_ORDER_INTERVAL - TIME_SLEEP_ERROR
             if(currenttime - monitor_open_orders_lasttime > MONITOR_OPEN_ORDER_INTERVAL) :
                 for symbol in sym.symbols:
                     monitor_open_orders_by_type(symbol, "SELL")

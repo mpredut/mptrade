@@ -310,13 +310,24 @@ def resolve_caller_module(
 ) -> Optional[str]:
     """Resolve canonical module identity from explicit module, order lineage prefix, or process name."""
     if module:
-        return str(module).strip().lower()
+        m_raw = str(module).strip()
+        if m_raw:
+            m_up = m_raw.upper()
+            if m_up in _PROCESS_TO_MODULE:
+                return _PROCESS_TO_MODULE[m_up]
+            m_low = m_raw.lower()
+            if m_low == "asset_guardian":
+                return "assetguardian"
+            return m_low
     if client_order_id or prefix:
         try:
             from binance_api.order_id_context import resolve_order_owner
-            owner = resolve_order_owner(client_order_id or prefix)
-            if owner in _KNOWN_GUARD_MODULES:
-                return owner
+            for candidate in (client_order_id, prefix):
+                if not candidate:
+                    continue
+                owner = resolve_order_owner(candidate)
+                if owner in _KNOWN_GUARD_MODULES:
+                    return owner
         except Exception:
             pass
     try:
