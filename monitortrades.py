@@ -41,7 +41,7 @@ from strategies.position_exit_manager import (
 # Load versioned, non-secret global tuning parameters before reading the environment.
 # ``botcore.load_dotenv`` fills missing values without overwriting the real environment.
 # Per-instrument gain/loss/age/hard-TP configuration remains in the instrument configs.
-from botcore import load_dotenv as _load_dotenv, required_float_env
+from botcore import load_dotenv as _load_dotenv, required_bool_env, required_float_env
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "config.env"))
 
@@ -52,6 +52,7 @@ MT_BUY_PRICE_OFFSET = required_float_env("MT_BUY_PRICE_OFFSET")
 MT_SELL_SAFEBACK_HOURS = required_float_env("MT_SELL_SAFEBACK_HOURS")
 MT_BUY_SAFEBACK_HOURS = required_float_env("MT_BUY_SAFEBACK_HOURS")
 MT_GUARD_WINDOW_DAYS = required_float_env("MT_GUARD_WINDOW_DAYS")
+MT_NOTIFY_ONLY = required_bool_env("MT_NOTIFY_ONLY")
 
 
 
@@ -2116,28 +2117,29 @@ def main():
         except Exception as _e:
             print(f"[MONITORTRADES] Error in loop pre-checks: {_e}")
         
-        # Reload the authoritative registry so deliberate configuration changes take
-        # effect without restart. Validation errors propagate and stop the service
-        # rather than leaving a trading loop alive with an unknown configuration.
-        # Iterate enabled instruments from the ``mt`` namespace and route each explicitly
-        # to its provider. Non-Binance orders remain dry until their live gates are enabled.
-        instruments = load_for("mt")
-        if not instruments:
-            raise RuntimeError("No enabled monitortrades instruments are configured")
-        for _inst in instruments.values():
-            print(f"-----{_inst.name} ({_inst.symbol}@{_inst.provider_label})------")
-            try:
-                monitor_price_and_trade(_inst, sbs=d*24*3600+60)
-            except Exception as _e:
-                print(f"[{_inst.name}] monitoring error: {_e}")
-            print("--------------")
+        if not MT_NOTIFY_ONLY:
+            # Reload the authoritative registry so deliberate configuration changes take
+            # effect without restart. Validation errors propagate and stop the service
+            # rather than leaving a trading loop alive with an unknown configuration.
+            # Iterate enabled instruments from the ``mt`` namespace and route each explicitly
+            # to its provider. Non-Binance orders remain dry until their live gates are enabled.
+            instruments = load_for("mt")
+            if not instruments:
+                raise RuntimeError("No enabled monitortrades instruments are configured")
+            for _inst in instruments.values():
+                print(f"-----{_inst.name} ({_inst.symbol}@{_inst.provider_label})------")
+                try:
+                    monitor_price_and_trade(_inst, sbs=d*24*3600+60)
+                except Exception as _e:
+                    print(f"[{_inst.name}] monitoring error: {_e}")
+                print("--------------")
 
-        # Flush batched smart stop-loss recovery alerts after all instruments are checked
-        try:
-            from intelligence.external.guards.smart_stop_loss_guard import flush_smart_stop_loss_alerts
-            flush_smart_stop_loss_alerts()
-        except Exception as _e:
-            print(f"flush_smart_stop_loss_alerts error: {_e}")
+            # Flush batched smart stop-loss recovery alerts after all instruments are checked
+            try:
+                from intelligence.external.guards.smart_stop_loss_guard import flush_smart_stop_loss_alerts
+                flush_smart_stop_loss_alerts()
+            except Exception as _e:
+                print(f"flush_smart_stop_loss_alerts error: {_e}")
 
         # Removed a recommendation block consumed only by commented legacy functions.
         # Active trend data now comes directly from cacheManager.

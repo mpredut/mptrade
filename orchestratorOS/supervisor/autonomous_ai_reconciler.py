@@ -867,6 +867,12 @@ class AutonomousAIReconciler:
                     pos["last_buy_px"] = lb_px
                     if isinstance(pos_px, (int, float)) and float(pos_px) > 0:
                         pos["pnl_vs_last_buy_pct"] = round(((float(pos_px) - lb_px) / lb_px) * 100.0, 2)
+                ls = ro.get("last_sell")
+                if isinstance(ls, dict) and isinstance(ls.get("price"), (int, float)) and float(ls["price"]) > 0:
+                    ls_px = float(ls["price"])
+                    pos["last_sell_px"] = ls_px
+                    if isinstance(pos_px, (int, float)) and float(pos_px) > 0:
+                        pos["chg_vs_last_sell_pct"] = round(((float(pos_px) - ls_px) / ls_px) * 100.0, 2)
 
         intents_data = _read_json(os.path.join(self.cache_dir, "autonomous_trade_intents.json"))
         if isinstance(intents_data, list) and intents_data:
@@ -1175,14 +1181,34 @@ class AutonomousAIReconciler:
                 growth = pinfo.get("growth_coefficient", 0.0)
                 extras: List[str] = []
                 if "chg_15m_pct" in pinfo:
+                    l24, h24 = pinfo.get("low_24h"), pinfo.get("high_24h")
+                    pos24_sfx = ""
+                    if (
+                        isinstance(px, (int, float))
+                        and isinstance(l24, (int, float))
+                        and isinstance(h24, (int, float))
+                        and float(h24) > float(l24)
+                    ):
+                        pos24 = round(((float(px) - float(l24)) / (float(h24) - float(l24))) * 100.0, 1)
+                        pos24_sfx = f" pos_24h={pos24}%"
                     extras.append(
                         f"15m={pinfo.get('chg_15m_pct', 0):+.2f}% 30m={pinfo.get('chg_30m_pct', 0):+.2f}% "
                         f"1h={pinfo.get('chg_1h_pct', 0):+.2f}% 3h={pinfo.get('chg_3h_pct', 0):+.2f}% "
-                        f"24h_range=[{pinfo.get('low_24h')}, {pinfo.get('high_24h')}]"
+                        f"24h_range=[{l24}, {h24}]{pos24_sfx}"
                     )
                 if "chg_7d_pct" in pinfo:
+                    l7, h7 = pinfo.get("low_7d"), pinfo.get("high_7d")
+                    pos7_sfx = ""
+                    if (
+                        isinstance(px, (int, float))
+                        and isinstance(l7, (int, float))
+                        and isinstance(h7, (int, float))
+                        and float(h7) > float(l7)
+                    ):
+                        pos7 = round(((float(px) - float(l7)) / (float(h7) - float(l7))) * 100.0, 1)
+                        pos7_sfx = f" pos_7d={pos7}%"
                     extras.append(
-                        f"7d={pinfo.get('chg_7d_pct', 0):+.2f}% 7d_range=[{pinfo.get('low_7d')}, {pinfo.get('high_7d')}]"
+                        f"7d={pinfo.get('chg_7d_pct', 0):+.2f}% 7d_range=[{l7}, {h7}]{pos7_sfx}"
                     )
                 if "slope_15m" in pinfo:
                     extras.append(
@@ -1211,11 +1237,24 @@ class AutonomousAIReconciler:
         if sensors.microstructure:
             context_items.append("\n### 3B. PILLAR 2 MICROSTRUCTURE, ORDERBOOK WALLS, DERIVATIVES & WHALE FLOW:")
             for sym, minfo in sorted(sensors.microstructure.items()):
+                cur_px = (sensors.prices_and_trends.get(sym) or {}).get("price")
+                bw_px = minfo.get("bid_wall_px")
+                aw_px = minfo.get("ask_wall_px")
+                bw_dist = (
+                    f", dist={(float(bw_px) - float(cur_px)) / float(cur_px) * 100.0:+.2f}%"
+                    if isinstance(cur_px, (int, float)) and float(cur_px) > 0 and isinstance(bw_px, (int, float)) and float(bw_px) > 0
+                    else ""
+                )
+                aw_dist = (
+                    f", dist={(float(aw_px) - float(cur_px)) / float(cur_px) * 100.0:+.2f}%"
+                    if isinstance(cur_px, (int, float)) and float(cur_px) > 0 and isinstance(aw_px, (int, float)) and float(aw_px) > 0
+                    else ""
+                )
                 context_items.append(
                     f"  * {sym}: ob_imbalance={minfo.get('ob_imbalance')} "
                     f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}), "
-                    f"bid_wall={minfo.get('bid_wall_px')} (${minfo.get('bid_wall_usd')}), "
-                    f"ask_wall={minfo.get('ask_wall_px')} (${minfo.get('ask_wall_usd')}), "
+                    f"bid_wall={bw_px} (${minfo.get('bid_wall_usd')}{bw_dist}), "
+                    f"ask_wall={aw_px} (${minfo.get('ask_wall_usd')}{aw_dist}), "
                     f"whale_long_pct={minfo.get('whale_long_pct')}, div_regime={minfo.get('divergence_regime')}, "
                     f"taker_ratio={minfo.get('taker_buy_sell_ratio')} "
                     f"(buy_v=${minfo.get('taker_buy_vol_usd')}/sell_v=${minfo.get('taker_sell_vol_usd')}), "
@@ -1244,10 +1283,14 @@ class AutonomousAIReconciler:
                         t_extra += f", avg_buy_px={pos.get('active_avg_buy_px')} (pnl_vs_avg={pos.get('pnl_vs_avg_pct')}%)"
                     if pos.get("last_buy_px") is not None:
                         t_extra += f", last_buy_px={pos.get('last_buy_px')} (pnl_vs_last_buy={pos.get('pnl_vs_last_buy_pct')}%)"
+                    if pos.get("last_sell_px") is not None:
+                        t_extra += f", last_sell_px={pos.get('last_sell_px')} (chg_vs_last_sell={pos.get('chg_vs_last_sell_pct')}%)"
                     if pos.get("trailing_peak") is not None:
                         t_extra += f", trail_peak={pos.get('trailing_peak')} (dd_from_peak={pos.get('dd_from_peak_pct')}%)"
                     if pos.get("mt_gain_pct") or pos.get("mt_lost_pct"):
                         t_extra += f", bot_ref_gain={pos.get('mt_gain_pct')}%/lost={pos.get('mt_lost_pct')}%"
+                    fee_bps = 10 if pos.get("venue") == "binance" else (26 if pos.get("venue") == "kraken" else 15)
+                    t_extra += f", venue_fee_per_leg={fee_bps}bps"
                     context_items.append(
                         f"    - [{pos['venue']}] {pos['symbol']}: free_{pos['base']}={pos.get('free_base')} "
                         f"(${pos.get('value_usd')} USD), free_{pos['quote']}=${pos.get('free_quote')}, "
@@ -1332,27 +1375,22 @@ class AutonomousAIReconciler:
             tasks.append(
                 f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across ALL live tradable spot coins "
                 "(e.g. BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSD, TAOUSD, ADAUSD on 'kraken') using the complete "
-                "macro sentiment, geopolitical risk, live breaking news, market breadth, multi-horizon price evolution "
-                "(15m/30m/1h/3h/24h/7d), 1s-sampled dynamic slopes (3.7m/15m/2.5h), Kalman velocity/volatility, "
-                "Weibull long-trend survival, Pillar 2 whale/orderbook walls/taker flow, and real spot wallet balances + "
-                "cycle entry anchors + active retry queue above.\n"
-                "   - FULL AI AUTHORITY (ZERO PROFIT OR STRATEGY GUARDS): ALL deterministic order_guard gates (G_PROF "
-                "profit reference, GO1 daily cap/cooldown, GT_* trend deferrals, G_QLIMIT* weight caps, GI_* microstructure, "
-                "and GLLM* secondary vetoes) are BYPASSED symmetrically on both BUY and SELL. You hold 100% quantitative "
-                "responsibility for profit harvesting, multi-tranche scaling, and capital protection:\n"
-                "     * SELL (Take-Profit OR Defensive Risk Reduction): Emit 'SELL' on any tradable coin with free base "
-                f"inventory >= ${min_usd:g} USD BOTH when an advance shows rally exhaustion AND when protective/defensive "
-                "de-risking is warranted EVEN BELOW entry/last-BUY price (e.g. structural breakdown, accelerating multi-horizon "
-                "selloff, distribution, or macro/geopolitical shock where cutting/trimming exposure protects capital against a "
-                "deeper drop). You may scale out in tranches across consecutive 10m cycles up to the per-order notional cap. "
-                "Distinguish true structural breakdowns from shallow liquidity sweeps into strong bid walls.\n"
-                "     * BUY (Accumulation, Re-Entry & Breakout): Emit 'BUY' on any tradable coin whose venue has free quote "
-                f"cash >= ${min_usd:g} USD on high-conviction washed-out reversals, steady upward recovery/inflection after "
-                "a prior exit, or confirmed momentum breakouts (scaling in across 10m cycles when warranted).\n"
-                f"   - Emit one entry per actionable coin in `market_trading_decisions` with `confidence >= {min_conf:g}` "
-                f"and `suggested_notional_usd` sized between {min_usd:g} and {max_usd:g} USD (the gateway automatically "
-                "clamps notional strictly to available free wallet balance with zero artificial cooldowns or dedup locks). "
-                "If no coin warrants action right now, return a single 'HOLD' entry."
+                "factual telemetry provided above (macro sentiment, geopolitical risk, live breaking news, market breadth, "
+                "multi-horizon price evolution 15m/30m/1h/3h/24h/7d, 1s-sampled dynamic slopes 3.7m/15m/2.5h, Kalman "
+                "velocity/volatility, Weibull survival, Pillar 2 whale/orderbook walls/taker flow, and real spot wallet "
+                "balances + cycle cost anchors + recent fills + open/retry orders).\n"
+                "   - BUSINESS OBJECTIVE & FULL AUTONOMOUS JUDGMENT (ZERO PROFIT OR STRATEGY GUARDS): Your sole business "
+                "mandate is to maximize net portfolio value and risk-adjusted compounding returns (net of venue fees) while "
+                "protecting capital. ALL deterministic order_guard gates (G_PROF profit reference, GO1 daily cap/cooldown, "
+                "GT_* trend deferrals, G_QLIMIT* weight caps, GI_* microstructure, and GLLM* secondary vetoes) are BYPASSED "
+                "symmetrically on both BUY and SELL. No rigid trading rules, indicator formulas, or directional constraints "
+                "are imposed on how you reason—you have 100% independent quantitative freedom to decide WHEN, WHAT, HOW MUCH, "
+                "and WHY to BUY, SELL (whether above or below entry/last-BUY), scale in/out, or HOLD based on your own "
+                "judgment of the data.\n"
+                f"   - OPERATIONAL MECHANICS: Emit one entry per actionable coin in `market_trading_decisions` with "
+                f"`confidence >= {min_conf:g}` and `suggested_notional_usd` sized between {min_usd:g} and {max_usd:g} USD "
+                "(the gateway automatically clamps notional strictly to available free wallet balance with zero artificial "
+                "cooldowns or dedup locks). If no coin warrants action right now, return a single 'HOLD' entry."
             )
             schema.append(
                 '  "market_trading_decisions": [{"decision": "BUY" | "SELL" | "HOLD", "symbol": "BTCUSDC", '

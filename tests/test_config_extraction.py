@@ -48,6 +48,7 @@ DEFAULTS = [
     (mt, "MT_BUY_PRICE_OFFSET", 0.5),
     (mt, "MT_SELL_SAFEBACK_HOURS", 2),
     (mt, "MT_BUY_SAFEBACK_HOURS", 48),
+    (mt, "MT_NOTIFY_ONLY", True),
     (mt, "HARD_TP_PCT", 0.17),
     (mt, "HARD_TP_FRACTION", 0.5),
     (mt, "HARD_TP_COOLDOWN_S", 6 * 3600),
