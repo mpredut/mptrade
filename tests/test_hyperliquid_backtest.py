@@ -614,3 +614,45 @@ def test_hyperliquid_reconcile_paper_stop_fills_on_continued_crash():
     strat.reconcile(90.0)
     assert strat.s["qty"] == 0.0
     assert len(strat.s["orders"]) == 0
+
+
+def test_hyperliquid_reconcile_real_marginal_dca_fill_price():
+    Strategy = hl_replay.Strategy
+    StratParams = hl_replay.StratParams
+
+    class FakeClient:
+        def __init__(self):
+            self.pos = (15.0, 1490.0 / 15.0)
+            self.orders = []
+
+        def sz_decimals(self, coin):
+            return 2
+
+        def position_strict(self, coin):
+            return self.pos
+
+        def open_orders_strict(self, coin):
+            return self.orders
+
+        def cancel(self, coin, oid):
+            return True
+
+    client = FakeClient()
+    strat = Strategy(
+        client=client,
+        coin="HYPE",
+        params=StratParams(direction="long", dca_drop_pct=2.0),
+        dry_run=False,
+        replay_mode=True,
+    )
+    strat.s["qty"] = 10.0
+    strat.s["cost"] = 1000.0
+    strat.s["spent"] = 1000.0
+    strat.s["entry_price"] = 100.0
+    strat.s["last_open_price"] = 100.0
+    strat.s["orders"] = [{"oid": "DCA-1", "role": "open", "side": "buy", "sz": 5.0, "px": 98.0, "kind": "DCA"}]
+
+    assert strat.reconcile(98.0) is True
+    assert abs(strat.s["last_open_price"] - 98.0) < 1e-6
+    assert strat.s["dca_buys"] == 1
+

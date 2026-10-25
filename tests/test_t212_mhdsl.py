@@ -588,6 +588,24 @@ class T212MHDSLTest(_T212BaseTest):
         strat = self._make_strat(dry_run=False)
         self.assertFalse(strat.reconcile(100.0))
 
+    def test_sl_rebuy_preserved_when_place_buy_deferred(self):
+        strat = self._make_strat(
+            dry_run=False,
+            STRAT_SL_MHDSL_ENABLED="false",
+            STRAT_SL_REBUY_ENABLED="true",
+            STRAT_SL_REBUY_BOUNCE_PCT="1.2",
+        )
+        strat.s.update(
+            qty=0.0,
+            last_sell_price=100.0,
+            last_exit_kind="STOP",
+            sl_rebuy={"low": 90.0, "sell_price": 100.0},
+            pending_submit={"intent_id": "in-flight"},
+        )
+        strat.step(90.0 * 1.015)
+        self.assertIsNotNone(strat.s.get("sl_rebuy"))
+        self.assertEqual(strat.s.get("last_exit_kind"), "STOP")
+
 
 if __name__ == "__main__":
     unittest.main()

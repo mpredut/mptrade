@@ -196,6 +196,16 @@ class TestPositionExitManager(unittest.TestCase):
         self.assertAlmostEqual(dec.metadata["disaster_floor"], 0.20, places=4)
         self.assertEqual(mgr.sl_episode_state["BTCUSDT"]["buy_price"], 95.0)
 
+    def test_unified_evaluate_resets_sl_episode_on_neutral_recovery(self):
+        mgr, _ = self._smart_sl_manager()
+        dec1 = mgr.evaluate(self._snap(94.5, 0, False, 0.01))
+        self.assertEqual(dec1.action, ExitAction.HOLD)
+        self.assertIn("BTCUSDT", mgr.sl_episode_state)
+
+        dec2 = mgr.evaluate(self._snap(99.0, 10, False, 0.01))
+        self.assertEqual(dec2.reason, "neutral_corridor")
+        self.assertNotIn("BTCUSDT", mgr.sl_episode_state)
+
     def test_bind_state_wires_all_persisted_exit_dicts(self):
         """bind_state must expose every durable lifecycle dict (incl. SL episode) to the external store."""
         store = {}

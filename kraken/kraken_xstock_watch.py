@@ -109,7 +109,7 @@ def check_balance(client: KrakenClient, st: dict, rx: str, desktop: bool) -> Non
             notify(title=f"ℹ Activ nou in cont Kraken: {a} = {q}",
                    body="Check whether the xStock allocation sits under a different code than expected.",
                    source="xstock-watch", desktop=desktop)
-    st["known_assets"] = assets
+    st["known_assets"].update(assets)
 
 
 def check_pairs(client: KrakenClient, st: dict, rx: str, desktop: bool,

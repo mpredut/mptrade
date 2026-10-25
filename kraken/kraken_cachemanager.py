@@ -143,7 +143,9 @@ def _ledger_to_fills(ledger):
     and withdrawals. Price is |quote| / |base|; receiving base means isBuyer=True."""
     by_ref = {}
     for x in ledger.values():
-        by_ref.setdefault(x.get("refid"), []).append(x)
+        refid = x.get("refid")
+        if refid:
+            by_ref.setdefault(refid, []).append(x)
     fills = []
     for refid, legs in by_ref.items():
         if len(legs) < 2:
@@ -161,10 +163,11 @@ def _ledger_to_fills(ledger):
         raw_base = str(base["asset"]).upper()
         if raw_base.endswith(".F"):
             raw_base = raw_base[:-2]
-        raw_symbol = raw_base + _QUOTE[str(quote["asset"]).upper()]
+        quote_ccy = _QUOTE[str(quote["asset"]).upper()]
+        raw_symbol = raw_base + quote_ccy
         ts_ms = extract_timestamp_ms(base, default=None) or extract_timestamp_ms(quote, default=0) or 0
         is_buyer = ba > 0
-        fills.append({
+        fill = {
             "symbol": raw_symbol,
             "id": str(refid), "orderId": str(refid),
             "price": abs(qa) / abs(ba),
@@ -172,7 +175,19 @@ def _ledger_to_fills(ledger):
             "time": ts_ms, "timestamp": ts_ms,
             "isBuyer": is_buyer,                          # receiving base means a purchase
             "side": "BUY" if is_buyer else "SELL",
-        })
+        }
+        try:
+            q_fee = abs(float(quote.get("fee", 0.0) or 0.0))
+            b_fee = abs(float(base.get("fee", 0.0) or 0.0))
+            if q_fee > 0:
+                fill["fee"] = q_fee
+                fill["feeAsset"] = quote_ccy
+            elif b_fee > 0:
+                fill["fee"] = b_fee
+                fill["feeAsset"] = raw_base
+        except (ValueError, TypeError):
+            pass
+        fills.append(fill)
     return fills
 
 

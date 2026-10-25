@@ -1272,11 +1272,14 @@ class PositionExitManager:
             if sl_decision.should_exit:
                 self.tp_ride_state.pop(snapshot.symbol, None)
                 return sl_decision
-            elif sl_decision.action == ExitAction.HOLD and "mhdsl_bounce" in sl_decision.reason:
+            elif sl_decision.action == ExitAction.HOLD and (
+                "mhdsl_bounce" in sl_decision.reason or "smart_stop_loss" in sl_decision.reason
+            ):
                 self.tp_ride_state.pop(snapshot.symbol, None)
                 return sl_decision
         else:
             self.sl_bounce_state.pop(snapshot.symbol, None)
+            self.reset_sl_episode(snapshot.symbol)
 
         # Check Take-Profit
         eff_tp = tp_threshold if tp_threshold is not None else self.config.gain_threshold
@@ -1288,12 +1291,15 @@ class PositionExitManager:
             tp_decision = self.evaluate_take_profit(snapshot, custom_threshold=tp_threshold)
             if tp_decision.should_exit:
                 self.sl_bounce_state.pop(snapshot.symbol, None)
+                self.reset_sl_episode(snapshot.symbol)
                 return tp_decision
             elif tp_decision.action == ExitAction.HOLD and "mdhtp" in tp_decision.reason:
                 self.sl_bounce_state.pop(snapshot.symbol, None)
+                self.reset_sl_episode(snapshot.symbol)
                 return tp_decision
 
         # Neutral corridor: clean up any remaining stale state
         self.sl_bounce_state.pop(snapshot.symbol, None)
+        self.reset_sl_episode(snapshot.symbol)
         self.tp_ride_state.pop(snapshot.symbol, None)
         return ExitDecision(ExitAction.HOLD, False, "neutral_corridor")

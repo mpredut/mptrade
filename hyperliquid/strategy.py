@@ -284,17 +284,48 @@ class Strategy:
             active = {str(o.get("oid")) for o in self.s["orders"]}
 
         prev = self.s["qty"]
+        prev_cost = float(self.s.get("cost", 0.0) or 0.0)
 
         if qty_now > prev + 1e-9:        # position opened or increased
-            fp = entry if entry > 0 else price
-            self._apply_open(qty_now - prev, fp, round((qty_now - prev) * fp, 2), None,
-                             real_qty=qty_now, real_avg=entry)
+            fq = qty_now - prev
+            filled_open = next(
+                (o for o in self.s["orders"] if o.get("role") == "open" and str(o.get("oid")) not in active),
+                None,
+            )
+            if prev > 1e-9:
+                marginal_px = ((qty_now * entry - prev_cost) / fq) if (entry > 0 and prev_cost > 0) else 0.0
+                if marginal_px > 0:
+                    fp = marginal_px
+                elif filled_open and float(filled_open.get("px", 0) or 0) > 0:
+                    fp = float(filled_open["px"])
+                else:
+                    fp = price
+            else:
+                fp = entry if entry > 0 else (
+                    float(filled_open["px"])
+                    if (filled_open and float(filled_open.get("px", 0) or 0) > 0)
+                    else price
+                )
+            self._apply_open(
+                fq, fp, round(fq * fp, 2),
+                filled_open.get("kind") if filled_open else None,
+                real_qty=qty_now, real_avg=entry if entry > 0 else fp,
+            )
         elif qty_now < prev - 1e-9:      # position reduced by take profit
-            self._apply_close(self._avg() or entry or price, price, prev - qty_now,
+            filled_close = next(
+                (o for o in self.s["orders"] if o.get("role") == "close" and str(o.get("oid")) not in active),
+                None,
+            )
+            close_px = (
+                float(filled_close["px"])
+                if (filled_close and filled_close.get("kind") != "STOP" and float(filled_close.get("px", 0) or 0) > 0)
+                else price
+            )
+            self._apply_close(self._avg() or entry or close_px, close_px, prev - qty_now,
                               real_qty=qty_now, real_avg=entry)
         else:
             self.s["qty"] = qty_now
-            if qty_now > 1e-12: self.s["cost"] = qty_now * entry
+            if qty_now > 1e-12 and entry > 0: self.s["cost"] = qty_now * entry
 
         for o in list(self.s["orders"]):
             if str(o.get("oid", "")).startswith("PAPER"): continue

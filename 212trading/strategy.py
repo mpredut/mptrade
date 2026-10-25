@@ -689,36 +689,38 @@ class Strategy:
                 log(f"  [STRAT] === ciclu inchis, reincep (ciclu {nxt}) ===")
 
     # -- plasare / anulare -----------------------------------------------------
-    def _place_buy(self, amount: float, limit: float, kind: str) -> None:
+    def _place_buy(self, amount: float, limit: float, kind: str) -> bool:
         qty = self._qty_for_amount(amount, limit)
         if qty <= 0:
             log("  ! [STRAT] qty 0 — sar")
-            return
+            return False
         if self.dry_run:
             self._paper_seq += 1
             log(f"  [STRAT] [PAPER] plasez BUY {kind} {qty} @ {limit:.2f} USD (~{amount:.0f} {self.ccy})")
             self.s["orders"].append({"id": f"PAPER-{self._paper_seq}", "side": "BUY", "qty": qty,
                                      "limit": round(limit, 2), "amount": amount, "kind": kind,
                                      "ts": self._now()})
-            return
+            return True
         if self.s.get("pending_submit"):
             log(f"  [STRAT] BUY {kind} deferred — a T212 submit is already pending")
-            return
+            return False
         pending = self._new_pending_submit(
             side="BUY", qty=qty, limit=limit, amount=amount, kind=kind,
             level=None, market=False,
         )
         outcome = self._submit_pending_order(pending)
         if outcome.state != "accepted":
-            if outcome.state == "refused":
+            definitive = outcome.state == "refused"
+            if definitive:
                 log(f"  ! [STRAT] BUY {kind} explicitly refused: {outcome.reason}")
             else:
                 log(f"  ! [STRAT] BUY {kind} outcome unknown: {outcome.reason}; keeping pending")
             if "insufficient" in outcome.reason.lower():
                 self.s["buy_backoff_until"] = self._now() + 1800
                 log("  [STRAT] insufficient funds — pausing buys for 30 minutes")
-            return
+            return not definitive
         log(f"  [STRAT] BUY {kind} placed id={outcome.order_id} {qty} @ {limit:.2f}")
+        return True
 
     def _place_sell(self, qty: float, limit: float, level: float | None = None,
                     kind: str = "TP", *, market: bool = False) -> bool:
@@ -1392,7 +1394,7 @@ class Strategy:
 
         # Multi-Horizon Dynamic Stop Loss (MHDSL) via centralized PositionExitManager
         if self.exit_manager is not None and self.p.sl_mhdsl_enabled:
-            in_sl = (
+            in_sl = loss_pct > 0.0 and (
                 loss_pct >= self.p.stop_loss_pct
                 or are_close(loss_pct, self.p.stop_loss_pct, self.p.reentry_tolerance_pct)
             )
@@ -1488,17 +1490,18 @@ class Strategy:
         if self.s["spent_cash"] + self.p.entry_amount > self.p.max_budget:
             log(f"  [STRAT] re-buy SL cancelled — budget cap {self.p.max_budget:.0f} {self.ccy} reached")
             return
+        disc = 1 - self.p.entry_discount_pct / 100
+        if not self._place_buy(self.p.entry_amount, price * disc, kind="ENTRY"):
+            return
         self.s.pop("sl_rebuy", None)                          # Consume the one-tranche reentry arm.
         self.s["last_exit_kind"] = "TP"
         if self.exit_manager is not None:
             self.exit_manager.reentry_state.pop(self.ticker, None)
-        disc = 1 - self.p.entry_discount_pct / 100
         log(f"  🟢 [STRAT] RE-BUY after the SL: a +{self.p.sl_rebuy_bounce_pct}% pullback from the low {rb['low']:.2f} — re-entering ENTRY")
         notify(title=f"🟢 {self.yahoo_sym} RE-BUY after the stop-loss",
                body=(f"recul +{self.p.sl_rebuy_bounce_pct}% de la min {rb['low']:.2f} — "
                      f"re-entering with {self.p.entry_amount:.0f}{self.ccy}"),
                source="T212", price=price, desktop=self.desktop)
-        self._place_buy(self.p.entry_amount, price * disc, kind="ENTRY")
 
     def _effective_reentry_pullback_pct(self) -> tuple[float, str]:
         """Return the dynamic volatility-scaled or fixed pullback threshold from peak.
@@ -1625,9 +1628,13 @@ class Strategy:
             if lsp:
                 log(f"  [STRAT] re-entry approved: {reason} — placing ENTRY")
             if self.s["spent_cash"] + self.p.entry_amount > self.p.max_budget:
+                if self.exit_manager is not None:
+                    self.exit_manager.restore_reentry_state(self.ticker)
                 log(f"  [STRAT] budget cap {self.p.max_budget:.0f} {self.ccy} reached — not entering")
                 return
-            self._place_buy(self.p.entry_amount, price * disc, kind="ENTRY")
+            if not self._place_buy(self.p.entry_amount, price * disc, kind="ENTRY"):
+                if self.exit_manager is not None:
+                    self.exit_manager.restore_reentry_state(self.ticker)
             return
 
         # Check the tighter trailing crash breaker before the catastrophic stop loss.
@@ -1734,6 +1741,8 @@ class Strategy:
 
                     exit_px = round(price * 0.999, 2)
                     if self._place_sell(sell_qty, exit_px, kind="TP", market=True):
+                        if pending_exit.get("action") == ExitAction.PARTIAL_SELL.value and self.exit_manager is not None:
+                            self.exit_manager.record_hard_tp(self.ticker, tick_time)
                         log(f"  [STRAT] MDHTP EXIT ({pending_exit.get('reason')}) -> reference {exit_px} ({sell_qty} shares)")
                         self.s["tp_pending_exit"] = None
                         return

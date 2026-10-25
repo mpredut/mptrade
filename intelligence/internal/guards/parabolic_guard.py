@@ -73,8 +73,14 @@ class ParabolicSurgeGuard:
             st["surge_start_px"] = current_price
             st["ts"] = ts_now
 
-        # Update extreme (peak for BUY, trough for SELL) if current price extends the move
-        if (side_u == "BUY" and current_price > st["peak"]) or (side_u == "SELL" and current_price < st["peak"]):
+        was_active = bool(st["surge_active"])
+
+        # Update extreme (peak for BUY, trough for SELL) if current price extends an active move
+        if was_active:
+            if (side_u == "BUY" and current_price > st["peak"]) or (side_u == "SELL" and current_price < st["peak"]):
+                st["peak"] = current_price
+                st["ts"] = ts_now
+        else:
             st["peak"] = current_price
             st["ts"] = ts_now
 
@@ -107,7 +113,10 @@ class ParabolicSurgeGuard:
                 if best_move_pct >= threshold:
                     st["surge_active"] = True
                     st["surge_start_px"] = surge_start_px
-                    st["peak"] = max(st["peak"], surge_extreme_px) if side_u == "BUY" else min(st["peak"], surge_extreme_px)
+                    if was_active:
+                        st["peak"] = max(st["peak"], surge_extreme_px) if side_u == "BUY" else min(st["peak"], surge_extreme_px)
+                    else:
+                        st["peak"] = surge_extreme_px
                     st["ts"] = surge_extreme_ts
                 elif st["surge_active"]:
                     if (side_u == "BUY" and surge_extreme_px > st["peak"]) or (side_u == "SELL" and surge_extreme_px < st["peak"]):

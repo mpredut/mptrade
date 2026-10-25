@@ -131,6 +131,19 @@ class TestIntelligenceGuards(unittest.TestCase):
         dec_pullback = guard.check(symbol, "BUY", 84000.0, price_history=history, now=1200.0)
         self.assertTrue(dec_pullback.allowed)
 
+    def test_parabolic_surge_guard_v_reversal_does_not_self_disarm(self):
+        guard = ParabolicSurgeGuard(surge_threshold_pct=4.0, pullback_required_pct=1.5)
+        symbol = "SOLUSDC"
+        # First check at pre-dip price 110.0 (no surge)
+        dec1 = guard.check(symbol, "BUY", 110.0, price_history=[(900.0, 110.0), (1000.0, 110.0)], now=1000.0)
+        self.assertTrue(dec1.allowed)
+        # V-reversal: dips to 100.0 then surges +4.5% to 104.50; must NOT self-disarm against 110.0
+        v_hist = [(1000.0, 110.0), (1060.0, 100.0), (1120.0, 104.5)]
+        dec2 = guard.check(symbol, "BUY", 104.5, price_history=v_hist, now=1120.0)
+        self.assertFalse(dec2.allowed)
+        self.assertEqual(dec2.brake_action, BrakeAction.DEFER_WAIT)
+        self.assertIn("parabolic_surge_active", dec2.reason)
+
     def test_weibull_exhaustion_guard(self):
         guard = WeibullExhaustionGuard(default_p90_days=7.0, policy="downscale", exhausted_scale=0.25)
         symbol = "BTCUSDC"
