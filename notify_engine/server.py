@@ -208,18 +208,25 @@ class NotificationServer:
     def flush_pending_bulk(self, *, now: float | None = None, force: bool = False) -> bool:
         """Flush and synthesize any buffered notifications once the 5-minute common gate opens."""
         from notify_engine.alertnotifiers import pop_due_bulk_batch
+        flushed = False
         batch = pop_due_bulk_batch("ntfy", now=now, force=force)
-        if not batch:
-            return False
-        bulk_title, bulk_body, bulk_prio, bulk_topic = batch
-        if not bulk_topic:
-            bulk_topic = self._resolve_topic("ERROR")
-        prev = getattr(self, "_in_gated_dispatch", False)
-        self._in_gated_dispatch = True
-        try:
-            return self._send_ntfy(bulk_title, bulk_body, bulk_prio, bulk_topic)
-        finally:
-            self._in_gated_dispatch = prev
+        if batch:
+            bulk_title, bulk_body, bulk_prio, bulk_topic = batch
+            if not bulk_topic:
+                bulk_topic = self._resolve_topic("ERROR")
+            prev = getattr(self, "_in_gated_dispatch", False)
+            self._in_gated_dispatch = True
+            try:
+                if self._send_ntfy(bulk_title, bulk_body, bulk_prio, bulk_topic):
+                    flushed = True
+            finally:
+                self._in_gated_dispatch = prev
+        email_batch = pop_due_bulk_batch("email", now=now, force=force)
+        if email_batch:
+            email_subj, email_body, _, _ = email_batch
+            if self._send_email(email_subj, email_body, is_retry=True):
+                flushed = True
+        return flushed
 
     def _send_ntfy(self, title: str, message: str, priority: str, topic: str, is_retry: bool = False, skip_email: bool = False) -> bool:
         if not topic:

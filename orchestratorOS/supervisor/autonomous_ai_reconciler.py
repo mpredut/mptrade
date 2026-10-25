@@ -77,20 +77,29 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
         ts: Optional[float] = None
         m = _FULL_TS_RE.search(line)
         if m:
-            dt = datetime.strptime(f"{m.group(1)} {m.group(2)}:{m.group(3)}:{m.group(4)}", "%Y-%m-%d %H:%M:%S")
-            day = dt.date()
-            ts = _resolve_fold_ts(dt, prev_ts)
-            prev_ts = ts
+            try:
+                dt = datetime.strptime(f"{m.group(1)} {m.group(2)}:{m.group(3)}:{m.group(4)}", "%Y-%m-%d %H:%M:%S")
+                day = dt.date()
+                ts = _resolve_fold_ts(dt, prev_ts)
+                prev_ts = ts
+            except ValueError:
+                pass
         else:
             g = _GLOG_TS_RE.match(line)
             c = None if g else _CLOCK_TS_RE.match(line)
             if g:
-                dt = datetime(ref.year, int(g.group(1)), int(g.group(2)),
-                              int(g.group(3)), int(g.group(4)), int(g.group(5)))
-                day = dt.date()
-                ts = _resolve_fold_ts(dt, prev_ts)
-                prev_ts = ts
-            elif c:
+                try:
+                    dt = datetime(ref.year, int(g.group(1)), int(g.group(2)),
+                                  int(g.group(3)), int(g.group(4)), int(g.group(5)))
+                    if (dt - ref).total_seconds() > 86400:
+                        dt = datetime(ref.year - 1, int(g.group(1)), int(g.group(2)),
+                                      int(g.group(3)), int(g.group(4)), int(g.group(5)))
+                    day = dt.date()
+                    ts = _resolve_fold_ts(dt, prev_ts)
+                    prev_ts = ts
+                except ValueError:
+                    pass
+            elif c and int(c.group(1)) < 24 and int(c.group(2)) < 60 and int(c.group(3)) < 60:
                 secs = int(c.group(1)) * 3600 + int(c.group(2)) * 60 + int(c.group(3))
                 dt_same = datetime.combine(day, datetime.min.time()) + timedelta(seconds=secs)
                 ts0 = dt_same.replace(fold=0).timestamp()
@@ -294,7 +303,7 @@ class AutonomousAIReconciler:
             return enriched
 
         # 1. Fear & Greed sensor
-        for fg_name in ("fear_greed_cache.json", "fear_greed_collect.json"):
+        for fg_name in ("fear_greed_collect.json", "fear_greed_cache.json"):
             fg_path = os.path.join(self.cache_dir, fg_name)
             data = _read_json(fg_path)
             if isinstance(data, dict) and data:
@@ -302,7 +311,7 @@ class AutonomousAIReconciler:
                 break
 
         # 2. Market Breadth sensor
-        for mb_name in ("market_breadth_cache.json", "market_breadth_collect.json"):
+        for mb_name in ("market_breadth_collect.json", "market_breadth_cache.json"):
             mb_path = os.path.join(self.cache_dir, mb_name)
             data = _read_json(mb_path)
             if isinstance(data, dict) and data:
@@ -630,20 +639,31 @@ class AutonomousAIReconciler:
         # 8. 24h multi-horizon price evolution & Pillar 2 microstructure per symbol
         for sym in list(snapshot.prices_and_trends.keys()):
             base_sym = sym[:-4] if sym.endswith(("USDC", "USDT")) else (sym[:-3] if sym.endswith(("USD", "EUR")) else sym)
-            p24_data = _read_json(os.path.join(self.cache_dir, f"cache_24_price_{sym}.json"))
-            p24_key = sym
-            if p24_data is None and base_sym:
-                for sib in (f"{base_sym}USDC", f"{base_sym}USDT"):
-                    p24_data = _read_json(os.path.join(self.cache_dir, f"cache_24_price_{sib}.json"))
-                    if p24_data is not None:
-                        p24_key = sib
-                        break
+            p24_cands = [sym]
+            if base_sym:
+                for sib in (f"{base_sym}USDC", f"{base_sym}USDT", f"{base_sym}USD"):
+                    if sib not in p24_cands:
+                        p24_cands.append(sib)
             m24: Dict[str, Any] = {}
-            if isinstance(p24_data, dict):
+            for p24_key in p24_cands:
+                p24_data = _read_json(os.path.join(self.cache_dir, f"cache_24_price_{p24_key}.json"))
+                if not isinstance(p24_data, dict):
+                    continue
                 raw_items = p24_data.get("items", {})
-                series = raw_items.get(p24_key, []) if isinstance(raw_items, dict) else raw_items
+                if isinstance(raw_items, dict):
+                    series = []
+                    for k_cand in p24_cands:
+                        series = raw_items.get(k_cand, [])
+                        if series:
+                            break
+                    if not series and raw_items:
+                        series = next(iter(raw_items.values()), [])
+                else:
+                    series = raw_items
                 m24 = compute_24h_price_metrics(series) or {}
-            elif sym in inst_by_sym:
+                if m24:
+                    break
+            if not m24 and sym in inst_by_sym:
                 # Fallback for standalone Kraken pairs (e.g. ADAUSD) without a cachedb/cache_24_price_* file
                 prov = getattr(inst_by_sym[sym], "_provider", None)
                 ohlc_fn = getattr(prov, "ohlc_series", None)

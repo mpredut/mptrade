@@ -436,23 +436,12 @@ class BotManager:
                                         f"Last logs:\n{last_activity}"
                                     )
                                     zombie_title = f"Zombie Bot Terminated: {name}"
-                                    should_send = True
-                                    try:
-                                        from notify_engine.alertnotifiers import _reserve_delivery
-                                        should_send, _reason, _ = _reserve_delivery(
-                                            "ntfy",
-                                            [{"type": "bot_event", "name": zombie_title, "source": "orchestrator"}],
-                                            urgent=True,
-                                        )
-                                    except Exception:
-                                        should_send = True
-                                    if should_send:
-                                        self.server._send_ntfy(
-                                            zombie_title,
-                                            alert_body,
-                                            "urgent",
-                                            self.server._resolve_topic("ERROR")
-                                        )
+                                    self.server._send_ntfy(
+                                        zombie_title,
+                                        alert_body,
+                                        "urgent",
+                                        self.server._resolve_topic("ERROR")
+                                    )
                                 asyncio.create_task(self.stop_bot(name))
             await asyncio.sleep(2)
 

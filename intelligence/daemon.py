@@ -92,11 +92,11 @@ class IntelligenceTelemetryDaemon:
         )
         self.news_collector = NewsFeedCollector(
             cache_ttl_sec=max(30.0, self.macro_interval_sec * 0.5),
-            history_file=os.path.join(self.cache_dir, "news_feed_history.json"),
+            history_file=os.path.join(self.cache_dir, "news_feed_collect.json"),
         )
         self.geopolitical_analyzer = GeopoliticalThreatAnalyzer(
             cache_ttl_sec=self.macro_llm_interval_sec,
-            state_file=os.path.join(self.cache_dir, "geopolitical_threat_state.json"),
+            state_file=os.path.join(self.cache_dir, "geopolitical_threat_eval.json"),
         )
 
         # Track execution timestamps per symbol / task

@@ -1078,6 +1078,14 @@ class IncidentDigest:
                             )
                     except (TypeError, ValueError, OverflowError):
                         pass
+                raw_ttl = event.get("ttl_sec")
+                if raw_ttl is not None:
+                    try:
+                        ttl_val = float(raw_ttl)
+                        if math.isfinite(ttl_val) and ttl_val > 0:
+                            group["ttl_sec"] = ttl_val
+                    except (TypeError, ValueError, OverflowError):
+                        pass
                 changed = True
             due = []
             for group in groups.values():
@@ -1086,7 +1094,8 @@ class IncidentDigest:
                     group.update(next_at=now + self.interval, reported=True,
                                  count=0, quantity=0.0, attempts=0,
                                  notional=0.0, last_price=None,
-                                 created_ts=None, last_attempt_ts=None)
+                                 created_ts=None, last_attempt_ts=None,
+                                 ttl_sec=None)
                     changed = True
             if changed:
                 atomic_write_json(self.path, state, separators=(",", ":"))
@@ -1127,6 +1136,7 @@ def _alert_giveups(records, now):
                 ),
                 "created_ts": rec.get("created_ts"),
                 "last_attempt_ts": rec.get("last_attempt_ts"),
+                "ttl_sec": oq.resolve_record_ttl(rec),
             })
         digest = IncidentDigest(
             os.path.join(os.path.dirname(oq.QUEUE_FILE), "order_retry_giveup_alerts.json"),
@@ -1173,13 +1183,14 @@ def _alert_giveups(records, now):
                 time_parts.append(f"Expired: {expired_str}")
             time_info = ("Time: " + " | ".join(time_parts) + ". ") if time_parts else ""
 
-            ttl_h = oq.RETRY_TTL_SEC / 3600.0
-            if oq.RETRY_TTL_SEC >= 86400 and (oq.RETRY_TTL_SEC % 43200 == 0):
-                ttl_str = f"{oq.RETRY_TTL_SEC / 86400:g}d ({ttl_h:g}h)"
-            elif oq.RETRY_TTL_SEC >= 3600:
+            eff_ttl = float(report.get("ttl_sec") or oq.RETRY_TTL_SEC)
+            ttl_h = eff_ttl / 3600.0
+            if eff_ttl >= 86400 and (eff_ttl % 43200 == 0):
+                ttl_str = f"{eff_ttl / 86400:g}d ({ttl_h:g}h)"
+            elif eff_ttl >= 3600:
                 ttl_str = f"{ttl_h:g}h"
             else:
-                ttl_str = f"{oq.RETRY_TTL_SEC / 60.0:g}m"
+                ttl_str = f"{eff_ttl / 60.0:g}m"
             expiry_detail = f"{expiry} (TTL: {ttl_str})" if expiry == "active_ttl" else expiry
             try:
                 alert.notify(

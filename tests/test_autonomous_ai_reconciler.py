@@ -1001,6 +1001,47 @@ def test_auto_trade_executor_never_dispatches_sre_notifications_or_executes_venu
     assert report.notification_sent is True
 
 
+def test_recent_log_lines_handles_invalid_glog_and_year_wrap():
+    from datetime import datetime
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import recent_log_lines
+
+    jan1_mtime = datetime(2027, 1, 1, 0, 10, 0).timestamp()
+    cutoff = jan1_mtime - 3600.0  # 1 hour lookback (includes Dec 31 23:50, excludes Dec 31 20:00)
+    lines = [
+        "E1231 20:00:00 [ERROR] old dec 31 error\n",
+        "E9999 99:99:99 [ERROR] malformed glog timestamp\n",
+        "E1231 23:50:00 [ERROR] recent dec 31 error\n",
+    ]
+    picked = recent_log_lines(lines, jan1_mtime, cutoff)
+    assert len(picked) == 2
+    assert "E1231 23:50:00 [ERROR] recent dec 31 error\n" in picked
+    assert "E1231 20:00:00 [ERROR] old dec 31 error\n" not in picked
+
+
+def test_monitor_check_processes_requires_all_heartbeat_files_fresh(tmp_path, monkeypatch):
+    (tmp_path / "procs.conf").write_text(
+        "rtrade.py|$ROOT|python rtrade.py|rtrade|cachedb/rtrade.heartbeat,logs/rtrade.log|180|fleet\n"
+    )
+    (tmp_path / "cachedb").mkdir()
+    (tmp_path / "logs").mkdir()
+    hb = tmp_path / "cachedb" / "rtrade.heartbeat"
+    lg = tmp_path / "logs" / "rtrade.log"
+    hb.write_text("hb")
+    lg.write_text("log")
+    now = 1_800_000_000.0
+    # Log is fresh (now), but heartbeat is stale (now - 300s > 180s)
+    os.utime(hb, (now - 300.0, now - 300.0))
+    os.utime(lg, (now, now))
+
+    monitor = AutonomousOvernightMonitor(workspace_dir=str(tmp_path))
+    monkeypatch.setattr(monitor, "_is_process_running", lambda pat: True)
+    res = monitor.check_processes(now=now)
+    assert len(res) == 1
+    assert res[0].heartbeat_fresh is False
+    assert res[0].age_seconds == 300.0
+
+
+
 
 
 

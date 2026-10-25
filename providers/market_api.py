@@ -157,8 +157,12 @@ class BinanceProvider(MarketDataProvider):
 
         if not math.isfinite(since_s) or since_s <= 0:
             raise ValueError("since_s must be finite and positive")
-        spec = next(item for item in select_instruments("binance").values()
-                    if item.symbol == symbol)
+        spec = next(
+            (item for item in select_instruments("binance").values() if item.symbol == symbol),
+            None,
+        )
+        if spec is None:
+            return None
         status = health.require_fresh_account_cache()
         cm.ensure_account_cache_readers(status)
         manager = cm.get_cache_manager("Trade", start_sync=False)

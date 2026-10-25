@@ -422,12 +422,16 @@ def commit_file_and_meta(
             discard_generation_file(backup_path)
 
 
+_MISSING = object()
+
+
 def read_recovering_previous(
     path: str,
     read_fn: Callable[[str], T],
     *,
     backup_path: str | None = None,
     error_mapper: Callable[[BaseException], BaseException] | None = None,
+    default: Any = _MISSING,
 ) -> T:
     """Read and validate ``path`` via ``read_fn``, recovering ``.previous`` if needed.
 
@@ -438,19 +442,29 @@ def read_recovering_previous(
     """
     target_path = os.fspath(path)
     target_backup = backup_path or previous_generation_path(target_path)
+    if read_fn is json.loads:
+        def _invoke(candidate_path: str) -> Any:
+            with open(candidate_path, "r", encoding="utf-8") as handle:
+                return json.loads(handle.read())
+    else:
+        _invoke = read_fn
     try:
-        result = read_fn(target_path)
+        result = _invoke(target_path)
         if os.path.exists(target_backup):
             discard_generation_file(target_backup)
         return result
     except Exception as primary_exc:
         if not os.path.exists(target_backup):
+            if default is not _MISSING:
+                return default
             raise
         try:
-            read_fn(target_backup)
+            _invoke(target_backup)
             restore_previous_generation(target_path, backup_path=target_backup)
-            return read_fn(target_path)
+            return _invoke(target_path)
         except Exception as recovery_exc:
+            if default is not _MISSING:
+                return default
             if error_mapper is not None:
                 mapped = error_mapper(recovery_exc)
                 if mapped is not recovery_exc:

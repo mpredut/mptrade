@@ -1404,6 +1404,24 @@ class ProcessOnceTest(unittest.TestCase):
         self.assertFalse(worker._alert_reconciliation_quarantine(rec, reason="lookup_unavailable"))
         self.assertEqual(len(self.alerts), 2, "Restarted worker must not re-alert on already persisted quarantine")
 
+    def test_giveup_alert_formats_custom_record_ttl(self):
+        rec = {
+            "id": "custom-ttl-1",
+            "provider_name": "binance",
+            "side": "BUY",
+            "symbol": "BTCUSDC",
+            "qty": 0.01,
+            "requested_price": 70000.0,
+            "created_ts": 1000.0,
+            "ttl_started_ts": 1000.0,
+            "ttl_sec": 900.0,
+            "attempts": 2,
+            "last_failure_reason": "guard_blocked",
+        }
+        worker._alert_giveups([rec], now=2000.0)
+        self.assertEqual(len(self.alerts), 1)
+        self.assertIn("TTL: 15m", self.alerts[0]["body"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

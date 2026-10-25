@@ -34,7 +34,6 @@ $ROOT/kraken/*.log
 $ROOT/hyperliquid/*.log
 $ROOT/212trading/*.log
 $ROOT/binance_api/*.log
-$ROOT/*.log
 {
     size ${LOGROTATE_MAX_SIZE:-20M}
     rotate ${LOGROTATE_KEEP:-5}
@@ -43,6 +42,16 @@ $ROOT/*.log
     compress
     copytruncate
     olddir archive
+}
+$ROOT/*.log
+{
+    size ${LOGROTATE_MAX_SIZE:-20M}
+    rotate ${LOGROTATE_KEEP:-5}
+    missingok
+    notifempty
+    compress
+    copytruncate
+    olddir $ROOT/logs/archive
 }
 EOF
         } > "$CONF"

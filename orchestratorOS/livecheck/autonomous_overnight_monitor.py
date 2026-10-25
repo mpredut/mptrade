@@ -132,20 +132,31 @@ class AutonomousOvernightMonitor:
 
             if hb_log:
                 hb_paths = [
-                    (os.path.join(self.workspace_dir, f.strip()) if not os.path.isabs(f.strip()) else f.strip())
+                    (
+                        f.strip()
+                        if os.path.isabs(f.strip())
+                        else (
+                            os.path.join(self.workspace_dir, f.strip())
+                            if f.strip().startswith(("logs/", "cachedb/"))
+                            else os.path.join(p["dir"], f.strip())
+                        )
+                    )
                     for f in hb_log.split(",") if f.strip()
                 ]
                 mtimes = []
+                missing_any = False
                 for hbp in hb_paths:
                     if os.path.exists(hbp):
                         try:
                             mtimes.append(os.path.getmtime(hbp))
                         except Exception:
-                            pass
+                            missing_any = True
+                    else:
+                        missing_any = True
                 if mtimes:
-                    youngest = max(mtimes)
-                    age_sec = max(0.0, now_ts - youngest)
-                    if stale_threshold > 0 and age_sec > stale_threshold:
+                    oldest = min(mtimes)
+                    age_sec = max(0.0, now_ts - oldest)
+                    if stale_threshold > 0 and (missing_any or age_sec > stale_threshold):
                         fresh = False
                 elif stale_threshold > 0:
                     fresh = False
@@ -206,11 +217,11 @@ class AutonomousOvernightMonitor:
             }
 
         # 4. Fear & Greed & Market Breadth
-        fg = _read("fear_greed_cache.json")
+        fg = _read("fear_greed_collect.json") or _read("fear_greed_cache.json")
         if fg:
             sensors["fear_greed"] = fg.get("value")
 
-        mb = _read("market_breadth_cache.json")
+        mb = _read("market_breadth_collect.json") or _read("market_breadth_cache.json")
         if mb:
             sensors["market_breadth"] = mb.get("advance_ratio")
 

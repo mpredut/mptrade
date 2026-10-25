@@ -202,6 +202,9 @@ class BinanceExecutorContractTest(unittest.TestCase):
         self.assertEqual(order["orderId"], 77)
         self.assertEqual(order["clientOrderId"], "RT_abc")
 
+    def test_position_cost_basis_returns_none_for_unknown_symbol(self):
+        self.assertIsNone(self.p.position_cost_basis("UNLISTEDCOIN", 1.0, 86400.0))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
