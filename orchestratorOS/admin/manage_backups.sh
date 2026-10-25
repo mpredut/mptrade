@@ -21,7 +21,7 @@ backup_local() {
     [ -n "$LIST" ] || { echo "❌ nothing to save"; exit 1; }
     
     rm -rf "$OUT"; mkdir -p "$OUT"
-    printf '%s\n' "$LIST" | tar cf - -C "$ROOT" -T - | tar xf - -C "$OUT"
+    printf '%s\n' "$LIST" | tar cf - --exclude='*.tmp' --exclude='*.tmp.*' --warning=no-file-changed --warning=no-file-removed --ignore-failed-read -C "$ROOT" -T - | tar xf - -C "$OUT"
     
     # Preserve Antigravity CLI (agy) OAuth credentials, settings, and project configs for Disaster Recovery
     if [ -f "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" ] || [ -d "$HOME/.gemini/config" ]; then
