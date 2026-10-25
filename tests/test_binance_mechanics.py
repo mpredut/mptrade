@@ -29,6 +29,21 @@ SYMBOL = "BTCUSDC"
 
 
 class TestAdjustPriceAndCancelOpposite(unittest.TestCase):
+    def setUp(self):
+        fake_client = MagicMock()
+        fake_client.get_symbol_info.return_value = {
+            "baseAsset": "BTC", "quoteAsset": "USDC", "filters": [
+                {"filterType": "PRICE_FILTER", "tickSize": "0.01"},
+                {"filterType": "LOT_SIZE", "stepSize": "0.0001", "minQty": "0.0001"},
+                {"filterType": "MIN_NOTIONAL", "minNotional": "10", "applyToMarket": True},
+            ],
+        }
+        self.bapi_client_patch = patch.object(bapi, "client", fake_client)
+        self.bapi_client_patch.start()
+
+    def tearDown(self):
+        self.bapi_client_patch.stop()
+
     def test_adjust_and_cancel_success(self):
         with self.subTest(msg="buy nudges down and cancels low sells"):
             with patch.object(po.api, "get_current_price", return_value=100.0), \

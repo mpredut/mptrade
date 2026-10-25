@@ -172,4 +172,5 @@ testpaths = ["tests"]
 filterwarnings = [
     "ignore:websockets.WebSocketClientProtocol is deprecated:DeprecationWarning",
     "ignore:websockets.legacy is deprecated:DeprecationWarning",
+    "ignore:There is no current event loop:DeprecationWarning:binance.helpers",
 ]
