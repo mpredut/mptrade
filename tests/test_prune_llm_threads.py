@@ -372,3 +372,13 @@ class TestPruneCliThreads:
         remaining = {r[0] for r in conn.execute("SELECT conversation_id FROM conversation_summaries").fetchall()}
         conn.close()
         assert remaining == {"user-interactive-3"}
+
+    def test_parse_db_timestamp_handles_trailing_z_suffix(self):
+        from orchestratorOS.agy.summary_store import parse_db_timestamp
+        dt1 = parse_db_timestamp("2026-10-25T22:08:31Z")
+        dt2 = parse_db_timestamp("2026-10-25T22:08:31.123Z")
+        dt3 = parse_db_timestamp("2026-10-25T22:08:31.123456789Z")
+        assert dt1 is not None and dt1.year == 2026
+        assert dt2 is not None and dt2.microsecond == 123000
+        assert dt3 is not None and dt3.microsecond == 123456
+

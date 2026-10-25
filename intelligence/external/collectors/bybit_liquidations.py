@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import threading
 import time
 from collections import deque
@@ -152,10 +153,14 @@ class BybitLiquidationCollector:
         now = time.time()
         for item in msg.get("data", []) or []:
             try:
-                symbol = item["s"]
+                symbol = str(item["s"]).strip().upper()
+                if not symbol:
+                    continue
                 # Bybit: Buy = long liquidated, Sell = short liquidated
                 side = "LONG" if item["S"] == "Buy" else "SHORT"
                 notional = float(item["v"]) * float(item["p"])
+                if not math.isfinite(notional) or notional <= 0:
+                    continue
             except (KeyError, ValueError, TypeError):
                 continue
             with self._lock:
@@ -167,11 +172,17 @@ class BybitLiquidationCollector:
 
     def record_event(self, symbol: str, side: str, notional_usd: float, ts: Optional[float] = None) -> None:
         """Inject event directly (useful for tests and synthetic feeds)."""
-        now = ts or time.time()
-        side_norm = "LONG" if side.upper() in ("LONG", "BUY") else "SHORT"
+        try:
+            notional = float(notional_usd)
+        except (ValueError, TypeError):
+            return
+        if not math.isfinite(notional) or notional <= 0:
+            return
+        now = float(ts) if ts is not None else time.time()
+        side_norm = "LONG" if str(side).upper() in ("LONG", "BUY") else "SHORT"
         with self._lock:
-            dq = self._events.setdefault(symbol.upper(), deque())
-            dq.append((now, side_norm, float(notional_usd)))
+            dq = self._events.setdefault(str(symbol).strip().upper(), deque())
+            dq.append((now, side_norm, notional))
             cutoff = now - self._retention
             while dq and dq[0][0] < cutoff:
                 dq.popleft()

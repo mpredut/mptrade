@@ -38,6 +38,7 @@ standalone to watch it live before we wire it into the strategies:
 import asyncio
 import json
 import logging
+import math
 import threading
 import time
 from collections import deque
@@ -166,10 +167,14 @@ class LiquidationSignal:
         now = time.time()
         for item in msg.get("data", []) or []:
             try:
-                symbol = item["s"]
+                symbol = str(item["s"]).strip().upper()
+                if not symbol:
+                    continue
                 # Bybit: "Buy" = long liquidated, "Sell" = short liquidated.
                 side = _LONG if item["S"] == "Buy" else _SHORT
                 notional = float(item["v"]) * float(item["p"])
+                if not math.isfinite(notional) or notional <= 0:
+                    continue
             except (KeyError, ValueError, TypeError):
                 continue
             with self._lock:

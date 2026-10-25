@@ -1244,6 +1244,26 @@ def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
     assert forced_rep.summary == "ok"
     assert len(captured_prompts) == 3
 
+    # Verify scope="equities" vs scope="crypto" filters recent_ai_intents and active_retry_queue
+    now_ts = time.time()
+    with open(os.path.join(cache_dir, "autonomous_trade_intents.json"), "w", encoding="utf-8") as f:
+        json.dump([
+            {"decision": "BUY", "symbol": "BTCUSDC", "venue": "binance", "status": "EXECUTED", "suggested_notional_usd": 100.0, "timestamp": now_ts},
+            {"decision": "BUY", "symbol": "SPCX_US_EQ", "venue": "t212", "status": "EXECUTED", "suggested_notional_usd": 50.0, "timestamp": now_ts},
+        ], f)
+    with open(os.path.join(cache_dir, "order_retry_queue.jsonl"), "w", encoding="utf-8") as f:
+        f.write(json.dumps({"lifecycle": "pending", "expires_at_ts": now_ts + 3600, "provider_name": "binance", "symbol": "BTCUSDC", "side": "BUY", "qty": 0.001, "requested_price": 65000.0, "kind": "DCA", "attempts": 1}) + "\n")
+        f.write(json.dumps({"lifecycle": "pending", "expires_at_ts": now_ts + 3600, "provider_name": "t212", "symbol": "SPCX_US_EQ", "side": "BUY", "qty": 2.0, "requested_price": 30.5, "kind": "DCA", "attempts": 1}) + "\n")
+
+    eq_snap = reconciler.harvest_sensors_telemetry(asset_scope="equities")
+    assert [i["venue"] for i in eq_snap.portfolio_summary.get("recent_ai_intents", [])] == ["t212"]
+    assert [r["venue"] for r in eq_snap.portfolio_summary.get("active_retry_queue", [])] == ["t212"]
+
+    cr_snap = reconciler.harvest_sensors_telemetry(asset_scope="crypto")
+    assert [i["venue"] for i in cr_snap.portfolio_summary.get("recent_ai_intents", [])] == ["binance"]
+    assert [r["venue"] for r in cr_snap.portfolio_summary.get("active_retry_queue", [])] == ["binance"]
+
+
 
 
 

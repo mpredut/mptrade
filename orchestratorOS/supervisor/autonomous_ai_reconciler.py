@@ -615,7 +615,11 @@ class AutonomousAIReconciler:
         # Enrich every symbol (including Kraken/Hyperliquid/T212 pairs discovered in 7B) with cross-venue trend/Kalman/Weibull & 7d range
         multi_items = prices_multi_data.get("items", {}) if isinstance(prices_multi_data, dict) else {}
         for sym, entry in list(snapshot.prices_and_trends.items()):
-            base_prefix = sym[:-4] if sym.endswith(("USDC", "USDT")) else (sym[:-3] if sym.endswith(("USD", "EUR")) else sym)
+            base_prefix = (
+                sym[:-4]
+                if sym.endswith(("USDC", "USDT")) and len(sym) > 4
+                else (sym[:-3] if sym.endswith(("USD", "EUR")) and len(sym) > 3 else sym)
+            )
             cand_keys = (sym, f"{base_prefix}USDC", f"{base_prefix}USDT", f"{base_prefix}USD", base_prefix)
 
             # Inherit short/dynamic slopes from cross-venue sibling (e.g. TAOUSDC -> TAOUSD) when missing
@@ -679,7 +683,11 @@ class AutonomousAIReconciler:
 
         # 8. 24h multi-horizon price evolution & Pillar 2 microstructure per symbol
         for sym in list(snapshot.prices_and_trends.keys()):
-            base_sym = sym[:-4] if sym.endswith(("USDC", "USDT")) else (sym[:-3] if sym.endswith(("USD", "EUR")) else sym)
+            base_sym = (
+                sym[:-4]
+                if sym.endswith(("USDC", "USDT")) and len(sym) > 4
+                else (sym[:-3] if sym.endswith(("USD", "EUR")) and len(sym) > 3 else sym)
+            )
             p24_cands = [sym]
             if base_sym:
                 for sib in (f"{base_sym}USDC", f"{base_sym}USDT", f"{base_sym}USD"):
@@ -1098,8 +1106,35 @@ class AutonomousAIReconciler:
                     snapshot.portfolio_summary["recent_ai_intents"] = eq_intents
                 else:
                     snapshot.portfolio_summary.pop("recent_ai_intents", None)
+            if "active_retry_queue" in snapshot.portfolio_summary:
+                eq_retries = [
+                    r for r in snapshot.portfolio_summary["active_retry_queue"]
+                    if isinstance(r, dict) and str(r.get("venue") or "").lower() == "t212"
+                ]
+                if eq_retries:
+                    snapshot.portfolio_summary["active_retry_queue"] = eq_retries
+                else:
+                    snapshot.portfolio_summary.pop("active_retry_queue", None)
         elif scope == "crypto":
             snapshot.portfolio_summary.pop("t212_cycles", None)
+            if "recent_ai_intents" in snapshot.portfolio_summary:
+                crypto_intents = [
+                    i for i in snapshot.portfolio_summary["recent_ai_intents"]
+                    if isinstance(i, dict) and str(i.get("venue") or "").lower() != "t212"
+                ]
+                if crypto_intents:
+                    snapshot.portfolio_summary["recent_ai_intents"] = crypto_intents
+                else:
+                    snapshot.portfolio_summary.pop("recent_ai_intents", None)
+            if "active_retry_queue" in snapshot.portfolio_summary:
+                crypto_retries = [
+                    r for r in snapshot.portfolio_summary["active_retry_queue"]
+                    if isinstance(r, dict) and str(r.get("venue") or "").lower() != "t212"
+                ]
+                if crypto_retries:
+                    snapshot.portfolio_summary["active_retry_queue"] = crypto_retries
+                else:
+                    snapshot.portfolio_summary.pop("active_retry_queue", None)
 
         # 10. Fleet processes health, Linux OS resources, and VPN tunnel state (only needed for SRE/self-heal audits)
         if include_fleet:

@@ -23,15 +23,19 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
     if not isinstance(series, list) or len(series) < 2:
         return {}
     try:
-        now_ms = float(series[-1][0])
+        def _to_ms(raw_ts: Any) -> float:
+            ts_f = float(raw_ts)
+            return ts_f * 1000.0 if 0 < ts_f < 1e11 else ts_f
+
+        now_ms = _to_ms(series[-1][0])
         cur_px = float(series[-1][1])
         if cur_px <= 0:
             return {}
 
         def _px_ago(mins: float) -> float:
             target = now_ms - mins * 60000.0
-            for ts_ms, p_val in reversed(series):
-                if float(ts_ms) <= target:
+            for ts_raw, p_val in reversed(series):
+                if _to_ms(ts_raw) <= target:
                     return float(p_val)
             return float(series[0][1])
 

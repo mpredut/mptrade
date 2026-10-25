@@ -748,6 +748,59 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertEqual(u_mod.asymptotic_decrease(1.5, 0, 5), 1.5)
         self.assertEqual(u_mod.exponential_decrease(1.5, 60, 5, half_life_duration=0), 0.0)
 
+        # 13. bapi.update_price and get_free_balance reject boolean/NaN/negative payloads
+        fake_client = MagicMock()
+        fake_client.get_symbol_ticker.return_value = {"price": True}
+        fake_client.get_asset_balance.return_value = {"free": True}
+        with mock.patch.object(bapi_mod, "client", fake_client):
+            self.assertIsNone(bapi_mod.update_price(SYMBOL))
+            self.assertIsNone(bapi_mod.get_free_balance("USDC"))
+            fake_client.get_asset_balance.return_value = {"free": "-5.0"}
+            self.assertIsNone(bapi_mod.get_free_balance("USDC"))
+
+        # 14. compute_24h_price_metrics normalizes Unix-second timestamps
+        from intelligence.sentiment.guards.high_stake_guard import compute_24h_price_metrics
+        sec_base = 1_700_000_000.0
+        sec_series = [
+            [sec_base - 180 * 60, 100.0],
+            [sec_base - 60 * 60, 105.0],
+            [sec_base - 30 * 60, 108.0],
+            [sec_base - 15 * 60, 109.0],
+            [sec_base, 110.0],
+        ]
+        m24 = compute_24h_price_metrics(sec_series)
+        self.assertEqual(m24.get("chg_3h_pct"), 10.0)
+        self.assertEqual(m24.get("chg_1h_pct"), 4.76)
+
+        # 15. liquidation_signal and BybitLiquidationCollector normalize symbol case and reject NaN/non-positive notionals
+        import liquidation_signal as liq_mod
+        from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector
+        liq_col = liq_mod.LiquidationSignal(symbols=["BTCUSDT"])
+        liq_col._ingest(json.dumps({
+            "topic": "allLiquidation.BTCUSDT",
+            "data": [
+                {"s": "btcusdt", "S": "Buy", "v": "1.5", "p": "100.0"},
+                {"s": "BTCUSDT", "S": "Buy", "v": "nan", "p": "100.0"},
+                {"s": "BTCUSDT", "S": "Buy", "v": "-1.0", "p": "100.0"},
+            ],
+        }))
+        sig = liq_col.get_signal("BTCUSDT")
+        self.assertEqual(sig["long_liq_usd"], 150.0)
+
+        bybit_col = BybitLiquidationCollector(symbols=["BTCUSDT"])
+        bybit_col._ingest(json.dumps({
+            "topic": "allLiquidation.BTCUSDT",
+            "data": [
+                {"s": "btcusdt", "S": "Sell", "v": "2.0", "p": "100.0"},
+                {"s": "BTCUSDT", "S": "Sell", "v": "inf", "p": "100.0"},
+            ],
+        }))
+        bybit_col.record_event("btcusdt", "SHORT", float("nan"))
+        bybit_col.record_event("btcusdt", "SHORT", -50.0)
+        summ = bybit_col.get_summary("BTCUSDT")
+        self.assertEqual(summ.short_liq_usd, 200.0)
+
+
 
 if __name__ == "__main__":
     unittest.main()

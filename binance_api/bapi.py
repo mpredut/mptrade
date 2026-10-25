@@ -63,7 +63,10 @@ def update_price(symbol):
     """Refresh one REST quote without making an older value look fresh."""
     try:
         ticker = client.get_symbol_ticker(symbol=symbol)
-        price = float(ticker["price"])
+        raw_px = ticker["price"]
+        if isinstance(raw_px, bool):
+            raise TypeError(f"invalid boolean ticker price: {raw_px!r}")
+        price = float(raw_px)
         if not math.isfinite(price) or price <= 0:
             raise ValueError(f"invalid ticker price: {price!r}")
     except Exception as e:
@@ -109,7 +112,13 @@ def get_free_balance(asset: str):
     try:
         # Return the free Binance balance for an asset.
         asset_info = client.get_asset_balance(asset=asset)
-        return float((asset_info or {}).get("free", 0))
+        raw_free = (asset_info or {}).get("free", 0)
+        if isinstance(raw_free, bool):
+            raise TypeError(f"invalid boolean free balance: {raw_free!r}")
+        free_val = float(raw_free)
+        if not math.isfinite(free_val) or free_val < 0:
+            raise ValueError(f"invalid free balance: {free_val!r}")
+        return free_val
     except Exception as e:
         print(f"get_free_balance: Error for {asset}: {e}")
         return None

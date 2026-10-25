@@ -67,7 +67,7 @@ def parse_db_timestamp(ts_str: str) -> Optional[datetime]:
     if not ts_str:
         return None
     try:
-        ts_part = ts_str.split("+")[0].strip()
+        ts_part = ts_str.split("+")[0].rstrip("Zz").strip()
         if ts_part.startswith("0001-01-01"):
             return datetime(1, 1, 1, tzinfo=timezone.utc)
         if "." in ts_part:
