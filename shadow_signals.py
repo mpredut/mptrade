@@ -17,7 +17,7 @@ from __future__ import annotations
 import math
 import os
 import time
-from state_io import atomic_write_json
+from state_io import atomic_write_json, read_recovering_previous, save_json_state
 from datetime import date
 
 import numpy as np
@@ -130,11 +130,9 @@ class KalmanStateTracker:
                 legacy_path = os.path.join(os.path.dirname(self.state_path), "shadow_state.json")
                 if os.path.exists(legacy_path):
                     os.replace(legacy_path, self.state_path)
-            if os.path.exists(self.state_path):
-                with open(self.state_path, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    self._state = loaded
+            loaded = read_recovering_previous(self.state_path, json.loads, default=None)
+            if isinstance(loaded, dict):
+                self._state = loaded
         except Exception as e:  # noqa: BLE001
             print(f"[shadow_signals] error loading initial kalman state: {e}")
 
@@ -142,7 +140,7 @@ class KalmanStateTracker:
         if not self.state_path or (now - self._last_state_write) < self.state_min_interval:
             return
         try:
-            atomic_write_json(self.state_path, self._state)
+            save_json_state(self.state_path, self._state)
             self._last_state_write = now
         except Exception as e:  # noqa: BLE001
             print(f"[shadow_signals] error writing shadow state: {e}")

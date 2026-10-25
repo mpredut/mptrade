@@ -39,6 +39,7 @@ from .strategy_executor import (
 )
 from credentials import CredentialProfileMissingError, kraken_credentials
 from market_regime import ClosedPriceSeries
+from state_io import read_recovering_previous
 
 _KRAKEN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kraken")
 # Shared cross-process fill cache produced by kraken_cachemanager.py.
@@ -320,20 +321,24 @@ class KrakenProvider(MarketDataProvider):
 
     def _fills_from_cache(self, symbol: str):
         """Read symbol fills from the shared cache, or return None for API fallback."""
-        try:
-            with open(_KRAKEN_CACHE_FILE) as f:
-                data = json.load(f)
-        except (OSError, ValueError):
+        data = read_recovering_previous(_KRAKEN_CACHE_FILE, json.loads, default=None)
+        if not isinstance(data, dict):
             return None
-        items = data.get("items") or {}
-        ft = data.get("fetchtime") or {}
+        items = data.get("items")
+        ft = data.get("fetchtime")
+        if not isinstance(items, dict) or not isinstance(ft, dict):
+            return None
         su = symbol.upper()
         key = next((k for k in items if _kraken_pair_matches(symbol, k)), None)
         if key is None:
             key = next((k for k in items if su in k.upper() or k.upper() in su), None)
-        if key is None:
+        if key is None or not isinstance(items.get(key), list):
             return None
-        if (time.time() * 1000.0 - float(ft.get(key, 0))) > _CACHE_MAX_STALE_S * 1000.0:
+        try:
+            ft_val = float(ft.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            return None
+        if (time.time() * 1000.0 - ft_val) > _CACHE_MAX_STALE_S * 1000.0:
             return None                                       # Stale cachemanager data.
         return [
             _normalize_kraken_fill(t)

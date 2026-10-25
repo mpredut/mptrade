@@ -15,7 +15,7 @@ deadlocks under the lock. State persists; the lock does not.
 """
 import os
 import json
-from state_io import atomic_write_json
+from state_io import atomic_write_json, read_recovering_previous, save_json_state
 import time
 import socket
 import threading
@@ -77,14 +77,11 @@ class Cooldown:
 
     # ── Storage ──────────────────────────────────────────────────────────────
     def _read(self):
-        try:
-            with open(self.state_path) as f:
-                return json.load(f)
-        except Exception:
-            return {}
+        loaded = read_recovering_previous(self.state_path, json.loads, default=None)
+        return loaded if isinstance(loaded, dict) else {}
 
     def _write(self, state):
-        atomic_write_json(self.state_path, state, indent=2)
+        save_json_state(self.state_path, state, indent=2)
 
     # ── API ──────────────────────────────────────────────────────────────────
     def reserve(self, key, ttl, **meta):

@@ -241,5 +241,103 @@ def test_save_json_state_restores_previous_on_write_failure(tmp_path, monkeypatc
     assert json.loads(path.read_text(encoding="utf-8")) == {"cycle": 10}
 
 
+def test_audit46_transactional_recovery_and_cross_venue_fallbacks(tmp_path, monkeypatch):
+    import time
+    import order_guard
+    from lock.cooldown import Cooldown
+    from providers.kraken_provider import KrakenProvider
+    from intelligence.sentiment.guards.high_stake_guard import collect_pretrade_telemetry
+
+    now_s = time.time()
+    now_ms = int(now_s * 1000)
+
+    # 1. Cooldown recovers from .previous when primary cooldown file is corrupted
+    cd_path = tmp_path / "cooldown_test.json"
+    cd_lock = tmp_path / "cooldown_test.lock"
+    cd = Cooldown("test", state_path=str(cd_path), lock_path=str(cd_lock))
+    cd._write({"BTCUSDC": {"timestamp": now_s, "side": "BUY"}})
+    Path(previous_generation_path(str(cd_path))).write_text(
+        cd_path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    cd_path.write_text("{corrupt", encoding="utf-8")
+    assert cd._read()["BTCUSDC"]["side"] == "BUY"
+
+    # 2. KrakenProvider._fills_from_cache recovers from cache_trade_kraken.json.previous
+    kr_cache = tmp_path / "cache_trade_kraken.json"
+    Path(previous_generation_path(str(kr_cache))).write_text(
+        json.dumps({
+            "items": {
+                "TAOUSD": [
+                    {
+                        "symbol": "TAOUSD",
+                        "id": "T1",
+                        "orderId": "O1",
+                        "price": 250.0,
+                        "qty": 1.5,
+                        "quantity": 1.5,
+                        "time": now_ms - 5000,
+                        "timestamp": now_ms - 5000,
+                        "isBuyer": True,
+                        "side": "BUY",
+                    }
+                ]
+            },
+            "fetchtime": {"TAOUSD": now_ms},
+        }),
+        encoding="utf-8",
+    )
+    kr_cache.write_text("{corrupt", encoding="utf-8")
+    monkeypatch.setattr("providers.kraken_provider._KRAKEN_CACHE_FILE", str(kr_cache))
+    kp = KrakenProvider()
+    fills = kp._fills_from_cache("TAOUSD")
+    assert fills is not None and len(fills) == 1
+    assert fills[0]["price"] == pytest.approx(250.0)
+
+    # 3. order_guard._read_cached_price_history skips empty cache_24_price_TAOUSD.json
+    # and recovers from cache_24_price_TAOUSDC.json.previous
+    monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path))
+    (tmp_path / "cache_24_price_TAOUSD.json").write_text(
+        json.dumps({"items": {}}), encoding="utf-8"
+    )
+    p24_usdc = tmp_path / "cache_24_price_TAOUSDC.json"
+    Path(previous_generation_path(str(p24_usdc))).write_text(
+        json.dumps({
+            "items": {
+                "TAOUSDC": [
+                    [now_ms - 1800_000, 240.0],
+                    [now_ms - 900_000, 245.0],
+                    [now_ms, 250.0],
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+    hist = order_guard._read_cached_price_history("TAOUSD", window_seconds=3600.0)
+    assert hist is not None and len(hist) == 3
+
+    # 4. collect_pretrade_telemetry recovers cache_short_trend.json.previous (with "items" envelope)
+    # and reads recent fills from cache_trade_kraken.json
+    st_path = tmp_path / "cache_short_trend.json"
+    Path(previous_generation_path(str(st_path))).write_text(
+        json.dumps({
+            "items": {
+                "TAOUSDC": {
+                    "dynamic": {
+                        "222": {"slope_full": 0.0011},
+                        "900": {"slope_full": 0.0022},
+                        "9000": {"slope_full": 0.0033},
+                    }
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+    st_path.write_text("{corrupt", encoding="utf-8")
+    telem = collect_pretrade_telemetry("TAO/USD", cachedb_dir=str(tmp_path))
+    assert "24h Multi-Horizon Price Evolution" in telem
+    assert "Dynamic Multi-Window Slopes" in telem
+    assert "Recent Venue Fills" in telem
+
+
 
 

@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from kraken_common import (load_env_stack, log, required_env, required_float_env,
                            single_instance)
 from kraken_client import KrakenClient
-from state_io import atomic_write_json
+from state_io import atomic_write_json, read_recovering_previous, save_json_state
 from credentials import CredentialConfigurationError, kraken_credentials
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -133,7 +133,30 @@ def _normalize(txid, tr):
 
 
 def _atomic_write(path, obj):
-    atomic_write_json(path, obj, indent=1)
+    save_json_state(path, obj, indent=1)
+
+
+def _load_initial_cache(path):
+    """Load existing Kraken trade cache (or recover from .previous) so transient startup errors do not wipe history."""
+    loaded = read_recovering_previous(path, json.loads, default=None)
+    if (
+        isinstance(loaded, dict)
+        and isinstance(loaded.get("items"), dict)
+        and isinstance(loaded.get("fetchtime"), dict)
+    ):
+        return {
+            "items": {
+                str(k): list(v)
+                for k, v in loaded["items"].items()
+                if isinstance(v, list)
+            },
+            "fetchtime": {
+                str(k): v
+                for k, v in loaded["fetchtime"].items()
+                if isinstance(v, (int, float)) and not isinstance(v, bool)
+            },
+        }
+    return {"items": {}, "fetchtime": {}}
 
 
 def _ledger_to_fills(ledger):
@@ -215,7 +238,7 @@ def _fetch_rest_into(client, cache):
 def poll_loop(client):
     """Default V1 loop: fetch Ledgers and write the file every POLL_INTERVAL.
     Exponential backoff on rate-limit/nonce errors avoids repeatedly hammering Kraken."""
-    cache = {"items": {}, "fetchtime": {}}
+    cache = _load_initial_cache(CACHE_FILE)
     backoff = POLL_BACKOFF_INIT
     while True:
         try:
@@ -273,7 +296,7 @@ def ws_loop(client):
     therefore also needs periodic Ledgers polling, for example every 30 seconds."""
     import websocket  # lazy so poll mode works without the dependency
 
-    cache = {"items": {}, "fetchtime": {}}
+    cache = _load_initial_cache(CACHE_FILE)
     last_flush_ms = [0]
     try:
         _merge_rest_into(client, cache)      # initial snapshot merged incrementally

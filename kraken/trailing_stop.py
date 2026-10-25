@@ -32,15 +32,17 @@ import os
 import sys
 import time
 
-from kraken_common import (load_dotenv, load_env_stack, log, required_bool_env,
-                           required_env, required_float_env, single_instance)
-from kraken_client import KrakenClient
-from notify import notify
-
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)   # import the shared core from the repository root
+
+from kraken_common import (load_dotenv, load_env_stack, log, required_bool_env,  # noqa: E402
+                           required_env, required_float_env, single_instance)
+from kraken_client import KrakenClient  # noqa: E402
+from notify import notify  # noqa: E402
 
 from trailing_core import TrailingCore, should_sell  # noqa: E402  (re-export should_sell for tests/compatibility)
 from providers.execution_audit import (  # noqa: E402
