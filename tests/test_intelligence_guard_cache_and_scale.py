@@ -3823,6 +3823,195 @@ def test_iteration16_volatility_items_and_usdcusdt_exit_manager_sl_timer_expired
     assert call_count["n"] == 1
 
 
+def test_iteration17_price_history_now_liquidation_cascade_now_composite_gemini_now_persistence_nan_and_macro_previous_recovery(
+    monkeypatch, tmp_path
+) -> None:
+    """
+    Iteration 17 regression tests:
+    1. order_guard._read_cached_price_history honors injected `now` and filters out future-dated points
+       when invoked via check_qlimit2_order_guards / check_intelligence_guards.
+    2. BybitLiquidationCollector.get_summary and LiquidationCascadeGuard.check honor injected `now`
+       for synthetic / replay liquidation events and reject future-dated events.
+    3. CompositeMarketIntelligence.evaluate_guards forwards `dur_sec` and `now` to gemini_guard.check.
+    4. calculate_mann_kendall and calculate_hurst_exponent filter non-finite (NaN/Inf) prices without crashing.
+    5. GeopoliticalThreatAnalyzer, SentimentAdvisor, and NewsFeedCollector sanitize non-finite/bool fields
+       and recover from .previous backup files.
+    """
+    import math
+    import qlimit_order_guard
+    from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector
+    from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
+    from intelligence.composite import CompositeMarketIntelligence
+    from intelligence.internal.state.persistence import (
+        calculate_hurst_exponent,
+        calculate_mann_kendall,
+    )
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+
+    # 1. _read_cached_price_history honors `now` and rejects future-dated points
+    monkeypatch.setattr(order_guard, "_resolve_cachedb_dir", lambda: str(tmp_path))
+    p24 = tmp_path / "cache_24_price_TAOUSDC.json"
+    p24.write_text(
+        json.dumps(
+            {
+                "items": {
+                    "TAOUSDC": [
+                        [10000.0, 100.0],
+                        [10500.0, 108.0],  # +8% surge within [3800..11000] window when now=11000
+                        [20000.0, 50.0],   # future point relative to now=11000 -> must be ignored
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    hist = order_guard._read_cached_price_history("TAOUSDC", window_seconds=7200.0, now=11000.0)
+    assert hist == [(10000.0, 100.0), (10500.0, 108.0)]
+
+    # Verify check_qlimit2_order_guards forwards `now` to _read_cached_price_history and blocks parabolic BUY
+    q_ok, q_reason, q_scale = qlimit_order_guard.check_qlimit2_order_guards(
+        "TAOUSDC",
+        "BUY",
+        108.0,
+        margins={
+            "internal_guard_mode": "enforce",
+            "parabolic_surge_pct": 5.0,
+            "parabolic_pullback_pct": 1.5,
+            "weibull_exhaustion_policy": "downscale",
+            "weibull_exhausted_scale": 0.5,
+            "weibull_p90_days": 7.0,
+        },
+        now=11000.0,
+    )
+    assert q_ok is False
+    assert "parabolic_surge" in q_reason
+
+    # 2. BybitLiquidationCollector.get_summary and LiquidationCascadeGuard.check honor `now`
+    liq_col = BybitLiquidationCollector(symbols=["BTCUSDT"])
+    liq_col.record_event("BTCUSDT", "LONG", 600_000.0, ts=5000.0)
+    liq_col.record_event("BTCUSDT", "LONG", 900_000.0, ts=5100.0)  # future event relative to now=5010.0
+    c_guard = LiquidationCascadeGuard(collector=liq_col, max_active_cascade_usd=500_000.0, active_window_sec=60.0)
+    c_dec = c_guard.check("BTCUSDC", "BUY", now=5010.0)
+    assert c_dec.allowed is False
+    assert c_dec.metadata.get("long_liq_usd") == pytest.approx(600_000.0)
+
+    # 3. CompositeMarketIntelligence.evaluate_guards forwards `dur_sec` and `now` to gemini_guard.check
+    captured_gemini_kwargs = {}
+
+    class _SpyGeminiGuard:
+        min_notional_eur = 700.0
+
+        def check(self, symbol, side, price, qty, **kwargs):
+            captured_gemini_kwargs.update(kwargs)
+            from intelligence.internal.guards.guard_decision import GuardDecision
+            return GuardDecision.allow("HighStakeGuard", "spy_ok")
+
+    comp = CompositeMarketIntelligence(gemini_guard=_SpyGeminiGuard())
+    comp_dec = comp.evaluate_guards(
+        "TAOUSDC",
+        "BUY",
+        200.0,
+        qty=5.0,
+        notional_eur=1000.0,
+        trend_duration_seconds=3600.0,
+        now=12345.0,
+    )
+    assert comp_dec.allowed is True
+    assert captured_gemini_kwargs.get("dur_sec") == pytest.approx(3600.0)
+    assert captured_gemini_kwargs.get("now") == pytest.approx(12345.0)
+
+    # 4. calculate_mann_kendall and calculate_hurst_exponent filter NaN/Inf without crashing
+    mk_s, mk_z, mk_p = calculate_mann_kendall([100.0, float("nan"), 101.0, 102.0, float("inf"), 103.0, 104.0, 105.0, 106.0, 107.0])
+    assert mk_s > 0
+    assert mk_p < 0.05
+    hurst_series = [100.0 + i * 0.5 for i in range(70)]
+    hurst_series[10] = float("nan")
+    h_val = calculate_hurst_exponent(hurst_series)
+    assert h_val is not None and math.isfinite(h_val)
+
+    # 5. GeopoliticalThreatAnalyzer, SentimentAdvisor, and NewsFeedCollector sanitize non-finite/bool and recover .previous
+    geo_path = tmp_path / "geopolitical_threat_eval.json"
+    geo_prev = tmp_path / "geopolitical_threat_eval.json.previous"
+    geo_path.write_text("{corrupt", encoding="utf-8")
+    geo_prev.write_text(
+        json.dumps(
+            {
+                "threat_level": "ELEVATED",
+                "risk_score": True,  # bool should fallback to 0.1
+                "summary": "recovered",
+                "recommended_brake": "DOWNSCALE_50",
+                "headlines_analyzed": 3,
+                "ts": -50.0,  # negative ts should clamp to 0.0
+            }
+        ),
+        encoding="utf-8",
+    )
+    geo_analyzer = GeopoliticalThreatAnalyzer(state_file=str(geo_path), cache_ttl_sec=3600.0, fallback_retry_ttl_sec=300.0)
+    assert geo_analyzer._cached_assessment is not None
+    assert geo_analyzer._cached_assessment.threat_level == "ELEVATED"
+    assert geo_analyzer._cached_assessment.risk_score == pytest.approx(0.1)
+    assert geo_analyzer._cached_assessment.ts == pytest.approx(0.0)
+
+    sent_path = tmp_path / "sentiment_advisor_eval.json"
+    sent_prev = tmp_path / "sentiment_advisor_eval.json.previous"
+    sent_path.write_text("{corrupt", encoding="utf-8")
+    sent_prev.write_text(
+        json.dumps(
+            {
+                "market_bias": "CAUTION",
+                "risk_level": "HIGH",
+                "confidence": 9.9,  # out of [0, 1] range -> fallback to 0.5
+                "summary": "recovered sentiment",
+                "key_risks": ["macro"],
+                "recommended_action": "DEFENSIVE",
+                "ts": 1000.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    sent_adv = SentimentAdvisor(cache_file=str(sent_path))
+    assert sent_adv._cached_assessment is not None
+    assert sent_adv._cached_assessment.market_bias == "CAUTION"
+    assert sent_adv._cached_assessment.confidence == pytest.approx(0.5)
+
+    news_path = tmp_path / "news_feed_collect.json"
+    news_prev = tmp_path / "news_feed_collect.json.previous"
+    news_path.write_text("{corrupt", encoding="utf-8")
+    now_wall = time.time()
+    news_prev.write_text(
+        json.dumps(
+            [
+                {
+                    "title": "Major pipeline escalation",
+                    "source": "Reuters",
+                    "pub_date": "now",
+                    "url": "https://example.com/1",
+                    "matched_keywords": ["escalation"],
+                    "is_high_severity": True,
+                    "first_seen_ts": now_wall - 60.0,
+                },
+                {
+                    "title": "Future clock-skew headline",
+                    "source": "Reuters",
+                    "pub_date": "future",
+                    "url": "https://example.com/2",
+                    "matched_keywords": ["war"],
+                    "is_high_severity": True,
+                    "first_seen_ts": now_wall + 3600.0,
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    news_col = NewsFeedCollector(history_file=str(news_path))
+    snap = news_col.get_pool_snapshot(now_ts=now_wall)
+    assert len(snap.headlines) == 1
+    assert snap.headlines[0].title == "Major pipeline escalation"
+
+
+
 
 
 

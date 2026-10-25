@@ -94,13 +94,30 @@ class GeopoliticalThreatAnalyzer:
                     continue
                 summary_str = str(data.get("summary", ""))
                 is_fb = bool(data.get("is_fallback", "LLM fallback" in summary_str))
+                raw_risk = data.get("risk_score", 0.1)
+                if raw_risk is None or isinstance(raw_risk, bool):
+                    risk_val = 0.1
+                else:
+                    try:
+                        risk_val = float(raw_risk)
+                        if not math.isfinite(risk_val) or not (0.0 <= risk_val <= 1.0):
+                            risk_val = 0.1
+                    except (TypeError, ValueError):
+                        risk_val = 0.1
+                raw_ts = data.get("ts", 0.0)
+                try:
+                    ts_val = float(raw_ts) if not isinstance(raw_ts, bool) else 0.0
+                    if not math.isfinite(ts_val) or ts_val < 0.0:
+                        ts_val = 0.0
+                except (TypeError, ValueError):
+                    ts_val = 0.0
                 self._cached_assessment = GeopoliticalThreatAssessment(
                     threat_level=str(data.get("threat_level", "NORMAL")),
-                    risk_score=float(data.get("risk_score", 0.1)),
+                    risk_score=risk_val,
                     summary=summary_str,
                     recommended_brake=str(data.get("recommended_brake", "NONE")),
                     headlines_analyzed=int(data.get("headlines_analyzed", 0)),
-                    ts=float(data.get("ts", 0.0)),
+                    ts=ts_val,
                     is_fallback=is_fb,
                 )
                 self._last_eval_ts = self._cached_assessment.ts
@@ -112,14 +129,14 @@ class GeopoliticalThreatAnalyzer:
     def _save_to_disk(self, assessment: GeopoliticalThreatAssessment) -> None:
         state_file = self._effective_state_file()
         try:
-            from state_io import atomic_write_json
+            from state_io import save_json_state
             data = asdict(assessment)
             data["headlines_digest"] = self._last_headlines_digest
-            atomic_write_json(state_file, data, indent=2)
+            save_json_state(state_file, data, indent=2)
             # Write legacy file during migration
             legacy = state_file.replace("geopolitical_threat_eval.json", "geopolitical_threat_state.json")
             if legacy != state_file:
-                atomic_write_json(legacy, data, indent=2)
+                save_json_state(legacy, data, indent=2)
         except Exception as e:
             logger.warning("Could not persist geopolitical state to %s: %s", state_file, e)
 

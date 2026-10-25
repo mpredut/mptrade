@@ -1158,7 +1158,11 @@ def _resolve_trend_direction(symbol: str, regime_context=None) -> Optional[str]:
     return _read_cached_trend_direction(symbol)
 
 
-def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> Optional[List[Tuple[float, float]]]:
+def _read_cached_price_history(
+    symbol: str,
+    window_seconds: float = 7200.0,
+    now: Optional[float] = None,
+) -> Optional[List[Tuple[float, float]]]:
     """Read rolling price history from local cache for parabolic surge evaluation.
 
     Prefers the authoritative 24h per-symbol cache (cachedb/cache_24_price_{symbol}.json)
@@ -1168,7 +1172,7 @@ def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> O
     """
     su = (symbol or "").strip().upper()
     cachedb_dir = _resolve_cachedb_dir()
-    now_ts = time.time()
+    now_ts = float(now) if now is not None else time.time()
     cutoff_ts = now_ts - window_seconds
     history: List[Tuple[float, float]] = []
 
@@ -1213,7 +1217,7 @@ def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> O
                         if not (math.isfinite(ts_raw) and math.isfinite(px)):
                             continue
                         ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
-                        if ts_sec >= cutoff_ts and px > 0:
+                        if cutoff_ts <= ts_sec <= (now_ts + 5.0) and px > 0:
                             history.append((ts_sec, px))
                     except (ValueError, TypeError, OverflowError):
                         continue
@@ -1250,7 +1254,7 @@ def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> O
                                 if not (math.isfinite(ts_raw) and math.isfinite(px)):
                                     continue
                                 ts_sec = ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw
-                                if ts_sec >= cutoff_ts and px > 0:
+                                if cutoff_ts <= ts_sec <= (now_ts + 5.0) and px > 0:
                                     history.append((ts_sec, px))
                             except (ValueError, TypeError, OverflowError):
                                 continue
@@ -1420,7 +1424,10 @@ def check_intelligence_guards(
         pullback_pct = float(m["parabolic_pullback_pct"])
         history = price_history
         if history is None:
-            history = _read_cached_price_history(symbol, window_seconds=7200.0)
+            try:
+                history = _read_cached_price_history(symbol, window_seconds=7200.0, now=now)
+            except TypeError:
+                history = _read_cached_price_history(symbol, window_seconds=7200.0)
         if history:
             p_guard = ParabolicSurgeGuard(surge_threshold_pct=surge_pct, pullback_required_pct=pullback_pct)
             p_dec = p_guard.check(symbol, side, price, price_history=history, now=now)

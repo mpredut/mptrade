@@ -20,6 +20,7 @@ def calculate_mann_kendall(prices: Sequence[float]) -> tuple[int, float, float]:
     Returns (S, Z, p-value). Sequences with fewer than 8 observations return (0, 0.0, 1.0).
     """
     y = np.asarray(prices, dtype=float)
+    y = y[np.isfinite(y)]
     n = len(y)
     if n < 8:
         return 0, 0.0, 1.0
@@ -49,6 +50,7 @@ def calculate_hurst_exponent(prices: Sequence[float]) -> float | None:
     Returns None if series has fewer than 65 points or non-positive values.
     """
     y = np.asarray(prices, dtype=float)
+    y = y[np.isfinite(y)]
     if len(y) < 65 or np.any(y <= 0):
         return None
         

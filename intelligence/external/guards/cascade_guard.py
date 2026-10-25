@@ -50,7 +50,14 @@ class LiquidationCascadeGuard:
             )
 
         if summary is None and self.collector is not None:
-            summary = self.collector.get_summary(symbol, window_sec=self.active_window_sec)
+            try:
+                summary = self.collector.get_summary(
+                    symbol, window_sec=self.active_window_sec, now=now
+                )
+            except TypeError:
+                summary = self.collector.get_summary(
+                    symbol, window_sec=self.active_window_sec
+                )
 
         if summary is None:
             return GuardDecision.allow(

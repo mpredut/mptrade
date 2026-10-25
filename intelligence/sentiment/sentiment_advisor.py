@@ -70,14 +70,31 @@ class SentimentAdvisor:
                 data = read_recovering_previous(cand, json.loads, default=None)
                 if not isinstance(data, dict):
                     continue
+                raw_conf = data.get("confidence", 0.5)
+                if raw_conf is None or isinstance(raw_conf, bool):
+                    conf_val = 0.5
+                else:
+                    try:
+                        conf_val = float(raw_conf)
+                        if not math.isfinite(conf_val) or not (0.0 <= conf_val <= 1.0):
+                            conf_val = 0.5
+                    except (TypeError, ValueError):
+                        conf_val = 0.5
+                raw_ts = data.get("ts", 0.0)
+                try:
+                    ts_val = float(raw_ts) if not isinstance(raw_ts, bool) else 0.0
+                    if not math.isfinite(ts_val) or ts_val < 0.0:
+                        ts_val = 0.0
+                except (TypeError, ValueError):
+                    ts_val = 0.0
                 self._cached_assessment = SentimentAdvisorAssessment(
                     market_bias=str(data.get("market_bias", "NEUTRAL")),
                     risk_level=str(data.get("risk_level", "MODERATE")),
-                    confidence=float(data.get("confidence", 0.5)),
+                    confidence=conf_val,
                     summary=str(data.get("summary", "")),
                     key_risks=list(data.get("key_risks", [])),
                     recommended_action=str(data.get("recommended_action", "HOLD")),
-                    ts=float(data.get("ts", 0.0)),
+                    ts=ts_val,
                 )
                 self._last_eval_ts = self._cached_assessment.ts
                 return
@@ -87,15 +104,15 @@ class SentimentAdvisor:
     def _save_to_disk(self, assessment: SentimentAdvisorAssessment) -> None:
         cache_file = self._effective_cache_file()
         try:
-            from state_io import atomic_write_json
+            from state_io import save_json_state
             payload = asdict(assessment)
-            atomic_write_json(cache_file, payload, indent=2)
+            save_json_state(cache_file, payload, indent=2)
             # Write legacy files during migration
             for legacy_name in ("macro_advisor_eval.json", "gemini_macro_advisor.json"):
                 legacy_path = cache_file.replace("sentiment_advisor_eval.json", legacy_name)
                 if legacy_path != cache_file:
                     try:
-                        atomic_write_json(legacy_path, payload, indent=2)
+                        save_json_state(legacy_path, payload, indent=2)
                     except Exception:
                         pass
         except Exception as e:

@@ -73,19 +73,21 @@ class NewsFeedCollector:
         return re.sub(r"\s+", " ", title.strip().lower())
 
     def _load_history(self) -> None:
-        load_path = self.history_file
-        if not os.path.exists(load_path) and "_collect.json" in load_path:
-            legacy = load_path.replace("_collect.json", "_history.json")
-            if os.path.exists(legacy):
-                load_path = legacy
-        if os.path.exists(load_path):
+        from state_io import read_recovering_previous
+        candidates = [self.history_file]
+        if "_collect.json" in self.history_file:
+            candidates.append(self.history_file.replace("_collect.json", "_history.json"))
+        now = time.time()
+        for load_path in candidates:
             try:
-                with open(load_path, "r") as f:
-                    data = json.load(f)
-                now = time.time()
+                data = read_recovering_previous(load_path, json.loads, default=None)
+                if not isinstance(data, list):
+                    continue
                 for item in data:
+                    if not isinstance(item, dict):
+                        continue
                     ts = float(item.get("first_seen_ts", now))
-                    if (now - ts) < self.rolling_window_sec:
+                    if 0.0 <= (now - ts) < self.rolling_window_sec:
                         h = NewsHeadline(
                             title=str(item.get("title", "")),
                             source=str(item.get("source", "")),
@@ -97,12 +99,13 @@ class NewsFeedCollector:
                         norm = self._normalize_title(h.title)
                         if norm:
                             self._aggregated_pool[norm] = (ts, h)
+                return
             except Exception as e:
                 logger.debug("Could not load news history from %s: %s", load_path, e)
 
     def _save_history(self) -> None:
         try:
-            from state_io import atomic_write_json
+            from state_io import save_json_state
             payload = []
             for norm, (ts, h) in self._aggregated_pool.items():
                 payload.append({
@@ -114,11 +117,11 @@ class NewsFeedCollector:
                     "is_high_severity": h.is_high_severity,
                     "first_seen_ts": ts,
                 })
-            atomic_write_json(self.history_file, payload, indent=2)
+            save_json_state(self.history_file, payload, indent=2)
             # Dual-write legacy filename if using standardized collect naming
             if "_collect.json" in self.history_file:
                 legacy = self.history_file.replace("_collect.json", "_history.json")
-                atomic_write_json(legacy, payload, indent=2)
+                save_json_state(legacy, payload, indent=2)
         except Exception as e:
             logger.debug("Could not save news history to %s: %s", self.history_file, e)
 
@@ -254,7 +257,7 @@ class NewsFeedCollector:
     def fetch(self, force_refresh: bool = False) -> Optional[NewsFeedSnapshot]:
         """Fetch latest geopolitical RSS headlines with caching, aggregation, and error handling."""
         now = time.time()
-        if not force_refresh and self._cached_snapshot and (now - self._last_fetch_ts) < self.cache_ttl_sec:
+        if not force_refresh and self._cached_snapshot and 0.0 <= (now - self._last_fetch_ts) < self.cache_ttl_sec:
             return self._cached_snapshot
 
         try:

@@ -138,7 +138,10 @@ def check_qlimit2_order_guards(
     if history is None:
         try:
             from order_guard import _read_cached_price_history
-            history = _read_cached_price_history(symbol, window_seconds=7200.0)
+            try:
+                history = _read_cached_price_history(symbol, window_seconds=7200.0, now=now)
+            except TypeError:
+                history = _read_cached_price_history(symbol, window_seconds=7200.0)
         except Exception:
             pass
 

@@ -187,11 +187,16 @@ class BybitLiquidationCollector:
             while dq and dq[0][0] < cutoff:
                 dq.popleft()
 
-    def get_summary(self, symbol: str, window_sec: float = 300.0) -> LiquidationSummary:
+    def get_summary(
+        self,
+        symbol: str,
+        window_sec: float = 300.0,
+        now: Optional[float] = None,
+    ) -> LiquidationSummary:
         """Aggregate liquidation metrics for symbol over window_sec."""
         symbol = symbol.upper()
-        now = time.time()
-        cutoff = now - window_sec
+        now_ts = float(now) if now is not None else time.time()
+        cutoff = now_ts - window_sec
         long_usd = short_usd = 0.0
         events_n = 0
         last_ts = 0.0
@@ -205,7 +210,7 @@ class BybitLiquidationCollector:
                         break
 
         for ts, side, notional in items:
-            if ts < cutoff:
+            if ts < cutoff or ts > (now_ts + 5.0):
                 continue
             last_ts = max(last_ts, ts)
             events_n += 1

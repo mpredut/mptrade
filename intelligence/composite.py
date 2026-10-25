@@ -211,17 +211,30 @@ class CompositeMarketIntelligence:
         if computed_notional is None and qty is not None and price > 0:
             computed_notional = price * qty
         if computed_notional is not None and computed_notional >= self.gemini_guard.min_notional_eur:
-            gemini_dec = self.gemini_guard.check(
-                symbol,
-                side,
-                price,
-                qty if qty is not None else 1.0,
-                notional_eur=computed_notional,
-                telemetry={
-                    "fear_greed": fear_greed_snapshot.value if fear_greed_snapshot else None,
-                    "breadth_regime": market_breadth_snapshot.regime if market_breadth_snapshot else None,
-                },
-            )
+            telemetry_ctx = {
+                "fear_greed": fear_greed_snapshot.value if fear_greed_snapshot else None,
+                "breadth_regime": market_breadth_snapshot.regime if market_breadth_snapshot else None,
+            }
+            try:
+                gemini_dec = self.gemini_guard.check(
+                    symbol,
+                    side,
+                    price,
+                    qty if qty is not None else 1.0,
+                    notional_eur=computed_notional,
+                    telemetry=telemetry_ctx,
+                    dur_sec=trend_duration_seconds if trend_duration_seconds > 0 else None,
+                    now=now,
+                )
+            except TypeError:
+                gemini_dec = self.gemini_guard.check(
+                    symbol,
+                    side,
+                    price,
+                    qty if qty is not None else 1.0,
+                    notional_eur=computed_notional,
+                    telemetry=telemetry_ctx,
+                )
             if not gemini_dec.allowed:
                 return gemini_dec
             if gemini_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
