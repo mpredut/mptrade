@@ -826,6 +826,18 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
                 100.0,
             )
 
+        # 17. symbols.get_quantity_precision returns positive decimal places for sub-unit stepSize
+        fake_sym_client = MagicMock()
+        fake_sym_client.get_symbol_info.return_value = {
+            "filters": [{"filterType": "LOT_SIZE", "stepSize": "0.00100000"}]
+        }
+        with mock.patch.object(sym_mod, "_get_client", return_value=fake_sym_client):
+            self.assertEqual(sym_mod.get_quantity_precision(SYMBOL), 3)
+            fake_sym_client.get_symbol_info.return_value = {
+                "filters": [{"filterType": "LOT_SIZE", "stepSize": "0.0"}]
+            }
+            self.assertEqual(sym_mod.get_quantity_precision(SYMBOL), 8)
+
 
 
 if __name__ == "__main__":

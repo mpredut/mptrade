@@ -67,6 +67,19 @@ class TestProtobuf:
         out, removed = drop_entries(buf, {"a"})
         assert removed == 2 and [entry_cid(v) for _, _, v in parse_fields(out)] == ["b"]
 
+    def test_parse_fields_rejects_truncated_wire_payloads(self):
+        # Wire type 2 declaring 10 bytes but only 3 bytes present
+        with pytest.raises(ValueError, match="truncated"):
+            parse_fields(b"\x0a\x0abc")
+        # Wire type 1 (fixed64) with only 4 bytes present
+        with pytest.raises(ValueError, match="truncated"):
+            parse_fields(b"\x09abcd")
+        # Wire type 5 (fixed32) with only 2 bytes present
+        with pytest.raises(ValueError, match="truncated"):
+            parse_fields(b"\x0dab")
+        # entry_cid returns empty string cleanly on truncated entry
+        assert entry_cid(b"\x0a\x0abc") == ""
+
 
 class TestTopics:
     def test_only_auto_trade_executor_trades_and_only_auto_technical_repair_self_heals(self):

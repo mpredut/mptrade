@@ -83,8 +83,10 @@ def get_quantity_precision(symbol):
         info = _get_client().get_symbol_info(symbol)
         for filter in info['filters']:
             if filter['filterType'] == 'LOT_SIZE':
-                step_size = filter['stepSize']
-                precision = -int(round(-math.log10(float(step_size)), 0))
+                step_size = float(filter['stepSize'])
+                if step_size <= 0 or not math.isfinite(step_size):
+                    break
+                precision = max(0, int(round(-math.log10(step_size), 0)))
                 return precision
     except Exception as e:
         print(f"Error getting quantity precision: {e}")

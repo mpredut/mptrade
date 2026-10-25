@@ -149,6 +149,17 @@ mt.gain=5
             ["binance-order-pipeline"],
         )
 
+    def test_config_txt_trade_enabled_false_overrides_config_env_true(self):
+        root = self._make_fixture()
+        _write(root, "config.env", "BINANCE_ACCOUNT_REF=binance-main\nTRADE_ENABLED=true\n")
+        _write(root, "config.txt", "trade_enabled=false\n")
+        owners = build_inventory(root)
+        mt_owner = next(
+            owner for owner in owners
+            if owner.owner_id == "monitortrades:KRAKEN_HYPE"
+        )
+        self.assertFalse(mt_owner.live_enabled)
+
 
 if __name__ == "__main__":
     unittest.main()

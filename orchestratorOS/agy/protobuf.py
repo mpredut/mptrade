@@ -47,12 +47,18 @@ def parse_fields(buf: bytes) -> List[Field]:
             v, pos = dec_varint(buf, pos)
         elif wire == 2:
             n, pos = dec_varint(buf, pos)
+            if pos + n > len(buf):
+                raise ValueError("truncated length-delimited field")
             v = buf[pos:pos + n]
             pos += n
         elif wire == 1:
+            if pos + 8 > len(buf):
+                raise ValueError("truncated fixed64 field")
             v = buf[pos:pos + 8]
             pos += 8
         elif wire == 5:
+            if pos + 4 > len(buf):
+                raise ValueError("truncated fixed32 field")
             v = buf[pos:pos + 4]
             pos += 4
         else:

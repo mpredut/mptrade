@@ -257,9 +257,11 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
     monitor_pattern = "monitortrades.py"
     monitor_configured = _pattern(patterns, monitor_pattern) is not None
     trade_enabled = _truthy(
-        root_env.get("TRADE_ENABLED")
+        trade_settings.get("trade_enabled")
+        or trade_settings.get("TRADE_ENABLED")
+        or root_env.get("TRADE_ENABLED")
         or root_env.get("trade_enabled")
-        or trade_settings.get("trade_enabled", "true")
+        or "true"
     )
     instruments_path = root / "instruments.conf"
     if instruments_path.exists():
