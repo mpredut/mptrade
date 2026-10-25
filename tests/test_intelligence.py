@@ -624,7 +624,7 @@ def test_global_telemetry_and_macro_analyzer_preserve_breadth_and_fg_fields(temp
     )
     captured = {}
 
-    def _fake_review(*, fear_greed=None, breadth=None, whale_telemetry=None, force_refresh=False):
+    def _fake_review(*, fear_greed=None, breadth=None, whale_telemetry=None, force_refresh=False, now_ts=None, **_kwargs):
         captured["fg"] = fear_greed
         captured["mb"] = breadth
         return None
