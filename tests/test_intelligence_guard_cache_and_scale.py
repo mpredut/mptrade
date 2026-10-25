@@ -2223,6 +2223,112 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert trades_called == []
         assert pg_called == [{"profit_guard"}]
 
+    def test_iteration5_category_bypass_revocation_resolve_assets_and_sl_episode_cleanup(self, monkeypatch):
+        """Regression test for Iteration 5 fixes:
+        1. Instrument.place revokes category tokens ('profit', 'qlimit', 'financial', 'gf')
+           so G_PROF cannot re-expand on SELL and G_QLIMIT1 cannot re-expand on BUY.
+        2. bapi_placeorder.if_place_safe_order checks GLLM2 and GLLM3 before skipping profit_guard.
+        3. resolve_assets strips '/', '-', '_' separators and MarketApi.place defaults quote='USDC'
+           for bare Hyperliquid symbols.
+        4. monitortrades._resolve_exit and _handle_position_recovery clear _SL_EPISODE_STATE.
+        """
+        from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+        from instrument import Instrument
+        from providers.quantity import resolve_assets
+        import binance_api.bapi_placeorder as bapi_placeorder
+        import monitortrades
+
+        # 1. Category token revocation on SELL (G_PROF) and BUY (G_QLIMIT1)
+        provider = MagicMock()
+        provider.name = "binance"
+        provider.get_current_price.return_value = 100.0
+        provider.round_amount = lambda s, a: round(a, 4)
+        provider.min_order_qty.return_value = 0.001
+        provider.min_order_notional.return_value = 5.0
+        provider.order_filter_refusal.return_value = None
+        provider.free_balance.return_value = 10000.0
+        provider.policy_cap_quantity.return_value = 10.0
+        provider.fee_cap_quantity.return_value = 100.0
+        provider.guards_internally.return_value = False
+        provider.get_orders.return_value = []
+        provider.get_trades.return_value = []
+        provider.adjust_order_price.side_effect = lambda s, sd, p, **k: p
+        from providers.quantity import decide_quantity
+        provider.quantity_decision.side_effect = lambda *a, **k: decide_quantity(provider, *a, **k)
+
+        captured_bypasses = []
+        def fake_profit_guard(prov, sym, side, px, margin, window_ref=None, regime_context=None, qty=None, **kw):
+            captured_bypasses.append((side, normalize_bypassed_guards(bypass_guards=kw.get("bypass_guards"))))
+            return False
+
+        monkeypatch.setattr(order_guard, "profit_guard", fake_profit_guard)
+        monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
+        from contextlib import contextmanager
+
+        @contextmanager
+        def fake_trade_slot(*a, **k):
+            slot = MagicMock()
+            slot.allowed = True
+            slot.info = {}
+            yield slot
+
+        monkeypatch.setattr("lock.trade_cooldown.trade_slot", fake_trade_slot)
+
+        mock_api = MagicMock()
+        mock_api.provider_by_name.return_value = provider
+        inst = Instrument("test_inst", "BTCUSDC", "binance", api=mock_api)
+
+        # SELL with bypass_guards={"financial"} must revoke G_PROF while keeping G_QLIMIT1 & G_QLIMIT2
+        inst.place("SELL", 100.0, 1.0, bypass_guards={"financial"}, wait_for_trend=False)
+        assert len(captured_bypasses) == 1
+        sell_side, sell_byp = captured_bypasses[-1]
+        assert sell_side == "SELL"
+        assert GUARD_REGISTRY["G_PROF"].is_bypassed(sell_byp) is False
+        assert GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(sell_byp) is True
+        assert GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(sell_byp) is True
+
+        # BUY with bypass_guards={"qlimit"} must revoke G_QLIMIT1 while keeping G_QLIMIT2
+        inst.place("BUY", 100.0, 1.0, bypass_guards={"qlimit"}, wait_for_trend=False)
+        assert len(captured_bypasses) == 2
+        buy_side, buy_byp = captured_bypasses[-1]
+        assert buy_side == "BUY"
+        assert GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(buy_byp) is False
+        assert GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(buy_byp) is True
+
+        # 2. bapi_placeorder.if_place_safe_order must NOT skip profit_guard if GLLM3 is still active
+        monkeypatch.setattr(bapi_placeorder.api, "get_current_price", lambda s: 85000.0)
+        pg_calls = []
+        monkeypatch.setattr(
+            order_guard,
+            "profit_guard",
+            lambda *a, **k: pg_calls.append(k.get("bypass_guards")) or False,
+        )
+        partial_byp = {"g_prof", "g_qlimit2", "gi_obook", "gi_whale", "gi_funding", "gllm1"}
+        ok, reason = bapi_placeorder.if_place_safe_order(
+            "BUY", "BTCUSDC", 85000.0, 0.01, 3600,
+            bypass_guards=partial_byp,
+        )
+        assert ok is False
+        assert reason == "profit_guard"
+        assert len(pg_calls) == 1
+
+        # 3. resolve_assets strips separators while preserving unknown suffixes
+        assert resolve_assets("HYPE/USDC") == ("HYPE", "USDC")
+        assert resolve_assets("HYPE-USDC", base="HYPE") == ("HYPE", "USDC")
+        assert resolve_assets("TAOUSDT") == ("TAOUSDT", None)
+
+        # 4. monitortrades._resolve_exit and _handle_position_recovery clear _SL_EPISODE_STATE
+        monkeypatch.setattr(monitortrades, "_save_mt_state", lambda: None)
+        monkeypatch.setattr(monitortrades, "_clear_smart_sl_exit", lambda *a, **k: None)
+        monitortrades._SL_EPISODE_STATE["TESTUSDC"] = {"started_at": 1234.0, "buy_price": 100.0}
+        monitortrades._SL_BOUNCE_STATE["TESTUSDC"] = {"started_at": 1234.0, "buy_price": 100.0}
+        monitortrades._TP_RIDE_STATE["TESTUSDC"] = {"started_at": 1234.0, "buy_price": 100.0}
+        monitortrades._resolve_exit("TESTUSDC", inst=None, kind="STOP", clear_pending=True)
+        assert "TESTUSDC" not in monitortrades._SL_EPISODE_STATE
+        assert "TESTUSDC" not in monitortrades._SL_BOUNCE_STATE
+        assert "TESTUSDC" not in monitortrades._TP_RIDE_STATE
+
+
 
 
 

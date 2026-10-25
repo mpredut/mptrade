@@ -312,6 +312,7 @@ class Instrument:
             bypassed_guards.difference_update(GUARD_REGISTRY["G_PROF"].aliases)
             bypassed_guards.discard(GUARD_REGISTRY["G_PROF"].canonical)
             bypassed_guards.discard(GUARD_REGISTRY["G_PROF"].code.lower())
+            bypassed_guards.difference_update({"profit", "financial", "gf"})
             bypass_math_ref = False
         # Quantity-policy bypass reduces exposure and is therefore SELL-only.
         # Ignore it on BUY so a misplaced argument can never increase exposure.
@@ -322,6 +323,7 @@ class Instrument:
             bypassed_guards.difference_update(GUARD_REGISTRY["G_QLIMIT1"].aliases)
             bypassed_guards.discard(GUARD_REGISTRY["G_QLIMIT1"].canonical)
             bypassed_guards.discard(GUARD_REGISTRY["G_QLIMIT1"].code.lower())
+            bypassed_guards.difference_update({"qlimit", "g_qlimit", "financial", "gf"})
             bypass_quantity_policy = False
         requires_permit = bool(getattr(self._provider, "requires_cache_permit", lambda: False)())
         defers_smart_cancel = bool(getattr(self._provider, "defers_smart_cancellation", lambda: False)())

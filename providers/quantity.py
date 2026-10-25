@@ -82,10 +82,13 @@ def resolve_assets(symbol: str, base: Optional[str] = None,
     if base_u and quote_u:
         return base_u, quote_u
     if base_u and symbol_u.startswith(base_u) and symbol_u != base_u:
-        return base_u, quote_u or symbol_u[len(base_u):]
+        rem = symbol_u[len(base_u):].lstrip("/-_")
+        return base_u, quote_u or (rem or None)
     for suffix in QUOTE_SUFFIXES:
         if symbol_u.endswith(suffix) and len(symbol_u) > len(suffix):
-            return base_u or symbol_u[:-len(suffix)], quote_u or suffix
+            stem = symbol_u[:-len(suffix)].rstrip("/-_")
+            if stem:
+                return base_u or stem, quote_u or suffix
     return base_u or symbol_u, quote_u
 
 

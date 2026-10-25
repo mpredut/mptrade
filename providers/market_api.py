@@ -1155,8 +1155,10 @@ class MarketApi:
                 base = u.base_asset(symbol)
             except Exception:
                 base = None
-        if quote is None and base and symbol.startswith(base) and symbol != base:
-            quote = symbol[len(base):]   # For example, BTCUSDC gives BTC and USDC.
+        if quote is None and base and symbol.upper().startswith(base.upper()) and symbol.upper() != base.upper():
+            quote = symbol[len(base):].lstrip("/-_") or None   # For example, BTCUSDC or HYPE/USDC gives BTC/HYPE and USDC.
+        if quote is None and str(prov_name).lower() == "hyperliquid":
+            quote = "USDC"
         inst = Instrument(name=symbol, symbol=symbol, provider=prov_name,
                           base=base, quote=quote, api=self)
         return inst.place(side, price, qty, **kwargs)

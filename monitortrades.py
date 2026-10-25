@@ -580,6 +580,9 @@ def _resolve_exit(symbol: str, inst: Any = None, kind: Optional[str] = None, cle
     _REENTRY_DONE_SELL_TIME.pop(symbol, None)
     if clear_pending:
         _PENDING_STOP_EXIT.pop(symbol, None)
+        _SL_BOUNCE_STATE.pop(symbol, None)
+        _SL_EPISODE_STATE.pop(symbol, None)
+        _TP_RIDE_STATE.pop(symbol, None)
     _clear_smart_sl_exit(symbol, inst)
     _save_mt_state()
 
@@ -1320,6 +1323,16 @@ def _execute_stop_loss(
             else:
                 _SL_BOUNCE_STATE[symbol] = prev_sl_state
             _save_mt_state()
+        elif outcome_ctx.get("reason") == "trend_deferred":
+            _SL_BOUNCE_STATE[symbol] = {
+                "started_at": bounce_started_at if bounce_started_at is not None else current_time_s,
+                "entry_loss": snapshot.loss_ratio,
+                "lowest_price": current_price,
+                "peak_bounce_price": current_price,
+                "min_loss": snapshot.loss_ratio,
+                "buy_price": snapshot.avg_buy_price,
+            }
+            _save_mt_state()
         if cancelled_tp_orders:
             _restore_resting_tp_orders(inst, symbol, cancelled_tp_orders, sellable_qty, sl_state)
         print(f"No can sell (sellable_qty={sellable_qty})")
@@ -1349,6 +1362,7 @@ def _handle_position_recovery(
         if same_buy:
             print(f"[{symbol}] 🎉 Stop-Loss bounce successfully recovered! Position saved from dip "
                   f"({snapshot.loss_pct:.2f}% <= {lost_threshold*100:.2f}%).")
+    _SL_EPISODE_STATE.pop(symbol, None)
     _PENDING_STOP_EXIT.pop(symbol, None)
     _TP_RIDE_STATE.pop(symbol, None)
     _save_mt_state()

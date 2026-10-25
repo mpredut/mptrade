@@ -495,7 +495,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
             skip_math_profit_ref
             and all(
                 GUARD_REGISTRY[gid].is_bypassed(bypassed)
-                for gid in ("G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM1")
+                for gid in ("G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM1", "GLLM2", "GLLM3")
             )
         )
     )
