@@ -412,6 +412,8 @@ class AutonomousAIReconciler:
                         "growth_coefficient": growth,
                         "slope_full": slope,
                         "gradient_recent": tinfo.get("gradient_recent", 0.0),
+                        "gradient_recent_fast": tinfo.get("gradient_recent_fast"),
+                        "epsilon": tinfo.get("epsilon"),
                         "trend_fast": tinfo.get("trend_fast", trend),
                         "slope_3_7m": d222.get("slope_full", 0.0),
                         "trend_3_7m": d222.get("final_trend", trend),
@@ -1211,10 +1213,13 @@ class AutonomousAIReconciler:
                         f"7d={pinfo.get('chg_7d_pct', 0):+.2f}% 7d_range=[{l7}, {h7}]{pos7_sfx}"
                     )
                 if "slope_15m" in pinfo:
+                    fast_sfx = ""
+                    if isinstance(pinfo.get("gradient_recent_fast"), (int, float)) and isinstance(pinfo.get("epsilon"), (int, float)):
+                        fast_sfx = f", grad_fast={float(pinfo['gradient_recent_fast']):+.4f}/eps={float(pinfo['epsilon']):.4f}"
                     extras.append(
                         f"slopes(3.7m={pinfo.get('slope_3_7m', 0):+.5f}[T={pinfo.get('trend_3_7m', 0)}], "
                         f"15m={pinfo.get('slope_15m', 0):+.5f}[T={pinfo.get('trend_15m', 0)}], "
-                        f"2.5h={pinfo.get('slope_2_5h', 0):+.5f}[T={pinfo.get('trend_2_5h', 0)}])"
+                        f"2.5h={pinfo.get('slope_2_5h', 0):+.5f}[T={pinfo.get('trend_2_5h', 0)}]{fast_sfx})"
                     )
                 if pinfo.get("vol_1h_pct") is not None:
                     vol_part = f"vol_1h={pinfo.get('vol_1h_pct')}%"
@@ -1375,22 +1380,32 @@ class AutonomousAIReconciler:
             tasks.append(
                 f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across ALL live tradable spot coins "
                 "(e.g. BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSD, TAOUSD, ADAUSD on 'kraken') using the complete "
-                "factual telemetry provided above (macro sentiment, geopolitical risk, live breaking news, market breadth, "
-                "multi-horizon price evolution 15m/30m/1h/3h/24h/7d, 1s-sampled dynamic slopes 3.7m/15m/2.5h, Kalman "
-                "velocity/volatility, Weibull survival, Pillar 2 whale/orderbook walls/taker flow, and real spot wallet "
-                "balances + cycle cost anchors + recent fills + open/retry orders).\n"
-                "   - BUSINESS OBJECTIVE & FULL AUTONOMOUS JUDGMENT (ZERO PROFIT OR STRATEGY GUARDS): Your sole business "
-                "mandate is to maximize net portfolio value and risk-adjusted compounding returns (net of venue fees) while "
+                "macro sentiment, geopolitical risk, live breaking news, market breadth, multi-horizon price evolution "
+                "(15m/30m/1h/3h/24h/7d), 1s-sampled dynamic slopes (3.7m/15m/2.5h), Kalman velocity/volatility, "
+                "Weibull long-trend survival, Pillar 2 whale/orderbook walls/taker flow, and real spot wallet balances + "
+                "cycle entry anchors + active retry queue above.\n"
+                "   - FULL AI AUTHORITY & QUANTITATIVE GUIDANCE (ZERO PROFIT OR STRATEGY GUARDS): Your business mandate "
+                "is to maximize net portfolio value and risk-adjusted compounding returns (net of venue fees) while "
                 "protecting capital. ALL deterministic order_guard gates (G_PROF profit reference, GO1 daily cap/cooldown, "
                 "GT_* trend deferrals, G_QLIMIT* weight caps, GI_* microstructure, and GLLM* secondary vetoes) are BYPASSED "
-                "symmetrically on both BUY and SELL. No rigid trading rules, indicator formulas, or directional constraints "
-                "are imposed on how you reason—you have 100% independent quantitative freedom to decide WHEN, WHAT, HOW MUCH, "
-                "and WHY to BUY, SELL (whether above or below entry/last-BUY), scale in/out, or HOLD based on your own "
-                "judgment of the data.\n"
-                f"   - OPERATIONAL MECHANICS: Emit one entry per actionable coin in `market_trading_decisions` with "
-                f"`confidence >= {min_conf:g}` and `suggested_notional_usd` sized between {min_usd:g} and {max_usd:g} USD "
-                "(the gateway automatically clamps notional strictly to available free wallet balance with zero artificial "
-                "cooldowns or dedup locks). If no coin warrants action right now, return a single 'HOLD' entry."
+                "symmetrically on both BUY and SELL. You hold 100% autonomous quantitative judgment for profit harvesting, "
+                "multi-tranche scaling, and capital protection, guided by these core principles:\n"
+                "     * SELL (Take-Profit, Tranche Harvesting OR Defensive Risk Reduction): Emit 'SELL' on any tradable coin "
+                f"with free base inventory >= ${min_usd:g} USD BOTH when an advance shows rally exhaustion / approaches "
+                "major ask-wall resistance (including harvesting profitable dip-buy tranches when `pnl_vs_last_buy` is "
+                "solidly positive) AND when protective/defensive de-risking is warranted EVEN BELOW entry/last-BUY price "
+                "(e.g. structural breakdown, accelerating multi-horizon selloff, distribution, or macro/geopolitical shock "
+                "where cutting/trimming exposure protects capital against a deeper drop). Distinguish true structural "
+                "breakdowns from shallow liquidity sweeps into strong bid walls.\n"
+                "     * BUY (Accumulation, Re-Entry & Breakout): Emit 'BUY' on any tradable coin whose venue has free quote "
+                f"cash >= ${min_usd:g} USD on high-conviction washed-out reversals near support/bid walls, steady upward "
+                "recovery/inflection after a prior exit, or confirmed momentum breakouts (scaling in across cycles while "
+                "avoiding immediate whipsaw buybacks at the same price right after a take-profit SELL unless a structural "
+                "breakout is confirmed).\n"
+                f"   - Emit one entry per actionable coin in `market_trading_decisions` with `confidence >= {min_conf:g}` "
+                f"and `suggested_notional_usd` sized between {min_usd:g} and {max_usd:g} USD (the gateway automatically "
+                "clamps notional strictly to available free wallet balance with zero artificial cooldowns or dedup locks). "
+                "If no coin warrants action right now, return a single 'HOLD' entry."
             )
             schema.append(
                 '  "market_trading_decisions": [{"decision": "BUY" | "SELL" | "HOLD", "symbol": "BTCUSDC", '
