@@ -1347,6 +1347,26 @@ class ProcessOnceTest(unittest.TestCase):
             self.assertEqual(kw3.get("profit_margin"), 0.15)
             # Crucial requirement: wait_for_trend MUST REMAIN TRUE!
             self.assertTrue(kw3.get("wait_for_trend"))
+
+            # 4. Non-failure deferral (e.g. trend_deferred / GT_S) must NOT consume age_progress
+            # or prematurely trigger Stage 2 breakeven / Stage 3 salvage before active TTL starts.
+            oq.rewrite([])
+            oq.enqueue(
+                "TAOUSDC", "SELL", 1.0,
+                {"bypass_guards": ["cooldown"], "profit_margin": None},
+                requested_price=500.0, now=t0,
+                failure_reason="trend_deferred",
+            )
+            mkt4 = FakeMkt(price=500.0, succeed=True)
+            t_deferred = t0 + 70 * 3600.0
+            stats4 = worker.process_once(mkt4, now=t_deferred)
+            self.assertEqual(stats4["succeeded"], 1)
+            self.assertEqual(len(mkt4.calls), 1)
+            kw4 = mkt4.calls[0]["kw"]
+            self.assertNotIn("math_reference", kw4.get("bypass_guards", []))
+            self.assertFalse(kw4.get("allow_math_reference_sell", False))
+            self.assertIsNone(kw4.get("profit_margin"))
+            self.assertTrue(kw4.get("wait_for_trend"))
         finally:
             oq.RETRY_TTL_SEC = prev_ttl
 

@@ -783,15 +783,11 @@ def _trend_defer_ready(symbol, kind, side, threshold, state):
             }
             _save_symbol_campaign(symbol, kind, state)
         elapsed = max(0.0, now - started_at)
-        if elapsed < TREND_DEFER_MAX_SECONDS:
-            print(
-                f"[{symbol}] {side} tier {float(threshold):g}% deferred by "
-                f"short trend: {elapsed:.1f}/{TREND_DEFER_MAX_SECONDS:.1f}s; "
-                "no blocking sleep.")
-            return False, state
         print(
-            f"[{symbol}] {side} trend defer reached "
-            f"{TREND_DEFER_MAX_SECONDS:.1f}s; submit only if signal remains valid.")
+            f"[{symbol}] {side} tier {float(threshold):g}% deferred by "
+            f"short trend (GT_S): {elapsed:.1f}s elapsed; "
+            "waiting for trend reversal without blocking sleep.")
+        return False, state
 
     if "trend_defer" in state:
         state.pop("trend_defer", None)

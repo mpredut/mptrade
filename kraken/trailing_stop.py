@@ -175,8 +175,22 @@ class KrakenTrailing:
         Errors return 0, making trend filters a safe no-op."""
         try:
             import json
-            with open(CACHE_TREND) as f:
-                snap = json.load(f).get(pair)
+            with open(CACHE_TREND, encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return 0.0
+            raw = str(pair or "").strip().upper()
+            cleaned = raw.replace("/", "").replace("-", "").replace("_", "")
+            base = cleaned
+            for quote in ("USDC", "USDT", "FDUSD", "EUR", "USD"):
+                if base.endswith(quote) and len(base) > len(quote):
+                    base = base[: -len(quote)]
+                    break
+            snap = None
+            for cand in (pair, raw, cleaned, f"{base}USDC", f"{base}USDT", f"{base}USD", base):
+                if cand and isinstance(data.get(cand), dict):
+                    snap = data[cand]
+                    break
             if isinstance(snap, dict):
                 age = time.time() - float(snap["ts"])
                 if -5.0 <= age <= 15.0:

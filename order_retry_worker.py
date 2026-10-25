@@ -606,7 +606,10 @@ def process_once(mkt, now=None):
         # - Stage 3 (Controlled Salvage, progress >= 75%): For SELL, allow math_reference bypass
         #           while strictly maintaining wait_for_trend=True and P2 whale/orderbook protections.
         ttl_started = float(r.get("ttl_started_ts") or r.get("created_ts") or now)
-        age_sec = max(0.0, now - ttl_started)
+        if oq.is_non_failure_deferral(r.get("last_failure_reason")):
+            age_sec = 0.0
+        else:
+            age_sec = max(0.0, now - ttl_started)
         effective_ttl = (
             oq.resolve_record_ttl(r)
             if hasattr(oq, "resolve_record_ttl")

@@ -390,6 +390,34 @@ class TestRebuyGuardsKraken(Base):
         second_cid = c.orders[1]["cl_ord_id"]
         self.assertNotEqual(first_cid, second_cid)
 
+    def test_trend_value_resolves_cross_venue_symbol_variants(self):
+        import json
+        import time
+
+        fd, trend_path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        prev_cache = ts_mod.CACHE_TREND
+        try:
+            with open(trend_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "TAOUSDC": {
+                            "ts": time.time(),
+                            "gradient_recent": -0.42,
+                        }
+                    },
+                    f,
+                )
+            ts_mod.CACHE_TREND = trend_path
+            c = FakeK(60.0)
+            ts = self.ts(c)
+            self.assertAlmostEqual(ts._trend_value("TAOUSD"), -0.42)
+            self.assertAlmostEqual(ts._trend_value("TAO/USD"), -0.42)
+        finally:
+            ts_mod.CACHE_TREND = prev_cache
+            if os.path.exists(trend_path):
+                os.remove(trend_path)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

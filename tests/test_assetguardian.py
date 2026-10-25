@@ -563,20 +563,35 @@ class AssetGuardianTest(unittest.TestCase):
                  mock.patch.object(ag.time, "sleep") as sleep:
                 ready1, deferred = self._real_trend_defer_ready(
                     "TAOUSDC", "buy", "BUY", 7.0, initial)
+            # Even after TREND_DEFER_MAX_SECONDS, while should_wait (GT_S) is True,
+            # AssetGuardian must keep deferring and never bypass GT_S on a timer.
             with mock.patch.object(ag, "STATE", state), \
                  mock.patch.object(ag.cm, "get_short_trend_manager", return_value=manager), \
                  mock.patch.object(
                      ag.time, "time",
                      return_value=1000.0 + ag.TREND_DEFER_MAX_SECONDS + 1), \
                  mock.patch.object(ag.time, "sleep") as sleep2:
-                ready2, released = self._real_trend_defer_ready(
+                ready2, still_deferred = self._real_trend_defer_ready(
                     "TAOUSDC", "buy", "BUY", 7.0, deferred)
+            # Once should_wait becomes False (trend turns favorable), it releases immediately.
+            manager.should_wait.return_value = False
+            with mock.patch.object(ag, "STATE", state), \
+                 mock.patch.object(ag.cm, "get_short_trend_manager", return_value=manager), \
+                 mock.patch.object(
+                     ag.time, "time",
+                     return_value=1000.0 + ag.TREND_DEFER_MAX_SECONDS + 5), \
+                 mock.patch.object(ag.time, "sleep") as sleep3:
+                ready3, released = self._real_trend_defer_ready(
+                    "TAOUSDC", "buy", "BUY", 7.0, still_deferred)
 
             self.assertFalse(ready1)
-            self.assertTrue(ready2)
+            self.assertFalse(ready2)
+            self.assertIn("trend_defer", still_deferred)
+            self.assertTrue(ready3)
             self.assertNotIn("trend_defer", released)
             sleep.assert_not_called()
             sleep2.assert_not_called()
+            sleep3.assert_not_called()
 
     def test_sell_campaign_initialization_and_constraints(self):
         with self.subTest(msg="test_guardian_owns_retry_for_asset_specific_sell"):

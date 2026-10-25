@@ -178,6 +178,26 @@ class CacheLongTrendManager(CacheManagerInterface):
 CacheLongTrend = CacheLongTrendManager
 
 
+def _short_trend_symbol_variants(symbol) -> list:
+    """Return ordered symbol candidates (exact symbol first, then cross-venue aliases)."""
+    if not isinstance(symbol, str):
+        return [symbol]
+    raw = symbol.strip().upper()
+    if not raw:
+        return [symbol]
+    cleaned = raw.replace("/", "").replace("-", "").replace("_", "")
+    base = cleaned
+    for quote in ("USDC", "USDT", "FDUSD", "EUR", "USD"):
+        if base.endswith(quote) and len(base) > len(quote):
+            base = base[: -len(quote)]
+            break
+    out = [symbol]
+    for cand in (raw, cleaned, f"{base}USDC", f"{base}USDT", f"{base}USD", base):
+        if cand and cand not in out:
+            out.append(cand)
+    return out
+
+
 class CacheShortTrendManager(CacheManagerInterface):
     """Calculate per-symbol short trends and share snapshots across processes.
 
@@ -682,23 +702,33 @@ class CacheShortTrendManager(CacheManagerInterface):
     def _load_disk_cache24_entries(self, symbol):
         """Load raw [ts_ms, price] entries from cachedb/cache_24_price_<symbol>.json if present."""
         base_dir = os.path.dirname(self.filename)
-        c24_file = os.path.join(base_dir, f"cache_24_price_{symbol}.json")
-        if not os.path.exists(c24_file) and not os.path.exists(
-            previous_generation_path(c24_file)
-        ):
-            legacy_file = os.path.join(base_dir, f"cache_24price_{symbol}.json")
+        c24_file = None
+        matched_sym = symbol
+        for cand in _short_trend_symbol_variants(symbol):
+            if not isinstance(cand, str) or not cand:
+                continue
+            cand_file = os.path.join(base_dir, f"cache_24_price_{cand}.json")
+            if os.path.exists(cand_file) or os.path.exists(
+                previous_generation_path(cand_file)
+            ):
+                c24_file = cand_file
+                matched_sym = cand
+                break
+            legacy_file = os.path.join(base_dir, f"cache_24price_{cand}.json")
             if os.path.exists(legacy_file) or os.path.exists(
                 previous_generation_path(legacy_file)
             ):
                 c24_file = legacy_file
-            else:
-                return []
+                matched_sym = cand
+                break
+        if c24_file is None:
+            return []
         try:
             backup_path = previous_generation_path(c24_file)
             if os.path.exists(c24_file) and not os.path.exists(backup_path):
                 mtime = os.stat(c24_file).st_mtime_ns
                 with self._lock:
-                    cached = self._disk_c24_cache.get(symbol)
+                    cached = self._disk_c24_cache.get(matched_sym)
                     if cached and cached[0] == mtime:
                         return cached[1]
 
@@ -710,7 +740,12 @@ class CacheShortTrendManager(CacheManagerInterface):
                 items_map = raw.get("items")
                 if not isinstance(items_map, dict):
                     raise ValueError("Cache24 items must be a dict")
-                items = items_map.get(symbol)
+                items = items_map.get(matched_sym)
+                if not isinstance(items, list):
+                    for cand in _short_trend_symbol_variants(symbol):
+                        if isinstance(items_map.get(cand), list):
+                            items = items_map[cand]
+                            break
                 if not isinstance(items, list):
                     return []
                 valid_entries = []
@@ -734,7 +769,7 @@ class CacheShortTrendManager(CacheManagerInterface):
             if os.path.exists(c24_file):
                 mtime = os.stat(c24_file).st_mtime_ns
                 with self._lock:
-                    self._disk_c24_cache[symbol] = (mtime, entries)
+                    self._disk_c24_cache[matched_sym] = (mtime, entries)
             return entries
         except Exception:
             return []
@@ -817,7 +852,13 @@ class CacheShortTrendManager(CacheManagerInterface):
             )
             return res
 
-        c24 = self._cache24_managers.get(symbol)
+        c24 = None
+        c24_sym = symbol
+        for cand in _short_trend_symbol_variants(symbol):
+            c24 = self._cache24_managers.get(cand)
+            if c24 is not None:
+                c24_sym = cand
+                break
         if c24 is None:
             return None
 
@@ -827,7 +868,7 @@ class CacheShortTrendManager(CacheManagerInterface):
         # Fast path when c24 is a real Cache24PriceManager instance with direct buffer access:
         if hasattr(c24, "cache") and hasattr(c24, "lock"):
             with c24.lock:
-                all_entries = list(c24.cache.get(symbol, []))
+                all_entries = list(c24.cache.get(c24_sym, []))
             if len(all_entries) < 3:
                 return None
             cutoff_ms = int((now_val - clamped) * 1000)
@@ -847,7 +888,7 @@ class CacheShortTrendManager(CacheManagerInterface):
             if not (math.isfinite(latest_price) and latest_price > 0):
                 return None
             with self._lock:
-                cached = (self._live_windows.get(symbol) or {}).get(w_key)
+                cached = (self._live_windows.get(c24_sym) or {}).get(w_key)
                 if (
                     isinstance(cached, dict)
                     and cached.get("_last_tick_ts_ms") == newest_ts_ms
@@ -859,7 +900,7 @@ class CacheShortTrendManager(CacheManagerInterface):
                     hit["ts"] = now_val
                     return hit
             ft, gc, sf, gr, eps, sample_rate = self._eval_entries_with_buffer(
-                symbol, all_entries, a, b, window_seconds=clamped
+                c24_sym, all_entries, a, b, window_seconds=clamped
             )
             res = dict(
                 final_trend=ft,
@@ -874,13 +915,13 @@ class CacheShortTrendManager(CacheManagerInterface):
                 ts=now_val,
             )
             self._persist_live_window(
-                symbol, w_key, res, last_tick_ts_ms=newest_ts_ms
+                c24_sym, w_key, res, last_tick_ts_ms=newest_ts_ms
             )
             return res
 
         # Compatibility path for custom/mock c24 objects implementing only get_recent_entries:
         try:
-            entries = c24.get_recent_entries(symbol, last_seconds=clamped)
+            entries = c24.get_recent_entries(c24_sym, last_seconds=clamped)
         except Exception as e:
             print(
                 f"[get_short_trend_for_window] {symbol}: get_recent_entries failed ({e})"
@@ -1040,35 +1081,45 @@ class CacheShortTrendManager(CacheManagerInterface):
                     return None
             return {k: v for k, v in dyn.items() if not k.startswith("_")}
 
+        variants = _short_trend_symbol_variants(symbol)
+
         # 1. Check in-memory _live_windows first:
         with self._lock:
-            mem_live = (self._live_windows.get(symbol) or {}).get(w_key)
-        if isinstance(mem_live, dict):
-            fresh = _check_fresh(mem_live)
-            if fresh is not None:
-                return fresh
+            for cand in variants:
+                mem_live = (self._live_windows.get(cand) or {}).get(w_key)
+                if isinstance(mem_live, dict):
+                    fresh = _check_fresh(mem_live)
+                    if fresh is not None:
+                        return fresh
 
         # 2. Check shared snapshot file dynamic dict (authoritative if present):
-        snap = self._read_file().get(symbol)
-        if isinstance(snap, dict):
-            published = snap.get("dynamic")
-            if isinstance(published, dict) and w_key in published:
-                fresh = _check_fresh(published.get(w_key))
-                if fresh is not None:
-                    return fresh
-            if (
-                math.isclose(clamped, self.window_seconds[0], rel_tol=0.0, abs_tol=1e-6)
-                and "gradient_recent" in snap
-                and "ts" in snap
-            ):
-                fresh = _check_fresh(snap)
-                if fresh is not None:
-                    return fresh
+        file_data = self._read_file()
+        for cand in variants:
+            snap = file_data.get(cand)
+            if isinstance(snap, dict):
+                published = snap.get("dynamic")
+                if isinstance(published, dict) and w_key in published:
+                    fresh = _check_fresh(published.get(w_key))
+                    if fresh is not None:
+                        return fresh
+                if (
+                    math.isclose(clamped, self.window_seconds[0], rel_tol=0.0, abs_tol=1e-6)
+                    and "gradient_recent" in snap
+                    and "ts" in snap
+                ):
+                    fresh = _check_fresh(snap)
+                    if fresh is not None:
+                        return fresh
 
         # 3. Check per-symbol 24trend/live_<SYMBOL>.json:
-        file_live = self._read_live_symbol_file(symbol).get(w_key)
-        if isinstance(file_live, dict):
-            return _check_fresh(file_live)
+        for cand in variants:
+            if not isinstance(cand, str) or not cand:
+                continue
+            file_live = self._read_live_symbol_file(cand).get(w_key)
+            if isinstance(file_live, dict):
+                fresh = _check_fresh(file_live)
+                if fresh is not None:
+                    return fresh
 
         return None
 
@@ -1430,12 +1481,18 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     def get_snapshot(self, symbol):
         """Return local calculated/primed memory, or the file for a pure reader."""
+        variants = _short_trend_symbol_variants(symbol)
         with self._lock:
-            val = self._mem.get(symbol)
+            for cand in variants:
+                val = self._mem.get(cand)
+                if isinstance(val, dict):
+                    return dict(val)
+        file_data = self._read_file()
+        for cand in variants:
+            val = file_data.get(cand)
             if isinstance(val, dict):
                 return dict(val)
-        val = self._read_file().get(symbol)
-        return dict(val) if isinstance(val, dict) else None
+        return None
 
     @staticmethod
     def _snapshot_is_usable(snap, now, max_age_sec):

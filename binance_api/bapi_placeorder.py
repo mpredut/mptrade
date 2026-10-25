@@ -480,14 +480,25 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
     and historical price profit references before order placement.
     """
     from . import bapi_allorders as apiorders
-    from guard_hierarchy import normalize_bypassed_guards
+    from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
     from providers.market_api import BinanceProvider
 
     order_type = order_type.upper()
     sym.validate_params(order_type, symbol, price, qty)
     provider = BinanceProvider()
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
-    bypass_pg = "profit_guard" in bypassed or "all" in bypassed or "*" in bypassed
+    skip_math_profit_ref = GUARD_REGISTRY["G_PROF"].is_bypassed(bypassed)
+    bypass_pg = (
+        "all" in bypassed
+        or "*" in bypassed
+        or (
+            skip_math_profit_ref
+            and all(
+                GUARD_REGISTRY[gid].is_bypassed(bypassed)
+                for gid in ("G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM1")
+            )
+        )
+    )
 
     try:
         current_price = api.get_current_price(symbol)
@@ -528,49 +539,50 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
                 regime_context = market_api.market_regime_context(
                     symbol, provider_name="binance")
 
-            ref_window = order_guard.get_window_cfg(
-                "binance",
-                symbol=symbol,
-                order_type=order_type,
-                regime_context=regime_context,
-                module=caller_module,
-                reference_mode=eff_ref_mode,
-            )
-            if not ref_window or ref_window <= 0:
-                ref_window = time_back_in_seconds
-
-            fetch_window = max(float(time_back_in_seconds or 0), float(ref_window or 0))
-            time_limit = float(time.time() * 1000) - (ref_window * 1000)
-            oposite_trades = apiorders.get_trade_orders(opposite_order_type, symbol, max_age_seconds=fetch_window) or []
-            recent_opposite_trades = [trade for trade in oposite_trades
-                                      if (extract_timestamp_ms(trade, default=0) or 0) >= time_limit
-                                      and extract_order_price(trade, default=0.0) > 0]
-
             window_ref = None
-            if recent_opposite_trades and eff_ref_mode != "off":
-                if len(recent_opposite_trades) > 1:
-                    same_trades = apiorders.get_trade_orders(order_type, symbol, max_age_seconds=fetch_window) or []
-                    recent_same_trades = [
-                        trade for trade in same_trades
-                        if (extract_timestamp_ms(trade, default=0) or 0) >= time_limit
-                        and extract_order_price(trade, default=0.0) > 0
-                    ]
-                    window_ref = order_guard.active_cycle_window_ref(
-                        recent_opposite_trades,
-                        recent_same_trades,
-                        order_type,
-                        reference_mode=eff_ref_mode,
-                    )
-                elif eff_ref_mode in ("average", "last", "hybrid"):
-                    window_ref = order_guard.active_cycle_window_ref(
-                        recent_opposite_trades,
-                        None,
-                        order_type,
-                        reference_mode=eff_ref_mode,
-                    )
-                else:
-                    _prices = [extract_order_price(t) for t in recent_opposite_trades]
-                    window_ref = order_guard.select_extreme_reference(_prices, order_type, strict=True)
+            if not skip_math_profit_ref and eff_ref_mode != "off":
+                ref_window = order_guard.get_window_cfg(
+                    "binance",
+                    symbol=symbol,
+                    order_type=order_type,
+                    regime_context=regime_context,
+                    module=caller_module,
+                    reference_mode=eff_ref_mode,
+                )
+                if not ref_window or ref_window <= 0:
+                    ref_window = time_back_in_seconds
+
+                fetch_window = max(float(time_back_in_seconds or 0), float(ref_window or 0))
+                time_limit = float(time.time() * 1000) - (ref_window * 1000)
+                oposite_trades = apiorders.get_trade_orders(opposite_order_type, symbol, max_age_seconds=fetch_window) or []
+                recent_opposite_trades = [trade for trade in oposite_trades
+                                          if (extract_timestamp_ms(trade, default=0) or 0) >= time_limit
+                                          and extract_order_price(trade, default=0.0) > 0]
+
+                if recent_opposite_trades:
+                    if len(recent_opposite_trades) > 1:
+                        same_trades = apiorders.get_trade_orders(order_type, symbol, max_age_seconds=fetch_window) or []
+                        recent_same_trades = [
+                            trade for trade in same_trades
+                            if (extract_timestamp_ms(trade, default=0) or 0) >= time_limit
+                            and extract_order_price(trade, default=0.0) > 0
+                        ]
+                        window_ref = order_guard.active_cycle_window_ref(
+                            recent_opposite_trades,
+                            recent_same_trades,
+                            order_type,
+                            reference_mode=eff_ref_mode,
+                        )
+                    elif eff_ref_mode in ("average", "last", "hybrid"):
+                        window_ref = order_guard.active_cycle_window_ref(
+                            recent_opposite_trades,
+                            None,
+                            order_type,
+                            reference_mode=eff_ref_mode,
+                        )
+                    else:
+                        _prices = [extract_order_price(t) for t in recent_opposite_trades]
+                        window_ref = order_guard.select_extreme_reference(_prices, order_type, strict=True)
 
             pg_kwargs = dict(
                 window_ref=window_ref,

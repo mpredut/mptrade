@@ -2158,6 +2158,72 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert res_pg is False
         assert intel_called == [1500.0]
 
+    def test_short_trend_symbol_variants_and_bapi_if_place_safe_order_g_prof_bypass(self, tmp_path, monkeypatch):
+        """Verify CacheShortTrendManager resolves cross-venue symbol variants (TAOUSD -> TAOUSDC)
+        and bapi_placeorder.if_place_safe_order skips trade history fetch when G_PROF is bypassed."""
+        import json
+        import time
+        from cachetrend import CacheShortTrendManager
+        from binance_api import bapi_placeorder
+
+        st_file = tmp_path / "cache_short_trend.json"
+        now_s = time.time()
+        st_file.write_text(
+            json.dumps({
+                "TAOUSDC": {
+                    "ts": now_s,
+                    "current_price": 400.0,
+                    "growth_coefficient": 0.25,
+                    "gradient_recent": 0.25,
+                    "final_trend": 0.25,
+                    "epsilon": 0.01,
+                    "dynamic": {
+                        "222": {
+                            "ts": now_s,
+                            "current_price": 400.0,
+                            "growth_coefficient": 0.30,
+                            "gradient_recent": 0.30,
+                            "final_trend": 0.30,
+                            "epsilon": 0.01,
+                        }
+                    },
+                }
+            }),
+            encoding="utf-8",
+        )
+        stm = CacheShortTrendManager(symbols=["TAOUSDC"], filename=str(st_file), writer=False)
+        snap = stm.get_snapshot("TAOUSD")
+        assert snap is not None
+        assert snap["current_price"] == pytest.approx(400.0)
+        assert stm.is_trend_up("TAOUSD", now=now_s) is True
+        assert stm.should_wait("SELL", "TAO/USD", now=now_s) is True
+        assert stm.should_wait("BUY", "TAO/USD", now=now_s) is False
+        dyn = stm.get_short_trend_for_window("TAOUSD", 222.0, now=now_s)
+        assert dyn is not None
+        assert dyn["growth_coefficient"] == pytest.approx(0.30)
+
+        # Verify bapi_placeorder.if_place_safe_order skips apiorders.get_trade_orders when G_PROF is bypassed
+        monkeypatch.setattr(bapi_placeorder.api, "get_current_price", lambda s: 85000.0)
+        monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
+        trades_called = []
+        import binance_api.bapi_allorders as apiorders
+        monkeypatch.setattr(apiorders, "get_trade_orders", lambda *a, **k: trades_called.append(a) or [])
+        pg_called = []
+        monkeypatch.setattr(
+            order_guard,
+            "profit_guard",
+            lambda *a, **k: pg_called.append(k.get("bypass_guards")) or False,
+        )
+        ok, reason = bapi_placeorder.if_place_safe_order(
+            "BUY", "BTCUSDC", 85000.0, 0.01, 3600,
+            bypass_guards={"profit_guard"},
+        )
+        assert ok is False
+        assert reason == "profit_guard"
+        assert trades_called == []
+        assert pg_called == [{"profit_guard"}]
+
+
 
 
 
