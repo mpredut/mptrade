@@ -509,43 +509,43 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         if not ok:
             return False, reason
 
-        caller_module = order_guard.resolve_caller_module(
-            kwargs.get("module"),
-            prefix=kwargs.get("prefix"),
-            client_order_id=kwargs.get("client_order_id"),
-        )
-        profit_ref_mode = kwargs.get("reference_mode")
-        eff_ref_mode = order_guard.get_profit_guard_mode_cfg(
-            "binance",
-            order_type,
-            module=caller_module,
-            reference_mode=profit_ref_mode,
-        )
-
-        if regime_context is None and not bypass_pg:
-            from providers.market_api import api as market_api
-            regime_context = market_api.market_regime_context(
-                symbol, provider_name="binance")
-
-        ref_window = order_guard.get_window_cfg(
-            "binance",
-            symbol=symbol,
-            order_type=order_type,
-            regime_context=regime_context,
-            module=caller_module,
-            reference_mode=eff_ref_mode,
-        )
-        if not ref_window or ref_window <= 0:
-            ref_window = time_back_in_seconds
-
-        fetch_window = max(float(time_back_in_seconds or 0), float(ref_window or 0))
-        time_limit = float(time.time() * 1000) - (ref_window * 1000)
-        oposite_trades = apiorders.get_trade_orders(opposite_order_type, symbol, max_age_seconds=fetch_window) or []
-        recent_opposite_trades = [trade for trade in oposite_trades
-                                  if (extract_timestamp_ms(trade, default=0) or 0) >= time_limit
-                                  and extract_order_price(trade, default=0.0) > 0]
-
         if not bypass_pg:
+            caller_module = order_guard.resolve_caller_module(
+                kwargs.get("module"),
+                prefix=kwargs.get("prefix"),
+                client_order_id=kwargs.get("client_order_id"),
+            )
+            profit_ref_mode = kwargs.get("reference_mode")
+            eff_ref_mode = order_guard.get_profit_guard_mode_cfg(
+                "binance",
+                order_type,
+                module=caller_module,
+                reference_mode=profit_ref_mode,
+            )
+
+            if regime_context is None:
+                from providers.market_api import api as market_api
+                regime_context = market_api.market_regime_context(
+                    symbol, provider_name="binance")
+
+            ref_window = order_guard.get_window_cfg(
+                "binance",
+                symbol=symbol,
+                order_type=order_type,
+                regime_context=regime_context,
+                module=caller_module,
+                reference_mode=eff_ref_mode,
+            )
+            if not ref_window or ref_window <= 0:
+                ref_window = time_back_in_seconds
+
+            fetch_window = max(float(time_back_in_seconds or 0), float(ref_window or 0))
+            time_limit = float(time.time() * 1000) - (ref_window * 1000)
+            oposite_trades = apiorders.get_trade_orders(opposite_order_type, symbol, max_age_seconds=fetch_window) or []
+            recent_opposite_trades = [trade for trade in oposite_trades
+                                      if (extract_timestamp_ms(trade, default=0) or 0) >= time_limit
+                                      and extract_order_price(trade, default=0.0) > 0]
+
             window_ref = None
             if recent_opposite_trades and eff_ref_mode != "off":
                 if len(recent_opposite_trades) > 1:

@@ -345,9 +345,13 @@ class IfPlaceSafeOrderDailyLimitTestCase(unittest.TestCase):
             )
 
     def test_no_trades_allowed(self):
-        ok, reason = self._run(same_side_trades=[])
+        with patch.object(po.order_guard, "get_window_cfg") as get_win, \
+             patch.object(po.order_guard, "profit_guard") as pg:
+            ok, reason = self._run(same_side_trades=[])
         self.assertTrue(ok)
         self.assertIsNone(reason)
+        get_win.assert_not_called()
+        pg.assert_not_called()
 
     def test_daily_limit_blocks(self):
         # 25 filled orders in 24h reaches the 25/24h cap
