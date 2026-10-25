@@ -584,11 +584,23 @@ class PositionExitManager:
         # ---------------------------------------------------------------------
         # PRIORITY 2: Bounce Protection (Trend Up)
         # ---------------------------------------------------------------------
+        episode_state = self.sl_episode_state.get(symbol) or {}
+        episode_started_at = float(episode_state.get("started_at", now))
         if snapshot.trend_up:
             bounce_state = self.sl_bounce_state.get(symbol)
             if bounce_state is None:
+                elapsed_ep = now - episode_started_at
+                if elapsed_ep >= self.config.sl_trend_defer_max_sec:
+                    reason = f"mhdsl_bounce_timeout ({elapsed_ep:.0f}s >= {self.config.sl_trend_defer_max_sec:.0f}s without full recovery)"
+                    return ExitDecision(
+                        action=ExitAction.SELL,
+                        should_exit=True,
+                        reason=reason,
+                        forced=True,
+                        metadata={"priority": 2, "sub_reason": "timeout", "elapsed": elapsed_ep},
+                    )
                 self.sl_bounce_state[symbol] = {
-                    "started_at": now,
+                    "started_at": episode_started_at,
                     "entry_loss": price_decrease,
                     "lowest_price": current_price,
                     "peak_bounce_price": current_price,
@@ -701,7 +713,8 @@ class PositionExitManager:
         # ---------------------------------------------------------------------
         # PRIORITY 3: Smart Stop-Loss Controller / Trend Check
         # ---------------------------------------------------------------------
-        if self.config.smart_sl_enabled:
+        sl_episode_expired = (now - episode_started_at) >= self.config.sl_trend_defer_max_sec
+        if self.config.smart_sl_enabled and not sl_episode_expired and not episode_state.get("smart_sl_done"):
             eval_fn = self.smart_sl_evaluator
             if eval_fn is None:
                 try:
@@ -731,6 +744,8 @@ class PositionExitManager:
                             metadata={"priority": 3, "smart_sl_meta": sl_meta, "disaster_floor": disaster_floor},
                         )
                     else:
+                        if "grace_period_expired" in str(sl_reason) or "active_crash_cascade" in str(sl_reason):
+                            episode_state["smart_sl_done"] = True
                         return ExitDecision(
                             action=ExitAction.SELL,
                             should_exit=True,
@@ -748,7 +763,7 @@ class PositionExitManager:
             should_exit=True,
             reason=reason,
             forced=False,
-            metadata={"priority": 3, "loss": price_decrease},
+            metadata={"priority": 3, "loss": price_decrease, "sl_timer_expired": sl_episode_expired},
         )
 
     def evaluate_take_profit(

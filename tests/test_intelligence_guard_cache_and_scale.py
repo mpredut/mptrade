@@ -2479,6 +2479,96 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert res.outcome == "accepted"
         assert guard_called == []
 
+    def test_iteration8_operational_category_gt_s_isolation_sl_episode_timer_and_qlimit_recovery(self, tmp_path, monkeypatch):
+        """Regression test for Iteration 8 fixes:
+        1. GUARD_CATEGORIES['operational'] contains only OperationalGuard (GO1) and never ShortTrendGuard (GT_S),
+           and BaseGuard.is_bypassed / LLMGuard.is_bypassed match uppercase guard tokens directly.
+        2. PositionExitManager._evaluate_stop_loss_core preserves sl_episode_state['started_at'] across
+           trend_up oscillations (True -> False -> True) and marks smart_sl_done after grace_period_expired
+           so Smart-SL cannot re-arm a second grace period during the same SL episode.
+        3. qlimit_order_guard.resolve_cached_gaussian_horizon uses read_recovering_previous to recover
+           from .prev generation files when T_CACHE_FILE is missing/corrupted.
+        """
+        from guard_hierarchy import GUARD_CATEGORIES, GUARD_REGISTRY, normalize_bypassed_guards
+        from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, PositionSnapshot
+        import intelligence.internal.state.survival as survival_mod
+        from qlimit_order_guard import resolve_cached_gaussian_horizon
+
+        # 1. Operational category isolation & case-insensitive is_bypassed
+        assert [g.code for g in GUARD_CATEGORIES["operational"]] == ["GO1"]
+        op_byp = normalize_bypassed_guards("operational")
+        assert GUARD_REGISTRY["GO1"].is_bypassed(op_byp) is True
+        assert GUARD_REGISTRY["GT_S"].is_bypassed(op_byp) is False
+        assert GUARD_REGISTRY["G_PROF"].is_bypassed({"G_PROF"}) is True
+        assert GUARD_REGISTRY["GLLM1"].is_bypassed({"GLLM1"}) is True
+
+        # 2. PositionExitManager preserves episode_started_at across trend_up flips & prevents Smart-SL re-arm
+        smart_calls = []
+
+        def fake_smart_sl(**kw):
+            smart_calls.append(kw["now"])
+            if len(smart_calls) == 1:
+                return False, "grace_active", {}
+            return True, "grace_period_expired (120s elapsed without bounce)", {}
+
+        mgr = PositionExitManager(
+            config=PositionExitConfig(lost_threshold=0.05, sl_trend_defer_max_sec=300.0, smart_sl_enabled=True),
+            smart_sl_evaluator=fake_smart_sl,
+        )
+        # t=1000: trend_up=True -> initiates bounce watch at started_at=1000
+        d1 = mgr.evaluate_stop_loss(
+            PositionSnapshot(symbol="TAOUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1000.0, trend_up=True)
+        )
+        assert d1.should_exit is False
+        assert mgr.sl_bounce_state["TAOUSDC"]["started_at"] == 1000.0
+
+        # t=1100: trend_up=False -> Smart-SL defers (grace_active), sl_bounce_state popped
+        d2 = mgr.evaluate_stop_loss(
+            PositionSnapshot(symbol="TAOUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1100.0, trend_up=False)
+        )
+        assert d2.should_exit is False
+        assert "TAOUSDC" not in mgr.sl_bounce_state
+
+        # t=1150: trend_up=True again -> restores started_at=1000.0 from sl_episode_state (NOT 1150.0!)
+        d3 = mgr.evaluate_stop_loss(
+            PositionSnapshot(symbol="TAOUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1150.0, trend_up=True)
+        )
+        assert d3.should_exit is False
+        assert mgr.sl_bounce_state["TAOUSDC"]["started_at"] == 1000.0
+
+        # t=1220: trend_up=False -> Smart-SL expires (grace_period_expired) -> SELL & marks smart_sl_done
+        d4 = mgr.evaluate_stop_loss(
+            PositionSnapshot(symbol="TAOUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1220.0, trend_up=False)
+        )
+        assert d4.should_exit is True
+        assert mgr.sl_episode_state["TAOUSDC"].get("smart_sl_done") is True
+
+        # t=1225: if order was deferred by GT_S and re-evaluated with trend_up=False, Smart-SL is NOT called again
+        d5 = mgr.evaluate_stop_loss(
+            PositionSnapshot(symbol="TAOUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1225.0, trend_up=False)
+        )
+        assert d5.should_exit is True
+        assert len(smart_calls) == 2
+
+        # t=1310 (>= 1000 + 300s): trend_up=True -> immediately triggers mhdsl_bounce_timeout!
+        d6 = mgr.evaluate_stop_loss(
+            PositionSnapshot(symbol="TAOUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=1310.0, trend_up=True)
+        )
+        assert d6.should_exit is True
+        assert d6.metadata.get("sub_reason") == "timeout"
+
+        # 3. resolve_cached_gaussian_horizon recovers from .previous generation file
+        t_cache = tmp_path / "trend_T_cache.json"
+        t_prev = tmp_path / "trend_T_cache.json.previous"
+        t_cache.write_text("{corrupt_json", encoding="utf-8")
+        t_prev.write_text(json.dumps({"TAOUSDC": {"T": 10.0, "p90_d": 8.5, "median_d": 4.0}}), encoding="utf-8")
+        monkeypatch.setattr(survival_mod, "T_CACHE_FILE", str(t_cache))
+        p90_d, med_d, gauss_h = resolve_cached_gaussian_horizon("TAOUSD")
+        assert p90_d == 8.5
+        assert med_d == 4.0
+        assert gauss_h == 14.0
+
+
 
 
 

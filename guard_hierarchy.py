@@ -31,13 +31,14 @@ class BaseGuard(ABC):
         """Return whether this guard is bypassed by the given set of active bypass keys."""
         if not bypassed_guards:
             return False
+        low = {str(x).strip().lower() for x in bypassed_guards if x}
         return bool(
-            "all" in bypassed_guards
-            or "*" in bypassed_guards
-            or self.category in bypassed_guards
-            or self.code.lower() in bypassed_guards
-            or self.canonical in bypassed_guards
-            or bool(bypassed_guards.intersection(self.aliases))
+            "all" in low
+            or "*" in low
+            or self.category in low
+            or self.code.lower() in low
+            or self.canonical in low
+            or bool(low.intersection(self.aliases))
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -180,13 +181,14 @@ class LLMGuard(BaseGuard):
     def is_bypassed(self, bypassed_guards: set[str]) -> bool:
         if not bypassed_guards:
             return False
+        low = {str(x).strip().lower() for x in bypassed_guards if x}
         return bool(
-            "all" in bypassed_guards
-            or "*" in bypassed_guards
-            or "gllm" in bypassed_guards
-            or self.code.lower() in bypassed_guards
-            or self.canonical in bypassed_guards
-            or bool(bypassed_guards.intersection(self.aliases))
+            "all" in low
+            or "*" in low
+            or "gllm" in low
+            or self.code.lower() in low
+            or self.canonical in low
+            or bool(low.intersection(self.aliases))
         )
 
 
@@ -237,7 +239,7 @@ GUARD_REGISTRY: dict[str, BaseGuard] = {g.code: g for g in GUARD_INSTANCES}
 GUARD_REGISTRY["GI_CROWD"] = GUARD_REGISTRY["GI_FUNDING"]
 
 GUARD_CATEGORIES: dict[str, list[BaseGuard]] = {
-    "operational": [g for g in GUARD_INSTANCES if isinstance(g, (OperationalGuard, ShortTrendGuard))],
+    "operational": [g for g in GUARD_INSTANCES if isinstance(g, OperationalGuard)],
     "trend": [g for g in GUARD_INSTANCES if isinstance(g, TrendGuard)],
     "profit": [g for g in GUARD_INSTANCES if isinstance(g, ProfitGuard)],
     "qlimit": [g for g in GUARD_INSTANCES if isinstance(g, QuantLimitGuard)],

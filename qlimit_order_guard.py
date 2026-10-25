@@ -44,9 +44,9 @@ def resolve_cached_gaussian_horizon(symbol: str, exceed_percent: float = 0.4) ->
     """Read cached (p90_days, median_days, gaussian_horizon_days=T*(1+exceed_percent)) in 0 ms without network I/O."""
     try:
         from intelligence.internal.state.survival import T_CACHE_FILE, _lookup_t_cache_entry
-        if os.path.exists(T_CACHE_FILE):
-            with open(T_CACHE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
+        from state_io import read_recovering_previous
+        data = read_recovering_previous(T_CACHE_FILE, json.loads, default=None)
+        if isinstance(data, dict):
             ent = _lookup_t_cache_entry(data, symbol)
             if isinstance(ent, dict):
                 p90_d = float(ent["p90_d"]) if ent.get("p90_d") else None
