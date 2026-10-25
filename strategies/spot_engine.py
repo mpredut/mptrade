@@ -582,12 +582,25 @@ class Strategy:
         )
 
     def _order_from_pending(self, pending: dict) -> dict:
+        req_qty = float(pending.get("requested_qty") or 0.0)
+        sub_qty = pending.get("submitted_qty")
+        eff_vol = req_qty
+        if sub_qty is not None:
+            try:
+                sq = float(sub_qty)
+                if math.isfinite(sq) and sq > 0.0:
+                    eff_vol = sq
+            except (TypeError, ValueError, OverflowError):
+                pass
+        amount = float(pending.get("amount") or 0.0)
+        if 0.0 < eff_vol < req_qty and amount > 0.0:
+            amount = amount * (eff_vol / req_qty)
         return {
             "txid": str(pending["order_id"]),
             "side": str(pending["side"]).lower(),
-            "vol": float(pending["requested_qty"]),
+            "vol": eff_vol,
             "price": float(pending.get("requested_price") or 0.0),
-            "amount": float(pending.get("amount") or 0.0),
+            "amount": amount,
             "kind": pending.get("kind"),
             "market": bool(pending.get("market")),
             "intent_id": pending.get("intent_id"),

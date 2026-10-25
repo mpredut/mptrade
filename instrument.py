@@ -662,6 +662,8 @@ class Instrument:
             # or observational pass-through.
             check_medium_trend = not GUARD_REGISTRY["GT_M"].is_bypassed(bypassed_guards)
             medium_trend_action = kwargs.get("medium_trend_action")
+            if medium_trend_action is None and hasattr(self, "params") and isinstance(self.params, dict):
+                medium_trend_action = self.params.get("medium_trend_action")
             gt2_context = regime_context
             if (
                 check_medium_trend
@@ -695,31 +697,39 @@ class Instrument:
                     reason = "medium_trend_deferred"
                     return None
                 elif medium_trend_action == "scale" and adverse_medium_trend:
-                    scale_factor = float(kwargs.get("medium_trend_scale", 0.5))
-                    qty = max(0.0, qty * scale_factor)
-                    round_fn = getattr(self._provider, "round_amount", None) or getattr(self._provider, "round_quantity", None)
-                    if callable(round_fn) and qty > 0:
-                        try:
-                            res_f = float(round_fn(self.symbol, qty))
-                            if math.isfinite(res_f):
-                                qty = res_f
-                        except (TypeError, ValueError):
-                            pass
-                    print(f"[{self.symbol}] {side_u} scaled by medium-term trend ({scale_factor*100:.0f}%, new qty={qty})")
-                    if qty <= 0:
+                    raw_mt_scale = kwargs.get("medium_trend_scale")
+                    if raw_mt_scale is None and hasattr(self, "params") and isinstance(self.params, dict):
+                        raw_mt_scale = self.params.get("medium_trend_scale")
+                    scale_factor = float(0.5 if raw_mt_scale is None else raw_mt_scale)
+                    if scale_factor <= 0.0:
                         reason = "medium_trend_qty_zero"
                         return None
-                    filter_check = getattr(self._provider, "order_filter_refusal", None)
-                    if callable(filter_check):
-                        gt2_refusal = filter_check(
-                            self.symbol, side_u, quantity_price if is_market else price, qty,
-                            market=is_market, enforce_business_minimum=enforce_business_minimum,
-                        )
-                        if gt2_refusal:
-                            print(f"[{self.symbol}] {side_u} medium-trend scaled qty {qty} refused by filter: {gt2_refusal}")
-                            reason = str(gt2_refusal)
+                    if scale_factor < float(applied_scale):
+                        ratio = scale_factor / float(applied_scale)
+                        qty = max(0.0, qty * ratio)
+                        round_fn = getattr(self._provider, "round_amount", None) or getattr(self._provider, "round_quantity", None)
+                        if callable(round_fn) and qty > 0:
+                            try:
+                                res_f = float(round_fn(self.symbol, qty))
+                                if math.isfinite(res_f):
+                                    qty = res_f
+                            except (TypeError, ValueError):
+                                pass
+                        print(f"[{self.symbol}] {side_u} scaled by medium-term trend ({scale_factor*100:.0f}%, new qty={qty})")
+                        if qty <= 0:
+                            reason = "medium_trend_qty_zero"
                             return None
-                    applied_scale = min(float(applied_scale), scale_factor)
+                        filter_check = getattr(self._provider, "order_filter_refusal", None)
+                        if callable(filter_check):
+                            gt2_refusal = filter_check(
+                                self.symbol, side_u, quantity_price if is_market else price, qty,
+                                market=is_market, enforce_business_minimum=enforce_business_minimum,
+                            )
+                            if gt2_refusal:
+                                print(f"[{self.symbol}] {side_u} medium-trend scaled qty {qty} refused by filter: {gt2_refusal}")
+                                reason = str(gt2_refusal)
+                                return None
+                        applied_scale = min(float(applied_scale), scale_factor)
 
             # Stage 3: Post-sizing Profit & Intelligence Guards.
             # Evaluated with the non-zero finalized quantity and exact notional size.
@@ -893,7 +903,7 @@ class Instrument:
                             import order_retry
                             if order_retry.RETRY_ENABLED:
                                 synced_claim = order_retry.update_claimed_qty(
-                                    prequeued_claim, qty)
+                                    prequeued_claim, qty, applied_scale=applied_scale)
                                 if synced_claim is None:
                                     raise SubmissionRefused("durable_qty_sync_failed")
                                 prequeued_claim = synced_claim
@@ -922,7 +932,7 @@ class Instrument:
                     # race a worker or allow two provider submissions.
                     import order_retry
                     refreshed_claim = order_retry.begin_claimed_submit(
-                        prequeued_claim, qty=qty)
+                        prequeued_claim, qty=qty, applied_scale=applied_scale)
                     if refreshed_claim is None:
                         raise SubmissionRefused("producer_claim_lost")
                     prequeued_claim = refreshed_claim
@@ -931,7 +941,7 @@ class Instrument:
                         import order_retry
                         if order_retry.RETRY_ENABLED:
                             synced_claim = order_retry.update_claimed_qty(
-                                prequeued_claim, qty)
+                                prequeued_claim, qty, applied_scale=applied_scale)
                             if synced_claim is None:
                                 raise SubmissionRefused("durable_qty_sync_failed")
                             prequeued_claim = synced_claim

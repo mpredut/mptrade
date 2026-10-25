@@ -1413,7 +1413,7 @@ def _can_pass_buy_quantity_policy(
             requested_qty,
             base=base_asset,
             quote=quote_asset,
-            cancelorders=False,
+            cancelorders=True,
             hours=float(MT_BUY_SAFEBACK_HOURS),
             apply_policy=True,
             market=False,
@@ -1452,13 +1452,31 @@ def _can_pass_buy_quantity_policy(
                 )
                 return False
         import order_guard
+        inst_params = getattr(inst, "params", None)
+        inst_bg = inst_params.get("bypass_guards") if isinstance(inst_params, dict) else None
+        reentry_bg = {"G_PROF", "GLLM1"}
+        if inst_bg:
+            from guard_hierarchy import normalize_bypassed_guards
+            reentry_bg = reentry_bg | normalize_bypassed_guards(bypass_guards=inst_bg)
+        if callable(getattr(provider, "get_orders", None)):
+            dl_res = order_guard.daily_limit_guard(
+                provider, symbol, "BUY", bypass_guards=reentry_bg
+            )
+            dl_ok = dl_res[0] if isinstance(dl_res, tuple) else bool(dl_res)
+            dl_reason = dl_res[1] if isinstance(dl_res, tuple) and len(dl_res) > 1 else "daily_limit"
+            if not dl_ok:
+                print(
+                    f"[{symbol}] Post-STOP re-entry deferred before AI guard: "
+                    f"{dl_reason or 'daily_limit'}"
+                )
+                return False
         intel_ok, intel_reason, intel_scale = order_guard.check_intelligence_guards(
             provider,
             symbol,
             "BUY",
             current_price,
             qty=final_qty,
-            bypass_guards={"G_PROF", "GLLM1"},
+            bypass_guards=reentry_bg,
         )
         if not intel_ok:
             print(
@@ -1553,7 +1571,7 @@ def _apply_post_stop_ai_guard(
                     _est_qty,
                     base=base_asset,
                     quote=quote_asset,
-                    cancelorders=False,
+                    cancelorders=True,
                     hours=float(MT_BUY_SAFEBACK_HOURS),
                     apply_policy=True,
                     market=False,

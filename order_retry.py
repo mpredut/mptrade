@@ -778,7 +778,7 @@ def enqueue_claimed(
         ttl_sec=ttl_sec)
 
 
-def update_claimed_qty(claim_snapshot, qty, *, now=None):
+def update_claimed_qty(claim_snapshot, qty, *, now=None, applied_scale=None):
     """Durably update the requested quantity of an exact claimed intent before submit.
 
     Token, revision, and client order ID must match. Ensures that late quantity
@@ -816,13 +816,22 @@ def update_claimed_qty(claim_snapshot, qty, *, now=None):
                 continue
             record["qty"] = q_val
             record["requested_qty_total"] = q_val
+            if applied_scale is not None:
+                try:
+                    s_val = float(applied_scale)
+                    if math.isfinite(s_val) and 0.0 < s_val < 1.0:
+                        pk = dict(record.get("place_kwargs") or {})
+                        pk["applied_scale"] = s_val
+                        record["place_kwargs"] = pk
+                except (TypeError, ValueError, OverflowError):
+                    pass
             refreshed = dict(record)
             _write_nolock(existing)
             break
     return refreshed
 
 
-def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None):
+def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, applied_scale=None):
     """Durably mark one exact claimed revision possibly submitted.
 
     Token, revision, and deterministic client order ID must still match under
@@ -888,6 +897,15 @@ def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None):
                     if math.isfinite(q_val) and q_val > 0:
                         record["qty"] = q_val
                         record["requested_qty_total"] = q_val
+                except (TypeError, ValueError, OverflowError):
+                    pass
+            if applied_scale is not None:
+                try:
+                    s_val = float(applied_scale)
+                    if math.isfinite(s_val) and 0.0 < s_val < 1.0:
+                        pk = dict(record.get("place_kwargs") or {})
+                        pk["applied_scale"] = s_val
+                        record["place_kwargs"] = pk
                 except (TypeError, ValueError, OverflowError):
                     pass
             refreshed = dict(record)

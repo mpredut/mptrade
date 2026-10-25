@@ -2695,6 +2695,184 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert res_order is None
         assert reason_box.get("reason") == "trend_deferred"
 
+    def test_iteration10_gtm_scale_idempotency_claimed_qty_scale_sync_mt_reentry_and_spot_engine_submitted_qty(self, tmp_path, monkeypatch):
+        """Regression test for Iteration 10 fixes:
+        1. GT_M medium_trend_action='scale' respects applied_scale on retry and does not double-halve qty.
+        2. order_retry.update_claimed_qty and begin_claimed_submit synchronize applied_scale into place_kwargs on disk.
+        3. monitortrades._can_pass_buy_quantity_policy and _apply_post_stop_ai_guard pass cancelorders=True
+           and _can_pass_buy_quantity_policy checks GO1 (daily_limit_guard) before AI/intelligence guards.
+        4. strategies.spot_engine.Strategy._order_from_pending honors submitted_qty and scales amount proportionally.
+        """
+        from types import SimpleNamespace
+        from instrument import Instrument
+        import order_retry
+        import monitortrades as mt
+        from strategies.spot_engine import Strategy
+
+        # 1. GT_M medium_trend_action='scale' idempotency when applied_scale=0.5 is already present on retry
+        submitted_qtys = []
+        provider = MagicMock()
+        provider.name = "binance"
+        provider.get_current_price.return_value = 100.0
+        provider.round_amount = lambda s, a: round(float(a), 4)
+        provider.min_order_qty.return_value = 0.001
+        provider.min_order_notional.return_value = 5.0
+        provider.order_filter_refusal.return_value = None
+        provider.free_balance.return_value = 10000.0
+        provider.policy_cap_quantity.return_value = 10.0
+        provider.fee_cap_quantity.return_value = 100.0
+        provider.guards_internally.return_value = False
+        provider.requires_cache_permit.return_value = False
+        provider.defers_smart_cancellation.return_value = False
+        provider.supports_business_minimum.return_value = False
+        provider.execution_enabled.return_value = True
+        provider.get_orders.return_value = []
+        provider.get_trades.return_value = []
+        provider.adjust_order_price.side_effect = lambda s, sd, p, **k: p
+        from providers.quantity import decide_quantity
+        provider.quantity_decision.side_effect = lambda *a, **k: decide_quantity(provider, *a, **k)
+
+        def _fake_place_order(_sym, side, price, qty, **_kw):
+            submitted_qtys.append(float(qty))
+            return {"orderId": "gtm-1", "symbol": _sym, "side": side, "price": price, "origQty": qty}
+
+        provider.place_order.side_effect = _fake_place_order
+        provider.submit_order.side_effect = _fake_place_order
+
+        bear_ctx = SimpleNamespace(
+            symbol="BTCUSDC",
+            regime="bear",
+            resolved_trend="bear",
+            adverse_regime_for_buy=True,
+            adverse_regime_for_sell=False,
+            allowed_buy=True,
+            allowed_sell=True,
+            suggested_scale=1.0,
+            computed_at=time.time(),
+            decisions={},
+        )
+        monkeypatch.setattr(order_guard, "profit_guard", lambda *a, **k: True)
+        monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
+        from contextlib import contextmanager
+
+        @contextmanager
+        def fake_trade_slot(*a, **k):
+            slot = MagicMock()
+            slot.allowed = True
+            slot.info = {}
+            yield slot
+
+        monkeypatch.setattr("lock.trade_cooldown.trade_slot", fake_trade_slot)
+
+        mock_api = MagicMock()
+        mock_api.provider_by_name.return_value = provider
+        inst = Instrument(
+            "BTCUSDC",
+            "BTCUSDC",
+            "binance",
+            base="BTC",
+            quote="USDC",
+            params={"check_medium_trend": True, "medium_trend_action": "scale"},
+            api=mock_api,
+        )
+        # First pass with qty=1.0, applied_scale=1.0 -> scaled to 0.5
+        res1 = inst.place(
+            "BUY", 100.0, 1.0,
+            wait_for_trend=False,
+            caller_owns_retry=True,
+            regime_context=bear_ctx,
+            medium_trend_scale=0.5,
+        )
+        assert res1 is not None
+        assert submitted_qtys[-1] == pytest.approx(0.5)
+
+        # Retry pass where qty=0.5 was already scaled and applied_scale=0.5 is carried -> must stay 0.5 (not 0.25!)
+        res2 = inst.place(
+            "BUY", 100.0, 0.5,
+            wait_for_trend=False,
+            caller_owns_retry=True,
+            regime_context=bear_ctx,
+            medium_trend_scale=0.5,
+            applied_scale=0.5,
+        )
+        assert res2 is not None
+        assert submitted_qtys[-1] == pytest.approx(0.5)
+
+        # 2. order_retry.update_claimed_qty persists applied_scale into place_kwargs on disk
+        q_file = tmp_path / "pending_orders.json"
+        l_file = tmp_path / "pending_orders.lock"
+        monkeypatch.setattr(order_retry, "QUEUE_FILE", str(q_file))
+        monkeypatch.setattr(order_retry, "LOCK_FILE", str(l_file))
+        claim = order_retry.enqueue_claimed(
+            "BTCUSDC", "BUY", 1.0, {"smart": False},
+            requested_price=100.0, ref_price=100.0,
+            failure_reason="submit_pending", provider_name="binance",
+        )
+        assert claim is not None
+        updated = order_retry.update_claimed_qty(claim, 0.5, applied_scale=0.5)
+        assert updated is not None
+        assert updated["qty"] == pytest.approx(0.5)
+        assert updated["place_kwargs"].get("applied_scale") == pytest.approx(0.5)
+
+        # 3. monitortrades._can_pass_buy_quantity_policy passes cancelorders=True and checks GO1 daily_limit_guard
+        qdec_kwargs = []
+
+        class _MTPolicyProv:
+            name = "binance"
+
+            @staticmethod
+            def free_balance(_asset):
+                return 1000.0
+
+            @staticmethod
+            def get_orders(_sym, _side, _since):
+                return []
+
+            @staticmethod
+            def quantity_decision(_sym, _side, _px, req_qty, **kw):
+                qdec_kwargs.append(dict(kw))
+                return SimpleNamespace(final_qty=req_qty, refuse_reason=None, balance_asset="USDC")
+
+        mt_inst = SimpleNamespace(
+            symbol="BTCUSDC",
+            base="BTC",
+            quote="USDC",
+            provider_name="binance",
+            provider=_MTPolicyProv(),
+            _provider=_MTPolicyProv(),
+            params={"bypass_guards": "G_QLIMIT2"},
+        )
+        dl_calls = []
+        monkeypatch.setattr(
+            order_guard,
+            "daily_limit_guard",
+            lambda _p, _s, _side, **kw: dl_calls.append(kw.get("bypass_guards")) or (False, "daily_limit"),
+        )
+        assert mt._can_pass_buy_quantity_policy(mt_inst, "BTCUSDC", 100.0, 1.0, min_qty=0.1) is False
+        assert qdec_kwargs and qdec_kwargs[-1].get("cancelorders") is True
+        assert dl_calls and "g_qlimit2" in dl_calls[-1]
+
+        # 4. Strategy._order_from_pending honors submitted_qty and scales amount proportionally
+        dummy_strat = SimpleNamespace(_now=lambda: 1700000000.0)
+        order_rec = Strategy._order_from_pending(
+            dummy_strat,
+            {
+                "order_id": "tx-123",
+                "side": "BUY",
+                "requested_qty": 2.0,
+                "submitted_qty": 1.0,
+                "requested_price": 100.0,
+                "amount": 200.0,
+                "kind": "B0",
+                "market": False,
+                "intent_id": "id-1",
+                "created_at": 1700000000.0,
+            },
+        )
+        assert order_rec["vol"] == pytest.approx(1.0)
+        assert order_rec["amount"] == pytest.approx(100.0)
+
+
 
 
 
