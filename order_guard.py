@@ -159,7 +159,7 @@ _MODULE_REFERENCE_KEYS = frozenset({
 })
 
 _DISCRETE_POLICY_SETS: Dict[str, frozenset] = {
-    "weibull_exhaustion_policy": frozenset({"block", "downscale"}),
+    "weibull_exhaustion_policy": frozenset({"block", "veto", "downscale"}),
     "funding_crowding_policy": frozenset({"defer", "downscale"}),
     "llm_fallback": frozenset({"allow", "block", "veto", "downscale"}),
     "post_stop_reentry_fallback": frozenset({"allow", "block", "veto", "downscale"}),
@@ -1024,6 +1024,8 @@ def get_derivatives_collector():
 
 def _normalize_base_asset(sym: str) -> str:
     s = (sym or "").strip().upper()
+    if s.replace("/", "").replace("-", "").replace("_", "") == "USDCUSDT":
+        return "USDCUSDT"
     if "/" in s:
         s = s.split("/", 1)[0].strip()
     elif "-" in s:
@@ -1034,6 +1036,14 @@ def _normalize_base_asset(sym: str) -> str:
         if s.endswith(q) and len(s) > len(q):
             return s[:-len(q)]
     return s
+
+
+def _resolve_cachedb_dir() -> str:
+    try:
+        from cachepaths import get_cachedb_dir
+        return get_cachedb_dir()
+    except Exception:
+        return os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
 
 
 def _read_json_recovering(path: str) -> Optional[dict]:
@@ -1055,7 +1065,7 @@ def _read_json_recovering(path: str) -> Optional[dict]:
 
 def _read_cached_trend_duration(symbol: str) -> float:
     try:
-        cachedb_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
+        cachedb_dir = _resolve_cachedb_dir()
         p = os.path.join(cachedb_dir, "cache_long_trend.json")
         data = _read_json_recovering(p)
         if not isinstance(data, dict):
@@ -1102,7 +1112,7 @@ def _resolve_trend_duration(symbol: str) -> float:
 
 def _read_cached_trend_direction(symbol: str) -> Optional[str]:
     try:
-        cachedb_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
+        cachedb_dir = _resolve_cachedb_dir()
         p = os.path.join(cachedb_dir, "cache_long_trend.json")
         data = _read_json_recovering(p)
         if not isinstance(data, dict):
@@ -1157,7 +1167,7 @@ def _read_cached_price_history(symbol: str, window_seconds: float = 7200.0) -> O
     Never uses substring matching so e.g. ETHFI does not accidentally match ETH.
     """
     su = (symbol or "").strip().upper()
-    cachedb_dir = os.environ.get("MPTRADE_CACHEDB_DIR", "cachedb")
+    cachedb_dir = _resolve_cachedb_dir()
     now_ts = time.time()
     cutoff_ts = now_ts - window_seconds
     history: List[Tuple[float, float]] = []
@@ -1341,7 +1351,7 @@ def check_intelligence_guards(
                 and (price != cached_price or now is not None)
             )
             or (
-                "weibull_exhaustion" in str(cached_res[1])
+                ("weibull_exhaustion" in str(cached_res[1]) or "trend_exhausted" in str(cached_res[1]))
                 and float(trend_duration_seconds or 0.0) != cached_dur
             )
         )
@@ -1446,8 +1456,8 @@ def check_intelligence_guards(
     )
     if not hs_ok:
         return False, hs_reason, 0.0
-    if hs_scale < 1.0:
-        effective_scale = min(effective_scale, hs_scale)
+    if hs_scale < 1.0 and hs_scale <= effective_scale:
+        effective_scale = hs_scale
         active_reason = hs_reason
 
     # 3. Dynamic Weibull trend exhaustion check if duration provided or resolved
@@ -1487,8 +1497,9 @@ def check_intelligence_guards(
             if internal_mode == "enforce":
                 if not e_dec.allowed:
                     return False, e_dec.reason, 0.0
-                effective_scale = min(effective_scale, e_dec.suggested_scale)
-                active_reason = e_dec.reason
+                if e_dec.suggested_scale < 1.0 and e_dec.suggested_scale <= effective_scale:
+                    effective_scale = e_dec.suggested_scale
+                    active_reason = e_dec.reason
 
     final_res = (True, active_reason if effective_scale < 1.0 else "ok", effective_scale)
     if valid_context:
@@ -1594,8 +1605,8 @@ def _evaluate_intelligence_guards_raw(
         )
         if not ext_ok:
             return False, ext_reason, 0.0
-        if ext_scale < 1.0:
-            effective_scale = min(effective_scale, ext_scale)
+        if ext_scale < 1.0 and ext_scale <= effective_scale:
+            effective_scale = ext_scale
             active_reason = ext_reason
 
     # 3. LLM Guards (GLLM1 High-Stake + GLLM2 Sentiment + GLLM3 Geopolitical)
@@ -1620,8 +1631,8 @@ def _evaluate_intelligence_guards_raw(
         )
         if not intel_ok:
             return False, intel_reason, 0.0
-        if intel_scale < 1.0:
-            effective_scale = min(effective_scale, intel_scale)
+        if intel_scale < 1.0 and intel_scale <= effective_scale:
+            effective_scale = intel_scale
             active_reason = intel_reason
 
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale

@@ -112,7 +112,7 @@ class WeibullExhaustionGuard:
                 f"trend_exhausted (duration={duration_days:.1f}d > P90={limit_p90:.1f}d, "
                 f"median={med_d:.1f}d, S_weibull={survival_prob:.2f}, k={k_shape:.2f})"
             )
-            if self.policy == "veto":
+            if self.policy in ("veto", "block", "defer"):
                 return GuardDecision.veto(
                     "WeibullExhaustionGuard",
                     reason,

@@ -3079,6 +3079,100 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert eff_scale == pytest.approx(0.40)
         assert "moderate_taker_selling_pressure" in reason
 
+    def test_iteration12_weibull_block_policy_trend_exhausted_cache_invalidation_usdcusdt_base_and_llm_guard_reason(
+        self, monkeypatch
+    ):
+        from types import SimpleNamespace
+        import llm_order_guard
+        import order_guard
+        from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+
+        # 1. WeibullExhaustionGuard with policy="block" (from order_guard.conf _DISCRETE_POLICY_SETS) vetoes exhausted trend
+        wg_block = WeibullExhaustionGuard(default_p90_days=7.0, policy="block", exhausted_scale=0.25)
+        dec_block = wg_block.check(
+            "BTCUSDC",
+            "BUY",
+            trend_duration_seconds=10.0 * 86400.0,
+            trend_direction="bull",
+        )
+        assert dec_block.allowed is False
+        assert dec_block.suggested_scale == pytest.approx(0.0)
+        assert "trend_exhausted" in dec_block.reason
+
+        # 2. check_intelligence_guards invalidates cached Weibull "trend_exhausted" decision when trend_duration_seconds changes
+        base_m = dict(order_guard._load_margins())
+        base_m.update(
+            {
+                "intelligence_guards_mode": "enforce",
+                "internal_guard_mode": "enforce",
+                "weibull_exhaustion_policy": "downscale",
+                "weibull_exhausted_scale": 0.25,
+                "weibull_p90_days": 7.0,
+                "external_guard_mode": "off",
+                "llm_guard_mode": "off",
+                "geopolitical_guard_mode": "off",
+            }
+        )
+        monkeypatch.setattr(order_guard, "_load_margins", lambda: base_m)
+        monkeypatch.setattr(order_guard, "_read_cached_price_history", lambda *_a, **_k: None)
+
+        ctx = SimpleNamespace(
+            resolved_trend="bull",
+            symbol="BTCUSDC",
+            provider="binance",
+            is_valid_for=lambda **_kw: True,
+        )
+        ok1, reason1, scale1 = order_guard.check_intelligence_guards(
+            "binance",
+            "BTCUSDC",
+            "BUY",
+            100.0,
+            trend_duration_seconds=10.0 * 86400.0,
+            regime_context=ctx,
+            qty=1.0,
+        )
+        assert ok1 is True
+        assert scale1 == pytest.approx(0.25)
+        assert "trend_exhausted" in reason1
+
+        # Second call with same regime_context but fresh short duration (1d <= 7d) must invalidate cached 0.25 downscale
+        ok2, reason2, scale2 = order_guard.check_intelligence_guards(
+            "binance",
+            "BTCUSDC",
+            "BUY",
+            100.0,
+            trend_duration_seconds=1.0 * 86400.0,
+            regime_context=ctx,
+            qty=1.0,
+        )
+        assert ok2 is True
+        assert scale2 == pytest.approx(1.0)
+        assert reason2 == "ok"
+
+        # 3. _normalize_base_asset preserves USDCUSDT so it is never conflated with USDC/EUR
+        assert order_guard._normalize_base_asset("USDCUSDT") == "USDCUSDT"
+        assert order_guard._normalize_base_asset("USDC/USDT") == "USDCUSDT"
+        assert order_guard._normalize_base_asset("BTCUSDC") == "BTC"
+
+        # 4. check_llm_order_guards preserves stricter GLLM1 active_reason when GLLM3 has looser downscale
+        monkeypatch.setattr(
+            llm_order_guard,
+            "evaluate_high_stake_order_guard",
+            lambda **_kw: (True, "Gemini downscaled high-stake BUY: whale flow weak", 0.30),
+        )
+        monkeypatch.setattr(
+            llm_order_guard,
+            "check_geopolitical_order_guards",
+            lambda *_a, **_kw: (True, "downscale_elevated_geopolitical_risk", 0.50),
+        )
+        llm_ok, llm_reason, llm_scale = llm_order_guard.check_llm_order_guards(
+            "binance", "BTCUSDC", "BUY", 1000.0, qty=1.0, margins=base_m
+        )
+        assert llm_ok is True
+        assert llm_scale == pytest.approx(0.30)
+        assert "whale flow weak" in llm_reason
+
+
 
 
 

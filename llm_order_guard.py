@@ -374,8 +374,8 @@ def check_llm_order_guards(
         )
         if not geo_ok:
             return False, geo_reason, 0.0
-        if geo_scale < 1.0:
-            effective_scale = min(effective_scale, geo_scale)
+        if geo_scale < 1.0 and geo_scale <= effective_scale:
+            effective_scale = geo_scale
             active_reason = geo_reason
 
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
