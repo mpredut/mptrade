@@ -202,7 +202,10 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
         symbol=kraken_pair, role="primary", coordination="spot-dca",
         pattern=kraken_bot,
         configured=_pattern(patterns, kraken_bot) is not None,
-        enabled=_truthy(kraken_env.get("STRAT_EXECUTE")),
+        enabled=(
+            _truthy(kraken_env.get("STRAT_EXECUTE"))
+            and not _truthy(kraken_env.get("KRAKEN_BOT_OBSERVE_ONLY"))
+        ),
         source="kraken/config.env", commands=commands,
     ))
 
@@ -246,6 +249,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
         enabled=(
             _truthy(hl_env.get("STRAT_EXECUTE"))
             and _truthy(hl_env.get("HL_LIVE_ORDERS"))
+            and not _truthy(hl_env.get("HL_BOT_OBSERVE_ONLY"))
         ),
         source="hyperliquid/hl_bot.py", commands=commands,
     ))
@@ -283,6 +287,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
             enabled = (
                 _truthy(values.get("enabled"), True)
                 and trade_enabled
+                and not _truthy(root_env.get("MT_NOTIFY_ONLY"))
                 and live_gates.get(venue, False)
             )
             env = venue_envs.get(venue, {})
@@ -317,6 +322,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
             enabled=(
                 _truthy(profile_env.get("STRAT_ENABLED"))
                 and _truthy(profile_env.get("STRAT_EXECUTE"))
+                and not _truthy(profile_env.get("T212_BOT_OBSERVE_ONLY"))
             ),
             source=f"212trading/{path.name}", commands=commands,
         ))

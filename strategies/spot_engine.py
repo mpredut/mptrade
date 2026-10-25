@@ -467,12 +467,14 @@ class Strategy:
                  notifier: Callable[..., None] | None = None,
                  notification_source: str = "kraken", venue_label: str = "Kraken",
                  fee_note: str = _DEFAULT_FEE_NOTE,
-                 regime_service: MarketRegimeService | None = None):
+                 regime_service: MarketRegimeService | None = None,
+                 observe_only: bool = False):
         self.client = client
         self.pair = pair
         self.p = params
         self.ccy = params.currency
         self.dry_run = dry_run
+        self.observe_only = bool(observe_only)
         # ``dry_run`` includes paper-live, not only backtests. Replay must be identified
         # separately so the trend signal uses injected bars.
         self.replay_mode = replay_mode
@@ -2125,6 +2127,13 @@ class Strategy:
         if self.s.get("pending_intent"):
             log("  [STRAT] pre-submit intent in reconciliation — deferring new decisions")
             return
+        if self.observe_only:
+            tick_time = float(timestamp) if timestamp is not None else self._now()
+            self._shadow_prices.append((tick_time, price))
+            if not self.dry_run and not self.s.get("orders") and self.s.get("qty", 0.0) > 1e-12:
+                self.s["ledger_reconcile_required"] = True
+            else:
+                return
         held = self.s["qty"]
         if (not self.dry_run and self.s.get("ledger_reconcile_required")
                 and held > 1e-12 and not self.s.get("orders")):
@@ -2185,6 +2194,8 @@ class Strategy:
                 return
             self.s["ledger_reconcile_required"] = False
             self._save()
+        if self.observe_only:
+            return
         entry_px = sr.entry_price(price, self.p.entry_discount_pct)   # = price*(1 - disc%)
         # Live uses wall time while replay injects bar time. Without this distinction, a
         # backtest processing hundreds of bars per second produces meaningless hourly
@@ -2443,7 +2454,12 @@ class Strategy:
                 if q > 0:
                     desired.append((round(sr.tp_price(avg, pct), self.price_dec), q))
             if self.ordermin and any(q < self.ordermin for _, q in desired):
-                desired = [(round(sr.tp_price(avg, tranches[0][0]), self.price_dec), held)]
+                safe_held = self._dust_safe_qty(held)
+                desired = (
+                    [(round(sr.tp_price(avg, tranches[0][0]), self.price_dec), safe_held)]
+                    if safe_held >= self.ordermin
+                    else []
+                )
             sells = [o for o in self.s["orders"] if o["side"] == "sell"]
             ok = (len(sells) == len(desired) and
                   all(not o.get("cancel_requested") for o in sells) and
@@ -2519,8 +2535,9 @@ class Strategy:
     # -- main loop -------------------------------------------------------------
     def run(self) -> None:
         mode = "avg_tp" if self.p.enable_takeprofit else "dca_only"
+        exec_banner = "[OBSERVE ONLY — AI MANAGED]" if self.observe_only else ("[PAPER]" if self.dry_run else "⚠ REAL — BANI")
         log(f"  === STRATEGIE {self.venue_label.upper()} PORNITA ===")
-        log(f"      pereche    : {self.pair}   {'[PAPER]' if self.dry_run else '⚠ REAL — BANI'}")
+        log(f"      pereche    : {self.pair}   {exec_banner}")
         log(f"      mod        : {mode}")
         log(f"      intrare    : {self._effective_entry_amount():.0f} {self.ccy} @ market-{self.p.entry_discount_pct}%")
         log(f"      DCA        : {self._base_dca_amount():.0f} {self.ccy} la -{self.p.dca_drop_pct}% (max {self.p.max_dca_buys})")

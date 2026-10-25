@@ -100,8 +100,9 @@ class HyperliquidProvider(MarketDataProvider):
     """Provide HYPE spot access through the lazily loaded Hyperliquid SDK."""
 
     #: Served spot token, defaulting to HYPE.
-    def __init__(self, token: str = "HYPE"):
+    def __init__(self, token: str = "HYPE", live_enabled: Optional[bool] = None):
         self._token = (token or "HYPE").upper()
+        self._live_enabled = live_enabled
         self._lock = threading.Lock()
         self._client = None          # HLClient read-only (lazy)
         self._client_tried = False   # Avoid endless retries when the SDK is absent.
@@ -114,7 +115,7 @@ class HyperliquidProvider(MarketDataProvider):
 
     def execution_enabled(self) -> bool:
         """Return whether the generic pipeline may create a real spot order."""
-        return bool_env(_LIVE_ENV)
+        return bool_env(_LIVE_ENV) if self._live_enabled is None else bool(self._live_enabled)
 
     def reconciliation_capabilities(self) -> OrderReconciliationCapabilities:
         return OrderReconciliationCapabilities(
@@ -394,6 +395,8 @@ class HyperliquidProvider(MarketDataProvider):
             print(f"[HL] place_order: spot pair unavailable for {symbol}")
             return None
         try:
+            if not self._client_tried and not self._env_loaded:
+                self._load_env()
             client_order_id = kwargs.get("client_order_id")
             cloid = (
                 _cloid_for_client_order_id(client_order_id)

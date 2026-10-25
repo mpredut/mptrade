@@ -565,3 +565,56 @@ def test_resolve_instrument_and_live_price_support_cross_venue_quote_variants(te
     assert gw._get_live_price(kraken_tao) == pytest.approx(345.67)
 
 
+def test_load_tradable_instruments_discovers_hyperliquid_and_rth_gated_t212(temp_workspace):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    ws, _ = temp_workspace
+    hl_dir = os.path.join(ws, "hyperliquid")
+    os.makedirs(hl_dir, exist_ok=True)
+    with open(os.path.join(hl_dir, "config.env"), "w", encoding="utf-8") as f:
+        f.write("HL_MAINNET=true\nHL_LIVE_ORDERS=true\nHL_SPOT_TOKEN=HYPE\n")
+
+    t212_dir = os.path.join(ws, "212trading")
+    os.makedirs(t212_dir, exist_ok=True)
+    with open(os.path.join(t212_dir, "runtime.env"), "w", encoding="utf-8") as f:
+        f.write("T212_LIVE_ORDERS=true\nT212_ORDER_VALIDITY=DAY\n")
+    with open(os.path.join(t212_dir, "config.spcx.env"), "w", encoding="utf-8") as f:
+        f.write("STRAT_PAIR=SPCX_US_EQ\n")
+    with open(os.path.join(t212_dir, "config.nvda.env"), "w", encoding="utf-8") as f:
+        f.write("STRAT_PAIR=NVDA_US_EQ\n")
+
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="shadow")
+
+    # 1. Outside US RTH (Saturday 14:00 America/New_York): Hyperliquid is active, T212 is excluded
+    sat_ts = datetime(2026, 10, 24, 14, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    closed_map = gw.load_tradable_instruments(now_ts=sat_ts)
+    assert "HYPERLIQUID_HYPE" in closed_map
+    assert "T212_SPCX" not in closed_map
+    assert "T212_NVDA" not in closed_map
+
+    # 2. During US RTH (Monday 10:30 America/New_York): Both Hyperliquid and T212 are active
+    mon_rth_ts = datetime(2026, 10, 26, 10, 30, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    open_map = gw.load_tradable_instruments(now_ts=mon_rth_ts)
+    assert "HYPERLIQUID_HYPE" in open_map
+    assert "T212_SPCX" in open_map
+    assert "T212_NVDA" in open_map
+
+    # 3. Resolve symbol variants within their respective venues
+    hl_inst = gw.resolve_instrument("HYPEUSDC", venue="hyperliquid", instruments_map=open_map)
+    assert hl_inst is open_map["HYPERLIQUID_HYPE"]
+    assert gw.resolve_instrument("HYPE", venue="hyperliquid", instruments_map=open_map) is hl_inst
+
+    spcx_inst = gw.resolve_instrument("SPCX_US_EQ", venue="t212", instruments_map=open_map)
+    assert spcx_inst is open_map["T212_SPCX"]
+    assert gw.resolve_instrument("SPCX", venue="t212", instruments_map=open_map) is spcx_inst
+    assert gw.resolve_instrument("NVDA", venue="t212", instruments_map=open_map) is open_map["T212_NVDA"]
+
+    # 4. Hyperliquid BUY uses 0.95 wallet clamp buffer to accommodate 1.05x IOC market limit price
+    hl_inst._provider.free_balance = MagicMock(return_value=100.0)
+    ok, clamped_usd, _ = gw._clamp_notional_to_wallet_balance(hl_inst, "BUY", 40.0, 100.0)
+    assert ok is True
+    assert clamped_usd == pytest.approx(95.0)
+
+
+

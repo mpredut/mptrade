@@ -1102,6 +1102,135 @@ def test_harvest_and_synthesize_surfaces_active_avg_buy_tranches_and_open_orders
     assert "Recent BUY Tranches=[3.0@260.0, 1.0@240.0]" in prompt_text
 
 
+def test_verify_tools_monitor_night_snapshot_and_watch_decisions():
+    from verify_tools import monitor_night, portfolio_snapshot, watch_trade_decisions
+
+    # 1. monitor_night.load_procs resolves fleet labels and comma-separated hb_log paths
+    procs_text = (
+        "market_monitor/price_notifier.py|$ROOT|python market_monitor/price_notifier.py|price_notifier|cachedb/price_notifier.heartbeat,logs/price_notifier.log|180|fleet\n"
+        "hyperliquid/bot.py|$ROOT/hyperliquid|python bot.py|HL-bot|cachedb/HL-bot.heartbeat,logs/HL-bot.log|600|bot\n"
+    )
+    with patch.object(monitor_night, "run", return_value=procs_text):
+        procs = monitor_night.load_procs(MagicMock())
+    assert len(procs) == 2
+    assert procs[0].log == "logs/price_notifier.log"
+    assert procs[1].log == "logs/HL-bot.log"
+
+    # 2. portfolio_snapshot._ntfy encodes non-ASCII emojis safely for HTTP headers
+    with patch("urllib.request.urlopen") as mock_open, \
+         patch.dict(os.environ, {"NTFY_TOPIC": "test-topic"}):
+        portfolio_snapshot._ntfy("⚠️ Drawdown 5.5% (-$100)", "body")
+        mock_open.assert_called_once()
+        req = mock_open.call_args[0][0]
+        assert req.headers["Title"].encode("latin-1").decode("utf-8") == "⚠️ Drawdown 5.5% (-$100)"
+
+    # 3. watch_trade_decisions.position picks latest BUY by timestamp
+    now_ms = int(time.time() * 1000)
+    fake_buys = [
+        {"qty": "1.0", "price": "220.0", "timestamp": now_ms - 7200_000},
+        {"qty": "1.0", "price": "260.0", "timestamp": now_ms - 1800_000},
+    ]
+    with patch.object(
+        watch_trade_decisions.apiorders,
+        "get_trade_orders",
+        side_effect=lambda side, sym, maxage: fake_buys if side == "BUY" else [],
+    ):
+        avg_px, net_qty, n_sells, last_buy = watch_trade_decisions.position("TAOUSDC")
+        assert avg_px == 240.0
+        assert net_qty == 2.0
+        assert n_sells == 0
+        assert last_buy == 260.0
+
+
+def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
+    workspace, cache_dir, _ = temp_env
+    with open(os.path.join(workspace, "instruments.conf"), "w", encoding="utf-8") as f:
+        f.write("")
+
+    hl_dir = os.path.join(workspace, "hyperliquid")
+    os.makedirs(hl_dir, exist_ok=True)
+    with open(os.path.join(hl_dir, ".state_HYPE.json"), "w", encoding="utf-8") as f:
+        json.dump({
+            "qty": 10.0,
+            "cost": 380.0,
+            "entry_price": 38.0,
+            "last_buy_price": 38.0,
+            "last_sell_price": 41.2,
+            "last_exit_kind": "TP",
+            "dca_buys": 1,
+        }, f)
+
+    t212_dir = os.path.join(workspace, "212trading")
+    os.makedirs(t212_dir, exist_ok=True)
+    with open(os.path.join(t212_dir, ".state_SPCX_US_EQ.json"), "w", encoding="utf-8") as f:
+        json.dump({
+            "qty": 5.0,
+            "cost": 150.0,
+            "entry_price": 30.0,
+            "last_buy_price": 30.0,
+            "last_sell_price": 31.5,
+            "last_exit_kind": "TP",
+            "dca_buys": 0,
+        }, f)
+
+    hl_inst = MagicMock()
+    hl_inst.symbol = "HYPEUSDC"
+    hl_inst.provider_name = "hyperliquid"
+    hl_inst.base = "HYPE"
+    hl_inst.quote = "USDC"
+    hl_inst.params = {}
+    hl_inst._provider.get_current_price.return_value = 40.0
+    hl_inst._provider.free_balance.side_effect = lambda a: 10.0 if a == "HYPE" else 200.0
+    hl_inst.open_orders.return_value = []
+
+    t212_inst = MagicMock()
+    t212_inst.symbol = "SPCX_US_EQ"
+    t212_inst.provider_name = "t212"
+    t212_inst.base = "SPCX_US_EQ"
+    t212_inst.quote = "USD"
+    t212_inst.params = {}
+    t212_inst._provider.get_current_price.return_value = 30.9
+    t212_inst._provider.free_balance.side_effect = lambda a: 5.0 if a == "SPCX_US_EQ" else 120.0
+    t212_inst.open_orders.return_value = []
+
+    gateway = MagicMock(min_confidence=0.85, max_notional_usd=2000.0, min_notional_usd=10.0)
+    gateway.load_tradable_instruments.return_value = {
+        "HYPERLIQUID_HYPE": hl_inst,
+        "T212_SPCX": t212_inst,
+    }
+
+    captured_prompts = []
+    auditor = GeminiClient(custom_runner=lambda p, m, t: captured_prompts.append(p) or json.dumps({"summary": "ok"}))
+    reconciler = AutonomousAIReconciler(
+        workspace_dir=workspace,
+        cache_dir="cachedb",
+        logs_dirs=["logs"],
+        gemini_auditor=auditor,
+        mode="shadow",
+        notify_enabled=False,
+        intent_gateway=gateway,
+    )
+    sensors = reconciler.harvest_sensors_telemetry()
+    ps = sensors.portfolio_summary
+    assert "HYPEUSDC" in ps["hyperliquid_cycles"]
+    assert "SPCX_US_EQ" in ps["t212_cycles"]
+
+    pos_by_sym = {p["symbol"]: p for p in ps["tradable_positions"]}
+    assert pos_by_sym["HYPEUSDC"]["active_avg_buy_px"] == 38.0
+    assert pos_by_sym["HYPEUSDC"]["pnl_vs_avg_pct"] == 5.26
+    assert pos_by_sym["SPCX_US_EQ"]["active_avg_buy_px"] == 30.0
+    assert pos_by_sym["SPCX_US_EQ"]["pnl_vs_avg_pct"] == 3.0
+
+    reconciler.synthesize_and_diagnose(sensors, reconciler.harvest_log_anomalies(), topic_key="auto_trade_executor")
+    prompt_text = captured_prompts[0]
+    assert "Hyperliquid Active Cycle Cost & Drawdown Anchors:" in prompt_text
+    assert "Trading212 Active Cycle Cost & Drawdown Anchors:" in prompt_text
+    assert "venue_fee_per_leg=7bps" in prompt_text
+    assert "venue_fee_per_leg=15bps" in prompt_text
+    assert '"venue": "binance" | "kraken" | "hyperliquid" | "t212"' in prompt_text
+
+
+
 
 
 

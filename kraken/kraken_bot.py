@@ -101,6 +101,7 @@ def main() -> int:
     label       = required_env("SYMBOL_LABEL")
     strategy_execution = required_bool_env("STRAT_EXECUTE")
     strat_dry = kraken_strategy_dry_run(args.paper, strategy_execution)
+    observe_only = str(os.environ.get("KRAKEN_BOT_OBSERVE_ONLY", "")).strip().lower() in ("1", "true", "yes", "on")
     interval    = max(args.interval, 15)
 
     # --- one-shot commands ---
@@ -115,9 +116,9 @@ def main() -> int:
     if args.test_strategy:
         log(
             f"[TEST] strategy for {args.test_strategy}  "
-            f"{'PAPER' if strat_dry else '⚠ REAL'}")
+            f"{'OBSERVE ONLY' if observe_only else ('PAPER' if strat_dry else '⚠ REAL')}")
         Strategy(_build_executor(client), args.test_strategy, StratParams.from_env(),
-                 dry_run=strat_dry, desktop=args.desktop).run()
+                 dry_run=strat_dry, desktop=args.desktop, observe_only=observe_only).run()
         return 0
 
     if not pair:
@@ -129,7 +130,7 @@ def main() -> int:
     log(
         f"    credentials  : "
         f"{'yes' if os.environ.get('KRAKEN_API_KEY_BOT') else 'NO (public/paper only)'}")
-    log(f"    execution    : {'PAPER (no money)' if strat_dry else '⚠ REAL — REAL MONEY'}")
+    log(f"    execution    : {'OBSERVE ONLY (AI managed)' if observe_only else ('PAPER (no money)' if strat_dry else '⚠ REAL — REAL MONEY')}")
     log(f"    ntfy/email   : {os.environ.get('NTFY_TOPIC_TRADES') or '-'} / {os.environ.get('ALERT_TO_EMAIL') or '-'}")
 
     # --- wait until the pair is LISTED and tradable, analogous to launch ---
@@ -140,7 +141,7 @@ def main() -> int:
     # --- start the strategy ---
     try:
         Strategy(_build_executor(client), pair, StratParams.from_env(), dry_run=strat_dry,
-                 desktop=args.desktop).run()
+                 desktop=args.desktop, observe_only=observe_only).run()
         return 0
     except KeyboardInterrupt:
         log("Stopped manually.")

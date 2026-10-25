@@ -80,6 +80,7 @@ def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_
     isin = (cfg.get("EXPECTED_ISIN") or "").strip()
     strat_enabled = required_bool_env("STRAT_ENABLED", cfg)
     strat_dry = force_paper or not required_bool_env("STRAT_EXECUTE", cfg)
+    observe_only = str(cfg.get("T212_BOT_OBSERVE_ONLY") or os.environ.get("T212_BOT_OBSERVE_ONLY") or "").strip().lower() in ("1", "true", "yes", "on")
     interval = required_float_env("POLL_SECONDS", cfg)
     if interval < 30:
         raise ValueError("POLL_SECONDS must be at least 30")
@@ -87,7 +88,8 @@ def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_
     if not strat_enabled:
         log(f"  ! [{name}] STRAT_ENABLED!=true — skipping (t212_bot only runs strategies)"); return
 
-    log(f"  ▶ [{label}] {ticker} | price through {yahoo} | {'PAPER' if strat_dry else '⚠ REAL — MONEY'} | poll {interval}s")
+    exec_mode_str = "OBSERVE ONLY (AI managed)" if observe_only else ("PAPER" if strat_dry else "⚠ REAL — MONEY")
+    log(f"  ▶ [{label}] {ticker} | price through {yahoo} | {exec_mode_str} | poll {interval}s")
     while not STOP.is_set():
         try:
             if not verify_isin(client, ticker, isin):
@@ -100,7 +102,7 @@ def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_
                     return
             # Block in the strategy's self-healing loop. It returns only after an
             # unexpected stop, at which point verification and startup are retried.
-            Strategy(client, ticker, StratParams.from_env(cfg), dry_run=strat_dry).run(stop=STOP)
+            Strategy(client, ticker, StratParams.from_env(cfg), dry_run=strat_dry, observe_only=observe_only).run(stop=STOP)
             return
         except Exception as e:  # noqa: BLE001 — resilience: one asset cannot terminate the process
             log(f"  ! [{label}] cycle error ({e.__class__.__name__}: {e}) — retrying in 60s")

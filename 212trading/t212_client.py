@@ -58,6 +58,7 @@ class T212Client:
         # on portfolio and order endpoints.
         self._pf_cache: tuple[float, list] | None = None
         self._ord_cache: tuple[float, list] | None = None
+        self._cash_cache: tuple[float, dict] | None = None
         self._pf_ttl = (required_float_env("T212_PORTFOLIO_TTL_SEC")
                         if portfolio_ttl_sec is None else portfolio_ttl_sec)
         # On TTL expiry, one thread fetches while others wait and reuse its result.
@@ -401,3 +402,8 @@ class T212Client:
         them or marking a take-profit tranche as sold.
         """
         return self._read_cached("_ord_cache", "/equity/orders", "active orders")
+
+    def get_cash(self) -> dict | None:
+        """Return account cash breakdown (free, invested, blocked, total) in account base currency."""
+        res = self._read_cached("_cash_cache", "/equity/account/cash", "account cash")
+        return res if isinstance(res, dict) else None

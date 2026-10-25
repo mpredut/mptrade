@@ -595,11 +595,11 @@ class AutonomousAIReconciler:
         if trailing_map:
             snapshot.portfolio_summary["trailing_peaks"] = trailing_map
 
-        # Enrich every symbol (including Kraken pairs discovered in 7B) with cross-venue trend/Kalman/Weibull & 7d range
+        # Enrich every symbol (including Kraken/Hyperliquid/T212 pairs discovered in 7B) with cross-venue trend/Kalman/Weibull & 7d range
         multi_items = prices_multi_data.get("items", {}) if isinstance(prices_multi_data, dict) else {}
         for sym, entry in list(snapshot.prices_and_trends.items()):
             base_prefix = sym[:-4] if sym.endswith(("USDC", "USDT")) else (sym[:-3] if sym.endswith(("USD", "EUR")) else sym)
-            cand_keys = (sym, f"{base_prefix}USDC", f"{base_prefix}USDT", base_prefix)
+            cand_keys = (sym, f"{base_prefix}USDC", f"{base_prefix}USDT", f"{base_prefix}USD", base_prefix)
 
             # Inherit short/dynamic slopes from cross-venue sibling (e.g. TAOUSDC -> TAOUSD) when missing
             if "slope_15m" not in entry and isinstance(trends_data, dict):
@@ -688,7 +688,7 @@ class AutonomousAIReconciler:
                 if m24:
                     break
             if not m24 and sym in inst_by_sym:
-                # Fallback for standalone Kraken pairs (e.g. ADAUSD) without a cachedb/cache_24_price_* file
+                # Fallback for standalone Kraken/Hyperliquid/T212 pairs without a cachedb/cache_24_price_* file
                 prov = getattr(inst_by_sym[sym], "_provider", None)
                 ohlc_fn = getattr(prov, "ohlc_series", None)
                 if callable(ohlc_fn):
@@ -715,6 +715,36 @@ class AutonomousAIReconciler:
                                 )
                                 snapshot.prices_and_trends[sym]["low_7d"] = min(vals_7d)
                                 snapshot.prices_and_trends[sym]["high_7d"] = max(vals_7d)
+                    except Exception:
+                        pass
+                elif str(getattr(inst_by_sym[sym], "provider_name", "")).lower() == "t212":
+                    try:
+                        t212_dir = os.path.join(self.workspace_dir, "212trading")
+                        if t212_dir not in sys.path:
+                            sys.path.insert(0, t212_dir)
+                        from market_data import _chart
+                        yahoo_sym = sym.split("_", 1)[0]
+                        chart_res = _chart(yahoo_sym, rng="5d", interval="5m") or {}
+                        ts_list = chart_res.get("timestamp") or []
+                        closes = (((chart_res.get("indicators") or {}).get("quote") or [{}])[0]).get("close") or []
+                        pts_5d = [
+                            [int(ts * 1000), float(c)]
+                            for ts, c in zip(ts_list, closes)
+                            if ts and c is not None and float(c) > 0
+                        ]
+                        if pts_5d:
+                            cutoff_24h_ms = int((now_ts - 86400.0) * 1000)
+                            pts_24h = [pt for pt in pts_5d if pt[0] >= cutoff_24h_ms]
+                            if len(pts_24h) < 10:
+                                pts_24h = pts_5d[-78:]
+                            m24 = compute_24h_price_metrics(pts_24h) or {}
+                            vals_5d = [pt[1] for pt in pts_5d]
+                            if len(vals_5d) >= 2 and "chg_7d_pct" not in snapshot.prices_and_trends[sym]:
+                                snapshot.prices_and_trends[sym]["chg_7d_pct"] = round(
+                                    ((vals_5d[-1] - vals_5d[0]) / vals_5d[0]) * 100.0, 2
+                                )
+                                snapshot.prices_and_trends[sym]["low_7d"] = round(min(vals_5d), 4)
+                                snapshot.prices_and_trends[sym]["high_7d"] = round(max(vals_5d), 4)
                     except Exception:
                         pass
             if m24:
@@ -784,7 +814,7 @@ class AutonomousAIReconciler:
             except Exception:
                 pass
 
-        # 9B. Kraken active DCA cycle states (kraken/.state_<PAIR>.json)
+        # 9B. Active DCA cycle states on Kraken, Hyperliquid, and Trading212 (.state_*.json)
         kraken_cycles: Dict[str, Any] = {}
         kraken_dir = os.path.join(self.workspace_dir, "kraken")
         if os.path.isdir(kraken_dir):
@@ -819,7 +849,79 @@ class AutonomousAIReconciler:
         if kraken_cycles:
             snapshot.portfolio_summary["kraken_cycles"] = kraken_cycles
 
-        # 9C. Cross-venue portfolio snapshot tail (e.g. Hyperliquid read-only holdings)
+        hyperliquid_cycles: Dict[str, Any] = {}
+        hl_dir = os.path.join(self.workspace_dir, "hyperliquid")
+        if os.path.isdir(hl_dir):
+            for st_path in sorted(glob.glob(os.path.join(hl_dir, ".state_*.json"))):
+                fname = os.path.basename(st_path)
+                raw_tok = fname[len(".state_") : -len(".json")].upper()
+                pair_name = raw_tok if raw_tok.endswith("USDC") else f"{raw_tok}USDC"
+                st_data = _read_json(st_path)
+                if not isinstance(st_data, dict):
+                    continue
+                qty = float(st_data.get("qty") or 0.0)
+                cost = float(st_data.get("cost") or 0.0)
+                avg_cost = round(cost / qty, 6) if qty > 1e-12 and cost > 0 else None
+                px = (
+                    snapshot.prices_and_trends.get(pair_name, {}).get("price")
+                    or snapshot.prices_and_trends.get(f"{raw_tok}USD", {}).get("price")
+                )
+                dd_pct = (
+                    round(((float(px) - avg_cost) / avg_cost) * 100.0, 2)
+                    if avg_cost and isinstance(px, (int, float)) and float(px) > 0
+                    else None
+                )
+                hyperliquid_cycles[pair_name] = {
+                    "qty": round(qty, 6),
+                    "cost_usd": round(cost, 2),
+                    "avg_cost_px": avg_cost,
+                    "entry_price": st_data.get("entry_price"),
+                    "last_buy_price": st_data.get("last_buy_price"),
+                    "last_sell_price": st_data.get("last_sell_price"),
+                    "last_exit_kind": st_data.get("last_exit_kind"),
+                    "dca_buys": st_data.get("dca_buys"),
+                    "dd_pct": dd_pct,
+                }
+        if hyperliquid_cycles:
+            snapshot.portfolio_summary["hyperliquid_cycles"] = hyperliquid_cycles
+
+        t212_cycles: Dict[str, Any] = {}
+        t212_dir = os.path.join(self.workspace_dir, "212trading")
+        has_active_t212 = any(
+            str(getattr(inst, "provider_name", "")).lower() == "t212"
+            for inst in inst_by_sym.values()
+        )
+        if has_active_t212 and os.path.isdir(t212_dir):
+            for st_path in sorted(glob.glob(os.path.join(t212_dir, ".state_*.json"))):
+                fname = os.path.basename(st_path)
+                ticker = fname[len(".state_") : -len(".json")].upper()
+                st_data = _read_json(st_path)
+                if not isinstance(st_data, dict):
+                    continue
+                qty = float(st_data.get("qty") or 0.0)
+                cost = float(st_data.get("cost") or 0.0)
+                avg_cost = round(cost / qty, 4) if qty > 1e-12 and cost > 0 else None
+                px = snapshot.prices_and_trends.get(ticker, {}).get("price")
+                dd_pct = (
+                    round(((float(px) - avg_cost) / avg_cost) * 100.0, 2)
+                    if avg_cost and isinstance(px, (int, float)) and float(px) > 0
+                    else None
+                )
+                t212_cycles[ticker] = {
+                    "qty": round(qty, 6),
+                    "cost_usd": round(cost, 2),
+                    "avg_cost_px": avg_cost,
+                    "entry_price": st_data.get("entry_price"),
+                    "last_buy_price": st_data.get("last_buy_price"),
+                    "last_sell_price": st_data.get("last_sell_price"),
+                    "last_exit_kind": st_data.get("last_exit_kind"),
+                    "dca_buys": st_data.get("dca_buys"),
+                    "dd_pct": dd_pct,
+                }
+        if t212_cycles:
+            snapshot.portfolio_summary["t212_cycles"] = t212_cycles
+
+        # 9C. Cross-venue portfolio snapshot tail (e.g. Hyperliquid spot/perp equity summary)
         for l_dir in self.logs_dirs:
             ps_path = os.path.join(l_dir, "portfolio_snapshot.jsonl")
             if os.path.exists(ps_path):
@@ -850,14 +952,13 @@ class AutonomousAIReconciler:
                         recent_orders[sym] = fills
         if recent_orders:
             snapshot.portfolio_summary["recent_orders"] = recent_orders
-            for pos in snapshot.portfolio_summary.get("tradable_positions", []):
-                if not isinstance(pos, dict):
-                    continue
-                p_sym = str(pos.get("symbol") or "").upper()
-                ro = recent_orders.get(p_sym)
-                if not isinstance(ro, dict):
-                    continue
-                pos_px = pos.get("price")
+        for pos in snapshot.portfolio_summary.get("tradable_positions", []):
+            if not isinstance(pos, dict):
+                continue
+            p_sym = str(pos.get("symbol") or "").upper()
+            pos_px = pos.get("price")
+            ro = recent_orders.get(p_sym)
+            if isinstance(ro, dict):
                 avg_b = ro.get("active_avg_buy_px")
                 if isinstance(avg_b, (int, float)) and float(avg_b) > 0:
                     pos["active_avg_buy_px"] = avg_b
@@ -875,6 +976,25 @@ class AutonomousAIReconciler:
                     pos["last_sell_px"] = ls_px
                     if isinstance(pos_px, (int, float)) and float(pos_px) > 0:
                         pos["chg_vs_last_sell_pct"] = round(((float(pos_px) - ls_px) / ls_px) * 100.0, 2)
+            for cyc_map in (kraken_cycles, hyperliquid_cycles, t212_cycles):
+                cyc = cyc_map.get(p_sym)
+                if not isinstance(cyc, dict):
+                    continue
+                if "active_avg_buy_px" not in pos and isinstance(cyc.get("avg_cost_px"), (int, float)) and float(cyc["avg_cost_px"]) > 0:
+                    avg_c = float(cyc["avg_cost_px"])
+                    pos["active_avg_buy_px"] = avg_c
+                    if isinstance(pos_px, (int, float)) and float(pos_px) > 0:
+                        pos["pnl_vs_avg_pct"] = round(((float(pos_px) - avg_c) / avg_c) * 100.0, 2)
+                if "last_buy_px" not in pos and isinstance(cyc.get("last_buy_price"), (int, float)) and float(cyc["last_buy_price"]) > 0:
+                    lb_c = float(cyc["last_buy_price"])
+                    pos["last_buy_px"] = lb_c
+                    if isinstance(pos_px, (int, float)) and float(pos_px) > 0:
+                        pos["pnl_vs_last_buy_pct"] = round(((float(pos_px) - lb_c) / lb_c) * 100.0, 2)
+                if "last_sell_px" not in pos and isinstance(cyc.get("last_sell_price"), (int, float)) and float(cyc["last_sell_price"]) > 0:
+                    ls_c = float(cyc["last_sell_price"])
+                    pos["last_sell_px"] = ls_c
+                    if isinstance(pos_px, (int, float)) and float(pos_px) > 0:
+                        pos["chg_vs_last_sell_pct"] = round(((float(pos_px) - ls_c) / ls_c) * 100.0, 2)
 
         intents_data = _read_json(os.path.join(self.cache_dir, "autonomous_trade_intents.json"))
         if isinstance(intents_data, list) and intents_data:
@@ -1294,7 +1414,10 @@ class AutonomousAIReconciler:
                         t_extra += f", trail_peak={pos.get('trailing_peak')} (dd_from_peak={pos.get('dd_from_peak_pct')}%)"
                     if pos.get("mt_gain_pct") or pos.get("mt_lost_pct"):
                         t_extra += f", bot_ref_gain={pos.get('mt_gain_pct')}%/lost={pos.get('mt_lost_pct')}%"
-                    fee_bps = 10 if pos.get("venue") == "binance" else (26 if pos.get("venue") == "kraken" else 15)
+                    fee_bps = (
+                        10 if pos.get("venue") == "binance"
+                        else (26 if pos.get("venue") == "kraken" else (7 if pos.get("venue") == "hyperliquid" else 15))
+                    )
                     t_extra += f", venue_fee_per_leg={fee_bps}bps"
                     context_items.append(
                         f"    - [{pos['venue']}] {pos['symbol']}: free_{pos['base']}={pos.get('free_base')} "
@@ -1312,8 +1435,26 @@ class AutonomousAIReconciler:
                         f"last_buy={kc.get('last_buy_price')}, last_sell={kc.get('last_sell_price')} "
                         f"({kc.get('last_exit_kind')}), dca_buys={kc.get('dca_buys')}, dd={kc.get('dd_pct')}%"
                     )
+            if ps.get("hyperliquid_cycles"):
+                context_items.append("  * Hyperliquid Active Cycle Cost & Drawdown Anchors:")
+                for h_sym, hc in sorted(ps["hyperliquid_cycles"].items()):
+                    context_items.append(
+                        f"    - [hyperliquid] {h_sym}: qty={hc.get('qty')}, cost=${hc.get('cost_usd')}, "
+                        f"avg_cost={hc.get('avg_cost_px')}, entry_px={hc.get('entry_price')}, "
+                        f"last_buy={hc.get('last_buy_price')}, last_sell={hc.get('last_sell_price')} "
+                        f"({hc.get('last_exit_kind')}), dca_buys={hc.get('dca_buys')}, dd={hc.get('dd_pct')}%"
+                    )
+            if ps.get("t212_cycles"):
+                context_items.append("  * Trading212 Active Cycle Cost & Drawdown Anchors:")
+                for t_sym, tc in sorted(ps["t212_cycles"].items()):
+                    context_items.append(
+                        f"    - [t212] {t_sym}: qty={tc.get('qty')}, cost=${tc.get('cost_usd')}, "
+                        f"avg_cost={tc.get('avg_cost_px')}, entry_px={tc.get('entry_price')}, "
+                        f"last_buy={tc.get('last_buy_price')}, last_sell={tc.get('last_sell_price')} "
+                        f"({tc.get('last_exit_kind')}), dca_buys={tc.get('dca_buys')}, dd={tc.get('dd_pct')}%"
+                    )
             if ps.get("hyperliquid_readonly"):
-                context_items.append(f"  * Hyperliquid Read-Only Holding (managed by HL-bot): {ps['hyperliquid_readonly']}")
+                context_items.append(f"  * Hyperliquid Spot/Perp Equity Summary: {ps['hyperliquid_readonly']}")
             for sym, oinfo in sorted((ps.get("recent_orders") or {}).items()):
                 lb = oinfo.get("last_buy") or {}
                 ls = oinfo.get("last_sell") or {}
@@ -1378,8 +1519,9 @@ class AutonomousAIReconciler:
             min_usd = _parse_finite_float(getattr(gw, "min_notional_usd", None), 10.0)
             min_conf = _parse_finite_float(getattr(gw, "min_confidence", None), 0.85)
             tasks.append(
-                f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across ALL live tradable spot coins "
-                "(e.g. BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSD, TAOUSD, ADAUSD on 'kraken') using the complete "
+                f"{len(tasks) + 1}. Formulate symmetric autonomous trading decisions across ALL live tradable spot instruments "
+                "(e.g. BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSD, TAOUSD, ADAUSD on 'kraken'; HYPEUSDC on 'hyperliquid'; "
+                "and SPCX_US_EQ, NVDA_US_EQ, RGNT_US_EQ on 't212' when US market hours are open) using the complete "
                 "macro sentiment, geopolitical risk, live breaking news, market breadth, multi-horizon price evolution "
                 "(15m/30m/1h/3h/24h/7d), 1s-sampled dynamic slopes (3.7m/15m/2.5h), Kalman velocity/volatility, "
                 "Weibull long-trend survival, Pillar 2 whale/orderbook walls/taker flow, and real spot wallet balances + "
@@ -1390,26 +1532,26 @@ class AutonomousAIReconciler:
                 "GT_* trend deferrals, G_QLIMIT* weight caps, GI_* microstructure, and GLLM* secondary vetoes) are BYPASSED "
                 "symmetrically on both BUY and SELL. You hold 100% autonomous quantitative judgment for profit harvesting, "
                 "multi-tranche scaling, and capital protection, guided by these core principles:\n"
-                "     * SELL (Take-Profit, Tranche Harvesting OR Defensive Risk Reduction): Emit 'SELL' on any tradable coin "
+                "     * SELL (Take-Profit, Tranche Harvesting OR Defensive Risk Reduction): Emit 'SELL' on any tradable instrument "
                 f"with free base inventory >= ${min_usd:g} USD BOTH when an advance shows rally exhaustion / approaches "
                 "major ask-wall resistance (including harvesting profitable dip-buy tranches when `pnl_vs_last_buy` is "
                 "solidly positive) AND when protective/defensive de-risking is warranted EVEN BELOW entry/last-BUY price "
                 "(e.g. structural breakdown, accelerating multi-horizon selloff, distribution, or macro/geopolitical shock "
                 "where cutting/trimming exposure protects capital against a deeper drop). Distinguish true structural "
                 "breakdowns from shallow liquidity sweeps into strong bid walls.\n"
-                "     * BUY (Accumulation, Re-Entry & Breakout): Emit 'BUY' on any tradable coin whose venue has free quote "
+                "     * BUY (Accumulation, Re-Entry & Breakout): Emit 'BUY' on any tradable instrument whose venue has free quote "
                 f"cash >= ${min_usd:g} USD on high-conviction washed-out reversals near support/bid walls, steady upward "
                 "recovery/inflection after a prior exit, or confirmed momentum breakouts (scaling in across cycles while "
                 "avoiding immediate whipsaw buybacks at the same price right after a take-profit SELL unless a structural "
                 "breakout is confirmed).\n"
-                f"   - Emit one entry per actionable coin in `market_trading_decisions` with `confidence >= {min_conf:g}` "
+                f"   - Emit one entry per actionable instrument in `market_trading_decisions` with `confidence >= {min_conf:g}` "
                 f"and `suggested_notional_usd` sized between {min_usd:g} and {max_usd:g} USD (the gateway automatically "
                 "clamps notional strictly to available free wallet balance with zero artificial cooldowns or dedup locks). "
-                "If no coin warrants action right now, return a single 'HOLD' entry."
+                "If no instrument warrants action right now, return a single 'HOLD' entry."
             )
             schema.append(
                 '  "market_trading_decisions": [{"decision": "BUY" | "SELL" | "HOLD", "symbol": "BTCUSDC", '
-                '"venue": "binance" | "kraken", "confidence": 0.90, '
+                '"venue": "binance" | "kraken" | "hyperliquid" | "t212", "confidence": 0.90, '
                 f'"suggested_notional_usd": 500.0, "urgency": "NORMAL" | "HIGH", "thesis": "..."}}]'
             )
 
@@ -1807,8 +1949,18 @@ class AutonomousAIReconciler:
             if m_decision in ("BUY", "SELL"):
                 m_sym = m_dec.get("symbol", "")
                 m_venue = m_dec.get("venue", "")
-                m_conf = float(m_dec.get("confidence") or 0.0)
-                m_usd = float(m_dec.get("suggested_notional_usd") or 0.0)
+                try:
+                    m_conf = float(m_dec.get("confidence") or 0.0)
+                    if not math.isfinite(m_conf):
+                        m_conf = 0.0
+                except (TypeError, ValueError, OverflowError):
+                    m_conf = 0.0
+                try:
+                    m_usd = float(m_dec.get("suggested_notional_usd") or 0.0)
+                    if not math.isfinite(m_usd):
+                        m_usd = 0.0
+                except (TypeError, ValueError, OverflowError):
+                    m_usd = 0.0
                 venue_sfx = f" ({m_venue})" if m_venue else ""
                 body_lines.append(f"Trading Intent: {m_decision} {m_sym}{venue_sfx} ${m_usd:.0f} (conf={m_conf:.2f})")
 

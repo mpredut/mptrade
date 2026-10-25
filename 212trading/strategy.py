@@ -331,12 +331,14 @@ class Strategy:
                  clock: Callable[[], float] | None = None,
                  trend_slope_provider: Callable[[str], float | None] | None = None,
                  execution_audit: ExecutionAudit | None = None,
-                 replay_mode: bool = False):
+                 replay_mode: bool = False,
+                 observe_only: bool = False):
         self.client = client
         self.ticker = ticker
         self.yahoo_sym = params.yahoo_sym or t212_to_yahoo(ticker)
         self.p = params
         self.dry_run = dry_run
+        self.observe_only = bool(observe_only)
         self.desktop = desktop
         self.ccy = params.currency
         self.replay_mode = replay_mode or (clock is not None)
@@ -819,7 +821,11 @@ class Strategy:
             if p["side"] == "SELL":
                 return bool(self._place_sell(p["qty"], p["limit"], level=p.get("level"), kind=p.get("kind", "TP")))
             elif p["side"] == "BUY":
-                amount = p.get("amount") or (p["qty"] * p["limit"])
+                raw_ord = p.get("raw") if isinstance(p.get("raw"), dict) else p
+                raw_amount = raw_ord.get("amount")
+                usd_notional = p["qty"] * p["limit"]
+                fallback_amt = (usd_notional / self.fx_to_usd) if self.fx_to_usd > 0 else usd_notional
+                amount = raw_amount or fallback_amt
                 return bool(self._place_buy(amount, p["limit"], kind=p.get("kind", "ENTRY")))
             return False
 
@@ -1206,7 +1212,7 @@ class Strategy:
         is_flat = real_qty <= 1e-9
         ladder_levels = {lvl for (lvl, _) in self.p.tp_ladder} if self.p.tp_ladder else set()
         all_tp_sold = bool(ladder_levels and ladder_levels.issubset(set(self.s.get("tp_sold_levels", []))))
-        has_open_sells = any(o.get("side") == "SELL" for o in self.s["orders"])
+        has_open_sells = self._has_open("SELL")
         is_dust = self._is_dust(real_qty, real_avg or price)
         cycle_closed = (is_flat and prev_qty > 1e-9) or (
             prev_qty > 1e-9 and is_dust and not has_open_sells and (all_tp_sold or self.s.get("sl_pending") or not self.p.tp_ladder)
@@ -1217,7 +1223,9 @@ class Strategy:
             was_sl = bool(self.s.get("sl_pending"))   # Was this a catastrophic stop-loss exit?
             exit_price = self.s.get("last_sell_price") or price
             nxt = self.s.get("cycle", 1) + 1
+            saved_pending_submit = self.s.get("pending_submit")
             self.s = _new_state()
+            self.s["pending_submit"] = saved_pending_submit
             self.s["realized_pnl_usd"] = pnl
             self.s["realized_net_usd"] = net_tot
             self.s["fees_usd"] = fees
@@ -1625,6 +1633,10 @@ class Strategy:
     def step(self, price: float) -> None:
         held = self.s["qty"]
         self._check_loss_alert(price)   # Alert on deeper loss while holding; never sells.
+        if self.observe_only:
+            if not self.dry_run and self.s.get("orders"):
+                self._cancel_all_orders()
+            return
         disc = 1 - self.p.entry_discount_pct / 100
 
         in_backoff = self._now() < self.s.get("buy_backoff_until", 0)
@@ -1832,9 +1844,10 @@ class Strategy:
     # -- main loop -------------------------------------------------------------
     def run(self, stop: threading.Event | None = None) -> None:
         mode = "avg_tp" if self.p.enable_takeprofit else "dca_only"
+        exec_banner = "[OBSERVE ONLY — AI MANAGED]" if self.observe_only else ("[PAPER]" if self.dry_run else "⚠ REAL — BANI ADEVARATI")
         log("  === STRATEGIE PORNITA ===")
         log(f"      instrument : {self.ticker}  (price through {self.yahoo_sym})")
-        log(f"      mod        : {mode}   {'[PAPER]' if self.dry_run else '⚠ REAL — BANI ADEVARATI'}")
+        log(f"      mod        : {mode}   {exec_banner}")
         log(f"      intrare    : {self.p.entry_amount:.0f} {self.ccy} @ market-{self.p.entry_discount_pct}%")
         log(f"      DCA        : {self.p.dca_amount:.0f} {self.ccy} at every -{self.p.dca_drop_pct}% "
             f"(max {self.p.max_dca_buys})")

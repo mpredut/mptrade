@@ -59,6 +59,7 @@ def main() -> int:
     strategy_enabled = required_bool_env("STRAT_EXECUTE")
     venue_enabled = required_bool_env("HL_LIVE_ORDERS")
     strat_dry = args.paper or not (strategy_enabled and venue_enabled)
+    observe_only = str(os.environ.get("HL_BOT_OBSERVE_ONLY", "")).strip().lower() in ("1", "true", "yes", "on")
     if args.test_strategy:
         single_instance(f"hl_bot_{args.test_strategy.strip()}")
     elif not any(a in sys.argv for a in ()):  # reserved for future one-shot commands
@@ -71,13 +72,14 @@ def main() -> int:
     )
     log("=== HL base v2 bot (spot_engine) ===")
     log(f"    token      : {token} (HYPE spot pe Hyperliquid)")
-    log(f"    execution  : {'PAPER (no money)' if strat_dry else '⚠ REAL — REAL MONEY'}")
+    log(f"    execution  : {'OBSERVE ONLY (AI managed)' if observe_only else ('PAPER (no money)' if strat_dry else '⚠ REAL — REAL MONEY')}")
     log("    engine     : strategies.spot_engine (IDENTICAL to kraken_bot)")
     Strategy(
         provider, token, StratParams.from_env(), dry_run=strat_dry,
         state_dir=state_dir_for(strat_dry),
         notification_source="hyperliquid", venue_label="Hyperliquid",
         fee_note="fee HL spot base ~0.04% maker / ~0.07% taker per fill",
+        observe_only=observe_only,
     ).run()
     return 0
 

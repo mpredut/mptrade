@@ -89,13 +89,56 @@ def _parse_finite_float(val: Any, default: float) -> float:
         return default
 
 
+def _norm_sym(symbol: str) -> str:
+    """Normalize a symbol for comparison by stripping separators and uppercasing."""
+    return (symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+
+
 def _split_symbol_assets(symbol: str) -> Optional[Tuple[str, str]]:
     """Split a standard spot pair symbol (e.g. TAOUSD, BTCUSDC, TAO/USD) into (base, quote)."""
-    sym_u = (symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+    sym_u = _norm_sym(symbol)
+    if sym_u.endswith("USEQ") and len(sym_u) > 4:
+        return sym_u[:-4], "USD"
     for quote in _QUOTE_SUFFIXES:
         if sym_u.endswith(quote) and len(sym_u) > len(quote):
             return sym_u[: -len(quote)], quote
     return None
+
+
+def _is_us_rth_open(now_ts: Optional[float] = None) -> bool:
+    """Return True if US equities regular trading hours (09:30-16:00 America/New_York, Mon-Fri) are open."""
+    from datetime import datetime, time as dt_time
+    from zoneinfo import ZoneInfo
+
+    ts = float(now_ts) if now_ts is not None else time.time()
+    ny_dt = datetime.fromtimestamp(ts, tz=ZoneInfo("America/New_York"))
+    if ny_dt.weekday() >= 5:
+        return False
+    return dt_time(9, 30) <= ny_dt.time() < dt_time(16, 0)
+
+
+def _load_env_file_defaults(env_path: str) -> Dict[str, str]:
+    """Parse an env file and set non-STRAT_* keys in os.environ via setdefault."""
+    parsed: Dict[str, str] = {}
+    if not os.path.exists(env_path):
+        return parsed
+    try:
+        with open(env_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                cleaned = line.split("#", 1)[0].strip()
+                if not cleaned or "=" not in cleaned:
+                    continue
+                k, v = cleaned.split("=", 1)
+                key = k.strip()
+                val = v.strip().strip('"').strip("'")
+                if not key:
+                    continue
+                parsed[key.upper()] = val
+                if not key.upper().startswith("STRAT_"):
+                    os.environ.setdefault(key, val)
+    except OSError:
+        pass
+    return parsed
 
 
 def _discover_kraken_cache_pairs(workspace_dir: str) -> List[Tuple[str, str, str]]:
@@ -125,6 +168,47 @@ def _discover_kraken_cache_pairs(workspace_dir: str) -> List[Tuple[str, str, str
         split = _split_symbol_assets(pair)
         if split is not None:
             out.append((pair, split[0], split[1]))
+    return out
+
+
+def _discover_hyperliquid_spot(workspace_dir: str) -> List[Tuple[str, str, str]]:
+    """Read hyperliquid/config.env to include live Hyperliquid spot pairs (e.g. HYPEUSDC)."""
+    cfg_path = os.path.join(workspace_dir, "hyperliquid", "config.env")
+    if not os.path.exists(cfg_path):
+        return []
+    kv = _load_env_file_defaults(cfg_path)
+    if kv.get("HL_LIVE_ORDERS", "").lower() not in ("1", "true", "yes", "on"):
+        return []
+    token = (kv.get("HL_SPOT_TOKEN") or "HYPE").strip().upper()
+    if not token:
+        return []
+    return [(f"{token}USDC", token, "USDC")]
+
+
+def _discover_t212_equities(workspace_dir: str) -> List[Tuple[str, str, str, str]]:
+    """Read 212trading/config.*.env to discover configured Trading212 equity tickers."""
+    t212_dir = os.path.join(workspace_dir, "212trading")
+    if not os.path.isdir(t212_dir):
+        return []
+    out: List[Tuple[str, str, str, str]] = []
+    seen: set[str] = set()
+    for cfg_path in sorted(glob.glob(os.path.join(t212_dir, "config.*.env"))):
+        try:
+            with open(cfg_path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    cleaned = line.split("#", 1)[0].strip()
+                    if not cleaned or "=" not in cleaned:
+                        continue
+                    k, v = cleaned.split("=", 1)
+                    if k.strip().upper() == "STRAT_PAIR":
+                        ticker = v.strip().strip('"').strip("'").upper()
+                        if ticker and ticker not in seen:
+                            seen.add(ticker)
+                            short = ticker.split("_", 1)[0]
+                            out.append((f"T212_{short}", ticker, ticker, "USD"))
+                        break
+        except OSError:
+            continue
     return out
 
 
@@ -322,8 +406,14 @@ class AutonomousIntentGateway:
         """Returns all intents with PENDING status."""
         return [i for i in self.load_all_intents() if i.get("status") == "PENDING"]
 
-    def load_tradable_instruments(self, *, only_workspace_conf: bool = False) -> Dict[str, Any]:
-        """Load all enabled instruments from instruments.conf plus live Kraken spot pairs."""
+    def load_tradable_instruments(
+        self,
+        *,
+        only_workspace_conf: bool = False,
+        include_closed_rth: bool = False,
+        now_ts: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Load all enabled instruments from instruments.conf plus live Kraken, Hyperliquid, and Trading212 pairs."""
         ws_inst_conf = os.path.join(self.workspace_dir, "instruments.conf")
         if only_workspace_conf and not os.path.exists(ws_inst_conf):
             return {}
@@ -364,6 +454,60 @@ class AutonomousIntentGateway:
             except Exception as exc:
                 logger.debug("Could not bind Kraken pair %s: %s", pair, exc)
 
+        existing_hl_syms = {
+            str(getattr(inst, "symbol", "")).upper()
+            for inst in active_map.values()
+            if str(getattr(inst, "provider_name", "")).lower() == "hyperliquid"
+        }
+        for pair, base, quote in _discover_hyperliquid_spot(self.workspace_dir):
+            if pair in existing_hl_syms or base in existing_hl_syms:
+                continue
+            try:
+                from instrument import Instrument
+                inst = Instrument(
+                    name=f"HYPERLIQUID_{base}",
+                    provider="hyperliquid",
+                    symbol=pair,
+                    base=base,
+                    quote=quote,
+                    enabled=True,
+                )
+                if hasattr(inst, "_provider"):
+                    inst._provider._live_enabled = True
+                active_map[f"HYPERLIQUID_{base}"] = inst
+                existing_hl_syms.add(pair)
+            except Exception as exc:
+                logger.debug("Could not bind Hyperliquid pair %s: %s", pair, exc)
+
+        if include_closed_rth or _is_us_rth_open(now_ts):
+            _load_env_file_defaults(os.path.join(self.workspace_dir, "212trading", "runtime.env"))
+            existing_t212_syms = {
+                str(getattr(inst, "symbol", "")).upper()
+                for inst in active_map.values()
+                if str(getattr(inst, "provider_name", "")).lower() == "t212"
+            }
+            for inst_name, ticker, base, quote in _discover_t212_equities(self.workspace_dir):
+                if ticker in existing_t212_syms:
+                    continue
+                try:
+                    from instrument import Instrument
+                    inst = Instrument(
+                        name=inst_name,
+                        provider="t212",
+                        symbol=ticker,
+                        base=base,
+                        quote=quote,
+                        enabled=True,
+                        market_hours="rth",
+                    )
+                    if hasattr(inst, "_provider"):
+                        inst._provider._live_enabled = True
+                        inst._provider._order_validity = "DAY"
+                    active_map[inst_name] = inst
+                    existing_t212_syms.add(ticker)
+                except Exception as exc:
+                    logger.debug("Could not bind Trading212 ticker %s: %s", ticker, exc)
+
         return active_map
 
     def resolve_instrument(
@@ -381,40 +525,47 @@ class AutonomousIntentGateway:
             if getattr(inst, "enabled", True) is not False
         ]
 
-        sym_norm = (symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+        sym_norm = _norm_sym(symbol)
         venue_norm = venue.strip().lower() if venue else None
         req_base = (_split_symbol_assets(sym_norm) or (sym_norm, ""))[0]
+
+        def _inst_base_norm(inst: Any) -> str:
+            raw_b = getattr(inst, "base", None) or (_split_symbol_assets(inst.symbol) or (inst.symbol, ""))[0]
+            b_norm = _norm_sym(str(raw_b))
+            if b_norm.endswith("USEQ") and len(b_norm) > 4:
+                return b_norm[:-4]
+            return b_norm
 
         # 1. Match strictly within the specified venue (never cross-venue fallback)
         if venue_norm:
             for inst in active_values:
-                if inst.symbol.upper() == sym_norm and inst.provider_name.lower() == venue_norm:
+                if _norm_sym(inst.symbol) == sym_norm and inst.provider_name.lower() == venue_norm:
                     return inst
             for inst in active_values:
+                inst_sym_n = _norm_sym(inst.symbol)
                 if inst.provider_name.lower() == venue_norm and (
-                    inst.symbol.upper().startswith(sym_norm) or sym_norm.startswith(inst.symbol.upper())
+                    inst_sym_n.startswith(sym_norm) or sym_norm.startswith(inst_sym_n)
                 ):
                     return inst
             if req_base:
                 for inst in active_values:
-                    inst_base = getattr(inst, "base", None) or (_split_symbol_assets(inst.symbol) or (inst.symbol.upper(), ""))[0]
-                    if inst.provider_name.lower() == venue_norm and str(inst_base).upper() == req_base:
+                    if inst.provider_name.lower() == venue_norm and _inst_base_norm(inst) == req_base:
                         return inst
             return None
 
         # 2. Match by exact symbol
         for inst in active_values:
-            if inst.symbol.upper() == sym_norm:
+            if _norm_sym(inst.symbol) == sym_norm:
                 return inst
 
         # 3. Match by base asset prefix (e.g. BTC in BTCUSDC) or shared base asset
         for inst in active_values:
-            if inst.symbol.upper().startswith(sym_norm) or sym_norm.startswith(inst.symbol.upper()):
+            inst_sym_n = _norm_sym(inst.symbol)
+            if inst_sym_n.startswith(sym_norm) or sym_norm.startswith(inst_sym_n):
                 return inst
         if req_base:
             for inst in active_values:
-                inst_base = getattr(inst, "base", None) or (_split_symbol_assets(inst.symbol) or (inst.symbol.upper(), ""))[0]
-                if str(inst_base).upper() == req_base:
+                if _inst_base_norm(inst) == req_base:
                     return inst
 
         return None
@@ -499,7 +650,9 @@ class AutonomousIntentGateway:
         if not math.isfinite(bal):
             return True, desired_usd, "Wallet balance check skipped (non-finite)"
 
-        avail_usd = bal * 0.998 if decision == "BUY" else bal * price
+        venue_l = str(getattr(inst, "provider_name", "")).lower()
+        buy_buf = 0.95 if venue_l == "hyperliquid" else 0.998
+        avail_usd = bal * buy_buf if decision == "BUY" else bal * price
         if avail_usd < self.min_notional_usd:
             return (
                 False,

@@ -155,6 +155,34 @@ class T212Provider(MarketDataProvider):
     # -- Account. --------------------------------------------------------------
     def free_balance(self, asset: str) -> Optional[float]:
         # Under the common contract, errors become None rather than a valid zero.
+        asset_u = str(asset or "").strip().upper()
+        if asset_u in {"USD", "RON", "EUR"}:
+            try:
+                cli = self._client()
+            except Exception as e:
+                print(f"[T212] balance {asset}: {e}")
+                return None
+            get_cash_fn = getattr(cli, "get_cash", None)
+            if not callable(get_cash_fn):
+                return None
+            try:
+                cash = get_cash_fn()
+                if not isinstance(cash, dict):
+                    return None
+                free_ron = float(cash.get("free") or 0.0)
+                if not math.isfinite(free_ron) or free_ron < 0:
+                    return None
+                if asset_u == "RON":
+                    return free_ron
+                try:
+                    market_data = importlib.import_module("212trading.market_data")
+                    usd_ron = float(market_data.get_usd_ron() or 4.6)
+                except Exception:
+                    usd_ron = 4.6
+                return round(free_ron / usd_ron, 2) if usd_ron > 0 else free_ron
+            except Exception as e:
+                print(f"[T212] cash balance {asset}: {e}")
+                return None
         try:
             p = self._position(asset, strict=True)
         except ProviderError as e:
