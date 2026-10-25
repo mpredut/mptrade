@@ -540,3 +540,28 @@ def test_reconcile_failed_intent_from_execution_audit_and_capture_outcome_reason
     assert reconciled[0]["execution_payload"]["reconciled_from_audit"] is True
     assert reconciled[0]["history"][-1]["action"] == "RECONCILED_EXECUTED"
 
+
+def test_resolve_instrument_and_live_price_support_cross_venue_quote_variants(temp_workspace):
+    import json
+    ws, cache_dir = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="shadow")
+
+    kraken_tao = MagicMock()
+    kraken_tao.symbol = "TAOUSD"
+    kraken_tao.base = "TAO"
+    kraken_tao.quote = "USD"
+    kraken_tao.provider_name = "kraken"
+    kraken_tao.enabled = True
+    kraken_tao._provider.get_current_price.return_value = None
+
+    instruments_map = {"KRAKEN_TAO": kraken_tao}
+    assert gw.resolve_instrument("TAOUSDC", venue="kraken", instruments_map=instruments_map) is kraken_tao
+    assert gw.resolve_instrument("TAO/USDT", venue="kraken", instruments_map=instruments_map) is kraken_tao
+
+    price_cache = os.path.join(cache_dir, "cache_current_price.json")
+    with open(price_cache, "w", encoding="utf-8") as f:
+        json.dump({"items": {"TAOUSDC": [[1700000000, 345.67]]}}, f)
+
+    assert gw._get_live_price(kraken_tao) == pytest.approx(345.67)
+
+

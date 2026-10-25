@@ -989,3 +989,23 @@ def test_spot_engine_mdhtp_intrabar_high_with_trend_not_up_does_not_false_sell_b
     engine.step(99.5, high=104.0)
     assert not submits(executor)
 
+
+def test_spot_engine_pending_stop_exit_does_not_reinitiate_mhdsl_bounce_watch():
+    engine, executor = make_mhdsl_engine(
+        mhdsl_enabled=True, stop_loss_pct=10.0, sl_trend_defer_max_sec=220.0,
+    )
+    engine.dry_run = False
+    executor.trend = lambda _sym: "up"
+    engine.s["orders"] = [order("TP-1", "sell", price=110.0, kind="TP")]
+    engine.s["pending_exit"] = {"kind": "STOP", "soft_floor": False}
+
+    # On tick where TP-1 is reconciled as canceled, step(89.0) must execute the pending STOP market exit
+    # without re-running evaluate_stop_loss or re-populating sl_bounce_state!
+    executor.order_status = lambda _sym, _oid: OrderStatus("canceled", 0.0, 0.0, 0.0)
+    engine.reconcile(89.0)
+    engine.step(89.0)
+    s = submits(executor)
+    assert len(s) == 1 and s[0][6] == "STOP"
+    assert engine.pair not in engine.exit_manager.sl_bounce_state
+
+

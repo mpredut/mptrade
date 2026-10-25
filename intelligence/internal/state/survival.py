@@ -25,7 +25,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from binance_api.market_data import fetch_ohlc_candles
-from state_io import atomic_write_json
+from state_io import atomic_write_json, read_recovering_previous, save_json_state
 
 T_CACHE_FILE = os.path.join(_ROOT, "cachedb", "cache_T_trend.json")
 
@@ -178,12 +178,8 @@ def estimate_T(
     ttl_days: float = 7.0,
 ) -> dict:
     """Estimate asset-specific trend lifetime T empirically from historical candlesticks."""
-    cache = {}
-    try:
-        with open(T_CACHE_FILE, "r", encoding="utf-8") as f:
-            cache = json.load(f)
-    except (OSError, ValueError):
-        pass
+    loaded_cache = read_recovering_previous(T_CACHE_FILE, json.loads, default=None)
+    cache = loaded_cache if isinstance(loaded_cache, dict) else {}
 
     ent = _lookup_t_cache_entry(cache, symbol)
     if ent and time.time() - ent.get("ts", 0) < ttl_days * 86400:
@@ -240,44 +236,54 @@ def estimate_T(
     res["ts"] = time.time()
     cache[symbol] = res
     try:
-        atomic_write_json(T_CACHE_FILE, cache, indent=2)
+        save_json_state(T_CACHE_FILE, cache, indent=2)
     except OSError:
         pass
     return res
 
 
-def get_trend_survival_metrics(symbol: str, trend_duration_seconds: float = 0.0) -> Dict[str, Any]:
+def get_trend_survival_metrics(
+    symbol: str,
+    trend_duration_seconds: float = 0.0,
+    *,
+    allow_network: bool = False,
+) -> Dict[str, Any]:
     """Retrieve or compute empirical trend survival metrics for a symbol."""
     duration_days = max(0.0, float(trend_duration_seconds) / 86400.0)
     median_d = 3.0
     p90_d = 7.0
     T_val = 8.0
+    cached_t: Optional[float] = None
 
     cached_entry: Optional[dict] = None
-    if os.path.exists(T_CACHE_FILE):
-        try:
-            with open(T_CACHE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                cached_entry = _lookup_t_cache_entry(data, symbol)
-        except Exception:
-            cached_entry = None
+    try:
+        data = read_recovering_previous(T_CACHE_FILE, json.loads, default=None)
+        if isinstance(data, dict):
+            cached_entry = _lookup_t_cache_entry(data, symbol)
+    except Exception:
+        cached_entry = None
 
     if cached_entry:
         median_d = float(cached_entry.get("median_d") or median_d)
         p90_d = float(cached_entry.get("p90_d") or p90_d)
-        T_val = float(cached_entry.get("T") or T_val)
-    else:
+        if cached_entry.get("T"):
+            T_val = float(cached_entry["T"])
+            cached_t = T_val
+    elif allow_network:
         try:
             est = estimate_T(symbol)
             if est:
                 median_d = float(est.get("median_d") or median_d)
                 p90_d = float(est.get("p90_d") or p90_d)
-                T_val = float(est.get("T") or T_val)
+                if est.get("T") and est.get("n", 0) > 0:
+                    T_val = float(est["T"])
+                    cached_t = T_val
         except Exception:
             pass
 
     ratio = duration_days / p90_d if p90_d > 0 else 0.0
     is_exhausted = duration_days > p90_d if duration_days > 0 else False
+    gauss_h = round(cached_t * 1.4, 4) if cached_t and cached_t > 0 else None
 
     return {
         "symbol": symbol,
@@ -285,6 +291,7 @@ def get_trend_survival_metrics(symbol: str, trend_duration_seconds: float = 0.0)
         "median_days": round(median_d, 2),
         "p90_days": round(p90_d, 2),
         "T": round(T_val, 1),
+        "gaussian_horizon_days": gauss_h,
         "duration_ratio_to_p90": round(ratio, 2),
         "is_exhausted": is_exhausted,
     }

@@ -312,6 +312,7 @@ def _new_state() -> dict:
         "tr_alerted": False,    # Current-episode trailing notification anti-spam.
         "tr_armed": False,      # Arm only after the configured gain over average.
         "tp_pending_exit": None, # Persistent MDHTP exit intent awaiting execution.
+        "sl_pending_exit": None, # Persistent MHDSL exit intent awaiting order cancellation/execution.
     }
 
 
@@ -362,6 +363,7 @@ class Strategy:
         self.s.setdefault("tp_ride_state", {})
         self.s.setdefault("reentry_state", {})
         self.s.setdefault("tp_pending_exit", None)
+        self.s.setdefault("sl_pending_exit", None)
         self.exit_manager: PositionExitManager | None = (
             self._init_exit_manager() if (self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled) else None
         )
@@ -1399,6 +1401,8 @@ class Strategy:
                 or are_close(loss_pct, self.p.stop_loss_pct, self.p.reentry_tolerance_pct)
             )
             in_bounce_watch = bool(self.ticker in self.exit_manager.sl_bounce_state)
+            if not in_sl:
+                self.s["sl_pending_exit"] = None
             if not in_sl and not in_bounce_watch:
                 if self.exit_manager.sl_episode_state:
                     self.exit_manager.reset_sl_episode(self.ticker)  # Leaving SL territory ends the episode floor lock
@@ -1411,22 +1415,35 @@ class Strategy:
             snapshot = self._create_position_snapshot(price, avg, held)
             sell_qty = snapshot.sellable_qty
 
-            decision = self.exit_manager.evaluate_stop_loss(
-                snapshot, custom_threshold=self.p.stop_loss_pct / 100.0,
-            )
+            pending_sl = self.s.get("sl_pending_exit") if in_sl else None
+            if pending_sl:
+                should_exit_sl = True
+                exit_reason = str(pending_sl.get("reason") or "mhdsl_pending_exit")
+                decision = None
+            else:
+                decision = self.exit_manager.evaluate_stop_loss(
+                    snapshot, custom_threshold=self.p.stop_loss_pct / 100.0,
+                )
+                should_exit_sl = bool(decision.action == ExitAction.SELL and decision.should_exit)
+                exit_reason = decision.reason if should_exit_sl else ""
 
-            if decision.action == ExitAction.SELL and decision.should_exit:
+            if should_exit_sl:
                 if self._now() < self.s.get("sl_fail_until", 0):
                     return False
+                if pending_sl is None:
+                    self.s["sl_pending_exit"] = {"reason": exit_reason, "time": self._now()}
                 if self._execute_protective_exit("SL", price, "STOP", "sl_fail_until", sell_qty=sell_qty):
+                    self.s["sl_pending_exit"] = None
                     if not self.s.get("sl_alerted"):
                         self.s["sl_alerted"] = True
-                        log(f"  🛑 [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% ({decision.reason}) — SELLING EVERYTHING (cutting the loss)")
+                        log(f"  🛑 [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% ({exit_reason}) — SELLING EVERYTHING (cutting the loss)")
                         notify(title=f"🛑 SL {self.yahoo_sym} -{loss_pct:.1f}%",
-                               body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}% ({decision.reason}) — selling everything",
+                               body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}% ({exit_reason}) — selling everything",
                                source="T212", price=price, desktop=self.desktop)
+                elif self.s.get("sl_fail_until"):
+                    self.s["sl_pending_exit"] = None
                 return True
-            elif decision.action == ExitAction.HOLD:
+            elif decision is not None and decision.action == ExitAction.HOLD:
                 if decision.metadata.get("priority") in (1, 2) or (
                     self.exit_manager and self.ticker in self.exit_manager.sl_bounce_state
                 ):
@@ -1615,6 +1632,7 @@ class Strategy:
         is_flat = held <= 1e-9 or (self._is_dust(held, price) and not self._has_open("SELL"))
         if is_flat:
             self.s["tp_pending_exit"] = None
+            self.s["sl_pending_exit"] = None
             if in_backoff:   # After insufficient funds, avoid buys while the account is empty.
                 return
             if self._has_open("BUY"):

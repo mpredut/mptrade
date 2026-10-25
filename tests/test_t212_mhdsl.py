@@ -142,9 +142,11 @@ class _T212BaseTest(unittest.TestCase):
             ticker="TEST_US_EQ",
             params=params,
             dry_run=dry_run,
+            initial_state=strategy._new_state(),
             clock=clock_fn,
             trend_slope_provider=slope_fn,
         )
+        strat._save = lambda: None
         if positioned:
             strat.s.update(
                 qty=10.0, cost_usd=1000.0, spent_cash=1000.0,
@@ -605,6 +607,47 @@ class T212MHDSLTest(_T212BaseTest):
         strat.step(90.0 * 1.015)
         self.assertIsNotNone(strat.s.get("sl_rebuy"))
         self.assertEqual(strat.s.get("last_exit_kind"), "STOP")
+
+    def test_mhdsl_sl_pending_exit_persists_across_order_cancellation_when_trend_up(self):
+        current_time = 1000.0
+        strat = self._make_strat(
+            dry_run=False,
+            clock=lambda: current_time,
+            slope=0.35,
+            positioned=True,
+            STRAT_SL_MHDSL_ENABLED="true",
+            STRAT_STOP_LOSS_PCT="10",
+            STRAT_SL_DISASTER_BUFFER_RATIO="0.30",
+            STRAT_SL_TREND_DEFER_MAX_SEC="220.0",
+        )
+        strat.s["orders"] = [{"id": "TP-RESTING-1", "side": "SELL", "qty": 10.0, "limit": 103.0, "kind": "TP", "market": False}]
+
+        # Tick 1 (t=1000): enters MHDSL bounce watch while trend is up
+        with patch.object(strategy, "notify"):
+            strat.step(89.0)
+        self.assertIn("TEST_US_EQ", strat.exit_manager.sl_bounce_state)
+        self.assertIsNone(strat.s.get("sl_pending_exit"))
+
+        # Tick 2 (t=1230, > 220s): mhdsl_bounce_timeout fires; open TP order is requested to cancel
+        current_time = 1230.0
+        with patch.object(strategy, "notify"), \
+             patch.object(strat.executor, "cancel_order_with_intent", return_value=None), \
+             patch.object(strat, "_place_sell", return_value=True) as mock_place_sell:
+            strat.step(89.0)
+            mock_place_sell.assert_not_called()
+            self.assertIsNotNone(strat.s.get("sl_pending_exit"))
+            self.assertIn("mhdsl_bounce_timeout", strat.s["sl_pending_exit"]["reason"])
+            self.assertTrue(strat.s["orders"][0].get("cancel_requested"))
+
+            # Tick 3 (t=1245): TP order cancellation reconciled; SL must execute immediately even though slope > 0
+            strat.s["orders"] = []
+            current_time = 1245.0
+            strat.step(89.0)
+            mock_place_sell.assert_called_once()
+            self.assertEqual(mock_place_sell.call_args.kwargs.get("kind"), "SL")
+            self.assertTrue(mock_place_sell.call_args.kwargs.get("market"))
+            self.assertIsNone(strat.s.get("sl_pending_exit"))
+            self.assertNotIn("TEST_US_EQ", strat.exit_manager.sl_bounce_state)
 
 
 if __name__ == "__main__":

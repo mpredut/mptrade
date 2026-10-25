@@ -745,6 +745,23 @@ def test_whale_collector_short_building_and_ignore_ttl_prev_regime(temp_cache_di
     assert loaded_expired.divergence_regime == "aggressive_shorting"
 
 
+def test_survival_metrics_returns_gaussian_horizon_days_and_respects_allow_network_false(temp_cache_dir):
+    from intelligence.internal.state import survival
+
+    temp_t_cache = os.path.join(temp_cache_dir, "cache_T_trend.json")
+    with open(temp_t_cache, "w", encoding="utf-8") as f:
+        json.dump({"TAOUSDC": {"T": 6.0, "p90_d": 4.2, "median_d": 2.0, "ts": time.time()}}, f)
+
+    with patch.object(survival, "T_CACHE_FILE", temp_t_cache), \
+         patch.object(survival, "estimate_T", side_effect=AssertionError("must not call estimate_T")) as mock_est:
+        m_hit = survival.get_trend_survival_metrics("TAOUSD", trend_duration_seconds=5.0 * 86400.0)
+        assert m_hit["T"] == 6.0
+        assert m_hit["gaussian_horizon_days"] == pytest.approx(8.4)
+        m_miss = survival.get_trend_survival_metrics("UNLISTEDUSD", trend_duration_seconds=5.0 * 86400.0)
+        assert m_miss["gaussian_horizon_days"] is None
+        mock_est.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
 

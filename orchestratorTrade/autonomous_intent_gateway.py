@@ -90,8 +90,8 @@ def _parse_finite_float(val: Any, default: float) -> float:
 
 
 def _split_symbol_assets(symbol: str) -> Optional[Tuple[str, str]]:
-    """Split a standard spot pair symbol (e.g. TAOUSD, BTCUSDC) into (base, quote)."""
-    sym_u = symbol.strip().upper()
+    """Split a standard spot pair symbol (e.g. TAOUSD, BTCUSDC, TAO/USD) into (base, quote)."""
+    sym_u = (symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
     for quote in _QUOTE_SUFFIXES:
         if sym_u.endswith(quote) and len(sym_u) > len(quote):
             return sym_u[: -len(quote)], quote
@@ -381,8 +381,9 @@ class AutonomousIntentGateway:
             if getattr(inst, "enabled", True) is not False
         ]
 
-        sym_norm = symbol.strip().upper()
+        sym_norm = (symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
         venue_norm = venue.strip().lower() if venue else None
+        req_base = (_split_symbol_assets(sym_norm) or (sym_norm, ""))[0]
 
         # 1. Match strictly within the specified venue (never cross-venue fallback)
         if venue_norm:
@@ -394,6 +395,11 @@ class AutonomousIntentGateway:
                     inst.symbol.upper().startswith(sym_norm) or sym_norm.startswith(inst.symbol.upper())
                 ):
                     return inst
+            if req_base:
+                for inst in active_values:
+                    inst_base = getattr(inst, "base", None) or (_split_symbol_assets(inst.symbol) or (inst.symbol.upper(), ""))[0]
+                    if inst.provider_name.lower() == venue_norm and str(inst_base).upper() == req_base:
+                        return inst
             return None
 
         # 2. Match by exact symbol
@@ -401,10 +407,15 @@ class AutonomousIntentGateway:
             if inst.symbol.upper() == sym_norm:
                 return inst
 
-        # 3. Match by base asset prefix (e.g. BTC in BTCUSDC)
+        # 3. Match by base asset prefix (e.g. BTC in BTCUSDC) or shared base asset
         for inst in active_values:
             if inst.symbol.upper().startswith(sym_norm) or sym_norm.startswith(inst.symbol.upper()):
                 return inst
+        if req_base:
+            for inst in active_values:
+                inst_base = getattr(inst, "base", None) or (_split_symbol_assets(inst.symbol) or (inst.symbol.upper(), ""))[0]
+                if str(inst_base).upper() == req_base:
+                    return inst
 
         return None
 
@@ -419,15 +430,30 @@ class AutonomousIntentGateway:
         except Exception:
             pass
 
-        # Fallback to cache_current_price.json
+        # Fallback to cache_current_price.json (supporting cross-venue quote variants, e.g. TAOUSD -> TAOUSDC)
         cache_path = os.path.join(self.cache_dir, "cache_current_price.json")
         if os.path.exists(cache_path):
             try:
                 with open(cache_path, "r", encoding="utf-8") as f:
                     cdata = json.load(f)
                     items = cdata.get("items", {})
-                    if inst.symbol in items and items[inst.symbol]:
-                        return float(items[inst.symbol][0][1])
+                    sym_u = str(inst.symbol or "").strip().upper()
+                    candidates = [inst.symbol, sym_u]
+                    inst_base = getattr(inst, "base", None) or (_split_symbol_assets(sym_u) or (sym_u, ""))[0]
+                    if inst_base:
+                        for suffix in ("USDC", "USDT", "USD"):
+                            cand = f"{str(inst_base).upper()}{suffix}"
+                            if cand not in candidates:
+                                candidates.append(cand)
+                    for cand in candidates:
+                        if cand in items and items[cand]:
+                            return float(items[cand][0][1])
+                    if inst_base:
+                        base_u = str(inst_base).upper()
+                        for k, v in items.items():
+                            k_base = (_split_symbol_assets(str(k)) or (str(k).upper(), ""))[0]
+                            if k_base == base_u and v:
+                                return float(v[0][1])
             except Exception:
                 pass
 

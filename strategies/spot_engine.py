@@ -1312,6 +1312,11 @@ class Strategy:
 
     def _check_stop_loss(self, price: float) -> bool:
         """Close everything when unrealized loss crosses the anti-runaway threshold."""
+        if (self.s.get("pending_exit") or {}).get("kind") == "STOP":
+            if self._has_pending_market_exit():
+                return True
+            self._continue_market_exit(price)
+            return True
         if self.p.stop_loss_pct <= 0:
             return False
         avg = self._avg()
