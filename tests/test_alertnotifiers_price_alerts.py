@@ -292,6 +292,7 @@ class TestAlertsConfigLoadAndResolve(unittest.TestCase):
     def test_resolution_precedence(self):
         cases = (
             ("per-coin", "BTC", False, "up_percent", 6.0),
+            ("per-coin-pair", "BTCUSDC", False, "up_percent", 6.0),
             ("default", "SOL", False, "up_percent", 4.1),
             ("dynamic", "FOONEW", True, "down_percent", 25.0),
             ("per-coin-over-dynamic", "BTC", True, "up_percent", 6.0),
@@ -299,6 +300,9 @@ class TestAlertsConfigLoadAndResolve(unittest.TestCase):
         for label, symbol, dynamic, field, expected in cases:
             with self.subTest(case=label):
                 self.assertEqual(resolve(self.ac, symbol, is_dynamic=dynamic)[field], expected)
+        checker = PriceChecker(DummyPriceManager(), config=self.ac)
+        self.assertEqual(checker._get_thresholds_for_symbol("BTCUSDC")["up_percent"], 6.0)
+        self.assertEqual(checker._get_thresholds_for_symbol("BTCUSDC")["down_percent"], 10.0)
 
     def test_missing_file_or_key_fails_closed(self):
         with self.assertRaisesRegex(ValueError, "missing"):
@@ -406,6 +410,20 @@ class TestNewCoinsDiscovery(unittest.TestCase):
             mock_cg.assert_not_called()
             mock_dex.assert_not_called()
             self.assertEqual(factory.get_available_sources(), ["binance"])
+
+    def test_cleanup_old_symbols_purges_inactive_symbol_added_time(self):
+        from market_monitor import pricefetcher
+        pf_path = os.path.join(tempfile.mkdtemp(prefix="pf_clean_"), "cache_prices_multi.json")
+        with patch.object(pricefetcher, "PricePlatformFactory"):
+            mgr = pricefetcher.CacheAllPriceFetcherManager(60, ["BTC"], pf_path, read_only=True)
+            mgr.symbol_added_time["OLDCOIN"] = time.time() - 30 * 86400
+            mgr.symbol_preferred_source["OLDCOIN"] = "CoinMarketCap"
+            self.assertNotIn("OLDCOIN", mgr.active_symbols)
+            removed = mgr.cleanup_old_symbols(max_age_days=7)
+            self.assertEqual(removed, ["OLDCOIN"])
+            self.assertNotIn("OLDCOIN", mgr.symbol_added_time)
+            self.assertNotIn("OLDCOIN", mgr.symbol_preferred_source)
+            self.assertEqual(mgr.cleanup_old_symbols(max_age_days=7), [])
 
 
 if __name__ == "__main__":

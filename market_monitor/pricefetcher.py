@@ -569,9 +569,13 @@ class PricePlatformFactory:
 
 class CacheAllPriceFetcherManager(CacheManagerInterface):
     def __init__(self, sync_ts, symbols, filename, api_client=api, cmc_api_key: Optional[str] = None,
-                 read_only=False):
+                 read_only=False, max_symbols: Optional[int] = None):
         self.price_factory = PricePlatformFactory(cmc_api_key=cmc_api_key)
-        self.max_monitored_symbols = MAX_MONITORED_SYMBOLS
+        self.max_monitored_symbols = (
+            int(max_symbols)
+            if (max_symbols is not None and not isinstance(max_symbols, bool) and int(max_symbols) > 0)
+            else MAX_MONITORED_SYMBOLS
+        )
         initial_symbols = []
         seen_bases = set()
         for symbol in symbols:
@@ -580,7 +584,7 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
             if base_symbol not in seen_bases and is_valid_symbol_for_monitoring(symbol):
                 seen_bases.add(base_symbol)
                 initial_symbols.append(symbol)
-            if len(initial_symbols) >= MAX_MONITORED_SYMBOLS:
+            if len(initial_symbols) >= self.max_monitored_symbols:
                 break
         self.original_symbols = list(initial_symbols)
         self.active_symbols = set(initial_symbols)
@@ -636,8 +640,8 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                         )
                     ]
                     for symbol in list(dict.fromkeys(active_symbols + recovered_symbols)):
-                        if len(self.active_symbols) >= MAX_MONITORED_SYMBOLS:
-                            print(f"[Pricefetcher] Limit reached while loading: maximum {MAX_MONITORED_SYMBOLS} monitored coins, the rest will be ignored")
+                        if len(self.active_symbols) >= self.max_monitored_symbols:
+                            print(f"[Pricefetcher] Limit reached while loading: maximum {self.max_monitored_symbols} monitored coins, the rest will be ignored")
                             break
                         base_symbol = get_base_symbol(symbol)
                         if (
@@ -727,8 +731,8 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
             if any(get_base_symbol(active_symbol) == base_symbol for active_symbol in self.active_symbols):
                 print(f"[Pricefetcher] {symbol} ignored: asset {base_symbol} is already being monitored")
                 return False
-            if len(self.active_symbols) >= MAX_MONITORED_SYMBOLS:
-                print(f"[Pricefetcher] Limit reached: maximum {MAX_MONITORED_SYMBOLS} monitored coins")
+            if len(self.active_symbols) >= self.max_monitored_symbols:
+                print(f"[Pricefetcher] Limit reached: maximum {self.max_monitored_symbols} monitored coins")
                 return False
             self.symbols.append(symbol)
             self.original_symbols.append(symbol)
@@ -752,7 +756,12 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
     
     def remove_symbol(self, symbol: str, reason: str = ""):
         with self.lock:
-            if symbol not in self.active_symbols:
+            was_active = symbol in self.active_symbols
+            had_meta = (
+                symbol in self.symbol_added_time
+                or symbol in getattr(self, "symbol_preferred_source", {})
+            )
+            if not was_active and not had_meta:
                 return False
             if symbol in self.symbols:
                 self.symbols.remove(symbol)
@@ -942,15 +951,18 @@ CachePriceMulti = CacheAllPriceFetcherManager
 
 PRICE_MULTI_SYNC_INTERVAL_SEC = 5 * 60
 
-def register_enhanced_cachePriceAll(cmc_api_key: Optional[str] = None):
+def register_enhanced_cachePriceAll(cmc_api_key: Optional[str] = None, max_symbols: Optional[int] = None):
     if not hasattr(CacheFactory, '_CONFIG'):
         CacheFactory._CONFIG = {}
-    CacheFactory._CONFIG["PriceMulti"] = {
+    cfg = {
         "class": CacheAllPriceFetcherManager,
         "filename": "cache_prices_multi.json",
         "sync_ts": lambda: PRICE_MULTI_SYNC_INTERVAL_SEC,
-        "cmc_api_key": cmc_api_key
+        "cmc_api_key": cmc_api_key,
     }
+    if max_symbols is not None:
+        cfg["max_symbols"] = max_symbols
+    CacheFactory._CONFIG["PriceMulti"] = cfg
     print("[Pricefetcher] Manager registered in CacheFactory as 'PriceMulti'")
 
 
@@ -1000,8 +1012,10 @@ def create_cachePriceAll(cmc_api_key: Optional[str] = None, symbols=None, max_sy
     print(f"[pricefetcher] Valid symbols to monitor: {len(all_symbols)}")
     print(f"[pricefetcher] List: {all_symbols}")
 
-    register_enhanced_cachePriceAll(cmc_api_key)
+    register_enhanced_cachePriceAll(cmc_api_key, max_symbols=max_symbols)
     cachePriceAll = CacheFactory.get("PriceMulti", symbols=all_symbols)
+    if max_symbols is not None and not isinstance(max_symbols, bool) and int(max_symbols) > 0:
+        cachePriceAll.max_monitored_symbols = int(max_symbols)
     thread = cachePriceAll.periodic_sync(sync_ts=PRICE_MULTI_SYNC_INTERVAL_SEC, save_state=True)
 
     return cachePriceAll

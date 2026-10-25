@@ -358,7 +358,7 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
                 all_trades_list = []
 
     # Select existing fills for the current symbol.
-    existing_trades = [trade for trade in all_trades_list if trade['symbol'] == symbol]
+    existing_trades = [trade for trade in all_trades_list if isinstance(trade, dict) and trade.get('symbol') == symbol]
     print(f"Already saved in file {len(existing_trades)} trades for {symbol}")
 
     # Calculate the retention cutoff.
@@ -394,8 +394,15 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
 
     # Remove duplicates by fill ID.
     # new_trades = [trade for trade in new_trades if trade['time'] > most_recent_trade_time]    #
-    existing_trade_ids = {trade['id'] for trade in filtered_existing_trades}
-    unique_new_trades = [trade for trade in new_trades if trade['id'] not in existing_trade_ids]
+    existing_trade_ids = {
+        trade.get('id', trade.get('orderId'))
+        for trade in filtered_existing_trades
+        if trade.get('id', trade.get('orderId')) is not None
+    }
+    unique_new_trades = [
+        trade for trade in new_trades
+        if trade.get('id', trade.get('orderId')) not in existing_trade_ids
+    ]
 
     if unique_new_trades:
         print(f"Found {len(unique_new_trades)} new trades for {symbol}.")
@@ -405,7 +412,7 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
         updated_trades.sort(key=lambda x: extract_timestamp_ms(x, default=0) or 0)
 
         # Replace this symbol's entries in the main list.
-        all_trades_list = [trade for trade in all_trades_list if trade['symbol'] != symbol]
+        all_trades_list = [trade for trade in all_trades_list if isinstance(trade, dict) and trade.get('symbol') != symbol]
         all_trades_list.extend(updated_trades)
 
         # Persist the updated list.
@@ -434,7 +441,7 @@ def load_trades_from_file(filename):
         print(f"File {filename} not found.")
         trade_cache = []
         
-    print(set(trade['symbol'] for trade in trade_cache))
+    print(set(trade.get('symbol') for trade in trade_cache if isinstance(trade, dict) and trade.get('symbol')))
 
 
 # Return recent BUY or SELL fills from the manager cache.

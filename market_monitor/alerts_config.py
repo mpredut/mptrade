@@ -91,6 +91,10 @@ def resolve(alert_config: dict, symbol: str, is_dynamic: bool) -> dict:
     per = alert_config.get("per_coin", {})
     if symbol in per:
         return per[symbol]
+    from providers.quantity import resolve_assets
+    base = resolve_assets(symbol)[0]
+    if base and base in per:
+        return per[base]
     return alert_config["dynamic"] if is_dynamic else alert_config["default"]
 
 

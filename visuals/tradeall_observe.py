@@ -331,7 +331,7 @@ def load_trend_starts(symbol, days_back):
     events = []
     for d in reversed(_log_dates(days_back)):
         for row in _read_pipe_log(_daily_log_path(DECISIONS_PREFIX, d), 7):
-            ts, sym_, event, state, old_state, price, prev_confirm = row
+            ts, sym_, event, state, old_state, price, prev_confirm = row[:7]
             if sym_ != symbol or event != "trend_start":
                 continue
             try:
@@ -376,7 +376,7 @@ def _parse_shadow_rows(rows, symbol):
     """Parse shadow rows: ts|symbol|signal|event|state|old_state|price|vel|vel_std."""
     events = []
     for row in rows:
-        ts, sym_, signal, event, state, old_state, price, vel, vel_std = row
+        ts, sym_, signal, event, state, old_state, price, vel, vel_std = row[:9]
         if sym_ != symbol or event != "trend_start":
             continue
         try:
@@ -429,7 +429,7 @@ def load_backtest_price_samples(directory, symbol):
 def load_backtest_trend_starts(directory, symbol):
     events = []
     for row in _read_pipe_log(os.path.join(directory, "tradeall_decisions.log"), 7):
-        ts, sym_, event, state, old_state, price, prev_confirm = row
+        ts, sym_, event, state, old_state, price, prev_confirm = row[:7]
         if sym_ != symbol or event != "trend_start":
             continue
         try:
@@ -682,18 +682,18 @@ def format_state_text(entry, header, pending=None, exposure=None):
         f"{header}\n"
         f"price:     {entry.get('current_price', '?')}\n"
         f"trend:     {trend_map.get(entry.get('final_trend'), '?')}\n"
-        f"grad rec:  {entry.get('gradient_recent', 0):+.4f}\n"
-        f"slope short:{entry.get('slope_small', 0):+.3f}\n"
-        f"slope long: {entry.get('slope_big', 0):+.3f}\n"
-        f"epsilon:   {entry.get('epsilon', 0):.4f}"
+        f"grad rec:  {(entry.get('gradient_recent') or 0):+.4f}\n"
+        f"slope short:{(entry.get('slope_small') or 0):+.3f}\n"
+        f"slope long: {(entry.get('slope_big') or 0):+.3f}\n"
+        f"epsilon:   {(entry.get('epsilon') or 0):.4f}"
     )
     fast_trend = entry.get("trend_fast")
     if fast_trend is not None:
-        text += f"\nfast:      {trend_map.get(fast_trend, '?')} (grad: {entry.get('gradient_recent_fast', 0):+.4f})"
+        text += f"\nfast:      {trend_map.get(fast_trend, '?')} (grad: {(entry.get('gradient_recent_fast') or 0):+.4f})"
     # Add shadow rows only when their keys exist in the snapshot.
     if entry.get("kalman_trend") is not None:
         text += (f"\nkalman:    {trend_map.get(entry.get('kalman_trend'), '?')} "
-                 f"(v={entry.get('kalman_vel', 0):+.3f}%/min ±{entry.get('kalman_vel_std', 0):.3f})")
+                 f"(v={(entry.get('kalman_vel') or 0):+.3f}%/min ±{(entry.get('kalman_vel_std') or 0):.3f})")
     v1h = entry.get("vol_1h_pct")
     if v1h is not None:
         text += (f"\nvol 1h:    {v1h:.2f}% → re:{entry.get('adapt_reentry_pct', '?')}% "

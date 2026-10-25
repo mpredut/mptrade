@@ -120,16 +120,17 @@ class CoinMarketCapSource(NewCoinsSource):
                     slug = coin.get('slug', '')
                     if is_trackable_symbol(symbol, name=name, slug=slug):
                         self._supported_symbols.add(symbol)
+                        usd_quote = coin.get('quote', {}).get('USD') or {}
                         self._cache.append({
                             "symbol": symbol,
                             "name": name,
                             "added_at": pd.to_datetime(coin['date_added']),
                             "source": self.get_name(),
-                            "price": coin['quote']['USD'].get('price', 0),
-                            "volume_24h": coin['quote']['USD'].get('volume_24h', 0),
-                            "market_cap": coin['quote']['USD'].get('market_cap', 0),
-                            "change_24h": coin['quote']['USD'].get('percent_change_24h', 0),
-                            "change_7d": coin['quote']['USD'].get('percent_change_7d', 0),
+                            "price": usd_quote.get('price') if usd_quote.get('price') is not None else 0,
+                            "volume_24h": usd_quote.get('volume_24h') if usd_quote.get('volume_24h') is not None else 0,
+                            "market_cap": usd_quote.get('market_cap') if usd_quote.get('market_cap') is not None else 0,
+                            "change_24h": usd_quote.get('percent_change_24h') if usd_quote.get('percent_change_24h') is not None else 0,
+                            "change_7d": usd_quote.get('percent_change_7d') if usd_quote.get('percent_change_7d') is not None else 0,
                             "slug": slug,
                             "url": f"https://coinmarketcap.com/currencies/{coin['slug']}/"
                         })

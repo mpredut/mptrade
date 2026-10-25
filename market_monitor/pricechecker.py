@@ -112,11 +112,13 @@ class PriceChecker:
         self._thread = None
         self._running = False
 
-    def _default_alert_handler(self, alert: PriceAlert):
-        """Default handler that prints the alert to the console."""
-        print("\n" + "=" * 60)
-        print(str(alert))
-        print("=" * 60)
+    def _default_alert_handler(self, alert):
+        """Default handler that prints the alert(s) to the console."""
+        items = alert if isinstance(alert, (list, tuple)) else [alert]
+        for item in items:
+            print("\n" + "=" * 60)
+            print(str(item))
+            print("=" * 60)
 
     def _build_cmc_url(self, symbol: str) -> str:
         try:
@@ -229,6 +231,9 @@ class PriceChecker:
         per_coin = self.config.get("per_coin", {})
         if symbol in per_coin:                 # configured per-coin threshold takes precedence
             return per_coin[symbol]
+        base = get_base_symbol(symbol)
+        if base and base in per_coin:
+            return per_coin[base]
         if self._is_dynamic_symbol(symbol):    # new coin uses the dynamic threshold
             return self.config["dynamic"]
         return self.config["default"]          # all remaining coins use the default
