@@ -26,7 +26,7 @@ echo "[trigger_dev_ci $(date '+%F %T')] Contacting DEV ($DEV_HOST:$DEV_PORT) to 
 
 # Step 1: Pull latest code on DEV only if no regression is currently mid-run
 # (if a regression holds /tmp/dev_regression.lock, run_dev_regression.sh will pull after acquiring the lock)
-$SSH "$DEV_USER@$DEV_HOST" "cd ~/$DEV_PATH && if flock -n /tmp/dev_regression.lock git pull --ff-only origin $DEV_CODE_BRANCH; then :; else echo 'Regression currently in flight; deferred git pull until lock is released.'; fi" 2>&1 | sed 's/^/  [dev] /'
+$SSH "$DEV_USER@$DEV_HOST" "cd ~/$DEV_PATH && if flock -n /tmp/dev_regression.lock flock -w 45 /tmp/dev_ci_watcher.lock git pull --ff-only origin $DEV_CODE_BRANCH; then :; else echo 'Regression currently in flight; deferred git pull until lock is released.'; fi" 2>&1 | sed 's/^/  [dev] /'
 
 # Step 2: Trigger regression on dev
 if [ "$WAIT_MODE" = true ]; then

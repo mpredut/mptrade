@@ -45,7 +45,7 @@ LOG_FILE="$REPO_ROOT/logs/dev_regression.log"
 STATUS_JSON="$REPO_ROOT/cachedb/dev_regression_status.json"
 
 # Pull latest code safely inside the mutex so mid-run pytest imports are never torn
-git pull --ff-only origin "${DEV_CODE_BRANCH:-main}" >/dev/null 2>&1 || true
+flock -w 45 /tmp/dev_ci_watcher.lock git pull --ff-only origin "${DEV_CODE_BRANCH:-main}" >/dev/null 2>&1 || true
 
 COMMIT_HASH="$(git rev-parse HEAD 2>/dev/null || echo "unknown")"
 COMMIT_SHORT="$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")"
