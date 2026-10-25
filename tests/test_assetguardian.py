@@ -96,6 +96,16 @@ class AssetGuardianTest(unittest.TestCase):
         )
         self._trend_patch.start()
         self.addCleanup(self._trend_patch.stop)
+        self._asset_val_patch = mock.patch.object(
+            ag, "_read_total_asset_value_rows", return_value=[]
+        )
+        self._asset_val_patch.start()
+        self.addCleanup(self._asset_val_patch.stop)
+        self._p3b_patch = mock.patch.object(
+            ag, "_read_p3b_sentiment", return_value=None
+        )
+        self._p3b_patch.start()
+        self.addCleanup(self._p3b_patch.stop)
         ag._last_evaluation.clear()
         ag._last_evaluation.update({
             symbol: {"growth": None, "drawdown": None, "pending_tier": False}
@@ -951,6 +961,7 @@ class AssetGuardianTest(unittest.TestCase):
                 return None
 
             with mock.patch.object(ag, "STATE", state), \
+                 mock.patch.object(ag.api, "get_current_price", return_value=225.0), \
                  mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
                  mock.patch.object(ag.mkt, "place", side_effect=_refuse_place):
                 tier, campaign, _ = ag._sell_campaign_tier(
@@ -981,6 +992,7 @@ class AssetGuardianTest(unittest.TestCase):
                 return None
 
             with mock.patch.object(ag, "STATE", state), \
+                 mock.patch.object(ag.api, "get_current_price", return_value=225.0), \
                  mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
                  mock.patch.object(ag.mkt, "place", side_effect=_refuse_place):
                 self.assertFalse(ag._submit_buy_tier(

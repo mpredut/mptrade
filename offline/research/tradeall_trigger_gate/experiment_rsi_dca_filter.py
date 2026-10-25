@@ -148,14 +148,18 @@ if __name__ == "__main__":
     from datetime import datetime
 
     hist_start = datetime.strptime("2025-08-27", "%Y-%m-%d").timestamp()
-    now = datetime.now().timestamp()
-    mid = hist_start + (now - hist_start) / 2.0
-    periods = [("full", hist_start, None), ("H1", hist_start, mid), ("H2", mid, now)]
 
     results = {}   # (symbol, period) -> {config: total}
     for symbol in ("BTCUSDC", "TAOUSDC", "ARBUSDC"):
         sys.stderr.write(f"\n=== {symbol} ===\n")
         ticks = load_ticks(symbol)
+        if not ticks:
+            sys.stderr.write("  no ticks loaded, skipped\n")
+            continue
+        sym_start = max(hist_start, ticks[0][0])
+        sym_end = ticks[-1][0]
+        sym_mid = sym_start + (sym_end - sym_start) / 2.0
+        periods = [("full", sym_start, None), ("H1", sym_start, sym_mid), ("H2", sym_mid, sym_end)]
         for plabel, s, e in periods:
             bars = hourly_ohlc(ticks, s, e)
             if len(bars) < 50:
