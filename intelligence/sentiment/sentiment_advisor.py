@@ -112,7 +112,7 @@ class SentimentAdvisor:
     ) -> Optional[SentimentAdvisorAssessment]:
         """Synthesize market conditions and request a periodic qualitative macro assessment."""
         now = now_ts if now_ts is not None else time.time()
-        if not force_refresh and self._cached_assessment and (now - self._last_eval_ts) < self.cache_ttl_sec:
+        if not force_refresh and self._cached_assessment and 0.0 <= (now - self._last_eval_ts) < self.cache_ttl_sec:
             return self._cached_assessment
 
         prompt_context = []

@@ -144,7 +144,9 @@ def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, 
 
 def _extract_base_symbol(symbol: str) -> str:
     s = (symbol or "").upper().strip().replace("/", "").replace("-", "").replace("_", "")
-    for quote in ("USDC", "USDT", "FDUSD", "EUR", "USD"):
+    if s == "USDCUSDT":
+        return s
+    for quote in ("USDC", "USDT", "FDUSD", "EUR", "USD", "RON", "GBP"):
         if s.endswith(quote) and len(s) > len(quote):
             return s[: -len(quote)]
     return s

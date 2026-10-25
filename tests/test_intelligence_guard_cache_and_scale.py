@@ -3173,6 +3173,160 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert "whale flow weak" in llm_reason
 
 
+def test_iteration13_assetguardian_p3b_recovery_and_gllm2_bypass_survival_usdcusdt_composite_weibull_direction_and_clock_skew(
+    tmp_path, monkeypatch
+):
+    """Verify Iteration 13 fixes across AssetGuardian P3B sentiment recovery & GLLM2 bypass,
+    survival.py USDCUSDT base preservation, CompositeMarketIntelligence Weibull trend_direction,
+    and SentimentAdvisor / GeopoliticalThreatAnalyzer clock-skew cache invalidation."""
+    import json
+    import time
+    import assetguardian as ag
+    from intelligence.internal.state.survival import _extract_base_symbol
+    from intelligence.composite import CompositeMarketIntelligence
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor, SentimentAdvisorAssessment
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer, GeopoliticalThreatAssessment
+
+    now_ts = time.time()
+
+    # 1. AssetGuardian _read_p3b_sentiment recovers from .previous when primary is corrupted,
+    #    and _p3b_threshold_multipliers honors GLLM2 bypass.
+    p3b_file = tmp_path / "sentiment_advisor_eval.json"
+    p3b_prev = tmp_path / "sentiment_advisor_eval.json.previous"
+    p3b_file.write_text("{corrupted_json", encoding="utf-8")
+    p3b_prev.write_text(
+        json.dumps(
+            {
+                "recommended_action": "DEFENSIVE",
+                "market_bias": "BEARISH",
+                "risk_level": "HIGH",
+                "confidence": 0.90,
+                "ts": now_ts - 60.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    recovered = ag._read_p3b_sentiment(path=str(p3b_file), now_ts=now_ts)
+    assert isinstance(recovered, dict)
+    assert recovered["recommended_action"] == "DEFENSIVE"
+    assert recovered["confidence"] == pytest.approx(0.90)
+
+    # When GLLM2 is bypassed via bypass_guards, _p3b_threshold_multipliers returns neutral (1.0, 1.0, None)
+    sell_m, buy_m, eff_assess = ag._p3b_threshold_multipliers(
+        assessment=recovered, bypass_guards={"GLLM2"}
+    )
+    assert sell_m == pytest.approx(1.0)
+    assert buy_m == pytest.approx(1.0)
+    assert eff_assess is None
+
+    # Without GLLM2 bypass, defensive assessment compresses sell_mult (< 1.0) and expands buy_mult (> 1.0)
+    sell_m2, buy_m2, eff_assess2 = ag._p3b_threshold_multipliers(
+        assessment=recovered, bypass_guards=set()
+    )
+    assert sell_m2 < 1.0
+    assert buy_m2 > 1.0
+    assert eff_assess2 is recovered
+
+    # 2. survival._extract_base_symbol preserves USDCUSDT and strips RON/GBP quotes
+    assert _extract_base_symbol("USDCUSDT") == "USDCUSDT"
+    assert _extract_base_symbol("USDC/USDT") == "USDCUSDT"
+    assert _extract_base_symbol("BTCRON") == "BTC"
+    assert _extract_base_symbol("ETHGBP") == "ETH"
+
+    # 3. CompositeMarketIntelligence.evaluate_guards passes inferred trend_direction from gradient
+    #    to WeibullExhaustionGuard.check so counter-trend SELL in mature bull trend (gradient > 0) is not downscaled
+    cmi = CompositeMarketIntelligence()
+    monkeypatch.setattr(
+        "intelligence.composite.get_trend_survival_metrics",
+        lambda *_a, **_kw: {"p90_days": 5.0, "median_days": 3.0, "gaussian_horizon_days": 2.0},
+    )
+    # SELL with positive gradient (bull trend) at 10 days (> p90=5d) is counter-trend exit -> allowed at 1.0 scale
+    dec_sell_bull = cmi.evaluate_guards(
+        "BTCUSDC",
+        "SELL",
+        100.0,
+        gradient=0.05,
+        epsilon=0.001,
+        trend_duration_seconds=10.0 * 86400.0,
+    )
+    assert dec_sell_bull.allowed is True
+    assert dec_sell_bull.suggested_scale == pytest.approx(1.0)
+
+    # BUY with positive gradient (bull trend) at 10 days (> p90=5d) is trend-chasing -> downscaled
+    dec_buy_bull = cmi.evaluate_guards(
+        "BTCUSDC",
+        "BUY",
+        100.0,
+        gradient=0.05,
+        epsilon=0.001,
+        trend_duration_seconds=10.0 * 86400.0,
+    )
+    assert dec_buy_bull.allowed is True
+    assert dec_buy_bull.suggested_scale < 1.0
+
+    # 4. SentimentAdvisor and GeopoliticalThreatAnalyzer invalidate cache when _last_eval_ts is in the future (clock skew)
+    sa = SentimentAdvisor(cache_ttl_sec=3600.0, cache_file=str(tmp_path / "sa_eval.json"))
+    sa._cached_assessment = SentimentAdvisorAssessment(
+        market_bias="BULLISH",
+        risk_level="LOW",
+        confidence=0.8,
+        summary="cached",
+        key_risks=[],
+        recommended_action="ACCUMULATE",
+        ts=now_ts + 5000.0,
+    )
+    sa._last_eval_ts = now_ts + 5000.0
+    called_sa = {"count": 0}
+    monkeypatch.setattr(
+        sa.gemini_client,
+        "query_json",
+        lambda *_a, **_kw: (
+            called_sa.__setitem__("count", called_sa["count"] + 1)
+            or {
+                "market_bias": "NEUTRAL",
+                "risk_level": "MODERATE",
+                "confidence": 0.5,
+                "summary": "refreshed after clock skew",
+                "key_risks": [],
+                "recommended_action": "HOLD",
+            }
+        ),
+    )
+    refreshed_sa = sa.review(now_ts=now_ts)
+    assert called_sa["count"] == 1
+    assert refreshed_sa.summary == "refreshed after clock skew"
+
+    ga = GeopoliticalThreatAnalyzer(cache_ttl_sec=3600.0, state_file=str(tmp_path / "ga_eval.json"))
+    ga._cached_assessment = GeopoliticalThreatAssessment(
+        threat_level="CRITICAL_SHOCK",
+        risk_score=0.95,
+        summary="future cached shock",
+        recommended_brake="VETO_ALL",
+        headlines_analyzed=3,
+        ts=now_ts + 5000.0,
+    )
+    ga._last_eval_ts = now_ts + 5000.0
+    from intelligence.macro.news_feed_collector import NewsFeedSnapshot, NewsHeadline
+    snap = NewsFeedSnapshot(
+        headlines=(
+            NewsHeadline(
+                title="Routine market update",
+                source="test",
+                pub_date="now",
+                url="http://example.com",
+                matched_keywords=(),
+                is_high_severity=False,
+            ),
+        ),
+        total_fetched=1,
+        high_severity_count=0,
+        has_critical_shock_keywords=False,
+        ts=now_ts,
+    )
+    refreshed_ga = ga.assess(snap, now_ts=now_ts)
+    assert refreshed_ga.threat_level == "NORMAL"
+
+
 
 
 

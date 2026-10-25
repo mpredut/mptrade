@@ -137,7 +137,8 @@ class GeopoliticalThreatAnalyzer:
             if (self._cached_assessment is not None and self._cached_assessment.is_fallback)
             else self.cache_ttl_sec
         )
-        is_stale = (now - self._last_eval_ts) >= effective_ttl
+        age_sec = now - self._last_eval_ts
+        is_stale = age_sec < 0.0 or age_sec >= effective_ttl
         acute_shock_alert = (
             news_snapshot is not None
             and news_snapshot.has_critical_shock_keywords

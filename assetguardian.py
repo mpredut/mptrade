@@ -16,6 +16,9 @@ from providers.execution_audit import ExecutionAudit
 from order_retry import propagate_submission_refusal
 from providers.quantity import resolve_assets
 from providers.strategy_executor import extract_order_id
+from state_io import read_recovering_previous
+from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+import order_guard as _og
 
 import cacheManager as cm
 import symbols as sym
@@ -415,6 +418,7 @@ def _get_portfolio_growth_percent(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFA
 
 def _read_p3b_sentiment(path=None, now_ts=None):
     """Read fresh Pillar 3B SentimentAdvisor assessment if available and within TTL."""
+    data = None
     if path is None:
         state_path = getattr(STATE, "path", None)
         if not state_path:
@@ -426,21 +430,20 @@ def _read_p3b_sentiment(path=None, now_ts=None):
             "gemini_macro_advisor.json",
         ):
             candidate = os.path.join(cache_dir, fname)
-            if os.path.exists(candidate):
-                path = candidate
+            cand_data = read_recovering_previous(
+                candidate, json.loads, default=None
+            )
+            if isinstance(cand_data, dict):
+                data = cand_data
                 break
-        if path is None:
+        if not isinstance(data, dict):
             return None
-    elif not os.path.exists(path):
-        return None
-
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        return None
-    if not isinstance(data, dict):
-        return None
+    else:
+        data = read_recovering_previous(
+            path, json.loads, default=None
+        )
+        if not isinstance(data, dict):
+            return None
 
     eval_ts = _finite_float(data.get("ts"), positive=True)
     now_val = _finite_float(now_ts, positive=True) or float(time.time())
@@ -461,7 +464,7 @@ def _read_p3b_sentiment(path=None, now_ts=None):
     }
 
 
-def _p3b_threshold_multipliers(assessment=None):
+def _p3b_threshold_multipliers(assessment=None, bypass_guards=None):
     """Compute (sell_mult, buy_mult, assessment) from Pillar 3B sentiment state.
 
     Preserves canonical tier identities while scaling trigger thresholds:
@@ -472,6 +475,13 @@ def _p3b_threshold_multipliers(assessment=None):
       AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT; DEFENSIVE expands drawdown thresholds by
       up to AG_P3B_BUY_DEFENSIVE_MAX_PENALTY to avoid catching falling knives early.
     """
+    bypass_guards_raw = bypass_guards
+    if bypass_guards_raw is None:
+        m = _og._load_margins()
+        bypass_guards_raw = m.get("binance_bypass_guards", m.get("default_bypass_guards"))
+    eff_bypass = normalize_bypassed_guards(bypass_guards=bypass_guards_raw)
+    if GUARD_REGISTRY["GLLM2"].is_bypassed(eff_bypass):
+        return 1.0, 1.0, None
     if assessment is None:
         assessment = _read_p3b_sentiment()
     if not isinstance(assessment, dict):

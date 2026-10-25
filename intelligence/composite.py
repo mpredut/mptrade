@@ -154,11 +154,16 @@ class CompositeMarketIntelligence:
         # 3. Weibull Trend Exhaustion Guard
         if trend_duration_seconds > 0:
             surv = get_trend_survival_metrics(symbol, trend_duration_seconds)
+            inferred_trend_dir = (
+                "bull" if (gradient is not None and gradient > 0)
+                else ("bear" if (gradient is not None and gradient < 0) else None)
+            )
             exh_dec = self.exhaustion_guard.check(
                 symbol, side, trend_duration_seconds,
                 p90_days=surv.get("p90_days"),
                 median_days=surv.get("median_days"),
                 gaussian_horizon_days=surv.get("gaussian_horizon_days"),
+                trend_direction=inferred_trend_dir,
             )
             if not exh_dec.allowed:
                 return exh_dec
