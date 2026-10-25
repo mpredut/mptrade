@@ -119,17 +119,29 @@ def test_recent_log_lines_handles_clock_only_stamps_and_midnight_wrap():
     picked = recent_log_lines(lines, mtime, mtime - 3600)
     assert picked == lines[1:]
 
-    # DST fallback hour (2026-10-25 03:00-04:00 fold=0 -> fold=1):
-    dt_fold1 = datetime(2026, 10, 25, 3, 15, 0, fold=1)
-    mtime_dst = dt_fold1.timestamp()
-    dst_lines = [
-        "2026-10-25 01:00:00 [ERROR] outside 1h window\n",
-        "2026-10-25 03:45:00 [ERROR] fold=0 (30m before 03:15 fold=1)\n",
-        "03:50:00 [ERROR] clock-only fold=0 (25m before 03:15 fold=1)\n",
-        "2026-10-25 03:10:00 [ERROR] fold=1 (5m before 03:15 fold=1)\n",
-    ]
-    picked_dst = recent_log_lines(dst_lines, mtime_dst, mtime_dst - 3600)
-    assert picked_dst == dst_lines[1:]
+    # DST fallback hour in Europe/Bucharest (2026-10-25 03:00-04:00 fold=0 -> fold=1):
+    old_tz = os.environ.get("TZ")
+    try:
+        os.environ["TZ"] = "Europe/Bucharest"
+        if hasattr(time, "tzset"):
+            time.tzset()
+        dt_fold1 = datetime(2026, 10, 25, 3, 15, 0, fold=1)
+        mtime_dst = dt_fold1.timestamp()
+        dst_lines = [
+            "2026-10-25 01:00:00 [ERROR] outside 1h window\n",
+            "2026-10-25 03:45:00 [ERROR] fold=0 (30m before 03:15 fold=1)\n",
+            "03:50:00 [ERROR] clock-only fold=0 (25m before 03:15 fold=1)\n",
+            "2026-10-25 03:10:00 [ERROR] fold=1 (5m before 03:15 fold=1)\n",
+        ]
+        picked_dst = recent_log_lines(dst_lines, mtime_dst, mtime_dst - 3600)
+        assert picked_dst == dst_lines[1:]
+    finally:
+        if old_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old_tz
+        if hasattr(time, "tzset"):
+            time.tzset()
 
 
 def test_only_trade_executor_topic_reaches_gateway_bounded_by_supervisor_mode(temp_env):

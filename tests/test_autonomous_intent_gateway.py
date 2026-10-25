@@ -205,6 +205,7 @@ def test_process_intent_symmetric_buy_and_sell_bypass_all_profit_guards(temp_wor
     assert "force" not in kwargs
     assert "is_market" not in kwargs
     assert kwargs["enforce_business_minimum"] is False
+    assert kwargs["wait_for_trend"] is False
     assert kwargs["regime_context"] is None
     assert kwargs["intent_id"] == f"intent_sym_{side.lower()}"
     assert kwargs["client_order_id"] == f"AI_intent_sym_{side.lower()}"
