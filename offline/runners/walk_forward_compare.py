@@ -212,16 +212,34 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
     norm_venue = venue.lower()
     raw_params = source_report.get("strategy_params", {})
 
+    spot_defaults = {
+        "currency": "USDC",
+        "entry_amount": 50.0,
+        "entry_discount_pct": 0.2,
+        "dca_amount": 30.0,
+        "dca_drop_pct": 2.0,
+        "check_minutes": 60.0,
+        "takeprofit_pct": 5.0,
+        "max_budget": 500.0,
+        "max_dca_buys": 10,
+        "enable_takeprofit": True,
+        "order_ttl_min": 120.0,
+    }
+
     if norm_venue in ("kraken", "binance"):
-        base_params = StratParams.from_dict(raw_params)
-        base_fee = float(source_report.get("fee_pct_per_leg") or (0.26 if norm_venue == "kraken" else 0.10))
+        base_params = StratParams.from_dict(raw_params, defaults=spot_defaults)
+        raw_fee = source_report.get("fee_pct_per_leg")
+        base_fee = float(raw_fee if raw_fee is not None else (0.26 if norm_venue == "kraken" else 0.10))
         return base_params, base_fee, _segment_result
 
     if norm_venue == "hyperliquid":
         hl_replay = _load_hl_replay()
         runtime_cfg = source_report.get("runtime", {})
         engine = str(runtime_cfg.get("engine") or raw_params.get("engine") or "perp").lower()
-        base_fee = float(source_report.get("fee_pct_per_leg") or raw_params.get("fee_pct") or 0.035)
+        raw_fee = source_report.get("fee_pct_per_leg")
+        if raw_fee is None:
+            raw_fee = raw_params.get("fee_pct")
+        base_fee = float(raw_fee if raw_fee is not None else 0.035)
 
         if engine == "spot":
             defaults = {
@@ -275,7 +293,10 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
         valid_fields = {f.name for f in dataclasses.fields(t212_params_cls)}
         filtered = {k: v for k, v in raw_params.items() if k in valid_fields}
         base_params = t212_params_cls(**filtered)
-        base_fee = float(source_report.get("fee_pct_per_leg") or raw_params.get("fx_fee_pct") or 0.0)
+        raw_fee = source_report.get("fee_pct_per_leg")
+        if raw_fee is None:
+            raw_fee = raw_params.get("fx_fee_pct")
+        base_fee = float(raw_fee if raw_fee is not None else 0.0)
         fx_model = source_report.get("fx_model") or {}
         fx_fixed = float(fx_model["usd_per_unit"]) if fx_model.get("usd_per_unit") is not None else 1.0
         fx_invert = bool(fx_model.get("invert", False))
@@ -293,7 +314,7 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
         periods_yr = float(ppy) if ppy is not None else None
 
         def segment_fn(records, params, fee_pct, interval, warmup_records=(), execution=None):
-            if hasattr(params, "fx_fee_pct") and fee_pct != base_fee:
+            if hasattr(params, "fx_fee_pct") and fee_pct is not None and params.fx_fee_pct != fee_pct:
                 params = dataclasses.replace(params, fx_fee_pct=fee_pct)
             adapter = t212_replay.make_t212_replay_adapter(
                 params,

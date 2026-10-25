@@ -90,7 +90,13 @@ def find_common_coins_and_sort(topn, df_cmc, binance_data):
         if symbol in binance_data:
             price_binance = binance_data[symbol]
             # Use price proximity as a weak cross-source identity check.
-            if abs(price_cmc - price_binance) / price_cmc < 0.05:  # Toleranta de 5%
+            if (
+                price_cmc is not None
+                and pd.notna(price_cmc)
+                and price_cmc > 0
+                and price_binance is not None
+                and abs(price_cmc - price_binance) / price_cmc < 0.05
+            ):  # Toleranta de 5%
                 common_coins.append({
                     "name": row['name'],
                     "symbol": symbol,
@@ -102,7 +108,19 @@ def find_common_coins_and_sort(topn, df_cmc, binance_data):
                     "website_slug": row['website_slug']
                 })
 
-    df_common = pd.DataFrame(common_coins)
+    df_common = pd.DataFrame(
+        common_coins,
+        columns=[
+            "name",
+            "symbol",
+            "launch_date",
+            "price_cmc",
+            "price_binance",
+            "change_24h",
+            "change_7d",
+            "website_slug",
+        ],
+    )
 
     # Produce the requested ranked views.
     df_sorted_new = df_common.sort_values(by="launch_date", ascending=False).head(topn)

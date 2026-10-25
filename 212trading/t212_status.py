@@ -12,7 +12,11 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+for _p in (_HERE, _ROOT):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 from ipo_common import (  # noqa: E402
     http_get, load_t212_environment, required_env, required_float_env,
 )
@@ -56,9 +60,9 @@ def main() -> int:
     cash = _retry(get_cash)
     print("============ TRADING 212 ACCOUNT ============")
     if cash:
-        free = cash.get("free", 0); inv = cash.get("invested", 0)
-        blk = cash.get("blocked") or 0; tot = cash.get("total", 0)
-        ppl = cash.get("ppl", 0); pie = cash.get("pieCash", 0)
+        free = float(cash.get("free") or 0.0); inv = float(cash.get("invested") or 0.0)
+        blk = float(cash.get("blocked") or 0.0); tot = float(cash.get("total") or 0.0)
+        ppl = float(cash.get("ppl") or 0.0); pie = float(cash.get("pieCash") or 0.0)
         print(f"  INVESTED (cost)   : {inv:>10.2f}")
         print(f"  AVAILABLE (free)  : {free:>10.2f}   <- this is what you can place new orders with")
         print(f"  BLOCKED           : {blk:>10.2f}   <- locked in pending or in-flight orders")
@@ -73,11 +77,11 @@ def main() -> int:
     print(f"\n  --- POSITIONS ({len(pf)}) ---")
     inv_sum = 0.0
     for p in pf:
-        q = float(p.get("quantity", 0)); avg = float(p.get("averagePrice", 0))
-        cur = float(p.get("currentPrice", 0)); ppl = p.get("ppl", 0)
+        q = float(p.get("quantity") or 0.0); avg = float(p.get("averagePrice") or 0.0)
+        cur = float(p.get("currentPrice") or 0.0); ppl = float(p.get("ppl") or 0.0)
         val = q * cur; inv_sum += q * avg
         print(f"    {p.get('ticker',''):<14} qty {q:<8.3f} avg {avg:<9.2f} price {cur:<9.2f} "
-              f"value {val:>9.2f}  P&L {float(ppl):>+8.2f}")
+              f"value {val:>9.2f}  P&L {ppl:>+8.2f}")
     if pf:
         print(f"    (positions cost sum: {inv_sum:.2f})")
 
@@ -87,9 +91,15 @@ def main() -> int:
     if not orders:
         print("    (none — the cash is not locked by orders)")
     for o in orders:
-        q = o.get("quantity", 0); lp = o.get("limitPrice", o.get("price"))
-        side = "BUY" if (isinstance(q, (int, float)) and q > 0) else "SELL"
-        print(f"    {o.get('ticker',''):<14} {side} qty {q} @ {lp}  ({o.get('type','')}, {o.get('status','')}) id={o.get('id','')}")
+        try:
+            q = float(o.get("quantity") or 0.0)
+        except (TypeError, ValueError):
+            q = 0.0
+        lp = o.get("limitPrice", o.get("price"))
+        side = "BUY" if q > 0 else "SELL"
+        inst = o.get("instrument") if isinstance(o.get("instrument"), dict) else {}
+        ticker = o.get("ticker") or inst.get("ticker") or ""
+        print(f"    {ticker:<14} {side} qty {q} @ {lp}  ({o.get('type','')}, {o.get('status','')}) id={o.get('id','')}")
     print("==========================================")
     return 0
 

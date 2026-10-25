@@ -81,20 +81,31 @@ cat "$LOG_FILE.run" >> "$LOG_FILE"
 PREV_STATUS="$("$PYTHON_BIN" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status",""))' "$STATUS_JSON" 2>/dev/null || true)"
 
 # Parse pytest results via python
-"$PYTHON_BIN" - <<EOF | tee -a "$LOG_FILE"
+REG_LOG_PATH="$LOG_FILE.run" \
+REG_RC="$RC" \
+REG_DURATION="$DURATION" \
+REG_COMMIT_HASH="$COMMIT_HASH" \
+REG_COMMIT_SHORT="$COMMIT_SHORT" \
+REG_COMMIT_MSG="$COMMIT_MSG" \
+REG_START_TS="$START_TS" \
+REG_START_ISO="$START_ISO" \
+REG_STATUS_JSON="$STATUS_JSON" \
+"$PYTHON_BIN" - <<'EOF' | tee -a "$LOG_FILE"
 import json
+import os
 import re
 import sys
 import time
 
-log_path = "$LOG_FILE.run"
-rc = $RC
-duration = $DURATION
-commit_hash = "$COMMIT_HASH"
-commit_short = "$COMMIT_SHORT"
-commit_msg = """$COMMIT_MSG"""
-start_ts = $START_TS
-start_iso = "$START_ISO"
+log_path = os.environ["REG_LOG_PATH"]
+rc = int(os.environ.get("REG_RC") or 0)
+duration = int(os.environ.get("REG_DURATION") or 0)
+commit_hash = os.environ.get("REG_COMMIT_HASH", "")
+commit_short = os.environ.get("REG_COMMIT_SHORT", "")
+commit_msg = os.environ.get("REG_COMMIT_MSG", "")
+start_ts = int(os.environ.get("REG_START_TS") or 0)
+start_iso = os.environ.get("REG_START_ISO", "")
+status_json_path = os.environ["REG_STATUS_JSON"]
 
 passed = 0
 failed = 0
@@ -143,12 +154,11 @@ status_data = {
     "ts": int(time.time()),
 }
 
-tmp_out = "$STATUS_JSON.tmp"
+tmp_out = f"{status_json_path}.tmp"
 with open(tmp_out, "w", encoding="utf-8") as f:
     json.dump(status_data, f, indent=2)
 
-import os
-os.replace(tmp_out, "$STATUS_JSON")
+os.replace(tmp_out, status_json_path)
 print(f"[dev_regression] Status: {status} | Passed: {passed} | Failed: {failed} | Duration: {duration}s")
 EOF
 

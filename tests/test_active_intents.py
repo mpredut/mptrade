@@ -154,3 +154,23 @@ def test_normalizes_kraken_vol_t212_limit_price_and_nested_outbox_client_order_i
     assert by_id["CID-NESTED-1"]["client_order_id"] == "CID-NESTED-1"
     assert by_id["CID-NESTED-1"]["requested_price"] == 150.0
 
+
+def test_excludes_inactive_tickets_in_rtrade_pairs(tmp_path):
+    rtrade = tmp_path / "cachedb/rtrade_pairs.json"
+    _write(rtrade, {
+        "pairs": {
+            "round-1": {
+                "symbol": "ETHUSDC",
+                "terminal": False,
+                "tickets": [
+                    {"order_id": "101", "side": "BUY", "price": 3000.0, "qty": 0.1, "active": False},
+                    {"order_id": "102", "side": "SELL", "price": 3100.0, "qty": 0.1, "active": True},
+                ],
+            }
+        }
+    })
+    result = build_active_intent_index(str(tmp_path))
+    ids = {row["intent_id"] for row in result["intents"]}
+    assert ids == {"102"}
+
+

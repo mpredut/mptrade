@@ -51,6 +51,8 @@ def _first(row: dict, *names):
 
 def _intent_row(row: dict, *, owner: str, source: str, location: str,
                 inherited: dict) -> dict | None:
+    if row.get("active") is False:
+        return None
     place_kwargs = row.get("place_kwargs")
     nested_kwargs = place_kwargs if isinstance(place_kwargs, dict) else {}
     client_order_id = _first(row, "client_order_id") or nested_kwargs.get("client_order_id")

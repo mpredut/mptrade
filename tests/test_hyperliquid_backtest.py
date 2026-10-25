@@ -656,3 +656,42 @@ def test_hyperliquid_reconcile_real_marginal_dca_fill_price():
     assert abs(strat.s["last_open_price"] - 98.0) < 1e-6
     assert strat.s["dca_buys"] == 1
 
+
+def test_hyperliquid_price_analysis_and_signals_edge_cases(tmp_path):
+    spec_pa = importlib.util.spec_from_file_location("hl_pa_module", os.path.join(_HL_DIR, "price_analysis.py"))
+    price_analysis = importlib.util.module_from_spec(spec_pa)
+    spec_pa.loader.exec_module(price_analysis)
+
+    spec_sig = importlib.util.spec_from_file_location("hl_sig_module", os.path.join(_HL_DIR, "signals.py"))
+    signals = importlib.util.module_from_spec(spec_sig)
+    spec_sig.loader.exec_module(signals)
+
+    class FakeCandleClient:
+        def candles(self, coin, interval, lookback_hours=None):
+            rows = [{"t": (1700000000 + i * 3600) * 1000, "c": str(100.0 + i * 0.1)} for i in range(60)]
+            # Inject malformed candles missing 't' or 'c'
+            rows.insert(5, {"t": 1700000000 * 1000})
+            rows.insert(10, {"c": "101.0"})
+            return rows
+
+    res = price_analysis.analyze(FakeCandleClient(), "HYPE")
+    assert res is not None
+    assert res["direction"] == "up"
+
+    corrupt_sig = tmp_path / "signal.json"
+    corrupt_sig.write_text("[1, 2, 3]", encoding="utf-8")
+    sig_res = signals._file_signal(str(corrupt_sig))
+    assert sig_res["trend"] == "neutral"
+    assert sig_res["source"] == "file(corupt)"
+
+
+def test_walk_forward_compare_preserves_zero_fee():
+    from offline.runners.walk_forward_compare import _build_venue_evaluator
+
+    _, krk_fee, _ = _build_venue_evaluator("kraken", {"fee_pct_per_leg": 0.0, "strategy_params": {}})
+    assert krk_fee == 0.0
+
+    _, hl_fee, _ = _build_venue_evaluator("hyperliquid", {"fee_pct_per_leg": 0.0, "strategy_params": {"fee_pct": 0.035}})
+    assert hl_fee == 0.0
+
+

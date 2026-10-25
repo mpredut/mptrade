@@ -25,9 +25,10 @@ def fetch_ohlc(sym: str, rng: str, interval: str):
     ts = res.get("timestamp") or []
     q = (res.get("indicators", {}).get("quote") or [{}])[0]
     o, h, l, c, v = (q.get(k) or [] for k in ("open", "high", "low", "close", "volume"))
+    n_ohlc = min(len(o), len(h), len(l), len(c))
     out = []
     for i, t in enumerate(ts):
-        if i < len(c) and None not in (o[i], h[i], l[i], c[i]):
+        if i < n_ohlc and None not in (o[i], h[i], l[i], c[i]):
             out.append((t, o[i], h[i], l[i], c[i], (v[i] if i < len(v) and v[i] else 0)))
     return out, res.get("meta", {})
 
@@ -62,7 +63,7 @@ def main() -> int:
     hi = max(b[2] for b in intra); lo = min(b[3] for b in intra)
     closes = [b[4] for b in intra]
     rets = [pct(closes[i], closes[i - 1]) for i in range(1, len(closes))]
-    abs_rets = [abs(r) for r in rets]
+    abs_rets = [abs(r) for r in rets] or [0.0]
     bar_rng = [pct(b[2], b[3]) for b in intra]           # (high-low)/low per five-minute bar
     dips = pullbacks(closes)
 

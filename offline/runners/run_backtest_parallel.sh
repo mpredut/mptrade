@@ -31,11 +31,11 @@ for cmd in "${CMDS[@]}"; do
   log="$OUTDIR/$(printf '%02d' "$idx").log"
   printf '%02d\t%s\n' "$idx" "$cmd" | tee -a "$OUTDIR/manifest.tsv" >/dev/null
   echo "=== [$idx] $cmd ===" > "$log"
-  ( eval "$cmd" >> "$log" 2>&1; echo "[exit $?]" >> "$log" ) &
+  ( rc=0; eval "$cmd" >> "$log" 2>&1 || rc=$?; echo "[exit $rc]" >> "$log" ) &
   # limit concurrency to JOBS
-  while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do wait -n; done
+  while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do wait -n || true; done
 done
-wait
+wait || true
 
 echo "[parallel] DONE. Logs in $OUTDIR"
 echo "[parallel] manifest:"; cat "$OUTDIR/manifest.tsv" | sed 's/^/  /'

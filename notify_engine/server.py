@@ -224,7 +224,7 @@ class NotificationServer:
         email_batch = pop_due_bulk_batch("email", now=now, force=force)
         if email_batch:
             email_subj, email_body, _, _ = email_batch
-            if self._send_email(email_subj, email_body, is_retry=True):
+            if self._send_email(email_subj, email_body, is_retry=False, dedup=False):
                 flushed = True
         return flushed
 
@@ -311,9 +311,9 @@ class NotificationServer:
                 })
             return False
             
-    def _send_email(self, subject: str, message: str, is_retry: bool = False) -> bool:
-        # Retries bypass dedup: the first attempt already reserved this fingerprint.
-        ok = send_email(subject, message, dedup=not is_retry)
+    def _send_email(self, subject: str, message: str, is_retry: bool = False, *, dedup: bool = True) -> bool:
+        # Retries and synthesized bulk batches bypass dedup: the first attempt already reserved this fingerprint.
+        ok = send_email(subject, message, dedup=(dedup and not is_retry))
         if not ok and not is_retry and email_is_configured() and not last_error_is_auth_failure():
             self._enqueue_payload("email", {"subject": subject, "message": message})
         return ok

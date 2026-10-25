@@ -22,8 +22,12 @@ from __future__ import annotations
 import json
 import os
 import statistics
+import sys
 import time
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 from common import log, required_env, required_float_env, required_int_env
 
 NEUTRAL = {"trend": "neutral", "confidence": 0.0, "source": "neutral"}
@@ -54,6 +58,9 @@ def _file_signal(path: str) -> dict:
             d = json.load(f)
     except (OSError, ValueError) as e:
         log(f"  ! an invalid signal file: {e}")
+        return {**NEUTRAL, "source": "file(corupt)"}
+    if not isinstance(d, dict):
+        log("  ! an invalid signal file: top-level JSON must be an object")
         return {**NEUTRAL, "source": "file(corupt)"}
     ts = d.get("ts") or d.get("timestamp")
     max_age = required_float_env("SIGNAL_MAX_AGE_MIN") * 60

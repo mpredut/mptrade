@@ -203,7 +203,10 @@ def _merge_forward_history(pair: str, interval: int, anchor: int, fetched):
 
 
 def _run_one(ohlc, params, interval, fee_pct, *, include_decision_trace=False):
-    import replay as rp
+    try:
+        from kraken import replay as rp
+    except ImportError:
+        import replay as rp
     with contextlib.redirect_stdout(io.StringIO()):
         m = rp.run_replay(
             ohlc, params, fee_pct=fee_pct, bar_minutes=interval,

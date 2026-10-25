@@ -130,6 +130,17 @@ if [ "$local_sha" != "$remote_sha" ]; then
 fi
 
 # --- mode=on: apply restart ---
+if [ "$AUTODEPLOY_MODE" = shadow ]; then
+    log "SHADOW: origin/$BRANCH=$remote_sha (HEAD=$local_sha) -- WOULD restart python_orchestrator.service. Not applied."
+    seen=""; [ -f "$SHADOW_MARK" ] && seen="$(cat "$SHADOW_MARK" 2>/dev/null)"
+    if [ "$seen" != "$remote_sha" ]; then
+        echo "$remote_sha" > "$SHADOW_MARK"
+        alert "autodeploy SHADOW ($(hostname))" \
+            "origin/$BRANCH -> ${remote_sha:0:9} is ready. Set AUTODEPLOY_MODE=on in autodeploy.local.conf to apply (restart the fleet)."
+    fi
+    exit 0
+fi
+
 # GUARD: anti-loop -- do not redeploy the same target within the cooldown.
 if [ -n "$last_sha" ] && [ "$last_sha" = "$remote_sha" ] && [ $(( $(date +%s) - ${last_ts:-0} )) -lt "$COOLDOWN" ]; then
     log "already deployed $remote_sha within the ${COOLDOWN}s cooldown; skipping"
