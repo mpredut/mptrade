@@ -649,6 +649,19 @@ class T212MHDSLTest(_T212BaseTest):
             self.assertIsNone(strat.s.get("sl_pending_exit"))
             self.assertNotIn("TEST_US_EQ", strat.exit_manager.sl_bounce_state)
 
+    def test_restore_cancelled_buy_converts_usd_notional_to_account_ccy(self):
+        strat = self._make_strat(STRAT_CURRENCY="RON")
+        strat.fx_to_usd = 0.22
+        captured = []
+        strat._place_buy = lambda amount, limit, kind="ENTRY": (captured.append((amount, limit, kind)) or True)
+        # Adopted/synced BUY order has qty & limit in USD, without 'amount'
+        strat._restore_cancelled_orders([{"side": "BUY", "qty": 2.0, "limit": 110.0, "kind": "DCA"}], reason="test")
+        self.assertEqual(len(captured), 1)
+        self.assertAlmostEqual(captured[0][0], 220.0 / 0.22, places=4)
+        self.assertEqual(captured[0][1], 110.0)
+        self.assertEqual(captured[0][2], "DCA")
+
+
 
 if __name__ == "__main__":
     unittest.main()

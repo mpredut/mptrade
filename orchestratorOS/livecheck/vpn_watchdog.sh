@@ -208,6 +208,7 @@ ntfy_topic() {
 source "$ROOT/orchestratorOS/lib/os_notify.sh"
 
 ntfy_push() {  # $1=title $2=body -> 0 if it went out (ERROR topic, mirrored to email)
+    net_raw_ok || return 1
     local topic; topic=$(ntfy_topic)
     [ -z "$topic" ] && return 1
     send_os_ntfy "$1" "$2" default "$topic"
@@ -236,7 +237,7 @@ flush_spool() {
             IFS= read -r line < "$file" || [ -n "$line" ] || break
             # One stored alert per request keeps the push body comfortably below
             # mobile push limits. Remove a line only after an HTTP-confirmed send.
-            ntfy_push "PIA: Delayed alert ($(hostname))" "$line" || return 1
+            OS_NOTIFY_DEDUP_SECONDS=0 OS_NOTIFY_GATE_SECONDS=0 ntfy_push "PIA: Delayed alert ($(hostname))" "$line" || return 1
             remainder="$file.remainder.$$"
             tail -n +2 "$file" > "$remainder"
             mv -f "$remainder" "$file"

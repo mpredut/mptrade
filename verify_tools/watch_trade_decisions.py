@@ -45,7 +45,10 @@ def position(symbol, maxage=17 * 24 * 3600):
     tq = sum(float(o["qty"]) for o in buys)
     tv = sum(float(o["price"]) * float(o["qty"]) for o in buys)
     sq = sum(float(o["qty"]) for o in sells)
-    last_buy = float(buys[0]["price"]) if buys else 0.0   # ca get_relevant_trade (referinta botului)
+    last_buy = (
+        float(max(buys, key=lambda o: float(o.get("timestamp") or o.get("time") or 0))["price"])
+        if buys else 0.0
+    )   # ca get_relevant_trade (referinta botului)
     return (tv / tq if tq else 0.0), tq - sq, len(sells), last_buy
 
 

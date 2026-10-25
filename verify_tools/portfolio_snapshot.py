@@ -132,9 +132,10 @@ def _ntfy(title: str, body: str) -> None:
     if not topic:
         return
     import urllib.request
+    safe_title = title.encode("utf-8").decode("latin-1", "ignore")
     req = urllib.request.Request(
         f"https://ntfy.sh/{topic}", data=body.encode("utf-8"),
-        headers={"Title": title, "Priority": "high", "Tags": "warning"})
+        headers={"Title": safe_title, "Priority": "high", "Tags": "warning"})
     try:
         urllib.request.urlopen(req, timeout=10)
     except Exception:  # noqa: BLE001 — best-effort alert, we do not block the snapshot

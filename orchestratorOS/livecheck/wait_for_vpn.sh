@@ -6,8 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 MAX_WAIT=45
 WAIT_COUNT=0
 
-# If pia.service is active or enabled on the system, wait for VPN health check
-if systemctl is-enabled --quiet pia.service 2>/dev/null || systemctl is-active --quiet pia.service 2>/dev/null; then
+# If pia-vpn.service or pia.service is active or enabled on the system, wait for VPN health check
+if systemctl is-enabled --quiet pia-vpn.service 2>/dev/null || systemctl is-active --quiet pia-vpn.service 2>/dev/null || systemctl is-enabled --quiet pia.service 2>/dev/null || systemctl is-active --quiet pia.service 2>/dev/null; then
     while [ "$WAIT_COUNT" -lt "$MAX_WAIT" ]; do
         if [ -x "$SCRIPT_DIR/pia_supervisor.sh" ] && "$SCRIPT_DIR/pia_supervisor.sh" --check >/dev/null 2>&1; then
             exit 0

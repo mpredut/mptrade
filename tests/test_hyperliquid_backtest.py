@@ -656,6 +656,37 @@ def test_hyperliquid_reconcile_real_marginal_dca_fill_price():
     assert abs(strat.s["last_open_price"] - 98.0) < 1e-6
     assert strat.s["dca_buys"] == 1
 
+    # Partial ENTRY fill across two ticks must not count as DCA, and partial DCA fill across two ticks counts once
+    strat2 = Strategy(
+        client=client,
+        coin="HYPE",
+        params=StratParams(direction="long", dca_drop_pct=2.0),
+        dry_run=False,
+        replay_mode=True,
+    )
+    strat2.s["orders"] = [{"oid": "ENT-1", "role": "open", "side": "buy", "sz": 10.0, "px": 100.0, "kind": "ENTRY"}]
+    client.orders = [{"oid": "ENT-1"}]  # still open (partial fill 1)
+    client.pos = (4.0, 100.0)
+    assert strat2.reconcile(100.0) is True
+    assert strat2.s["dca_buys"] == 0
+
+    client.orders = []  # second fill completes ENTRY
+    client.pos = (10.0, 100.0)
+    assert strat2.reconcile(100.0) is True
+    assert strat2.s["dca_buys"] == 0
+
+    # Now place a DCA order that fills in two partial fills
+    strat2.s["orders"] = [{"oid": "DCA-2", "role": "open", "side": "buy", "sz": 4.0, "px": 95.0, "kind": "DCA"}]
+    client.orders = [{"oid": "DCA-2"}]
+    client.pos = (12.0, (1000.0 + 190.0) / 12.0)
+    assert strat2.reconcile(95.0) is True
+    assert strat2.s["dca_buys"] == 1
+
+    client.orders = []
+    client.pos = (14.0, (1000.0 + 380.0) / 14.0)
+    assert strat2.reconcile(95.0) is True
+    assert strat2.s["dca_buys"] == 1
+
 
 def test_hyperliquid_price_analysis_and_signals_edge_cases(tmp_path):
     spec_pa = importlib.util.spec_from_file_location("hl_pa_module", os.path.join(_HL_DIR, "price_analysis.py"))

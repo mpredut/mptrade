@@ -52,7 +52,7 @@ def _load_state() -> dict:
         path,
         default_factory=lambda: {
             "known_assets": {}, "allocated": None, "pair": None,
-            "alerted_pair": False, "alerted_tp": False, "alerted_sl": False,
+            "alerted_pair": False, "alerted_tp": False, "alerted_tp2": False, "alerted_sl": False,
             "bot_pid": None, "alerted_need_price": False,
         },
         fail_closed=True, label="Kraken xStock watcher",
@@ -322,7 +322,8 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
         _save_state(st)
         log("  [proba] waiting 12s for it to adopt the position and place the paper TP...")
         time.sleep(12)
-        os.kill(int(bot_pid), 15)                                # 4. watchdog
+        if bot_pid is not None:
+            os.kill(int(bot_pid), 15)                            # 4. watchdog
         time.sleep(1.0)
         verdict["moartea botului detectata"] = not _bot_alive(bot_pid)
         maybe_start_bot(st, alloc, desktop)

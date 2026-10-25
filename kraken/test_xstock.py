@@ -149,6 +149,8 @@ class TestWatcherPersistenta(Base):
     def test_the_tp_and_sl_level_alerts_fire_once(self):
         c = FakeKraken(price=250.0)
         st = xw._load_state()
+        self.assertIn("alerted_tp2", st)
+        self.assertFalse(st["alerted_tp2"])
         st["allocated"] = {"asset": "SPCXX", "qty": 37.5}
         st["pair"] = "SPCXXUSD"
         xw.check_levels(c, st, 200.0, 20.0, 15.0, "", False)   # +25% > +20%

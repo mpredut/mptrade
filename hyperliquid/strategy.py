@@ -292,6 +292,11 @@ class Strategy:
                 (o for o in self.s["orders"] if o.get("role") == "open" and str(o.get("oid")) not in active),
                 None,
             )
+            if filled_open is None:
+                filled_open = next(
+                    (o for o in self.s["orders"] if o.get("role") == "open"),
+                    None,
+                )
             if prev > 1e-9:
                 marginal_px = ((qty_now * entry - prev_cost) / fq) if (entry > 0 and prev_cost > 0) else 0.0
                 if marginal_px > 0:
@@ -306,10 +311,19 @@ class Strategy:
                     if (filled_open and float(filled_open.get("px", 0) or 0) > 0)
                     else price
                 )
+            open_kind = filled_open.get("kind") if filled_open else None
+            if open_kind == "ENTRY":
+                count_dca = False
+            elif filled_open is not None:
+                count_dca = not bool(filled_open.get("dca_counted"))
+                filled_open["dca_counted"] = True
+            else:
+                count_dca = None
             self._apply_open(
                 fq, fp, round(fq * fp, 2),
-                filled_open.get("kind") if filled_open else None,
+                open_kind,
                 real_qty=qty_now, real_avg=entry if entry > 0 else fp,
+                count_dca=count_dca,
             )
         elif qty_now < prev - 1e-9:      # position reduced by take profit
             filled_close = next(
@@ -347,8 +361,8 @@ class Strategy:
             return False
         return self.sign * (price - order["px"]) > 0.003 * order["px"]
 
-    def _apply_open(self, fq, fp, amount, kind, real_qty=None, real_avg=None):
-        is_dca = self.s["qty"] > 1e-9
+    def _apply_open(self, fq, fp, amount, kind, real_qty=None, real_avg=None, *, count_dca=None):
+        is_dca = (self.s["qty"] > 1e-9) if count_dca is None else bool(count_dca)
         self.s["last_open_price"] = fp
         if self.s["entry_price"] is None: self.s["entry_price"] = fp
         if is_dca: self.s["dca_buys"] += 1
@@ -512,7 +526,7 @@ class Strategy:
     # -- loop ------------------------------------------------------------------
     def run(self) -> None:
         mode = "avg_tp" if self.p.enable_takeprofit else "dca_only"
-        if not self.dry_run and self.client.exchange:
+        if not self.dry_run and self.client is not None and self.client.exchange:
             self.client.set_leverage(self.coin, self.leverage)
         fee_hl = getattr(self.p, "fee_pct", HL_FEE_PCT)
         log("  === STRATEGIE HYPERLIQUID PORNITA ===")

@@ -19,7 +19,10 @@ import collections
 import datetime
 from pathlib import Path
 
-import paramiko
+try:
+    import paramiko
+except ImportError:
+    paramiko = None
 
 _REPO = Path(__file__).resolve().parent.parent   # verify_tools/ -> repository root
 sys.path.insert(0, str(_REPO))
@@ -108,11 +111,18 @@ def load_procs(c):
         reldir = _rel_dir(dir_field)
 
         if role == "fleet":
-            script = os.path.basename(pat.split()[0])          # 'cacheManager.py'
-            log = f"logs/{script[:-3] if script.endswith('.py') else script}.log"
+            clean_stem = (label or os.path.basename(pat.split()[0])).replace(".py", "")
+            log = f"logs/{clean_stem}.log"
         else:
             rel = hb_log or _log_from_cmd(start_cmd)
-            log = f"{reldir}/{rel}" if (reldir and rel) else rel
+            if "," in rel:
+                parts_rel = [p.strip() for p in rel.split(",") if p.strip()]
+                log_candidates = [p for p in parts_rel if p.endswith(".log")]
+                rel = log_candidates[-1] if log_candidates else (parts_rel[-1] if parts_rel else "")
+            if rel.startswith(("logs/", "cachedb/")):
+                log = rel
+            else:
+                log = f"{reldir}/{rel}" if (reldir and rel) else rel
 
         procs.append(Proc(pat=pat, label=label, log=log, role=role))
     return procs

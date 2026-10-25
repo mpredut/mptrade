@@ -9,11 +9,14 @@ SINCE="${1:-40m}"
 # Read from .env or config.env without exposing secrets in output.
 PHONE_URL=$(env_get PHONE_ALERT_URL)
 NT_TOPIC=$(env_get NTFY_TOPIC_ERROR "ntfy-error-1978")
+TOKEN="${NTFY_TOKEN:-$(env_get NTFY_TOKEN)}"
+AUTH_HDR=()
+[ -n "$TOKEN" ] && AUTH_HDR=(-H "Authorization: Bearer $TOKEN")
 
 check_url() {
     local url="$1" label="$2"
     [ -z "$url" ] && { echo "$label: (topic missing from .env/config.env)"; return; }
-    curl -s -m 15 "$url/json?poll=1&since=$SINCE" | "$PYTHON_BIN" -c "
+    curl -s -m 15 "${AUTH_HDR[@]}" "$url/json?poll=1&since=$SINCE" | "$PYTHON_BIN" -c "
 import sys, json, datetime
 alarms, info = [], 0
 for line in sys.stdin:
