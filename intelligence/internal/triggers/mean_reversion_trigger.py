@@ -95,6 +95,24 @@ class MeanReversionTrigger:
 
     def update(self, symbol: str, timestamp: float, price: float) -> TriggerEvent:
         """Feed latest price and return current TriggerEvent."""
+        import math
+        if not (math.isfinite(float(price)) and float(price) > 0):
+            return TriggerEvent(
+                action=TriggerAction.NEUTRAL,
+                side=TriggerSide.HOLD,
+                source="MeanReversionTrigger",
+                symbol=symbol,
+                price=0.0,
+                strength=0.0,
+                ts=timestamp,
+                confidence=0.0,
+                metadata={
+                    "rsi": None,
+                    "percent_b": None,
+                    "mode": self.mode,
+                    "current_sign": self.current_sign,
+                },
+            )
         rsi = self._calc_rsi(price)
         pb = self._calc_percent_b(price)
 

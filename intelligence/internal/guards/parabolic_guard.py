@@ -51,8 +51,8 @@ class ParabolicSurgeGuard:
 
         # Dynamic threshold based on volatility if available
         threshold = self.surge_threshold_pct
-        if volatility_1h_pct is not None and volatility_1h_pct > 0:
-            threshold = max(self.surge_threshold_pct, volatility_1h_pct * self.vol_multiplier)
+        if volatility_1h_pct is not None and math.isfinite(float(volatility_1h_pct)) and volatility_1h_pct > 0:
+            threshold = max(self.surge_threshold_pct, float(volatility_1h_pct) * self.vol_multiplier)
 
         state_key = symbol if side_u == "BUY" else f"{symbol}:SELL"
         st = self._states.setdefault(
@@ -66,8 +66,14 @@ class ParabolicSurgeGuard:
             },
         )
 
-        # Expire stale peak/trough state once a full window has elapsed without new extremes
-        if ts_now > 0 and st.get("ts", 0) > 0 and (ts_now - st["ts"]) >= self.window_seconds:
+        # Reset clock-skewed future timestamps
+        if ts_now > 0 and float(st.get("disarmed_peak_ts", 0.0)) > ts_now + 5.0:
+            st["disarmed_peak_ts"] = 0.0
+
+        # Expire stale peak/trough state once a full window has elapsed without new extremes (or on backward clock skew)
+        if ts_now > 0 and st.get("ts", 0) > 0 and (
+            (ts_now - st["ts"]) >= self.window_seconds or st["ts"] > ts_now + 5.0
+        ):
             st["surge_active"] = False
             st["peak"] = current_price
             st["surge_start_px"] = current_price
@@ -87,7 +93,16 @@ class ParabolicSurgeGuard:
         # Check chronological directional move in rolling window if history provided
         if price_history and len(price_history) >= 2:
             window_start_ts = max(ts_now - self.window_seconds, float(st.get("disarmed_peak_ts", 0.0)))
-            window_pts = [(float(t), float(p)) for (t, p) in price_history if t >= window_start_ts and p > 0]
+            max_allowed_ts = (ts_now + 5.0) if ts_now > 0 else float("inf")
+            window_pts = []
+            for item in price_history:
+                try:
+                    t_f = float(item[0])
+                    p_f = float(item[1])
+                    if math.isfinite(t_f) and math.isfinite(p_f) and p_f > 0 and window_start_ts <= t_f <= max_allowed_ts:
+                        window_pts.append((t_f, p_f))
+                except (TypeError, ValueError, IndexError):
+                    continue
             if ts_now >= window_start_ts and (not window_pts or window_pts[-1] != (float(ts_now), float(current_price))):
                 window_pts.append((float(ts_now), float(current_price)))
             if window_pts:

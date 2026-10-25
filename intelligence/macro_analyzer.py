@@ -111,7 +111,14 @@ class MacroAnalyzer:
                     history_file=os.path.join(self.cache_dir, "news_feed_collect.json")
                 ).get_pool_snapshot()
 
-            assessment = self.geopolitical_analyzer.assess(news_snap, force_refresh=force, now_ts=eval_now)
+            try:
+                assessment = (
+                    self.geopolitical_analyzer.assess(news_snap, force_refresh=force, now_ts=eval_now)
+                    if now is not None
+                    else self.geopolitical_analyzer.assess(news_snap, force_refresh=force)
+                )
+            except TypeError:
+                assessment = self.geopolitical_analyzer.assess(news_snap, force_refresh=force)
             if assessment:
                 logger.info(
                     "Published geopolitical assessment: threat=%s, risk=%.2f, headlines=%d",
@@ -227,13 +234,30 @@ class MacroAnalyzer:
                 except Exception as w_err:
                     logger.debug("Failed loading whale telemetry from %s: %s", w_path, w_err)
 
-            assessment = self.gemini_advisor.review(
-                fear_greed=fg_snap,
-                breadth=mb_snap,
-                whale_telemetry=whale_data,
-                force_refresh=force,
-                now_ts=eval_now,
-            )
+            try:
+                assessment = (
+                    self.gemini_advisor.review(
+                        fear_greed=fg_snap,
+                        breadth=mb_snap,
+                        whale_telemetry=whale_data,
+                        force_refresh=force,
+                        now_ts=eval_now,
+                    )
+                    if now is not None
+                    else self.gemini_advisor.review(
+                        fear_greed=fg_snap,
+                        breadth=mb_snap,
+                        whale_telemetry=whale_data,
+                        force_refresh=force,
+                    )
+                )
+            except TypeError:
+                assessment = self.gemini_advisor.review(
+                    fear_greed=fg_snap,
+                    breadth=mb_snap,
+                    whale_telemetry=whale_data,
+                    force_refresh=force,
+                )
             if assessment:
                 logger.info(
                     "Published Gemini macro advisor assessment: bias=%s, risk=%s, action=%s (ts=%.1f)",

@@ -4230,6 +4230,145 @@ def test_iteration18_macro_analyzer_resilience_and_external_collectors_now_propa
     assert reason_stale == "ok"
 
 
+def test_iteration19_parabolic_clock_skew_smart_sl_now_kalman_mean_reversion_nan_and_cli_previous(tmp_path, monkeypatch):
+    """Verify Iteration 19 fixes:
+    1. ParabolicSurgeGuard resets future disarmed_peak_ts / ts on backward clock skew,
+       filters non-finite or future points from price_history, and ignores NaN/Inf volatility_1h_pct.
+    2. SmartStopLossGuard propagates `now` to whale/orderbook collectors and resets clock-skewed future grace entries.
+    3. KalmanTrend and MeanReversionTrigger reject NaN/Inf/<=0 prices without poisoning internal state,
+       and KalmanTrend resets on backward timestamp jumps (raw_dt < -1.0).
+    4. LiquidationCapitulationTrigger and WhaleAccumulationTrigger forward `now` to collectors.
+    5. intelligence.cli recovers corrupt heartbeat and telemetry files from .previous backups.
+    """
+    import external_order_guard
+    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard, _GRACE_TRACKER
+    from intelligence.internal.triggers.kalman_trigger import KalmanTrend
+    from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
+    from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
+    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
+    from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector
+    from intelligence.external.collectors.whale_positioning import (
+        WhalePositioningCollector,
+        WhalePositioningSnapshot,
+    )
+    from intelligence.cli import get_daemon_status, get_macro_analyzer_status, inspect_symbol_intelligence
 
+    # 1. ParabolicSurgeGuard clock-skew & NaN/future history resilience
+    p_guard = ParabolicSurgeGuard(surge_threshold_pct=4.0, pullback_required_pct=1.5, window_seconds=3600.0)
+    p_guard._states["BTCUSDC"] = {
+        "peak": 120.0,
+        "surge_active": False,
+        "surge_start_px": 100.0,
+        "ts": 99999.0,
+        "disarmed_peak_ts": 99999.0,  # future disarmed timestamp from prior run
+    }
+    hist = [
+        (1000.0, 100.0),
+        (1200.0, float("nan")),
+        (1500.0, 106.0),  # +6% surge at t=1500
+        (9000.0, 150.0),  # future point beyond now=1500 -> must be ignored
+    ]
+    dec_surge = p_guard.check(
+        "BTCUSDC",
+        "BUY",
+        current_price=106.0,
+        price_history=hist,
+        volatility_1h_pct=float("inf"),
+        now=1500.0,
+    )
+    assert dec_surge.allowed is False
+    assert "parabolic_surge_active" in dec_surge.reason
+    assert dec_surge.metadata["peak"] == pytest.approx(106.0)
 
+    # 2. SmartStopLossGuard `now` propagation & clock-skewed grace reset
+    w_col = WhalePositioningCollector(cache_ttl_sec=120.0, cache_dir=str(tmp_path), disk_ttl_sec=300.0)
+    w_col.record_snapshot(
+        WhalePositioningSnapshot(
+            symbol="BTCUSDC",
+            top_traders_long_ratio=2.0,
+            top_traders_long_pct=0.68,
+            taker_buy_sell_ratio=1.10,
+            taker_buy_vol_usd=500_000.0,
+            taker_sell_vol_usd=450_000.0,
+            open_interest_usd=20_000_000.0,
+            open_interest_1h_change_pct=1.5,
+            divergence_regime="accumulation",
+            ts=2000.0,
+        ),
+        save_to_disk=True,
+    )
+    monkeypatch.setattr(external_order_guard, "get_whale_collector", lambda: w_col)
+    sl_guard = SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
+    _GRACE_TRACKER["BTCUSDC"] = {
+        "start_ts": 99999.0,  # future clock-skewed grace start_ts
+        "initial_loss_pct": 3.1,
+        "lost_threshold_pct": 3.0,
+        "provider": "binance",
+        "current_price": 96.9,
+        "buy_price": 100.0,
+    }
+    should_exec, sl_reason, _ = sl_guard.evaluate(
+        "BTCUSDC",
+        price_decrease=0.031,
+        lost_threshold=0.030,
+        now=2050.0,
+        provider="binance",
+        current_price=96.9,
+        buy_price=100.0,
+    )
+    assert should_exec is False
+    assert "suspected_wick_hunt" in sl_reason
+    assert _GRACE_TRACKER["BTCUSDC"]["start_ts"] == pytest.approx(2050.0)
+    _GRACE_TRACKER.pop("BTCUSDC", None)
+
+    # 3. KalmanTrend & MeanReversionTrigger NaN/Inf/backward-ts protection
+    import math
+    kf = KalmanTrend()
+    kf.update(1000.0, 100.0, 0.05)
+    kf_nan = kf.update(1010.0, float("nan"), float("nan"))
+    assert math.isfinite(kf._x0) and math.isfinite(kf._x1)
+    assert kf_nan["vel"] == 0.0
+    # Backward timestamp jump resets state cleanly instead of using dt=0.05s
+    kf_back = kf.update(500.0, 110.0, 0.05)
+    assert kf.last_ts == pytest.approx(500.0)
+    assert kf_back["vel"] == pytest.approx(0.0)
+
+    mrt = MeanReversionTrigger(mode="both", rsi_period=3, bb_period=3)
+    mrt.update("BTCUSDC", 1000.0, 100.0)
+    ev_nan = mrt.update("BTCUSDC", 1010.0, float("nan"))
+    assert ev_nan.metadata["rsi"] is None
+    assert len(mrt.bb_buf) == 1
+    mrt.update("BTCUSDC", 1020.0, 101.0)
+    mrt.update("BTCUSDC", 1030.0, 102.0)
+    ev_valid = mrt.update("BTCUSDC", 1040.0, 103.0)
+    assert ev_valid.metadata["rsi"] is not None and math.isfinite(ev_valid.metadata["rsi"])
+    assert ev_valid.metadata["percent_b"] is not None and math.isfinite(ev_valid.metadata["percent_b"])
+
+    # 4. LiquidationCapitulationTrigger & WhaleAccumulationTrigger `now` propagation
+    liq_col = BybitLiquidationCollector(retention_sec=3600.0)
+    liq_col.record_event("BTCUSDT", "LONG", 250_000.0, ts=3000.0)
+    liq_trig = LiquidationCapitulationTrigger(collector=liq_col, min_notional_usd=100_000.0, window_sec=300.0)
+    ev_liq = liq_trig.evaluate("BTCUSDC", 100.0, now=3050.0)
+    assert ev_liq is not None and ev_liq.reason == "liquidation_capitulation_burst"
+
+    whale_trig = WhaleAccumulationTrigger(collector=w_col, min_top_traders_long_pct=0.60, min_taker_buy_ratio=1.05)
+    ev_whale = whale_trig.evaluate("BTCUSDC", 100.0, now=2050.0)
+    assert ev_whale is not None and ev_whale.reason == "whale_aggressive_accumulation"
+
+    # 5. intelligence.cli .previous recovery
+    (tmp_path / "globaltelemetry_collector.heartbeat").write_text("{corrupt", encoding="utf-8")
+    (tmp_path / "globaltelemetry_collector.heartbeat.previous").write_text(
+        json.dumps({"pid": os.getpid(), "ts": time.time(), "symbols": ["BTCUSDC"]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "macro_analyzer.heartbeat").write_text("{corrupt", encoding="utf-8")
+    (tmp_path / "macro_analyzer.heartbeat.previous").write_text(
+        json.dumps({"pid": os.getpid(), "ts": time.time(), "intervals": {"geopolitical_llm": 600}}),
+        encoding="utf-8",
+    )
+    assert get_daemon_status(str(tmp_path))["running"] is True
+    assert get_macro_analyzer_status(str(tmp_path))["running"] is True
+    rep = inspect_symbol_intelligence("BTCUSDC", cache_dir=str(tmp_path))
+    assert rep["pillar2_external"]["whale"] is not None
 

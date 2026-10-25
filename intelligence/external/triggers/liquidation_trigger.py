@@ -40,9 +40,16 @@ class LiquidationCapitulationTrigger:
         now: Optional[float] = None,
     ) -> Optional[TriggerEvent]:
         """Evaluate current liquidation window for capitulation buy or squeeze exit."""
-        t_now = now or time.time()
+        t_now = float(now) if now is not None else time.time()
         if summary is None and self.collector is not None:
-            summary = self.collector.get_summary(symbol, window_sec=self.window_sec)
+            try:
+                summary = (
+                    self.collector.get_summary(symbol, window_sec=self.window_sec, now=t_now)
+                    if now is not None
+                    else self.collector.get_summary(symbol, window_sec=self.window_sec)
+                )
+            except TypeError:
+                summary = self.collector.get_summary(symbol, window_sec=self.window_sec)
 
         if summary is None or summary.total_usd < self.min_notional_usd:
             return None

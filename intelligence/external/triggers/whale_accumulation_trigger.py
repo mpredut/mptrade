@@ -43,9 +43,12 @@ class WhaleAccumulationTrigger:
         now: Optional[float] = None,
     ) -> Optional[TriggerEvent]:
         """Evaluate if whale capital flow triggers an entry or exit."""
-        t_now = now or time.time()
+        t_now = float(now) if now is not None else time.time()
         if snapshot is None and self.collector is not None:
-            snapshot = self.collector.fetch(symbol)
+            try:
+                snapshot = self.collector.fetch(symbol, now=t_now) if now is not None else self.collector.fetch(symbol)
+            except TypeError:
+                snapshot = self.collector.fetch(symbol)
 
         if snapshot is None:
             return None

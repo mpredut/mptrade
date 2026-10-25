@@ -56,7 +56,14 @@ class KalmanTrend:
 
     def update(self, ts: float, price: float, epsilon: float | None) -> dict:
         """Run one predict/update step and return velocity and trend fields."""
-        eps = float(epsilon) if epsilon else 0.0
+        if not (math.isfinite(float(ts)) and math.isfinite(float(price)) and float(price) > 0):
+            return {
+                "vel": 0.0,
+                "vel_std": 0.0,
+                "trend": self.trend,
+                "old_trend": self.trend,
+            }
+        eps = float(epsilon) if (epsilon is not None and math.isfinite(float(epsilon))) else 0.0
         if eps <= 0:
             eps = max(price * 1e-4, 1e-9)
         R = eps * eps
@@ -66,7 +73,7 @@ class KalmanTrend:
             return self._out(price, old_trend=self.trend)
 
         raw_dt = ts - self.last_ts
-        if raw_dt > self.gap_reset_sec:
+        if raw_dt > self.gap_reset_sec or raw_dt < -1.0:
             self._reset_state(price, R, ts)
             old_trend = self.trend
             self.trend = 0

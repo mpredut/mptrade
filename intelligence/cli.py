@@ -27,15 +27,22 @@ def _format_age(seconds: float) -> str:
 
 def get_daemon_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
     """Inspect the running background telemetry daemon."""
-    hb_path = os.path.join(cache_dir, "globaltelemetry_collector.heartbeat")
-    if not os.path.exists(hb_path):
-        hb_path = os.path.join(cache_dir, "intelligence_daemon.heartbeat")
-    if not os.path.exists(hb_path):
+    from state_io import read_recovering_previous
+    data = None
+    for fname in ("globaltelemetry_collector.heartbeat", "intelligence_daemon.heartbeat"):
+        cand = os.path.join(cache_dir, fname)
+        if os.path.exists(cand) or os.path.exists(f"{cand}.previous"):
+            try:
+                cand_data = read_recovering_previous(cand, json.loads, default=None)
+                if isinstance(cand_data, dict):
+                    data = cand_data
+                    break
+            except Exception:
+                continue
+    if data is None:
         return {"running": False, "reason": "no_heartbeat_file"}
 
     try:
-        with open(hb_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
         pid = int(data.get("pid", 0))
         ts = float(data.get("ts", 0.0))
         age = time.time() - ts
@@ -66,13 +73,15 @@ def get_daemon_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
 
 def get_macro_analyzer_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
     """Inspect the running macro intelligence analyzer daemon."""
+    from state_io import read_recovering_previous
     hb_path = os.path.join(cache_dir, "macro_analyzer.heartbeat")
-    if not os.path.exists(hb_path):
+    if not (os.path.exists(hb_path) or os.path.exists(f"{hb_path}.previous")):
         return {"running": False, "reason": "no_heartbeat_file"}
 
     try:
-        with open(hb_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = read_recovering_previous(hb_path, json.loads, default=None)
+        if not isinstance(data, dict):
+            return {"running": False, "reason": "no_heartbeat_file"}
         pid = int(data.get("pid", 0))
         ts = float(data.get("ts", 0.0))
         age = time.time() - ts
@@ -128,13 +137,14 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
     except Exception as e:
         result["pillar1_internal"]["trend_survival_error"] = str(e)
 
+    from state_io import read_recovering_previous
+
     # 2. Pillar 2: External Microstructure & Derivatives
     try:
         # Orderbook depth
         ob_path = os.path.join(cache_dir, f"orderbook_depth_{symbol}.json")
-        if os.path.exists(ob_path):
-            with open(ob_path, "r", encoding="utf-8") as f:
-                ob_data = json.load(f)
+        ob_data = read_recovering_previous(ob_path, json.loads, default=None)
+        if isinstance(ob_data, dict):
             ob_data["age_seconds"] = round(now - ob_data.get("ts", 0), 1)
             ob_data["age_formatted"] = _format_age(now - ob_data.get("ts", 0))
             result["pillar2_external"]["orderbook"] = ob_data
@@ -143,9 +153,8 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
 
         # Derivatives telemetry
         deriv_path = os.path.join(cache_dir, f"derivatives_telemetry_{symbol}.json")
-        if os.path.exists(deriv_path):
-            with open(deriv_path, "r", encoding="utf-8") as f:
-                deriv_data = json.load(f)
+        deriv_data = read_recovering_previous(deriv_path, json.loads, default=None)
+        if isinstance(deriv_data, dict):
             deriv_data["age_seconds"] = round(now - deriv_data.get("ts", 0), 1)
             deriv_data["age_formatted"] = _format_age(now - deriv_data.get("ts", 0))
             result["pillar2_external"]["derivatives"] = deriv_data
@@ -154,9 +163,8 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
 
         # Whale positioning
         whale_path = os.path.join(cache_dir, f"whale_snapshot_{symbol}.json")
-        if os.path.exists(whale_path):
-            with open(whale_path, "r", encoding="utf-8") as f:
-                whale_data = json.load(f)
+        whale_data = read_recovering_previous(whale_path, json.loads, default=None)
+        if isinstance(whale_data, dict):
             whale_data["age_seconds"] = round(now - whale_data.get("ts", 0), 1)
             whale_data["age_formatted"] = _format_age(now - whale_data.get("ts", 0))
             result["pillar2_external"]["whale"] = whale_data
@@ -167,25 +175,25 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
 
     # 3. Pillar 3: Sentiment & Gemini Advisor
     try:
-        fg_path = os.path.join(cache_dir, "fear_greed_collect.json")
-        if not os.path.exists(fg_path):
-            fg_path = os.path.join(cache_dir, "fear_greed_cache.json")
-        if os.path.exists(fg_path):
-            with open(fg_path, "r", encoding="utf-8") as f:
-                fg_data = json.load(f)
+        fg_data = None
+        for fg_fname in ("fear_greed_collect.json", "fear_greed_cache.json"):
+            cand_fg = read_recovering_previous(os.path.join(cache_dir, fg_fname), json.loads, default=None)
+            if isinstance(cand_fg, dict):
+                fg_data = cand_fg
+                break
+        if isinstance(fg_data, dict):
             fg_data["age_formatted"] = _format_age(now - fg_data.get("ts", 0))
             result["pillar3_sentiment"]["fear_greed"] = fg_data
         else:
             result["pillar3_sentiment"]["fear_greed"] = None
 
-        advisor_path = os.path.join(cache_dir, "sentiment_advisor_eval.json")
-        if not os.path.exists(advisor_path):
-            advisor_path = os.path.join(cache_dir, "macro_advisor_eval.json")
-        if not os.path.exists(advisor_path):
-            advisor_path = os.path.join(cache_dir, "gemini_macro_advisor.json")
-        if os.path.exists(advisor_path):
-            with open(advisor_path, "r", encoding="utf-8") as f:
-                gem_data = json.load(f)
+        gem_data = None
+        for adv_fname in ("sentiment_advisor_eval.json", "macro_advisor_eval.json", "gemini_macro_advisor.json"):
+            cand_adv = read_recovering_previous(os.path.join(cache_dir, adv_fname), json.loads, default=None)
+            if isinstance(cand_adv, dict):
+                gem_data = cand_adv
+                break
+        if isinstance(gem_data, dict):
             gem_data["age_formatted"] = _format_age(now - gem_data.get("ts", 0))
             result["pillar3_sentiment"]["sentiment_advisor"] = gem_data
             result["pillar3_sentiment"]["gemini_macro"] = gem_data
@@ -197,12 +205,13 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
 
     # 4. Pillar 4: Geopolitical Threat Shield
     try:
-        geo_path = os.path.join(cache_dir, "geopolitical_threat_eval.json")
-        if not os.path.exists(geo_path):
-            geo_path = os.path.join(cache_dir, "geopolitical_threat_state.json")
-        if os.path.exists(geo_path):
-            with open(geo_path, "r", encoding="utf-8") as f:
-                geo_data = json.load(f)
+        geo_data = None
+        for geo_fname in ("geopolitical_threat_eval.json", "geopolitical_threat_state.json"):
+            cand_geo = read_recovering_previous(os.path.join(cache_dir, geo_fname), json.loads, default=None)
+            if isinstance(cand_geo, dict):
+                geo_data = cand_geo
+                break
+        if isinstance(geo_data, dict):
             geo_data["age_seconds"] = round(now - geo_data.get("ts", 0), 1)
             geo_data["age_formatted"] = _format_age(now - geo_data.get("ts", 0))
             result["pillar4_macro"] = geo_data

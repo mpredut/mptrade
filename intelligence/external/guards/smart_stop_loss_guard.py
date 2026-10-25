@@ -295,8 +295,27 @@ class SmartStopLossGuard:
         # 3. Microstructure Telemetry Retrieval (0 ms cache lookup; skipped in replay unless explicitly injected)
         from external_order_guard import get_orderbook_collector, get_whale_collector
 
-        w_snap = whale_snapshot if whale_snapshot is not None else (None if is_sim else get_whale_collector().fetch(sym_key, allow_network=False))
-        ob_snap = orderbook_snapshot if orderbook_snapshot is not None else (None if is_sim else get_orderbook_collector().fetch(sym_key, allow_network=False))
+        if whale_snapshot is not None:
+            w_snap = whale_snapshot
+        elif is_sim:
+            w_snap = None
+        else:
+            w_col = get_whale_collector()
+            try:
+                w_snap = w_col.fetch(sym_key, allow_network=False, now=now_ts)
+            except TypeError:
+                w_snap = w_col.fetch(sym_key, allow_network=False)
+
+        if orderbook_snapshot is not None:
+            ob_snap = orderbook_snapshot
+        elif is_sim:
+            ob_snap = None
+        else:
+            ob_col = get_orderbook_collector()
+            try:
+                ob_snap = ob_col.fetch(sym_key, allow_network=False, now=now_ts)
+            except TypeError:
+                ob_snap = ob_col.fetch(sym_key, allow_network=False)
 
         top_long_pct = getattr(w_snap, "top_traders_long_pct", 0.50) if w_snap else 0.50
         taker_ratio = getattr(w_snap, "taker_buy_sell_ratio", 1.0) if w_snap else 1.0
@@ -334,6 +353,13 @@ class SmartStopLossGuard:
         if is_whale_supported and has_absorption:
             tracker = _load_grace_state(is_sim=is_sim)
             active_grace = tracker.get(sym_key)
+            if active_grace is not None:
+                try:
+                    existing_start = float(active_grace.get("start_ts", now_ts))
+                    if existing_start > now_ts + 5.0 or (now_ts - existing_start) > 3600.0:
+                        active_grace = None
+                except (TypeError, ValueError):
+                    active_grace = None
             if active_grace is not None and buy_price is not None:
                 saved_buy = active_grace.get("buy_price")
                 try:
@@ -370,8 +396,8 @@ class SmartStopLossGuard:
                 print(f"🛡 {prefix} DEFER {sym_key}{prov_tag}: {reason}")
 
                 if not is_sim:
-                    last_defer_ts = _LAST_DEFER_ALERT_TS.get(sym_key, 0.0)
-                    if (now_ts - last_defer_ts) >= _RECOVERY_COOLDOWN_SEC:
+                    last_defer_ts = _LAST_DEFER_ALERT_TS.get(sym_key, -1e18)
+                    if not (0.0 <= (now_ts - last_defer_ts) < _RECOVERY_COOLDOWN_SEC):
                         _LAST_DEFER_ALERT_TS[sym_key] = now_ts
                         c_str = _format_price(current_price)
                         b_str = _format_price(buy_price)
@@ -399,7 +425,7 @@ class SmartStopLossGuard:
                 if buy_price is not None and active_grace.get("buy_price") is None:
                     active_grace["buy_price"] = float(buy_price)
                 start_ts = float(active_grace.get("start_ts", now_ts))
-                elapsed = now_ts - start_ts
+                elapsed = max(0.0, now_ts - start_ts)
                 meta["grace_elapsed_sec"] = round(elapsed, 1)
 
                 prov_str = str(provider or active_grace.get("provider") or "").strip().upper()
@@ -435,8 +461,8 @@ class SmartStopLossGuard:
                     print(f"🛑 [P2 · SMART-SL] TIMEOUT {sym_key}{saved_prov_tag}: {reason} -> executing stop-loss")
 
                     if not is_sim:
-                        last_timeout_ts = _LAST_TIMEOUT_ALERT_TS.get(sym_key, 0.0)
-                        if (now_ts - last_timeout_ts) >= _RECOVERY_COOLDOWN_SEC:
+                        last_timeout_ts = _LAST_TIMEOUT_ALERT_TS.get(sym_key, -1e18)
+                        if not (0.0 <= (now_ts - last_timeout_ts) < _RECOVERY_COOLDOWN_SEC):
                             _LAST_TIMEOUT_ALERT_TS[sym_key] = now_ts
                             body_lines = [
                                 f"{sym_key}{saved_prov_tag}{price_part}",
@@ -519,8 +545,8 @@ class SmartStopLossGuard:
                 return True
 
             # 30-minute cooldown per symbol to avoid spamming
-            last_alert = _LAST_RECOVERY_ALERT_TS.get(sym_key, 0.0)
-            if now_ts - last_alert < _RECOVERY_COOLDOWN_SEC:
+            last_alert = _LAST_RECOVERY_ALERT_TS.get(sym_key, -1e18)
+            if 0.0 <= (now_ts - last_alert) < _RECOVERY_COOLDOWN_SEC:
                 logger.info(
                     "Smart SL recovery alert for %s in %.0fs cooldown; skipping push.",
                     sym_key,

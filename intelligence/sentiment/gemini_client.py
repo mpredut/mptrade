@@ -73,7 +73,7 @@ class GeminiClient:
 
         if cache_ttl_sec > 0:
             cached = self._cache.get(prompt)
-            if cached and (now - cached[0]) < cache_ttl_sec:
+            if cached and 0.0 <= (now - cached[0]) < cache_ttl_sec:
                 return cached[1]
 
         # 1. Custom runner (used for unit tests)
