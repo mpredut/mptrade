@@ -458,6 +458,12 @@ Check the fleet: systemctl is-active python_orchestrator.service ."
     # `systemctl restart` stopped binance and its start lost the VPN-gate race, leaving it
     # down -- and a CLEAN stop does not trigger the unit's own Restart=always, so nothing
     # recovered it. Skipped while a maintenance pause flag is present.
+    if systemctl is-enabled --quiet pia.service 2>/dev/null \
+       && ! systemctl is-active --quiet pia.service 2>/dev/null; then
+        log "pia.service enabled but inactive/failed while PIA is healthy -> starting it"
+        systemctl reset-failed pia.service >/dev/null 2>&1 || true
+        systemctl start pia.service >/dev/null 2>&1 || true
+    fi
     if [ ! -e "$ROOT/FLEET_PAUSED" ] \
        && systemctl is-enabled --quiet python_orchestrator.service 2>/dev/null \
        && ! systemctl is-active --quiet python_orchestrator.service 2>/dev/null; then

@@ -76,12 +76,18 @@ def test_env_common_env_get_works_under_set_u_without_home():
     with open(os.path.join(ROOT, "orchestratorOS", "livecheck", "pia_supervisor.sh"), encoding="utf-8") as fh:
         pia_text = fh.read()
     assert pia_text.index('. "$ROOT/config.env"') < pia_text.index('. "$ROOT/.env"')
+    assert 'if [ "$current_reg" = "$target_region" ] && vpn_healthy; then' in pia_text
+
+    with open(os.path.join(ROOT, "orchestratorOS", "livecheck", "vpn_watchdog.sh"), encoding="utf-8") as fh:
+        wd_text = fh.read()
+    assert "pia.service enabled but inactive/failed while PIA is healthy -> starting it" in wd_text
 
 
 def test_botcore_env_helpers_handle_zero_booleans_and_non_finite_values():
     import pytest
     import botcore
     from rtrade_pair_store import RTradePairStore
+    from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairPolicy, anchored_exit_price, quote_prices
 
     assert botcore.float_env("K", {"K": 0}) == 0.0
     assert botcore.float_env("K", {"K": 1.5}) == 1.5
@@ -100,4 +106,15 @@ def test_botcore_env_helpers_handle_zero_booleans_and_non_finite_values():
         RTradePairStore._finite_positive(True, "qty")
     with pytest.raises(ValueError):
         RTradePairStore._finite_positive(False, "qty")
+    with pytest.raises(ValueError):
+        OrderTicket(order_id="1", side="BUY", price=True, qty=1.0)
+    with pytest.raises(ValueError):
+        OrderSnapshot(status="open", filled_qty=True)
+    with pytest.raises(ValueError):
+        PairPolicy(adjustment_fraction=True)
+    with pytest.raises(ValueError):
+        quote_prices(float("nan"), 0.01)
+    with pytest.raises(ValueError):
+        anchored_exit_price("SELL", 100.0, float("nan"), 0.01, 0.01)
+
 

@@ -28,6 +28,8 @@ class OrderTicket:
     revision: int = 0
 
     def __post_init__(self):
+        if isinstance(self.price, bool) or isinstance(self.qty, bool) or isinstance(self.revision, bool):
+            raise ValueError("ticket rtrade invalid")
         self.side = str(self.side).upper()
         self.price = float(self.price)
         self.qty = float(self.qty)
@@ -48,7 +50,7 @@ class OrderSnapshot:
     def __post_init__(self):
         if self.status not in {"open", "closed", "canceled", "expired"}:
             raise ValueError(f"invalid rtrade order status: {self.status}")
-        if any(not math.isfinite(float(value)) or float(value) < 0
+        if any(isinstance(value, bool) or not math.isfinite(float(value)) or float(value) < 0
                for value in (self.filled_qty, self.cost, self.fee)):
             raise ValueError("invalid rtrade financial snapshot")
 
@@ -70,7 +72,7 @@ class PairPolicy:
             self.fast_fill_ratio, self.min_edge_fraction,
             self.shock_hard_stop_fraction, self.hard_stop_fraction,
         )
-        if any(not math.isfinite(float(value)) for value in numeric):
+        if any(isinstance(value, bool) or not math.isfinite(float(value)) for value in numeric):
             raise ValueError("the rtrade policy must hold finite values")
         if not 0 < self.adjustment_fraction < 1:
             raise ValueError("adjustment_fraction must be in (0, 1)")
@@ -141,7 +143,7 @@ def _place_failure_reason(venue: PairVenue, side: str) -> str:
 def quote_prices(mid: float, adjustment_fraction: float,
                  decimals: int = 4) -> tuple[float, float]:
     """Return bid/ask quotes symmetric around the same market snapshot."""
-    if mid <= 0:
+    if isinstance(mid, bool) or not math.isfinite(float(mid)) or mid <= 0:
         raise ValueError("mid must be positive")
     return (
         round(mid * (1 - adjustment_fraction), decimals),
@@ -159,7 +161,10 @@ def anchored_exit_price(exit_side: str, fill_price: float, current_price: float,
       BUY:  (sell-buy)/sell >= edge  -> buy <= sell*(1-edge)
     """
     side = exit_side.upper()
-    if fill_price <= 0 or current_price <= 0:
+    if (isinstance(fill_price, bool) or isinstance(current_price, bool)
+            or not math.isfinite(float(fill_price))
+            or not math.isfinite(float(current_price))
+            or fill_price <= 0 or current_price <= 0):
         raise ValueError("the prices must be positive")
     if side == "SELL":
         market_target = current_price * (1 + adjustment_fraction)
@@ -897,8 +902,12 @@ class PairCoordinator:
                     return self.outcome()
             exposure_side = "LONG" if net > 0 else "SOLD"
             entry_avg = (bc / bq) if exposure_side == "LONG" else (sc / sq)
-            current = float(self.venue.current_price() or 0.0)
-            if current <= 0:
+            raw_current = self.venue.current_price()
+            try:
+                current = 0.0 if raw_current is None or isinstance(raw_current, bool) else float(raw_current)
+            except (TypeError, ValueError, OverflowError):
+                current = 0.0
+            if not math.isfinite(current) or current <= 0:
                 self.reason = "current_price_unavailable"
                 return self.outcome()
             self.reason = None

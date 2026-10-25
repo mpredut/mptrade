@@ -18,7 +18,7 @@ import math
 def diff_percent(v1: float, v2: float) -> float:
     """Return symmetric percentage difference relative to the absolute mean.
     Identical to botcore.diff_percent but self-contained for isolated backtests."""
-    if v1 == 0 and v2 == 0:
+    if v1 == v2:
         return 0.0
     return abs(v1 - v2) / ((abs(v1) + abs(v2)) / 2) * 100
 

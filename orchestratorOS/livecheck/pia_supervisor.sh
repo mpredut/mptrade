@@ -144,6 +144,12 @@ discover_regions() {
 connect_to_region() {
     local target_region="$1"
     local desc="$2"
+    local current_reg
+    current_reg=$(pia get region 2>/dev/null | tr -d '\r')
+    if [ "$current_reg" = "$target_region" ] && vpn_healthy; then
+        echo "Already connected and healthy on $desc ($target_region, IP: $(pia get vpnip 2>/dev/null | tr -d '\r'))"
+        return 0
+    fi
     echo "Attempting connection to $desc ($target_region)..."
     pia set region "$target_region" >/dev/null 2>&1 || return 1
     pia set requestportforward true >/dev/null 2>&1 || true
@@ -306,7 +312,9 @@ if ! ip rule show | grep -q "to 192.168.0.0/24 lookup main"; then
 fi
 
 # WireGuard protocol
-pia set protocol wireguard || exit 1
+if [ "$(pia get protocol 2>/dev/null | tr -d '\r')" != "wireguard" ]; then
+    pia set protocol wireguard || exit 1
+fi
 
 # Ensure PIA login if not already authenticated
 if ! pia get connectionstate 2>/dev/null | grep -Eq '^(Connected|Connecting|Disconnected|Reconnecting)$'; then
