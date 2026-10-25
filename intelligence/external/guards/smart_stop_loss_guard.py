@@ -80,16 +80,22 @@ def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
     if _GRACE_TRACKER or is_sim:
         return _GRACE_TRACKER
     state_file = _effective_smart_sl_state_file()
-    try:
-        mtime = os.path.getmtime(state_file)
-    except OSError:
+    from state_io import previous_generation_path, read_recovering_previous
+    prev_file = previous_generation_path(state_file)
+    mtime = None
+    for cand in (state_file, prev_file):
+        try:
+            mtime = os.path.getmtime(cand)
+            break
+        except OSError:
+            continue
+    if mtime is None:
         return _GRACE_TRACKER
     file_key = (state_file, mtime)
     if _LOADED_STATE_FILE_KEY == file_key:
         return _GRACE_TRACKER
     try:
-        with open(state_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = read_recovering_previous(state_file, json.loads, default=None)
         if isinstance(data, dict):
             # Sanitize: purge any ancient, unphysical, or expired entries (> 3600s old or start_ts < 1e9)
             now_curr = time.time()
@@ -101,7 +107,9 @@ def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
                         clean_data[k] = v
             _GRACE_TRACKER.clear()
             _GRACE_TRACKER.update(clean_data)
-        _LOADED_STATE_FILE_KEY = file_key
+            _LOADED_STATE_FILE_KEY = file_key
+        else:
+            _GRACE_TRACKER.clear()
     except Exception:
         _GRACE_TRACKER.clear()
     return _GRACE_TRACKER
@@ -111,8 +119,8 @@ def _save_grace_state() -> None:
     global _LOADED_STATE_FILE_KEY
     state_file = _effective_smart_sl_state_file()
     try:
-        from state_io import atomic_write_json
-        atomic_write_json(state_file, _GRACE_TRACKER, indent=2)
+        from state_io import save_json_state
+        save_json_state(state_file, _GRACE_TRACKER, indent=2)
         try:
             _LOADED_STATE_FILE_KEY = (state_file, os.path.getmtime(state_file))
         except OSError:
@@ -559,6 +567,12 @@ def evaluate_smart_stop_loss(
     m = _load_margins()
 
     mode = str(m["smart_sl_mode"]).strip().lower()
+    intel_master = str(m.get("intelligence_guards_mode", "enforce")).strip().lower()
+    ext_master = str(m.get("external_guard_mode", "enforce")).strip().lower()
+    if intel_master == "off" or ext_master == "off":
+        mode = "off"
+    elif ext_master == "shadow" and mode == "enforce":
+        mode = "shadow"
     max_thresh = float(m["smart_sl_max_threshold_pct"])
     grace_sec = float(m["smart_sl_grace_seconds"])
     default_disaster_buf = float(m["smart_sl_disaster_buffer_pct"])

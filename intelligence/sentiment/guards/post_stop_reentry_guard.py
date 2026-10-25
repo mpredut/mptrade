@@ -285,6 +285,12 @@ def get_post_stop_reentry_guard(
     else:
         m = margins
     mode = str(m["post_stop_reentry_mode"]).strip().lower()
+    intel_master = str(m.get("intelligence_guards_mode", "enforce")).strip().lower()
+    llm_master = str(m.get("llm_guard_mode", "enforce")).strip().lower()
+    if intel_master == "off" or llm_master == "off":
+        mode = "off"
+    elif llm_master == "shadow" and mode == "enforce":
+        mode = "shadow"
     timeout = float(m["post_stop_reentry_timeout_sec"])
     fallback = str(m["post_stop_reentry_fallback"]).strip().lower()
     notify_en = str(m["post_stop_reentry_notify"]).strip().lower() not in ("0", "0.0", "false", "off")

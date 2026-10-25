@@ -3440,6 +3440,156 @@ def test_iteration14_monitortrades_reentry_qlimit1_bypass_rtrade_gi_whale_bypass
     assert "ETHUSDC" in _short_trend_symbol_variants("ETHGBP")
 
 
+def test_iteration15_post_stop_reentry_mode_hierarchy_smart_sl_recovery_external_shadow_and_intent_gateway_price_fallback(
+    monkeypatch, tmp_path
+):
+    """Iteration 15 regression suite:
+    1. get_post_stop_reentry_guard honors intelligence_guards_mode and llm_guard_mode master switches.
+    2. monitortrades._execute_reentry_buy only bypasses GLLM1 on post-STOP BUY when PostStopReentryGuard
+       was actually enforced (so post_stop_reentry_mode=off/shadow does not silently bypass HighStakeGuard >= $700).
+    3. smart_stop_loss_guard._load_grace_state recovers from .previous when primary state file is corrupted,
+       and evaluate_smart_stop_loss honors intelligence_guards_mode and external_guard_mode master switches.
+    4. external_order_guard.check_external_order_guards caps sub-guard modes to 'shadow' when external_guard_mode='shadow'.
+    5. AutonomousIntentGateway._get_live_price recovers cache_current_price.json from .previous and skips non-positive prices.
+    """
+    import external_order_guard
+    import monitortrades as mt
+    import order_guard
+    from intelligence.external.collectors.whale_positioning import (
+        WhalePositioningCollector,
+        WhalePositioningSnapshot,
+    )
+    from intelligence.external.guards import smart_stop_loss_guard as ssl_mod
+    from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
+    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+    from strategies.position_exit_manager import ReentrySnapshot
+
+    # 1. get_post_stop_reentry_guard honors llm_guard_mode and intelligence_guards_mode
+    base_m = dict(order_guard._load_margins())
+    m_llm_off = {**base_m, "post_stop_reentry_mode": "enforce", "llm_guard_mode": "off"}
+    g_off = get_post_stop_reentry_guard(margins=m_llm_off, gemini_client=object())
+    assert g_off.mode == "off"
+
+    m_llm_shadow = {**base_m, "post_stop_reentry_mode": "enforce", "llm_guard_mode": "shadow"}
+    g_shadow = get_post_stop_reentry_guard(margins=m_llm_shadow, gemini_client=object())
+    assert g_shadow.mode == "shadow"
+
+    # 2. monitortrades._apply_post_stop_ai_guard & _execute_reentry_buy preserve HighStakeGuard when PostStopReentryGuard is off/shadow
+    monkeypatch.setattr(mt, "_is_simulated_env_or_inst", lambda inst=None: False)
+    monkeypatch.setattr(order_guard, "_load_margins", lambda: m_llm_shadow)
+    snap = ReentrySnapshot(
+        symbol="TAOUSDC",
+        current_price=200.0,
+        last_sell_price=210.0,
+        last_exit_kind="STOP",
+        post_sell_peak=210.0,
+        post_sell_trough=195.0,
+        current_time_s=2000.0,
+        last_sell_time_s=1000.0,
+        trend_up=True,
+        trend_down=False,
+    )
+    allowed, _, _, _ = mt._apply_post_stop_ai_guard(
+        "TAOUSDC", 200.0, 210.0, 1000.0, snap, 1000.0, None, 5.0, inst=None
+    )
+    assert allowed is True
+    assert "TAOUSDC" in mt._POST_STOP_AI_NOT_ENFORCED
+
+    captured_bypasses = []
+    monkeypatch.setattr(
+        mt,
+        "_place_guarded",
+        lambda inst, side, px, q, mq, **kw: (captured_bypasses.append(kw.get("bypass_guards")) or True),
+    )
+
+    class _DummyInst:
+        symbol = "TAOUSDC"
+
+        def param(self, ns, key, default=None, cast=None):
+            return default
+
+    mt._execute_reentry_buy(_DummyInst(), "TAOUSDC", 200.0, 5.0, 0.01, 3600.0, "STOP", {"sell_time": 1000.0})
+    assert captured_bypasses == [{"G_PROF"}]
+
+    # 3. smart_stop_loss_guard._load_grace_state recovers from .previous and evaluate_smart_stop_loss honors external_guard_mode
+    state_file = tmp_path / "smart_stop_loss_state.json"
+    prev_file = tmp_path / "smart_stop_loss_state.json.previous"
+    state_file.write_text("{corrupt_json", encoding="utf-8")
+    now_ts = time.time()
+    prev_file.write_text(
+        json.dumps({"TAOUSDC": {"start_ts": now_ts - 10.0, "initial_loss_pct": 3.5}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ssl_mod, "_effective_smart_sl_state_file", lambda: str(state_file))
+    ssl_mod._GRACE_TRACKER.clear()
+    ssl_mod._LOADED_STATE_FILE_KEY = None
+    tracker = ssl_mod._load_grace_state(is_sim=False)
+    assert "TAOUSDC" in tracker
+
+    m_ext_off = {**base_m, "smart_sl_mode": "enforce", "external_guard_mode": "off"}
+    monkeypatch.setattr(order_guard, "_load_margins", lambda: m_ext_off)
+    sl_exec, sl_reason, _ = ssl_mod.evaluate_smart_stop_loss("TAOUSDC", 0.04, 0.033, provider="sim")
+    assert sl_exec is True
+    assert sl_reason == "smart_sl_disabled"
+
+    # 4. external_order_guard caps whale_guard_mode='enforce' to 'shadow' when external_guard_mode='shadow'
+    collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=None)
+    collector.record_snapshot(
+        WhalePositioningSnapshot(
+            symbol="TAOUSDC",
+            top_traders_long_ratio=2.0,
+            top_traders_long_pct=0.66,
+            taker_buy_sell_ratio=0.60,
+            taker_buy_vol_usd=60_000.0,
+            taker_sell_vol_usd=100_000.0,
+            open_interest_usd=50_000_000.0,
+            open_interest_1h_change_pct=-5.0,
+            divergence_regime="long_liquidation_risk",
+            ts=now_ts,
+        )
+    )
+    monkeypatch.setattr(external_order_guard, "_whale_collector", collector)
+    m_ext_shadow = {
+        **base_m,
+        "external_guard_mode": "shadow",
+        "whale_guard_mode": "enforce",
+        "orderbook_wall_guard_mode": "off",
+        "funding_guard_mode": "off",
+    }
+    ext_ok, ext_reason, ext_scale = external_order_guard.check_external_order_guards(
+        "TAOUSDC", "BUY", 200.0, qty=1.0, margins=m_ext_shadow, now=now_ts
+    )
+    assert ext_ok is True
+    assert ext_scale == 1.0
+
+    # 5. AutonomousIntentGateway._get_live_price recovers from .previous and skips 0/NaN price entries
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(exist_ok=True)
+    cp_file = cache_dir / "cache_current_price.json"
+    cp_prev = cache_dir / "cache_current_price.json.previous"
+    cp_file.write_text("{corrupt", encoding="utf-8")
+    cp_prev.write_text(
+        json.dumps(
+            {
+                "items": {
+                    "TAOUSD": [[now_ts, 0.0]],
+                    "TAOUSDC": [[now_ts, 245.5]],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    gw = AutonomousIntentGateway(workspace_dir=str(tmp_path), mode="shadow")
+
+    class _FakeInst:
+        symbol = "TAOUSD"
+        base = "TAO"
+        _provider = None
+
+    assert gw._get_live_price(_FakeInst()) == pytest.approx(245.5)
+
+
+
 
 
 

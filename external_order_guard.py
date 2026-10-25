@@ -90,6 +90,7 @@ def check_external_order_guards(
     else:
         m = margins
 
+    ext_mode = "enforce"
     if "external_guard_mode" in m:
         ext_mode = validate_guard_mode_cfg(m["external_guard_mode"], "external_guard_mode")
         if ext_mode == "off":
@@ -132,6 +133,8 @@ def check_external_order_guards(
 
     # 1. GI_WHALE: Whale Flow & Open Interest Divergence Guard
     whale_mode = validate_guard_mode_cfg(m["whale_guard_mode"], "whale_guard_mode")
+    if ext_mode == "shadow" and whale_mode == "enforce":
+        whale_mode = "shadow"
     if whale_mode != "off" and not GUARD_REGISTRY["GI_WHALE"].is_bypassed(bypassed):
         try:
             from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
@@ -164,6 +167,8 @@ def check_external_order_guards(
 
     # 2. GI_OBOOK: Orderbook Depth & Whale Limit Wall Guard
     ob_mode = validate_guard_mode_cfg(m["orderbook_wall_guard_mode"], "orderbook_wall_guard_mode")
+    if ext_mode == "shadow" and ob_mode == "enforce":
+        ob_mode = "shadow"
     if ob_mode != "off" and not GUARD_REGISTRY["GI_OBOOK"].is_bypassed(bypassed):
         try:
             from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
@@ -195,6 +200,8 @@ def check_external_order_guards(
 
     # 3. GI_FUNDING (GI_CROWD): Perpetual Derivatives Funding Rate Crowding Guard
     funding_mode = validate_guard_mode_cfg(m["funding_guard_mode"], "funding_guard_mode")
+    if ext_mode == "shadow" and funding_mode == "enforce":
+        funding_mode = "shadow"
     if funding_mode != "off" and not GUARD_REGISTRY["GI_FUNDING"].is_bypassed(bypassed):
         try:
             from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard

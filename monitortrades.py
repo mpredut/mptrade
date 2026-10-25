@@ -1536,6 +1536,7 @@ def _can_pass_buy_quantity_policy(
 
 
 _POST_STOP_AI_APPLIED_SCALE: dict[str, float] = {}
+_POST_STOP_AI_NOT_ENFORCED: set[str] = set()
 
 
 def _apply_post_stop_ai_guard(
@@ -1551,15 +1552,36 @@ def _apply_post_stop_ai_guard(
 ) -> tuple[bool, Optional[float], Optional[float], float]:
     """Validate post-STOP re-entry via Pillar 3 AI guard, returning (allowed, budget, cfg, qty)."""
     _POST_STOP_AI_APPLIED_SCALE.pop(symbol, None)
+    _POST_STOP_AI_NOT_ENFORCED.discard(symbol)
     if _is_simulated_env_or_inst(inst):
         return True, buy_budget, buy_qty_cfg, qty
     try:
+        from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+        from intelligence.sentiment.guards.high_stake_guard import is_llm_guard_exempt
         from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
+        import order_guard
+        provider = (getattr(inst, "provider", None) or getattr(inst, "_provider", None)) if inst is not None else None
+        inst_params = getattr(inst, "params", None) if inst is not None else None
+        inst_bg = inst_params.get("bypass_guards") if isinstance(inst_params, dict) else None
+        venue_name = (
+            getattr(provider, "name", None)
+            or getattr(inst, "provider_name", None)
+            or getattr(inst, "provider_label", None)
+            or "binance"
+        )
+        m_cfg = order_guard._load_margins()
+        venue_bg = m_cfg.get(f"{str(venue_name).lower()}_bypass_guards", m_cfg.get("default_bypass_guards"))
+        caller_bg = normalize_bypassed_guards(bypass_guards=venue_bg)
+        if inst_bg:
+            caller_bg = caller_bg | normalize_bypassed_guards(bypass_guards=inst_bg)
+        if GUARD_REGISTRY["GLLM1"].is_bypassed(caller_bg) or "all" in caller_bg or "*" in caller_bg or is_llm_guard_exempt():
+            return True, buy_budget, buy_qty_cfg, qty
         _ps_guard = get_post_stop_reentry_guard()
+        if getattr(_ps_guard, "mode", None) in ("off", "shadow"):
+            _POST_STOP_AI_NOT_ENFORCED.add(symbol)
         _trough_px = reentry_snap.post_sell_trough or min(sell_price, current_price)
         _bounce_ratio = reentry_snap.bounce_ratio(_trough_px)
         _est_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
-        provider = (getattr(inst, "provider", None) or getattr(inst, "_provider", None)) if inst is not None else None
         if (
             provider is not None
             and not isinstance(provider, str)
@@ -1567,22 +1589,8 @@ def _apply_post_stop_ai_guard(
             and callable(getattr(provider, "free_balance", None))
         ):
             try:
-                import order_guard
-                from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
                 from providers.quantity import resolve_assets
-                inst_params = getattr(inst, "params", None)
-                inst_bg = inst_params.get("bypass_guards") if isinstance(inst_params, dict) else None
-                venue_name = (
-                    getattr(provider, "name", None)
-                    or getattr(inst, "provider_name", None)
-                    or getattr(inst, "provider_label", None)
-                    or "binance"
-                )
-                m_cfg = order_guard._load_margins()
-                venue_bg = m_cfg.get(f"{str(venue_name).lower()}_bypass_guards", m_cfg.get("default_bypass_guards"))
-                reentry_bg = {"G_PROF", "GLLM1"} | normalize_bypassed_guards(bypass_guards=venue_bg)
-                if inst_bg:
-                    reentry_bg = reentry_bg | normalize_bypassed_guards(bypass_guards=inst_bg)
+                reentry_bg = {"G_PROF", "GLLM1"} | caller_bg
                 bypass_qlimit1 = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(reentry_bg) or "all" in reentry_bg or "*" in reentry_bg
                 base_asset, quote_asset = resolve_assets(
                     symbol,
@@ -1689,7 +1697,12 @@ def _execute_reentry_buy(
     _default_offset = min(MT_BUY_PRICE_OFFSET, current_price * 0.01)
     _buy_offset = inst.param("mt", "buy_price_offset", _default_offset, float)
     reentry_outcome_ctx = {}
-    reentry_bypass = {"G_PROF", "GLLM1"} if last_exit_kind == "STOP" else ({"G_PROF"} if MT_REENTRY_HYBRID_ENABLED else None)
+    if last_exit_kind == "STOP":
+        ai_not_enforced = symbol in _POST_STOP_AI_NOT_ENFORCED and not _is_simulated_env_or_inst(inst)
+        _POST_STOP_AI_NOT_ENFORCED.discard(symbol)
+        reentry_bypass = {"G_PROF"} if ai_not_enforced else {"G_PROF", "GLLM1"}
+    else:
+        reentry_bypass = {"G_PROF"} if MT_REENTRY_HYBRID_ENABLED else None
     extra_kwargs = {}
     if 0.0 < float(applied_scale) < 1.0 and not _is_simulated_env_or_inst(inst):
         extra_kwargs["applied_scale"] = float(applied_scale)
