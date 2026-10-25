@@ -22,6 +22,8 @@ logger = logging.getLogger("intelligence.external.orderbook_depth")
 
 def _extract_base_asset(symbol: str) -> str:
     s = (symbol or "").upper().strip()
+    if s == "USDCUSDT":
+        return s
     if "/" in s:
         return s.split("/", 1)[0].strip()
     if "-" in s:
@@ -138,7 +140,7 @@ class OrderbookDepthCollector:
                 if not isinstance(data, dict):
                     continue
                 snapshot = OrderbookSnapshot.from_dict(data)
-                if (now - snapshot.ts) < max_age:
+                if 0.0 <= (now - snapshot.ts) < max_age:
                     self._cache[symbol.upper()] = (snapshot.ts, snapshot)
                     return snapshot
             except Exception as e:
@@ -150,8 +152,8 @@ class OrderbookDepthCollector:
         if not p:
             return
         try:
-            from state_io import atomic_write_json
-            atomic_write_json(p, snapshot.to_dict(), indent=2)
+            from state_io import save_json_state
+            save_json_state(p, snapshot.to_dict(), indent=2)
         except Exception as e:
             logger.debug("Failed writing orderbook snapshot to %s: %s", p, e)
 
@@ -166,10 +168,10 @@ class OrderbookDepthCollector:
                 break
         if cached:
             if isinstance(cached, tuple) and len(cached) >= 2:
-                if (now - cached[0]) < self.cache_ttl_sec:
+                if 0.0 <= (now - cached[0]) < self.cache_ttl_sec:
                     return cached[1]
             elif isinstance(cached, OrderbookSnapshot):
-                if (now - cached.ts) < self.cache_ttl_sec:
+                if 0.0 <= (now - cached.ts) < self.cache_ttl_sec:
                     return cached
 
         disk_snap = self._load_from_disk(symbol, now)

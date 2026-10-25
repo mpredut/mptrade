@@ -564,6 +564,10 @@ class PositionExitManager:
             disaster_buffer = max(0.0, disaster_floor - lost_threshold)
             disaster_meta = {**disaster_meta, "source": "episode_locked", "effective_buffer": disaster_buffer}
 
+        episode_state = self.sl_episode_state.get(symbol) or {}
+        episode_started_at = float(episode_state.get("started_at", now))
+        sl_episode_expired = (now - episode_started_at) >= self.config.sl_trend_defer_max_sec
+
         # ---------------------------------------------------------------------
         # PRIORITY 1: Hard Disaster Floor Circuit Breaker
         # ---------------------------------------------------------------------
@@ -578,14 +582,17 @@ class PositionExitManager:
                 should_exit=True,
                 reason=reason,
                 forced=True,
-                metadata={"priority": 1, "disaster_floor": disaster_floor, "disaster_meta": disaster_meta},
+                metadata={
+                    "priority": 1,
+                    "disaster_floor": disaster_floor,
+                    "disaster_meta": disaster_meta,
+                    "sl_timer_expired": sl_episode_expired,
+                },
             )
 
         # ---------------------------------------------------------------------
         # PRIORITY 2: Bounce Protection (Trend Up)
         # ---------------------------------------------------------------------
-        episode_state = self.sl_episode_state.get(symbol) or {}
-        episode_started_at = float(episode_state.get("started_at", now))
         if snapshot.trend_up:
             bounce_state = self.sl_bounce_state.get(symbol)
             if bounce_state is None:
@@ -597,7 +604,7 @@ class PositionExitManager:
                         should_exit=True,
                         reason=reason,
                         forced=True,
-                        metadata={"priority": 2, "sub_reason": "timeout", "elapsed": elapsed_ep},
+                        metadata={"priority": 2, "sub_reason": "timeout", "elapsed": elapsed_ep, "sl_timer_expired": True},
                     )
                 self.sl_bounce_state[symbol] = {
                     "started_at": episode_started_at,
@@ -619,6 +626,19 @@ class PositionExitManager:
                     metadata={"priority": 2, "state": "initiated", "disaster_floor": disaster_floor},
                 )
             else:
+                elapsed = now - bounce_state["started_at"]
+                if elapsed >= self.config.sl_trend_defer_max_sec or sl_episode_expired:
+                    eff_elapsed = max(elapsed, now - episode_started_at)
+                    reason = f"mhdsl_bounce_timeout ({eff_elapsed:.0f}s >= {self.config.sl_trend_defer_max_sec:.0f}s without full recovery)"
+                    self.sl_bounce_state.pop(symbol, None)
+                    return ExitDecision(
+                        action=ExitAction.SELL,
+                        should_exit=True,
+                        reason=reason,
+                        forced=True,
+                        metadata={"priority": 2, "sub_reason": "timeout", "elapsed": eff_elapsed, "sl_timer_expired": True},
+                    )
+
                 lowest_px = bounce_state.get("lowest_price") or current_price
                 peak_px = bounce_state.get("peak_bounce_price") or current_price
                 bounce_recovery = (peak_px - lowest_px) / lowest_px if lowest_px > 0 else 0.0
@@ -651,13 +671,17 @@ class PositionExitManager:
                         should_exit=True,
                         reason=sl_forced_reason,
                         forced=True,
-                        metadata={"priority": 2, "sub_reason": "structural_break", "lowest_px": lowest_px},
+                        metadata={
+                            "priority": 2,
+                            "sub_reason": "structural_break",
+                            "lowest_px": lowest_px,
+                            "sl_timer_expired": False,
+                        },
                     )
 
                 if price_decrease < bounce_state["min_loss"]:
                     bounce_state["min_loss"] = price_decrease
 
-                elapsed = now - bounce_state["started_at"]
                 pullback_from_peak = snapshot.pullback_ratio(peak_px)
 
                 eff_pullback_pct = self.config.sl_bounce_pullback_pct
@@ -666,19 +690,8 @@ class PositionExitManager:
                     tightened = self.config.sl_bounce_pullback_pct - (excess_rec * self.config.sl_bounce_ratchet_k)
                     eff_pullback_pct = max(self.config.sl_bounce_min_pullback_pct, tightened)
 
-                # Timeout expiration (~220s)
-                if elapsed >= self.config.sl_trend_defer_max_sec:
-                    reason = f"mhdsl_bounce_timeout ({elapsed:.0f}s >= {self.config.sl_trend_defer_max_sec:.0f}s without full recovery)"
-                    self.sl_bounce_state.pop(symbol, None)
-                    return ExitDecision(
-                        action=ExitAction.SELL,
-                        should_exit=True,
-                        reason=reason,
-                        forced=True,
-                        metadata={"priority": 2, "sub_reason": "timeout", "elapsed": elapsed},
-                    )
                 # Dynamic micro-trailing bounce rollover
-                elif bounce_attempted and pullback_from_peak >= eff_pullback_pct:
+                if bounce_attempted and pullback_from_peak >= eff_pullback_pct:
                     reason = (
                         f"mhdsl_bounce_rollover (peaked at {peak_px:.4f} [+{bounce_recovery*100:.2f}%], "
                         f"pulled back {pullback_from_peak*100:.2f}% >= {eff_pullback_pct*100:.2f}%)"
@@ -689,7 +702,13 @@ class PositionExitManager:
                         should_exit=True,
                         reason=reason,
                         forced=True,
-                        metadata={"priority": 2, "sub_reason": "rollover", "pullback": pullback_from_peak, "eff_pullback": eff_pullback_pct},
+                        metadata={
+                            "priority": 2,
+                            "sub_reason": "rollover",
+                            "pullback": pullback_from_peak,
+                            "eff_pullback": eff_pullback_pct,
+                            "sl_timer_expired": False,
+                        },
                     )
                 else:
                     reason = (
@@ -713,7 +732,6 @@ class PositionExitManager:
         # ---------------------------------------------------------------------
         # PRIORITY 3: Smart Stop-Loss Controller / Trend Check
         # ---------------------------------------------------------------------
-        sl_episode_expired = (now - episode_started_at) >= self.config.sl_trend_defer_max_sec
         if self.config.smart_sl_enabled and not sl_episode_expired and not episode_state.get("smart_sl_done"):
             eval_fn = self.smart_sl_evaluator
             if eval_fn is None:

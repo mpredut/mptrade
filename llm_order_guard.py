@@ -99,6 +99,7 @@ def evaluate_high_stake_order_guard(
                 notional_eur=computed_notional,
                 regime_context=regime_context if valid_context else None,
                 dur_sec=dur_sec,
+                now=now,
             )
         except TypeError:
             g_dec = llm_guard.check(

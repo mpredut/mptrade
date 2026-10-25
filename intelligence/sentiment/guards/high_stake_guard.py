@@ -459,6 +459,7 @@ class HighStakeGuard:
         telemetry: Optional[Dict[str, Any]] = None,
         regime_context: Optional[Any] = None,
         dur_sec: Optional[float] = None,
+        now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate order through LLM if value exceeds threshold."""
         side_norm = side.upper()
@@ -477,11 +478,11 @@ class HighStakeGuard:
         if is_llm_guard_exempt(self._explicit_client):
             return GuardDecision.allow("HighStakeGuard", "backtest_mode_exempt", notional_eur=notional)
 
-        now = time.time()
+        now_ts = float(now) if now is not None else time.time()
         cache_key = (symbol.upper(), side_norm, int(notional // 100.0))
         if self.cache_ttl_sec > 0:
             cached = _HIGH_STAKE_DECISION_CACHE.get(cache_key)
-            if cached is not None and 0.0 <= (now - cached[0]) < self.cache_ttl_sec:
+            if cached is not None and 0.0 <= (now_ts - cached[0]) < self.cache_ttl_sec:
                 return cached[1]
 
         # 3. High-stake order detected: build rich multi-pillar telemetry context for LLM
@@ -555,13 +556,16 @@ class HighStakeGuard:
                 notional,
                 self.fallback_action,
             )
-            return evaluate_llm_guard_response(
+            dec = evaluate_llm_guard_response(
                 "HighStakeGuard",
                 f"high-stake {side_norm}",
                 None,
                 fallback_action=self.fallback_action,
                 notional_eur=notional,
             )
+            if self.cache_ttl_sec > 0:
+                _HIGH_STAKE_DECISION_CACHE[cache_key] = (now_ts, dec)
+            return dec
 
         dec = evaluate_llm_guard_response(
             "HighStakeGuard",
@@ -572,5 +576,5 @@ class HighStakeGuard:
         )
 
         if self.cache_ttl_sec > 0:
-            _HIGH_STAKE_DECISION_CACHE[cache_key] = (now, dec)
+            _HIGH_STAKE_DECISION_CACHE[cache_key] = (now_ts, dec)
         return dec

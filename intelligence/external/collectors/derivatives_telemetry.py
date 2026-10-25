@@ -88,7 +88,7 @@ class DerivativesTelemetryCollector:
                 if not isinstance(data, dict):
                     continue
                 telemetry = DerivativesTelemetry.from_dict(data)
-                if (now - telemetry.ts) < max_age:
+                if 0.0 <= (now - telemetry.ts) < max_age:
                     self._cache[symbol.upper()] = (telemetry.ts, telemetry)
                     return telemetry
             except Exception as e:
@@ -100,8 +100,8 @@ class DerivativesTelemetryCollector:
         if not p:
             return
         try:
-            from state_io import atomic_write_json
-            atomic_write_json(p, telemetry.to_dict(), indent=2)
+            from state_io import save_json_state
+            save_json_state(p, telemetry.to_dict(), indent=2)
         except Exception as e:
             logger.debug("Failed writing derivatives telemetry to %s: %s", p, e)
 
@@ -116,10 +116,10 @@ class DerivativesTelemetryCollector:
                 break
         if cached:
             if isinstance(cached, tuple) and len(cached) >= 2:
-                if (now - cached[0]) < self.cache_ttl_sec:
+                if 0.0 <= (now - cached[0]) < self.cache_ttl_sec:
                     return cached[1]
             elif isinstance(cached, DerivativesTelemetry):
-                if (now - cached.ts) < self.cache_ttl_sec:
+                if 0.0 <= (now - cached.ts) < self.cache_ttl_sec:
                     return cached
 
         disk_snap = self._load_from_disk(symbol, now)

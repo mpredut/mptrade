@@ -159,8 +159,10 @@ def _vol_symbol_variants(symbol: str) -> Tuple[str, ...]:
     if not raw:
         return ()
     clean = raw.replace("/", "").replace("-", "").replace("_", "")
+    if clean == "USDCUSDT":
+        return ("USDCUSDT",)
     base = clean
-    for suffix in ("USDC", "USDT", "FDUSD", "EUR", "USD"):
+    for suffix in ("USDC", "USDT", "FDUSD", "EUR", "RON", "GBP", "USD"):
         if base.endswith(suffix) and len(base) > len(suffix):
             base = base[: -len(suffix)]
             break
@@ -172,20 +174,27 @@ def _vol_symbol_variants(symbol: str) -> Tuple[str, ...]:
 
 
 def _extract_vol_ratio_from_file(path: str, symbol: str) -> Optional[float]:
-    if not path or not os.path.exists(path):
+    if not path:
         return None
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        from state_io import read_recovering_previous
+        data = read_recovering_previous(path, json.loads, default=None)
         if isinstance(data, dict):
+            search_maps = [data]
+            items_map = data.get("items")
+            if isinstance(items_map, dict):
+                search_maps.append(items_map)
             entry = None
-            for cand in _vol_symbol_variants(symbol):
-                if cand in data and isinstance(data[cand], dict):
-                    entry = data[cand]
+            for mapping in search_maps:
+                for cand in _vol_symbol_variants(symbol):
+                    if cand in mapping and isinstance(mapping[cand], dict):
+                        entry = mapping[cand]
+                        break
+                if entry is not None:
                     break
             if entry and isinstance(entry, dict):
                 v = entry.get("vol_1h_pct")
-                if v is not None and math.isfinite(float(v)) and float(v) > 0:
+                if v is not None and not isinstance(v, bool) and math.isfinite(float(v)) and float(v) > 0:
                     return vol_pct_to_ratio(float(v))
     except Exception:
         pass

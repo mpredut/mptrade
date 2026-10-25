@@ -3589,6 +3589,241 @@ def test_iteration15_post_stop_reentry_mode_hierarchy_smart_sl_recovery_external
     assert gw._get_live_price(_FakeInst()) == pytest.approx(245.5)
 
 
+def test_iteration16_volatility_items_and_usdcusdt_exit_manager_sl_timer_expired_collectors_clock_skew_and_high_stake_now(
+    monkeypatch, tmp_path
+) -> None:
+    """
+    Iteration 16 regression tests:
+    1. volatility.py: _vol_symbol_variants preserves USDCUSDT intact and strips RON/GBP;
+       _extract_vol_ratio_from_file reads standard {"items": {...}} envelopes and recovers from .previous.
+    2. PositionExitManager._evaluate_stop_loss_core sets metadata["sl_timer_expired"] = True
+       when the SL deferral timer has expired, and evaluates timeout before structural_break.
+    3. External collectors (OrderbookDepthCollector, WhalePositioningCollector, DerivativesTelemetryCollector)
+       reject future-dated timestamps (clock skew) and stage .previous backup files via save_json_state.
+    4. HighStakeGuard.check honors injected `now` for _HIGH_STAKE_DECISION_CACHE and caches timeout
+       fallback decisions so repeated order checks within TTL do not block for 3s per call.
+    """
+    from intelligence.internal.state import volatility as vol_mod
+    from strategies.position_exit_manager import (
+        PositionExitConfig,
+        PositionExitManager,
+        PositionSnapshot,
+    )
+    from intelligence.external.collectors.orderbook_depth import (
+        OrderbookDepthCollector,
+        _extract_base_asset,
+    )
+    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+    from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetryCollector
+    from intelligence.sentiment.guards import high_stake_guard as hsg_mod
+    import llm_order_guard
+
+    # 1. volatility.py: USDCUSDT preserved, RON/GBP stripped, {"items": {...}} + .previous recovery
+    assert vol_mod._vol_symbol_variants("USDCUSDT") == ("USDCUSDT",)
+    assert "BTC" in vol_mod._vol_symbol_variants("BTCRON")
+    assert "ETH" in vol_mod._vol_symbol_variants("ETHGBP")
+
+    st_path = tmp_path / "cache_short_trend.json"
+    st_prev = tmp_path / "cache_short_trend.json.previous"
+    st_path.write_text("{corrupt", encoding="utf-8")
+    st_prev.write_text(
+        json.dumps(
+            {
+                "items": {
+                    "TAOUSD": {"vol_1h_pct": 2.35},
+                    "USDCUSDT": {"vol_1h_pct": 1.05},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert vol_mod.resolve_cached_volatility_1h("TAOUSDC", state_path=str(st_path)) == pytest.approx(0.0235)
+    assert vol_mod.resolve_cached_volatility_1h("USDCUSDT", state_path=str(st_path)) == pytest.approx(0.0105)
+
+    # 2. PositionExitManager._evaluate_stop_loss_core sets sl_timer_expired=True and prioritizes timeout over structural_break
+    cfg = PositionExitConfig(
+        lost_threshold=0.05,
+        sl_trend_defer_max_sec=900.0,
+        sl_structural_break_enabled=True,
+        smart_sl_enabled=False,
+    )
+    mgr = PositionExitManager(cfg)
+    # Sample 1 at t=2000 initiates bounce watch (5.5% loss >= 5.0% threshold, below 6.5% disaster floor)
+    d1 = mgr.evaluate_stop_loss(
+        PositionSnapshot(
+            symbol="TAOUSDC",
+            current_price=94.5,
+            avg_buy_price=100.0,
+            net_qty=1.0,
+            sellable_qty=1.0,
+            current_time_s=2000.0,
+            trend_up=True,
+        )
+    )
+    assert d1.should_exit is False
+    assert d1.metadata.get("state") == "initiated"
+
+    # Sample 2 at t=2100 records a bounce up to 94.95 (+0.48% above 94.5 trough, still >= 5.0% loss threshold)
+    d2 = mgr.evaluate_stop_loss(
+        PositionSnapshot(
+            symbol="TAOUSDC",
+            current_price=94.95,
+            avg_buy_price=100.0,
+            net_qty=1.0,
+            sellable_qty=1.0,
+            current_time_s=2100.0,
+            trend_up=True,
+        )
+    )
+    assert d2.should_exit is False
+
+    # Sample 3 at t=2950 (950s >= 900s max defer) with price 94.2 (< lowest_px 94.5, which would also be structural_break):
+    # timeout must take precedence over structural_break and set sl_timer_expired=True
+    d3 = mgr.evaluate_stop_loss(
+        PositionSnapshot(
+            symbol="TAOUSDC",
+            current_price=94.2,
+            avg_buy_price=100.0,
+            net_qty=1.0,
+            sellable_qty=1.0,
+            current_time_s=2950.0,
+            trend_up=True,
+        )
+    )
+    assert d3.should_exit is True
+    assert d3.metadata.get("sl_timer_expired") is True
+    assert d3.metadata.get("sub_reason") == "timeout"
+
+    # 3. External collectors: USDCUSDT preserved in _extract_base_asset, clock skew rejected, .previous written
+    from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
+    from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+    from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
+
+    assert _extract_base_asset("USDCUSDT") == "USDCUSDT"
+
+    ob_col = OrderbookDepthCollector(cache_dir=str(tmp_path), cache_ttl_sec=60, disk_ttl_sec=60)
+    ob_snap_valid = OrderbookSnapshot(
+        symbol="BTCUSDC",
+        mid_price=60000.0,
+        bid_depth_usd=1000.0,
+        ask_depth_usd=1000.0,
+        imbalance_ratio=0.5,
+        largest_bid_wall_usd=500.0,
+        largest_bid_wall_price=59900.0,
+        largest_ask_wall_usd=500.0,
+        largest_ask_wall_price=60100.0,
+        ts=1000.0,
+    )
+    ob_col._save_to_disk(ob_snap_valid)
+    ob_snap_future = OrderbookSnapshot(
+        symbol="BTCUSDC",
+        mid_price=60000.0,
+        bid_depth_usd=1000.0,
+        ask_depth_usd=1000.0,
+        imbalance_ratio=0.5,
+        largest_bid_wall_usd=500.0,
+        largest_bid_wall_price=59900.0,
+        largest_ask_wall_usd=500.0,
+        largest_ask_wall_price=60100.0,
+        ts=2000.0,  # future timestamp relative to now=1005.0 -> clock skew
+    )
+    ob_col._save_to_disk(ob_snap_future)
+    assert (tmp_path / "orderbook_depth_BTCUSDC.json").exists()
+    # Future-dated snapshot is rejected on load at now=1005.0
+    assert ob_col._load_from_disk("BTCUSDC", now=1005.0) is None
+
+    whale_col = WhalePositioningCollector(cache_dir=str(tmp_path), cache_ttl_sec=60, disk_ttl_sec=60)
+    whale_snap_future = WhalePositioningSnapshot(
+        symbol="BTCUSDC",
+        top_traders_long_ratio=1.0,
+        top_traders_long_pct=0.5,
+        taker_buy_sell_ratio=1.0,
+        taker_buy_vol_usd=100.0,
+        taker_sell_vol_usd=100.0,
+        open_interest_usd=1000.0,
+        open_interest_1h_change_pct=0.0,
+        divergence_regime="neutral",
+        ts=2000.0,
+    )
+    whale_col._save_to_disk(whale_snap_future)
+    assert whale_col._load_from_disk("BTCUSDC", now=1005.0) is None
+
+    deriv_col = DerivativesTelemetryCollector(cache_dir=str(tmp_path), cache_ttl_sec=60, disk_ttl_sec=60)
+    deriv_snap_future = DerivativesTelemetry(
+        symbol="BTCUSDC",
+        funding_rate=0.001,
+        predicted_funding_rate=0.001,
+        open_interest=100.0,
+        open_interest_usd=6000000.0,
+        ts=2000.0,
+    )
+    deriv_col._save_to_disk(deriv_snap_future)
+    assert deriv_col._load_from_disk("BTCUSDC", now=1005.0) is None
+    # WhalePositioningCollector._resolve_cached_funding_rate also rejects future-dated derivatives telemetry
+    assert whale_col._resolve_cached_funding_rate("BTCUSDC", now=1005.0) is None
+
+    # 4. HighStakeGuard.check honors `now` and caches timeout fallback decisions
+    hsg_mod._HIGH_STAKE_DECISION_CACHE.clear()
+    monkeypatch.setattr(hsg_mod, "is_llm_guard_exempt", lambda explicit_client=False: False)
+    guard = hsg_mod.HighStakeGuard(
+        min_notional_usd=700.0,
+        timeout_sec=0.05,
+        fallback_action="allow",
+        cache_ttl_sec=120,
+    )
+    call_count = {"n": 0}
+
+    def _timeout_query_json(*args, **kwargs):
+        call_count["n"] += 1
+        return None  # simulates LLM query timeout
+
+    monkeypatch.setattr(guard.gemini_client, "query_json", _timeout_query_json)
+    monkeypatch.setattr(hsg_mod, "HighStakeGuard", lambda **kw: guard)
+    margins_hs = {
+        "intelligence_guards_mode": "enforce",
+        "llm_guard_mode": "enforce",
+        "high_stake_min_notional_usd": 700.0,
+        "llm_timeout_sec": 0.05,
+        "llm_fallback": "allow",
+    }
+
+    ok1, r1, s1 = llm_order_guard.evaluate_high_stake_order_guard(
+        symbol="TAOUSDC",
+        side="BUY",
+        price=1000.0,
+        qty=1.0,
+        computed_notional=1000.0,
+        regime_context=None,
+        valid_context=False,
+        cache_key=("TAOUSDC", "BUY"),
+        margins=margins_hs,
+        bypassed=set(),
+        now=5000.0,
+    )
+    assert ok1 is True
+    assert s1 == 1.0
+    assert call_count["n"] == 1
+
+    # Second call 10s later in simulated time should hit the cached timeout fallback without calling query_json again
+    ok2, r2, s2 = llm_order_guard.evaluate_high_stake_order_guard(
+        symbol="TAOUSDC",
+        side="BUY",
+        price=1000.0,
+        qty=1.0,
+        computed_notional=1000.0,
+        regime_context=None,
+        valid_context=False,
+        cache_key=("TAOUSDC", "BUY"),
+        margins=margins_hs,
+        bypassed=set(),
+        now=5010.0,
+    )
+    assert ok2 is True
+    assert s2 == 1.0
+    assert call_count["n"] == 1
+
+
+
 
 
 

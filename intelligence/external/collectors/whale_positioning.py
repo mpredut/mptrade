@@ -107,7 +107,7 @@ class WhalePositioningCollector:
                 if not isinstance(data, dict):
                     continue
                 snapshot = WhalePositioningSnapshot.from_dict(data)
-                if (now - snapshot.ts) < max_age:
+                if 0.0 <= (now - snapshot.ts) < max_age:
                     self._cache[symbol.upper()] = (snapshot.ts, snapshot)
                     return snapshot
                 if ignore_ttl:
@@ -121,8 +121,8 @@ class WhalePositioningCollector:
         if not p:
             return
         try:
-            from state_io import atomic_write_json
-            atomic_write_json(p, snapshot.to_dict(), indent=2)
+            from state_io import save_json_state
+            save_json_state(p, snapshot.to_dict(), indent=2)
         except Exception as e:
             logger.debug("Failed writing whale snapshot to %s: %s", p, e)
 
@@ -191,7 +191,7 @@ class WhalePositioningCollector:
                     if not isinstance(d, dict):
                         continue
                     ts_val = float(d.get("ts") or 0.0)
-                    if ts_val > 0 and (now_ts - ts_val) >= max_age:
+                    if ts_val > 0 and not (0.0 <= (now_ts - ts_val) < max_age):
                         continue
                     fr = d.get("funding_rate")
                     if fr is not None:
@@ -285,10 +285,10 @@ class WhalePositioningCollector:
                 break
         if cached:
             if isinstance(cached, tuple) and len(cached) >= 2:
-                if (now - cached[0]) < self.cache_ttl_sec:
+                if 0.0 <= (now - cached[0]) < self.cache_ttl_sec:
                     return cached[1]
             elif isinstance(cached, WhalePositioningSnapshot):
-                if (now - cached.ts) < self.cache_ttl_sec:
+                if 0.0 <= (now - cached.ts) < self.cache_ttl_sec:
                     return cached
 
         # Check disk cache before network
