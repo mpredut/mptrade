@@ -405,8 +405,9 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
         hp._client = FakeHLClient()
         hp._client_tried = True
 
-        with self.assertRaises(ProviderError) as ctx:
-            hp.order_status("PURRUSDC", "777")
+        with patch.dict(os.environ, {"HL_ACCOUNT_ADDRESS": "0x123"}):
+            with self.assertRaises(ProviderError) as ctx:
+                hp.order_status("PURRUSDC", "777")
         self.assertIn("cannot value HYPE fee in USDC", str(ctx.exception))
 
 
