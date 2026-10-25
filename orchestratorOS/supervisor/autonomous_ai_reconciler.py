@@ -63,27 +63,47 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
 
     ref = datetime.fromtimestamp(file_mtime)
     day = ref.date()
-    prev_secs = ref.hour * 3600 + ref.minute * 60 + ref.second + 60
+    prev_ts = float(file_mtime)
     picked: List[str] = []
+
+    def _resolve_fold_ts(dt_naive: datetime, upper_ts: float) -> float:
+        ts0 = dt_naive.replace(fold=0).timestamp()
+        ts1 = dt_naive.replace(fold=1).timestamp()
+        if ts1 > ts0 and ts1 <= upper_ts + 300.0:
+            return ts1
+        return ts0
+
     for line in reversed(lines):
         ts: Optional[float] = None
         m = _FULL_TS_RE.search(line)
         if m:
             dt = datetime.strptime(f"{m.group(1)} {m.group(2)}:{m.group(3)}:{m.group(4)}", "%Y-%m-%d %H:%M:%S")
-            day, prev_secs, ts = dt.date(), dt.hour * 3600 + dt.minute * 60 + dt.second, dt.timestamp()
+            day = dt.date()
+            ts = _resolve_fold_ts(dt, prev_ts)
+            prev_ts = ts
         else:
             g = _GLOG_TS_RE.match(line)
             c = None if g else _CLOCK_TS_RE.match(line)
             if g:
                 dt = datetime(ref.year, int(g.group(1)), int(g.group(2)),
                               int(g.group(3)), int(g.group(4)), int(g.group(5)))
-                day, prev_secs, ts = dt.date(), dt.hour * 3600 + dt.minute * 60 + dt.second, dt.timestamp()
+                day = dt.date()
+                ts = _resolve_fold_ts(dt, prev_ts)
+                prev_ts = ts
             elif c:
                 secs = int(c.group(1)) * 3600 + int(c.group(2)) * 60 + int(c.group(3))
-                if secs > prev_secs + 300:
+                dt_same = datetime.combine(day, datetime.min.time()) + timedelta(seconds=secs)
+                ts0 = dt_same.replace(fold=0).timestamp()
+                ts1 = dt_same.replace(fold=1).timestamp()
+                if ts1 > ts0 and ts1 <= prev_ts + 300.0:
+                    ts = ts1
+                elif ts0 <= prev_ts + 300.0:
+                    ts = ts0
+                else:
                     day -= timedelta(days=1)
-                prev_secs = secs
-                ts = (datetime.combine(day, datetime.min.time()) + timedelta(seconds=secs)).timestamp()
+                    dt_prev = datetime.combine(day, datetime.min.time()) + timedelta(seconds=secs)
+                    ts = _resolve_fold_ts(dt_prev, prev_ts)
+                prev_ts = ts
         if ts is not None and ts < cutoff_ts:
             break
         picked.append(line)
