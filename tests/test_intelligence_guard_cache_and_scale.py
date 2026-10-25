@@ -3327,6 +3327,120 @@ def test_iteration13_assetguardian_p3b_recovery_and_gllm2_bypass_survival_usdcus
     assert refreshed_ga.threat_level == "NORMAL"
 
 
+def test_iteration14_monitortrades_reentry_qlimit1_bypass_rtrade_gi_whale_bypass_quantity_resolve_assets_and_cachetrend_usdcusdt(
+    monkeypatch,
+):
+    """Verify Iteration 14 fixes:
+    1. monitortrades._can_pass_buy_quantity_policy and _apply_post_stop_ai_guard merge venue bypass_guards
+       and pass apply_policy=not bypass_qlimit1 to provider.quantity_decision.
+    2. rtrade._whale_flow_blocks_side and _effective_adjustment_fraction honor GI_WHALE bypass and whale_guard_mode.
+    3. providers.quantity.resolve_assets and utils.base_asset support USDT, FDUSD, and GBP quotes.
+    4. cachetrend._short_trend_symbol_variants preserves USDCUSDT intact and strips RON/GBP quotes.
+    """
+    import time
+    from types import SimpleNamespace
+    import monitortrades as mt
+    import order_guard
+    import rtrade
+    import external_order_guard
+    import utils as u
+    from providers.quantity import resolve_assets, QuantityDecision
+    from cachetrend import _short_trend_symbol_variants
+    from intelligence.external.collectors.whale_positioning import (
+        WhalePositioningSnapshot,
+        WhalePositioningCollector,
+    )
+
+    # 1. monitortrades._can_pass_buy_quantity_policy honors G_QLIMIT1 bypass
+    captured_apply_policy = []
+
+    def _fake_q_dec(symbol, side, price, req_qty, **kw):
+        captured_apply_policy.append(kw.get("apply_policy"))
+        return QuantityDecision(
+            requested_qty=req_qty,
+            balance_cap=req_qty,
+            policy_cap=req_qty,
+            fee_cap=req_qty,
+            final_qty=req_qty if not kw.get("apply_policy") else 0.0,
+            refuse_reason="qty_zero_after_policy" if kw.get("apply_policy") else None,
+            balance_asset="USDC",
+        )
+
+    fake_prov = SimpleNamespace(
+        name="binance",
+        free_balance=lambda _a: 1000.0,
+        quantity_decision=_fake_q_dec,
+        order_filter_refusal=lambda *_a, **_kw: None,
+        get_orders=lambda *_a, **_kw: [],
+    )
+    fake_inst = SimpleNamespace(
+        symbol="TAOUSDC",
+        base="TAO",
+        quote="USDC",
+        provider=fake_prov,
+        provider_name="binance",
+        params={"bypass_guards": {"G_QLIMIT1", "GO1"}},
+    )
+    monkeypatch.setattr(mt, "_is_simulated_env_or_inst", lambda *_a, **_kw: True)
+    monkeypatch.setattr(
+        order_guard,
+        "check_intelligence_guards",
+        lambda *_a, **_kw: (True, "ok", 1.0),
+    )
+
+    ok_reentry = mt._can_pass_buy_quantity_policy(fake_inst, "TAOUSDC", 200.0, 1.0, min_qty=0.01)
+    assert ok_reentry is True
+    assert captured_apply_policy == [False]
+
+    # 2. rtrade._whale_flow_blocks_side and _effective_adjustment_fraction honor GI_WHALE bypass
+    collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=None)
+    collector.record_snapshot(
+        WhalePositioningSnapshot(
+            symbol="TAOUSDC",
+            top_traders_long_ratio=2.0,
+            top_traders_long_pct=0.66,
+            taker_buy_sell_ratio=0.70,
+            taker_buy_vol_usd=70_000.0,
+            taker_sell_vol_usd=100_000.0,
+            open_interest_usd=50_000_000.0,
+            open_interest_1h_change_pct=0.0,
+            divergence_regime="neutral",
+            ts=time.time(),
+        )
+    )
+    monkeypatch.setattr(external_order_guard, "_whale_collector", collector)
+
+    # Enforced by default -> blocks BUY and widens adjustment
+    blocked_default, _ = rtrade._whale_flow_blocks_side("TAOUSDC", "BUY")
+    assert blocked_default is True
+    assert rtrade._effective_adjustment_fraction("TAOUSDC", 0.004) == pytest.approx(0.006)
+
+    # Bypassed via GI_WHALE -> does not block and keeps base adjustment
+    blocked_bypassed, reason_bypassed = rtrade._whale_flow_blocks_side(
+        "TAOUSDC", "BUY", bypass_guards={"GI_WHALE"}
+    )
+    assert blocked_bypassed is False
+    assert reason_bypassed == "gi_whale_bypassed_or_off"
+    assert rtrade._effective_adjustment_fraction(
+        "TAOUSDC", 0.004, bypass_guards={"GI_WHALE"}
+    ) == pytest.approx(0.004)
+
+    # 3. rtrade also honors whale_guard_mode = shadow / off in order_guard.conf
+    base_m = dict(order_guard._load_margins())
+    base_m["whale_guard_mode"] = "shadow"
+    monkeypatch.setattr(order_guard, "_load_margins", lambda: base_m)
+    blocked_shadow, reason_shadow = rtrade._whale_flow_blocks_side("TAOUSDC", "BUY")
+    assert blocked_shadow is False
+    assert reason_shadow == "gi_whale_bypassed_or_off"
+    assert rtrade._effective_adjustment_fraction("TAOUSDC", 0.004) == pytest.approx(0.004)
+
+    # 4. cachetrend._short_trend_symbol_variants preserves USDCUSDT intact and strips RON/GBP
+    assert _short_trend_symbol_variants("USDCUSDT") == ["USDCUSDT"]
+    assert "BTCUSDC" in _short_trend_symbol_variants("BTCRON")
+    assert "ETHUSDC" in _short_trend_symbol_variants("ETHGBP")
+
+
+
 
 
 

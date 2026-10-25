@@ -189,8 +189,14 @@ def _short_trend_symbol_variants(symbol) -> list:
     if not raw:
         return [symbol]
     cleaned = raw.replace("/", "").replace("-", "").replace("_", "")
+    if cleaned == "USDCUSDT":
+        out = [symbol]
+        for cand in (raw, cleaned):
+            if cand and cand not in out:
+                out.append(cand)
+        return out
     base = cleaned
-    for quote in ("USDC", "USDT", "FDUSD", "EUR", "USD"):
+    for quote in ("USDC", "USDT", "FDUSD", "EUR", "USD", "RON", "GBP"):
         if base.endswith(quote) and len(base) > len(quote):
             base = base[: -len(quote)]
             break

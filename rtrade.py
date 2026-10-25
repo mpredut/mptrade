@@ -927,11 +927,33 @@ def _market_regime_decision(symbol) -> MarketRegimeDecision:
         allow_fallback=RTRADE_TREND_OHLC_FALLBACK_ENABLED)
 
 
-def _whale_flow_blocks_side(symbol: str, side: str) -> tuple[bool, str]:
+def _is_gi_whale_enforced(bypass_guards=None) -> bool:
+    """Return True if GI_WHALE is actively enforced and not bypassed in order_guard.conf."""
+    try:
+        import order_guard
+        from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+        m = order_guard._load_margins()
+        for mode_key in ("intelligence_guards_mode", "external_guard_mode", "whale_guard_mode"):
+            if str(m.get(mode_key, "enforce")).strip().lower() != "enforce":
+                return False
+        bg_raw = bypass_guards
+        if bg_raw is None:
+            bg_raw = m.get("binance_bypass_guards", m.get("default_bypass_guards"))
+        bypassed = normalize_bypassed_guards(bypass_guards=bg_raw)
+        if GUARD_REGISTRY["GI_WHALE"].is_bypassed(bypassed) or "all" in bypassed or "*" in bypassed:
+            return False
+    except Exception:
+        pass
+    return True
+
+
+def _whale_flow_blocks_side(symbol: str, side: str, *, bypass_guards=None) -> tuple[bool, str]:
     """Check if whale taker flow or OI divergence conflicts with initiating an rtrade round."""
     side_u = (side or "").upper()
     if side_u not in {"BUY", "SELL"}:
         return False, "ok"
+    if not _is_gi_whale_enforced(bypass_guards):
+        return False, "gi_whale_bypassed_or_off"
     try:
         from external_order_guard import get_whale_collector
         collector = get_whale_collector()
@@ -955,8 +977,10 @@ def _whale_flow_blocks_side(symbol: str, side: str) -> tuple[bool, str]:
     return False, "ok"
 
 
-def _effective_adjustment_fraction(symbol: str, base_adjustment: float) -> float:
+def _effective_adjustment_fraction(symbol: str, base_adjustment: float, *, bypass_guards=None) -> float:
     """Widen grid quote adjustment when moderate taker flow pressure exists (0.80 <= ratio < 0.90 or 1.11 < ratio <= 1.25)."""
+    if not _is_gi_whale_enforced(bypass_guards):
+        return base_adjustment
     try:
         from external_order_guard import get_whale_collector
         collector = get_whale_collector()

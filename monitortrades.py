@@ -1400,7 +1400,23 @@ def _can_pass_buy_quantity_policy(
     if not callable(getattr(provider, "free_balance", None)):
         return True
     try:
+        import order_guard
+        from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
         from providers.quantity import resolve_assets
+        inst_params = getattr(inst, "params", None)
+        inst_bg = inst_params.get("bypass_guards") if isinstance(inst_params, dict) else None
+        venue_name = (
+            getattr(provider, "name", None)
+            or getattr(inst, "provider_name", None)
+            or getattr(inst, "provider_label", None)
+            or "binance"
+        )
+        m_cfg = order_guard._load_margins()
+        venue_bg = m_cfg.get(f"{str(venue_name).lower()}_bypass_guards", m_cfg.get("default_bypass_guards"))
+        reentry_bg = {"G_PROF", "GLLM1"} | normalize_bypassed_guards(bypass_guards=venue_bg)
+        if inst_bg:
+            reentry_bg = reentry_bg | normalize_bypassed_guards(bypass_guards=inst_bg)
+        bypass_qlimit1 = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(reentry_bg) or "all" in reentry_bg or "*" in reentry_bg
         base_asset, quote_asset = resolve_assets(
             symbol,
             getattr(inst, "base", None),
@@ -1415,7 +1431,7 @@ def _can_pass_buy_quantity_policy(
             quote=quote_asset,
             cancelorders=True,
             hours=float(MT_BUY_SAFEBACK_HOURS),
-            apply_policy=True,
+            apply_policy=not bypass_qlimit1,
             market=False,
         )
         if decision is None:
@@ -1451,13 +1467,6 @@ def _can_pass_buy_quantity_policy(
                     f"qty {final_qty} refused by filter ({refusal})"
                 )
                 return False
-        import order_guard
-        inst_params = getattr(inst, "params", None)
-        inst_bg = inst_params.get("bypass_guards") if isinstance(inst_params, dict) else None
-        reentry_bg = {"G_PROF", "GLLM1"}
-        if inst_bg:
-            from guard_hierarchy import normalize_bypassed_guards
-            reentry_bg = reentry_bg | normalize_bypassed_guards(bypass_guards=inst_bg)
         if callable(getattr(provider, "get_orders", None)):
             dl_res = order_guard.daily_limit_guard(
                 provider, symbol, "BUY", bypass_guards=reentry_bg
@@ -1558,7 +1567,23 @@ def _apply_post_stop_ai_guard(
             and callable(getattr(provider, "free_balance", None))
         ):
             try:
+                import order_guard
+                from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
                 from providers.quantity import resolve_assets
+                inst_params = getattr(inst, "params", None)
+                inst_bg = inst_params.get("bypass_guards") if isinstance(inst_params, dict) else None
+                venue_name = (
+                    getattr(provider, "name", None)
+                    or getattr(inst, "provider_name", None)
+                    or getattr(inst, "provider_label", None)
+                    or "binance"
+                )
+                m_cfg = order_guard._load_margins()
+                venue_bg = m_cfg.get(f"{str(venue_name).lower()}_bypass_guards", m_cfg.get("default_bypass_guards"))
+                reentry_bg = {"G_PROF", "GLLM1"} | normalize_bypassed_guards(bypass_guards=venue_bg)
+                if inst_bg:
+                    reentry_bg = reentry_bg | normalize_bypassed_guards(bypass_guards=inst_bg)
+                bypass_qlimit1 = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(reentry_bg) or "all" in reentry_bg or "*" in reentry_bg
                 base_asset, quote_asset = resolve_assets(
                     symbol,
                     getattr(inst, "base", None),
@@ -1573,7 +1598,7 @@ def _apply_post_stop_ai_guard(
                     quote=quote_asset,
                     cancelorders=True,
                     hours=float(MT_BUY_SAFEBACK_HOURS),
-                    apply_policy=True,
+                    apply_policy=not bypass_qlimit1,
                     market=False,
                 )
                 if q_dec is not None:
