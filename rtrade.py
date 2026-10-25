@@ -359,7 +359,8 @@ class _LivePairVenue:
                 self.symbol, side, price, qty,
                 force=False, cancelorders=False, hours=hours, smart=False,
                 cooldown_pair_id=pair_id,
-                bypass_guards={"GLLM1"},
+                bypass_guards={"G_PROF", "GLLM1"} if RTRADE_BYPASS_PROFIT_GUARD else {"GLLM1"},
+                allow_math_reference_sell=bool(RTRADE_BYPASS_PROFIT_GUARD and str(side).upper() == "SELL"),
                 # The coordinator owns retry/reconciliation. The global outbox
                 # must not later recreate a leg from an expired pair.
                 caller_owns_retry=True, motivation="rtrade_pair_quote",

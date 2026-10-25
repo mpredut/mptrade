@@ -106,8 +106,14 @@ NON_FAILURE_DEFERRAL_REASONS = frozenset({
     "retry_price_unfavorable",
 })
 
-TERMINAL_FILTER_REFUSAL_REASONS = frozenset({"below_min_notional"})
-TERMINAL_FILTER_REFUSAL_PREFIXES = ("binance_filter_refused:",)
+TERMINAL_FILTER_REFUSAL_REASONS = frozenset({
+    "below_min_notional",
+    "qty_zero_or_negative",
+})
+TERMINAL_FILTER_REFUSAL_PREFIXES = (
+    "binance_filter_refused:",
+    "filter_",
+)
 
 
 def is_terminal_filter_refusal(reason) -> bool:

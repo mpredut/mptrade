@@ -304,13 +304,13 @@ class TestCentralizedBalanceSingleSourceOfTruth(unittest.TestCase):
 
         # BUY with 0 quote balance fails in Stage 0
         outcome_buy = {}
-        res_buy = inst.place("BUY", 100.0, 1.0, _outcome_context=outcome_buy)
+        res_buy = inst.place("BUY", 100.0, 1.0, caller_owns_retry=True, _outcome_context=outcome_buy)
         self.assertIsNone(res_buy)
         self.assertEqual(outcome_buy.get("reason"), "balance_unavailable")
 
         # SELL with 0 base balance fails in Stage 0
         outcome_sell = {}
-        res_sell = inst.place("SELL", 100.0, 1.0, _outcome_context=outcome_sell)
+        res_sell = inst.place("SELL", 100.0, 1.0, caller_owns_retry=True, _outcome_context=outcome_sell)
         self.assertIsNone(res_sell)
         self.assertEqual(outcome_sell.get("reason"), "balance_unavailable")
 

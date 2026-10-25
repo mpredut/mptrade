@@ -345,8 +345,10 @@ class KrakenTrailing:
         if bypass_guards is None:
             bypass_guards = {"all"} if side.upper() == "SELL" else {"math_reference"}
 
+        from guard_hierarchy import normalize_bypassed_guards
         from order_guard import check_intelligence_guards
-        if not ("all" in bypass_guards or "*" in bypass_guards):
+        normalized_bypass = normalize_bypassed_guards(bypass_guards=bypass_guards)
+        if "all" not in normalized_bypass:
             allowed, reason, suggested_scale = check_intelligence_guards(
                 self.executor._executor, pair, side.upper(), price,
                 qty=qty,

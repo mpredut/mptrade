@@ -2279,7 +2279,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
         inst = Instrument("test_inst", "BTCUSDC", "binance", api=mock_api)
 
         # SELL with bypass_guards={"financial"} must revoke G_PROF while keeping G_QLIMIT1 & G_QLIMIT2
-        inst.place("SELL", 100.0, 1.0, bypass_guards={"financial"}, wait_for_trend=False)
+        inst.place("SELL", 100.0, 1.0, bypass_guards={"financial"}, wait_for_trend=False, caller_owns_retry=True)
         assert len(captured_bypasses) == 1
         sell_side, sell_byp = captured_bypasses[-1]
         assert sell_side == "SELL"
@@ -2288,7 +2288,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(sell_byp) is True
 
         # BUY with bypass_guards={"qlimit"} must revoke G_QLIMIT1 while keeping G_QLIMIT2
-        inst.place("BUY", 100.0, 1.0, bypass_guards={"qlimit"}, wait_for_trend=False)
+        inst.place("BUY", 100.0, 1.0, bypass_guards={"qlimit"}, wait_for_trend=False, caller_owns_retry=True)
         assert len(captured_bypasses) == 2
         buy_side, buy_byp = captured_bypasses[-1]
         assert buy_side == "BUY"
@@ -2412,6 +2412,73 @@ class TestBatch6IntelligenceAndRoutingFixes:
         )
         w_col = WhalePositioningCollector(cache_dir=str(c24_dir))
         assert w_col._resolve_price_1h_change_pct("TAOUSD") == pytest.approx(10.0)
+
+    def test_iteration7_terminal_filter_refusal_rtrade_pair_bypass_and_kraken_trail_normalize(self, tmp_path, monkeypatch):
+        """Regression test for Iteration 7 fixes:
+        1. order_retry.is_terminal_filter_refusal recognizes 'filter_lot_size_min:...' and
+           'qty_zero_or_negative' returned by MarketDataProvider.order_filter_refusal.
+        2. rtrade._LivePairVenue._submit_limit_intent honours RTRADE_BYPASS_PROFIT_GUARD
+           (including allow_math_reference_sell=True on SELL) symmetrically with repetitive_buy/sell.
+        3. kraken.trailing_stop.KrakenTrailingEngine._submit_lifecycle_order normalizes
+           bypass_guards before checking for 'all' / '*' (so string 'all' or {'ALL'} is respected).
+        """
+        import order_retry as oq
+        import rtrade
+        from kraken.trailing_stop import KrakenTrailing
+
+        # 1. Terminal filter refusal classification across non-Binance providers
+        assert oq.is_terminal_filter_refusal("filter_lot_size_min:0.001<0.05") is True
+        assert oq.is_terminal_filter_refusal("qty_zero_or_negative") is True
+        assert oq.is_terminal_filter_refusal("binance_filter_refused:MIN_NOTIONAL") is True
+        assert oq.is_terminal_filter_refusal("below_min_notional") is True
+        assert oq.is_terminal_filter_refusal("trend_deferred") is False
+
+        # 2. _LivePairVenue._submit_limit_intent honours RTRADE_BYPASS_PROFIT_GUARD on BUY & SELL
+        monkeypatch.setattr(rtrade, "RTRADE_BYPASS_PROFIT_GUARD", True)
+        placed_calls = []
+        monkeypatch.setattr(
+            rtrade.mkt,
+            "place",
+            lambda symbol, side, price, qty, **kw: placed_calls.append((symbol, side, price, qty, kw)) or {"orderId": "99"},
+        )
+        venue = rtrade._LivePairVenue("SOLUSDC")
+        monkeypatch.setattr(venue, "_persist_callback", lambda *a, **k: (lambda x: None))
+        monkeypatch.setattr(venue, "_ticket_from_pending", lambda intent, pair_id: intent)
+        monkeypatch.setattr(
+            venue.order_lifecycle,
+            "submit",
+            lambda intent, persist, submit: MagicMock(intent=submit()),
+        )
+
+        venue._submit_limit_intent("BUY", 100.0, 1.0, "pair1", attempt=1, revision=0)
+        assert len(placed_calls) == 1
+        assert placed_calls[-1][4]["bypass_guards"] == {"G_PROF", "GLLM1"}
+        assert placed_calls[-1][4]["allow_math_reference_sell"] is False
+
+        venue._submit_limit_intent("SELL", 105.0, 1.0, "pair1", attempt=1, revision=0)
+        assert len(placed_calls) == 2
+        assert placed_calls[-1][4]["bypass_guards"] == {"G_PROF", "GLLM1"}
+        assert placed_calls[-1][4]["allow_math_reference_sell"] is True
+
+        # 3. KrakenTrailing._submit_lifecycle_order normalizes bypass_guards="ALL" / {"ALL"}
+        eng = object.__new__(KrakenTrailing)
+        eng.executor = MagicMock()
+        eng.order_lifecycle = MagicMock()
+        eng.order_lifecycle.submit.return_value = MagicMock(outcome="accepted")
+        guard_called = []
+        monkeypatch.setattr(
+            order_guard,
+            "check_intelligence_guards",
+            lambda *a, **k: guard_called.append(1) or (False, "should_be_skipped", 1.0),
+        )
+        res = eng._submit_lifecycle_order(
+            intent={"intent_id": "id1", "client_order_id": "cid1"},
+            persist=lambda x: None, pair="SOLUSD", side="BUY",
+            qty=1.0, price=100.0, kind="TRAIL", bypass_guards="ALL", market=False,
+        )
+        assert res.outcome == "accepted"
+        assert guard_called == []
+
 
 
 
