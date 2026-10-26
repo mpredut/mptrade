@@ -2,8 +2,19 @@
 
 from __future__ import annotations
 
+import math
 import re
 import statistics
+
+
+def _f(val: object, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        res = float(val)
+    except (TypeError, ValueError):
+        return default
+    return res if math.isfinite(res) else default
 
 
 _CLIENT_ORDER_ID_PATTERNS = {
@@ -35,22 +46,33 @@ def _percentile(values: list[float], percentile: float) -> float | None:
 
 
 def distribution(values: list[float]) -> dict:
-    values = [float(value) for value in values if value is not None]
+    clean_values: list[float] = []
+    for value in values:
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            vf = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(vf):
+            clean_values.append(vf)
     return {
-        "count": len(values),
-        "min": min(values) if values else None,
-        "mean": statistics.fmean(values) if values else None,
-        "p50": _percentile(values, 50),
-        "p90": _percentile(values, 90),
-        "p95": _percentile(values, 95),
-        "max": max(values) if values else None,
+        "count": len(clean_values),
+        "min": min(clean_values) if clean_values else None,
+        "mean": statistics.fmean(clean_values) if clean_values else None,
+        "p50": _percentile(clean_values, 50),
+        "p90": _percentile(clean_values, 90),
+        "p95": _percentile(clean_values, 95),
+        "max": max(clean_values) if clean_values else None,
     }
 
 
 def calibrate_execution_events(events: list[dict]) -> dict:
     """Correlate the events by ``intent_id`` without assuming missing fills."""
     intents: dict[str, list[dict]] = {}
-    for event in sorted(events, key=lambda item: float(item.get("ts") or 0.0)):
+    for event in sorted(events, key=lambda item: _f(item.get("ts") if isinstance(item, dict) else 0.0, 0.0)):
+        if not isinstance(event, dict):
+            continue
         intent_id = str(event.get("intent_id") or "").strip()
         if intent_id:
             intents.setdefault(intent_id, []).append(event)
@@ -71,16 +93,16 @@ def calibrate_execution_events(events: list[dict]) -> dict:
         statuses = [
             event for event in history if event.get("event") in STATUS_EVENTS
         ]
-        qty = float(requested.get("qty") or 0.0)
+        qty = _f(requested.get("qty"), 0.0)
         status_rows = []
         for status in statuses:
-            filled = float(status.get("filled_qty") or 0.0)
-            cost = float(status.get("cost") or 0.0)
-            fee = float(status.get("fee") or 0.0)
+            filled = _f(status.get("filled_qty"), 0.0)
+            cost = _f(status.get("cost"), 0.0)
+            fee = _f(status.get("fee"), 0.0)
             status_rows.append((status, filled, cost, fee))
         latest = max(
             status_rows,
-            key=lambda row: (row[1], float(row[0].get("ts") or 0.0)),
+            key=lambda row: (row[1], _f(row[0].get("ts"), 0.0)),
             default=None,
         )
         first_fill = next((row for row in status_rows if row[1] > 0), None)
@@ -95,7 +117,7 @@ def calibrate_execution_events(events: list[dict]) -> dict:
         requested_price = requested.get("price")
         deviation_bps = None
         if requested_price is not None and avg_fill is not None:
-            reference = float(requested_price)
+            reference = _f(requested_price, 0.0)
             if reference > 0:
                 side = str(requested.get("side") or "").lower()
                 direction = 1.0 if side == "buy" else -1.0
@@ -107,7 +129,7 @@ def calibrate_execution_events(events: list[dict]) -> dict:
             and reference_price is not None
             and avg_fill is not None
         ):
-            reference = float(reference_price)
+            reference = _f(reference_price, 0.0)
             if reference > 0:
                 side = str(requested.get("side") or "").lower()
                 direction = 1.0 if side == "buy" else -1.0
@@ -118,8 +140,8 @@ def calibrate_execution_events(events: list[dict]) -> dict:
         if accepted is not None and first_fill is not None:
             latency = max(
                 0.0,
-                float(first_fill[0].get("ts") or 0.0)
-                - float(accepted.get("ts") or 0.0),
+                _f(first_fill[0].get("ts"), 0.0)
+                - _f(accepted.get("ts"), 0.0),
             )
         client_order_id = None
         if accepted is not None:

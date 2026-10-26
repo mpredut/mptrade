@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import hashlib
+import math
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -19,6 +20,9 @@ REQUIRED_FIELDS = ("timestamp", "open", "high", "low", "close")
 
 def normalize_record(record: Mapping) -> dict:
     """Normalise a row into the common OHLC contract."""
+    for field in REQUIRED_FIELDS:
+        if isinstance(record[field], bool):
+            raise ValueError(f"{field} cannot be a boolean")
     return {
         "timestamp": int(record["timestamp"]),
         "open": float(record["open"]),
@@ -75,7 +79,7 @@ def validate_dataset(records: Iterable[Mapping], *, interval_minutes: int | None
     rows = [normalize_record(record) for record in records]
     if not rows:
         raise ValueError("dataset-ul OHLC cannot be empty")
-    if interval_minutes is not None and interval_minutes <= 0:
+    if interval_minutes is not None and (isinstance(interval_minutes, bool) or interval_minutes <= 0):
         raise ValueError("interval_minutes must be positive")
 
     expected_delta = interval_minutes * 60 if interval_minutes is not None else None
@@ -93,7 +97,7 @@ def validate_dataset(records: Iterable[Mapping], *, interval_minutes: int | None
         previous_timestamp = timestamp
 
         open_, high, low, close = row["open"], row["high"], row["low"], row["close"]
-        if min(open_, high, low, close) <= 0:
+        if not all(math.isfinite(v) for v in (open_, high, low, close)) or min(open_, high, low, close) <= 0:
             raise ValueError(f"non-positive price at line {index}")
         if high < max(open_, close, low) or low > min(open_, close, high):
             raise ValueError(f"invalid OHLC invariant at line {index}")
@@ -114,7 +118,7 @@ def drop_incomplete_last_bar(
     uses the session start, so during the session we compare against the
     ``regular`` end provided in the response metadata.
     """
-    if interval_minutes <= 0:
+    if isinstance(interval_minutes, bool) or interval_minutes <= 0:
         raise ValueError("interval_minutes must be positive")
     rows = [normalize_record(record) for record in records]
     if not rows:
@@ -179,7 +183,7 @@ def align_previous_values(
                 f"no known FX value at or before timestamp {target}; "
                 "extend the FX dataset further back"
             )
-        if current <= 0:
+        if isinstance(current, bool) or not math.isfinite(float(current)) or float(current) <= 0:
             raise ValueError(f"non-positive aligned value at timestamp {target}")
         result.append(float(current))
     return result

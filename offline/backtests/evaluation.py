@@ -12,6 +12,7 @@ import argparse
 from collections.abc import Callable, Sequence
 from collections import Counter
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import Any
 
@@ -89,7 +90,7 @@ def assess_decision_evidence(
 
 def automatic_window_sizes(sample_count: int) -> tuple[int, int, int, int]:
     """Trei fold-uri aproximative: 45% train, 10% validation, 15% test."""
-    if sample_count < 20:
+    if isinstance(sample_count, bool) or not isinstance(sample_count, int) or sample_count < 20:
         raise ValueError("at least 20 bars are required for automatic windows")
     train = max(1, int(sample_count * 0.45))
     validation = max(1, int(sample_count * 0.10))
@@ -158,7 +159,7 @@ def evaluate_walk_forward(
     warmup_bars: int = 0,
     validate_contract: bool = False,
 ) -> dict:
-    if warmup_bars < 0:
+    if isinstance(warmup_bars, bool) or not isinstance(warmup_bars, int) or warmup_bars < 0:
         raise ValueError("warmup_bars cannot be negative")
     folds = walk_forward_splits(
         len(records),
@@ -249,7 +250,16 @@ def evaluate_walk_forward(
 
 
 def _optional_min(values: list[float | None]) -> float | None:
-    present = [float(value) for value in values if value is not None]
+    present = []
+    for value in values:
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            vf = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(vf):
+            present.append(vf)
     return min(present) if present else None
 
 

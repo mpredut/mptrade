@@ -1433,3 +1433,39 @@ def test_backtest_metrics_walk_forward_and_execution_hardening():
         bex.ExecutionModel(spread_bps=True)
 
 
+def test_datasets_execution_calibration_and_benchmark_hardening():
+    import pytest
+    from offline.backtests import datasets as bds
+    from offline.backtests import execution_calibration as bec
+    from offline.backtests import financial_benchmark as bfb
+    from offline.backtests import evaluation as bev
+
+    with pytest.raises(ValueError):
+        bds.validate_dataset([{"timestamp": 1000, "open": 10.0, "high": float("nan"), "low": 9.0, "close": 10.0}])
+    with pytest.raises(ValueError):
+        bds.validate_dataset([{"timestamp": 1000, "open": True, "high": 10.0, "low": 9.0, "close": 10.0}])
+    with pytest.raises(ValueError):
+        bds.validate_dataset(
+            [{"timestamp": 1000, "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.0}],
+            interval_minutes=True,
+        )
+
+    dist = bec.distribution([1.0, None, True, float("nan"), float("inf"), 3.0])
+    assert dist["count"] == 2 and dist["mean"] == 2.0
+    cal = bec.calibrate_execution_events(
+        [
+            {"intent_id": "i1", "event": "submit_requested", "ts": "bad", "qty": "bad", "price": float("nan")},
+            {"intent_id": "i1", "event": "order_terminal", "ts": True, "filled_qty": "bad", "cost": float("nan"), "fee": None},
+        ]
+    )
+    assert len(cal["orders"]) == 1 and cal["orders"][0]["filled_qty"] == 0.0
+
+    assert bfb._present([1.0, None, True, float("nan"), 2.0]) == [1.0, 2.0]
+    with pytest.raises(ValueError):
+        bfb.aggregate_financial_windows([], initial_capital=True)
+
+    with pytest.raises(ValueError):
+        bev.automatic_window_sizes(True)
+    assert bev._optional_min([None, True, float("nan"), 2.5, 1.5]) == 1.5
+
+

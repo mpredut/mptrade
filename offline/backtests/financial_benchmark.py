@@ -140,7 +140,17 @@ def default_scenarios(venue: str = "kraken") -> tuple[BenchmarkScenario, Benchma
 
 
 def _present(values: Iterable[float | int | None]) -> list[float]:
-    return [float(value) for value in values if value is not None]
+    out: list[float] = []
+    for value in values:
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            vf = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(vf):
+            out.append(vf)
+    return out
 
 
 def _mean(values: Iterable[float | int | None]) -> float | None:
@@ -191,9 +201,9 @@ def aggregate_financial_windows(
     and the same empty state. It is not compounding and does not simulate position
     continuity across folds; the explicit name prevents the misreading.
     """
-    if initial_capital <= 0:
+    if isinstance(initial_capital, bool) or not math.isfinite(initial_capital) or initial_capital <= 0:
         raise ValueError("initial_capital must be positive")
-    if regime_threshold_pct < 0:
+    if isinstance(regime_threshold_pct, bool) or not math.isfinite(regime_threshold_pct) or regime_threshold_pct < 0:
         raise ValueError("regime_threshold_pct cannot be negative")
     if not windows:
         raise ValueError("the benchmark requires at least one TEST window")
