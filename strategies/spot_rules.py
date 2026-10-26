@@ -218,11 +218,15 @@ def dynamic_surge_gain_pct(
       candle bursts room to develop before arming the tight exhaustion exit.
     """
     vol_f = _finite_float(hourly_volatility_pct)
+    fb_f = _finite_float(fallback_gain_pct, 25.0)
     if vol_f is None or vol_f <= 0:
-        return float(fallback_gain_pct)
-    raw = vol_f * float(vol_multiplier)
-    min_g = min(float(min_gain_pct), float(max_gain_pct))
-    max_g = max(float(min_gain_pct), float(max_gain_pct))
+        return float(fb_f)
+    mult_f = _finite_float(vol_multiplier, 10.0)
+    min_raw = _finite_float(min_gain_pct, 24.0)
+    max_raw = _finite_float(max_gain_pct, 32.0)
+    raw = vol_f * float(mult_f)
+    min_g = min(float(min_raw), float(max_raw))
+    max_g = max(float(min_raw), float(max_raw))
     return max(min_g, min(max_g, raw))
 
 
@@ -241,13 +245,16 @@ def dynamic_flat_tp_pct(
     Falls back safely to base_tp_pct if strength is None, negative, or non-finite.
     """
     str_f = _finite_float(strength)
+    base_f = _finite_float(base_tp_pct, 5.0)
     if str_f is None or str_f < 0:
-        return float(base_tp_pct)
+        return float(base_f)
     thresh_f = _finite_float(strength_threshold)
     thresh = thresh_f if (thresh_f is not None and thresh_f > 0) else 2.0
     c_flat = min(1.0, max(0.0, str_f / thresh))
-    min_tp = min(float(tp_min_pct), float(tp_max_pct))
-    max_tp = max(float(tp_min_pct), float(tp_max_pct))
+    min_raw = _finite_float(tp_min_pct, 3.0)
+    max_raw = _finite_float(tp_max_pct, 7.0)
+    min_tp = min(float(min_raw), float(max_raw))
+    max_tp = max(float(min_raw), float(max_raw))
     return min_tp + c_flat * (max_tp - min_tp)
 
 
@@ -321,25 +328,19 @@ def check_fast_profit_reversal(
     required_gain = tp_f * mult_f
     if not (current_gain_pct >= required_gain):
         return False, current_gain_pct, 0.0
-    valid_shadows = [
-        (float(t), float(p))
-        for t, p in (shadow_prices or ())
-        if t is not None
-        and p is not None
-        and not isinstance(t, bool)
-        and not isinstance(p, bool)
-        and math.isfinite(float(t))
-        and math.isfinite(float(p))
-        and float(p) > 0
-    ]
+    valid_shadows = []
+    for item in (shadow_prices or ()):
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        tf = _finite_float(item[0])
+        pf = _finite_float(item[1])
+        if tf is not None and pf is not None and pf > 0:
+            valid_shadows.append((tf, pf))
     if not valid_shadows:
         return False, current_gain_pct, 0.0
-    now = (
-        float(current_time)
-        if (current_time is not None and not isinstance(current_time, bool) and math.isfinite(float(current_time)))
-        else valid_shadows[-1][0]
-    )
-    win_s = float(window_sec) if (window_sec is not None and not isinstance(window_sec, bool) and math.isfinite(float(window_sec))) else 0.0
+    now_f = _finite_float(current_time)
+    now = now_f if now_f is not None else valid_shadows[-1][0]
+    win_s = _finite_float(window_sec, 0.0)
     cutoff = now - max(0.0, win_s)
     recent = [p for t, p in valid_shadows if t >= cutoff]
     if not recent:
@@ -410,26 +411,25 @@ def check_parabolic_surge_exhaustion(
 
     # Invariant: A parabolic surge exhaustion exit is a TAKE-PROFIT guard.
     # It must never execute below the minimum surge profit floor!
-    min_floor = parabolic_surge_profit_floor_pct(
-        surge_gain_pct, exit_pullback_pct, min_profit_pct)
+    min_floor = parabolic_surge_profit_floor_pct(sg_f, ep_f, mp_f)
     if not (math.isfinite(min_floor) and current_gain_pct >= min_floor):
         return False, ""
 
-    pos_surge = surge_gain_pct > 0 and (current_gain_pct >= surge_gain_pct or peak_gain_pct >= surge_gain_pct)
+    pos_surge = sg_f > 0 and (current_gain_pct >= sg_f or peak_gain_pct >= sg_f)
+    wm_f = _finite_float(window_move_pct)
+    sm_f = _finite_float(surge_move_pct)
     win_surge = (
-        window_move_pct is not None
-        and not isinstance(window_move_pct, bool)
-        and math.isfinite(float(window_move_pct))
-        and math.isfinite(float(surge_move_pct))
-        and surge_move_pct > 0
-        and window_move_pct >= surge_move_pct
-        and current_gain_pct >= surge_gain_pct * 0.8
+        wm_f is not None
+        and sm_f is not None
+        and sm_f > 0
+        and wm_f >= sm_f
+        and current_gain_pct >= sg_f * 0.8
     )
     if not (surge_active or pos_surge or win_surge):
         return False, ""
-    pullback = (surge_peak - current_price) / surge_peak * 100.0
-    if pullback >= exit_pullback_pct:
-        reason = f"surge_pullback_{pullback:.2f}%_ge_{exit_pullback_pct:.2f}%"
+    pullback = (peak_f - px_f) / peak_f * 100.0
+    if pullback >= ep_f:
+        reason = f"surge_pullback_{pullback:.2f}%_ge_{ep_f:.2f}%"
         return True, reason
     return False, ""
 
@@ -482,18 +482,14 @@ def check_slow_grind_exhaustion(
     # Check flash drop
     win_s = _finite_float(flash_window_sec, 0.0)
     cutoff = cur_t_f - max(0.0, win_s)
-    recent = [
-        float(p)
-        for t, p in (shadow_prices or ())
-        if t is not None
-        and p is not None
-        and not isinstance(t, bool)
-        and not isinstance(p, bool)
-        and math.isfinite(float(t))
-        and math.isfinite(float(p))
-        and float(p) > 0
-        and float(t) >= cutoff
-    ]
+    recent = []
+    for item in (shadow_prices or ()):
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        tf = _finite_float(item[0])
+        pf = _finite_float(item[1])
+        if tf is not None and pf is not None and pf > 0 and tf >= cutoff:
+            recent.append(pf)
     fd_f = _finite_float(flash_drop_pct)
     if fd_f is not None and fd_f > 0 and recent:
         local_flash_peak = max(max(recent), px_f)

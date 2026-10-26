@@ -281,7 +281,13 @@ def read_tail_lines(
     chunk_size: int = 65536,
 ) -> list[bytes]:
     """Read up to the last ``limit`` lines from ``path`` with bounded memory."""
-    if isinstance(limit, bool) or limit <= 0 or not os.path.exists(path):
+    if limit is None or isinstance(limit, bool):
+        return []
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError, OverflowError):
+        return []
+    if limit <= 0 or not os.path.isfile(path):
         return []
     eff_chunk = 65536 if isinstance(chunk_size, bool) or int(chunk_size) <= 0 else int(chunk_size)
     chunks: list[bytes] = []

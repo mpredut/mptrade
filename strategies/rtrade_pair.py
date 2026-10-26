@@ -28,8 +28,16 @@ class OrderTicket:
     revision: int = 0
 
     def __post_init__(self):
-        if isinstance(self.price, bool) or isinstance(self.qty, bool) or isinstance(self.revision, bool):
+        if (
+            self.order_id is None
+            or isinstance(self.order_id, bool)
+            or not str(self.order_id).strip()
+            or isinstance(self.price, bool)
+            or isinstance(self.qty, bool)
+            or isinstance(self.revision, bool)
+        ):
             raise ValueError("ticket rtrade invalid")
+        self.order_id = str(self.order_id).strip()
         self.side = str(self.side).upper()
         self.price = float(self.price)
         self.qty = float(self.qty)
@@ -394,9 +402,15 @@ class PairCoordinator:
             for order_id, snapshot in state.get("snapshots", {}).items()
         }
         stop_order_id = state.get("stop_order_id")
-        obj.stop_ticket = next(
-            (ticket for ticket in obj.tickets
-             if ticket.order_id == str(stop_order_id)), None)
+        obj.stop_ticket = (
+            next(
+                (ticket for ticket in obj.tickets
+                 if ticket.order_id == str(stop_order_id).strip()),
+                None,
+            )
+            if stop_order_id is not None and not isinstance(stop_order_id, bool) and str(stop_order_id).strip()
+            else None
+        )
         if obj.stop_ticket is None and obj.phase == "stopping" and obj.tickets:
             # Backward-compatible adoption of checkpoints written before the
             # explicit stop-order field existed: the market exit was appended last.
@@ -424,7 +438,10 @@ class PairCoordinator:
     def _cancel(self, ticket: OrderTicket) -> bool:
         if not ticket.active:
             return True
-        ok = bool(self.venue.cancel(ticket.order_id))
+        try:
+            ok = bool(self.venue.cancel(ticket.order_id))
+        except Exception:
+            return False
         if ok:
             ticket.active = False
         return ok

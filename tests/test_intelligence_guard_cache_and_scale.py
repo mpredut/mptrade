@@ -8757,3 +8757,79 @@ def test_iteration63_liquidation_credentials_pricewindow_and_assetguardian_safet
     assert updated["total_spent_quote"] == pytest.approx(50.0)
 
 
+def test_iteration64_cooldown_state_io_spot_rules_and_rtrade_pair_safety(tmp_path):
+    """Iteration 64: Cooldown slot expected_timestamp rollback guard, state_io NaN recovery, spot_rules shadow parsing, and rtrade_pair _cancel exception safety."""
+    import json
+    from lock.cooldown import Cooldown
+    from state_io import previous_generation_path, read_recovering_previous, read_tail_lines
+    from strategies import spot_rules as sr
+    from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairCoordinator, PairPolicy
+
+    # 1. Cooldown.slot rollback does not delete a newer reservation if TTL expired during the block
+    cd = Cooldown("iter64", state_path=str(tmp_path / "cd.json"), lock_path=str(tmp_path / "cd.lock"))
+    with cd.slot("BTCUSDC", ttl=0.0) as s1:
+        assert s1.allowed
+        # Another worker acquires and commits a newer reservation before s1 exits without commit
+        cd._write({"BTCUSDC": {"timestamp": s1.info["timestamp"] + 10.0, "side": "SELL"}})
+    assert cd.get("BTCUSDC")["side"] == "SELL"
+
+    # 2. JsonStateStore.save rejects non-dict state and state_io.read_tail_lines guards directory/None limit
+    from strategies.state_store import JsonStateStore, StatePersistenceError
+    store = JsonStateStore(
+        str(tmp_path / "strat_state.json"),
+        default_factory=lambda: {"cycle": 0, "qty": 0.0},
+        label="test_strat",
+        logger=lambda _msg: None,
+        fail_closed=True,
+    )
+    with pytest.raises(StatePersistenceError):
+        store.save(["not", "a", "dict"])
+    assert read_tail_lines(str(tmp_path), 10) == []
+    assert read_tail_lines(str(tmp_path / "strat_state.json"), None) == []
+
+    # 3. spot_rules handles malformed shadow_prices entries and string numbers in check_parabolic_surge_exhaustion
+    trig, gain, drop = sr.check_fast_profit_reversal(
+        current_price=110.0,
+        avg_cost=100.0,
+        base_tp_pct=4.0,
+        mult=2.0,
+        shadow_prices=[("bad", 115.0), (1000.0, "115.0"), ("not-a-tuple",)],
+        window_sec=60.0,
+        drop_pct=2.0,
+        current_time=1010.0,
+    )
+    assert trig is True and gain == pytest.approx(10.0)
+    surge_trig, _ = sr.check_parabolic_surge_exhaustion(
+        current_price="125.0",
+        avg_cost="100.0",
+        surge_peak="135.0",
+        surge_gain_pct="24.0",
+        exit_pullback_pct="3.2",
+        surge_move_pct=None,
+    )
+    assert surge_trig is True
+
+    # 4. OrderTicket rejects blank/boolean order_id and PairCoordinator._cancel catches venue cancel exceptions
+    with pytest.raises(ValueError, match="ticket rtrade invalid"):
+        OrderTicket(order_id=True, side="BUY", price=100.0, qty=1.0)
+
+    class _RaiseCancelVenue:
+        def current_price(self):
+            return 100.0
+        def preflight_order(self, *a, **kw):
+            return None
+        def place_limit(self, side, price, qty, pair_id, **kw):
+            return OrderTicket(order_id=f"id-{side}", side=side, price=price, qty=qty, pair_id=pair_id)
+        def place_market_exit(self, *a, **kw):
+            return None
+        def order_status(self, order_id):
+            return OrderSnapshot(status="open", filled_qty=0.0, cost=0.0, fee=0.0)
+        def cancel(self, order_id):
+            raise RuntimeError("network error on cancel")
+
+    coord = PairCoordinator(_RaiseCancelVenue(), 1.0, PairPolicy(adjustment_fraction=0.01, quote_ttl_sec=10.0), clock=lambda: 100.0)
+    coord.start(100.0)
+    outcome = coord.step(now=120.0)
+    assert outcome.reason == "quote_cancel_pending"
+    assert not outcome.terminal
+

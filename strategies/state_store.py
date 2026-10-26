@@ -48,6 +48,8 @@ class JsonStateStore:
 
     def save(self, state: dict) -> bool:
         try:
+            if not isinstance(state, dict):
+                raise TypeError("state must be a dict")
             save_json_state(self.path, state, indent=2)
             return True
         except (OSError, TypeError, ValueError) as exc:

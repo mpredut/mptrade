@@ -43,7 +43,7 @@ def _is_active_entry(last, now: float, ttl: float) -> bool:
         ts = float(raw_ts)
         ttl_f = float(ttl)
         now_f = float(now)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return False
     if not (math.isfinite(ts) and math.isfinite(ttl_f) and math.isfinite(now_f)):
         return False
@@ -56,7 +56,7 @@ def _sanitize_json_payload(value):
         return value if math.isfinite(value) else None
     if isinstance(value, dict):
         return {k: _sanitize_json_payload(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, (list, tuple, set, frozenset)):
         return [_sanitize_json_payload(v) for v in value]
     return value
 
@@ -269,11 +269,15 @@ class Cooldown:
             self._write(state)
             return True
 
-    def release(self, key):
+    def release(self, key, *, expected_timestamp=None):
         """Release a failed reservation so it no longer blocks the TTL."""
         with FileLock(self.lock_path):
             state = self._read()
             if key in state:
+                if expected_timestamp is not None and isinstance(state[key], dict):
+                    cur_ts = state[key].get("timestamp")
+                    if cur_ts is not None and cur_ts != expected_timestamp:
+                        return
                 del state[key]
                 self._write(state)
 
@@ -298,7 +302,7 @@ class Cooldown:
             return None
         try:
             ts = float(raw_ts)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None
         if not math.isfinite(ts) or ts <= 0:
             return None
@@ -316,7 +320,8 @@ class Cooldown:
             yield res
         finally:
             if allowed and not res._committed:
-                self.release(key)                 # No completed operation, so roll back.
+                exp_ts = info.get("timestamp") if isinstance(info, dict) else None
+                self.release(key, expected_timestamp=exp_ts)  # No completed operation, so roll back.
 
     @contextlib.contextmanager
     def group_slot(self, key, ttl, group_id, member, **meta):

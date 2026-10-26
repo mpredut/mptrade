@@ -60,12 +60,16 @@ def _cooldown():
     return _cd
 
 
+def _valid_pair_id(pair_id) -> bool:
+    return pair_id is not None and not isinstance(pair_id, bool) and bool(str(pair_id).strip())
+
+
 def reserve_trade(side, symbol, cooldown_sec=DEFAULT_COOLDOWN_SEC, client_order_id=None,
                   pair_id=None):
     """Atomically check and reserve placement rights for ``symbol``."""
-    if pair_id:
+    if _valid_pair_id(pair_id):
         return _cooldown().reserve_group_member(
-            symbol, cooldown_sec, pair_id, side,
+            symbol, cooldown_sec, str(pair_id).strip(), side,
             side="PAIR", symbol=symbol, client_order_id=client_order_id)
     return _cooldown().reserve(symbol, cooldown_sec, side=side, symbol=symbol,
                                client_order_id=client_order_id, binance_order_id=None)
@@ -109,9 +113,9 @@ class _TradeReservation:
 def trade_slot(side, symbol, cooldown_sec=DEFAULT_COOLDOWN_SEC, client_order_id=None,
                pair_id=None):
     """Provide RAII for an exclusive cooldown or one leg of a pair."""
-    if pair_id:
+    if _valid_pair_id(pair_id):
         with _cooldown().group_slot(
-                symbol, cooldown_sec, pair_id, side,
+                symbol, cooldown_sec, str(pair_id).strip(), side,
                 side="PAIR", symbol=symbol, client_order_id=client_order_id) as res:
             yield _TradeReservation(res)
     else:
