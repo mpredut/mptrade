@@ -23,6 +23,10 @@ from orchestratorOS.agy.summary_store import (
     upsert_ui_visible_summary,
     write_annotation_title,
 )
+from orchestratorOS.agy.ui_mirror import (
+    mirror_topic_thread_to_ui,
+    sync_topic_thread_from_ui,
+)
 
 logger = logging.getLogger("orchestratorOS.agy.topics")
 

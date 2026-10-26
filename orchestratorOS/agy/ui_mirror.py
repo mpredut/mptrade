@@ -7,11 +7,13 @@ on the next idle `manage_agy.sh ui-sync` restart.
 from __future__ import annotations
 
 import fcntl
+import importlib
 import logging
+import math
 import os
 import shutil
 import sqlite3
-from typing import Optional
+from typing import Any, Optional
 
 from orchestratorOS.agy.paths import (
     resolve_bot_cli_base,
@@ -19,8 +21,13 @@ from orchestratorOS.agy.paths import (
     resolve_ui_cli_base,
     visible_conversations_dir,
 )
+import orchestratorOS.agy.summary_store as _summary_store
+if not hasattr(_summary_store, "_safe_step_count"):
+    try:
+        importlib.reload(_summary_store)
+    except Exception:
+        pass
 from orchestratorOS.agy.summary_store import (
-    _safe_step_count,
     checkpoint_db,
     conversation_db,
     drop_wal_sidecars,
@@ -30,6 +37,19 @@ from orchestratorOS.agy.summary_store import (
     upsert_ui_visible_summary,
 )
 from state_io import durable_replace_file
+
+
+def _fallback_safe_step_count(val: Any) -> int:
+    if val is None or isinstance(val, bool):
+        return 0
+    try:
+        fval = float(val)
+        return max(0, int(fval)) if math.isfinite(fval) else 0
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+_safe_step_count = getattr(_summary_store, "_safe_step_count", _fallback_safe_step_count)
 
 logger = logging.getLogger("orchestratorOS.agy.ui_mirror")
 

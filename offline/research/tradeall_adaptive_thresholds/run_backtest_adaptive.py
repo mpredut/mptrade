@@ -42,9 +42,10 @@ session about unifying the backtests). The refactor was verified to
 reproduce the old loop's results BIT FOR BIT, on real data, before
 a inlocui vechea implementare.
 """
+import json
+import math
 import os
 import sys
-import json
 import time
 from datetime import datetime
 
@@ -75,7 +76,7 @@ def run_adaptive(symbol, start_ts, end_ts, k_small, run_id):
         if k_small is None:
             return FIXED_SMALL, FIXED_BIG
         vol1h = shadow_signals.vol_1h_pct(window_big.prices, window_big.sample_rate_sec)
-        if vol1h is None:
+        if vol1h is None or not math.isfinite(vol1h) or vol1h <= 0:
             warmup["n"] += 1
             return FIXED_SMALL, FIXED_BIG
         return k_small * vol1h, k_big * vol1h
@@ -88,8 +89,13 @@ def run_adaptive(symbol, start_ts, end_ts, k_small, run_id):
     pnl_path = os.path.join(out_dir, "pnl.json")
     pnl = {}
     if os.path.exists(pnl_path):
-        with open(pnl_path, encoding="utf-8") as fh:
-            pnl = json.load(fh)
+        try:
+            with open(pnl_path, encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                pnl = loaded
+        except (OSError, json.JSONDecodeError):
+            pnl = {}
     pnl["warmup_ticks"] = warmup["n"]
     pnl["k_small"] = k_small
     pnl["k_big"] = round(k_big, 4) if k_big is not None else None

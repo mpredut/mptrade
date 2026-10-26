@@ -197,8 +197,8 @@ def define_candidate_grid() -> dict[str, dict]:
 def _summarize_replay(m: dict, budget: float) -> dict[str, float | int]:
     """Compute normalized percentage and risk-adjusted replay metrics safely."""
     safe_budget = max(float(budget), 1e-9)
-    net_pct = (float(m.get("net", 0.0)) / safe_budget) * 100.0
-    total_pct = (float(m.get("total", 0.0)) / safe_budget) * 100.0
+    net_pct = (float(m.get("net") or 0.0) / safe_budget) * 100.0
+    total_pct = (float(m.get("total") or 0.0) / safe_budget) * 100.0
     max_dd = float(m.get("max_drawdown_pct") or 0.0)
     calmar = (net_pct / max_dd) if max_dd > 0 else 0.0
     sharpe = float(m.get("sharpe_ratio") or 0.0)
@@ -208,9 +208,9 @@ def _summarize_replay(m: dict, budget: float) -> dict[str, float | int]:
         "max_dd": max_dd,
         "calmar": calmar,
         "sharpe": sharpe,
-        "cycles": int(m.get("cycles", 0)),
-        "wins": int(m.get("wins", 0)),
-        "fills": int(m.get("fills", 0)),
+        "cycles": int(m.get("cycles") or 0),
+        "wins": int(m.get("wins") or 0),
+        "fills": int(m.get("fills") or 0),
     }
 
 
@@ -342,9 +342,14 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
         except ValueError:
             anchor_ts = 0
 
-    fwd_bars = [b for b in full_bars if b[0] >= anchor_ts]
-    full_ohlc = [(b[1], b[2], b[3], b[4]) for b in full_bars]
-    fwd_ohlc = [(b[1], b[2], b[3], b[4]) for b in fwd_bars]
+    valid_bars = [
+        b for b in full_bars
+        if isinstance(b, (list, tuple)) and len(b) >= 5
+        and all(isinstance(b[i], (int, float)) and not isinstance(b[i], bool) and math.isfinite(float(b[i])) for i in range(5))
+    ]
+    fwd_bars = [b for b in valid_bars if float(b[0]) >= anchor_ts]
+    full_ohlc = [(float(b[1]), float(b[2]), float(b[3]), float(b[4])) for b in valid_bars]
+    fwd_ohlc = [(float(b[1]), float(b[2]), float(b[3]), float(b[4])) for b in fwd_bars]
 
     if len(fwd_ohlc) < 2 or len(full_ohlc) < 2:
         print(f"Insufficient forward or full bars for shadow replay (fwd: {len(fwd_ohlc)}, full: {len(full_ohlc)})")

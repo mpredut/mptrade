@@ -922,3 +922,35 @@ def test_offline_research_ml_and_pilot_edge_cases(tmp_path, monkeypatch):
     assert row_fmt["cycles"] == 0
     assert row_fmt["fills"] == 0
 
+
+def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
+    """Verify ui_mirror._safe_step_count fallback and comprehensive_strategy_sweep / kraken_adaptive_thresholds guards."""
+    from orchestratorOS.agy import ui_mirror
+    from offline.research import comprehensive_strategy_sweep as css
+    from offline.research.kraken_adaptive_thresholds import verify_adaptive_dca, verify_adaptive_reentry
+
+    # 1. ui_mirror._fallback_safe_step_count handles bool, NaN, negative, and valid floats
+    assert ui_mirror._fallback_safe_step_count(None) == 0
+    assert ui_mirror._fallback_safe_step_count(True) == 0
+    assert ui_mirror._fallback_safe_step_count(float("nan")) == 0
+    assert ui_mirror._fallback_safe_step_count("-4") == 0
+    assert ui_mirror._fallback_safe_step_count("7.0") == 7
+
+    # 2. comprehensive_strategy_sweep._summarize_replay coalesces None values
+    summary = css._summarize_replay(
+        {"net": None, "total": None, "max_drawdown_pct": None, "cycles": None, "wins": None, "fills": None},
+        budget=1000.0,
+    )
+    assert summary["net_pct"] == 0.0
+    assert summary["total_pct"] == 0.0
+    assert summary["cycles"] == 0
+    assert summary["wins"] == 0
+    assert summary["fills"] == 0
+
+    # 3. verify_adaptive_dca and verify_adaptive_reentry handle empty candles cleanly
+    monkeypatch.setattr(verify_adaptive_dca, "fetch_candles", lambda pair, interval: [])
+    monkeypatch.setattr(verify_adaptive_reentry, "fetch_candles", lambda pair, interval: [])
+    assert verify_adaptive_dca.run() == ({}, {})
+    assert verify_adaptive_reentry.run() == ({}, {})
+
+

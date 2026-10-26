@@ -61,8 +61,11 @@ def _run_k_sweep(section_title, k_label, ohlc, vol_trail, params, fallback_key, 
 
 def main():
     ohlc = fetch_candles(PAIR, INTERVAL)
+    if not ohlc:
+        print(f"=== {PAIR}: no candles returned ===")
+        return
     closes = [x[3] for x in ohlc]
-    bh = (closes[-1] - closes[0]) / closes[0] * 100
+    bh = ((closes[-1] - closes[0]) / closes[0] * 100) if closes[0] > 0 else 0.0
     print(f"=== {PAIR} interval={INTERVAL}m ({len(ohlc)} bare = ~{len(ohlc)/24:.1f} zile) — buy&hold {bh:+.1f}% ===\n")
     vol_trail = trailing_vol_series(closes)
 

@@ -41,9 +41,12 @@ REAL = dict(
 
 def run():
     ohlc = fetch_candles(PAIR, INTERVAL)
+    if not ohlc:
+        print(f"=== {PAIR}: no candles returned ===")
+        return {}, {}
     print(f"=== {PAIR} interval={INTERVAL}m ({len(ohlc)} bare = ~{len(ohlc)/24:.1f} zile) ===")
     closes = [x[3] for x in ohlc]
-    bh = (closes[-1] - closes[0]) / closes[0] * 100
+    bh = ((closes[-1] - closes[0]) / closes[0] * 100) if closes[0] > 0 else 0.0
     print(f"buy&hold pe perioada: {bh:+.1f}%")
 
     vol_trail = trailing_vol_series(closes)
@@ -52,10 +55,14 @@ def run():
 
     fixed_arr = np.full(len(ohlc), REAL["drop_fallback"])
     shadow_arr = np.array([ss.K_DCA * v if not np.isnan(v) else np.nan for v in vol_trail])
+    valid_shadow = shadow_arr[~np.isnan(shadow_arr)]
+    mean_s = float(np.mean(valid_shadow)) if len(valid_shadow) else float("nan")
+    min_s = float(np.min(valid_shadow)) if len(valid_shadow) else float("nan")
+    max_s = float(np.max(valid_shadow)) if len(valid_shadow) else float("nan")
 
     print(f"\n(K_DCA={ss.K_DCA}, prag FIX real={REAL['drop_fallback']}%, "
-          f"medie adaptiv-shadow={np.nanmean(shadow_arr):.2f}%, "
-          f"min={np.nanmin(shadow_arr):.2f}% max={np.nanmax(shadow_arr):.2f}%)")
+          f"medie adaptiv-shadow={mean_s:.2f}%, "
+          f"min={min_s:.2f}% max={max_s:.2f}%)")
 
     m_fixed = simulate_variant(ohlc, REAL, fixed_arr)
     m_shadow = simulate_variant(ohlc, REAL, shadow_arr)

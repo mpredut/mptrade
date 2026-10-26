@@ -60,6 +60,7 @@ SAMPLE_SEC_SWEEP = [20.0, 60.0, 90.0, 150.0]
 
 
 def run_variant(symbol, start_ts, end_ts, sample_sec, run_id):
+    sample_sec = max(1.0, float(sample_sec))
     orig_sample_sec = shadow_signals.KALMAN_SAMPLE_SEC
     shadow_signals.KALMAN_SAMPLE_SEC = sample_sec
     out_dir = os.path.join(ROOT, "logger", "backtest", run_id)
@@ -77,8 +78,13 @@ def run_variant(symbol, start_ts, end_ts, sample_sec, run_id):
     pnl_path = os.path.join(out_dir, "pnl.json")
     pnl = {}
     if os.path.exists(pnl_path):
-        with open(pnl_path, encoding="utf-8") as fh:
-            pnl = json.load(fh)
+        try:
+            with open(pnl_path, encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                pnl = loaded
+        except (OSError, json.JSONDecodeError):
+            pnl = {}
 
     # Count logged Kalman transitions (direct proxy for noise/instability).
     shadow_log = os.path.join(out_dir, "tradeall_shadow.log")
