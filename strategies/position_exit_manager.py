@@ -556,16 +556,7 @@ class PositionExitManager:
         symbol = snapshot.symbol
         current_price = snapshot.current_price
         buy_price = snapshot.avg_buy_price
-        now: Optional[float] = None
-        if snapshot.current_time_s is not None and not isinstance(snapshot.current_time_s, bool):
-            try:
-                tf = float(snapshot.current_time_s)
-                if math.isfinite(tf) and tf >= 0.0:
-                    now = tf
-            except (TypeError, ValueError):
-                pass
-        if now is None:
-            now = time.time()
+        now = _resolve_now_s(snapshot.current_time_s)
         lost_threshold = custom_threshold if custom_threshold is not None else self.config.lost_threshold
 
         if not snapshot.is_valid_price:
@@ -611,7 +602,7 @@ class PositionExitManager:
             episode_started_at = float(episode_state.get("started_at", now))
         except (TypeError, ValueError):
             episode_started_at = now
-        if not math.isfinite(episode_started_at) or episode_started_at <= 0 or episode_started_at > now:
+        if not math.isfinite(episode_started_at) or episode_started_at < 0 or episode_started_at > now:
             episode_started_at = now
             if symbol in self.sl_episode_state:
                 self.sl_episode_state[symbol]["started_at"] = now
@@ -679,7 +670,7 @@ class PositionExitManager:
                     b_started_at = float(bounce_state.get("started_at", now))
                 except (TypeError, ValueError):
                     b_started_at = now
-                if not math.isfinite(b_started_at) or b_started_at <= 0 or b_started_at > now:
+                if not math.isfinite(b_started_at) or b_started_at < 0 or b_started_at > now:
                     b_started_at = now
                     bounce_state["started_at"] = now
                 elapsed = now - b_started_at
@@ -1087,7 +1078,7 @@ class PositionExitManager:
                 isinstance(last_peak_t, bool)
                 or not isinstance(last_peak_t, (int, float))
                 or not math.isfinite(float(last_peak_t))
-                or float(last_peak_t) <= 0
+                or float(last_peak_t) < 0
                 or float(last_peak_t) > now
             ):
                 last_peak_t = now

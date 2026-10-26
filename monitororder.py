@@ -214,7 +214,15 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         return
     
     current_price = api.get_current_price(symbol)
-    if current_price is None:
+    if current_price is None or isinstance(current_price, bool):
+        print("Could not obtain the current price.")
+        return
+    try:
+        current_price = float(current_price)
+    except (TypeError, ValueError, OverflowError):
+        print("Could not obtain the current price.")
+        return
+    if not math.isfinite(current_price) or current_price <= 0:
         print("Could not obtain the current price.")
         return
     
@@ -295,7 +303,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             print(f"Order {order_id} (owner='{owner}', cid='{cid}') is protected from monitororder repricing; skipping.")
             continue
 
-        if order_id not in initial_prices:
+        init_px = initial_prices.get(order_id)
+        if init_px is None or isinstance(init_px, bool) or not math.isfinite(float(init_px)) or float(init_px) <= 0:
             _remember_initial_price(initial_prices, order_id, price)
 
         difference_percent = abs(current_price - price) / price * 100
@@ -357,7 +366,12 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     "it is not canceled or replaced."
                 )
                 continue
-            if quantity <= 0:
+            if (
+                not math.isfinite(quantity)
+                or quantity <= 0
+                or not math.isfinite(original_quantity)
+                or original_quantity <= 0
+            ):
                 print(
                     f"Order {order_id} has no unfilled quantity; "
                     "it is not canceled or replaced."

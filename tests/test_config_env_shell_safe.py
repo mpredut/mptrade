@@ -533,3 +533,50 @@ def test_order_id_context_and_pricefetcher_hardening(tmp_path):
     assert bapi_trades.trade_cache == []
 
 
+def test_price_analysis_market_regime_and_monitororder_hardening(monkeypatch):
+    from market_regime import MarketRegimeContext, MarketRegimeDecision, MarketRegimeEvaluator, MarketRegimeService
+    import monitororder as mo
+    import priceAnalysis as pa
+    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, PositionSnapshot
+
+    # 1. PositionExitManager preserves t=0.0 episode/bounce/peak timestamps across simulation ticks
+    mgr = PositionExitManager(
+        config=PositionExitConfig(
+            lost_threshold=0.05,
+            sl_trend_defer_max_sec=100.0,
+            tp_stagnation_max_sec=100.0,
+            allow_external_cache=False,
+        )
+    )
+    snap0 = PositionSnapshot(symbol="BTCUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=0.0, trend_up=True)
+    mgr.evaluate_stop_loss(snap0)
+    assert mgr.sl_episode_state["BTCUSDC"]["started_at"] == 0.0
+    assert mgr.sl_bounce_state["BTCUSDC"]["started_at"] == 0.0
+    snap50 = PositionSnapshot(symbol="BTCUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=50.0, trend_up=True)
+    mgr.evaluate_stop_loss(snap50)
+    assert mgr.sl_episode_state["BTCUSDC"]["started_at"] == 0.0
+    assert mgr.sl_bounce_state["BTCUSDC"]["started_at"] == 0.0
+
+    # 2. MarketRegimeEvaluator & MarketRegimeService reject bool inputs
+    ev = MarketRegimeEvaluator()
+    assert ev.evaluate({"gradient_recent": True, "epsilon": 0.01}).fresh is False
+    svc = MarketRegimeService()
+    assert svc.evaluate_closes([100.0, 101.0, True]).fresh is False
+    ctx = MarketRegimeContext(
+        decision=MarketRegimeDecision("bull", 0.01, 0.001, 10.0, True, "ok"),
+        resolved_trend="bull",
+        evaluated_at=1000.0,
+    )
+    assert ctx.is_valid_for(now=True) is False
+    assert ctx.is_valid_for(now="bad") is False
+
+    # 3. priceAnalysis.detect_long_term_trend filters non-finite points
+    assert pa.detect_long_term_trend([1.0, 2.0, float("nan")], [100.0, float("nan"), 102.0]) is None
+
+    # 4. monitororder skips invalid/zero/bool current_price without raising
+    monkeypatch.setattr(mo.api, "get_open_orders", lambda side, sym: {"1": {"price": 100.0, "quantity": 1.0}})
+    monkeypatch.setattr(mo.api, "get_current_price", lambda sym: 0.0)
+    mo.monitor_open_orders_by_type("BTCUSDC", "SELL")
+
+
+

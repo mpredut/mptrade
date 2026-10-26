@@ -76,7 +76,19 @@ def priceLstFor(symbol: str) -> List[Tuple[int, float]]:
             raw = list(manager.cache.get(symbol, []))
     else:
         raw = list(manager.cache.get(symbol, []))
-    return [(int(ts), float(p)) for ts, p in raw]
+    out: List[Tuple[int, float]] = []
+    for item in raw:
+        try:
+            ts_raw, p_raw = item[0], item[1]
+            if ts_raw is None or p_raw is None or isinstance(ts_raw, bool) or isinstance(p_raw, bool):
+                continue
+            ts_f = float(ts_raw)
+            p_f = float(p_raw)
+            if math.isfinite(ts_f) and ts_f > 0 and math.isfinite(p_f) and p_f > 0:
+                out.append((int(ts_f), p_f))
+        except (TypeError, ValueError, IndexError, OverflowError):
+            continue
+    return out
 
 
 _draw_fig = {}  # Reused symbol-to-(figure, axis) mapping; see drawPriceLst.
@@ -434,8 +446,14 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     """
     timestamps = np.asarray(timestamps, dtype=float)
     prices = np.asarray(prices, dtype=float)
+    if timestamps.ndim != 1 or prices.ndim != 1 or len(prices) != len(timestamps):
+        return None
+    finite_mask = np.isfinite(timestamps) & np.isfinite(prices) & (prices > 0)
+    if not np.all(finite_mask):
+        timestamps = timestamps[finite_mask]
+        prices = prices[finite_mask]
     n_pts = len(timestamps)
-    if n_pts < 2 or len(prices) != n_pts:
+    if n_pts < 2:
         return None
 
     t_end, t_first = float(timestamps[-1]), float(timestamps[0])
@@ -474,6 +492,8 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
             return None, (lo, hi)
         x, y = timestamps[lo:hi], prices[lo:hi]
         s, _ = _fast_linear_regression_1d(x, y)
+        if not math.isfinite(s):
+            return None, (lo, hi)
         return s * 3600.0, (lo, hi)
 
     cur, cur_idx = slope_h(t_end - window_sec, t_end + 1.0)

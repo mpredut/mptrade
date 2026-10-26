@@ -113,7 +113,12 @@ class MarketRegimeContext:
         require_identity: bool = False,
     ) -> bool:
         """Validate whether context matches instrument identity, timestamp sanity, and freshness constraints."""
-        current_time = time.time() if now is None else float(now)
+        if isinstance(now, bool):
+            return False
+        try:
+            current_time = time.time() if now is None else float(now)
+        except (TypeError, ValueError, OverflowError):
+            return False
         if not math.isfinite(current_time):
             return False
 
@@ -351,9 +356,13 @@ class MarketRegimeEvaluator:
             return self.unknown()
         if "gradient_recent" not in snapshot or "epsilon" not in snapshot:
             return self.unknown("missing_signal_fields")
+        raw_grad = snapshot["gradient_recent"]
+        raw_eps = snapshot["epsilon"]
+        if isinstance(raw_grad, bool) or isinstance(raw_eps, bool):
+            return self.unknown("invalid_signal")
         try:
-            gradient = float(snapshot["gradient_recent"])
-            epsilon = abs(float(snapshot["epsilon"]))
+            gradient = float(raw_grad)
+            epsilon = abs(float(raw_eps))
         except (TypeError, ValueError):
             return self.unknown("invalid_signal")
         if not math.isfinite(gradient) or not math.isfinite(epsilon):
@@ -1073,7 +1082,10 @@ class MarketRegimeService:
         needed = max(3, int(math.ceil(float(window_seconds) / (int(interval_min) * 60))))
         try:
             seq = closes if isinstance(closes, (list, tuple)) else list(closes)
-            values = tuple([float(value) for value in seq[-needed:]])
+            tail = seq[-needed:]
+            if any(isinstance(value, bool) or value is None for value in tail):
+                return self.evaluator.unknown("invalid_ohlc")
+            values = tuple([float(value) for value in tail])
         except (TypeError, ValueError, OverflowError):
             return self.evaluator.unknown("invalid_ohlc")
         n = len(values)
