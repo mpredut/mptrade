@@ -8,9 +8,10 @@ BOT_HOME="${RAW_BOT_HOME//\$HOME/$REAL_HOME}"
 BOT_HOME="${BOT_HOME/#\~/$REAL_HOME}"
 BOT_CLI="$BOT_HOME/.gemini/antigravity-cli"
 REAL_CLI="$REAL_HOME/.gemini/antigravity-cli"
-mkdir -p "$BOT_CLI" "$BOT_HOME/.gemini/config/projects"
+mkdir -p "$BOT_CLI" "$BOT_HOME/.gemini/config/projects" "$BOT_HOME/.config/antigravity"
 [ -f "$BOT_CLI/settings.json" ] || cp -p "$REAL_CLI/settings.json" "$BOT_CLI/" 2>/dev/null
 cp -au "$REAL_HOME/.gemini/config/." "$BOT_HOME/.gemini/config/" 2>/dev/null
+cp -au "$REAL_HOME/.config/antigravity/." "$BOT_HOME/.config/antigravity/" 2>/dev/null
 # give the bot home the same login whenever the main one is newer (or missing)
 if [ -f "$REAL_CLI/antigravity-oauth-token" ] && { [ ! -f "$BOT_CLI/antigravity-oauth-token" ] || [ "$REAL_CLI/antigravity-oauth-token" -nt "$BOT_CLI/antigravity-oauth-token" ]; }; then
   cp -p "$REAL_CLI/antigravity-oauth-token" "$BOT_CLI/antigravity-oauth-token" && chmod 600 "$BOT_CLI/antigravity-oauth-token"

@@ -2209,8 +2209,9 @@ class AutonomousAIReconciler:
             if str(d.get("decision") or "HOLD").upper() in ("BUY", "SELL")
         ]
         submit_decs = actionable_decs if actionable_decs else decisions_list[:1]
+        effective_max_mode = "shadow" if (scope == "equities" and not _is_us_rth_open(now)) else self.mode
         for dec in submit_decs:
-            emitted = self.intent_gateway.submit(dec, source=topic_key, max_mode=self.mode)
+            emitted = self.intent_gateway.submit(dec, source=topic_key, max_mode=effective_max_mode)
             if isinstance(emitted, dict):
                 intents_emitted.append(emitted)
                 if self.mode == "enforce" and emitted.get("status") == "EXECUTED":

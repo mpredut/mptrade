@@ -541,8 +541,9 @@ def last_store_activity() -> float:
                 conn_idx = txt.rfind("Connection status: Connected")
                 if conn_idx >= 0:
                     tail = txt[conn_idx:]
+                    recent_tail = "\n".join(tail.splitlines()[-15:])
                     if any(
-                        marker in tail
+                        marker in recent_tail
                         for marker in (
                             "SEND_USER_CASCADE_MESSAGE",
                             "streamGenerateContent",
@@ -550,8 +551,6 @@ def last_store_activity() -> float:
                             "StreamAgentStateUpdates",
                             "RequestAgentStatePageUpdate",
                             "GetSlashCommands",
-                            "fetchAvailableModels",
-                            "loadCodeAssist",
                         )
                     ):
                         newest = max(newest, os.stat(latest_log).st_mtime)
