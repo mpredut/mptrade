@@ -2545,3 +2545,57 @@ def test_composite_and_macro_advisor_robustness(tmp_path):
     assert th["up_percent"] == 9.5 and th["down_percent"] == 11.5
 
 
+def test_intelligence_cli_bapi_ws_and_pricefetcher_robustness(tmp_path):
+    """Verify intelligence.cli, bapi_ws_health, bapi_ws, and pricefetcher handle string booleans, whitespace symbols, and FearGreedSnapshot schema."""
+    import json
+    from binance_api.bapi_ws import BinancePriceStream
+    from binance_api.bapi_ws_health import mark_ws_available, should_poll_for_manager
+    from intelligence.cli import inspect_symbol_intelligence
+    from market_monitor.pricefetcher import StockYahooPricePlatform
+
+    # 1. intelligence.cli: whitespace symbol + FearGreedSnapshot timestamp/classification fields
+    fg_file = tmp_path / "fear_greed_collect.json"
+    fg_file.write_text(
+        json.dumps({"value": 24, "classification": "Extreme Fear", "timestamp": 1700000000.0}),
+        encoding="utf-8",
+    )
+    info = inspect_symbol_intelligence(" btcusdc ", cache_dir=str(tmp_path))
+    assert info["symbol"] == "BTCUSDC"
+    fg_res = info["pillar3_sentiment"]["fear_greed"]
+    assert isinstance(fg_res, dict)
+    assert fg_res["classification"] == "Extreme Fear"
+    assert fg_res["age_formatted"] != "never"
+
+    # 2. bapi_ws_health: string booleans ("false", "0") do not evaluate to True
+    orig_avail = mark_ws_available(False)
+    try:
+        assert mark_ws_available("false") is False  # type: ignore[arg-type]
+        assert mark_ws_available("true") is True  # type: ignore[arg-type]
+        assert should_poll_for_manager(
+            "CacheOrderManager",
+            ws_only_mode="false",  # type: ignore[arg-type]
+            ws_available="true",  # type: ignore[arg-type]
+            ws_is_healthy="true",  # type: ignore[arg-type]
+        ) is True
+    finally:
+        mark_ws_available(orig_avail)
+
+    # 3. BinancePriceStream: whitespace/lowercase symbol normalization and invalid symbol rejection
+    stream = BinancePriceStream(symbols=[" btcusdc ", None, ""])
+    assert stream.running_symbols == {"BTCUSDC"}
+    assert stream.add_symbol("") is False
+    assert stream.add_symbol(" ethusdc ") is True
+    assert "ETHUSDC" in stream.running_symbols
+    stream._process_message('{"data": {"s": " btcusdc ", "c": "65000.5", "E": 1700000000000}}')
+    assert stream.get_price(" btcusdc ") == 65000.5
+    assert stream.get_price("") is None
+    assert stream.remove_symbol(" btcusdc ") is True
+    assert "BTCUSDC" not in stream.running_symbols
+
+    # 4. StockYahooPricePlatform: whitespace ticker normalization
+    yahoo = StockYahooPricePlatform(tickers=["NVDA", "TSLA"])
+    assert yahoo.supports_symbol(" nvda ") is True
+    assert yahoo.supports_symbol("   ") is False
+
+
+

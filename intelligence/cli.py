@@ -145,7 +145,7 @@ def get_macro_analyzer_status(cache_dir: str = "cachedb") -> Dict[str, Any]:
 
 def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict[str, Any]:
     """Consolidate full multi-pillar state for a symbol."""
-    symbol = symbol.upper()
+    symbol = str(symbol or "").strip().upper()
     now = time.time()
     result: Dict[str, Any] = {
         "symbol": symbol,
@@ -224,7 +224,8 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
                 fg_data = cand_fg
                 break
         if isinstance(fg_data, dict):
-            fg_ts = _safe_float(fg_data.get("ts"), 0.0)
+            raw_fg_ts = fg_data.get("ts") if fg_data.get("ts") is not None else fg_data.get("timestamp")
+            fg_ts = _safe_float(raw_fg_ts, 0.0)
             fg_age = (now - fg_ts) if fg_ts > 0.0 else float("inf")
             fg_data["age_formatted"] = _format_age(fg_age)
             result["pillar3_sentiment"]["fear_greed"] = fg_data
@@ -374,7 +375,8 @@ def print_intelligence_report(report: Dict[str, Any]) -> None:
     print("\n🧠 [PILLAR 3: SENTIMENT & GEMINI LLM REASONING]")
     fg = p3.get("fear_greed")
     if isinstance(fg, dict) and fg:
-        print(f"  • Fear & Greed:   {_safe_int(fg.get('value'), 50)}/100 ({fg.get('sentiment', 'Neutral')}) [snapshot: {fg.get('age_formatted', 'unknown')}]")
+        fg_label = fg.get("sentiment") or fg.get("classification") or "Neutral"
+        print(f"  • Fear & Greed:   {_safe_int(fg.get('value'), 50)}/100 ({fg_label}) [snapshot: {fg.get('age_formatted', 'unknown')}]")
     else:
         print("  • Fear & Greed:   [No snapshot in cachedb]")
 

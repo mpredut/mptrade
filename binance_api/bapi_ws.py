@@ -195,7 +195,8 @@ class BinancePriceStream(BinanceWSBase):
         self._subscribers = []
         if symbols:
             for s in symbols:
-                self._subscribed.add(s.upper())
+                if isinstance(s, str) and s.strip():
+                    self._subscribed.add(s.strip().upper())
 
     def start(self, name: str = "BinanceWS", daemon: bool = False) -> "BinancePriceStream":
         # Preserve the original non-daemon market-manager thread behavior.
@@ -325,6 +326,7 @@ class BinancePriceStream(BinanceWSBase):
             symbol = data["s"]
             if not isinstance(symbol, str) or not symbol.strip():
                 raise ValueError(f"invalid ticker symbol: {symbol!r}")
+            symbol = symbol.strip().upper()
             raw_c = data["c"]
             if isinstance(raw_c, bool):
                 raise ValueError("invalid boolean ticker price")
@@ -362,7 +364,9 @@ class BinancePriceStream(BinanceWSBase):
 
     # ─── Public API ───────────────────────────────────────────────────────────
     def add_symbol(self, symbol: str) -> bool:
-        symbol = symbol.upper()
+        if not isinstance(symbol, str) or not symbol.strip():
+            return False
+        symbol = symbol.strip().upper()
         with self._lock:
             if symbol in self._subscribed:
                 logger.debug("[%s] Already subscribed", symbol)
@@ -375,7 +379,9 @@ class BinancePriceStream(BinanceWSBase):
         return True
 
     def remove_symbol(self, symbol: str) -> bool:
-        symbol = symbol.upper()
+        if not isinstance(symbol, str) or not symbol.strip():
+            return False
+        symbol = symbol.strip().upper()
         with self._lock:
             if symbol not in self._subscribed:
                 logger.debug("[%s] Not subscribed", symbol)
@@ -386,8 +392,10 @@ class BinancePriceStream(BinanceWSBase):
         return True
 
     def get_price(self, symbol: str) -> Optional[float]:
+        if not isinstance(symbol, str) or not symbol.strip():
+            return None
         with self._lock:
-            return self._prices.get(symbol.upper())
+            return self._prices.get(symbol.strip().upper())
 
     def get_all_prices(self) -> Dict[str, float]:
         with self._lock:

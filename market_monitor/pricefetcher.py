@@ -154,6 +154,9 @@ class BinancePricePlatform(PricePlatformInterface):
         return self._supported_symbols.copy()
     
     def supports_symbol(self, symbol: str) -> bool:
+        if not isinstance(symbol, str) or not symbol.strip():
+            return False
+        symbol = symbol.strip().upper()
         self.refresh_symbols()
         if symbol in self._supported_symbols:
             return True
@@ -169,6 +172,9 @@ class BinancePricePlatform(PricePlatformInterface):
     
     def get_price(self, symbol: str) -> Optional[float]:
         try:
+            if not isinstance(symbol, str) or not symbol.strip():
+                return None
+            symbol = symbol.strip().upper()
             trading_pair = None
             
             if symbol in self._symbol_mapping:
@@ -244,6 +250,9 @@ class HyperliquidPricePlatform(PricePlatformInterface):
         return self._supported_symbols.copy()
     
     def supports_symbol(self, symbol: str) -> bool:
+        if not isinstance(symbol, str) or not symbol.strip():
+            return False
+        symbol = symbol.strip().upper()
         self.refresh_symbols()
         if symbol in self._supported_symbols:
             return True
@@ -252,6 +261,9 @@ class HyperliquidPricePlatform(PricePlatformInterface):
     
     def get_price(self, symbol: str) -> Optional[float]:
         try:
+            if not isinstance(symbol, str) or not symbol.strip():
+                return None
+            symbol = symbol.strip().upper()
             self.refresh_symbols()
             lookup_key = symbol if symbol in self._all_mids else get_base_symbol(symbol)
             if lookup_key not in self._all_mids:
@@ -359,8 +371,9 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
         return self._supported_symbols.copy()
     
     def supports_symbol(self, symbol: str) -> bool:
-        if not self.api_key:
+        if not self.api_key or not isinstance(symbol, str) or not symbol.strip():
             return False
+        symbol = symbol.strip().upper()
         self.refresh_symbols()
         if symbol in self._supported_symbols:
             return True
@@ -385,9 +398,11 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
         return None
     
     def get_price_old(self, symbol: str) -> Optional[float]:
-        if not self.api_key:
-            print(f"[CMCPlatform] Missing API key")
+        if not self.api_key or not isinstance(symbol, str) or not symbol.strip():
+            if not self.api_key:
+                print(f"[CMCPlatform] Missing API key")
             return None
+        symbol = symbol.strip().upper()
         try:
             headers = {'X-CMC_PRO_API_KEY': self.api_key, 'Accept': 'application/json'}
             params = {'symbol': symbol, 'convert': 'USD'}
@@ -411,9 +426,11 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
         Get the price from the internal cache (updated from listings/latest).
         This is the fastest and safest way to get prices for new coins.
         """
-        if not self.api_key:
-            print(f"[CMCPlatform] Missing API key")
+        if not self.api_key or not isinstance(symbol, str) or not symbol.strip():
+            if not self.api_key:
+                print(f"[CMCPlatform] Missing API key")
             return None
+        symbol = symbol.strip().upper()
 
         # Refresh if enough time has passed
         self.refresh_symbols()
@@ -473,13 +490,15 @@ class StockYahooPricePlatform(PricePlatformInterface):
 
     def supports_symbol(self, symbol: str) -> bool:
         # Accept only configured tickers; do not divert crypto or make a network call here.
-        if not symbol or not isinstance(symbol, str):
+        if not symbol or not isinstance(symbol, str) or not symbol.strip():
             return False
-        return symbol.upper() in self._symbols
+        return symbol.strip().upper() in self._symbols
 
     def get_price(self, symbol: str) -> Optional[float]:
         try:
-            sym_y = symbol.split("_")[0]                      # NVDA_US_EQ -> NVDA
+            if not isinstance(symbol, str) or not symbol.strip():
+                return None
+            sym_y = symbol.strip().upper().split("_")[0]                      # NVDA_US_EQ -> NVDA
             url = self._YAHOO.format(sym=sym_y) + "?range=1d&interval=5m"
             resp = requests.get(url, headers=self._UA, timeout=10)
             resp.raise_for_status()
@@ -755,6 +774,9 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
             return []
     
     def add_symbol(self, symbol: str, preferred_source: Optional[str] = None):
+        if not isinstance(symbol, str) or not symbol.strip():
+            return False
+        symbol = symbol.strip()
         with self.lock:
             base_symbol = get_base_symbol(symbol)
             if symbol in self.active_symbols:
@@ -859,9 +881,9 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                 continue
             history.append(
                 {
-                    "timestamp": raw_ts,
+                    "timestamp": int(ts_val) if ts_val.is_integer() else ts_val,
                     "timestamp_readable": readable,
-                    "price": raw_px,
+                    "price": px_val,
                 }
             )
         return history

@@ -26,11 +26,19 @@ _ws_is_healthy = False
 _ws_needs_rest_resync: set[str] = set()
 
 
+def _as_bool(value: object) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return math.isfinite(float(value)) and float(value) != 0.0
+    return bool(value)
+
+
 def mark_ws_available(value: bool) -> bool:
     """Record whether the Binance user-data WebSocket stream is connected."""
     global _ws_available
     with _ws_health_lock:
-        _ws_available = bool(value)
+        _ws_available = _as_bool(value)
         cm = sys.modules.get("cacheManager")
         if cm is not None:
             cm._ws_available = _ws_available
@@ -93,7 +101,7 @@ def should_poll_for_manager(
     ws_is_healthy: bool | None = None,
 ) -> bool:
     """Return True when ``cls_name`` must run a REST reconciliation poll."""
-    effective_ws_only = WS_ONLY_MODE if ws_only_mode is None else bool(ws_only_mode)
+    effective_ws_only = _as_bool(WS_ONLY_MODE) if ws_only_mode is None else _as_bool(ws_only_mode)
     if not effective_ws_only:
         return True
     if cls_name not in WS_MANAGED_CACHE_CLASSES:
@@ -101,8 +109,8 @@ def should_poll_for_manager(
     with _ws_health_lock:
         if cls_name in _ws_needs_rest_resync:
             return True
-        effective_available = _ws_available if ws_available is None else bool(ws_available)
-        effective_healthy = _ws_is_healthy if ws_is_healthy is None else bool(ws_is_healthy)
+        effective_available = _as_bool(_ws_available) if ws_available is None else _as_bool(ws_available)
+        effective_healthy = _as_bool(_ws_is_healthy) if ws_is_healthy is None else _as_bool(ws_is_healthy)
         return (not effective_available) or (not effective_healthy)
 
 
