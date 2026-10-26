@@ -339,17 +339,17 @@ class TrendState:
         print(f"Trend ended: {self.state} at {time.ctime(self.end_time)} after {self.confirm_count} confirmations.")
   
     def is_trend_up(self):
-        if not self.check_trend_expiration(self) and self.state == 'UP':
+        if not self.check_trend_expiration() and self.state == 'UP':
             return self.confirm_count
         return 0
 
     def is_trend_down(self):
-        if not self.check_trend_expiration(self) and self.state == 'DOWN':
+        if not self.check_trend_expiration() and self.state == 'DOWN':
             return self.confirm_count
         return 0
 
     def is_hold(self):
-        if self.check_trend_expiration(self) or self.state == 'HOLD':
+        if self.check_trend_expiration() or self.state == 'HOLD':
             return self.confirm_count
         return 0
         

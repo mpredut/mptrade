@@ -3507,6 +3507,29 @@ def test_batch10_archive_hardening(tmp_path):
     assert tcm.last_fetch_time_per_symbol == {}
 
 
+def test_batch11_verify_tools_and_watchdog_hardening(tmp_path, monkeypatch):
+    import sys
+    from verify_tools import check_cache_coherence, translation_audit
+    from orchestratorOS.livecheck import os_resources_watchdog as orw
+
+    # 1. translation_audit skips myenv
+    assert "myenv" in translation_audit.SKIP_DIRS
+
+    # 2. check_cache_coherence.expected_symbols does not duplicate sys.path
+    orig_len = len(sys.path)
+    check_cache_coherence.expected_symbols()
+    check_cache_coherence.expected_symbols()
+    assert len(sys.path) == orig_len
+
+    # 3. os_resources_watchdog handles proc dict missing pid/command without KeyError
+    monkeypatch.setattr(orw, "STATE_FILE", tmp_path / "rw_state.json")
+    monkeypatch.setattr(orw.wc, "alert", lambda *a, **kw: True)
+    procs = {"999:1": {"rss_mb": orw.MEMORY_THRESHOLD_MB + 100.0}}
+    for step in range(orw.CONSECUTIVE + 1):
+        orw.check_once(now=1000.0 + step * 60.0, total_ticks=1000 + step * 100, processes=procs, cpu_count=1)
+
+
+
 
 
 

@@ -60,7 +60,7 @@ motiv motive cauza scop rand randuri linie linii pas pasi etapa etape exemplu ex
 """.split())
 
 DOC_OWNERS = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-SKIP_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache"}
+SKIP_DIRS = {".git", ".venv", "myenv", "__pycache__", "node_modules", ".pytest_cache"}
 
 
 # ── scan ──────────────────────────────────────────────────────────────────────

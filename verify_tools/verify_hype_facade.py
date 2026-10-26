@@ -21,7 +21,9 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 from providers.market_api import api as mkt          # noqa: E402  (facada singleton)
 import symbols as sym                        # noqa: E402

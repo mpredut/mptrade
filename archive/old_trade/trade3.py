@@ -531,15 +531,17 @@ class TrendState:
         return self.old_state
         
     def get_trend_time(self):
+        if self.start_time is None:
+            return 0
         return time.time() - self.start_time
     
     def is_trend_fresh(self, fresh_trend_time=1.7 * 60):
-        if time.time() < self.start_time + fresh_trend_time:
+        if self.start_time is not None and time.time() < self.start_time + fresh_trend_time:
             return True
         return False
         
     def is_trend_old(self, old_trend_time):
-        return get_trend_time(self) > old_trend_time 
+        return self.get_trend_time() > old_trend_time 
 
     def confirm_trend(self):
         self.last_confirmation_time = time.time()

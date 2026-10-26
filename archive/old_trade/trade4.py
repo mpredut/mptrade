@@ -33,11 +33,11 @@ class TradingBot:
         self.sell_filled = False
         self.DEFAULT_ADJUSTMENT_PERCENT = DEFAULT_ADJUSTMENT_PERCENT
         
-    def mark_buy_filled() :
+    def mark_buy_filled(self) :
         self.buy_filled = True
         self.sell_filled = False
         
-    def mark_sell_filled() :
+    def mark_sell_filled(self) :
         self.buy_filled = False
         self.sell_filled = True
         

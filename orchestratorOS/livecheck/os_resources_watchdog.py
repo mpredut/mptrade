@@ -6,7 +6,9 @@ import signal
 import time
 from pathlib import Path
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+_LIB_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "lib"))
+if _LIB_DIR not in sys.path:
+    sys.path.insert(0, _LIB_DIR)
 import watchdog_common as wc
 
 ROOT = wc.ROOT
@@ -117,9 +119,12 @@ def _restart_managed(proc, state, now):
     script = _managed_script(proc)
     if not AUTO_RESTART or not script or not _restart_allowed(state, script, now):
         return None
+    pid = proc.get("pid") if isinstance(proc, dict) else None
+    if pid is None or isinstance(pid, bool):
+        return False
     try:
-        os.kill(proc["pid"], signal.SIGTERM)
-    except (ProcessLookupError, PermissionError, OSError):
+        os.kill(int(pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError, TypeError, ValueError):
         return False
     state.setdefault("restart_history", {}).setdefault(script, []).append(now)
     return True
@@ -273,12 +278,12 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
             action = ("automatic restart requested" if restarted is True else
                       "automatic restart failed" if restarted is False else
                       "alert only (unmanaged process or restart safety limit)")
-            lines.append(f"PID {proc['pid']} — {', '.join(reasons)} for at least "
-                         f"{checks * CHECK_INTERVAL_MIN:.0f} min — {action} — {proc['command']}")
+            lines.append(f"PID {proc.get('pid', '?')} — {', '.join(reasons)} for at least "
+                         f"{checks * CHECK_INTERVAL_MIN:.0f} min — {action} — {proc.get('command', '?')}")
         wc.save_state(STATE_FILE, state)
         wc.alert("High sustained process resource usage", "\n".join(lines))
     if recovered:
-        lines = [f"PID {proc['pid']} — {proc['command']}" for proc in recovered]
+        lines = [f"PID {proc.get('pid', '?')} — {proc.get('command', '?')}" for proc in recovered]
         wc.alert("Process resource usage recovered", "\n".join(lines))
     if not offenders and not recovered:
         print(f"[resources] OK — sampled {len(processes)} processes")

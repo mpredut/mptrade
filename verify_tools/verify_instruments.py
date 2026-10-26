@@ -15,7 +15,8 @@ import sys
 
 # Run from verify_tools/ -> put the repo ROOT on the path for the imports below.
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _ROOT)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 from providers.market_api import api
 from instrument import Instrument
@@ -88,7 +89,11 @@ def main() -> int:
         if it and exp:
             got = [str(it.param("mt", "gain")), str(it.param("mt", "lost")),
                    str(it.param("mt", "maxage_days"))]
-            check([float(x) for x in got] == [float(x) for x in exp],
+            try:
+                match = [float(x) for x in got] == [float(x) for x in exp]
+            except (TypeError, ValueError):
+                match = False
+            check(match,
                   f"{symname} gain/lost/maxage", f"conf={exp} instr={got}")
     # globale -> mt.* pe TAO (oglindesc hard_tp_* + tp_reference)
     if tao and g:

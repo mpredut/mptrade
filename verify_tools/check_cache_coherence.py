@@ -37,7 +37,8 @@ def load(name):
 
 def expected_symbols():
     """Use the registry without credentials; invalid configuration must fail the check."""
-    sys.path.insert(0, ROOT)
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
     from instrument_registry import select_instruments, symbols_for
     syms = symbols_for("binance")
     for inst in select_instruments(role="mt").values():
