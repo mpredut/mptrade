@@ -19,7 +19,19 @@ def binance_filter_refusal_reason(error: Exception) -> str:
     return f"binance_filter_refused:{text}"
 
 
+def _parse_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
 def _decimal(value, *, name: str, allow_zero: bool = True) -> Decimal:
+    if isinstance(value, bool):
+        raise BinanceFilterError(f"invalid {name}: {value!r}")
     try:
         parsed = Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError) as exc:
@@ -77,12 +89,12 @@ class BinanceOrderRules:
         if notional:
             min_notional = _decimal(notional.get("minNotional", 0), name="minNotional")
             max_notional = _decimal(notional.get("maxNotional", 0), name="maxNotional")
-            min_market = bool(notional.get("applyMinToMarket", False))
-            max_market = bool(notional.get("applyMaxToMarket", False))
+            min_market = _parse_bool(notional.get("applyMinToMarket", False))
+            max_market = _parse_bool(notional.get("applyMaxToMarket", False))
         elif minimum:
             min_notional = _decimal(minimum.get("minNotional", 0), name="minNotional")
             max_notional = Decimal(0)
-            min_market = bool(minimum.get("applyToMarket", False))
+            min_market = _parse_bool(minimum.get("applyToMarket", False))
             max_market = False
         else:
             min_notional = max_notional = Decimal(0)

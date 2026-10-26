@@ -210,12 +210,13 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
         round_fn = getattr(provider, "round_quantity", None)
     if callable(round_fn) and final > 0:
         res = round_fn(symbol, final)
-        try:
-            res_f = float(res)
-            if math.isfinite(res_f):
-                final = res_f
-        except (TypeError, ValueError):
-            pass
+        if res is not None and not isinstance(res, bool):
+            try:
+                res_f = float(res)
+                if math.isfinite(res_f) and res_f >= 0.0:
+                    final = res_f
+            except (TypeError, ValueError, OverflowError):
+                pass
 
     # Market-intelligence quantity scaling (e.g. Weibull trend exhaustion, derivatives crowding)
     # Applied per-order without mutating the shared market context.
@@ -243,12 +244,13 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
         scaled_amount = final * eff_scale_f
         if callable(round_fn):
             res = round_fn(symbol, scaled_amount)
-            try:
-                res_f = float(res)
-                if math.isfinite(res_f):
-                    scaled_amount = res_f
-            except (TypeError, ValueError):
-                pass
+            if res is not None and not isinstance(res, bool):
+                try:
+                    res_f = float(res)
+                    if math.isfinite(res_f) and res_f >= 0.0:
+                        scaled_amount = res_f
+                except (TypeError, ValueError, OverflowError):
+                    pass
         print(f"[{symbol}] {side.upper()} quantity scaled by market-intelligence: "
               f"{final} -> {scaled_amount} (scale={eff_scale_f:.2f})")
         final = scaled_amount

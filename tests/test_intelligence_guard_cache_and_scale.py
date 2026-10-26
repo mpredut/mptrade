@@ -6790,3 +6790,53 @@ def test_iteration38_headroom_cancel_opposite_and_provider_base_nan_bool_safety(
     assert dp.order_filter_refusal("BTCUSDC", "BUY", 100.0, True) == "qty_zero_or_negative"
     assert dp.last_opposite_fill("BTCUSDC", "BUY") == pytest.approx(50000.0)
 
+
+def test_iteration39_binance_filters_strategy_executor_market_api_nan_bool_safety():
+    from types import SimpleNamespace
+    import pytest
+    from providers.binance_filters import BinanceFilterError, BinanceOrderRules, _decimal, _parse_bool
+    from providers.strategy_executor import ProviderError, SubmissionOutcome
+    from providers.market_api import BinanceProvider
+    from providers.quantity import decide_quantity
+
+    # 1. binance_filters._decimal rejects bool and _parse_bool handles string "false"
+    with pytest.raises(BinanceFilterError):
+        _decimal(True, name="qty")
+    assert _parse_bool("false") is False
+    assert _parse_bool("true") is True
+    rules = BinanceOrderRules.from_symbol_info({
+        "baseAsset": "BTC",
+        "quoteAsset": "USDC",
+        "filters": [
+            {"filterType": "PRICE_FILTER", "tickSize": "0.01", "minPrice": "1", "maxPrice": "1000000"},
+            {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001", "maxQty": "100"},
+            {"filterType": "NOTIONAL", "minNotional": "10", "maxNotional": "100000", "applyMinToMarket": "false"},
+        ],
+    })
+    assert rules.min_notional_market is False
+
+    # 2. SubmissionOutcome rejects boolean order_id
+    with pytest.raises(ValueError):
+        SubmissionOutcome("accepted", order_id=True)
+
+    # 3. BinanceProvider.position_cost_basis / order_status / cancel_order reject boolean inputs
+    bp_prov = BinanceProvider()
+    with pytest.raises(ValueError):
+        bp_prov.position_cost_basis("BTCUSDC", 1.0, True)
+    with pytest.raises(ProviderError):
+        bp_prov.order_status("BTCUSDC", True)
+    with pytest.raises(ProviderError):
+        bp_prov.cancel_order("BTCUSDC", True)
+
+    # 4. decide_quantity ignores boolean/negative round_fn return values
+    prov_q = SimpleNamespace(
+        name="dummy",
+        free_balance=lambda asset: 1000.0,
+        policy_cap_quantity=lambda sym, side, px, req, avail, **kw: avail,
+        fee_cap_quantity=lambda sym, side, px, avail: avail,
+        round_amount=lambda sym, q: True,
+        order_filter_refusal=lambda *a, **kw: None,
+    )
+    qd = decide_quantity(prov_q, "BTCUSDC", "BUY", 100.0, 2.5, scale=0.5)
+    assert qd.final_qty == pytest.approx(1.25)
+

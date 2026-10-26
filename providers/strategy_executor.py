@@ -52,6 +52,8 @@ class SubmissionOutcome:
     def __post_init__(self):
         if self.state not in {"accepted", "refused", "unknown"}:
             raise ValueError(f"invalid submission outcome: {self.state!r}")
+        if isinstance(self.order_id, bool):
+            raise ValueError(f"invalid order_id in SubmissionOutcome: {self.order_id!r}")
         order_id = None if self.order_id is None else str(self.order_id).strip()
         if self.state == "accepted" and not order_id:
             raise ValueError("accepted submission requires order_id")

@@ -155,8 +155,9 @@ class BinanceProvider(MarketDataProvider):
         from instrument_registry import select_instruments
         from .quantity import remaining_average_cost
 
-        if not math.isfinite(since_s) or since_s <= 0:
+        if isinstance(since_s, bool) or not math.isfinite(float(since_s)) or float(since_s) <= 0:
             raise ValueError("since_s must be finite and positive")
+        since_s = float(since_s)
         spec = next(
             (item for item in select_instruments("binance").values() if item.symbol == symbol),
             None,
@@ -309,9 +310,15 @@ class BinanceProvider(MarketDataProvider):
         # is active on BUY and safeback_sec was not explicitly passed by caller, use dynamic window.
         import order_guard
         from binance_api import bapi_placeorder as _po
-        if safeback_sec is not None:
-            sb = safeback_sec
-        else:
+        sb = None
+        if safeback_sec is not None and not isinstance(safeback_sec, bool):
+            try:
+                sb_f = float(safeback_sec)
+                if math.isfinite(sb_f) and sb_f > 0:
+                    sb = sb_f
+            except (TypeError, ValueError, OverflowError):
+                sb = None
+        if sb is None:
             win_s = order_guard.get_window_cfg(
                 "binance",
                 symbol=symbol,
@@ -320,7 +327,11 @@ class BinanceProvider(MarketDataProvider):
                 module=module,
                 reference_mode=reference_mode,
             )
-            sb = win_s if (win_s and win_s > 0) else _po.PLACE_ORDER_SAFEBACK_SEC
+            sb = (
+                float(win_s)
+                if (win_s is not None and not isinstance(win_s, bool) and math.isfinite(float(win_s)) and float(win_s) > 0)
+                else _po.PLACE_ORDER_SAFEBACK_SEC
+            )
         wr_kwargs = {}
         if reference_mode is not None:
             wr_kwargs["reference_mode"] = reference_mode
@@ -341,9 +352,17 @@ class BinanceProvider(MarketDataProvider):
     def policy_cap_quantity(self, symbol: str, side: str, price: float,
                             qty: float, available_qty: float, **kwargs) -> float:
         from binance_api import bapi_placeorder as _po
+        is_auto = False
+        if qty is None:
+            is_auto = True
+        elif not isinstance(qty, bool):
+            try:
+                is_auto = math.isinf(float(qty)) and float(qty) > 0
+            except (TypeError, ValueError, OverflowError):
+                is_auto = False
         return _po.apply_weight_limit(
             symbol, side, price,
-            None if math.isinf(float(qty)) else qty,
+            None if is_auto else qty,
             available_qty)
 
     def fee_cap_quantity(self, symbol: str, side: str, price: float,
@@ -516,10 +535,14 @@ class BinanceProvider(MarketDataProvider):
         return total
 
     def order_status(self, symbol: str, order_id: str):
+        if isinstance(order_id, bool):
+            raise ProviderError(f"order_status({order_id}): invalid order id")
         try:
             oid = int(order_id)
         except (ValueError, TypeError) as exc:
             raise ProviderError(f"order_status({order_id}): invalid order id") from exc
+        if oid <= 0:
+            raise ProviderError(f"order_status({order_id}): invalid order id")
 
         try:
             o = _get_bapi().client.get_order(symbol=symbol, orderId=oid)
@@ -560,8 +583,13 @@ class BinanceProvider(MarketDataProvider):
         )
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
+        if isinstance(order_id, bool):
+            raise ProviderError(f"cancel_order({order_id}): invalid order id")
         try:
-            canceled = _get_bapi().cancel_order(symbol, int(order_id))
+            oid = int(order_id)
+            if oid <= 0:
+                raise ValueError("order_id must be positive")
+            canceled = _get_bapi().cancel_order(symbol, oid)
             if not canceled:
                 raise ProviderError(
                     f"cancel_order({order_id}): the venue did not confirm the cancellation"
@@ -685,8 +713,9 @@ class MarketApi:
         if isinstance(since_s, bool):
             raise ValueError("since_s must be finite and positive")
         since_s = float(since_s)
-        if not math.isfinite(since_s) or since_s <= 0:
+        if isinstance(since_s, bool) or not math.isfinite(float(since_s)) or float(since_s) <= 0:
             raise ValueError("since_s must be finite and positive")
+        since_s = float(since_s)
         if isinstance(min_notional, bool):
             raise ValueError("min_notional must be finite and non-negative")
         if isinstance(max_notional, bool):
@@ -1131,7 +1160,13 @@ class MarketApi:
             return provider.round_quantity(symbol, qty)
         if hasattr(provider, "round_amount"):
             return provider.round_amount(symbol, qty)
-        return float(qty)
+        if qty is None or isinstance(qty, bool):
+            return 0.0
+        try:
+            qf = float(qty)
+            return qf if math.isfinite(qf) else 0.0
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
 
     def round_amount(self, symbol: str, qty: float, provider_name=None) -> float:
         return self.round_quantity(symbol, qty, provider_name=provider_name)
@@ -1140,7 +1175,13 @@ class MarketApi:
         provider = self._provider_explicit_or_routed(symbol, provider_name)
         if hasattr(provider, "round_price"):
             return provider.round_price(symbol, price)
-        return float(price)
+        if price is None or isinstance(price, bool):
+            return 0.0
+        try:
+            pf = float(price)
+            return pf if math.isfinite(pf) else 0.0
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
 
     def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
         # Mechanics-only provider dispatch without guards. Real placement must use
