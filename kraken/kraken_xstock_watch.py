@@ -55,17 +55,27 @@ def _state_file() -> str:
 
 
 # -- state -------------------------------------------------------------------
+def _default_state() -> dict:
+    return {
+        "known_assets": {}, "allocated": None, "pair": None,
+        "alerted_pair": False, "alerted_tp": False, "alerted_tp2": False, "alerted_sl": False,
+        "bot_pid": None, "alerted_need_price": False,
+    }
+
+
 def _load_state() -> dict:
     path = _state_file()
-    return load_json_state(
+    raw = load_json_state(
         path,
-        default_factory=lambda: {
-            "known_assets": {}, "allocated": None, "pair": None,
-            "alerted_pair": False, "alerted_tp": False, "alerted_tp2": False, "alerted_sl": False,
-            "bot_pid": None, "alerted_need_price": False,
-        },
+        default_factory=_default_state,
         fail_closed=True, label="Kraken xStock watcher",
     )
+    merged = _default_state()
+    if isinstance(raw, dict):
+        merged.update(raw)
+    if not isinstance(merged.get("known_assets"), dict):
+        merged["known_assets"] = {}
+    return merged
 
 
 def _save_state(st: dict) -> None:
@@ -276,17 +286,27 @@ def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
     """
     if not required_bool_env("XSTOCK_AUTOSTART"):
         return
-    if not (st["allocated"] and st["pair"]):
+    allocated = st.get("allocated")
+    pair = st.get("pair")
+    if not (isinstance(allocated, dict) and allocated.get("asset") and pair):
         return
-    if alloc_price <= 0:
-        if not st["alerted_need_price"]:
+    if isinstance(alloc_price, bool) or alloc_price is None:
+        alloc_f = 0.0
+    else:
+        try:
+            alloc_f = float(alloc_price)
+        except (TypeError, ValueError, OverflowError):
+            alloc_f = 0.0
+    if not math.isfinite(alloc_f) or alloc_f <= 0:
+        if not st.get("alerted_need_price"):
             st["alerted_need_price"] = True
             notify(title="⚠ xStock: completeaza XSTOCK_ALLOC_PRICE",
-                   body=f"The allocation {st['allocated']['asset']} is in the account and the pair "
-                        f"{st['pair']} is listed, but I do not know the allocation price. "
+                   body=f"The allocation {allocated['asset']} is in the account and the pair "
+                        f"{pair} is listed, but I do not know the allocation price. "
                         f"Set XSTOCK_ALLOC_PRICE in config.env so I can start the bot automatically.",
                    source="xstock-watch", desktop=desktop)
         return
+    alloc_price = alloc_f
     if _bot_alive(st.get("bot_pid")):
         return
     relaunch = st.get("bot_pid") is not None

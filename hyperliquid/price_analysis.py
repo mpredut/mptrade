@@ -44,12 +44,25 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     """Port priceAnalysis.detect_long_term_trend with gap/density robustness."""
     if timestamps is None or prices is None:
         return None
+    if any(isinstance(v, bool) for v in (window_hours, step_hours, min_consecutive_blocks, noise_tolerance, min_points_per_window)):
+        return None
+    try:
+        wh_f = float(window_hours)
+        sh_f = float(step_hours)
+        mcb_i = int(min_consecutive_blocks)
+        nt_i = int(noise_tolerance)
+        mpw_i = int(min_points_per_window)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not (math.isfinite(wh_f) and wh_f > 0.0 and math.isfinite(sh_f) and sh_f > 0.0):
+        return None
+    if mcb_i < 1 or nt_i < 0 or mpw_i < 2:
+        return None
     raw_ts = list(timestamps)
     raw_px = list(prices)
     if len(raw_ts) != len(raw_px) or len(raw_ts) < 2:
         return None
-    clean_ts: list[float] = []
-    clean_px: list[float] = []
+    pairs: list[tuple[float, float]] = []
     for t_item, p_item in zip(raw_ts, raw_px):
         if isinstance(t_item, bool) or isinstance(p_item, bool):
             continue
@@ -59,16 +72,20 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
         except (TypeError, ValueError, OverflowError):
             continue
         if math.isfinite(tf) and tf > 0.0 and math.isfinite(pf) and pf > 0.0:
-            clean_ts.append(tf)
-            clean_px.append(pf)
-    if len(clean_ts) < 2:
+            pairs.append((tf, pf))
+    if len(pairs) < 2:
         return None
-    timestamps = np.asarray(clean_ts, dtype=float)
-    prices = np.asarray(clean_px, dtype=float)
+    if any(pairs[i][0] > pairs[i + 1][0] for i in range(len(pairs) - 1)):
+        pairs.sort(key=lambda item: item[0])
+    timestamps = np.asarray([p[0] for p in pairs], dtype=float)
+    prices = np.asarray([p[1] for p in pairs], dtype=float)
 
     t_end, t_first = timestamps[-1], timestamps[0]
-    window_sec = window_hours * 3600.0
-    step_sec = step_hours * 3600.0
+    window_sec = wh_f * 3600.0
+    step_sec = sh_f * 3600.0
+    min_consecutive_blocks = mcb_i
+    noise_tolerance = nt_i
+    min_points_per_window = mpw_i
 
     def slope_h(t_lo, t_hi):
         lo = int(np.searchsorted(timestamps, t_lo, "left"))

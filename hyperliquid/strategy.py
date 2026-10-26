@@ -103,10 +103,12 @@ class StratParams:
 
     @classmethod
     def from_dict(cls, d: dict, direction: str | None = None) -> "StratParams":
-        dir_val = direction or d.get("direction", "long")
+        dir_val = str(direction or d.get("direction", "long") or "long").strip().lower()
+        if dir_val not in ("long", "short"):
+            raise ValueError(f"Invalid HL_DIRECTION: {dir_val!r}")
         return cls(
             currency=str(d.get("currency", "USDC")),
-            direction=str(dir_val),
+            direction=dir_val,
             entry_amount=float(d.get("entry", d.get("entry_amount", 50.0))),
             entry_discount_pct=float(d.get("disc", d.get("entry_discount_pct", 0.2))),
             dca_amount=float(d.get("dca", d.get("dca_amount", 30.0))),
@@ -134,6 +136,68 @@ def _new_state() -> dict:
     }
 
 
+def _sanitize_state(raw: dict) -> dict:
+    merged = _new_state()
+    if isinstance(raw, dict):
+        merged.update(raw)
+    for k in ("qty", "cost", "spent", "realized_gross", "realized_net", "fees_total"):
+        val = merged.get(k, 0.0)
+        if isinstance(val, bool) or val is None:
+            merged[k] = 0.0
+        else:
+            try:
+                vf = float(val)
+                merged[k] = vf if math.isfinite(vf) else 0.0
+            except (TypeError, ValueError, OverflowError):
+                merged[k] = 0.0
+    for k in ("qty", "cost", "spent", "fees_total"):
+        if merged[k] < 0.0:
+            merged[k] = 0.0
+    for k, default_i in (("cycle", 1), ("cycles_completed", 0), ("wins", 0), ("dca_buys", 0)):
+        val = merged.get(k, default_i)
+        if isinstance(val, bool) or val is None:
+            merged[k] = default_i
+        else:
+            try:
+                vi = int(float(val))
+                merged[k] = max(default_i if k == "cycle" else 0, vi)
+            except (TypeError, ValueError, OverflowError):
+                merged[k] = default_i
+    for k in ("entry_price", "last_open_price"):
+        val = merged.get(k)
+        if val is None or isinstance(val, bool):
+            merged[k] = None
+        else:
+            try:
+                vf = float(val)
+                merged[k] = vf if (math.isfinite(vf) and vf > 0.0) else None
+            except (TypeError, ValueError, OverflowError):
+                merged[k] = None
+    raw_orders = merged.get("orders")
+    clean_orders = []
+    if isinstance(raw_orders, list):
+        for o in raw_orders:
+            if not isinstance(o, dict) or o.get("role") not in ("open", "close"):
+                continue
+            raw_px = o.get("px")
+            raw_sz = o.get("sz")
+            if isinstance(raw_px, bool) or isinstance(raw_sz, bool):
+                continue
+            try:
+                px_f = float(raw_px)
+                sz_f = float(raw_sz)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not (math.isfinite(px_f) and px_f > 0.0 and math.isfinite(sz_f) and sz_f > 0.0):
+                continue
+            o_copy = dict(o)
+            o_copy["px"] = px_f
+            o_copy["sz"] = sz_f
+            clean_orders.append(o_copy)
+    merged["orders"] = clean_orders
+    return merged
+
+
 class Strategy:
     def __init__(self, client: HLClient | None, coin: str, params: StratParams,
                  dry_run: bool = True, desktop: bool = False, leverage: int = 1,
@@ -146,14 +210,16 @@ class Strategy:
         self.desktop = desktop
         self.leverage = leverage
         self.replay_mode = replay_mode
-        self.sign = 1 if params.direction == "long" else -1
+        dir_norm = str(getattr(params, "direction", "long") or "long").strip().lower()
+        if dir_norm not in ("long", "short"):
+            raise ValueError(f"Invalid Strategy direction: {params.direction!r}")
+        self.p.direction = dir_norm
+        self.sign = 1 if dir_norm == "long" else -1
         self.open_side = "buy" if self.sign > 0 else "sell"     # open or increase the position
         self.close_side = "sell" if self.sign > 0 else "buy"    # reduce-only close
-        self.state_file = state_path_for(coin, params.direction)
+        self.state_file = state_path_for(coin, dir_norm)
         if initial_state is not None:
-            merged = _new_state()
-            merged.update(initial_state)
-            self.s = merged
+            self.s = _sanitize_state(initial_state)
         elif replay_mode:
             self.s = _new_state()
         else:
@@ -174,8 +240,7 @@ class Strategy:
             self.state_file, default_factory=dict, fail_closed=not self.dry_run,
             label="Hyperliquid strategy",
         )
-        merged = _new_state()
-        merged.update(st)
+        merged = _sanitize_state(st)
         if st:
             log(f"  [STRAT] state loaded (cycle {merged.get('cycle')}, qty {merged.get('qty')})")
         return merged
@@ -362,13 +427,31 @@ class Strategy:
 
     def _open_is_stale(self, order: dict, price: float, elapsed_min: float | None = None) -> bool:
         """Return whether an unfilled open limit order has expired and price ran away."""
-        if order.get("role") != "open":
+        if not isinstance(order, dict) or order.get("role") != "open":
+            return False
+        raw_px = order.get("px")
+        if raw_px is None or isinstance(raw_px, bool):
+            return False
+        try:
+            ord_px = float(raw_px)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not math.isfinite(ord_px) or ord_px <= 0.0:
             return False
         if elapsed_min is None:
-            elapsed_min = (time.time() - (order.get("ts") or 0)) / 60.0
-        if elapsed_min <= self.p.order_ttl_min:
+            raw_ts = order.get("ts")
+            try:
+                ts_f = 0.0 if (raw_ts is None or isinstance(raw_ts, bool)) else float(raw_ts)
+            except (TypeError, ValueError, OverflowError):
+                ts_f = 0.0
+            elapsed_min = (time.time() - (ts_f if math.isfinite(ts_f) else 0.0)) / 60.0
+        try:
+            el_f = float(elapsed_min)
+        except (TypeError, ValueError, OverflowError):
             return False
-        return self.sign * (price - order["px"]) > 0.003 * order["px"]
+        if not math.isfinite(el_f) or el_f <= self.p.order_ttl_min:
+            return False
+        return self.sign * (price - ord_px) > 0.003 * ord_px
 
     def _apply_open(self, fq, fp, amount, kind, real_qty=None, real_avg=None, *, count_dca=None):
         is_dca = (self.s["qty"] > 1e-9) if count_dca is None else bool(count_dca)

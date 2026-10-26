@@ -8493,5 +8493,90 @@ def test_iteration59_base_vwap_audit_kraken_and_hl_client_safety(tmp_path):
     hl.exchange.order.assert_not_called()
 
 
+def test_iteration60_hl_strategy_price_analysis_xstock_and_t212_client_safety(tmp_path, monkeypatch):
+    """Iteration 60: HL Strategy direction/state sanitization, price_analysis step_hours/sort guard, xStock state defaults, and T212 historical fill VWAP."""
+    import json
+
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    orig_sys_path = list(sys.path)
+    hl_mod_names = ("common", "notify", "hl_client", "market_data", "signals", "strategy", "price_analysis")
+    saved_hl = {k: sys.modules.get(k) for k in hl_mod_names}
+    try:
+        for k in hl_mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import strategy as hl_strat_mod
+        import price_analysis as hl_pa_mod
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_hl.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    # 1. HL Strategy normalizes uppercase "LONG" to sign=+1 and rejects invalid direction
+    p_long = hl_strat_mod.StratParams(direction="LONG")
+    st_long = hl_strat_mod.Strategy(
+        None, "HYPE", p_long, dry_run=True, replay_mode=True,
+        initial_state={"qty": None, "cost": "nan", "orders": [None, {"role": "open", "px": True, "sz": 1.0}]},
+    )
+    assert st_long.sign == 1
+    assert st_long.open_side == "buy"
+    assert st_long.s["qty"] == 0.0
+    assert st_long.s["cost"] == 0.0
+    assert st_long.s["orders"] == []
+
+    with pytest.raises(ValueError, match="Invalid Strategy direction"):
+        hl_strat_mod.Strategy(None, "HYPE", hl_strat_mod.StratParams(direction="sideways"), dry_run=True, replay_mode=True)
+
+    # 2. HL price_analysis.detect_long_term_trend rejects step_hours <= 0 (preventing infinite loop) and sorts unsorted timestamps
+    assert hl_pa_mod.detect_long_term_trend([1000, 2000, 3000], [10.0, 11.0, 12.0], window_hours=1, step_hours=0) is None
+    ts_unsorted = [float(i * 3600) for i in range(1, 60)][::-1]
+    px_unsorted = [10.0 + 0.5 * i for i in range(1, 60)][::-1]
+    res = hl_pa_mod.detect_long_term_trend(ts_unsorted, px_unsorted, window_hours=12, step_hours=4, min_consecutive_blocks=3)
+    assert res is not None and res["direction"] == "up"
+
+    # 3. kraken_xstock_watch._load_state merges partial JSON onto default keys without KeyError
+    from kraken import kraken_xstock_watch as xw
+    state_file = tmp_path / "xstock_partial.json"
+    state_file.write_text(json.dumps({"known_assets": "corrupt"}), encoding="utf-8")
+    monkeypatch.setenv("XSTOCK_STATE_FILE", str(state_file))
+    loaded = xw._load_state()
+    assert loaded["known_assets"] == {}
+    assert loaded["alerted_pair"] is False
+    assert loaded["alerted_tp"] is False
+
+    # 4. T212Client.get_historical_order does not dilute fillPrice when a sub-fill has price=0
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    t212_mod_names = ("ipo_common", "t212_client")
+    saved_t212 = {k: sys.modules.get(k) for k in t212_mod_names}
+    try:
+        for k in t212_mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import t212_client as t212_mod
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_t212.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    cli = t212_mod.T212Client("k", "s", env="demo", min_gap_sec=0.0, portfolio_ttl_sec=1.0, order_min_gap_sec=0.0)
+    payload = {
+        "items": [
+            {"order": {"id": "77", "status": "FILLED"}, "fill": {"quantity": 2.0, "price": 50.0}},
+            {"order": {"id": "77", "status": "FILLED"}, "fill": {"quantity": 2.0, "price": 0.0}},
+        ]
+    }
+    monkeypatch.setattr(t212_mod, "http_get", lambda url, headers=None: (200, json.dumps(payload).encode("utf-8")))
+    hist = cli.get_historical_order("77")
+    assert hist["filledQuantity"] == pytest.approx(4.0)
+    assert hist["fillPrice"] == pytest.approx(50.0)
+
+
+
 
 

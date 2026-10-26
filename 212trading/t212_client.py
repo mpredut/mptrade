@@ -292,7 +292,7 @@ class T212Client:
         # History uses {order, fill}, and one order may have several fills. Return
         # the client's order shape enriched with actual aggregate execution data.
         result = dict(matches[0][0])
-        total_qty = total_cost = total_fee = 0.0
+        total_qty = total_cost = total_fee = priced_qty = 0.0
         fee_currencies = set()
         for _, fill in matches:
             if not isinstance(fill, dict):
@@ -309,7 +309,9 @@ class T212Client:
             if not (math.isfinite(qty) and math.isfinite(price)):
                 continue
             total_qty += qty
-            total_cost += qty * price
+            if price > 0.0 and qty > 0.0:
+                total_cost += qty * price
+                priced_qty += qty
             wallet = fill.get("walletImpact")
             taxes = wallet.get("taxes") if isinstance(wallet, dict) else []
             for tax in taxes or []:
@@ -331,7 +333,8 @@ class T212Client:
         if total_qty > 0:
             result["filledQuantity"] = total_qty
             result["filledValue"] = total_cost
-            result["fillPrice"] = total_cost / total_qty
+            if priced_qty > 0:
+                result["fillPrice"] = total_cost / priced_qty
         result["fee"] = total_fee
         if fee_currencies:
             result["_feeCurrencies"] = sorted(fee_currencies)
@@ -347,10 +350,14 @@ class T212Client:
             self._log_read_fail("order status", status)
             return None
         try:
-            return json.loads(body)
-        except ValueError:
+            parsed = json.loads(body)
+        except (TypeError, ValueError):
             self._log_read_fail("order status (invalid JSON)", status)
             return None
+        if not isinstance(parsed, dict):
+            self._log_read_fail("order status (non-dict JSON)", status)
+            return None
+        return parsed
 
     def cancel_order(self, order_id) -> bool:
         """Cancel an order by id and return whether the request was accepted."""

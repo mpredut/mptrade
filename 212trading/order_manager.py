@@ -451,12 +451,17 @@ def place_order_with_retry(
     if record:
         # Legacy accepted markers stay blocking rather than silently creating a
         # second order whose identity cannot be reconstructed.
-        if int(record.get("version") or 1) < 2:
+        raw_ver = record.get("version")
+        try:
+            ver_i = 1 if (raw_ver is None or isinstance(raw_ver, bool)) else int(raw_ver)
+        except (TypeError, ValueError, OverflowError):
+            ver_i = 1
+        if ver_i < 2:
             legacy = record.get("order") if isinstance(record.get("order"), dict) else {}
             legacy_id = legacy.get("id")
             if legacy_id:
                 info = poll_order_until_terminal(client, legacy_id, ticker, desktop)
-                record["last_status"] = (info or {}).get("status")
+                record["last_status"] = info.get("status") if isinstance(info, dict) else None
                 _persist_marker(record, marker_path)
             log("  [ORDER] an existing legacy marker — not duplicating the order")
             return True
@@ -526,7 +531,12 @@ def place_order_with_retry(
             )
             return False
 
-    record["attempts"] = int(record.get("attempts") or 0) + 1
+    raw_att = record.get("attempts")
+    try:
+        att_i = 0 if (raw_att is None or isinstance(raw_att, bool)) else max(0, int(raw_att))
+    except (TypeError, ValueError, OverflowError):
+        att_i = 0
+    record["attempts"] = att_i + 1
     record["last_submit_at"] = now
     record["next_retry_at"] = now + retry_delay_f
     record["lookup_misses"] = 0
