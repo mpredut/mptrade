@@ -208,11 +208,16 @@ class WhalePositioningCollector:
 
     def _resolve_cached_funding_rate(self, symbol: str, now: Optional[float] = None) -> Optional[float]:
         """Lookup cached funding rate from derivatives telemetry if available and fresh."""
+        import math
         cache_dir = self._effective_cache_dir()
         if not cache_dir:
             return None
         try:
-            now_ts = now if now is not None else time.time()
+            now_ts = (
+                float(now)
+                if (now is not None and not isinstance(now, bool) and math.isfinite(float(now)))
+                else time.time()
+            )
             max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
             variants = _symbol_variants(symbol)
             for s in variants:
@@ -222,12 +227,17 @@ class WhalePositioningCollector:
                     d = read_recovering_previous(p, json.loads, default=None)
                     if not isinstance(d, dict):
                         continue
-                    ts_val = float(d.get("ts") or 0.0)
-                    if ts_val > 0 and not (0.0 <= (now_ts - ts_val) < max_age):
+                    raw_ts = d.get("ts")
+                    if raw_ts is None or isinstance(raw_ts, bool):
+                        continue
+                    ts_val = float(raw_ts)
+                    if not math.isfinite(ts_val) or ts_val <= 0 or not (0.0 <= (now_ts - ts_val) < max_age):
                         continue
                     fr = d.get("funding_rate")
-                    if fr is not None:
-                        return float(fr)
+                    if fr is not None and not isinstance(fr, bool):
+                        fr_val = float(fr)
+                        if math.isfinite(fr_val):
+                            return fr_val
                 except Exception:
                     continue
         except Exception as e:
@@ -251,6 +261,40 @@ class WhalePositioningCollector:
         3. Taker Buy/Sell ratio (aggressive market execution dominance)
         4. Funding Rate (crowded short vs long pressure)
         """
+        import math
+        try:
+            p_chg = float(price_1h_change_pct) if not isinstance(price_1h_change_pct, bool) else 0.0
+            price_1h_change_pct = p_chg if math.isfinite(p_chg) else 0.0
+        except (TypeError, ValueError, OverflowError):
+            price_1h_change_pct = 0.0
+        try:
+            o_chg = float(oi_change_pct) if not isinstance(oi_change_pct, bool) else 0.0
+            oi_change_pct = o_chg if math.isfinite(o_chg) else 0.0
+        except (TypeError, ValueError, OverflowError):
+            oi_change_pct = 0.0
+        try:
+            t_rat = float(taker_ratio) if not isinstance(taker_ratio, bool) else 1.0
+            taker_ratio = t_rat if math.isfinite(t_rat) and t_rat > 0 else 1.0
+        except (TypeError, ValueError, OverflowError):
+            taker_ratio = 1.0
+        if funding_rate is not None:
+            if isinstance(funding_rate, bool):
+                funding_rate = None
+            else:
+                try:
+                    fr_f = float(funding_rate)
+                    funding_rate = fr_f if math.isfinite(fr_f) else None
+                except (TypeError, ValueError, OverflowError):
+                    funding_rate = None
+        if top_long_pct is not None:
+            if isinstance(top_long_pct, bool):
+                top_long_pct = None
+            else:
+                try:
+                    tl_f = float(top_long_pct)
+                    top_long_pct = tl_f if math.isfinite(tl_f) else None
+                except (TypeError, ValueError, OverflowError):
+                    top_long_pct = None
         # 1. Price rising (> +0.2%)
         if price_1h_change_pct > 0.2:
             if oi_change_pct > 0.3:
@@ -314,8 +358,13 @@ class WhalePositioningCollector:
         now: Optional[float] = None,
     ) -> Optional[WhalePositioningSnapshot]:
         """Fetch latest whale positioning metrics from public Binance Futures endpoints."""
+        import math
         symbol = symbol.upper()
-        now = float(now) if now is not None else time.time()
+        try:
+            now_f = float(now) if (now is not None and not isinstance(now, bool)) else time.time()
+            now = now_f if math.isfinite(now_f) else time.time()
+        except (TypeError, ValueError, OverflowError):
+            now = time.time()
         cached = None
         for cand in _symbol_variants(symbol):
             cached = self._cache.get(cand)

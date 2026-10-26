@@ -5829,6 +5829,103 @@ def test_iteration28_cache_symbol_variants_future_timestamps_cancel_bounds_and_m
         mapi.market_regime_bundle("TAOUSD", provider_name="kraken", now=float("nan"))
 
 
+def test_iteration29_candle_interval_bool_t212_get_orders_whale_funding_ts_and_collector_nan(tmp_path):
+    """Iteration 29 regression suite:
+    1. candle_interval rejects boolean inputs (e.g. True / False) with ProviderError.
+    2. T212Provider.get_orders rejects NaN/bool/non-positive since_s, matches ticker case-insensitively,
+       and keeps synthetic timestamp within short windows (< 2h); order_status tolerates NaN/bool orderedQuantity.
+    3. WhalePositioningCollector._resolve_cached_funding_rate rejects missing/zero/NaN ts and bool/NaN funding_rate,
+       and classify_regime sanitizes NaN/bool inputs so flat-price OI divergence still works.
+    4. OrderbookDepthCollector, DerivativesTelemetryCollector, and WhalePositioningCollector fetch()
+       sanitize NaN/bool `now` without crashing or persisting NaN timestamps.
+    """
+    from types import SimpleNamespace
+    import pytest
+    from providers.strategy_executor import candle_interval, ProviderError
+    from providers.t212_provider import T212Provider
+    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector, OrderbookSnapshot
+    from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetryCollector, DerivativesTelemetry
+
+    # 1. candle_interval rejects bool
+    with pytest.raises(ProviderError):
+        candle_interval(True)
+    with pytest.raises(ProviderError):
+        candle_interval(False)
+    assert candle_interval(1) == "1m"
+
+    # 2. T212Provider.get_orders and order_status
+    fake_cli = SimpleNamespace(
+        get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "averagePrice": 120.0, "quantity": 5.0}],
+        get_order_status=lambda oid: {
+            "ticker": "NVDA_US_EQ",
+            "status": "FILLED",
+            "filledQuantity": 5.0,
+            "filledValue": 600.0,
+            "fee": 0.0,
+            "orderedQuantity": float("nan"),
+        },
+    )
+    t212 = T212Provider(client=fake_cli, live_enabled=False)
+    assert t212.get_orders("NVDA_US_EQ", "BUY", float("nan")) == []
+    assert t212.get_orders("NVDA_US_EQ", "BUY", True) == []
+    assert t212.get_orders("NVDA_US_EQ", "BUY", -10.0) == []
+
+    # Case-insensitive ticker match and synthetic timestamp inside 600s window
+    now_ms = int(time.time() * 1000)
+    short_win_orders = t212.get_orders("nvda_us_eq", "BUY", 600.0)
+    assert len(short_win_orders) == 1
+    assert now_ms - short_win_orders[0]["timestamp"] <= 600_000
+
+    st = t212.order_status("nvda_us_eq", "ord-1")
+    assert st.status == "closed" and st.orig_qty is None
+
+    # 3. WhalePositioningCollector._resolve_cached_funding_rate & classify_regime
+    w_col = WhalePositioningCollector(cache_ttl_sec=60.0, disk_ttl_sec=120.0, cache_dir=str(tmp_path))
+    f_path = tmp_path / "derivatives_telemetry_BTCUSDT.json"
+
+    # Missing / zero ts must be rejected
+    f_path.write_text(json.dumps({"symbol": "BTCUSDT", "funding_rate": -0.001, "ts": 0.0}), encoding="utf-8")
+    assert w_col._resolve_cached_funding_rate("BTCUSDC", now=1000.0) is None
+
+    # Bool funding_rate must be rejected
+    f_path.write_text(json.dumps({"symbol": "BTCUSDT", "funding_rate": True, "ts": 990.0}), encoding="utf-8")
+    assert w_col._resolve_cached_funding_rate("BTCUSDC", now=1000.0) is None
+
+    # Valid fresh funding_rate is accepted
+    f_path.write_text(json.dumps({"symbol": "BTCUSDT", "funding_rate": -0.0005, "ts": 990.0}), encoding="utf-8")
+    assert w_col._resolve_cached_funding_rate("BTCUSDC", now=1000.0) == pytest.approx(-0.0005)
+
+    # classify_regime with NaN price_1h_change_pct and NaN funding_rate
+    assert WhalePositioningCollector.classify_regime(
+        price_1h_change_pct=float("nan"),
+        oi_change_pct=1.2,
+        taker_ratio=1.25,
+        funding_rate=float("nan"),
+    ) == "accumulation"
+
+    # 4. Collectors fetch() with NaN/bool `now`
+    ob_col = OrderbookDepthCollector(cache_ttl_sec=60.0, cache_dir=str(tmp_path))
+    now_s = time.time()
+    ob_snap = OrderbookSnapshot(
+        symbol="BTCUSDC", mid_price=85000.0, bid_depth_usd=1000.0, ask_depth_usd=1000.0,
+        imbalance_ratio=0.5, largest_bid_wall_usd=100.0, largest_bid_wall_price=84900.0,
+        largest_ask_wall_usd=100.0, largest_ask_wall_price=85100.0, ts=now_s,
+    )
+    ob_col.record_snapshot(ob_snap)
+    assert ob_col.fetch("BTCUSDC", allow_network=False, now=float("nan")) is ob_snap
+    assert ob_col.fetch("BTCUSDC", allow_network=False, now=True) is ob_snap
+
+    dt_col = DerivativesTelemetryCollector(cache_ttl_sec=60.0, cache_dir=str(tmp_path))
+    dt_snap = DerivativesTelemetry(
+        symbol="BTCUSDC", funding_rate=0.0001, predicted_funding_rate=0.0001,
+        open_interest=100.0, open_interest_usd=8_500_000.0, ts=now_s,
+    )
+    dt_col.record_telemetry(dt_snap)
+    assert dt_col.fetch("BTCUSDC", allow_network=False, now=float("nan")) is dt_snap
+
+
+
 
 
 

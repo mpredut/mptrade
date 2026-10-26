@@ -124,8 +124,13 @@ class DerivativesTelemetryCollector:
         now: Optional[float] = None,
     ) -> Optional[DerivativesTelemetry]:
         """Fetch funding rate and open interest from public Binance Futures endpoint."""
+        import math
         symbol = symbol.upper()
-        now = float(now) if now is not None else time.time()
+        try:
+            now_f = float(now) if (now is not None and not isinstance(now, bool)) else time.time()
+            now = now_f if math.isfinite(now_f) else time.time()
+        except (TypeError, ValueError, OverflowError):
+            now = time.time()
         cached = None
         for cand in _symbol_variants(symbol):
             cached = self._cache.get(cand)
@@ -155,8 +160,17 @@ class DerivativesTelemetryCollector:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data_fund = json.loads(resp.read().decode("utf-8"))
 
-            funding_rate = float(data_fund.get("lastFundingRate") or 0.0)
-            next_funding = float(data_fund.get("nextFundingRate") or funding_rate)
+            def _safe_float(raw, default: float = 0.0) -> float:
+                if raw is None or isinstance(raw, bool):
+                    return default
+                try:
+                    val = float(raw)
+                    return val if math.isfinite(val) else default
+                except (TypeError, ValueError, OverflowError):
+                    return default
+
+            funding_rate = _safe_float(data_fund.get("lastFundingRate"), 0.0)
+            next_funding = _safe_float(data_fund.get("nextFundingRate"), funding_rate)
 
             # 2. Open interest endpoint
             url_oi = f"https://fapi.binance.com/fapi/v1/openInterest?symbol={lookup_sym}"
@@ -164,8 +178,8 @@ class DerivativesTelemetryCollector:
             with urllib.request.urlopen(req_oi, timeout=5) as resp:
                 data_oi = json.loads(resp.read().decode("utf-8"))
 
-            oi = float(data_oi.get("openInterest") or 0.0)
-            mark_price = float(data_fund.get("markPrice") or 0.0)
+            oi = max(0.0, _safe_float(data_oi.get("openInterest"), 0.0))
+            mark_price = max(0.0, _safe_float(data_fund.get("markPrice"), 0.0))
             oi_usd = oi * mark_price
 
             telemetry = DerivativesTelemetry(

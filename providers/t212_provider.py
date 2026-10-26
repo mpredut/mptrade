@@ -116,8 +116,9 @@ class T212Provider(MarketDataProvider):
             port = self._client().get_portfolio()
             if port is None:
                 raise ProviderError("the T212 portfolio is unavailable")
+            target_sym = str(symbol or "").strip().upper()
             for p in port:
-                if str(p.get("ticker", "")) == symbol:
+                if str(p.get("ticker", "")).strip().upper() == target_sym:
                     return p
             return None
         except Exception as e:  # noqa: BLE001
@@ -202,6 +203,14 @@ class T212Provider(MarketDataProvider):
 
     def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
         """Represent the portfolio position as one synthetic average-price buy."""
+        if since_s is None or isinstance(since_s, bool):
+            return []
+        try:
+            since_val = float(since_s)
+        except (TypeError, ValueError, OverflowError):
+            return []
+        if not math.isfinite(since_val) or since_val <= 0:
+            return []
         want = (side or "").upper()
         if want == "SELL":
             return []                         # Historical sells are not modeled.
@@ -219,9 +228,10 @@ class T212Provider(MarketDataProvider):
             raise ProviderError(f"portfolio({symbol}): invalid position")
         if qty <= 0:
             return []
+        offset_s = min(2 * 3600.0, since_val * 0.5)
         return [_normalize_order({
             "side": "BUY", "price": avg, "qty": qty,
-            "timestamp": int((time.time() - 2 * 3600) * 1000),  # Inside the window, not too recent.
+            "timestamp": int((time.time() - offset_s) * 1000),  # Inside the window, not too recent.
         })]
 
     # -- Placement remains dry until T212_LIVE_ORDERS=true. --------------------
@@ -382,10 +392,14 @@ class T212Provider(MarketDataProvider):
                 ) from None
 
         raw_orig = raw.get("orderedQuantity", raw.get("quantity"))
-        try:
-            orig_qty = abs(float(raw_orig)) if raw_orig is not None else None
-        except (TypeError, ValueError, OverflowError):
-            orig_qty = None
+        orig_qty = None
+        if raw_orig is not None and not isinstance(raw_orig, bool):
+            try:
+                cand_orig = abs(float(raw_orig))
+                if math.isfinite(cand_orig):
+                    orig_qty = cand_orig
+            except (TypeError, ValueError, OverflowError):
+                orig_qty = None
 
         return OrderStatus(
             status=normalized,

@@ -176,8 +176,13 @@ class OrderbookDepthCollector:
         now: Optional[float] = None,
     ) -> Optional[OrderbookSnapshot]:
         """Fetch spot depth snapshot from Binance public API."""
+        import math
         symbol = symbol.upper()
-        now = float(now) if now is not None else time.time()
+        try:
+            now_f = float(now) if (now is not None and not isinstance(now, bool)) else time.time()
+            now = now_f if math.isfinite(now_f) else time.time()
+        except (TypeError, ValueError, OverflowError):
+            now = time.time()
         cached = None
         for cand in _symbol_variants(symbol):
             cached = self._cache.get(cand)
@@ -205,8 +210,16 @@ class OrderbookDepthCollector:
             with urllib.request.urlopen(req, timeout=4) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
 
-            bids: List[Tuple[float, float]] = [(float(p), float(q)) for p, q in data.get("bids", [])]
-            asks: List[Tuple[float, float]] = [(float(p), float(q)) for p, q in data.get("asks", [])]
+            bids: List[Tuple[float, float]] = [
+                (float(p), float(q))
+                for p, q in data.get("bids", [])
+                if math.isfinite(float(p)) and float(p) > 0 and math.isfinite(float(q)) and float(q) > 0
+            ]
+            asks: List[Tuple[float, float]] = [
+                (float(p), float(q))
+                for p, q in data.get("asks", [])
+                if math.isfinite(float(p)) and float(p) > 0 and math.isfinite(float(q)) and float(q) > 0
+            ]
 
             if not bids or not asks:
                 return None
@@ -214,6 +227,8 @@ class OrderbookDepthCollector:
             best_bid = bids[0][0]
             best_ask = asks[0][0]
             mid = (best_bid + best_ask) / 2.0
+            if not math.isfinite(mid) or mid <= 0:
+                return None
 
             bid_lower_bound = mid * (1.0 - self.depth_band_pct / 100.0)
             ask_upper_bound = mid * (1.0 + self.depth_band_pct / 100.0)

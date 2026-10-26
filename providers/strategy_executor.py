@@ -182,6 +182,8 @@ _CANDLE_INTERVALS = {
 
 def candle_interval(interval_min: int) -> str:
     """Return the canonical venue interval or reject an unsupported horizon."""
+    if isinstance(interval_min, bool):
+        raise ProviderError(f"invalid candle interval: {interval_min!r}")
     try:
         minutes = int(interval_min)
     except (TypeError, ValueError, OverflowError) as exc:
