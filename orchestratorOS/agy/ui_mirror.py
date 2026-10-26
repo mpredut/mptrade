@@ -172,17 +172,11 @@ def mirror_topic_thread_to_ui(
         mtime = os.stat(dst_db).st_mtime
         os.utime(src_db, (mtime, mtime))
 
-        # Re-link the visible conversations dir to the updated CLI trajectory in-place so
-        # known permanent topic threads never appear unlinked to pending_ui_sync() or require a daemon restart.
-        visible_dir = visible_conversations_dir(dst_base)
-        os.makedirs(visible_dir, exist_ok=True)
-        visible_db = os.path.join(visible_dir, f"{cid}.db")
-        if os.path.lexists(visible_db):
-            if not os.path.exists(visible_db) or not os.path.samefile(visible_db, dst_db):
-                os.remove(visible_db)
-                os.link(dst_db, visible_db)
-        else:
-            os.link(dst_db, visible_db)
+        # A previous mirror hard-linked into the visible dir is now stale; drop it so agy_store_fix moves the
+        # rewritten content there on the next idle restart and refreshes the daemon's in-memory trajectory cache.
+        stale = os.path.join(visible_conversations_dir(dst_base), f"{cid}.db")
+        if os.path.lexists(stale) and (not os.path.exists(stale) or not os.path.samefile(stale, dst_db)):
+            os.remove(stale)
 
         src_brain = os.path.join(src_base, "brain", cid)
         if os.path.isdir(src_brain):

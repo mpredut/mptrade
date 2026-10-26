@@ -452,6 +452,7 @@ def pending_ui_sync() -> list[str]:
             disk_cids.update(n[:-3] for n in os.listdir(d) if n.endswith(".db"))
     active_rows = rows & disk_cids
     entries = [f"new:{cid}" for cid in active_rows - known] + [f"gone:{cid}" for cid in known - active_rows]
+    topic_cids = mirrored_topic_cids()
     if os.path.isdir(D1):
         for name in os.listdir(D1):
             cid = name[:-3]
@@ -459,7 +460,7 @@ def pending_ui_sync() -> list[str]:
                 continue
             p1 = os.path.join(D1, name)
             p2 = os.path.join(D2, name)
-            if (cid not in known or os.path.exists(p2)) and not same_file(p1, p2):
+            if (cid not in known or cid in topic_cids or os.path.exists(p2)) and not same_file(p1, p2):
                 entries.append(f"content:{cid}:{os.stat(p1).st_ino}")
     return sorted(entries)
 
@@ -548,9 +549,6 @@ def last_store_activity() -> float:
                             "SEND_USER_CASCADE_MESSAGE",
                             "streamGenerateContent",
                             "LLM Monitor",
-                            "StreamAgentStateUpdates",
-                            "RequestAgentStatePageUpdate",
-                            "GetSlashCommands",
                         )
                     ):
                         newest = max(newest, os.stat(latest_log).st_mtime)
