@@ -30,6 +30,8 @@ class JsonStateStore:
                 self.path, default_factory=dict, fail_closed=True,
                 label=self.label,
             )
+            if not isinstance(loaded, dict):
+                raise ValueError("loaded state is not a dict")
             merged = self.default_factory()
             if not isinstance(merged, dict):
                 raise TypeError("default_factory did not return a dict")

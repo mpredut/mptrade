@@ -9847,3 +9847,66 @@ def test_iteration83_composite_trigger_priority_sell_scale_and_daemon_symbols(tm
     assert itd.symbols == ["TAOUSDC"]
 
 
+def test_iteration84_spot_rules_state_store_execution_audit_and_http_resilience(monkeypatch, tmp_path):
+    """Verify Iteration 84 spot_rules entry/tp/surge/shadow bounds, JsonStateStore non-dict rejection, execution_audit cache max, and http_resilience validation."""
+    import pytest
+    import requests
+    from strategies import spot_rules
+    from strategies.state_store import JsonStateStore, StatePersistenceError
+    from providers import execution_audit, http_resilience
+
+    # 1. spot_rules entry_price, tp_price, check_parabolic_surge_exhaustion, and check_fast_profit_reversal
+    assert spot_rules.entry_price("100.0", "5.0") == 95.0
+    assert spot_rules.entry_price(float("nan"), 5.0) == 0.0
+    assert spot_rules.tp_price("100.0", "5.0") == 105.0
+    assert spot_rules.tp_price(False, 5.0) == 0.0
+
+    # Disabled surge_gain_pct <= 0 must not trigger via window_move_pct
+    triggered, _ = spot_rules.check_parabolic_surge_exhaustion(
+        current_price=105.0,
+        avg_cost=100.0,
+        surge_peak=110.0,
+        surge_gain_pct=0.0,
+        exit_pullback_pct=3.0,
+        window_move_pct=30.0,
+        surge_move_pct=25.0,
+    )
+    assert triggered is False
+
+    # Future timestamps in shadow_prices must not inflate local_peak in check_fast_profit_reversal
+    rev_trig, _, _ = spot_rules.check_fast_profit_reversal(
+        current_price=110.0,
+        avg_cost=100.0,
+        base_tp_pct=5.0,
+        mult=2.0,
+        shadow_prices=[(990.0, 110.5), (9999.0, 200.0)],
+        window_sec=60.0,
+        drop_pct=5.0,
+        current_time=1000.0,
+    )
+    assert rev_trig is False
+
+    # 2. JsonStateStore rejects non-dict loaded payloads even if load_json_state returns a list of pairs
+    monkeypatch.setattr("strategies.state_store.load_json_state", lambda *a, **k: [["cycle", 99]])
+    store = JsonStateStore(
+        str(tmp_path / "state.json"),
+        lambda: {"cycle": 1, "qty": 0.0},
+        label="test",
+        logger=lambda _: None,
+        fail_closed=True,
+    )
+    with pytest.raises(StatePersistenceError):
+        store.load()
+
+    # 3. execution_audit._parse_cache_max parses float strings
+    monkeypatch.setenv("EXECUTION_AUDIT_CACHE_MAX", "2500.0 # inline comment")
+    assert execution_audit._parse_cache_max() == 2500
+
+    # 4. http_resilience.mount_connect_retry rejects boolean, negative, and non-finite retry parameters
+    sess = requests.Session()
+    assert http_resilience.mount_connect_retry(sess, attempts=False) is False
+    assert http_resilience.mount_connect_retry(sess, attempts=-1) is False
+    assert http_resilience.mount_connect_retry(sess, backoff=float("nan")) is False
+    assert http_resilience.mount_connect_retry(sess, attempts=2, backoff=0.2) is True
+
+

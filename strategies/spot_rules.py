@@ -51,12 +51,20 @@ def are_close(v1: float, v2: float, tol_pct: float) -> bool:
 
 def entry_price(close: float, disc_pct: float) -> float:
     """Return the entry/DCA price at `disc_pct`%% below close."""
-    return close * (1 - disc_pct / 100)
+    close_f = _finite_float(close, 0.0)
+    disc_f = _finite_float(disc_pct, 0.0)
+    if close_f <= 0:
+        return 0.0
+    return max(0.0, close_f * (1.0 - disc_f / 100.0))
 
 
 def tp_price(avg: float, tp_pct: float) -> float:
     """Return the take-profit price at `tp_pct`%% above average cost."""
-    return avg * (1 + tp_pct / 100)
+    avg_f = _finite_float(avg, 0.0)
+    tp_f = _finite_float(tp_pct, 0.0)
+    if avg_f <= 0:
+        return 0.0
+    return max(0.0, avg_f * (1.0 + tp_f / 100.0))
 
 
 def hit_stop(avg: float, price: float, sl_pct: float) -> bool:
@@ -342,9 +350,10 @@ def check_fast_profit_reversal(
     now = now_f if now_f is not None else valid_shadows[-1][0]
     win_s = _finite_float(window_sec, 0.0)
     cutoff = now - max(0.0, win_s)
-    recent = [p for t, p in valid_shadows if t >= cutoff]
+    recent = [p for t, p in valid_shadows if cutoff <= t <= now]
     if not recent:
-        recent = [valid_shadows[-1][1]]
+        past_or_now = [p for t, p in valid_shadows if t <= now]
+        recent = [past_or_now[-1]] if past_or_now else [valid_shadows[-1][1]]
     local_peak = max(max(recent), px_f)
     if local_peak <= 0:
         return False, current_gain_pct, 0.0
@@ -403,6 +412,7 @@ def check_parabolic_surge_exhaustion(
         or avg_f <= 0
         or px_f <= 0
         or peak_f <= 0
+        or sg_f <= 0
         or ep_f <= 0
     ):
         return False, ""
@@ -488,10 +498,10 @@ def check_slow_grind_exhaustion(
             continue
         tf = _finite_float(item[0])
         pf = _finite_float(item[1])
-        if tf is not None and pf is not None and pf > 0 and tf >= cutoff:
+        if tf is not None and pf is not None and pf > 0 and cutoff <= tf <= cur_t_f:
             recent.append(pf)
     fd_f = _finite_float(flash_drop_pct)
-    if fd_f is not None and fd_f > 0 and recent:
+    if fd_f is not None and fd_f > 0 and win_s > 0 and recent:
         local_flash_peak = max(max(recent), px_f)
         if local_flash_peak > 0:
             flash_drop = (local_flash_peak - px_f) / local_flash_peak * 100.0

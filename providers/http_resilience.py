@@ -17,6 +17,8 @@ cache (see systemd/DNS_RESILIENCE.md).
 """
 from __future__ import annotations
 
+import math
+
 
 def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,
                         read: int = 0, status_forcelist=None,
@@ -33,17 +35,35 @@ def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,
     client startup.
     """
     try:
+        if (
+            isinstance(attempts, bool)
+            or isinstance(read, bool)
+            or isinstance(backoff, bool)
+            or not isinstance(attempts, (int, float))
+            or not isinstance(read, (int, float))
+            or not isinstance(backoff, (int, float))
+        ):
+            return False
+        att_f = float(attempts)
+        read_f = float(read)
+        bo_f = float(backoff)
+        if not (math.isfinite(att_f) and math.isfinite(read_f) and math.isfinite(bo_f)):
+            return False
+        att_i = int(att_f)
+        read_i = int(read_f)
+        if att_i < 0 or read_i < 0 or bo_f < 0.0:
+            return False
         from requests.adapters import HTTPAdapter
         from urllib3.util.retry import Retry
         retry = Retry(
-            total=attempts,
-            connect=attempts,
-            read=read,
-            status=attempts if status_forcelist else 0,
+            total=att_i,
+            connect=att_i,
+            read=read_i,
+            status=att_i if status_forcelist else 0,
             redirect=0,
-            backoff_factor=backoff,
+            backoff_factor=bo_f,
             status_forcelist=list(status_forcelist) if status_forcelist else None,
-            raise_on_status=raise_on_status,
+            raise_on_status=bool(raise_on_status),
         )
         adapter = HTTPAdapter(max_retries=retry)
         session.mount("https://", adapter)

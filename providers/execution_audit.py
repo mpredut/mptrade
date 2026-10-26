@@ -35,9 +35,12 @@ _UUID_HEX_SUFFIX = re.compile(r"([0-9a-fA-F]{32})$")
 def _parse_cache_max() -> int:
     raw = str(os.environ.get("EXECUTION_AUDIT_CACHE_MAX", "10000") or "").split("#", 1)[0].strip()
     try:
-        return max(100, int(raw))
-    except ValueError:
-        return 10000
+        f = float(raw)
+        if math.isfinite(f):
+            return max(100, int(f))
+    except (ValueError, OverflowError):
+        pass
+    return 10000
 
 
 _CACHE_MAX = _parse_cache_max()
