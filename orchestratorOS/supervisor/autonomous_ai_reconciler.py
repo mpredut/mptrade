@@ -1212,7 +1212,8 @@ class AutonomousAIReconciler:
         supervisor_summary_pattern = re.compile(
             r"(Autonomous AI Supervisor cycle complete:|\[(ENFORCE|SHADOW)\]\s+auto_|"
             r"mailer:\s+Email delivery skipped|Email gated by common delivery policy|"
-            r"ntfy delivery gated by common policy|Dispatched ntfy alert to)",
+            r"ntfy delivery gated by common policy|Dispatched ntfy alert to|"
+            r"<!--\s*a padding to disable MSIE|<(?:head|center)>.*500 Internal Server Error)",
             re.IGNORECASE,
         )
         guard_pattern = re.compile(r"(\[.*GUARD.*\]|vetoed|downscaled|HARD_VETO|DOWNSCALE_QTY)", re.IGNORECASE)

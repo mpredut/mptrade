@@ -38,7 +38,7 @@ def _install_retry(cl):
     """
     from providers.http_resilience import mount_connect_retry
     if not mount_connect_retry(cl.session, attempts=3, backoff=1.0, read=3,
-                               status_forcelist=[429, 502, 503, 504],
+                               status_forcelist=[429, 500, 502, 503, 504],
                                raise_on_status=True):
         print("[bapi_client] _install_retry: adapter mount failed (timeout still guards)")
 
@@ -75,22 +75,38 @@ def _install_recvwindow_retry(cl):
     if not callable(orig_request) or getattr(cl, "_recvwindow_retry_installed", False):
         return
 
+    def _sanitize_exc(exc):
+        msg = getattr(exc, "message", None)
+        if isinstance(msg, str) and ("\n" in msg or "\r" in msg):
+            exc.message = " ".join(msg.split())
+
     def _request_with_recvwindow_retry(method, uri, signed, force_params=False, **kwargs):
         saved_data = dict(kwargs["data"]) if isinstance(kwargs.get("data"), dict) else None
         saved_kwargs = dict(kwargs)
         try:
             return orig_request(method, uri, signed, force_params=force_params, **kwargs)
         except Exception as exc:
-            if not signed or getattr(exc, "code", None) != -1021:
+            is_recvwindow = bool(signed and getattr(exc, "code", None) == -1021)
+            is_idempotent_5xx = (
+                str(method).lower() == "get"
+                and getattr(exc, "status_code", None) in (500, 502, 503, 504)
+            )
+            if not (is_recvwindow or is_idempotent_5xx):
+                _sanitize_exc(exc)
                 raise
-            sync_time()
+            if is_recvwindow:
+                sync_time()
             retry_kwargs = dict(saved_kwargs)
             if saved_data is not None:
                 clean_data = dict(saved_data)
                 clean_data.pop("timestamp", None)
                 clean_data.pop("signature", None)
                 retry_kwargs["data"] = clean_data
-            return orig_request(method, uri, signed, force_params=force_params, **retry_kwargs)
+            try:
+                return orig_request(method, uri, signed, force_params=force_params, **retry_kwargs)
+            except Exception as retry_exc:
+                _sanitize_exc(retry_exc)
+                raise
 
     cl._request = _request_with_recvwindow_retry
     cl._recvwindow_retry_installed = True

@@ -144,6 +144,29 @@ class RuntimeImportSafetyTest(unittest.TestCase):
         self.assertEqual(calls[1], {"symbol": "BTCUSDC"})
         self.assertEqual(bapi_client.REQUEST_RECVWINDOW_MS, 30000)
 
+        class _Html500Error(Exception):
+            code = 0
+            status_code = 500
+            def __init__(self):
+                self.message = "Invalid JSON error message from Binance: <html>\r\n<head><title>500 Internal Server Error</title></head>\r\n</html>"
+            def __str__(self):
+                return f"APIError(code={self.code}): {self.message}"
+
+        class _Failing500Client:
+            def __init__(self):
+                self.calls = 0
+            def _request(self, method, uri, signed, force_params=False, **kwargs):
+                self.calls += 1
+                raise _Html500Error()
+
+        fail500 = _Failing500Client()
+        bapi_client._install_recvwindow_retry(fail500)
+        with self.assertRaises(_Html500Error) as ctx:
+            fail500._request("get", "https://api.binance.com/api/v3/account", True, data={"symbol": "BTCUSDC"})
+        self.assertEqual(fail500.calls, 2)
+        self.assertNotIn("\n", str(ctx.exception))
+        self.assertNotIn("\r", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
