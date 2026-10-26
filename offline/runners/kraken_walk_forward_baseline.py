@@ -201,9 +201,9 @@ def main(argv: list[str] | None = None) -> int:
         aggregate = value["aggregate_test"]
         print(
             f"{interval}m | folds={aggregate['fold_count']} "
-            f"mean={aggregate['mean_return_pct']:+.3f}% "
-            f"worst={aggregate['worst_return_pct']:+.3f}% "
-            f"worstDD={aggregate['worst_max_drawdown_pct']:.3f}% "
+            f"mean={(aggregate.get('mean_return_pct') or 0.0):+.3f}% "
+            f"worst={(aggregate.get('worst_return_pct') or 0.0):+.3f}% "
+            f"worstDD={(aggregate.get('worst_max_drawdown_pct') or 0.0):.3f}% "
             f"cycles={aggregate['total_cycles']} fills={aggregate['total_fills']} "
             f"ambiguous={aggregate['total_ambiguous_bars']}"
         )

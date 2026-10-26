@@ -36,9 +36,13 @@ from offline.runners.kraken_financial_benchmark import DEFAULT_DATASET, DEFAULT_
 def revision_params(spec: str) -> StratParams:
     text = subprocess.run(["git", "show", spec], check=True, capture_output=True,
                           text=True, cwd=ROOT).stdout
-    env = dict(dotenv_values(stream=io.StringIO(text), interpolate=False))
+    env = {
+        k: str(v)
+        for k, v in dotenv_values(stream=io.StringIO(text), interpolate=False).items()
+        if v is not None
+    }
     with patch.dict(os.environ, env, clear=True):
-        return StratParams.from_env()
+        return StratParams.from_env(env)
 
 
 def review(baseline: str, candidate: str, cash: float) -> dict:

@@ -529,14 +529,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Pareto: {', '.join(report['pareto_frontier'])}")
     print(f"Dominates live: {', '.join(report['dominates_live']) or '-'}")
     for name, item in sorted(
-            results.items(), key=lambda pair: pair[1]["summary"]["mean_return_pct"],
+            results.items(), key=lambda pair: float(pair[1]["summary"].get("mean_return_pct") or 0.0),
             reverse=True)[:5]:
         summary = item["summary"]
         relative = item["relative_to_live"]
         print(
-            f"{name}: mean={summary['mean_return_pct']:+.3f}% "
-            f"worst={summary['worst_return_pct']:+.3f}% "
-            f"worstDD={summary['worst_max_drawdown_pct']:.3f}% "
+            f"{name}: mean={(summary.get('mean_return_pct') or 0.0):+.3f}% "
+            f"worst={(summary.get('worst_return_pct') or 0.0):+.3f}% "
+            f"worstDD={(summary.get('worst_max_drawdown_pct') or 0.0):.3f}% "
             f"W/T/L={relative['wins_vs_live']}/{relative['ties_vs_live']}/"
             f"{relative['losses_vs_live']}"
         )

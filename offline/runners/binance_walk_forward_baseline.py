@@ -178,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
         report_path = output_dir / f"{symbol}_{interval}m_baseline.json"
         report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(f"[{symbol} {interval}m] Verdict: {evidence['verdict']} | "
-              f"Worst Return: {wf_result['aggregate_test']['worst_return_pct']:+.2f}% | "
+              f"Worst Return: {(wf_result['aggregate_test'].get('worst_return_pct') or 0.0):+.2f}% | "
               f"Folds: {wf_result['aggregate_test']['fold_count']} -> {report_path.name}")
         summary_by_interval[interval] = wf_result["aggregate_test"]
 

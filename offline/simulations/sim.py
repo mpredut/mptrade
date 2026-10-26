@@ -1,5 +1,6 @@
 """A manual simulation; it is not part of the live runtime."""
 
+import math
 import numpy as np
 import matplotlib.pyplot as plt
 import random
@@ -8,13 +9,13 @@ from collections import deque
 
 class PriceWindow:
     def __init__(self, window_size, max_index=1000000, epsilon=1e-5):
-        self.window_size = window_size
+        self.window_size = max(1, int(window_size))
         self.prices = deque()  # Keeps every price in the window.
         self.min_deque = deque()  # Gestionarea minimului
         self.max_deque = deque()  # Gestionarea maximului
         self.current_index = 0  # An internal counter tracking the index.
-        self.max_index = max_index  # The threshold at which normalisation happens.
-        self.epsilon = epsilon  # The tolerance for approximately equal lows.
+        self.max_index = max(1, int(max_index))  # The threshold at which normalisation happens.
+        self.epsilon = max(0.0, float(epsilon))  # The tolerance for approximately equal lows.
 
     def normalize_indices(self):
         """Normalise the indices when max_index is reached."""
@@ -27,29 +28,38 @@ class PriceWindow:
         self.current_index -= min_index  # Ajustam indexul curent
 
     def process_price(self, price):
+        if isinstance(price, bool) or price is None:
+            return
+        try:
+            px = float(price)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(px):
+            return
+
         # Add the new price to the price list.
-        self.prices.append(price)
+        self.prices.append(px)
 
         # Remove the prices that fall out of the window.
         if len(self.prices) > self.window_size:
             self.prices.popleft()
 
         # Handling of the current low and high.
-        self._manage_minimum(price)
-        self._manage_maximum(price)
+        self._manage_minimum(px)
+        self._manage_maximum(px)
 
         # Incrementam indexul intern
         self.current_index += 1
 
     def _manage_minimum(self, price):
         """Handling of the current low in the window."""
+        # Remove the elements that are outside the window (too old).
+        while self.min_deque and self.min_deque[0][0] <= self.current_index - self.window_size:
+            self.min_deque.popleft()
+
         # Normalise the indices if max_index is reached.
         if self.current_index >= self.max_index:
             self.normalize_indices()
-
-        # Remove the elements that are outside the window (too old).
-        if self.min_deque and self.min_deque[0][0] <= self.current_index - self.window_size:
-            self.min_deque.popleft()
 
         # Check whether the current price is approximately equal to any price already in `min_deque`.
         for index, existing_price in self.min_deque:
@@ -65,13 +75,13 @@ class PriceWindow:
 
     def _manage_maximum(self, price):
         """Handling of the current high in the window."""
+        # Remove the elements that are outside the window (too old).
+        while self.max_deque and self.max_deque[0][0] <= self.current_index - self.window_size:
+            self.max_deque.popleft()
+
         # Normalise the indices if max_index is reached.
         if self.current_index >= self.max_index:
             self.normalize_indices()
-
-        # Remove the elements that are outside the window (too old).
-        if self.max_deque and self.max_deque[0][0] <= self.current_index - self.window_size:
-            self.max_deque.popleft()
 
         # Remove the trailing elements that are smaller than the current price (to keep the latest high).
         while self.max_deque and self.max_deque[-1][1] <= price:

@@ -669,6 +669,14 @@ def test_simulations_price_window_get_max_and_normalize_indices():
     assert pw.get_min()[0] == 15.0
     assert pw.get_max()[0] == 30.0
 
+    # Non-finite, bool, and None values are ignored without poisoning min/max deques
+    pw.process_price(float("nan"))
+    pw.process_price(float("inf"))
+    pw.process_price(True)
+    pw.process_price(None)
+    assert pw.get_min()[0] == 15.0
+    assert pw.get_max()[0] == 30.0
+
 
 def test_experiment_trend_gate_and_kalman_lag_sweep_restore_globals(tmp_path, monkeypatch):
     """experiment_trend_gate and run_kalman_lag_sweep restore tradeall/shadow_signals globals after execution."""
@@ -1088,6 +1096,16 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
     with pytest.raises(FileNotFoundError):
         legacy_move.backup_and_replace(str(tmp_path / "missing_converted.json"), str(cache_orig))
     assert cache_orig.exists()
+
+    # 9. spot_profile_review.revision_params filters None values from dotenv_values
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from offline.runners import spot_profile_review as spr
+    cfg_text = (spr.ROOT / "hyperliquid/config.env").read_text(encoding="utf-8") + "\nUNVALUED_KEY\n"
+    with patch.object(spr.subprocess, "run", return_value=SimpleNamespace(stdout=cfg_text)):
+        rp = spr.revision_params("HEAD:hyperliquid/config.env")
+        assert rp.entry_amount > 0
+
 
 
 
