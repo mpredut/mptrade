@@ -64,6 +64,8 @@ def normalize_closed_candles(
     for row in rows:
         if not isinstance(row, dict):
             continue
+        if any(isinstance(row.get(k), bool) for k in ("t", "T", "o", "h", "l", "c")):
+            continue
         try:
             open_time = int(row["t"])
             close_time = int(row["T"])
@@ -75,7 +77,11 @@ def normalize_closed_candles(
             continue
         if not (math.isfinite(o_val) and math.isfinite(h_val) and math.isfinite(l_val) and math.isfinite(c_val)):
             continue
+        if open_time <= 0 or close_time < open_time:
+            continue
         if o_val <= 0 or h_val <= 0 or l_val <= 0 or c_val <= 0:
+            continue
+        if h_val < l_val or h_val < max(o_val, c_val) or l_val > min(o_val, c_val):
             continue
         if drop_incomplete and close_time >= now_ms:
             continue
@@ -153,12 +159,14 @@ def fetch_funding_history(coin: str, start_ms: int, timeout: int = 25) -> list[t
         for d in data:
             if not isinstance(d, dict):
                 continue
+            if isinstance(d.get("time"), bool) or isinstance(d.get("fundingRate"), bool):
+                continue
             try:
                 t_ms = int(d["time"])
                 rate = float(d["fundingRate"])
             except (KeyError, TypeError, ValueError, OverflowError):
                 continue
-            if math.isfinite(rate):
+            if t_ms > 0 and math.isfinite(rate):
                 entries.append((t_ms, rate))
         return sorted(entries, key=lambda x: x[0])
     except Exception as e:  # noqa: BLE001

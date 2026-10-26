@@ -7446,6 +7446,87 @@ def test_iteration48_kraken_client_cachemanager_market_data_trailing_and_xstock_
     assert kxw._bot_alive(0) is False
 
 
+def test_iteration49_hyperliquid_client_market_data_price_analysis_strategy_and_replay_nan_bool_safety():
+    import os
+    import sys
+    from types import SimpleNamespace
+    import pytest
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    orig_sys_path = list(sys.path)
+    mod_names = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
+    saved_mods = {k: sys.modules.get(k) for k in mod_names}
+    try:
+        for k in mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import hl_client as hlc
+        import market_data as hl_md
+        import price_analysis as hl_pa
+        import strategy as hl_strat
+        import replay as hl_rep
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    # 1. hl_client: _round_px, mid, spot_mid, position_strict, spot_balance_strict
+    with pytest.raises(ValueError):
+        hlc._round_px(True, 2)
+    with pytest.raises(ValueError):
+        hlc._round_px(20.0, True)
+
+    dummy = object.__new__(hlc.HLClient)
+    dummy.address = "0x1234"
+    dummy.info = SimpleNamespace(
+        all_mids=lambda: {"HYPE": float("nan"), "BTC": True, "ETH": "2500.5"},
+        user_state=lambda _addr: {
+            "assetPositions": [{"position": {"coin": "HYPE", "szi": float("nan"), "entryPx": 20.0}}],
+            "withdrawable": True,
+        },
+        spot_user_state=lambda _addr: {
+            "balances": [{"coin": "HYPE", "total": True}]
+        },
+    )
+    assert dummy.mid("HYPE") is None
+    assert dummy.mid("BTC") is None
+    assert dummy.mid("ETH") == 2500.5
+    assert dummy.withdrawable() == 0.0
+    with pytest.raises(hlc.HLError):
+        dummy.position_strict("HYPE")
+    with pytest.raises(hlc.HLError):
+        dummy.spot_balance_strict("HYPE")
+
+    # 2. hyperliquid/market_data: normalize_closed_candles rejects bool and invalid OHLC bounds
+    rows = [
+        {"t": True, "T": 2000, "o": 10, "h": 12, "l": 9, "c": 11},
+        {"t": 1000, "T": 2000, "o": 10, "h": 8, "l": 9, "c": 11},   # h < l
+        {"t": 1000, "T": 2000, "o": 10, "h": 12, "l": 9, "c": 11},  # valid
+    ]
+    norm = hl_md.normalize_closed_candles(rows, now_ms=5000, drop_incomplete=True)
+    assert len(norm) == 1
+    assert norm[0]["close"] == 11.0
+
+    # 3. hyperliquid/price_analysis: detect_long_term_trend ignores NaN/bool points
+    assert hl_pa.detect_long_term_trend([1000.0, 2000.0, 3000.0], [float("nan"), float("nan"), float("nan")]) is None
+    assert hl_pa.detect_long_term_trend([True, False], [10.0, 11.0]) is None
+
+    # 4. hyperliquid/strategy & replay: step ignores NaN/bool price and funding_at sanitizes NaN/bool funding rate
+    st_inst = hl_strat.Strategy(
+        client=None, coin="HYPE", params=hl_strat.StratParams(direction="long"), dry_run=True, replay_mode=True
+    )
+    st_inst.step(float("nan"))
+    st_inst.step(True)
+    assert st_inst.s["orders"] == []
+
+    assert hl_rep.funding_at([(1000, float("nan"))], 1000) == 0.0
+    assert hl_rep.funding_at([(1000, True)], 1000) == 0.0
+    assert hl_rep.funding_at([(1000, 0.0001)], True) == 0.0
+
+
+
 
 
 

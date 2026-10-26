@@ -18,6 +18,7 @@ HL fees are small enough for a tight take profit. HL_LEVERAGE=1 approximates spo
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 import time
@@ -268,6 +269,14 @@ class Strategy:
         except Exception as e:
             log(f"  [STRAT] pozitie indisponibila ({e})")
             return False
+        if (
+            isinstance(szi, bool)
+            or isinstance(entry, bool)
+            or not (math.isfinite(float(szi)) and math.isfinite(float(entry)))
+            or float(entry) < 0.0
+        ):
+            log(f"  ! [STRAT] invalid position state on {self.coin} (szi={szi}, entry={entry}); skipping step")
+            return False
 
         if abs(szi) > 1e-9 and szi * self.sign < 0:
             log(f"  ! [STRAT] opposite-direction position detected on {self.coin} (szi={szi}); skipping step")
@@ -465,6 +474,15 @@ class Strategy:
 
     # -- decision --------------------------------------------------------------
     def step(self, price: float, signal: str | None = None) -> None:
+        if (
+            isinstance(price, bool)
+            or not isinstance(price, (int, float))
+            or not math.isfinite(float(price))
+            or float(price) <= 0.0
+        ):
+            if not self.replay_mode:
+                log("  ! [STRAT] invalid price — deferring step")
+            return
         held = self.s["qty"]
         d = self.p.entry_discount_pct / 100
         if held <= 1e-12:

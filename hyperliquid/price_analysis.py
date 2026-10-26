@@ -42,10 +42,29 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
                            min_consecutive_blocks=3, noise_tolerance=2,
                            min_points_per_window=MIN_POINTS_PER_WINDOW):
     """Port priceAnalysis.detect_long_term_trend with gap/density robustness."""
-    timestamps = np.asarray(timestamps, dtype=float)
-    prices = np.asarray(prices, dtype=float)
-    if len(timestamps) < 2:
+    if timestamps is None or prices is None:
         return None
+    raw_ts = list(timestamps)
+    raw_px = list(prices)
+    if len(raw_ts) != len(raw_px) or len(raw_ts) < 2:
+        return None
+    clean_ts: list[float] = []
+    clean_px: list[float] = []
+    for t_item, p_item in zip(raw_ts, raw_px):
+        if isinstance(t_item, bool) or isinstance(p_item, bool):
+            continue
+        try:
+            tf = float(t_item)
+            pf = float(p_item)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(tf) and tf > 0.0 and math.isfinite(pf) and pf > 0.0:
+            clean_ts.append(tf)
+            clean_px.append(pf)
+    if len(clean_ts) < 2:
+        return None
+    timestamps = np.asarray(clean_ts, dtype=float)
+    prices = np.asarray(clean_px, dtype=float)
 
     t_end, t_first = timestamps[-1], timestamps[0]
     window_sec = window_hours * 3600.0
@@ -58,10 +77,12 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
             return None, (lo, hi)
         x, y = timestamps[lo:hi], prices[lo:hi]
         s = _fast_linear_slope_1d(x, y)
+        if not math.isfinite(s):
+            return None, (lo, hi)
         return s * 3600.0, (lo, hi)
 
     cur, cur_idx = slope_h(t_end - window_sec, t_end + 1.0)
-    if cur is None:
+    if cur is None or not math.isfinite(cur):
         return None
     current_sign = np.sign(cur) or 1.0
 
@@ -112,12 +133,14 @@ def analyze(client, coin: str) -> dict | None:
     for c in candles or []:
         if not isinstance(c, dict) or c.get("t") is None or c.get("c") is None:
             continue
+        if isinstance(c.get("t"), bool) or isinstance(c.get("c"), bool):
+            continue
         try:
             t_s = float(c["t"]) / 1000.0
             c_v = float(c["c"])
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
-        if math.isfinite(t_s) and math.isfinite(c_v) and c_v > 0:
+        if math.isfinite(t_s) and t_s > 0 and math.isfinite(c_v) and c_v > 0:
             pts.append((t_s, c_v))
     if len(pts) < window_hours:
         return None

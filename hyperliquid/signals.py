@@ -43,11 +43,11 @@ def _builtin_trend(client, coin: str) -> dict:
     candles = client.candles(coin, "1h", lookback_hours=slow + 6)
     closes: list[float] = []
     for c in candles or []:
-        if not isinstance(c, dict) or "c" not in c:
+        if not isinstance(c, dict) or "c" not in c or isinstance(c.get("c"), bool):
             continue
         try:
             v = float(c["c"])
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if math.isfinite(v) and v > 0:
             closes.append(v)

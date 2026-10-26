@@ -40,18 +40,31 @@ def funding_at(fund: list[tuple[int, float]] | None, t_ms: int) -> float:
     Automatically normalises Unix-second timestamps (< 1e10) to milliseconds so
     both direct replay callers (ms) and walk-forward evaluation contexts (s) match.
     """
-    if not fund:
+    if not fund or isinstance(t_ms, bool):
         return 0.0
-    if 0 < t_ms < 10_000_000_000 and fund[0][0] >= 10_000_000_000:
-        t_ms = t_ms * 1000
+    try:
+        t_val = float(t_ms)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not math.isfinite(t_val):
+        return 0.0
+    if 0 < t_val < 10_000_000_000 and fund[0][0] >= 10_000_000_000:
+        t_val = t_val * 1000
     lo, hi = 0, len(fund)
     while lo < hi:
         mid = (lo + hi) // 2
-        if fund[mid][0] <= t_ms:
+        if fund[mid][0] <= t_val:
             lo = mid + 1
         else:
             hi = mid
-    return fund[lo - 1][1] if lo > 0 else (fund[0][1] if fund else 0.0)
+    raw_rate = fund[lo - 1][1] if lo > 0 else (fund[0][1] if fund else 0.0)
+    if raw_rate is None or isinstance(raw_rate, bool):
+        return 0.0
+    try:
+        r_f = float(raw_rate)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return r_f if math.isfinite(r_f) else 0.0
 
 
 def run_replay(

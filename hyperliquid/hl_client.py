@@ -41,9 +41,12 @@ EXCHANGE_TIMEOUT_SECONDS = 30.0
 
 def _round_px(px: float, sz_decimals: int, is_perp: bool = True) -> float:
     """Round an HL price to 5 significant figures and at most (6/8 - szDecimals) decimals."""
+    if isinstance(px, bool) or isinstance(sz_decimals, bool):
+        raise ValueError("px and sz_decimals must not be boolean")
+    px = float(px)
     if not math.isfinite(px) or px <= 0:
         return px
-    max_dec = (6 if is_perp else 8) - sz_decimals
+    max_dec = (6 if is_perp else 8) - int(sz_decimals)
     px = float(f"{px:.5g}")           # five significant figures
     return round(px, max(max_dec, 0))
 
@@ -150,7 +153,10 @@ class HLClient:
         try:
             mids = self.info.all_mids()
             v = mids.get(coin)
-            return float(v) if v is not None else None
+            if v is None or isinstance(v, bool):
+                return None
+            px = float(v)
+            return px if math.isfinite(px) and px > 0.0 else None
         except Exception as e:  # noqa: BLE001
             log(f"  ! mid({coin}) failed: {e}")
             return None
@@ -168,7 +174,15 @@ class HLClient:
         for ap in self._user_state().get("assetPositions", []):
             p = ap.get("position", {})
             if p.get("coin") == coin:
-                return float(p.get("szi") or 0), float(p.get("entryPx") or 0)
+                raw_szi = p.get("szi")
+                raw_entry = p.get("entryPx")
+                if isinstance(raw_szi, bool) or isinstance(raw_entry, bool):
+                    raise HLError(f"Invalid boolean position state for {coin}")
+                szi = float(raw_szi or 0.0)
+                entry = float(raw_entry or 0.0)
+                if not (math.isfinite(szi) and math.isfinite(entry)) or entry < 0.0:
+                    raise HLError(f"Invalid non-finite position state for {coin}")
+                return szi, entry
         return 0.0, 0.0
 
     def position(self, coin: str) -> tuple[float, float]:
@@ -184,7 +198,11 @@ class HLClient:
 
     def withdrawable(self) -> float:
         try:
-            return float(self._user_state().get("withdrawable") or 0)
+            raw = self._user_state().get("withdrawable")
+            if raw is None or isinstance(raw, bool):
+                return 0.0
+            val = float(raw)
+            return val if math.isfinite(val) and val >= 0.0 else 0.0
         except Exception:  # noqa: BLE001
             return 0.0
 
@@ -227,7 +245,10 @@ class HLClient:
         """Return the spot price for an @index pair, e.g. @107 = HYPE/USDC."""
         try:
             v = self.info.all_mids().get(pair)
-            return float(v) if v is not None else None
+            if v is None or isinstance(v, bool):
+                return None
+            px = float(v)
+            return px if math.isfinite(px) and px > 0.0 else None
         except Exception as e:  # noqa: BLE001
             log(f"  ! spot_mid({pair}) failed: {e}")
             return None
@@ -238,7 +259,13 @@ class HLClient:
             raise HLError("HL_ACCOUNT_ADDRESS missing")
         for b in self.info.spot_user_state(self.address).get("balances", []):
             if b.get("coin") == token:
-                return float(b.get("total") or 0)
+                raw_tot = b.get("total")
+                if isinstance(raw_tot, bool):
+                    raise HLError(f"Invalid boolean spot balance for {token}")
+                tot = float(raw_tot or 0.0)
+                if not math.isfinite(tot) or tot < 0.0:
+                    raise HLError(f"Invalid non-finite spot balance for {token}")
+                return tot
         return 0.0
 
     def spot_balance(self, token: str) -> float:
@@ -256,7 +283,11 @@ class HLClient:
             meta, ctxs = self.info.meta_and_asset_ctxs()
             for i, a in enumerate(meta["universe"]):
                 if a["name"] == coin:
-                    return float(ctxs[i].get("funding") or 0)
+                    raw_f = ctxs[i].get("funding")
+                    if isinstance(raw_f, bool):
+                        return None
+                    rate = float(raw_f or 0.0)
+                    return rate if math.isfinite(rate) else None
         except Exception as e:  # noqa: BLE001
             log(f"  ! funding_rate({coin}) failed: {e}")
         return None
