@@ -626,10 +626,18 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                     )
                     preferred = sym_meta.get("preferred_source")
                     if isinstance(preferred, dict):
-                        self.symbol_preferred_source = dict(preferred)
+                        self.symbol_preferred_source = {
+                            str(k): str(v)
+                            for k, v in preferred.items()
+                            if isinstance(k, str) and isinstance(v, str) and v.strip()
+                        }
                     seen_bases = {get_base_symbol(symbol) for symbol in self.active_symbols}
                     raw_active = sym_meta.get("active_symbols")
-                    active_symbols = list(raw_active) if isinstance(raw_active, list) else []
+                    active_symbols = (
+                        [s for s in raw_active if isinstance(s, str) and s.strip()]
+                        if isinstance(raw_active, list)
+                        else []
+                    )
                     raw_items = data.get("items")
                     items_map = raw_items if isinstance(raw_items, dict) else {}
                     recovered_symbols = [

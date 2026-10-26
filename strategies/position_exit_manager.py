@@ -138,6 +138,17 @@ class PositionSnapshot(PriceGeometrySnapshot):
     sma_value: Optional[float] = None
     window_move_pct: Optional[float] = None
 
+    def __post_init__(self) -> None:
+        for attr in ("current_price", "avg_buy_price"):
+            val = getattr(self, attr, None)
+            if isinstance(val, str):
+                try:
+                    f = float(val)
+                    if math.isfinite(f):
+                        setattr(self, attr, f)
+                except (TypeError, ValueError):
+                    pass
+
     @property
     def price_change_ratio(self) -> float:
         """Normalized price change relative to cost: (current - buy) / buy."""
@@ -237,6 +248,17 @@ class ReentrySnapshot(PriceGeometrySnapshot):
     trend_down: bool = False
     vol_1h: float = 0.0  # Hourly realized volatility as decimal ratio (e.g. 0.02 for 2.0%)
     vol_source: str = "default"
+
+    def __post_init__(self) -> None:
+        for attr in ("current_price", "last_sell_price", "post_sell_peak", "post_sell_trough"):
+            val = getattr(self, attr, None)
+            if isinstance(val, str):
+                try:
+                    f = float(val)
+                    if math.isfinite(f):
+                        setattr(self, attr, f)
+                except (TypeError, ValueError):
+                    pass
 
     @property
     def sale_drop_ratio(self) -> float:
@@ -383,8 +405,17 @@ class PositionExitManager:
 
     def bind_state(self, store: Dict[str, Any]) -> None:
         """Bind durable lifecycle dicts to an external persisted state store."""
+        if not isinstance(store, dict):
+            return
         for key in PERSISTED_EXIT_STATE_KEYS:
-            setattr(self, key, store.setdefault(key, {}))
+            sub = store.get(key)
+            if not isinstance(sub, dict):
+                sub = {}
+                store[key] = sub
+            else:
+                for sym_k in [k for k, v in sub.items() if not isinstance(v, dict)]:
+                    sub.pop(sym_k, None)
+            setattr(self, key, sub)
 
     def clear_state(self, symbol: Optional[str] = None) -> None:
         """Clear tracking state for a single symbol or all symbols."""
@@ -461,7 +492,7 @@ class PositionExitManager:
 
     def record_hard_tp(self, symbol: str, timestamp: Optional[float] = None) -> None:
         """Record successful execution of a Hard-TP order to arm cooldown."""
-        self.hard_tp_last[symbol] = timestamp if timestamp is not None else time.time()
+        self.hard_tp_last[symbol] = _resolve_now_s(timestamp)
 
     # -------------------------------------------------------------------------
     # Stop-Loss: Volatility-Scaled Disaster Buffer (Priority 1)
@@ -960,7 +991,15 @@ class PositionExitManager:
             and self.config.hard_tp_pct > 0
             and snapshot.in_tp_territory(self.config.hard_tp_pct, self.config.are_close_tolerance_pct)
         ):
-            last_hard = self.hard_tp_last.get(symbol, 0.0)
+            raw_last_hard = self.hard_tp_last.get(symbol, 0.0)
+            try:
+                last_hard = (
+                    0.0
+                    if raw_last_hard is None or isinstance(raw_last_hard, bool)
+                    else float(raw_last_hard)
+                )
+            except (TypeError, ValueError, OverflowError):
+                last_hard = float("nan")
             if not math.isfinite(last_hard) or last_hard > now:
                 last_hard = 0.0
                 self.hard_tp_last.pop(symbol, None)

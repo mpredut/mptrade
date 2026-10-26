@@ -1834,4 +1834,52 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     t212_prov = T212Provider(client=t212_cli)
     assert t212_prov.free_balance("NVDA_US_EQ") == 2.0
 
+    # 7. PositionExitManager, PairCoordinator.from_state, and PriceChecker edge cases
+    import math
+    from strategies.position_exit_manager import (
+        PositionExitConfig,
+        PositionExitManager,
+        PositionSnapshot,
+        ReentrySnapshot,
+    )
+    from strategies.rtrade_pair import PairCoordinator
+    from market_monitor.pricechecker import PriceChecker
+
+    snap = PositionSnapshot(symbol="BTCUSDC", current_price="110.0", avg_buy_price="100.0")
+    assert snap.is_valid_price is True
+    assert math.isclose(snap.gain_ratio, 0.10)
+
+    rsnap = ReentrySnapshot(symbol="BTCUSDC", current_price="95.0", last_sell_price="100.0")
+    assert rsnap.is_valid_price is True
+    assert math.isclose(rsnap.sale_drop_ratio, 0.05)
+
+    pem = PositionExitManager(config=PositionExitConfig(hard_tp_enabled=True, hard_tp_pct=0.05, hard_tp_frac=0.5))
+    corrupted_store = {
+        "sl_bounce_state": None,
+        "sl_episode_state": "invalid",
+        "tp_ride_state": {"BTCUSDC": "not_a_dict"},
+        "reentry_state": {"BTCUSDC": None},
+    }
+    pem.bind_state(corrupted_store)
+    assert isinstance(pem.sl_bounce_state, dict)
+    assert "BTCUSDC" not in pem.tp_ride_state
+    pem.record_hard_tp("BTCUSDC", timestamp="invalid")
+    pem.hard_tp_last["BTCUSDC"] = "not_a_float"
+    dec = pem.evaluate_take_profit(snap)
+    assert dec.should_exit is True
+
+    with pytest.raises(ValueError, match="tickets"):
+        PairCoordinator.from_state(
+            MagicMock(),
+            MagicMock(step_interval_sec=1.0),
+            {"pair_id": "p1", "qty": 1.0, "start_side": "BUY", "phase": "paired", "tickets": ["not_a_dict"]},
+        )
+
+    checker_cache = MagicMock()
+    checker_cache.symbol_added_time = None
+    checker = PriceChecker(checker_cache, config={"default": None, "dynamic": "bad"})
+    assert isinstance(checker.config["default"], dict)
+    assert checker._is_dynamic_symbol("BTC") is False
+
+
 

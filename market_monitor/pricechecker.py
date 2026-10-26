@@ -108,10 +108,11 @@ class PriceChecker:
         # Use market_alerts.conf configuration, including per_coin, when supplied;
         # otherwise retain the legacy hardcoded defaults.
         self.config = copy.deepcopy(PRICE_ALERT_CONFIG)
-        if config:
+        if isinstance(config, dict):
             for key, value in config.items():
-                if key in ("default", "dynamic") and isinstance(value, dict):
-                    self.config[key].update(copy.deepcopy(value))
+                if key in ("default", "dynamic"):
+                    if isinstance(value, dict):
+                        self.config[key].update(copy.deepcopy(value))
                 else:
                     self.config[key] = copy.deepcopy(value)
 
@@ -276,6 +277,8 @@ class PriceChecker:
 
     def _is_dynamic_symbol(self, symbol: str) -> bool:
         symbol_added_time = getattr(self.cachePriceAll, "symbol_added_time", {})
+        if not isinstance(symbol_added_time, dict):
+            return False
         return bool(symbol_added_time.get(symbol))
 
     def _get_thresholds_for_symbol(self, symbol: str) -> Dict:

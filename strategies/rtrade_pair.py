@@ -370,7 +370,7 @@ class PairCoordinator:
     def from_state(cls, venue, policy, state, *,
                    clock=time.monotonic, sleeper=time.sleep):
         required = {"pair_id", "qty", "start_side", "phase", "tickets"}
-        if not required.issubset(state or {}):
+        if not isinstance(state, dict) or not required.issubset(state):
             raise ValueError("incomplete rtrade checkpoint")
         obj = cls(venue, state["qty"], policy, start_side=state["start_side"],
                   clock=clock, sleeper=sleeper)
@@ -396,11 +396,28 @@ class PairCoordinator:
                 raise ValueError("invalid rtrade checkpoint first_fill_elapsed_sec")
             obj.first_fill_at = obj.started_at + max(0.0, float(ff_elapsed))
         obj.first_fill_side = state.get("first_fill_side")
-        obj.tickets = [OrderTicket(**ticket) for ticket in state.get("tickets", [])]
-        obj.snapshots = {
-            str(order_id): OrderSnapshot(**snapshot)
-            for order_id, snapshot in state.get("snapshots", {}).items()
-        }
+        raw_tickets = state.get("tickets")
+        if not isinstance(raw_tickets, list):
+            raise ValueError("invalid rtrade checkpoint tickets")
+        try:
+            obj.tickets = [
+                OrderTicket(**ticket) if isinstance(ticket, dict) else (_ for _ in ()).throw(TypeError("ticket not dict"))
+                for ticket in raw_tickets
+            ]
+        except TypeError as exc:
+            raise ValueError("invalid rtrade checkpoint tickets") from exc
+        raw_snapshots = state.get("snapshots")
+        if raw_snapshots is None:
+            raw_snapshots = {}
+        elif not isinstance(raw_snapshots, dict):
+            raise ValueError("invalid rtrade checkpoint snapshots")
+        try:
+            obj.snapshots = {
+                str(order_id): OrderSnapshot(**snapshot) if isinstance(snapshot, dict) else (_ for _ in ()).throw(TypeError("snapshot not dict"))
+                for order_id, snapshot in raw_snapshots.items()
+            }
+        except TypeError as exc:
+            raise ValueError("invalid rtrade checkpoint snapshots") from exc
         stop_order_id = state.get("stop_order_id")
         obj.stop_ticket = (
             next(
@@ -415,7 +432,11 @@ class PairCoordinator:
             # Backward-compatible adoption of checkpoints written before the
             # explicit stop-order field existed: the market exit was appended last.
             obj.stop_ticket = obj.tickets[-1]
-        stored_limit_revisions = state.get("limit_revisions") or {}
+        stored_limit_revisions = state.get("limit_revisions")
+        if stored_limit_revisions is None:
+            stored_limit_revisions = {}
+        elif not isinstance(stored_limit_revisions, dict):
+            raise ValueError("invalid rtrade checkpoint limit_revisions")
         obj.limit_revisions = {}
         for side in ("BUY", "SELL"):
             raw_rev = stored_limit_revisions.get(side, 0)
