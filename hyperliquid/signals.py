@@ -81,7 +81,7 @@ def _file_signal(path: str) -> dict:
             return {**NEUTRAL, "source": "file(expirat)"}
         try:
             ts_f = float(ts)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return {**NEUTRAL, "source": "file(expirat)"}
         age = time.time() - ts_f
         if not math.isfinite(ts_f) or age > max_age or age < -60.0:
@@ -95,7 +95,7 @@ def _file_signal(path: str) -> dict:
     else:
         try:
             conf = float(raw_conf or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             conf = 0.0
     if not math.isfinite(conf):
         conf = 0.0

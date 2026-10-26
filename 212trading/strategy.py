@@ -103,11 +103,12 @@ def generate_tp_ladder(
     try:
         min_f = float(min_pct)
         max_f = float(max_pct)
-        steps_i = int(steps)
+        steps_f = float(steps)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"invalid generate_tp_ladder parameters: {exc}") from exc
-    if not (math.isfinite(min_f) and math.isfinite(max_f)):
-        raise ValueError("generate_tp_ladder requires finite min_pct and max_pct")
+    if not (math.isfinite(min_f) and math.isfinite(max_f) and math.isfinite(steps_f) and steps_f.is_integer()):
+        raise ValueError("generate_tp_ladder requires finite min_pct, max_pct, and integer steps")
+    steps_i = int(steps_f)
     if steps_i < 1:
         return []
     if steps_i == 1:
@@ -1130,7 +1131,7 @@ class Strategy:
             return None
         return {
             str(o.get("id")) for o in orders
-            if isinstance(o, dict) and self._active_order_identity(o)[0] == self.ticker.upper()
+            if isinstance(o, dict) and o.get("id") is not None and self._active_order_identity(o)[0] == self.ticker.upper()
         }
 
     def _tracked_order_status(self, order: dict, cache: dict[str, object]):
@@ -1332,7 +1333,12 @@ class Strategy:
                         self.s.setdefault("tp_sold_levels", []).append(o["level"])
                     self._remove_order(o)
                 elif status == "not_found":
-                    misses = int(o.get("lookup_misses") or 0) + 1
+                    raw_m = o.get("lookup_misses")
+                    try:
+                        m_base = 0 if (raw_m is None or isinstance(raw_m, bool)) else max(0, int(float(raw_m)))
+                    except (TypeError, ValueError, OverflowError):
+                        m_base = 0
+                    misses = m_base + 1
                     o["lookup_misses"] = misses
                     max_misses = 2 if o.get("cancel_requested") else 3
                     if misses >= max_misses:

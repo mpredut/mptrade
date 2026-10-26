@@ -67,16 +67,25 @@ def normalize_closed_candles(
         if any(isinstance(row.get(k), bool) for k in ("t", "T", "o", "h", "l", "c")):
             continue
         try:
-            open_time = int(row["t"])
-            close_time = int(row["T"])
+            t_f = float(row["t"])
+            T_f = float(row["T"])
             o_val = float(row["o"])
             h_val = float(row["h"])
             l_val = float(row["l"])
             c_val = float(row["c"])
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
-        if not (math.isfinite(o_val) and math.isfinite(h_val) and math.isfinite(l_val) and math.isfinite(c_val)):
+        if not (
+            math.isfinite(t_f)
+            and math.isfinite(T_f)
+            and math.isfinite(o_val)
+            and math.isfinite(h_val)
+            and math.isfinite(l_val)
+            and math.isfinite(c_val)
+        ):
             continue
+        open_time = int(t_f)
+        close_time = int(T_f)
         if open_time <= 0 or close_time < open_time:
             continue
         if o_val <= 0 or h_val <= 0 or l_val <= 0 or c_val <= 0:
@@ -120,17 +129,37 @@ def fetch_ohlc_candles(
     else:
         if isinstance(interval, bool):
             raise ValueError(f"unsupported Hyperliquid interval: {interval!r}")
-        interval_min = int(interval)
+        try:
+            interval_f = float(interval)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"unsupported Hyperliquid interval: {interval!r}") from exc
+        if not math.isfinite(interval_f) or not interval_f.is_integer():
+            raise ValueError(f"unsupported Hyperliquid interval: {interval!r}")
+        interval_min = int(interval_f)
         interval_str = INTERVALS.get(interval_min)
         if interval_str is None:
             raise ValueError(f"unsupported Hyperliquid interval: {interval} minutes")
 
     now_ms = int(time.time() * 1000)
-    final_end = end_ms if end_ms is not None else now_ms
+    if end_ms is not None:
+        if isinstance(end_ms, bool) or not isinstance(end_ms, (int, float)) or not math.isfinite(float(end_ms)):
+            raise ValueError(f"invalid end_ms: {end_ms!r}")
+        final_end = int(end_ms)
+    else:
+        final_end = now_ms
     if start_ms is not None:
-        final_start = start_ms
+        if isinstance(start_ms, bool) or not isinstance(start_ms, (int, float)) or not math.isfinite(float(start_ms)):
+            raise ValueError(f"invalid start_ms: {start_ms!r}")
+        final_start = int(start_ms)
     elif lookback_hours is not None:
-        final_start = final_end - lookback_hours * 3600 * 1000
+        if (
+            isinstance(lookback_hours, bool)
+            or not isinstance(lookback_hours, (int, float))
+            or not math.isfinite(float(lookback_hours))
+            or float(lookback_hours) <= 0
+        ):
+            raise ValueError(f"invalid lookback_hours: {lookback_hours!r}")
+        final_start = int(final_end - float(lookback_hours) * 3600 * 1000)
     else:
         final_start = final_end - 30 * 24 * 3600 * 1000
 

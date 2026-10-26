@@ -26,10 +26,12 @@ from offline.backtests.datasets import drop_incomplete_last_bar, validate_datase
 
 def parse_interval_minutes(value: str) -> int:
     """Parse interval strings like '5m', '1h', '1d' into integer minutes."""
+    if not isinstance(value, str) or len(value) < 2:
+        raise ValueError(f"invalid Yahoo interval: {value!r}; examples: 5m, 1h, 1d")
     units = {"m": 1, "h": 60, "d": 1440}
     try:
         minutes = int(value[:-1]) * units[value[-1].lower()]
-    except (KeyError, ValueError, IndexError) as exc:
+    except (KeyError, ValueError, IndexError, TypeError) as exc:
         raise ValueError(f"invalid Yahoo interval: {value!r}; examples: 5m, 1h, 1d") from exc
     if minutes <= 0:
         raise ValueError("the interval must be positive")
@@ -92,10 +94,13 @@ def fetch_yahoo_candles(
         if None in values or any(isinstance(v, bool) for v in values):
             continue
         try:
-            ts_i = int(timestamp)
+            ts_f = float(timestamp)
             o_f, h_f, l_f, c_f = float(values[0]), float(values[1]), float(values[2]), float(values[3])
         except (TypeError, ValueError, OverflowError):
             continue
+        if not math.isfinite(ts_f):
+            continue
+        ts_i = int(ts_f)
         if ts_i <= 0 or not all(math.isfinite(v) and v > 0 for v in (o_f, h_f, l_f, c_f)):
             continue
         records.append({
@@ -124,7 +129,7 @@ _UA = {"User-Agent": "Mozilla/5.0 (ipo-watch)"}
 
 def t212_to_yahoo(t212_ticker: str) -> str:
     """Convert NVDA_US_EQ to NVDA for Yahoo price lookup."""
-    return t212_ticker.split("_")[0]
+    return str(t212_ticker or "").split("_")[0]
 
 
 def _chart(sym: str, rng: str = "1d", interval: str = "5m"):

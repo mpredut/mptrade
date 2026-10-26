@@ -103,27 +103,52 @@ class StratParams:
 
     @classmethod
     def from_dict(cls, d: dict, direction: str | None = None) -> "StratParams":
+        if not isinstance(d, dict):
+            raise ValueError("StratParams.from_dict requires a dict")
         dir_val = str(direction or d.get("direction", "long") or "long").strip().lower()
         if dir_val not in ("long", "short"):
             raise ValueError(f"Invalid HL_DIRECTION: {dir_val!r}")
+
+        def _f(keys: tuple[str, ...], default: float) -> float:
+            raw = default
+            for k in keys:
+                if k in d and d[k] is not None:
+                    raw = d[k]
+                    break
+            if isinstance(raw, bool):
+                raise ValueError(f"boolean not allowed for {keys[0]}")
+            try:
+                val = float(raw)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"invalid float for {keys[0]}: {raw!r}") from exc
+            if not math.isfinite(val):
+                raise ValueError(f"non-finite float for {keys[0]}: {raw!r}")
+            return val
+
+        def _i(keys: tuple[str, ...], default: int) -> int:
+            val_f = _f(keys, float(default))
+            if not val_f.is_integer():
+                raise ValueError(f"non-integer value for {keys[0]}: {val_f!r}")
+            return int(val_f)
+
         return cls(
-            currency=str(d.get("currency", "USDC")),
+            currency=str(d.get("currency", "USDC") or "USDC"),
             direction=dir_val,
-            entry_amount=float(d.get("entry", d.get("entry_amount", 50.0))),
-            entry_discount_pct=float(d.get("disc", d.get("entry_discount_pct", 0.2))),
-            dca_amount=float(d.get("dca", d.get("dca_amount", 30.0))),
-            dca_drop_pct=float(d.get("drop", d.get("dca_drop_pct", 2.0))),
-            check_minutes=float(d.get("check_minutes", 60.0)),
-            takeprofit_pct=float(d.get("tp", d.get("takeprofit_pct", 1.0))),
-            max_budget=float(d.get("budget", d.get("max_budget", 500.0))),
-            max_dca_buys=int(d.get("maxdca", d.get("max_dca_buys", 10))),
+            entry_amount=_f(("entry", "entry_amount"), 50.0),
+            entry_discount_pct=_f(("disc", "entry_discount_pct"), 0.2),
+            dca_amount=_f(("dca", "dca_amount"), 30.0),
+            dca_drop_pct=_f(("drop", "dca_drop_pct"), 2.0),
+            check_minutes=_f(("check_minutes",), 60.0),
+            takeprofit_pct=_f(("tp", "takeprofit_pct"), 1.0),
+            max_budget=_f(("budget", "max_budget"), 500.0),
+            max_dca_buys=_i(("maxdca", "max_dca_buys"), 10),
             enable_takeprofit=bool(d.get("enable_takeprofit", True)),
-            order_ttl_min=float(d.get("order_ttl_min", 60.0)),
+            order_ttl_min=_f(("order_ttl_min",), 60.0),
             signal_gate=bool(d.get("signal_gate", False)),
-            stop_loss_pct=float(d.get("sl", d.get("stop_loss_pct", 0.0))),
-            reentry_tolerance_pct=float(d.get("reentry_tolerance_pct", 0.0)),
-            fee_pct=float(d.get("fee", d.get("fee_pct", HL_FEE_PCT))),
-            sz_decimals=int(d.get("sz_decimals", 4)),
+            stop_loss_pct=_f(("sl", "stop_loss_pct"), 0.0),
+            reentry_tolerance_pct=_f(("reentry_tolerance_pct",), 0.0),
+            fee_pct=_f(("fee", "fee_pct"), HL_FEE_PCT),
+            sz_decimals=_i(("sz_decimals",), 4),
         )
 
 
@@ -270,7 +295,18 @@ class Strategy:
 
     # -- placement -------------------------------------------------------------
     def _place(self, role: str, sz: float, px: float, kind: str, amount: float = 0.0) -> None:
-        sz = round(sz, self.sz_dec)
+        if (
+            isinstance(sz, bool)
+            or isinstance(px, bool)
+            or not isinstance(sz, (int, float))
+            or not isinstance(px, (int, float))
+            or not (math.isfinite(float(sz)) and math.isfinite(float(px)) and float(px) > 0.0)
+        ):
+            if not self.replay_mode:
+                log("  ! [STRAT] invalid sz/px — sar")
+            return
+        sz = round(float(sz), self.sz_dec)
+        px = float(px)
         if sz <= 0:
             if not self.replay_mode:
                 log("  ! [STRAT] sz 0 — sar")
@@ -351,11 +387,19 @@ class Strategy:
         orders_fn = getattr(self.client, "open_orders_strict", None) or self.client.open_orders
         orders_ok = True
         try:
-            active = {str(o.get("oid")) for o in orders_fn(self.coin)}
+            active = {
+                str(o.get("oid"))
+                for o in (orders_fn(self.coin) or [])
+                if isinstance(o, dict) and o.get("oid") is not None
+            }
         except Exception as e:
             orders_ok = False
             log(f"  [STRAT] open_orders unavailable ({e}); preserving tracked order state")
-            active = {str(o.get("oid")) for o in self.s["orders"]}
+            active = {
+                str(o.get("oid"))
+                for o in self.s["orders"]
+                if isinstance(o, dict) and o.get("oid") is not None
+            }
 
         prev = self.s["qty"]
         prev_cost = float(self.s.get("cost", 0.0) or 0.0)

@@ -9082,5 +9082,80 @@ def test_iteration68_kraken_and_hyperliquid_client_safety():
     assert HLClient.candles(dummy_hl, "HYPE", lookback_hours=-5) == []
 
 
+def test_iteration69_hyperliquid_and_t212_strategy_market_data_safety(tmp_path):
+    """Iteration 69: hyperliquid market_data / signals / strategy and 212trading market_data / strategy safety."""
+    import importlib.util
+    import json
+    import os
+    import sys
+    import pytest
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    hl_dir = os.path.join(repo_root, "hyperliquid")
+    t212_dir = os.path.join(repo_root, "212trading")
+    for p in (hl_dir, t212_dir):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+
+    def _load_mod(name: str, path: str, mod_dir: str):
+        if mod_dir in sys.path:
+            sys.path.remove(mod_dir)
+        sys.path.insert(0, mod_dir)
+        for m in ("market_data", "common", "ipo_common", "ipo_notify", "t212_client", "order_rollback"):
+            sys.modules.pop(m, None)
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    hl_md = _load_mod("_hl_market_data_69", os.path.join(hl_dir, "market_data.py"), hl_dir)
+    hl_sig = _load_mod("_hl_signals_69", os.path.join(hl_dir, "signals.py"), hl_dir)
+    hl_strat = _load_mod("_hl_strategy_69", os.path.join(hl_dir, "strategy.py"), hl_dir)
+    t212_md = _load_mod("_t212_market_data_69", os.path.join(t212_dir, "market_data.py"), t212_dir)
+    t212_strat = _load_mod("_t212_strategy_69", os.path.join(t212_dir, "strategy.py"), t212_dir)
+
+    # 1. hyperliquid.market_data: normalize_closed_candles float-string timestamps & fetch_ohlc_candles interval/lookback checks
+    rows = [{"t": "1700000000000.0", "T": "1700003599000.0", "o": "10", "h": "12", "l": "9", "c": "11"}]
+    norm = hl_md.normalize_closed_candles(rows, now_ms=1700005000000)
+    assert len(norm) == 1 and norm[0]["timestamp"] == 1700000000
+    with pytest.raises(ValueError):
+        hl_md.fetch_ohlc_candles("HYPE", interval=15.5)
+    with pytest.raises(ValueError):
+        hl_md.fetch_ohlc_candles("HYPE", interval=60, lookback_hours=True)
+    with pytest.raises(ValueError):
+        hl_md.fetch_ohlc_candles("HYPE", interval=60, lookback_hours=-1)
+
+    # 2. hyperliquid.signals._file_signal: catches OverflowError on huge ts/confidence
+    sig_file = tmp_path / "signal.json"
+    sig_file.write_text(json.dumps({"trend": "up", "confidence": 10**400, "ts": 10**400}), encoding="utf-8")
+    os.environ.setdefault("SIGNAL_MAX_AGE_MIN", "60")
+    res_sig = hl_sig._file_signal(str(sig_file))
+    assert res_sig["trend"] == "neutral"
+
+    # 3. hyperliquid.strategy.StratParams.from_dict & Strategy._place validation
+    with pytest.raises(ValueError):
+        hl_strat.StratParams.from_dict({"entry": True})
+    with pytest.raises(ValueError):
+        hl_strat.StratParams.from_dict({"entry": float("nan")})
+    with pytest.raises(ValueError):
+        hl_strat.StratParams.from_dict({"maxdca": 2.5})
+    sp = hl_strat.StratParams.from_dict({"maxdca": "10.0"})
+    assert sp.max_dca_buys == 10
+    s_inst = hl_strat.Strategy(client=None, coin="HYPE", params=sp, dry_run=True, replay_mode=True)
+    s_inst._place("open", 1.0, -5.0, "ENTRY", 50.0)
+    assert s_inst.s["orders"] == []
+
+    # 4. 212trading.market_data & 212trading.strategy.generate_tp_ladder
+    with pytest.raises(ValueError):
+        t212_md.parse_interval_minutes(None)
+    assert t212_md.t212_to_yahoo(None) == ""
+    with pytest.raises(ValueError):
+        t212_strat.generate_tp_ladder(1.0, 10.0, steps=2.5)
+    ladder = t212_strat.generate_tp_ladder(1.0, 5.0, steps=2.0)
+    assert len(ladder) == 2
+
+
+
 
 
