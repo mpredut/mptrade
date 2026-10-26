@@ -129,22 +129,38 @@ class HLClient:
 
     def sz_decimals(self, coin: str) -> int:
         meta = self._meta().get(coin)
-        if meta and "szDecimals" in meta:
-            return int(meta["szDecimals"])
+        raw_dec = meta.get("szDecimals") if isinstance(meta, dict) else None
+        if raw_dec is not None and not isinstance(raw_dec, bool):
+            try:
+                dec = int(raw_dec)
+                if 0 <= dec <= 18:
+                    return dec
+            except (TypeError, ValueError, OverflowError):
+                pass
         try:
             spot_meta = self.info.spot_meta() if hasattr(self.info, "spot_meta") else {}
             for token in (spot_meta or {}).get("tokens", []):
                 if isinstance(token, dict) and token.get("name") == coin and "szDecimals" in token:
-                    return int(token["szDecimals"])
+                    raw_tdec = token["szDecimals"]
+                    if raw_tdec is not None and not isinstance(raw_tdec, bool):
+                        dec = int(raw_tdec)
+                        if 0 <= dec <= 18:
+                            return dec
         except Exception:  # noqa: BLE001
             pass
         raise HLError(f"Missing size precision metadata for {coin}")
 
     def max_leverage(self, coin: str) -> int:
         meta = self._meta().get(coin)
-        if not meta or "maxLeverage" not in meta:
-            raise HLError(f"Missing leverage metadata for {coin}")
-        return int(meta["maxLeverage"])
+        raw_lev = meta.get("maxLeverage") if isinstance(meta, dict) else None
+        if raw_lev is not None and not isinstance(raw_lev, bool):
+            try:
+                lev = int(raw_lev)
+                if lev > 0:
+                    return lev
+            except (TypeError, ValueError, OverflowError):
+                pass
+        raise HLError(f"Missing leverage metadata for {coin}")
 
     def coin_listed(self, coin: str) -> bool:
         return coin in self._meta()
@@ -307,10 +323,24 @@ class HLClient:
         """Return perpetual account value, used margin, and withdrawable balance."""
         try:
             st = self._user_state()
-            ms = st.get("marginSummary", {})
-            return {"accountValue": float(ms.get("accountValue") or 0),
-                    "totalMarginUsed": float(ms.get("totalMarginUsed") or 0),
-                    "withdrawable": float(st.get("withdrawable") or 0)}
+            ms = st.get("marginSummary", {}) if isinstance(st, dict) else {}
+            if not isinstance(ms, dict):
+                ms = {}
+
+            def _num(raw) -> float:
+                if raw is None or isinstance(raw, bool):
+                    return 0.0
+                try:
+                    val = float(raw)
+                except (TypeError, ValueError, OverflowError):
+                    return 0.0
+                return val if math.isfinite(val) else 0.0
+
+            return {
+                "accountValue": _num(ms.get("accountValue")),
+                "totalMarginUsed": _num(ms.get("totalMarginUsed")),
+                "withdrawable": _num(st.get("withdrawable") if isinstance(st, dict) else 0.0),
+            }
         except Exception:  # noqa: BLE001
             return {}
 
@@ -342,8 +372,20 @@ class HLClient:
         """Place a spot limit or market IOC order; pair is the @index name such as @107."""
         if not self.exchange:
             raise HLError("No agent wallet (HL_SECRET_KEY)")
-        sz = round(sz, sz_decimals)
-        px = _round_px(px, sz_decimals, is_perp=False)
+        if isinstance(sz, bool) or isinstance(px, bool) or isinstance(sz_decimals, bool):
+            return False, None, "invalid boolean order parameter"
+        try:
+            sz_f = float(sz)
+            px_f = float(px)
+            dec_i = max(0, min(int(sz_decimals), 18))
+        except (TypeError, ValueError, OverflowError):
+            return False, None, "invalid numeric order parameter"
+        if not (math.isfinite(sz_f) and sz_f > 0 and math.isfinite(px_f) and px_f > 0):
+            return False, None, "invalid non-positive sz or px"
+        sz = round(sz_f, dec_i)
+        px = _round_px(px_f, dec_i, is_perp=False)
+        if sz <= 0 or px <= 0:
+            return False, None, "rounded sz or px is non-positive"
         order_tif = tif or ("Ioc" if is_market else "Gtc")
         try:
             kwargs = {}
@@ -387,8 +429,20 @@ class HLClient:
         """Place a GTC LIMIT order and return (ok, oid, message)."""
         if not self.exchange:
             raise HLError("No agent wallet (HL_SECRET_KEY) — orders cannot be placed")
-        sz = round(sz, self.sz_decimals(coin))
-        px = _round_px(px, self.sz_decimals(coin))
+        if isinstance(sz, bool) or isinstance(px, bool):
+            return False, None, "invalid boolean order parameter"
+        try:
+            sz_f = float(sz)
+            px_f = float(px)
+        except (TypeError, ValueError, OverflowError):
+            return False, None, "invalid numeric order parameter"
+        if not (math.isfinite(sz_f) and sz_f > 0 and math.isfinite(px_f) and px_f > 0):
+            return False, None, "invalid non-positive sz or px"
+        dec_i = self.sz_decimals(coin)
+        sz = round(sz_f, dec_i)
+        px = _round_px(px_f, dec_i)
+        if sz <= 0 or px <= 0:
+            return False, None, "rounded sz or px is non-positive"
         try:
             res = self.exchange.order(coin, is_buy, sz, px,
                                       {"limit": {"tif": "Gtc"}}, reduce_only=reduce_only)

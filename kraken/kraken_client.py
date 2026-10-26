@@ -209,10 +209,19 @@ class KrakenClient:
         self, pair: str, interval: int,
     ) -> tuple[list, tuple]:
         """Return completed OHLC closes and every corresponding close timestamp."""
-        if isinstance(interval, bool) or int(interval) <= 0:
+        if isinstance(interval, bool) or interval is None:
             raise ValueError("interval must be a positive integer")
-        itv_sec = int(interval) * 60
-        res = self._public("OHLC", {"pair": pair, "interval": int(interval)})
+        try:
+            itv_f = float(interval)
+            if not math.isfinite(itv_f):
+                raise ValueError("interval must be a positive integer")
+            itv_int = int(interval)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("interval must be a positive integer") from exc
+        if itv_int <= 0:
+            raise ValueError("interval must be a positive integer")
+        itv_sec = itv_int * 60
+        res = self._public("OHLC", {"pair": pair, "interval": itv_int})
         key = next((key for key in res if key != "last"), None)
         rows = list(res[key])[:-1] if key and isinstance(res.get(key), list) else []
         closes: list[float] = []
@@ -272,7 +281,7 @@ class KrakenClient:
             raw_dec = info.get("pair_decimals") if isinstance(info, dict) else None
             if raw_dec is not None and not isinstance(raw_dec, bool):
                 dec = int(raw_dec)
-                if dec >= 0:
+                if 0 <= dec <= 18:
                     return dec
         except Exception:  # noqa: BLE001 — conservatively fall back without blocking the order
             pass

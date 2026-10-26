@@ -54,8 +54,13 @@ def _json_safe_value(val: Any) -> Any:
     if isinstance(val, float):
         return val if math.isfinite(val) else None
     if isinstance(val, dict):
-        return {str(k): _json_safe_value(v) for k, v in val.items() if _json_safe_value(v) is not None}
-    if isinstance(val, (list, tuple)):
+        out = {}
+        for k, v in val.items():
+            cleaned = _json_safe_value(v)
+            if cleaned is not None:
+                out[str(k)] = cleaned
+        return out
+    if isinstance(val, (list, tuple, set, frozenset)):
         return [_json_safe_value(v) for v in val]
     return val
 
@@ -109,8 +114,11 @@ class ExecutionAudit:
             if isinstance(raw_ts, bool) or raw_ts is None:
                 ts = time.time()
             else:
-                ts = float(raw_ts)
-                if not math.isfinite(ts) or ts <= 0:
+                try:
+                    ts = float(raw_ts)
+                except (TypeError, ValueError, OverflowError):
+                    ts = time.time()
+                if not math.isfinite(ts) or ts <= 0 or ts >= 32503680000:
                     ts = time.time()
             payload = {
                 "ts": ts,
@@ -124,7 +132,7 @@ class ExecutionAudit:
                 cleaned = _json_safe_value(value)
                 if cleaned is not None:
                     payload[key] = cleaned
-            line = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+            line = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False, default=str)
             os.makedirs(self.directory, exist_ok=True)
             day = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
             path = os.path.join(self.directory, f"execution_audit_{day}.jsonl")

@@ -8396,4 +8396,102 @@ def test_iteration58_binance_trailing_t212_params_and_provider_adapters_safety(m
         strat_mod.StratParams.from_env(base_env)
 
 
+def test_iteration59_base_vwap_audit_kraken_and_hl_client_safety(tmp_path):
+    """Iteration 59: aggregate_fills_by_order_id VWAP dilution, ExecutionAudit clock/set safety, KrakenClient interval, and HLClient metadata/order checks."""
+    from providers.base import MarketDataProvider, PairPrecision, aggregate_fills_by_order_id
+    from providers.execution_audit import ExecutionAudit
+    from kraken.kraken_client import KrakenClient
+
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    orig_sys_path = list(sys.path)
+    saved_mods = {k: sys.modules.get(k) for k in ("common", "hl_client")}
+    try:
+        for k in ("common", "hl_client"):
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import hl_client as hl_mod
+        HLClient = hl_mod.HLClient
+        HLError = hl_mod.HLError
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    # 1. aggregate_fills_by_order_id does not dilute VWAP when a partial fill has price=0
+    fills = [
+        {"orderId": "ord-1", "side": "BUY", "price": 100.0, "qty": 2.0, "timestamp": 1000},
+        {"orderId": "ord-1", "side": "BUY", "price": 0.0, "qty": 2.0, "timestamp": 2000},
+    ]
+    agg = aggregate_fills_by_order_id(fills)
+    assert len(agg) == 1
+    assert agg[0]["price"] == pytest.approx(100.0)
+    assert agg[0]["qty"] == pytest.approx(4.0)
+
+    # 2. MarketDataProvider.round_quantity and round_price clamp negative inputs to 0.0 and clamp large decimals
+    class _DummyProvider(MarketDataProvider):
+        @property
+        def name(self) -> str:
+            return "dummy"
+
+        def get_current_price(self, symbol: str):
+            return 1.0
+
+        def supports_symbol(self, symbol: str) -> bool:
+            return True
+
+        def pair_precision(self, symbol: str):
+            return PairPrecision(price_decimals=50, volume_decimals=50)
+
+    dp = _DummyProvider()
+    assert dp.round_quantity("BTCUSDC", -1.5) == 0.0
+    assert dp.round_price("BTCUSDC", -10.0) == 0.0
+    assert dp.round_quantity("BTCUSDC", 1.23456) > 0.0
+
+    # 3. ExecutionAudit handles out-of-range clock timestamps and set/frozenset fields
+    audit = ExecutionAudit(directory=str(tmp_path), clock=lambda: 1e30)
+    assert audit.record(
+        "submit",
+        intent_id="id-1",
+        venue="binance",
+        symbol="BTCUSDC",
+        tags={"a", "b"},
+        nested={"nan_val": float("nan"), "ok": 1},
+    ) is True
+
+    # 4. KrakenClient.ohlc_closes_with_timestamps rejects inf/nan interval cleanly with ValueError
+    kc = KrakenClient.__new__(KrakenClient)
+    with pytest.raises(ValueError, match="positive integer"):
+        kc.ohlc_closes_with_timestamps("XBTUSD", float("inf"))
+
+    # 5. HLClient metadata and order placement reject boolean/NaN/non-positive inputs
+    hl = HLClient.__new__(HLClient)
+    hl._meta_cache = {"HYPE": {"name": "HYPE", "szDecimals": True, "maxLeverage": False}}
+    hl.info = MagicMock()
+    hl.info.spot_meta.return_value = {"tokens": []}
+    with pytest.raises(HLError):
+        hl.sz_decimals("HYPE")
+    with pytest.raises(HLError):
+        hl.max_leverage("HYPE")
+
+    hl.address = "0x123"
+    hl.info.user_state.return_value = {
+        "marginSummary": {"accountValue": float("nan"), "totalMarginUsed": True},
+        "withdrawable": "inf",
+    }
+    ms = hl.margin_summary()
+    assert ms == {"accountValue": 0.0, "totalMarginUsed": 0.0, "withdrawable": 0.0}
+
+    hl._meta_cache = {"HYPE": {"name": "HYPE", "szDecimals": 2, "maxLeverage": 5}}
+    hl.exchange = MagicMock()
+    ok, oid, msg = hl.place_limit("HYPE", True, float("nan"), 20.0)
+    assert ok is False and oid is None
+    ok2, oid2, msg2 = hl.spot_order("@107", True, 0.00001, 20.0, sz_decimals=2)
+    assert ok2 is False and oid2 is None
+    hl.exchange.order.assert_not_called()
+
+
+
 

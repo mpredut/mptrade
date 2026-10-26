@@ -497,12 +497,14 @@ def aggregate_fills_by_order_id(
             key = (parent_oid, norm["side"])
             px = float(norm["price"] or 0.0)
             qty = float(norm["qty"] or 0.0)
+            priced_qty = qty if (px > 0.0 and qty > 0.0) else 0.0
             ts_val = ts_ms if ts_ms is not None else 0
             if key not in grouped:
                 grouped[key] = {
                     "orderId": parent_oid,
                     "side": norm["side"],
-                    "cost": px * qty,
+                    "cost": px * priced_qty,
+                    "cost_qty": priced_qty,
                     "qty": qty,
                     "fallback_price": px,
                     "timestamp": ts_val,
@@ -510,7 +512,8 @@ def aggregate_fills_by_order_id(
                 out.append(grouped[key])
             else:
                 g = grouped[key]
-                g["cost"] += px * qty
+                g["cost"] += px * priced_qty
+                g["cost_qty"] += priced_qty
                 g["qty"] += qty
                 if px > 0:
                     g["fallback_price"] = px
@@ -522,7 +525,8 @@ def aggregate_fills_by_order_id(
     for item in out:
         if "cost" in item:
             total_qty = item["qty"]
-            vwap = (item["cost"] / total_qty) if total_qty > 0 else item["fallback_price"]
+            cost_qty = item.get("cost_qty", total_qty)
+            vwap = (item["cost"] / cost_qty) if cost_qty > 0 else item["fallback_price"]
             result.append({
                 "orderId": item["orderId"],
                 "side": item["side"],
@@ -650,7 +654,7 @@ class MarketDataProvider(ABC):
             qty_f = float(qty)
         except (TypeError, ValueError, OverflowError):
             return 0.0
-        if not math.isfinite(qty_f):
+        if not math.isfinite(qty_f) or qty_f <= 0.0:
             return 0.0
         try:
             pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
@@ -658,6 +662,7 @@ class MarketDataProvider(ABC):
             if dec_raw is not None and not isinstance(dec_raw, bool):
                 dec = int(dec_raw)
                 if dec >= 0:
+                    dec = min(dec, 18)
                     factor = 10 ** dec
                     return math.floor(qty_f * factor + 1e-12) / factor
         except Exception:
@@ -676,7 +681,7 @@ class MarketDataProvider(ABC):
             price_f = float(price)
         except (TypeError, ValueError, OverflowError):
             return 0.0
-        if not math.isfinite(price_f):
+        if not math.isfinite(price_f) or price_f <= 0.0:
             return 0.0
         try:
             pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
@@ -684,7 +689,7 @@ class MarketDataProvider(ABC):
             if dec_raw is not None and not isinstance(dec_raw, bool):
                 dec = int(dec_raw)
                 if dec >= 0:
-                    return round(price_f, dec)
+                    return round(price_f, min(dec, 18))
         except Exception:
             pass
         return price_f
