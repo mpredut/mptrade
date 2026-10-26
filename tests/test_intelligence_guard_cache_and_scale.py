@@ -7930,4 +7930,137 @@ def test_iteration53_t212_order_manager_hl_shadow_and_intelligence_collectors_na
     assert ma.thread_prune_interval_sec == 10800.0
 
 
+def test_iteration54_triggers_cli_daemon_pricewindow_and_shadow_signals_nan_bool_safety(tmp_path):
+    import json
+    from active_intents import _intent_row
+    from intelligence.cli import inspect_symbol_intelligence, print_intelligence_report
+    from intelligence.daemon import IntelligenceTelemetryDaemon
+    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
+    from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+    from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
+    from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot, NewsHeadline
+    from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
+    from pricewindow import PriceWindow, WindowAnalyzer
+    from shadow_signals import KalmanStateTracker
+
+    # 1. Triggers sanitize bool/NaN/Inf constructor parameters
+    wat = WhaleAccumulationTrigger(
+        min_top_traders_long_pct=True,
+        min_taker_buy_ratio=float("nan"),
+        min_top_traders_short_pct=float("inf"),
+        min_taker_sell_ratio=-1.0,
+    )
+    assert wat.min_top_traders_long_pct == 0.60
+    assert wat.min_taker_buy_ratio == 1.25
+    assert wat.min_top_traders_short_pct == 0.60
+    assert wat.min_taker_sell_ratio == 0.80
+
+    lgt = LinearGradientTrigger(strength_threshold=True)
+    assert lgt.strength_threshold == 2.0
+    lgt_nan = LinearGradientTrigger(strength_threshold=float("nan"))
+    assert lgt_nan.strength_threshold == 2.0
+
+    mbt = MarketBreadthTrigger(
+        washout_advance_threshold=True,
+        washout_median_threshold=float("nan"),
+        blowoff_advance_threshold=1.5,
+        blowoff_median_threshold=float("inf"),
+    )
+    assert mbt.washout_advance_threshold == 0.15
+    assert mbt.washout_median_threshold == -4.0
+    assert mbt.blowoff_advance_threshold == 0.88
+    assert mbt.blowoff_median_threshold == 6.0
+
+    # 2. NewsFeedCollector._aggregate prunes corrupted/NaN entries safely
+    nfc = NewsFeedCollector(history_file=str(tmp_path / "news_feed_collect.json"))
+    h = NewsHeadline(
+        title="Breaking macro test headline",
+        source="Test",
+        pub_date="",
+        url="",
+        matched_keywords=("war",),
+        is_high_severity=True,
+    )
+    nfc._aggregated_pool["corrupted"] = (float("nan"), h)
+    snap = NewsFeedSnapshot(
+        headlines=(h,),
+        total_fetched=1,
+        high_severity_count=1,
+        has_critical_shock_keywords=False,
+        ts=1700000000.0,
+    )
+    agg = nfc._aggregate(snap, 1700000000.0)
+    assert agg.total_fetched == 1
+    assert "corrupted" not in nfc._aggregated_pool
+
+    # 3. Intelligence CLI & Daemon / GlobalTelemetryCollector
+    ob_file = tmp_path / "orderbook_depth_BTCUSDC.json"
+    ob_file.write_text(json.dumps({"mid_price": None, "imbalance_ratio": float("nan"), "ts": 0.0}).replace("NaN", "null"))
+    rep = inspect_symbol_intelligence("BTCUSDC", cache_dir=str(tmp_path))
+    assert rep["pillar2_external"]["orderbook"]["age_seconds"] is None
+    assert rep["pillar2_external"]["orderbook"]["age_formatted"] == "unknown"
+    print_intelligence_report(rep)
+
+    itd = IntelligenceTelemetryDaemon(
+        symbols=["BTCUSDC"],
+        cache_dir=str(tmp_path),
+        orderbook_interval_sec=True,
+        derivatives_interval_sec=float("nan"),
+        whale_interval_sec=-5.0,
+        macro_interval_sec=float("inf"),
+    )
+    assert itd.orderbook_interval_sec == 15.0
+    assert itd.derivatives_interval_sec == 30.0
+    assert itd.whale_interval_sec == 60.0
+    assert itd.macro_interval_sec > 0.0
+
+    gtc = GlobalTelemetryCollector(
+        symbols=["BTCUSDC"],
+        cache_dir=str(tmp_path),
+        orderbook_interval_sec=True,
+        derivatives_interval_sec=float("nan"),
+        whale_interval_sec=-5.0,
+        news_interval_sec=float("inf"),
+        fear_greed_interval_sec=True,
+        breadth_interval_sec=float("nan"),
+    )
+    assert gtc.orderbook_interval_sec == 15.0
+    assert gtc.derivatives_interval_sec == 30.0
+    assert gtc.whale_interval_sec == 60.0
+    assert gtc.fear_greed_interval_sec == 1800.0
+    assert gtc.breadth_interval_sec == 900.0
+
+    # 4. PriceWindow & WindowAnalyzer
+    pw = PriceWindow("BTCUSDC", window_size=True, sample_rate_sec=float("nan"), window_seconds=True)
+    assert pw.window_size == 10
+    assert pw.window_seconds is None
+    for p in (100.0, 101.0, 102.0, 103.0):
+        pw.process_price(p)
+    eps_default = pw.get_noise_epsilon(1.0)
+    assert pw.get_noise_epsilon(float("nan")) == eps_default
+    assert pw.get_noise_epsilon(True) == eps_default
+
+    wa = WindowAnalyzer(pw)
+    assert wa.calculate_proximities(float("nan")) == (0, 0)
+    assert wa.calculate_proximities(True) == (0, 0)
+    assert wa.check_price_change(float("nan")) == (0, 0)
+    assert wa.check_price_change(True) == (0, 0)
+    assert wa.evaluate_buy_sell_opportunity(float("nan"))[0] == "HOLD"
+    assert wa.evaluate_buy_sell_opportunity(True)[0] == "HOLD"
+
+    # 5. KalmanStateTracker & active_intents
+    kst = KalmanStateTracker(state_min_interval=float("nan"), now_fn=lambda: 1000.0)
+    assert kst.state_min_interval == 1.0
+    kst._state["BTCUSDC"] = {"ts": 995.0, "kalman_trend": True}
+    assert kst.current_trend("BTCUSDC") == (None, 1e18)
+    kst._state["BTCUSDC"] = {"ts": 995.0, "kalman_trend": float("nan")}
+    assert kst.current_trend("BTCUSDC") == (None, 1e18)
+    kst._state["BTCUSDC"] = {"ts": 995.0, "kalman_trend": 1}
+    assert kst.current_trend("BTCUSDC") == (1, 5.0)
+
+    assert _intent_row({"id": "ord-1", "side": "BUY", "qty": True}, owner="test", source="s", location="$", inherited={}) is None
+    assert _intent_row({"id": True, "side": "BUY", "qty": 1.0}, owner="test", source="s", location="$", inherited={}) is None
+
+
+
 

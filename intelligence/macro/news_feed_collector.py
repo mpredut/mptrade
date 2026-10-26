@@ -113,7 +113,7 @@ class NewsFeedCollector:
                         if raw_ts is None or isinstance(raw_ts, bool):
                             continue
                         ts = float(raw_ts)
-                        if not math.isfinite(ts):
+                        if not (math.isfinite(ts) and ts > 0.0):
                             continue
                     except (TypeError, ValueError):
                         continue
@@ -168,7 +168,14 @@ class NewsFeedCollector:
         # 2. Prune old headlines past rolling horizon
         cutoff = now - self.rolling_window_sec
         self._aggregated_pool = {
-            k: v for k, v in self._aggregated_pool.items() if v[0] >= cutoff
+            k: v
+            for k, v in self._aggregated_pool.items()
+            if isinstance(v, tuple)
+            and len(v) == 2
+            and not isinstance(v[0], bool)
+            and isinstance(v[0], (int, float))
+            and math.isfinite(float(v[0]))
+            and float(v[0]) >= cutoff
         }
         self._save_history()
 

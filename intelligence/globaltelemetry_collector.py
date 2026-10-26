@@ -29,6 +29,16 @@ load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 logger = logging.getLogger("intelligence.telemetry_collector")
 
 
+def _safe_pos_interval(val: Any, default: float) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return f if (math.isfinite(f) and f > 0.0) else default
+
+
 class GlobalTelemetryCollector:
     """Orchestrates periodic background ingestion of external microstructure and macro telemetry."""
 
@@ -46,23 +56,22 @@ class GlobalTelemetryCollector:
         skip_external: bool = False,
     ) -> None:
         self.cache_dir = cache_dir
-        self.orderbook_interval_sec = orderbook_interval_sec
-        self.derivatives_interval_sec = derivatives_interval_sec
-        self.whale_interval_sec = whale_interval_sec
-        self.news_interval_sec = (
-            float(news_interval_sec)
-            if news_interval_sec is not None
-            else required_float_env("MACRO_NEWS_INTERVAL_SEC")
+        self.orderbook_interval_sec = _safe_pos_interval(orderbook_interval_sec, 15.0)
+        self.derivatives_interval_sec = _safe_pos_interval(derivatives_interval_sec, 30.0)
+        self.whale_interval_sec = _safe_pos_interval(whale_interval_sec, 60.0)
+        self.news_interval_sec = _safe_pos_interval(
+            news_interval_sec,
+            required_float_env("MACRO_NEWS_INTERVAL_SEC"),
         )
-        self.fear_greed_interval_sec = fear_greed_interval_sec
-        self.breadth_interval_sec = breadth_interval_sec
-        self.skip_news = skip_news
-        self.skip_external = skip_external
+        self.fear_greed_interval_sec = _safe_pos_interval(fear_greed_interval_sec, 1800.0)
+        self.breadth_interval_sec = _safe_pos_interval(breadth_interval_sec, 900.0)
+        self.skip_news = bool(skip_news)
+        self.skip_external = bool(skip_external)
         self.running = False
 
         # Resolve target symbols
         if symbols:
-            self.symbols = [s.strip().upper() for s in symbols if s.strip()]
+            self.symbols = [str(s).strip().upper() for s in symbols if str(s or "").strip()]
         else:
             self.symbols = self._detect_active_symbols()
 
@@ -75,17 +84,17 @@ class GlobalTelemetryCollector:
         from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
 
         self.orderbook_collector = OrderbookDepthCollector(
-            cache_ttl_sec=max(5.0, orderbook_interval_sec * 0.8),
+            cache_ttl_sec=max(5.0, self.orderbook_interval_sec * 0.8),
             cache_dir=self.cache_dir,
             disk_ttl_sec=60.0,
         )
         self.derivatives_collector = DerivativesTelemetryCollector(
-            cache_ttl_sec=max(10.0, derivatives_interval_sec * 0.8),
+            cache_ttl_sec=max(10.0, self.derivatives_interval_sec * 0.8),
             cache_dir=self.cache_dir,
             disk_ttl_sec=120.0,
         )
         self.whale_collector = WhalePositioningCollector(
-            cache_ttl_sec=max(15.0, whale_interval_sec * 0.8),
+            cache_ttl_sec=max(15.0, self.whale_interval_sec * 0.8),
             cache_dir=self.cache_dir,
             disk_ttl_sec=300.0,
         )
@@ -183,6 +192,7 @@ class GlobalTelemetryCollector:
             snap = self.fear_greed_collector.fetch(force_refresh=force)
             if snap:
                 from state_io import save_json_state
+                snap_ts = _safe_pos_interval(getattr(snap, "timestamp", None), time.time())
                 payload = {
                     "value": snap.value,
                     "sentiment": snap.classification,
@@ -191,7 +201,7 @@ class GlobalTelemetryCollector:
                     "trend_7d_change": snap.trend_7d_change,
                     "is_extreme_fear": snap.is_extreme_fear,
                     "is_extreme_greed": snap.is_extreme_greed,
-                    "ts": snap.timestamp or time.time(),
+                    "ts": snap_ts,
                 }
                 # Standardized collect file + legacy cache file
                 save_json_state(os.path.join(self.cache_dir, "fear_greed_collect.json"), payload, indent=2)

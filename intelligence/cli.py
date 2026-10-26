@@ -155,13 +155,14 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
     try:
         from intelligence.internal.state.survival import estimate_T
         t_est = estimate_T(symbol)
+        samples_n = max(0, _safe_int(t_est.get("n", 0), 0)) if isinstance(t_est, dict) else 0
         result["pillar1_internal"]["trend_survival"] = {
-            "T": t_est.get("T", 14),
-            "T_emp": t_est.get("T_emp"),
-            "median_duration_days": t_est.get("median_d"),
-            "P90_days": t_est.get("p90_d"),
-            "samples": t_est.get("n", 0),
-            "is_calibrated": t_est.get("n", 0) > 0,
+            "T": t_est.get("T", 14) if isinstance(t_est, dict) else 14,
+            "T_emp": t_est.get("T_emp") if isinstance(t_est, dict) else None,
+            "median_duration_days": t_est.get("median_d") if isinstance(t_est, dict) else None,
+            "P90_days": t_est.get("p90_d") if isinstance(t_est, dict) else None,
+            "samples": samples_n,
+            "is_calibrated": samples_n > 0,
         }
     except Exception as e:
         result["pillar1_internal"]["trend_survival_error"] = str(e)
@@ -175,8 +176,9 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         ob_data = read_recovering_previous(ob_path, json.loads, default=None)
         if isinstance(ob_data, dict):
             ob_ts = _safe_float(ob_data.get("ts"), 0.0)
-            ob_data["age_seconds"] = round(now - ob_ts, 1)
-            ob_data["age_formatted"] = _format_age(now - ob_ts)
+            ob_age = (now - ob_ts) if ob_ts > 0.0 else float("inf")
+            ob_data["age_seconds"] = round(ob_age, 1) if math.isfinite(ob_age) else None
+            ob_data["age_formatted"] = _format_age(ob_age)
             result["pillar2_external"]["orderbook"] = ob_data
         else:
             result["pillar2_external"]["orderbook"] = None
@@ -186,8 +188,9 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         deriv_data = read_recovering_previous(deriv_path, json.loads, default=None)
         if isinstance(deriv_data, dict):
             deriv_ts = _safe_float(deriv_data.get("ts"), 0.0)
-            deriv_data["age_seconds"] = round(now - deriv_ts, 1)
-            deriv_data["age_formatted"] = _format_age(now - deriv_ts)
+            deriv_age = (now - deriv_ts) if deriv_ts > 0.0 else float("inf")
+            deriv_data["age_seconds"] = round(deriv_age, 1) if math.isfinite(deriv_age) else None
+            deriv_data["age_formatted"] = _format_age(deriv_age)
             result["pillar2_external"]["derivatives"] = deriv_data
         else:
             result["pillar2_external"]["derivatives"] = None
@@ -197,8 +200,9 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         whale_data = read_recovering_previous(whale_path, json.loads, default=None)
         if isinstance(whale_data, dict):
             whale_ts = _safe_float(whale_data.get("ts"), 0.0)
-            whale_data["age_seconds"] = round(now - whale_ts, 1)
-            whale_data["age_formatted"] = _format_age(now - whale_ts)
+            whale_age = (now - whale_ts) if whale_ts > 0.0 else float("inf")
+            whale_data["age_seconds"] = round(whale_age, 1) if math.isfinite(whale_age) else None
+            whale_data["age_formatted"] = _format_age(whale_age)
             result["pillar2_external"]["whale"] = whale_data
         else:
             result["pillar2_external"]["whale"] = None
@@ -215,7 +219,8 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
                 break
         if isinstance(fg_data, dict):
             fg_ts = _safe_float(fg_data.get("ts"), 0.0)
-            fg_data["age_formatted"] = _format_age(now - fg_ts)
+            fg_age = (now - fg_ts) if fg_ts > 0.0 else float("inf")
+            fg_data["age_formatted"] = _format_age(fg_age)
             result["pillar3_sentiment"]["fear_greed"] = fg_data
         else:
             result["pillar3_sentiment"]["fear_greed"] = None
@@ -228,7 +233,8 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
                 break
         if isinstance(gem_data, dict):
             gem_ts = _safe_float(gem_data.get("ts"), 0.0)
-            gem_data["age_formatted"] = _format_age(now - gem_ts)
+            gem_age = (now - gem_ts) if gem_ts > 0.0 else float("inf")
+            gem_data["age_formatted"] = _format_age(gem_age)
             result["pillar3_sentiment"]["sentiment_advisor"] = gem_data
             result["pillar3_sentiment"]["gemini_macro"] = gem_data
         else:
@@ -247,8 +253,9 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
                 break
         if isinstance(geo_data, dict):
             geo_ts = _safe_float(geo_data.get("ts"), 0.0)
-            geo_data["age_seconds"] = round(now - geo_ts, 1)
-            geo_data["age_formatted"] = _format_age(now - geo_ts)
+            geo_age = (now - geo_ts) if geo_ts > 0.0 else float("inf")
+            geo_data["age_seconds"] = round(geo_age, 1) if math.isfinite(geo_age) else None
+            geo_data["age_formatted"] = _format_age(geo_age)
             result["pillar4_macro"] = geo_data
         else:
             result["pillar4_macro"] = None
@@ -323,54 +330,54 @@ def print_intelligence_report(report: Dict[str, Any]) -> None:
     # Pillar 2
     print("\n🌊 [PILLAR 2: EXTERNAL MICROSTRUCTURE & DERIVATIVES FLOW]")
     ob = p2.get("orderbook")
-    if ob:
-        imbalance = ob.get("imbalance_ratio", 0.5)
+    if isinstance(ob, dict) and ob:
+        imbalance = _safe_float(ob.get("imbalance_ratio"), 0.5)
         imb_bar = "🟢 BIDS" if imbalance > 0.55 else ("🔴 ASKS" if imbalance < 0.45 else "⚪ BALANCED")
-        print(f"  • Spot Depth:     Mid=${ob.get('mid_price', 0):,.2f} | Bids=${ob.get('bid_depth_usd', 0):,.0f} | Asks=${ob.get('ask_depth_usd', 0):,.0f}")
+        print(f"  • Spot Depth:     Mid=${_safe_float(ob.get('mid_price'), 0.0):,.2f} | Bids=${_safe_float(ob.get('bid_depth_usd'), 0.0):,.0f} | Asks=${_safe_float(ob.get('ask_depth_usd'), 0.0):,.0f}")
         print(f"  • Imbalance:      {imbalance:.2f} ({imb_bar}) [snapshot: {ob.get('age_formatted', 'unknown')}]")
-        print(f"  • Max Bid Wall:   ${ob.get('largest_bid_wall_usd', 0):,.0f} at ${ob.get('largest_bid_wall_price', 0):,.2f}")
-        print(f"  • Max Ask Wall:   ${ob.get('largest_ask_wall_usd', 0):,.0f} at ${ob.get('largest_ask_wall_price', 0):,.2f}")
+        print(f"  • Max Bid Wall:   ${_safe_float(ob.get('largest_bid_wall_usd'), 0.0):,.0f} at ${_safe_float(ob.get('largest_bid_wall_price'), 0.0):,.2f}")
+        print(f"  • Max Ask Wall:   ${_safe_float(ob.get('largest_ask_wall_usd'), 0.0):,.0f} at ${_safe_float(ob.get('largest_ask_wall_price'), 0.0):,.2f}")
     else:
         print("  • Spot Depth:     [No snapshot in cachedb]")
 
     deriv = p2.get("derivatives")
-    if deriv:
-        funding = deriv.get("funding_rate", 0.0)
+    if isinstance(deriv, dict) and deriv:
+        funding = _safe_float(deriv.get("funding_rate"), 0.0)
         crowding = "⚠️ CROWDED LONG" if funding > 0.0005 else ("🔥 NEGATIVE/SQUEEZE" if funding < -0.0002 else "NORMAL")
         print(f"  • Funding Rate:   {funding:+.6f} ({funding*100:+.4f}% / 8h) [{crowding}]")
-        print(f"  • Open Interest:  ${deriv.get('open_interest_usd', 0):,.0f} contracts [snapshot: {deriv.get('age_formatted', 'unknown')}]")
+        print(f"  • Open Interest:  ${_safe_float(deriv.get('open_interest_usd'), 0.0):,.0f} contracts [snapshot: {deriv.get('age_formatted', 'unknown')}]")
     else:
         print("  • Derivatives:    [No snapshot in cachedb]")
 
     whale = p2.get("whale")
-    if whale:
-        regime = whale.get("divergence_regime", "neutral").upper()
-        print(f"  • Whale L/S:      {whale.get('top_traders_long_ratio', 1.0):.2f} ({whale.get('top_traders_long_pct', 0.5)*100:.1f}% longs)")
-        print(f"  • Taker Vol Buy:  ${whale.get('taker_buy_vol_usd', 0):,.0f} vs Sell: ${whale.get('taker_sell_vol_usd', 0):,.0f} (Ratio: {whale.get('taker_buy_sell_ratio', 1.0):.2f})")
-        print(f"  • OI Divergence:  Regime={regime} | OI 1h Delta={whale.get('open_interest_1h_change_pct', 0.0):+.2f}% [snapshot: {whale.get('age_formatted', 'unknown')}]")
+    if isinstance(whale, dict) and whale:
+        regime = str(whale.get("divergence_regime") or "neutral").upper()
+        print(f"  • Whale L/S:      {_safe_float(whale.get('top_traders_long_ratio'), 1.0):.2f} ({_safe_float(whale.get('top_traders_long_pct'), 0.5)*100:.1f}% longs)")
+        print(f"  • Taker Vol Buy:  ${_safe_float(whale.get('taker_buy_vol_usd'), 0.0):,.0f} vs Sell: ${_safe_float(whale.get('taker_sell_vol_usd'), 0.0):,.0f} (Ratio: {_safe_float(whale.get('taker_buy_sell_ratio'), 1.0):.2f})")
+        print(f"  • OI Divergence:  Regime={regime} | OI 1h Delta={_safe_float(whale.get('open_interest_1h_change_pct'), 0.0):+.2f}% [snapshot: {whale.get('age_formatted', 'unknown')}]")
     else:
         print("  • Whale Flow:     [No snapshot in cachedb]")
 
     # Pillar 3
     print("\n🧠 [PILLAR 3: SENTIMENT & GEMINI LLM REASONING]")
     fg = p3.get("fear_greed")
-    if fg:
-        print(f"  • Fear & Greed:   {fg.get('value', 50)}/100 ({fg.get('sentiment', 'Neutral')}) [snapshot: {fg.get('age_formatted', 'unknown')}]")
+    if isinstance(fg, dict) and fg:
+        print(f"  • Fear & Greed:   {_safe_int(fg.get('value'), 50)}/100 ({fg.get('sentiment', 'Neutral')}) [snapshot: {fg.get('age_formatted', 'unknown')}]")
     else:
         print("  • Fear & Greed:   [No snapshot in cachedb]")
 
     gem = p3.get("gemini_macro")
-    if gem:
+    if isinstance(gem, dict) and gem:
         print(f"  • Gemini Advisor: {gem.get('summary', 'No summary')} [snapshot: {gem.get('age_formatted', 'unknown')}]")
     else:
         print("  • Gemini Advisor: [No snapshot in cachedb]")
 
     # Pillar 4
     print("\n🛡️ [PILLAR 4: MACRO GEOPOLITICAL & ENERGY SHOCK SHIELD]")
-    if p4:
-        level = p4.get("threat_level", "NORMAL")
+    if isinstance(p4, dict) and p4:
+        level = str(p4.get("threat_level") or "NORMAL")
         icon = "🟢" if level == "NORMAL" else ("🟡" if level == "ELEVATED" else "🔴")
-        print(f"  • Threat Level:   {icon} {level} (Risk Score: {p4.get('risk_score', 0.0):.2f}) [snapshot: {p4.get('age_formatted', 'unknown')}]")
+        print(f"  • Threat Level:   {icon} {level} (Risk Score: {_safe_float(p4.get('risk_score'), 0.0):.2f}) [snapshot: {p4.get('age_formatted', 'unknown')}]")
         print(f"  • Brake Action:   {p4.get('recommended_brake', 'NONE')}")
         print(f"  • Analysis:       {p4.get('summary', '')}")
     else:
@@ -379,13 +386,13 @@ def print_intelligence_report(report: Dict[str, Any]) -> None:
     # Order Guard Preview
     print("\n🚦 [ORDER GUARD EXECUTION PREVIEW (order_guard.py)]")
     buy_std = gp.get("buy_standard")
-    if buy_std:
-        status_std = "✅ ALLOWED" if buy_std["allowed"] else "⛔ BLOCKED"
-        print(f"  • Standard BUY (250 EUR):   {status_std} | Scale: {buy_std['suggested_scale']*100:.0f}% | Reason: {buy_std['reason']}")
+    if isinstance(buy_std, dict) and buy_std:
+        status_std = "✅ ALLOWED" if buy_std.get("allowed") else "⛔ BLOCKED"
+        print(f"  • Standard BUY (250 EUR):   {status_std} | Scale: {_safe_float(buy_std.get('suggested_scale'), 1.0)*100:.0f}% | Reason: {buy_std.get('reason', '')}")
     buy_hi = gp.get("buy_high_stake")
-    if buy_hi:
-        status_hi = "✅ ALLOWED" if buy_hi["allowed"] else "⛔ BLOCKED"
-        print(f"  • High-Stake BUY (1500 EUR): {status_hi} | Scale: {buy_hi['suggested_scale']*100:.0f}% | Reason: {buy_hi['reason']}")
+    if isinstance(buy_hi, dict) and buy_hi:
+        status_hi = "✅ ALLOWED" if buy_hi.get("allowed") else "⛔ BLOCKED"
+        print(f"  • High-Stake BUY (1500 EUR): {status_hi} | Scale: {_safe_float(buy_hi.get('suggested_scale'), 1.0)*100:.0f}% | Reason: {buy_hi.get('reason', '')}")
 
     print("=" * 76 + "\n")
 

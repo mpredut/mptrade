@@ -19,6 +19,16 @@ from intelligence.external.collectors.whale_positioning import (
 )
 
 
+def _safe_pos_float(val, default: float) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return f if (math.isfinite(f) and f > 0.0) else default
+
+
 class WhaleAccumulationTrigger:
     """Generates directional entries/exits when whales aggressively accumulate or distribute."""
 
@@ -31,10 +41,10 @@ class WhaleAccumulationTrigger:
         min_taker_sell_ratio: float = 0.80,        # Taker aggressive sells dominate (<0.80)
     ) -> None:
         self.collector = collector
-        self.min_top_traders_long_pct = min_top_traders_long_pct
-        self.min_taker_buy_ratio = min_taker_buy_ratio
-        self.min_top_traders_short_pct = min_top_traders_short_pct
-        self.min_taker_sell_ratio = min_taker_sell_ratio
+        self.min_top_traders_long_pct = _safe_pos_float(min_top_traders_long_pct, 0.60)
+        self.min_taker_buy_ratio = _safe_pos_float(min_taker_buy_ratio, 1.25)
+        self.min_top_traders_short_pct = _safe_pos_float(min_top_traders_short_pct, 0.60)
+        self.min_taker_sell_ratio = _safe_pos_float(min_taker_sell_ratio, 0.80)
 
     def evaluate(
         self,
@@ -99,7 +109,7 @@ class WhaleAccumulationTrigger:
         is_capital_entering = oi_chg >= 0.0
 
         if is_whale_long and is_aggressive_buying and is_capital_entering:
-            confidence = min(1.0, (top_long_pct - 0.5) * 2.0)
+            confidence = max(0.0, min(1.0, (top_long_pct - 0.5) * 2.0))
             return TriggerEvent(
                 action=TriggerAction.ENTRY,
                 side=TriggerSide.BUY,
@@ -125,7 +135,7 @@ class WhaleAccumulationTrigger:
         is_aggressive_selling = taker_ratio <= self.min_taker_sell_ratio
 
         if is_whale_short and is_aggressive_selling:
-            confidence = min(1.0, (top_short_pct - 0.5) * 2.0)
+            confidence = max(0.0, min(1.0, (top_short_pct - 0.5) * 2.0))
             return TriggerEvent(
                 action=TriggerAction.EXIT,
                 side=TriggerSide.SELL,

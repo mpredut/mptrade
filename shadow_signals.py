@@ -109,8 +109,16 @@ class KalmanStateTracker:
         # the order gate blocks every BUY.
         self._now = now_fn or time.time
         self.state_path = state_path
-        self.state_min_interval = state_min_interval
-        self.compute_vol = compute_vol
+        smi = 1.0
+        if state_min_interval is not None and not isinstance(state_min_interval, bool):
+            try:
+                smi_f = float(state_min_interval)
+                if math.isfinite(smi_f) and smi_f >= 0.0:
+                    smi = smi_f
+            except (TypeError, ValueError, OverflowError):
+                smi = 1.0
+        self.state_min_interval = smi
+        self.compute_vol = bool(compute_vol)
         self._state: dict = {}
         if self.state_path:
             self._port_and_load_initial_state()
@@ -165,7 +173,16 @@ class KalmanStateTracker:
             return None, 1e18
         if not (math.isfinite(ts_f) and ts_f > 0 and math.isfinite(now_f)):
             return None, 1e18
-        return st.get("kalman_trend"), now_f - ts_f
+        raw_kt = st.get("kalman_trend")
+        if raw_kt is None or isinstance(raw_kt, bool):
+            return None, 1e18
+        try:
+            kt_f = float(raw_kt)
+        except (TypeError, ValueError, OverflowError):
+            return None, 1e18
+        if not math.isfinite(kt_f) or int(kt_f) not in (-1, 0, 1):
+            return None, 1e18
+        return int(kt_f), now_f - ts_f
 
     @staticmethod
     def _grad_std(fed: list[float]) -> float:

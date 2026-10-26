@@ -378,7 +378,15 @@ class PriceWindow:
     def __init__(self, symbol, window_size, sample_rate_sec=None, initial_prices=None,
                  window_seconds=None):
         self.symbol = symbol
-        self.window_size = max(1, int(window_size))
+        ws_int = 10
+        if window_size is not None and not isinstance(window_size, bool):
+            try:
+                wf = float(window_size)
+                if math.isfinite(wf) and wf >= 1.0:
+                    ws_int = max(1, int(wf))
+            except (TypeError, ValueError, OverflowError):
+                pass
+        self.window_size = ws_int
         if sample_rate_sec is not None and not isinstance(sample_rate_sec, bool):
             try:
                 _sr = float(sample_rate_sec)
@@ -389,7 +397,15 @@ class PriceWindow:
             self.sample_rate_sec = DEFAULT_SAMPLE_RATE_SEC
         # When set, target duration resizes with the observed sampling rate so the
         # window continues to cover the same elapsed time.
-        self.window_seconds = window_seconds
+        win_sec = None
+        if window_seconds is not None and not isinstance(window_seconds, bool):
+            try:
+                wsec_f = float(window_seconds)
+                if math.isfinite(wsec_f) and wsec_f > 0:
+                    win_sec = wsec_f
+            except (TypeError, ValueError, OverflowError):
+                win_sec = None
+        self.window_seconds = win_sec
         self._subscribed_to_cache24 = False
         # WS/Cache24 updates on a different thread from evaluation. Protect mutation
         # and iteration of both price collections.
@@ -670,6 +686,14 @@ class PriceWindow:
         """Noise threshold INFORMED by the volatility of the window:
         epsilon = k * stddev(np.gradient(prices)).
         It adapts by symbol and over time to distinguish real movement from noise."""
+        k_val = 1.0
+        if k is not None and not isinstance(k, bool):
+            try:
+                kf = float(k)
+                if math.isfinite(kf) and kf > 0.0:
+                    k_val = kf
+            except (TypeError, ValueError, OverflowError):
+                k_val = 1.0
         with self._lock:
             n = len(self.prices)
             if n < 3:
@@ -682,7 +706,7 @@ class PriceWindow:
             ):
                 key = (blen, self._trend_buf.offset, n, self.sample_rate_sec, self.window_seconds)
                 if self._cached_eval_key == key and self._cached_eval_val is not None:
-                    return float(k * self._cached_eval_val[4])
+                    return float(k_val * self._cached_eval_val[4])
                 res = self._trend_buf.eval_slice(
                     blen - n,
                     blen - 1,
@@ -692,10 +716,10 @@ class PriceWindow:
                 )
                 self._cached_eval_key = key
                 self._cached_eval_val = res
-                return float(k * res[4])
+                return float(k_val * res[4])
             prices = list(self.prices)
         grad = np.gradient(np.array(prices))
-        return float(k * np.std(grad))
+        return float(k_val * np.std(grad))
 
     def get_short_trend(self):
         """Return ``(final_trend, growth_coefficient, slope_full, gradient_recent)``.
@@ -821,13 +845,23 @@ class WindowAnalyzer:
         return (max_price - min_price) / (max_index - min_index)
 
     def calculate_proximities(self, current_price):
+        if current_price is None or isinstance(current_price, bool):
+            return 0, 0
+        try:
+            cp = float(current_price)
+        except (TypeError, ValueError, OverflowError):
+            return 0, 0
+        if not math.isfinite(cp):
+            return 0, 0
         w = self.window
         min_price, _ = w.get_min_and_index()
         max_price, _ = w.get_max_and_index()
         if min_price is None or max_price is None or max_price == min_price:
             return 0, 0
-        min_proximity = (current_price - min_price) / (max_price - min_price)
-        max_proximity = (max_price - current_price) / (max_price - min_price)
+        min_proximity = (cp - min_price) / (max_price - min_price)
+        max_proximity = (max_price - cp) / (max_price - min_price)
+        if not (math.isfinite(min_proximity) and math.isfinite(max_proximity)):
+            return 0, 0
         return max(min_proximity, 0), max(max_proximity, 0)
 
     def calculate_positions(self):
@@ -839,6 +873,14 @@ class WindowAnalyzer:
         return min_position, max_position
 
     def check_price_change(self, threshold):
+        if threshold is None or isinstance(threshold, bool):
+            return 0, 0
+        try:
+            threshold = float(threshold)
+        except (TypeError, ValueError, OverflowError):
+            return 0, 0
+        if not math.isfinite(threshold):
+            return 0, 0
         w = self.window
         if len(w.prices) < 2:
             return 0, 1
@@ -920,6 +962,14 @@ class WindowAnalyzer:
         return 0, 1
 
     def evaluate_buy_sell_opportunity(self, current_price, threshold_percent=1, decrease_percent=3.7):
+        if current_price is None or isinstance(current_price, bool):
+            return 'HOLD', 0.0, 0.0, 0.0
+        try:
+            current_price = float(current_price)
+        except (TypeError, ValueError, OverflowError):
+            return 'HOLD', 0.0, 0.0, 0.0
+        if not (math.isfinite(current_price) and current_price > 0):
+            return 'HOLD', 0.0, 0.0, 0.0
         w = self.window
         slope = self.calculate_slope_max_min()
         min_price, min_index = w.get_min_and_index()
@@ -934,6 +984,8 @@ class WindowAnalyzer:
             return 'HOLD', current_price, price_change_percent, slope
 
         min_position, max_position = self.calculate_positions()
+        if min_position is None or max_position is None:
+            return 'HOLD', current_price, price_change_percent, slope
         if slope > 0:
             if max_position > 0.8 or u.are_close(max_position, 0.8, target_tolerance_percent=1.0):
                 proposed_price = current_price * 0.995

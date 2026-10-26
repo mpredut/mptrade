@@ -59,7 +59,14 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str,
     intent_id = _first(row, "intent_id", "client_order_id", "order_id", "id", "txid") or client_order_id
     side = _first(row, "side", "start_side")
     quantity = _first(row, "requested_qty", "qty", "quantity", "vol")
-    if not intent_id or not side or quantity is None:
+    if (
+        not intent_id
+        or isinstance(intent_id, bool)
+        or not side
+        or isinstance(side, bool)
+        or quantity is None
+        or isinstance(quantity, bool)
+    ):
         return None
     side_str = str(side).upper()
     if side_str not in {"BUY", "SELL"}:

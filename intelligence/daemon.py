@@ -28,6 +28,16 @@ load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 logger = logging.getLogger("intelligence.daemon")
 
 
+def _safe_pos_interval(val: Any, default: float) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return f if (math.isfinite(f) and f > 0.0) else default
+
+
 class IntelligenceTelemetryDaemon:
     """Orchestrates periodic background updates of external microstructure and macro threat state."""
 
@@ -45,27 +55,25 @@ class IntelligenceTelemetryDaemon:
         skip_external: bool = False,
     ) -> None:
         self.cache_dir = cache_dir
-        self.orderbook_interval_sec = orderbook_interval_sec
-        self.derivatives_interval_sec = derivatives_interval_sec
-        self.whale_interval_sec = whale_interval_sec
-        self.macro_interval_sec = (
-            float(macro_interval_sec)
-            if macro_interval_sec is not None
-            else required_float_env("MACRO_NEWS_INTERVAL_SEC")
+        self.orderbook_interval_sec = _safe_pos_interval(orderbook_interval_sec, 15.0)
+        self.derivatives_interval_sec = _safe_pos_interval(derivatives_interval_sec, 30.0)
+        self.whale_interval_sec = _safe_pos_interval(whale_interval_sec, 60.0)
+        self.macro_interval_sec = _safe_pos_interval(
+            macro_interval_sec,
+            required_float_env("MACRO_NEWS_INTERVAL_SEC"),
         )
-        self.macro_llm_interval_sec = (
-            macro_llm_interval_sec
-            if macro_llm_interval_sec is not None
-            else required_float_env("MACRO_LLM_INTERVAL_SEC")
+        self.macro_llm_interval_sec = _safe_pos_interval(
+            macro_llm_interval_sec,
+            required_float_env("MACRO_LLM_INTERVAL_SEC"),
         )
-        self.thread_prune_interval_sec = thread_prune_interval_sec
-        self.skip_macro = skip_macro
-        self.skip_external = skip_external
+        self.thread_prune_interval_sec = _safe_pos_interval(thread_prune_interval_sec, 10800.0)
+        self.skip_macro = bool(skip_macro)
+        self.skip_external = bool(skip_external)
         self.running = False
 
         # Resolve target symbols
         if symbols:
-            self.symbols = [s.strip().upper() for s in symbols if s.strip()]
+            self.symbols = [str(s).strip().upper() for s in symbols if str(s or "").strip()]
         else:
             self.symbols = self._detect_active_symbols()
 
@@ -77,17 +85,17 @@ class IntelligenceTelemetryDaemon:
         from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
 
         self.orderbook_collector = OrderbookDepthCollector(
-            cache_ttl_sec=max(5.0, orderbook_interval_sec * 0.8),
+            cache_ttl_sec=max(5.0, self.orderbook_interval_sec * 0.8),
             cache_dir=self.cache_dir,
             disk_ttl_sec=60.0,
         )
         self.derivatives_collector = DerivativesTelemetryCollector(
-            cache_ttl_sec=max(10.0, derivatives_interval_sec * 0.8),
+            cache_ttl_sec=max(10.0, self.derivatives_interval_sec * 0.8),
             cache_dir=self.cache_dir,
             disk_ttl_sec=120.0,
         )
         self.whale_collector = WhalePositioningCollector(
-            cache_ttl_sec=max(15.0, whale_interval_sec * 0.8),
+            cache_ttl_sec=max(15.0, self.whale_interval_sec * 0.8),
             cache_dir=self.cache_dir,
             disk_ttl_sec=300.0,
         )

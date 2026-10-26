@@ -12,6 +12,16 @@ from intelligence.sentiment.collectors.market_breadth_collector import MarketBre
 logger = logging.getLogger("intelligence.sentiment.market_breadth_trigger")
 
 
+def _safe_float(val, default: float) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return f if math.isfinite(f) else default
+
+
 class MarketBreadthTrigger:
     """Emits directional triggers based on cross-asset market participation extremes.
 
@@ -26,10 +36,12 @@ class MarketBreadthTrigger:
         blowoff_advance_threshold: float = 0.88,
         blowoff_median_threshold: float = 6.0,
     ) -> None:
-        self.washout_advance_threshold = washout_advance_threshold
-        self.washout_median_threshold = washout_median_threshold
-        self.blowoff_advance_threshold = blowoff_advance_threshold
-        self.blowoff_median_threshold = blowoff_median_threshold
+        wat = _safe_float(washout_advance_threshold, 0.15)
+        self.washout_advance_threshold = wat if (0.0 <= wat <= 1.0) else 0.15
+        self.washout_median_threshold = _safe_float(washout_median_threshold, -4.0)
+        bat = _safe_float(blowoff_advance_threshold, 0.88)
+        self.blowoff_advance_threshold = bat if (0.0 <= bat <= 1.0) else 0.88
+        self.blowoff_median_threshold = _safe_float(blowoff_median_threshold, 6.0)
 
     def evaluate(
         self,

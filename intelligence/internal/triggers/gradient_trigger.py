@@ -11,7 +11,15 @@ class LinearGradientTrigger:
     """Emits Entry/Exit triggers based on linear regression gradient exceeding noise threshold."""
 
     def __init__(self, strength_threshold: float = 2.0):
-        self.strength_threshold = float(strength_threshold)
+        st = 2.0
+        if strength_threshold is not None and not isinstance(strength_threshold, bool):
+            try:
+                sf = float(strength_threshold)
+                if math.isfinite(sf) and sf > 0.0:
+                    st = sf
+            except (TypeError, ValueError, OverflowError):
+                pass
+        self.strength_threshold = st
         self.last_state = "neutral"  # "bull", "bear", "neutral"
 
     def evaluate(
