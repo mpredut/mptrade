@@ -10006,4 +10006,40 @@ def test_iteration86_strategy_executor_pair_precision_and_market_api_safety(monk
     assert api.provider_by_name("binance") is not None
 
 
+def test_iteration87_kraken_hyperliquid_t212_provider_side_and_cloid_safety():
+    """Verify Iteration 87 Kraken, Hyperliquid, and T212 provider side validation, boolean cloid rejection, and pair_precision safety."""
+    import pytest
+    from providers.strategy_executor import ProviderError, SubmissionRefused
+    from providers.kraken_provider import KrakenProvider, _kraken_client_order_id
+    from providers.hyperliquid_provider import HyperliquidProvider, _cloid_for_client_order_id
+    from providers.t212_provider import T212Provider, _definitive_submit_failure
+
+    # 1. KrakenProvider rejects boolean client_order_id and invalid order sides in place_order / submit_order
+    with pytest.raises(ProviderError, match="client_order_id"):
+        _kraken_client_order_id(True)
+    kp = KrakenProvider()
+    for bad_side in ("", None, "HOLD", "bad", True):
+        assert kp.place_order("HYPEUSD", bad_side, 25.0, 1.0) is None
+        with pytest.raises(SubmissionRefused, match="invalid side"):
+            kp.submit_order("HYPEUSD", bad_side, 1.0, price=25.0)
+
+    # 2. HyperliquidProvider rejects boolean client_order_id and invalid order sides in place_order / submit_order
+    with pytest.raises(ProviderError, match="client_order_id"):
+        _cloid_for_client_order_id(False)
+    hp = HyperliquidProvider(live_enabled=True)
+    for bad_side in ("", None, "HOLD", "bad", True):
+        assert hp.place_order("HYPEUSDC", bad_side, 25.0, 1.0) is None
+        with pytest.raises(SubmissionRefused, match="invalid side"):
+            hp.submit_order("HYPEUSDC", bad_side, 1.0, price=25.0)
+
+    # 3. T212Provider._definitive_submit_failure and pair_precision safety
+    assert _definitive_submit_failure(None, "order rejected by venue") is True
+    assert _definitive_submit_failure(True, "timeout") is False
+    tp = T212Provider()
+    assert tp.pair_precision("   ") is None
+    assert tp.pair_precision(True) is None
+    assert tp.pair_precision("  AAPL_US_EQ  ").base_asset == "AAPL_US_EQ"
+
+
+
 

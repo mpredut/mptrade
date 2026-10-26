@@ -50,8 +50,13 @@ _STATUS_MAP = {
 
 def _definitive_submit_failure(status: int, payload) -> bool:
     """Return whether a synchronous T212 response proves non-acceptance."""
-    if 400 <= int(status) < 500 and int(status) not in {408, 425, 429}:
-        return True
+    if not isinstance(status, bool):
+        try:
+            st_i = int(status)
+            if 400 <= st_i < 500 and st_i not in {408, 425, 429}:
+                return True
+        except (TypeError, ValueError, OverflowError):
+            pass
     return "rejected" in str(payload or "").lower()
 
 
@@ -483,7 +488,7 @@ class T212Provider(MarketDataProvider):
             )
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
-        if not symbol:
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
             return None
         # The live client rounds price and quantity to two decimals. Metadata does
         # not publish tickSize/minQty, so the contract reflects actual mechanics.
@@ -491,5 +496,5 @@ class T212Provider(MarketDataProvider):
             price_decimals=_PRICE_DECIMALS,
             volume_decimals=_VOLUME_DECIMALS,
             order_min=_ORDER_MIN,
-            base_asset=symbol,
+            base_asset=str(symbol).strip(),
         )

@@ -40,6 +40,7 @@ from .strategy_executor import (
     OrderStatus,
     PairPrecision,
     ProviderError,
+    SubmissionRefused,
     candle_interval,
 )
 from market_regime import ClosedPriceSeries
@@ -82,6 +83,8 @@ _CLOID_RE = re.compile(r"^0x[0-9a-fA-F]{32}$")
 
 def _cloid_for_client_order_id(client_order_id: str) -> str:
     """Map one durable client ID to Hyperliquid's exact 128-bit CLOID form."""
+    if isinstance(client_order_id, bool):
+        raise ProviderError("Hyperliquid client_order_id must contain 1-128 characters")
     raw = str(client_order_id or "").strip()
     if not raw or len(raw) > 128:
         raise ProviderError("Hyperliquid client_order_id must contain 1-128 characters")
@@ -423,10 +426,18 @@ class HyperliquidProvider(MarketDataProvider):
         delta-neutral wallet co-mingling, which could otherwise unwind its spot leg.
         """
         self.validate_symbol(symbol)
-        side = (side or "").upper()
+        s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
+        if s_norm in {"BUY", "B"}:
+            is_buy = True
+            side = "BUY"
+        elif s_norm in {"SELL", "S"}:
+            is_buy = False
+            side = "SELL"
+        else:
+            print(f"[HL] place_order {symbol}: refused invalid side={side!r}")
+            return None
         live = self.execution_enabled()
         is_market = bool(force or kwargs.get("market", False) or kwargs.get("force", False))
-        is_buy = side.startswith("B")
 
         if is_market:
             raw_curr = self.get_current_price(symbol)
@@ -593,6 +604,13 @@ class HyperliquidProvider(MarketDataProvider):
                      kind: Optional[str] = None,
                      client_order_id: Optional[str] = None) -> str:
         self.validate_symbol(symbol)
+        s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
+        if s_norm in {"BUY", "B"}:
+            is_buy = True
+        elif s_norm in {"SELL", "S"}:
+            is_buy = False
+        else:
+            raise SubmissionRefused(f"submit_order({symbol}): invalid side={side!r}")
         # Safety: real orders require HL_LIVE_ORDERS due to spot/DN co-mingling.
         if not self.execution_enabled():
             raise ProviderError(f"HL_LIVE_ORDERS=false — refusing a real order on HL ({side} {symbol})")
@@ -600,7 +618,6 @@ class HyperliquidProvider(MarketDataProvider):
         if pair is None:
             raise ProviderError(
                 f"submit_order({symbol}): spot pair unavailable")
-        is_buy = (side or "").lower().startswith("b")
         px = price
         if market or px is None:
             mid = self.get_current_price(symbol)

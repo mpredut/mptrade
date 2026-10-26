@@ -82,6 +82,8 @@ _KRAKEN_CLIENT_ID_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 
 def _kraken_client_order_id(client_order_id: str) -> str:
     """Map one durable client ID to Kraken's 128-bit hexadecimal UUID form."""
+    if isinstance(client_order_id, bool):
+        raise ProviderError("Kraken client_order_id must contain 1-128 characters")
     raw = str(client_order_id or "").strip()
     if not raw or len(raw) > 128:
         raise ProviderError("Kraken client_order_id must contain 1-128 characters")
@@ -414,8 +416,14 @@ class KrakenProvider(MarketDataProvider):
     # -- Placement remains dry until KRAKEN_LIVE_ORDERS=true. ------------------
     def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
         live = self.execution_enabled()
-        s = (side or "").lower()
-        s = "buy" if s.startswith("b") else "sell"
+        s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
+        if s_norm in {"BUY", "B"}:
+            s = "buy"
+        elif s_norm in {"SELL", "S"}:
+            s = "sell"
+        else:
+            print(f"[Kraken] place_order {symbol}: refused invalid side={side!r}")
+            return None
         market = bool(kwargs.get("market", False) or kwargs.get("force", False))
         ordertype = "market" if market else "limit"
         submit_price = None if market else price
@@ -488,7 +496,13 @@ class KrakenProvider(MarketDataProvider):
                      price: Optional[float] = None, *, market: bool = False,
                      kind: Optional[str] = None,
                      client_order_id: Optional[str] = None) -> str:
-        s = "buy" if (side or "").lower().startswith("b") else "sell"
+        s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
+        if s_norm in {"BUY", "B"}:
+            s = "buy"
+        elif s_norm in {"SELL", "S"}:
+            s = "sell"
+        else:
+            raise SubmissionRefused(f"submit_order {symbol}: invalid side={side!r}")
         ordertype = "market" if (market or price is None) else "limit"
         if ordertype == "limit":
             if isinstance(price, bool):
@@ -690,10 +704,14 @@ class KrakenProvider(MarketDataProvider):
                 raise ProviderError(
                     f"pair_precision {symbol}: missing metadata {', '.join(missing)}"
                 )
-            if any(isinstance(info[key], bool) for key in ("pair_decimals", "lot_decimals", "ordermin")):
+            if any(isinstance(info[key], bool) for key in ("pair_decimals", "lot_decimals", "ordermin", "base")):
                 raise ValueError("boolean values not allowed in pair_precision")
-            p_dec = int(info["pair_decimals"])
-            v_dec = int(info["lot_decimals"])
+            p_f = float(info["pair_decimals"])
+            v_f = float(info["lot_decimals"])
+            if not (math.isfinite(p_f) and math.isfinite(v_f)) or int(p_f) != p_f or int(v_f) != v_f:
+                raise ValueError("non-integer decimals in pair_precision")
+            p_dec = int(p_f)
+            v_dec = int(v_f)
             ord_min = float(info["ordermin"])
             if p_dec < 0 or v_dec < 0 or not math.isfinite(ord_min) or ord_min <= 0.0:
                 raise ValueError("non-finite or non-positive values in pair_precision")
