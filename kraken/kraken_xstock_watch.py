@@ -227,19 +227,19 @@ def check_levels(client: KrakenClient, st: dict, alloc_price: float,
         qty = 0.0
     if not math.isfinite(qty) or qty < 0:
         qty = 0.0
-    if not st.get("alerted_tp") and chg >= tp_pct:
+    if tp_pct > 0 and not st.get("alerted_tp") and chg >= tp_pct:
         st["alerted_tp"] = True
         notify(title=f"📈 xStock {chg:+.1f}% above the allocation ({price})",
                body=f"Estimated value: {qty * price:.0f} (allocated at {alloc_price}). "
                     f"Consider a partial sale or starting the bot with adoption.",
                source="xstock-watch", price=price, desktop=desktop)
     tp2 = required_float_env("XSTOCK_TP2_ALERT_PCT")
-    if tp2 and not st.get("alerted_tp2") and chg >= tp2:
+    if math.isfinite(tp2) and tp2 > 0 and not st.get("alerted_tp2") and chg >= tp2:
         st["alerted_tp2"] = True
         notify(title=f"📈📈 TRANSA 2: xStock {chg:+.1f}% ({price})",
                body=f"The second target is reached — sell the rest. Value: {qty * price:.0f}.",
                source="xstock-watch", price=price, desktop=desktop)
-    if not st.get("alerted_sl") and chg <= -sl_pct:
+    if sl_pct > 0 and not st.get("alerted_sl") and chg <= -sl_pct:
         st["alerted_sl"] = True
         notify(title=f"📉 xStock {chg:+.1f}% sub alocare ({price})",
                body=f"Estimated value: {qty * price:.0f} (allocated at {alloc_price}). "
@@ -353,6 +353,10 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
     global notify
     asset = required_env("XSTOCK_TRIAL_ASSET")
     quote = required_env("XSTOCK_QUOTE")
+    saved_env = {
+        k: os.environ.get(k)
+        for k in ("XSTOCK_BOT_PAPER", "XSTOCK_AUTOSTART", "XSTOCK_STATE_FILE")
+    }
     os.environ["XSTOCK_BOT_PAPER"] = "true"                      # guaranteed zero-money mode
     os.environ["XSTOCK_AUTOSTART"] = "true"
     os.environ["XSTOCK_STATE_FILE"] = os.path.join(_HERE, "xstock_state_trial.json")
@@ -370,12 +374,28 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
         except KrakenError as e:
             log(f"  ! cannot read the balance: {e}")
             return 1
-        if float(bal.get(asset, 0) or 0) <= 0:
+        if not isinstance(bal, dict):
+            return 1
+        raw_asset_bal = bal.get(asset, 0)
+        try:
+            asset_bal = 0.0 if (raw_asset_bal is None or isinstance(raw_asset_bal, bool)) else float(raw_asset_bal)
+        except (TypeError, ValueError, OverflowError):
+            asset_bal = 0.0
+        if not math.isfinite(asset_bal) or asset_bal <= 0:
             log(f"  ! n-ai {asset} in cont — alege alt activ: XSTOCK_TRIAL_ASSET=...")
             return 1
         st = _load_state()
-        st["known_assets"] = {a: float(q) for a, q in bal.items()
-                              if float(q) > 0 and a != asset}
+        known: dict[str, float] = {}
+        for a, q in bal.items():
+            if a == asset or q is None or isinstance(q, bool):
+                continue
+            try:
+                qf = float(q)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(qf) and qf > 0:
+                known[a] = qf
+        st["known_assets"] = known
         log(f"  [proba] cobai: {asset} — removing it from the snapshot so it 'arrives' now")
         check_balance(client, st, asset, desktop)                # 1. allocation detection
         verdict["alocare detectata"] = bool(st["allocated"])
@@ -427,6 +447,11 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
                 os.remove(sp)
         if os.path.exists(_state_file()):
             os.remove(_state_file())
+        for env_k, env_v in saved_env.items():
+            if env_v is None:
+                os.environ.pop(env_k, None)
+            else:
+                os.environ[env_k] = env_v
     ok = all(verdict.values()) and len(verdict) == 5
     log("=== VERDICT PROBA ===")
     for k, v in verdict.items():

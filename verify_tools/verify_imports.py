@@ -19,14 +19,19 @@ MODS = [
     "providers.market_api", "symbols",
 ]
 
-fails = 0
-for m in MODS:
-    try:
-        importlib.import_module(m)
-        print(f"OK   {m}")
-    except Exception as e:  # noqa: BLE001
-        fails += 1
-        print(f"FAIL {m}: {e.__class__.__name__}: {e}")
+def main() -> int:
+    fails = 0
+    for m in MODS:
+        try:
+            importlib.import_module(m)
+            print(f"OK   {m}")
+        except Exception as e:  # noqa: BLE001
+            fails += 1
+            print(f"FAIL {m}: {e.__class__.__name__}: {e}")
 
-print(f"\n=== {len(MODS)-fails}/{len(MODS)} OK, {fails} failed ===")
-sys.exit(1 if fails else 0)
+    print(f"\n=== {len(MODS)-fails}/{len(MODS)} OK, {fails} failed ===")
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

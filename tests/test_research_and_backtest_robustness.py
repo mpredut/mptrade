@@ -1433,4 +1433,62 @@ def test_glob_escape_bracket_paths_and_export_env_parsing(tmp_path):
     assert ("SOLUSD", "SOL", "USD") in kr_pairs
 
 
+def test_xstock_watch_new_coins_and_pnl_report_guards(monkeypatch):
+    """Verify kraken_xstock_watch, new_coins_discovery, and verify_tools/pnl_report guards."""
+    from types import SimpleNamespace
+    from kraken import kraken_xstock_watch as xw
+    from market_monitor import new_coins_discovery as ncd
+    from verify_tools import pnl_report as pr
+
+    # 1. kraken_xstock_watch.check_levels ignores non-positive thresholds and run_trial restores env
+    sent = []
+    monkeypatch.setattr(xw, "notify", lambda **kw: sent.append(kw))
+    monkeypatch.setenv("XSTOCK_TP2_ALERT_PCT", "-5")
+    st = {
+        "allocated": {"asset": "SPCX", "qty": 10.0, "ts": 1.0},
+        "pair": "SPCXUSD",
+        "alerted_tp": False,
+        "alerted_tp2": False,
+        "alerted_sl": False,
+    }
+    client = SimpleNamespace(last_price=lambda _p: 100.0, balance=lambda: {"SPCX": 0})
+    xw.check_levels(client, st, alloc_price=100.0, tp_pct=0.0, sl_pct=0.0, yahoo_sym="", desktop=False)
+    assert sent == []
+
+    monkeypatch.setenv("XSTOCK_TRIAL_ASSET", "SPCX")
+    monkeypatch.setenv("XSTOCK_QUOTE", "USD")
+    monkeypatch.setenv("XSTOCK_STATE_FILE", "/tmp/orig_xstock_state.json")
+    rc = xw.run_trial(client, desktop=False)
+    assert rc == 1
+    assert os.environ.get("XSTOCK_STATE_FILE") == "/tmp/orig_xstock_state.json"
+
+    # 2. NewCoinsMonitor.add_new_coin_to_watchlist respects False from price_monitor.add_symbol
+    fake_factory = SimpleNamespace(
+        get_all_new_coins=lambda _d: {"coinmarketcap": [{"symbol": "NEWC", "name": "NewCoin"}]},
+        get_available_sources=lambda: ["coinmarketcap"],
+        refresh_all=lambda: None,
+    )
+    reject_pm = SimpleNamespace(
+        original_symbols=[],
+        active_symbols=set(),
+        max_monitored_symbols=10,
+        add_symbol=lambda _s, preferred_source=None: False,
+    )
+    mon = ncd.NewCoinsMonitor(price_monitor=reject_pm, factory=fake_factory)
+    assert mon.add_new_coin_to_watchlist({"symbol": "NEWC", "name": "NewCoin"}) is False
+    assert mon.add_new_coin_to_watchlist({}) is False
+
+    # 3. verify_tools.pnl_report.binance_symbol returns 0.0 unrealized when current price is unavailable
+    monkeypatch.setattr(
+        pr.ao,
+        "get_filled_orders",
+        lambda _c, _s, _st: [{"price": "100.0", "executedQty": "2.0", "side": "BUY", "time": 1000}],
+    )
+    monkeypatch.setattr(pr.bapi, "get_current_price", lambda _s: None)
+    res = pr.binance_symbol("BTCUSDC")
+    assert res["pos"] == 2.0
+    assert res["unreal"] == 0.0
+
+
+
 

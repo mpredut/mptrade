@@ -3,7 +3,7 @@
 P&L (current position at current price). Sources: Binance get_filled_orders (direct API,
 not the incomplete cache) and Kraken/HL state. Binance uses a 120-day window, so older
 cost basis is approximate. Run with: ./myenv/bin/python verify_tools/pnl_report.py"""
-import sys, os, time, json
+import sys, os, time, json, math
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT); os.chdir(ROOT)
 from binance_api import bapi_allorders as ao
@@ -17,6 +17,16 @@ from providers.base import (
 )
 
 WINDOW_D = 120
+
+
+def _safe_float(val, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
 
 
 def binance_symbol(symbol):
@@ -35,49 +45,13 @@ def binance_symbol(symbol):
                 m = min(q, qty); avg = cost / qty
                 realized += (p - avg) * m; cost -= avg * m; qty -= m
     try:
-        cur = float(bapi.get_current_price(symbol))
+        cur = _safe_float(bapi.get_current_price(symbol), 0.0)
+        if cur < 0:
+            cur = 0.0
     except Exception:
         cur = 0.0
-    unreal = qty * cur - cost if qty > 1e-9 else 0.0
+    unreal = (qty * cur - cost) if (qty > 1e-9 and cur > 0) else 0.0
     return dict(realized=realized, unreal=unreal, pos=qty, cur=cur, n=len(fills), buys=buys, sells=sells)
-
-
-print(f"\n=== RAPORT P&L FLOTA ({time.strftime('%Y-%m-%d %H:%M')}) ===")
-print(f"{'sursa':<22}{'realized':>11}{'unrealized':>12}{'pozitie':>12}")
-tot_r = tot_u = 0.0
-
-for sym in symbols_for("binance"):
-    try:
-        d = binance_symbol(sym)
-        tot_r += d["realized"]; tot_u += d["unreal"]
-        print(f"{'Binance '+sym:<22}{d['realized']:>+11.2f}{d['unreal']:>+12.2f}"
-              f"{d['pos']:>10.4f}  ({d['n']} fills 120z, {d['buys']}b/{d['sells']}s @ {d['cur']})")
-    except Exception as e:
-        print(f"{'Binance '+sym:<22} EROARE: {e}")
-
-# Kraken HYPE (kraken_bot)
-try:
-    k = json.load(open("kraken/.state_HYPEUSD.json"))
-    hy = 54.77  # Latest price from trail_k.
-    kr, ku = k["realized_net"], (k["qty"] * hy - k["cost"] if k["qty"] > 1e-9 else 0.0)
-    tot_r += kr; tot_u += ku
-    print(f"{'Kraken HYPE (bot)':<22}{kr:>+11.2f}{ku:>+12.2f}{k['qty']:>10.4f}  (avg cost {k['cost']/k['qty'] if k['qty'] else 0:.2f}, cur ~{hy})")
-except Exception as e:
-    print(f"{'Kraken HYPE':<22} EROARE: {e}")
-
-# Hyperliquid dn_bot (delta-neutral: profit = funding - fees, price-independent)
-try:
-    h = json.load(open("hyperliquid/.state_dn_HYPE.json"))
-    hl = h.get("funding_accrued", 0) - h.get("fees_paid", 0)
-    tot_r += hl
-    print(f"{'HL dn_bot (funding)':<22}{hl:>+11.2f}{0.0:>+12.2f}{h.get('spot_qty',0):>10.4f}  (delta-neutral: funding {h.get('funding_accrued',0):.2f} - fee {h.get('fees_paid',0):.2f})")
-except Exception as e:
-    print(f"{'HL dn_bot':<22} EROARE: {e}")
-
-print("-" * 57)
-print(f"{'TOTAL':<22}{tot_r:>+11.2f}{tot_u:>+12.2f}   -> NET {tot_r+tot_u:+.2f} USD")
-print("\nNote: the Binance realised figure covers a 120-day window (a cost basis older than that is approximated).")
-print("No Binance fees in realized (the API fills do not expose them here); ~0.075%/leg with BNB.")
 
 
 # ── PER-BOT ATTRIBUTION (from get_all_orders, by clientOrderId prefix) ──────────
@@ -99,19 +73,22 @@ def _bot(cid):
 def per_bot(symbol):
     from collections import defaultdict
     try:
-        orders = bapi.client.get_all_orders(symbol=symbol, limit=1000)
+        orders = bapi.client.get_all_orders(symbol=symbol, limit=1000) or []
     except Exception as e:  # noqa: BLE001
         print(f"  {symbol}: EROARE {e}"); return
     g = defaultdict(lambda: {"bq": 0.0, "bv": 0.0, "sq": 0.0, "sv": 0.0})
     for o in orders:
-        eq = float(o.get("executedQty", 0) or 0)
+        if not isinstance(o, dict):
+            continue
+        eq = _safe_float(o.get("executedQty", 0), 0.0)
         if eq <= 0:
             continue
-        cqq = float(o.get("cummulativeQuoteQty", 0) or 0)
+        cqq = _safe_float(o.get("cummulativeQuoteQty", 0), 0.0)
         a = g[_bot(o.get("clientOrderId", ""))]
-        if o["side"] == "BUY":
+        side = str(o.get("side") or "").upper()
+        if side == "BUY":
             a["bq"] += eq; a["bv"] += cqq
-        else:
+        elif side == "SELL":
             a["sq"] += eq; a["sv"] += cqq
     print(f"\n  {symbol} (the last {len(orders)} orders):")
     print(f"    {'sursa':<16}{'buy$':>9}{'sell$':>9}{'net_qty':>12}{'realized_own':>14}")
@@ -123,8 +100,58 @@ def per_bot(symbol):
         print(f"    {b:<16}{a['bv']:>9.0f}{a['sv']:>9.0f}{a['bq'] - a['sq']:>+12.4f}{realized_own:>+14.2f}")
 
 
-print("\n=== ATTRIBUTION PER BOT (clientOrderId; realized_own = only its own round trips) ===")
-for _sym in symbols_for("binance"):
-    per_bot(_sym)
-print("Note: bots that trade inventory between themselves (tradeall buys / rtrade sells the same TAO)")
-print("have no cleanly separable realized — net_qty shows who accumulates (+) versus who distributes (-).")
+def main():
+    print(f"\n=== RAPORT P&L FLOTA ({time.strftime('%Y-%m-%d %H:%M')}) ===")
+    print(f"{'sursa':<22}{'realized':>11}{'unrealized':>12}{'pozitie':>12}")
+    tot_r = tot_u = 0.0
+
+    for sym in symbols_for("binance"):
+        try:
+            d = binance_symbol(sym)
+            tot_r += d["realized"]; tot_u += d["unreal"]
+            print(f"{'Binance '+sym:<22}{d['realized']:>+11.2f}{d['unreal']:>+12.2f}"
+                  f"{d['pos']:>10.4f}  ({d['n']} fills 120z, {d['buys']}b/{d['sells']}s @ {d['cur']})")
+        except Exception as e:
+            print(f"{'Binance '+sym:<22} EROARE: {e}")
+
+    # Kraken HYPE (kraken_bot)
+    try:
+        with open("kraken/.state_HYPEUSD.json", encoding="utf-8") as _kf:
+            k = json.load(_kf)
+        hy = 54.77  # Latest price from trail_k.
+        k_qty = _safe_float(k.get("qty") if isinstance(k, dict) else 0, 0.0)
+        k_cost = _safe_float(k.get("cost") if isinstance(k, dict) else 0, 0.0)
+        kr = _safe_float(k.get("realized_net") if isinstance(k, dict) else 0, 0.0)
+        ku = (k_qty * hy - k_cost) if k_qty > 1e-9 else 0.0
+        tot_r += kr; tot_u += ku
+        print(f"{'Kraken HYPE (bot)':<22}{kr:>+11.2f}{ku:>+12.2f}{k_qty:>10.4f}  (avg cost {k_cost/k_qty if k_qty else 0:.2f}, cur ~{hy})")
+    except Exception as e:
+        print(f"{'Kraken HYPE':<22} EROARE: {e}")
+
+    # Hyperliquid dn_bot (delta-neutral: profit = funding - fees, price-independent)
+    try:
+        with open("hyperliquid/.state_dn_HYPE.json", encoding="utf-8") as _hf:
+            h = json.load(_hf)
+        h_fund = _safe_float(h.get("funding_accrued") if isinstance(h, dict) else 0, 0.0)
+        h_fees = _safe_float(h.get("fees_paid") if isinstance(h, dict) else 0, 0.0)
+        h_spot = _safe_float(h.get("spot_qty") if isinstance(h, dict) else 0, 0.0)
+        hl = h_fund - h_fees
+        tot_r += hl
+        print(f"{'HL dn_bot (funding)':<22}{hl:>+11.2f}{0.0:>+12.2f}{h_spot:>10.4f}  (delta-neutral: funding {h_fund:.2f} - fee {h_fees:.2f})")
+    except Exception as e:
+        print(f"{'HL dn_bot':<22} EROARE: {e}")
+
+    print("-" * 57)
+    print(f"{'TOTAL':<22}{tot_r:>+11.2f}{tot_u:>+12.2f}   -> NET {tot_r+tot_u:+.2f} USD")
+    print("\nNote: the Binance realised figure covers a 120-day window (a cost basis older than that is approximated).")
+    print("No Binance fees in realized (the API fills do not expose them here); ~0.075%/leg with BNB.")
+
+    print("\n=== ATTRIBUTION PER BOT (clientOrderId; realized_own = only its own round trips) ===")
+    for _sym in symbols_for("binance"):
+        per_bot(_sym)
+    print("Note: bots that trade inventory between themselves (tradeall buys / rtrade sells the same TAO)")
+    print("have no cleanly separable realized — net_qty shows who accumulates (+) versus who distributes (-).")
+
+
+if __name__ == "__main__":
+    main()

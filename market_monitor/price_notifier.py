@@ -14,6 +14,7 @@ Usage: ``python3 price_notifier.py [--config PATH] [--check]``.
 """
 
 import argparse
+import math
 import os
 import platform
 import threading
@@ -111,6 +112,8 @@ def new_coin_alerts_handler(alerts):
     print("=" * 70)
 
     for coin_info in alerts:
+        if not isinstance(coin_info, dict):
+            continue
         source = coin_info.get('source', 'unknown')
         has_price = coin_info.get('has_price', False)
         auto_added = coin_info.get('auto_added', False)
@@ -119,7 +122,7 @@ def new_coin_alerts_handler(alerts):
         )
 
         print(
-            f"🆕 {coin_info['symbol']} - "
+            f"🆕 {coin_info.get('symbol', 'N/A')} - "
             f"{coin_info.get('name', 'N/A')}"
         )
         print(f"   📡 Source: {source}")
@@ -129,7 +132,9 @@ def new_coin_alerts_handler(alerts):
             raw_px = coin_info.get('price')
             try:
                 px_val = 0.0 if (raw_px is None or isinstance(raw_px, bool)) else float(raw_px)
-            except (TypeError, ValueError):
+                if not math.isfinite(px_val) or px_val < 0.0:
+                    px_val = 0.0
+            except (TypeError, ValueError, OverflowError):
                 px_val = 0.0
             print(f"   💰 Price: ${px_val:.8f}")
             print(f"   ✅ Auto-added: {auto_added}")
@@ -212,7 +217,7 @@ def start_new_coin_checker(cachePriceAll, interval_seconds=3600,
                     auto_added_count += 1
         else:
             if coins:
-                symbols_list = ', '.join([c['symbol'] for c in coins[:10]])
+                symbols_list = ', '.join([str(c.get('symbol', 'N/A')) for c in coins[:10] if isinstance(c, dict)])
                 if len(coins) > 10:
                     symbols_list += f" and {len(coins) - 10} more"
                 print(f"[Startup] ℹ️ Source {source_name}: {len(coins)} new coins: {symbols_list}")

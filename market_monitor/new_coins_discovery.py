@@ -147,10 +147,15 @@ class CoinMarketCapSource(NewCoinsSource):
                         self._supported_symbols.add(symbol)
                         quote_map = coin.get('quote') if isinstance(coin.get('quote'), dict) else {}
                         usd_quote = quote_map.get('USD') if isinstance(quote_map.get('USD'), dict) else {}
+                        raw_date = coin.get('date_added')
+                        try:
+                            added_dt = pd.to_datetime(raw_date) if raw_date else None
+                        except Exception:
+                            added_dt = None
                         self._cache.append({
                             "symbol": symbol,
                             "name": name,
-                            "added_at": pd.to_datetime(coin['date_added']),
+                            "added_at": added_dt,
                             "source": self.get_name(),
                             "price": usd_quote.get('price') if usd_quote.get('price') is not None else 0,
                             "volume_24h": usd_quote.get('volume_24h') if usd_quote.get('volume_24h') is not None else 0,
@@ -158,7 +163,7 @@ class CoinMarketCapSource(NewCoinsSource):
                             "change_24h": usd_quote.get('percent_change_24h') if usd_quote.get('percent_change_24h') is not None else 0,
                             "change_7d": usd_quote.get('percent_change_7d') if usd_quote.get('percent_change_7d') is not None else 0,
                             "slug": slug,
-                            "url": f"https://coinmarketcap.com/currencies/{coin['slug']}/"
+                            "url": f"https://coinmarketcap.com/currencies/{slug}/" if slug else ""
                         })
                 print(f"[CMC Source] Loaded {len(self._cache)} coins")
                 self._last_refresh = time.time()
@@ -484,6 +489,9 @@ class NewCoinsMonitor:
         alerts = []
 
         for coin in new_coins:
+            if not isinstance(coin, dict) or not coin.get("symbol"):
+                continue
+            sym = str(coin["symbol"])
             if auto_add and source_has_price:
                 auto_added_status = self.add_new_coin_to_watchlist(coin)
             else:
@@ -491,15 +499,15 @@ class NewCoinsMonitor:
 
                 if not source_has_price:
                     print(
-                        f"[NewCoinsMonitor] ℹ️ {coin['symbol']} discovered from "
+                        f"[NewCoinsMonitor] ℹ️ {sym} discovered from "
                         f"{source_name} - informational only (no price in the system)"
                     )
 
             alerts.append({
                 "type": "new_coin_discovered",
                 "source": source_name,
-                "symbol": coin["symbol"],
-                "name": coin.get("name", coin["symbol"]),
+                "symbol": sym,
+                "name": coin.get("name", sym),
                 "added_at": coin.get("added_at"),
                 "price": coin.get("price", 0),
                 "auto_added": auto_added_status,
@@ -539,7 +547,7 @@ class NewCoinsMonitor:
                     if new_symbols:
                         print(f"[NewCoinsMonitor] 🆕 New symbols detected: {new_symbols}")
                         for source_name, coins in self.all_new_coins.items():
-                            new_from_source = [c for c in coins if c['symbol'] in new_symbols]
+                            new_from_source = [c for c in coins if isinstance(c, dict) and c.get('symbol') in new_symbols]
                             if new_from_source:
                                 auto_add = (source_name.lower() == "coinmarketcap")
                                 self._trigger_alerts(new_from_source, source_name, auto_add=auto_add)
@@ -565,11 +573,14 @@ class NewCoinsMonitor:
                 report += f"\n📡 SOURCE: {source_name.upper()} ({len(coins)} coins)\n"
                 report += "-" * 40 + "\n"
                 for coin in coins[:15]:
+                    if not isinstance(coin, dict):
+                        continue
+                    sym_str = str(coin.get('symbol') or 'N/A')
                     raw_added = coin.get('added_at')
                     added_str = raw_added.strftime('%Y-%m-%d') if (raw_added is not None and not pd.isna(raw_added) and hasattr(raw_added, 'strftime')) else 'N/A'
                     px_val = _safe_num(coin.get('price'), 0.0)
                     price_str = f"${px_val:.6f}" if px_val > 0 else 'N/A'
-                    report += f"   🆕 {coin['symbol']} - {coin.get('name', coin['symbol'])}\n"
+                    report += f"   🆕 {sym_str} - {coin.get('name', sym_str)}\n"
                     report += f"      📅 Added: {added_str} | 💰 Price: {price_str}\n"
                     if coin.get('url'):
                         report += f"      🔗 {coin['url']}\n"
@@ -586,7 +597,7 @@ class NewCoinsMonitor:
         for source_name, coins in self.all_new_coins.items():
             summary["sources"][source_name] = {
                 "count": len(coins),
-                "symbols": [c['symbol'] for c in coins][:20]
+                "symbols": [c.get('symbol') for c in coins if isinstance(c, dict) and c.get('symbol')][:20]
             }
         return summary
 
@@ -598,8 +609,10 @@ class NewCoinsMonitor:
         if not self.price_monitor:
             print(f"[NewCoinsMonitor] No price_monitor available")
             return False
+        if not isinstance(coin_info, dict) or not coin_info.get('symbol'):
+            return False
 
-        symbol = coin_info['symbol']
+        symbol = str(coin_info['symbol'])
         source = coin_info.get('source', 'unknown')
 
         if not self.is_valid_symbol(symbol, coin_info.get('name', ''), coin_info.get('slug', '')):
@@ -657,7 +670,9 @@ class NewCoinsMonitor:
         # Add the symbol to the watchlist regardless of filters
         try:
             if hasattr(self.price_monitor, 'add_symbol'):
-                self.price_monitor.add_symbol(symbol, preferred_source=source)
+                added = self.price_monitor.add_symbol(symbol, preferred_source=source)
+                if added is False:
+                    return False
                 print(f"[NewCoinsMonitor] ✅ {symbol} added to the watchlist (price from {source})")
                 return True
             else:
