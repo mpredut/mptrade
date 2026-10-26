@@ -2079,6 +2079,33 @@ class TestAtomicWrite(unittest.TestCase):
                 is_valid_item_fn=cm.CacheTradeManager._is_valid_item,
                 reader_reason="trade_cache_reader_not_current",
             )
+        with self.assertRaises(cm.account_cache_health.AccountCacheNotReady):
+            cacheintegrity.read_trade_records_range_strict(
+                t_path,
+                10,
+                5,
+                is_valid_item_fn=cm.CacheTradeManager._is_valid_item,
+                reader_reason="trade_cache_reader_not_current",
+            )
+        with self.assertRaises(ValueError):
+            cacheintegrity.trade_semantic_signature(
+                {"symbol": "BTCUSDC", "id": 1, "orderId": 10, "price": "NaN", "qty": "0.1", "time": 1000, "isBuyer": True}
+            )
+        with self.assertRaises(ValueError):
+            cacheintegrity.trade_semantic_signature(
+                {"symbol": "BTCUSDC", "id": 1, "orderId": 10, "price": "Infinity", "qty": "0.1", "time": 1000, "isBuyer": True}
+            )
+        with self.assertRaises(ValueError):
+            cacheintegrity.trade_semantic_signature(
+                {"symbol": "BTCUSDC", "id": True, "orderId": 10, "price": "50000", "qty": "0.1", "time": 1000, "isBuyer": True}
+            )
+        from orchestratorOS.livecheck import os_resources_watchdog
+        self.assertIsNone(
+            os_resources_watchdog._usage({"ticks": 10}, {"ticks": 20}, 100, 200, 0)
+        )
+        self.assertIsNone(
+            os_resources_watchdog._usage({"ticks": 10}, {"ticks": 20}, 100, 200, False)
+        )
 
         # CacheAllPriceFetcherManager overwrite guard, null symbol_metadata resilience, and fetchtime cleanup
         from market_monitor import pricefetcher

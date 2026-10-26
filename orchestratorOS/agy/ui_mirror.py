@@ -105,12 +105,13 @@ def sync_topic_thread_from_ui(
             try:
                 cols = [r[1] for r in conn.execute("PRAGMA table_info(conversation_summaries)")]
                 common = [c for c in cols if c in merged]
-                conn.execute(
-                    f"INSERT OR REPLACE INTO conversation_summaries ({','.join(common)}) "
-                    f"VALUES ({','.join('?' for _ in common)})",
-                    [merged[c] for c in common],
-                )
-                conn.commit()
+                if common:
+                    conn.execute(
+                        f"INSERT OR REPLACE INTO conversation_summaries ({','.join(common)}) "
+                        f"VALUES ({','.join('?' for _ in common)})",
+                        [merged[c] for c in common],
+                    )
+                    conn.commit()
             finally:
                 conn.close()
         return True

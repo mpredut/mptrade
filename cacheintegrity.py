@@ -49,6 +49,8 @@ def snapshot_data_version(items: dict[str, Any], fetchtime: dict[str, Any] | Non
 
 def trade_data_version(stream_id: str, revision: int) -> str:
     """Format a monotonic ``<stream_id>:<revision>`` version string for Trade JSONL."""
+    if isinstance(revision, bool):
+        raise ValueError("invalid Trade stream revision")
     return f"{stream_id}:{int(revision)}"
 
 
@@ -83,12 +85,28 @@ def trade_records_digest(
 
 def trade_semantic_signature(item: dict[str, Any]) -> tuple[Any, ...]:
     """Normalize the immutable financial fields shared by REST and WebSocket."""
+    if (
+        isinstance(item["id"], bool)
+        or isinstance(item["orderId"], bool)
+        or isinstance(item["time"], bool)
+        or not isinstance(item["isBuyer"], bool)
+        or isinstance(item["price"], bool)
+        or isinstance(item["qty"], bool)
+    ):
+        raise ValueError("invalid Trade row field type")
+    try:
+        price_dec = Decimal(str(item["price"])).normalize()
+        qty_dec = Decimal(str(item["qty"])).normalize()
+    except ArithmeticError as exc:
+        raise ValueError("invalid Trade price or qty") from exc
+    if not (price_dec.is_finite() and qty_dec.is_finite()):
+        raise ValueError("non-finite Trade price or qty")
     return (
         str(item["symbol"]).upper(),
         int(item["id"]),
         int(item["orderId"]),
-        Decimal(str(item["price"])).normalize(),
-        Decimal(str(item["qty"])).normalize(),
+        price_dec,
+        qty_dec,
         int(item["time"]),
         item["isBuyer"],
     )
@@ -99,6 +117,8 @@ def dedupe_trade_items_by_id(items: Iterable[dict[str, Any]]) -> list[dict[str, 
     seen: dict[str, tuple[Any, ...]] = {}
     deduped: list[dict[str, Any]] = []
     for item in items:
+        if isinstance(item["id"], bool):
+            raise ValueError("invalid Trade id")
         trade_id = str(int(item["id"]))
         signature = trade_semantic_signature(item)
         if trade_id in seen:
@@ -158,6 +178,13 @@ def build_account_meta_snapshot(
         "counts": dict(counts),
     }
     if committed_bytes is not None:
+        if (
+            isinstance(revision, bool)
+            or isinstance(committed_bytes, bool)
+            or int(revision) < 0
+            or int(committed_bytes) < 0
+        ):
+            raise ValueError("invalid Trade stream metadata")
         payload.update({
             "stream_id": stream_id,
             "revision": int(revision),
@@ -282,9 +309,16 @@ def read_trade_records_range_strict(
     reader_reason: str,
 ) -> list[tuple[str, dict[str, Any]]]:
     """Read and validate Trade JSONL records strictly from ``[start_byte, end_byte)``."""
-    if end_byte < start_byte:
-        raise ValueError("Trade committed boundary moved backwards")
     try:
+        if (
+            isinstance(start_byte, bool)
+            or isinstance(end_byte, bool)
+            or not isinstance(start_byte, int)
+            or not isinstance(end_byte, int)
+            or start_byte < 0
+            or end_byte < start_byte
+        ):
+            raise ValueError("Trade committed boundary moved backwards")
         with open(path, "rb") as handle:
             file_size = os.fstat(handle.fileno()).st_size
             if file_size < end_byte:

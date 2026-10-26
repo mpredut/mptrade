@@ -24,9 +24,14 @@ RESTART_COOLDOWN_MIN = wc.required_float_env("RESOURCE_RESTART_COOLDOWN_MINUTES"
 RESTART_MAX = wc.required_int_env("RESOURCE_RESTART_MAX")
 RESTART_WINDOW_H = wc.required_float_env("RESOURCE_RESTART_WINDOW_HOURS")
 
-if min(CPU_THRESHOLD, MEMORY_THRESHOLD_MB, CONSECUTIVE, RECOVERY_CHECKS,
-       COOLDOWN_MIN, CHECK_INTERVAL_MIN, RESTART_COOLDOWN_MIN, RESTART_MAX,
-       RESTART_WINDOW_H) <= 0:
+if not all(
+    math.isfinite(v) and v > 0
+    for v in (
+        CPU_THRESHOLD, MEMORY_THRESHOLD_MB, CONSECUTIVE, RECOVERY_CHECKS,
+        COOLDOWN_MIN, CHECK_INTERVAL_MIN, RESTART_COOLDOWN_MIN, RESTART_MAX,
+        RESTART_WINDOW_H,
+    )
+):
     raise ValueError("resource watchdog configuration values must be positive")
 
 
@@ -166,6 +171,9 @@ def _processes():
 def _usage(previous, current, previous_total, current_total, cpu_count):
     if not isinstance(previous, dict) or not isinstance(current, dict):
         return None
+    cpu_cnt = _safe_float(cpu_count, 0.0)
+    if cpu_cnt <= 0.0:
+        return None
     prev_tot = _safe_float(previous_total, -1.0)
     curr_tot = _safe_float(current_total, -1.0)
     if prev_tot < 0.0 or curr_tot < 0.0:
@@ -180,7 +188,7 @@ def _usage(previous, current, previous_total, current_total, cpu_count):
     tick_delta = curr_ticks - prev_ticks
     if tick_delta < 0:
         return None
-    return tick_delta * cpu_count * 100.0 / total_delta
+    return tick_delta * cpu_cnt * 100.0 / total_delta
 
 
 def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
@@ -189,7 +197,9 @@ def check_once(now=None, *, total_ticks=None, processes=None, cpu_count=None):
         now = time.time()
     total_ticks = _system_ticks() if total_ticks is None else total_ticks
     processes = _processes() if processes is None else processes
-    cpu_count = (os.cpu_count() or 1) if cpu_count is None else cpu_count
+    cpu_count = (os.cpu_count() or 1) if cpu_count is None else _safe_int(cpu_count, 1)
+    if cpu_count <= 0:
+        cpu_count = 1
     state = wc.load_state(STATE_FILE)
     if not isinstance(state, dict):
         state = {}

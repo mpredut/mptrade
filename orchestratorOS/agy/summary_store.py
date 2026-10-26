@@ -158,12 +158,13 @@ def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
     try:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(conversation_summaries)")]
         common = [c for c in cols if c in row]
-        conn.execute(
-            f"INSERT OR REPLACE INTO conversation_summaries ({','.join(common)}) "
-            f"VALUES ({','.join('?' for _ in common)})",
-            [row[c] for c in common],
-        )
-        conn.commit()
+        if common:
+            conn.execute(
+                f"INSERT OR REPLACE INTO conversation_summaries ({','.join(common)}) "
+                f"VALUES ({','.join('?' for _ in common)})",
+                [row[c] for c in common],
+            )
+            conn.commit()
     finally:
         conn.close()
     raw_sum = row.get("raw_summary")
