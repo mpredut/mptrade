@@ -61,7 +61,9 @@ def in_market_window() -> bool:
 def verify_instrument(client: T212Client, ticker: str, expected_isin: str) -> bool:
     """Best-effort verification that a configured EXPECTED_ISIN matches the ticker.
     Return False only for a proven mismatch identifying the wrong instrument."""
-    if not expected_isin:
+    if not ticker or isinstance(ticker, bool) or not str(ticker).strip():
+        return False
+    if not expected_isin or isinstance(expected_isin, bool) or not str(expected_isin).strip():
         return True
     instruments = client.list_instruments()
     if not instruments or not isinstance(instruments, list):
@@ -289,6 +291,10 @@ def _wait_for_launch(args, yahoo_symbol, label, interval) -> bool:
 # One-shot commands
 # ---------------------------------------------------------------------------
 def _cmd_find_ticker(client: T212Client, query: str) -> int:
+    if not query or isinstance(query, bool) or not str(query).strip():
+        log("! invalid search query")
+        return 1
+    query = str(query).strip()
     log(f"[FIND] Caut '{query}' in instrumentele T212...")
     instruments = client.list_instruments()
     if not isinstance(instruments, list):

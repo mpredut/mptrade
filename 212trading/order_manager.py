@@ -105,6 +105,8 @@ def _read_marker(path: str) -> dict | None:
 
 
 def _safe_marker_component(value: str) -> str:
+    if isinstance(value, bool):
+        return "unknown"
     component = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
     return component.strip("._") or "unknown"
 
@@ -430,6 +432,11 @@ def place_order_with_retry(
         log("  ! [ORDER] validity invalid")
         return False
     validity = validity.strip().upper()
+    if validity == "GTC":
+        validity = "GOOD_TILL_CANCEL"
+    if validity not in {"DAY", "GOOD_TILL_CANCEL"}:
+        log(f"  ! [ORDER] validity invalid: {validity!r}")
+        return False
     if isinstance(quantity, bool) or isinstance(limit_price, bool) or isinstance(retry_delay, bool):
         log("  ! [ORDER] parametri numerici invalizi: bool nu este permis")
         return False

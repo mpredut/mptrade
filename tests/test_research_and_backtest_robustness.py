@@ -2884,6 +2884,40 @@ def test_venue_market_data_and_client_hardening():
     assert t212_md._chart(None) == (None, [])  # type: ignore[arg-type]
 
 
+def test_t212_strategy_order_manager_and_ipo_hardening():
+    """Verify T212 strategy, order_manager, and ipo helpers handle malformed inputs safely."""
+    import importlib
+    t212_strat = importlib.import_module("212trading.strategy")
+    t212_om = importlib.import_module("212trading.order_manager")
+    t212_ipo = importlib.import_module("212trading.ipo")
+
+    # 1. state_path_for handles bool/None/punctuation-only tickers
+    assert t212_strat.state_path_for(True).endswith(".state_unknown.json")  # type: ignore[arg-type]
+    assert t212_strat.state_path_for("---").endswith(".state_unknown.json")
+
+    # 2. _find_open and _has_open are case-insensitive and tolerate missing side
+    strat_dummy = object.__new__(t212_strat.Strategy)
+    strat_dummy.s = {"orders": [{}, {"id": "1", "side": "sell", "limit": None, "ts": None}], "pending_submit": None}
+    strat_dummy._clock = lambda: 1000.0
+    strat_dummy.p = object.__new__(t212_strat.StratParams)
+    strat_dummy.p.order_ttl_min = 5.0
+    strat_dummy.p.entry_discount_pct = 1.0
+    assert strat_dummy._has_open("SELL") is True
+    assert strat_dummy._find_open("SELL") == {"id": "1", "side": "sell", "limit": None, "ts": None}
+    assert strat_dummy._buy_is_stale({"id": "2", "side": "buy", "limit": None, "ts": None}, 100.0) is False
+
+    # 3. order_manager rejects unsupported validity before touching client/disk
+    assert t212_om._safe_marker_component(True) == "unknown"  # type: ignore[arg-type]
+    assert t212_om.place_order_with_retry(None, "NVDA_US_EQ", 1.0, 100.0, "INVALID_VAL", dry_run=False) is False  # type: ignore[arg-type]
+    assert t212_om.place_order_with_retry(None, "NVDA_US_EQ", 1.0, 100.0, "gtc", dry_run=True) is True  # type: ignore[arg-type]
+
+    # 4. ipo.verify_instrument and _cmd_find_ticker reject empty/bool ticker or query
+    assert t212_ipo.verify_instrument(None, "   ", "") is False  # type: ignore[arg-type]
+    assert t212_ipo.verify_instrument(None, True, "") is False  # type: ignore[arg-type]
+    assert t212_ipo._cmd_find_ticker(None, "   ") == 1  # type: ignore[arg-type]
+
+
+
 
 
 

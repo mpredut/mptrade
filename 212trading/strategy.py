@@ -70,7 +70,10 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def state_path_for(ticker: str) -> str:
-    safe = "".join(c for c in ticker if c.isalnum() or c in "._-")
+    if isinstance(ticker, bool) or not isinstance(ticker, str):
+        safe = "unknown"
+    else:
+        safe = "".join(c for c in ticker if c.isalnum() or c in "._-").strip("._-") or "unknown"
     return os.path.join(_HERE, f".state_{safe}.json")
 
 
@@ -600,16 +603,20 @@ class Strategy:
         return round(usd / px_f, 2) if (math.isfinite(usd) and px_f > 0) else 0.0
 
     def _has_open(self, side: str) -> bool:
-        side_u = str(side).upper()
+        side_u = str(side or "").strip().upper()
         pending = self.s.get("pending_submit") or {}
         return (
-            str(pending.get("side") or "").upper() == side_u
-            or any(str(o["side"]).upper() == side_u for o in self.s["orders"])
+            str(pending.get("side") or "").strip().upper() == side_u
+            or any(
+                isinstance(o, dict) and str(o.get("side") or "").strip().upper() == side_u
+                for o in self.s["orders"]
+            )
         )
 
     def _find_open(self, side: str) -> dict | None:
+        side_u = str(side or "").strip().upper()
         for o in self.s["orders"]:
-            if o["side"] == side:
+            if isinstance(o, dict) and str(o.get("side") or "").strip().upper() == side_u:
                 return o
         return None
 
@@ -1159,12 +1166,16 @@ class Strategy:
         0.3% above it. Comparing the raw price instead re-placed an identical order on
         every TTL whenever the discount exceeded 0.3% (RGNT: 5%, NVDA: 0.4%).
         """
-        if str(order.get("side")).upper() != "BUY" or order.get("market"):
+        if str(order.get("side") or "").strip().upper() != "BUY" or order.get("market"):
             return False
-        if (self._now() - order.get("ts", 0)) / 60 <= self.p.order_ttl_min:
+        order_ts = _clean_nonneg_float(order.get("ts"), 0.0)
+        order_lim = _clean_pos_float(order.get("limit"))
+        if order_lim is None:
+            return False
+        if (self._now() - order_ts) / 60 <= self.p.order_ttl_min:
             return False
         fresh_limit = price * (1 - self.p.entry_discount_pct / 100)
-        return fresh_limit > float(order["limit"]) * 1.003
+        return fresh_limit > order_lim * 1.003
 
     # -- Reconciliation --------------------------------------------------------
     def _remove_order(self, o: dict) -> None:
