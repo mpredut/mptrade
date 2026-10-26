@@ -20,6 +20,7 @@ from orchestratorOS.agy.paths import (
     visible_conversations_dir,
 )
 from orchestratorOS.agy.summary_store import (
+    _safe_step_count,
     checkpoint_db,
     conversation_db,
     drop_wal_sidecars,
@@ -56,8 +57,8 @@ def sync_topic_thread_from_ui(
     bot_row = read_summary_row(dst_base, cid)
     if str((ui_row or {}).get("status") or "") == "CASCADE_RUN_STATUS_RUNNING":
         return False
-    ui_steps = int((ui_row or {}).get("step_count") or 0)
-    bot_steps = int((bot_row or {}).get("step_count") or 0)
+    ui_steps = _safe_step_count((ui_row or {}).get("step_count"))
+    bot_steps = _safe_step_count((bot_row or {}).get("step_count"))
     bot_db = conversation_db(dst_base, cid)
     bot_exists = os.path.exists(bot_db)
     ui_mtime = max((os.stat(p).st_mtime for p in (ui_db, ui_db + "-wal") if os.path.exists(p)), default=0.0)
@@ -140,7 +141,7 @@ def mirror_topic_thread_to_ui(
     if row is None or not os.path.exists(os.path.join(dst_base, "conversation_summaries.db")):
         return False
     _, ui_steps, ui_status = get_thread_step_count(cid, dst_base)
-    bot_steps = int(row.get("step_count") or 0)
+    bot_steps = _safe_step_count(row.get("step_count"))
     if ui_status == "CASCADE_RUN_STATUS_RUNNING":
         return False
     if ui_steps > bot_steps:

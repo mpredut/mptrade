@@ -118,6 +118,8 @@ def generate_tp_ladder(
     if curve_lower == "geometric":
         r_start = 1.0 + min_f / 100.0
         r_end = 1.0 + max_f / 100.0
+        if r_start <= 0.0 or r_end <= 0.0:
+            raise ValueError("geometric generate_tp_ladder requires min_pct > -100 and max_pct > -100")
         ratio = (r_end / r_start) ** (1.0 / (steps - 1)) if steps > 1 else 1.0
         levels = [round(((r_start * (ratio ** i)) - 1.0) * 100.0, 1) for i in range(steps)]
     else:
@@ -595,14 +597,26 @@ class Strategy:
         ticker = str(order.get("ticker") or nested_ticker or "").upper()
         side = extract_order_side(order) or ""
         raw_qty = order.get("quantity", order.get("orderedQuantity", order.get("qty")))
-        try:
-            qty = abs(float(raw_qty))
-        except (TypeError, ValueError, OverflowError):
+        qty: float | None = None
+        if raw_qty is not None and not isinstance(raw_qty, bool):
+            try:
+                q_val = abs(float(raw_qty))
+                if math.isfinite(q_val) and q_val > 0.0:
+                    qty = q_val
+            except (TypeError, ValueError, OverflowError):
+                pass
+        if qty is None:
             qty = extract_orig_qty(order, default=0.0) or None
         raw_limit = order.get("limitPrice", order.get("limit"))
-        try:
-            limit = float(raw_limit) if raw_limit is not None else None
-        except (TypeError, ValueError, OverflowError):
+        limit: float | None = None
+        if raw_limit is not None and not isinstance(raw_limit, bool):
+            try:
+                l_val = float(raw_limit)
+                if math.isfinite(l_val) and l_val > 0.0:
+                    limit = l_val
+            except (TypeError, ValueError, OverflowError):
+                pass
+        if limit is None:
             limit = extract_order_price(order, default=0.0) or None
         return ticker, side, qty, limit
 
@@ -610,12 +624,24 @@ class Strategy:
         ticker, side, qty, limit = self._active_order_identity(order)
         if ticker != self.ticker.upper() or side != str(pending.get("side") or "").upper():
             return False
-        expected_qty = float(pending.get("qty") or 0.0)
+        raw_expected_qty = pending.get("qty")
+        try:
+            expected_qty = float(raw_expected_qty) if raw_expected_qty is not None and not isinstance(raw_expected_qty, bool) else 0.0
+            if not math.isfinite(expected_qty):
+                expected_qty = 0.0
+        except (TypeError, ValueError, OverflowError):
+            expected_qty = 0.0
         if qty is None or abs(qty - expected_qty) > max(0.011, expected_qty * 1e-6):
             return False
         if pending.get("market"):
             return True
-        expected_limit = float(pending.get("limit") or 0.0)
+        raw_expected_limit = pending.get("limit")
+        try:
+            expected_limit = float(raw_expected_limit) if raw_expected_limit is not None and not isinstance(raw_expected_limit, bool) else 0.0
+            if not math.isfinite(expected_limit):
+                expected_limit = 0.0
+        except (TypeError, ValueError, OverflowError):
+            expected_limit = 0.0
         return limit is not None and abs(limit - expected_limit) <= 0.011
 
     def _recover_pending_submit(self, real_qty: float,
@@ -644,15 +670,32 @@ class Strategy:
             log("  ! [STRAT] ambiguous T212 submit: several active orders match — keeping it pending")
             return "waiting"
 
-        before = float(pending.get("before_qty") or 0.0)
+        raw_before = pending.get("before_qty")
+        try:
+            before = float(raw_before) if raw_before is not None and not isinstance(raw_before, bool) else 0.0
+            if not math.isfinite(before):
+                before = 0.0
+        except (TypeError, ValueError, OverflowError):
+            before = 0.0
         side = str(pending.get("side") or "").upper()
-        delta = float(real_qty) - before
+        try:
+            real_qty_f = float(real_qty) if real_qty is not None and not isinstance(real_qty, bool) else before
+            if not math.isfinite(real_qty_f):
+                real_qty_f = before
+        except (TypeError, ValueError, OverflowError):
+            real_qty_f = before
+        delta = real_qty_f - before
         if (side == "BUY" and delta > 1e-6) or (side == "SELL" and delta < -1e-6):
             pending["portfolio_fill_observed"] = True
             self._persist_pending_submit(pending)
             return "filled"
 
-        misses = int(pending.get("lookup_misses") or 0) + 1
+        raw_misses = pending.get("lookup_misses")
+        try:
+            misses_base = int(float(raw_misses)) if raw_misses is not None and not isinstance(raw_misses, bool) and math.isfinite(float(raw_misses)) else 0
+        except (TypeError, ValueError, OverflowError):
+            misses_base = 0
+        misses = max(0, misses_base) + 1
         pending["lookup_misses"] = misses
         if misses < 2:
             self._persist_pending_submit(pending)

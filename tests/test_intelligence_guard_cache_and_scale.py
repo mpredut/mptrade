@@ -8225,3 +8225,87 @@ def test_iteration56_portfolio_snapshot_new_coins_overnight_monitor_and_reconcil
     res = rec.synthesize_and_diagnose(snap, logs, topic_key="auto_cryptotrade_executor")
     assert res["summary"] == "OK"
 
+
+def test_iteration57_agy_store_drawprices_trailing_and_t212_strategy_safety(monkeypatch):
+    import importlib
+    import numpy as np
+    from orchestratorOS.agy.summary_store import _safe_step_count, get_thread_step_count
+    from orchestratorOS.agy.topics import _safe_int, prepare_topic_session
+    from visuals.drawprices import to_series, min_max_scale
+    from kraken.trailing_stop import KrakenTrailing
+
+    # 1. summary_store._safe_step_count and topics._safe_int
+    assert _safe_step_count(True) == 0
+    assert _safe_step_count(float("nan")) == 0
+    assert _safe_step_count(float("inf")) == 0
+    assert _safe_step_count("-5") == 0
+    assert _safe_step_count("12.0") == 12
+    monkeypatch.setattr("orchestratorOS.agy.summary_store.read_summary_row", lambda base, cid: {"step_count": True, "status": "IDLE"})
+    assert get_thread_step_count("cid1", "/tmp") == (False, 0, "IDLE")
+
+    assert _safe_int(True, 7) == 7
+    assert _safe_int(float("nan"), 7) == 7
+    assert _safe_int("15.0", 0) == 15
+    with pytest.raises(ValueError):
+        prepare_topic_session("auto_cryptotrade_executor", compact_steps=float("nan"))
+
+    # 2. visuals/drawprices.py to_series and min_max_scale
+    ts, prices, dt = to_series([
+        (1700000000000, 100.0),
+        (10**22, 105.0),
+        (True, 102.0),
+        (1700000060000, float("nan")),
+    ])
+    assert len(ts) == 1
+    assert prices[0] == pytest.approx(100.0)
+    assert len(dt) == 1
+    scaled, vmin, vmax = min_max_scale(np.array([1.0, float("nan"), 3.0]))
+    assert np.allclose(scaled, 0.5)
+    assert vmin == 0.0 and vmax == 0.0
+
+    # 3. KrakenTrailing._sync_retry_count_from_state & _order_intent
+    adapter = object.__new__(KrakenTrailing)
+    adapter._retry_counts = {}
+    adapter.order_lifecycle = MagicMock()
+    adapter.order_lifecycle.new_intent.side_effect = lambda **kw: kw
+    dummy_persist = type("P", (), {"st": {"retry_counts": {"SELL": True}}})()
+    adapter._sync_retry_count_from_state("HYPEUSD", "SELL", dummy_persist)
+    assert adapter._retry_counts.get(("HYPEUSD", "SELL"), 0) == 0
+    intent = adapter._order_intent("SELL", "HYPE", "HYPE", "HYPEUSD", 1.5, 20.0, anchor=None)
+    assert ":20.00000000" in intent["intent_id"]
+
+    # 4. 212trading/strategy.py generate_tp_ladder & _active_order_identity
+    import os
+    import sys
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    mod_names = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy")
+    saved_mods = {k: sys.modules.get(k) for k in mod_names}
+    try:
+        for k in mod_names:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import strategy as strat_mod
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    with pytest.raises(ValueError, match="min_pct > -100"):
+        strat_mod.generate_tp_ladder(-100.0, 10.0, 3, curve="geometric")
+    with pytest.raises(ValueError, match="min_pct > -100"):
+        strat_mod.generate_tp_ladder(-150.0, 10.0, 3, curve="geometric")
+
+    ticker, side, qty, limit = strat_mod.Strategy._active_order_identity({
+        "ticker": "AAPL",
+        "quantity": True,
+        "limitPrice": float("nan"),
+    })
+    assert ticker == "AAPL"
+    assert qty is None
+    assert limit is None
+
+

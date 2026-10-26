@@ -8,11 +8,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import logging
+import math
 import os
 import re
 import shutil
 import sqlite3
-from typing import Iterable, Optional, Set, Tuple
+from typing import Any, Iterable, Optional, Set, Tuple
 
 from orchestratorOS.agy.protobuf import drop_entries, replace_summary_entry, summary_ui_visible
 from state_io import atomic_write_bytes
@@ -102,13 +103,25 @@ def resolve_project_ids(names_or_ids: Iterable[str], cli_bases: Iterable[str]) -
     return resolved
 
 
+def _safe_step_count(val: Any) -> int:
+    if val is None or isinstance(val, bool):
+        return 0
+    try:
+        fval = float(val)
+        if not math.isfinite(fval):
+            return 0
+        return max(0, int(fval))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def get_thread_step_count(cid: str, cli_base: str) -> Tuple[bool, int, str]:
     """(content file exists, step_count, run status) of a conversation in ``cli_base``."""
     if not cid:
         return (False, 0, "")
     exists = os.path.exists(conversation_db(cli_base, cid))
     row = read_summary_row(cli_base, cid)
-    return (exists, int(row.get("step_count") or 0), str(row.get("status") or "")) if row else (exists, 0, "")
+    return (exists, _safe_step_count(row.get("step_count")), str(row.get("status") or "")) if row else (exists, 0, "")
 
 
 def read_annotation_title(cli_base: str, cid: str) -> str:

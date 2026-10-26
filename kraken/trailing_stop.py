@@ -285,19 +285,34 @@ class KrakenTrailing:
             return
         rc = st.get("retry_counts")
         if isinstance(rc, dict) and action in rc:
-            try:
-                persisted = int(rc[action] or 0)
-            except (TypeError, ValueError):
+            raw_rc = rc[action]
+            if raw_rc is None or isinstance(raw_rc, bool):
                 persisted = 0
+            else:
+                try:
+                    persisted_f = float(raw_rc)
+                    persisted = int(persisted_f) if math.isfinite(persisted_f) and persisted_f >= 0 else 0
+                except (TypeError, ValueError, OverflowError):
+                    persisted = 0
             retry_key = (pair, action)
-            if persisted > int(self._retry_counts.get(retry_key, 0)):
+            cur_rc = self._retry_counts.get(retry_key, 0)
+            cur_rc_i = int(cur_rc) if not isinstance(cur_rc, bool) and isinstance(cur_rc, (int, float)) and math.isfinite(float(cur_rc)) else 0
+            if persisted > cur_rc_i:
                 self._retry_counts[retry_key] = persisted
 
     def _order_intent(self, action, key, asset, pair, qty, price, **metadata):
-        attempt = int(self._retry_counts.get((pair, action), 0)) + 1
+        raw_attempt = self._retry_counts.get((pair, action), 0)
+        attempt = (int(raw_attempt) if not isinstance(raw_attempt, bool) and isinstance(raw_attempt, (int, float)) and math.isfinite(float(raw_attempt)) else 0) + 1
+        raw_anchor = metadata.get("anchor", price)
+        try:
+            anchor_f = float(raw_anchor) if raw_anchor is not None and not isinstance(raw_anchor, bool) else float(price)
+            if not math.isfinite(anchor_f):
+                anchor_f = float(price)
+        except (TypeError, ValueError, OverflowError):
+            anchor_f = float(price)
         intent_id = (
-            f"trailing:kraken:{key}:{action}:{qty:.8f}:{price:.8f}:"
-            f"{metadata.get('anchor', price):.8f}"
+            f"trailing:kraken:{key}:{action}:{float(qty):.8f}:{float(price):.8f}:"
+            f"{anchor_f:.8f}"
         )
         if attempt > 1:
             intent_id = f"{intent_id}:a{attempt}"

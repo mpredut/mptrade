@@ -3,7 +3,7 @@ import os
 import sys
 import math
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Tuple, Optional
 
 import numpy as np
@@ -33,17 +33,18 @@ def to_series(cache_pairs: List[Tuple[int, float]]):
         try:
             t_val = int(float(item[0]))
             p_val = float(item[1])
-        except (TypeError, ValueError, OverflowError):
+            dt_val = datetime.fromtimestamp(t_val / 1000.0, timezone.utc).replace(tzinfo=None)
+        except (TypeError, ValueError, OverflowError, OSError):
             continue
-        if math.isfinite(p_val) and t_val >= 0:
-            valid.append((t_val, p_val))
+        if math.isfinite(p_val) and 0 <= t_val <= (1 << 63) - 1:
+            valid.append((t_val, p_val, dt_val))
     if not valid:
         return np.array([]), np.array([]), []
     # Chronological ordering.
     cache_pairs = sorted(valid, key=lambda x: x[0])
     ts = np.array([int(x[0]) for x in cache_pairs], dtype=np.int64)
     prices = np.array([float(x[1]) for x in cache_pairs], dtype=np.float64)
-    dt = [datetime.utcfromtimestamp(int(t)/1000.0) for t in ts]
+    dt = [x[2] for x in cache_pairs]
     return ts, prices, dt
 
 def ensure_dir(path: str):
@@ -54,12 +55,15 @@ def min_max_scale(arr: np.ndarray):
     """Scale to [0, 1] without sklearn and return (scaled, minimum, maximum)."""
     if len(arr) == 0:
         return np.array([], dtype=np.float64), 0.0, 0.0
-    vmin = float(np.min(arr))
-    vmax = float(np.max(arr))
-    if vmax == vmin:
+    arr_f = np.asarray(arr, dtype=np.float64)
+    vmin = float(np.min(arr_f))
+    vmax = float(np.max(arr_f))
+    if not (math.isfinite(vmin) and math.isfinite(vmax)):
+        return np.full_like(arr_f, 0.5, dtype=np.float64), 0.0, 0.0
+    if vmax == vmin or not math.isfinite(vmax - vmin):
         # Map a constant series to 0.5 to avoid division by zero.
-        return np.full_like(arr, 0.5), vmin, vmax
-    scaled = (arr - vmin) / (vmax - vmin)
+        return np.full_like(arr_f, 0.5, dtype=np.float64), vmin, vmax
+    scaled = (arr_f - vmin) / (vmax - vmin)
     return scaled, vmin, vmax
 
 def min_max_inverse(arr_scaled: np.ndarray, vmin: float, vmax: float):

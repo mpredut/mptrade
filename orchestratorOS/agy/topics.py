@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import logging
+import math
 import os
 import re
 from typing import Any, Dict, NamedTuple, Optional, Set
@@ -225,7 +226,10 @@ def _safe_int(val: Any, default: int = 0) -> int:
     if val is None or isinstance(val, bool):
         return default
     try:
-        return int(val)
+        fval = float(val)
+        if not math.isfinite(fval):
+            return default
+        return int(fval)
     except (TypeError, ValueError, OverflowError):
         return default
 
@@ -245,7 +249,10 @@ def prepare_topic_session(
     if isinstance(compact_steps, bool):
         raise ValueError(f"LLM_TOPIC_COMPACT_STEPS must be > 0, got {compact_steps}")
     try:
-        compact_steps_i = int(compact_steps)
+        compact_steps_f = float(compact_steps)
+        if not math.isfinite(compact_steps_f):
+            raise ValueError(f"LLM_TOPIC_COMPACT_STEPS must be > 0, got {compact_steps}")
+        compact_steps_i = int(compact_steps_f)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"LLM_TOPIC_COMPACT_STEPS must be > 0, got {compact_steps}") from exc
     if compact_steps_i <= 0:
