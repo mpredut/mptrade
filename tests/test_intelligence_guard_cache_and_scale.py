@@ -7101,4 +7101,80 @@ def test_iteration43_ws_health_market_data_execution_audit_replay_and_trailing_n
     assert ts.cost_basis("BTCUSDC") is None
 
 
+def test_iteration44_trailing_core_and_order_retry_nan_bool_safety(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    import pytest
+    import trailing_core
+    import order_retry
+
+    # 1. TrailingCore._safe_trend ignores boolean True so sell_skip_if_trend_up does not skip a crash sell
+    sold_calls = []
+    adapter = SimpleNamespace(
+        assets=lambda: [("BTCUSDC", "BTC", "BTCUSDC", 10.0)],
+        begin_tick=lambda: True,
+        free_qty=lambda asset: 1.0,
+        price=lambda pair: 85.0,
+        trend=lambda pair: True,  # boolean True must be treated as 0.0, not > 0
+        log_dry_sell=lambda *a: sold_calls.append(a),
+        log_skip_sell_trend=lambda *a: None,
+        log_hold=lambda *a: None,
+        log_item_error=lambda *a: None,
+    )
+    core = trailing_core.TrailingCore(
+        adapter,
+        log=lambda *a: None,
+        enabled=False,
+        state_file=str(tmp_path / "trail_state.json"),
+        min_notional=10.0,
+        rebuy_enabled=False,
+        rebuy_bounce_pct=5.0,
+        rebuy_skip_if_trend_down=True,
+        sell_skip_if_trend_up=True,
+        sell_fraction=1.0,
+    )
+    assert core._safe_trend("BTCUSDC") == 0.0
+    core.save({"BTCUSDC": {"peak": 100.0, "exit_sold_qty": float("nan")}})
+    core.check_once()
+    assert len(sold_calls) == 1
+
+    # 2. order_retry: valid_record rejects boolean id/symbol/order_id/replaces_order_id/replaces_original_qty
+    base_rec = {
+        "id": "rec1",
+        "symbol": "BTCUSDC",
+        "side": "BUY",
+        "qty": 0.5,
+        "created_ts": 1700000000.0,
+        "revision": 0,
+        "lifecycle": "submit_pending",
+    }
+    assert order_retry.valid_record(base_rec) is True
+    assert order_retry.valid_record({**base_rec, "id": True}) is False
+    assert order_retry.valid_record({**base_rec, "symbol": True}) is False
+    assert order_retry.valid_record({**base_rec, "lifecycle": "accepted", "order_id": True}) is False
+    assert order_retry.valid_record({**base_rec, "lifecycle": "awaiting_cancel", "replaces_order_id": True, "replaces_original_qty": 1.0}) is False
+    assert order_retry.valid_record({**base_rec, "lifecycle": "awaiting_cancel", "replaces_order_id": "123", "replaces_original_qty": True}) is False
+
+    # 3. order_retry: enqueue sanitizes NaN/bool requested_price & ref_price, and is_expired/is_due reject bool now
+    monkeypatch.setattr(order_retry, "QUEUE_FILE", str(tmp_path / "q.jsonl"))
+    monkeypatch.setattr(order_retry, "LOCK_FILE", str(tmp_path / "q.lock"))
+    rid = order_retry.enqueue(
+        "BTCUSDC",
+        "BUY",
+        0.25,
+        requested_price=float("nan"),
+        ref_price=True,
+        failure_reason="profit_guard",
+        now=1700000000.0,
+    )
+    assert rid is not None
+    loaded = order_retry.get(rid)
+    assert loaded["requested_price"] is None
+    assert loaded["ref_price"] is None
+    assert order_retry.is_expired(loaded, now=True) is True
+    assert order_retry.is_due(loaded, now=True) is False
+    assert order_retry.resolve_accepted_order("BTCUSDC", True) is False
+    assert order_retry.get_accepted_order_ids_for_owner(True, "tradeall") == []
+
+
+
 

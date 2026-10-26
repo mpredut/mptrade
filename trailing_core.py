@@ -36,6 +36,16 @@ import math
 from state_io import load_json_state, save_json_state
 
 
+def _safe_nonneg_float(val, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) and f >= 0.0 else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def should_sell(current: float, peak: float, trail_pct: float) -> bool:
     """Return True when the price has fallen at least trail% from the peak."""
     if isinstance(current, bool) or isinstance(peak, bool) or isinstance(trail_pct, bool):
@@ -105,12 +115,19 @@ class TrailingCore:
 
     def _safe_free_qty(self, asset: str) -> float:
         raw_free = self.a.free_qty(asset)
-        if isinstance(raw_free, bool) or raw_free is None:
+        return _safe_nonneg_float(raw_free, default=0.0)
+
+    def _safe_trend(self, pair: str) -> float:
+        try:
+            raw_trend = self.a.trend(pair)
+        except Exception:
+            return 0.0
+        if raw_trend is None or isinstance(raw_trend, bool):
             return 0.0
         try:
-            val = float(raw_free)
-            return val if math.isfinite(val) and val >= 0 else 0.0
-        except (TypeError, ValueError):
+            val = float(raw_trend)
+            return val if math.isfinite(val) else 0.0
+        except (TypeError, ValueError, OverflowError):
             return 0.0
 
     def _remaining_qty(self, asset: str) -> float:
@@ -154,11 +171,11 @@ class TrailingCore:
             if not asset:
                 asset = self._asset_for_pair(pair)
 
-            accum_qty = float(st.get("exit_sold_qty", 0.0) or 0.0) + filled
-            accum_cost = float(st.get("exit_sold_cost", 0.0) or 0.0) + (avg * filled)
+            accum_qty = _safe_nonneg_float(st.get("exit_sold_qty", 0.0)) + filled
+            accum_cost = _safe_nonneg_float(st.get("exit_sold_cost", 0.0)) + (avg * filled)
             overall_avg = accum_cost / accum_qty if accum_qty > 0 else avg
 
-            target_qty = float(st.get("target_exit_qty", 0.0) or 0.0)
+            target_qty = _safe_nonneg_float(st.get("target_exit_qty", 0.0))
             remaining_balance = self._remaining_qty(asset)
             is_flat = (remaining_balance * price < self.min_notional)
             remaining_target = max(0.0, target_qty - accum_qty)
@@ -186,16 +203,17 @@ class TrailingCore:
                     f"remaining position still protected under peak {st.get('peak', avg):.4f}"
                 )
         elif action == "REBUY" and filled > 0:
-            rb = st.get("rebuy") or {}
-            submitted_qty = float(pending.get("submitted_qty") or rb.get("qty") or 0.0)
-            remaining = max(0.0, float(rb.get("qty") or 0.0) - filled)
+            rb = st.get("rebuy") if isinstance(st.get("rebuy"), dict) else {}
+            submitted_qty = _safe_nonneg_float(pending.get("submitted_qty") or rb.get("qty") or 0.0)
+            remaining = max(0.0, _safe_nonneg_float(rb.get("qty") or 0.0) - filled)
             order_fully_filled = (
                 str(getattr(status, "status", "") or "").lower() == "closed"
                 or (submitted_qty > 0 and filled >= submitted_qty - 1e-6)
             )
             if not order_fully_filled and remaining * avg >= self.min_notional:
                 rb["qty"] = round(remaining, 8)
-                rb["low"] = min(float(rb.get("low") or avg), avg)
+                prev_low = _safe_nonneg_float(rb.get("low"), default=avg)
+                rb["low"] = min(prev_low if prev_low > 0 else avg, avg)
                 st["rebuy"] = rb
                 st["is_flat"] = False
                 st["peak"] = avg
@@ -274,7 +292,7 @@ class TrailingCore:
             return
         if price < rb["low"] * (1 + self.rebuy_bounce_pct / 100.0):
             return                                            # bounce is not confirmed yet; wait
-        if self.rebuy_skip_if_trend_down and self.a.trend(pair) < 0:
+        if self.rebuy_skip_if_trend_down and self._safe_trend(pair) < 0:
             self.a.log_skip_rebuy_trend(asset)
             return
         if self.enabled:
@@ -367,7 +385,7 @@ class TrailingCore:
         # Emergency crash circuit breaker (zona de avarie) — brute force unconditional exit.
         # Extreme crash protection is decoupled from profit warm-up.
         if should_sell(price, st["peak"], trail):
-            if self.sell_skip_if_trend_up and self.a.trend(pair) > 0:
+            if self.sell_skip_if_trend_up and self._safe_trend(pair) > 0:
                 self.a.log_skip_sell_trend(key, asset, pair, trail)
                 return
             if self.enabled:
@@ -383,20 +401,24 @@ class TrailingCore:
                 if free * price < self.min_notional:
                     return                                        # nothing to sell even after unlock attempt
 
-                if "target_exit_qty" not in st or not st.get("exit_sold_qty"):
+                if "target_exit_qty" not in st or _safe_nonneg_float(st.get("exit_sold_qty")) <= 0:
                     total_pos = self._remaining_qty(asset)
                     if total_pos <= 0:
                         total_pos = free
                     st["target_exit_qty"] = round(total_pos * self.sell_fraction, 8)
 
-                target_rem = max(0.0, float(st.get("target_exit_qty", 0.0)) - float(st.get("exit_sold_qty", 0.0) or 0.0))
+                target_rem = max(
+                    0.0,
+                    _safe_nonneg_float(st.get("target_exit_qty", 0.0))
+                    - _safe_nonneg_float(st.get("exit_sold_qty", 0.0)),
+                )
                 sell_qty = round(min(free, target_rem) if target_rem > 0 else (free * self.sell_fraction), 8)
                 if sell_qty * price >= self.min_notional:
                     res = self.a.execute_sell(
                         key, asset, pair, sell_qty, price, st["peak"], trail,
                         self._pending_persist(state, st),
                     )
-                    if getattr(res, "outcome", None) == "refused" and not st.get("exit_sold_qty"):
+                    if getattr(res, "outcome", None) == "refused" and _safe_nonneg_float(st.get("exit_sold_qty")) <= 0:
                         st.pop("target_exit_qty", None)
             else:
                 if free * price < self.min_notional:
@@ -405,16 +427,16 @@ class TrailingCore:
                 self.a.log_dry_sell(key, asset, pair, sell_qty, price, st["peak"], trail)
             return
 
-        if not st.get("exit_sold_qty"):
+        if _safe_nonneg_float(st.get("exit_sold_qty")) <= 0:
             st.pop("target_exit_qty", None)
 
         total_pos = self._remaining_qty(asset)
         if total_pos <= 0:
             total_pos = free
         if total_pos * price < self.min_notional:
-            sold_qty = float(st.get("exit_sold_qty", 0.0) or 0.0)
+            sold_qty = _safe_nonneg_float(st.get("exit_sold_qty", 0.0))
             if sold_qty > 0:
-                sold_cost = float(st.get("exit_sold_cost", 0.0) or 0.0)
+                sold_cost = _safe_nonneg_float(st.get("exit_sold_cost", 0.0))
                 overall_avg = sold_cost / sold_qty if sold_cost > 0 else price
                 st["peak"] = overall_avg
                 if self._rebuy_for(pair, arm=True):

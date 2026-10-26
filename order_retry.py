@@ -286,10 +286,33 @@ order_id_from_response = extract_order_id
 order_qty_from_response = extract_orig_qty
 
 
+def _clean_opt_finite_float(val):
+    if val is None or isinstance(val, bool):
+        return None
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _clean_now_sec(now=None) -> float:
+    if now is not None and not isinstance(now, bool):
+        try:
+            f = float(now)
+            if math.isfinite(f) and f > 0:
+                return f
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return float(time.time())
+
+
 def valid_record(rec):
     """Return whether a persisted record is safe to evaluate or submit."""
     if (
         not isinstance(rec, dict)
+        or isinstance(rec.get("id"), bool)
+        or isinstance(rec.get("symbol"), bool)
         or isinstance(rec.get("qty"), bool)
         or isinstance(rec.get("created_ts"), bool)
         or isinstance(rec.get("revision"), bool)
@@ -304,22 +327,28 @@ def valid_record(rec):
     lifecycle = str(rec.get("lifecycle") or "submit_pending").lower()
     lifecycle_ok = lifecycle in {
         "awaiting_cancel", "submit_pending", "accepted"}
-    if lifecycle == "accepted" and not str(rec.get("order_id") or "").strip():
+    raw_oid = rec.get("order_id")
+    if lifecycle == "accepted" and (isinstance(raw_oid, bool) or not str(raw_oid or "").strip()):
         lifecycle_ok = False
+    raw_rep_oid = rec.get("replaces_order_id")
     if (lifecycle == "awaiting_cancel"
-            and not str(rec.get("replaces_order_id") or "").strip()):
+            and (isinstance(raw_rep_oid, bool) or not str(raw_rep_oid or "").strip())):
         lifecycle_ok = False
     if lifecycle == "awaiting_cancel":
-        try:
-            original_qty = float(rec.get("replaces_original_qty"))
-            lifecycle_ok = (
-                lifecycle_ok
-                and math.isfinite(original_qty)
-                and original_qty > 0)
-        except (TypeError, ValueError, OverflowError):
+        raw_rep_qty = rec.get("replaces_original_qty")
+        if isinstance(raw_rep_qty, bool):
             lifecycle_ok = False
+        else:
+            try:
+                original_qty = float(raw_rep_qty)
+                lifecycle_ok = (
+                    lifecycle_ok
+                    and math.isfinite(original_qty)
+                    and original_qty > 0)
+            except (TypeError, ValueError, OverflowError):
+                lifecycle_ok = False
     return bool(
-        rec.get("id") and rec.get("symbol") and
+        str(rec.get("id") or "").strip() and str(rec.get("symbol") or "").strip() and
         str(rec.get("side") or "").upper() in {"BUY", "SELL"} and
         math.isfinite(qty) and qty > 0 and
         math.isfinite(created) and created > 0 and revision >= 0 and lifecycle_ok
@@ -396,6 +425,8 @@ def _has_prior_venue_evidence(rec):
         value = rec.get(key)
         if value in (None, ""):
             continue
+        if isinstance(value, bool):
+            return True
         try:
             numeric = float(value)
         except (TypeError, ValueError, OverflowError):
@@ -588,6 +619,8 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
             custom_ttl = min(custom_ttl, MAX_GLOBAL_ORDER_TTL_SEC)
         else:
             custom_ttl = None
+    requested_price = _clean_opt_finite_float(requested_price)
+    ref_price = _clean_opt_finite_float(ref_price)
     rec = {
         "id": record_id,
         "prefix": prefix,
@@ -958,15 +991,15 @@ def get_accepted_order_ttl_map() -> dict:
         return res
     for r in records:
         ttl = r.get("ttl_sec")
-        if ttl is not None:
+        if ttl is not None and not isinstance(ttl, bool):
             try:
                 ttl_val = float(ttl)
                 if math.isfinite(ttl_val) and ttl_val > 0:
                     oid = r.get("order_id")
-                    if oid:
+                    if oid is not None and not isinstance(oid, bool) and str(oid).strip():
                         res[str(oid)] = ttl_val
                     cid = dict(r.get("place_kwargs") or {}).get("client_order_id")
-                    if cid:
+                    if cid is not None and not isinstance(cid, bool) and str(cid).strip():
                         res[str(cid)] = ttl_val
             except (TypeError, ValueError):
                 continue
@@ -1029,16 +1062,18 @@ def get_accepted_order_owner_map() -> dict:
         if not inferred or inferred in {"unknown", "unspecified", "order_retry"} or str(inferred).startswith("alt:"):
             continue
         oid = r.get("order_id")
-        if oid:
+        if oid is not None and not isinstance(oid, bool) and str(oid).strip():
             res[str(oid)] = inferred
         cid = dict(r.get("place_kwargs") or {}).get("client_order_id")
-        if cid:
+        if cid is not None and not isinstance(cid, bool) and str(cid).strip():
             res[str(cid)] = inferred
     return res
 
 
 def get_accepted_order_ids_for_owner(symbol: str, owner: str) -> list:
     """Return active accepted order_ids for ``symbol`` belonging to logical ``owner``."""
+    if isinstance(symbol, bool) or isinstance(owner, bool):
+        return []
     target_sym = str(symbol or "").strip().upper()
     target_owner = str(owner or "").strip().lower()
     if not target_sym or not target_owner:
@@ -1054,7 +1089,7 @@ def get_accepted_order_ids_for_owner(symbol: str, owner: str) -> list:
         if str(r.get("symbol") or "").strip().upper() != target_sym:
             continue
         oid = r.get("order_id")
-        if not oid:
+        if oid is None or isinstance(oid, bool) or not str(oid).strip():
             continue
         if infer_record_owner(r) == target_owner:
             oid_str = str(oid)
@@ -1129,11 +1164,11 @@ def mark_failure(record_id, failure_reason, *, now=None, client_order_id=None,
     ``client_order_id`` protects a newer concurrent revision from being overwritten
     by the result of an older submit call.
     """
-    if not record_id:
+    if not record_id or isinstance(record_id, bool):
         return False
     if submission_state not in {None, "refused", "unknown"}:
         raise ValueError(f"invalid submission state: {submission_state!r}")
-    now = float(time.time() if now is None else now)
+    now = _clean_now_sec(now)
     changed = False
     _ensure_dir()
     with FileLock(LOCK_FILE):
@@ -1217,9 +1252,9 @@ def _apply_accepted(rec, order, now, provider_name=None):
 def mark_accepted(record_id, order, *, now=None, client_order_id=None,
                   provider_name=None):
     """Move one exact pre-submit revision to durable accepted tracking."""
-    if not record_id:
+    if not record_id or isinstance(record_id, bool):
         return False
-    now = float(time.time() if now is None else now)
+    now = _clean_now_sec(now)
     changed = False
     _ensure_dir()
     with FileLock(LOCK_FILE):
@@ -1272,11 +1307,13 @@ def resolve_record(record_id, *, client_order_id=None):
 
 def claim(ids, now=None, lease_sec=None):
     """Lease entries without removing them, making crash recovery deterministic."""
-    ids = set(ids)
+    ids = {i for i in ids if not isinstance(i, bool) and i}
     if not ids:
         return []
+    if isinstance(lease_sec, bool):
+        raise ValueError("claim lease must be finite and positive")
     _ensure_dir()
-    now = float(time.time() if now is None else now)
+    now = _clean_now_sec(now)
     lease_sec = float(RETRY_CLAIM_LEASE_SEC if lease_sec is None else lease_sec)
     if not math.isfinite(lease_sec) or lease_sec <= 0:
         raise ValueError("claim lease must be finite and positive")
@@ -1327,7 +1364,7 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
             f"invalid non-failure deferral reason: {failure_reason!r}")
     if submission_state not in {None, "refused", "unknown"}:
         raise ValueError(f"invalid submission state: {submission_state!r}")
-    now = float(time.time() if now is None else now)
+    now = _clean_now_sec(now)
     changed = False
     _ensure_dir()
     with FileLock(LOCK_FILE):
@@ -1531,6 +1568,8 @@ def activate_claimed_replacement(claimed, qty, now=None):
 
 def resolve_accepted_order(symbol, order_id) -> bool:
     """Remove an ``accepted`` tracker after intentional external cancellation."""
+    if isinstance(symbol, bool) or isinstance(order_id, bool):
+        return False
     target_sym = str(symbol or "").strip().upper()
     target_oid = str(order_id or "").strip()
     if not target_sym or not target_oid:
@@ -1633,7 +1672,7 @@ def discard_expired(snapshots, now=None):
     deleting an intent that another producer refreshed or another worker claimed
     after the initial snapshot.
     """
-    if not snapshots:
+    if not snapshots or isinstance(now, bool):
         return []
     try:
         now = float(time.time() if now is None else now)
@@ -1757,6 +1796,8 @@ def is_expired(rec, now=None):
     if str(rec.get("lifecycle") or "submit_pending").lower() in {
             "accepted", "awaiting_cancel"} or is_possibly_submitted(rec):
         return False
+    if isinstance(now, bool):
+        return True
     try:
         now = float(time.time() if now is None else now)
         claim_until = float(rec.get("claim_until", 0) or 0)
@@ -1772,6 +1813,8 @@ def is_expired(rec, now=None):
         return False
     raw_expires_at = rec.get("expires_at_ts")
     if raw_expires_at is not None:
+        if isinstance(raw_expires_at, bool):
+            return True
         try:
             expires_at = float(raw_expires_at)
             if math.isfinite(expires_at) and expires_at > 0 and now > expires_at:
@@ -1787,6 +1830,8 @@ def is_expired(rec, now=None):
 
 def is_due(rec, now=None):
     """Return true once the retry interval has elapsed since creation or last attempt."""
+    if isinstance(now, bool):
+        return False
     try:
         now = float(time.time() if now is None else now)
         claim_until = float(rec.get("claim_until", 0) or 0)
