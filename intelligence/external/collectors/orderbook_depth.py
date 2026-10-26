@@ -180,7 +180,7 @@ class OrderbookDepthCollector:
         symbol = symbol.upper()
         try:
             now_f = float(now) if (now is not None and not isinstance(now, bool)) else time.time()
-            now = now_f if math.isfinite(now_f) else time.time()
+            now = now_f if (math.isfinite(now_f) and now_f > 0.0) else time.time()
         except (TypeError, ValueError, OverflowError):
             now = time.time()
         cached = None
@@ -210,16 +210,26 @@ class OrderbookDepthCollector:
             with urllib.request.urlopen(req, timeout=4) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
 
-            bids: List[Tuple[float, float]] = [
-                (float(p), float(q))
-                for p, q in data.get("bids", [])
-                if math.isfinite(float(p)) and float(p) > 0 and math.isfinite(float(q)) and float(q) > 0
-            ]
-            asks: List[Tuple[float, float]] = [
-                (float(p), float(q))
-                for p, q in data.get("asks", [])
-                if math.isfinite(float(p)) and float(p) > 0 and math.isfinite(float(q)) and float(q) > 0
-            ]
+            def _parse_side(rows: Any) -> List[Tuple[float, float]]:
+                out: List[Tuple[float, float]] = []
+                if not isinstance(rows, list):
+                    return out
+                for item in rows:
+                    if not isinstance(item, (list, tuple)) or len(item) < 2:
+                        continue
+                    p, q = item[0], item[1]
+                    if p is None or q is None or isinstance(p, bool) or isinstance(q, bool):
+                        continue
+                    try:
+                        pf, qf = float(p), float(q)
+                        if math.isfinite(pf) and pf > 0.0 and math.isfinite(qf) and qf > 0.0:
+                            out.append((pf, qf))
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                return out
+
+            bids = _parse_side(data.get("bids"))
+            asks = _parse_side(data.get("asks"))
 
             if not bids or not asks:
                 return None

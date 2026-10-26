@@ -216,7 +216,14 @@ class NewsFeedCollector:
         if not xml_bytes:
             return None
 
-        now = now_ts if now_ts is not None else time.time()
+        now = time.time()
+        if now_ts is not None and not isinstance(now_ts, bool):
+            try:
+                nf = float(now_ts)
+                if math.isfinite(nf) and nf > 0.0:
+                    now = nf
+            except (TypeError, ValueError, OverflowError):
+                pass
         try:
             root = ET.fromstring(xml_bytes)
         except Exception as e:

@@ -128,7 +128,7 @@ class DerivativesTelemetryCollector:
         symbol = symbol.upper()
         try:
             now_f = float(now) if (now is not None and not isinstance(now, bool)) else time.time()
-            now = now_f if math.isfinite(now_f) else time.time()
+            now = now_f if (math.isfinite(now_f) and now_f > 0.0) else time.time()
         except (TypeError, ValueError, OverflowError):
             now = time.time()
         cached = None

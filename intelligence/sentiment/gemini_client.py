@@ -4,6 +4,7 @@ from __future__ import annotations
 import fcntl
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -70,6 +71,24 @@ class GeminiClient:
         """Query Gemini with a prompt and return the text response."""
         now = time.time()
         selected_model = model or self.model
+        timeout_f = 15.0
+        if timeout_sec is not None and not isinstance(timeout_sec, bool):
+            try:
+                tf = float(timeout_sec)
+                if math.isfinite(tf) and tf > 0.0:
+                    timeout_f = tf
+            except (TypeError, ValueError, OverflowError):
+                pass
+        timeout_sec = timeout_f
+        ttl_f = 0.0
+        if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
+            try:
+                cf = float(cache_ttl_sec)
+                if math.isfinite(cf) and cf > 0.0:
+                    ttl_f = cf
+            except (TypeError, ValueError, OverflowError):
+                pass
+        cache_ttl_sec = ttl_f
 
         if cache_ttl_sec > 0:
             cached = self._cache.get(prompt)

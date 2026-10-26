@@ -179,7 +179,12 @@ class WhalePositioningCollector:
                         valid_pts = []
                         for pt in pts:
                             try:
-                                if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+                                if (
+                                    not isinstance(pt, (list, tuple))
+                                    or len(pt) < 2
+                                    or isinstance(pt[0], bool)
+                                    or isinstance(pt[1], bool)
+                                ):
                                     continue
                                 raw_ts = float(pt[0])
                                 px = float(pt[1])
@@ -215,7 +220,7 @@ class WhalePositioningCollector:
         try:
             now_ts = (
                 float(now)
-                if (now is not None and not isinstance(now, bool) and math.isfinite(float(now)))
+                if (now is not None and not isinstance(now, bool) and math.isfinite(float(now)) and float(now) > 0.0)
                 else time.time()
             )
             max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
@@ -362,7 +367,7 @@ class WhalePositioningCollector:
         symbol = symbol.upper()
         try:
             now_f = float(now) if (now is not None and not isinstance(now, bool)) else time.time()
-            now = now_f if math.isfinite(now_f) else time.time()
+            now = now_f if (math.isfinite(now_f) and now_f > 0.0) else time.time()
         except (TypeError, ValueError, OverflowError):
             now = time.time()
         cached = None
@@ -386,8 +391,26 @@ class WhalePositioningCollector:
         if not allow_network:
             return None
 
+        p1h_f = 0.0
+        if price_1h_change_pct is not None and not isinstance(price_1h_change_pct, bool):
+            try:
+                cand_p1h = float(price_1h_change_pct)
+                if math.isfinite(cand_p1h):
+                    p1h_f = cand_p1h
+            except (TypeError, ValueError, OverflowError):
+                p1h_f = 0.0
+        price_1h_change_pct = p1h_f
         if abs(price_1h_change_pct) < 1e-6:
             price_1h_change_pct = self._resolve_price_1h_change_pct(symbol)
+
+        def _safe_float(raw: Any, default: float) -> float:
+            if raw is None or isinstance(raw, bool):
+                return default
+            try:
+                val = float(raw)
+                return val if math.isfinite(val) else default
+            except (TypeError, ValueError, OverflowError):
+                return default
 
         lookup_sym = _resolve_binance_lookup_symbol(symbol)
         try:
@@ -396,34 +419,38 @@ class WhalePositioningCollector:
             req_top = urllib.request.Request(url_top, headers={"User-Agent": "mptrade-whale/1.0"})
             with urllib.request.urlopen(req_top, timeout=5) as resp:
                 data_top = json.loads(resp.read().decode("utf-8"))
-            if not isinstance(data_top, list) or not data_top:
+            if not isinstance(data_top, list) or not data_top or not isinstance(data_top[-1], dict):
                 raise ValueError(f"Empty topLongShortPositionRatio response for {lookup_sym}")
 
-            top_ratio = float(data_top[-1].get("longShortRatio") or 1.0)
-            top_long_pct = float(data_top[-1].get("longAccount") or 0.5)
+            top_ratio = _safe_float(data_top[-1].get("longShortRatio"), 1.0)
+            top_long_pct = _safe_float(data_top[-1].get("longAccount"), 0.5)
 
             # 2. Taker Buy/Sell Volume Ratio
             url_taker = f"https://fapi.binance.com/futures/data/takerlongshortRatio?symbol={lookup_sym}&period=1h&limit=2"
             req_taker = urllib.request.Request(url_taker, headers={"User-Agent": "mptrade-whale/1.0"})
             with urllib.request.urlopen(req_taker, timeout=5) as resp:
                 data_taker = json.loads(resp.read().decode("utf-8"))
-            if not isinstance(data_taker, list) or not data_taker:
+            if not isinstance(data_taker, list) or not data_taker or not isinstance(data_taker[-1], dict):
                 raise ValueError(f"Empty takerlongshortRatio response for {lookup_sym}")
 
-            taker_ratio = float(data_taker[-1].get("buySellRatio") or 1.0)
-            taker_buy = float(data_taker[-1].get("buyVol") or 0.0)
-            taker_sell = float(data_taker[-1].get("sellVol") or 0.0)
+            taker_ratio = _safe_float(data_taker[-1].get("buySellRatio"), 1.0)
+            taker_buy = max(0.0, _safe_float(data_taker[-1].get("buyVol"), 0.0))
+            taker_sell = max(0.0, _safe_float(data_taker[-1].get("sellVol"), 0.0))
 
             # 3. Open Interest History (compute 1h change)
             url_oi = f"https://fapi.binance.com/futures/data/openInterestHist?symbol={lookup_sym}&period=1h&limit=3"
             req_oi = urllib.request.Request(url_oi, headers={"User-Agent": "mptrade-whale/1.0"})
             with urllib.request.urlopen(req_oi, timeout=5) as resp:
                 data_oi = json.loads(resp.read().decode("utf-8"))
-            if not isinstance(data_oi, list) or not data_oi:
+            if not isinstance(data_oi, list) or not data_oi or not isinstance(data_oi[-1], dict):
                 raise ValueError(f"Empty openInterestHist response for {lookup_sym}")
 
-            latest_oi_usd = float(data_oi[-1].get("sumOpenInterestValue") or 0.0)
-            prev_oi_usd = float(data_oi[-2].get("sumOpenInterestValue") or latest_oi_usd) if len(data_oi) >= 2 else latest_oi_usd
+            latest_oi_usd = max(0.0, _safe_float(data_oi[-1].get("sumOpenInterestValue"), 0.0))
+            prev_oi_usd = (
+                max(0.0, _safe_float(data_oi[-2].get("sumOpenInterestValue"), latest_oi_usd))
+                if (len(data_oi) >= 2 and isinstance(data_oi[-2], dict))
+                else latest_oi_usd
+            )
             oi_change_pct = ((latest_oi_usd - prev_oi_usd) / prev_oi_usd * 100.0) if prev_oi_usd > 0 else 0.0
 
             # 4. Classify OI-Price divergence regime

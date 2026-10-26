@@ -945,6 +945,38 @@ def test_persistence_survival_and_triggers_hardening():
     assert sig == "CONTRARIAN_BUY" and ev_s is not None
 
 
+def test_collectors_and_gemini_client_hardening():
+    import math
+    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+    from intelligence.sentiment.gemini_client import GeminiClient
+
+    # 1. WhalePositioningCollector.fetch handles price_1h_change_pct=None/NaN/bool without TypeError
+    w_col = WhalePositioningCollector(cache_dir=None)
+    assert w_col.fetch("BTCUSDC", price_1h_change_pct=None, allow_network=False, now=0.0) is None
+    assert w_col.fetch("BTCUSDC", price_1h_change_pct=float("nan"), allow_network=False, now=True) is None
+
+    # 2. NewsFeedCollector.parse_rss_xml sanitizes non-finite/bool/<=0 now_ts
+    xml_data = b"<rss><channel><item><title>Major offensive reported</title><source>Reuters</source></item></channel></rss>"
+    snap_rss = NewsFeedCollector.parse_rss_xml(xml_data, now_ts=float("nan"))
+    assert snap_rss is not None and math.isfinite(snap_rss.ts) and snap_rss.ts > 1000.0
+    snap_rss2 = NewsFeedCollector.parse_rss_xml(xml_data, now_ts=True)
+    assert snap_rss2 is not None and math.isfinite(snap_rss2.ts) and snap_rss2.ts > 1000.0
+
+    # 3. GeminiClient.query_text sanitizes timeout_sec and cache_ttl_sec
+    received = {}
+
+    def _runner(prompt, model, timeout):
+        received["timeout"] = timeout
+        return '{"ok": true}'
+
+    gc = GeminiClient(model="test-model", custom_runner=_runner, project_id="test-proj")
+    out = gc.query_text("hello", timeout_sec=float("nan"), cache_ttl_sec=float("nan"))
+    assert out == '{"ok": true}'
+    assert received["timeout"] == 15.0
+
+
+
 
 
 
