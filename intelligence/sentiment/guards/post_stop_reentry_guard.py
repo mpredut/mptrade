@@ -69,7 +69,10 @@ class PostStopReentryGuard:
         self.timeout_sec = t_sec
         self.fallback_action = str(fallback_action or DEFAULT_FALLBACK).strip().lower()
         self.mode = str(mode or "enforce").strip().lower()
-        self.notify_enabled = bool(notify_enabled)
+        if isinstance(notify_enabled, str):
+            self.notify_enabled = notify_enabled.strip().lower() not in ("0", "0.0", "false", "no", "off", "")
+        else:
+            self.notify_enabled = bool(notify_enabled)
         if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
             try:
                 cf = float(cache_ttl_sec)
@@ -269,7 +272,16 @@ class PostStopReentryGuard:
             return
         try:
             from notify_engine.alertnotifiers import notify
-            scale_pct = int(decision.suggested_scale * 100)
+            raw_scale = getattr(decision, "suggested_scale", 1.0)
+            scale_f = 1.0
+            if raw_scale is not None and not isinstance(raw_scale, bool):
+                try:
+                    sf = float(raw_scale)
+                    if math.isfinite(sf) and 0.0 <= sf <= 1.0:
+                        scale_f = sf
+                except (TypeError, ValueError, OverflowError):
+                    pass
+            scale_pct = int(round(scale_f * 100))
             if not decision.allowed:
                 action_label = "VETO"
             elif decision.brake_action == BrakeAction.DOWNSCALE_QTY:
@@ -277,7 +289,14 @@ class PostStopReentryGuard:
             else:
                 action_label = "APPROVED"
 
-            ts = float(now_ts) if now_ts is not None else time.time()
+            ts = time.time()
+            if now_ts is not None and not isinstance(now_ts, bool):
+                try:
+                    nt_f = float(now_ts)
+                    if math.isfinite(nt_f) and nt_f > 0.0:
+                        ts = nt_f
+                except (TypeError, ValueError, OverflowError):
+                    pass
             notify_key = (str(symbol or "").upper(), action_label)
             cooldown = self.cache_ttl_sec if self.cache_ttl_sec > 0 else 0.0
             if cooldown > 0:
@@ -319,17 +338,29 @@ def get_post_stop_reentry_guard(
         m = _load_margins()
     else:
         m = margins
-    mode = str(m["post_stop_reentry_mode"]).strip().lower()
-    intel_master = str(m.get("intelligence_guards_mode", "enforce")).strip().lower()
-    llm_master = str(m.get("llm_guard_mode", "enforce")).strip().lower()
+    mode = str(m.get("post_stop_reentry_mode", "enforce") or "enforce").strip().lower()
+    intel_master = str(m.get("intelligence_guards_mode", "enforce") or "enforce").strip().lower()
+    llm_master = str(m.get("llm_guard_mode", "enforce") or "enforce").strip().lower()
     if intel_master == "off" or llm_master == "off":
         mode = "off"
     elif llm_master == "shadow" and mode == "enforce":
         mode = "shadow"
-    timeout = float(m["post_stop_reentry_timeout_sec"])
-    fallback = str(m["post_stop_reentry_fallback"]).strip().lower()
-    notify_en = str(m["post_stop_reentry_notify"]).strip().lower() not in ("0", "0.0", "false", "off")
-    cache_ttl = float(m["post_stop_reentry_cache_ttl_sec"])
+
+    def _safe_pos_f(val: Any, default: float) -> float:
+        if val is None or isinstance(val, bool):
+            return default
+        try:
+            f = float(val)
+            return f if (math.isfinite(f) and f >= 0.0) else default
+        except (TypeError, ValueError, OverflowError):
+            return default
+
+    timeout = _safe_pos_f(m.get("post_stop_reentry_timeout_sec"), DEFAULT_TIMEOUT_SEC)
+    if timeout <= 0.0:
+        timeout = DEFAULT_TIMEOUT_SEC
+    fallback = str(m.get("post_stop_reentry_fallback", DEFAULT_FALLBACK) or DEFAULT_FALLBACK).strip().lower()
+    notify_en = str(m.get("post_stop_reentry_notify", "1")).strip().lower() not in ("0", "0.0", "false", "no", "off", "")
+    cache_ttl = _safe_pos_f(m.get("post_stop_reentry_cache_ttl_sec"), DEFAULT_POST_STOP_CACHE_TTL_SEC)
 
     if gemini_client is not None:
         return PostStopReentryGuard(

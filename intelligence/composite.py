@@ -132,6 +132,7 @@ class CompositeMarketIntelligence:
         effective_scale = 1.0
         downscale_dec: Optional[GuardDecision] = None
         bypassed = normalize_bypassed_guards(bypass_guards)
+        side = str(side or "").strip().upper()
 
         def _is_bypassed(code: Optional[str], *legacy_names: str) -> bool:
             if not bypassed:
@@ -410,16 +411,15 @@ class CompositeMarketIntelligence:
 
         # Calculate volatility if prices given
         vol1h: Optional[float] = None
-        sr_sec = (
-            float(sample_rate_sec)
-            if sample_rate_sec is not None
-            and not isinstance(sample_rate_sec, bool)
-            and isinstance(sample_rate_sec, (int, float))
-            and math.isfinite(float(sample_rate_sec))
-            and float(sample_rate_sec) > 0.0
-            else 60.0
-        )
-        if prices_for_vol and len(prices_for_vol) >= 20:
+        sr_sec = 60.0
+        if sample_rate_sec is not None and not isinstance(sample_rate_sec, bool):
+            try:
+                sr_f = float(sample_rate_sec)
+                if math.isfinite(sr_f) and sr_f > 0.0:
+                    sr_sec = sr_f
+            except (TypeError, ValueError, OverflowError):
+                sr_sec = 60.0
+        if isinstance(prices_for_vol, (list, tuple)) and len(prices_for_vol) >= 20:
             vol1h = calculate_volatility_1h(prices_for_vol, sr_sec)
 
         # Select primary active trigger (prioritize highest strength among executable triggers)
@@ -437,7 +437,8 @@ class CompositeMarketIntelligence:
             )
         else:
             active_trigger = triggered_events[0] if triggered_events else None
-        side = active_trigger.side.value if active_trigger else "HOLD"
+        raw_side = getattr(active_trigger.side, "value", active_trigger.side) if active_trigger else "HOLD"
+        side = str(raw_side or "HOLD").strip().upper()
 
         # Evaluate guards against active side
         if active_trigger and active_trigger.is_executable():

@@ -2429,7 +2429,92 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert fills_ws is not None and fills_ws["active_avg_buy_px"] == 100.0
 
 
+def test_composite_and_macro_advisor_robustness(tmp_path):
+    """Verify composite market intelligence, geopolitical analyzer, sentiment advisor, and post-stop guard normalization."""
+    import json
+    from types import SimpleNamespace
+    from intelligence.composite import CompositeMarketIntelligence
+    from intelligence.daemon import IntelligenceTelemetryDaemon
+    from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    from intelligence.sentiment.guards.post_stop_reentry_guard import (
+        PostStopReentryGuard,
+        get_post_stop_reentry_guard,
+    )
 
+    cmi = CompositeMarketIntelligence()
+    # Non-sequence prices_for_vol and string sample_rate_sec must not raise TypeError
+    eval_res = cmi.evaluate(
+        "BTCUSDC",
+        100.0,
+        ts=1000.0,
+        prices_for_vol=True,  # type: ignore[arg-type]
+        sample_rate_sec="60",  # type: ignore[arg-type]
+    )
+    assert eval_res.symbol == "BTCUSDC"
 
+    mid = IntelligenceTelemetryDaemon(
+        symbols=["BTCUSDC"],
+        cache_dir=str(tmp_path),
+        skip_macro="false",  # type: ignore[arg-type]
+        skip_external="0",  # type: ignore[arg-type]
+    )
+    assert mid.skip_macro is False and mid.skip_external is False
+
+    gtcd = GlobalTelemetryCollector(
+        symbols=["BTCUSDC"],
+        cache_dir=str(tmp_path),
+        skip_news="false",  # type: ignore[arg-type]
+        skip_external="0",  # type: ignore[arg-type]
+    )
+    assert gtcd.skip_news is False and gtcd.skip_external is False
+
+    geo_state = tmp_path / "geopolitical_threat_eval.json"
+    geo_state.write_text(
+        json.dumps(
+            {
+                "threat_level": " elevated ",
+                "risk_score": "0.65",
+                "summary": "cached summary",
+                "recommended_brake": " downscale_50 ",
+                "headlines_analyzed": "5",
+                "ts": 1000.0,
+                "is_fallback": "false",
+            }
+        ),
+        encoding="utf-8",
+    )
+    gta = GeopoliticalThreatAnalyzer(state_file=str(geo_state))
+    assert gta._cached_assessment is not None
+    assert gta._cached_assessment.threat_level == "ELEVATED"
+    assert gta._cached_assessment.recommended_brake == "DOWNSCALE_50"
+    assert gta._cached_assessment.is_fallback is False
+
+    sa_state = tmp_path / "sentiment_advisor_eval.json"
+    sa_state.write_text(
+        json.dumps(
+            {
+                "market_bias": " bullish ",
+                "risk_level": " low ",
+                "confidence": "0.8",
+                "summary": "ok",
+                "key_risks": ["r1"],
+                "recommended_action": " accumulate ",
+                "ts": 1000.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    sa = SentimentAdvisor(cache_file=str(sa_state))
+    assert sa._cached_assessment is not None
+    assert sa._cached_assessment.market_bias == "BULLISH"
+    assert sa._cached_assessment.risk_level == "LOW"
+    assert sa._cached_assessment.recommended_action == "ACCUMULATE"
+
+    psg = PostStopReentryGuard(notify_enabled="false")  # type: ignore[arg-type]
+    assert psg.notify_enabled is False
+    psg_partial = get_post_stop_reentry_guard(margins={"post_stop_reentry_mode": "shadow"})
+    assert psg_partial.mode == "shadow"
 
 

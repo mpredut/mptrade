@@ -258,14 +258,28 @@ class MacroAnalyzer:
                                         hist_vals.append(int(hv_f))
                                 except (TypeError, ValueError, OverflowError):
                                     pass
+                    def _fg_bool(val: Any, default: bool) -> bool:
+                        if val is None:
+                            return default
+                        if isinstance(val, bool):
+                            return val
+                        if isinstance(val, str):
+                            s = val.strip().lower()
+                            if s in ("1", "1.0", "true", "yes", "on"):
+                                return True
+                            if s in ("0", "0.0", "false", "no", "off", ""):
+                                return False
+                            return default
+                        return bool(val)
+
                     fg_snap = FearGreedSnapshot(
                         value=fg_val,
                         classification=fg_cls,
                         timestamp=fg_ts,
                         historical_values=tuple(hist_vals),
                         trend_7d_change=fg_t7d,
-                        is_extreme_fear=bool(fg_data.get("is_extreme_fear", False)),
-                        is_extreme_greed=bool(fg_data.get("is_extreme_greed", False)),
+                        is_extreme_fear=_fg_bool(fg_data.get("is_extreme_fear"), fg_val <= 25),
+                        is_extreme_greed=_fg_bool(fg_data.get("is_extreme_greed"), fg_val >= 75),
                     )
                     break
                 except Exception as fg_err:

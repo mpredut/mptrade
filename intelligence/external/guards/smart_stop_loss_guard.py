@@ -637,18 +637,18 @@ def evaluate_smart_stop_loss(
     from order_guard import _load_margins
     m = _load_margins()
 
-    mode = str(m["smart_sl_mode"]).strip().lower()
-    intel_master = str(m.get("intelligence_guards_mode", "enforce")).strip().lower()
-    ext_master = str(m.get("external_guard_mode", "enforce")).strip().lower()
+    mode = str(m.get("smart_sl_mode", "enforce") or "enforce").strip().lower()
+    intel_master = str(m.get("intelligence_guards_mode", "enforce") or "enforce").strip().lower()
+    ext_master = str(m.get("external_guard_mode", "enforce") or "enforce").strip().lower()
     if intel_master == "off" or ext_master == "off":
         mode = "off"
     elif ext_master == "shadow" and mode == "enforce":
         mode = "shadow"
-    max_thresh = float(m["smart_sl_max_threshold_pct"])
-    grace_sec = float(m["smart_sl_grace_seconds"])
-    default_disaster_buf = float(m["smart_sl_disaster_buffer_pct"])
-    min_whale = float(m["smart_sl_min_whale_long_pct"])
-    min_taker = float(m["smart_sl_min_taker_ratio"])
+    max_thresh = _safe_float(m.get("smart_sl_max_threshold_pct"), 6.0)
+    grace_sec = _safe_float(m.get("smart_sl_grace_seconds"), 120.0)
+    default_disaster_buf = _safe_float(m.get("smart_sl_disaster_buffer_pct"), 0.85)
+    min_whale = _safe_float(m.get("smart_sl_min_whale_long_pct"), 0.60)
+    min_taker = _safe_float(m.get("smart_sl_min_taker_ratio"), 0.85)
 
     effective_disaster_buf = (
         default_disaster_buf

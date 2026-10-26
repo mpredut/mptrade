@@ -66,9 +66,16 @@ class IntelligenceTelemetryDaemon:
             macro_llm_interval_sec,
             required_float_env("MACRO_LLM_INTERVAL_SEC"),
         )
+        def _as_bool(val: Any) -> bool:
+            if isinstance(val, bool):
+                return val
+            if isinstance(val, str):
+                return val.strip().lower() in ("1", "true", "yes", "on")
+            return bool(val)
+
         self.thread_prune_interval_sec = _safe_pos_interval(thread_prune_interval_sec, 10800.0)
-        self.skip_macro = bool(skip_macro)
-        self.skip_external = bool(skip_external)
+        self.skip_macro = _as_bool(skip_macro)
+        self.skip_external = _as_bool(skip_external)
         self.running = False
 
         # Resolve target symbols

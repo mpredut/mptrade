@@ -103,7 +103,13 @@ class GeopoliticalThreatAnalyzer:
                 if not isinstance(data, dict):
                     continue
                 summary_str = str(data.get("summary", ""))
-                is_fb = bool(data.get("is_fallback", "LLM fallback" in summary_str))
+                raw_fb = data.get("is_fallback")
+                if raw_fb is None:
+                    is_fb = "LLM fallback" in summary_str
+                elif isinstance(raw_fb, str):
+                    is_fb = raw_fb.strip().lower() in ("1", "true", "yes", "on")
+                else:
+                    is_fb = bool(raw_fb)
                 raw_risk = data.get("risk_score", 0.1)
                 if raw_risk is None or isinstance(raw_risk, bool):
                     risk_val = 0.1
@@ -130,11 +136,17 @@ class GeopoliticalThreatAnalyzer:
                             hl_cnt = int(hl_f)
                     except (TypeError, ValueError, OverflowError):
                         hl_cnt = 0
+                tl_norm = str(data.get("threat_level") or "NORMAL").strip().upper()
+                if tl_norm not in ("NORMAL", "ELEVATED", "CRITICAL_SHOCK"):
+                    tl_norm = "NORMAL"
+                rb_norm = str(data.get("recommended_brake") or "NONE").strip().upper()
+                if rb_norm not in ("NONE", "DOWNSCALE_50", "HARD_VETO_NEW_BUYS"):
+                    rb_norm = "NONE"
                 self._cached_assessment = GeopoliticalThreatAssessment(
-                    threat_level=str(data.get("threat_level") or "NORMAL"),
+                    threat_level=tl_norm,
                     risk_score=risk_val,
                     summary=summary_str,
-                    recommended_brake=str(data.get("recommended_brake") or "NONE"),
+                    recommended_brake=rb_norm,
                     headlines_analyzed=max(0, hl_cnt),
                     ts=ts_val,
                     is_fallback=is_fb,
@@ -220,7 +232,7 @@ class GeopoliticalThreatAnalyzer:
             return normal_assessment
 
         # Stage 2: High-severity headlines present -> Check if headlines have changed
-        headline_digest = " || ".join(h.title for h in high_sev[:12])
+        headline_digest = " || ".join(str(getattr(h, "title", None) or "") for h in high_sev[:12])
         if (
             not force_refresh
             and not acute_shock_alert
@@ -235,7 +247,10 @@ class GeopoliticalThreatAnalyzer:
             return self._cached_assessment
 
         # Stage 3: New high-severity headlines detected -> Query Google Gemini LLM
-        headline_list = "\n".join(f"- {h.title} ({h.source})" for h in high_sev[:12])
+        headline_list = "\n".join(
+            f"- {getattr(h, 'title', None) or ''} ({getattr(h, 'source', None) or 'Unknown'})"
+            for h in high_sev[:12]
+        )
         prompt = (
             "You are a senior macroeconomic and geopolitical risk officer for an algorithmic crypto fund.\n"
             "Evaluate these breaking headlines regarding war, military action, or energy crises:\n\n"
@@ -251,7 +266,7 @@ class GeopoliticalThreatAnalyzer:
             "}"
         )
 
-        lead_headline = high_sev[0].title[:60] if high_sev else "Macro Geopolitical Assessment"
+        lead_headline = str(getattr(high_sev[0], "title", None) or "")[:60] if high_sev else "Macro Geopolitical Assessment"
         macro_thread_title = f"{topic_spec('macro_geopolitical').title} — {lead_headline}"
 
         resp = self.gemini_client.query_json(
@@ -262,7 +277,7 @@ class GeopoliticalThreatAnalyzer:
         )
         if not resp or not isinstance(resp, dict):
             has_acute_phrase = any(
-                phrase in h.title.lower()
+                phrase in str(getattr(h, "title", None) or "").lower()
                 for h in high_sev
                 for phrase in ACUTE_SHOCK_PHRASES
             )

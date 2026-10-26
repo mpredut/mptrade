@@ -97,13 +97,22 @@ class SentimentAdvisor:
                     ts_val = 0.0
                 raw_risks = data.get("key_risks")
                 risks_list = [str(r) for r in raw_risks if r is not None] if isinstance(raw_risks, (list, tuple)) else []
+                mb_norm = str(data.get("market_bias") or "NEUTRAL").strip().upper()
+                if mb_norm not in ("BULLISH", "BEARISH", "NEUTRAL", "CAUTION"):
+                    mb_norm = "NEUTRAL"
+                rl_norm = str(data.get("risk_level") or "MODERATE").strip().upper()
+                if rl_norm not in ("LOW", "MODERATE", "HIGH", "EXTREME"):
+                    rl_norm = "MODERATE"
+                ra_norm = str(data.get("recommended_action") or "HOLD").strip().upper()
+                if ra_norm not in ("ACCUMULATE", "HOLD", "TRIM_PROFITS", "DEFENSIVE"):
+                    ra_norm = "HOLD"
                 self._cached_assessment = SentimentAdvisorAssessment(
-                    market_bias=str(data.get("market_bias") or "NEUTRAL"),
-                    risk_level=str(data.get("risk_level") or "MODERATE"),
+                    market_bias=mb_norm,
+                    risk_level=rl_norm,
                     confidence=conf_val,
                     summary=str(data.get("summary") or ""),
                     key_risks=risks_list,
-                    recommended_action=str(data.get("recommended_action") or "HOLD"),
+                    recommended_action=ra_norm,
                     ts=ts_val,
                 )
                 self._last_eval_ts = self._cached_assessment.ts
@@ -193,7 +202,7 @@ class SentimentAdvisor:
             "}"
         )
 
-        fg_label = f"F&G={fear_greed.value}" if fear_greed else "Pulse"
+        fg_label = f"F&G={int(round(_sf(getattr(fear_greed, 'value', 50), 50.0)))}" if fear_greed else "Pulse"
         macro_thread_title = f"{topic_spec('macro_sentiment').title} — {fg_label}"
         resp = self.gemini_client.query_json(
             prompt,
@@ -216,14 +225,23 @@ class SentimentAdvisor:
                 except (TypeError, ValueError):
                     conf = 0.5
             raw_risks = resp.get("key_risks")
-            key_risks = [str(r) for r in raw_risks if r is not None] if isinstance(raw_risks, list) else []
+            key_risks = [str(r) for r in raw_risks if r is not None] if isinstance(raw_risks, (list, tuple)) else []
+            mb_norm = str(resp.get("market_bias") or "NEUTRAL").strip().upper()
+            if mb_norm not in ("BULLISH", "BEARISH", "NEUTRAL", "CAUTION"):
+                mb_norm = "NEUTRAL"
+            rl_norm = str(resp.get("risk_level") or "MODERATE").strip().upper()
+            if rl_norm not in ("LOW", "MODERATE", "HIGH", "EXTREME"):
+                rl_norm = "MODERATE"
+            ra_norm = str(resp.get("recommended_action") or "HOLD").strip().upper()
+            if ra_norm not in ("ACCUMULATE", "HOLD", "TRIM_PROFITS", "DEFENSIVE"):
+                ra_norm = "HOLD"
             assessment = SentimentAdvisorAssessment(
-                market_bias=str(resp.get("market_bias") or "NEUTRAL").upper(),
-                risk_level=str(resp.get("risk_level") or "MODERATE").upper(),
+                market_bias=mb_norm,
+                risk_level=rl_norm,
                 confidence=conf,
                 summary=str(resp.get("summary") or ""),
                 key_risks=key_risks,
-                recommended_action=str(resp.get("recommended_action") or "HOLD").upper(),
+                recommended_action=ra_norm,
                 ts=now,
             )
             self._cached_assessment = assessment

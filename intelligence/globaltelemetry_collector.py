@@ -63,10 +63,17 @@ class GlobalTelemetryCollector:
             news_interval_sec,
             required_float_env("MACRO_NEWS_INTERVAL_SEC"),
         )
+        def _as_bool(val: Any) -> bool:
+            if isinstance(val, bool):
+                return val
+            if isinstance(val, str):
+                return val.strip().lower() in ("1", "true", "yes", "on")
+            return bool(val)
+
         self.fear_greed_interval_sec = _safe_pos_interval(fear_greed_interval_sec, 1800.0)
         self.breadth_interval_sec = _safe_pos_interval(breadth_interval_sec, 900.0)
-        self.skip_news = bool(skip_news)
-        self.skip_external = bool(skip_external)
+        self.skip_news = _as_bool(skip_news)
+        self.skip_external = _as_bool(skip_external)
         self.running = False
 
         # Resolve target symbols
