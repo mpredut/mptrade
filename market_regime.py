@@ -180,28 +180,35 @@ class MarketRegimeContext:
 
         # 4. Identity validation
         if require_identity:
-            if not self.symbol or not str(self.symbol).strip():
+            if not isinstance(self.symbol, str) or not self.symbol.strip():
                 return False
-            if not self.provider or not str(self.provider).strip():
+            if not isinstance(self.provider, str) or not self.provider.strip():
                 return False
 
         if symbol is not None:
-            target_sym = str(symbol).strip().upper().replace("/", "")
+            if not isinstance(symbol, str) or not symbol.strip():
+                return False
+            target_sym = symbol.strip().upper().replace("/", "")
             if self.symbol is not None:
-                if self.symbol.strip().upper().replace("/", "") != target_sym:
+                if not isinstance(self.symbol, str) or self.symbol.strip().upper().replace("/", "") != target_sym:
                     return False
             elif require_identity:
                 return False
 
         if provider is not None:
-            p_str = getattr(provider, "name", None) or (provider if isinstance(provider, str) else None)
-            if p_str:
-                target_prov = str(p_str).strip().lower()
+            if isinstance(provider, bool):
+                return False
+            p_raw = getattr(provider, "name", None)
+            p_str = p_raw if isinstance(p_raw, str) and p_raw.strip() else (provider if isinstance(provider, str) else None)
+            if isinstance(p_str, str) and p_str.strip():
+                target_prov = p_str.strip().lower()
                 if self.provider is not None:
-                    if self.provider.strip().lower() != target_prov:
+                    if not isinstance(self.provider, str) or self.provider.strip().lower() != target_prov:
                         return False
                 elif require_identity:
                     return False
+            elif require_identity:
+                return False
 
         return True
 
@@ -649,10 +656,18 @@ class MarketRegimeService:
             max_age_seconds = float(max_age_seconds)
             if not math.isfinite(max_age_seconds) or max_age_seconds <= 0:
                 raise ValueError("max_age_seconds must be finite and positive")
+        role_str = role.strip() if isinstance(role, str) and role.strip() else "asset_short"
+        fam_str = family.strip() if isinstance(family, str) and family.strip() else "price_trend"
+        cls_str = classifier.strip() if isinstance(classifier, str) and classifier.strip() else "linear_noise_v1"
+        corr_str = (
+            correlation_key.strip()
+            if isinstance(correlation_key, str) and correlation_key.strip()
+            else self._correlation_key(provider, symbol, horizon)
+        )
         return MarketRegimeEvidence(
-            role=str(role),
-            family=str(family),
-            classifier=str(classifier),
+            role=role_str,
+            family=fam_str,
+            classifier=cls_str,
             provider=str(getattr(provider, "name", "unknown")),
             symbol=str(symbol),
             decision=decision,
@@ -662,11 +677,7 @@ class MarketRegimeService:
             max_age_seconds=max_age_seconds,
             closed_candles=closed_candles,
             continuous_candles=continuous_candles,
-            correlation_key=(
-                str(correlation_key)
-                if correlation_key
-                else self._correlation_key(provider, symbol, horizon)
-            ),
+            correlation_key=corr_str,
         )
 
     def resolve(self, provider, symbol: str, *, horizon="short", snapshot=None,
@@ -712,7 +723,7 @@ class MarketRegimeService:
         evaluation; alternatives never replace the first usable source.
         """
         parsed = MarketRegimeHorizon.parse(horizon)
-        role = role or f"asset_{parsed.value}"
+        role = role.strip() if isinstance(role, str) and role.strip() else f"asset_{parsed.value}"
         if isinstance(now, bool):
             raise ValueError("now must be a positive finite Unix timestamp")
         evaluated_at = time.time() if now is None else float(now)
@@ -857,10 +868,14 @@ class MarketRegimeService:
         Benchmark-only data is never actionable. Missing components retain their
         nominal weight as lost confidence instead of amplifying the remaining data.
         """
-        use_case = str(use_case or "balanced").lower()
+        if isinstance(use_case, bool) or (use_case is not None and not isinstance(use_case, str)):
+            raise ValueError(f"unsupported composite use case: {use_case!r}")
+        use_case = str(use_case or "balanced").strip().lower()
         if use_case not in _COMPOSITE_PROFILES:
             raise ValueError(f"unsupported composite use case: {use_case!r}")
-        raw_weights = weights or _COMPOSITE_PROFILES[use_case]
+        raw_weights = _COMPOSITE_PROFILES[use_case] if weights is None else weights
+        if not isinstance(raw_weights, Mapping):
+            raise ValueError("composite weights must be a mapping")
         expected = {"asset_short", "asset_long", "benchmark_short", "benchmark_long"}
         if set(raw_weights) != expected:
             raise ValueError(f"composite weights must contain exactly {sorted(expected)}")
@@ -1039,15 +1054,18 @@ class MarketRegimeService:
         if callable(reader):
             series = reader(symbol, interval_min)
             if isinstance(series, Mapping):
+                raw_iv = series.get("interval_min", interval_min)
+                if isinstance(raw_iv, bool):
+                    raise ValueError("ohlc_series returned the wrong interval")
                 series = ClosedPriceSeries(
                     tuple(series.get("closes") or ()),
-                    int(series.get("interval_min", interval_min)),
+                    int(raw_iv),
                     series.get("last_closed_at"),
                     tuple(series.get("timestamps") or ()),
                 )
             if not isinstance(series, ClosedPriceSeries):
                 raise TypeError("ohlc_series must return ClosedPriceSeries")
-            if int(series.interval_min) != interval_min:
+            if isinstance(series.interval_min, bool) or int(series.interval_min) != interval_min:
                 raise ValueError("ohlc_series returned the wrong interval")
             return series
         return ClosedPriceSeries(

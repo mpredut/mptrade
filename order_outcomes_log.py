@@ -49,8 +49,16 @@ def log_order_outcome(
         os.makedirs(ORDER_OUTCOMES_LOG_DIR, exist_ok=True)
         path = os.path.join(ORDER_OUTCOMES_LOG_DIR,
                              f"order_outcomes_{datetime.now().strftime('%Y-%m-%d')}.log")
-        cols = [time.time(), symbol, side, price, qty, outcome,
-                refuse_reason or "", caller or "", motivation or ""]
+        sym_val = "" if symbol is None or isinstance(symbol, bool) else symbol
+        side_val = "" if side is None or isinstance(side, bool) else side
+        price_val = "" if price is None or isinstance(price, bool) else price
+        qty_val = "" if qty is None or isinstance(qty, bool) else qty
+        out_val = "" if outcome is None or isinstance(outcome, bool) else outcome
+        ref_val = refuse_reason if isinstance(refuse_reason, str) else ("" if refuse_reason is None or isinstance(refuse_reason, bool) else str(refuse_reason))
+        cal_val = caller if isinstance(caller, str) else ("" if caller is None or isinstance(caller, bool) else str(caller))
+        mot_val = motivation if isinstance(motivation, str) else ("" if motivation is None or isinstance(motivation, bool) else str(motivation))
+        cols = [time.time(), sym_val, side_val, price_val, qty_val, out_val,
+                ref_val, cal_val, mot_val]
         if regime_context is not None:
             strength_val = getattr(regime_context, "strength", None)
             strength_str = ""
@@ -61,13 +69,16 @@ def log_order_outcome(
                         strength_str = f"{sf:.4f}"
                 except (TypeError, ValueError, OverflowError):
                     strength_str = ""
+            reg_raw = getattr(regime_context, "regime", "")
+            src_raw = getattr(regime_context, "source", "")
+            rsn_raw = getattr(regime_context, "reason", "")
             cols.extend([
-                getattr(regime_context, "regime", "") or "",
+                reg_raw if isinstance(reg_raw, str) else "",
                 strength_str,
-                getattr(regime_context, "source", "") or "",
+                src_raw if isinstance(src_raw, str) else "",
                 str(getattr(regime_context, "fresh", "")),
                 str(getattr(regime_context, "fallback_used", "")),
-                getattr(regime_context, "reason", "") or "",
+                rsn_raw if isinstance(rsn_raw, str) else "",
             ])
         line = "|".join(_sanitize_outcome_field(c) for c in cols)
         with open(path, "a", encoding="utf-8") as f:

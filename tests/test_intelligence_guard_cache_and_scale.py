@@ -11397,6 +11397,87 @@ def test_iteration106_quantity_execution_audit_rollback_and_bapi_placeorder_safe
     assert bpo.order_candidate_price(" s ", 100.0, 105.0) == 105.0
 
 
+def test_iteration107_binance_cache_health_market_regime_and_order_outcomes_safety(tmp_path, monkeypatch):
+    """Iteration 107: Verify binance_cache_health, market_regime, and order_outcomes_log safety."""
+    from types import SimpleNamespace
+    import binance_cache_health as bch
+    import market_regime as mr
+    import order_outcomes_log as ool
+
+    # 1. binance_cache_health: AccountCacheNotReady, record_successful_sync, record_persisted_version
+    err = bch.AccountCacheNotReady(True)
+    assert err.reason == "account_cache_not_fresh"
+    assert bch.record_successful_sync("Order", True) is False
+    assert bch.record_successful_sync(True, "v1") is False
+    assert bch.record_persisted_version("Trade", True) is False
+    assert bch.record_persisted_version(True, "v1") is False
+
+    # 2. market_regime: MarketRegimeContext.is_valid_for, compose, _closed_series
+    dec = mr.MarketRegimeEvaluator().unknown()
+    ctx = mr.MarketRegimeContext(
+        decision=dec,
+        resolved_trend="unknown",
+        evaluated_at=1000.0,
+        symbol=True,
+        provider=True,
+    )
+    assert ctx.is_valid_for(now=1000.0, require_identity=True) is False
+    ctx_ok = mr.MarketRegimeContext(
+        decision=dec,
+        resolved_trend="unknown",
+        evaluated_at=1000.0,
+        symbol="BTCUSDC",
+        provider="binance",
+    )
+    assert ctx_ok.is_valid_for(symbol=True, now=1000.0) is False
+    assert ctx_ok.is_valid_for(provider=True, now=1000.0) is False
+
+    svc = mr.MarketRegimeService()
+    with pytest.raises(ValueError):
+        svc.compose(dec, dec, use_case=True)
+    with pytest.raises(ValueError):
+        svc.compose(dec, dec, weights={})
+    with pytest.raises(ValueError):
+        svc.compose(dec, dec, weights=True)
+
+    # _closed_series rejects boolean interval_min even when interval_min == 1 (since int(True) == 1)
+    bad_provider = SimpleNamespace(
+        name="binance",
+        ohlc_series=lambda _s, _i: mr.ClosedPriceSeries((100.0, 101.0, 102.0), True),
+    )
+    with pytest.raises(ValueError):
+        svc._closed_series(bad_provider, "BTCUSDC", 1)
+
+    # 3. order_outcomes_log: log_order_outcome sanitizes boolean fields
+    monkeypatch.setattr(ool, "ORDER_OUTCOMES_LOG_DIR", str(tmp_path))
+    ool.log_order_outcome(
+        symbol=True,
+        side=True,
+        price=True,
+        qty=True,
+        outcome=True,
+        refuse_reason=True,
+        motivation=True,
+        caller=True,
+        regime_context=SimpleNamespace(
+            regime=True,
+            strength=True,
+            source=True,
+            fresh=True,
+            fallback_used=False,
+            reason=True,
+        ),
+    )
+    log_files = list(tmp_path.glob("order_outcomes_*.log"))
+    assert len(log_files) == 1
+    content = log_files[0].read_text(encoding="utf-8").strip()
+    parts = content.split("|")
+    assert parts[1:9] == ["", "", "", "", "", "", "", ""]
+    assert parts[9:12] == ["", "", ""]
+    assert parts[14] == ""
+
+
+
 
 
 

@@ -60,7 +60,11 @@ class AccountCacheNotReady(RuntimeError):
     """The shared Binance account snapshot cannot authorize a live submit."""
 
     def __init__(self, reason: str):
-        self.reason = str(reason or "account_cache_not_fresh")
+        self.reason = (
+            reason.strip()
+            if isinstance(reason, str) and reason.strip()
+            else "account_cache_not_fresh"
+        )
         super().__init__(self.reason)
 
 
@@ -184,8 +188,10 @@ def _publish_locked() -> None:
 def record_successful_sync(cache_name: str, data_version: str, *,
                            now_ms: Optional[int] = None) -> bool:
     """Publish one complete, persisted Order or Trade reconciliation success."""
-    fields = _SYNC_FIELDS.get(str(cache_name or "").strip())
-    version = str(data_version or "").strip()
+    if not isinstance(cache_name, str) or not isinstance(data_version, str):
+        return False
+    fields = _SYNC_FIELDS.get(cache_name.strip())
+    version = data_version.strip()
     if fields is None or not version:
         return False
     sync_timestamp = _clean_now_ms(now_ms)
@@ -206,8 +212,10 @@ def record_successful_sync(cache_name: str, data_version: str, *,
 def record_persisted_version(cache_name: str, data_version: str, *,
                              now_ms: Optional[int] = None) -> bool:
     """Publish durable content without claiming a new REST reconciliation."""
-    fields = _SYNC_FIELDS.get(str(cache_name or "").strip())
-    version = str(data_version or "").strip()
+    if not isinstance(cache_name, str) or not isinstance(data_version, str):
+        return False
+    fields = _SYNC_FIELDS.get(cache_name.strip())
+    version = data_version.strip()
     if fields is None or not version:
         return False
     _sync_field, version_field = fields
@@ -278,6 +286,8 @@ def inspect_health(*, path: str = HEALTH_PATH,
         trade_version = state.get("trade_cache_version")
         if not isinstance(order_version, str) or not isinstance(trade_version, str):
             raise ValueError("invalid cache version")
+        order_version = order_version.strip()
+        trade_version = trade_version.strip()
         initializing = (
             generation < 2 or not order_sync_ms or not trade_sync_ms
             or not order_version or not trade_version
@@ -302,15 +312,7 @@ def inspect_health(*, path: str = HEALTH_PATH,
         return CacheHealthStatus(False, "account_cache_initializing")
 
     try:
-        current_ms = (
-            _now_ms()
-            if now_ms is None
-            else (
-                int(now_ms)
-                if not isinstance(now_ms, bool) and math.isfinite(float(now_ms))
-                else _now_ms()
-            )
-        )
+        current_ms = _clean_now_ms(now_ms)
         max_age_val = (
             float(max_age_sec)
             if not isinstance(max_age_sec, bool)
