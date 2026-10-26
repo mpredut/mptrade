@@ -784,7 +784,7 @@ def _trend_defer_ready(symbol, kind, side, threshold, state):
         should_wait = False
 
     if should_wait:
-        if started_at is None:
+        if started_at is None or started_at > now:
             started_at = now
             state["trend_defer"] = {
                 "side": str(side).upper(),
@@ -997,6 +997,11 @@ def _record_terminal_sell(symbol, state, status):
             if abs(float(t_thr) - float(threshold)) <= 1e-9:
                 allocation = float(t_alloc)
                 break
+        if (
+            allocation is None
+            and abs(float(threshold) - float(PORTFOLIO_ASSET_MIN_GROWTH_PERCENT)) <= 1e-9
+        ):
+            allocation = float(PORTFOLIO_SELL_ALLOCATION)
     initial_qty = _finite_float(state.get("initial_qty"), positive=True)
     target_qty = (
         initial_qty * allocation
@@ -1203,7 +1208,7 @@ def _resolve_blocking_sell_orders(symbol, open_sells):
         return open_sells
     now = float(time.time())
     blocked_since = _rtrade_sell_block_since.get(symbol)
-    if blocked_since is None:
+    if blocked_since is None or blocked_since > now:
         _rtrade_sell_block_since[symbol] = now
         print(
             f"[{symbol}] AssetGuardian SELL temporarily blocked by rtrade order(s) "
@@ -1343,11 +1348,12 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
         )
         if growth < trigger_thr or threshold in completed:
             continue
-        target_qty = min(free_qty, initial_qty * allocation)
+        tier_target_qty = initial_qty * allocation
         already_filled = _finite_float(
             filled_by_tier.get(_tier_key(threshold))) or 0.0
-        remaining_qty = max(0.0, target_qty - already_filled)
-        if remaining_qty <= max(1e-12, target_qty * 0.02):
+        unfilled_tier_qty = max(0.0, tier_target_qty - already_filled)
+        remaining_qty = min(free_qty, unfilled_tier_qty)
+        if remaining_qty <= max(1e-12, tier_target_qty * 0.02):
             _complete_campaign_tier(symbol, "sell", state, threshold)
             return None, _symbol_campaign(symbol, "sell"), growth
         return (threshold, allocation, remaining_qty), state, growth

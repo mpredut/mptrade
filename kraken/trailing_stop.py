@@ -177,8 +177,8 @@ class KrakenTrailing:
         Errors return 0, making trend filters a safe no-op."""
         try:
             import json
-            with open(CACHE_TREND, encoding="utf-8") as f:
-                data = json.load(f)
+            from state_io import read_recovering_previous
+            data = read_recovering_previous(CACHE_TREND, json.loads, default=None)
             if not isinstance(data, dict):
                 return 0.0
             raw = str(pair or "").strip().upper()
@@ -194,9 +194,13 @@ class KrakenTrailing:
                     snap = data[cand]
                     break
             if isinstance(snap, dict):
-                age = time.time() - float(snap["ts"])
+                raw_ts = float(snap["ts"])
+                if raw_ts > 1e11:
+                    raw_ts /= 1000.0
+                age = time.time() - raw_ts
                 if -5.0 <= age <= 15.0:
-                    return float(snap.get("gradient_recent", snap.get("slope_small", 0.0)) or 0.0)
+                    val = float(snap.get("gradient_recent", snap.get("slope_small", 0.0)) or 0.0)
+                    return val if math.isfinite(val) else 0.0
         except Exception:
             pass
         return 0.0

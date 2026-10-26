@@ -409,7 +409,10 @@ class TrendState:
 
     def can_retry_fire(self, direction):
         last = self._last_attempt_up_ts if direction == 'UP' else self._last_attempt_down_ts
-        return last is None or (self._now() - last) >= FIRE_MIN_RETRY_INTERVAL_SEC
+        if last is None:
+            return True
+        elapsed = self._now() - last
+        return elapsed < 0 or elapsed >= FIRE_MIN_RETRY_INTERVAL_SEC
 
     def mark_fire_attempt(self, direction):
         if direction == 'UP':
@@ -792,6 +795,9 @@ class TrendCoordinator:
     # -- Decide whether the symbol is due for evaluation. ----------------------
     def _is_due(self, symbol, now):
         elapsed = now - self._last_eval[symbol]
+        if elapsed < 0:
+            self._last_eval[symbol] = 0.0
+            elapsed = now
         if elapsed >= self.max_interval:          # heartbeat
             return True
         with self._lock:

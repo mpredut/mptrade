@@ -315,6 +315,8 @@ class Instrument:
             print(
                 f"[GUARD] {side_u} {self.symbol}: bypass math_profit/math_reference ignored; "
                 "is allowed only for BUY")
+            if bypassed_guards.intersection({"financial", "gf"}):
+                bypassed_guards.update({"g_qlimit1", "g_qlimit2"})
             bypassed_guards.difference_update(GUARD_REGISTRY["G_PROF"].aliases)
             bypassed_guards.discard(GUARD_REGISTRY["G_PROF"].canonical)
             bypassed_guards.discard(GUARD_REGISTRY["G_PROF"].code.lower())
@@ -326,6 +328,10 @@ class Instrument:
             print(
                 f"[GUARD] {side_u} {self.symbol}: bypass_quantity_policy ignored; "
                 "is allowed only for SELL")
+            if bypassed_guards.intersection({"financial", "gf"}):
+                bypassed_guards.update({"g_prof", "g_qlimit2"})
+            if bypassed_guards.intersection({"qlimit", "g_qlimit"}):
+                bypassed_guards.add("g_qlimit2")
             bypassed_guards.difference_update(GUARD_REGISTRY["G_QLIMIT1"].aliases)
             bypassed_guards.discard(GUARD_REGISTRY["G_QLIMIT1"].canonical)
             bypassed_guards.discard(GUARD_REGISTRY["G_QLIMIT1"].code.lower())
@@ -572,12 +578,13 @@ class Instrument:
                 # and Hyperliquid use their configured venue window; Binance uses
                 # safeback_sec from the order cache. An empty window falls back to
                 # the last opposite fill.
-                profit_window_ref = self._call_profit_guard_window_ref(
-                    self.symbol, side_u, safeback_override,
-                    regime_context=regime_context,
-                    reference_mode=profit_reference_mode,
-                    module=caller_module,
-                )
+                if not bypass_math_ref and eff_ref_mode != "off":
+                    profit_window_ref = self._call_profit_guard_window_ref(
+                        self.symbol, side_u, safeback_override,
+                        regime_context=regime_context,
+                        reference_mode=profit_reference_mode,
+                        module=caller_module,
+                    )
 
                 # Stage 1: Deterministic Mathematical Reference Check (G_PROF).
                 # Must beat historical reference before sizing or intelligence evaluation.
@@ -617,7 +624,7 @@ class Instrument:
                 apply_policy=not bypass_quantity_policy,
                 market=is_market,
                 enforce_business_minimum=enforce_business_minimum,
-                regime_context=(None if caller_applied_scale < 1.0 else regime_context),
+                regime_context=(None if (caller_applied_scale < 1.0 or bypass_profit_guard) else regime_context),
                 known_balance=known_balance,
             )
             qty = decision.final_qty
@@ -631,7 +638,8 @@ class Instrument:
 
             # Fail-safe check for intelligence scaling if not applied in quantity_decision
             if (
-                regime_context is not None
+                not bypass_profit_guard
+                and regime_context is not None
                 and side_u == "BUY"
                 and qty > 0
                 and not getattr(decision, "scale_applied", False)

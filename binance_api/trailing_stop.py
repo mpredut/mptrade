@@ -269,7 +269,8 @@ class TrailingStop:
             import cacheManager as cm
             snap = cm.get_short_trend_manager().get_fresh_snapshot(symbol)
             if snap:
-                return float(snap.get('gradient_recent', snap.get('slope_small', 0.0)) or 0.0)
+                val = float(snap.get('gradient_recent', snap.get('slope_small', 0.0)) or 0.0)
+                return val if math.isfinite(val) else 0.0
         except Exception:
             pass
         return 0.0

@@ -500,6 +500,8 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         print(
             f"[GUARD] {order_type} {symbol}: bypass math_profit/math_reference ignored; "
             "is allowed only for BUY")
+        if bypassed.intersection({"financial", "gf"}):
+            bypassed.update({"g_qlimit1", "g_qlimit2"})
         bypassed.difference_update(GUARD_REGISTRY["G_PROF"].aliases)
         bypassed.discard(GUARD_REGISTRY["G_PROF"].canonical)
         bypassed.discard(GUARD_REGISTRY["G_PROF"].code.lower())

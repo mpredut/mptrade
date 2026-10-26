@@ -4519,3 +4519,179 @@ def test_iteration20_caller_module_quarantine_set_and_position_exit_clock_skew(t
     assert d_re.action == ReentryAction.ENTER
 
 
+def test_iteration21_assetguardian_partial_sell_tier_category_revocation_and_trailing_recovery(tmp_path, monkeypatch):
+    """Regression test for Iteration 21 fixes:
+    1. assetguardian._sell_campaign_tier computes unfilled_tier_qty = max(0, initial_qty * allocation - already_filled)
+       and caps by free_qty, instead of subtracting already_filled from min(free_qty, initial_qty * allocation)
+       (which double-subtracted partial fills when free_qty < initial_qty * allocation and falsely marked the
+       remaining tier as dust-completed).
+    2. Instrument.place and bapi_placeorder.if_place_safe_order preserve sibling category bypasses
+       (e.g. 'g_qlimit2' when revoking G_QLIMIT1 from 'qlimit'/'financial' on BUY; 'g_qlimit1' & 'g_qlimit2'
+       when revoking G_PROF from 'financial' on SELL), skip _call_profit_guard_window_ref when G_PROF is bypassed,
+       and ignore regime_context.suggested_scale when bypass_profit_guard ('all'/'profit_guard') is active.
+    3. trailing_core.should_sell rejects non-positive/non-finite prices, and KrakenTrailing._trend_value
+       recovers from .previous generation files and handles ms timestamps.
+    """
+    import assetguardian as ag
+    from instrument import Instrument
+    from providers.quantity import QuantityDecision
+    import trailing_core
+    import kraken.trailing_stop as kt
+
+    # 1. assetguardian._sell_campaign_tier does not double-subtract already_filled on partial fill
+    state_file = tmp_path / "ag_state.json"
+    monkeypatch.setattr(ag, "STATE", ag.AssetGuardianState(str(state_file), fail_closed=False))
+    monkeypatch.setattr(ag, "_p3b_threshold_multipliers", lambda *a, **k: (1.0, 1.0, None))
+    completed_earlier = [t for t, _ in ag.SELL_TIERS[:-1]]
+    last_thr, last_alloc = ag.SELL_TIERS[-1]
+    tier_target = 10.0 * last_alloc
+    partial_fill = tier_target * 0.6
+    rem_expected = tier_target - partial_fill
+    total_filled = (10.0 - tier_target) + partial_fill
+    ag._save_symbol_campaign(
+        "TAOUSDC",
+        "sell",
+        {
+            "trough_price": 100.0,
+            "trough_ts": 1000.0,
+            "initial_qty": 10.0,
+            "created_at": 1000.0,
+            "completed_tiers": completed_earlier,
+            "filled_qty_by_tier": {ag._tier_key(last_thr): partial_fill},
+            "total_filled_qty": total_filled,
+            "attempts_by_tier": {},
+            "terminal_orders": [],
+        },
+    )
+
+    class DummyProvider:
+        name = "binance"
+        def open_orders(self, symbol):
+            return []
+
+    tier_res, _, growth = ag._sell_campaign_tier(
+        "TAOUSDC",
+        current_price=100.0 * (1.0 + last_thr / 100.0 + 0.05),
+        minimum_row={"price": 100.0, "timestamp": 1000.0},
+        free_qty=rem_expected,
+        provider=DummyProvider(),
+    )
+    assert tier_res is not None
+    thr_out, alloc_out, rem_qty = tier_res
+    assert thr_out == pytest.approx(last_thr)
+    assert alloc_out == pytest.approx(last_alloc)
+    # Must return the remaining 40% of tier_target, NOT 0.0 (min(rem_expected, tier_target) - partial_fill)!
+    assert rem_qty == pytest.approx(rem_expected)
+
+    # 2. Instrument.place preserves G_QLIMIT2 when revoking G_QLIMIT1 from 'qlimit' on BUY,
+    #    skips profit_guard_window_ref when G_PROF is bypassed, and ignores suggested_scale on bypass_guards={'all'}
+    window_ref_calls = []
+    pg_bypasses = []
+
+    class FakeSpotProvider:
+        name = "kraken"
+        def validate_symbol(self, sym):
+            return None
+        def guards_internally(self):
+            return False
+        def requires_cache_permit(self):
+            return False
+        def defers_smart_cancel(self):
+            return False
+        def supports_business_minimum(self):
+            return False
+        def execution_enabled(self):
+            return True
+        def preflight_order(self, *a, **k):
+            return None
+        def round_price(self, sym, px):
+            return px
+        def round_amount(self, sym, q):
+            return q
+        def free_balance(self, asset):
+            return 10000.0
+        def get_current_price(self, sym):
+            return 100.0
+        def profit_guard_window_ref(self, *a, **k):
+            window_ref_calls.append(1)
+            raise RuntimeError("should not be called when G_PROF is bypassed")
+        def quantity_decision(self, symbol, side, price, qty, **kw):
+            rc = kw.get("regime_context")
+            sc = getattr(rc, "suggested_scale", 1.0) if (rc is not None and side == "BUY") else 1.0
+            final_q = float(qty or 1.0) * (sc if 0 < sc < 1.0 else 1.0)
+            return QuantityDecision(
+                requested_qty=float(qty or 1.0),
+                balance_cap=100.0,
+                policy_cap=100.0,
+                fee_cap=100.0,
+                final_qty=final_q,
+                scale_applied=(0 < sc < 1.0),
+                applied_scale=sc,
+            )
+        def place_order(self, symbol, side, price, qty, **kw):
+            return {"orderId": "ord-21", "qty": qty}
+
+    monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))
+    monkeypatch.setattr(
+        order_guard,
+        "profit_guard",
+        lambda *a, **k: (pg_bypasses.append(set(k.get("bypass_guards") or set())) or True),
+    )
+
+    fake_prov = FakeSpotProvider()
+    fake_api = MagicMock()
+    fake_api.provider_by_name.return_value = fake_prov
+    fake_api.market_regime_context.return_value = None
+    inst = Instrument(
+        name="TAO",
+        provider="kraken",
+        symbol="TAOUSD",
+        base="TAO",
+        quote="USD",
+        enabled=True,
+        api=fake_api,
+    )
+    # Pass bypass_guards={"financial"} on BUY -> G_QLIMIT1 is revoked, but G_PROF & G_QLIMIT2 stay bypassed!
+    res_buy = inst.place(
+        "BUY", 100.0, 2.0,
+        smart=False, wait_for_trend=False, caller_owns_retry=True,
+        bypass_guards={"financial"},
+    )
+    assert res_buy is not None
+    assert window_ref_calls == []  # G_PROF was bypassed, so profit_guard_window_ref was NOT called
+    assert len(pg_bypasses) == 1
+    assert "g_prof" in pg_bypasses[0]
+    assert "g_qlimit2" in pg_bypasses[0]
+    assert "g_qlimit1" not in pg_bypasses[0]
+
+    # Pass bypass_guards={"all"} on BUY with a regime_context that has suggested_scale=0.25 -> must NOT downscale qty!
+    ctx_scaled = _build_test_context()
+    object.__setattr__(ctx_scaled, "suggested_scale", 0.25)
+    res_all = inst.place(
+        "BUY", 100.0, 2.0,
+        smart=False, wait_for_trend=False, caller_owns_retry=True,
+        bypass_guards={"all"},
+        regime_context=ctx_scaled,
+    )
+    assert res_all is not None
+    assert res_all["qty"] == pytest.approx(2.0)
+
+    # 3. trailing_core.should_sell & KrakenTrailing._trend_value .previous recovery
+    assert trailing_core.should_sell(0.0, 100.0, 15.0) is False
+    assert trailing_core.should_sell(-5.0, 100.0, 15.0) is False
+    assert trailing_core.should_sell(float("nan"), 100.0, 15.0) is False
+    assert trailing_core.should_sell(80.0, 100.0, 15.0) is True
+
+    trend_file = tmp_path / "cache_short_trend.json"
+    trend_prev = tmp_path / "cache_short_trend.json.previous"
+    trend_file.write_text("{corrupt", encoding="utf-8")
+    trend_prev.write_text(
+        json.dumps({"HYPEUSDC": {"ts": time.time() * 1000.0, "gradient_recent": 0.42}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(kt, "CACHE_TREND", str(trend_file))
+    kt_inst = object.__new__(kt.KrakenTrailing)
+    assert kt_inst._trend_value("HYPE/USD") == pytest.approx(0.42)
+
+
+

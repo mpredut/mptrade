@@ -38,7 +38,9 @@ from state_io import load_json_state, save_json_state
 
 def should_sell(current: float, peak: float, trail_pct: float) -> bool:
     """Return True when the price has fallen at least trail% from the peak."""
-    return peak > 0 and trail_pct > 0 and current <= peak * (1 - trail_pct / 100.0)
+    if not (math.isfinite(current) and math.isfinite(peak) and math.isfinite(trail_pct)):
+        return False
+    return current > 0 and peak > 0 and trail_pct > 0 and current <= peak * (1 - trail_pct / 100.0)
 
 
 class TrailingCore:
@@ -246,8 +248,9 @@ class TrailingCore:
     def _process(self, key, asset, pair, trail, state) -> None:
         free = self.a.free_qty(asset)
         price = self.a.price(pair)
-        if not price or price <= 0:
+        if not price or isinstance(price, bool) or not math.isfinite(float(price)) or float(price) <= 0:
             return
+        price = float(price)
         is_new = key not in state
         st = state.setdefault(key, {"peak": price})
 
