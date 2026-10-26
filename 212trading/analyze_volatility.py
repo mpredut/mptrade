@@ -48,6 +48,8 @@ def pct(a, b):
 
 def pullbacks(closes):
     """Return pullback depths below the running peak for DCA spacing."""
+    if not closes:
+        return []
     peak = closes[0]; dips = []; cur = 0.0
     for c in closes:
         if c >= peak:

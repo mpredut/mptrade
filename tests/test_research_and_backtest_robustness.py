@@ -1140,6 +1140,51 @@ def test_ui_mirror_hot_reload_and_research_sweep_guards(tmp_path, monkeypatch):
     assert tob._load_cachedb_price_entries("cache_365_price_TEST.jsonl", "TEST") == [[1000, 50.0]]
     assert tob._load_cachedb_price_entries("cache_24_price_TEST.json", "TEST") == []
 
+    # 11. analyze_volatility.pullbacks empty input, 212trading/backtest.simulate None/shorthand keys, hyperliquid/backtest.precompute_signal
+    import importlib.util
+    import sys
+    from pathlib import Path
+    root_dir = Path(tob.__file__).resolve().parent.parent
+
+    with monkeypatch.context() as m:
+        m.setattr(sys, "path", list(sys.path))
+        spec_av = importlib.util.spec_from_file_location("t212_analyze_vol_test", root_dir / "212trading/analyze_volatility.py")
+        mod_av = importlib.util.module_from_spec(spec_av)
+        spec_av.loader.exec_module(mod_av)
+        assert mod_av.pullbacks([]) == []
+        assert mod_av.pullbacks([100.0, 80.0, 102.0]) == [25.0]
+
+        spec_t212_bt = importlib.util.spec_from_file_location("t212_backtest_test", root_dir / "212trading/backtest.py")
+        mod_t212_bt = importlib.util.module_from_spec(spec_t212_bt)
+        spec_t212_bt.loader.exec_module(mod_t212_bt)
+        sim_res = mod_t212_bt.simulate(
+            [(100.0, 102.0, 99.0, 101.0), (101.0, 103.0, 100.0, 102.0)],
+            {
+                "budget": 1000.0,
+                "entry": 100.0,
+                "dca": 100.0,
+                "disc": 0.2,
+                "drop": 2.0,
+                "tp": 1.5,
+                "maxdca": 5,
+                "fee": 0.15,
+                "sl": 10.0,
+                "tp_ladder": None,
+                "reentry_drop": 1.0,
+                "reentry_tol": 0.05,
+                "sl_rebuy_bounce": 1.2,
+                "sl_mhdsl_enabled": True,
+            },
+        )
+        assert isinstance(sim_res, dict) and "total" in sim_res
+
+        spec_hl_bt = importlib.util.spec_from_file_location("hl_backtest_test", root_dir / "hyperliquid/backtest.py")
+        mod_hl_bt = importlib.util.module_from_spec(spec_hl_bt)
+        spec_hl_bt.loader.exec_module(mod_hl_bt)
+        sig_out = mod_hl_bt.precompute_signal([100.0, 101.0, 102.0], [1000.0, 4600.0, 8200.0], "analysis", 2, 3, 0.01, 24, 8)
+        assert sig_out == ["neutral", "neutral", "neutral"]
+
+
 
 
 

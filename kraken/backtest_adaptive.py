@@ -133,11 +133,13 @@ def main() -> int:
     ap.add_argument("--horizon", type=int, default=24)
     args = ap.parse_args()
 
+    if args.budget <= 0 or args.interval <= 0:
+        print("! budget and interval must be > 0"); return 1
     ohlc = fetch_candles(args.pair, args.interval)
     if len(ohlc) < 40:
         print(f"! not enough data ({len(ohlc)})"); return 1
     closes = [x[3] for x in ohlc]
-    bh = (closes[-1] - closes[0]) / closes[0] * 100
+    bh = (closes[-1] - closes[0]) / closes[0] * 100 if closes[0] > 0 else 0.0
     print(f"=== {args.pair} interval={args.interval}m ({len(ohlc)} bare) — buy&hold {bh:+.1f}% ===")
 
     vol_trail = trailing_vol_series(closes, sample_rate_sec=args.interval * 60.0)

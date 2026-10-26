@@ -245,7 +245,7 @@ class TrailingStop:
         """
         try:
             asset = TRAILING_INSTRUMENTS[pair].base
-            balances = [row for row in self._balances if row.get("asset") == asset]
+            balances = [row for row in self._balances if isinstance(row, dict) and row.get("asset") == asset]
             if len(balances) != 1:
                 return None
             balance = balances[0]

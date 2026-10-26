@@ -567,7 +567,12 @@ class KrakenTrailing:
                  "  (FREE balance only, not the bot position)")
         self.log(f"    re-buy: {'ON' if REBUY_ENABLED else 'off'} (recul +{REBUY_BOUNCE_PCT}% de la minim)")
         while True:
-            self.check_once()
+            try:
+                self.check_once()
+            except KeyboardInterrupt:
+                return
+            except Exception as e:  # noqa: BLE001
+                self.log_tick_error(e)
             time.sleep(CHECK_SECONDS)
 
 

@@ -73,10 +73,21 @@ def precompute_signal(closes, ts, source, fast, slow, band, win_h, step_h):
     out = ["neutral"] * len(closes)
     if source == "off":
         return ["__any__"] * len(closes)         # gate disabled
+    detect_fn = None
+    if source == "analysis":
+        try:
+            from price_analysis import detect_long_term_trend as detect_fn
+        except ImportError:
+            import importlib.util
+            _pa_spec = importlib.util.spec_from_file_location(
+                "hyperliquid_price_analysis", os.path.join(_HERE, "price_analysis.py")
+            )
+            _pa_mod = importlib.util.module_from_spec(_pa_spec)
+            _pa_spec.loader.exec_module(_pa_mod)
+            detect_fn = _pa_mod.detect_long_term_trend
     for i in range(len(closes)):
         if source == "analysis":
-            from price_analysis import detect_long_term_trend
-            res = detect_long_term_trend(ts[:i+1], closes[:i+1], win_h, step_h)
+            res = detect_fn(ts[:i+1], closes[:i+1], win_h, step_h)
             out[i] = res["direction"] if res else "neutral"
         else:  # builtin
             if fast > 0 and slow > 0 and i + 1 >= max(fast, slow):

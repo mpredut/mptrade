@@ -108,15 +108,19 @@ def simulate(ohlc, P):
     }
     for k, v in P.items():
         if k == "tp_ladder":
-            if isinstance(v, (list, tuple)):
+            if v is None:
+                env_overrides["STRAT_TP_LADDER"] = ""
+            elif isinstance(v, (list, tuple)):
                 env_overrides["STRAT_TP_LADDER"] = ",".join(
                     f"{lvl}:{frac * 100.0 if frac <= 1.0 else frac}" for lvl, frac in v
                 )
             else:
                 env_overrides["STRAT_TP_LADDER"] = str(v)
+        elif v is None or k in ("reentry_drop", "reentry_tol", "sl_rebuy_bounce"):
+            continue
         elif k.startswith("STRAT_") or k.startswith("sl_") or k.startswith("tp_") or k.startswith("reentry_"):
             env_key = k if k.startswith("STRAT_") else f"STRAT_{k.upper()}"
-            env_overrides[env_key] = str(v)
+            env_overrides[env_key] = str(v).lower() if isinstance(v, bool) else str(v)
 
     params = StratParams.from_env(env_overrides)
     return run_replay(
