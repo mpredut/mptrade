@@ -544,7 +544,13 @@ class HyperliquidProvider(MarketDataProvider):
         if c is None:
             return None
         try:
-            szd = int(c.sz_decimals(self._token))
+            raw_szd = c.sz_decimals(self._token)
+            if isinstance(raw_szd, bool) or raw_szd is None:
+                raise ValueError(f"invalid sz_decimals={raw_szd!r}")
+            szd_f = float(raw_szd)
+            if not math.isfinite(szd_f) or not szd_f.is_integer() or int(szd_f) < 0:
+                raise ValueError(f"invalid sz_decimals={raw_szd!r}")
+            szd = int(szd_f)
         except Exception as e:  # noqa: BLE001
             raise ProviderError(f"pair_precision({symbol}): {e}") from e
         # Spot price permits 8-szDecimals decimal places and volume permits
@@ -692,7 +698,7 @@ class HyperliquidProvider(MarketDataProvider):
         repeats this check to close the race after engine preflight.
         """
         self.validate_symbol(symbol)
-        if not (side or "").lower().startswith("b"):
+        if not isinstance(side, str) or not side.strip().lower().startswith("b"):
             return
         if qty is None:
             return
@@ -765,11 +771,11 @@ class HyperliquidProvider(MarketDataProvider):
             if not isinstance(order, dict):
                 order = {}
             oid = order.get("oid", payload.get("oid"))
-            if oid is None:
+            if oid is None or isinstance(oid, bool) or not str(oid).strip():
                 raise ProviderError(
                     f"order_by_client_id({symbol}): response without order ID")
             return {
-                "orderId": str(oid),
+                "orderId": str(oid).strip(),
                 "status": payload.get("status"),
             }
         except ProviderError:
@@ -815,7 +821,12 @@ class HyperliquidProvider(MarketDataProvider):
                 raise ProviderError(
                     f"order_status({order_id}): invalid order payload ({raw_status})"
                 )
-            venue_status = str(status_payload.get("status") or "")
+            raw_venue_status = status_payload.get("status")
+            if isinstance(raw_venue_status, bool):
+                raise ProviderError(
+                    f"order_status({order_id}): invalid order status ({raw_status})"
+                )
+            venue_status = str(raw_venue_status or "")
             order_payload = status_payload.get("order")
             if not isinstance(order_payload, dict):
                 raise ProviderError(
@@ -856,10 +867,14 @@ class HyperliquidProvider(MarketDataProvider):
                     raw_fee_val = f.get("fee", f.get("commission", 0.0))
                     if isinstance(raw_fee_val, bool):
                         raise ProviderError(f"order_status({order_id}): invalid fee value")
-                    raw_fee = float(raw_fee_val or 0.0)
-                    if not math.isfinite(raw_fee):
-                        raise ProviderError(f"order_status({order_id}): non-finite fee value")
-                    fee_token = str(f.get("feeToken") or f.get("feeAsset") or "").strip().upper()
+                    try:
+                        raw_fee = float(raw_fee_val or 0.0)
+                    except (TypeError, ValueError, OverflowError) as e:
+                        raise ProviderError(f"order_status({order_id}): invalid fee value") from e
+                    if not math.isfinite(raw_fee) or raw_fee < 0.0:
+                        raise ProviderError(f"order_status({order_id}): non-finite or negative fee value")
+                    raw_fee_token = f.get("feeToken") or f.get("feeAsset") or ""
+                    fee_token = str(raw_fee_token).strip().upper() if isinstance(raw_fee_token, str) else ""
                 # Hyperliquid usually charges BUY fees in base and SELL fees in
                 # quote. Convert base fees at the exact fill price for quote accounting.
                 if fee_token == self._token:
@@ -893,7 +908,7 @@ class HyperliquidProvider(MarketDataProvider):
                     f"order_status({order_id}): invalid order sizes"
                 ) from e
             if (not all(math.isfinite(v) for v in (original, remaining, filled, cost, fee))
-                    or original < 0.0 or remaining < 0.0 or filled < 0.0 or cost < 0.0):
+                    or original < 0.0 or remaining < 0.0 or filled < 0.0 or cost < 0.0 or fee < 0.0):
                 raise ProviderError(
                     f"order_status({order_id}): invalid order sizes"
                 )

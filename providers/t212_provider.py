@@ -191,7 +191,9 @@ class T212Provider(MarketDataProvider):
     # -- Account. --------------------------------------------------------------
     def free_balance(self, asset: str) -> Optional[float]:
         # Under the common contract, errors become None rather than a valid zero.
-        asset_u = str(asset or "").strip().upper()
+        if not isinstance(asset, str) or not asset.strip():
+            return None
+        asset_u = asset.strip().upper()
         if asset_u in {"USD", "RON", "EUR"}:
             try:
                 cli = self._client()
@@ -295,7 +297,9 @@ class T212Provider(MarketDataProvider):
     # -- Placement remains dry until T212_LIVE_ORDERS=true. --------------------
     @staticmethod
     def _signed_qty(side: str, qty: float) -> float:
-        side_u = (side or "").strip().upper()
+        if not isinstance(side, str):
+            raise ProviderError(f"invalid T212 side: {side!r}")
+        side_u = side.strip().upper()
         if isinstance(qty, bool):
             raise ProviderError(f"invalid T212 quantity: {qty!r}")
         try:
@@ -333,9 +337,9 @@ class T212Provider(MarketDataProvider):
             if self._order_validity is not None
             else os.environ.get("T212_ORDER_VALIDITY")
         )
-        if configured is None or not str(configured).strip():
+        if not isinstance(configured, str) or not configured.strip():
             raise ProviderError("T212_ORDER_VALIDITY is mandatory for limit orders")
-        validity = str(configured).strip().upper()
+        validity = configured.strip().upper()
         if validity not in {"DAY", "GOOD_TILL_CANCEL"}:
             raise ProviderError(f"T212_ORDER_VALIDITY invalid: {validity!r}")
         return self._client().place_limit_order(symbol, signed, price_f, validity=validity)
@@ -359,9 +363,15 @@ class T212Provider(MarketDataProvider):
                 return None
             # Instrument.place uses the common orderId key for cooldown. Preserve
             # T212's native id while exposing the mechanical alias on a copied payload.
-            if isinstance(data, dict) and data.get("id") is not None and "orderId" not in data:
+            if (
+                isinstance(data, dict)
+                and data.get("id") is not None
+                and not isinstance(data.get("id"), bool)
+                and str(data["id"]).strip()
+                and "orderId" not in data
+            ):
                 data = dict(data)
-                data["orderId"] = str(data["id"])
+                data["orderId"] = str(data["id"]).strip()
             return data
         except Exception as e:  # noqa: BLE001
             print(f"[T212] place_order {symbol}: {e}")
@@ -441,11 +451,12 @@ class T212Provider(MarketDataProvider):
 
         raw_fee_cur = raw.get("_feeCurrencies")
         fee_currencies = {
-            str(currency).strip().upper()
+            currency.strip().upper()
             for currency in (raw_fee_cur if isinstance(raw_fee_cur, (list, tuple, set)) else [])
-            if str(currency).strip()
+            if isinstance(currency, str) and currency.strip()
         }
-        order_currency = str(raw.get("currency") or "").strip().upper()
+        raw_order_cur = raw.get("currency")
+        order_currency = raw_order_cur.strip().upper() if isinstance(raw_order_cur, str) else ""
         if fee and order_currency and fee_currencies != {order_currency}:
             raise ProviderError(
                 f"order_status({order_id}): fee {sorted(fee_currencies)} "
@@ -516,7 +527,7 @@ class T212Provider(MarketDataProvider):
             )
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+        if not isinstance(symbol, str) or not symbol.strip():
             return None
         # The live client rounds price and quantity to two decimals. Metadata does
         # not publish tickSize/minQty, so the contract reflects actual mechanics.
@@ -524,5 +535,5 @@ class T212Provider(MarketDataProvider):
             price_decimals=_PRICE_DECIMALS,
             volume_decimals=_VOLUME_DECIMALS,
             order_min=_ORDER_MIN,
-            base_asset=str(symbol).strip(),
+            base_asset=symbol.strip(),
         )

@@ -49,7 +49,9 @@ _CACHE_MAX_STALE_S = 30.0   # Beyond this, assume cachemanager stopped and use T
 
 def _kraken_pair_key(value: str) -> str:
     """Canonicalize common Kraken legacy pair wrappers for strict comparison."""
-    key = "".join(ch for ch in str(value or "").upper() if ch.isalnum())
+    if not isinstance(value, str):
+        return ""
+    key = "".join(ch for ch in value.upper() if ch.isalnum())
     quote = next((candidate for candidate in (
         "USDC", "USDT", "USD", "EUR", "GBP", "CAD", "JPY", "AUD",
         "BTC", "XBT", "ETH",
@@ -76,8 +78,8 @@ def _normalize_kraken_fill(raw: dict) -> dict:
     norm = _normalize_order(raw)
     if isinstance(raw, dict):
         order_id = raw.get("ordertxid") or raw.get("orderId")
-        if order_id:
-            norm["orderId"] = str(order_id)
+        if order_id is not None and not isinstance(order_id, bool) and str(order_id).strip():
+            norm["orderId"] = str(order_id).strip()
     return norm
 
 
@@ -570,7 +572,7 @@ class KrakenProvider(MarketDataProvider):
         mutating strategy state. BUY funding remains venue-authoritative because its
         required fee/slippage reserve depends on order type and execution.
         """
-        if not str(side or "").lower().startswith("s"):
+        if not isinstance(side, str) or not side.strip().lower().startswith("s"):
             return
         if qty is None:
             return
@@ -605,6 +607,8 @@ class KrakenProvider(MarketDataProvider):
             )
 
     def order_status(self, symbol: str, order_id: str) -> OrderStatus:
+        if isinstance(order_id, bool) or not isinstance(order_id, str) or not order_id.strip():
+            raise ProviderError(f"order_status {order_id}: invalid order id")
         try:
             res = self._client().query_orders(order_id) or {}
         except Exception as e:  # noqa: BLE001
@@ -684,6 +688,8 @@ class KrakenProvider(MarketDataProvider):
         The explicit method name avoids future ambiguity; cancel_order below is the
         StrategyExecutor contract alias.
         """
+        if isinstance(order_id, bool) or not isinstance(order_id, str) or not order_id.strip():
+            raise ProviderError(f"cancel_order {order_id}: invalid order id")
         try:
             result = self._client().cancel_order(order_id) or {}
         except Exception as e:  # noqa: BLE001
@@ -733,11 +739,14 @@ class KrakenProvider(MarketDataProvider):
             ord_min = float(info["ordermin"])
             if p_dec < 0 or v_dec < 0 or not math.isfinite(ord_min) or ord_min <= 0.0:
                 raise ValueError("non-finite or non-positive values in pair_precision")
+            base_str = str(info["base"]).strip()
+            if not base_str:
+                raise ValueError("empty base asset in pair_precision")
             return PairPrecision(
                 price_decimals=p_dec,
                 volume_decimals=v_dec,
                 order_min=ord_min,
-                base_asset=str(info["base"]),
+                base_asset=base_str,
             )
         except (TypeError, ValueError, OverflowError) as e:
             raise ProviderError(f"pair_precision {symbol}: info malformat ({e})") from e

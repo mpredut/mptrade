@@ -11768,16 +11768,57 @@ def test_iteration98_intelligence_collectors_survival_and_guards_safety(tmp_path
     assert len(notified) == 1
 
 
+def test_iteration111_kraken_hyperliquid_and_t212_provider_safety():
+    """Iteration 111: Verify Kraken, Hyperliquid, and T212 provider input and payload validation."""
+    from types import SimpleNamespace
+    import pytest
+    from providers.base import ProviderError
+    import providers.kraken_provider as kp
+    import providers.hyperliquid_provider as hlp
+    import providers.t212_provider as tp
 
+    # 1. KrakenProvider
+    assert kp._kraken_pair_key(True) == ""
+    assert kp._kraken_pair_key(None) == ""
+    norm = kp._normalize_kraken_fill({"side": "BUY", "price": 100.0, "qty": 1.0, "timestamp": 1000, "ordertxid": True})
+    assert "orderId" not in norm
 
+    k_prov = kp.KrakenProvider.__new__(kp.KrakenProvider)
+    k_prov.preflight_order("XXBTZUSD", True, 1.0)
+    with pytest.raises(ProviderError):
+        k_prov.order_status("XXBTZUSD", True)
+    with pytest.raises(ProviderError):
+        k_prov.order_status("XXBTZUSD", "   ")
+    with pytest.raises(ProviderError):
+        k_prov.cancel_order_by_id("XXBTZUSD", True)
+    with pytest.raises(ProviderError):
+        k_prov.cancel_order_by_id("XXBTZUSD", "")
 
+    k_prov._client = lambda: SimpleNamespace(
+        pair_info=lambda _s: {"pair_decimals": 2, "lot_decimals": 4, "ordermin": 0.01, "base": "   "}
+    )
+    with pytest.raises(ProviderError):
+        k_prov.pair_precision("XXBTZUSD")
 
+    # 2. HyperliquidProvider
+    hl_prov = hlp.HyperliquidProvider.__new__(hlp.HyperliquidProvider)
+    hl_prov._token = "PURR"
+    hl_prov._symbol = "PURR"
+    hl_prov.validate_symbol = lambda _s: None
+    hl_prov.preflight_order("PURR", True, 1.0)
+    hl_prov._hl = lambda: SimpleNamespace(sz_decimals=lambda _t: True)
+    with pytest.raises(ProviderError):
+        hl_prov.pair_precision("PURR")
+    hl_prov._hl = lambda: SimpleNamespace(sz_decimals=lambda _t: -1)
+    with pytest.raises(ProviderError):
+        hl_prov.pair_precision("PURR")
 
-
-
-
-
-
-
-
+    # 3. T212Provider
+    t_prov = tp.T212Provider.__new__(tp.T212Provider)
+    assert t_prov.free_balance(True) is None
+    assert t_prov.free_balance("   ") is None
+    with pytest.raises(ProviderError):
+        t_prov._signed_qty(True, 1.0)
+    assert t_prov.pair_precision(123) is None
+    assert t_prov.pair_precision("   ") is None
 
