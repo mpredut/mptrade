@@ -165,10 +165,16 @@ class KrakenTrailing:
         bx = self._balance_ex_entry(asset)
         if not bx:
             return 0.0
+        raw_bal = bx.get("balance", 0)
+        raw_hold = bx.get("hold_trade", 0)
+        if isinstance(raw_bal, bool) or isinstance(raw_hold, bool):
+            return 0.0
         try:
-            free = float(bx.get("balance", 0)) - float(bx.get("hold_trade", 0))
-            return max(0.0, free) if math.isfinite(free) else 0.0
-        except (TypeError, ValueError):
+            bal_f = 0.0 if raw_bal is None else float(raw_bal)
+            hold_f = 0.0 if raw_hold is None else float(raw_hold)
+            free = bal_f - hold_f
+            return max(0.0, free) if (math.isfinite(bal_f) and math.isfinite(hold_f) and math.isfinite(free)) else 0.0
+        except (TypeError, ValueError, OverflowError):
             return 0.0
 
     # -- HYPE short trend from cache_short_trend.json for optional filters --
@@ -194,12 +200,20 @@ class KrakenTrailing:
                     snap = data[cand]
                     break
             if isinstance(snap, dict):
-                raw_ts = float(snap["ts"])
+                raw_ts_val = snap.get("ts")
+                if raw_ts_val is None or isinstance(raw_ts_val, bool):
+                    return 0.0
+                raw_ts = float(raw_ts_val)
+                if not math.isfinite(raw_ts) or raw_ts <= 0:
+                    return 0.0
                 if raw_ts > 1e11:
                     raw_ts /= 1000.0
                 age = time.time() - raw_ts
                 if -5.0 <= age <= 15.0:
-                    val = float(snap.get("gradient_recent", snap.get("slope_small", 0.0)) or 0.0)
+                    raw_grad = snap.get("gradient_recent", snap.get("slope_small", 0.0))
+                    if raw_grad is None or isinstance(raw_grad, bool):
+                        return 0.0
+                    val = float(raw_grad)
                     return val if math.isfinite(val) else 0.0
         except Exception:
             pass
@@ -229,10 +243,13 @@ class KrakenTrailing:
         bx = self._balance_ex_entry(asset)
         if not bx:
             return 0.0
+        raw_bal = bx.get("balance", 0)
+        if raw_bal is None or isinstance(raw_bal, bool):
+            return 0.0
         try:
-            val = float(bx.get("balance", 0))
+            val = float(raw_bal)
             return val if math.isfinite(val) and val >= 0 else 0.0
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return 0.0
 
     def unlock_qty(self, pair: str) -> bool:
@@ -372,18 +389,28 @@ class KrakenTrailing:
             if (
                 side.upper() == "BUY"
                 and suggested_scale is not None
+                and not isinstance(suggested_scale, bool)
+                and math.isfinite(float(suggested_scale))
                 and 0.0 < float(suggested_scale) < 1.0
             ):
                 scaled_qty = float(qty) * float(suggested_scale)
                 round_fn = getattr(self.executor._executor, "round_quantity", None)
                 if callable(round_fn):
                     try:
-                        scaled_qty = float(round_fn(pair, scaled_qty))
+                        rq = round_fn(pair, scaled_qty)
+                        if rq is not None and not isinstance(rq, bool) and math.isfinite(float(rq)):
+                            scaled_qty = float(rq)
                     except Exception:
                         pass
                 min_qty_fn = getattr(self.executor._executor, "min_order_qty", None)
-                min_q = float(min_qty_fn(pair) or 0.0) if callable(min_qty_fn) else 0.0
-                if scaled_qty <= 0 or (min_q > 0 and scaled_qty < min_q):
+                raw_min_q = min_qty_fn(pair) if callable(min_qty_fn) else 0.0
+                try:
+                    min_q = 0.0 if raw_min_q is None or isinstance(raw_min_q, bool) else float(raw_min_q)
+                except (TypeError, ValueError, OverflowError):
+                    min_q = 0.0
+                if not math.isfinite(min_q) or min_q < 0.0:
+                    min_q = 0.0
+                if not math.isfinite(scaled_qty) or scaled_qty <= 0 or (min_q > 0 and scaled_qty < min_q):
                     intent["refusal_reason"] = f"downscaled_below_min_qty:{reason}"
                     persist(None)
                     from order_retry import TrackedOrderResult

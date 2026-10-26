@@ -55,8 +55,13 @@ def fetch_ohlc_candles(
     for x in rows:
         if not isinstance(x, (list, tuple)) or len(x) < 5:
             continue
+        if any(isinstance(x[i], bool) for i in range(5)):
+            continue
         try:
-            ts = int(float(x[0]))
+            raw_ts = float(x[0])
+            if not math.isfinite(raw_ts):
+                continue
+            ts = int(raw_ts)
             o_val = float(x[1])
             h_val = float(x[2])
             l_val = float(x[3])
@@ -65,7 +70,9 @@ def fetch_ohlc_candles(
             continue
         if not (math.isfinite(o_val) and math.isfinite(h_val) and math.isfinite(l_val) and math.isfinite(c_val)):
             continue
-        if o_val <= 0 or h_val <= 0 or l_val <= 0 or c_val <= 0:
+        if ts <= 0 or o_val <= 0 or h_val <= 0 or l_val <= 0 or c_val <= 0:
+            continue
+        if h_val < l_val or h_val < max(o_val, c_val) or l_val > min(o_val, c_val):
             continue
         records.append({
             "timestamp": ts,

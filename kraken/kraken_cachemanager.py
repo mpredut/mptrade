@@ -27,6 +27,7 @@ Run: cd kraken && python kraken_cachemanager.py
 import os
 import sys
 import json
+import math
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -153,7 +154,10 @@ def _load_initial_cache(path):
             "fetchtime": {
                 str(k): v
                 for k, v in loaded["fetchtime"].items()
-                if isinstance(v, (int, float)) and not isinstance(v, bool)
+                if isinstance(v, (int, float))
+                and not isinstance(v, bool)
+                and math.isfinite(float(v))
+                and float(v) >= 0
             },
         }
     return {"items": {}, "fetchtime": {}}
@@ -177,11 +181,16 @@ def _ledger_to_fills(ledger):
         base = next((l for l in legs if l is not quote and str(l.get("asset", "")).upper() not in _QUOTE), None)
         if not quote or not base or str(base.get("type")) not in ("trade", "receive", "spend"):
             continue
-        try:
-            ba = float(base["amount"]); qa = float(quote["amount"])
-        except (KeyError, ValueError, TypeError):
+        raw_ba = base.get("amount") if isinstance(base, dict) else None
+        raw_qa = quote.get("amount") if isinstance(quote, dict) else None
+        if isinstance(raw_ba, bool) or isinstance(raw_qa, bool):
             continue
-        if ba == 0:
+        try:
+            ba = float(raw_ba)
+            qa = float(raw_qa)
+        except (KeyError, ValueError, TypeError, OverflowError):
+            continue
+        if not (math.isfinite(ba) and math.isfinite(qa)) or ba == 0.0 or qa == 0.0:
             continue
         raw_base = str(base["asset"]).upper()
         if raw_base.endswith(".F"):
@@ -190,25 +199,30 @@ def _ledger_to_fills(ledger):
         raw_symbol = raw_base + quote_ccy
         ts_ms = extract_timestamp_ms(base, default=None) or extract_timestamp_ms(quote, default=0) or 0
         is_buyer = ba > 0
+        px = abs(qa) / abs(ba)
+        if not math.isfinite(px) or px <= 0.0:
+            continue
         fill = {
             "symbol": raw_symbol,
             "id": str(refid), "orderId": str(refid),
-            "price": abs(qa) / abs(ba),
+            "price": px,
             "qty": abs(ba), "quantity": abs(ba),
             "time": ts_ms, "timestamp": ts_ms,
             "isBuyer": is_buyer,                          # receiving base means a purchase
             "side": "BUY" if is_buyer else "SELL",
         }
         try:
-            q_fee = abs(float(quote.get("fee", 0.0) or 0.0))
-            b_fee = abs(float(base.get("fee", 0.0) or 0.0))
-            if q_fee > 0:
+            raw_qf = quote.get("fee", 0.0)
+            raw_bf = base.get("fee", 0.0)
+            q_fee = 0.0 if raw_qf is None or isinstance(raw_qf, bool) else abs(float(raw_qf))
+            b_fee = 0.0 if raw_bf is None or isinstance(raw_bf, bool) else abs(float(raw_bf))
+            if math.isfinite(q_fee) and q_fee > 0:
                 fill["fee"] = q_fee
                 fill["feeAsset"] = quote_ccy
-            elif b_fee > 0:
+            elif math.isfinite(b_fee) and b_fee > 0:
                 fill["fee"] = b_fee
                 fill["feeAsset"] = raw_base
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             pass
         fills.append(fill)
     return fills
@@ -279,8 +293,16 @@ def _merge_rest_into(client, cache):
 
 def _touch_ws_fetchtimes(cache, now_ms=None):
     """Refresh fetchtime across all configured pairs while the WS stream is healthy."""
-    if now_ms is None:
+    if (
+        now_ms is None
+        or isinstance(now_ms, bool)
+        or not isinstance(now_ms, (int, float))
+        or not math.isfinite(float(now_ms))
+        or float(now_ms) <= 0
+    ):
         now_ms = int(time.time() * 1000)
+    else:
+        now_ms = int(now_ms)
     configured = [sym for sym in (PAIRS or ()) if sym and sym != "*"]
     for sym in configured:
         cache["items"].setdefault(sym, [])

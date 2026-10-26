@@ -7396,6 +7396,57 @@ def test_iteration47_botcore_and_market_regime_nan_bool_safety():
     assert comp.regime == "unknown"
 
 
+def test_iteration48_kraken_client_cachemanager_market_data_trailing_and_xstock_nan_bool_safety(monkeypatch):
+    import sys
+    import pytest
+    orig_sys_path = list(sys.path)
+    try:
+        from kraken import kraken_client as kc
+        from kraken import kraken_cachemanager as kcm
+        from kraken import kraken_xstock_watch as kxw
+    finally:
+        sys.path[:] = orig_sys_path
+
+    # 1. kraken_client: _read_ttl, last_price, price_decimals, add_order, ohlc_closes_with_timestamps
+    assert kc._read_ttl("OHLC", {"interval": float("nan")}) == 30.0
+    assert kc._read_ttl("OHLC", {"interval": True}) == 30.0
+    cli = kc.KrakenClient.public()
+    monkeypatch.setattr(cli, "ticker", lambda _pair: {"c": [float("nan"), "1.0"]})
+    assert cli.last_price("HYPEUSD") is None
+    monkeypatch.setattr(cli, "ticker", lambda _pair: {"c": [True, "1.0"]})
+    assert cli.last_price("HYPEUSD") is None
+    monkeypatch.setattr(cli, "pair_info", lambda _pair: {"pair_decimals": True})
+    assert cli.price_decimals("HYPEUSD") == 2
+    with pytest.raises(ValueError):
+        cli.add_order("HYPEUSD", "buy", True, 20.0)
+    with pytest.raises(ValueError):
+        cli.add_order("HYPEUSD", "buy", 1.0, float("nan"), ordertype="limit")
+    with pytest.raises(ValueError):
+        cli.ohlc_closes_with_timestamps("HYPEUSD", True)
+
+    # 2. kraken_cachemanager: _ledger_to_fills rejects NaN/bool/zero amounts and fees
+    bad_ledger = {
+        "L1": {"refid": "R1", "type": "trade", "asset": "HYPE", "amount": float("nan"), "time": 1700000000},
+        "L2": {"refid": "R1", "type": "trade", "asset": "ZUSD", "amount": "-100.0", "time": 1700000000},
+        "L3": {"refid": "R2", "type": "trade", "asset": "HYPE", "amount": True, "time": 1700000000},
+        "L4": {"refid": "R2", "type": "trade", "asset": "ZUSD", "amount": "-100.0", "time": 1700000000},
+        "L5": {"refid": "R3", "type": "trade", "asset": "HYPE", "amount": "2.0", "fee": True, "time": 1700000000},
+        "L6": {"refid": "R3", "type": "trade", "asset": "ZUSD", "amount": "-40.0", "fee": float("nan"), "time": 1700000000},
+    }
+    fills = kcm._ledger_to_fills(bad_ledger)
+    assert len(fills) == 1
+    assert fills[0]["id"] == "R3"
+    assert fills[0]["price"] == 20.0
+    assert "fee" not in fills[0]
+
+    # 3. kraken_xstock_watch: _bot_alive rejects boolean True (PID 1 systemd) and <= 1
+    assert kxw._bot_alive(True) is False
+    assert kxw._bot_alive(1) is False
+    assert kxw._bot_alive(-1) is False
+    assert kxw._bot_alive(0) is False
+
+
+
 
 
 

@@ -18,12 +18,16 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import re
 import threading
 import time
 import urllib.parse
 
-from kraken_common import http_get, http_post_form, log
+try:
+    from kraken.kraken_common import http_get, http_post_form, log
+except ImportError:
+    from kraken_common import http_get, http_post_form, log
 
 API_URL = "https://api.kraken.com"
 
@@ -57,10 +61,15 @@ def _read_ttl(method: str, params: dict) -> float | None:
     ttl = _READ_TTL.get(method)
     if not ttl or method != "OHLC":
         return ttl
-    try:
-        interval = max(1.0, float(params.get("interval", 1)))
-    except (TypeError, ValueError, OverflowError):
+    raw_itv = params.get("interval", 1)
+    if isinstance(raw_itv, bool):
         interval = 1.0
+    else:
+        try:
+            itv_f = float(raw_itv)
+            interval = max(1.0, itv_f) if math.isfinite(itv_f) else 1.0
+        except (TypeError, ValueError, OverflowError):
+            interval = 1.0
     return min(float(ttl), max(3.0, interval * 30.0))
 
 
@@ -200,13 +209,29 @@ class KrakenClient:
         self, pair: str, interval: int,
     ) -> tuple[list, tuple]:
         """Return completed OHLC closes and every corresponding close timestamp."""
-        res = self._public("OHLC", {"pair": pair, "interval": interval})
+        if isinstance(interval, bool) or int(interval) <= 0:
+            raise ValueError("interval must be a positive integer")
+        itv_sec = int(interval) * 60
+        res = self._public("OHLC", {"pair": pair, "interval": int(interval)})
         key = next((key for key in res if key != "last"), None)
-        rows = list(res[key])[:-1] if key else []
-        closes = [float(row[4]) for row in rows]
-        timestamps = tuple(
-            float(row[0]) + int(interval) * 60 for row in rows)
-        return closes, timestamps
+        rows = list(res[key])[:-1] if key and isinstance(res.get(key), list) else []
+        closes: list[float] = []
+        timestamps: list[float] = []
+        for row in rows:
+            if not isinstance(row, (list, tuple)) or len(row) < 5:
+                continue
+            if isinstance(row[0], bool) or isinstance(row[4], bool):
+                continue
+            try:
+                ts_val = float(row[0])
+                c_val = float(row[4])
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not (math.isfinite(ts_val) and ts_val > 0 and math.isfinite(c_val) and c_val > 0):
+                continue
+            closes.append(c_val)
+            timestamps.append(ts_val + itv_sec)
+        return closes, tuple(timestamps)
 
     def ohlc_closes_with_timestamp(
         self, pair: str, interval: int,
@@ -223,8 +248,14 @@ class KrakenClient:
     def last_price(self, pair: str) -> float | None:
         t = self.ticker(pair)
         try:
-            return float(t["c"][0]) if t else None      # 'c' = latest trade [price, volume]
-        except (KeyError, IndexError, TypeError, ValueError):
+            if not t:
+                return None
+            raw = t["c"][0]
+            if raw is None or isinstance(raw, bool):
+                return None
+            px = float(raw)
+            return px if math.isfinite(px) and px > 0.0 else None      # 'c' = latest trade [price, volume]
+        except (KeyError, IndexError, TypeError, ValueError, OverflowError):
             return None
 
     # ----- PRIVATE -------------------------------------------------------------
@@ -238,8 +269,11 @@ class KrakenClient:
         Kraken accepts fewer decimals but never more (e.g. HYPE/USD = 2)."""
         try:
             info = self.pair_info(pair)
-            if info and info.get("pair_decimals") is not None:
-                return int(info["pair_decimals"])
+            raw_dec = info.get("pair_decimals") if isinstance(info, dict) else None
+            if raw_dec is not None and not isinstance(raw_dec, bool):
+                dec = int(raw_dec)
+                if dec >= 0:
+                    return dec
         except Exception:  # noqa: BLE001 — conservatively fall back without blocking the order
             pass
         return 2
@@ -252,13 +286,17 @@ class KrakenClient:
         mechanical protection for every Kraken caller (trailing/bot/xstock), analogous
         to Binance place_order_mechanics. Without it, Kraken rejects excess precision
         with 'price can only be specified up to N decimals' and the order fails."""
+        if isinstance(volume, bool) or not math.isfinite(float(volume)) or float(volume) <= 0.0:
+            raise ValueError(f"invalid Kraken order volume: {volume!r}")
         data = {
             "pair": pair,
             "type": side,
             "ordertype": ordertype,
-            "volume": f"{volume}",
+            "volume": f"{float(volume)}",
         }
         if ordertype == "limit" and price is not None:
+            if isinstance(price, bool) or not math.isfinite(float(price)) or float(price) <= 0.0:
+                raise ValueError(f"invalid Kraken limit price: {price!r}")
             price = round(float(price), self.price_decimals(pair))
             data["price"] = f"{price}"
         if cl_ord_id is not None:

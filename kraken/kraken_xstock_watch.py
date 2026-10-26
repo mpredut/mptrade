@@ -29,16 +29,24 @@ import sys
 import time
 import urllib.request
 
-from kraken_common import (
-    log, load_env_stack, single_instance, required_env,
-    required_float_env, required_bool_env,
-)
-from notify import notify
-from kraken_client import KrakenClient, KrakenError
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+try:
+    from kraken.kraken_common import (
+        log, load_env_stack, single_instance, required_env,
+        required_float_env, required_bool_env,
+    )
+    from kraken.notify import notify
+    from kraken.kraken_client import KrakenClient, KrakenError
+except ImportError:
+    from kraken_common import (
+        log, load_env_stack, single_instance, required_env,
+        required_float_env, required_bool_env,
+    )
+    from notify import notify
+    from kraken_client import KrakenClient, KrakenError
 from state_io import atomic_write_json, load_json_state, save_json_state
 from credentials import kraken_credentials
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def _state_file() -> str:
@@ -98,9 +106,11 @@ def check_balance(client: KrakenClient, st: dict, rx: str, desktop: bool) -> Non
         return
     assets: dict[str, float] = {}
     for a, q in bal.items():
+        if isinstance(q, bool):
+            continue
         try:
             qf = float(q)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if math.isfinite(qf) and qf > 0:
             assets[a] = qf
@@ -218,11 +228,13 @@ BOT_LOG = os.path.join(_HERE, "xstock_bot.log")
 
 
 def _bot_alive(pid) -> bool:
-    if not pid:
+    if not pid or isinstance(pid, bool):
         return False
     try:
         pid = int(pid)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if pid <= 1:
         return False
     try:
         # Reap a dead child; otherwise kill(0) would incorrectly report it as alive.
