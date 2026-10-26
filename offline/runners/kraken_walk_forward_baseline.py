@@ -13,6 +13,7 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -109,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.fee < 0:
+    if not math.isfinite(args.fee) or args.fee < 0:
         parser.error("--fee cannot be negative")
     execution = build_execution_model_from_args(parser, args)
 

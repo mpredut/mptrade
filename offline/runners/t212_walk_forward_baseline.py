@@ -11,6 +11,7 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -64,6 +65,8 @@ from offline.backtests.execution import ExecutionModel  # noqa: E402
 
 
 def periods_per_year(interval_minutes: int) -> float:
+    if isinstance(interval_minutes, bool) or interval_minutes <= 0:
+        raise ValueError("interval_minutes must be positive")
     # Regular US session: 6.5h and roughly 252 trading days per year.
     if interval_minutes >= 1440:
         return 252.0 * 1440.0 / interval_minutes
@@ -114,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--fx-to-usd and --fx-dataset are alternatives")
     if args.dataset is not None and args.seed_dataset is not None:
         parser.error("--dataset and --seed-dataset are alternatives")
-    if args.fx_to_usd is not None and args.fx_to_usd <= 0:
+    if args.fx_to_usd is not None and (not math.isfinite(args.fx_to_usd) or args.fx_to_usd <= 0):
         parser.error("--fx-to-usd must be positive")
     execution = build_execution_model_from_args(parser, args)
     warmup = (12 if params.dca_trend_gate_pct > 0 else 0) if args.warmup is None else args.warmup

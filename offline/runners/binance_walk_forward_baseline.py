@@ -11,6 +11,7 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -59,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         "--output-dir", type=Path, default=ROOT / "offline/results/binance_walk_forward",
     )
     args = parser.parse_args(argv)
-    if args.fee < 0:
+    if not math.isfinite(args.fee) or args.fee < 0:
         parser.error("--fee cannot be negative")
 
     cfg: dict[str, str] = {}
@@ -121,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[!] Insufficient bars for {symbol} {interval}m ({len(records)} < 20); skipping.")
             continue
 
-        validate_dataset(records, interval_minutes=interval)
+        records = validate_dataset(records, interval_minutes=interval)
         train_size, val_size, test_size, step_size = resolve_window_sizes(args, len(records))
 
         adapter = make_binance_replay_adapter(

@@ -11,6 +11,7 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -96,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     coin = (args.coin or cfg.get("HL_COIN", "HYPE")).strip().upper()
     direction = (args.direction or cfg.get("HL_DIRECTION", "long")).strip().lower()
     fee_pct = args.fee if args.fee is not None else float(cfg.get("HL_FEE_PCT", "0.035"))
-    if fee_pct < 0:
+    if not math.isfinite(fee_pct) or fee_pct < 0:
         parser.error("--fee cannot be negative")
 
     if args.engine == "spot":

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 import sys
 
@@ -39,6 +40,8 @@ def _load(paths: list[Path], venue: str | None) -> list[dict]:
                     event = json.loads(raw)
                 except json.JSONDecodeError as error:
                     raise ValueError(f"{path}:{line_number}: JSON invalid") from error
+                if not isinstance(event, dict):
+                    raise ValueError(f"{path}:{line_number}: JSON invalid")
                 if venue and str(event.get("venue") or "").lower() != venue.lower():
                     continue
                 events.append(event)
@@ -46,7 +49,13 @@ def _load(paths: list[Path], venue: str | None) -> list[dict]:
 
 
 def _fmt(value) -> str:
-    return "n/a" if value is None else f"{float(value):.3f}"
+    if value is None or isinstance(value, bool):
+        return "n/a"
+    try:
+        fval = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    return f"{fval:.3f}" if math.isfinite(fval) else "n/a"
 
 
 def markdown_report(report: dict, paths: list[Path]) -> str:

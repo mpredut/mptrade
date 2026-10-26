@@ -12,6 +12,7 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
+import math
 from pathlib import Path
 import sys
 
@@ -105,8 +106,16 @@ def build_comparison(args) -> dict:
     }
 
 
-def _fmt(value: float, *, signed: bool = False) -> str:
-    return f"{value:+.3f}" if signed else f"{value:.3f}"
+def _fmt(value: float | None, *, signed: bool = False) -> str:
+    if value is None or isinstance(value, bool):
+        return "n/a"
+    try:
+        fval = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    if not math.isfinite(fval):
+        return "n/a"
+    return f"{fval:+.3f}" if signed else f"{fval:.3f}"
 
 
 def markdown_report(report: dict) -> str:
@@ -163,13 +172,14 @@ def main() -> int:
     parser.add_argument("--step", type=int, default=90)
     parser.add_argument("--warmup", type=int, default=40)
     parser.add_argument("--regime-threshold", type=float, default=3.0)
+    parser.add_argument("--strict-baseline", action="store_true")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--markdown", type=Path)
     args = parser.parse_args()
     for name in ("train", "validation", "test", "step"):
         if getattr(args, name) <= 0:
             parser.error(f"--{name} must be positive")
-    if args.warmup < 0 or args.regime_threshold < 0:
+    if args.warmup < 0 or not math.isfinite(args.regime_threshold) or args.regime_threshold < 0:
         parser.error("warmup and regime-threshold cannot be negative")
     args.baseline = args.baseline.expanduser().resolve()
     args.dataset = args.dataset.expanduser().resolve()

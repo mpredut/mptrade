@@ -17,6 +17,7 @@ Visualisation (while running or afterwards): in another terminal,
 """
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -87,10 +88,24 @@ class BacktestBroker:
 
     def _execute(self, order_type, symbol, price, qty=None, motivation=None):
         """The real P&L accounting (no gate) — used directly or after waiting."""
-        price = float(price)
+        if isinstance(price, bool):
+            return None
+        try:
+            price = float(price)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(price) or price <= 0.0:
+            return None
         if qty is None:
             qty = BACKTEST_NOTIONAL_USD / price
-        qty = float(qty)
+        if isinstance(qty, bool):
+            return None
+        try:
+            qty = float(qty)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(qty) or qty <= 0.0:
+            return None
         self.last_price = price
         if order_type == "BUY":
             self.n_buy += 1
@@ -218,9 +233,19 @@ def _iter_jsonl_ticks(path, symbol, start_ts, end_ts):
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if rec.get("s") != symbol:
+                if not isinstance(rec, dict) or rec.get("s") != symbol:
                     continue
-                ts_ms, price = rec["i"]
+                item = rec.get("i")
+                if not isinstance(item, (list, tuple)) or len(item) < 2:
+                    continue
+                if isinstance(item[0], bool) or isinstance(item[1], bool):
+                    continue
+                try:
+                    ts_ms, price = float(item[0]), float(item[1])
+                except (TypeError, ValueError):
+                    continue
+                if not (math.isfinite(ts_ms) and math.isfinite(price) and price > 0.0):
+                    continue
                 full_ticks.append((ts_ms / 1000.0, price))
         if len(_FILE_TICKS_CACHE) >= 4:
             _FILE_TICKS_CACHE.clear()
@@ -259,8 +284,18 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
         return
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    entries = data.get("items", {}).get(symbol, [])
-    for ts_ms, price in entries:
+    entries = data.get("items", {}).get(symbol, []) if isinstance(data, dict) else []
+    for entry in entries:
+        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+            continue
+        if isinstance(entry[0], bool) or isinstance(entry[1], bool):
+            continue
+        try:
+            ts_ms, price = float(entry[0]), float(entry[1])
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(ts_ms) and math.isfinite(price) and price > 0.0):
+            continue
         ts = ts_ms / 1000.0
         if ts < start_ts:
             continue
@@ -279,7 +314,10 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     DYNAMIC thresholds (e.g. adaptive on volatility) without copying the whole loop
     (23 Jul: offline/research/tradeall_adaptive_thresholds/ had done exactly that before, with
     the risk that its own loop would silently diverge from this, the "official" one, over time)."""
-    out_dir = os.path.join(ROOT, "logger", "backtest", run_id)
+    safe_run_id = str(run_id or "").strip().replace("/", "_").replace("\\", "_")
+    if not safe_run_id or safe_run_id in (".", ".."):
+        raise ValueError(f"Invalid run_id: {run_id!r}")
+    out_dir = os.path.join(ROOT, "logger", "backtest", safe_run_id)
     # 23 Jul: clean the folder BEFORE running — several files here
     # (order_outcomes.log, tradeall_decisions.log, tradeall_shadow.log,
     # tradeall_price_samples.log) are written with open(..., "a") (append), so without

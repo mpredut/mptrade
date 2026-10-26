@@ -185,6 +185,37 @@ class WalkForwardCompareTest(unittest.TestCase):
         self.assertTrue(base_params.tp_mdhtp_enabled)
         self.assertTrue(callable(segment_fn))
 
+    def test_runners_and_backtest_broker_guards(self):
+        from offline.backtests.tradeall import BacktestBroker, run_backtest
+        from offline.runners.t212_walk_forward_baseline import periods_per_year
+        from offline.runners.kraken_financial_benchmark import _format as kfb_fmt
+        from offline.runners.kraken_financial_compare import _fmt as kfc_fmt
+        from offline.runners.calibrate_execution_audit import _fmt as cea_fmt
+        import tempfile
+
+        for fn in (kfb_fmt, kfc_fmt, cea_fmt):
+            self.assertEqual(fn(None), "n/a")
+            self.assertEqual(fn(True), "n/a")
+            self.assertEqual(fn(float("nan")), "n/a")
+            self.assertEqual(fn(float("inf")), "n/a")
+
+        with self.assertRaises(ValueError):
+            periods_per_year(0)
+        with self.assertRaises(ValueError):
+            periods_per_year(False)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            broker = BacktestBroker(tmp, lambda: 1000.0)
+            self.assertIsNone(broker._execute("BUY", "BTCUSDC", 0.0))
+            self.assertIsNone(broker._execute("BUY", "BTCUSDC", float("nan")))
+            self.assertIsNone(broker._execute("BUY", "BTCUSDC", 100.0, qty=0.0))
+            self.assertIsNone(broker._execute("BUY", "BTCUSDC", True))
+
+        with self.assertRaises(ValueError):
+            run_backtest("BTCUSDC", 0.0, 1.0, "fast", "", "history")
+        with self.assertRaises(ValueError):
+            run_backtest("BTCUSDC", 0.0, 1.0, "fast", "..", "history")
+
 
 if __name__ == "__main__":
     unittest.main()

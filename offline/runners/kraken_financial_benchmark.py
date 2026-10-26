@@ -7,6 +7,7 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -181,7 +182,7 @@ def build_report(
     report = {
         "schema_version": 1,
         "benchmark": "HYPE base-v2 financial OOS",
-        "candidate_name": candidate_name or args.name,
+        "candidate_name": candidate_name or getattr(args, "name", "base_v2_live"),
         "generated_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "code": _git_state(),
         "strategy_params": dataclasses.asdict(params),
@@ -225,9 +226,15 @@ def build_report(
 
 
 def _format(value, *, signed: bool = False) -> str:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return "n/a"
-    return f"{float(value):+.3f}" if signed else f"{float(value):.3f}"
+    try:
+        fval = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    if not math.isfinite(fval):
+        return "n/a"
+    return f"{fval:+.3f}" if signed else f"{fval:.3f}"
 
 
 def markdown_report(report: dict) -> str:
@@ -325,7 +332,7 @@ def main() -> int:
     for name in ("train", "validation", "test", "step"):
         if getattr(args, name) <= 0:
             parser.error(f"--{name} must be positive")
-    if args.warmup < 0 or args.regime_threshold < 0:
+    if args.warmup < 0 or not math.isfinite(args.regime_threshold) or args.regime_threshold < 0:
         parser.error("warmup and regime-threshold cannot be negative")
     args.dataset = args.dataset.expanduser().resolve()
     args.manifest = args.manifest.expanduser().resolve()
