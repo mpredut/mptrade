@@ -30,14 +30,16 @@ if (not math.isfinite(ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC)
 def _accepted_is_durable(order_retry_module, claim, order) -> bool:
     """Recognize a first attempt that committed before reporting an I/O error."""
     try:
+        if not isinstance(claim, dict):
+            return False
         expected_order_id = order_retry_module.order_id_from_response(order)
-        expected_client_id = dict(
-            claim.get("place_kwargs") or {}).get("client_order_id")
+        pk = claim.get("place_kwargs")
+        expected_client_id = pk.get("client_order_id") if isinstance(pk, dict) else None
         for record in order_retry_module.load_all():
-            if record.get("id") != claim.get("id"):
+            if not isinstance(record, dict) or record.get("id") != claim.get("id"):
                 continue
-            current_client_id = dict(
-                record.get("place_kwargs") or {}).get("client_order_id")
+            rpk = record.get("place_kwargs")
+            current_client_id = rpk.get("client_order_id") if isinstance(rpk, dict) else None
             return (
                 str(record.get("lifecycle") or "").lower() == "accepted"
                 and str(record.get("order_id") or "") == str(expected_order_id)
@@ -79,15 +81,23 @@ def complete_accepted_claim(
             time.sleep(ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC)
 
     from datetime import datetime
-    order_id = order_retry_module.order_id_from_response(order)
-    client_order_id = dict(
-        claim.get("place_kwargs") or {}).get("client_order_id")
-    qty = claim.get("qty")
-    px = claim.get("requested_price") if claim.get("requested_price") is not None else claim.get("ref_price")
     try:
-        val_str = f"~${float(qty) * float(px):.2f}" if (qty is not None and px is not None) else "N/A"
-    except (TypeError, ValueError, OverflowError):
-        val_str = "N/A"
+        order_id = order_retry_module.order_id_from_response(order)
+    except Exception:
+        order_id = None
+    claim_dict = claim if isinstance(claim, dict) else {}
+    pk = claim_dict.get("place_kwargs")
+    client_order_id = pk.get("client_order_id") if isinstance(pk, dict) else None
+    qty = claim_dict.get("qty")
+    px = claim_dict.get("requested_price") if claim_dict.get("requested_price") is not None else claim_dict.get("ref_price")
+    val_str = "N/A"
+    if qty is not None and px is not None and not isinstance(qty, bool) and not isinstance(px, bool):
+        try:
+            val_f = float(qty) * float(px)
+            if math.isfinite(val_f):
+                val_str = f"~${val_f:.2f}"
+        except (TypeError, ValueError, OverflowError):
+            val_str = "N/A"
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     detail = (
         f"venue={provider_name} symbol={symbol} side={side} "

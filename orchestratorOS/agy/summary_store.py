@@ -64,7 +64,7 @@ def drop_wal_sidecars(path: str, *, force: bool = False) -> None:
 
 def parse_db_timestamp(ts_str: str) -> Optional[datetime]:
     """Parse a summaries-db datetime string into an aware UTC datetime."""
-    if not ts_str:
+    if not ts_str or not isinstance(ts_str, str):
         return None
     try:
         ts_part = ts_str.split("+")[0].rstrip("Zz").strip()
@@ -72,9 +72,10 @@ def parse_db_timestamp(ts_str: str) -> Optional[datetime]:
             return datetime(1, 1, 1, tzinfo=timezone.utc)
         if "." in ts_part:
             main_ts, frac = ts_part.split(".", 1)
-            ts_part = f"{main_ts}.{frac[:6]}"
+            frac_digits = "".join(ch for ch in frac if ch.isdigit())
+            ts_part = f"{main_ts}.{frac_digits[:6].ljust(6, '0')}" if frac_digits else main_ts
         return datetime.fromisoformat(f"{ts_part}+00:00")
-    except ValueError:
+    except (ValueError, TypeError, AttributeError):
         return None
 
 
@@ -92,6 +93,8 @@ def resolve_project_ids(names_or_ids: Iterable[str], cli_bases: Iterable[str]) -
                 with open(os.path.join(pdir, fname), encoding="utf-8") as f:
                     data = json.load(f)
             except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict):
                 continue
             pid, pname = data.get("id"), data.get("name")
             if resolved & {pid, pname}:
@@ -129,8 +132,8 @@ def write_annotation_title(cli_base: str, cid: str, title: str) -> None:
         with open(path, encoding="utf-8", errors="ignore") as f:
             preserved = [ln.rstrip("\n") for ln in f if ln.strip() and not ln.lstrip().startswith("title:")]
     esc = title.replace("\\", "\\\\").replace('"', '\\"')
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join([f'title:"{esc}"'] + preserved) + "\n")
+    content = ("\n".join([f'title:"{esc}"'] + preserved) + "\n").encode("utf-8")
+    atomic_write_bytes(path, content)
 
 
 def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
@@ -176,6 +179,8 @@ def read_summary_row(cli_base: str, cid: str) -> Optional[dict]:
 
 
 def _drop_summaries(cli_base: str, cids: Set[str]) -> None:
+    if not cids:
+        return
     db = summaries_db(cli_base)
     if os.path.exists(db):
         conn = sqlite3.connect(db)

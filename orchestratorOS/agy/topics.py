@@ -94,12 +94,13 @@ def get_topic_registry_path(registry_path: Optional[str] = None) -> str:
 
 
 def load_topic_registry(registry_path: Optional[str] = None) -> Dict[str, dict]:
+    from state_io import previous_generation_path, read_recovering_previous
+
     path = get_topic_registry_path(registry_path)
-    if not os.path.exists(path):
+    if not os.path.exists(path) and not os.path.exists(previous_generation_path(path)):
         return {}
     try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
+        data = read_recovering_previous(path, json.loads, default=None)
     except (OSError, ValueError) as e:
         logger.warning("Unreadable topic registry %s: %s", path, e)
         return {}
@@ -115,11 +116,11 @@ def load_topic_registry(registry_path: Optional[str] = None) -> Dict[str, dict]:
 
 
 def save_topic_registry(registry: Dict[str, dict], registry_path: Optional[str] = None) -> None:
-    from state_io import atomic_write_json
+    from state_io import save_json_state
 
     path = get_topic_registry_path(registry_path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    atomic_write_json(path, registry, indent=2)
+    save_json_state(path, registry, indent=2)
 
 
 def get_active_topic_cids(registry_path: Optional[str] = None) -> Set[str]:
@@ -330,6 +331,7 @@ def condense_decision(response_text: str, max_len: int = 220) -> str:
         parts.extend(f"{k}={parsed[k]}" for k in _PROSE_SUMMARY_KEYS if parsed.get(k) not in (None, ""))
         if parts:
             condensed = "; ".join(parts)
+    max_len = max(4, int(max_len))
     return condensed if len(condensed) <= max_len else condensed[: max_len - 3] + "..."
 
 

@@ -27,12 +27,20 @@ class FileLock:
     def __enter__(self):
         self._fd = open(self.path, "a+")
         if _HAVE_FCNTL:
-            fcntl.flock(self._fd, fcntl.LOCK_EX)
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_EX)
+            except BaseException:
+                self._fd.close()
+                self._fd = None
+                raise
         return self
 
     def __exit__(self, *exc):
+        if self._fd is None:
+            return
         try:
             if _HAVE_FCNTL:
                 fcntl.flock(self._fd, fcntl.LOCK_UN)
         finally:
             self._fd.close()
+            self._fd = None

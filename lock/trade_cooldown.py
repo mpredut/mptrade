@@ -18,6 +18,7 @@ Flow at the ``__place_order`` choke point:
         # Failure, exception, or omission releases automatically on exit.
 """
 import os
+import math
 import time
 import contextlib
 import configparser
@@ -126,9 +127,18 @@ def get_last_trade_age(symbol):
 
 def describe_last_trade(symbol):
     last = _cooldown().get(symbol)
-    if not last or not last.get("timestamp"):
+    if not isinstance(last, dict):
         return f"{symbol}: no order recorded"
-    age = time.time() - last["timestamp"]
+    raw_ts = last.get("timestamp")
+    if raw_ts is None or isinstance(raw_ts, bool):
+        return f"{symbol}: no order recorded"
+    try:
+        ts = float(raw_ts)
+    except (TypeError, ValueError):
+        return f"{symbol}: no order recorded"
+    if not math.isfinite(ts) or ts <= 0:
+        return f"{symbol}: no order recorded"
+    age = max(0.0, time.time() - ts)
     return (f"{symbol}: ultim={last.get('side')} | age={age:.1f}s | "
             f"proc={last.get('process_name')} | tid={last.get('thread_id')} | "
             f"clientId={last.get('client_order_id')} | binId={last.get('binance_order_id')}")

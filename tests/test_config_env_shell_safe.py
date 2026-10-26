@@ -464,3 +464,51 @@ def test_triggers_guards_and_collectors_hardening(tmp_path):
     assert len(nfc.get_pool_snapshot(now_ts=now).headlines) == 1
 
 
+def test_agy_store_and_order_persistence_hardening(tmp_path, monkeypatch):
+    import accepted_order_persistence as aop
+    from lock import trade_cooldown as tc
+    from orchestratorOS.agy.summary_store import _drop_summaries, parse_db_timestamp, resolve_project_ids, write_annotation_title, read_annotation_title
+    from orchestratorOS.agy.topics import condense_decision, load_topic_registry, save_topic_registry
+
+    assert parse_db_timestamp(None) is None
+    assert parse_db_timestamp(12345) is None
+    assert parse_db_timestamp("2026-10-26 04:00:00.12Z") is not None
+
+    cli_dir = tmp_path / "store" / "antigravity-cli"
+    proj_dir = tmp_path / "store" / "config" / "projects"
+    proj_dir.mkdir(parents=True)
+    (proj_dir / "bad.json").write_text("[1, 2, 3]", encoding="utf-8")
+    (proj_dir / "good.json").write_text('{"id": "p1", "name": "mptrade"}', encoding="utf-8")
+    assert "p1" in resolve_project_ids(["mptrade"], [str(cli_dir)])
+
+    write_annotation_title(str(cli_dir), "cid1", 'Test "Title"')
+    assert read_annotation_title(str(cli_dir), "cid1") == 'Test "Title"'
+    _drop_summaries(str(cli_dir), set())
+
+    from state_io import stage_previous_generation
+    reg_file = tmp_path / "topics.json"
+    save_topic_registry({"macro_sentiment": {"conversation_id": "c1"}}, str(reg_file))
+    stage_previous_generation(str(reg_file))
+    reg_file.unlink()
+    reg_file.write_text("{corrupted", encoding="utf-8")
+    loaded_reg = load_topic_registry(str(reg_file))
+    assert loaded_reg.get("macro_sentiment", {}).get("conversation_id") == "c1"
+    assert len(condense_decision("A very long decision string here", max_len=2)) == 4
+
+    monkeypatch.setattr(tc, "STATE_FILE", str(tmp_path / "tc.json"))
+    monkeypatch.setattr(tc, "LOCK_FILE", str(tmp_path / "tc.lock"))
+    tc._cooldown()._write({"BTCUSDC": {"timestamp": "bad"}})
+    assert "no order recorded" in tc.describe_last_trade("BTCUSDC")
+
+    class _DummyRetry:
+        @staticmethod
+        def order_id_from_response(o):
+            return "ord1"
+        @staticmethod
+        def load_all():
+            return ["not_a_dict", {"id": "c1", "place_kwargs": "bad"}]
+
+    assert aop._accepted_is_durable(_DummyRetry, "not_a_dict", {}) is False
+    assert aop._accepted_is_durable(_DummyRetry, {"id": "c1", "place_kwargs": "bad"}, {}) is False
+
+

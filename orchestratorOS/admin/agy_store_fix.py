@@ -172,6 +172,7 @@ def mode_pre(force: bool = False) -> int:
     if not force and os.environ.get("AGY_FIX_HOME") is None and unit_active():
         log.error("daemon is active; refusing to run 'pre' (use --force to override)")
         return 2
+    os.makedirs(D1, exist_ok=True)
     os.makedirs(D2, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
     mesh_state = disable_webrtc_mesh(stamp)
@@ -400,10 +401,15 @@ def mode_check() -> int:
     linked = sum(1 for f in d1 & d2 if same_file(os.path.join(D1, f), os.path.join(D2, f)))
     print(f"visible dir files={len(d2)}  content dir files={len(d1)}  hard-linked={linked}  only-in-content-dir={len(d1 - d2)}  webrtc_mesh={webrtc_mesh_status()}")
     if os.path.exists(DB):
-        c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
         import collections
-        cnt = collections.Counter((r[0][:8], r[1] or "unset", "titled" if r[2] else "untitled") for r in
-                                  c.execute("select project_id, source, title from conversation_summaries"))
+        c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+        try:
+            cnt = collections.Counter(
+                ((r[0] or "none")[:8], r[1] or "unset", "titled" if r[2] else "untitled")
+                for r in c.execute("select project_id, source, title from conversation_summaries")
+            )
+        finally:
+            c.close()
         for k, v in sorted(cnt.items()):
             print(" ", v, k)
     return 0
