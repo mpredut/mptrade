@@ -17,14 +17,26 @@ ROLES = {"mt", "tradeall_fire", "kalman_primary", "trailing", "assetguardian",
 
 
 def _required(values, key, section):
-    value = values.get(key, "").strip()
+    raw = values.get(key) if isinstance(values, dict) else None
+    if raw is None and isinstance(values, dict) and isinstance(key, str):
+        key_cf = key.casefold()
+        for k, v in values.items():
+            if isinstance(k, str) and k.casefold() == key_cf:
+                raw = v
+                break
+    if isinstance(raw, bool):
+        value = "true" if raw else "false"
+    else:
+        value = str(raw if raw is not None else "").strip()
     if not value:
         raise ValueError(f"instruments.conf [{section}]: missing required {key!r}")
     return value
 
 
 def _boolean(value, key, section):
-    normalized = value.casefold()
+    if isinstance(value, bool):
+        return value
+    normalized = str(value if value is not None else "").strip().casefold()
     if normalized not in configparser.ConfigParser.BOOLEAN_STATES:
         raise ValueError(f"instruments.conf [{section}]: invalid boolean {key}={value!r}")
     return configparser.ConfigParser.BOOLEAN_STATES[normalized]

@@ -321,7 +321,11 @@ def valid_record(rec):
     try:
         qty = float(rec.get("qty"))
         created = float(rec.get("created_ts"))
-        revision = int(rec.get("revision", 0))
+        rev_raw = rec.get("revision", 0)
+        rev_f = float(rev_raw)
+        if not math.isfinite(rev_f) or not rev_f.is_integer():
+            return False
+        revision = int(rev_f)
     except (TypeError, ValueError, OverflowError):
         return False
     lifecycle = str(rec.get("lifecycle") or "submit_pending").lower()
@@ -349,7 +353,8 @@ def valid_record(rec):
                 lifecycle_ok = False
     return bool(
         str(rec.get("id") or "").strip() and str(rec.get("symbol") or "").strip() and
-        str(rec.get("side") or "").upper() in {"BUY", "SELL"} and
+        not isinstance(rec.get("side"), bool) and
+        str(rec.get("side") or "").strip().upper() in {"BUY", "SELL"} and
         math.isfinite(qty) and qty > 0 and
         math.isfinite(created) and created > 0 and revision >= 0 and lifecycle_ok
     )
@@ -384,12 +389,17 @@ def _same_deferred_stream(left, right):
     right_provider = str(right.get("provider_name") or "").strip().lower()
     provider_matches = (
         not left_provider or not right_provider or left_provider == right_provider)
+    left_sym = str(left.get("symbol") or "").strip().upper()
+    right_sym = str(right.get("symbol") or "").strip().upper()
+    left_kind = str(left.get("kind") or "").strip() or None
+    right_kind = str(right.get("kind") or "").strip() or None
     return bool(
         provider_matches
-        and left.get("symbol") == right.get("symbol")
-        and str(left.get("side") or "").upper()
-        == str(right.get("side") or "").upper()
-        and (left.get("kind") or None) == (right.get("kind") or None)
+        and left_sym
+        and left_sym == right_sym
+        and str(left.get("side") or "").strip().upper()
+        == str(right.get("side") or "").strip().upper()
+        and left_kind == right_kind
     )
 
 
@@ -1315,6 +1325,8 @@ def resolve_record(record_id, *, client_order_id=None):
 
 def claim(ids, now=None, lease_sec=None):
     """Lease entries without removing them, making crash recovery deterministic."""
+    if ids is None or isinstance(ids, (str, bytes, bool)):
+        return []
     ids = {i for i in ids if not isinstance(i, bool) and i}
     if not ids:
         return []
@@ -1726,7 +1738,9 @@ def discard_expired(snapshots, now=None):
 
 def discard(ids):
     """Atomically remove records by ID without submitting them (expiry/give-up)."""
-    ids = set(ids)
+    if ids is None or isinstance(ids, (str, bytes, bool)):
+        return []
+    ids = {i for i in ids if not isinstance(i, bool) and i}
     if not ids:
         return []
     _ensure_dir()
@@ -2041,19 +2055,28 @@ class TrackedOrderLifecycle:
                  retry_on_lookup_error: bool = False,
                  max_age_seconds: Optional[float] = None,
                  audit=None, clock: Callable[[], float] = time.time):
-        if not str(provider_name or "").strip():
+        if isinstance(provider_name, bool) or not isinstance(provider_name, str) or not provider_name.strip():
             raise ValueError("provider_name is required")
-        if isinstance(missing_confirmations, bool) or int(missing_confirmations) <= 0:
+        if venue is not None and (isinstance(venue, bool) or not isinstance(venue, str) or not venue.strip()):
+            raise ValueError("venue must be a non-empty string")
+        if isinstance(missing_confirmations, bool):
             raise ValueError("missing_confirmations must be positive")
+        try:
+            mc_f = float(missing_confirmations)
+            if not math.isfinite(mc_f) or not mc_f.is_integer() or int(mc_f) <= 0:
+                raise ValueError("missing_confirmations must be positive")
+            mc_int = int(mc_f)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("missing_confirmations must be positive") from exc
         if max_age_seconds is not None:
             parsed_age = _lifecycle_finite(max_age_seconds, positive=True)
             if parsed_age is None:
                 raise ValueError("max_age_seconds must be finite and positive")
             max_age_seconds = parsed_age
         self.market_api = market_api
-        self.provider_name = str(provider_name)
-        self.venue = str(venue or provider_name)
-        self.missing_confirmations = int(missing_confirmations)
+        self.provider_name = provider_name.strip()
+        self.venue = venue.strip() if venue is not None else self.provider_name
+        self.missing_confirmations = mc_int
         self.retry_on_lookup_error = bool(retry_on_lookup_error)
         self.max_age_seconds = max_age_seconds
         self.audit = audit
@@ -2082,10 +2105,13 @@ class TrackedOrderLifecycle:
 
     @staticmethod
     def _validate_identity(intent: dict) -> None:
+        if not isinstance(intent, dict):
+            raise ValueError("tracked intent must be a dict")
         for key in ("intent_id", "client_order_id", "symbol", "side"):
-            if not str(intent.get(key) or "").strip():
+            val = intent.get(key)
+            if isinstance(val, bool) or not str(val or "").strip():
                 raise ValueError(f"tracked intent missing {key}")
-        if str(intent["side"]).upper() not in {"BUY", "SELL"}:
+        if str(intent["side"]).strip().upper() not in {"BUY", "SELL"}:
             raise ValueError("tracked intent side must be BUY or SELL")
         if _lifecycle_finite(intent.get("requested_qty"), positive=True) is None:
             raise ValueError("tracked intent requested_qty must be positive")
@@ -2098,23 +2124,37 @@ class TrackedOrderLifecycle:
                    requested_price: Optional[float] = None,
                    kind: Optional[str] = None, attempt: int = 1,
                    metadata: Optional[Dict] = None) -> dict:
+        if isinstance(intent_id, bool) or isinstance(client_order_id, bool) or isinstance(symbol, bool) or isinstance(side, bool) or isinstance(kind, bool):
+            raise ValueError("tracked intent identity fields must not be boolean")
         if isinstance(requested_qty, bool):
             raise ValueError("tracked intent requested_qty must be positive")
         if isinstance(requested_price, bool):
             raise ValueError("tracked intent requested_price must be positive")
         if isinstance(attempt, bool):
             raise ValueError("tracked intent attempt must be positive")
+        try:
+            att_f = float(attempt)
+            if not math.isfinite(att_f) or not att_f.is_integer():
+                raise ValueError("tracked intent attempt must be positive")
+            att_int = int(att_f)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("tracked intent attempt must be positive") from exc
+        side_norm = str(side or "").strip().upper()
+        if side_norm == "B":
+            side_norm = "BUY"
+        elif side_norm == "S":
+            side_norm = "SELL"
         now = self._now()
         intent = {
-            "intent_id": str(intent_id),
-            "client_order_id": str(client_order_id),
-            "symbol": str(symbol),
-            "side": str(side).upper(),
+            "intent_id": str(intent_id).strip(),
+            "client_order_id": str(client_order_id).strip(),
+            "symbol": str(symbol).strip(),
+            "side": side_norm,
             "kind": None if kind is None else str(kind),
             "requested_qty": float(requested_qty),
             "requested_price": (None if requested_price is None
                                 else float(requested_price)),
-            "attempt": int(attempt),
+            "attempt": att_int,
             "created_at": now,
             "lookup_misses": 0,
         }

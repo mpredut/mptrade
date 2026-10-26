@@ -10679,3 +10679,83 @@ def test_iteration96_provider_base_replay_quantity_and_market_api_safety():
     with pytest.raises(ValueError, match="side must be BUY or SELL"):
         ma.latest_fill_price("BTCUSDC", True, 60.0)
 
+
+def test_iteration97_instrument_registry_order_retry_and_worker_safety(tmp_path):
+    from instrument_registry import InstrumentSpec
+    import order_retry as oq
+    import order_retry_worker as orw
+
+    # 1. InstrumentSpec programmatic non-string and mixed-case params handling
+    spec = InstrumentSpec(
+        name="BTC",
+        provider="binance",
+        symbol="BTCUSDC",
+        base="BTC",
+        quote="USDC",
+        enabled=True,
+        isolation="own_ledger",
+        market_hours="24x7",
+        params={"ROLE.MT": True, "TRAILING.PCT": 1.5, "trailing.rebuy": False},
+    )
+    assert spec.has_role("mt") is True
+    assert spec.number("trailing.pct") == pytest.approx(1.5)
+    assert spec.rebuy_mode() == "off"
+
+    # 2. order_retry.valid_record, _same_deferred_stream, claim/discard, and TrackedOrderLifecycle validation
+    base_rec = {
+        "id": "rec1",
+        "symbol": "BTCUSDC",
+        "side": "BUY",
+        "qty": 1.0,
+        "created_ts": 1000.0,
+        "revision": 0,
+        "lifecycle": "submit_pending",
+        "last_failure_reason": "trend_deferred",
+    }
+    assert oq.valid_record({**base_rec, "revision": 1.5}) is False
+    assert oq.valid_record({**base_rec, "side": " buy "}) is True
+    assert oq._same_deferred_stream(
+        {**base_rec, "symbol": "btcusdc", "side": " buy "},
+        {**base_rec, "symbol": " BTCUSDC ", "side": "BUY"},
+    ) is True
+    assert oq.claim(None) == []
+    assert oq.claim("rec1") == []
+    assert oq.discard(None) == []
+    assert oq.discard("rec1") == []
+
+    with pytest.raises(ValueError, match="provider_name is required"):
+        oq.TrackedOrderLifecycle(object(), provider_name=True)
+    with pytest.raises(ValueError, match="missing_confirmations must be positive"):
+        oq.TrackedOrderLifecycle(object(), provider_name="binance", missing_confirmations=1.5)
+
+    lc = oq.TrackedOrderLifecycle(object(), provider_name=" binance ", clock=lambda: 1000.0)
+    assert lc.provider_name == "binance"
+    with pytest.raises(ValueError, match="must not be boolean"):
+        lc.new_intent(intent_id=True, client_order_id="c1", symbol="BTCUSDC", side="BUY", requested_qty=1.0)
+    with pytest.raises(ValueError, match="attempt must be positive"):
+        lc.new_intent(intent_id="i1", client_order_id="c1", symbol="BTCUSDC", side="BUY", requested_qty=1.0, attempt=1.5)
+    intent = lc.new_intent(intent_id=" i1 ", client_order_id=" c1 ", symbol=" BTCUSDC ", side=" b ", requested_qty=1.0)
+    assert intent["side"] == "BUY"
+    assert intent["symbol"] == "BTCUSDC"
+
+    # 3. order_retry_worker._format_record_context & IncidentDigest.collect validation
+    ctx_str = orw._format_record_context(
+        {"side": "BUY", "symbol": "BTCUSDC", "qty": True, "requested_price": True, "attempts": True}
+    )
+    assert "@ market" in ctx_str
+    assert "(0 attempts" in ctx_str
+
+    digest = orw.IncidentDigest(tmp_path / "digest.json", 60.0)
+    with pytest.raises(ValueError, match="invalid notification digest event"):
+        digest.collect([{"labels": {"symbol": "BTCUSDC"}, "quantity": 1.0}], now=1000.0)
+    with pytest.raises(ValueError, match="invalid notification digest event"):
+        digest.collect([{"labels": {"symbol": "BTCUSDC"}, "quantity": 1.0, "sample_id": "s1", "attempts": True}], now=1000.0)
+    reports = digest.collect(
+        [{"labels": {"symbol": "BTCUSDC"}, "quantity": 2.0, "sample_id": " s1 ", "attempts": None, "price": True}],
+        now=1000.0,
+    )
+    assert len(reports) == 1
+    assert reports[0]["sample_id"] == "s1"
+    assert reports[0]["attempts"] == 0
+    assert reports[0].get("last_price") is None
+

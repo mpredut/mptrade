@@ -626,7 +626,15 @@ def process_once(mkt, now=None):
         if price is None or isinstance(price, bool):
             oq.complete_claim(r, "release", now)
             continue
-        if not oq.price_gate_ok(r, price):
+        try:
+            price_f = float(price)
+        except (TypeError, ValueError, OverflowError):
+            oq.complete_claim(r, "release", now)
+            continue
+        if not math.isfinite(price_f) or price_f <= 0:
+            oq.complete_claim(r, "release", now)
+            continue
+        if not oq.price_gate_ok(r, price_f):
             oq.complete_claim(r, "release", now)
             skipped_price += 1
             continue
@@ -842,13 +850,15 @@ def _format_record_context(rec, *, include_lease=False):
     provider = str(rec.get("provider_name") or "routed").upper()
     base_asset, quote_asset = _resolve_display_assets(symbol)
     try:
-        qty_val = float(rec.get("qty") or 0.0)
+        raw_qty = rec.get("qty")
+        qty_val = float(raw_qty) if raw_qty is not None and not isinstance(raw_qty, bool) else 0.0
     except (TypeError, ValueError, OverflowError):
         qty_val = 0.0
     try:
+        raw_req_px = rec.get("requested_price")
         req_px = (
-            float(rec.get("requested_price"))
-            if rec.get("requested_price") is not None
+            float(raw_req_px)
+            if raw_req_px is not None and not isinstance(raw_req_px, bool)
             else None
         )
         if req_px is not None and (not math.isfinite(req_px) or req_px <= 0):
@@ -856,9 +866,10 @@ def _format_record_context(rec, *, include_lease=False):
     except (TypeError, ValueError, OverflowError):
         req_px = None
     try:
+        raw_ref_px = rec.get("ref_price")
         ref_px = (
-            float(rec.get("ref_price"))
-            if rec.get("ref_price") is not None
+            float(raw_ref_px)
+            if raw_ref_px is not None and not isinstance(raw_ref_px, bool)
             else None
         )
         if ref_px is not None and (not math.isfinite(ref_px) or ref_px <= 0):
@@ -882,7 +893,11 @@ def _format_record_context(rec, *, include_lease=False):
 
     created_str = _format_ts(rec.get("created_ts"))
     last_attempt_str = _format_ts(rec.get("last_attempt_ts"))
-    attempts = int(rec.get("attempts") or 0)
+    raw_att = rec.get("attempts")
+    try:
+        attempts = int(raw_att) if raw_att is not None and not isinstance(raw_att, bool) else 0
+    except (TypeError, ValueError, OverflowError):
+        attempts = 0
     last_reason = str(rec.get("last_failure_reason") or "none")
     time_parts = [f"Created: {created_str}"]
     if last_attempt_str != "N/A":
@@ -1093,11 +1108,20 @@ class IncidentDigest:
                 if (not isinstance(event, dict)
                         or "labels" not in event
                         or "quantity" not in event
-                        or isinstance(event.get("quantity"), bool)):
+                        or isinstance(event.get("quantity"), bool)
+                        or isinstance(event.get("sample_id"), bool)
+                        or not str(event.get("sample_id") or "").strip()):
                     raise ValueError("invalid notification digest event")
                 labels = event["labels"]
+                raw_attempts = event.get("attempts", 0)
+                if isinstance(raw_attempts, bool):
+                    raise ValueError("invalid notification digest event")
                 try:
                     quantity = float(event["quantity"])
+                    att_f = float(0 if raw_attempts is None else raw_attempts)
+                    if not math.isfinite(att_f) or not att_f.is_integer() or int(att_f) < 0:
+                        raise ValueError("invalid notification digest event")
+                    ev_attempts = int(att_f)
                 except (TypeError, ValueError, OverflowError) as exc:
                     raise ValueError("invalid notification digest event") from exc
                 if (not isinstance(labels, dict) or not labels
@@ -1112,13 +1136,13 @@ class IncidentDigest:
                 })
                 if group["count"] == 0:
                     group["first_ts"] = now
-                    group["sample_id"] = str(event["sample_id"])
+                    group["sample_id"] = str(event["sample_id"]).strip()
                 group["last_ts"] = now
                 group["count"] += 1
                 group["quantity"] += quantity
-                group["attempts"] = max(group.get("attempts", 0), int(event.get("attempts", 0)))
+                group["attempts"] = max(group.get("attempts", 0), ev_attempts)
                 raw_px = event.get("price")
-                if raw_px is not None:
+                if raw_px is not None and not isinstance(raw_px, bool):
                     try:
                         px_val = float(raw_px)
                         if math.isfinite(px_val) and px_val > 0:
@@ -1127,7 +1151,7 @@ class IncidentDigest:
                     except (TypeError, ValueError, OverflowError):
                         pass
                 raw_created = event.get("created_ts")
-                if raw_created is not None:
+                if raw_created is not None and not isinstance(raw_created, bool):
                     try:
                         c_val = float(raw_created)
                         if math.isfinite(c_val) and c_val > 0:
@@ -1140,7 +1164,7 @@ class IncidentDigest:
                     except (TypeError, ValueError, OverflowError):
                         pass
                 raw_last_attempt = event.get("last_attempt_ts")
-                if raw_last_attempt is not None:
+                if raw_last_attempt is not None and not isinstance(raw_last_attempt, bool):
                     try:
                         la_val = float(raw_last_attempt)
                         if math.isfinite(la_val) and la_val > 0:
@@ -1150,7 +1174,7 @@ class IncidentDigest:
                     except (TypeError, ValueError, OverflowError):
                         pass
                 raw_ttl = event.get("ttl_sec")
-                if raw_ttl is not None:
+                if raw_ttl is not None and not isinstance(raw_ttl, bool):
                     try:
                         ttl_val = float(raw_ttl)
                         if math.isfinite(ttl_val) and ttl_val > 0:

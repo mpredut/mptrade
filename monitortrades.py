@@ -121,6 +121,28 @@ def reset_trades_monitor_state_for_test():
     _trades_monitor_warmup_failed_symbols.clear()
 
 
+def _safe_f(val: Any, default: Optional[float] = 0.0) -> Optional[float]:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        vf = float(val)
+        return vf if math.isfinite(vf) else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _extract_trade_uid(trade: Any) -> str:
+    if not isinstance(trade, dict):
+        return ""
+    for key in ("id", "tradeId", "a"):
+        raw = trade.get(key)
+        if raw is not None and not isinstance(raw, bool):
+            val = str(raw).strip()
+            if val:
+                return val
+    return ""
+
+
 def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=None):
     """Detect and notify newly executed trades on Binance centrally.
 
@@ -136,8 +158,10 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
         for symbol in symbols_to_check:
             try:
                 orders = apitrades.get_trade_orders(None, symbol, maxage_trade_s)
-                for t in orders:
-                    _notified_trade_ids.add(str(t['id']))
+                for t in (orders or []):
+                    tid = _extract_trade_uid(t)
+                    if tid:
+                        _notified_trade_ids.add(tid)
                 _trades_monitor_warmup_failed_symbols.discard(symbol)
             except Exception as _e:
                 _trades_monitor_warmup_failed_symbols.add(symbol)
@@ -149,16 +173,23 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
     for symbol in symbols_to_check:
         try:
             orders = apitrades.get_trade_orders(None, symbol, maxage_trade_s)
+            if not isinstance(orders, list):
+                orders = list(orders or [])
             if symbol in _trades_monitor_warmup_failed_symbols:
                 for t in orders:
-                    _notified_trade_ids.add(str(t['id']))
+                    tid = _extract_trade_uid(t)
+                    if tid:
+                        _notified_trade_ids.add(tid)
                 _trades_monitor_warmup_failed_symbols.discard(symbol)
                 continue
+            orders = [t for t in orders if isinstance(t, dict)]
             orders.sort(key=_order_timestamp_ms)
 
             new_trades = []
             for trade in orders:
-                tid = str(trade['id'])
+                tid = _extract_trade_uid(trade)
+                if not tid:
+                    continue
                 if tid not in _notified_trade_ids:
                     _notified_trade_ids.add(tid)
                     new_trades.append(trade)
@@ -169,7 +200,7 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
             # Group newly executed fills by orderId
             trades_by_order = {}
             for t in new_trades:
-                oid = extract_order_id(t) or str(t['id'])
+                oid = extract_order_id(t) or _extract_trade_uid(t)
                 trades_by_order.setdefault(oid, []).append(t)
 
             for oid, group in trades_by_order.items():
@@ -399,7 +430,7 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
             pass
     now_ts = now_val
     sym_key = str(symbol or "").strip().upper().replace("/", "")
-    maxage_f = float(maxage_trade_s) if (maxage_trade_s is not None and not isinstance(maxage_trade_s, bool) and math.isfinite(float(maxage_trade_s))) else 0.0
+    maxage_f = _safe_f(maxage_trade_s, 0.0) or 0.0
     cache_key = (_api_cache_identity(api), sym_key, maxage_f)
     total_buy_qty, total_buy_value, buy_sig = _summarize_orders(buy_orders)
     total_sell_qty, total_sell_value, sell_sig = _summarize_orders(sell_orders)
