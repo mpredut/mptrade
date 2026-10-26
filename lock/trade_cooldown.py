@@ -82,8 +82,10 @@ def release_trade(symbol):
 
 def release_pair_leg(symbol, pair_id, side):
     """Release a committed leg only after it is canceled successfully."""
+    if not _valid_pair_id(pair_id):
+        return False
     return _cooldown().release_group_member(
-        symbol, pair_id, side, keep_group=True)
+        symbol, str(pair_id).strip(), side, keep_group=True)
 
 
 def update_binance_order_id(symbol, order_id):

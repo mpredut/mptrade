@@ -937,6 +937,8 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
                 if (
                     not isinstance(added_time, (int, float))
                     or isinstance(added_time, bool)
+                    or not math.isfinite(added_time)
+                    or added_time <= 0
                     or added_time < cutoff_time
                 ):
                     removed_symbols.append(symbol)
@@ -1063,11 +1065,12 @@ def create_cachePriceAll(cmc_api_key: Optional[str] = None, symbols=None, max_sy
                 all_symbols.append(s)
     
     for sym_default in (symbols or DEFAULT_SYMBOLS):
+        if not is_valid_symbol_for_monitoring(sym_default):
+            continue
         base_symbol = get_base_symbol(sym_default)
         if (
             base_symbol not in seen_bases
             and sym_default not in all_symbols
-            and is_valid_symbol_for_monitoring(sym_default)
         ):
             seen_bases.add(base_symbol)
             all_symbols.append(sym_default)

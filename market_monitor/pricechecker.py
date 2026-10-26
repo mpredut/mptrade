@@ -288,7 +288,14 @@ class PriceChecker:
         symbol_added_time = getattr(self.cachePriceAll, "symbol_added_time", {})
         if not isinstance(symbol_added_time, dict):
             return False
-        return bool(symbol_added_time.get(symbol))
+        raw_ts = symbol_added_time.get(symbol)
+        if raw_ts is None or isinstance(raw_ts, bool):
+            return False
+        try:
+            ts = float(raw_ts)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        return math.isfinite(ts) and ts > 0.0
 
     def _get_thresholds_for_symbol(self, symbol: str) -> Dict:
         fallback = self.config.get("dynamic") if self._is_dynamic_symbol(symbol) else self.config.get("default")
@@ -455,7 +462,7 @@ class PriceChecker:
 
     def stop_monitoring(self):
         self._running = False
-        if self._thread:
+        if self._thread and self._thread is not threading.current_thread():
             self._thread.join(timeout=5)
         print("[Checker] Monitoring stopped")
 

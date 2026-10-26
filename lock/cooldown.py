@@ -152,8 +152,8 @@ class Cooldown:
         Repeating a member or using another group is rejected. Legacy state remains
         compatible and exclusive, so a new group cannot bypass it.
         """
-        group_id = str(group_id)
-        member = str(member).upper()
+        group_id = str(group_id).strip()
+        member = str(member).strip().upper()
         with FileLock(self.lock_path):
             state = self._read()
             last = state.get(key)
@@ -194,8 +194,8 @@ class Cooldown:
 
     def commit_group_member(self, key, group_id, member, **fields):
         """Confirm the reserved member and keep its result separately."""
-        group_id = str(group_id)
-        member = str(member).upper()
+        group_id = str(group_id).strip()
+        member = str(member).strip().upper()
         with FileLock(self.lock_path):
             state = self._read()
             entry = state.get(key)
@@ -220,8 +220,8 @@ class Cooldown:
 
     def rollback_group_member(self, key, group_id, member):
         """Withdraw only the uncommitted member without removing the other leg."""
-        group_id = str(group_id)
-        member = str(member).upper()
+        group_id = str(group_id).strip()
+        member = str(member).strip().upper()
         with FileLock(self.lock_path):
             state = self._read()
             entry = state.get(key)
@@ -246,8 +246,8 @@ class Cooldown:
         coordinator may replace the leg, but another process/group cannot exploit the
         short interval between cancellation and replacement.
         """
-        group_id = str(group_id)
-        member = str(member).upper()
+        group_id = str(group_id).strip()
+        member = str(member).strip().upper()
         with FileLock(self.lock_path):
             state = self._read()
             entry = state.get(key)

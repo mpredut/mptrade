@@ -3235,6 +3235,61 @@ def test_batch5_hardening():
     assert priceAnalysis.detect_long_term_trend([1000.0, None, "bad", True, 2000.0], [100.0, 101.0, 102.0, 103.0, 104.0]) is None
 
 
+def test_cooldown_and_market_monitor_hardening(tmp_path):
+    import threading
+    from types import SimpleNamespace
+    from lock.cooldown import Cooldown
+    from lock import trade_cooldown
+    from market_monitor.new_coins_discovery import NewCoinsMonitor
+    from market_monitor.pricechecker import PriceChecker
+    from market_monitor.pricefetcher import CacheAllPriceFetcherManager
 
+    # 1. Cooldown group methods strip group_id and member whitespace
+    cd = Cooldown("test_cd", base_dir=str(tmp_path))
+    allowed, _ = cd.reserve_group_member("BTCUSDC", 60, "  grp1  ", "  buy  ")
+    assert allowed is True
+    cd.commit_group_member("BTCUSDC", "grp1", "BUY", order_id=101)
+    state = cd.get("BTCUSDC")
+    assert state["group_id"] == "grp1"
+    assert state["group_committed"] == ["BUY"]
+    assert cd.release_group_member("BTCUSDC", "  grp1 ", " buy ", keep_group=False) is True
 
+    # 2. trade_cooldown.release_pair_leg rejects invalid pair_id and strips whitespace
+    assert trade_cooldown.release_pair_leg("BTCUSDC", None, "BUY") is False
+    assert trade_cooldown.release_pair_leg("BTCUSDC", True, "BUY") is False
+    assert trade_cooldown.release_pair_leg("BTCUSDC", "   ", "BUY") is False
+
+    # 3. PriceChecker._is_dynamic_symbol rejects NaN/bool/non-positive timestamps and stop_monitoring avoids self-join
+    dummy_cache = SimpleNamespace(
+        original_symbols=["BTCUSDC"],
+        symbol_added_time={"NAN_SYM": float("nan"), "BOOL_SYM": True, "NEG_SYM": -5.0, "OK_SYM": 1700000000.0},
+    )
+    checker = PriceChecker(dummy_cache)
+    assert checker._is_dynamic_symbol("NAN_SYM") is False
+    assert checker._is_dynamic_symbol("BOOL_SYM") is False
+    assert checker._is_dynamic_symbol("NEG_SYM") is False
+    assert checker._is_dynamic_symbol("OK_SYM") is True
+    checker._thread = threading.current_thread()
+    checker._running = True
+    checker.stop_monitoring()
+    assert checker._running is False
+
+    # 4. NewCoinsMonitor.stop_monitoring avoids self-join
+    ncm = NewCoinsMonitor.__new__(NewCoinsMonitor)
+    ncm._running = True
+    ncm._thread = threading.current_thread()
+    ncm.stop_monitoring()
+    assert ncm._running is False
+
+    # 5. CacheAllPriceFetcherManager.cleanup_old_symbols evicts NaN/non-positive added_time
+    pf = CacheAllPriceFetcherManager.__new__(CacheAllPriceFetcherManager)
+    pf.lock = threading.RLock()
+    pf.symbols = ["NANSYM"]
+    pf.original_symbols = ["NANSYM"]
+    pf.active_symbols = {"NANSYM"}
+    pf.symbol_added_time = {"NANSYM": float("nan"), "NEGSYM": -1.0}
+    pf.symbol_preferred_source = {}
+    removed = pf.cleanup_old_symbols(max_age_days=7)
+    assert set(removed) == {"NANSYM", "NEGSYM"}
+    assert pf.symbol_added_time == {}
 
