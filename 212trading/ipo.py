@@ -34,15 +34,30 @@ import os
 import sys
 import time
 
-from ipo_common import (
-    load_t212_environment, log, now_str, float_env, ET, required_env,
-    required_float_env, required_bool_env,
-)
-from market_data import check_market, t212_to_yahoo
-from t212_client import T212Client
-from ipo_notify import notify
-from order_manager import resolve_quantity, place_order_with_retry
-from strategy import Strategy, StratParams
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+try:
+    from .ipo_common import (
+        load_t212_environment, log, now_str, float_env, ET, required_env,
+        required_float_env, required_bool_env,
+    )
+    from .market_data import check_market, t212_to_yahoo
+    from .t212_client import T212Client
+    from .ipo_notify import notify
+    from .order_manager import resolve_quantity, place_order_with_retry
+    from .strategy import Strategy, StratParams
+except ImportError:
+    from ipo_common import (
+        load_t212_environment, log, now_str, float_env, ET, required_env,
+        required_float_env, required_bool_env,
+    )
+    from market_data import check_market, t212_to_yahoo
+    from t212_client import T212Client
+    from ipo_notify import notify
+    from order_manager import resolve_quantity, place_order_with_retry
+    from strategy import Strategy, StratParams
 from credentials import t212_credentials
 
 # ---------------------------------------------------------------------------
