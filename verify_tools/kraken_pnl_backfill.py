@@ -33,13 +33,17 @@ def env_value(folder, name):
         p = os.path.join(folder, fn)
         if not os.path.exists(p):
             continue
-        for line in open(p, encoding='utf-8'):
-            line = line.strip()
-            if not line or line.startswith('#') or '=' not in line:
-                continue
-            k, _, v = line.partition('=')
-            if k.strip() == name:
-                return v.strip().strip('"').strip("'") or None
+        with open(p, encoding='utf-8') as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                k, _, v = line.partition('=')
+                k = k.strip()
+                if k.startswith('export') and (len(k) == 6 or k[6].isspace()):
+                    k = k[6:].strip()
+                if k == name:
+                    return v.strip().strip('"').strip("'") or None
     return None
 
 
@@ -49,18 +53,27 @@ def _client():
         'KRAKEN_API_KEY_BOT', 'KRAKEN_API_SECRET_BOT',
     )
     values = {name: env_value(KD, name) or '' for name in names}
-    sys.path.insert(0, ROOT)
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
     from credentials import CredentialConfigurationError, kraken_credentials
     try:
         credentials = kraken_credentials('analysis', values=values)
     except CredentialConfigurationError as exc:
         sys.exit(f'[kraken_pnl] invalid Kraken analysis credentials: {exc}')
     saved = list(sys.path)
-    sys.modules.pop('common', None); sys.modules.pop('kraken_client', None)
-    sys.path.insert(0, KD)
-    from kraken_client import KrakenClient
-    sys.path[:] = saved
-    return KrakenClient(credentials.key, credentials.secret)
+    saved_mods = {m: sys.modules.get(m) for m in ('common', 'kraken_client')}
+    try:
+        sys.modules.pop('common', None); sys.modules.pop('kraken_client', None)
+        sys.path.insert(0, KD)
+        from kraken_client import KrakenClient
+        return KrakenClient(credentials.key, credentials.secret)
+    finally:
+        sys.path[:] = saved
+        for m, mod in saved_mods.items():
+            if mod is None:
+                sys.modules.pop(m, None)
+            else:
+                sys.modules[m] = mod
 
 
 def fetch_all_trades(cli):

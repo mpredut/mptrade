@@ -185,14 +185,16 @@ def mode_pre(force: bool = False) -> int:
     if os.path.exists(DB):
         try:
             con = sqlite3.connect(DB, timeout=15)
-            known_cids = {r[0] for r in con.execute("SELECT conversation_id FROM conversation_summaries")}
-            con.close()
+            try:
+                known_cids = {r[0] for r in con.execute("SELECT conversation_id FROM conversation_summaries")}
+            finally:
+                con.close()
         except sqlite3.Error as e:
             log.warning("cannot read summary IDs from %s: %s", DB, e)
 
     if known_cids:
         del_dir = os.path.join(BACKUPS, stamp, "deleted_in_ui")
-        for p2 in sorted(glob.glob(os.path.join(D2, "*.db"))):
+        for p2 in sorted(glob.glob(os.path.join(glob.escape(D2), "*.db"))):
             name = os.path.basename(p2)
             cid = name[:-3]
             if cid in known_cids:
@@ -255,13 +257,13 @@ def mode_pre(force: bool = False) -> int:
         moved += 1
 
     # leftover WAL/SHM sidecars on the real files
-    for p2 in glob.glob(os.path.join(D2, "*.db")):
+    for p2 in glob.glob(os.path.join(glob.escape(D2), "*.db")):
         if checkpoint(p2):
             drop_sidecars(p2)
 
     # normalise mtimes to whole seconds so stored fileModTimes (seconds) always >= disk mtime
     mt = {}
-    for p2 in glob.glob(os.path.join(D2, "*.db")):
+    for p2 in glob.glob(os.path.join(glob.escape(D2), "*.db")):
         cid = os.path.basename(p2)[:-3]
         sec = int(os.stat(p2).st_mtime)
         os.utime(p2, (sec, sec))
@@ -278,32 +280,34 @@ def repair_summaries(mt: dict) -> int:
         return 0
     topic_titles = topic_canonical_titles()
     con = sqlite3.connect(DB, timeout=15)
-    rows = con.execute("SELECT conversation_id, title, raw_summary FROM conversation_summaries").fetchall()
-    raws, fixed, orphans = {}, 0, []
-    for cid, title, raw in rows:
-        raw = bytes(raw or b"")
-        if cid in mt:
-            ttl = topic_titles.get(cid) or pbtxt_title(cid) or (title or "").strip() or raw_title(raw)
-            new = fix_summary(raw, ttl)
-            con.execute(
-                "UPDATE conversation_summaries SET title=?, source='', status='CASCADE_RUN_STATUS_IDLE', "
-                "not_fully_idle=0, raw_summary=? WHERE conversation_id=?", (ttl, new, cid))
-            raws[cid] = new
-            fixed += 1
-        else:
-            orphans.append(cid)
-    if orphans:
-        con.execute(
-            f"DELETE FROM conversation_summaries WHERE conversation_id IN ({','.join('?' for _ in orphans)})",
-            orphans,
-        )
-        log.info("pre: removed %d orphan summary rows from conversation_summaries.db", len(orphans))
-    con.commit()
     try:
-        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    except sqlite3.Error:
-        pass
-    con.close()
+        rows = con.execute("SELECT conversation_id, title, raw_summary FROM conversation_summaries").fetchall()
+        raws, fixed, orphans = {}, 0, []
+        for cid, title, raw in rows:
+            raw = bytes(raw or b"")
+            if cid in mt:
+                ttl = topic_titles.get(cid) or pbtxt_title(cid) or (title or "").strip() or raw_title(raw)
+                new = fix_summary(raw, ttl)
+                con.execute(
+                    "UPDATE conversation_summaries SET title=?, source='', status='CASCADE_RUN_STATUS_IDLE', "
+                    "not_fully_idle=0, raw_summary=? WHERE conversation_id=?", (ttl, new, cid))
+                raws[cid] = new
+                fixed += 1
+            else:
+                orphans.append(cid)
+        if orphans:
+            con.execute(
+                f"DELETE FROM conversation_summaries WHERE conversation_id IN ({','.join('?' for _ in orphans)})",
+                orphans,
+            )
+            log.info("pre: removed %d orphan summary rows from conversation_summaries.db", len(orphans))
+        con.commit()
+        try:
+            con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.Error:
+            pass
+    finally:
+        con.close()
 
     # rebuild agyhub_summaries_proto.pb (and jetbox_summaries_proto.pb if present): Keep only existing mt files.
     out = bytearray()
@@ -346,11 +350,12 @@ def main_pid() -> str:
 def newest_daemon_log_ready(since: float, pid: str = "") -> bool:
     """True once THIS daemon instance (matched by PID, else by log-file start time >= since) logged the end of
     its startup reconciliation. Never matches the log of a previous instance."""
-    for lf in glob.glob(os.path.join(LOGS, "cli-*.log")):
+    for lf in glob.glob(os.path.join(glob.escape(LOGS), "cli-*.log")):
         if not pid and log_started_at(lf) < since:
             continue
         try:
-            txt = open(lf, errors="ignore").read()
+            with open(lf, errors="ignore") as f:
+                txt = f.read()
         except OSError:
             continue
         if pid and f"language server process with pid {pid}" not in txt:
@@ -375,7 +380,7 @@ def mode_post(timeout: int = 50) -> int:
         time.sleep(5)
     time.sleep(0.5)   # link immediately after startup scan so reconnecting Web UI tabs find trajectories in D1
     linked = exists = bad = 0
-    for p2 in sorted(glob.glob(os.path.join(D2, "*.db"))):
+    for p2 in sorted(glob.glob(os.path.join(glob.escape(D2), "*.db"))):
         p1 = os.path.join(D1, os.path.basename(p2))
         if os.path.lexists(p1):
             if same_file(p1, p2):
@@ -461,7 +466,10 @@ def pending_ui_sync() -> list[str]:
             p1 = os.path.join(D1, name)
             p2 = os.path.join(D2, name)
             if (cid not in known or cid in topic_cids or os.path.exists(p2)) and not same_file(p1, p2):
-                entries.append(f"content:{cid}:{os.stat(p1).st_ino}")
+                try:
+                    entries.append(f"content:{cid}:{os.stat(p1).st_ino}")
+                except OSError:
+                    pass
     return sorted(entries)
 
 
@@ -534,7 +542,7 @@ def last_store_activity() -> float:
                     pass
     if os.path.isdir(LOGS):
         try:
-            cli_logs = sorted(glob.glob(os.path.join(LOGS, "cli-*.log")), key=os.path.getmtime, reverse=True)
+            cli_logs = sorted(glob.glob(os.path.join(glob.escape(LOGS), "cli-*.log")), key=os.path.getmtime, reverse=True)
             if cli_logs:
                 latest_log = cli_logs[0]
                 with open(latest_log, errors="ignore") as f:

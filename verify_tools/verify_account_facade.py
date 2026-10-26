@@ -100,10 +100,7 @@ def main():
                 continue
             mism = 0
             for r, n in zip(sorted(raw, key=order_key), sorted(nrm, key=order_key)):
-                if (float(r.get("price", 0) or 0) != float(n.get("price", 0) or 0)
-                        or float(r.get("qty", 0) or 0) != float(n.get("qty", 0) or 0)
-                        or r.get("timestamp") != n.get("timestamp")
-                        or (r.get("side") or "").upper() != (n.get("side") or "").upper()):
+                if order_key(r) != order_key(n):
                     mism += 1
             if mism:
                 failures.append(f"{s} {side}: {mism} orders with different fields")

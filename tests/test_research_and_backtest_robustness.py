@@ -1490,5 +1490,47 @@ def test_xstock_watch_new_coins_and_pnl_report_guards(monkeypatch):
     assert res["unreal"] == 0.0
 
 
+def test_agy_store_fix_and_verify_tools_hardening(tmp_path, monkeypatch):
+    """Verify agy_store_fix bracketed glob handling and verify_tools isolation/guards."""
+    import sys
+    from orchestratorOS.admin import agy_store_fix as asf
+    from verify_tools import check_cache_coherence as ccc
+    from verify_tools import kraken_pnl_backfill as kpb
+    from verify_tools import portfolio_snapshot as ps
+    from verify_tools import verify_hype_facade as vhf
 
+    # 1. check_cache_coherence can be imported without executing live checks
+    assert callable(ccc.main)
+
+    # 2. agy_store_fix.newest_daemon_log_ready finds logs in bracketed paths
+    bracket_logs = tmp_path / "home[1]" / "log"
+    bracket_logs.mkdir(parents=True)
+    log_file = bracket_logs / "cli-20261026_120000.log"
+    log_file.write_text(
+        "language server process with pid 4242\nsummary store: reconciliation complete\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(asf, "LOGS", str(bracket_logs))
+    assert asf.newest_daemon_log_ready(0.0, pid="4242") is True
+
+    # 3. kraken_pnl_backfill.env_value parses export lines and closes files
+    env_dir = tmp_path / "kraken_cfg"
+    env_dir.mkdir()
+    (env_dir / ".env").write_text('export KRAKEN_API_KEY_SPARE="spare_key_123"\n', encoding="utf-8")
+    assert kpb.env_value(str(env_dir), "KRAKEN_API_KEY_SPARE") == "spare_key_123"
+
+    # 4. portfolio_snapshot._ntfy respects DISABLE_EXTERNAL_NOTIFICATIONS and hl_row restores sys.path
+    monkeypatch.setenv("DISABLE_EXTERNAL_NOTIFICATIONS", "1")
+    ps._ntfy("Test Title", "Test Body")
+    before_path = list(sys.path)
+    sentinel_common = object()
+    monkeypatch.setitem(sys.modules, "common", sentinel_common)
+    ps.hl_row()
+    assert sys.path == before_path
+    assert sys.modules.get("common") is sentinel_common
+
+    # 5. verify_hype_facade._f rejects booleans and non-finite numbers
+    assert vhf._f(True, -1.0) == -1.0
+    assert vhf._f(float("nan"), -1.0) == -1.0
+    assert vhf._f("12.5", 0.0) == 12.5
 

@@ -49,12 +49,16 @@ def _load_state(pair: str) -> dict | None:
 
 
 def _kraken_price(pair: str):
+    saved_path = list(sys.path)
     try:
-        sys.path.insert(0, KRAKEN_DIR)
+        if KRAKEN_DIR not in sys.path:
+            sys.path.insert(0, KRAKEN_DIR)
         from kraken_client import KrakenClient
         return KrakenClient.public().last_price(pair)
     except Exception:  # noqa: BLE001 — the snapshot must not die on one missed price
         return None
+    finally:
+        sys.path[:] = saved_path
 
 
 def _f(x, default=0.0):
@@ -101,8 +105,13 @@ def kraken_rows() -> list[dict]:
 def hl_row() -> dict | None:
     import contextlib
     import io
+    saved_path = list(sys.path)
+    saved_common = sys.modules.get("common")
     try:
-        sys.path.insert(0, os.path.join(ROOT, "hyperliquid"))
+        hl_dir = os.path.join(ROOT, "hyperliquid")
+        if hl_dir not in sys.path:
+            sys.path.insert(0, hl_dir)
+        sys.modules.pop("common", None)
         # load_dotenv/HLClient write logs to stdout — we suppress them so they do not
         # pollute the --json output (the cron jsonl).
         with contextlib.redirect_stdout(io.StringIO()):
@@ -120,6 +129,12 @@ def hl_row() -> dict | None:
                 "value_usd": round(hype * mid, 2), "cash_usd": round(usdc, 2)}
     except Exception as e:  # noqa: BLE001
         return {"engine": "HL", "error": str(e)[:60]}
+    finally:
+        sys.path[:] = saved_path
+        if saved_common is None:
+            sys.modules.pop("common", None)
+        else:
+            sys.modules["common"] = saved_common
 
 
 ALERT_STATE = os.path.join(ROOT, "logs", ".risk_alert_state.json")
@@ -127,6 +142,11 @@ ALERT_STATE = os.path.join(ROOT, "logs", ".risk_alert_state.json")
 
 def _ntfy(title: str, body: str) -> None:
     """Send an ntfy notification (best-effort, no external dependencies)."""
+    if any(
+        os.environ.get(k, "").strip().lower() in {"1", "true", "yes", "on"}
+        for k in ("DISABLE_EXTERNAL_NOTIFICATIONS", "BACKTEST_MODE", "REPLAY_MODE")
+    ):
+        return
     topic = os.environ.get("NTFY_TOPIC")
     if not topic:
         # Read from kraken/config.env when it is not in the environment.
@@ -137,6 +157,14 @@ def _ntfy(title: str, body: str) -> None:
                     if ln.startswith("NTFY_TOPIC="):
                         topic = ln.split("=", 1)[1].strip()
                         break
+    if not topic:
+        topic = (
+            os.environ.get("NTFY_TOPIC_GUARD")
+            or _ROOT_CONFIG.get("NTFY_TOPIC_GUARD")
+            or os.environ.get("NTFY_TOPIC_ERROR")
+            or _ROOT_CONFIG.get("NTFY_TOPIC_ERROR")
+            or ""
+        ).strip()
     if not topic:
         return
     import urllib.request

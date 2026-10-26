@@ -242,7 +242,10 @@ def load_key_value_conf(workspace_dir: str, root_dir: str = ROOT_DIR) -> Dict[st
                     if not line or "=" not in line:
                         continue
                     k, v = line.split("=", 1)
-                    conf[k.strip().lower()] = v.strip().strip('"').strip("'")
+                    k = k.strip()
+                    if k.startswith("export") and (len(k) == 6 or k[6].isspace()):
+                        k = k[6:].strip()
+                    conf[k.lower()] = v.strip().strip('"').strip("'")
     return conf
 
 

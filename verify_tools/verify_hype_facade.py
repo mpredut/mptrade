@@ -16,6 +16,7 @@ Run it locally with the venv that has the HL SDK:
   ../.venv/bin/python verify_hype_facade.py
 Exits non-zero if anything is clearly unhealthy (wrong routing, invalid price, real order).
 """
+import math
 import os
 import sys
 import time
@@ -30,6 +31,16 @@ MAXAGE = 17 * 24 * 3600
 failures = []
 
 
+def _f(val, default=0.0):
+    if isinstance(val, bool) or val is None:
+        return default
+    try:
+        v = float(val)
+        return v if math.isfinite(v) else default
+    except (TypeError, ValueError):
+        return default
+
+
 def check(name, cond, detail=""):
     print(f"  [{'OK ' if cond else 'FAIL'}] {name}{(' — ' + detail) if detail else ''}")
     if not cond:
@@ -37,6 +48,7 @@ def check(name, cond, detail=""):
 
 
 def main():
+    failures.clear()
     print("==== RUTARE pe symbol (Binance ramane default) ====")
     check("HYPEUSDC -> Hyperliquid", mkt.provider_name_for(HYPE) == "Hyperliquid",
           mkt.provider_name_for(HYPE))
@@ -53,23 +65,27 @@ def main():
 
     print("\n==== HYPE MARKET DATA (public, no key) ====")
     price = mkt.get_current_price(HYPE)
+    price_f = _f(price, 0.0)
     print(f"  get_current_price(HYPEUSDC) = {price}")
-    check("valid SPOT price (>0)", isinstance(price, (int, float)) and price and price > 0,
+    check("valid SPOT price (>0)", price_f > 0.0,
           repr(price))
 
     hist = mkt.get_price_history(HYPE, 3)
-    n = len(hist) if hist else 0
+    hist_dicts = [p for p in (hist or []) if isinstance(p, dict)] if isinstance(hist, list) else []
+    n = len(hist_dicts)
     print(f"  get_price_history(HYPEUSDC, 3h): {n} puncte")
-    if hist:
-        print(f"    first={hist[0]}  last={hist[-1]}")
-    asc = bool(hist) and all(hist[i]["timestamp"] <= hist[i + 1]["timestamp"]
-                             for i in range(len(hist) - 1))
-    pos = bool(hist) and all(p["price"] > 0 for p in hist)
-    check("the history is granular, ascending, with prices>0", bool(hist) and asc and pos,
+    if hist_dicts:
+        print(f"    first={hist_dicts[0]}  last={hist_dicts[-1]}")
+    asc = bool(hist_dicts) and all(
+        _f(hist_dicts[i].get("timestamp"), 0.0) <= _f(hist_dicts[i + 1].get("timestamp"), 0.0)
+        for i in range(len(hist_dicts) - 1)
+    )
+    pos = bool(hist_dicts) and all(_f(p.get("price"), 0.0) > 0.0 for p in hist_dicts)
+    check("the history is granular, ascending, with prices>0", bool(hist_dicts) and asc and pos,
           f"n={n} asc={asc} pos={pos}")
-    if price and hist:
-        last = hist[-1]["price"]
-        near = abs(last - price) / price < 0.10
+    if price_f > 0.0 and hist_dicts:
+        last = _f(hist_dicts[-1].get("price"), 0.0)
+        near = last > 0.0 and abs(last - price_f) / price_f < 0.10
         check("the last close ~ the current price (<10%)", near,
               f"close={last} price={price}")
 
@@ -79,7 +95,7 @@ def main():
     print(f"  free_balance(HYPE) = {free_hype}")
     print("  free_balance(USDC) = "
           f"{free_usdc}  (provider explicit: hyperliquid)")
-    check("free_balance(HYPE) numeric >=0", isinstance(free_hype, (int, float)) and free_hype >= 0,
+    check("free_balance(HYPE) numeric >=0", _f(free_hype, -1.0) >= 0.0,
           repr(free_hype))
 
     buys = mkt.get_orders(HYPE, "BUY", MAXAGE) or []
@@ -94,28 +110,29 @@ def main():
             print(f"    {o.get('side')} px={o.get('price')} qty={o.get('qty')} ts={o.get('timestamp')}")
 
     print("\n==== POZITIE (logica get_position_stats) ====")
-    tbq = sum(float(o.get("qty") or 0.0) for o in buys if isinstance(o, dict))
-    tbv = sum(float(o.get("price") or 0.0) * float(o.get("qty") or 0.0) for o in buys if isinstance(o, dict))
-    tsq = sum(float(o.get("qty") or 0.0) for o in sells if isinstance(o, dict))
+    tbq = sum(_f(o.get("qty"), 0.0) for o in buys if isinstance(o, dict))
+    tbv = sum(_f(o.get("price"), 0.0) * _f(o.get("qty"), 0.0) for o in buys if isinstance(o, dict))
+    tsq = sum(_f(o.get("qty"), 0.0) for o in sells if isinstance(o, dict))
     avg_buy = tbv / tbq if tbq else 0.0
     net = tbq - tsq
     print(f"  buy_qty={tbq:.6f} sell_qty={tsq:.6f} net_qty={net:.6f} avg_buy={avg_buy:.4f}")
     check("avg_buy is plausible (0 or positive and within price range)",
-          avg_buy == 0.0 or (price and 0.2 * price <= avg_buy <= 5 * price),
+          avg_buy == 0.0 or (price_f > 0.0 and 0.2 * price_f <= avg_buy <= 5 * price_f),
           f"avg_buy={avg_buy} price={price}")
 
     print("\n==== A simulated DECISION (like monitor_price_and_trade, WITHOUT placing) ====")
-    if buys and price:
-        last_buy = float(sorted(buys, key=lambda x: x.get("timestamp") or 0, reverse=True)[0].get("price") or 0.0)
+    valid_buys = [o for o in buys if isinstance(o, dict)]
+    if valid_buys and price_f > 0.0:
+        last_buy = _f(sorted(valid_buys, key=lambda x: _f(x.get("timestamp"), 0.0), reverse=True)[0].get("price"), 0.0)
         if last_buy > 0:
-            inc = (price - last_buy) / last_buy
+            inc = (price_f - last_buy) / last_buy
             print(f"  last buy={last_buy}  price={price}  change={inc*100:+.2f}%")
             gain, lost = 0.092, 0.049
             if inc >= 0.17:
                 decision = "HARD-TP (sell a fraction, regardless of the trend)"
             elif inc > gain:
                 decision = "gain above threshold -> sell ONLY if the trend is NOT up"
-            elif (last_buy - price) / last_buy > lost:
+            elif (last_buy - price_f) / last_buy > lost:
                 decision = "loss above threshold -> sell ONLY if the trend is NOT up"
             else:
                 decision = "nothing interesting"
@@ -126,8 +143,12 @@ def main():
         print("  (no recent SPOT buys or no price — no sell decision)")
 
     print("\n==== ORDER GATE: place_order must be DRY ====")
-    os.environ.pop("HL_LIVE_ORDERS", None)   # asiguram DRY pt test
-    res = mkt.place_order(HYPE, "SELL", price or 1.0, 0.0001)
+    saved_live_orders = os.environ.pop("HL_LIVE_ORDERS", None)   # asiguram DRY pt test
+    try:
+        res = mkt.place_order(HYPE, "SELL", price_f if price_f > 0.0 else 1.0, 0.0001)
+    finally:
+        if saved_live_orders is not None:
+            os.environ["HL_LIVE_ORDERS"] = saved_live_orders
     check("place_order(HYPEUSDC) DRY -> None (no real order)", res is None, repr(res))
 
     print("\n" + "=" * 60)
