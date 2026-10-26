@@ -61,9 +61,13 @@ def funding_at(fund: list[tuple[int, float]] | None, t_ms: int) -> float:
         except (TypeError, ValueError, OverflowError):
             continue
         if math.isfinite(ts_f) and math.isfinite(rate_f):
+            if 0 < ts_f < 10_000_000_000:
+                ts_f *= 1000.0
             clean_fund.append((ts_f, rate_f))
     if not clean_fund:
         return 0.0
+    if any(clean_fund[i][0] > clean_fund[i + 1][0] for i in range(len(clean_fund) - 1)):
+        clean_fund.sort(key=lambda item: item[0])
     if 0 < t_val < 10_000_000_000 and clean_fund[0][0] >= 10_000_000_000:
         t_val = t_val * 1000
     lo, hi = 0, len(clean_fund)
@@ -91,13 +95,18 @@ def run_replay(
 ) -> dict:
     """Replay historical candles through the live Strategy engine."""
     if not ohlc:
-        init_cap = (
-            float(params.max_budget)
-            if isinstance(params, StratParams)
-            else float(params.get("budget", params.get("max_budget", 500.0)))
-            if isinstance(params, dict)
-            else 500.0
-        )
+        init_cap = 500.0
+        if isinstance(params, StratParams):
+            init_cap = float(params.max_budget)
+        elif isinstance(params, dict):
+            raw_b = params.get("budget") if params.get("budget") is not None else params.get("max_budget", 500.0)
+            if raw_b is not None and not isinstance(raw_b, bool):
+                try:
+                    bf = float(raw_b)
+                    if math.isfinite(bf) and bf > 0:
+                        init_cap = bf
+                except (TypeError, ValueError, OverflowError):
+                    pass
         ccy = (
             getattr(params, "currency", "USDC")
             if isinstance(params, StratParams)

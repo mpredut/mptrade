@@ -69,6 +69,8 @@ def main() -> int:
     for i, a in enumerate(sys.argv):
         if a == "--env-file" and i + 1 < len(sys.argv):
             env_file = sys.argv[i + 1]
+        elif a.startswith("--env-file="):
+            env_file = a.split("=", 1)[1]
     load_env_stack(env_file)
     poll_seconds = required_int_env("KRAKEN_BOT_POLL_SEC")
 
@@ -89,16 +91,16 @@ def main() -> int:
     ap.add_argument("--test-strategy", metavar="PAIR", help="Run the strategy NOW on the given pair")
     args = ap.parse_args()
     if args.test_strategy:
-        single_instance(f"kraken_bot_{args.test_strategy.strip()}")
+        single_instance(f"kraken_bot_{args.test_strategy.strip().upper()}")
     elif not any(getattr(args, a, None) for a in ("balance", "find_pair", "price")):
         # Use one instance PER PAIR so HYPE, ADA, WIF, etc. can run concurrently with
         # separate locks. The former fixed 'kraken_bot' key blocked a second pair.
-        _lock_pair = (args.pair or required_env("KRAKEN_PAIR")).strip()
+        _lock_pair = (args.pair or required_env("KRAKEN_PAIR")).strip().upper()
         single_instance(f"kraken_bot_{_lock_pair}")
 
     client = _build_client()
 
-    pair        = (args.pair or required_env("KRAKEN_PAIR")).strip()
+    pair        = (args.pair or required_env("KRAKEN_PAIR")).strip().upper()
     label       = required_env("SYMBOL_LABEL")
     strategy_execution = required_bool_env("STRAT_EXECUTE")
     strat_dry = kraken_strategy_dry_run(args.paper, strategy_execution)
@@ -115,10 +117,11 @@ def main() -> int:
     if args.balance:
         return _cmd_balance(client)
     if args.test_strategy:
+        test_pair = args.test_strategy.strip().upper()
         log(
-            f"[TEST] strategy for {args.test_strategy}  "
+            f"[TEST] strategy for {test_pair}  "
             f"{'OBSERVE ONLY' if observe_only else ('PAPER' if strat_dry else '⚠ REAL')}")
-        Strategy(_build_executor(client), args.test_strategy, StratParams.from_env(),
+        Strategy(_build_executor(client), test_pair, StratParams.from_env(),
                  dry_run=strat_dry, desktop=args.desktop, observe_only=observe_only).run()
         return 0
 

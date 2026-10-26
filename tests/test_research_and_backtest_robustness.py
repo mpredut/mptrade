@@ -2038,9 +2038,11 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
                 sys.path.insert(0, hl_dir)
             spec = importlib.util.spec_from_file_location(mod_name, os.path.join(hl_dir, filename))
             mod = importlib.util.module_from_spec(spec)
+            sys.modules[mod_name] = mod
             spec.loader.exec_module(mod)
             return mod
         finally:
+            sys.modules.pop(mod_name, None)
             sys.path[:] = orig_path
 
     hl_client = _load_hl_mod("_test_hl_client", "hl_client.py")
@@ -2092,6 +2094,63 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert sig_res["trend"] == "up"
     assert sig_res["confidence"] == 0.8
     assert sig_res["source"] == "file"
+
+    # 12. Hyperliquid replay/strategy and 212trading strategy/market_data guards
+    hl_strat = _load_hl_mod("_test_hl_strat_p", "strategy.py")
+    sp_hl = hl_strat.StratParams.from_dict({"enable_takeprofit": "false", "signal_gate": "0"})
+    assert sp_hl.enable_takeprofit is False
+    assert sp_hl.signal_gate is False
+
+    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
+    orig_path = list(sys.path)
+    try:
+        if hl_dir not in sys.path:
+            sys.path.insert(0, hl_dir)
+        sys.modules["strategy"] = hl_strat
+        spec_rp = importlib.util.spec_from_file_location("_test_hl_replay", os.path.join(hl_dir, "replay.py"))
+        hl_replay = importlib.util.module_from_spec(spec_rp)
+        sys.modules["_test_hl_replay"] = hl_replay
+        spec_rp.loader.exec_module(hl_replay)
+    finally:
+        sys.modules.pop("_test_hl_replay", None)
+        sys.modules.pop("strategy", None)
+        sys.path[:] = orig_path
+
+    empty_rp = hl_replay.run_replay([], params={"budget": None})
+    assert empty_rp["total"] == 0.0
+    assert empty_rp["initial_capital"] == 500.0
+
+    t212_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "212trading")
+    orig_path = list(sys.path)
+    try:
+        if t212_dir not in sys.path:
+            sys.path.insert(0, t212_dir)
+        spec_t212_md = importlib.util.spec_from_file_location("_test_t212_md2", os.path.join(t212_dir, "market_data.py"))
+        t212_md2 = importlib.util.module_from_spec(spec_t212_md)
+        sys.modules["_test_t212_md2"] = t212_md2
+        spec_t212_md.loader.exec_module(t212_md2)
+        sys.modules["market_data"] = t212_md2
+        spec_t212_st = importlib.util.spec_from_file_location("_test_t212_st2", os.path.join(t212_dir, "strategy.py"))
+        t212_st2 = importlib.util.module_from_spec(spec_t212_st)
+        sys.modules["_test_t212_st2"] = t212_st2
+        spec_t212_st.loader.exec_module(t212_st2)
+    finally:
+        sys.modules.pop("_test_t212_md2", None)
+        sys.modules.pop("_test_t212_st2", None)
+        sys.modules.pop("market_data", None)
+        sys.path[:] = orig_path
+
+    from offline.research.hybrid_reentry import run_equities
+    base_t212_cfg = dict(run_equities.BASE_CONFIG, YAHOO_SYMBOL="NVDA")
+    assert t212_md2.parse_interval_minutes(" 1h ") == 60
+    with pytest.raises(ValueError):
+        t212_md2.fetch_yahoo_candles("NVDA", "1mo", "1h", timeout=0)
+    with pytest.raises(ValueError, match="STRAT_MAX_DCA_BUYS"):
+        t212_st2.StratParams.from_env(dict(base_t212_cfg, STRAT_MAX_DCA_BUYS="3.5"))
+    with pytest.raises(ValueError, match="step"):
+        t212_st2.generate_tp_ladder(1.0, 5.0, steps="2.5")
+    monkeypatch.setattr(t212_st2, "get_eur_usd", lambda: None)
+    assert t212_st2.Strategy._fx_to_usd(None, " eur ") == 1.08
 
 
 

@@ -232,7 +232,7 @@ class StratParams:
     def from_env(cls, env: dict | None = None) -> "StratParams":
         """Read the environment or an explicit mapping for collision-free multi-asset use."""
         e = os.environ if env is None else env
-        mode = required_env("STRATEGY_MODE", e).lower()
+        mode = required_env("STRATEGY_MODE", e).strip().lower()
         if mode not in {"avg_tp", "dca_only"}:
             raise ValueError(f"Invalid STRATEGY_MODE: {mode!r}")
         # Parse scale-out ladder percentages and fractions (explicit list or dynamic range).
@@ -245,8 +245,8 @@ class StratParams:
                 try:
                     p_min, p_max, p_steps = clean_raw.split(":")
                     steps_f = float(p_steps)
-                    if not math.isfinite(steps_f):
-                        raise ValueError("non-finite steps")
+                    if not math.isfinite(steps_f) or not steps_f.is_integer():
+                        raise ValueError("non-integer or non-finite steps")
                     _ladder = generate_tp_ladder(float(p_min), float(p_max), int(steps_f), curve=ladder_curve)
                 except (ValueError, OverflowError) as exc:
                     raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}") from exc
@@ -285,7 +285,7 @@ class StratParams:
         elif _mdb:
             try:
                 _mdb_f = float(_mdb)
-                if not math.isfinite(_mdb_f) or _mdb_f < 0:
+                if not math.isfinite(_mdb_f) or _mdb_f < 0 or not _mdb_f.is_integer():
                     raise ValueError("invalid STRAT_MAX_DCA_BUYS")
                 _max_dca = int(_mdb_f)
             except (ValueError, OverflowError) as exc:
@@ -293,7 +293,7 @@ class StratParams:
         else:
             raise ValueError("Missing or empty mandatory setting: STRAT_MAX_DCA_BUYS")
         return cls(
-            currency           = required_env("STRAT_CURRENCY", e).upper(),
+            currency           = required_env("STRAT_CURRENCY", e).strip().upper(),
             entry_amount       = _entry,
             entry_discount_pct = required_float_env("STRAT_ENTRY_DISCOUNT_PCT", e),
             dca_amount         = _dca,
@@ -542,16 +542,18 @@ class Strategy:
     # -- valuta ----------------------------------------------------------------
     def _fx_to_usd(self, currency: str) -> float:
         """How many USD in one unit of the given currency — generic for any Yahoo currency."""
-        if currency == "USD":
+        ccy = str(currency or "USD").strip().upper()
+        if ccy == "USD":
             return 1.0
-        if currency == "EUR":
-            return get_eur_usd()          # USD per EUR
-        if currency == "RON":
-            return 1.0 / get_usd_ron()    # USD per RON = 1 / (RON per USD)
-        rate = get_price_usd(f"{currency}USD=X")   # generic: GBP, CHF, PLN...
+        if ccy == "EUR":
+            return _clean_pos_float(get_eur_usd()) or 1.08          # USD per EUR
+        if ccy == "RON":
+            ron_rate = _clean_pos_float(get_usd_ron()) or 4.65
+            return 1.0 / ron_rate                                   # USD per RON = 1 / (RON per USD)
+        rate = _clean_pos_float(get_price_usd(f"{ccy}USD=X"))       # generic: GBP, CHF, PLN...
         if rate:
             return rate
-        log(f"  ! curs {currency}/USD indisponibil — tratez sumele ca USD (1:1). "
+        log(f"  ! curs {ccy}/USD indisponibil — tratez sumele ca USD (1:1). "
             f"Check STRAT_CURRENCY!")
         return 1.0
 
@@ -2109,10 +2111,11 @@ class Strategy:
         log(f"      ! break-even threshold ~{self.p.fx_fee_pct*2:.2f}% (FX) plus spread; TP={self.p.takeprofit_pct}%")
 
         def _delay(delay_sec: float) -> None:
+            eff_sec = max(1.0, float(delay_sec)) if (_clean_pos_float(delay_sec) is not None) else 60.0
             if stop is not None:
-                stop.wait(delay_sec)
+                stop.wait(eff_sec)
             else:
-                time.sleep(delay_sec)
+                time.sleep(eff_sec)
 
         try:
             while not (stop is not None and stop.is_set()):

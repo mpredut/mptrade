@@ -76,14 +76,14 @@ class StratParams:
 
     @classmethod
     def from_env(cls) -> "StratParams":
-        mode = required_env("STRATEGY_MODE").lower()
+        mode = required_env("STRATEGY_MODE").strip().lower()
         if mode not in {"avg_tp", "dca_only"}:
             raise ValueError(f"Invalid STRATEGY_MODE: {mode!r}")
-        direction = required_env("HL_DIRECTION").lower()
+        direction = required_env("HL_DIRECTION").strip().lower()
         if direction not in ("long", "short"):
             raise ValueError(f"Invalid HL_DIRECTION: {direction!r}")
         return cls(
-            currency           = required_env("STRAT_CURRENCY").upper(),
+            currency           = required_env("STRAT_CURRENCY").strip().upper(),
             direction          = direction,
             entry_amount       = required_float_env("STRAT_ENTRY"),
             entry_discount_pct = required_float_env("STRAT_ENTRY_DISCOUNT_PCT"),
@@ -131,8 +131,23 @@ class StratParams:
                 raise ValueError(f"non-integer value for {keys[0]}: {val_f!r}")
             return int(val_f)
 
+        def _b(key: str, default: bool) -> bool:
+            raw = d.get(key, default)
+            if raw is None:
+                return default
+            if isinstance(raw, bool):
+                return raw
+            if isinstance(raw, str):
+                s = raw.strip().lower()
+                if s in ("1", "true", "yes", "on"):
+                    return True
+                if s in ("0", "false", "no", "off", ""):
+                    return False
+                raise ValueError(f"invalid boolean string for {key}: {raw!r}")
+            return bool(raw)
+
         return cls(
-            currency=str(d.get("currency", "USDC") or "USDC"),
+            currency=str(d.get("currency", "USDC") or "USDC").strip().upper(),
             direction=dir_val,
             entry_amount=_f(("entry", "entry_amount"), 50.0),
             entry_discount_pct=_f(("disc", "entry_discount_pct"), 0.2),
@@ -142,9 +157,9 @@ class StratParams:
             takeprofit_pct=_f(("tp", "takeprofit_pct"), 1.0),
             max_budget=_f(("budget", "max_budget"), 500.0),
             max_dca_buys=_i(("maxdca", "max_dca_buys"), 10),
-            enable_takeprofit=bool(d.get("enable_takeprofit", True)),
+            enable_takeprofit=_b("enable_takeprofit", True),
             order_ttl_min=_f(("order_ttl_min",), 60.0),
-            signal_gate=bool(d.get("signal_gate", False)),
+            signal_gate=_b("signal_gate", False),
             stop_loss_pct=_f(("sl", "stop_loss_pct"), 0.0),
             reentry_tolerance_pct=_f(("reentry_tolerance_pct",), 0.0),
             fee_pct=_f(("fee", "fee_pct"), HL_FEE_PCT),

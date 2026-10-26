@@ -26,11 +26,14 @@ from offline.backtests.datasets import drop_incomplete_last_bar, validate_datase
 
 def parse_interval_minutes(value: str) -> int:
     """Parse interval strings like '5m', '1h', '1d' into integer minutes."""
-    if not isinstance(value, str) or len(value) < 2:
+    if not isinstance(value, str):
+        raise ValueError(f"invalid Yahoo interval: {value!r}; examples: 5m, 1h, 1d")
+    cleaned = value.strip()
+    if len(cleaned) < 2:
         raise ValueError(f"invalid Yahoo interval: {value!r}; examples: 5m, 1h, 1d")
     units = {"m": 1, "h": 60, "d": 1440}
     try:
-        minutes = int(value[:-1]) * units[value[-1].lower()]
+        minutes = int(cleaned[:-1]) * units[cleaned[-1].lower()]
     except (KeyError, ValueError, IndexError, TypeError) as exc:
         raise ValueError(f"invalid Yahoo interval: {value!r}; examples: 5m, 1h, 1d") from exc
     if minutes <= 0:
@@ -50,6 +53,11 @@ def fetch_yahoo_candles(
 
     Excludes the forming candle when drop_incomplete is True to prevent lookahead drift.
     """
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(float(timeout)) or float(timeout) <= 0:
+        raise ValueError(f"invalid timeout: {timeout!r}")
+    symbol = str(symbol or "").strip()
+    range_ = str(range_ or "").strip()
+    interval = str(interval or "").strip()
     query = {"range": range_, "interval": interval}
     day_range = re.fullmatch(r"([1-9][0-9]*)d", range_.lower())
     if day_range:

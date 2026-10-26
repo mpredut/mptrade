@@ -46,6 +46,8 @@ def main() -> int:
     for i, a in enumerate(sys.argv):
         if a == "--env-file" and i + 1 < len(sys.argv):
             env_file = sys.argv[i + 1]
+        elif a.startswith("--env-file="):
+            env_file = a.split("=", 1)[1]
     load_env_stack(env_file)
 
     ap = argparse.ArgumentParser(description="base v2 (spot_dca) pe Hyperliquid HYPE.")
@@ -55,13 +57,13 @@ def main() -> int:
     ap.add_argument("--test-strategy", metavar="TOKEN", help="Run strategy once on given token")
     args = ap.parse_args()
 
-    token = (args.test_strategy or args.token or required_env("HL_SPOT_TOKEN")).upper()
+    token = (args.test_strategy or args.token or required_env("HL_SPOT_TOKEN")).strip().upper()
     strategy_enabled = required_bool_env("STRAT_EXECUTE")
     venue_enabled = required_bool_env("HL_LIVE_ORDERS")
     strat_dry = args.paper or not (strategy_enabled and venue_enabled)
     observe_only = str(os.environ.get("HL_BOT_OBSERVE_ONLY", "")).strip().lower() in ("1", "true", "yes", "on")
     if args.test_strategy:
-        single_instance(f"hl_bot_{args.test_strategy.strip()}")
+        single_instance(f"hl_bot_{token}")
     elif not any(a in sys.argv for a in ()):  # reserved for future one-shot commands
         single_instance(f"hl_bot_{token}")   # one instance per token
 

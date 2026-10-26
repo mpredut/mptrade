@@ -73,7 +73,8 @@ def main() -> int:
     if not math.isfinite(price) or price <= 0:
         log(f"  [{args.symbol}] price unavailable — skipping"); return 0
 
-    state_path = args.state or os.path.join(_HERE, f".alert_{args.symbol}.json")
+    safe_sym = "".join(c for c in str(args.symbol or "") if c.isalnum() or c in "._-=") or "unknown"
+    state_path = args.state or os.path.join(_HERE, f".alert_{safe_sym}.json")
     st = {}
     if os.path.exists(state_path):
         try:
@@ -83,7 +84,13 @@ def main() -> int:
                 st = loaded
         except (OSError, ValueError):
             st = {}
-    armed = bool(st.get("armed", True))
+    raw_armed = st.get("armed", True)
+    if raw_armed is None:
+        armed = True
+    elif isinstance(raw_armed, str):
+        armed = raw_armed.strip().lower() not in ("0", "false", "no", "off")
+    else:
+        armed = bool(raw_armed)
 
     hit_below = args.below is not None and price <= args.below
     hit_above = args.above is not None and price >= args.above
