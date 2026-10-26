@@ -710,8 +710,8 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         from binance_api import market_data as b_md
         import utils as u_mod
 
-        page1 = [[1_700_000_000_000 + i * 60_000, "100", "101", "99", "100", "10", 1_700_000_059_999] for i in range(1000)]
-        page2 = [[1_700_000_000_000 + (1000 + i) * 60_000, "100", "101", "99", "100", "10", 1_700_000_059_999] for i in range(200)]
+        page1 = [[1_700_000_000_000 + i * 60_000, "100", "101", "99", "100", "10", 1_700_000_059_999 + i * 60_000] for i in range(1000)]
+        page2 = [[1_700_000_000_000 + (1000 + i) * 60_000, "100", "101", "99", "100", "10", 1_700_000_059_999 + (1000 + i) * 60_000] for i in range(200)]
         calls = []
 
         class _FakeResp:
