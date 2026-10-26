@@ -55,12 +55,12 @@ def resolve_effective_order_ttl(order_id, client_order_id, owner=None, custom_tt
     3. Fall back to global default.
     4. Enforce MAX_GLOBAL_ORDER_TTL_SEC hard cap (3 days) without exception.
     """
-    custom_map = custom_ttl_map or {}
-    oid_str = str(order_id)
-    cid_str = str(client_order_id or "")
+    custom_map = custom_ttl_map if isinstance(custom_ttl_map, dict) else {}
+    oid_str = str(order_id).strip() if order_id is not None and not isinstance(order_id, bool) else ""
+    cid_str = str(client_order_id).strip() if client_order_id is not None and not isinstance(client_order_id, bool) else ""
 
     # 1. Custom TTL from placement
-    custom_ttl = custom_map.get(oid_str) or (custom_map.get(cid_str) if cid_str else None)
+    custom_ttl = (custom_map.get(oid_str) if oid_str else None) or (custom_map.get(cid_str) if cid_str else None)
     if custom_ttl is not None and not isinstance(custom_ttl, bool):
         try:
             val = float(custom_ttl)
@@ -70,10 +70,10 @@ def resolve_effective_order_ttl(order_id, client_order_id, owner=None, custom_tt
             pass
 
     # 2. Module default based on owner
-    if not owner and cid_str:
+    if (not owner or isinstance(owner, bool)) and cid_str:
         owner = rc.resolve_order_owner(cid_str)
 
-    norm_owner = str(owner or "").strip().lower()
+    norm_owner = str(owner).strip().lower() if isinstance(owner, str) else ""
     if norm_owner in MODULE_ORDER_TTLS:
         return min(MODULE_ORDER_TTLS[norm_owner], MAX_GLOBAL_ORDER_TTL_SEC)
 
@@ -208,6 +208,19 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
     durable record submittable. ``failed_orders`` remains a compatibility-only
     argument for old callers; this function neither writes nor drains it.
     """
+    if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        return
+    if isinstance(order_type, bool) or not isinstance(order_type, str):
+        return
+    order_type_u = order_type.strip().upper()
+    if order_type_u == "B":
+        order_type_u = "BUY"
+    elif order_type_u == "S":
+        order_type_u = "SELL"
+    if order_type_u not in ("BUY", "SELL"):
+        return
+    order_type = order_type_u
+
     orders = api.get_open_orders(order_type, symbol)
     if not orders:
         print(f"For {symbol} there are no open {order_type} orders to begin with.")
@@ -529,7 +542,12 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 continue
 
             try:
-                filled_quantity = max(0.0, float(status.filled_qty or 0.0))
+                raw_filled = getattr(status, "filled_qty", 0.0)
+                if isinstance(raw_filled, bool):
+                    raise TypeError("boolean filled_qty")
+                filled_quantity = float(raw_filled or 0.0)
+                if not math.isfinite(filled_quantity) or filled_quantity < 0.0:
+                    raise ValueError("invalid filled_qty")
                 quantity = max(0.0, original_quantity - filled_quantity)
             except (TypeError, ValueError, OverflowError):
                 order_retry.complete_claim(

@@ -127,11 +127,16 @@ def _safe_step_count(val: Any) -> int:
 
 def get_thread_step_count(cid: str, cli_base: str) -> Tuple[bool, int, str]:
     """(content file exists, step_count, run status) of a conversation in ``cli_base``."""
-    if not cid:
+    if not cid or not isinstance(cid, str) or not cid.strip():
         return (False, 0, "")
-    exists = os.path.exists(conversation_db(cli_base, cid))
-    row = read_summary_row(cli_base, cid)
-    return (exists, _safe_step_count(row.get("step_count")), str(row.get("status") or "")) if row else (exists, 0, "")
+    clean_cid = cid.strip()
+    exists = os.path.exists(conversation_db(cli_base, clean_cid))
+    row = read_summary_row(cli_base, clean_cid)
+    if not row:
+        return (exists, 0, "")
+    raw_status = row.get("status")
+    status_str = raw_status.strip() if isinstance(raw_status, str) else ""
+    return (exists, _safe_step_count(row.get("step_count")), status_str)
 
 
 def read_annotation_title(cli_base: str, cid: str) -> str:

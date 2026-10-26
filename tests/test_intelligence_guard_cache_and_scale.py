@@ -11307,6 +11307,53 @@ def test_iteration104_macro_sentiment_and_order_retry_safety(tmp_path):
     assert "reason=none" in ctx
 
 
+def test_iteration105_agy_topics_monitororder_and_strategy_executor_safety(tmp_path):
+    """Iteration 105: Verify orchestratorOS.agy, monitororder, and providers.strategy_executor bool/non-str safety."""
+    import json
+    from orchestratorOS.agy import topics, summary_store, ui_mirror
+    import monitororder as mo
+    from providers.strategy_executor import OrderStatus, SubmissionOutcome, SubmissionRefused
+
+    # 1. orchestratorOS.agy.topics & summary_store & ui_mirror
+    assert topics.canonical_topic_key(True) == ""
+    assert topics.canonical_topic_key("  auto_trade_executor  ") == "auto_cryptotrade_executor"
+    assert topics.format_topic_turn_header("macro_geopolitical", True) is not None
+    assert topics.extract_json_object(True) is None
+    assert topics.condense_decision(True) == ""
+    assert summary_store.get_thread_step_count(True, str(tmp_path)) == (False, 0, "")
+    assert ui_mirror.sync_topic_thread_from_ui(True, bot_cli_base=str(tmp_path), ui_cli_base=str(tmp_path)) is False
+    assert ui_mirror.mirror_topic_thread_to_ui(True, "Title", bot_cli_base=str(tmp_path), ui_cli_base=str(tmp_path)) is False
+
+    reg_file = tmp_path / "topics.json"
+    reg_file.write_text(
+        json.dumps({
+            "macro_geopolitical": {"conversation_id": True, "title": True},
+            "macro_sentiment": {"conversation_id": "  cid-123  ", "title": True},
+        }),
+        encoding="utf-8",
+    )
+    assert topics.get_active_topic_cids(str(reg_file)) == {"cid-123"}
+    titles = topics.get_topic_canonical_titles(str(reg_file))
+    assert "cid-123" in titles and "True" not in titles
+
+    # 2. monitororder: resolve_effective_order_ttl & monitor_open_orders_by_type
+    ttl = mo.resolve_effective_order_ttl(True, True, owner=True, custom_ttl_map={"True": 10.0, "None": 10.0})
+    assert ttl == mo.DEFAULT_ORDER_TTL_SEC
+    # Invalid symbol/order_type exits cleanly without calling api
+    mo.monitor_open_orders_by_type(True, "SELL")
+    mo.monitor_open_orders_by_type("BTCUSDC", True)
+    mo.monitor_open_orders_by_type("BTCUSDC", "INVALID_SIDE")
+
+    # 3. providers.strategy_executor: bool rejection in SubmissionRefused, SubmissionOutcome, OrderStatus
+    with pytest.raises(ValueError):
+        SubmissionRefused(True)
+    with pytest.raises(ValueError):
+        SubmissionOutcome("refused", reason=True)
+    with pytest.raises(ValueError):
+        OrderStatus("open", 0.0, 0.0, 0.0, venue_status=True)
+
+
+
 
 
 

@@ -28,6 +28,8 @@ class SubmissionRefused(ProviderError, RuntimeError):
     """The order was definitively refused before or during synchronous submit."""
 
     def __init__(self, reason: str):
+        if isinstance(reason, bool):
+            raise ValueError("submission refusal reason is required")
         self.reason = str(reason or "").strip()
         if not self.reason:
             raise ValueError("submission refusal reason is required")
@@ -59,6 +61,8 @@ class SubmissionOutcome:
             raise ValueError("accepted submission requires order_id")
         if self.state != "accepted" and order_id:
             raise ValueError(f"{self.state} submission cannot carry order_id")
+        if isinstance(self.reason, bool):
+            raise ValueError(f"invalid reason in SubmissionOutcome: {self.reason!r}")
         object.__setattr__(self, "order_id", order_id)
         object.__setattr__(self, "reason", str(self.reason or "").strip())
 
@@ -123,6 +127,8 @@ class OrderStatus:
             if not math.isfinite(value) or (name != "fee" and value < 0):
                 raise ValueError(f"invalid {name} in OrderStatus: {raw!r}")
             object.__setattr__(self, name, value)
+        if isinstance(self.venue_status, bool):
+            raise ValueError(f"invalid venue_status in OrderStatus: {self.venue_status!r}")
         object.__setattr__(self, "venue_status", str(self.venue_status or "").upper())
         if self.orig_qty is not None:
             raw_orig = self.orig_qty

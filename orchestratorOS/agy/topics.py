@@ -79,9 +79,12 @@ TOPIC_ALIASES: Dict[str, str] = {
 }
 
 
-def canonical_topic_key(topic_key: str) -> str:
+def canonical_topic_key(topic_key: Any) -> str:
     """Resolve legacy topic aliases (e.g. auto_trade_executor -> auto_cryptotrade_executor)."""
-    return TOPIC_ALIASES.get(topic_key, topic_key)
+    if not isinstance(topic_key, str):
+        return ""
+    cleaned = topic_key.strip()
+    return TOPIC_ALIASES.get(cleaned, cleaned)
 
 
 def topic_spec(topic_key: str) -> TopicSpec:
@@ -131,9 +134,9 @@ def save_topic_registry(registry: Dict[str, dict], registry_path: Optional[str] 
 def get_active_topic_cids(registry_path: Optional[str] = None) -> Set[str]:
     """Conversation ids owned by topics (protected from pruning)."""
     return {
-        str(e["conversation_id"])
+        e["conversation_id"].strip()
         for e in load_topic_registry(registry_path).values()
-        if isinstance(e, dict) and e.get("conversation_id")
+        if isinstance(e, dict) and isinstance(e.get("conversation_id"), str) and e["conversation_id"].strip()
     }
 
 
@@ -141,11 +144,15 @@ def get_topic_canonical_titles(registry_path: Optional[str] = None) -> Dict[str,
     """Map each topic's conversation_id to its canonical TopicSpec title (or registry title)."""
     out: Dict[str, str] = {}
     for key, entry in load_topic_registry(registry_path).items():
-        if not isinstance(entry, dict) or not entry.get("conversation_id"):
+        if not isinstance(entry, dict):
             continue
-        cid = str(entry["conversation_id"])
+        raw_cid = entry.get("conversation_id")
+        if not isinstance(raw_cid, str) or not raw_cid.strip():
+            continue
+        cid = raw_cid.strip()
         spec_title = TOPIC_SPECS[key].title if key in TOPIC_SPECS else ""
-        title = spec_title or str(entry.get("title") or "").strip()
+        raw_title = entry.get("title")
+        title = spec_title or (raw_title.strip() if isinstance(raw_title, str) else "")
         if title:
             out[cid] = title
     return out
@@ -169,7 +176,8 @@ def sync_all_topic_titles(
         if entry.get("title") != canonical:
             entry["title"] = canonical
             changed_reg = True
-        cid = str(entry.get("conversation_id") or "").strip()
+        raw_cid = entry.get("conversation_id")
+        cid = raw_cid.strip() if isinstance(raw_cid, str) else ""
         if not cid:
             continue
         try:
@@ -189,7 +197,7 @@ def sync_all_topic_titles(
 
 def format_topic_turn_header(topic_key: Optional[str], thread_title: Optional[str]) -> Optional[str]:
     """Normalize the per-turn header so every topic thread always starts with its canonical TopicSpec title."""
-    raw = (thread_title or "").strip()
+    raw = thread_title.strip() if isinstance(thread_title, str) else ""
     resolved = canonical_topic_key(topic_key) if topic_key else ""
     if not resolved or resolved not in TOPIC_SPECS:
         return raw or None
@@ -267,7 +275,8 @@ def prepare_topic_session(
     if not isinstance(entry, dict):
         return TopicSession(None, "", False)
 
-    cid = str(entry.get("conversation_id") or "").strip()
+    raw_cid = entry.get("conversation_id")
+    cid = raw_cid.strip() if isinstance(raw_cid, str) else ""
     if cid:
         from orchestratorOS.agy.ui_mirror import sync_topic_thread_from_ui
 
@@ -302,9 +311,11 @@ _SHORT_SUMMARY_KEYS = (
 _PROSE_SUMMARY_KEYS = ("summary", "reason")
 
 
-def extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+def extract_json_object(text: Any) -> Optional[Dict[str, Any]]:
     """Extract a JSON object from pure JSON or a hybrid Markdown + trailing JSON response."""
-    cleaned = (text or "").strip()
+    if not isinstance(text, str):
+        return None
+    cleaned = text.strip()
     if not cleaned:
         return None
     if "```" in cleaned:
@@ -340,9 +351,11 @@ def extract_json_object(text: str) -> Optional[Dict[str, Any]]:
         pos = idx
 
 
-def condense_decision(response_text: str, max_len: int = 220) -> str:
+def condense_decision(response_text: Any, max_len: int = 220) -> str:
     """Single-line summary of an LLM JSON decision (falls back to the whitespace-collapsed text)."""
-    condensed = " ".join((response_text or "").split())
+    if not isinstance(response_text, str):
+        return ""
+    condensed = " ".join(response_text.split())
     parsed = extract_json_object(response_text)
     if isinstance(parsed, dict):
         parts = [f"{k}={parsed[k]}" for k in _SHORT_SUMMARY_KEYS if parsed.get(k) not in (None, "")]
@@ -398,14 +411,18 @@ def record_topic_turn(
     if not isinstance(entry, dict):
         entry = {"topic_key": resolved, "turn_count": 0, "rolling_history": []}
 
-    if not entry.get("conversation_id") and conversation_id:
-        entry["conversation_id"] = conversation_id
+    clean_cid = conversation_id.strip() if isinstance(conversation_id, str) and conversation_id.strip() else None
+    raw_existing = entry.get("conversation_id")
+    existing_cid = raw_existing.strip() if isinstance(raw_existing, str) and raw_existing.strip() else None
+    if not existing_cid and clean_cid:
+        entry["conversation_id"] = clean_cid
         entry["compacted_at_step"] = 0
-    active_cid = entry.get("conversation_id")
+        existing_cid = clean_cid
+    active_cid = existing_cid
     if active_cid:
         _, step_count, _ = get_thread_step_count(active_cid, base)
         entry["step_count"] = step_count
-        if compacted and active_cid == conversation_id:
+        if compacted and active_cid == clean_cid:
             entry["compacted_at_step"] = step_count
             entry["compaction_count"] = _safe_int(entry.get("compaction_count"), 0) + 1
     entry["topic_key"] = resolved
