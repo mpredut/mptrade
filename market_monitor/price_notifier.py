@@ -167,11 +167,16 @@ def print_new_coin_status(cachePriceAll, new_coins_checker):
 
     if new_coins_checker:
         summary = new_coins_checker.get_summary()
-        print(f"\n🆕 New coins discovered total: {summary['total_new_coins']}")
-        for source, data in summary['sources'].items():
-            print(f"   {source}: {data['count']} coins")
-        if summary['all_symbols']:
-            print(f"   New symbols: {summary['all_symbols'][:10]}")
+        if isinstance(summary, dict):
+            print(f"\n🆕 New coins discovered total: {summary.get('total_new_coins', 0)}")
+            sources_map = summary.get('sources')
+            if isinstance(sources_map, dict):
+                for source, data in sources_map.items():
+                    cnt = data.get('count', 0) if isinstance(data, dict) else 0
+                    print(f"   {source}: {cnt} coins")
+            all_syms = summary.get('all_symbols')
+            if isinstance(all_syms, list) and all_syms:
+                print(f"   New symbols: {all_syms[:10]}")
 
 
 def periodic_cleanup(cachePriceAll, new_coins_checker):
@@ -210,9 +215,16 @@ def start_new_coin_checker(cachePriceAll, interval_seconds=3600,
     new_coins_checker.refresh()
 
     auto_added_count = 0
+    eff_max_new = (
+        max(0, int(max_new_coins))
+        if isinstance(max_new_coins, (int, float))
+        and not isinstance(max_new_coins, bool)
+        and math.isfinite(float(max_new_coins))
+        else MAX_NEW_COINS_TO_TRACK
+    )
     for source_name, coins in new_coins_checker.all_new_coins.items():
         if source_name.lower() == "coinmarketcap":
-            for coin in coins[:max_new_coins]:
+            for coin in coins[:eff_max_new]:
                 if new_coins_checker.add_new_coin_to_watchlist(coin):
                     auto_added_count += 1
         else:

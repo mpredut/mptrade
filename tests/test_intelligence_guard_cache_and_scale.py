@@ -9645,6 +9645,54 @@ def test_iteration78_pricechecker_thresholds_alertnotifiers_and_sim_window_norma
     assert max_px == 30.0 and max_pos == 2
 
 
+def test_iteration79_alerts_config_price_notifier_and_verify_tools_safety(tmp_path):
+    """Verify Iteration 79 alerts_config validation/resolve, price_notifier status safety, and gen_alert_thresholds guards."""
+    import pytest
+    from types import SimpleNamespace
+    from market_monitor import alerts_config
+    from verify_tools import gen_alert_thresholds
+
+    # 1. alerts_config._pair rejects extra slashes and load_config rejects fractional integer settings
+    with pytest.raises(ValueError):
+        alerts_config._pair("6 / 10 / 15")
+    with pytest.raises(ValueError):
+        alerts_config._pair("6")
+
+    bad_cfg = tmp_path / "bad_alerts.conf"
+    bad_cfg.write_text(
+        "watch = BTC\n"
+        "sources = coinmarketcap\n"
+        "discover_new_coins = yes\n"
+        "default = 4 / 8\n"
+        "new_coin = 12 / 25\n"
+        "cooldown_minutes = 30\n"
+        "lookback_hours = 24\n"
+        "max_monitored = 3.5\n"
+        "max_new_coins = 5\n"
+        "new_coins_scan_seconds = 3600\n"
+        "price_scan_seconds = 60\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Invalid alert configuration for max_monitored"):
+        alerts_config.load_config(str(bad_cfg))
+
+    # 2. alerts_config.resolve normalizes case and handles None per_coin
+    ac = {
+        "default": {"up_percent": 4.0, "down_percent": 8.0},
+        "dynamic": {"up_percent": 12.0, "down_percent": 25.0},
+        "per_coin": {"BTC": {"up_percent": 6.0, "down_percent": 10.0}},
+    }
+    assert alerts_config.resolve(ac, "btcusdc", False) == {"up_percent": 6.0, "down_percent": 10.0}
+    assert alerts_config.resolve({"default": ac["default"], "dynamic": ac["dynamic"], "per_coin": None}, "ETH", False) == ac["default"]
+
+    # 3. gen_alert_thresholds._perc and suggest input validation
+    assert gen_alert_thresholds._perc([], 85) == 0.0
+    assert gen_alert_thresholds.suggest("BTC", days=False) is None
+    assert gen_alert_thresholds.suggest("BTC", days=-5) is None
+    assert gen_alert_thresholds.suggest("BTC", days=float("nan")) is None
+
+
+
 
 
 

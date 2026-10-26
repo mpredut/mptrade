@@ -31,7 +31,10 @@ _BUCKET_ALIAS = {"default": "default", "new_coin": "dynamic"}
 
 def _pair(val: str) -> dict:
     """'6 / 10' -> {'up_percent': 6.0, 'down_percent': 10.0}."""
-    up, _, down = val.partition("/")
+    parts = str(val).split("/")
+    if len(parts) != 2:
+        raise ValueError("expected UP / DOWN threshold pair")
+    up, down = parts
     up_v = float(up.strip())
     down_v = float(down.strip())
     if not (math.isfinite(up_v) and math.isfinite(down_v) and up_v > 0 and down_v > 0):
@@ -67,6 +70,8 @@ def load_config(path: str) -> dict:
                     fval = float(val)
                     if not math.isfinite(fval):
                         raise ValueError("setting must be finite")
+                    if typ is int and not fval.is_integer():
+                        raise ValueError("integer setting must not have fractional part")
                     v = typ(fval)
                     min_allowed = 0 if key == "cooldown_minutes" else 1
                     if v < min_allowed:
@@ -99,13 +104,21 @@ def load_config(path: str) -> dict:
 
 def resolve(alert_config: dict, symbol: str, is_dynamic: bool) -> dict:
     """Resolve a coin threshold: per_coin, then dynamic for new coins, then default."""
-    per = alert_config.get("per_coin", {})
-    if symbol in per:
-        return per[symbol]
+    per = alert_config.get("per_coin")
+    if not isinstance(per, dict):
+        per = {}
+    sym_str = str(symbol or "").strip()
+    sym_up = sym_str.upper()
+    if sym_str in per:
+        return per[sym_str]
+    if sym_up in per:
+        return per[sym_up]
     from providers.quantity import resolve_assets
-    base = resolve_assets(symbol)[0]
+    base = resolve_assets(sym_up)[0]
     if base and base in per:
         return per[base]
+    if base and base.upper() in per:
+        return per[base.upper()]
     return alert_config["dynamic"] if is_dynamic else alert_config["default"]
 
 

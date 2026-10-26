@@ -142,7 +142,7 @@ def cmd_scan(args) -> int:
         if runtime_doc:
             print("    WARNING: this file references __doc__; its module docstring may be"
                   " runtime CLI text — do not translate it as ordinary prose.")
-        shown = hits if args.all else hits[:args.limit]
+        shown = hits if args.all else hits[:max(0, int(args.limit))]
         for line, kind, score, text in shown:
             print(f"  L{line:<5} {kind:<9} score={score:<3} {text[:100]}")
         if len(hits) > len(shown):

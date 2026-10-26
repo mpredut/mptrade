@@ -49,8 +49,11 @@ def resolve_id(symbol):
 
 
 def _perc(xs, pct):
+    if not xs:
+        return 0.0
     xs = sorted(xs)
-    return xs[min(len(xs) - 1, int(len(xs) * pct / 100))]
+    idx = max(0, min(len(xs) - 1, int(len(xs) * pct / 100)))
+    return xs[idx]
 
 
 def thresholds_from_prices(prices, window=WINDOW, pct=PERCENTILE):
@@ -97,10 +100,12 @@ def thresholds_from_prices(prices, window=WINDOW, pct=PERCENTILE):
 
 
 def suggest(symbol, days=DAYS):
+    if isinstance(days, bool) or not isinstance(days, (int, float)) or not math.isfinite(float(days)) or int(days) <= 0:
+        return None
     cid, sym, name = resolve_id(symbol)
     if not cid:
         return None
-    data = _get(f"https://api.coingecko.com/api/v3/coins/{cid}/market_chart?vs_currency=usd&days={days}")
+    data = _get(f"https://api.coingecko.com/api/v3/coins/{cid}/market_chart?vs_currency=usd&days={int(days)}")
     raw_prices = data.get("prices", []) if isinstance(data, dict) else []
     prices = [
         p[1] for p in raw_prices
