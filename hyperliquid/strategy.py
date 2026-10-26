@@ -112,7 +112,10 @@ class StratParams:
     def from_dict(cls, d: dict, direction: str | None = None) -> "StratParams":
         if not isinstance(d, dict):
             raise ValueError("StratParams.from_dict requires a dict")
-        dir_val = str(direction or d.get("direction", "long") or "long").strip().lower()
+        raw_dir = direction if direction is not None else d.get("direction", "long")
+        if isinstance(raw_dir, bool):
+            raise ValueError(f"Invalid HL_DIRECTION: {raw_dir!r}")
+        dir_val = str(raw_dir or "long").strip().lower()
         if dir_val not in ("long", "short"):
             raise ValueError(f"Invalid HL_DIRECTION: {dir_val!r}")
 
@@ -157,8 +160,17 @@ class StratParams:
                 raise ValueError(f"invalid numeric boolean for {key}: {raw!r}")
             raise ValueError(f"invalid boolean value for {key}: {raw!r}")
 
+        raw_ccy = d.get("currency", "USDC")
+        ccy_val = (
+            str(raw_ccy).strip().upper()
+            if raw_ccy is not None and not isinstance(raw_ccy, bool) and str(raw_ccy).strip()
+            else "USDC"
+        )
+        sz_dec = _i(("sz_decimals",), 4)
+        if not (0 <= sz_dec <= 18):
+            raise ValueError(f"sz_decimals out of range [0, 18]: {sz_dec}")
         return cls(
-            currency=str(d.get("currency", "USDC") or "USDC").strip().upper(),
+            currency=ccy_val,
             direction=dir_val,
             entry_amount=_f(("entry", "entry_amount"), 50.0),
             entry_discount_pct=_f(("disc", "entry_discount_pct"), 0.2),
@@ -174,7 +186,7 @@ class StratParams:
             stop_loss_pct=_f(("sl", "stop_loss_pct"), 0.0),
             reentry_tolerance_pct=_f(("reentry_tolerance_pct",), 0.0),
             fee_pct=_f(("fee", "fee_pct"), HL_FEE_PCT),
-            sz_decimals=_i(("sz_decimals",), 4),
+            sz_decimals=sz_dec,
         )
 
 
@@ -281,10 +293,23 @@ class Strategy:
         if replay_mode:
             self._save = lambda: None
         self._paper_seq = 0
-        self.sz_dec = getattr(params, "sz_decimals", 4 if replay_mode else 2)
+        default_sz_dec = 4 if replay_mode else 2
+        raw_sz_dec = getattr(params, "sz_decimals", default_sz_dec)
+        if isinstance(raw_sz_dec, bool) or raw_sz_dec is None:
+            self.sz_dec = default_sz_dec
+        else:
+            try:
+                dec_f = float(raw_sz_dec)
+                self.sz_dec = max(0, min(18, int(dec_f))) if (math.isfinite(dec_f) and dec_f.is_integer()) else default_sz_dec
+            except (TypeError, ValueError, OverflowError):
+                self.sz_dec = default_sz_dec
         if client is not None:
             try:
-                self.sz_dec = client.sz_decimals(coin)
+                c_dec = client.sz_decimals(coin)
+                if not isinstance(c_dec, bool) and c_dec is not None:
+                    c_dec_f = float(c_dec)
+                    if math.isfinite(c_dec_f) and c_dec_f.is_integer():
+                        self.sz_dec = max(0, min(18, int(c_dec_f)))
             except Exception:
                 pass
 
@@ -580,7 +605,15 @@ class Strategy:
                    body=f"a{avg:.2f} · br{gross:+.2f} fee{fee:.2f} N{net:+.2f} | Ntot{self.s['realized_net']:+.2f}",
                    source="hyperliquid", price=price, desktop=self.desktop)
         if real_qty is not None:
-            self.s["qty"] = real_qty; self.s["cost"] = real_qty * (real_avg or 0)
+            eff_avg = (
+                float(real_avg)
+                if (real_avg is not None and not isinstance(real_avg, bool) and math.isfinite(float(real_avg)) and float(real_avg) > 0)
+                else avg
+            )
+            self.s["qty"] = real_qty
+            self.s["cost"] = max(0.0, real_qty * (eff_avg or 0.0))
+            if self.s["qty"] > 1e-12:
+                self.s["spent"] = round(self.s["cost"], 2)
         else:
             prev_qty = self.s["qty"]
             self.s["qty"] -= sz

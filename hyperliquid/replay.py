@@ -193,6 +193,23 @@ def _run_once(
         replay_mode=True,
     )
 
+    for idx, row in enumerate(ohlc):
+        if not isinstance(row, (list, tuple)) or len(row) < 4:
+            raise ValueError(f"invalid OHLC bar at index {idx}")
+        if any(isinstance(v, bool) for v in row[:4]):
+            raise ValueError(f"OHLC bar at index {idx} contains bool")
+        try:
+            o_f, h_f, l_f, c_f = float(row[0]), float(row[1]), float(row[2]), float(row[3])
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"OHLC bar at index {idx} has non-numeric prices") from exc
+        if (
+            not all(math.isfinite(v) and v > 0 for v in (o_f, h_f, l_f, c_f))
+            or h_f < l_f
+            or h_f < max(o_f, c_f)
+            or l_f > min(o_f, c_f)
+        ):
+            raise ValueError(f"OHLC bar at index {idx} has non-finite or invalid prices")
+
     initial_capital = float(strat_params.max_budget)
     equity_curve = [initial_capital]
     exposure: list[bool] = []
@@ -202,7 +219,7 @@ def _run_once(
     fills = 0
     funding = 0.0
     ambiguous_bars = 0
-    c = ohlc[0][3]
+    c = float(ohlc[0][3])
 
     open_side = "buy" if strategy.sign > 0 else "sell"
     close_side = "sell" if strategy.sign > 0 else "buy"
@@ -218,7 +235,7 @@ def _run_once(
     eff_bar_minutes = valid_bar_minutes if valid_bar_minutes is not None else 60.0
 
     for i in range(len(ohlc)):
-        o, h, l, c = ohlc[i]
+        o, h, l, c = float(ohlc[i][0]), float(ohlc[i][1]), float(ohlc[i][2]), float(ohlc[i][3])
         t_ms = ts[i] if ts and i < len(ts) else 0
 
         # 1. Funding on held perpetuals: shorts receive funding; longs pay it.

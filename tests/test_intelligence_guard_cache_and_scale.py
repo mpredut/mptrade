@@ -12331,3 +12331,101 @@ def test_iteration117_venue_trailing_ws_and_replay_safety(monkeypatch, tmp_path)
                 sys.modules[k] = v
 
 
+def test_iteration118_hl_strategy_replay_and_t212_reconcile_safety(monkeypatch):
+    """Iteration 118: Verify HL StratParams/Strategy._apply_close/replay OHLC validation and T212 _reconcile_real marginal price fallback."""
+    import os
+    import sys
+    from types import SimpleNamespace
+    import pytest
+
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    hl_mods = ("common", "notify", "hl_client", "market_data", "price_analysis", "signals", "strategy", "replay")
+    t212_mods = ("ipo_common", "ipo_notify", "t212_client", "market_data", "strategy")
+    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
+    try:
+        for k in hl_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import strategy as hl_strat
+        import replay as hl_replay
+        sys.path[:] = orig_sys_path
+        for k in t212_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import strategy as t212_strat
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    # 1. HL StratParams.from_dict rejects direction=False and out-of-range sz_decimals; sanitizes currency=True
+    with pytest.raises(ValueError):
+        hl_strat.StratParams.from_dict({"direction": False})
+    with pytest.raises(ValueError):
+        hl_strat.StratParams.from_dict({"sz_decimals": -1})
+    with pytest.raises(ValueError):
+        hl_strat.StratParams.from_dict({"sz_decimals": 25})
+    assert hl_strat.StratParams.from_dict({"currency": True}).currency == "USDC"
+
+    # 2. HL Strategy._apply_close preserves avg cost and updates spent when real_avg=0 on partial close
+    monkeypatch.setattr(hl_strat, "notify", lambda *a, **kw: None)
+    st_hl = hl_strat.Strategy(
+        client=None,
+        coin="HYPE",
+        params=hl_strat.StratParams(sz_decimals=99),
+        dry_run=True,
+        replay_mode=True,
+    )
+    assert st_hl.sz_dec == 18
+    st_hl.s["qty"] = 10.0
+    st_hl.s["cost"] = 100.0
+    st_hl.s["spent"] = 100.0
+    st_hl._apply_close(10.0, 12.0, 4.0, real_qty=6.0, real_avg=0.0)
+    assert st_hl.s["qty"] == 6.0
+    assert st_hl.s["cost"] == 60.0
+    assert st_hl.s["spent"] == 60.0
+
+    # 3. HL replay validates OHLC envelope and accepts 5-tuple bars (o, h, l, c, ts)
+    res_5t = hl_replay.run_replay([(100.0, 101.0, 99.0, 100.0, 1000)])
+    assert res_5t["initial_capital"] == 500.0
+    with pytest.raises(ValueError, match="has non-finite or invalid prices"):
+        hl_replay.run_replay([(105.0, 101.0, 99.0, 100.0)])
+
+    # 4. T212 Strategy._reconcile_real falls back to order limit/real_avg when marginal_px <= 0
+    monkeypatch.setattr(t212_strat, "notify", lambda *a, **kw: None)
+    dummy_client = SimpleNamespace(
+        get_portfolio=lambda: [{"ticker": "TEST_US_EQ", "quantity": 1.01, "averagePrice": 99.0}],
+        list_active_orders=lambda: [],
+    )
+    t_params = t212_strat.StratParams(
+        currency="USD", entry_amount=100.0, entry_discount_pct=1.0, dca_amount=10.0,
+        dca_drop_pct=2.0, check_minutes=5.0, takeprofit_pct=2.0, max_budget=1000.0,
+        max_dca_buys=5, validity="GOOD_TILL_CANCEL", enable_takeprofit=True,
+        order_ttl_min=60.0, stop_loss_pct=5.0,
+    )
+    t_eng = t212_strat.Strategy(
+        dummy_client,
+        "TEST_US_EQ",
+        t_params,
+        dry_run=False,
+        initial_state={
+            "qty": 1.0,
+            "cost_usd": 100.0,
+            "spent_cash": 100.0,
+            "entry_price": 100.0,
+            "last_buy_price": 100.0,
+            "orders": [{"id": "B1", "side": "BUY", "qty": 0.01, "limit": 95.0, "kind": "DCA"}],
+        },
+        fx_to_usd=1.0,
+        clock=lambda: 1000.0,
+    )
+    t_eng._save = lambda: None
+    t_eng._tracked_order_status = lambda _o, _c: None
+    assert t_eng._reconcile_real(96.0) is True
+    assert t_eng.s["last_buy_price"] == 95.0
+

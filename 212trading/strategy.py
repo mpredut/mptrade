@@ -1398,19 +1398,33 @@ class Strategy:
         if real_qty > prev_qty + 1e-6:
             fq = real_qty - prev_qty
             exact_price = self._exact_execution_price("BUY", fq, status_cache)
-            fp = exact_price or (
-                (real_avg * real_qty - prev_avg * prev_qty) / fq if fq > 0 else real_avg
-            )
             source_order = next(
                 (o for o in self.s["orders"] if o.get("side") == "BUY"), None,
             )
             if source_order is None and pending_for_fill and pending_for_fill.get("side") == "BUY":
                 source_order = pending_for_fill
+            raw_marginal = (
+                (real_avg * real_qty - prev_avg * prev_qty) / fq
+                if (fq > 0 and real_avg > 0)
+                else 0.0
+            )
+            fp = (
+                exact_price
+                or (_clean_pos_float(raw_marginal) if raw_marginal > 0 else None)
+                or _clean_pos_float((source_order or {}).get("limit"))
+                or _clean_pos_float(real_avg)
+                or price
+            )
+            eff_real_avg = (
+                real_avg
+                if real_avg > 0
+                else (prev_avg if (prev_avg and prev_avg > 0) else fp)
+            )
             is_adoption = source_order is None and prev_qty < 1e-9
-            if is_adoption and self._is_dust(real_qty, real_avg):
+            if is_adoption and self._is_dust(real_qty, eff_real_avg):
                 now = self._now()
                 if now - getattr(self, "_dust_logged", 0) > 600:
-                    log(f"  [STRAT] portfolio dust ({real_qty:.4f} shares, ~{real_qty*real_avg:.2f} USD) ignored — staying flat for new cycle")
+                    log(f"  [STRAT] portfolio dust ({real_qty:.4f} shares, ~{real_qty*eff_real_avg:.2f} USD) ignored — staying flat for new cycle")
                     self._dust_logged = now
                 return True
             is_dca = bool(
@@ -1427,16 +1441,16 @@ class Strategy:
             if is_dca:
                 self.s["dca_buys"] += 1
             self.s["qty"] = real_qty
-            self.s["cost_usd"] = real_qty * real_avg
-            self.s["spent_cash"] = round(real_qty * real_avg / self.fx_to_usd, 2)
+            self.s["cost_usd"] = real_qty * eff_real_avg
+            self.s["spent_cash"] = round(real_qty * eff_real_avg / self.fx_to_usd, 2)
             kind_label = (
                 "ADOPTAT" if is_adoption
                 else str((source_order or {}).get("kind") or ("DCA" if prev_qty > 1e-9 else "ENTRY"))
             )
             log(f"  [STRAT] BUY EXECUTED {fq:.4f} @ {fp:.2f} USD "
-                f"({kind_label})  qty={real_qty:.4f} avg={real_avg:.2f}")
-            notify(title=f"{self.yahoo_sym} {'ADOPTAT' if is_adoption else 'BUY'} {fq:.4f}@a{real_avg:.2f}",
-                   body=(f"{kind_label} | q{real_qty:.4f} a{real_avg:.2f} p~{fp:.2f} | "
+                f"({kind_label})  qty={real_qty:.4f} avg={eff_real_avg:.2f}")
+            notify(title=f"{self.yahoo_sym} {'ADOPTAT' if is_adoption else 'BUY'} {fq:.4f}@a{eff_real_avg:.2f}",
+                   body=(f"{kind_label} | q{real_qty:.4f} a{eff_real_avg:.2f} p~{fp:.2f} | "
                          f"desf{self.s['spent_cash']:.0f}{self.ccy} DCA{self.s['dca_buys']}/{self.p.max_dca_buys}"),
                    source="T212", price=fp, desktop=self.desktop)
             if source_order is pending_for_fill:
