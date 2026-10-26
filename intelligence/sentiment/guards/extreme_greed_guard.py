@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import Optional
 
 from intelligence.internal.guards.guard_decision import GuardDecision
@@ -39,17 +40,27 @@ class ExtremeGreedGuard:
             return GuardDecision.allow("ExtremeGreedGuard", "no_sentiment_data")
 
         # Greed guard only restricts BUY orders; SELL orders in greed are approved
-        if side.upper() != "BUY":
+        if str(side or "").upper() != "BUY":
             return GuardDecision.allow("ExtremeGreedGuard", "sell_permitted_in_greed")
 
-        val = snapshot.value
+        raw_val = getattr(snapshot, "value", None)
+        if raw_val is None or isinstance(raw_val, bool):
+            return GuardDecision.allow("ExtremeGreedGuard", "no_sentiment_data")
+        try:
+            val_f = float(raw_val)
+            if not math.isfinite(val_f):
+                return GuardDecision.allow("ExtremeGreedGuard", "no_sentiment_data")
+            val = int(round(val_f))
+        except (TypeError, ValueError):
+            return GuardDecision.allow("ExtremeGreedGuard", "no_sentiment_data")
+        cls_label = str(getattr(snapshot, "classification", None) or "Unknown")
 
         if val >= self.hard_veto_threshold:
             return GuardDecision.veto(
                 "ExtremeGreedGuard",
                 f"veto_extreme_market_euphoria (F&G={val} >= {self.hard_veto_threshold})",
                 fear_greed_value=val,
-                classification=snapshot.classification,
+                classification=cls_label,
             )
 
         if val >= self.downscale_threshold:
@@ -58,7 +69,7 @@ class ExtremeGreedGuard:
                 scale=self.downscale_factor,
                 reason=f"downscale_market_greed (F&G={val} >= {self.downscale_threshold})",
                 fear_greed_value=val,
-                classification=snapshot.classification,
+                classification=cls_label,
             )
 
         return GuardDecision.allow("ExtremeGreedGuard", f"greed_within_tolerance (F&G={val})")

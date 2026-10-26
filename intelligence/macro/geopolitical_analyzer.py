@@ -111,12 +111,17 @@ class GeopoliticalThreatAnalyzer:
                         ts_val = 0.0
                 except (TypeError, ValueError):
                     ts_val = 0.0
+                raw_hl = data.get("headlines_analyzed")
+                try:
+                    hl_cnt = int(raw_hl) if (raw_hl is not None and not isinstance(raw_hl, bool)) else 0
+                except (TypeError, ValueError):
+                    hl_cnt = 0
                 self._cached_assessment = GeopoliticalThreatAssessment(
-                    threat_level=str(data.get("threat_level", "NORMAL")),
+                    threat_level=str(data.get("threat_level") or "NORMAL"),
                     risk_score=risk_val,
                     summary=summary_str,
-                    recommended_brake=str(data.get("recommended_brake", "NONE")),
-                    headlines_analyzed=int(data.get("headlines_analyzed", 0)),
+                    recommended_brake=str(data.get("recommended_brake") or "NONE"),
+                    headlines_analyzed=max(0, hl_cnt),
                     ts=ts_val,
                     is_fallback=is_fb,
                 )

@@ -44,10 +44,30 @@ class ParabolicSurgeGuard:
         if side_u not in ("BUY", "SELL"):
             return GuardDecision.allow("ParabolicSurgeGuard", "unsupported_side_skipped")
 
+        if current_price is None or isinstance(current_price, bool):
+            return GuardDecision.allow("ParabolicSurgeGuard", "invalid_price_skipped")
+        try:
+            current_price = float(current_price)
+        except (TypeError, ValueError):
+            return GuardDecision.allow("ParabolicSurgeGuard", "invalid_price_skipped")
         if not math.isfinite(current_price) or current_price <= 0:
             return GuardDecision.allow("ParabolicSurgeGuard", "invalid_price_skipped")
 
-        ts_now = now or (price_history[-1][0] if price_history else 0.0)
+        ts_now = 0.0
+        if now is not None and not isinstance(now, bool):
+            try:
+                nf = float(now)
+                if math.isfinite(nf) and nf > 0:
+                    ts_now = nf
+            except (TypeError, ValueError):
+                pass
+        if ts_now <= 0.0 and price_history:
+            try:
+                hf = float(price_history[-1][0])
+                if math.isfinite(hf) and hf > 0:
+                    ts_now = hf
+            except (TypeError, ValueError, IndexError):
+                pass
 
         # Dynamic threshold based on volatility if available
         threshold = self.surge_threshold_pct

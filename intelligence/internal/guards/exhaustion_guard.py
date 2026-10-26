@@ -2,9 +2,19 @@
 from __future__ import annotations
 
 import math
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from intelligence.internal.guards.guard_decision import GuardDecision
+
+
+def _pos_finite(val: Any, default: Optional[float] = None) -> Optional[float]:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if (math.isfinite(f) and f > 0.0) else default
+    except (TypeError, ValueError):
+        return default
 
 
 def calibrate_weibull_params(median_days: float, p90_days: float) -> Tuple[float, float]:
@@ -13,8 +23,10 @@ def calibrate_weibull_params(median_days: float, p90_days: float) -> Tuple[float
     Survival function: S(t) = exp(-(t / lambda)^k)
     Hazard function:   h(t) = (k / lambda) * (t / lambda)^(k - 1)
     """
-    med = max(0.1, float(median_days or 3.0))
-    p90 = max(med * 1.05, float(p90_days or 7.0))
+    med_in = _pos_finite(median_days, 3.0) or 3.0
+    p90_in = _pos_finite(p90_days, 7.0) or 7.0
+    med = max(0.1, med_in)
+    p90 = max(med * 1.05, p90_in)
     ln2 = math.log(2.0)
     ln10 = math.log(10.0)
     ratio = p90 / med
@@ -91,17 +103,19 @@ class WeibullExhaustionGuard:
                     f"trend_direction_favorable ({dir_norm})",
                 )
 
-        if not math.isfinite(trend_duration_seconds) or trend_duration_seconds <= 0:
+        dur_sec = _pos_finite(trend_duration_seconds, None)
+        if dur_sec is None:
             return GuardDecision.allow("WeibullExhaustionGuard", "no_duration_data")
 
-        duration_days = trend_duration_seconds / 86400.0
-        base_p90 = float(p90_days) if p90_days and p90_days > 0 else self.default_p90_days
-        med_d = float(median_days) if median_days and median_days > 0 else min(3.0, base_p90 * 0.5)
+        duration_days = dur_sec / 86400.0
+        base_p90 = _pos_finite(p90_days, self.default_p90_days) or self.default_p90_days
+        med_d = _pos_finite(median_days, None) or min(3.0, base_p90 * 0.5)
 
         # Avoid overlapping with G_QLIMIT1's Gaussian Zone 1 & Zone 2 (0 .. 1.4*T) when provided:
         limit_p90 = base_p90
-        if gaussian_horizon_days is not None and gaussian_horizon_days > 0:
-            limit_p90 = max(limit_p90, float(gaussian_horizon_days))
+        gauss_h = _pos_finite(gaussian_horizon_days, None)
+        if gauss_h is not None:
+            limit_p90 = max(limit_p90, gauss_h)
 
         survival_prob, hazard_rate, k_shape, lam_scale = weibull_survival_and_hazard(
             duration_days, med_d, limit_p90

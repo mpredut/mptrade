@@ -6,14 +6,25 @@ Defers execution until the cascade rate has decelerated.
 
 from __future__ import annotations
 
+import math
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
 from intelligence.external.collectors.bybit_liquidations import (
     BybitLiquidationCollector,
     LiquidationSummary,
 )
+
+
+def _safe_float(val: Any, default: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError):
+        return default
 
 
 class LiquidationCascadeGuard:
@@ -65,27 +76,30 @@ class LiquidationCascadeGuard:
                 reason="no_liquidation_data",
             )
 
+        long_liq = _safe_float(getattr(summary, "long_liq_usd", None), 0.0)
+        short_liq = _safe_float(getattr(summary, "short_liq_usd", None), 0.0)
+
         # 1. BUY: If long liquidations in the short window exceed the cascade threshold, it's an active knife
-        if side_norm == "BUY" and summary.long_liq_usd >= self.max_active_cascade_usd:
+        if side_norm == "BUY" and long_liq >= self.max_active_cascade_usd:
             return GuardDecision.defer(
                 guard_name="LiquidationCascadeGuard",
-                reason=f"active_long_liquidation_cascade (${summary.long_liq_usd:,.0f} in {self.active_window_sec:.0f}s)",
-                long_liq_usd=summary.long_liq_usd,
+                reason=f"active_long_liquidation_cascade (${long_liq:,.0f} in {self.active_window_sec:.0f}s)",
+                long_liq_usd=long_liq,
                 active_window_sec=self.active_window_sec,
             )
 
         # 2. SELL: If short liquidations in the short window exceed the cascade threshold, it's an active squeeze
-        if side_norm == "SELL" and summary.short_liq_usd >= self.max_active_cascade_usd:
+        if side_norm == "SELL" and short_liq >= self.max_active_cascade_usd:
             return GuardDecision.defer(
                 guard_name="LiquidationCascadeGuard",
-                reason=f"active_short_liquidation_cascade (${summary.short_liq_usd:,.0f} in {self.active_window_sec:.0f}s)",
-                short_liq_usd=summary.short_liq_usd,
+                reason=f"active_short_liquidation_cascade (${short_liq:,.0f} in {self.active_window_sec:.0f}s)",
+                short_liq_usd=short_liq,
                 active_window_sec=self.active_window_sec,
             )
 
         return GuardDecision.allow(
             guard_name="LiquidationCascadeGuard",
             reason="liquidation_flow_stable",
-            long_liq_usd=summary.long_liq_usd,
-            short_liq_usd=summary.short_liq_usd,
+            long_liq_usd=long_liq,
+            short_liq_usd=short_liq,
         )

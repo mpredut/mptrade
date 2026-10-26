@@ -56,6 +56,16 @@ _RECOVERY_COOLDOWN_SEC: float = required_float_env("SMART_SL_COOLDOWN_SEC")
 _PENDING_RECOVERIES: list[Dict[str, Any]] = []
 
 
+def _safe_float(val: Any, default: float) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError):
+        return default
+
+
 def _format_price(p: Optional[float]) -> str:
     if p is None:
         return ""
@@ -102,9 +112,21 @@ def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
             clean_data = {}
             for k, v in data.items():
                 if isinstance(v, dict):
-                    sts = float(v.get("start_ts", 0.0))
-                    if sts > 1_000_000_000 and abs(now_curr - sts) < 3600.0:
-                        clean_data[k] = v
+                    raw_sts = v.get("start_ts")
+                    if raw_sts is None or isinstance(raw_sts, bool):
+                        continue
+                    try:
+                        sts = float(raw_sts)
+                    except (TypeError, ValueError):
+                        continue
+                    if (
+                        math.isfinite(sts)
+                        and sts > 1_000_000_000
+                        and -5.0 <= (now_curr - sts) < 3600.0
+                    ):
+                        norm_k = str(k or "").strip().upper().replace("/", "")
+                        if norm_k:
+                            clean_data[norm_k] = v
             _GRACE_TRACKER.clear()
             _GRACE_TRACKER.update(clean_data)
             _LOADED_STATE_FILE_KEY = file_key
@@ -256,9 +278,11 @@ class SmartStopLossGuard:
             - should_execute = True  -> Proceed with stop-loss placement.
             - should_execute = False -> Defer stop-loss for this tick (grace period active).
         """
-        now_ts = float(now) if now is not None else time.time()
-        sym_key = symbol.upper()
+        now_ts = _safe_float(now, time.time())
+        sym_key = str(symbol or "").strip().upper().replace("/", "")
         is_sim = _is_simulated_provider(provider)
+        price_decrease = _safe_float(price_decrease, 0.0)
+        lost_threshold = _safe_float(lost_threshold, 0.0)
         meta: Dict[str, Any] = {
             "symbol": sym_key,
             "provider": provider,
@@ -317,11 +341,11 @@ class SmartStopLossGuard:
             except TypeError:
                 ob_snap = ob_col.fetch(sym_key, allow_network=False)
 
-        top_long_pct = getattr(w_snap, "top_traders_long_pct", 0.50) if w_snap else 0.50
-        taker_ratio = getattr(w_snap, "taker_buy_sell_ratio", 1.0) if w_snap else 1.0
-        divergence_regime = getattr(w_snap, "divergence_regime", "neutral") if w_snap else "neutral"
-        imbalance = getattr(ob_snap, "imbalance_ratio", 0.50) if ob_snap else 0.50
-        bid_wall = getattr(ob_snap, "largest_bid_wall_usd", 0.0) if ob_snap else 0.0
+        top_long_pct = _safe_float(getattr(w_snap, "top_traders_long_pct", 0.50), 0.50) if w_snap else 0.50
+        taker_ratio = _safe_float(getattr(w_snap, "taker_buy_sell_ratio", 1.0), 1.0) if w_snap else 1.0
+        divergence_regime = str(getattr(w_snap, "divergence_regime", None) or "neutral") if w_snap else "neutral"
+        imbalance = _safe_float(getattr(ob_snap, "imbalance_ratio", 0.50), 0.50) if ob_snap else 0.50
+        bid_wall = _safe_float(getattr(ob_snap, "largest_bid_wall_usd", 0.0), 0.0) if ob_snap else 0.0
 
         meta.update({
             "top_long_pct": round(top_long_pct * 100.0, 1),
@@ -500,7 +524,7 @@ class SmartStopLossGuard:
         """Called when price decrease drops back below or equal to threshold."""
         if not _GRACE_TRACKER and (_LOADED_STATE_FILE_KEY is not None or _is_simulated_provider(provider)):
             return False
-        sym_key = symbol.upper()
+        sym_key = str(symbol or "").strip().upper().replace("/", "")
         is_sim_call = _is_simulated_provider(provider)
         tracker = _load_grace_state(is_sim=is_sim_call)
         if sym_key in tracker:
@@ -520,8 +544,10 @@ class SmartStopLossGuard:
                         return False
                 except (TypeError, ValueError):
                     pass
-            now_ts = float(now) if now is not None else time.time()
-            start_ts = float(grace_info.get("start_ts", now_ts))
+            now_ts = _safe_float(now, time.time())
+            start_ts = _safe_float(grace_info.get("start_ts"), now_ts)
+            if start_ts > now_ts + 5.0:
+                return False
             elapsed = max(0.0, now_ts - start_ts)
             if elapsed > 3600.0:
                 # Silently discard ancient or unphysical tracker record
@@ -658,7 +684,7 @@ def clear_smart_stop_loss_if_recovered(
 
 def clear_smart_stop_loss(symbol: str, *, provider: Optional[str] = None) -> None:
     """Clear any active grace state for symbol across in-memory tracker and persistent state."""
-    sym_key = symbol.upper()
+    sym_key = str(symbol or "").strip().upper().replace("/", "")
     is_sim_call = _is_simulated_provider(provider)
     tracker = _load_grace_state(is_sim=is_sim_call)
     if sym_key in tracker:

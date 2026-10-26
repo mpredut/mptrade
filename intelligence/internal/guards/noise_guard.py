@@ -21,6 +21,18 @@ class NoiseFloorGuard:
         epsilon: float,
     ) -> GuardDecision:
         """Evaluate if the instantaneous gradient exceeds the statistical noise floor."""
+        if (
+            gradient is None
+            or epsilon is None
+            or isinstance(gradient, bool)
+            or isinstance(epsilon, bool)
+        ):
+            return GuardDecision.allow("NoiseFloorGuard", "non_finite_signal_allowed")
+        try:
+            gradient = float(gradient)
+            epsilon = float(epsilon)
+        except (TypeError, ValueError):
+            return GuardDecision.allow("NoiseFloorGuard", "non_finite_signal_allowed")
         if not math.isfinite(gradient) or not math.isfinite(epsilon):
             return GuardDecision.allow("NoiseFloorGuard", "non_finite_signal_allowed")
 

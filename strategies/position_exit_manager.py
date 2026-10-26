@@ -426,8 +426,13 @@ class PositionExitManager:
             }
             return candidate_floor, False
         armed = episode.get("disaster_floor")
-        if armed is not None and armed < candidate_floor:
-            return float(armed), True
+        if armed is not None and not isinstance(armed, bool):
+            try:
+                armed_f = float(armed)
+            except (TypeError, ValueError):
+                armed_f = float("nan")
+            if math.isfinite(armed_f) and 0 < armed_f < candidate_floor:
+                return armed_f, True
         episode["disaster_floor"] = candidate_floor
         return candidate_floor, False
 
@@ -658,8 +663,20 @@ class PositionExitManager:
                         metadata={"priority": 2, "sub_reason": "timeout", "elapsed": eff_elapsed, "sl_timer_expired": True},
                     )
 
-                lowest_px = bounce_state.get("lowest_price") or current_price
-                peak_px = bounce_state.get("peak_bounce_price") or current_price
+                try:
+                    lowest_px = float(bounce_state.get("lowest_price") or current_price)
+                except (TypeError, ValueError):
+                    lowest_px = current_price
+                if not math.isfinite(lowest_px) or lowest_px <= 0:
+                    lowest_px = current_price
+                    bounce_state["lowest_price"] = current_price
+                try:
+                    peak_px = float(bounce_state.get("peak_bounce_price") or current_price)
+                except (TypeError, ValueError):
+                    peak_px = current_price
+                if not math.isfinite(peak_px) or peak_px <= 0:
+                    peak_px = current_price
+                    bounce_state["peak_bounce_price"] = current_price
                 bounce_recovery = (peak_px - lowest_px) / lowest_px if lowest_px > 0 else 0.0
                 bounce_attempted = bounce_recovery >= self.config.sl_bounce_min_recovery_pct
 
@@ -698,7 +715,11 @@ class PositionExitManager:
                         },
                     )
 
-                if price_decrease < bounce_state["min_loss"]:
+                try:
+                    min_loss_val = float(bounce_state.get("min_loss", price_decrease))
+                except (TypeError, ValueError):
+                    min_loss_val = price_decrease
+                if not math.isfinite(min_loss_val) or price_decrease < min_loss_val:
                     bounce_state["min_loss"] = price_decrease
 
                 pullback_from_peak = snapshot.pullback_ratio(peak_px)
@@ -982,7 +1003,23 @@ class PositionExitManager:
                 )
         else:
             # Update peak trajectory
-            if current_price > ride_state["peak_price"]:
+            try:
+                cur_peak_px = float(ride_state.get("peak_price", current_price))
+            except (TypeError, ValueError):
+                cur_peak_px = current_price
+            if not math.isfinite(cur_peak_px) or cur_peak_px <= 0:
+                cur_peak_px = current_price
+                ride_state["peak_price"] = current_price
+            try:
+                cur_peak_gain = float(ride_state.get("peak_gain", price_increase))
+            except (TypeError, ValueError):
+                cur_peak_gain = price_increase
+            if not math.isfinite(cur_peak_gain) or cur_peak_gain < 0:
+                cur_peak_gain = price_increase
+                ride_state["peak_gain"] = price_increase
+            else:
+                ride_state["peak_gain"] = cur_peak_gain
+            if current_price > cur_peak_px:
                 ride_state["peak_price"] = current_price
                 ride_state["peak_gain"] = price_increase
                 ride_state["last_peak_time"] = now
@@ -1173,13 +1210,25 @@ class PositionExitManager:
         if snapshot.last_sell_time_s and state.get("sell_time") is None:
             state["sell_time"] = snapshot.last_sell_time_s
 
-        if current_price < state["trough"]:
+        def _valid_px(val, fallback: float) -> float:
+            if val is None or isinstance(val, bool):
+                return fallback
+            try:
+                f = float(val)
+                return f if (math.isfinite(f) and f > 0) else fallback
+            except (TypeError, ValueError):
+                return fallback
+
+        cur_trough = _valid_px(state.get("trough"), snapshot.post_sell_trough or min(last_sell, current_price))
+        cur_peak = _valid_px(state.get("peak"), snapshot.post_sell_peak or max(last_sell, current_price))
+        cur_peak_bounce = _valid_px(state.get("peak_bounce"), current_price)
+        if current_price < cur_trough:
             state["trough"] = current_price
             state["peak_bounce"] = current_price
         else:
-            state["trough"] = min(state["trough"], current_price)
-            state["peak_bounce"] = max(state.get("peak_bounce", current_price), current_price)
-        state["peak"] = max(state["peak"], current_price)
+            state["trough"] = min(cur_trough, current_price)
+            state["peak_bounce"] = max(cur_peak_bounce, current_price)
+        state["peak"] = max(cur_peak, current_price)
         trough = state["trough"]
         peak = state["peak"]
 

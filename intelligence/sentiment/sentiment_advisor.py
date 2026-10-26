@@ -87,13 +87,15 @@ class SentimentAdvisor:
                         ts_val = 0.0
                 except (TypeError, ValueError):
                     ts_val = 0.0
+                raw_risks = data.get("key_risks")
+                risks_list = [str(r) for r in raw_risks if r is not None] if isinstance(raw_risks, (list, tuple)) else []
                 self._cached_assessment = SentimentAdvisorAssessment(
-                    market_bias=str(data.get("market_bias", "NEUTRAL")),
-                    risk_level=str(data.get("risk_level", "MODERATE")),
+                    market_bias=str(data.get("market_bias") or "NEUTRAL"),
+                    risk_level=str(data.get("risk_level") or "MODERATE"),
                     confidence=conf_val,
-                    summary=str(data.get("summary", "")),
-                    key_risks=list(data.get("key_risks", [])),
-                    recommended_action=str(data.get("recommended_action", "HOLD")),
+                    summary=str(data.get("summary") or ""),
+                    key_risks=risks_list,
+                    recommended_action=str(data.get("recommended_action") or "HOLD"),
                     ts=ts_val,
                 )
                 self._last_eval_ts = self._cached_assessment.ts

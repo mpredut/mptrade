@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -89,24 +90,57 @@ class PostStopReentryGuard:
         if is_llm_guard_exempt(self._explicit_client):
             return GuardDecision.allow("PostStopReentryGuard", "backtest_mode_exempt")
 
-        now_ts = float(now) if now is not None else time.time()
+        now_ts = float(now) if (now is not None and not isinstance(now, bool) and math.isfinite(float(now))) else time.time()
+        safe_sell_px = (
+            float(last_sell_price)
+            if (last_sell_price is not None and not isinstance(last_sell_price, bool) and math.isfinite(float(last_sell_price)))
+            else 0.0
+        )
+        safe_sell_ts = (
+            int(float(last_sell_time_s))
+            if (last_sell_time_s is not None and not isinstance(last_sell_time_s, bool) and math.isfinite(float(last_sell_time_s)))
+            else 0
+        )
         cache_key = (
-            str(symbol or "").upper(),
-            round(float(last_sell_price or 0.0), 6),
-            int(last_sell_time_s or 0),
+            str(symbol or "").strip().upper().replace("/", ""),
+            round(safe_sell_px, 6),
+            safe_sell_ts,
         )
         if self.cache_ttl_sec > 0:
             cached = _POST_STOP_DECISION_CACHE.get(cache_key)
             if cached is not None and 0.0 <= (now_ts - cached[0]) < self.cache_ttl_sec:
                 return cached[1]
 
-        drop_after_sl_pct = (
-            ((last_sell_price - trough) / last_sell_price * 100.0)
-            if last_sell_price > 0 and trough > 0
+        safe_trough = (
+            float(trough)
+            if (trough is not None and not isinstance(trough, bool) and math.isfinite(float(trough)))
             else 0.0
         )
-        bounce_from_trough_pct = float(bounce_pct * 100.0)
-        notional = float(notional_eur if notional_eur is not None else (current_price * qty))
+        safe_curr_px = (
+            float(current_price)
+            if (current_price is not None and not isinstance(current_price, bool) and math.isfinite(float(current_price)))
+            else 0.0
+        )
+        safe_qty = (
+            float(qty)
+            if (qty is not None and not isinstance(qty, bool) and math.isfinite(float(qty)))
+            else 1.0
+        )
+        safe_bounce = (
+            float(bounce_pct)
+            if (bounce_pct is not None and not isinstance(bounce_pct, bool) and math.isfinite(float(bounce_pct)))
+            else 0.0
+        )
+        drop_after_sl_pct = (
+            ((safe_sell_px - safe_trough) / safe_sell_px * 100.0)
+            if safe_sell_px > 0 and safe_trough > 0
+            else 0.0
+        )
+        bounce_from_trough_pct = float(safe_bounce * 100.0)
+        if notional_eur is not None and not isinstance(notional_eur, bool) and math.isfinite(float(notional_eur)):
+            notional = float(notional_eur)
+        else:
+            notional = float(safe_curr_px * safe_qty)
 
         # Build multi-pillar context
         effective_telemetry = (

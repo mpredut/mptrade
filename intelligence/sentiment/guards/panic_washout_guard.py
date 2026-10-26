@@ -2,13 +2,24 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+import math
+from typing import Any, Optional
 
 from intelligence.internal.guards.guard_decision import GuardDecision
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
 
 logger = logging.getLogger("intelligence.sentiment.panic_washout_guard")
+
+
+def _safe_float(val: Any, default: Optional[float] = None) -> Optional[float]:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (TypeError, ValueError):
+        return default
 
 
 class PanicWashoutGuard:
@@ -40,41 +51,50 @@ class PanicWashoutGuard:
     ) -> GuardDecision:
         """Evaluate order against macro panic and market-wide capitulation."""
         # Only guard BUY orders; stop-losses or exits are never impeded
-        if side.upper() != "BUY":
+        if str(side or "").upper() != "BUY":
             return GuardDecision.allow("PanicWashoutGuard", "sell_permitted_in_panic")
 
         # 1. Check severe accelerating Fear & Greed free-fall
         if fear_greed_snapshot is not None:
-            val = fear_greed_snapshot.value
-            history = fear_greed_snapshot.historical_values
-            if val <= self.severe_panic_fng_threshold:
-                # If sentiment plummeted sharply (e.g. > 8 pt drop from previous day)
-                if len(history) >= 2 and (history[1] - history[0]) > 8:
-                    return GuardDecision.defer(
-                        "PanicWashoutGuard",
-                        f"defer_accelerating_panic_capitulation (F&G={val}, 1d drop={history[1] - history[0]})",
-                        fear_greed_value=val,
-                    )
+            val_f = _safe_float(getattr(fear_greed_snapshot, "value", None), None)
+            raw_history = getattr(fear_greed_snapshot, "historical_values", None) or ()
+            if val_f is not None and val_f <= self.severe_panic_fng_threshold:
+                val = int(round(val_f))
+                if isinstance(raw_history, (list, tuple)) and len(raw_history) >= 2:
+                    h0 = _safe_float(raw_history[0], None)
+                    h1 = _safe_float(raw_history[1], None)
+                    if h0 is not None and h1 is not None and (h1 - h0) > 8:
+                        drop_1d = int(round(h1 - h0))
+                        return GuardDecision.defer(
+                            "PanicWashoutGuard",
+                            f"defer_accelerating_panic_capitulation (F&G={val}, 1d drop={drop_1d})",
+                            fear_greed_value=val,
+                        )
 
         # 2. Check Market Breadth Washout
         if breadth_snapshot is not None:
+            adv_ratio = _safe_float(getattr(breadth_snapshot, "advance_ratio", None), None)
+            med_chg = _safe_float(getattr(breadth_snapshot, "median_change_pct", None), None)
             if (
-                breadth_snapshot.advance_ratio <= self.panic_advance_threshold
-                and breadth_snapshot.median_change_pct <= -5.0
+                adv_ratio is not None
+                and med_chg is not None
+                and adv_ratio <= self.panic_advance_threshold
+                and med_chg <= -5.0
             ):
+                chg_24h = _safe_float(asset_24h_change_pct, None)
                 # If asset is also plunging heavily (> 7% drop), defer entry
-                if asset_24h_change_pct is not None and asset_24h_change_pct <= -7.0:
+                if chg_24h is not None and chg_24h <= -7.0:
                     return GuardDecision.defer(
                         "PanicWashoutGuard",
-                        f"defer_market_panic_washout (adv_ratio={breadth_snapshot.advance_ratio:.2f}, asset_change={asset_24h_change_pct:.1f}%)",
-                        advance_ratio=breadth_snapshot.advance_ratio,
+                        f"defer_market_panic_washout (adv_ratio={adv_ratio:.2f}, asset_change={chg_24h:.1f}%)",
+                        advance_ratio=adv_ratio,
                     )
                 # Otherwise, allow with reduced risk allocation
                 return GuardDecision.downscale(
                     "PanicWashoutGuard",
                     scale=self.downscale_factor,
-                    reason=f"downscale_market_panic_washout (adv_ratio={breadth_snapshot.advance_ratio:.2f})",
-                    advance_ratio=breadth_snapshot.advance_ratio,
+                    reason=f"downscale_market_panic_washout (adv_ratio={adv_ratio:.2f})",
+                    advance_ratio=adv_ratio,
                 )
 
         return GuardDecision.allow("PanicWashoutGuard", "macro_conditions_stable")
