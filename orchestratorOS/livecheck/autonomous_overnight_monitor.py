@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -120,7 +121,14 @@ class AutonomousOvernightMonitor:
 
     def check_processes(self, now: Optional[float] = None) -> List[ProcessHealth]:
         """Audits process running state and heartbeat timestamps."""
-        now_ts = now if now is not None else time.time()
+        now_ts = (
+            float(now)
+            if isinstance(now, (int, float))
+            and not isinstance(now, bool)
+            and math.isfinite(float(now))
+            and float(now) > 0
+            else time.time()
+        )
         results: List[ProcessHealth] = []
 
         for p in self.parse_process_manifest():
@@ -182,7 +190,8 @@ class AutonomousOvernightMonitor:
             if os.path.exists(p):
                 try:
                     with open(p, "r", encoding="utf-8", errors="replace") as f:
-                        return json.load(f)
+                        data = json.load(f)
+                    return data if isinstance(data, dict) else None
                 except Exception:
                     pass
             return None
@@ -208,7 +217,8 @@ class AutonomousOvernightMonitor:
         # 3. Autonomous AI Supervisor State
         sup = _read("auto_cryptotrade_executor_eval.json") or _read("auto_trade_executor_eval.json")
         if sup:
-            dec = sup.get("market_trading_decision", {})
+            raw_dec = sup.get("market_trading_decision")
+            dec = raw_dec if isinstance(raw_dec, dict) else {}
             sensors["supervisor_eval"] = {
                 "mode": sup.get("mode", "enforce"),
                 "decision": dec.get("decision", "HOLD"),
@@ -291,7 +301,7 @@ class AutonomousOvernightMonitor:
 
             # Disk usage
             disk = shutil.disk_usage(self.workspace_dir)
-            stats["disk_used_pct"] = round((disk.used / disk.total) * 100, 1)
+            stats["disk_used_pct"] = round((disk.used / disk.total) * 100, 1) if disk.total > 0 else 0.0
             stats["disk_free_gb"] = round(disk.free / (1024 ** 3), 1)
         except Exception:
             pass

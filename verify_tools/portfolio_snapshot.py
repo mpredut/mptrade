@@ -74,10 +74,12 @@ def kraken_rows() -> list[dict]:
             continue
         qty = _f(s.get("qty"))
         cost = _f(s.get("cost"))
-        px = _kraken_price(pair) or 0.0
-        upnl = (px - cost / qty) * qty if qty > 1e-12 and px else 0.0
+        px = _f(_kraken_price(pair), 0.0)
+        upnl = (px - cost / qty) * qty if qty > 1e-12 and px > 0 else 0.0
         # Unrealised drawdown as a % of cost (this triggers the risk alert).
         dd_pct = (upnl / cost * 100.0) if cost > 1e-9 else 0.0
+        raw_orders = s.get("orders")
+        open_orders_cnt = len(raw_orders) if isinstance(raw_orders, (list, tuple, dict)) else 0
         rows.append({
             "engine": f"Kraken {label}" + (" (paper)" if paper else ""),
             "paper": paper,
@@ -90,7 +92,7 @@ def kraken_rows() -> list[dict]:
             "spent": round(_f(s.get("spent")), 0),
             "cycle": s.get("cycle"),
             "dca_buys": s.get("dca_buys"),
-            "open_orders": len(s.get("orders", [])),
+            "open_orders": open_orders_cnt,
         })
     return rows
 
@@ -109,9 +111,10 @@ def hl_row() -> dict | None:
             addr = os.environ.get("HL_ACCOUNT_ADDRESS")
             c = HLClient.public(account_address=addr, mainnet=True)
             ss = c.info.spot_user_state(addr)
-            mid = c.spot_mid(c.resolve_spot_pair("HYPE")) or 0.0
-        hype = next((float(b["total"]) for b in ss.get("balances", []) if b.get("coin") == "HYPE"), 0.0)
-        usdc = next((float(b["total"]) for b in ss.get("balances", []) if b.get("coin") == "USDC"), 0.0)
+            mid = _f(c.spot_mid(c.resolve_spot_pair("HYPE")), 0.0)
+        raw_balances = ss.get("balances") if isinstance(ss, dict) and isinstance(ss.get("balances"), list) else []
+        hype = next((_f(b.get("total")) for b in raw_balances if isinstance(b, dict) and b.get("coin") == "HYPE"), 0.0)
+        usdc = next((_f(b.get("total")) for b in raw_balances if isinstance(b, dict) and b.get("coin") == "USDC"), 0.0)
         return {"engine": "HL HYPE (long-hold)", "paper": False, "qty": round(hype, 4),
                 "value_usd": round(hype * mid, 2), "cash_usd": round(usdc, 2)}
     except Exception as e:  # noqa: BLE001

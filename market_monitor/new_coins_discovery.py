@@ -358,7 +358,8 @@ class DexScreenerSource(NewCoinsSource):
                     if symbol and len(symbol) <= 10 and symbol.isalnum() and symbol not in EXCLUDED_SYMBOLS:
                         self._supported_symbols.add(symbol)
                         try:
-                            added_time = datetime.fromtimestamp(float(listed_at) / 1000) if listed_at else None
+                            listed_val = _safe_num(listed_at, 0.0)
+                            added_time = datetime.fromtimestamp(listed_val / 1000) if listed_val > 0 else None
                         except (TypeError, ValueError, OSError, OverflowError):
                             added_time = None
                         self._cache.append({
@@ -608,7 +609,9 @@ class NewCoinsMonitor:
         if hasattr(self.price_monitor, 'original_symbols') and symbol in self.price_monitor.original_symbols:
             print(f"[NewCoinsMonitor] {symbol} is already in the watchlist")
             return False
-        max_watchlist_symbols = getattr(self.price_monitor, 'max_monitored_symbols', MAX_NEW_COINS_TO_TRACK)
+        raw_max_wl = getattr(self.price_monitor, 'max_monitored_symbols', MAX_NEW_COINS_TO_TRACK)
+        max_wl_f = _safe_num(raw_max_wl, float(MAX_NEW_COINS_TO_TRACK))
+        max_watchlist_symbols = int(max_wl_f) if max_wl_f > 0 else MAX_NEW_COINS_TO_TRACK
         if hasattr(self.price_monitor, 'active_symbols') and len(self.price_monitor.active_symbols) >= max_watchlist_symbols:
             print(f"[NewCoinsMonitor] Watchlist limit reached: maximum {max_watchlist_symbols} coins")
             return False

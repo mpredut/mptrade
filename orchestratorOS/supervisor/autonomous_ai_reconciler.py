@@ -301,8 +301,9 @@ class AutonomousAIReconciler:
             enriched = dict(payload)
             raw_ts = enriched.get("ts")
             ref_ts: Optional[float] = None
-            if isinstance(raw_ts, (int, float)) and not isinstance(raw_ts, bool) and raw_ts > 0:
-                ref_ts = float(raw_ts) / 1000.0 if float(raw_ts) > 1e12 else float(raw_ts)
+            ts_f = _parse_finite_float(raw_ts, 0.0)
+            if ts_f > 0:
+                ref_ts = ts_f / 1000.0 if ts_f > 1e12 else ts_f
             elif os.path.exists(fpath):
                 ref_ts = os.path.getmtime(fpath)
             if ref_ts is not None:
@@ -347,12 +348,12 @@ class AutonomousAIReconciler:
             valid_news.sort(
                 key=lambda x: (
                     1 if x.get("is_high_severity") else 0,
-                    float(x.get("first_seen_ts") or 0.0),
+                    _parse_finite_float(x.get("first_seen_ts"), 0.0),
                 ),
                 reverse=True,
             )
             for item in valid_news[:6]:
-                seen_ts = float(item.get("first_seen_ts") or 0.0)
+                seen_ts = _parse_finite_float(item.get("first_seen_ts"), 0.0)
                 age_m = round(max(0.0, now_ts - seen_ts) / 60.0, 1) if seen_ts > 0 else None
                 snapshot.breaking_news.append({
                     "title": item.get("title"),
@@ -400,10 +401,9 @@ class AutonomousAIReconciler:
         if isinstance(prices_data, dict) and isinstance(prices_data.get("items"), dict):
             for sym, item in prices_data["items"].items():
                 if isinstance(item, list) and item and isinstance(item[0], list) and len(item[0]) > 1:
-                    try:
-                        price_map[sym] = float(item[0][1])
-                    except (ValueError, TypeError):
-                        pass
+                    px_val = _parse_finite_float(item[0][1], 0.0)
+                    if px_val > 0:
+                        price_map[sym] = px_val
 
         long_items = long_trends_data.get("items", {}) if isinstance(long_trends_data, dict) else {}
         t_trend_map = t_trend_data if isinstance(t_trend_data, dict) else {}
@@ -535,18 +535,21 @@ class AutonomousAIReconciler:
                     inst_by_sym[sym] = inst
 
                     px = snapshot.prices_and_trends.get(sym, {}).get("price")
-                    if not (isinstance(px, (int, float)) and math.isfinite(float(px)) and float(px) > 0):
+                    px_f = _parse_finite_float(px, 0.0)
+                    if px_f <= 0:
                         try:
                             get_px_fn = getattr(inst._provider, "get_current_price", None)
                             if callable(get_px_fn):
-                                live_px = float(get_px_fn(sym))
-                                if math.isfinite(live_px) and live_px > 0:
+                                live_px = _parse_finite_float(get_px_fn(sym), 0.0)
+                                if live_px > 0:
                                     px = live_px
+                                    px_f = live_px
                                     snapshot.prices_and_trends.setdefault(
                                         sym, {"price": px, "trend": 0, "growth_coefficient": 0.0}
                                     )["price"] = px
                         except Exception:
                             px = None
+                            px_f = 0.0
 
                     base_free = _query_free_bal(inst, base)
                     quote_free = _query_free_bal(inst, quote)
@@ -558,16 +561,17 @@ class AutonomousAIReconciler:
                         }
 
                     pos_val_usd = (
-                        round(base_free * float(px), 2)
-                        if base_free is not None and isinstance(px, (int, float)) and float(px) > 0
+                        round(base_free * px_f, 2)
+                        if base_free is not None and px_f > 0
                         else None
                     )
                     params = getattr(inst, "params", {}) if isinstance(getattr(inst, "params", None), dict) else {}
                     t_state = trailing_map.get(sym, {}) if isinstance(trailing_map.get(sym), dict) else {}
                     peak = t_state.get("peak")
+                    peak_f = _parse_finite_float(peak, 0.0)
                     dd_from_peak_pct = (
-                        round(((float(px) - float(peak)) / float(peak)) * 100.0, 2)
-                        if isinstance(px, (int, float)) and isinstance(peak, (int, float)) and float(peak) > 0
+                        round(((px_f - peak_f) / peak_f) * 100.0, 2)
+                        if px_f > 0 and peak_f > 0
                         else None
                     )
                     pos_entry: Dict[str, Any] = {
@@ -668,9 +672,11 @@ class AutonomousAIReconciler:
                     lt = lt_list[-1]
                     if isinstance(lt, dict):
                         entry["long_trend_dir"] = lt.get("direction")
-                        entry["long_trend_hours"] = round(float(lt.get("duration_seconds", 0.0)) / 3600.0, 1)
-                        if isinstance(lt.get("estimated_future_hours"), (int, float)):
-                            entry["long_trend_est_rem_hours"] = round(float(lt["estimated_future_hours"]), 1)
+                        dur_s = _parse_finite_float(lt.get("duration_seconds"), 0.0)
+                        entry["long_trend_hours"] = round(dur_s / 3600.0, 1)
+                        est_rem = _parse_finite_float(lt.get("estimated_future_hours"), -1.0)
+                        if est_rem >= 0.0:
+                            entry["long_trend_est_rem_hours"] = round(est_rem, 1)
             tt = next((t_trend_map[ck] for ck in cand_keys if isinstance(t_trend_map.get(ck), dict)), None)
             if isinstance(tt, dict):
                 entry["weibull_median_d"] = tt.get("median_d")
@@ -809,12 +815,16 @@ class AutonomousAIReconciler:
                 m_info: Dict[str, Any] = {}
                 if isinstance(ob, dict):
                     m_info["ob_imbalance"] = ob.get("imbalance_ratio")
-                    m_info["bid_depth_usd"] = round(float(ob["bid_depth_usd"]), 0) if isinstance(ob.get("bid_depth_usd"), (int, float)) else None
-                    m_info["ask_depth_usd"] = round(float(ob["ask_depth_usd"]), 0) if isinstance(ob.get("ask_depth_usd"), (int, float)) else None
+                    bd_f = _parse_finite_float(ob.get("bid_depth_usd"), -1.0)
+                    ad_f = _parse_finite_float(ob.get("ask_depth_usd"), -1.0)
+                    bw_f = _parse_finite_float(ob.get("largest_bid_wall_usd"), -1.0)
+                    aw_f = _parse_finite_float(ob.get("largest_ask_wall_usd"), -1.0)
+                    m_info["bid_depth_usd"] = round(bd_f, 0) if bd_f >= 0 else None
+                    m_info["ask_depth_usd"] = round(ad_f, 0) if ad_f >= 0 else None
                     m_info["bid_wall_px"] = ob.get("largest_bid_wall_price")
-                    m_info["bid_wall_usd"] = round(float(ob["largest_bid_wall_usd"]), 0) if isinstance(ob.get("largest_bid_wall_usd"), (int, float)) else None
+                    m_info["bid_wall_usd"] = round(bw_f, 0) if bw_f >= 0 else None
                     m_info["ask_wall_px"] = ob.get("largest_ask_wall_price")
-                    m_info["ask_wall_usd"] = round(float(ob["largest_ask_wall_usd"]), 0) if isinstance(ob.get("largest_ask_wall_usd"), (int, float)) else None
+                    m_info["ask_wall_usd"] = round(aw_f, 0) if aw_f >= 0 else None
                 if isinstance(deriv, dict):
                     m_info["funding_rate"] = deriv.get("funding_rate")
                     m_info["pred_funding_rate"] = deriv.get("predicted_funding_rate")
@@ -857,13 +867,13 @@ class AutonomousAIReconciler:
                 st_data = _read_json(st_path)
                 if not isinstance(st_data, dict):
                     continue
-                qty = float(st_data.get("qty") or 0.0)
-                cost = float(st_data.get("cost") or 0.0)
+                qty = _parse_finite_float(st_data.get("qty"), 0.0)
+                cost = _parse_finite_float(st_data.get("cost"), 0.0)
                 avg_cost = round(cost / qty, 6) if qty > 1e-12 and cost > 0 else None
-                px = snapshot.prices_and_trends.get(pair_name, {}).get("price")
+                px_f = _parse_finite_float(snapshot.prices_and_trends.get(pair_name, {}).get("price"), 0.0)
                 dd_pct = (
-                    round(((float(px) - avg_cost) / avg_cost) * 100.0, 2)
-                    if avg_cost and isinstance(px, (int, float)) and float(px) > 0
+                    round(((px_f - avg_cost) / avg_cost) * 100.0, 2)
+                    if avg_cost and px_f > 0
                     else None
                 )
                 kraken_cycles[pair_name] = {
@@ -892,16 +902,17 @@ class AutonomousAIReconciler:
                 st_data = _read_json(st_path)
                 if not isinstance(st_data, dict):
                     continue
-                qty = float(st_data.get("qty") or 0.0)
-                cost = float(st_data.get("cost") or 0.0)
+                qty = _parse_finite_float(st_data.get("qty"), 0.0)
+                cost = _parse_finite_float(st_data.get("cost"), 0.0)
                 avg_cost = round(cost / qty, 6) if qty > 1e-12 and cost > 0 else None
-                px = (
+                px_f = _parse_finite_float(
                     snapshot.prices_and_trends.get(pair_name, {}).get("price")
-                    or snapshot.prices_and_trends.get(f"{raw_tok}USD", {}).get("price")
+                    or snapshot.prices_and_trends.get(f"{raw_tok}USD", {}).get("price"),
+                    0.0,
                 )
                 dd_pct = (
-                    round(((float(px) - avg_cost) / avg_cost) * 100.0, 2)
-                    if avg_cost and isinstance(px, (int, float)) and float(px) > 0
+                    round(((px_f - avg_cost) / avg_cost) * 100.0, 2)
+                    if avg_cost and px_f > 0
                     else None
                 )
                 hyperliquid_cycles[pair_name] = {
@@ -935,14 +946,14 @@ class AutonomousAIReconciler:
                 st_data = _read_json(st_path)
                 if not isinstance(st_data, dict):
                     continue
-                qty = float(st_data.get("qty") or 0.0)
+                qty = _parse_finite_float(st_data.get("qty"), 0.0)
                 raw_cost = st_data.get("cost_usd") if st_data.get("cost_usd") is not None else st_data.get("cost")
-                cost = float(raw_cost or 0.0)
+                cost = _parse_finite_float(raw_cost, 0.0)
                 avg_cost = round(cost / qty, 4) if qty > 1e-12 and cost > 0 else None
-                px = snapshot.prices_and_trends.get(ticker, {}).get("price")
+                px_f = _parse_finite_float(snapshot.prices_and_trends.get(ticker, {}).get("price"), 0.0)
                 dd_pct = (
-                    round(((float(px) - avg_cost) / avg_cost) * 100.0, 2)
-                    if avg_cost and isinstance(px, (int, float)) and float(px) > 0
+                    round(((px_f - avg_cost) / avg_cost) * 100.0, 2)
+                    if avg_cost and px_f > 0
                     else None
                 )
                 t212_cycles[ticker] = {
@@ -1084,7 +1095,7 @@ class AutonomousAIReconciler:
                         if not isinstance(rec, dict):
                             continue
                         lifecycle = str(rec.get("lifecycle") or "").lower()
-                        exp_ts = float(rec.get("expires_at_ts") or 0.0)
+                        exp_ts = _parse_finite_float(rec.get("expires_at_ts"), 0.0)
                         if lifecycle in ("submit_pending", "pending", "active") and (exp_ts == 0.0 or exp_ts > now_ts):
                             active_retries.append({
                                 "venue": str(rec.get("provider_name") or "").lower(),
@@ -1215,7 +1226,7 @@ class AutonomousAIReconciler:
                 offenders = [
                     {"key": k, "reasons": v.get("last_reasons"), "consecutive_high": v.get("high")}
                     for k, v in rw_state["tracked"].items()
-                    if isinstance(v, dict) and int(v.get("high") or 0) > 0
+                    if isinstance(v, dict) and _parse_finite_float(v.get("high"), 0.0) > 0
                 ]
                 if offenders:
                     sys_vpn["resource_watchdog_offenders"] = offenders
@@ -1226,7 +1237,9 @@ class AutonomousAIReconciler:
 
     def harvest_log_anomalies(self, lookback_hours: Optional[float] = None) -> LogEventSummary:
         """Parses recent log files for errors, unhandled exceptions, and guard vetoes."""
-        hours = lookback_hours if lookback_hours is not None else self.lookback_hours
+        hours = _parse_finite_float(lookback_hours, self.lookback_hours)
+        if hours <= 0:
+            hours = self.lookback_hours
         cutoff_ts = time.time() - (hours * 3600.0)
 
         critical_events: List[str] = []
@@ -1404,62 +1417,69 @@ class AutonomousAIReconciler:
         if sensors.prices_and_trends:
             context_items.append("\n### 3. LIVE MARKET PRICES, MULTI-HORIZON TRENDS & 24H EVOLUTION (ALL COINS):")
             for sym, pinfo in sorted(sensors.prices_and_trends.items()):
+                if not isinstance(pinfo, dict):
+                    continue
                 px = pinfo.get("price")
+                px_f = _parse_finite_float(px, 0.0)
                 px_str = (
-                    f"${px:,.2f}"
-                    if isinstance(px, (int, float)) and px >= 1.0
-                    else (f"${px:.6g}" if isinstance(px, (int, float)) else (f"${px}" if px is not None else "N/A"))
+                    f"${px_f:,.2f}"
+                    if px_f >= 1.0
+                    else (f"${px_f:.6g}" if px_f > 0 else (f"${px}" if px is not None and not isinstance(px, bool) else "N/A"))
                 )
-                tr = pinfo.get("trend", 0)
+                tr = _parse_finite_float(pinfo.get("trend"), 0.0)
                 tr_label = "BULL (+1)" if tr > 0 else ("BEAR (-1)" if tr < 0 else "FLAT (0)")
-                growth = pinfo.get("growth_coefficient", 0.0)
+                growth = _parse_finite_float(pinfo.get("growth_coefficient"), 0.0)
                 extras: List[str] = []
                 if "chg_15m_pct" in pinfo:
                     l24, h24 = pinfo.get("low_24h"), pinfo.get("high_24h")
+                    l24_f = _parse_finite_float(l24, 0.0)
+                    h24_f = _parse_finite_float(h24, 0.0)
                     pos24_sfx = ""
-                    if (
-                        isinstance(px, (int, float))
-                        and isinstance(l24, (int, float))
-                        and isinstance(h24, (int, float))
-                        and float(h24) > float(l24)
-                    ):
-                        pos24 = round(((float(px) - float(l24)) / (float(h24) - float(l24))) * 100.0, 1)
+                    if px_f > 0 and l24_f > 0 and h24_f > l24_f:
+                        pos24 = round(((px_f - l24_f) / (h24_f - l24_f)) * 100.0, 1)
                         pos24_sfx = f" pos_24h={pos24}%"
                     extras.append(
-                        f"15m={pinfo.get('chg_15m_pct', 0):+.2f}% 30m={pinfo.get('chg_30m_pct', 0):+.2f}% "
-                        f"1h={pinfo.get('chg_1h_pct', 0):+.2f}% 3h={pinfo.get('chg_3h_pct', 0):+.2f}% "
+                        f"15m={_parse_finite_float(pinfo.get('chg_15m_pct'), 0.0):+.2f}% "
+                        f"30m={_parse_finite_float(pinfo.get('chg_30m_pct'), 0.0):+.2f}% "
+                        f"1h={_parse_finite_float(pinfo.get('chg_1h_pct'), 0.0):+.2f}% "
+                        f"3h={_parse_finite_float(pinfo.get('chg_3h_pct'), 0.0):+.2f}% "
                         f"24h_range=[{l24}, {h24}]{pos24_sfx}"
                     )
                 if "chg_7d_pct" in pinfo:
                     l7, h7 = pinfo.get("low_7d"), pinfo.get("high_7d")
+                    l7_f = _parse_finite_float(l7, 0.0)
+                    h7_f = _parse_finite_float(h7, 0.0)
                     pos7_sfx = ""
-                    if (
-                        isinstance(px, (int, float))
-                        and isinstance(l7, (int, float))
-                        and isinstance(h7, (int, float))
-                        and float(h7) > float(l7)
-                    ):
-                        pos7 = round(((float(px) - float(l7)) / (float(h7) - float(l7))) * 100.0, 1)
+                    if px_f > 0 and l7_f > 0 and h7_f > l7_f:
+                        pos7 = round(((px_f - l7_f) / (h7_f - l7_f)) * 100.0, 1)
                         pos7_sfx = f" pos_7d={pos7}%"
                     extras.append(
-                        f"7d={pinfo.get('chg_7d_pct', 0):+.2f}% 7d_range=[{l7}, {h7}]{pos7_sfx}"
+                        f"7d={_parse_finite_float(pinfo.get('chg_7d_pct'), 0.0):+.2f}% 7d_range=[{l7}, {h7}]{pos7_sfx}"
                     )
                 if "slope_15m" in pinfo:
                     fast_sfx = ""
-                    if isinstance(pinfo.get("gradient_recent_fast"), (int, float)) and isinstance(pinfo.get("epsilon"), (int, float)):
-                        fast_sfx = f", grad_fast={float(pinfo['gradient_recent_fast']):+.4f}/eps={float(pinfo['epsilon']):.4f}"
+                    if (
+                        isinstance(pinfo.get("gradient_recent_fast"), (int, float))
+                        and not isinstance(pinfo.get("gradient_recent_fast"), bool)
+                        and isinstance(pinfo.get("epsilon"), (int, float))
+                        and not isinstance(pinfo.get("epsilon"), bool)
+                    ):
+                        fast_sfx = (
+                            f", grad_fast={_parse_finite_float(pinfo.get('gradient_recent_fast'), 0.0):+.4f}"
+                            f"/eps={_parse_finite_float(pinfo.get('epsilon'), 0.0):.4f}"
+                        )
                     extras.append(
-                        f"slopes(3.7m={pinfo.get('slope_3_7m', 0):+.5f}[T={pinfo.get('trend_3_7m', 0)}], "
-                        f"15m={pinfo.get('slope_15m', 0):+.5f}[T={pinfo.get('trend_15m', 0)}], "
-                        f"2.5h={pinfo.get('slope_2_5h', 0):+.5f}[T={pinfo.get('trend_2_5h', 0)}]{fast_sfx})"
+                        f"slopes(3.7m={_parse_finite_float(pinfo.get('slope_3_7m'), 0.0):+.5f}[T={int(_parse_finite_float(pinfo.get('trend_3_7m'), 0.0))}], "
+                        f"15m={_parse_finite_float(pinfo.get('slope_15m'), 0.0):+.5f}[T={int(_parse_finite_float(pinfo.get('trend_15m'), 0.0))}], "
+                        f"2.5h={_parse_finite_float(pinfo.get('slope_2_5h'), 0.0):+.5f}[T={int(_parse_finite_float(pinfo.get('trend_2_5h'), 0.0))}]{fast_sfx})"
                     )
                 if pinfo.get("vol_1h_pct") is not None:
                     vol_part = f"vol_1h={pinfo.get('vol_1h_pct')}%"
                     if pinfo.get("adapt_reentry_pct") is not None:
                         vol_part += f"(adapt_reentry={pinfo.get('adapt_reentry_pct')}%)"
                     extras.append(vol_part)
-                if pinfo.get("kalman_vel") is not None:
-                    extras.append(f"kalman_vel={pinfo.get('kalman_vel'):+.5f}")
+                if pinfo.get("kalman_vel") is not None and not isinstance(pinfo.get("kalman_vel"), bool):
+                    extras.append(f"kalman_vel={_parse_finite_float(pinfo.get('kalman_vel'), 0.0):+.5f}")
                 if pinfo.get("long_trend_dir"):
                     lt_str = f"long_trend={pinfo.get('long_trend_dir')}({pinfo.get('long_trend_hours')}h"
                     if pinfo.get("long_trend_est_rem_hours") is not None:
@@ -1474,17 +1494,21 @@ class AutonomousAIReconciler:
         if sensors.microstructure:
             context_items.append("\n### 3B. PILLAR 2 MICROSTRUCTURE, ORDERBOOK WALLS, DERIVATIVES & WHALE FLOW:")
             for sym, minfo in sorted(sensors.microstructure.items()):
-                cur_px = (sensors.prices_and_trends.get(sym) or {}).get("price")
+                if not isinstance(minfo, dict):
+                    continue
+                cur_px = _parse_finite_float((sensors.prices_and_trends.get(sym) or {}).get("price"), 0.0)
                 bw_px = minfo.get("bid_wall_px")
                 aw_px = minfo.get("ask_wall_px")
+                bw_px_f = _parse_finite_float(bw_px, 0.0)
+                aw_px_f = _parse_finite_float(aw_px, 0.0)
                 bw_dist = (
-                    f", dist={(float(bw_px) - float(cur_px)) / float(cur_px) * 100.0:+.2f}%"
-                    if isinstance(cur_px, (int, float)) and float(cur_px) > 0 and isinstance(bw_px, (int, float)) and float(bw_px) > 0
+                    f", dist={(bw_px_f - cur_px) / cur_px * 100.0:+.2f}%"
+                    if cur_px > 0 and bw_px_f > 0
                     else ""
                 )
                 aw_dist = (
-                    f", dist={(float(aw_px) - float(cur_px)) / float(cur_px) * 100.0:+.2f}%"
-                    if isinstance(cur_px, (int, float)) and float(cur_px) > 0 and isinstance(aw_px, (int, float)) and float(aw_px) > 0
+                    f", dist={(aw_px_f - cur_px) / cur_px * 100.0:+.2f}%"
+                    if cur_px > 0 and aw_px_f > 0
                     else ""
                 )
                 context_items.append(
@@ -1503,10 +1527,11 @@ class AutonomousAIReconciler:
             ps = sensors.portfolio_summary
             context_items.append("\n### 3C. SPOT WALLET BALANCES, TRADABLE POSITIONS, CYCLE COST ANCHORS & LAST FILLS:")
             if ps.get("total_value_usdc") is not None:
-                context_items.append(f"  * Total Binance Portfolio Value: ${ps['total_value_usdc']:,.2f} USDC")
+                tot_usdc = _parse_finite_float(ps.get("total_value_usdc"), 0.0)
+                context_items.append(f"  * Total Binance Portfolio Value: ${tot_usdc:,.2f} USDC")
             if ps.get("venue_quote_cash"):
                 cash_parts = [
-                    f"{v['venue']} {v['asset']}=${v['free']:,.2f}"
+                    f"{v.get('venue')} {v.get('asset')}=${_parse_finite_float(v.get('free'), 0.0):,.2f}"
                     for v in ps["venue_quote_cash"].values()
                     if isinstance(v, dict)
                 ]
@@ -1568,11 +1593,15 @@ class AutonomousAIReconciler:
             if ps.get("hyperliquid_readonly"):
                 context_items.append(f"  * Hyperliquid Spot/Perp Equity Summary: {ps['hyperliquid_readonly']}")
             for sym, oinfo in sorted((ps.get("recent_orders") or {}).items()):
-                lb = oinfo.get("last_buy") or {}
-                ls = oinfo.get("last_sell") or {}
+                if not isinstance(oinfo, dict):
+                    continue
+                lb = oinfo.get("last_buy") if isinstance(oinfo.get("last_buy"), dict) else {}
+                ls = oinfo.get("last_sell") if isinstance(oinfo.get("last_sell"), dict) else {}
                 now_ms = int(time.time() * 1000)
-                lb_age_h = round((now_ms - int(lb["ts_ms"])) / 3_600_000.0, 1) if lb.get("ts_ms") else None
-                ls_age_h = round((now_ms - int(ls["ts_ms"])) / 3_600_000.0, 1) if ls.get("ts_ms") else None
+                lb_ts = _parse_finite_float(lb.get("ts_ms"), 0.0)
+                ls_ts = _parse_finite_float(ls.get("ts_ms"), 0.0)
+                lb_age_h = round((now_ms - int(lb_ts)) / 3_600_000.0, 1) if lb_ts > 0 else None
+                ls_age_h = round((now_ms - int(ls_ts)) / 3_600_000.0, 1) if ls_ts > 0 else None
                 avg_b_str = f" | Active Cycle Avg BUY={oinfo.get('active_avg_buy_px')}" if oinfo.get("active_avg_buy_px") else ""
                 r_buys = oinfo.get("recent_buys") or []
                 tranches_str = ""
@@ -2050,7 +2079,8 @@ class AutonomousAIReconciler:
         ]
         if report.diagnosed_issues:
             top_issue = report.diagnosed_issues[0]
-            body_lines.append(f"Primary Issue: [{top_issue.get('severity', 'INFO')}] {top_issue.get('description', '')}")
+            if isinstance(top_issue, dict):
+                body_lines.append(f"Primary Issue: [{top_issue.get('severity', 'INFO')}] {top_issue.get('description', '')}")
 
         if has_fix:
             patch_file = report.code_remediation.get("target_file", "unknown")

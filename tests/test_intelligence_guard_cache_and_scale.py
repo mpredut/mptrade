@@ -8118,6 +8118,110 @@ def test_iteration55_pricewindow_zero_size_tradeall_observe_pricechecker_and_ale
     assert pop_due_bulk_batch("ntfy", now=float("nan")) is None or True
 
 
+def test_iteration56_portfolio_snapshot_new_coins_overnight_monitor_and_reconciler_nan_bool_safety(tmp_path, monkeypatch):
+    import json
+    from unittest.mock import MagicMock
 
+    import verify_tools.portfolio_snapshot as ps_mod
+    from market_monitor.new_coins_discovery import DexScreenerSource, NewCoinsMonitor
+    from orchestratorOS.livecheck.autonomous_overnight_monitor import AutonomousOvernightMonitor
+    from orchestratorOS.supervisor.autonomous_ai_reconciler import (
+        AutonomousAIReconciler,
+        LogEventSummary,
+        TelemetrySensorSnapshot,
+    )
 
+    # 1. portfolio_snapshot.kraken_rows handles NaN _kraken_price and None orders without ValueError/TypeError
+    monkeypatch.setattr(ps_mod, "_load_state", lambda pair: {"qty": 2.0, "cost": 100.0, "orders": None})
+    monkeypatch.setattr(ps_mod, "_kraken_price", lambda pair: float("nan"))
+    rows = ps_mod.kraken_rows()
+    assert len(rows) == len(ps_mod.KRAKEN_PAIRS)
+    assert rows[0]["value_usd"] == 0.0
+    assert rows[0]["open_orders"] == 0
+
+    # 2. DexScreenerSource.refresh rejects bool/NaN listedAt and NewCoinsMonitor handles non-numeric max_monitored_symbols
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.json.return_value = {
+        "profiles": [
+            {"symbol": "ABC", "listedAt": True},
+            {"symbol": "DEF", "listedAt": "nan"},
+            {"symbol": "GHI", "listedAt": 1700000000000},
+        ]
+    }
+    monkeypatch.setattr("market_monitor.new_coins_discovery.requests.get", lambda *a, **kw: fake_resp)
+    dex = DexScreenerSource()
+    by_sym = {c["symbol"]: c["added_at"] for c in dex._cache}
+    assert by_sym["ABC"] is None
+    assert by_sym["DEF"] is None
+    assert by_sym["GHI"] is not None
+
+    dummy_pm = MagicMock()
+    dummy_pm.max_monitored_symbols = None
+    dummy_pm.original_symbols = []
+    dummy_pm.active_symbols = set()
+    ncm = NewCoinsMonitor.__new__(NewCoinsMonitor)
+    ncm.price_monitor = dummy_pm
+    assert ncm.add_new_coin_to_watchlist({"symbol": "NEWCOIN", "name": "NewCoin"}) is True
+
+    # 3. AutonomousOvernightMonitor handles bool/NaN now, list/null JSON in cachedb, and null market_trading_decision
+    cachedb = tmp_path / "cachedb"
+    cachedb.mkdir(parents=True, exist_ok=True)
+    (cachedb / "geopolitical_threat_eval.json").write_text("[]", encoding="utf-8")
+    (cachedb / "auto_cryptotrade_executor_eval.json").write_text(
+        json.dumps({"mode": "enforce", "market_trading_decision": None}),
+        encoding="utf-8",
+    )
+    aom = AutonomousOvernightMonitor(workspace_dir=str(tmp_path))
+    assert aom.check_processes(now=float("nan")) == []
+    assert aom.check_processes(now=True) == []
+    s_stat = aom.gather_sensor_status()
+    assert "geopolitical_threat" not in s_stat
+    assert s_stat["supervisor_eval"]["decision"] == "HOLD"
+
+    # 4. AutonomousAIReconciler.synthesize_and_diagnose handles None/bool/NaN in prices_and_trends, microstructure, and portfolio_summary
+    (tmp_path / "order_guard.conf").write_text("supervisor_mode = shadow\nsupervisor_notify = 0\n", encoding="utf-8")
+    (tmp_path / "config.env").write_text("NTFY_TOPIC_GUARD=test-guard\n", encoding="utf-8")
+    mock_gemini = MagicMock()
+    mock_gemini.query_json.return_value = {"summary": "OK", "market_trading_decisions": []}
+    rec = AutonomousAIReconciler(workspace_dir=str(tmp_path), gemini_auditor=mock_gemini)
+    snap = TelemetrySensorSnapshot(
+        prices_and_trends={
+            "BTCUSDC": {
+                "price": float("nan"),
+                "trend": None,
+                "growth_coefficient": None,
+                "chg_15m_pct": None,
+                "chg_30m_pct": float("nan"),
+                "chg_1h_pct": True,
+                "chg_3h_pct": None,
+                "low_24h": None,
+                "high_24h": float("nan"),
+                "chg_7d_pct": None,
+                "slope_15m": None,
+                "slope_3_7m": float("nan"),
+                "slope_2_5h": True,
+                "trend_3_7m": None,
+                "trend_15m": float("nan"),
+                "trend_2_5h": True,
+                "gradient_recent_fast": True,
+                "epsilon": float("nan"),
+                "kalman_vel": True,
+            }
+        },
+        microstructure={
+            "BTCUSDC": {
+                "bid_wall_px": float("nan"),
+                "ask_wall_px": True,
+            }
+        },
+        portfolio_summary={
+            "total_value_usdc": float("nan"),
+            "venue_quote_cash": {"binance:USDC": {"venue": "binance", "asset": "USDC", "free": float("nan")}},
+            "recent_orders": {"BTCUSDC": {"last_buy": {"ts_ms": "nan"}, "last_sell": None}},
+        },
+    )
+    logs = LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0)
+    res = rec.synthesize_and_diagnose(snap, logs, topic_key="auto_cryptotrade_executor")
+    assert res["summary"] == "OK"
 
