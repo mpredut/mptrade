@@ -1378,3 +1378,59 @@ def test_ml_forecast_and_trigger_gate_and_grid_isolation(monkeypatch):
     assert bars == [(105.0, 110.0, 105.0, 110.0)]
 
 
+def test_glob_escape_bracket_paths_and_export_env_parsing(tmp_path):
+    """Verify glob.escape handling on directory paths containing brackets and export env parsing."""
+    import state_io
+    import cachepaths
+    import active_intents
+    from orchestratorTrade import autonomous_intent_gateway as aig
+
+    bracket_dir = tmp_path / "dir[with]brackets"
+    bracket_dir.mkdir(parents=True)
+
+    # 1. state_io.prune_rotated_archives finds and prunes archives inside bracketed directories
+    base_file = bracket_dir / "state.json"
+    a1 = bracket_dir / "state.json.1.archive"
+    a2 = bracket_dir / "state.json.2.archive"
+    a1.write_text("{}", encoding="utf-8")
+    a2.write_text("{}", encoding="utf-8")
+    os.utime(a1, (1000.0, 1000.0))
+    os.utime(a2, (2000.0, 2000.0))
+    kept = state_io.prune_rotated_archives(str(base_file), 1)
+    assert kept == [str(a2)]
+    assert not a1.exists() and a2.exists()
+
+    # 2. cachepaths.migrate_legacy_filename_if_needed migrates legacy archives inside bracketed directories
+    legacy_path = bracket_dir / "cache_currentprice.json"
+    new_path = bracket_dir / "cache_current_price.json"
+    legacy_path.write_text("{}", encoding="utf-8")
+    legacy_arch = bracket_dir / "cache_currentprice.json.100.archive"
+    legacy_arch.write_text("{}", encoding="utf-8")
+    cachepaths.migrate_legacy_filename_if_needed(str(new_path))
+    assert new_path.exists()
+    assert (bracket_dir / "cache_current_price.json.100.archive").exists()
+
+    # 3. active_intents.build_active_intent_index discovers files inside bracketed root directories
+    kr_dir = bracket_dir / "kraken"
+    kr_dir.mkdir()
+    (kr_dir / ".state_BTCUSD.json").write_text(
+        json.dumps({"orders": [{"txid": "TX-42", "side": "buy", "px": 100.0, "vol": 1.0}]}),
+        encoding="utf-8",
+    )
+    idx = active_intents.build_active_intent_index(str(bracket_dir))
+    assert len(idx["intents"]) == 1
+    assert idx["intents"][0]["symbol"] == "BTCUSD"
+
+    # 4. autonomous_intent_gateway discovers T212 configs, Kraken export pairs, and audit files inside bracketed dir
+    t212_dir = bracket_dir / "212trading"
+    t212_dir.mkdir()
+    (t212_dir / "config.nvda.env").write_text("export T212_TICKER=NVDA_US_EQ\n", encoding="utf-8")
+    eqs = aig._discover_t212_equities(str(bracket_dir))
+    assert ("T212_NVDA", "NVDA_US_EQ", "NVDA_US_EQ", "USD") in eqs
+
+    (kr_dir / "config.env").write_text('export KRAKEN_CACHE_PAIRS="SOLUSD,ATOMUSD"\n', encoding="utf-8")
+    kr_pairs = aig._discover_kraken_cache_pairs(str(bracket_dir))
+    assert ("SOLUSD", "SOL", "USD") in kr_pairs
+
+
+

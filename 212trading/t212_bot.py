@@ -46,7 +46,7 @@ def discover_assets(cfg_dir: str) -> list[tuple[str, str]]:
     """Return sorted config.<asset>.env files as [(name, path), ...].
     config.nvda.env -> ('nvda', '.../config.nvda.env')."""
     out = []
-    for p in sorted(glob.glob(os.path.join(cfg_dir, "config.*.env"))):
+    for p in sorted(glob.glob(os.path.join(glob.escape(cfg_dir), "config.*.env"))):
         name = os.path.basename(p)[len("config."):-len(".env")]
         out.append((name, p))
     return out

@@ -145,7 +145,7 @@ def main():
     # cache_price_long_trend.json is the PriceLongTrend cache (a full-rewrite json, NOT
     # a per-symbol append) -> it stays .json, and we exclude it from the migration.
     EXCLUDE = {"long_trend"}
-    files = sorted(glob.glob(os.path.join(work_dir, "cache_price_*.json")))
+    files = sorted(glob.glob(os.path.join(glob.escape(work_dir), "cache_price_*.json")))
     files = [f for f in files
              if not f.endswith(".bak")
              and os.path.basename(f)[len("cache_price_"):-len(".json")] not in EXCLUDE]

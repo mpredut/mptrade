@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """212trading/test_dynamic_ladder.py — Unit tests for granular and dynamic TP ladder."""
 
+import os
+import sys
 import unittest
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+for _mod in ("strategy", "market_data", "notify"):
+    sys.modules.pop(_mod, None)
+
 from strategy import (
     generate_tp_ladder,
     adapt_ladder_rungs,

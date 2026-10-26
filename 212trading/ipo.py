@@ -128,7 +128,7 @@ def main() -> int:
         cfg = os.path.join(cfg_dir, f"config.{profile}.env")
         if not os.path.exists(cfg):
             avail = sorted(os.path.basename(p)[7:-4]
-                           for p in glob.glob(os.path.join(cfg_dir, "config.*.env")))
+                           for p in glob.glob(os.path.join(glob.escape(cfg_dir), "config.*.env")))
             log(f"! unknown profile '{profile}' (is missing {cfg})")
             log(f"  profile disponibile: {', '.join(avail) or '(niciunul)'}")
             return 2

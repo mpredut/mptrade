@@ -304,7 +304,7 @@ def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
     errors = []
     files = []
     for spec in sources:
-        for path in sorted(glob.glob(os.path.join(root, spec.pattern))):
+        for path in sorted(glob.glob(os.path.join(glob.escape(root), spec.pattern))):
             if _is_backup(path):
                 continue
             relative = os.path.relpath(path, root).replace(os.sep, "/")

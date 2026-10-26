@@ -11,7 +11,10 @@ import sys
 import tempfile
 import unittest
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+for _mod in ("strategy", "market_data", "notify", "t212_bot"):
+    sys.modules.pop(_mod, None)
 from ipo_common import float_env, parse_dotenv  # noqa: E402
 from strategy import StratParams  # noqa: E402
 from t212_bot import discover_assets  # noqa: E402

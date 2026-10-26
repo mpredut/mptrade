@@ -330,12 +330,17 @@ def prune_rotated_archives(
     keep_count: int,
 ) -> list[str]:
     """Retain the newest ``keep_count`` ``<base_filename>.*.archive*`` files."""
-    pattern = f"{os.fspath(base_filename)}.*.archive*"
-    archives = sorted(
-        (path for path in glob.glob(pattern) if not path.endswith(".tmp")),
-        key=os.path.getmtime,
-        reverse=True,
-    )
+    pattern = f"{glob.escape(os.fspath(base_filename))}.*.archive*"
+    candidates: list[tuple[float, str]] = []
+    for path in glob.glob(pattern):
+        if path.endswith(".tmp"):
+            continue
+        try:
+            candidates.append((os.path.getmtime(path), path))
+        except OSError:
+            continue
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    archives = [path for _, path in candidates]
     keep = 0 if isinstance(keep_count, bool) else max(0, int(keep_count))
     for old_archive in archives[keep:]:
         discard_generation_file(old_archive)

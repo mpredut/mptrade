@@ -135,6 +135,8 @@ def _load_env_file_defaults(env_path: str) -> Dict[str, str]:
                     continue
                 k, v = cleaned.split("=", 1)
                 key = k.strip()
+                if key.lower().startswith("export "):
+                    key = key[7:].strip()
                 val = v.strip().strip('"').strip("'")
                 if not key:
                     continue
@@ -159,7 +161,10 @@ def _discover_kraken_cache_pairs(workspace_dir: str) -> List[Tuple[str, str, str
                 if not cleaned or "=" not in cleaned:
                     continue
                 k, v = cleaned.split("=", 1)
-                if k.strip().upper() == "KRAKEN_CACHE_PAIRS":
+                key = k.strip()
+                if key.lower().startswith("export "):
+                    key = key[7:].strip()
+                if key.upper() == "KRAKEN_CACHE_PAIRS":
                     raw_pairs = v.strip().strip('"').strip("'")
                     break
     except OSError:
@@ -197,7 +202,7 @@ def _discover_t212_equities(workspace_dir: str) -> List[Tuple[str, str, str, str
         return []
     out: List[Tuple[str, str, str, str]] = []
     seen: set[str] = set()
-    for cfg_path in sorted(glob.glob(os.path.join(t212_dir, "config.*.env"))):
+    for cfg_path in sorted(glob.glob(os.path.join(glob.escape(t212_dir), "config.*.env"))):
         try:
             with open(cfg_path, "r", encoding="utf-8", errors="replace") as f:
                 for line in f:
@@ -205,7 +210,10 @@ def _discover_t212_equities(workspace_dir: str) -> List[Tuple[str, str, str, str
                     if not cleaned or "=" not in cleaned:
                         continue
                     k, v = cleaned.split("=", 1)
-                    if k.strip().upper() in ("T212_TICKER", "STRAT_PAIR"):
+                    key = k.strip()
+                    if key.lower().startswith("export "):
+                        key = key[7:].strip()
+                    if key.upper() in ("T212_TICKER", "STRAT_PAIR"):
                         ticker = v.strip().strip('"').strip("'").upper()
                         if ticker and ticker not in seen:
                             seen.add(ticker)
@@ -349,7 +357,7 @@ class AutonomousIntentGateway:
             return False
 
         matched_records: Dict[str, Dict[str, Any]] = {}
-        for audit_path in sorted(glob.glob(os.path.join(audit_dir, "execution_audit_*.jsonl"))):
+        for audit_path in sorted(glob.glob(os.path.join(glob.escape(audit_dir), "execution_audit_*.jsonl"))):
             try:
                 with open(audit_path, "r", encoding="utf-8", errors="replace") as f:
                     for line in f:
