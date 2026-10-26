@@ -307,7 +307,7 @@ def _summarize_orders(orders):
         raw_ts = _order_timestamp_ms(o)
         ts = int(raw_ts) if math.isfinite(raw_ts) else 0
         val = (p * q) if (q > 0.0 and p > 0.0) else 0.0
-        first_id = o.get("id") or o.get("orderId") or ts
+        first_id = (o.get("id") or o.get("orderId") or ts) if isinstance(o, dict) else ts
         return q, val, (1, round(q, 8), round(val, 4), ts, first_id)
     total_qty = 0.0
     total_val = 0.0
@@ -327,7 +327,7 @@ def _summarize_orders(orders):
     first = orders[0]
     first_ts_raw = _order_timestamp_ms(first)
     first_ts = int(first_ts_raw) if math.isfinite(first_ts_raw) else 0
-    first_id = first.get("id") or first.get("orderId") or first_ts
+    first_id = (first.get("id") or first.get("orderId") or first_ts) if isinstance(first, dict) else first_ts
     sig = (len(orders), round(total_qty, 8), round(total_val, 4), latest_ts, first_id)
     return total_qty, total_val, sig
 
@@ -2051,16 +2051,12 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         _TP_RIDE_STATE.pop(symbol, None)
         _save_mt_state()
     if trade_orders_buy and not position_closed_by_sell:
-        if (
-            buy_price is None
-            or isinstance(buy_price, bool)
-            or not math.isfinite(float(buy_price))
-            or float(buy_price) <= 0
-        ):
+        buy_price_f = _safe_f(buy_price, 0.0) or 0.0
+        if buy_price_f <= 0.0:
             if _verbose:
                 print(f"No buy_price !!!!!")
             return
-        buy_price = float(buy_price)
+        buy_price = buy_price_f
 
         snapshot = PositionSnapshot(
             symbol=symbol,
@@ -2154,16 +2150,12 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
 
     # 4. Evaluate SELL history (only when the latest SELL is at least as recent as any BUY).
     if trade_orders_sell and (not trade_orders_buy or sell_time >= buy_time):
-        if (
-            sell_price is None
-            or isinstance(sell_price, bool)
-            or not math.isfinite(float(sell_price))
-            or float(sell_price) <= 0
-        ):
+        sell_price_f = _safe_f(sell_price, 0.0) or 0.0
+        if sell_price_f <= 0.0:
             if _verbose:
                 print(f"No sell_price !!!!!")
             return
-        sell_price = float(sell_price)
+        sell_price = sell_price_f
         if (
             sell_time
             and symbol not in _LAST_EXIT_KIND

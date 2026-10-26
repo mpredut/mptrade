@@ -10759,3 +10759,91 @@ def test_iteration97_instrument_registry_order_retry_and_worker_safety(tmp_path)
     assert reports[0]["attempts"] == 0
     assert reports[0].get("last_price") is None
 
+
+def test_iteration98_market_regime_and_instrument_safety():
+    from instrument import Instrument
+    from market_regime import MarketRegimeEvaluator, MarketRegimeHorizon, MarketRegimeService
+    from providers.base import MarketDataProvider
+    from providers.market_api import MarketApi
+
+    # 1. MarketRegimeHorizon.parse, adverse_to, and MarketRegimeService interval/closes validation
+    assert MarketRegimeHorizon.parse(" short ") == MarketRegimeHorizon.SHORT
+    with pytest.raises(ValueError, match="unsupported market-regime horizon"):
+        MarketRegimeHorizon.parse(True)
+
+    ev = MarketRegimeEvaluator(2.0)
+    bull_dec = ev.evaluate({"gradient_recent": 0.5, "epsilon": 0.1})
+    bear_dec = ev.evaluate({"gradient_recent": -0.5, "epsilon": 0.1})
+    assert bear_dec.adverse_to(" long ") is True
+    assert bear_dec.adverse_to(" buy ") is True
+    assert bull_dec.adverse_to(" sold ") is True
+    assert bull_dec.adverse_to(True) is False
+
+    svc = MarketRegimeService()
+    with pytest.raises(ValueError, match="the regime interval must be positive"):
+        svc.horizon_sample_capacity("short", interval_min=1.5)
+    with pytest.raises(ValueError, match="the regime interval must be positive"):
+        svc.evaluate_closes_for_horizon([100, 101, 102], horizon="short", interval_min=True)
+    with pytest.raises(ValueError, match="the regime interval must be positive"):
+        svc.evaluate_closes_for_horizon([100, 101, 102], horizon="short", interval_min=1.5)
+    assert svc.evaluate_closes([100, 101, 102], interval_min=1.5).reason == "invalid_window_metadata"
+    assert svc.evaluate_closes("12345").reason == "invalid_ohlc"
+
+    # 2. Instrument.place side normalization & invalid side handling, and Instrument.param safety
+    class _GuardInternalProvider(MarketDataProvider):
+        name = "guard_internal"
+
+        def __init__(self):
+            self.last_side = None
+
+        def get_current_price(self, symbol: str):
+            return 100.0
+
+        def get_price_history(self, symbol: str, lookback_h: float):
+            return []
+
+        def supports_symbol(self, symbol: str) -> bool:
+            return True
+
+        def free_balance(self, asset: str):
+            return 1000.0
+
+        def get_orders(self, symbol: str, side, since_s: float):
+            return []
+
+        def guards_internally(self) -> bool:
+            return True
+
+        def place_order(self, symbol: str, side: str, price: float, qty: float, **kwargs):
+            self.last_side = side
+            return {"orderId": "OID-98", "status": "NEW"}
+
+    gip = _GuardInternalProvider()
+    api = MarketApi([gip])
+    inst = Instrument(
+        name="BTC",
+        symbol="BTCUSDC",
+        provider="guard_internal",
+        base="BTC",
+        quote="USDC",
+        params={"MT.GAIN": "9.5", "mt.nan_val": "nan", "mt.bool_val": True},
+        api=api,
+    )
+    out_ctx = {}
+    assert inst.place(True, 100.0, 1.0, _outcome_context=out_ctx) is None
+    assert out_ctx["reason"] == "invalid_side"
+    assert out_ctx["state"] == "refused"
+
+    out_ctx2 = {}
+    assert inst.place("INVALID", 100.0, 1.0, _outcome_context=out_ctx2) is None
+    assert out_ctx2["reason"] == "invalid_side"
+
+    res = inst.place(" b ", 100.0, 1.0)
+    assert res == {"orderId": "OID-98", "status": "NEW"}
+    assert gip.last_side == "BUY"
+
+    assert inst.param("mt", "gain", default=1.0, cast=float) == pytest.approx(9.5)
+    assert inst.param("mt", "nan_val", default=2.5, cast=float) == pytest.approx(2.5)
+    assert inst.param("mt", "bool_val", default=3.5, cast=float) == pytest.approx(3.5)
+    assert inst.param(True, "gain", default=4.5, cast=float) == pytest.approx(4.5)
+

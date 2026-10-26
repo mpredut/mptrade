@@ -187,6 +187,8 @@ KALMAN_BYPASS_SELL_REASONS = frozenset({"accel_plunge_down", "small_window_plung
 def _kalman_gate_blocks(symbol, action, reason=None):
     # An allowed symbol must have an explicit mode; there is no default policy.
     action = str(action or "").upper()
+    sym_norm = str(symbol or "").strip().upper()
+    symbol = sym_norm if sym_norm in KALMAN_MODES else symbol
     mode = KALMAN_MODES[symbol]
     if mode == "off" or _kalman_ref is None:
         return False, mode, None        # Gate disabled -> never blocks (not a data state).
@@ -219,6 +221,7 @@ def _fire_order(symbol, action, price, reason, **kwargs):
     to the real balance.
     """
     action = str(action or "").upper()
+    symbol = str(symbol or "").strip().upper()
     try:
         price = float(price)
     except (TypeError, ValueError):
@@ -266,6 +269,7 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     and records newly placed order IDs.
     """
     action = str(action or "").upper()
+    symbol = str(symbol or "").strip().upper()
     print(f"Iteration {count} generated price {proposed_price} versus {current_price}")
 
     if order_ids is None:

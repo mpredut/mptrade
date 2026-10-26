@@ -61,7 +61,7 @@ def resolve_effective_order_ttl(order_id, client_order_id, owner=None, custom_tt
 
     # 1. Custom TTL from placement
     custom_ttl = custom_map.get(oid_str) or (custom_map.get(cid_str) if cid_str else None)
-    if custom_ttl is not None:
+    if custom_ttl is not None and not isinstance(custom_ttl, bool):
         try:
             val = float(custom_ttl)
             if math.isfinite(val) and val > 0:
@@ -242,6 +242,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
 
     for order_id in list(orders.keys()):
         order = orders[order_id]
+        if not isinstance(order, dict):
+            continue
         price = extract_order_price(order, default=0.0)
 
         if not price or price <= 0:          # Guard against division by zero for invalid prices.
@@ -304,8 +306,17 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             continue
 
         init_px = initial_prices.get(order_id)
-        if init_px is None or isinstance(init_px, bool) or not math.isfinite(float(init_px)) or float(init_px) <= 0:
-            _remember_initial_price(initial_prices, order_id, price)
+        init_px_valid = False
+        if init_px is not None and not isinstance(init_px, bool):
+            try:
+                init_px_f = float(init_px)
+                if math.isfinite(init_px_f) and init_px_f > 0:
+                    initial_prices[order_id] = init_px_f
+                    init_px_valid = True
+            except (TypeError, ValueError, OverflowError):
+                init_px_valid = False
+        if not init_px_valid:
+            _remember_initial_price(initial_prices, order_id, float(price))
 
         difference_percent = abs(current_price - price) / price * 100
         print(f"{order_type.capitalize()} price {price}, current price {current_price} difference: {difference_percent:.2f}%, Order ID {order_id}")
@@ -355,8 +366,12 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 continue
             try:
                 raw_orig = order.get("quantity", order.get("origQty", order.get("qty")))
+                if isinstance(raw_orig, bool):
+                    raise TypeError("boolean origQty")
                 original_quantity = float(raw_orig)
                 if "remainingQty" in order:
+                    if isinstance(order["remainingQty"], bool):
+                        raise TypeError("boolean remainingQty")
                     quantity = float(order["remainingQty"])
                 else:
                     quantity = extract_remaining_qty(order, default=original_quantity)

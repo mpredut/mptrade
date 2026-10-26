@@ -888,8 +888,11 @@ def _campaign_tier(symbol, drawdown_abs, maximum_row, free_cash,
 
 
 def _complete_campaign_tier(symbol, kind, state, threshold):
+    thr_f = _finite_float(threshold, positive=True)
+    if thr_f is None:
+        return
     completed = _completed_tier_values(state)
-    completed.add(float(threshold))
+    completed.add(thr_f)
     state = dict(state)
     state["completed_tiers"] = sorted(completed)
     _save_symbol_campaign(symbol, kind, state)
@@ -1542,6 +1545,7 @@ def _next_check_seconds():
 
 def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     """Evaluate and possibly submit exactly one asset-specific SELL or BUY."""
+    symbol = str(symbol or "").strip().upper()
     evaluation = _last_evaluation.setdefault(
         symbol, {"growth": None, "drawdown": None, "pending_tier": False})
     evaluation.update(growth=None, drawdown=None, pending_tier=False)

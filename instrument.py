@@ -283,6 +283,19 @@ class Instrument:
         if order_kind is not None:
             kwargs["kind"] = order_kind
 
+        s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
+        if s_norm in {"BUY", "B"}:
+            side_u = "BUY"
+        elif s_norm in {"SELL", "S"}:
+            side_u = "SELL"
+        else:
+            reason = "invalid_side"
+            print(f"[{self.symbol}] {side!r} BLOCKED (pre-submit): {reason}")
+            if outcome_context is not None:
+                outcome_context.update(
+                    accepted=False, reason=reason, state="refused")
+            return None
+
         medium_trend_action_cfg = kwargs.get("medium_trend_action")
         medium_trend_scale_cfg = kwargs.get("medium_trend_scale")
         inst_bypass_raw = None
@@ -290,7 +303,7 @@ class Instrument:
             inst_bypass_raw = self.params.get("bypass_guards")
             if profit_reference_mode is None:
                 profit_reference_mode = self.params.get(
-                    f"{side.strip().lower()}_reference_mode",
+                    f"{side_u.lower()}_reference_mode",
                     self.params.get("reference_mode"),
                 )
             if caller_module is None:
@@ -324,7 +337,6 @@ class Instrument:
         wait_for_trend = bool(kwargs.pop("wait_for_trend", True))
         kwargs.pop("cooldown_pair_id", None)
         abort_if = kwargs.pop("abort_if", None)
-        side_u = side.upper()
         # This narrow escape hatch exists only for drawdown BUY flows or
         # explicitly authorized aged retry salvage exits (allow_math_reference_sell=True).
         # A SELL normally must prove profitability against its historical BUY reference;
@@ -394,7 +406,7 @@ class Instrument:
                     outcome_context.update(
                         accepted=False, reason=reason, state="refused")
                 return None
-            return self._provider.place_order(self.symbol, side, price, qty, **kwargs)
+            return self._provider.place_order(self.symbol, side_u, price, qty, **kwargs)
 
         # Capture the original uncapped quantity, requested price, and reproducible
         # arguments before mutation in case the placement must be queued for retry.
@@ -1065,7 +1077,7 @@ class Instrument:
                 # between a successful cancellation and the replacement.
                 provider_kwargs["_cancel_opposite_requested_price"] = orig_price
             response = self._provider.place_order(
-                self.symbol, side, price, qty, **provider_kwargs)
+                self.symbol, side_u, price, qty, **provider_kwargs)
             if _accepted_order_payload(response):
                 order = response
                 reason = None
@@ -1239,14 +1251,28 @@ class Instrument:
     def param(self, consumer: str, key: str, default: Any = None,
               cast: Optional[Callable] = None) -> Any:
         """Return ``consumer.key`` or ``default`` when missing or conversion fails."""
-        v = self.params.get(f"{consumer}.{key}")
+        if isinstance(consumer, bool) or isinstance(key, bool):
+            return default
+        k_lookup = f"{str(consumer or '').strip()}.{str(key or '').strip()}"
+        v = self.params.get(k_lookup)
+        if v is None:
+            k_cf = k_lookup.casefold()
+            for pk, pv in self.params.items():
+                if isinstance(pk, str) and pk.casefold() == k_cf:
+                    v = pv
+                    break
         if v is None:
             return default
         if cast is None:
             return v
+        if cast in (float, int) and isinstance(v, bool):
+            return default
         try:
-            return cast(v)
-        except (ValueError, TypeError):
+            res = cast(v)
+            if isinstance(res, float) and not math.isfinite(res):
+                return default
+            return res
+        except (ValueError, TypeError, OverflowError):
             return default
 
     def __repr__(self) -> str:

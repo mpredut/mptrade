@@ -66,9 +66,11 @@ class MarketRegimeDecision:
         return move if math.isfinite(move) else None
 
     def adverse_to(self, exposure_side: str) -> bool:
-        side = str(exposure_side or "").upper()
-        return ((side == "LONG" and self.regime == "bear") or
-                (side == "SOLD" and self.regime == "bull"))
+        if isinstance(exposure_side, bool):
+            return False
+        side = str(exposure_side or "").strip().upper()
+        return ((side in {"LONG", "BUY", "B"} and self.regime == "bear") or
+                (side in {"SOLD", "SHORT", "SELL", "S"} and self.regime == "bull"))
 
 
 @dataclass(frozen=True)
@@ -491,8 +493,10 @@ class MarketRegimeHorizon(str, Enum):
     def parse(cls, value) -> "MarketRegimeHorizon":
         if isinstance(value, cls):
             return value
+        if isinstance(value, bool):
+            raise ValueError(f"unsupported market-regime horizon: {value!r}")
         try:
-            return cls(str(value or cls.SHORT.value).lower())
+            return cls(str(value or cls.SHORT.value).strip().lower())
         except ValueError as exc:
             raise ValueError(f"unsupported market-regime horizon: {value!r}") from exc
 
@@ -759,8 +763,15 @@ class MarketRegimeService:
         if interval_min is not None or window_seconds is not None:
             if isinstance(interval_min, bool) or isinstance(window_seconds, bool):
                 raise ValueError("the regime interval and window must be positive")
+            if interval_min is not None:
+                try:
+                    im_f = float(interval_min)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError("the regime interval and window must be positive") from exc
+                if not math.isfinite(im_f) or not im_f.is_integer() or int(im_f) <= 0:
+                    raise ValueError("the regime interval and window must be positive")
             primary = (
-                int(configured[0][0] if interval_min is None else interval_min),
+                int(configured[0][0] if interval_min is None else float(interval_min)),
                 float(configured[0][1] if window_seconds is None else window_seconds),
             )
             configured = (primary,) + tuple(
@@ -1083,10 +1094,14 @@ class MarketRegimeService:
                                   interval_min=1, window_seconds=900.0):
         if isinstance(interval_min, bool) or isinstance(window_seconds, bool):
             raise ValueError("the regime interval and window must be positive")
-        interval_min = int(interval_min)
-        window_seconds = float(window_seconds)
-        if interval_min <= 0 or not math.isfinite(window_seconds) or window_seconds <= 0:
+        try:
+            im_f = float(interval_min)
+            window_seconds = float(window_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("the regime interval and window must be positive") from exc
+        if not math.isfinite(im_f) or not im_f.is_integer() or int(im_f) <= 0 or not math.isfinite(window_seconds) or window_seconds <= 0:
             raise ValueError("the regime interval and window must be positive")
+        interval_min = int(im_f)
         key = (
             str(getattr(provider, "name", "unknown")).lower(),
             str(symbol),
@@ -1165,9 +1180,16 @@ class MarketRegimeService:
             raise ValueError("the regime interval must be positive")
         parsed = MarketRegimeHorizon.parse(horizon)
         configured_interval, window_seconds = _HORIZON_SOURCES[parsed][0]
-        interval = configured_interval if interval_min is None else int(interval_min)
-        if interval <= 0:
-            raise ValueError("the regime interval must be positive")
+        if interval_min is None:
+            interval = configured_interval
+        else:
+            try:
+                im_f = float(interval_min)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("the regime interval must be positive") from exc
+            if not math.isfinite(im_f) or not im_f.is_integer() or int(im_f) <= 0:
+                raise ValueError("the regime interval must be positive")
+            interval = int(im_f)
         return max(3, int(math.ceil(window_seconds / (interval * 60))))
 
     _EVAL_CLOSES_CACHE: dict = {}
@@ -1176,11 +1198,20 @@ class MarketRegimeService:
     def evaluate_closes_for_horizon(self, closes, *, horizon="short",
                                     interval_min=None) -> MarketRegimeDecision:
         """Classify supplied closes with the canonical window for one horizon."""
+        if isinstance(interval_min, bool):
+            raise ValueError("the regime interval must be positive")
         parsed = MarketRegimeHorizon.parse(horizon)
         configured_interval, window_seconds = _HORIZON_SOURCES[parsed][0]
-        interval = (
-            configured_interval if interval_min is None else int(interval_min)
-        )
+        if interval_min is None:
+            interval = configured_interval
+        else:
+            try:
+                im_f = float(interval_min)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("the regime interval must be positive") from exc
+            if not math.isfinite(im_f) or not im_f.is_integer() or int(im_f) <= 0:
+                raise ValueError("the regime interval must be positive")
+            interval = int(im_f)
         return self._annotate(
             self.evaluate_closes(
                 closes, interval_min=interval, window_seconds=window_seconds,
@@ -1193,11 +1224,14 @@ class MarketRegimeService:
                         window_seconds=900.0) -> MarketRegimeDecision:
         if isinstance(interval_min, bool) or isinstance(window_seconds, bool):
             return self.evaluator.unknown("invalid_window_metadata")
+        if closes is None or isinstance(closes, (str, bytes, bool)):
+            return self.evaluator.unknown("invalid_ohlc")
         try:
-            itv = int(interval_min)
+            im_f = float(interval_min)
             win = float(window_seconds)
-            if itv <= 0 or not math.isfinite(win) or win <= 0:
+            if not math.isfinite(im_f) or not im_f.is_integer() or int(im_f) <= 0 or not math.isfinite(win) or win <= 0:
                 return self.evaluator.unknown("invalid_window_metadata")
+            itv = int(im_f)
             needed = max(3, int(math.ceil(win / (itv * 60))))
             seq = closes if isinstance(closes, (list, tuple)) else list(closes)
             tail = seq[-needed:]
