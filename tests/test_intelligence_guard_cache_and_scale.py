@@ -12113,6 +12113,93 @@ def test_iteration115_venue_clients_placeorder_and_strategy_state_safety(tmp_pat
     assert t212_clean["orders"][0]["side"] == "BUY"
 
 
+def test_iteration116_kraken_hl_and_t212_client_safety(monkeypatch):
+    """Iteration 116: Verify KrakenClient, kraken_cachemanager, HLClient.spot_order, and T212Client validation."""
+    import os
+    import sys
+    from types import SimpleNamespace
+    import pytest
+    from kraken.kraken_client import KrakenClient
+    import kraken.kraken_cachemanager as kcm
 
+    hl_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "hyperliquid"))
+    t212_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "212trading"))
+    orig_sys_path = list(sys.path)
+    hl_mods = ("common", "notify", "hl_client")
+    t212_mods = ("ipo_common", "ipo_notify", "t212_client")
+    saved_mods = {k: sys.modules.get(k) for k in set(hl_mods + t212_mods)}
+    try:
+        for k in hl_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, hl_dir)
+        import hl_client as hlc
+        HLClient = hlc.HLClient
+        sys.path[:] = orig_sys_path
+        for k in t212_mods:
+            sys.modules.pop(k, None)
+        sys.path.insert(0, t212_dir)
+        import t212_client as t212c
+        T212Client = t212c.T212Client
+    finally:
+        sys.path[:] = orig_sys_path
+        for k, v in saved_mods.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
 
+    # 1. KrakenClient.pair_info, ticker, and add_order validate="false"
+    kc = KrakenClient(api_key="k", api_secret="c2VjcmV0")
+    assert kc.pair_info(123) is None
+    assert kc.ticker(123) is None
+    captured_data = {}
+    monkeypatch.setattr(kc, "_private", lambda ep, data=None: captured_data.update(data or {}) or {"txid": ["T1"]})
+    monkeypatch.setattr(kc, "price_decimals", lambda _p: 2)
+    kc.add_order("XBTUSD", "buy", 1.0, price=100.0, ordertype="limit", validate="false")
+    assert "validate" not in captured_data
+    captured_data.clear()
+    kc.add_order("XBTUSD", "buy", 1.0, price=100.0, ordertype="limit", validate="true")
+    assert captured_data.get("validate") == "true"
+
+    # 2. kraken_cachemanager._match_configured_pair, _normalize, and _ledger_to_fills
+    assert kcm._match_configured_pair(True) is None
+    assert kcm._match_configured_pair(123) is None
+    assert kcm._normalize(None, {"pair": "XBTUSD"}) == {}
+    assert kcm._normalize(True, {"pair": "XBTUSD"}) == {}
+    assert kcm._normalize("tx1", "not-a-dict") == {}
+    assert kcm._normalize(" tx1 ", {"pair": True})["symbol"] is None
+    assert kcm._ledger_to_fills({
+        "l1": {"refid": "R1", "asset": True, "type": "trade", "amount": "1", "time": 1700000000},
+        "l2": {"refid": "R1", "asset": "ZUSD", "type": "trade", "amount": "-100", "time": 1700000000},
+    }) == []
+
+    # 3. HLClient.spot_order is_market & tif validation
+    hl = HLClient.__new__(HLClient)
+    hl.exchange = SimpleNamespace(order=lambda *a, **kw: {"status": "ok"})
+    assert hl.spot_order("@107", True, 1.0, 10.0, is_market="false")[0] is False
+    assert hl.spot_order("@107", True, 1.0, 10.0, tif=True)[0] is False
+    assert hl.spot_order("@107", True, 1.0, 10.0, tif="   ")[0] is False
+
+    # 4. T212Client.__init__, place_market_order extended_hours="false", and get_historical_order currency=True
+    with pytest.raises(ValueError):
+        T212Client(api_key="", env="demo", min_gap_sec=0, portfolio_ttl_sec=1, order_min_gap_sec=0)
+    with pytest.raises(ValueError):
+        T212Client(api_key=True, env="demo", min_gap_sec=0, portfolio_ttl_sec=1, order_min_gap_sec=0)
+    with pytest.raises(ValueError):
+        T212Client(api_key="key", api_secret=True, env="demo", min_gap_sec=0, portfolio_ttl_sec=1, order_min_gap_sec=0)
+    tc = T212Client(api_key="key", env="demo", min_gap_sec=0, portfolio_ttl_sec=1, order_min_gap_sec=0)
+    sent_payload = {}
+    monkeypatch.setattr(tc, "_place_order", lambda ep, payload: sent_payload.update(payload) or (200, {"id": 1}))
+    tc.place_market_order("AAPL_US_EQ", 1.0, extended_hours="false")
+    assert sent_payload["extendedHours"] is False
+    monkeypatch.setattr(
+        t212c,
+        "http_get",
+        lambda *_a, **_kw: (
+            200,
+            b'{"items":[{"order":{"id":"O1"},"fill":{"quantity":1,"price":10,"walletImpact":{"taxes":[{"quantity":0.1,"currency":true}]}}}]}',
+        ),
+    )
+    hist = tc.get_historical_order("O1")
+    assert "_feeCurrencies" not in hist
 

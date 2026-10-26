@@ -33,8 +33,12 @@ class T212Client:
                  *, min_gap_sec: float | None = None,
                  portfolio_ttl_sec: float | None = None,
                  order_min_gap_sec: float | None = None):
-        self.api_key = api_key
-        self.api_secret = api_secret
+        if not api_key or isinstance(api_key, bool) or not isinstance(api_key, str) or not api_key.strip():
+            raise ValueError("Invalid T212 api_key")
+        if api_secret is not None and isinstance(api_secret, bool):
+            raise ValueError("Invalid T212 api_secret")
+        self.api_key = api_key.strip()
+        self.api_secret = api_secret.strip() if isinstance(api_secret, str) and api_secret.strip() else None
         if isinstance(env, bool):
             raise ValueError(f"Invalid T212 environment: {env!r}; expected live or demo")
         self.env = (str(env).strip() if env is not None else required_env("T212_ENV")).lower()
@@ -273,10 +277,19 @@ class T212Client:
         qty_r = round(qty_f, 2)
         if qty_r == 0.0:
             raise ValueError("place_market_order rounded quantity must be non-zero")
+        ext_flag = (
+            extended_hours
+            if isinstance(extended_hours, bool)
+            else (
+                str(extended_hours).strip().lower() in {"1", "true", "yes", "on"}
+                if isinstance(extended_hours, str)
+                else bool(extended_hours)
+            )
+        )
         return self._place_order("market", {
             "ticker": str(ticker).strip(),
             "quantity": qty_r,
-            "extendedHours": bool(extended_hours),
+            "extendedHours": ext_flag,
         })
 
     def get_historical_order(self, order_id) -> dict | None:
@@ -354,7 +367,8 @@ class T212Client:
                 if not math.isfinite(tax_qty):
                     continue
                 total_fee += tax_qty
-                currency = str(tax.get("currency") or "").strip().upper()
+                raw_cur = tax.get("currency")
+                currency = raw_cur.strip().upper() if isinstance(raw_cur, str) else ""
                 if currency:
                     fee_currencies.add(currency)
         if total_qty > 0:

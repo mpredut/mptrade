@@ -92,7 +92,9 @@ _QUOTE = {
 
 def _match_configured_pair(symbol: str | None) -> str | None:
     """Resolve a raw or WS Kraken pair to its configured PAIRS entry (or canonical key if '*' is enabled)."""
-    raw = str(symbol or "").strip().upper()
+    if not isinstance(symbol, str):
+        return None
+    raw = symbol.strip().upper()
     if not raw:
         return None
     if PAIRS and "*" not in PAIRS:
@@ -105,6 +107,8 @@ def _match_configured_pair(symbol: str | None) -> str | None:
 
 def _normalize(txid, tr):
     """Normalize a Kraken TradesHistory/ownTrades transaction to the Binance-compatible form."""
+    if not isinstance(tr, dict) or txid is None or isinstance(txid, bool) or not str(txid).strip():
+        return {}
     ts_ms = extract_timestamp_ms(tr, default=0) or 0
     side = extract_order_side(tr) or None
     is_buyer = (side == "BUY") if side in {"BUY", "SELL"} else None
@@ -115,9 +119,11 @@ def _normalize(txid, tr):
         order_id = extract_order_id(tr)
     else:
         order_id = str(order_id).strip()
+    raw_sym = tr.get("pair", tr.get("symbol"))
+    sym_val = raw_sym.strip() if isinstance(raw_sym, str) and raw_sym.strip() else None
     normalized = {
-        "symbol": tr.get("pair", tr.get("symbol")),
-        "id": str(txid),
+        "symbol": sym_val,
+        "id": str(txid).strip(),
         "orderId": order_id,
         "price": price,
         "qty": qty,
@@ -207,8 +213,24 @@ def _ledger_to_fills(ledger):
     for refid, legs in by_ref.items():
         if len(legs) < 2:
             continue                                      # one leg means staking/deposit, not a trade
-        quote = next((l for l in legs if str(l.get("asset", "")).upper() in _QUOTE), None)
-        base = next((l for l in legs if l is not quote and str(l.get("asset", "")).upper() not in _QUOTE), None)
+        quote = next(
+            (
+                l for l in legs
+                if isinstance(l.get("asset"), str)
+                and l.get("asset").strip().upper() in _QUOTE
+            ),
+            None,
+        )
+        base = next(
+            (
+                l for l in legs
+                if l is not quote
+                and isinstance(l.get("asset"), str)
+                and l.get("asset").strip()
+                and l.get("asset").strip().upper() not in _QUOTE
+            ),
+            None,
+        )
         if not quote or not base or str(base.get("type") or "").strip().lower() not in ("trade", "receive", "spend"):
             continue
         raw_ba = base.get("amount") if isinstance(base, dict) else None

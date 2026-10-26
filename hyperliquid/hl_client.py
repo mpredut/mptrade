@@ -444,6 +444,10 @@ class HLClient:
         pair = pair.strip()
         if not isinstance(is_buy, bool):
             return False, None, "invalid non-boolean is_buy"
+        if not isinstance(is_market, bool):
+            return False, None, "invalid non-boolean is_market"
+        if tif is not None and (isinstance(tif, bool) or not isinstance(tif, str) or not tif.strip()):
+            return False, None, "invalid tif"
         if isinstance(sz, bool) or isinstance(px, bool) or isinstance(sz_decimals, bool):
             return False, None, "invalid boolean order parameter"
         try:

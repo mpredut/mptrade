@@ -201,17 +201,17 @@ class KrakenClient:
 
     def pair_info(self, pair: str) -> dict | None:
         """Return pair price/volume precision and minimum order, or None if absent."""
-        if not pair or isinstance(pair, bool) or not str(pair).strip():
+        if not pair or isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
             return None
-        res = self._public("AssetPairs", {"pair": str(pair).strip()})
+        res = self._public("AssetPairs", {"pair": pair.strip()})
         if not res:
             return None
         return next((v for v in res.values() if isinstance(v, dict)), None)
 
     def ticker(self, pair: str) -> dict | None:
-        if not pair or isinstance(pair, bool) or not str(pair).strip():
+        if not pair or isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
             return None
-        res = self._public("Ticker", {"pair": str(pair).strip()})
+        res = self._public("Ticker", {"pair": pair.strip()})
         return next((v for v in res.values() if isinstance(v, dict)), None) if res else None
 
     def ohlc_closes_with_timestamps(
@@ -357,7 +357,16 @@ class KrakenClient:
             if isinstance(cl_ord_id, bool) or not re.fullmatch(r"[0-9a-fA-F]{32}", str(cl_ord_id).strip()):
                 raise ValueError("a Kraken cl_ord_id must be a 128-bit hex UUID")
             data["cl_ord_id"] = str(cl_ord_id).strip().lower()
-        if validate:
+        val_flag = (
+            validate
+            if isinstance(validate, bool)
+            else (
+                str(validate).strip().lower() in {"1", "true", "yes", "on"}
+                if isinstance(validate, str)
+                else bool(validate)
+            )
+        )
+        if val_flag:
             data["validate"] = "true"
         return self._private("AddOrder", data)
 
