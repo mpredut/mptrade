@@ -58,7 +58,7 @@ class LiquidationCascadeGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate whether an active cascade prevents order execution."""
-        side_norm = str(side or "").upper()
+        side_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow(
                 guard_name="LiquidationCascadeGuard",

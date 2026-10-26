@@ -58,7 +58,7 @@ class ExtremeGreedGuard:
             return GuardDecision.allow("ExtremeGreedGuard", "no_sentiment_data")
 
         # Greed guard only restricts BUY orders; SELL orders in greed are approved
-        if str(side or "").upper() != "BUY":
+        if isinstance(side, bool) or str(side or "").strip().upper() != "BUY":
             return GuardDecision.allow("ExtremeGreedGuard", "sell_permitted_in_greed")
 
         raw_val = getattr(snapshot, "value", None)

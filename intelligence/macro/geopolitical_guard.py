@@ -42,14 +42,14 @@ class GeopoliticalShockGuard:
     ) -> GuardDecision:
         """Evaluate order against current geopolitical threat assessment."""
         # Only BUY orders are restrained; SELL / Stop-Loss orders always pass freely
-        if str(side or "").upper() != "BUY":
+        if isinstance(side, bool) or str(side or "").strip().upper() != "BUY":
             return GuardDecision.allow("GeopoliticalShockGuard", "sell_permitted_in_shock")
 
         if assessment is None:
             return GuardDecision.allow("GeopoliticalShockGuard", "no_geopolitical_data")
 
-        level = str(getattr(assessment, "threat_level", None) or "").upper()
-        brake = str(getattr(assessment, "recommended_brake", None) or "").upper()
+        level = str(getattr(assessment, "threat_level", None) or "").strip().upper()
+        brake = str(getattr(assessment, "recommended_brake", None) or "").strip().upper()
         summary = str(getattr(assessment, "summary", None) or "geopolitical_shock")
         raw_risk = getattr(assessment, "risk_score", 0.0)
         risk_score = 0.0

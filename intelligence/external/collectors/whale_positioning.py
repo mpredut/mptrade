@@ -206,6 +206,7 @@ class WhalePositioningCollector:
                             except Exception:
                                 continue
                         if len(valid_pts) >= 2:
+                            valid_pts.sort(key=lambda x: x[0])
                             now_sec = valid_pts[-1][0]
                             target_sec = now_sec - 3600.0
                             latest_p = valid_pts[-1][1]
@@ -375,7 +376,9 @@ class WhalePositioningCollector:
     ) -> Optional[WhalePositioningSnapshot]:
         """Fetch latest whale positioning metrics from public Binance Futures endpoints."""
         import math
-        symbol = symbol.upper()
+        symbol = str(symbol or "").strip().upper()
+        if not symbol:
+            return None
         try:
             now_f = float(now) if (now is not None and not isinstance(now, bool)) else time.time()
             now = now_f if (math.isfinite(now_f) and now_f > 0.0) else time.time()

@@ -63,7 +63,12 @@ class BybitLiquidationCollector:
         symbols: Optional[List[str]] = None,
         retention_sec: float = MAX_RETENTION_SEC,
     ) -> None:
-        self._symbols = [s.upper() for s in (symbols or DEFAULT_SYMBOLS)]
+        cleaned_syms = [
+            str(s).strip().upper()
+            for s in (symbols or DEFAULT_SYMBOLS)
+            if isinstance(s, str) and s.strip()
+        ]
+        self._symbols = cleaned_syms or list(DEFAULT_SYMBOLS)
         ret_sec = MAX_RETENTION_SEC
         if retention_sec is not None and not isinstance(retention_sec, bool):
             try:

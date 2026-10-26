@@ -42,7 +42,7 @@ class LiquidationCapitulationTrigger:
         mn = _safe_float(min_notional_usd, 100_000.0)
         self.min_notional_usd = mn if (mn is not None and mn > 0.0) else 100_000.0
         rt = _safe_float(ratio_threshold, 0.75)
-        self.ratio_threshold = rt if (rt is not None and rt > 0.0) else 0.75
+        self.ratio_threshold = rt if (rt is not None and 0.0 < rt <= 1.0) else 0.75
         ws = _safe_float(window_sec, 300.0)
         self.window_sec = ws if (ws is not None and ws > 0.0) else 300.0
 

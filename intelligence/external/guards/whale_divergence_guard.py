@@ -26,6 +26,21 @@ def _safe_float(val: Any, default: float) -> float:
         return default
 
 
+def _safe_bool(val: Any, default: bool = True) -> bool:
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val) if math.isfinite(float(val)) else default
+    s = str(val).strip().lower()
+    if s in ("1", "true", "yes", "on"):
+        return True
+    if s in ("0", "0.0", "false", "no", "off"):
+        return False
+    return default
+
+
 class WhaleDivergenceGuard:
     """Blocks or defers orders when whale positioning or OI flow contradicts the move."""
 
@@ -41,9 +56,9 @@ class WhaleDivergenceGuard:
         taker_downscaled_scale: float = 0.50,
     ) -> None:
         self.collector = collector
-        self.block_short_covering_fakeout = bool(block_short_covering_fakeout)
-        self.block_aggressive_shorting = bool(block_aggressive_shorting)
-        self.block_liquidation_cascade = bool(block_liquidation_cascade)
+        self.block_short_covering_fakeout = _safe_bool(block_short_covering_fakeout, True)
+        self.block_aggressive_shorting = _safe_bool(block_aggressive_shorting, True)
+        self.block_liquidation_cascade = _safe_bool(block_liquidation_cascade, True)
         self.severe_cascade_oi_pct = _safe_float(severe_cascade_oi_pct, -5.0)
         min_tr = _safe_float(min_taker_ratio, 0.75)
         self.min_taker_ratio = min_tr if min_tr > 0.0 else 0.75
@@ -60,7 +75,7 @@ class WhaleDivergenceGuard:
         now: Optional[float] = None,
     ) -> GuardDecision:
         """Evaluate if whale positioning or OI divergence conflicts with the order."""
-        side_norm = str(side or "").strip().upper()
+        side_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
         if side_norm not in ("BUY", "SELL"):
             return GuardDecision.allow(
                 guard_name="WhaleDivergenceGuard",
@@ -78,7 +93,7 @@ class WhaleDivergenceGuard:
                 reason="no_whale_snapshot_data",
             )
 
-        regime = str(getattr(snapshot, "divergence_regime", None) or "neutral")
+        regime = str(getattr(snapshot, "divergence_regime", None) or "neutral").strip().lower()
         oi_1h = _safe_float(getattr(snapshot, "open_interest_1h_change_pct", None), 0.0)
         taker_ratio = _safe_float(getattr(snapshot, "taker_buy_sell_ratio", None), 1.0)
         top_long_pct = _safe_float(getattr(snapshot, "top_traders_long_pct", None), 0.5)

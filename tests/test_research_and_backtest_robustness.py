@@ -2320,6 +2320,115 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     monkeypatch.setattr("market_monitor.pricefetcher.requests.get", lambda *a, **k: _DummyYahooResp())
     assert yp.get_price("NVDA_US_EQ") is None
 
+    # 16. External/Sentiment/Macro collectors, triggers, and guards whitespace/bool/bounds hardening
+    from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector, LiquidationSummary
+    from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry, DerivativesTelemetryCollector
+    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector, OrderbookSnapshot
+    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector, WhalePositioningSnapshot
+    from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
+    from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+    from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
+    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
+    from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
+    from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
+    from intelligence.sentiment.guards.high_stake_guard import compute_24h_price_metrics, extract_symbol_recent_fills
+    from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
+
+    blc = BybitLiquidationCollector(symbols=["  btcusdt ", "", None])
+    assert blc._symbols == ["BTCUSDT"]
+
+    assert DerivativesTelemetry.from_dict(None).symbol == ""
+    assert DerivativesTelemetryCollector(cache_dir=None).fetch("   ", allow_network=False) is None
+    assert OrderbookSnapshot.from_dict("bad").symbol == ""
+    assert OrderbookDepthCollector(cache_dir=None).fetch("   ", allow_network=False) is None
+    assert WhalePositioningCollector(cache_dir=None).fetch("   ", allow_network=False) is None
+
+    lcg = LiquidationCascadeGuard(max_active_cascade_usd=100_000.0)
+    liq_sum = LiquidationSummary(
+        symbol="BTCUSDT",
+        window_sec=60.0,
+        long_liq_usd=250_000.0,
+        short_liq_usd=0.0,
+        net_usd=-250_000.0,
+        capitulation_ratio=1.0,
+        squeeze_ratio=0.0,
+        events_count=5,
+        last_event_ts=1000.0,
+    )
+    assert lcg.check("BTCUSDT", " buy ", summary=liq_sum).allowed is False
+    assert lcg.check("BTCUSDT", True, summary=liq_sum).allowed is True
+
+    wdg = WhaleDivergenceGuard(
+        block_short_covering_fakeout="false",
+        block_aggressive_shorting="0",
+        block_liquidation_cascade="no",
+    )
+    assert wdg.block_short_covering_fakeout is False
+    assert wdg.block_aggressive_shorting is False
+    assert wdg.block_liquidation_cascade is False
+    wdg_strict = WhaleDivergenceGuard()
+    whale_snap = WhalePositioningSnapshot(
+        symbol="BTCUSDC",
+        top_traders_long_ratio=1.2,
+        top_traders_long_pct=0.55,
+        taker_buy_sell_ratio=1.0,
+        taker_buy_vol_usd=100.0,
+        taker_sell_vol_usd=100.0,
+        open_interest_usd=1000.0,
+        open_interest_1h_change_pct=-1.0,
+        divergence_regime=" SHORT_COVERING ",
+        ts=1000.0,
+    )
+    assert wdg_strict.check("BTCUSDC", " buy ", snapshot=whale_snap).allowed is False
+
+    lct = LiquidationCapitulationTrigger(ratio_threshold=75.0)
+    assert lct.ratio_threshold == 0.75
+    wat = WhaleAccumulationTrigger(min_top_traders_long_pct=60.0, min_top_traders_short_pct=60.0)
+    assert wat.min_top_traders_long_pct == 0.60 and wat.min_top_traders_short_pct == 0.60
+
+    egg = ExtremeGreedGuard(hard_veto_threshold=90)
+    fg_greed = FearGreedSnapshot(
+        value=95,
+        classification="Extreme Greed",
+        timestamp=1000.0,
+        historical_values=(95,),
+        trend_7d_change=10,
+        is_extreme_fear=False,
+        is_extreme_greed=True,
+    )
+    assert egg.check("BTCUSDC", " buy ", fg_greed).allowed is False
+
+    pwg = PanicWashoutGuard(severe_panic_fng_threshold=15)
+    fg_panic = FearGreedSnapshot(
+        value=10,
+        classification="Extreme Fear",
+        timestamp=1000.0,
+        historical_values=(10, 25),
+        trend_7d_change=-15,
+        is_extreme_fear=True,
+        is_extreme_greed=False,
+    )
+    assert pwg.check("BTCUSDC", " buy ", fear_greed_snapshot=fg_panic).allowed is False
+
+    gsg = GeopoliticalShockGuard()
+    geo_shock = SimpleNamespace(
+        threat_level=" CRITICAL_SHOCK ",
+        risk_score=0.95,
+        recommended_brake=" HARD_VETO_NEW_BUYS ",
+        summary="crisis",
+        ts=1000.0,
+    )
+    assert gsg.check("BTCUSDC", " buy ", geo_shock).allowed is False
+
+    m24_unsorted = compute_24h_price_metrics([[2000.0, 110.0], [1000.0, 100.0]])
+    assert m24_unsorted.get("chg_15m_pct") == 10.0
+    fills_ws = extract_symbol_recent_fills([{"side": " buy ", "price": "100.0", "qty": "2.0", "timestamp": 1000}])
+    assert fills_ws is not None and fills_ws["active_avg_buy_px"] == 100.0
+
+
 
 
 

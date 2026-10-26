@@ -51,6 +51,7 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
         if len(clean_series) < 2:
             return {}
 
+        clean_series.sort(key=lambda x: x[0])
         now_ms = clean_series[-1][0]
         cur_px = clean_series[-1][1]
 
@@ -103,8 +104,8 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
         key=lambda item: (_safe_order_ts(item[1]), item[0]),
     )
     chron = [o for _, o in ordered]
-    last_buy = next((o for o in reversed(chron) if str(o.get("side") or "").upper() == "BUY"), None)
-    last_sell = next((o for o in reversed(chron) if str(o.get("side") or "").upper() == "SELL"), None)
+    last_buy = next((o for o in reversed(chron) if str(o.get("side") or "").strip().upper() == "BUY"), None)
+    last_sell = next((o for o in reversed(chron) if str(o.get("side") or "").strip().upper() == "SELL"), None)
     last_any = chron[-1]
 
     def _norm_fill(o: Dict[str, Any]) -> Tuple[Optional[float], Optional[float], Any]:
@@ -141,7 +142,7 @@ def extract_symbol_recent_fills(orders_list: list) -> Optional[Dict[str, Any]]:
     buys_fmt: list[Dict[str, Any]] = []
     sells_fmt: list[Dict[str, Any]] = []
     for o in chron:
-        side_o = str(o.get("side") or "").upper()
+        side_o = str(o.get("side") or "").strip().upper()
         p_f, q_f, ts_raw = _norm_fill(o)
         if side_o == "BUY":
             buys_fmt.append({"price": p_f, "qty": q_f, "ts_ms": ts_raw})

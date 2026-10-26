@@ -41,9 +41,11 @@ class WhaleAccumulationTrigger:
         min_taker_sell_ratio: float = 0.80,        # Taker aggressive sells dominate (<0.80)
     ) -> None:
         self.collector = collector
-        self.min_top_traders_long_pct = _safe_pos_float(min_top_traders_long_pct, 0.60)
+        long_pct = _safe_pos_float(min_top_traders_long_pct, 0.60)
+        self.min_top_traders_long_pct = long_pct if long_pct <= 1.0 else 0.60
         self.min_taker_buy_ratio = _safe_pos_float(min_taker_buy_ratio, 1.25)
-        self.min_top_traders_short_pct = _safe_pos_float(min_top_traders_short_pct, 0.60)
+        short_pct = _safe_pos_float(min_top_traders_short_pct, 0.60)
+        self.min_top_traders_short_pct = short_pct if short_pct <= 1.0 else 0.60
         self.min_taker_sell_ratio = _safe_pos_float(min_taker_sell_ratio, 0.80)
 
     def evaluate(

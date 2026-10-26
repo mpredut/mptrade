@@ -40,6 +40,8 @@ class DerivativesTelemetry:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> DerivativesTelemetry:
         import math
+        if not isinstance(data, dict):
+            data = {}
 
         def _f(key: str, default: float) -> float:
             raw = data.get(key)
@@ -136,7 +138,9 @@ class DerivativesTelemetryCollector:
     ) -> Optional[DerivativesTelemetry]:
         """Fetch funding rate and open interest from public Binance Futures endpoint."""
         import math
-        symbol = symbol.upper()
+        symbol = str(symbol or "").strip().upper()
+        if not symbol:
+            return None
         try:
             now_f = float(now) if (now is not None and not isinstance(now, bool)) else time.time()
             now = now_f if (math.isfinite(now_f) and now_f > 0.0) else time.time()
