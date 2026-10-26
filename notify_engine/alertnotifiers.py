@@ -73,9 +73,10 @@ def _load_delivery_state(path: Path, today: str) -> dict:
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         state = {}
-    if state.get("date_utc") != today:
+    if not isinstance(state, dict) or state.get("date_utc") != today:
         state = {"schema_version": 1, "date_utc": today, "channels": {}}
-    state.setdefault("channels", {})
+    if not isinstance(state.get("channels"), dict):
+        state["channels"] = {}
     return state
 
 
@@ -382,30 +383,47 @@ def pass_common_gate(
     lock_path = path.with_suffix(path.suffix + ".lock")
     with FileLock(lock_path):
         state = _load_delivery_state(path, today)
-        channel_state = state["channels"].setdefault(
-            channel,
-            {
+        raw_ch = state["channels"].get(channel)
+        if not isinstance(raw_ch, dict):
+            raw_ch = {
                 "sent": 0,
                 "last": {},
                 "blocked": False,
                 "budget_warning_sent": False,
                 "last_gate_ts": 0.0,
                 "pending_bulk": [],
-            },
-        )
+            }
+            state["channels"][channel] = raw_ch
+        channel_state = raw_ch
         if channel == "ntfy" and channel_state.get("blocked"):
-            blocked_until = float(channel_state.get("blocked_until", 0.0) or 0.0)
+            try:
+                blocked_until = float(channel_state.get("blocked_until", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                blocked_until = 0.0
             if blocked_until > 0 and now_ts >= blocked_until:
                 channel_state["blocked"] = False
             else:
                 return False, "provider_daily_limit", False, None
 
-        last = channel_state.setdefault("last", {})
+        last_raw = channel_state.get("last")
+        last = last_raw if isinstance(last_raw, dict) else {}
         cutoff = now_ts - 2 * 24 * 60 * 60
-        channel_state["last"] = {
-            key: value for key, value in last.items() if float(value) >= cutoff
-        }
-        pending_bulk: list[dict] = channel_state.setdefault("pending_bulk", [])
+        cleaned_last: dict[str, float] = {}
+        for key, value in last.items():
+            try:
+                v_f = float(value)
+            except (TypeError, ValueError):
+                continue
+            if cutoff <= v_f <= now_ts:
+                cleaned_last[key] = v_f
+        channel_state["last"] = cleaned_last
+        raw_bulk = channel_state.get("pending_bulk")
+        pending_bulk: list[dict] = (
+            [it for it in raw_bulk if isinstance(it, dict)]
+            if isinstance(raw_bulk, list)
+            else []
+        )
+        channel_state["pending_bulk"] = pending_bulk
 
         # 1. Eliminate if already sitting in pending_bulk with same similarity or fingerprint
         for item in pending_bulk:
@@ -418,17 +436,20 @@ def pass_common_gate(
 
         # 2. Eliminate if sent/seen within dedup or similarity window
         prev_fp = channel_state["last"].get(fingerprint)
-        if prev_fp is not None and now_ts - float(prev_fp) < sim_window:
+        if prev_fp is not None and 0 <= now_ts - float(prev_fp) < sim_window:
             _save_delivery_state(path, state)
             return False, "duplicate", False, None
 
         prev_sim = channel_state["last"].get(sim_key)
-        if prev_sim is not None and now_ts - float(prev_sim) < sim_window:
+        if prev_sim is not None and 0 <= now_ts - float(prev_sim) < sim_window:
             _save_delivery_state(path, state)
             return False, "similar_eliminated", False, None
 
         # 3. Daily routine budget check for ntfy
-        sent = int(channel_state.get("sent", 0))
+        try:
+            sent = int(channel_state.get("sent", 0) or 0)
+        except (TypeError, ValueError):
+            sent = 0
         if channel == "ntfy" and not urgent:
             budget = _positive_int_env("NTFY_DAILY_BUDGET", 220)
             reserve = _positive_int_env("NTFY_URGENT_RESERVE", 20)
@@ -439,7 +460,12 @@ def pass_common_gate(
                 return False, "local_daily_budget", warn, None
 
         # 4. Check the 5-minute Common Gate
-        last_gate_ts = float(channel_state.get("last_gate_ts", 0.0) or 0.0)
+        try:
+            last_gate_ts = float(channel_state.get("last_gate_ts", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            last_gate_ts = 0.0
+        if last_gate_ts > now_ts:
+            last_gate_ts = 0.0
         if gate_sec > 0 and last_gate_ts > 0 and (now_ts - last_gate_ts) < gate_sec:
             # Gate is CLOSED: buffer this distinct message for bulk synthesis
             channel_state["last"][fingerprint] = now_ts
@@ -498,18 +524,30 @@ def pop_due_bulk_batch(
     with FileLock(lock_path):
         state = _load_delivery_state(path, today)
         channel_state = state["channels"].get(channel)
-        if not channel_state:
+        if not isinstance(channel_state, dict):
             return None
-        pending_bulk: list[dict] = channel_state.get("pending_bulk") or []
+        raw_bulk = channel_state.get("pending_bulk")
+        if not isinstance(raw_bulk, list):
+            return None
+        pending_bulk: list[dict] = [it for it in raw_bulk if isinstance(it, dict)]
         if not pending_bulk:
             return None
-        last_gate_ts = float(channel_state.get("last_gate_ts", 0.0) or 0.0)
+        try:
+            last_gate_ts = float(channel_state.get("last_gate_ts", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            last_gate_ts = 0.0
+        if last_gate_ts > now_ts:
+            last_gate_ts = 0.0
         if not force and gate_sec > 0 and last_gate_ts > 0 and (now_ts - last_gate_ts) < gate_sec:
             return None
         items = list(pending_bulk)
         channel_state["pending_bulk"] = []
         channel_state["last_gate_ts"] = now_ts
-        channel_state["sent"] = int(channel_state.get("sent", 0)) + 1
+        try:
+            prev_sent = int(channel_state.get("sent", 0) or 0)
+        except (TypeError, ValueError):
+            prev_sent = 0
+        channel_state["sent"] = prev_sent + 1
         _save_delivery_state(path, state)
         return synthesize_bulk_notifications(items)
 
@@ -595,11 +633,18 @@ class AlertNotifier:
 
     @staticmethod
     def format_new_coin_message(alert: dict) -> str:
+        raw_price = alert.get("price")
+        price_str = "Price: N/A"
+        if raw_price is not None and not isinstance(raw_price, bool):
+            try:
+                price_str = f"Price: ${float(raw_price):.4f}"
+            except (TypeError, ValueError):
+                price_str = f"Price: {raw_price}"
         lines = [
             f"🆕: {alert.get('symbol', 'N/A')} - {alert.get('name', alert.get('symbol', 'N/A'))}",
             f"Source: {alert.get('source', 'unknown')}",
             f"Added: {AlertNotifier.format_human_readable_time(alert.get('added_at'))}",
-            f"Price: ${alert.get('price', 0):.4f}" if alert.get('price') is not None else "Price: N/A",
+            price_str,
         ]
         url = alert.get("url")
         if url:

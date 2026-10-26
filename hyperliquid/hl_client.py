@@ -15,6 +15,7 @@ Run with the Python interpreter from the SDK virtual environment:
 
 from __future__ import annotations
 
+import math
 import time
 
 from common import log
@@ -40,7 +41,7 @@ EXCHANGE_TIMEOUT_SECONDS = 30.0
 
 def _round_px(px: float, sz_decimals: int, is_perp: bool = True) -> float:
     """Round an HL price to 5 significant figures and at most (6/8 - szDecimals) decimals."""
-    if px <= 0:
+    if not math.isfinite(px) or px <= 0:
         return px
     max_dec = (6 if is_perp else 8) - sz_decimals
     px = float(f"{px:.5g}")           # five significant figures
@@ -324,15 +325,20 @@ class HLClient:
             )
         except Exception as e:  # noqa: BLE001
             return False, None, str(e)
-        if res.get("status") != "ok":
+        if not isinstance(res, dict) or res.get("status") != "ok":
             return False, None, str(res)
-        st = res["response"]["data"]["statuses"][0]
-        if "resting" in st:
-            return True, st["resting"]["oid"], "resting"
-        if "filled" in st:
+        resp_obj = res.get("response") if isinstance(res.get("response"), dict) else {}
+        data_obj = resp_obj.get("data") if isinstance(resp_obj.get("data"), dict) else {}
+        statuses = data_obj.get("statuses") if isinstance(data_obj.get("statuses"), list) else []
+        if not statuses or not isinstance(statuses[0], dict):
+            return False, None, str(res)
+        st = statuses[0]
+        if "resting" in st and isinstance(st["resting"], dict):
+            return True, st["resting"].get("oid"), "resting"
+        if "filled" in st and isinstance(st["filled"], dict):
             return True, st["filled"].get("oid"), f"filled {st['filled'].get('totalSz')}"
         if "error" in st:
-            return False, None, st["error"]
+            return False, None, str(st["error"])
         return True, None, str(st)
 
     # ----- signed trading -----------------------------------------------------
@@ -357,15 +363,20 @@ class HLClient:
                                       {"limit": {"tif": "Gtc"}}, reduce_only=reduce_only)
         except Exception as e:  # noqa: BLE001
             return False, None, str(e)
-        if res.get("status") != "ok":
+        if not isinstance(res, dict) or res.get("status") != "ok":
             return False, None, str(res)
-        st = res["response"]["data"]["statuses"][0]
-        if "resting" in st:
-            return True, st["resting"]["oid"], "resting"
-        if "filled" in st:
+        resp_obj = res.get("response") if isinstance(res.get("response"), dict) else {}
+        data_obj = resp_obj.get("data") if isinstance(resp_obj.get("data"), dict) else {}
+        statuses = data_obj.get("statuses") if isinstance(data_obj.get("statuses"), list) else []
+        if not statuses or not isinstance(statuses[0], dict):
+            return False, None, str(res)
+        st = statuses[0]
+        if "resting" in st and isinstance(st["resting"], dict):
+            return True, st["resting"].get("oid"), "resting"
+        if "filled" in st and isinstance(st["filled"], dict):
             return True, st["filled"].get("oid"), f"filled {st['filled'].get('totalSz')} @ {st['filled'].get('avgPx')}"
         if "error" in st:
-            return False, None, st["error"]
+            return False, None, str(st["error"])
         return True, None, str(st)
 
     def cancel(self, coin: str, oid: int) -> bool:
@@ -375,17 +386,20 @@ class HLClient:
             res = self.exchange.cancel(coin, oid)
             if not isinstance(res, dict) or res.get("status") != "ok":
                 return False
-            statuses = res.get("response", {}).get("data", {}).get("statuses", [])
-            if statuses:
-                st = statuses[0]
-                if st == "success":
-                    return True
-                if isinstance(st, dict) and "error" in st:
-                    log(f"  ! cancel oid={oid} rejected: {st['error']}")
-                    return False
-                if isinstance(st, str) and "error" in st.lower():
-                    log(f"  ! cancel oid={oid} rejected: {st}")
-                    return False
+            resp_obj = res.get("response") if isinstance(res.get("response"), dict) else {}
+            data_obj = resp_obj.get("data") if isinstance(resp_obj.get("data"), dict) else {}
+            statuses = data_obj.get("statuses") if isinstance(data_obj.get("statuses"), list) else []
+            if not statuses:
+                return False
+            st = statuses[0]
+            if st == "success":
+                return True
+            if isinstance(st, dict) and "error" in st:
+                log(f"  ! cancel oid={oid} rejected: {st['error']}")
+                return False
+            if isinstance(st, str) and "error" in st.lower():
+                log(f"  ! cancel oid={oid} rejected: {st}")
+                return False
             return True
         except Exception as e:  # noqa: BLE001
             log(f"  ! cancel failed: {e}")

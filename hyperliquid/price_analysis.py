@@ -11,6 +11,7 @@ This runs on one-hour HL candles and therefore analyzes the real perpetual price
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 
@@ -103,13 +104,21 @@ def analyze(client, coin: str) -> dict | None:
     """Run analysis over HL candles for the coin."""
     window_hours = required_int_env("ANALYSIS_WINDOW_H")
     step_hours = required_int_env("ANALYSIS_STEP_H")
+    if window_hours <= 0 or step_hours <= 0:
+        return None
     lookback = window_hours + step_hours * 14   # enough historical windows
     candles = client.candles(coin, "1h", lookback_hours=lookback)
-    pts = [
-        (float(c["t"]) / 1000.0, float(c["c"]))
-        for c in (candles or [])
-        if isinstance(c, dict) and c.get("t") is not None and c.get("c") is not None
-    ]
+    pts: list[tuple[float, float]] = []
+    for c in candles or []:
+        if not isinstance(c, dict) or c.get("t") is None or c.get("c") is None:
+            continue
+        try:
+            t_s = float(c["t"]) / 1000.0
+            c_v = float(c["c"])
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(t_s) and math.isfinite(c_v) and c_v > 0:
+            pts.append((t_s, c_v))
     if len(pts) < window_hours:
         return None
     ts = [p[0] for p in pts]
@@ -128,7 +137,13 @@ def signal(client, coin: str) -> dict:
         last_px = client.mid(coin)
     except Exception:  # noqa: BLE001
         pass
-    slope_pct_h = abs(res["current_slope_h"]) / last_px * 100 if last_px else 0.0
+    has_valid_px = (
+        last_px is not None
+        and not isinstance(last_px, bool)
+        and math.isfinite(float(last_px))
+        and float(last_px) > 0
+    )
+    slope_pct_h = abs(res["current_slope_h"]) / float(last_px) * 100 if has_valid_px else 0.0
     dur_h = res["duration_seconds"] / 3600.0
     conf = round(min(1.0, slope_pct_h / 0.3 * 0.6 + min(dur_h / 48.0, 1.0) * 0.4), 2)
     return {

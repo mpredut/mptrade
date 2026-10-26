@@ -20,6 +20,7 @@ RULE: backtest every signal before assigning real money.
 from __future__ import annotations
 
 import json
+import math
 import os
 import statistics
 import sys
@@ -37,9 +38,20 @@ def _builtin_trend(client, coin: str) -> dict:
     fast = required_int_env("SIGNAL_FAST_H")
     slow = required_int_env("SIGNAL_SLOW_H")
     band = required_float_env("SIGNAL_BAND_PCT") / 100
+    if fast <= 0 or slow <= 0:
+        return {**NEUTRAL, "source": "builtin(insuf. date)"}
     candles = client.candles(coin, "1h", lookback_hours=slow + 6)
-    closes = [float(c["c"]) for c in candles if "c" in c]
-    if len(closes) < slow:
+    closes: list[float] = []
+    for c in candles or []:
+        if not isinstance(c, dict) or "c" not in c:
+            continue
+        try:
+            v = float(c["c"])
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(v) and v > 0:
+            closes.append(v)
+    if len(closes) < max(fast, slow):
         return {**NEUTRAL, "source": "builtin(insuf. date)"}
     mf = statistics.mean(closes[-fast:])
     ms = statistics.mean(closes[-slow:])
@@ -62,21 +74,32 @@ def _file_signal(path: str) -> dict:
     if not isinstance(d, dict):
         log("  ! an invalid signal file: top-level JSON must be an object")
         return {**NEUTRAL, "source": "file(corupt)"}
-    ts = d.get("ts") or d.get("timestamp")
+    ts = d.get("ts") if d.get("ts") is not None else d.get("timestamp")
     max_age = required_float_env("SIGNAL_MAX_AGE_MIN") * 60
-    if ts:
+    if ts is not None:
+        if isinstance(ts, bool):
+            return {**NEUTRAL, "source": "file(expirat)"}
         try:
-            if time.time() - float(ts) > max_age:
-                return {**NEUTRAL, "source": "file(expirat)"}
+            ts_f = float(ts)
         except (TypeError, ValueError):
-            pass
+            return {**NEUTRAL, "source": "file(expirat)"}
+        age = time.time() - ts_f
+        if not math.isfinite(ts_f) or age > max_age or age < -60.0:
+            return {**NEUTRAL, "source": "file(expirat)"}
     tr = str(d.get("trend", "neutral")).lower()
     if tr not in ("up", "down", "neutral"):
         tr = "neutral"
-    try:
-        conf = float(d.get("confidence", 0) or 0)
-    except (TypeError, ValueError):
+    raw_conf = d.get("confidence", 0)
+    if isinstance(raw_conf, bool):
         conf = 0.0
+    else:
+        try:
+            conf = float(raw_conf or 0)
+        except (TypeError, ValueError):
+            conf = 0.0
+    if not math.isfinite(conf):
+        conf = 0.0
+    conf = max(0.0, min(1.0, conf))
     return {"trend": tr, "confidence": conf, "source": "file"}
 
 

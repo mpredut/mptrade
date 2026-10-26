@@ -246,5 +246,80 @@ def test_position_exit_manager_and_audit_hardening(tmp_path, monkeypatch):
     assert sig.get_signal("BTCUSDT")["short_count"] == 0
 
 
+def test_alertnotifiers_and_hl_hardening(tmp_path, monkeypatch):
+    import importlib.util
+    import json
+    import math
+    from datetime import datetime, timezone
+    from pathlib import Path
+    from notify_engine import alertnotifiers
+
+    hl_dir = Path(__file__).resolve().parent.parent / "hyperliquid"
+    monkeypatch.syspath_prepend(str(hl_dir))
+
+    def _load_hl_mod(name: str):
+        spec = importlib.util.spec_from_file_location(f"_hl_{name}", str(hl_dir / f"{name}.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    hl_client = _load_hl_mod("hl_client")
+    hl_signals = _load_hl_mod("signals")
+    hl_pa = _load_hl_mod("price_analysis")
+
+    state_file = tmp_path / "notif_state.json"
+    monkeypatch.setenv("NOTIFICATION_STATE_FILE", str(state_file))
+    monkeypatch.setenv("NOTIFICATION_GATE_SECONDS", "300")
+
+    now_ts = 1700000000.0
+    today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
+    # Corrupted / future clock-skewed state
+    state_file.write_text(json.dumps({
+        "date_utc": today,
+        "channels": {
+            "ntfy": {
+                "sent": "bad",
+                "last": {"fp1": now_ts + 9999.0, "fp2": "not_a_float"},
+                "last_gate_ts": now_ts + 3600.0,
+                "pending_bulk": ["not_a_dict"],
+            }
+        },
+    }), encoding="utf-8")
+
+    allowed, reason, _, payload = alertnotifiers.pass_common_gate(
+        "ntfy", "Test Alert", "Body", now=now_ts
+    )
+    assert allowed is True
+    assert reason == "reserved"
+    assert payload is not None
+
+    msg = alertnotifiers.AlertNotifier.format_new_coin_message(
+        {"symbol": "ABC", "price": "1.23456"}
+    )
+    assert "Price: $1.2346" in msg
+
+    assert math.isnan(hl_client._round_px(float("nan"), 2))
+
+    sig_file = tmp_path / "signal.json"
+    sig_file.write_text(json.dumps({"trend": "up", "confidence": 5.0, "ts": now_ts + 999999999.0}), encoding="utf-8")
+    monkeypatch.setenv("SIGNAL_MAX_AGE_MIN", "30")
+    res_future = hl_signals._file_signal(str(sig_file))
+    assert res_future["trend"] == "neutral"
+
+    sig_file.write_text(json.dumps({"trend": "up", "confidence": 5.0}), encoding="utf-8")
+    res_clamped = hl_signals._file_signal(str(sig_file))
+    assert res_clamped["confidence"] == 1.0
+
+    monkeypatch.setenv("ANALYSIS_WINDOW_H", "2")
+    monkeypatch.setenv("ANALYSIS_STEP_H", "1")
+    class _DummyClient:
+        def candles(self, coin, interval, lookback_hours):
+            return [{"t": "bad", "c": "10.0"}, {"t": 1000, "c": float("nan")}]
+        def mid(self, coin):
+            return float("nan")
+    assert hl_pa.analyze(_DummyClient(), "HYPE") is None
+
+
+
 
 
